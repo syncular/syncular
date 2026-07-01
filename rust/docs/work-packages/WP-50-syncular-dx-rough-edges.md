@@ -1141,7 +1141,12 @@ online propagation, or reconnect behavior can change.
   drives an R2-backed Syncular blob route upload/complete/download flow,
   rejects a forbidden blob download URL with stable access details, and uses a
   DO-backed WebSocket route to echo a client message through the same upgrade
-  bridge as a lower-level transport proof.
+  bridge as a lower-level transport proof. The local Cloudflare failure
+  artifact self-check now also includes a safe `blobMetrics` object for the R2
+  route, covering upload initiation, byte upload, upload completion, scoped
+  reference push, download URL creation, byte download, partitioned download,
+  byte counts, and total route duration without recording hashes, signed URLs,
+  direct-transfer tokens, or payload text.
 - The post-publish JavaScript install smoke now runs a release-time optional
   subpath import matrix by default. It installs `@syncular/client`,
   `@syncular/server`, and the Bun-friendly optional peers in a fresh npm
@@ -1906,6 +1911,13 @@ online propagation, or reconnect behavior can change.
   synthetic `cloudflare-runtime-failure.self-check.json`; real runtime
   failures write `cloudflare-runtime-failure.json` with route, local port,
   process exit, and bounded recent-output context.
+- 2026-07-01: Extended the Cloudflare local-runtime failure artifact with safe
+  R2 blob route metrics. The artifact now validates nullable non-negative
+  timings for upload init, byte upload, upload completion, scoped reference
+  push, download URL creation, byte download, partitioned download URL
+  creation, partitioned byte download, byte counts, and total route duration,
+  while excluding hashes, signed URLs, direct-transfer tokens, and payload
+  text.
 - 2026-07-01: Made `framework-import-smokes` use a run-specific temporary
   workspace by default so a direct local smoke and a release-rehearsal smoke
   cannot delete each other's generated Next/Vite/Cloudflare app directories.
@@ -2351,7 +2363,11 @@ Most recent framework-import-smoke rerun:
     route upload/complete/download, forbidden `blob.forbidden` download URL
     details, and Durable Object WebSocket echo.
   - Passed the deterministic Cloudflare local-runtime failure artifact shape
-    self-check.
+    self-check, including safe `blobMetrics` fields for attempted route
+    coverage, content/download byte counts, upload init, byte upload, upload
+    completion, scoped reference push, download URL creation, byte download,
+    partitioned download URL creation, partitioned byte download, and total
+    route duration.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/framework-import-smokes.ts --require-vite-browser-runtime`
   - Expected nonzero status locally because Chrome/Chromium is unavailable;
     confirms the required Vite browser-runtime path fails loudly after the
@@ -2685,9 +2701,10 @@ Most recent mutation-status rerun:
   missing-reference owner, wrong-partition, revoked-reference, and
   deleted-reference download URL attempts, and forbidden blob download URLs
   with stable access details, and echoes through a DO-backed WebSocket route.
-  The same local runtime proof now
-  self-checks a bounded Cloudflare failure artifact so failed DO/D1/R2/WebSocket
-  runs can leave route, exit, and recent-output context instead of logs alone.
+  The same local runtime proof now self-checks a bounded Cloudflare failure
+  artifact so failed DO/D1/R2/WebSocket runs can leave route, exit,
+  recent-output context, and safe R2 blob route timing/byte metrics instead of
+  logs alone.
   Release rehearsal now runs those framework proofs by default before publish
   dry-runs and can require the Vite browser execution path on Chrome-capable
   runners. Remaining matrix work is deeper browser/framework execution beyond
@@ -2744,8 +2761,11 @@ Most recent mutation-status rerun:
   sync, realtime, local-apply, blob, cursors, request ids, sync-attempt ids,
   and latest phase codes, and refreshes on row changes. The Chrome/CDP path
   waits for the local-visibility marker before proving two-tab propagation.
-  Remaining depth is direct blob-fetch measurement where a browser/app flow
-  can expose it without manual log scraping.
+  The Cloudflare/R2 local runtime artifact now captures direct blob route
+  upload/download timings and byte counts for both owner-hash and partitioned
+  reference flows. Remaining depth is observing hosted browser/Cloudflare
+  artifacts and deciding whether Console/Fleet or future `doctor` checks
+  should ingest the same redacted shape.
 
 ## Next Action
 

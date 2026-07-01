@@ -81,6 +81,9 @@ async function runLocalWorkerRuntimeProbe(args: {
     args.appDir,
     'cloudflare-runtime-failure.json'
   );
+  const blobMetrics = args.blobRouteBase
+    ? createCloudflareBlobRouteMetrics()
+    : undefined;
   const output: string[] = [];
   let exited: { code: number | null; signal: NodeJS.Signals | null } | null =
     null;
@@ -136,6 +139,7 @@ async function runLocalWorkerRuntimeProbe(args: {
         origin: `http://127.0.0.1:${port}`,
         routeBase: args.blobRouteBase,
         syncRouteBase: args.syncRouteBase,
+        metrics: blobMetrics,
         output,
         getExit: () => exited,
       });
@@ -160,6 +164,7 @@ async function runLocalWorkerRuntimeProbe(args: {
     }
     await verifyCloudflareRuntimeFailureArtifactSelfCheck(args.appDir, {
       blobRouteBase: args.blobRouteBase,
+      blobMetrics,
       expectedText: args.expectedText,
       output,
       port,
@@ -171,6 +176,7 @@ async function runLocalWorkerRuntimeProbe(args: {
   } catch (error) {
     await writeCloudflareRuntimeFailureArtifact(failureArtifactPath, error, {
       blobRouteBase: args.blobRouteBase,
+      blobMetrics,
       expectedText: args.expectedText,
       output,
       port,
@@ -187,6 +193,7 @@ async function runLocalWorkerRuntimeProbe(args: {
 }
 
 type CloudflareRuntimeFailureProbe = {
+  blobMetrics: CloudflareBlobRouteMetrics | null;
   blobRouteBase: string | null;
   expectedText: string;
   exited: {
@@ -200,6 +207,32 @@ type CloudflareRuntimeFailureProbe = {
   webSocketRoute: string | null;
 };
 
+type CloudflareBlobRouteMetrics = {
+  attempted: boolean;
+  completeUploadMs: number | null;
+  contentBytes: number | null;
+  downloadBytes: number | null;
+  downloadBytesMs: number | null;
+  downloadUrlMs: number | null;
+  partitionedDownloadBytes: number | null;
+  partitionedDownloadBytesMs: number | null;
+  partitionedDownloadUrlMs: number | null;
+  referencePushMs: number | null;
+  totalMs: number | null;
+  uploadBytesMs: number | null;
+  uploadInitMs: number | null;
+};
+
+type CloudflareBlobRouteMetricMsKey =
+  | 'completeUploadMs'
+  | 'downloadBytesMs'
+  | 'downloadUrlMs'
+  | 'partitionedDownloadBytesMs'
+  | 'partitionedDownloadUrlMs'
+  | 'referencePushMs'
+  | 'uploadBytesMs'
+  | 'uploadInitMs';
+
 type CloudflareRuntimeFailureArtifact = {
   generatedAt: string;
   reason: string;
@@ -207,6 +240,7 @@ type CloudflareRuntimeFailureArtifact = {
 };
 
 type CloudflareRuntimeFailureProbeInput = {
+  blobMetrics?: CloudflareBlobRouteMetrics;
   blobRouteBase?: string;
   expectedText: string;
   exited: { code: number | null; signal: NodeJS.Signals | null } | null;
@@ -253,6 +287,7 @@ function cloudflareRuntimeFailureProbe(
   input: CloudflareRuntimeFailureProbeInput
 ): CloudflareRuntimeFailureProbe {
   return {
+    blobMetrics: input.blobMetrics ?? null,
     blobRouteBase: input.blobRouteBase ?? null,
     expectedText: input.expectedText,
     exited: input.exited
@@ -298,6 +333,7 @@ function assertCloudflareRuntimeFailureProbeShape(
   if (!isRecord(probe)) {
     throw new Error(`${path} probe was not a JSON object`);
   }
+  assertCloudflareBlobRouteMetricsShape(probe.blobMetrics, path);
   for (const key of [
     'blobRouteBase',
     'syncRouteBase',
@@ -329,6 +365,74 @@ function assertCloudflareRuntimeFailureProbeShape(
       throw new Error(`${path} probe.exited.signal was not nullable text`);
     }
   }
+}
+
+function assertCloudflareBlobRouteMetricsShape(
+  metrics: unknown,
+  path: string
+): void {
+  if (metrics === null) return;
+  if (!isRecord(metrics)) {
+    throw new Error(`${path} probe.blobMetrics was not a nullable JSON object`);
+  }
+  if (typeof metrics.attempted !== 'boolean') {
+    throw new Error(`${path} probe.blobMetrics.attempted was not a boolean`);
+  }
+  for (const key of [
+    'completeUploadMs',
+    'contentBytes',
+    'downloadBytes',
+    'downloadBytesMs',
+    'downloadUrlMs',
+    'partitionedDownloadBytes',
+    'partitionedDownloadBytesMs',
+    'partitionedDownloadUrlMs',
+    'referencePushMs',
+    'totalMs',
+    'uploadBytesMs',
+    'uploadInitMs',
+  ] as const) {
+    if (metrics[key] !== null && !isNonNegativeFiniteNumber(metrics[key])) {
+      throw new Error(
+        `${path} probe.blobMetrics.${key} was not nullable non-negative number`
+      );
+    }
+  }
+}
+
+function createCloudflareBlobRouteMetrics(): CloudflareBlobRouteMetrics {
+  return {
+    attempted: false,
+    completeUploadMs: null,
+    contentBytes: null,
+    downloadBytes: null,
+    downloadBytesMs: null,
+    downloadUrlMs: null,
+    partitionedDownloadBytes: null,
+    partitionedDownloadBytesMs: null,
+    partitionedDownloadUrlMs: null,
+    referencePushMs: null,
+    totalMs: null,
+    uploadBytesMs: null,
+    uploadInitMs: null,
+  };
+}
+
+async function measureCloudflareBlobMetric<T>(
+  metrics: CloudflareBlobRouteMetrics | undefined,
+  key: CloudflareBlobRouteMetricMsKey,
+  runMetric: () => Promise<T>
+): Promise<T> {
+  const startedAt = performance.now();
+  try {
+    return await runMetric();
+  } finally {
+    if (metrics) metrics[key] = elapsedSince(startedAt);
+  }
+}
+
+function elapsedSince(startedAt: number): number {
+  return Math.max(0, Math.round(performance.now() - startedAt));
 }
 
 async function runVitePreviewRuntimeProbe(args: {
@@ -691,6 +795,10 @@ function assertViteBrowserRuntimeProbeShape(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
 type CdpResponse = {
@@ -1739,14 +1847,18 @@ async function runBlobRouteFlow(args: {
   origin: string;
   routeBase: string;
   syncRouteBase: string;
+  metrics?: CloudflareBlobRouteMetrics;
   output: string[];
   getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
 }): Promise<void> {
   const label = 'Cloudflare R2 blob route smoke';
+  const startedAt = performance.now();
+  if (args.metrics) args.metrics.attempted = true;
   const actorId = 'syncular-framework-actor';
   const partitionId = 'syncular-framework-partition';
   const contentText = `syncular-cloudflare-r2-route-content-${Date.now()}`;
   const content = new TextEncoder().encode(contentText);
+  if (args.metrics) args.metrics.contentBytes = content.byteLength;
   const hash = `sha256:${createHash('sha256').update(content).digest('hex')}`;
   const headers = {
     'content-type': 'application/json',
@@ -1761,243 +1873,278 @@ async function runBlobRouteFlow(args: {
     getExit: args.getExit,
   });
 
-  const initResponse = await fetchWorkerResponse({
-    label,
-    url: `${args.origin}${args.routeBase}/blobs/upload`,
-    init: {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
+  try {
+    const initResponse = await measureCloudflareBlobMetric(
+      args.metrics,
+      'uploadInitMs',
+      () =>
+        fetchWorkerResponse({
+          label,
+          url: `${args.origin}${args.routeBase}/blobs/upload`,
+          init: {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              hash,
+              size: content.byteLength,
+              mimeType: 'text/plain',
+            }),
+          },
+          output: args.output,
+          getExit: args.getExit,
+        })
+    );
+    await expectOkResponse(label, 'upload init', initResponse, args.output);
+    const initBody = (await readJsonResponse(
+      label,
+      'upload init',
+      initResponse
+    )) as {
+      exists?: boolean;
+      headers?: Record<string, string>;
+      uploadMethod?: string;
+      uploadUrl?: string;
+    };
+    if (typeof initBody.uploadUrl !== 'string') {
+      throw new Error(
+        `${label} did not return an upload URL: ${JSON.stringify(initBody)}`
+      );
+    }
+
+    const uploadResponse = await measureCloudflareBlobMetric(
+      args.metrics,
+      'uploadBytesMs',
+      () =>
+        fetchWorkerResponse({
+          label,
+          url: resolveWorkerRouteUrl(args.origin, initBody.uploadUrl),
+          init: {
+            method: initBody.uploadMethod ?? 'PUT',
+            headers: {
+              ...(initBody.headers ?? {}),
+              'content-type': 'text/plain',
+              'content-length': String(content.byteLength),
+            },
+            body: content,
+          },
+          output: args.output,
+          getExit: args.getExit,
+        })
+    );
+    await expectOkResponse(label, 'upload bytes', uploadResponse, args.output);
+
+    const forbiddenCompleteResponse = await fetchWorkerResponse({
+      label,
+      url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+        hash
+      )}/complete`,
+      init: {
+        method: 'POST',
+        headers: {
+          'x-syncular-smoke-actor': `${actorId}-other`,
+          'x-syncular-smoke-partition': partitionId,
+        },
+      },
+      output: args.output,
+      getExit: args.getExit,
+    });
+    await expectJsonErrorResponse(label, 'forbidden upload completion', {
+      response: forbiddenCompleteResponse,
+      output: args.output,
+      status: 403,
+      code: 'blob.forbidden',
+      category: 'forbidden',
+      recommendedAction: 'checkPermissions',
+    });
+
+    const completeResponse = await measureCloudflareBlobMetric(
+      args.metrics,
+      'completeUploadMs',
+      () =>
+        fetchWorkerResponse({
+          label,
+          url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+            hash
+          )}/complete`,
+          init: {
+            method: 'POST',
+            headers: {
+              'x-syncular-smoke-actor': actorId,
+              'x-syncular-smoke-partition': partitionId,
+            },
+          },
+          output: args.output,
+          getExit: args.getExit,
+        })
+    );
+    await expectOkResponse(
+      label,
+      'complete upload',
+      completeResponse,
+      args.output
+    );
+
+    const unreferencedDownloadUrlResponse = await fetchWorkerResponse({
+      label,
+      url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+        hash
+      )}/url`,
+      init: {
+        headers: {
+          'x-syncular-smoke-actor': actorId,
+          'x-syncular-smoke-partition': partitionId,
+        },
+      },
+      output: args.output,
+      getExit: args.getExit,
+    });
+    const unreferencedDownloadUrlBody = await expectJsonErrorResponse(
+      label,
+      'unreferenced download URL',
+      {
+        response: unreferencedDownloadUrlResponse,
+        output: args.output,
+        status: 403,
+        code: 'blob.forbidden',
+        category: 'forbidden',
+        recommendedAction: 'checkPermissions',
+      }
+    );
+    assertBlobAccessDeniedDetails(label, 'unreferenced download URL', {
+      body: unreferencedDownloadUrlBody,
+      partitionId,
+      accessReason: 'missing_reference',
+      accessStage: 'reference',
+    });
+
+    await measureCloudflareBlobMetric(args.metrics, 'referencePushMs', () =>
+      pushBlobReferenceRow({
+        actorId,
         hash,
-        size: content.byteLength,
         mimeType: 'text/plain',
-      }),
-    },
-    output: args.output,
-    getExit: args.getExit,
-  });
-  await expectOkResponse(label, 'upload init', initResponse, args.output);
-  const initBody = (await readJsonResponse(
-    label,
-    'upload init',
-    initResponse
-  )) as {
-    exists?: boolean;
-    headers?: Record<string, string>;
-    uploadMethod?: string;
-    uploadUrl?: string;
-  };
-  if (typeof initBody.uploadUrl !== 'string') {
-    throw new Error(
-      `${label} did not return an upload URL: ${JSON.stringify(initBody)}`
+        origin: args.origin,
+        output: args.output,
+        routeBase: args.syncRouteBase,
+        size: content.byteLength,
+        getExit: args.getExit,
+      })
     );
-  }
 
-  const uploadResponse = await fetchWorkerResponse({
-    label,
-    url: resolveWorkerRouteUrl(args.origin, initBody.uploadUrl),
-    init: {
-      method: initBody.uploadMethod ?? 'PUT',
-      headers: {
-        ...(initBody.headers ?? {}),
-        'content-type': 'text/plain',
-        'content-length': String(content.byteLength),
-      },
-      body: content,
-    },
-    output: args.output,
-    getExit: args.getExit,
-  });
-  await expectOkResponse(label, 'upload bytes', uploadResponse, args.output);
-
-  const forbiddenCompleteResponse = await fetchWorkerResponse({
-    label,
-    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
-      hash
-    )}/complete`,
-    init: {
-      method: 'POST',
-      headers: {
-        'x-syncular-smoke-actor': `${actorId}-other`,
-        'x-syncular-smoke-partition': partitionId,
-      },
-    },
-    output: args.output,
-    getExit: args.getExit,
-  });
-  await expectJsonErrorResponse(label, 'forbidden upload completion', {
-    response: forbiddenCompleteResponse,
-    output: args.output,
-    status: 403,
-    code: 'blob.forbidden',
-    category: 'forbidden',
-    recommendedAction: 'checkPermissions',
-  });
-
-  const completeResponse = await fetchWorkerResponse({
-    label,
-    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
-      hash
-    )}/complete`,
-    init: {
-      method: 'POST',
-      headers: {
-        'x-syncular-smoke-actor': actorId,
-        'x-syncular-smoke-partition': partitionId,
-      },
-    },
-    output: args.output,
-    getExit: args.getExit,
-  });
-  await expectOkResponse(
-    label,
-    'complete upload',
-    completeResponse,
-    args.output
-  );
-
-  const unreferencedDownloadUrlResponse = await fetchWorkerResponse({
-    label,
-    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
-      hash
-    )}/url`,
-    init: {
-      headers: {
-        'x-syncular-smoke-actor': actorId,
-        'x-syncular-smoke-partition': partitionId,
-      },
-    },
-    output: args.output,
-    getExit: args.getExit,
-  });
-  const unreferencedDownloadUrlBody = await expectJsonErrorResponse(
-    label,
-    'unreferenced download URL',
-    {
-      response: unreferencedDownloadUrlResponse,
-      output: args.output,
-      status: 403,
-      code: 'blob.forbidden',
-      category: 'forbidden',
-      recommendedAction: 'checkPermissions',
+    const downloadUrlResponse = await measureCloudflareBlobMetric(
+      args.metrics,
+      'downloadUrlMs',
+      () =>
+        fetchWorkerResponse({
+          label,
+          url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+            hash
+          )}/url`,
+          init: {
+            headers: {
+              'x-syncular-smoke-actor': actorId,
+              'x-syncular-smoke-partition': partitionId,
+            },
+          },
+          output: args.output,
+          getExit: args.getExit,
+        })
+    );
+    await expectOkResponse(
+      label,
+      'create download URL',
+      downloadUrlResponse,
+      args.output
+    );
+    const downloadUrlBody = (await readJsonResponse(
+      label,
+      'create download URL',
+      downloadUrlResponse
+    )) as {
+      url?: string;
+    };
+    if (typeof downloadUrlBody.url !== 'string') {
+      throw new Error(
+        `${label} did not return a download URL: ${JSON.stringify(
+          downloadUrlBody
+        )}`
+      );
     }
-  );
-  assertBlobAccessDeniedDetails(label, 'unreferenced download URL', {
-    body: unreferencedDownloadUrlBody,
-    partitionId,
-    accessReason: 'missing_reference',
-    accessStage: 'reference',
-  });
 
-  await pushBlobReferenceRow({
-    actorId,
-    hash,
-    mimeType: 'text/plain',
-    origin: args.origin,
-    output: args.output,
-    routeBase: args.syncRouteBase,
-    size: content.byteLength,
-    getExit: args.getExit,
-  });
-
-  const downloadUrlResponse = await fetchWorkerResponse({
-    label,
-    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
-      hash
-    )}/url`,
-    init: {
-      headers: {
-        'x-syncular-smoke-actor': actorId,
-        'x-syncular-smoke-partition': partitionId,
-      },
-    },
-    output: args.output,
-    getExit: args.getExit,
-  });
-  await expectOkResponse(
-    label,
-    'create download URL',
-    downloadUrlResponse,
-    args.output
-  );
-  const downloadUrlBody = (await readJsonResponse(
-    label,
-    'create download URL',
-    downloadUrlResponse
-  )) as {
-    url?: string;
-  };
-  if (typeof downloadUrlBody.url !== 'string') {
-    throw new Error(
-      `${label} did not return a download URL: ${JSON.stringify(
-        downloadUrlBody
-      )}`
+    const downloadResponse = await measureCloudflareBlobMetric(
+      args.metrics,
+      'downloadBytesMs',
+      () =>
+        fetchWorkerResponse({
+          label,
+          url: resolveWorkerRouteUrl(args.origin, downloadUrlBody.url),
+          output: args.output,
+          getExit: args.getExit,
+        })
     );
-  }
-
-  const downloadResponse = await fetchWorkerResponse({
-    label,
-    url: resolveWorkerRouteUrl(args.origin, downloadUrlBody.url),
-    output: args.output,
-    getExit: args.getExit,
-  });
-  await expectOkResponse(
-    label,
-    'download bytes',
-    downloadResponse,
-    args.output
-  );
-  const downloadedText = await downloadResponse.text();
-  if (downloadedText !== contentText) {
-    throw new Error(
-      `${label} downloaded unexpected content: ${downloadedText.slice(0, 200)}`
+    await expectOkResponse(
+      label,
+      'download bytes',
+      downloadResponse,
+      args.output
     );
-  }
-
-  const forbiddenDownloadUrlResponse = await fetchWorkerResponse({
-    label,
-    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
-      hash
-    )}/url`,
-    init: {
-      headers: {
-        'x-syncular-smoke-actor': 'syncular-framework-intruder',
-        'x-syncular-smoke-partition': partitionId,
-      },
-    },
-    output: args.output,
-    getExit: args.getExit,
-  });
-  const forbiddenDownloadUrlBody = await expectJsonErrorResponse(
-    label,
-    'forbidden download URL',
-    {
-      response: forbiddenDownloadUrlResponse,
-      output: args.output,
-      status: 403,
-      code: 'blob.forbidden',
-      category: 'forbidden',
-      recommendedAction: 'checkPermissions',
+    const downloadedText = await downloadResponse.text();
+    if (args.metrics) {
+      args.metrics.downloadBytes = Buffer.byteLength(downloadedText, 'utf8');
     }
-  );
-  assertBlobAccessDeniedDetails(label, 'forbidden download URL', {
-    body: forbiddenDownloadUrlBody,
-    partitionId,
-    accessReason: 'scope_denied',
-    accessStage: 'scope',
-    referenceTable: 'syncular_framework_tasks',
-    referenceColumn: 'image_blob_ref',
-  });
+    if (downloadedText !== contentText) {
+      throw new Error(
+        `${label} downloaded unexpected content: ${downloadedText.slice(0, 200)}`
+      );
+    }
 
-  await runPartitionedBlobReferenceFlow({
-    actorId,
-    origin: args.origin,
-    output: args.output,
-    partitionId,
-    routeBase: args.routeBase,
-    syncRouteBase: args.syncRouteBase,
-    getExit: args.getExit,
-  });
+    const forbiddenDownloadUrlResponse = await fetchWorkerResponse({
+      label,
+      url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+        hash
+      )}/url`,
+      init: {
+        headers: {
+          'x-syncular-smoke-actor': 'syncular-framework-intruder',
+          'x-syncular-smoke-partition': partitionId,
+        },
+      },
+      output: args.output,
+      getExit: args.getExit,
+    });
+    const forbiddenDownloadUrlBody = await expectJsonErrorResponse(
+      label,
+      'forbidden download URL',
+      {
+        response: forbiddenDownloadUrlResponse,
+        output: args.output,
+        status: 403,
+        code: 'blob.forbidden',
+        category: 'forbidden',
+        recommendedAction: 'checkPermissions',
+      }
+    );
+    assertBlobAccessDeniedDetails(label, 'forbidden download URL', {
+      body: forbiddenDownloadUrlBody,
+      partitionId,
+      accessReason: 'scope_denied',
+      accessStage: 'scope',
+      referenceTable: 'syncular_framework_tasks',
+      referenceColumn: 'image_blob_ref',
+    });
+
+    await runPartitionedBlobReferenceFlow({
+      actorId,
+      origin: args.origin,
+      output: args.output,
+      partitionId,
+      routeBase: args.routeBase,
+      syncRouteBase: args.syncRouteBase,
+      metrics: args.metrics,
+      getExit: args.getExit,
+    });
+  } finally {
+    if (args.metrics) args.metrics.totalMs = elapsedSince(startedAt);
+  }
 }
 
 async function pushBlobReferenceRow(args: {
@@ -2090,6 +2237,7 @@ async function pushBlobReferenceRow(args: {
 
 async function runPartitionedBlobReferenceFlow(args: {
   actorId: string;
+  metrics?: CloudflareBlobRouteMetrics;
   origin: string;
   output: string[];
   partitionId: string;
@@ -2247,20 +2395,25 @@ async function runPartitionedBlobReferenceFlow(args: {
     getExit: args.getExit,
   });
 
-  const downloadUrlResponse = await fetchWorkerResponse({
-    label,
-    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
-      hash
-    )}/url`,
-    init: {
-      headers: {
-        'x-syncular-smoke-actor': args.actorId,
-        'x-syncular-smoke-partition': args.partitionId,
-      },
-    },
-    output: args.output,
-    getExit: args.getExit,
-  });
+  const downloadUrlResponse = await measureCloudflareBlobMetric(
+    args.metrics,
+    'partitionedDownloadUrlMs',
+    () =>
+      fetchWorkerResponse({
+        label,
+        url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+          hash
+        )}/url`,
+        init: {
+          headers: {
+            'x-syncular-smoke-actor': args.actorId,
+            'x-syncular-smoke-partition': args.partitionId,
+          },
+        },
+        output: args.output,
+        getExit: args.getExit,
+      })
+  );
   await expectOkResponse(
     label,
     'partitioned download URL',
@@ -2315,12 +2468,17 @@ async function runPartitionedBlobReferenceFlow(args: {
     referenceColumn: 'blob_ref',
   });
 
-  const downloadResponse = await fetchWorkerResponse({
-    label,
-    url: resolveWorkerRouteUrl(args.origin, downloadUrlBody.url),
-    output: args.output,
-    getExit: args.getExit,
-  });
+  const downloadResponse = await measureCloudflareBlobMetric(
+    args.metrics,
+    'partitionedDownloadBytesMs',
+    () =>
+      fetchWorkerResponse({
+        label,
+        url: resolveWorkerRouteUrl(args.origin, downloadUrlBody.url),
+        output: args.output,
+        getExit: args.getExit,
+      })
+  );
   await expectOkResponse(
     label,
     'partitioned download bytes',
@@ -2328,6 +2486,12 @@ async function runPartitionedBlobReferenceFlow(args: {
     args.output
   );
   const downloadedText = await downloadResponse.text();
+  if (args.metrics) {
+    args.metrics.partitionedDownloadBytes = Buffer.byteLength(
+      downloadedText,
+      'utf8'
+    );
+  }
   if (downloadedText !== contentText) {
     throw new Error(
       `${label} downloaded unexpected partitioned content: ${downloadedText.slice(
