@@ -1390,20 +1390,74 @@ describe('createConsoleGatewayRoutes', () => {
     };
     expect(handlersBody.error).toBe('console.invalid_request');
     expect(handlersBody.details.consoleError).toBe('instance_required');
+  });
 
-    const opsReadinessWithoutInstance = await app.request(
+  it('aggregates ops readiness reports across gateway instances', async () => {
+    const { app } = createMockGatewayApp({ instances: instanceData });
+
+    const response = await app.request(
       'http://localhost/console/ops/readiness',
       {
         headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
       }
     );
-    expect(opsReadinessWithoutInstance.status).toBe(400);
-    const opsReadinessBody = (await opsReadinessWithoutInstance.json()) as {
-      error: string;
-      details: { consoleError: string };
-    };
-    expect(opsReadinessBody.error).toBe('console.invalid_request');
-    expect(opsReadinessBody.details.consoleError).toBe('instance_required');
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as ConsoleOpsReadinessResponse;
+
+    expect(body.available).toBe(true);
+    expect(body.operationId).toBeNull();
+    expect(body.recordedAt).toBe('2026-02-17T10:07:00.000Z');
+    expect(body.report?.ready).toBe(true);
+    expect(body.instanceReports?.map((entry) => entry.instanceId)).toEqual([
+      'alpha',
+      'beta',
+    ]);
+    expect(body.readyInstanceCount).toBe(1);
+    expect(body.notReadyInstanceCount).toBe(0);
+    expect(body.missingInstanceCount).toBe(1);
+    expect(body.partial).toBe(false);
+    expect(body.failedInstances).toEqual([]);
+
+    const alphaReport = body.instanceReports?.find(
+      (entry) => entry.instanceId === 'alpha'
+    );
+    expect(alphaReport?.label).toBe('ALPHA');
+    expect(alphaReport?.report?.checks.restoreDrill).toBe('ready');
+
+    const betaReport = body.instanceReports?.find(
+      (entry) => entry.instanceId === 'beta'
+    );
+    expect(betaReport?.available).toBe(false);
+    expect(betaReport?.report).toBeNull();
+  });
+
+  it('reports partial ops readiness aggregation failures', async () => {
+    const { app } = createMockGatewayApp({
+      instances: instanceData,
+      failingInstances: new Set(['beta']),
+    });
+
+    const response = await app.request(
+      'http://localhost/console/ops/readiness',
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as ConsoleOpsReadinessResponse;
+
+    expect(body.available).toBe(true);
+    expect(body.report?.ready).toBe(true);
+    expect(body.instanceReports?.map((entry) => entry.instanceId)).toEqual([
+      'alpha',
+    ]);
+    expect(body.readyInstanceCount).toBe(1);
+    expect(body.notReadyInstanceCount).toBe(0);
+    expect(body.missingInstanceCount).toBe(1);
+    expect(body.partial).toBe(true);
+    expect(body.failedInstances).toEqual([
+      { instanceId: 'beta', reason: 'HTTP 503', status: 503 },
+    ]);
   });
 
   it('proxies single-instance mutation and config endpoints', async () => {

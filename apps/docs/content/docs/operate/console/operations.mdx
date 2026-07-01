@@ -24,8 +24,9 @@ keeps the deploy-time facts visible after CI finishes:
 
 Console stores the report as an `ops_readiness` operation event, omits local
 file paths from the CLI output, and rejects secret-shaped keys before the
-report is recorded. In Console gateway mode, select one instance before the
-panel fetches the report or post the deploy artifact with `?instanceId=<id>`.
+report is recorded. In Console gateway mode, the read view summarizes all
+selected instances; posting a deploy artifact still targets one instance with
+`?instanceId=<id>`.
 
 ## Actions
 

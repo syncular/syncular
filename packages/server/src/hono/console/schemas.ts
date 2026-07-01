@@ -1031,11 +1031,32 @@ export type ConsoleOpsReadinessReport = z.infer<
   typeof ConsoleOpsReadinessReportSchema
 >;
 
+export const ConsoleOpsReadinessInstanceReportSchema = z.object({
+  instanceId: z.string(),
+  label: z.string().optional(),
+  available: z.boolean(),
+  operationId: z.number().int().nullable(),
+  recordedAt: z.string().nullable(),
+  report: ConsoleOpsReadinessReportSchema.nullable(),
+});
+
+export const ConsoleOpsReadinessGatewayFailureSchema = z.object({
+  instanceId: z.string(),
+  reason: z.string(),
+  status: z.number().int().optional(),
+});
+
 export const ConsoleOpsReadinessResponseSchema = z.object({
   available: z.boolean(),
   operationId: z.number().int().nullable(),
   recordedAt: z.string().nullable(),
   report: ConsoleOpsReadinessReportSchema.nullable(),
+  instanceReports: z.array(ConsoleOpsReadinessInstanceReportSchema).optional(),
+  readyInstanceCount: z.number().int().nonnegative().optional(),
+  notReadyInstanceCount: z.number().int().nonnegative().optional(),
+  missingInstanceCount: z.number().int().nonnegative().optional(),
+  partial: z.boolean().optional(),
+  failedInstances: z.array(ConsoleOpsReadinessGatewayFailureSchema).optional(),
 });
 
 export type ConsoleOpsReadinessResponse = z.infer<

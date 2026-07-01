@@ -143,7 +143,8 @@ exit "$ops_status"
 Console stores a redacted summary in the operation audit, omitting local file
 paths from `manifestDir`, `configPath`, and issue paths while rejecting
 secret-shaped keys in issue details. In Console gateway mode, post to a single
-target instance by including `?instanceId=<id>` on the Console URL.
+target instance by including `?instanceId=<id>` on the Console URL; merged Ops
+reads summarize all selected gateway instances automatically.
 
 ## Related Guides
 

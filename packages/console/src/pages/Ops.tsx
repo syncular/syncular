@@ -16,6 +16,7 @@ import type {
   ConsoleOperationEvent,
   ConsoleOperationType,
   ConsoleOpsReadinessReport,
+  ConsoleOpsReadinessResponse,
 } from '../lib/types';
 import type { AlertThresholds, HandlerEntry, MaintenanceStat } from '../ui';
 import {
@@ -61,6 +62,9 @@ const DEFAULT_ALERT_CONFIG: AlertConfig = {
 };
 
 type OpsReadinessCheckKey = keyof ConsoleOpsReadinessReport['checks'];
+type OpsReadinessInstanceReport = NonNullable<
+  ConsoleOpsReadinessResponse['instanceReports']
+>[number];
 
 const OPS_READINESS_CHECK_ORDER: OpsReadinessCheckKey[] = [
   'schemaReadiness',
@@ -179,6 +183,75 @@ function opsReadinessBadgeVariant(
   return 'offline';
 }
 
+function compareNullableIsoDesc(
+  a: string | null | undefined,
+  b: string | null | undefined
+): number {
+  const aMs = a ? Date.parse(a) : Number.NaN;
+  const bMs = b ? Date.parse(b) : Number.NaN;
+  if (!Number.isFinite(aMs) && !Number.isFinite(bMs)) return 0;
+  if (!Number.isFinite(aMs)) return 1;
+  if (!Number.isFinite(bMs)) return -1;
+  return bMs - aMs;
+}
+
+function opsReadinessInstanceTimestamp(
+  entry: OpsReadinessInstanceReport
+): string | null {
+  return entry.recordedAt ?? entry.report?.generatedAt ?? null;
+}
+
+function latestOpsReadinessReport(
+  data: ConsoleOpsReadinessResponse | undefined
+): ConsoleOpsReadinessReport | null {
+  const instanceReports = data?.instanceReports ?? [];
+  const latestInstanceReport = instanceReports
+    .filter((entry) => entry.report !== null)
+    .sort((a, b) => {
+      const byTime = compareNullableIsoDesc(
+        opsReadinessInstanceTimestamp(a),
+        opsReadinessInstanceTimestamp(b)
+      );
+      return byTime !== 0 ? byTime : a.instanceId.localeCompare(b.instanceId);
+    })[0];
+  return latestInstanceReport?.report ?? data?.report ?? null;
+}
+
+function opsReadinessFleetBadge(
+  data: ConsoleOpsReadinessResponse | undefined,
+  report: ConsoleOpsReadinessReport | null
+): { variant: 'healthy' | 'offline' | 'ghost'; label: string } {
+  const instanceReports = data?.instanceReports ?? [];
+  if (instanceReports.length === 0) {
+    if (report) {
+      return {
+        variant: report.ready ? 'healthy' : 'offline',
+        label: report.status,
+      };
+    }
+    return { variant: 'ghost', label: 'No Report' };
+  }
+
+  const notReadyCount =
+    data?.notReadyInstanceCount ??
+    instanceReports.filter((entry) => entry.report?.ready === false).length;
+  const missingCount =
+    data?.missingInstanceCount ??
+    instanceReports.filter((entry) => !entry.available || !entry.report).length;
+  if ((data?.partial ?? false) || missingCount > 0) {
+    return { variant: 'offline', label: 'Fleet Partial' };
+  }
+  if (notReadyCount > 0) {
+    return { variant: 'offline', label: 'Fleet Not Ready' };
+  }
+  return { variant: 'healthy', label: 'Fleet Ready' };
+}
+
+function opsReadinessInstanceStatus(entry: OpsReadinessInstanceReport): string {
+  if (!entry.available || !entry.report) return 'missing';
+  return entry.report.status;
+}
+
 export function Ops() {
   const { partitionId } = usePartitionContext();
 
@@ -203,21 +276,27 @@ function OpsReadinessView() {
   const { data, isLoading, error } = useOpsReadiness({
     refetchIntervalMs: 30000,
   });
-  const report = data?.report ?? null;
+  const instanceReports = data?.instanceReports ?? [];
+  const failedInstances = data?.failedInstances ?? [];
+  const report = latestOpsReadinessReport(data);
+  const fleetBadge = opsReadinessFleetBadge(data, report);
+  const isFleetReport = instanceReports.length > 0;
+  const readyInstanceCount =
+    data?.readyInstanceCount ??
+    instanceReports.filter((entry) => entry.report?.ready === true).length;
+  const notReadyInstanceCount =
+    data?.notReadyInstanceCount ??
+    instanceReports.filter((entry) => entry.report?.ready === false).length;
+  const missingInstanceCount =
+    data?.missingInstanceCount ??
+    instanceReports.filter((entry) => !entry.available || !entry.report)
+      .length + failedInstances.length;
 
   return (
     <SectionCard
       title="Production Readiness"
       description="Latest syncular ops check report from the deploy pipeline."
-      actions={
-        report ? (
-          <Badge variant={report.ready ? 'healthy' : 'offline'}>
-            {report.status}
-          </Badge>
-        ) : (
-          <Badge variant="ghost">No Report</Badge>
-        )
-      }
+      actions={<Badge variant={fleetBadge.variant}>{fleetBadge.label}</Badge>}
       contentClassName="pt-4"
     >
       {isLoading ? (
@@ -230,90 +309,199 @@ function OpsReadinessView() {
             Failed to load ops readiness: {error.message}
           </AlertDescription>
         </Alert>
-      ) : !data?.available || !report ? (
+      ) : !data?.available && !isFleetReport ? (
         <div className="px-2 py-6 text-sm text-neutral-500">
           No production ops readiness report has been ingested.
         </div>
       ) : (
         <div className="flex flex-col gap-4">
-          <div className="grid gap-3 md:grid-cols-4">
-            <div>
-              <div className="font-mono text-[10px] uppercase text-neutral-500">
-                Environment
-              </div>
-              <div className="mt-1 font-mono text-sm text-neutral-100">
-                {report.environment ?? 'unknown'}
-              </div>
-            </div>
-            <div>
-              <div className="font-mono text-[10px] uppercase text-neutral-500">
-                Generated
-              </div>
-              <div className="mt-1 font-mono text-sm text-neutral-100">
-                {formatDateTime(report.generatedAt)}
-              </div>
-            </div>
-            <div>
-              <div className="font-mono text-[10px] uppercase text-neutral-500">
-                Recorded
-              </div>
-              <div className="mt-1 font-mono text-sm text-neutral-100">
-                {data.recordedAt ? formatDateTime(data.recordedAt) : 'unknown'}
-              </div>
-            </div>
-            <div>
-              <div className="font-mono text-[10px] uppercase text-neutral-500">
-                Issues
-              </div>
-              <div className="mt-1 font-mono text-sm text-neutral-100">
-                {report.issueCount}
-              </div>
-            </div>
-          </div>
-
-          <div className="grid gap-2 md:grid-cols-4 xl:grid-cols-7">
-            {OPS_READINESS_CHECK_ORDER.map((key) => {
-              const status = report.checks[key];
-              return (
-                <div
-                  key={key}
-                  className="flex min-h-[54px] flex-col justify-between rounded-sm border border-border bg-panel/40 px-3 py-2"
-                >
-                  <span className="font-mono text-[10px] uppercase text-neutral-500">
-                    {OPS_READINESS_CHECK_LABELS[key]}
-                  </span>
-                  <Badge variant={opsReadinessBadgeVariant(status)}>
-                    {formatOpsReadinessStatus(status)}
-                  </Badge>
+          {isFleetReport ? (
+            <div className="grid gap-3 md:grid-cols-4">
+              <div>
+                <div className="font-mono text-[10px] uppercase text-neutral-500">
+                  Ready
                 </div>
-              );
-            })}
-          </div>
+                <div className="mt-1 font-mono text-sm text-neutral-100">
+                  {readyInstanceCount}
+                </div>
+              </div>
+              <div>
+                <div className="font-mono text-[10px] uppercase text-neutral-500">
+                  Not Ready
+                </div>
+                <div className="mt-1 font-mono text-sm text-neutral-100">
+                  {notReadyInstanceCount}
+                </div>
+              </div>
+              <div>
+                <div className="font-mono text-[10px] uppercase text-neutral-500">
+                  Missing
+                </div>
+                <div className="mt-1 font-mono text-sm text-neutral-100">
+                  {missingInstanceCount}
+                </div>
+              </div>
+              <div>
+                <div className="font-mono text-[10px] uppercase text-neutral-500">
+                  Failed Reads
+                </div>
+                <div className="mt-1 font-mono text-sm text-neutral-100">
+                  {failedInstances.length}
+                </div>
+              </div>
+            </div>
+          ) : null}
 
-          {report.issues.length > 0 ? (
+          {failedInstances.length > 0 ? (
+            <Alert variant="destructive">
+              <AlertDescription>
+                {failedInstances.length} instance
+                {failedInstances.length === 1 ? '' : 's'} failed readiness
+                fetch:{' '}
+                {failedInstances.map((entry) => entry.instanceId).join(', ')}
+              </AlertDescription>
+            </Alert>
+          ) : null}
+
+          {report ? (
+            <>
+              <div className="grid gap-3 md:grid-cols-4">
+                <div>
+                  <div className="font-mono text-[10px] uppercase text-neutral-500">
+                    Environment
+                  </div>
+                  <div className="mt-1 font-mono text-sm text-neutral-100">
+                    {report.environment ?? 'unknown'}
+                  </div>
+                </div>
+                <div>
+                  <div className="font-mono text-[10px] uppercase text-neutral-500">
+                    Generated
+                  </div>
+                  <div className="mt-1 font-mono text-sm text-neutral-100">
+                    {formatDateTime(report.generatedAt)}
+                  </div>
+                </div>
+                <div>
+                  <div className="font-mono text-[10px] uppercase text-neutral-500">
+                    Recorded
+                  </div>
+                  <div className="mt-1 font-mono text-sm text-neutral-100">
+                    {data?.recordedAt
+                      ? formatDateTime(data.recordedAt)
+                      : 'unknown'}
+                  </div>
+                </div>
+                <div>
+                  <div className="font-mono text-[10px] uppercase text-neutral-500">
+                    Issues
+                  </div>
+                  <div className="mt-1 font-mono text-sm text-neutral-100">
+                    {report.issueCount}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-2 md:grid-cols-4 xl:grid-cols-7">
+                {OPS_READINESS_CHECK_ORDER.map((key) => {
+                  const status = report.checks[key];
+                  return (
+                    <div
+                      key={key}
+                      className="flex min-h-[54px] flex-col justify-between rounded-sm border border-border bg-panel/40 px-3 py-2"
+                    >
+                      <span className="font-mono text-[10px] uppercase text-neutral-500">
+                        {OPS_READINESS_CHECK_LABELS[key]}
+                      </span>
+                      <Badge variant={opsReadinessBadgeVariant(status)}>
+                        {formatOpsReadinessStatus(status)}
+                      </Badge>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {report.issues.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Code</TableHead>
+                        <TableHead>Action</TableHead>
+                        <TableHead>Message</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {report.issues.slice(0, 5).map((issue, index) => (
+                        <TableRow key={`${issue.code}:${index}`}>
+                          <TableCell className="font-mono text-xs text-offline">
+                            {issue.code}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {issue.recommendedAction}
+                          </TableCell>
+                          <TableCell className="text-xs text-neutral-300">
+                            {issue.message}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div className="px-2 py-3 text-sm text-neutral-500">
+              No instance has posted a production ops readiness report.
+            </div>
+          )}
+
+          {isFleetReport ? (
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Code</TableHead>
-                    <TableHead>Action</TableHead>
-                    <TableHead>Message</TableHead>
+                    <TableHead>Instance</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Generated</TableHead>
+                    <TableHead>Recorded</TableHead>
+                    <TableHead>Issues</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {report.issues.slice(0, 5).map((issue, index) => (
-                    <TableRow key={`${issue.code}:${index}`}>
-                      <TableCell className="font-mono text-xs text-offline">
-                        {issue.code}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {issue.recommendedAction}
-                      </TableCell>
-                      <TableCell className="text-xs text-neutral-300">
-                        {issue.message}
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {instanceReports.map((entry) => {
+                    const status = opsReadinessInstanceStatus(entry);
+                    return (
+                      <TableRow key={entry.instanceId}>
+                        <TableCell>
+                          <div className="font-mono text-xs">
+                            {entry.label ?? entry.instanceId}
+                          </div>
+                          <div className="font-mono text-[10px] text-neutral-500">
+                            {entry.instanceId}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={opsReadinessBadgeVariant(status)}>
+                            {formatOpsReadinessStatus(status)}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {entry.report
+                            ? formatDateTime(entry.report.generatedAt)
+                            : 'unknown'}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {entry.recordedAt
+                            ? formatDateTime(entry.recordedAt)
+                            : 'unknown'}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {entry.report?.issueCount ?? '-'}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>

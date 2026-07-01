@@ -4479,6 +4479,65 @@ export interface operations {
                                 sensitiveKeys: "rejected";
                             };
                         } | null;
+                        instanceReports?: {
+                            instanceId: string;
+                            label?: string;
+                            available: boolean;
+                            operationId: number | null;
+                            recordedAt: string | null;
+                            report: {
+                                /** @constant */
+                                artifactSchema: "syncular.ops-readiness.v1";
+                                /** Format: date-time */
+                                generatedAt: string;
+                                environment: string | null;
+                                /** @enum {string} */
+                                status: "ready" | "not-ready";
+                                ready: boolean;
+                                checks: {
+                                    /** @enum {string} */
+                                    schemaReadiness: "ready" | "not-ready" | "not-applicable" | "missing";
+                                    /** @enum {string} */
+                                    restoreDrill: "ready" | "not-ready" | "not-applicable" | "missing";
+                                    /** @enum {string} */
+                                    blobConsistency: "ready" | "not-ready" | "not-applicable" | "missing";
+                                    /** @enum {string} */
+                                    credentialRotation: "ready" | "not-ready" | "not-applicable" | "missing";
+                                    /** @enum {string} */
+                                    rateLimits: "ready" | "not-ready" | "not-applicable" | "missing";
+                                    /** @enum {string} */
+                                    logRetention: "ready" | "not-ready" | "not-applicable" | "missing";
+                                    /** @enum {string} */
+                                    supportWindow: "ready" | "not-ready" | "not-applicable" | "missing";
+                                };
+                                issueCount: number;
+                                issues: {
+                                    code: string;
+                                    /** @enum {string} */
+                                    severity: "warning" | "error";
+                                    message: string;
+                                    recommendedAction: string;
+                                    details?: {
+                                        [key: string]: unknown;
+                                    };
+                                }[];
+                                redaction: {
+                                    /** @constant */
+                                    localPaths: "omitted";
+                                    /** @constant */
+                                    sensitiveKeys: "rejected";
+                                };
+                            } | null;
+                        }[];
+                        readyInstanceCount?: number;
+                        notReadyInstanceCount?: number;
+                        missingInstanceCount?: number;
+                        partial?: boolean;
+                        failedInstances?: {
+                            instanceId: string;
+                            reason: string;
+                            status?: number;
+                        }[];
                     };
                 };
             };
@@ -4606,6 +4665,65 @@ export interface operations {
                                 sensitiveKeys: "rejected";
                             };
                         } | null;
+                        instanceReports?: {
+                            instanceId: string;
+                            label?: string;
+                            available: boolean;
+                            operationId: number | null;
+                            recordedAt: string | null;
+                            report: {
+                                /** @constant */
+                                artifactSchema: "syncular.ops-readiness.v1";
+                                /** Format: date-time */
+                                generatedAt: string;
+                                environment: string | null;
+                                /** @enum {string} */
+                                status: "ready" | "not-ready";
+                                ready: boolean;
+                                checks: {
+                                    /** @enum {string} */
+                                    schemaReadiness: "ready" | "not-ready" | "not-applicable" | "missing";
+                                    /** @enum {string} */
+                                    restoreDrill: "ready" | "not-ready" | "not-applicable" | "missing";
+                                    /** @enum {string} */
+                                    blobConsistency: "ready" | "not-ready" | "not-applicable" | "missing";
+                                    /** @enum {string} */
+                                    credentialRotation: "ready" | "not-ready" | "not-applicable" | "missing";
+                                    /** @enum {string} */
+                                    rateLimits: "ready" | "not-ready" | "not-applicable" | "missing";
+                                    /** @enum {string} */
+                                    logRetention: "ready" | "not-ready" | "not-applicable" | "missing";
+                                    /** @enum {string} */
+                                    supportWindow: "ready" | "not-ready" | "not-applicable" | "missing";
+                                };
+                                issueCount: number;
+                                issues: {
+                                    code: string;
+                                    /** @enum {string} */
+                                    severity: "warning" | "error";
+                                    message: string;
+                                    recommendedAction: string;
+                                    details?: {
+                                        [key: string]: unknown;
+                                    };
+                                }[];
+                                redaction: {
+                                    /** @constant */
+                                    localPaths: "omitted";
+                                    /** @constant */
+                                    sensitiveKeys: "rejected";
+                                };
+                            } | null;
+                        }[];
+                        readyInstanceCount?: number;
+                        notReadyInstanceCount?: number;
+                        missingInstanceCount?: number;
+                        partial?: boolean;
+                        failedInstances?: {
+                            instanceId: string;
+                            reason: string;
+                            status?: number;
+                        }[];
                     };
                 };
             };

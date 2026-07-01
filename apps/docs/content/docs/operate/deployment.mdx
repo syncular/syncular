@@ -443,7 +443,8 @@ so CI can block an unsafe deploy before traffic moves.
 If Console is enabled, publish the same JSON report to
 `POST /console/ops/readiness` during deploy. The Ops view keeps the latest
 readiness result visible in production and records it as an `ops_readiness`
-operation audit event with local paths omitted.
+operation audit event with local paths omitted. In Console gateway mode, Ops
+reads summarize selected instances while deploy posts still target one instance.
 
 See [Ops Check Command](/reference/cli/ops-check) for the JSON shape and
 freshness flags.

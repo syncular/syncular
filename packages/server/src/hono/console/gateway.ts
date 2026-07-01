@@ -629,6 +629,65 @@ function compareIsoDesc(a: string, b: string): number {
   return bMs - aMs;
 }
 
+type ConsoleOpsReadinessInstanceReport = NonNullable<
+  ConsoleOpsReadinessResponse['instanceReports']
+>[number];
+
+function opsReadinessTimestamp(
+  entry: ConsoleOpsReadinessInstanceReport
+): string {
+  return entry.recordedAt ?? entry.report?.generatedAt ?? '';
+}
+
+function buildOpsReadinessGatewayResponse(args: {
+  successfulResults: Array<{
+    instance: ConsoleGatewayInstance;
+    data: ConsoleOpsReadinessResponse;
+  }>;
+  failedInstances: GatewayFailure[];
+}): ConsoleOpsReadinessResponse {
+  const instanceReports = args.successfulResults
+    .map(({ instance, data }) => ({
+      instanceId: instance.instanceId,
+      label: instance.label,
+      available: data.available,
+      operationId: data.operationId,
+      recordedAt: data.recordedAt,
+      report: data.report,
+    }))
+    .sort((a, b) => a.instanceId.localeCompare(b.instanceId));
+
+  const reportsWithPayload = instanceReports
+    .filter((entry) => entry.report !== null)
+    .sort((a, b) => {
+      const byTime = compareIsoDesc(
+        opsReadinessTimestamp(a),
+        opsReadinessTimestamp(b)
+      );
+      return byTime !== 0 ? byTime : a.instanceId.localeCompare(b.instanceId);
+    });
+  const latestReport = reportsWithPayload[0] ?? null;
+
+  return {
+    available: latestReport !== null,
+    operationId: null,
+    recordedAt: latestReport?.recordedAt ?? null,
+    report: latestReport?.report ?? null,
+    instanceReports,
+    readyInstanceCount: instanceReports.filter(
+      (entry) => entry.report?.ready === true
+    ).length,
+    notReadyInstanceCount: instanceReports.filter(
+      (entry) => entry.report?.ready === false
+    ).length,
+    missingInstanceCount:
+      instanceReports.filter((entry) => !entry.available || !entry.report)
+        .length + args.failedInstances.length,
+    partial: args.failedInstances.length > 0,
+    failedInstances: args.failedInstances,
+  };
+}
+
 interface TimeseriesBucketAccumulator {
   pushCount: number;
   pullCount: number;
@@ -1451,10 +1510,10 @@ export function createConsoleGatewayRoutes(
     '/ops/readiness',
     describeConsoleGatewayRoute({
       summary:
-        'Get latest production ops readiness report from a single target instance (requires instance selection)',
+        'Get latest production ops readiness report across selected gateway instances',
       responses: {
         200: {
-          description: 'Ops readiness report',
+          description: 'Ops readiness report or gateway aggregate',
           content: {
             'application/json': {
               schema: resolver(ConsoleOpsReadinessResponseSchema),
@@ -1467,12 +1526,41 @@ export function createConsoleGatewayRoutes(
     async (c) => {
       return withGatewayAuth(c, async () => {
         const query = c.req.valid('query');
-        return proxySingleInstanceJsonRequest<ConsoleOpsReadinessResponse>({
-          c,
-          query,
-          method: 'GET',
-          path: '/ops/readiness',
-          responseSchema: ConsoleOpsReadinessResponseSchema,
+        const selection = selectTargetInstances(c, query);
+        if (!selection.ok) {
+          return selection.response;
+        }
+
+        if (selection.selectedInstances.length === 1) {
+          return proxySingleInstanceJsonRequest<ConsoleOpsReadinessResponse>({
+            c,
+            query,
+            method: 'GET',
+            path: '/ops/readiness',
+            responseSchema: ConsoleOpsReadinessResponseSchema,
+          });
+        }
+
+        const forwardQuery = sanitizeForwardQueryParams(
+          new URL(c.req.url).searchParams
+        );
+        const fetched =
+          await fetchFromSelectedInstances<ConsoleOpsReadinessResponse>({
+            c,
+            selectedInstances: selection.selectedInstances,
+            path: '/ops/readiness',
+            query: forwardQuery,
+            schema: ConsoleOpsReadinessResponseSchema,
+          });
+        if (!fetched.ok) {
+          return fetched.response;
+        }
+
+        return c.json({
+          ...buildOpsReadinessGatewayResponse({
+            successfulResults: fetched.successfulResults,
+            failedInstances: fetched.failedInstances,
+          }),
         });
       });
     }
