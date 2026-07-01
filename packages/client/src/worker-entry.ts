@@ -239,7 +239,9 @@ async function runtimeInfo(): Promise<
 }
 
 function loadWorkerWasmGlue(wasmGlueUrl: string): Promise<SyncularWasmGlue> {
-  return import(/* @vite-ignore */ wasmGlueUrl) as Promise<SyncularWasmGlue>;
+  return import(
+    /* @vite-ignore */ /* webpackIgnore: true */ wasmGlueUrl
+  ) as Promise<SyncularWasmGlue>;
 }
 
 function requireClient(): SyncularRustClient {

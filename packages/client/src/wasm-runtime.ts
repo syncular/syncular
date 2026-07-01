@@ -59,7 +59,7 @@ let modulePromise: Promise<SyncularWasmGlue> | undefined;
 export function loadSyncularWasmGlue(): Promise<SyncularWasmGlue> {
   modulePromise ??= (
     import(
-      /* @vite-ignore */ getSyncularWasmGlueUrl().href
+      /* @vite-ignore */ /* webpackIgnore: true */ getSyncularWasmGlueUrl().href
     ) as Promise<SyncularWasmGlue>
   ).catch((error: unknown) => {
     modulePromise = undefined;

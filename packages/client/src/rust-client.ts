@@ -249,7 +249,9 @@ function loadSyncularWasmGlueFromUrl(
   wasmGlueUrl: string | URL
 ): Promise<SyncularWasmGlue> {
   const href = wasmGlueUrl instanceof URL ? wasmGlueUrl.href : wasmGlueUrl;
-  return import(/* @vite-ignore */ href) as Promise<SyncularWasmGlue>;
+  return import(
+    /* @vite-ignore */ /* webpackIgnore: true */ href
+  ) as Promise<SyncularWasmGlue>;
 }
 
 export class SyncularRustClient {

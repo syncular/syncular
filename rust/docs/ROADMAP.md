@@ -140,6 +140,11 @@ read-only review:
     root client/server packages do not reach optional subpath files or peers;
     the same check now dynamically imports the root client/server source
     entrypoints to catch top-level browser/native side effects before release.
+    A Next 16 production-build framework smoke now aliases the root
+    client/core/server imports to source and proves `@syncular/client` plus
+    `@syncular/server` are SSR-build-safe without depending on stale ignored
+    `dist` directories; WASM glue dynamic imports now include webpack ignore
+    metadata so the same build stays warning-clean.
     Browser deployment preflight now exposes
     `getSyncularBrowserDeploymentPreflight(...)` from `@syncular/client` so
     deploy previews can check Worker/WebAssembly support, secure-context and

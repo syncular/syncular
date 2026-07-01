@@ -929,6 +929,12 @@ online propagation, or reconnect behavior can change.
   source entrypoints and checks known exports, catching top-level browser,
   native-driver, or optional-peer side effects that static graph walking could
   miss.
+- A first Next/SSR framework import smoke now builds a minimal Next 16 app
+  through webpack, imports `@syncular/client` and `@syncular/server` roots,
+  aliases workspace package roots to source so stale ignored `dist` leftovers
+  cannot affect the result, and verifies those root imports stay
+  warning-clean after WASM glue dynamic imports gained webpack ignore
+  metadata.
 - The post-publish JavaScript install smoke now runs a release-time optional
   subpath import matrix by default. It installs `@syncular/client`,
   `@syncular/server`, and the Bun-friendly optional peers in a fresh npm
@@ -1497,6 +1503,16 @@ online propagation, or reconnect behavior can change.
   Locks, page visibility, `pagehide`, `beforeunload`, resume/shutdown signal
   availability, and a multi-tab mode; apps can opt into failing the preflight
   when multi-tab coordination or page lifecycle resume signals are required.
+- 2026-07-01: Added `scripts/framework-import-smokes.ts` plus the root
+  `framework-import-smokes` script. The smoke builds a minimal Next 16 app
+  with webpack, imports `@syncular/client` and `@syncular/server` roots from a
+  server-rendered page, aliases workspace package roots to source so ignored
+  stale `dist` folders cannot hide source-root SSR problems, and proves the
+  build succeeds.
+- 2026-07-01: Added webpack ignore metadata to the client WASM glue dynamic
+  imports alongside the existing Vite ignore metadata, keeping runtime WASM
+  asset loading external and removing the Next production-build warning for
+  expression-based dynamic imports.
 - 2026-07-01: Wired the `create-syncular-app` starter to export a composed
   redacted support-bundle summary after the database opens. The task panel now
   exposes stable support-bundle DOM markers for status, redaction, section
@@ -1748,6 +1764,15 @@ Most recent native-sqlite-matrix script rerun:
 - `bun run docs:stale-check`
 - `git diff --check`
 
+Most recent framework-import-smoke rerun:
+
+- `bunx biome check scripts/framework-import-smokes.ts packages/client/src/wasm-runtime.ts packages/client/src/rust-client.ts packages/client/src/worker-entry.ts package.json`
+- `bun --cwd packages/client tsgo`
+- `bun test packages/client/src/public-api.test.ts packages/client/src/browser-deployment-preflight.test.ts`
+- `bun run framework-import-smokes`
+- `bun run docs:stale-check`
+- `git diff --check`
+
 Most recent local-recovery rerun:
 
 - `bun test packages/client/src/local-recovery.test.ts packages/client/src/public-api.test.ts`
@@ -1992,8 +2017,12 @@ Most recent mutation-status rerun:
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,
   Cloudflare, Chrome, Safari, Firefox, private mode, WebViews, and PWAs.
-  Root source imports are now guarded by static graph and dynamic import
-  checks; remaining matrix work is real framework/browser execution.
+  Root source imports are now guarded by static graph checks, dynamic import
+  checks, and a Next 16 production-build smoke that imports the client/server
+  roots from source and verifies the WASM glue dynamic import path is
+  warning-clean under webpack. Remaining matrix work is real browser/framework
+  execution beyond this first Next/SSR build proof, especially Vite runtime,
+  Cloudflare, Safari, Firefox, private mode, WebViews, and PWAs.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.
