@@ -54,6 +54,7 @@ describe('Syncular browser support matrix', () => {
       capabilityIssueCodes: expect.arrayContaining([
         'browser.runtime_asset_bad_content_type',
         'browser.storage_persistence_not_granted',
+        'browser.storage_pressure_high',
         'browser.web_locks_unavailable',
       ]),
       recommendedActions: expect.arrayContaining([

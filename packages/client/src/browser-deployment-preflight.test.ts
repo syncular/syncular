@@ -68,7 +68,10 @@ describe('Syncular browser deployment preflight', () => {
         opfsAvailable: true,
         persistenceSupported: true,
         persisted: true,
+        availableBytes: 250 * 1024 * 1024 - 1024,
+        quotaPressure: 'normal',
         quotaBytes: 250 * 1024 * 1024,
+        usageBytes: 1024,
       },
       runtimeAssets: {
         checked: true,
@@ -209,6 +212,95 @@ describe('Syncular browser deployment preflight', () => {
         requested: 'memory',
         durableRequired: false,
       },
+    });
+  });
+
+  it('warns when durable browser storage is already under high quota pressure', async () => {
+    await expect(
+      getSyncularBrowserDeploymentPreflight({
+        runtime: {
+          wasmGlueUrl: 'https://cdn.example/syncular.js',
+          wasmUrl: 'https://cdn.example/syncular_bg.wasm',
+        },
+        checkRuntimeAssets: false,
+        storage: 'indexedDb',
+        global: browserGlobal(),
+        navigator: browserNavigator({
+          opfs: true,
+          persisted: true,
+          quotaBytes: 100_000,
+          usageBytes: 95_000,
+        }),
+      })
+    ).resolves.toMatchObject({
+      status: 'warning',
+      ready: false,
+      requiresAction: false,
+      support: {
+        issueCodes: ['browser.storage_pressure_high'],
+        recommendedActions: ['freeStorageQuota'],
+        productionReady: false,
+      },
+      storage: {
+        availableBytes: 5_000,
+        quotaBytes: 100_000,
+        quotaPressure: 'high',
+        usageBytes: 95_000,
+      },
+      issues: [
+        expect.objectContaining({
+          code: 'browser.storage_pressure_high',
+          severity: 'warning',
+          recommendedAction: 'freeStorageQuota',
+          details: expect.objectContaining({
+            availableBytes: 5_000,
+            quotaBytes: 100_000,
+            usageBytes: 95_000,
+          }),
+        }),
+      ],
+    });
+  });
+
+  it('warns when available browser storage is below the configured free-space budget', async () => {
+    await expect(
+      getSyncularBrowserDeploymentPreflight({
+        runtime: {
+          wasmGlueUrl: 'https://cdn.example/syncular.js',
+          wasmUrl: 'https://cdn.example/syncular_bg.wasm',
+        },
+        checkRuntimeAssets: false,
+        storage: 'indexedDb',
+        global: browserGlobal(),
+        navigator: browserNavigator({
+          opfs: true,
+          persisted: true,
+          quotaBytes: 100_000,
+          usageBytes: 80_000,
+        }),
+        minimumAvailableBytes: 25_000,
+      })
+    ).resolves.toMatchObject({
+      status: 'warning',
+      support: {
+        issueCodes: ['browser.storage_quota_low'],
+        recommendedActions: ['freeStorageQuota'],
+      },
+      storage: {
+        availableBytes: 20_000,
+        minimumAvailableBytes: 25_000,
+        quotaPressure: 'elevated',
+        usageBytes: 80_000,
+      },
+      issues: [
+        expect.objectContaining({
+          code: 'browser.storage_quota_low',
+          details: expect.objectContaining({
+            availableBytes: 20_000,
+            minimumAvailableBytes: 25_000,
+          }),
+        }),
+      ],
     });
   });
 
@@ -432,6 +524,7 @@ function browserNavigator(options: {
   opfs: boolean;
   persisted?: boolean;
   quotaBytes?: number;
+  usageBytes?: number;
 }): SyncularBrowserDeploymentPreflightNavigator {
   return {
     ...(options.locks === false
@@ -460,7 +553,10 @@ function browserNavigator(options: {
         ? {}
         : {
             async estimate() {
-              return { quota: options.quotaBytes, usage: 1024 };
+              return {
+                quota: options.quotaBytes,
+                usage: options.usageBytes ?? 1024,
+              };
             },
           }),
     },

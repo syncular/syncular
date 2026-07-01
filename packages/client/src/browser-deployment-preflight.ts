@@ -37,6 +37,7 @@ export type SyncularBrowserDeploymentPreflightIssueCode =
   | 'browser.runtime_asset_unreachable'
   | 'browser.storage_persistence_not_granted'
   | 'browser.storage_persistence_unavailable'
+  | 'browser.storage_pressure_high'
   | 'browser.storage_quota_low'
   | 'browser.webassembly_unavailable'
   | 'browser.web_locks_unavailable'
@@ -65,6 +66,12 @@ export type SyncularBrowserDeploymentPreflightPersistenceMode =
   | 'ephemeral'
   | 'unsupported'
   | 'unknown';
+
+export type SyncularBrowserDeploymentPreflightQuotaPressure =
+  | 'unknown'
+  | 'normal'
+  | 'elevated'
+  | 'high';
 
 export interface SyncularBrowserDeploymentPreflightIssue {
   code: SyncularBrowserDeploymentPreflightIssueCode;
@@ -123,8 +130,12 @@ export interface SyncularBrowserDeploymentPreflightStorage {
   opfsAvailable: boolean | null;
   persistenceSupported: boolean | null;
   persisted: boolean | null;
+  quotaPressure: SyncularBrowserDeploymentPreflightQuotaPressure;
+  availableBytes?: number;
   quotaBytes?: number;
+  usageRatio?: number;
   usageBytes?: number;
+  minimumAvailableBytes?: number;
   minimumQuotaBytes?: number;
 }
 
@@ -165,6 +176,7 @@ export interface SyncularBrowserDeploymentPreflightOptions {
   requireMultiTabCoordination?: boolean;
   requirePageLifecycleResume?: boolean;
   checkRuntimeAssets?: boolean;
+  minimumAvailableBytes?: number;
   minimumQuotaBytes?: number;
   fetch?: SyncularBrowserDeploymentPreflightFetch;
   global?: SyncularBrowserDeploymentPreflightGlobal;
@@ -218,6 +230,7 @@ export async function getSyncularBrowserDeploymentPreflight(
     storageWasExplicit: options.storage != null,
     globalRef,
     navigatorRef,
+    minimumAvailableBytes: options.minimumAvailableBytes,
     minimumQuotaBytes: options.minimumQuotaBytes,
     issues,
   });
@@ -371,6 +384,7 @@ async function summarizeStorage(args: {
   storageWasExplicit: boolean;
   globalRef: SyncularBrowserDeploymentPreflightGlobal;
   navigatorRef?: SyncularBrowserDeploymentPreflightNavigator;
+  minimumAvailableBytes?: number;
   minimumQuotaBytes?: number;
   issues: SyncularBrowserDeploymentPreflightIssue[];
 }): Promise<SyncularBrowserDeploymentPreflightStorage> {
@@ -394,6 +408,9 @@ async function summarizeStorage(args: {
     typeof args.navigatorRef?.storage?.estimate === 'function'
       ? await safeEstimate(args.navigatorRef.storage.estimate)
       : undefined;
+  const availableBytes = summarizeAvailableBytes(estimate);
+  const usageRatio = summarizeStorageUsageRatio(estimate);
+  const quotaPressure = summarizeQuotaPressure(usageRatio);
 
   const storage: SyncularBrowserDeploymentPreflightStorage = {
     requested: args.expectedStorage,
@@ -402,8 +419,14 @@ async function summarizeStorage(args: {
     opfsAvailable,
     persistenceSupported,
     persisted,
+    quotaPressure,
+    ...(availableBytes != null ? { availableBytes } : {}),
     ...(estimate?.quota != null ? { quotaBytes: estimate.quota } : {}),
+    ...(usageRatio != null ? { usageRatio } : {}),
     ...(estimate?.usage != null ? { usageBytes: estimate.usage } : {}),
+    ...(args.minimumAvailableBytes != null
+      ? { minimumAvailableBytes: args.minimumAvailableBytes }
+      : {}),
     ...(args.minimumQuotaBytes != null
       ? { minimumQuotaBytes: args.minimumQuotaBytes }
       : {}),
@@ -468,6 +491,45 @@ async function summarizeStorage(args: {
       details: {
         quotaBytes: estimate.quota,
         minimumQuotaBytes: args.minimumQuotaBytes,
+      },
+    });
+  }
+
+  if (
+    durableRequired &&
+    args.minimumAvailableBytes != null &&
+    availableBytes != null &&
+    availableBytes < args.minimumAvailableBytes
+  ) {
+    args.issues.push({
+      code: 'browser.storage_quota_low',
+      severity: 'warning',
+      target: 'storage',
+      recommendedAction: 'freeStorageQuota',
+      message:
+        'The available browser storage budget is below the configured Syncular preflight budget.',
+      details: {
+        availableBytes,
+        minimumAvailableBytes: args.minimumAvailableBytes,
+        quotaBytes: estimate?.quota,
+        usageBytes: estimate?.usage,
+      },
+    });
+  }
+
+  if (durableRequired && quotaPressure === 'high') {
+    args.issues.push({
+      code: 'browser.storage_pressure_high',
+      severity: 'warning',
+      target: 'storage',
+      recommendedAction: 'freeStorageQuota',
+      message:
+        'Browser storage usage is close to the reported quota; offline data may be at higher risk of eviction or write failures.',
+      details: {
+        availableBytes,
+        quotaBytes: estimate?.quota,
+        usageBytes: estimate?.usage,
+        usageRatio,
       },
     });
   }
@@ -930,6 +992,35 @@ function describeRuntimeAssetUrl(input: string | URL | Request): string {
     return input.url;
   }
   return String(input);
+}
+
+function summarizeAvailableBytes(
+  estimate: { quota?: number; usage?: number } | undefined
+): number | undefined {
+  if (estimate?.quota == null || estimate.usage == null) return undefined;
+  return Math.max(0, estimate.quota - estimate.usage);
+}
+
+function summarizeStorageUsageRatio(
+  estimate: { quota?: number; usage?: number } | undefined
+): number | undefined {
+  if (
+    estimate?.quota == null ||
+    estimate.usage == null ||
+    estimate.quota <= 0
+  ) {
+    return undefined;
+  }
+  return Math.min(1, Math.max(0, estimate.usage / estimate.quota));
+}
+
+function summarizeQuotaPressure(
+  usageRatio: number | undefined
+): SyncularBrowserDeploymentPreflightQuotaPressure {
+  if (usageRatio == null) return 'unknown';
+  if (usageRatio >= 0.9) return 'high';
+  if (usageRatio >= 0.75) return 'elevated';
+  return 'normal';
 }
 
 function isFileRuntimeAsset(input: string | URL | Request): boolean {

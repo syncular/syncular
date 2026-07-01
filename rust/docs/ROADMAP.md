@@ -198,15 +198,16 @@ read-only review:
     `getSyncularBrowserDeploymentPreflight(...)` from `@syncular/client` so
     deploy previews can check Worker/WebAssembly support, secure-context and
     optional cross-origin-isolation flags, OPFS/IndexedDB durability,
-    persistent-storage status, quota budgets, and served WASM asset
-    status/content types before opening a database. It now also reports an
-    explicit support tier (`persistent-offline`, `ephemeral-development`,
-    `unsupported`, or `unknown`) with persistence mode, production readiness,
-    issue codes, and recommended actions, plus BroadcastChannel, Web Locks,
-    page visibility, `pagehide`, `beforeunload`, resume/shutdown signal
-    availability, and multi-tab mode, with opt-in not-ready checks for apps
-    that require tab coordination or page lifecycle resume signals; the starter
-    now runs this preflight before
+    persistent-storage status, total quota, free-space budgets, usage ratio,
+    quota pressure, and served WASM asset status/content types before opening
+    a database. It now also reports an explicit support tier
+    (`persistent-offline`, `ephemeral-development`, `unsupported`, or
+    `unknown`) with persistence mode, production readiness, issue codes, and
+    recommended actions, plus BroadcastChannel, Web Locks, page visibility,
+    `pagehide`, `beforeunload`, resume/shutdown signal availability, and
+    multi-tab mode, with opt-in not-ready checks for apps that require tab
+    coordination or page lifecycle resume signals; the starter now runs this
+    preflight before
     `createSyncularAppDatabase(...)`, and its scaffold smoke checks the
     transformed preflight client module. The starter now also exports a
     redacted support-bundle summary after opening the database, and the
@@ -222,7 +223,8 @@ read-only review:
     browser health refresh, schema readiness, support-bundle export,
     bootstrap readiness, realtime connection, and generated-mutation local
     visibility, plus deployment-preflight storage/quota status when Chrome/CDP
-    is available. The support-bundle marker also reports redacted runtime
+    is available, including available bytes, usage ratio, and quota pressure.
+    The support-bundle marker also reports redacted runtime
     timeline event counts for sync, realtime, local apply, blob, cursors, and
     request/sync-attempt ids. The same smoke
     self-checks the redacted browser failure artifact shape and safe smoke

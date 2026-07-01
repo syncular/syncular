@@ -1316,7 +1316,8 @@ online propagation, or reconnect behavior can change.
   `getSyncularBrowserDeploymentPreflight(...)` to `@syncular/client`, checking
   Worker/WebAssembly support, secure-context/cross-origin-isolation flags,
   OPFS/IndexedDB durable storage availability, persistent-storage status,
-  quota budgets, and served WASM runtime asset status/content types before a
+  quota budgets, available free-space budgets, storage usage ratio, quota
+  pressure, and served WASM runtime asset status/content types before a
   database is opened.
 - Browser deployment preflight now carries an explicit support decision:
   `persistent-offline`, `ephemeral-development`, `unsupported`, or `unknown`,
@@ -1993,6 +1994,12 @@ online propagation, or reconnect behavior can change.
   `unknown` with persistence mode, production readiness, issue codes, and
   recommended actions. The starter error, package README, public browser docs,
   and support-bundle tests now use the same support-tier vocabulary.
+- 2026-07-01: Extended browser deployment preflight storage diagnostics with
+  available bytes, minimum available budget, usage ratio, and
+  `quotaPressure`, plus the `browser.storage_pressure_high` warning code. The
+  starter hidden preflight marker and `browser-preview-failure.json` self-check
+  now preserve those fields so browser artifacts can distinguish low total
+  quota, low free space, high usage pressure, and persistence-grant gaps.
 - 2026-07-01: Added policy-level `browser_support.*` reason codes to
   `evaluateSyncularBrowserSupportPolicy(...)` and threaded them into the
   `create-syncular-app` hidden support-policy marker and
@@ -2837,20 +2844,27 @@ Most recent starter bootstrap/realtime artifact rerun:
 
 Most recent starter storage/quota artifact rerun:
 
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/browser-deployment-preflight.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/browser-support-matrix.ts packages/client/src/browser-support-matrix.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts apps/docs/content/docs/clients/javascript/browser.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-deployment-preflight.test.ts packages/client/src/browser-support-matrix.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-storage-quota-smoke bun --cwd packages/create-syncular-app smoke`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `git diff --check`
   - Passed dev server health/page/module/preflight transform checks.
   - Passed Vite production build, preview serving, and built asset checks,
     including the deployment-preflight storage/quota marker.
   - Passed the deterministic browser failure artifact shape and safe-metrics
     self-check with deployment-preflight status, support tier, persistence
-    mode, persisted flag, quota/usage bytes, minimum quota, issue count, and
+    mode, persisted flag, quota/usage/available bytes, minimum quota,
+    minimum available bytes, usage ratio, quota pressure, issue count, and
     recommended-action count.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
     binary was available. On browser-capable runners the failure artifact can
-    now distinguish storage/quota or persistence pressure from bootstrap,
-    realtime, local-visibility, and support-bundle failures.
+    now distinguish low total quota, low free space, high storage pressure, or
+    persistence-grant gaps from bootstrap, realtime, local-visibility, and
+    support-bundle failures.
 
 Most recent starter support-timeline artifact rerun:
 
@@ -2988,14 +3002,13 @@ Most recent adapter-boundary rerun:
 
 Most recent browser-deployment-preflight rerun:
 
-- `bun test packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts`
-- `bun --cwd packages/client tsgo`
-- `bun --cwd packages/create-syncular-app tsgo`
-- `bun run imports:check`
-- `bunx biome check packages/client/src/browser-deployment-preflight.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/create-syncular-app/template/src/client/syncular.ts packages/create-syncular-app/scripts/smoke.ts`
-- `bun --cwd packages/create-syncular-app smoke`
-- `bun --cwd apps/docs types:check`
-- `bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-deployment-preflight.test.ts packages/client/src/browser-support-matrix.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/browser-deployment-preflight.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/browser-support-matrix.ts packages/client/src/browser-support-matrix.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts apps/docs/content/docs/clients/javascript/browser.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `git diff --check`
 
 Most recent optional-import-matrix rerun:

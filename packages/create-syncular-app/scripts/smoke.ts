@@ -549,14 +549,18 @@ type BrowserPreviewProbe = {
   };
   deploymentPreflight: {
     actionCount: number;
+    availableBytes: number | null;
     issueCount: number;
+    minimumAvailableBytes: number | null;
     minimumQuotaBytes: number | null;
     persistence: string | null;
     persisted: string | null;
     preflightMs: number | null;
+    quotaPressure: string | null;
     quotaBytes: number | null;
     status: string | null;
     supportTier: string | null;
+    usageRatio: number | null;
     usageBytes: number | null;
   };
   browserSupportPolicy: {
@@ -695,14 +699,18 @@ async function readStarterBrowserProbe(
       return Number.isFinite(number) && number >= 0 ? number : null;
     };
     const deploymentPreflightActionCount = Number(deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-action-count') ?? 0);
+    const deploymentPreflightAvailableBytes = readDeploymentPreflightNumber('data-syncular-deployment-preflight-available-bytes');
     const deploymentPreflightIssueCount = Number(deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-issue-count') ?? 0);
+    const deploymentPreflightMinimumAvailableBytes = readDeploymentPreflightNumber('data-syncular-deployment-preflight-minimum-available-bytes');
     const deploymentPreflightMinimumQuotaBytes = readDeploymentPreflightNumber('data-syncular-deployment-preflight-minimum-quota-bytes');
     const deploymentPreflightPersistence = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-persistence') ?? null;
     const deploymentPreflightPersisted = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-persisted') ?? null;
     const deploymentPreflightPreflightMs = readDeploymentPreflightNumber('data-syncular-deployment-preflight-preflight-ms');
+    const deploymentPreflightQuotaPressure = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-quota-pressure') ?? null;
     const deploymentPreflightQuotaBytes = readDeploymentPreflightNumber('data-syncular-deployment-preflight-quota-bytes');
     const deploymentPreflightStatus = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-status') ?? null;
     const deploymentPreflightSupportTier = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-support-tier') ?? null;
+    const deploymentPreflightUsageRatio = readDeploymentPreflightNumber('data-syncular-deployment-preflight-usage-ratio');
     const deploymentPreflightUsageBytes = readDeploymentPreflightNumber('data-syncular-deployment-preflight-usage-bytes');
     const browserSupportPolicy = document.querySelector('[data-syncular-browser-support-policy-status]');
     const browserSupportPolicyActionCount = Number(browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-action-count') ?? 0);
@@ -832,14 +840,18 @@ async function readStarterBrowserProbe(
       },
       deploymentPreflight: {
         actionCount: deploymentPreflightActionCount,
+        availableBytes: deploymentPreflightAvailableBytes,
         issueCount: deploymentPreflightIssueCount,
+        minimumAvailableBytes: deploymentPreflightMinimumAvailableBytes,
         minimumQuotaBytes: deploymentPreflightMinimumQuotaBytes,
         persistence: deploymentPreflightPersistence,
         persisted: deploymentPreflightPersisted,
         preflightMs: deploymentPreflightPreflightMs,
+        quotaPressure: deploymentPreflightQuotaPressure,
         quotaBytes: deploymentPreflightQuotaBytes,
         status: deploymentPreflightStatus,
         supportTier: deploymentPreflightSupportTier,
+        usageRatio: deploymentPreflightUsageRatio,
         usageBytes: deploymentPreflightUsageBytes,
       },
       browserSupportPolicy: {
@@ -1492,14 +1504,18 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
       },
       deploymentPreflight: {
         actionCount: 0,
+        availableBytes: 107_374_178_304,
         issueCount: 0,
+        minimumAvailableBytes: 26_214_400,
         minimumQuotaBytes: 52_428_800,
         persistence: 'persistent',
         persisted: 'true',
         preflightMs: 2,
+        quotaPressure: 'normal',
         quotaBytes: 107_374_182_400,
         status: 'ready',
         supportTier: 'persistent-offline',
+        usageRatio: 0.00000003814697265625,
         usageBytes: 4096,
       },
       browserSupportPolicy: {
@@ -1772,9 +1788,12 @@ function assertBrowserPreviewDeploymentPreflightShape(
     }
   }
   for (const key of [
+    'availableBytes',
+    'minimumAvailableBytes',
     'minimumQuotaBytes',
     'preflightMs',
     'quotaBytes',
+    'usageRatio',
     'usageBytes',
   ] as const) {
     if (value[key] !== null && !isNonNegativeFiniteNumber(value[key])) {
@@ -1786,6 +1805,7 @@ function assertBrowserPreviewDeploymentPreflightShape(
   for (const key of [
     'persistence',
     'persisted',
+    'quotaPressure',
     'status',
     'supportTier',
   ] as const) {

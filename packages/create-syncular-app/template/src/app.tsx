@@ -56,14 +56,18 @@ type StarterTimelinePreview = {
 
 type DeploymentPreflightPreview = {
   actionCount: number;
+  availableBytes: number | null;
   issueCount: number;
+  minimumAvailableBytes: number | null;
   minimumQuotaBytes: number | null;
   persistence: SyncularBrowserDeploymentPreflight['support']['persistence'];
   persisted: boolean | null;
   preflightMs: number;
+  quotaPressure: SyncularBrowserDeploymentPreflight['storage']['quotaPressure'];
   quotaBytes: number | null;
   status: SyncularBrowserDeploymentPreflight['status'] | 'failed';
   supportTier: SyncularBrowserDeploymentPreflight['support']['tier'];
+  usageRatio: number | null;
   usageBytes: number | null;
 };
 
@@ -128,6 +132,7 @@ const starterDeploymentPreflightOptions = {
   requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
   storage: 'indexedDb',
   checkRuntimeAssets: false,
+  minimumAvailableBytes: 25 * 1024 * 1024,
   minimumQuotaBytes: 50 * 1024 * 1024,
 } as const;
 
@@ -678,8 +683,14 @@ function DeploymentPreflightMarker({
       data-syncular-deployment-preflight-action-count={
         deploymentPreflight.actionCount
       }
+      data-syncular-deployment-preflight-available-bytes={
+        deploymentPreflight.availableBytes ?? ''
+      }
       data-syncular-deployment-preflight-issue-count={
         deploymentPreflight.issueCount
+      }
+      data-syncular-deployment-preflight-minimum-available-bytes={
+        deploymentPreflight.minimumAvailableBytes ?? ''
       }
       data-syncular-deployment-preflight-minimum-quota-bytes={
         deploymentPreflight.minimumQuotaBytes ?? ''
@@ -695,6 +706,9 @@ function DeploymentPreflightMarker({
       data-syncular-deployment-preflight-preflight-ms={
         deploymentPreflight.preflightMs
       }
+      data-syncular-deployment-preflight-quota-pressure={
+        deploymentPreflight.quotaPressure
+      }
       data-syncular-deployment-preflight-quota-bytes={
         deploymentPreflight.quotaBytes ?? ''
       }
@@ -704,6 +718,9 @@ function DeploymentPreflightMarker({
       }
       data-syncular-deployment-preflight-usage-bytes={
         deploymentPreflight.usageBytes ?? ''
+      }
+      data-syncular-deployment-preflight-usage-ratio={
+        deploymentPreflight.usageRatio ?? ''
       }
       hidden
     />
@@ -736,14 +753,18 @@ function summarizeDeploymentPreflight(
 ): DeploymentPreflightPreview {
   return {
     actionCount: preflight.support.recommendedActions.length,
+    availableBytes: preflight.storage.availableBytes ?? null,
     issueCount: preflight.issues.length,
+    minimumAvailableBytes: preflight.storage.minimumAvailableBytes ?? null,
     minimumQuotaBytes: preflight.storage.minimumQuotaBytes ?? null,
     persistence: preflight.support.persistence,
     persisted: preflight.storage.persisted ?? null,
     preflightMs,
+    quotaPressure: preflight.storage.quotaPressure,
     quotaBytes: preflight.storage.quotaBytes ?? null,
     status: preflight.status,
     supportTier: preflight.support.tier,
+    usageRatio: preflight.storage.usageRatio ?? null,
     usageBytes: preflight.storage.usageBytes ?? null,
   };
 }
@@ -753,14 +774,19 @@ function failedDeploymentPreflightPreview(
 ): DeploymentPreflightPreview {
   return {
     actionCount: 1,
+    availableBytes: null,
     issueCount: 1,
+    minimumAvailableBytes:
+      starterDeploymentPreflightOptions.minimumAvailableBytes,
     minimumQuotaBytes: starterDeploymentPreflightOptions.minimumQuotaBytes,
     persistence: 'unknown',
     persisted: null,
     preflightMs,
+    quotaPressure: 'unknown',
     quotaBytes: null,
     status: 'failed',
     supportTier: 'unknown',
+    usageRatio: null,
     usageBytes: null,
   };
 }
