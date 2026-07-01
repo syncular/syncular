@@ -101,6 +101,9 @@ operators can post it to
 stores it as a redacted `cloudflare.runtime_failure` diagnostic record with
 the failed route, sync/blob/WebSocket route bases, exit status, bounded output
 excerpt, and safe R2 blob route timing/byte metrics.
+Before ingesting those artifacts in tests, assert their shape and redaction
+with `requireBrowserPreviewFailureArtifact(...)` or
+`requireCloudflareRuntimeFailureArtifact(...)` from `@syncular/testkit`.
 
 For app tests and support reports, prefer a runtime timeline over dumping the
 raw snapshot. `runtimeTimeline()` orders the current runtime/lifecycle state

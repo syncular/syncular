@@ -3,6 +3,7 @@ export * from './command-proof';
 export * from './deterministic';
 export * from './diagnostic-markers';
 export * from './disposable';
+export * from './failure-artifacts';
 export * from './faults';
 export * from './realtime-ws';
 export * from './runtime-process';

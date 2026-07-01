@@ -103,9 +103,10 @@ read-only review:
     membership-aware project/campaign actor helpers, stable diagnostic marker
     assertions, stable response assertion helpers for denied push results and
     revoked pull subscriptions, stable command proof assertion helpers for
-    command-timeline evidence chains, explicit project membership support in
-    the bundled tasks fixture, and binary sync-pack-aware combined response
-    parsing for real route tests. Public docs now lead Fresh JavaScript apps through
+    command-timeline evidence chains, stable failure-artifact assertion helpers
+    for browser-preview and Cloudflare runtime artifacts, explicit project
+    membership support in the bundled tasks fixture, and binary
+    sync-pack-aware combined response parsing for real route tests. Public docs now lead Fresh JavaScript apps through
     `create-syncular-app`, include a JavaScript import decision table, describe
     optional client/server integrations as subpaths with optional peers, and
     guard the starter-proven `src/generated/syncular.generated.ts` filename
@@ -342,7 +343,11 @@ read-only review:
     either the raw artifact or a wrapper with client identity, rejecting
     sensitive keys with the existing diagnostics policy, preserving safe
     metrics/timing/support-bundle summaries, and dropping the page text
-    excerpt before storing a `browser.preview_failure` record. Mutation queue
+    excerpt before storing a `browser.preview_failure` record. Testkit can now
+    assert those browser-preview artifacts plus Cloudflare runtime failure
+    artifacts for redaction, bounded excerpts, lifecycle evidence,
+    support-policy count consistency, and safe blob timing metrics before
+    ingestion. Mutation queue
     UX now has
     `getSyncularMutationStatus(...)` and
     `SyncularDatabase.mutationStatus(...)`, summarizing outbox queue state,

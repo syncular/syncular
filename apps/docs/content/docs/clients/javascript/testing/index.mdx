@@ -66,6 +66,7 @@ These groups cover the TypeScript `@syncular/testkit` package:
 | Response parsing | `parseSyncCombinedResponse`, `parseSyncPushResponse`, `parseSyncPullResponse`, `readSyncCombinedResponse`, `readSyncPushResponse`, `readSyncPullResponse` |
 | Response assertions | `findPushCommit`, `requirePushCommit`, `findPushOperationResult`, `requirePushOperationResult`, `requirePushErrorCode`, `findPullSubscription`, `requirePullSubscription`, `requireRevokedSubscription`, plus pull row helpers `subscriptionChanges`, `findSubscriptionChange`, `subscriptionChangeRow` |
 | Command proof assertions | `missingCommandProofEvidence`, `hasCommandProofEvidence`, `requireCommandProofEvidence`, `requireCompleteCommandProof`, `SYNCULAR_COMMAND_PROOF_EVIDENCE_KEYS` |
+| Failure artifact assertions | `requireBrowserPreviewFailureArtifact`, `requireCloudflareRuntimeFailureArtifact`, `assertFailureArtifactRedacted`, `findFailureArtifactSensitiveField`, `SYNCULAR_FAILURE_ARTIFACT_SENSITIVE_KEYS` |
 | Faults + recording | `withFaults`, `createMockTransport`, `withRecording` |
 | Deterministic IDs/clocks | `createIdFactory`, `createCommitIdFactory`, `createFakeClock` |
 | Realtime WebSocket | `createRealtimeWsUrl`, `openRealtimeWs`, `waitForWsOpen`, `waitForWsMessage`, `waitForWsJsonMessage`, `parseWsJsonMessage`, `closeWsSafe` |

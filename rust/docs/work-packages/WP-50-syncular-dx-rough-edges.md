@@ -1607,6 +1607,17 @@ online propagation, or reconnect behavior can change.
   assert complete or partial outbox/request/sync-attempt/server-commit/
   realtime-cursor/pull-reason/local-apply/local-visibility proof chains
   without hand-rolling boolean checks.
+- 2026-07-01: Added testkit failure-artifact assertion helpers for the two
+  current redacted smoke artifact families:
+  `requireBrowserPreviewFailureArtifact(...)`,
+  `requireCloudflareRuntimeFailureArtifact(...)`,
+  `assertFailureArtifactRedacted(...)`,
+  `findFailureArtifactSensitiveField(...)`, and
+  `SYNCULAR_FAILURE_ARTIFACT_SENSITIVE_KEYS`. These helpers let app/release
+  tests assert bounded browser-preview and Cloudflare runtime failure JSON,
+  support-policy count consistency, support-bundle redaction,
+  lifecycle-resume/pause evidence, safe blob timing metrics, and rejected
+  sensitive keys or known raw secret values before Console/Fleet ingestion.
 - The testkit `postSyncCombinedRequest(...)` helper now accepts the current
   binary sync-pack response format as well as JSON, so docs examples using the
   real combined route are executable again.
@@ -1793,6 +1804,10 @@ online propagation, or reconnect behavior can change.
 - 2026-07-01: Added `@syncular/testkit` command proof assertion helpers for
   `database.commandTimeline(...).summary.proof`, including complete-chain and
   subset assertions with missing evidence key names.
+- 2026-07-01: Added `@syncular/testkit` failure artifact assertion helpers
+  for `browser-preview-failure.json` and `cloudflare-runtime-failure.json`,
+  including redaction/sensitive-key scans and optional forbidden-substring
+  checks for app-specific secrets.
 - 2026-06-30: Updated `postSyncCombinedRequest(...)` /
   `readSyncCombinedResponse(...)` to decode binary sync-pack combined
   responses in addition to JSON responses.
@@ -2542,6 +2557,26 @@ Most recent testkit command-proof assertion rerun:
   - Passed actionable missing-evidence messages and canonical key ordering.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/testkit tsgo`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/testkit/src/command-proof.ts packages/testkit/src/command-proof.test.ts packages/testkit/src/index.ts apps/docs/content/docs/clients/javascript/testing/primitives.mdx apps/docs/content/docs/clients/javascript/testing/index.mdx apps/docs/content/docs/operate/observability.mdx`
+  - Passed for the TypeScript files. The repo Biome config ignores MDX, so
+    keep `apps/docs types:check`, `docs:stale-check`, `git diff --check`, and
+    manual Markdown sanity reads for those pages.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `git diff --check`
+
+Most recent testkit failure-artifact assertion rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/testkit/src/failure-artifacts.test.ts`
+  - Passed canonical browser-preview failure artifact shape/redaction
+    assertions, including support-policy count consistency,
+    support-bundle redaction, lifecycle resume/pause evidence, and bounded
+    page text excerpts.
+  - Passed canonical Cloudflare runtime failure artifact shape/redaction
+    assertions, including route/exit fields, bounded output excerpts, and
+    safe blob timing/byte metrics.
+  - Passed sensitive-key and forbidden-substring failure paths.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/testkit tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/testkit/src/failure-artifacts.ts packages/testkit/src/failure-artifacts.test.ts packages/testkit/src/index.ts apps/docs/content/docs/clients/javascript/testing/index.mdx apps/docs/content/docs/clients/javascript/testing/primitives.mdx apps/docs/content/docs/operate/observability.mdx`
   - Passed for the TypeScript files. The repo Biome config ignores MDX, so
     keep `apps/docs types:check`, `docs:stale-check`, `git diff --check`, and
     manual Markdown sanity reads for those pages.

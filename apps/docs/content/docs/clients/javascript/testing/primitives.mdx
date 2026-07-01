@@ -154,6 +154,37 @@ The assertion failure names the missing evidence keys, such as
 `realtimeCursorObserved` or `localVisibilityObserved`, so a failed test points
 at the broken lifecycle phase instead of a generic timeout.
 
+## Failure artifact assertions
+
+Use the failure artifact helpers when a smoke writes
+`browser-preview-failure.json` or `cloudflare-runtime-failure.json`. They
+assert the redacted, bounded artifact shape and fail with the field path that
+is malformed or unsafe:
+
+```ts
+import {
+  assertFailureArtifactRedacted,
+  requireBrowserPreviewFailureArtifact,
+  requireCloudflareRuntimeFailureArtifact,
+} from '@syncular/testkit';
+
+const browserArtifact = requireBrowserPreviewFailureArtifact(
+  JSON.parse(await Bun.file('browser-preview-failure.json').text()),
+  { forbiddenSubstrings: ['raw-test-token'] }
+);
+
+requireCloudflareRuntimeFailureArtifact(
+  JSON.parse(await Bun.file('cloudflare-runtime-failure.json').text())
+);
+
+assertFailureArtifactRedacted(browserArtifact);
+```
+
+The browser assertion checks marker metrics, support-policy counts,
+support-bundle redaction, lifecycle resume/pause evidence, starter timing
+fields, and bounded page text excerpts. The Cloudflare assertion checks route,
+exit, bounded output, and safe blob timing/byte metrics.
+
 ## Reference tasks schema
 
 The testkit bundles a complete project-scoped `tasks` table so tests do not
