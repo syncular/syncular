@@ -4288,7 +4288,9 @@ Most recent mutation-status rerun:
   quota-exhausted writes, eviction, and storage-shutdown behavior as remaining
   matrix work. Local `create-syncular-app` typecheck, focused Biome,
   non-Chrome scaffold smoke, smoke-script typecheck, and diff check passed;
-  hosted Chrome evidence is pending for the fixed branch.
+  hosted Checks run `28542315687` on `8d2cc113` passed the full matrix,
+  including `starter-browser-preview`, proving the fixed quota-pressure branch
+  in hosted Chrome.
 
 ## Next Action
 
@@ -4304,7 +4306,7 @@ memory-storage support-policy branch is now confirmed in hosted Chrome and
 verifies explicit ephemeral/development storage classification without claiming
 private-mode durable persistence. The current slice adds a browser-observed
 quota-pressure preflight branch, now fixed to pass post-override CDP usage/quota
-facts into the app preflight proof, with hosted Chrome verification pending.
+facts into the app preflight proof and confirmed in hosted Chrome.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 suspension/shutdown lifecycle coverage, actual quota-exhaustion/eviction and
