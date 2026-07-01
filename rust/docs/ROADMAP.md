@@ -294,7 +294,14 @@ read-only review:
     runtime timeline, schema readiness, optional deployment preflight, section
     failures, local support data, package/runtime versions, sync/trace ids,
     subscription cursors, and diagnostic redaction decisions into one redacted
-    incident artifact. Mutation queue UX now has
+    incident artifact. Console diagnostics can now ingest the starter's
+    redacted `browser-preview-failure.json` artifact through
+    `POST /console/client-diagnostics/browser-preview-failure`, accepting
+    either the raw artifact or a wrapper with client identity, rejecting
+    sensitive keys with the existing diagnostics policy, preserving safe
+    metrics/timing/support-bundle summaries, and dropping the page text
+    excerpt before storing a `browser.preview_failure` record. Mutation queue
+    UX now has
     `getSyncularMutationStatus(...)` and
     `SyncularDatabase.mutationStatus(...)`, summarizing outbox queue state,
     failed pushes, conflict records, last mutation errors, and UI-safe

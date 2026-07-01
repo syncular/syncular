@@ -10,6 +10,7 @@ import { resolver } from 'hono-openapi';
 import { consoleValidator as zValidator } from '../../validation';
 import { describeConsoleRoute } from '../route-descriptor';
 import {
+  ConsoleBrowserPreviewFailureIngestSchema,
   type ConsoleClient,
   ConsoleClientDiagnosticIngestSchema,
   type ConsoleClientDiagnosticRecord,
@@ -21,6 +22,7 @@ import {
 } from '../schemas';
 import type { ConsoleRoutesContext } from './context';
 import {
+  buildBrowserPreviewFailureClientDiagnosticIngest,
   buildClientDiagnosticRecord,
   clientDiagnosticDetailQuerySchema,
   clientDiagnosticHistoryQuerySchema,
@@ -276,6 +278,66 @@ export function registerClientRoutes(ctx: ConsoleRoutesContext): void {
         });
       }
 
+      const record = buildClientDiagnosticRecord(payload, new Date());
+      const recordBytes = jsonByteLength(record);
+      if (recordBytes > DEFAULT_CLIENT_DIAGNOSTICS_MAX_JSON_BYTES) {
+        return consoleRouteError(c, 400, 'console.invalid_request', undefined, {
+          maxBytes: DEFAULT_CLIENT_DIAGNOSTICS_MAX_JSON_BYTES,
+          actualBytes: recordBytes,
+          reason: 'client_diagnostic_snapshot_too_large',
+        });
+      }
+
+      await writeClientDiagnosticRecord(record);
+      await pruneClientDiagnosticRecordsByCount();
+      return c.json(record, 202);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /client-diagnostics/browser-preview-failure
+  // -------------------------------------------------------------------------
+
+  routes.post(
+    '/client-diagnostics/browser-preview-failure',
+    describeConsoleRoute({
+      summary: 'Ingest a redacted browser preview failure artifact',
+      responses: {
+        202: {
+          description: 'Accepted browser preview failure diagnostic artifact',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleClientDiagnosticRecordSchema),
+            },
+          },
+        },
+        400: {
+          description: 'Invalid request',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('json', ConsoleBrowserPreviewFailureIngestSchema),
+    async (c) => {
+      const artifactPayload = c.req.valid('json');
+      const sensitiveField = findSensitiveDiagnosticField(artifactPayload);
+      if (sensitiveField) {
+        return consoleRouteError(c, 400, 'console.invalid_request', undefined, {
+          fieldPath: sensitiveField,
+          reason: 'browser_preview_failure_sensitive_field',
+        });
+      }
+
+      const payload =
+        buildBrowserPreviewFailureClientDiagnosticIngest(artifactPayload);
       const record = buildClientDiagnosticRecord(payload, new Date());
       const recordBytes = jsonByteLength(record);
       if (recordBytes > DEFAULT_CLIENT_DIAGNOSTICS_MAX_JSON_BYTES) {

@@ -1189,6 +1189,15 @@ online propagation, or reconnect behavior can change.
   docs information scent, public-package release confidence,
   cross-environment unsupported states, data-shape escape hatches, telemetry
   naming, and destructive local-action guardrails.
+- The first failure-artifact ingestion slice adds
+  `POST /console/client-diagnostics/browser-preview-failure`, accepting either
+  the raw `create-syncular-app` `browser-preview-failure.json` artifact or a
+  wrapper with `clientId`/`actorId`/`partitionId`. The route rejects sensitive
+  keys with the existing Console diagnostics policy, normalizes safe
+  preview/asset metrics, deployment-preflight facts, support-bundle counts,
+  lifecycle timing summaries, and timeline counters into a
+  `browser.preview_failure` client diagnostic record, and deliberately drops
+  the artifact's page `textExcerpt`.
 - The first browser deployment preflight slice adds
   `getSyncularBrowserDeploymentPreflight(...)` to `@syncular/client`, checking
   Worker/WebAssembly support, secure-context/cross-origin-isolation flags,
@@ -2318,6 +2327,20 @@ Most recent starter browser-failure artifact rerun:
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `git diff --check`
 
+Most recent browser-failure Console ingestion rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/console-routes.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/server tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs generate:openapi`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/server/src/hono/console/schemas.ts packages/server/src/hono/console/routes/clients.ts packages/server/src/hono/console/routes/shared.ts packages/server/src/hono/__tests__/console-routes.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `git diff --check`
+  - Passed route coverage for raw artifact ingestion, wrapped artifact
+    ingestion with client identity, sensitive-field rejection, normalized
+    `browser.preview_failure` records, safe metrics/timing preservation, and
+    dropping the artifact page `textExcerpt`.
+
 Most recent starter local-visibility artifact rerun:
 
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts`
@@ -2839,9 +2862,12 @@ Most recent mutation-status rerun:
   page-reported health/support-bundle failures, the normal scaffold smoke
   self-checks the artifact shape and safe smoke metrics without Chrome, and
   the Checks job uploads that JSON on failure from a predictable smoke work
-  directory. Remaining work is to observe the hosted Chrome job for this proof
-  and decide whether server
-  Console/Fleet should ingest the same artifact shape.
+  directory. Console/Fleet can now ingest that starter artifact through
+  `POST /console/client-diagnostics/browser-preview-failure`, normalizing it
+  into a redacted `browser.preview_failure` client diagnostic record without
+  storing the artifact page text excerpt. Remaining work is to observe the
+  hosted Chrome job for this proof and decide whether Cloudflare runtime
+  artifacts should feed Console/Fleet or a future `doctor` surface.
 - Outbox and conflict UX: first app-facing status slice is done for
   queued/sending/failed/acked outbox counts, unresolved/resolved conflicts,
   conflict detail rows, last mutation-related errors, and recommended actions.
@@ -2881,9 +2907,11 @@ Most recent mutation-status rerun:
   waits for the local-visibility marker before proving two-tab propagation.
   The Cloudflare/R2 local runtime artifact now captures direct blob route
   upload/download timings and byte counts for both owner-hash and partitioned
-  reference flows. Remaining depth is observing hosted browser/Cloudflare
-  artifacts and deciding whether Console/Fleet or future `doctor` checks
-  should ingest the same redacted shape.
+  reference flows. Starter browser artifacts can now feed Console/Fleet as
+  redacted `browser.preview_failure` diagnostic records. Remaining depth is
+  observing hosted browser/Cloudflare artifacts and deciding whether
+  Cloudflare runtime artifacts should feed Console/Fleet or future `doctor`
+  checks with a separate redacted shape.
 
 ## Next Action
 

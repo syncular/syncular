@@ -17,6 +17,9 @@ import { z } from 'zod';
 import {
   type ApiKeyType,
   ApiKeyTypeSchema,
+  type ConsoleBrowserPreviewFailureArtifact,
+  ConsoleBrowserPreviewFailureArtifactSchema,
+  type ConsoleBrowserPreviewFailureIngest,
   type ConsoleClientDiagnosticCodeSummary,
   type ConsoleClientDiagnosticFreshnessState,
   type ConsoleClientDiagnosticHealthSeverity,
@@ -729,6 +732,135 @@ export function clientDiagnosticStoreKey(
   clientId: string
 ) {
   return `${partitionId}\u0000${clientId}`;
+}
+
+function compactDiagnosticDetails(
+  value: Record<string, unknown>
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined)
+  );
+}
+
+function truncateDiagnosticText(value: string, maxLength: number): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, maxLength - 3)}...`;
+}
+
+function browserPreviewArtifactGeneratedAtMs(
+  artifact: ConsoleBrowserPreviewFailureArtifact
+): number {
+  const generatedAt = Date.parse(artifact.generatedAt);
+  return Number.isFinite(generatedAt) ? generatedAt : Date.now();
+}
+
+export function buildBrowserPreviewFailureClientDiagnosticIngest(
+  payload: ConsoleBrowserPreviewFailureIngest
+): ConsoleClientDiagnosticIngest {
+  const artifact: ConsoleBrowserPreviewFailureArtifact =
+    payload.artifact ??
+    ConsoleBrowserPreviewFailureArtifactSchema.parse(payload);
+  const probe = artifact.probe;
+  const generatedAt = browserPreviewArtifactGeneratedAtMs(artifact);
+  const reason = truncateDiagnosticText(artifact.reason, 500);
+  const starterTimeline = probe?.starterTimeline ?? null;
+  const deploymentPreflight = probe?.deploymentPreflight ?? null;
+  const supportBundle = probe?.supportBundle ?? null;
+  const lifecycleResume = probe?.lifecycleResume ?? null;
+
+  const details = compactDiagnosticDetails({
+    artifactSchema: 'create-syncular-app.browser-preview-failure.v1',
+    artifactGeneratedAt: artifact.generatedAt,
+    reason,
+    probeReady: probe?.ready ?? null,
+    probeErrorCount: probe?.errors.length ?? 0,
+    probeTextExcerptLength: probe?.textExcerpt.length ?? 0,
+    markers: probe?.markers ?? null,
+    metrics: artifact.metrics,
+    deploymentPreflight,
+    supportBundle,
+    lifecycleResume,
+    starterTimeline,
+  });
+
+  return {
+    clientId: payload.clientId,
+    actorId: payload.actorId,
+    partitionId: payload.partitionId,
+    lifecycle: {
+      phase: probe?.ready ? 'ready' : 'browser-preview-failure',
+      realtime: starterTimeline?.realtimeStatus ?? undefined,
+      online: true,
+      requiresAction: true,
+      pendingRequests: 0,
+      lastError: {
+        code: 'browser.preview_failure',
+        reason,
+      },
+    },
+    snapshot: {
+      generatedAt,
+      runtime: {
+        packageName: '@syncular/client',
+        storage: deploymentPreflight?.persistence ?? undefined,
+      },
+      connection: {
+        realtime: starterTimeline?.realtimeStatus ?? undefined,
+        pendingRequests: 0,
+      },
+      subscriptions: [],
+      recentDiagnostics: [
+        {
+          at: generatedAt,
+          level: 'error',
+          source: 'browser-preview',
+          code: 'browser.preview_failure',
+          message: 'Browser preview failure artifact ingested.',
+          details,
+        },
+      ],
+      recentSyncTimings: [
+        compactDiagnosticDetails({
+          source: 'browser-preview-smoke',
+          artifactCreatedAfterMs: artifact.metrics.artifactCreatedAfterMs,
+          assetCheckMs: artifact.metrics.assetCheckMs,
+          previewReadyMs: artifact.metrics.previewReadyMs,
+          databaseOpenMs: starterTimeline?.databaseOpenMs ?? null,
+          schemaReadinessMs: starterTimeline?.schemaReadinessMs ?? null,
+          bootstrapReadyMs: starterTimeline?.bootstrapReadyMs ?? null,
+          realtimeConnectedMs: starterTimeline?.realtimeConnectedMs ?? null,
+          localVisibilityMs: starterTimeline?.localVisibilityMs ?? null,
+          supportBundleExportMs: starterTimeline?.supportBundleExportMs ?? null,
+        }),
+      ],
+      bootstrap: compactDiagnosticDetails({
+        status: starterTimeline?.bootstrapStatus ?? null,
+        readyMs: starterTimeline?.bootstrapReadyMs ?? null,
+        supportBundleStatus: supportBundle?.status ?? null,
+        supportBundleIssueCount: supportBundle?.issueCount ?? null,
+      }),
+      transportStats: compactDiagnosticDetails({
+        assetCount: artifact.metrics.assetCount,
+        jsAssetCount: artifact.metrics.jsAssetCount,
+        cssAssetCount: artifact.metrics.cssAssetCount,
+        totalAssetBytes: artifact.metrics.totalAssetBytes,
+        jsAssetBytes: artifact.metrics.jsAssetBytes,
+        cssAssetBytes: artifact.metrics.cssAssetBytes,
+        otherAssetBytes: artifact.metrics.otherAssetBytes,
+        deploymentPreflightMarkerInAssets:
+          artifact.metrics.deploymentPreflightMarkerInAssets,
+        lifecycleResumeMarkerInAssets:
+          artifact.metrics.lifecycleResumeMarkerInAssets,
+        starterTimelineMarkerInAssets:
+          artifact.metrics.starterTimelineMarkerInAssets,
+        supportBundleMarkerInAssets:
+          artifact.metrics.supportBundleMarkerInAssets,
+      }),
+    },
+  };
 }
 
 export function buildClientDiagnosticRecord(

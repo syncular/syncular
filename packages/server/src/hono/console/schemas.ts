@@ -499,6 +499,163 @@ export type ConsoleClientDiagnosticIngest = z.infer<
   typeof ConsoleClientDiagnosticIngestSchema
 >;
 
+const ConsoleBrowserPreviewFailureMetricsSchema = z
+  .object({
+    artifactCreatedAfterMs: z.number().nonnegative(),
+    assetCheckMs: z.number().nonnegative(),
+    assetCount: z.number().int().nonnegative(),
+    cssAssetBytes: z.number().int().nonnegative(),
+    cssAssetCount: z.number().int().nonnegative(),
+    deploymentPreflightMarkerInAssets: z.boolean(),
+    jsAssetBytes: z.number().int().nonnegative(),
+    jsAssetCount: z.number().int().nonnegative(),
+    lifecycleResumeMarkerInAssets: z.boolean(),
+    otherAssetBytes: z.number().int().nonnegative(),
+    otherAssetCount: z.number().int().nonnegative(),
+    previewReadyMs: z.number().nonnegative(),
+    starterTimelineMarkerInAssets: z.boolean(),
+    supportBundleMarkerInAssets: z.boolean(),
+    totalAssetBytes: z.number().int().nonnegative(),
+  })
+  .passthrough();
+
+const ConsoleBrowserPreviewFailureNullableNumberSchema = z
+  .number()
+  .nonnegative()
+  .nullable();
+const ConsoleBrowserPreviewFailureNullableStringSchema = z.string().nullable();
+
+const ConsoleBrowserPreviewFailureProbeSchema = z
+  .object({
+    ready: z.boolean(),
+    errors: z.array(z.string()).default([]),
+    markers: z
+      .object({
+        durableHealthLine: z.boolean(),
+        schemaLine: z.boolean(),
+        preflightFailure: z.boolean(),
+        databaseOpening: z.boolean(),
+      })
+      .passthrough(),
+    deploymentPreflight: z
+      .object({
+        actionCount: z.number().int().nonnegative(),
+        issueCount: z.number().int().nonnegative(),
+        minimumQuotaBytes: ConsoleBrowserPreviewFailureNullableNumberSchema,
+        persistence: ConsoleBrowserPreviewFailureNullableStringSchema,
+        persisted: ConsoleBrowserPreviewFailureNullableStringSchema,
+        preflightMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+        quotaBytes: ConsoleBrowserPreviewFailureNullableNumberSchema,
+        status: ConsoleBrowserPreviewFailureNullableStringSchema,
+        supportTier: ConsoleBrowserPreviewFailureNullableStringSchema,
+        usageBytes: ConsoleBrowserPreviewFailureNullableNumberSchema,
+      })
+      .passthrough(),
+    supportBundle: z
+      .object({
+        status: ConsoleBrowserPreviewFailureNullableStringSchema,
+        redacted: ConsoleBrowserPreviewFailureNullableStringSchema,
+        sectionCount: z.number().int().nonnegative(),
+        issueCount: z.number().int().nonnegative(),
+        blobEventCount: z.number().int().nonnegative(),
+        cursorCount: z.number().int().nonnegative(),
+        latestBlobCode: ConsoleBrowserPreviewFailureNullableStringSchema,
+        latestLocalApplyCode: ConsoleBrowserPreviewFailureNullableStringSchema,
+        latestRealtimeCode: ConsoleBrowserPreviewFailureNullableStringSchema,
+        latestSyncCode: ConsoleBrowserPreviewFailureNullableStringSchema,
+        localApplyEventCount: z.number().int().nonnegative(),
+        realtimeEventCount: z.number().int().nonnegative(),
+        requestIdCount: z.number().int().nonnegative(),
+        sectionErrorCount: z.number().int().nonnegative(),
+        syncAttemptIdCount: z.number().int().nonnegative(),
+        syncEventCount: z.number().int().nonnegative(),
+        timelineEventCount: z.number().int().nonnegative(),
+      })
+      .passthrough(),
+    lifecycleResume: z
+      .object({
+        status: ConsoleBrowserPreviewFailureNullableStringSchema,
+        count: z.number().int().nonnegative(),
+        reason: ConsoleBrowserPreviewFailureNullableStringSchema,
+        error: ConsoleBrowserPreviewFailureNullableStringSchema,
+      })
+      .passthrough(),
+    starterTimeline: z
+      .object({
+        bootstrapReadyMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+        bootstrapStatus: ConsoleBrowserPreviewFailureNullableStringSchema,
+        databaseOpenMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+        healthRefreshMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+        localVisibilityErrorCode:
+          ConsoleBrowserPreviewFailureNullableStringSchema,
+        localVisibilityMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+        localVisibilityStatus: ConsoleBrowserPreviewFailureNullableStringSchema,
+        marker: z.boolean(),
+        realtimeConnectedMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+        realtimeStatus: ConsoleBrowserPreviewFailureNullableStringSchema,
+        schemaReadinessMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+        supportBundleExportMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+      })
+      .passthrough(),
+    textExcerpt: z.string().max(4000).default(''),
+  })
+  .passthrough();
+
+export const ConsoleBrowserPreviewFailureArtifactSchema = z
+  .object({
+    generatedAt: z
+      .string()
+      .refine(
+        (value) => Number.isFinite(Date.parse(value)),
+        'generatedAt must be a parseable date'
+      ),
+    metrics: ConsoleBrowserPreviewFailureMetricsSchema,
+    reason: z.string().min(1),
+    probe: ConsoleBrowserPreviewFailureProbeSchema.nullable(),
+  })
+  .passthrough();
+
+export type ConsoleBrowserPreviewFailureArtifact = z.infer<
+  typeof ConsoleBrowserPreviewFailureArtifactSchema
+>;
+
+export const ConsoleBrowserPreviewFailureIngestSchema = z
+  .object({
+    clientId: z.string().min(1).default('browser-preview'),
+    actorId: z.string().min(1).optional(),
+    partitionId: z.string().min(1).default('default'),
+    artifact: ConsoleBrowserPreviewFailureArtifactSchema.optional(),
+    generatedAt: z
+      .string()
+      .refine(
+        (value) => Number.isFinite(Date.parse(value)),
+        'generatedAt must be a parseable date'
+      )
+      .optional(),
+    metrics: ConsoleBrowserPreviewFailureMetricsSchema.optional(),
+    reason: z.string().min(1).optional(),
+    probe: ConsoleBrowserPreviewFailureProbeSchema.nullable().optional(),
+  })
+  .passthrough()
+  .superRefine((value, ctx) => {
+    if (value.artifact) {
+      return;
+    }
+    const rawArtifact =
+      ConsoleBrowserPreviewFailureArtifactSchema.safeParse(value);
+    if (!rawArtifact.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'Expected artifact or raw create-syncular-app browser preview failure artifact',
+      });
+    }
+  });
+
+export type ConsoleBrowserPreviewFailureIngest = z.infer<
+  typeof ConsoleBrowserPreviewFailureIngestSchema
+>;
+
 export const ConsoleClientDiagnosticRecordSchema = z.object({
   clientId: z.string(),
   actorId: z.string().nullable(),

@@ -201,16 +201,22 @@ type ClientDiagnosticsResponse = {
     }>;
     runtime: {
       packageName?: string;
+      packageVersion?: string;
+      storage?: string;
       rust?: { crateName?: string; schemaVersion?: number };
     } | null;
     lifecycle: Record<string, unknown> | null;
+    bootstrap: Record<string, unknown> | null;
     transportStats: Record<string, unknown> | null;
+    timingSummary: Record<string, unknown> | null;
     subscriptions: Array<{ id: string; table: string; scopeKeys: string[] }>;
     recentDiagnostics: Array<{
       level: 'debug' | 'info' | 'warn' | 'error';
       source: string;
       code: string;
+      message: string;
       syncAttemptId?: string;
+      details?: Record<string, unknown>;
     }>;
   }>;
   total: number;
@@ -362,6 +368,110 @@ describe('console timeline route filters', () => {
       },
       body: JSON.stringify(body),
     });
+  }
+
+  async function postBrowserPreviewFailureDiagnostic(
+    body: unknown,
+    targetApp: Hono = app
+  ): Promise<Response> {
+    return targetApp.request(
+      'http://localhost/console/client-diagnostics/browser-preview-failure',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${CONSOLE_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      }
+    );
+  }
+
+  function createBrowserPreviewFailureArtifact(): Record<string, unknown> {
+    return {
+      generatedAt: new Date(baseTimeMs).toISOString(),
+      reason: 'artifact-self-check',
+      metrics: {
+        artifactCreatedAfterMs: 18,
+        assetCheckMs: 7,
+        assetCount: 4,
+        cssAssetBytes: 2048,
+        cssAssetCount: 1,
+        deploymentPreflightMarkerInAssets: true,
+        jsAssetBytes: 12_000,
+        jsAssetCount: 2,
+        lifecycleResumeMarkerInAssets: true,
+        otherAssetBytes: 128,
+        otherAssetCount: 1,
+        previewReadyMs: 42,
+        starterTimelineMarkerInAssets: true,
+        supportBundleMarkerInAssets: true,
+        totalAssetBytes: 14_176,
+      },
+      probe: {
+        ready: false,
+        errors: ['support bundle export failed'],
+        markers: {
+          durableHealthLine: true,
+          schemaLine: true,
+          preflightFailure: false,
+          databaseOpening: false,
+        },
+        deploymentPreflight: {
+          actionCount: 0,
+          issueCount: 0,
+          minimumQuotaBytes: 52_428_800,
+          persistence: 'persistent',
+          persisted: 'true',
+          preflightMs: 2,
+          quotaBytes: 107_374_182_400,
+          status: 'ready',
+          supportTier: 'persistent-offline',
+          usageBytes: 4096,
+        },
+        supportBundle: {
+          status: 'failed',
+          redacted: 'true',
+          sectionCount: 4,
+          issueCount: 1,
+          blobEventCount: 0,
+          cursorCount: 1,
+          latestBlobCode: null,
+          latestLocalApplyCode: 'local.visibility.visible',
+          latestRealtimeCode: 'realtime.sync_wakeup',
+          latestSyncCode: 'sync.pull.complete',
+          localApplyEventCount: 1,
+          realtimeEventCount: 2,
+          requestIdCount: 0,
+          sectionErrorCount: 1,
+          syncAttemptIdCount: 1,
+          syncEventCount: 3,
+          timelineEventCount: 12,
+        },
+        lifecycleResume: {
+          status: 'complete',
+          count: 2,
+          reason: 'online',
+          error: null,
+        },
+        starterTimeline: {
+          bootstrapReadyMs: 10,
+          bootstrapStatus: 'ready',
+          databaseOpenMs: 12,
+          healthRefreshMs: 3,
+          localVisibilityErrorCode: null,
+          localVisibilityMs: 5,
+          localVisibilityStatus: 'visible',
+          marker: true,
+          realtimeConnectedMs: 14,
+          realtimeStatus: 'connected',
+          schemaReadinessMs: 2,
+          supportBundleExportMs: 4,
+        },
+        textExcerpt:
+          'Syncular support bundle failed after redacted export check.',
+      },
+    };
   }
 
   async function readClientDiagnostics(
@@ -2119,6 +2229,102 @@ describe('console timeline route filters', () => {
     const detailPayload =
       (await detail.json()) as ClientDiagnosticsResponse['items'][number];
     expect(detailPayload.lifecycle?.phase).toBe('complete');
+  });
+
+  it('ingests browser preview failure artifacts as redacted client diagnostics', async () => {
+    const artifact = createBrowserPreviewFailureArtifact();
+    const response = await postBrowserPreviewFailureDiagnostic({
+      clientId: 'starter-preview',
+      actorId: 'actor-preview',
+      partitionId: 'tenant-preview',
+      artifact,
+    });
+
+    expect(response.status).toBe(202);
+    const accepted =
+      (await response.json()) as ClientDiagnosticsResponse['items'][number];
+    expect(accepted.clientId).toBe('starter-preview');
+    expect(accepted.actorId).toBe('actor-preview');
+    expect(accepted.partitionId).toBe('tenant-preview');
+    expect(accepted.healthMaxSeverity).toBe('error');
+    expect(accepted.diagnosticCodesSummary).toEqual([
+      { code: 'browser.preview_failure', count: 1, maxLevel: 'error' },
+    ]);
+    expect(accepted.lifecycle?.phase).toBe('browser-preview-failure');
+    expect(accepted.lifecycle?.requiresAction).toBe(true);
+    expect(accepted.runtime?.packageName).toBe('@syncular/client');
+    expect(accepted.runtime?.storage).toBe('persistent');
+    expect(accepted.transportStats?.totalAssetBytes).toBe(14_176);
+    expect(accepted.bootstrap?.status).toBe('ready');
+    expect(accepted.bootstrap?.supportBundleIssueCount).toBe(1);
+    expect(accepted.timingSummary?.count).toBe(1);
+    expect(
+      (accepted.timingSummary?.latest as Record<string, unknown> | undefined)
+        ?.localVisibilityMs
+    ).toBe(5);
+
+    const diagnostic = accepted.recentDiagnostics[0];
+    expect(diagnostic?.source).toBe('browser-preview');
+    expect(diagnostic?.code).toBe('browser.preview_failure');
+    expect(diagnostic?.message).toBe(
+      'Browser preview failure artifact ingested.'
+    );
+    expect(diagnostic?.details?.reason).toBe('artifact-self-check');
+    expect(
+      (
+        diagnostic?.details?.supportBundle as
+          | Record<string, unknown>
+          | undefined
+      )?.status
+    ).toBe('failed');
+    expect(
+      (diagnostic?.details?.metrics as Record<string, unknown> | undefined)
+        ?.previewReadyMs
+    ).toBe(42);
+    expect(
+      diagnostic?.details?.probeTextExcerptLength as number | undefined
+    ).toBeGreaterThan(0);
+    expect(JSON.stringify(accepted)).not.toContain(
+      'Syncular support bundle failed after redacted export check.'
+    );
+
+    const list = await readClientDiagnostics({
+      clientId: 'starter-preview',
+      partitionId: 'tenant-preview',
+    });
+    expect(list.total).toBe(1);
+    expect(list.items[0]?.recentDiagnostics[0]?.code).toBe(
+      'browser.preview_failure'
+    );
+  });
+
+  it('accepts raw browser preview failure artifacts and rejects sensitive fields', async () => {
+    const rawResponse = await postBrowserPreviewFailureDiagnostic(
+      createBrowserPreviewFailureArtifact()
+    );
+    expect(rawResponse.status).toBe(202);
+    const accepted =
+      (await rawResponse.json()) as ClientDiagnosticsResponse['items'][number];
+    expect(accepted.clientId).toBe('browser-preview');
+    expect(accepted.partitionId).toBe('default');
+    expect(accepted.healthMaxSeverity).toBe('error');
+
+    const sensitiveArtifact = createBrowserPreviewFailureArtifact();
+    const probe = sensitiveArtifact.probe as Record<string, unknown>;
+    probe.authToken = 'should-not-be-stored';
+
+    const sensitiveResponse = await postBrowserPreviewFailureDiagnostic({
+      clientId: 'starter-sensitive',
+      artifact: sensitiveArtifact,
+    });
+    expect(sensitiveResponse.status).toBe(400);
+
+    const rows = await db
+      .selectFrom('sync_client_diagnostic_snapshots')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('client_id', '=', 'starter-sensitive')
+      .executeTakeFirst();
+    expect(Number(rows?.total ?? 0)).toBe(0);
   });
 
   it('retains diagnostic history and prunes oldest snapshots by count', async () => {

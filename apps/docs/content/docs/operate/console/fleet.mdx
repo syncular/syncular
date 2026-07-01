@@ -39,6 +39,15 @@ Snapshots reject common sensitive-key fields such as tokens, passwords, secrets,
 and plaintext payloads. The Console UI labels the retained evidence as redacted
 runtime state; it is investigation context, not an authorization source.
 
+Starter/browser preview smokes can also post the raw
+`browser-preview-failure.json` artifact, or a wrapper that adds
+`clientId`/`actorId`/`partitionId`, to
+`POST /console/client-diagnostics/browser-preview-failure`. Console normalizes
+that artifact into a `browser.preview_failure` diagnostic record with safe
+asset metrics, deployment-preflight facts, support-bundle counts, lifecycle
+timings, and timeline counters. The bounded page `textExcerpt` from the
+artifact is not retained in the normalized Console record.
+
 ## Evicting a client
 
 Use **Evict** when a client has irrecoverable cursor/state issues.
@@ -56,6 +65,7 @@ Use partition filters before eviction in multi-tenant setups.
 - [Clients](/reference/api/getConsoleClients)
 - [Evict client](/reference/api/deleteConsoleClientsById)
 - [Ingest client diagnostics](/reference/api/postConsoleClientDiagnostics)
+- [Ingest browser preview failure artifact](/reference/api/postConsoleClientDiagnosticsBrowserPreviewFailure)
 - [Latest client diagnostics](/reference/api/getConsoleClientDiagnostics)
 - [Client diagnostic history](/reference/api/getConsoleClientDiagnosticsByIdHistory)
 - [Operations log](/reference/api/getConsoleOperations)
