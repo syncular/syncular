@@ -38,7 +38,9 @@ until the full browser Worker/WASM suite is green on Linux.
   relevant.
 - Package export maps, root imports, optional adapter boundaries, or dependency
   surface changes: run `bun run imports:check` so root client/server imports do
-  not start loading optional subpath modules or peers. For release/post-publish
+  not start loading optional subpath modules or peers, and run
+  `bun run framework-import-smokes` so those roots still build under the
+  current Next SSR and Vite browser production graphs. For release/post-publish
   checks, `bun scripts/post-publish-install-smokes.ts --version <version>` also
   runs the optional subpath install/import matrix unless
   `SYNCULAR_POST_PUBLISH_OPTIONAL_IMPORT_MATRIX=0` is set.
@@ -139,6 +141,7 @@ bun run --cwd packages/client build:wasm
 
 ```bash
 bun run imports:check
+bun run framework-import-smokes
 bun run --cwd packages/core tsgo
 bun run --cwd packages/server tsgo
 bun run --cwd packages/client tsgo

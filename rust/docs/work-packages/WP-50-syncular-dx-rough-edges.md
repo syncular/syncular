@@ -1526,6 +1526,9 @@ online propagation, or reconnect behavior can change.
   `framework-import-smokes` by default after docs/fresh-app checks and before
   publish dry-runs, with `--skip-framework-import-smokes` for local iteration
   when a maintainer is not exercising bundler/package-surface readiness.
+- 2026-07-01: Updated the quality-gate guide so package export maps, root
+  imports, optional adapter boundaries, and dependency surface changes run both
+  `bun run imports:check` and `bun run framework-import-smokes`.
 - 2026-07-01: Wired the `create-syncular-app` starter to export a composed
   redacted support-bundle summary after the database opens. The task panel now
   exposes stable support-bundle DOM markers for status, redaction, section
@@ -1791,6 +1794,12 @@ Most recent release-rehearsal framework-smoke wiring rerun:
 - `bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check`
 - `bun run docs:stale-check`
 - `git diff --check`
+
+Most recent framework-import quality-gate docs rerun:
+
+- `bun run docs:stale-check`
+- `git diff --check`
+- Manual Markdown sanity read of `rust/docs/QUALITY_GATES.md`.
 
 Most recent local-recovery rerun:
 
