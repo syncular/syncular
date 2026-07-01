@@ -599,6 +599,7 @@ describe('console timeline route filters', () => {
           lockName: 'syncular:create-syncular-app:lifecycle-resume',
           lockRequired: 'false',
           lockState: 'acquired',
+          lockTimeoutMs: 10_000,
         },
         lifecyclePause: {
           count: 2,
@@ -2714,6 +2715,15 @@ describe('console timeline route filters', () => {
     );
     expect(deploymentPreflight?.serviceWorkerControllerState).toBe('activated');
     expect(deploymentPreflight?.usageRatio).toBe(0.00000003814697265625);
+    const lifecycleResume = diagnostic?.details?.lifecycleResume as
+      | Record<string, unknown>
+      | undefined;
+    expect(lifecycleResume?.lockName).toBe(
+      'syncular:create-syncular-app:lifecycle-resume'
+    );
+    expect(lifecycleResume?.lockRequired).toBe('false');
+    expect(lifecycleResume?.lockState).toBe('acquired');
+    expect(lifecycleResume?.lockTimeoutMs).toBe(10_000);
     expect(
       (
         diagnostic?.details?.lifecyclePause as

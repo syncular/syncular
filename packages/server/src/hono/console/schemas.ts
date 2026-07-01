@@ -613,6 +613,10 @@ const ConsoleBrowserPreviewFailureProbeSchema = z
         count: z.number().int().nonnegative(),
         reason: ConsoleBrowserPreviewFailureNullableStringSchema,
         error: ConsoleBrowserPreviewFailureNullableStringSchema,
+        lockName: ConsoleBrowserPreviewFailureNullableStringSchema,
+        lockRequired: ConsoleBrowserPreviewFailureNullableStringSchema,
+        lockState: ConsoleBrowserPreviewFailureNullableStringSchema,
+        lockTimeoutMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
       })
       .passthrough(),
     lifecyclePause: z

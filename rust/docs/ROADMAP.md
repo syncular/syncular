@@ -357,12 +357,12 @@ read-only review:
     sensitive keys with the existing diagnostics policy, preserving safe
     metrics/timing/support-bundle summaries, deployment-preflight quota
     pressure, available-byte budgets, and service-worker/PWA controller
-    context, and dropping the page text excerpt before storing a
-    `browser.preview_failure` record. Testkit can now
-    assert those browser-preview artifacts plus Cloudflare runtime failure
-    artifacts for redaction, bounded excerpts, lifecycle evidence,
-    support-policy count consistency, and safe blob timing metrics before
-    ingestion. Mutation queue
+    context, lifecycle Web Lock name/state/timeout evidence, and dropping the
+    page text excerpt before storing a `browser.preview_failure` record.
+    Testkit can now assert those browser-preview artifacts plus Cloudflare
+    runtime failure artifacts for redaction, bounded excerpts, lifecycle
+    evidence, support-policy count consistency, and safe blob timing metrics
+    before ingestion. Mutation queue
     UX now has
     `getSyncularMutationStatus(...)` and
     `SyncularDatabase.mutationStatus(...)`, summarizing outbox queue state,

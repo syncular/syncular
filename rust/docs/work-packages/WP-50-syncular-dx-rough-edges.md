@@ -2368,6 +2368,11 @@ online propagation, or reconnect behavior can change.
   service-worker availability/control, controller state, redacted controller
   script path, and usage ratio inside the stored `browser.preview_failure`
   diagnostic details instead of relying on passthrough.
+- 2026-07-01: Promoted browser-preview lifecycle resume Web Lock details into
+  Console ingestion schema coverage and route assertions. Console now
+  validates and preserves lifecycle lock name, required flag, acquired/timed
+  out state, and timeout budget inside stored `browser.preview_failure`
+  diagnostic details.
 - 2026-07-01: Expanded production operations docs beyond the first upgrade
   runbook. Deployment now includes restore-drill steps, blob storage
   consistency sampling, rate-limit tuning, credential rotation cadence, and
@@ -2838,8 +2843,9 @@ Most recent browser-failure Console ingestion rerun:
   - Passed route coverage for raw artifact ingestion, wrapped artifact
     ingestion with client identity, sensitive-field rejection, normalized
     `browser.preview_failure` records, deployment-preflight storage/quota and
-    service-worker controller detail preservation, safe metrics/timing
-    preservation, and dropping the artifact page `textExcerpt`.
+    service-worker controller detail preservation, lifecycle Web Lock detail
+    preservation, safe metrics/timing preservation, and dropping the artifact
+    page `textExcerpt`.
 
 Most recent starter local-visibility artifact rerun:
 
