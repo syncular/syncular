@@ -48,6 +48,13 @@ asset metrics, deployment-preflight facts, support-bundle counts, lifecycle
 timings, and timeline counters. The bounded page `textExcerpt` from the
 artifact is not retained in the normalized Console record.
 
+Cloudflare framework/runtime smokes can post the raw
+`cloudflare-runtime-failure.json` artifact, or the same identity wrapper, to
+`POST /console/client-diagnostics/cloudflare-runtime-failure`. Console stores
+it as `cloudflare.runtime_failure` with the failed route, sync/blob/WebSocket
+route bases, exit status, bounded output excerpt, and R2 blob route
+timing/byte metrics.
+
 ## Evicting a client
 
 Use **Evict** when a client has irrecoverable cursor/state issues.
@@ -66,6 +73,7 @@ Use partition filters before eviction in multi-tenant setups.
 - [Evict client](/reference/api/deleteConsoleClientsById)
 - [Ingest client diagnostics](/reference/api/postConsoleClientDiagnostics)
 - [Ingest browser preview failure artifact](/reference/api/postConsoleClientDiagnosticsBrowserPreviewFailure)
+- [Ingest Cloudflare runtime failure artifact](/reference/api/postConsoleClientDiagnosticsCloudflareRuntimeFailure)
 - [Latest client diagnostics](/reference/api/getConsoleClientDiagnostics)
 - [Client diagnostic history](/reference/api/getConsoleClientDiagnosticsByIdHistory)
 - [Operations log](/reference/api/getConsoleOperations)

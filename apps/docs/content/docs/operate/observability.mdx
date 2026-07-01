@@ -95,6 +95,13 @@ it as a redacted `browser.preview_failure` diagnostic record, keeping safe
 preview metrics, deployment-preflight facts, support-bundle counts, and
 runtime timing summaries while dropping the page text excerpt.
 
+If `framework-import-smokes` writes `cloudflare-runtime-failure.json`,
+operators can post it to
+`POST /console/client-diagnostics/cloudflare-runtime-failure`. The Console
+stores it as a redacted `cloudflare.runtime_failure` diagnostic record with
+the failed route, sync/blob/WebSocket route bases, exit status, bounded output
+excerpt, and safe R2 blob route timing/byte metrics.
+
 For app tests and support reports, prefer a runtime timeline over dumping the
 raw snapshot. `runtimeTimeline()` orders the current runtime/lifecycle state
 and recent diagnostic events, classifies each event by phase, summarizes

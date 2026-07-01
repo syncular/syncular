@@ -672,6 +672,98 @@ export type ConsoleBrowserPreviewFailureIngest = z.infer<
   typeof ConsoleBrowserPreviewFailureIngestSchema
 >;
 
+const ConsoleCloudflareBlobRouteMetricsSchema = z
+  .object({
+    attempted: z.boolean(),
+    completeUploadMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+    contentBytes: ConsoleBrowserPreviewFailureNullableNumberSchema,
+    downloadBytes: ConsoleBrowserPreviewFailureNullableNumberSchema,
+    downloadBytesMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+    downloadUrlMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+    partitionedDownloadBytes: ConsoleBrowserPreviewFailureNullableNumberSchema,
+    partitionedDownloadBytesMs:
+      ConsoleBrowserPreviewFailureNullableNumberSchema,
+    partitionedDownloadUrlMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+    referencePushMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+    totalMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+    uploadBytesMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+    uploadInitMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+  })
+  .passthrough();
+
+const ConsoleCloudflareRuntimeFailureProbeSchema = z
+  .object({
+    blobMetrics: ConsoleCloudflareBlobRouteMetricsSchema.nullable(),
+    blobRouteBase: ConsoleBrowserPreviewFailureNullableStringSchema,
+    expectedText: z.string().max(1000),
+    exited: z
+      .object({
+        code: z.number().nullable(),
+        signal: ConsoleBrowserPreviewFailureNullableStringSchema,
+      })
+      .passthrough()
+      .nullable(),
+    outputExcerpt: z.string().max(13_000),
+    port: z.number().int().positive(),
+    route: z.string().min(1).max(500),
+    syncRouteBase: ConsoleBrowserPreviewFailureNullableStringSchema,
+    webSocketRoute: ConsoleBrowserPreviewFailureNullableStringSchema,
+  })
+  .passthrough();
+
+export const ConsoleCloudflareRuntimeFailureArtifactSchema = z
+  .object({
+    generatedAt: z
+      .string()
+      .refine(
+        (value) => Number.isFinite(Date.parse(value)),
+        'generatedAt must be a parseable date'
+      ),
+    reason: z.string().min(1),
+    probe: ConsoleCloudflareRuntimeFailureProbeSchema,
+  })
+  .passthrough();
+
+export type ConsoleCloudflareRuntimeFailureArtifact = z.infer<
+  typeof ConsoleCloudflareRuntimeFailureArtifactSchema
+>;
+
+export const ConsoleCloudflareRuntimeFailureIngestSchema = z
+  .object({
+    clientId: z.string().min(1).default('cloudflare-runtime'),
+    actorId: z.string().min(1).optional(),
+    partitionId: z.string().min(1).default('default'),
+    artifact: ConsoleCloudflareRuntimeFailureArtifactSchema.optional(),
+    generatedAt: z
+      .string()
+      .refine(
+        (value) => Number.isFinite(Date.parse(value)),
+        'generatedAt must be a parseable date'
+      )
+      .optional(),
+    reason: z.string().min(1).optional(),
+    probe: ConsoleCloudflareRuntimeFailureProbeSchema.optional(),
+  })
+  .passthrough()
+  .superRefine((value, ctx) => {
+    if (value.artifact) {
+      return;
+    }
+    const rawArtifact =
+      ConsoleCloudflareRuntimeFailureArtifactSchema.safeParse(value);
+    if (!rawArtifact.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'Expected artifact or raw framework-import-smokes Cloudflare runtime failure artifact',
+      });
+    }
+  });
+
+export type ConsoleCloudflareRuntimeFailureIngest = z.infer<
+  typeof ConsoleCloudflareRuntimeFailureIngestSchema
+>;
+
 export const ConsoleClientDiagnosticRecordSchema = z.object({
   clientId: z.string(),
   actorId: z.string().nullable(),

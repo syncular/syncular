@@ -25,6 +25,9 @@ import {
   type ConsoleClientDiagnosticHealthSeverity,
   type ConsoleClientDiagnosticIngest,
   type ConsoleClientDiagnosticRecord,
+  type ConsoleCloudflareRuntimeFailureArtifact,
+  ConsoleCloudflareRuntimeFailureArtifactSchema,
+  type ConsoleCloudflareRuntimeFailureIngest,
   ConsoleHandlerSchema,
   ConsolePaginationQuerySchema,
   ConsolePartitionedPaginationQuerySchema,
@@ -757,6 +760,13 @@ function browserPreviewArtifactGeneratedAtMs(
   return Number.isFinite(generatedAt) ? generatedAt : Date.now();
 }
 
+function cloudflareRuntimeArtifactGeneratedAtMs(
+  artifact: ConsoleCloudflareRuntimeFailureArtifact
+): number {
+  const generatedAt = Date.parse(artifact.generatedAt);
+  return Number.isFinite(generatedAt) ? generatedAt : Date.now();
+}
+
 export function buildBrowserPreviewFailureClientDiagnosticIngest(
   payload: ConsoleBrowserPreviewFailureIngest
 ): ConsoleClientDiagnosticIngest {
@@ -863,6 +873,105 @@ export function buildBrowserPreviewFailureClientDiagnosticIngest(
         supportBundleMarkerInAssets:
           artifact.metrics.supportBundleMarkerInAssets,
       }),
+    },
+  };
+}
+
+export function buildCloudflareRuntimeFailureClientDiagnosticIngest(
+  payload: ConsoleCloudflareRuntimeFailureIngest
+): ConsoleClientDiagnosticIngest {
+  const artifact: ConsoleCloudflareRuntimeFailureArtifact =
+    payload.artifact ??
+    ConsoleCloudflareRuntimeFailureArtifactSchema.parse(payload);
+  const probe = artifact.probe;
+  const generatedAt = cloudflareRuntimeArtifactGeneratedAtMs(artifact);
+  const reason = truncateDiagnosticText(artifact.reason, 500);
+  const outputExcerpt = truncateDiagnosticText(probe.outputExcerpt, 4000);
+  const details = compactDiagnosticDetails({
+    artifactSchema: 'framework-import-smokes.cloudflare-runtime-failure.v1',
+    artifactGeneratedAt: artifact.generatedAt,
+    reason,
+    route: probe.route,
+    syncRouteBase: probe.syncRouteBase,
+    blobRouteBase: probe.blobRouteBase,
+    webSocketRoute: probe.webSocketRoute,
+    expectedText: truncateDiagnosticText(probe.expectedText, 500),
+    port: probe.port,
+    exited: probe.exited,
+    outputExcerpt,
+    outputExcerptLength: probe.outputExcerpt.length,
+    blobMetrics: probe.blobMetrics,
+  });
+
+  return {
+    clientId: payload.clientId,
+    actorId: payload.actorId,
+    partitionId: payload.partitionId,
+    lifecycle: {
+      phase: 'cloudflare-runtime-failure',
+      realtime: probe.webSocketRoute ? 'unknown' : undefined,
+      online: false,
+      requiresAction: true,
+      pendingRequests: 0,
+      lastError: {
+        code: 'cloudflare.runtime_failure',
+        reason,
+      },
+    },
+    snapshot: {
+      generatedAt,
+      runtime: {
+        packageName: '@syncular/server',
+        hostRuntime: 'cloudflare-workers',
+        storage: probe.blobRouteBase
+          ? 'd1+r2+durable-object'
+          : 'd1+durable-object',
+      },
+      connection: {
+        realtime: probe.webSocketRoute ? 'unknown' : undefined,
+        pendingRequests: 0,
+      },
+      subscriptions: [],
+      recentDiagnostics: [
+        {
+          at: generatedAt,
+          level: 'error',
+          source: 'cloudflare-runtime',
+          code: 'cloudflare.runtime_failure',
+          message: 'Cloudflare local runtime failure artifact ingested.',
+          details,
+        },
+      ],
+      recentSyncTimings: [
+        compactDiagnosticDetails({
+          source: 'cloudflare-runtime-smoke',
+          route: probe.route,
+          syncRouteBase: probe.syncRouteBase,
+          blobRouteBase: probe.blobRouteBase,
+          webSocketRoute: probe.webSocketRoute,
+          blobMetrics: probe.blobMetrics,
+        }),
+      ],
+      bootstrap: compactDiagnosticDetails({
+        route: probe.route,
+        expectedText: truncateDiagnosticText(probe.expectedText, 500),
+        exitCode: probe.exited?.code ?? null,
+        exitSignal: probe.exited?.signal ?? null,
+      }),
+      transportStats: compactDiagnosticDetails({
+        route: probe.route,
+        port: probe.port,
+        syncRouteBase: probe.syncRouteBase,
+        blobRouteBase: probe.blobRouteBase,
+        webSocketRoute: probe.webSocketRoute,
+        outputExcerptLength: probe.outputExcerpt.length,
+        blobMetricsAttempted: probe.blobMetrics?.attempted ?? null,
+        blobContentBytes: probe.blobMetrics?.contentBytes ?? null,
+        blobDownloadBytes: probe.blobMetrics?.downloadBytes ?? null,
+        blobPartitionedDownloadBytes:
+          probe.blobMetrics?.partitionedDownloadBytes ?? null,
+      }),
+      blobUploadStats: probe.blobMetrics ?? undefined,
     },
   };
 }

@@ -1241,6 +1241,13 @@ online propagation, or reconnect behavior can change.
   lifecycle timing summaries, and timeline counters into a
   `browser.preview_failure` client diagnostic record, and deliberately drops
   the artifact's page `textExcerpt`.
+- Cloudflare runtime failure artifacts now feed Console/Fleet through
+  `POST /console/client-diagnostics/cloudflare-runtime-failure`, accepting the
+  raw `framework-import-smokes` `cloudflare-runtime-failure.json` artifact or
+  an identity wrapper. The route rejects sensitive keys, preserves route,
+  sync/blob/WebSocket bases, exit status, bounded output excerpt, and safe R2
+  timing/byte metrics, and normalizes them into a
+  `cloudflare.runtime_failure` client diagnostic record.
 - The first browser deployment preflight slice adds
   `getSyncularBrowserDeploymentPreflight(...)` to `@syncular/client`, checking
   Worker/WebAssembly support, secure-context/cross-origin-isolation flags,
@@ -2336,6 +2343,17 @@ Most recent browser support-policy artifact rerun:
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `git diff --check`
 
+Most recent Cloudflare runtime artifact ingestion rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/console-routes.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/server tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run generate:openapi`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/core tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/server/src/hono/console/schemas.ts packages/server/src/hono/console/routes/shared.ts packages/server/src/hono/console/routes/clients.ts packages/server/src/hono/__tests__/console-routes.test.ts apps/docs/content/docs/operate/console/fleet.mdx apps/docs/content/docs/operate/observability.mdx apps/docs/content/docs/reference/api/index.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `git diff --check`
+
 Most recent browser lifecycle resume helper rerun:
 
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-lifecycle.test.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts`
@@ -2965,9 +2983,12 @@ Most recent mutation-status rerun:
   into a redacted `browser.preview_failure` client diagnostic record without
   storing the artifact page text excerpt, and preserving the browser
   support-policy evaluation alongside deployment-preflight and support-bundle
-  summaries. Remaining work is to observe the hosted Chrome job for this proof
-  and decide whether Cloudflare runtime artifacts should feed Console/Fleet or
-  a future `doctor` surface.
+  summaries. Cloudflare runtime artifacts now feed Console/Fleet through
+  `POST /console/client-diagnostics/cloudflare-runtime-failure`, preserving
+  route, exit, bounded output, and safe blob timing/byte metrics as
+  `cloudflare.runtime_failure` diagnostics. Remaining work is to observe the
+  hosted Chrome job for this proof and decide whether a future `doctor`
+  surface should orchestrate these ingestion/artifact checks.
 - Outbox and conflict UX: first app-facing status slice is done for
   queued/sending/failed/acked outbox counts, unresolved/resolved conflicts,
   conflict detail rows, last mutation-related errors, and recommended actions.
@@ -3014,10 +3035,11 @@ Most recent mutation-status rerun:
   The Cloudflare/R2 local runtime artifact now captures direct blob route
   upload/download timings and byte counts for both owner-hash and partitioned
   reference flows. Starter browser artifacts can now feed Console/Fleet as
-  redacted `browser.preview_failure` diagnostic records. Remaining depth is
-  observing hosted browser/Cloudflare artifacts and deciding whether
-  Cloudflare runtime artifacts should feed Console/Fleet or future `doctor`
-  checks with a separate redacted shape.
+  redacted `browser.preview_failure` diagnostic records, and Cloudflare
+  runtime artifacts can now feed Console/Fleet as redacted
+  `cloudflare.runtime_failure` diagnostic records. Remaining depth is
+  observing hosted browser/Cloudflare artifacts and deciding whether future
+  `doctor` checks should orchestrate these artifact shapes.
 
 ## Next Action
 

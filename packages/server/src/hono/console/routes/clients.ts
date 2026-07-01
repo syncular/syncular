@@ -16,6 +16,7 @@ import {
   type ConsoleClientDiagnosticRecord,
   ConsoleClientDiagnosticRecordSchema,
   ConsoleClientSchema,
+  ConsoleCloudflareRuntimeFailureIngestSchema,
   type ConsolePaginatedResponse,
   ConsolePaginatedResponseSchema,
   ConsolePartitionedPaginationQuerySchema,
@@ -24,6 +25,7 @@ import type { ConsoleRoutesContext } from './context';
 import {
   buildBrowserPreviewFailureClientDiagnosticIngest,
   buildClientDiagnosticRecord,
+  buildCloudflareRuntimeFailureClientDiagnosticIngest,
   clientDiagnosticDetailQuerySchema,
   clientDiagnosticHistoryQuerySchema,
   clientDiagnosticsQuerySchema,
@@ -338,6 +340,67 @@ export function registerClientRoutes(ctx: ConsoleRoutesContext): void {
 
       const payload =
         buildBrowserPreviewFailureClientDiagnosticIngest(artifactPayload);
+      const record = buildClientDiagnosticRecord(payload, new Date());
+      const recordBytes = jsonByteLength(record);
+      if (recordBytes > DEFAULT_CLIENT_DIAGNOSTICS_MAX_JSON_BYTES) {
+        return consoleRouteError(c, 400, 'console.invalid_request', undefined, {
+          maxBytes: DEFAULT_CLIENT_DIAGNOSTICS_MAX_JSON_BYTES,
+          actualBytes: recordBytes,
+          reason: 'client_diagnostic_snapshot_too_large',
+        });
+      }
+
+      await writeClientDiagnosticRecord(record);
+      await pruneClientDiagnosticRecordsByCount();
+      return c.json(record, 202);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /client-diagnostics/cloudflare-runtime-failure
+  // -------------------------------------------------------------------------
+
+  routes.post(
+    '/client-diagnostics/cloudflare-runtime-failure',
+    describeConsoleRoute({
+      summary: 'Ingest a redacted Cloudflare runtime failure artifact',
+      responses: {
+        202: {
+          description:
+            'Accepted Cloudflare runtime failure diagnostic artifact',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleClientDiagnosticRecordSchema),
+            },
+          },
+        },
+        400: {
+          description: 'Invalid request',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('json', ConsoleCloudflareRuntimeFailureIngestSchema),
+    async (c) => {
+      const artifactPayload = c.req.valid('json');
+      const sensitiveField = findSensitiveDiagnosticField(artifactPayload);
+      if (sensitiveField) {
+        return consoleRouteError(c, 400, 'console.invalid_request', undefined, {
+          fieldPath: sensitiveField,
+          reason: 'cloudflare_runtime_failure_sensitive_field',
+        });
+      }
+
+      const payload =
+        buildCloudflareRuntimeFailureClientDiagnosticIngest(artifactPayload);
       const record = buildClientDiagnosticRecord(payload, new Date());
       const recordBytes = jsonByteLength(record);
       if (recordBytes > DEFAULT_CLIENT_DIAGNOSTICS_MAX_JSON_BYTES) {

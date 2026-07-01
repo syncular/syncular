@@ -387,6 +387,23 @@ describe('console timeline route filters', () => {
     );
   }
 
+  async function postCloudflareRuntimeFailureDiagnostic(
+    body: unknown,
+    targetApp: Hono = app
+  ): Promise<Response> {
+    return targetApp.request(
+      'http://localhost/console/client-diagnostics/cloudflare-runtime-failure',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${CONSOLE_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      }
+    );
+  }
+
   function createBrowserPreviewFailureArtifact(): Record<string, unknown> {
     return {
       generatedAt: new Date(baseTimeMs).toISOString(),
@@ -483,6 +500,42 @@ describe('console timeline route filters', () => {
         },
         textExcerpt:
           'Syncular support bundle failed after redacted export check.',
+      },
+    };
+  }
+
+  function createCloudflareRuntimeFailureArtifact(): Record<string, unknown> {
+    return {
+      generatedAt: new Date(baseTimeMs).toISOString(),
+      reason: 'cloudflare-runtime-artifact-self-check',
+      probe: {
+        blobMetrics: {
+          attempted: true,
+          completeUploadMs: 3,
+          contentBytes: 128,
+          downloadBytes: 128,
+          downloadBytesMs: 4,
+          downloadUrlMs: 2,
+          partitionedDownloadBytes: 128,
+          partitionedDownloadBytesMs: 5,
+          partitionedDownloadUrlMs: 2,
+          referencePushMs: 6,
+          totalMs: 32,
+          uploadBytesMs: 4,
+          uploadInitMs: 2,
+        },
+        blobRouteBase: '/syncular-framework-import-smoke/sync',
+        expectedText: 'syncular-cloudflare-runtime-schema-io-ready',
+        exited: {
+          code: 1,
+          signal: null,
+        },
+        outputExcerpt:
+          '[stderr] Durable Object runtime failed during local wrangler smoke',
+        port: 8787,
+        route: '/syncular-framework-import-smoke',
+        syncRouteBase: '/syncular-framework-import-smoke/full-sync',
+        webSocketRoute: '/syncular-framework-import-smoke/ws',
       },
     };
   }
@@ -2349,6 +2402,76 @@ describe('console timeline route filters', () => {
       .where('client_id', '=', 'starter-sensitive')
       .executeTakeFirst();
     expect(Number(rows?.total ?? 0)).toBe(0);
+  });
+
+  it('ingests Cloudflare runtime failure artifacts as redacted client diagnostics', async () => {
+    const artifact = createCloudflareRuntimeFailureArtifact();
+    const response = await postCloudflareRuntimeFailureDiagnostic({
+      clientId: 'cloudflare-smoke',
+      actorId: 'actor-cloudflare',
+      partitionId: 'tenant-cloudflare',
+      artifact,
+    });
+
+    expect(response.status).toBe(202);
+    const accepted =
+      (await response.json()) as ClientDiagnosticsResponse['items'][number];
+    expect(accepted.clientId).toBe('cloudflare-smoke');
+    expect(accepted.actorId).toBe('actor-cloudflare');
+    expect(accepted.partitionId).toBe('tenant-cloudflare');
+    expect(accepted.healthMaxSeverity).toBe('error');
+    expect(accepted.diagnosticCodesSummary).toEqual([
+      { code: 'cloudflare.runtime_failure', count: 1, maxLevel: 'error' },
+    ]);
+    expect(accepted.lifecycle?.phase).toBe('cloudflare-runtime-failure');
+    expect(accepted.lifecycle?.requiresAction).toBe(true);
+    expect(accepted.runtime?.packageName).toBe('@syncular/server');
+    expect(accepted.runtime?.hostRuntime).toBe('cloudflare-workers');
+    expect(accepted.runtime?.storage).toBe('d1+r2+durable-object');
+    expect(accepted.transportStats?.route).toBe(
+      '/syncular-framework-import-smoke'
+    );
+    expect(accepted.transportStats?.blobMetricsAttempted).toBe(true);
+    expect(accepted.blobUploadStats?.downloadBytes).toBe(128);
+
+    const diagnostic = accepted.recentDiagnostics[0];
+    expect(diagnostic?.source).toBe('cloudflare-runtime');
+    expect(diagnostic?.code).toBe('cloudflare.runtime_failure');
+    expect(diagnostic?.message).toBe(
+      'Cloudflare local runtime failure artifact ingested.'
+    );
+    expect(diagnostic?.details?.reason).toBe(
+      'cloudflare-runtime-artifact-self-check'
+    );
+    expect(diagnostic?.details?.route).toBe('/syncular-framework-import-smoke');
+    expect(
+      (diagnostic?.details?.blobMetrics as Record<string, unknown> | undefined)
+        ?.totalMs
+    ).toBe(32);
+    expect(diagnostic?.details?.outputExcerpt as string | undefined).toContain(
+      'wrangler smoke'
+    );
+  });
+
+  it('accepts raw Cloudflare runtime failure artifacts and rejects sensitive fields', async () => {
+    const rawResponse = await postCloudflareRuntimeFailureDiagnostic(
+      createCloudflareRuntimeFailureArtifact()
+    );
+    expect(rawResponse.status).toBe(202);
+    const accepted =
+      (await rawResponse.json()) as ClientDiagnosticsResponse['items'][number];
+    expect(accepted.clientId).toBe('cloudflare-runtime');
+    expect(accepted.partitionId).toBe('default');
+
+    const sensitiveArtifact = createCloudflareRuntimeFailureArtifact();
+    const probe = sensitiveArtifact.probe as Record<string, unknown>;
+    probe.authToken = 'should-not-be-stored';
+
+    const sensitiveResponse = await postCloudflareRuntimeFailureDiagnostic({
+      clientId: 'cloudflare-sensitive',
+      artifact: sensitiveArtifact,
+    });
+    expect(sensitiveResponse.status).toBe(400);
   });
 
   it('retains diagnostic history and prunes oldest snapshots by count', async () => {
