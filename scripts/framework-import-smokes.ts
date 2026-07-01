@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { Buffer } from 'node:buffer';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { type AddressInfo, createServer } from 'node:net';
@@ -56,6 +57,7 @@ async function getFreePort(): Promise<number> {
 }
 
 async function runLocalWorkerRuntimeProbe(args: {
+  blobRouteBase?: string;
   appDir: string;
   wranglerBin: string;
   route: string;
@@ -112,6 +114,14 @@ async function runLocalWorkerRuntimeProbe(args: {
       output,
       getExit: () => exited,
     });
+    if (args.blobRouteBase) {
+      await runBlobRouteFlow({
+        origin: `http://127.0.0.1:${port}`,
+        routeBase: args.blobRouteBase,
+        output,
+        getExit: () => exited,
+      });
+    }
     if (args.webSocketRoute && args.webSocketMessage) {
       await waitForWebSocketText({
         label: 'Cloudflare Durable Object WebSocket smoke',
@@ -688,12 +698,201 @@ function webSocketDataToText(data: unknown): string {
   return String(data);
 }
 
+async function runBlobRouteFlow(args: {
+  origin: string;
+  routeBase: string;
+  output: string[];
+  getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
+}): Promise<void> {
+  const label = 'Cloudflare R2 blob route smoke';
+  const actorId = 'syncular-framework-actor';
+  const partitionId = 'syncular-framework-partition';
+  const contentText = `syncular-cloudflare-r2-route-content-${Date.now()}`;
+  const content = new TextEncoder().encode(contentText);
+  const hash = `sha256:${createHash('sha256').update(content).digest('hex')}`;
+  const headers = {
+    'content-type': 'application/json',
+    'x-syncular-smoke-actor': actorId,
+    'x-syncular-smoke-partition': partitionId,
+  };
+
+  const initResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}/blobs/upload`,
+    init: {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        hash,
+        size: content.byteLength,
+        mimeType: 'text/plain',
+      }),
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectOkResponse(label, 'upload init', initResponse, args.output);
+  const initBody = (await initResponse.json()) as {
+    exists?: boolean;
+    headers?: Record<string, string>;
+    uploadMethod?: string;
+    uploadUrl?: string;
+  };
+  if (typeof initBody.uploadUrl !== 'string') {
+    throw new Error(
+      `${label} did not return an upload URL: ${JSON.stringify(initBody)}`
+    );
+  }
+
+  const uploadResponse = await fetchWorkerResponse({
+    label,
+    url: resolveWorkerRouteUrl(args.origin, initBody.uploadUrl),
+    init: {
+      method: initBody.uploadMethod ?? 'PUT',
+      headers: {
+        ...(initBody.headers ?? {}),
+        'content-type': 'text/plain',
+        'content-length': String(content.byteLength),
+      },
+      body: content,
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectOkResponse(label, 'upload bytes', uploadResponse, args.output);
+
+  const completeResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+      hash
+    )}/complete`,
+    init: {
+      method: 'POST',
+      headers: {
+        'x-syncular-smoke-actor': actorId,
+        'x-syncular-smoke-partition': partitionId,
+      },
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectOkResponse(
+    label,
+    'complete upload',
+    completeResponse,
+    args.output
+  );
+
+  const downloadUrlResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+      hash
+    )}/url`,
+    init: {
+      headers: {
+        'x-syncular-smoke-actor': actorId,
+        'x-syncular-smoke-partition': partitionId,
+      },
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectOkResponse(
+    label,
+    'create download URL',
+    downloadUrlResponse,
+    args.output
+  );
+  const downloadUrlBody = (await downloadUrlResponse.json()) as {
+    url?: string;
+  };
+  if (typeof downloadUrlBody.url !== 'string') {
+    throw new Error(
+      `${label} did not return a download URL: ${JSON.stringify(
+        downloadUrlBody
+      )}`
+    );
+  }
+
+  const downloadResponse = await fetchWorkerResponse({
+    label,
+    url: resolveWorkerRouteUrl(args.origin, downloadUrlBody.url),
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectOkResponse(
+    label,
+    'download bytes',
+    downloadResponse,
+    args.output
+  );
+  const downloadedText = await downloadResponse.text();
+  if (downloadedText !== contentText) {
+    throw new Error(
+      `${label} downloaded unexpected content: ${downloadedText.slice(0, 200)}`
+    );
+  }
+}
+
+function resolveWorkerRouteUrl(origin: string, candidate: string): string {
+  const url = new URL(candidate, origin);
+  return `${origin}${url.pathname}${url.search}`;
+}
+
+async function fetchWorkerResponse(args: {
+  label: string;
+  url: string;
+  init?: RequestInit;
+  output: string[];
+  getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
+}): Promise<Response> {
+  const exit = args.getExit();
+  if (exit) {
+    throw new Error(
+      `${args.label} exited before fetching ${args.url}: code=${
+        exit.code ?? 'null'
+      } signal=${exit.signal ?? 'null'}\n${args.output.join('')}`
+    );
+  }
+  try {
+    return await fetchResponseWithTimeout(args.url, args.init, 10_000);
+  } catch (error) {
+    throw new Error(
+      `${args.label} request failed for ${args.url}: ${
+        error instanceof Error ? error.message : String(error)
+      }\n${args.output.join('')}`
+    );
+  }
+}
+
+async function expectOkResponse(
+  label: string,
+  step: string,
+  response: Response,
+  output: string[]
+): Promise<void> {
+  if (response.ok) return;
+  throw new Error(
+    `${label} ${step} failed with ${response.status} ${
+      response.statusText
+    }: ${(await response.text()).slice(0, 500)}\n${output.join('')}`
+  );
+}
+
 async function fetchTextWithTimeout(url: string, timeoutMs: number) {
+  const response = await fetchResponseWithTimeout(url, undefined, timeoutMs);
+  return await response.text();
+}
+
+async function fetchResponseWithTimeout(
+  url: string,
+  init: RequestInit | undefined,
+  timeoutMs: number
+) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { signal: controller.signal });
-    return await response.text();
+    return await fetch(url, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timeout);
   }
@@ -940,8 +1139,10 @@ async function writeCloudflareWorkerApp(appDir: string): Promise<void> {
         dependencies: {
           '@syncular/core': 'workspace:*',
           '@syncular/server': 'workspace:*',
+          'hono-openapi': 'workspace:*',
           hono: 'workspace:*',
           wrangler: 'workspace:*',
+          zod: 'workspace:*',
         },
       },
       null,
@@ -952,12 +1153,16 @@ async function writeCloudflareWorkerApp(appDir: string): Promise<void> {
   await writeFile(
     join(appDir, 'src', 'worker.ts'),
     `import {
+  createBlobManager,
   createDatabase,
+  ensureBlobStorageSchemaSqlite,
   ensureSyncSchema,
 } from '@syncular/server';
 import { createD1Dialect } from '@syncular/server/d1';
+import { createBlobRoutes } from '@syncular/server/hono';
 import { createSqliteServerDialect } from '@syncular/server/sqlite';
 import {
+  createHmacTokenSigner,
   createR2BlobStorageAdapter,
   SyncDurableObject,
   createSyncWorkerWithDO,
@@ -970,7 +1175,46 @@ type Env = {
 };
 
 export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
-  setup(app, _env, upgradeWebSocket) {
+  async setup(app, env, upgradeWebSocket) {
+    const d1Dialect = createD1Dialect(env.DB);
+    const syncDialect = createSqliteServerDialect();
+    const db = createDatabase({
+      dialect: d1Dialect,
+      family: 'sqlite',
+    });
+    const tokenSigner = createHmacTokenSigner(
+      'syncular-framework-smoke-secret'
+    );
+    const blobStorage = createR2BlobStorageAdapter({
+      bucket: env.BLOBS,
+      baseUrl: '/syncular-framework-import-smoke/sync',
+      tokenSigner,
+    });
+    const blobManager = createBlobManager({
+      db,
+      adapter: blobStorage,
+    });
+    await ensureBlobStorageSchemaSqlite(db);
+    app.route(
+      '/syncular-framework-import-smoke/sync',
+      createBlobRoutes({
+        blobManager,
+        tokenSigner,
+        db,
+        authenticate: async (c) => {
+          const actorId = c.req.header('x-syncular-smoke-actor');
+          if (!actorId) return null;
+          return {
+            actorId,
+            partitionId:
+              c.req.header('x-syncular-smoke-partition') ?? 'default',
+          };
+        },
+        canAccessBlob: async ({ actorId }) =>
+          actorId === 'syncular-framework-actor',
+        maxUploadSize: 1024 * 1024,
+      })
+    );
     app.get('/syncular-framework-import-smoke', async (c) => {
       if (!c.env.SYNC_DO) {
         throw new Error('Durable Object binding was not available');
@@ -981,24 +1225,6 @@ export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
       if (!c.env.BLOBS) {
         throw new Error('R2 binding was not available');
       }
-      const d1Dialect = createD1Dialect(c.env.DB);
-      const syncDialect = createSqliteServerDialect();
-      const db = createDatabase({
-        dialect: d1Dialect,
-        family: 'sqlite',
-      });
-      const blobStorage = createR2BlobStorageAdapter({
-        bucket: c.env.BLOBS,
-        baseUrl: 'http://127.0.0.1/sync',
-        tokenSigner: {
-          async sign() {
-            return 'syncular-framework-smoke-token';
-          },
-          async verify() {
-            return null;
-          },
-        },
-      });
       if (!d1Dialect || blobStorage.name !== 'r2') {
         throw new Error('Cloudflare adapter factories did not initialize');
       }
@@ -1206,7 +1432,13 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
 
   await linkSyncularServerWorkspacePackages(appDir);
   await linkPackage(appDir, 'hono', workspaceDependencyPath('hono'));
+  await linkPackage(
+    appDir,
+    'hono-openapi',
+    workspaceDependencyPath('hono-openapi')
+  );
   await linkPackage(appDir, 'wrangler', workspaceDependencyPath('wrangler'));
+  await linkPackage(appDir, 'zod', workspaceDependencyPath('zod'));
   const wranglerBin = join(appDir, 'node_modules/wrangler/bin/wrangler.js');
 
   const outDir = join(appDir, 'dist');
@@ -1239,20 +1471,21 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
       bundle.includes('syncular-cloudflare-websocket-echo')
     ) {
       console.log(
-        '[framework-import-smokes] Cloudflare DO/D1 schema/R2/WebSocket import smoke passed'
+        '[framework-import-smokes] Cloudflare DO/D1 schema/R2 blob routes/WebSocket import smoke passed'
       );
       await runLocalWorkerRuntimeProbe({
         appDir,
         wranglerBin,
         route: '/syncular-framework-import-smoke',
         expectedText: 'syncular-cloudflare-runtime-schema-io-ready',
+        blobRouteBase: '/syncular-framework-import-smoke/sync',
         webSocketRoute: '/syncular-framework-import-smoke/ws',
         webSocketMessage: 'syncular-cloudflare-websocket-ping',
         webSocketExpectedText:
           'syncular-cloudflare-websocket-echo:syncular-cloudflare-websocket-ping',
       });
       console.log(
-        '[framework-import-smokes] Cloudflare DO/D1 schema/R2/WebSocket runtime IO smoke passed'
+        '[framework-import-smokes] Cloudflare DO/D1 schema/R2 blob routes/WebSocket runtime IO smoke passed'
       );
       return;
     }

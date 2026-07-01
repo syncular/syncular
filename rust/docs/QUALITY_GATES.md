@@ -44,8 +44,9 @@ until the full browser Worker/WASM suite is green on Linux.
   the built app assets, and so the Cloudflare subpaths bundle with Durable
   Object, D1, R2, and WebSocket routes under Wrangler and answer local runtime
   probes that perform Syncular schema creation on D1, D1 app-table
-  insert/select/delete, R2 object IO, and a Durable Object WebSocket echo
-  through those bindings.
+  insert/select/delete, an R2-backed Syncular blob route
+  upload/complete/download flow, and a Durable Object WebSocket echo through
+  those bindings.
   For release/post-publish
   checks,
   `bun scripts/post-publish-install-smokes.ts --version <version>` also runs
