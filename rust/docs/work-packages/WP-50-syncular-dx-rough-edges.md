@@ -1837,6 +1837,11 @@ online propagation, or reconnect behavior can change.
   smoke now proves the production build contains that marker and, when Chrome
   is available, waits for redacted support-bundle DOM evidence alongside the
   existing health/schema readiness checks.
+- 2026-07-01: Added hidden starter runtime-timing markers for database open,
+  browser-health refresh, schema-readiness check, and support-bundle export.
+  The scaffold smoke now proves the production build contains the timing
+  marker and the Chrome/CDP failure probe captures those timings in
+  `browser-preview-failure.json` when a browser failure artifact is written.
 - 2026-07-01: Extended the starter real-browser preview smoke to write a
   redacted `browser-preview-failure.json` artifact when browser readiness times
   out or the page reports health/support-bundle failures. The artifact records
@@ -2076,18 +2081,20 @@ Most recent starter support-bundle artifact rerun:
 - `bun --cwd packages/create-syncular-app smoke`
   - Passed dev server health/page/module/preflight transform checks.
   - Passed Vite production build, preview serving, and built asset checks,
-    including the support-bundle marker in the production JavaScript asset.
+    including the support-bundle and runtime-timing markers in the production
+    JavaScript asset.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
     binary was available.
 - `git diff --check`
 
 Most recent starter browser-failure artifact rerun:
 
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/scripts/smoke.ts rust/docs/QUALITY_GATES.md rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts rust/docs/QUALITY_GATES.md rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-browser-preview-smoke-local bun --cwd packages/create-syncular-app smoke`
   - Passed dev server health/page/module/preflight transform checks.
-  - Passed Vite production build, preview serving, and built asset checks.
+  - Passed Vite production build, preview serving, and built asset checks,
+    including support-bundle, lifecycle, and starter runtime-timing markers.
   - Passed the deterministic browser failure artifact shape and safe-metrics
     self-check.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
@@ -2098,7 +2105,8 @@ Most recent starter browser-failure artifact rerun:
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-browser-preview-smoke-local-required bun --cwd packages/create-syncular-app smoke --require-browser-preview`
   - Failed locally only at the required browser step because no
     Chrome/Chromium binary was available, after the same build, preview asset
-    checks, and browser failure artifact shape/safe-metrics self-check passed.
+    checks, starter runtime-timing marker check, and browser failure artifact
+    shape/safe-metrics self-check passed.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `git diff --check`
 
@@ -2534,8 +2542,9 @@ Most recent mutation-status rerun:
   data, section errors, package/runtime versions, request/sync/trace ids,
   subscription cursors, and diagnostic redaction policy. The starter now emits
   a compact redacted support-bundle artifact marker, and the scaffold smoke
-  asserts the production build contains it; the Chrome/CDP smoke waits for the
-  same marker when a browser is available. That browser path now writes a
+  asserts the production build contains it plus runtime-timing markers; the
+  Chrome/CDP smoke waits for those markers when a browser is available. That
+  browser path now writes a
   redacted `browser-preview-failure.json` artifact on readiness timeout or
   page-reported health/support-bundle failures, the normal scaffold smoke
   self-checks the artifact shape and safe smoke metrics without Chrome, and
@@ -2566,10 +2575,12 @@ Most recent mutation-status rerun:
   latency, local visibility delay, sync apply, realtime reconnect, blob fetch
   latency, storage/quota pressure, and redacted E2E failure artifacts
   measurable. The starter browser failure artifact now carries safe
-  preview/asset timing and byte metrics; remaining depth is to add richer
-  runtime-open, schema-readiness, bootstrap, local-visibility, realtime,
-  storage/quota, and blob-fetch measurements where browser/app flows can
-  expose them without manual log scraping.
+  preview/asset timing and byte metrics plus starter runtime timings for
+  database open, browser health refresh, schema readiness, and support-bundle
+  export when the browser probe can run; remaining depth is to add richer
+  bootstrap, local-visibility, realtime, storage/quota, and blob-fetch
+  measurements where browser/app flows can expose them without manual log
+  scraping.
 
 ## Next Action
 

@@ -8,7 +8,7 @@ import {
   type SyncularSupportBundle,
 } from '@syncular/client';
 import { createSyncularReact } from '@syncular/client/react';
-import type { FormEvent } from 'react';
+import type { Dispatch, FormEvent, SetStateAction } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import {
   type AppDb,
@@ -26,12 +26,28 @@ type LifecycleResumePreview = {
   status: 'idle' | 'running' | 'complete' | 'failed';
 };
 
+type StarterTimelinePreview = {
+  databaseOpenMs: number | null;
+  healthRefreshMs: number | null;
+  schemaReadinessMs: number | null;
+  supportBundleExportMs: number | null;
+};
+
 const initialLifecycleResume: LifecycleResumePreview = {
   count: 0,
   error: null,
   lastReason: null,
   status: 'idle',
 };
+
+const initialStarterTimeline: StarterTimelinePreview = {
+  databaseOpenMs: null,
+  healthRefreshMs: null,
+  schemaReadinessMs: null,
+  supportBundleExportMs: null,
+};
+
+const appStartedAtMs = performance.now();
 
 // One hook set, bound to this app's database schema.
 const {
@@ -47,6 +63,8 @@ export function App() {
   const [lifecycleResume, setLifecycleResume] =
     useState<LifecycleResumePreview>(initialLifecycleResume);
   const [openError, setOpenError] = useState<string | null>(null);
+  const [starterTimeline, setStarterTimeline] =
+    useState<StarterTimelinePreview>(initialStarterTimeline);
 
   useEffect(() => {
     let disposed = false;
@@ -92,6 +110,10 @@ export function App() {
             }
           },
         });
+        setStarterTimeline((current) => ({
+          ...current,
+          databaseOpenMs: elapsedSince(appStartedAtMs),
+        }));
         setClient(nextClient);
       })
       .catch((error) => {
@@ -118,7 +140,11 @@ export function App() {
         {client ? (
           <SyncProvider client={client}>
             <LifecycleResumeMarker lifecycleResume={lifecycleResume} />
-            <TaskPane client={client} />
+            <TaskPane
+              client={client}
+              starterTimeline={starterTimeline}
+              updateStarterTimeline={setStarterTimeline}
+            />
           </SyncProvider>
         ) : (
           <p className="empty-state">Opening local database…</p>
@@ -144,7 +170,15 @@ function LifecycleResumeMarker({
   );
 }
 
-function TaskPane({ client }: { client: AppSyncClient }) {
+function TaskPane({
+  client,
+  starterTimeline,
+  updateStarterTimeline,
+}: {
+  client: AppSyncClient;
+  starterTimeline: StarterTimelinePreview;
+  updateStarterTimeline: Dispatch<SetStateAction<StarterTimelinePreview>>;
+}) {
   // Live query: re-renders whenever synced rows change, locally or remotely.
   const { data: tasks, error: queryError } = useSyncQuery(
     ({ selectFrom }) =>
@@ -167,21 +201,48 @@ function TaskPane({ client }: { client: AppSyncClient }) {
   useEffect(() => {
     let disposed = false;
     const refresh = () => {
+      const healthStartedAtMs = performance.now();
       void getSyncularBrowserHealth(client)
         .then((nextHealth) => {
-          if (!disposed) setHealth(nextHealth);
+          if (!disposed) {
+            setHealth(nextHealth);
+            updateStarterTimeline((current) => ({
+              ...current,
+              healthRefreshMs: elapsedSince(healthStartedAtMs),
+            }));
+          }
         })
         .catch(() => {
-          if (!disposed) setHealth(null);
+          if (!disposed) {
+            setHealth(null);
+            updateStarterTimeline((current) => ({
+              ...current,
+              healthRefreshMs: elapsedSince(healthStartedAtMs),
+            }));
+          }
         });
+      const schemaStartedAtMs = performance.now();
       void client
         .schemaReadiness()
         .then((nextReadiness) => {
-          if (!disposed) setSchemaReadiness(nextReadiness);
+          if (!disposed) {
+            setSchemaReadiness(nextReadiness);
+            updateStarterTimeline((current) => ({
+              ...current,
+              schemaReadinessMs: elapsedSince(schemaStartedAtMs),
+            }));
+          }
         })
         .catch(() => {
-          if (!disposed) setSchemaReadiness(null);
+          if (!disposed) {
+            setSchemaReadiness(null);
+            updateStarterTimeline((current) => ({
+              ...current,
+              schemaReadinessMs: elapsedSince(schemaStartedAtMs),
+            }));
+          }
         });
+      const supportBundleStartedAtMs = performance.now();
       void client
         .exportSupportBundle({
           deploymentPreflight: {
@@ -192,10 +253,22 @@ function TaskPane({ client }: { client: AppSyncClient }) {
           },
         })
         .then((bundle) => {
-          if (!disposed) setSupportBundle(summarizeSupportBundle(bundle));
+          if (!disposed) {
+            setSupportBundle(summarizeSupportBundle(bundle));
+            updateStarterTimeline((current) => ({
+              ...current,
+              supportBundleExportMs: elapsedSince(supportBundleStartedAtMs),
+            }));
+          }
         })
         .catch(() => {
-          if (!disposed) setSupportBundle(failedSupportBundlePreview());
+          if (!disposed) {
+            setSupportBundle(failedSupportBundlePreview());
+            updateStarterTimeline((current) => ({
+              ...current,
+              supportBundleExportMs: elapsedSince(supportBundleStartedAtMs),
+            }));
+          }
         });
     };
     refresh();
@@ -206,7 +279,7 @@ function TaskPane({ client }: { client: AppSyncClient }) {
       unsubscribeLifecycle();
       unsubscribeBootstrap();
     };
-  }, [client]);
+  }, [client, updateStarterTimeline]);
 
   const rows = tasks ?? [];
   const doneCount = rows.filter((task) => task.completed).length;
@@ -242,6 +315,7 @@ function TaskPane({ client }: { client: AppSyncClient }) {
       {supportBundle ? (
         <SupportBundleLine supportBundle={supportBundle} />
       ) : null}
+      <StarterTimelineMarker starterTimeline={starterTimeline} />
 
       <form className="add-row" onSubmit={addTask}>
         <input ref={inputRef} aria-label="New task" placeholder="New task" />
@@ -277,6 +351,30 @@ function TaskPane({ client }: { client: AppSyncClient }) {
         {rows.length} task{rows.length === 1 ? '' : 's'} · {doneCount} done
       </p>
     </>
+  );
+}
+
+function StarterTimelineMarker({
+  starterTimeline,
+}: {
+  starterTimeline: StarterTimelinePreview;
+}) {
+  return (
+    <span
+      data-syncular-starter-database-open-ms={
+        starterTimeline.databaseOpenMs ?? ''
+      }
+      data-syncular-starter-health-refresh-ms={
+        starterTimeline.healthRefreshMs ?? ''
+      }
+      data-syncular-starter-schema-readiness-ms={
+        starterTimeline.schemaReadinessMs ?? ''
+      }
+      data-syncular-starter-support-bundle-export-ms={
+        starterTimeline.supportBundleExportMs ?? ''
+      }
+      hidden
+    />
   );
 }
 
@@ -460,4 +558,8 @@ function paneStatus(status: SyncularClientStatus): PaneStatus {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function elapsedSince(startedAtMs: number): number {
+  return Math.max(0, Math.round(performance.now() - startedAtMs));
 }

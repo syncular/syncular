@@ -228,6 +228,7 @@ async function verifyBuiltPreviewAssets(
   }
 
   let sawLifecycleResumeMarker = false;
+  let sawStarterTimelineMarker = false;
   let sawSupportBundleMarker = false;
   let totalAssetBytes = 0;
   let jsAssetCount = 0;
@@ -257,6 +258,9 @@ async function verifyBuiltPreviewAssets(
       sawLifecycleResumeMarker ||= assetBody.includes(
         'data-syncular-lifecycle-resume-status'
       );
+      sawStarterTimelineMarker ||= assetBody.includes(
+        'data-syncular-starter-database-open-ms'
+      );
       sawSupportBundleMarker ||= assetBody.includes(
         'data-syncular-support-bundle-status'
       );
@@ -282,6 +286,11 @@ async function verifyBuiltPreviewAssets(
       'Built preview assets did not include the lifecycle-resume smoke marker'
     );
   }
+  if (!sawStarterTimelineMarker) {
+    throw new Error(
+      'Built preview assets did not include the starter timeline smoke marker'
+    );
+  }
 
   return {
     assetCheckMs: elapsedSince(startedAtMs),
@@ -293,6 +302,7 @@ async function verifyBuiltPreviewAssets(
     lifecycleResumeMarkerInAssets: sawLifecycleResumeMarker,
     otherAssetBytes,
     otherAssetCount,
+    starterTimelineMarkerInAssets: sawStarterTimelineMarker,
     supportBundleMarkerInAssets: sawSupportBundleMarker,
     totalAssetBytes,
   };
@@ -308,6 +318,7 @@ type BuiltPreviewAssetMetrics = {
   lifecycleResumeMarkerInAssets: boolean;
   otherAssetBytes: number;
   otherAssetCount: number;
+  starterTimelineMarkerInAssets: boolean;
   supportBundleMarkerInAssets: boolean;
   totalAssetBytes: number;
 };
@@ -471,6 +482,13 @@ type BrowserPreviewProbe = {
     reason: string | null;
     error: string | null;
   };
+  starterTimeline: {
+    databaseOpenMs: number | null;
+    healthRefreshMs: number | null;
+    marker: boolean;
+    schemaReadinessMs: number | null;
+    supportBundleExportMs: number | null;
+  };
   textExcerpt: string;
 };
 
@@ -493,6 +511,7 @@ type BrowserPreviewFailureMetrics = {
   otherAssetBytes: number;
   otherAssetCount: number;
   previewReadyMs: number;
+  starterTimelineMarkerInAssets: boolean;
   supportBundleMarkerInAssets: boolean;
   totalAssetBytes: number;
 };
@@ -521,6 +540,17 @@ async function readStarterBrowserProbe(
     const lifecycleResumeCount = Number(lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-count') ?? 0);
     const lifecycleResumeReason = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-reason') ?? null;
     const lifecycleResumeError = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-error') ?? null;
+    const starterTimeline = document.querySelector('[data-syncular-starter-database-open-ms]');
+    const readStarterTimelineMs = (name) => {
+      const value = starterTimeline?.getAttribute(name) ?? null;
+      if (value === null || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number : null;
+    };
+    const databaseOpenMs = readStarterTimelineMs('data-syncular-starter-database-open-ms');
+    const healthRefreshMs = readStarterTimelineMs('data-syncular-starter-health-refresh-ms');
+    const schemaReadinessMs = readStarterTimelineMs('data-syncular-starter-schema-readiness-ms');
+    const supportBundleExportMs = readStarterTimelineMs('data-syncular-starter-support-bundle-export-ms');
     const durableHealthLine = text.includes('indexedDb durable');
     const schemaLine = text.includes('schema v');
     const preflightFailure = text.includes('Syncular browser preflight failed');
@@ -547,6 +577,11 @@ async function readStarterBrowserProbe(
         schemaLine &&
         supportBundleStatus !== null &&
         lifecycleResumeStatus !== null &&
+        starterTimeline !== null &&
+        databaseOpenMs !== null &&
+        healthRefreshMs !== null &&
+        schemaReadinessMs !== null &&
+        supportBundleExportMs !== null &&
         supportBundleRedacted === 'true' &&
         supportBundleSectionCount >= 4 &&
         !databaseOpening &&
@@ -571,6 +606,13 @@ async function readStarterBrowserProbe(
         count: lifecycleResumeCount,
         reason: lifecycleResumeReason,
         error: lifecycleResumeError,
+      },
+      starterTimeline: {
+        databaseOpenMs,
+        healthRefreshMs,
+        marker: starterTimeline !== null,
+        schemaReadinessMs,
+        supportBundleExportMs,
       },
       textExcerpt: text.slice(0, 4000),
     };
@@ -801,6 +843,13 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         reason: 'online',
         error: null,
       },
+      starterTimeline: {
+        databaseOpenMs: 12,
+        healthRefreshMs: 3,
+        marker: true,
+        schemaReadinessMs: 2,
+        supportBundleExportMs: 4,
+      },
       textExcerpt:
         'Syncular support bundle failed after redacted export check.',
     },
@@ -854,6 +903,7 @@ function finalizeBrowserPreviewFailureMetrics(
     otherAssetBytes: metrics.otherAssetBytes,
     otherAssetCount: metrics.otherAssetCount,
     previewReadyMs: metrics.previewReadyMs,
+    starterTimelineMarkerInAssets: metrics.starterTimelineMarkerInAssets,
     supportBundleMarkerInAssets: metrics.supportBundleMarkerInAssets,
     totalAssetBytes: metrics.totalAssetBytes,
   };
@@ -885,6 +935,7 @@ function assertBrowserPreviewFailureMetricsShape(
   }
   for (const key of [
     'lifecycleResumeMarkerInAssets',
+    'starterTimelineMarkerInAssets',
     'supportBundleMarkerInAssets',
   ] as const) {
     if (typeof metrics[key] !== 'boolean') {
@@ -912,11 +963,36 @@ function assertBrowserPreviewProbeShape(
   assertBrowserPreviewMarkersShape(probe.markers, path);
   assertBrowserPreviewSupportBundleShape(probe.supportBundle, path);
   assertBrowserPreviewLifecycleResumeShape(probe.lifecycleResume, path);
+  assertBrowserPreviewStarterTimelineShape(probe.starterTimeline, path);
   if (
     typeof probe.textExcerpt !== 'string' ||
     probe.textExcerpt.length > 4000
   ) {
     throw new Error(`${path} probe.textExcerpt was not a bounded string`);
+  }
+}
+
+function assertBrowserPreviewStarterTimelineShape(
+  value: unknown,
+  path: string
+): void {
+  if (!isRecord(value)) {
+    throw new Error(`${path} probe.starterTimeline was not a JSON object`);
+  }
+  if (typeof value.marker !== 'boolean') {
+    throw new Error(`${path} probe.starterTimeline.marker was not a boolean`);
+  }
+  for (const key of [
+    'databaseOpenMs',
+    'healthRefreshMs',
+    'schemaReadinessMs',
+    'supportBundleExportMs',
+  ] as const) {
+    if (value[key] !== null && !isNonNegativeFiniteNumber(value[key])) {
+      throw new Error(
+        `${path} probe.starterTimeline.${key} was not nullable non-negative number`
+      );
+    }
   }
 }
 

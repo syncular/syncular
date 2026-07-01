@@ -194,8 +194,11 @@ read-only review:
     transformed preflight client module. The starter now also exports a
     redacted support-bundle summary after opening the database, and the
     scaffold smoke asserts that production assets contain the support-bundle
-    marker plus waits for redacted support-bundle DOM evidence in the
-    Chrome/CDP preview path when a browser is available. The same smoke
+    and runtime-timing markers, then waits for redacted support-bundle DOM
+    evidence in the Chrome/CDP preview path when a browser is available.
+    Browser preview artifacts now include starter timings for database open,
+    browser health refresh, schema readiness, and support-bundle export when
+    Chrome/CDP is available. The same smoke
     self-checks the redacted browser failure artifact shape and safe smoke
     metrics even when no browser is installed. Browser pages can now
     install `installSyncularBrowserLifecycleResume(...)` to coalesce
