@@ -2,6 +2,7 @@ import {
   getSyncularBrowserDeploymentPreflight,
   type SyncularRuntimeArtifactCandidate,
 } from '@syncular/client';
+import SyncularWorker from '@syncular/client/worker?worker';
 import type { Selectable } from 'kysely';
 import {
   createSyncularAppDatabase,
@@ -47,10 +48,7 @@ export const syncularStarterRuntimeArtifacts = [
 ] as const satisfies readonly SyncularRuntimeArtifactCandidate[];
 
 function createSyncularStarterWorker() {
-  return new Worker('/syncular/client/worker-entry.js', {
-    type: 'module',
-    credentials: 'same-origin',
-  });
+  return new SyncularWorker();
 }
 
 const syncBaseUrl =

@@ -1,23 +1,15 @@
-import { cp, mkdir, readdir, readFile } from 'node:fs/promises';
+import { cp, readFile } from 'node:fs/promises';
 import type { ServerResponse } from 'node:http';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
-import {
-  defineConfig,
-  type Plugin,
-  type PreviewServer,
-  type ViteDevServer,
-} from 'vite';
+import { defineConfig, type Plugin, type ViteDevServer } from 'vite';
 
 const require = createRequire(import.meta.url);
 const syncularClientRoot = dirname(
   require.resolve('@syncular/client/package.json')
 );
-const syncularClientDistDir = join(syncularClientRoot, 'dist');
 const syncularCoreRuntimeDir = join(syncularClientRoot, 'dist', 'wasm-core');
 const syncularRuntimeMountPath = '/syncular/wasm-core/';
-const syncularClientRuntimeMountPath = '/syncular/client/';
-const syncularClientRuntimeDirs = ['', 'wasm-bindings'] as const;
 const syncularRuntimeContentTypes = new Map([
   ['syncular.js', 'text/javascript; charset=utf-8'],
   ['syncular_bg.wasm', 'application/wasm'],
@@ -36,27 +28,17 @@ function syncularRuntimeAssets(): Plugin {
     configureServer(server) {
       installSyncularRuntimeMiddleware(server);
     },
-    configurePreviewServer(server) {
-      installSyncularRuntimeMiddleware(server);
-    },
     async closeBundle() {
-      await Promise.all([
-        cp(
-          syncularCoreRuntimeDir,
-          resolve(root, outDir, 'syncular', 'wasm-core'),
-          { recursive: true }
-        ),
-        copySyncularClientRuntimeAssets(
-          resolve(root, outDir, 'syncular', 'client')
-        ),
-      ]);
+      await cp(
+        syncularCoreRuntimeDir,
+        resolve(root, outDir, 'syncular', 'wasm-core'),
+        { recursive: true }
+      );
     },
   };
 }
 
-function installSyncularRuntimeMiddleware(
-  server: ViteDevServer | PreviewServer
-) {
+function installSyncularRuntimeMiddleware(server: ViteDevServer) {
   server.middlewares.use((request, response, next) => {
     void serveSyncularRuntimeAsset(request.url, response)
       .then((served) => {
@@ -70,9 +52,7 @@ async function serveSyncularRuntimeAsset(
   requestUrl: string | undefined,
   response: ServerResponse
 ) {
-  const asset =
-    resolveSyncularRuntimeRequest(requestUrl) ??
-    resolveSyncularClientRuntimeRequest(requestUrl);
+  const asset = resolveSyncularRuntimeRequest(requestUrl);
   if (!asset) return false;
 
   const body = await readFile(join(asset.dir, asset.fileName));
@@ -91,39 +71,6 @@ function resolveSyncularRuntimeRequest(requestUrl: string | undefined) {
   return contentType
     ? { contentType, dir: syncularCoreRuntimeDir, fileName }
     : null;
-}
-
-function resolveSyncularClientRuntimeRequest(requestUrl: string | undefined) {
-  if (!requestUrl) return null;
-  const pathname = new URL(requestUrl, 'http://syncular.local').pathname;
-  if (!pathname.startsWith(syncularClientRuntimeMountPath)) return null;
-  const fileName = pathname.slice(syncularClientRuntimeMountPath.length);
-  if (!/^(?:[a-z0-9-]+|wasm-bindings\/[a-z0-9-]+)(?:\.js)?$/i.test(fileName)) {
-    return null;
-  }
-  return {
-    contentType: 'text/javascript; charset=utf-8',
-    dir: syncularClientDistDir,
-    fileName: fileName.endsWith('.js') ? fileName : `${fileName}.js`,
-  };
-}
-
-async function copySyncularClientRuntimeAssets(targetDir: string) {
-  await Promise.all(
-    syncularClientRuntimeDirs.map(async (runtimeDir) => {
-      const sourceDir = join(syncularClientDistDir, runtimeDir);
-      const outputDir = join(targetDir, runtimeDir);
-      await mkdir(outputDir, { recursive: true });
-      const entries = await readdir(sourceDir, { withFileTypes: true });
-      await Promise.all(
-        entries
-          .filter((entry) => entry.isFile() && entry.name.endsWith('.js'))
-          .map((entry) =>
-            cp(join(sourceDir, entry.name), join(outputDir, entry.name))
-          )
-      );
-    })
-  );
 }
 
 export default defineConfig({
