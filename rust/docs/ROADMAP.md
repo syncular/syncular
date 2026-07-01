@@ -342,7 +342,10 @@ read-only review:
     `create-syncular-app` smoke, repo typecheck, repo lint, and root tests
     (`1209` tests) pass with Bun 1.3.9; Chrome is not installed locally, so the
     hosted `starter-browser-preview` job remains the authority for the required
-    real-browser path. The
+    real-browser path. Hosted Checks run `28526881709` on commit `656b5275`
+    passed the full matrix, including `starter-browser-preview`, confirming the
+    local-visibility proof, reload persistence, browser process restart
+    persistence, and all Rust/native packaging lanes are green. The
     post-publish
     JavaScript install smoke now
     also creates a fresh optional import matrix project that installs

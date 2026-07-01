@@ -3864,14 +3864,16 @@ Most recent mutation-status rerun:
   methods. Focused local-visibility tests, client typecheck, full client tests
   (`290` tests), Biome, repo typecheck, repo lint, knip, `create-syncular-app`
   smoke, diff check, and root tests (`1209` tests) pass with Bun 1.3.9; Chrome
-  is not installed locally, so the next hosted artifact remains the authority
-  for the required real-browser path.
+  is not installed locally, so the hosted artifact remains the authority for the
+  required real-browser path. Hosted Checks run `28526881709` on commit
+  `656b5275` passed the full matrix, including `starter-browser-preview`,
+  confirming the local-visibility proof, reload persistence, browser process
+  restart persistence, and all Rust/native packaging lanes are green.
 
 ## Next Action
 
-Pick the next implementation slice from the remaining risks. Immediate next
-step is observing the hosted starter browser-preview job after the
-local-visibility bound-query fix. Strong follow-ups are deeper browser
+Pick the next implementation slice from the remaining risks. The immediate
+starter browser-preview blocker is cleared. Strong follow-ups are deeper browser
 suspension/shutdown lifecycle coverage, canonical real-browser support-bundle
 failure artifacts, browser/bundler matrix execution, or automating
 production-ops checks, because those remain broad DX holes after the first local
