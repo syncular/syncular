@@ -236,9 +236,9 @@ read-only review:
     Hosted CI narrowed the remaining browser-preview failure to first paint
     being blocked while lifecycle sync/realtime had already started; the
     starter now resolves after local database/schema/subscription setup,
-    renders the local-first UI, starts sync in the background, and exposes a
-    hidden `starterOpen` phase/diagnostic marker that the Chrome/CDP artifact
-    records.
+    renders the local-first UI, starts sync in a post-mount frame-yielded
+    background effect, and exposes a hidden `starterOpen` phase/diagnostic
+    marker that the Chrome/CDP artifact records.
     The Console client detail runtime panel now renders those browser-preview
     asset, support-policy, deployment-preflight, service-worker, quota, and
     lifecycle/Web Lock summaries from the stored quick fields, so operators

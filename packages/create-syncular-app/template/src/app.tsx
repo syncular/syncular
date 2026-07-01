@@ -276,15 +276,6 @@ export function App() {
           databaseOpenMs: elapsedSince(appStartedAtMs),
         }));
         setClient(nextClient);
-        void nextClient.start().catch((error) => {
-          if (!disposed) {
-            setOpenError(errorMessage(error));
-            setStarterOpen((current) => ({
-              ...current,
-              error: errorMessage(error),
-            }));
-          }
-        });
       })
       .catch((error) => {
         if (!disposed) {
@@ -302,6 +293,30 @@ export function App() {
       if (opened) void opened.close().catch(() => undefined);
     };
   }, []);
+
+  useEffect(() => {
+    if (!client) return undefined;
+    let disposed = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const frame = requestAnimationFrame(() => {
+      timeout = setTimeout(() => {
+        void client.start().catch((error) => {
+          if (!disposed) {
+            setOpenError(errorMessage(error));
+            setStarterOpen((current) => ({
+              ...current,
+              error: errorMessage(error),
+            }));
+          }
+        });
+      }, 0);
+    });
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(frame);
+      if (timeout) clearTimeout(timeout);
+    };
+  }, [client]);
 
   return (
     <main className="app-shell">

@@ -3804,11 +3804,12 @@ Most recent mutation-status rerun:
   green, but the UI stayed on "Opening local database..." until the next CDP
   readiness probe timed out. The starter now opens the durable local database,
   installs schema/subscriptions, renders the local-first UI, and starts sync in
-  the background instead of blocking first paint on lifecycle bootstrap/realtime.
-  It also records a hidden `starterOpen` phase/diagnostic marker and mirrors
-  `[syncular-starter]` diagnostics into the Chrome/CDP log so the next hosted
-  artifact can distinguish local open, background lifecycle, and page-thread
-  starvation failures without raw browser inspection. Remaining depth is
+  a post-mount frame-yielded background effect instead of blocking first paint
+  on lifecycle bootstrap/realtime. It also records a hidden `starterOpen`
+  phase/diagnostic marker and mirrors `[syncular-starter]` diagnostics into
+  the Chrome/CDP log so the next hosted artifact can distinguish local open,
+  background lifecycle, and page-thread starvation failures without raw browser
+  inspection. Remaining depth is
   observing the next hosted browser/Cloudflare artifacts and deciding whether
   future hosted artifact uploads need richer Console/Fleet orchestration.
 
