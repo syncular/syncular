@@ -4310,7 +4310,11 @@ Most recent mutation-status rerun:
   keeping actual quota-exhausted app writes and eviction behavior open. Local
   `create-syncular-app` typecheck, focused Biome, non-Chrome scaffold smoke,
   smoke-script typecheck, docs stale check, and diff check passed; hosted
-  Chrome verification is pending for this branch.
+  Checks run `28543241591` on `37cc4561` passed the full matrix, including
+  `starter-browser-preview`. The Chrome job log reached
+  `real-browser smoke: proving browser-observed quota recovery actions` and
+  then `real-browser built-preview preflight smoke passed`, confirming the new
+  observed-quota recovery mapping branch in hosted Chrome.
 
 ## Next Action
 
@@ -4328,7 +4332,7 @@ private-mode durable persistence. The current slice adds a browser-observed
 quota-pressure preflight branch, now fixed to pass post-override CDP usage/quota
 facts into the app preflight proof and confirmed in hosted Chrome. The current
 slice extends those browser-observed quota facts into storage recovery action
-mapping, with hosted Chrome verification pending.
+mapping, now confirmed in hosted Chrome.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 suspension/shutdown lifecycle coverage, actual quota-exhaustion/eviction and
