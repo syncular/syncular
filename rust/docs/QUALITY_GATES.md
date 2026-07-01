@@ -83,8 +83,9 @@ until the full browser Worker/WASM suite is green on Linux.
   verifies support-bundle/lifecycle/runtime-timing markers, self-checks the
   browser failure artifact shape and safe smoke metrics, and runs the
   real-browser preview check when Chrome/Chromium is available, including
-  visibility/pagehide/pageshow/online/DOM freeze-resume/CDP frozen-active/
-  beforeunload lifecycle evidence, lifecycle Web Lock contention, local recovery
+  visibility/pagehide/pageshow/online/DOM freeze-resume/CDP BFCache suspension
+  plus visibilitychange recovery/beforeunload lifecycle evidence, lifecycle Web
+  Lock contention, local recovery
   Web Lock contention, two-tab propagation, same-client page reload/reopen
   persistence, browser process restart persistence, and live support-bundle
   failure artifact validation.

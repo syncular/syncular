@@ -2194,8 +2194,10 @@ online propagation, or reconnect behavior can change.
 - 2026-07-01: Extended the starter Chrome/CDP lifecycle proof beyond
   DOM-dispatched page lifecycle events by forcing Chrome's page lifecycle state
   through `Page.setWebLifecycleState` with `frozen` and then `active`. The
-  smoke waits for the same app-facing `freeze` pause marker and browser
-  `resume` foreground catch-up marker after Chrome reactivates the page. This
+  hosted proof showed Chrome surfaces that transition as a BFCache lifecycle
+  suspension diagnostic rather than the same app-facing `freeze` event marker,
+  so the smoke now counts the Chrome diagnostic and then requires the app's
+  `visibilitychange` recovery marker after Chrome reactivates the page. This
   narrows the browser-automation gap while leaving true target-browser
   backgrounding/discard, storage shutdown, and quota/eviction work open.
 - 2026-07-01: Added the first starter two-tab runtime proof for Chrome-capable
@@ -2864,13 +2866,16 @@ Most recent Chrome CDP lifecycle-state proof local rerun:
   - Passed Vite production build, preview serving, built runtime asset checks,
     browser failure artifact shape self-check, and safe smoke metrics.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
-    binary was available. On browser-capable runners, the CDP path now
-    dispatches DOM `freeze`/`resume`, then forces Chrome's page lifecycle state
-    through `Page.setWebLifecycleState({ state: "frozen" })` and
-    `Page.setWebLifecycleState({ state: "active" })`, waits for the same
-    app-facing `freeze` pause marker and browser `resume` foreground catch-up
-    marker, and then continues through the existing `beforeunload`, Web Lock,
-    two-tab, reload, restart, and support-bundle artifact proofs.
+    binary was available. Hosted Checks run
+    <https://github.com/syncular/syncular/actions/runs/28533712104> passed on
+    commit `6e547607`, including `starter-browser-preview`. An earlier failed
+    hosted artifact showed `Page.setWebLifecycleState({ state: "frozen" })` and
+    `Page.setWebLifecycleState({ state: "active" })` do not emit the same
+    app-facing `freeze` pause marker; Chrome instead reports the BFCache
+    lifecycle suspension diagnostic and the app recovers through a
+    `visibilitychange` resume marker. The smoke now requires that diagnostic
+    plus recovery marker before continuing through the existing `beforeunload`,
+    Web Lock, two-tab, reload, restart, and support-bundle artifact proofs.
 
 Previous browser lifecycle resume helper rerun:
 
@@ -3762,8 +3767,9 @@ Most recent mutation-status rerun:
   non-destructive support-bundle recovery action times out, release the lock,
   and prove that the same action completes under the acquired lock. The helper
   and starter Chrome/CDP proof now also cover Page Lifecycle `freeze` and
-  browser `resume` events through both DOM-dispatched events and Chrome's
-  `Page.setWebLifecycleState("frozen" | "active")` automation hook.
+  browser `resume` events through DOM-dispatched events, plus Chrome's
+  `Page.setWebLifecycleState("frozen" | "active")` automation hook as BFCache
+  suspension diagnostic evidence followed by app `visibilitychange` recovery.
   Remaining work is richer browser lifecycle execution: actual backgrounded or
   discarded tab suspension/restoration outside CDP lifecycle-state forcing,
   storage shutdown, quota/eviction, database lock contention beyond the local
@@ -3793,8 +3799,9 @@ Most recent mutation-status rerun:
   non-destructive support-bundle recovery action under the real browser Web
   Locks API. The root lifecycle helper and starter Chrome/CDP proof now also
   cover Page Lifecycle `freeze` and browser `resume` events through
-  DOM-dispatched events and Chrome's `Page.setWebLifecycleState` frozen/active
-  path. Remaining work is richer browser-process proof: actual target-browser
+  DOM-dispatched events, plus Chrome `Page.setWebLifecycleState` frozen/active
+  BFCache suspension diagnostic evidence followed by app `visibilitychange`
+  recovery. Remaining work is richer browser-process proof: actual target-browser
   background/discard suspension and restoration, shutdown/restart states,
   storage shutdown, quota/eviction, database lock contention beyond the
   recovery action coordinator, and deeper persistent database recovery
