@@ -3000,6 +3000,12 @@ Most recent starter local recovery lock proof rerun:
   - Skipped local Chrome/Chromium execution in starter and Vite browser smokes
     because this machine has no Chrome/Chromium binary. Publish dry-runs were
     intentionally skipped for this local WP-50 iteration gate.
+- Hosted Checks run `28530944285` passed on `8cf12ab6`, including
+  `starter-browser-preview`. That hosted Chrome path exercises the new
+  local-recovery proof branch by holding the real browser recovery Web Lock,
+  observing the bounded timeout marker, releasing the lock, and requiring the
+  same non-destructive support-bundle recovery action to complete under an
+  acquired lock.
 
 Most recent live support-bundle failure artifact rerun:
 
@@ -3736,8 +3742,9 @@ Most recent mutation-status rerun:
   browser-observed recovery lock proof by timing out and then completing the
   non-destructive support-bundle recovery action under the real browser Web
   Locks API. Remaining work is richer browser-process proof:
-  suspended/resumed tabs, hosted observation of this new recovery-lock branch,
-  shutdown, and restart states.
+  suspended/resumed tabs, shutdown/restart states, storage shutdown,
+  quota/eviction, database lock contention beyond the recovery action
+  coordinator, and deeper persistent database recovery coordination.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,
