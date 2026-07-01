@@ -86,8 +86,10 @@ landing surface to the public apex site.
 
 ## Decision
 
-Accepted. The shared CI setup now installs Rust, `wasm-pack`, and `wasm-opt`
-before package builds. Native FFI tests match the generated Rust app contract,
+Accepted. The shared CI setup now installs Rust, `wasm-pack`, and pinned
+official Binaryen 130 before package builds instead of taking Ubuntu's
+`binaryen` package, whose version 108 corrupts wasm-bindgen externref table
+exports. Native FFI tests match the generated Rust app contract,
 optional WASM size attribution tools are skipped when absent, and native
 packaging passes the runtime package explicitly so BoltFFI cannot select the
 workspace wrapper crate; those package builds now enable `boltffi-bindings` so

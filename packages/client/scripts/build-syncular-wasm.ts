@@ -35,6 +35,7 @@ const wasmFeatures = readArgValue('--features') ?? 'web-owned-sqlite';
 const wasmVariant = readArgValue('--variant') ?? inferWasmVariant(wasmFeatures);
 const artifactName = readArgValue('--artifact-name') ?? wasmVariant;
 const releaseOptLevel = readArgValue('--release-opt-level');
+const minimumWasmOptVersion = 123;
 const browserSafeWasmOptFeatures = [
   '--enable-reference-types',
   '--enable-bulk-memory',
@@ -265,7 +266,19 @@ function optimizeWasmRelease(wasmPath: string): void {
     throw new Error(
       [
         '[syncular-wasm] release builds require wasm-opt for package size.',
-        'Install Binaryen (`brew install binaryen`, `apt install binaryen`, or equivalent) and rerun build:wasm.',
+        `Install Binaryen ${minimumWasmOptVersion}+ and rerun build:wasm.`,
+      ].join(' ')
+    );
+  }
+  const wasmOptVersion = parseWasmOptVersion(
+    `${version.stdout.toString()}\n${version.stderr.toString()}`
+  );
+  if (wasmOptVersion === null || wasmOptVersion < minimumWasmOptVersion) {
+    throw new Error(
+      [
+        `[syncular-wasm] wasm-opt ${minimumWasmOptVersion}+ is required for wasm-bindgen externref table correctness.`,
+        `Detected: ${wasmOptVersion === null ? 'unknown' : wasmOptVersion}.`,
+        'Install a current Binaryen release or use the shared CI setup action, which pins Binaryen 130.',
       ].join(' ')
     );
   }
@@ -295,6 +308,13 @@ function optimizeWasmRelease(wasmPath: string): void {
     process.exit(result.exitCode);
   }
   renameSync(tmpPath, wasmPath);
+}
+
+function parseWasmOptVersion(output: string): number | null {
+  const match = output.match(/\bversion\s+([0-9]+)\b/i);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isInteger(parsed) ? parsed : null;
 }
 
 function writeWasmProfileArtifact(wasmPath: string): void {

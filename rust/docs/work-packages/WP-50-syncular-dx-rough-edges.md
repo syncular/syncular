@@ -3775,15 +3775,20 @@ Most recent mutation-status rerun:
   that Bun could compile but hosted Chrome rejected during runtime
   initialization with `WebAssembly.instantiate(): unknown type form: 0 @+202`;
   release WASM packaging now uses explicit browser-safe optimizer feature flags
-  instead. Remaining depth is observing hosted browser/Cloudflare artifacts and
-  deciding whether future hosted artifact uploads need richer Console/Fleet
-  orchestration.
+  instead. The follow-up hosted run then advanced to wasm-bindgen startup and
+  failed with `WebAssembly.Table.grow(): failed to grow table by 4`; CI had
+  installed Ubuntu's Binaryen 108 package, matching the known old wasm-opt
+  externref table bug. Shared setup now installs official Binaryen 130 and the
+  release build script rejects `wasm-opt` versions older than 123 before
+  producing package artifacts. Remaining depth is observing hosted
+  browser/Cloudflare artifacts and deciding whether future hosted artifact
+  uploads need richer Console/Fleet orchestration.
 
 ## Next Action
 
 Pick the next implementation slice from the remaining risks. Strong candidates
-are observing the hosted starter browser-preview job after the browser-safe
-WASM optimizer fix, deeper browser
+are observing the hosted starter browser-preview job after the Binaryen 130 CI
+pin, deeper browser
 suspension/shutdown lifecycle coverage, canonical real-browser support-bundle
 failure artifacts,
 browser/bundler matrix execution, or automating production-ops checks, because

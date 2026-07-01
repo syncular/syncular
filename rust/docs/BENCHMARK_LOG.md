@@ -7651,6 +7651,11 @@ Decision:
   `--all-features` with explicit browser-safe feature flags:
   reference types, bulk memory, nontrapping float-to-int, multivalue, sign-ext,
   and mutable globals.
+- Pin CI to official Binaryen 130 and require `wasm-opt` 123+ in the release
+  build script. The hosted Ubuntu 24.04 package installed Binaryen 108, which
+  matches the upstream wasm-bindgen/wasm-opt externref table corruption fixed
+  after Binaryen 109 and surfaced in Chrome as
+  `WebAssembly.Table.grow(): failed to grow table by 4`.
 - Accept the roughly `+11.9KiB` raw delta versus the previous all-features
   artifact because the gzip output is slightly smaller in this probe and the
   resulting module stays compatible with baseline browser WASM parsing.

@@ -62,26 +62,56 @@ runs:
       run: |
         set -euo pipefail
 
-        if command -v wasm-opt >/dev/null 2>&1; then
-          exit 0
-        fi
-
-        case "${RUNNER_OS:-$(uname -s)}" in
-          Linux)
-            sudo apt-get update
-            sudo apt-get install -y binaryen
+        binaryen_version="130"
+        case "$(uname -s)/$(uname -m)" in
+          Linux/x86_64)
+            binaryen_target="x86_64-linux"
             ;;
-          macOS)
-            brew install binaryen
+          Linux/aarch64|Linux/arm64)
+            binaryen_target="aarch64-linux"
             ;;
-          Windows)
-            choco install binaryen -y
+          Darwin/x86_64)
+            binaryen_target="x86_64-macos"
+            ;;
+          Darwin/arm64)
+            binaryen_target="arm64-macos"
+            ;;
+          MINGW*/*|MSYS*/*|CYGWIN*/*)
+            case "$(uname -m)" in
+              x86_64)
+                binaryen_target="x86_64-windows"
+                ;;
+              aarch64|arm64)
+                binaryen_target="arm64-windows"
+                ;;
+              *)
+                echo "Unsupported Windows architecture for Binaryen: $(uname -m)" >&2
+                exit 1
+                ;;
+            esac
             ;;
           *)
-            echo "Unsupported runner OS for wasm-opt installation: ${RUNNER_OS:-$(uname -s)}" >&2
+            echo "Unsupported runner platform for Binaryen: $(uname -s)/$(uname -m)" >&2
             exit 1
             ;;
         esac
+
+        temp_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+        if command -v cygpath >/dev/null 2>&1; then
+          temp_root="$(cygpath -u "$temp_root")"
+        fi
+
+        install_dir="${temp_root}/binaryen-version_${binaryen_version}-${binaryen_target}"
+        archive="${temp_root}/binaryen-version_${binaryen_version}-${binaryen_target}.tar.gz"
+        url="https://github.com/WebAssembly/binaryen/releases/download/version_${binaryen_version}/binaryen-version_${binaryen_version}-${binaryen_target}.tar.gz"
+
+        rm -rf "$install_dir" "$archive"
+        mkdir -p "$install_dir"
+        curl -fsSL "$url" -o "$archive"
+        tar -xzf "$archive" -C "$install_dir" --strip-components=1
+
+        echo "${install_dir}/bin" >> "$GITHUB_PATH"
+        "${install_dir}/bin/wasm-opt" --version
 
     - name: Install Dependencies
       shell: bash

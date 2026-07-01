@@ -188,7 +188,11 @@ read-only review:
     `wasm-opt --all-features` pass after hosted Chrome rejected the optimized
     core runtime with `WebAssembly.instantiate(): unknown type form: 0 @+202`;
     the optimizer now enables only the browser-safe feature set needed by the
-    wasm-bindgen output.
+    wasm-bindgen output. The follow-up hosted run then exposed the older
+    Ubuntu `binaryen` package (`wasm-opt` 108) corrupting wasm-bindgen's
+    externref table path as `WebAssembly.Table.grow(): failed to grow table by
+    4`; the shared setup action now pins official Binaryen 130 and release
+    WASM builds fail fast on `wasm-opt` versions older than 123.
     The local Cloudflare `wrangler dev --local` proof now self-checks a
     bounded runtime failure artifact so DO/D1/R2/WebSocket failures leave
     route, exit, recent-output context, and safe R2 blob route timing/byte
