@@ -4359,8 +4359,9 @@ Most recent mutation-status rerun:
   `cargo check --manifest-path rust/Cargo.toml -p syncular-client
   --no-default-features --features native,crdt-yjs`, the new focused
   regression, full `syncular-todo-app-example --lib`, and a 30-run stress loop
-  of the previously flaky command-history test passed; hosted rerun is
-  pending.
+  of the previously flaky command-history test passed. Hosted Checks run
+  `28546327052` on commit `09f94e67` then passed the full matrix, including
+  `rust-native` and `starter-browser-preview`.
 
 ## Next Action
 
