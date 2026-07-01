@@ -319,7 +319,13 @@ read-only review:
     visibility proof, and requires the observer tab to see every row through
     sync/realtime, then restarts Chrome with the same profile directory and
     verifies that the same client id can still see the task in a fresh browser
-    process.
+    process. The branch now also writes a no-cache pass-through service worker
+    into the built starter preview, opens a fresh Chrome profile, registers the
+    worker, reloads under service-worker control, and requires the starter's
+    preflight/support-policy markers to report `pwa`,
+    `preflight-required`/`warning`, the activated controller state, and the
+    redacted controller script path instead of treating PWAs as automatically
+    supported.
     Release
     rehearsal now runs the
     create-syncular-app
@@ -427,7 +433,9 @@ read-only review:
     whether the page is service-worker controlled, controller state, and a
     redacted controller script path, so PWA/cache-skew context survives into
     starter artifacts without treating service workers as an automatic
-    failure.
+    failure. The starter browser-preview smoke now includes a first real Chrome
+    service-worker-controlled PWA classification proof, while keeping PWA
+    support preflight-gated until retained target evidence exists.
     Cloudflare local-runtime failure artifacts now feed Console/Fleet through
     `POST /console/client-diagnostics/cloudflare-runtime-failure`, preserving
     route, exit, bounded output, and safe R2 blob timing/byte metrics as

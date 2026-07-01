@@ -3942,7 +3942,14 @@ Most recent mutation-status rerun:
   hint helper now lets starter/browser artifacts switch to `pwa` for
   service-worker controlled pages or `private-browsing` for ephemeral storage
   without guessing Safari/Firefox from a user agent. The matrix is represented
-  in smoke evidence instead of docs alone.
+  in smoke evidence instead of docs alone. This branch adds the first real
+  Chrome service-worker-controlled PWA classification proof: the starter smoke
+  writes a temporary pass-through service worker into the built preview, opens a
+  fresh Chrome profile, registers the worker, reloads under controller, and
+  requires the app's own deployment-preflight/support-policy markers to report
+  `pwa`, `preflight-required`/`warning`, activated controller state, and the
+  redacted controller script path. That proves detection and artifact routing
+  from real browser state without claiming PWA support is production-ready.
   Root source imports are now guarded by static graph checks, dynamic import
   checks, a Next 16 production-build smoke that imports the client/server
   roots from source and verifies the WASM glue dynamic import path is
@@ -3983,7 +3990,9 @@ Most recent mutation-status rerun:
   runners. Remaining matrix work is deeper browser/framework execution beyond
   the policy matrix and existing proofs, especially richer
   multi-client/browser Syncular realtime over Durable Object WebSocket,
-  Safari, Firefox, private mode, WebViews, and PWAs.
+  Safari, Firefox, private mode, WebViews, installed-PWA cache/update
+  semantics, and PWA offline persistence beyond the first service-worker
+  controller classification proof.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.
@@ -4211,6 +4220,20 @@ Most recent mutation-status rerun:
   passed. Hosted Checks run `28538884038` on commit `8fd1c74d` then passed the
   full matrix, including `starter-browser-preview`, confirming the same-database
   duplicate-tab writer proof in hosted Chrome.
+- 2026-07-01: Added the first real-browser service-worker-controlled PWA
+  classification branch to the starter smoke. The build smoke now writes a
+  temporary pass-through service worker into the starter `dist`, then the
+  Chrome/CDP path opens a fresh profile, registers that worker, reloads under
+  controller, and requires the starter's own hidden markers to report
+  `deploymentPreflight.serviceWorkerControlled=true`, activated controller
+  state, controller script path `/__syncular-smoke-pwa-sw.js`, support-policy
+  context `pwa`, policy `preflight-required`, status `warning`, and
+  `browser_support.target_evidence_required`. This moves PWA/cache-skew
+  classification from helper-only coverage into hosted-browser evidence while
+  preserving the product stance that PWA remains target-evidence-gated, not
+  automatically supported. Local `create-syncular-app` typecheck, focused
+  Biome, non-Chrome scaffold smoke, docs stale check, and diff check passed;
+  hosted Checks are still pending for this slice.
 
 ## Next Action
 
@@ -4218,10 +4241,14 @@ Pick the next implementation slice from the remaining risks. The immediate
 starter browser-preview blocker is cleared, same-client duplicate-tab open
 contention, generated write pressure, and storage recovery action mapping are
 covered in hosted Chrome, and the same-database duplicate-tab writer branch is
-now also confirmed in hosted Chrome. Production ops readiness is now part of
-release rehearsal when evidence is present or required. Strong follow-ups are
-actual browser suspension/shutdown lifecycle coverage, actual
-quota-exhaustion/eviction and storage-shutdown browser proof, lower-level
-storage contention/failure behavior beyond duplicate-tab generated writes, and
-browser/bundler matrix execution, especially Safari, Firefox, private mode,
-WebViews, and PWAs.
+now also confirmed in hosted Chrome. The next slice is the new
+service-worker-controlled PWA classification proof; local code checks are green,
+and the non-Chrome scaffold smoke passes, but it still needs hosted Chrome
+confirmation.
+Production ops readiness is now part of release rehearsal when evidence is
+present or required. Strong follow-ups after that remain actual browser
+suspension/shutdown lifecycle coverage, actual quota-exhaustion/eviction and
+storage-shutdown browser proof, lower-level storage contention/failure behavior
+beyond duplicate-tab generated writes, and browser/bundler matrix execution,
+especially Safari, Firefox, private mode, WebViews, installed-PWA cache/update
+semantics, and PWA offline persistence beyond controller classification.

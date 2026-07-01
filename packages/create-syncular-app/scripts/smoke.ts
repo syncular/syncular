@@ -20,7 +20,8 @@ import { Buffer } from 'node:buffer';
  *    contention timeout/recovery, storage preflight-to-recovery action
  *    mapping, two-tab propagation, same-client page reload/reopen persistence,
  *    same-client duplicate-tab open/write contention, generated write
- *    pressure, and same-profile browser process restart persistence.
+ *    pressure, same-profile browser process restart persistence, and
+ *    service-worker-controlled PWA support-policy classification.
  *    After the happy path, the browser smoke also forces a hidden
  *    support-bundle marker failure and verifies the live
  *    browser-preview-failure artifact contract from real Chrome probe data.
@@ -51,6 +52,7 @@ const STARTER_LOCAL_RECOVERY_LOCK_NAME =
   'syncular:create-syncular-app:local-recovery';
 const STARTER_LOCAL_RECOVERY_LOCK_TIMEOUT_MS = 1_000;
 const STARTER_WRITE_PRESSURE_PROOF_COUNT = 4;
+const STARTER_PWA_SMOKE_SERVICE_WORKER_PATH = '/__syncular-smoke-pwa-sw.js';
 const BROWSER_PREVIEW_SMOKE_TIMEOUT_MS = 180_000;
 const CDP_CONNECT_TIMEOUT_MS = 10_000;
 const CDP_COMMAND_TIMEOUT_MS = 30_000;
@@ -146,6 +148,31 @@ async function runLinkedViteBuild(
     );
   }
   await run(process.execPath, [viteBin, 'build'], { cwd: appDir, env });
+}
+
+async function writeBuiltPreviewSmokeServiceWorker(
+  appDir: string
+): Promise<void> {
+  await writeFile(
+    join(appDir, 'dist', STARTER_PWA_SMOKE_SERVICE_WORKER_PATH.slice(1)),
+    `self.addEventListener('install', (event) => {
+  event.waitUntil(self.skipWaiting());
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SYNCULAR_SMOKE_SKIP_WAITING') {
+    event.waitUntil(self.skipWaiting());
+  }
+});
+
+self.addEventListener('fetch', () => {});
+`,
+    'utf8'
+  );
 }
 
 /**
@@ -638,6 +665,14 @@ async function runBrowserPreviewSmoke(args: {
     origin: args.origin,
     userDataDir: `${args.userDataDir}-support-bundle-failure`,
   });
+  log('real-browser smoke: proving service-worker-controlled PWA policy');
+  await proveStarterPwaServiceWorkerContext({
+    chrome: args.chrome,
+    failureArtifactPath: pwaFailureArtifactPath(args.failureArtifactPath),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    userDataDir: `${args.userDataDir}-pwa`,
+  });
   log('real-browser built-preview preflight smoke passed');
 }
 
@@ -645,6 +680,12 @@ function supportBundleFailureArtifactPath(failureArtifactPath: string): string {
   return failureArtifactPath.endsWith('.json')
     ? failureArtifactPath.replace(/\.json$/u, '.support-bundle.json')
     : `${failureArtifactPath}.support-bundle.json`;
+}
+
+function pwaFailureArtifactPath(failureArtifactPath: string): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(/\.json$/u, '.pwa.json')
+    : `${failureArtifactPath}.pwa.json`;
 }
 
 async function withTimeout<T>(args: {
@@ -2817,6 +2858,201 @@ async function proveStarterSupportBundleFailureArtifact(args: {
   }
 }
 
+async function proveStarterPwaServiceWorkerContext(args: {
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  const baseUrl = `${args.origin}/?syncularClientId=web-pwa&syncularPwaProof=${Date.now()}`;
+  let session: CdpSession | null = null;
+
+  try {
+    const target = await createChromeTarget(chrome.debugPort, 'about:blank');
+    session = await CdpSession.connect(target.webSocketDebuggerUrl);
+    await enableChromeTarget(session);
+    await navigateChromeTarget(session, baseUrl);
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+
+    const registration = await registerStarterSmokeServiceWorker(session);
+    if (!registration.ok) {
+      const probe = await readStarterBrowserProbe(session);
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-service-worker-registration-failed',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA service worker registration failed: ${registration.reason}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    await navigateChromeTarget(
+      session,
+      `${baseUrl}&syncularPwaControlled=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterPwaServiceWorkerEvidence({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+  } finally {
+    session?.close();
+    await stopProcess(chrome.process);
+  }
+}
+
+type StarterSmokeServiceWorkerRegistrationResult =
+  | {
+      ok: true;
+      controlled: boolean;
+      scriptPath: string | null;
+      state: string | null;
+    }
+  | { ok: false; reason: string };
+
+async function registerStarterSmokeServiceWorker(
+  session: CdpSession
+): Promise<StarterSmokeServiceWorkerRegistrationResult> {
+  return session.evaluate<StarterSmokeServiceWorkerRegistrationResult>(
+    `(async () => {
+      const scriptPath = ${JSON.stringify(STARTER_PWA_SMOKE_SERVICE_WORKER_PATH)};
+      const serviceWorker = globalThis.navigator?.serviceWorker;
+      if (typeof serviceWorker?.register !== 'function') {
+        return { ok: false, reason: 'service-worker-unavailable' };
+      }
+
+      const registration = await serviceWorker.register(scriptPath, {
+        scope: '/',
+      });
+      const waitForWorkerState = (worker, state) =>
+        new Promise((resolve, reject) => {
+          if (!worker) {
+            resolve(false);
+            return;
+          }
+          if (worker.state === state) {
+            resolve(true);
+            return;
+          }
+          const timeout = setTimeout(() => {
+            worker.removeEventListener('statechange', onStateChange);
+            reject(new Error('timed out waiting for service worker ' + state));
+          }, 10_000);
+          const onStateChange = () => {
+            if (worker.state !== state) return;
+            clearTimeout(timeout);
+            worker.removeEventListener('statechange', onStateChange);
+            resolve(true);
+          };
+          worker.addEventListener('statechange', onStateChange);
+        });
+
+      if (registration.installing) {
+        await waitForWorkerState(registration.installing, 'activated');
+      } else if (registration.waiting) {
+        registration.waiting.postMessage({ type: 'SYNCULAR_SMOKE_SKIP_WAITING' });
+        await waitForWorkerState(registration.waiting, 'activated');
+      } else if (registration.active?.state !== 'activated') {
+        await waitForWorkerState(registration.active, 'activated');
+      }
+
+      await serviceWorker.ready;
+      if (!serviceWorker.controller) {
+        await new Promise((resolve) => {
+          const timeout = setTimeout(resolve, 2_000);
+          serviceWorker.addEventListener(
+            'controllerchange',
+            () => {
+              clearTimeout(timeout);
+              resolve(true);
+            },
+            { once: true }
+          );
+        });
+      }
+
+      const controller = serviceWorker.controller;
+      const scriptUrl = registration.active?.scriptURL ?? controller?.scriptURL ?? null;
+      return {
+        ok: true,
+        controlled: controller !== null,
+        scriptPath: scriptUrl === null ? null : new URL(scriptUrl, window.location.href).pathname,
+        state: registration.active?.state ?? controller?.state ?? null,
+      };
+    })()`
+  );
+}
+
+async function waitForStarterPwaServiceWorkerEvidence(args: {
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-service-worker-policy-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA service worker policy proof failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    if (
+      probe.deploymentPreflight.serviceWorker === 'true' &&
+      probe.deploymentPreflight.serviceWorkerControlled === 'true' &&
+      probe.deploymentPreflight.serviceWorkerControllerScriptPath ===
+        STARTER_PWA_SMOKE_SERVICE_WORKER_PATH &&
+      probe.deploymentPreflight.serviceWorkerControllerState === 'activated' &&
+      probe.browserSupportPolicy.context === 'pwa' &&
+      probe.browserSupportPolicy.policy === 'preflight-required' &&
+      probe.browserSupportPolicy.status === 'warning' &&
+      probe.browserSupportPolicy.reasonCodes.includes(
+        'browser_support.target_evidence_required'
+      )
+    ) {
+      return;
+    }
+
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'pwa-service-worker-policy-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview PWA service worker policy evidence. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
 async function forceStarterSupportBundleFailureMarker(
   session: CdpSession
 ): Promise<void> {
@@ -4287,6 +4523,7 @@ async function main(): Promise<void> {
     // and assets are reachable. If a browser is available, execute the built
     // app and wait for the preflight-gated local database to open.
     await runLinkedViteBuild(appDir, appEnv);
+    await writeBuiltPreviewSmokeServiceWorker(appDir);
     devProcess = spawn('bun', ['scripts/dev.ts', '--preview'], {
       cwd: appDir,
       stdio: 'inherit',
