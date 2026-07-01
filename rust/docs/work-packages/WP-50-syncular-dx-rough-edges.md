@@ -2852,6 +2852,13 @@ Most recent browser lifecycle resume helper rerun:
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `git diff --check`
+  - Hosted follow-up `gh workflow run Checks --ref
+    bkniffler/wp50-dx-health` / `gh run watch 28532035671 --exit-status`
+    passed the full Checks matrix on `36a274b4`, including
+    `starter-browser-preview`. That hosted Chrome path is the real-browser
+    authority for the dispatched `freeze` pause marker and browser `resume`
+    foreground catch-up marker because this local machine has no
+    Chrome/Chromium binary.
   - Focused lifecycle tests now pass for browser `resume` catch-up, `freeze`
     pause evidence, and listener teardown for both events.
   - Passed dev server health/page/module/preflight transform checks.
