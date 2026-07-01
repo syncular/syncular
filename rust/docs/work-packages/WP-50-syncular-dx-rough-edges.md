@@ -749,6 +749,56 @@ contract, not to preserve the notes as a second backlog.
   client behavior. All retained work should stay Rust-first, generated-client
   first, and fail-closed around scoped access.
 
+### Feedback Intake Canonicalization
+
+The pasted integration notes are an external, untracked artifact. This WP is
+the tracked canonical copy of everything worth retaining from that feedback.
+Future sessions should not need the paste to understand the product pressure:
+each accepted point must live as an implementation requirement, an acceptance
+bar, a remaining risk, or a resolved anti-solution in this file.
+
+Keep the accepted feedback collapsed into these product contracts:
+
+- Runtime truth contract: UI health, support bundles, Console diagnostics,
+  deploy readiness, testkit assertions, and failure artifacts should all
+  answer the same questions about persistence, schema compatibility,
+  bootstrap, realtime, last failure, recovery owner, and safe next action.
+- Freshness and lifecycle contract: bootstrap, explicit pull, autosync,
+  realtime wakeup, command acknowledgement, local apply, and local query
+  visibility need ordered, app-facing evidence. Manual `sync()` calls are not
+  the default stale-read fix.
+- Auth, scope, and authority contract: actor, token subject, membership,
+  subscription, table, scope, partition, blob reference row, and storage object
+  semantics should be visible enough to debug safely, while access remains
+  fail-closed and secrets stay redacted.
+- Deploy and version contract: generated output, migrations, server schema,
+  runtime package versions, served WASM/Worker assets, browser caches, and
+  local database schema must have a checkable compatibility story before
+  traffic hits an app.
+- Negative-path evidence contract: the canonical app/testkit recipe should
+  prove denied scope, auth replacement, realtime recovery, offline replay,
+  local visibility, blob access, persistence durability, and redacted failure
+  artifacts against real app surfaces.
+- Import and dependency contract: optional integrations stay behind subpaths
+  and peer dependencies, with root import and release matrices proving Bun,
+  native-driver, Cloudflare, S3, Sentry, React Native, Tauri, and CRDT/Yjs code
+  does not leak into unrelated apps.
+- Operations and recovery contract: operator docs and helpers should cover
+  schema readiness, upgrade/rollback, backup/restore, blob-store consistency,
+  rate-limit tuning, credential rotation, local reset/rebootstrap, sign-out,
+  and destructive recovery guardrails.
+
+Do not reinterpret the feedback as permission to add convenient shortcuts:
+
+- No old JavaScript-client compatibility branches.
+- No request-startup production migrations.
+- No raw synced SQL writes as a public app mutation path.
+- No global blob hash or package row as an implicit scoped access grant.
+- No "lite" browser database SKU used as a substitute for reducing real core
+  cost and publishing honest size/init budgets.
+- No package splits whose only purpose is hiding dependencies that should be
+  handled through subpaths, peers, and import-side-effect checks.
+
 ### 2026-07-01 Feedback Addendum
 
 The feedback is worth keeping, but the implementation should avoid turning it
@@ -1032,6 +1082,11 @@ online propagation, or reconnect behavior can change.
   stability policy, generated-client ownership boundaries, failure-driven docs
   examples, reproducible fixture topology, and first-run docs that route users
   through the golden app loop before reference pages.
+- A canonical feedback-intake pass now records the external Skaldsong feedback
+  as tracked WP-50 product contracts: runtime truth, freshness/lifecycle,
+  auth/scope authority, deploy/version compatibility, negative-path evidence,
+  import/dependency isolation, and operations/recovery, plus explicit
+  anti-solutions that should not be revived in later sessions.
 - A final checklist pass added DX completion smell tests for first-run mental
   model, runtime truth, failure specificity, recovery ownership, freshness,
   authority, deploy confidence, browser persistence, optional dependencies,
