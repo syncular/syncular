@@ -799,6 +799,44 @@ Do not reinterpret the feedback as permission to add convenient shortcuts:
 - No package splits whose only purpose is hiding dependencies that should be
   handled through subpaths, peers, and import-side-effect checks.
 
+### 2026-07-01 Pasted Feedback Intake Verdict
+
+The latest pasted Skaldsong feedback is accepted into WP-50 as product pressure,
+not as a separate raw backlog. The worthy parts are already represented in the
+sections above and should be preserved through implementation in these forms:
+
+- Browser runtime truth: browser health, deployment preflight, support bundles,
+  and failure artifacts must expose durable-vs-ephemeral storage, Worker/WASM
+  readiness, active subscriptions, last sync error, realtime socket state, and
+  whether an in-memory fallback was intentional.
+- Bootstrap and freshness truth: initial bootstrap, explicit pull, autosync,
+  realtime wakeup, authoritative command acknowledgement, and local read-model
+  visibility need distinct state and docs. Manual `sync()` must not become the
+  blessed stale-read workaround.
+- Auth and scope truth: subscription authorization failures, token/campaign
+  scope mismatches, revoked membership, and denied tables need typed errors
+  with safe actor/scope/table/subscription detail that tests can assert without
+  parsing server prose.
+- Realtime proof: tests and support output must show more than an open socket.
+  The useful chain is scope joined -> event received -> pull/recovery reason
+  -> local apply -> local visibility, with stable request/cursor markers.
+- Blob and package authority: global package rows or content hashes are not
+  access grants. Shared bytes need scoped metadata rows or an explicit shared
+  partition policy, and blob failures must distinguish missing refs, forbidden
+  scope, URL/token failure, upload/blob record gaps, and missing storage bytes.
+- Deploy and schema readiness: migrations remain operator/deploy work, and CI
+  needs machine-readable readiness for expected tables, schema versions,
+  generated output freshness, server compatibility, and local/browser open
+  failures.
+- Deterministic app testing: the canonical recipe should use real auth, real
+  server routes, real browser persistence, realtime, scoped actors/tokens,
+  campaign or project membership changes, denied access, and redacted failure
+  artifacts.
+- Public API and log vocabulary: UI-facing helpers, generated wrappers,
+  operator checks, testkit assertions, Console rows, logs, metrics, and Sentry
+  attributes should share stable codes and safe detail fields, with clear
+  audience labels for what is app-facing vs debug/support-only.
+
 ### 2026-07-01 Feedback Addendum
 
 The feedback is worth keeping, but the implementation should avoid turning it
@@ -1189,6 +1227,11 @@ online propagation, or reconnect behavior can change.
   docs information scent, public-package release confidence,
   cross-environment unsupported states, data-shape escape hatches, telemetry
   naming, and destructive local-action guardrails.
+- A latest pasted-feedback intake verdict now keeps the worthy source notes as
+  retained product contracts for browser runtime truth, bootstrap/freshness
+  semantics, auth/scope failures, realtime proof, blob/package authority,
+  deploy/schema readiness, deterministic app tests, and shared public API/log
+  vocabulary.
 - The first failure-artifact ingestion slice adds
   `POST /console/client-diagnostics/browser-preview-failure`, accepting either
   the raw `create-syncular-app` `browser-preview-failure.json` artifact or a

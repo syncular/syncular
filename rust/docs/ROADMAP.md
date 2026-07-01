@@ -261,6 +261,11 @@ read-only review:
     worker/concurrency semantics, offline truthfulness, artifact ingestion,
     public-package release confidence, unsupported-environment states,
     telemetry naming, and destructive-action guardrails to that register.
+    The latest pasted Skaldsong feedback intake is now canonicalized in the
+    rough-edge register as retained product contracts for browser runtime
+    truth, bootstrap/freshness semantics, auth/scope failures, realtime proof,
+    blob/package authority, deploy/schema readiness, deterministic app tests,
+    and shared public API/log vocabulary.
     Local recovery
     controls now expose a
     first app-facing plan/action API through
