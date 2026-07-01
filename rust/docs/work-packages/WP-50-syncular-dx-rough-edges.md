@@ -4565,7 +4565,12 @@ Most recent browser-health failure-artifact rerun:
   `bun --cwd packages/create-syncular-app tsgo`,
   `bunx biome check packages/create-syncular-app/scripts/smoke.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/template/src/client/syncular.ts`,
   and `bun --cwd packages/create-syncular-app smoke`. Chrome was not installed
-  locally, so hosted Checks still need to confirm the new real-browser branch.
+  locally; hosted Checks run `28553329494` on commit `58870d5c` passed the full
+  matrix, including `starter-browser-preview`. The Chrome job log reached
+  `real-browser smoke: proving shutdown replay recovery`,
+  `real-browser smoke: proving browser storage eviction recovery`, and then
+  `real-browser built-preview preflight smoke passed`, confirming the new
+  shutdown replay branch in hosted Chrome.
 
 ## Next Action
 
@@ -4602,10 +4607,10 @@ confirmed in hosted Chrome. Explicit origin-storage eviction/rebootstrap
 recovery is also confirmed in hosted Chrome through Checks run `28552359995`.
 The sync-held shutdown replay proof now covers an unsynced generated write
 surviving browser process stop/restart and replaying after normal sync resumes;
-hosted Chrome confirmation for that branch is pending. The next lifecycle
-follow-up should move to discarded-tab, browser/host-driven eviction beyond
-explicit CDP origin clear, storage-shutdown, and lower-level storage-failure
-behavior.
+hosted Checks run `28553329494` confirmed that branch in Chrome. The next
+lifecycle follow-up should move to discarded-tab, browser/host-driven eviction
+beyond explicit CDP origin clear, storage-shutdown, and lower-level
+storage-failure behavior.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 discard/shutdown lifecycle coverage, host-driven eviction and storage-shutdown

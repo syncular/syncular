@@ -269,8 +269,9 @@ read-only review:
     restarts the same profile and client id with sync still held to prove the
     unsynced row restored from the persistent browser database, then reloads
     with normal sync startup and waits for a separate observer client to
-    receive the replay through sync/realtime. Host-driven eviction and
-    storage-shutdown behavior remain matrix work. The starter now also records
+    receive the replay through sync/realtime. Hosted Checks run `28553329494`
+    on commit `58870d5c` confirmed that branch in Chrome. Host-driven eviction
+    and storage-shutdown behavior remain matrix work. The starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply
     evidence, and local-visibility evidence in the hidden marker and browser
@@ -365,10 +366,10 @@ read-only review:
     process. It also runs a sync-held shutdown replay proof for an unsynced
     generated task: manual sync startup, local visibility before browser stop,
     same-profile local restore after restart, and observer propagation after
-    normal sync resumes. The branch now also writes a no-cache pass-through
-    service worker into the built starter preview, opens a fresh Chrome
-    profile, registers the worker, reloads under service-worker control, and
-    requires the starter's
+    normal sync resumes; hosted Checks run `28553329494` confirmed that branch
+    in Chrome. The branch now also writes a no-cache pass-through service worker
+    into the built starter preview, opens a fresh Chrome profile, registers the
+    worker, reloads under service-worker control, and requires the starter's
     preflight/support-policy markers to report `pwa`,
     `preflight-required`/`warning`, the activated controller state, and the
     redacted controller script path instead of treating PWAs as automatically
