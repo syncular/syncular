@@ -57,6 +57,7 @@ export type SyncularBrowserPreviewProbe = {
   browserHealth: Record<string, unknown>;
   deploymentPreflight: Record<string, unknown>;
   browserSupportPolicy: Record<string, unknown>;
+  commandTimelineProof: Record<string, unknown>;
   supportBundle: Record<string, unknown>;
   lifecycleResume: Record<string, unknown>;
   lifecyclePause: Record<string, unknown>;
@@ -241,6 +242,10 @@ function assertBrowserPreviewProbe(value: unknown, path: string): void {
     value.browserSupportPolicy,
     `${path}.browserSupportPolicy`
   );
+  assertBrowserCommandTimelineProof(
+    value.commandTimelineProof,
+    `${path}.commandTimelineProof`
+  );
   assertBrowserPreviewSupportBundle(
     value.supportBundle,
     `${path}.supportBundle`
@@ -319,6 +324,78 @@ function assertBrowserPreviewSupportBundle(value: unknown, path: string): void {
   }
   if (value.redacted !== 'true') {
     throw new Error(`${path}.redacted was not "true"`);
+  }
+}
+
+function assertBrowserCommandTimelineProof(value: unknown, path: string): void {
+  assertRecord(value, path);
+  for (const key of [
+    'complete',
+    'localApplyObserved',
+    'localVisibilityObserved',
+    'outboxPersisted',
+    'pullReasonObserved',
+    'realtimeCursorObserved',
+    'requestCorrelated',
+    'scopeJoined',
+    'serverCommitObserved',
+    'syncAttemptObserved',
+  ] as const) {
+    assertBoolean(value[key], `${path}.${key}`);
+  }
+  for (const key of ['missingEvidence', 'subscriptionIds'] as const) {
+    assertTextArray(value[key], `${path}.${key}`);
+  }
+  assertCountMatchesArray(
+    value,
+    'missingEvidenceCount',
+    'missingEvidence',
+    path
+  );
+  assertCountMatchesArray(
+    value,
+    'subscriptionIdCount',
+    'subscriptionIds',
+    path
+  );
+  for (const key of [
+    'clientCommitId',
+    'error',
+    'errorCode',
+    'localApplyOutboxId',
+    'localVisibilitySource',
+    'localVisibilityState',
+    'localVisibilityTrigger',
+    'pullReason',
+    'requestId',
+    'state',
+    'status',
+    'syncAttemptId',
+    'traceId',
+    'spanId',
+  ] as const) {
+    assertNullableString(value[key], `${path}.${key}`);
+  }
+  for (const key of [
+    'contextEventCount',
+    'count',
+    'eventCount',
+    'matchedEventCount',
+  ] as const) {
+    assertNonNegativeNumber(value[key], `${path}.${key}`);
+  }
+  for (const key of [
+    'durationMs',
+    'localApplyCommitSeq',
+    'serverCommitSeq',
+  ] as const) {
+    assertNullableNonNegativeNumber(value[key], `${path}.${key}`);
+  }
+  if (
+    value.realtimeCursor !== null &&
+    typeof value.realtimeCursor !== 'string'
+  ) {
+    assertNonNegativeNumber(value.realtimeCursor, `${path}.realtimeCursor`);
   }
 }
 

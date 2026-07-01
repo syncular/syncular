@@ -59,6 +59,7 @@ describe('runtime timeline', () => {
       requestIds: ['req-1'],
       syncAttemptIds: ['attempt-1'],
       affectedTables: ['tasks'],
+      subscriptionIds: ['sub-a'],
       requiresAction: false,
     });
     expect(

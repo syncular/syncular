@@ -352,6 +352,9 @@ async function verifyBuiltPreviewAssets(
         assetBody.includes('data-syncular-command-timeline-proof-status') &&
         assetBody.includes(
           'data-syncular-command-timeline-proof-local-visibility-observed'
+        ) &&
+        assetBody.includes(
+          'data-syncular-command-timeline-proof-realtime-cursor'
         );
     } else {
       const assetBytes = (await response.arrayBuffer()).byteLength;
@@ -952,7 +955,10 @@ type BrowserPreviewProbe = {
     errorCode: string | null;
     eventCount: number;
     localApplyObserved: boolean;
+    localApplyCommitSeq: number | null;
+    localApplyOutboxId: string | null;
     localVisibilityObserved: boolean;
+    localVisibilitySource: string | null;
     localVisibilityState: string | null;
     localVisibilityTrigger: string | null;
     matchedEventCount: number;
@@ -960,12 +966,22 @@ type BrowserPreviewProbe = {
     missingEvidenceCount: number;
     outboxPersisted: boolean;
     pullReasonObserved: boolean;
+    pullReason: string | null;
     realtimeCursorObserved: boolean;
+    realtimeCursor: number | string | null;
     requestCorrelated: boolean;
+    requestId: string | null;
     serverCommitObserved: boolean;
+    serverCommitSeq: number | null;
+    scopeJoined: boolean;
     state: string | null;
     status: string | null;
+    subscriptionIdCount: number;
+    subscriptionIds: string[];
+    syncAttemptId: string | null;
     syncAttemptObserved: boolean;
+    traceId: string | null;
+    spanId: string | null;
   };
   lifecycleResume: {
     status: string | null;
@@ -1177,8 +1193,34 @@ async function readStarterBrowserProbe(
       const number = Number(value);
       return Number.isFinite(number) && number >= 0 ? number : null;
     };
+    const readCommandTimelineProofText = (name) => {
+      const value = commandTimelineProof?.getAttribute(name) ?? null;
+      return value === null || value === '' ? null : value;
+    };
+    const readCommandTimelineProofTextArray = (name) => {
+      const value = commandTimelineProof?.getAttribute(name) ?? '';
+      return value === '' ? [] : value.split(',').filter(Boolean);
+    };
+    const readCommandTimelineProofCursor = (name) => {
+      const value = commandTimelineProof?.getAttribute(name) ?? null;
+      if (value === null || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number : value;
+    };
     const commandTimelineProofCount = Number(commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-count') ?? 0);
     const commandTimelineProofDurationMs = readCommandTimelineProofNumber('data-syncular-command-timeline-proof-duration-ms');
+    const commandTimelineProofLocalApplyCommitSeq = readCommandTimelineProofNumber('data-syncular-command-timeline-proof-local-apply-commit-seq');
+    const commandTimelineProofLocalApplyOutboxId = readCommandTimelineProofText('data-syncular-command-timeline-proof-local-apply-outbox-id');
+    const commandTimelineProofLocalVisibilitySource = readCommandTimelineProofText('data-syncular-command-timeline-proof-local-visibility-source');
+    const commandTimelineProofPullReason = readCommandTimelineProofText('data-syncular-command-timeline-proof-pull-reason');
+    const commandTimelineProofRealtimeCursor = readCommandTimelineProofCursor('data-syncular-command-timeline-proof-realtime-cursor');
+    const commandTimelineProofRequestId = readCommandTimelineProofText('data-syncular-command-timeline-proof-request-id');
+    const commandTimelineProofServerCommitSeq = readCommandTimelineProofNumber('data-syncular-command-timeline-proof-server-commit-seq');
+    const commandTimelineProofScopeJoined = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-scope-joined') === 'true';
+    const commandTimelineProofSubscriptionIds = readCommandTimelineProofTextArray('data-syncular-command-timeline-proof-subscription-ids');
+    const commandTimelineProofSyncAttemptId = readCommandTimelineProofText('data-syncular-command-timeline-proof-sync-attempt-id');
+    const commandTimelineProofTraceId = readCommandTimelineProofText('data-syncular-command-timeline-proof-trace-id');
+    const commandTimelineProofSpanId = readCommandTimelineProofText('data-syncular-command-timeline-proof-span-id');
     const deploymentPreflight = document.querySelector('[data-syncular-deployment-preflight-status]');
     const readDeploymentPreflightNumber = (name) => {
       const value = deploymentPreflight?.getAttribute(name) ?? null;
@@ -1587,7 +1629,10 @@ async function readStarterBrowserProbe(
             : commandTimelineProofErrorCode,
         eventCount: commandTimelineProofEventCount,
         localApplyObserved: commandTimelineProofLocalApplyObserved,
+        localApplyCommitSeq: commandTimelineProofLocalApplyCommitSeq,
+        localApplyOutboxId: commandTimelineProofLocalApplyOutboxId,
         localVisibilityObserved: commandTimelineProofLocalVisibilityObserved,
+        localVisibilitySource: commandTimelineProofLocalVisibilitySource,
         localVisibilityState:
           commandTimelineProofLocalVisibilityState === ''
             ? null
@@ -1601,15 +1646,25 @@ async function readStarterBrowserProbe(
         missingEvidenceCount: commandTimelineProofMissingEvidenceCount,
         outboxPersisted: commandTimelineProofOutboxPersisted,
         pullReasonObserved: commandTimelineProofPullReasonObserved,
+        pullReason: commandTimelineProofPullReason,
         realtimeCursorObserved: commandTimelineProofRealtimeCursorObserved,
+        realtimeCursor: commandTimelineProofRealtimeCursor,
         requestCorrelated: commandTimelineProofRequestCorrelated,
+        requestId: commandTimelineProofRequestId,
         serverCommitObserved: commandTimelineProofServerCommitObserved,
+        serverCommitSeq: commandTimelineProofServerCommitSeq,
+        scopeJoined: commandTimelineProofScopeJoined,
         state:
           commandTimelineProofState === ''
             ? null
             : commandTimelineProofState,
         status: commandTimelineProofStatus,
+        subscriptionIdCount: commandTimelineProofSubscriptionIds.length,
+        subscriptionIds: commandTimelineProofSubscriptionIds,
+        syncAttemptId: commandTimelineProofSyncAttemptId,
         syncAttemptObserved: commandTimelineProofSyncAttemptObserved,
+        traceId: commandTimelineProofTraceId,
+        spanId: commandTimelineProofSpanId,
       },
       lifecycleResume: {
         status: lifecycleResumeStatus,
@@ -4287,7 +4342,10 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         errorCode: null,
         eventCount: 3,
         localApplyObserved: true,
+        localApplyCommitSeq: null,
+        localApplyOutboxId: 'outbox-self-check',
         localVisibilityObserved: true,
+        localVisibilitySource: 'query',
         localVisibilityState: 'visible',
         localVisibilityTrigger: 'initial',
         matchedEventCount: 1,
@@ -4301,12 +4359,22 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         missingEvidenceCount: 5,
         outboxPersisted: true,
         pullReasonObserved: false,
+        pullReason: null,
         realtimeCursorObserved: false,
+        realtimeCursor: null,
         requestCorrelated: false,
+        requestId: null,
         serverCommitObserved: false,
+        serverCommitSeq: null,
+        scopeJoined: true,
         state: 'queued',
         status: 'complete',
+        subscriptionIdCount: 1,
+        subscriptionIds: ['tasks:user-1'],
+        syncAttemptId: null,
         syncAttemptObserved: false,
+        traceId: null,
+        spanId: null,
       },
       lifecycleResume: {
         status: 'complete',
@@ -4872,6 +4940,7 @@ function assertBrowserPreviewCommandTimelineProofShape(
     'realtimeCursorObserved',
     'requestCorrelated',
     'serverCommitObserved',
+    'scopeJoined',
     'syncAttemptObserved',
   ] as const) {
     if (typeof value[key] !== 'boolean') {
@@ -4893,14 +4962,34 @@ function assertBrowserPreviewCommandTimelineProofShape(
       `${path} probe.commandTimelineProof.missingEvidenceCount did not match missingEvidence length`
     );
   }
+  if (
+    !Array.isArray(value.subscriptionIds) ||
+    value.subscriptionIds.some((item) => typeof item !== 'string')
+  ) {
+    throw new Error(
+      `${path} probe.commandTimelineProof.subscriptionIds was not a string array`
+    );
+  }
+  if (value.subscriptionIdCount !== value.subscriptionIds.length) {
+    throw new Error(
+      `${path} probe.commandTimelineProof.subscriptionIdCount did not match subscriptionIds length`
+    );
+  }
   for (const key of [
     'clientCommitId',
     'error',
     'errorCode',
+    'localApplyOutboxId',
+    'localVisibilitySource',
     'localVisibilityState',
     'localVisibilityTrigger',
+    'pullReason',
+    'requestId',
     'state',
     'status',
+    'syncAttemptId',
+    'traceId',
+    'spanId',
   ] as const) {
     if (value[key] !== null && typeof value[key] !== 'string') {
       throw new Error(
@@ -4914,6 +5003,7 @@ function assertBrowserPreviewCommandTimelineProofShape(
     'eventCount',
     'matchedEventCount',
     'missingEvidenceCount',
+    'subscriptionIdCount',
   ] as const) {
     if (
       !isNonNegativeFiniteNumber(value[key]) ||
@@ -4930,6 +5020,22 @@ function assertBrowserPreviewCommandTimelineProofShape(
   ) {
     throw new Error(
       `${path} probe.commandTimelineProof.durationMs was not nullable non-negative number`
+    );
+  }
+  for (const key of ['localApplyCommitSeq', 'serverCommitSeq'] as const) {
+    if (value[key] !== null && !isNonNegativeFiniteNumber(value[key])) {
+      throw new Error(
+        `${path} probe.commandTimelineProof.${key} was not nullable non-negative number`
+      );
+    }
+  }
+  if (
+    value.realtimeCursor !== null &&
+    typeof value.realtimeCursor !== 'string' &&
+    !isNonNegativeFiniteNumber(value.realtimeCursor)
+  ) {
+    throw new Error(
+      `${path} probe.commandTimelineProof.realtimeCursor was not nullable text or non-negative number`
     );
   }
 }

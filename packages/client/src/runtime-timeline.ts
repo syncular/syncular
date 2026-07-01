@@ -107,7 +107,7 @@ export async function getSyncularRuntimeTimeline(
     ),
   ];
   const orderedEvents = limitEvents(sortTimelineEvents(events), options);
-  const summary = summarizeTimeline(orderedEvents, status);
+  const summary = summarizeTimeline(orderedEvents, status, snapshot);
   const timelineStatus = summarizeTimelineStatus(summary);
 
   return {
@@ -416,7 +416,8 @@ function limitEvents(
 
 function summarizeTimeline(
   events: readonly SyncularRuntimeTimelineEvent[],
-  status: SyncularClientStatus | undefined
+  status: SyncularClientStatus | undefined,
+  snapshot: SyncularDiagnosticSnapshot
 ): SyncularRuntimeTimelineSummary {
   const errorEvents = events.filter((event) => event.level === 'error');
   const warningEvents = events.filter((event) => event.level === 'warn');
@@ -434,11 +435,12 @@ function summarizeTimeline(
   const affectedTables = uniqueSorted(
     events.flatMap((event) => collectAffectedTables(event))
   );
-  const subscriptionIds = uniqueSorted(
-    events
+  const subscriptionIds = uniqueSorted([
+    ...events
       .map((event) => event.subscriptionId)
-      .filter((value): value is string => Boolean(value))
-  );
+      .filter((value): value is string => Boolean(value)),
+    ...snapshot.subscriptions.map((subscription) => subscription.id),
+  ]);
   const requiresAction =
     status?.requiresAction ?? status?.lifecycle.requiresAction ?? false;
 

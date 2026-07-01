@@ -601,6 +601,51 @@ const ConsoleBrowserPreviewFailureProbeSchema = z
       })
       .passthrough()
       .optional(),
+    commandTimelineProof: z
+      .object({
+        clientCommitId: ConsoleBrowserPreviewFailureNullableStringSchema,
+        complete: z.boolean(),
+        contextEventCount: z.number().int().nonnegative(),
+        count: z.number().int().nonnegative(),
+        durationMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+        error: ConsoleBrowserPreviewFailureNullableStringSchema,
+        errorCode: ConsoleBrowserPreviewFailureNullableStringSchema,
+        eventCount: z.number().int().nonnegative(),
+        localApplyObserved: z.boolean(),
+        localApplyCommitSeq: ConsoleBrowserPreviewFailureNullableNumberSchema,
+        localApplyOutboxId: ConsoleBrowserPreviewFailureNullableStringSchema,
+        localVisibilityObserved: z.boolean(),
+        localVisibilitySource: ConsoleBrowserPreviewFailureNullableStringSchema,
+        localVisibilityState: ConsoleBrowserPreviewFailureNullableStringSchema,
+        localVisibilityTrigger:
+          ConsoleBrowserPreviewFailureNullableStringSchema,
+        matchedEventCount: z.number().int().nonnegative(),
+        missingEvidence: z.array(z.string()).default([]),
+        missingEvidenceCount: z.number().int().nonnegative(),
+        outboxPersisted: z.boolean(),
+        pullReasonObserved: z.boolean(),
+        pullReason: ConsoleBrowserPreviewFailureNullableStringSchema,
+        realtimeCursorObserved: z.boolean(),
+        realtimeCursor: z.union([
+          z.number().nonnegative(),
+          z.string(),
+          z.null(),
+        ]),
+        requestCorrelated: z.boolean(),
+        requestId: ConsoleBrowserPreviewFailureNullableStringSchema,
+        scopeJoined: z.boolean(),
+        serverCommitObserved: z.boolean(),
+        serverCommitSeq: ConsoleBrowserPreviewFailureNullableNumberSchema,
+        state: ConsoleBrowserPreviewFailureNullableStringSchema,
+        status: ConsoleBrowserPreviewFailureNullableStringSchema,
+        subscriptionIdCount: z.number().int().nonnegative(),
+        subscriptionIds: z.array(z.string()).default([]),
+        syncAttemptId: ConsoleBrowserPreviewFailureNullableStringSchema,
+        syncAttemptObserved: z.boolean(),
+        traceId: ConsoleBrowserPreviewFailureNullableStringSchema,
+        spanId: ConsoleBrowserPreviewFailureNullableStringSchema,
+      })
+      .passthrough(),
     supportBundle: z
       .object({
         status: ConsoleBrowserPreviewFailureNullableStringSchema,

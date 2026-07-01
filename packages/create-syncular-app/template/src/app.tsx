@@ -13,6 +13,7 @@ import {
   type SyncularBrowserSupportPolicyEvaluation,
   type SyncularClientStatus,
   type SyncularCommandTimeline,
+  type SyncularCommandTimelineEvidence,
   type SyncularCommandTimelineMissingEvidence,
   type SyncularCommandTimelineProof,
   type SyncularDiagnosticEvent,
@@ -73,6 +74,7 @@ type CommandTimelineProofPreview = {
   contextEventCount: number;
   count: number;
   durationMs: number | null;
+  evidence: SyncularCommandTimelineEvidence;
   error: string | null;
   errorCode: string | null;
   eventCount: number;
@@ -257,11 +259,18 @@ const emptyCommandTimelineProof: SyncularCommandTimelineProof = {
   complete: false,
 };
 
+const emptyCommandTimelineEvidence: SyncularCommandTimelineEvidence = {
+  scopeJoined: false,
+  subscriptionIds: [],
+  localVisibilityState: 'not-requested',
+};
+
 const initialCommandTimelineProof: CommandTimelineProofPreview = {
   clientCommitId: null,
   contextEventCount: 0,
   count: 0,
   durationMs: null,
+  evidence: emptyCommandTimelineEvidence,
   error: null,
   errorCode: null,
   eventCount: 0,
@@ -2485,11 +2494,14 @@ function summarizeCommandTimelineProof(args: {
     contextEventCount: args.timeline.summary.contextEventCount,
     count: args.count,
     durationMs: args.durationMs,
+    evidence: args.timeline.summary.evidence,
     error: null,
     errorCode: null,
     eventCount: args.timeline.events.length,
-    localVisibilityState: args.localVisibility?.state ?? null,
-    localVisibilityTrigger: localVisibilityTrigger(args.localVisibility),
+    localVisibilityState: args.timeline.summary.evidence.localVisibilityState,
+    localVisibilityTrigger:
+      args.timeline.summary.evidence.localVisibilityTrigger ??
+      localVisibilityTrigger(args.localVisibility),
     matchedEventCount: args.timeline.summary.matchedEventCount,
     missingEvidence: args.timeline.summary.missingEvidence,
     missingEvidenceCount: args.timeline.summary.missingEvidence.length,
@@ -2587,6 +2599,7 @@ function CommandTimelineProofMarker({
 }: {
   commandTimelineProof: CommandTimelineProofPreview;
 }) {
+  const evidence = commandTimelineProof.evidence;
   const proof = commandTimelineProof.proof;
   return (
     <span
@@ -2601,6 +2614,9 @@ function CommandTimelineProofMarker({
       data-syncular-command-timeline-proof-duration-ms={
         commandTimelineProof.durationMs ?? ''
       }
+      data-syncular-command-timeline-proof-evidence-local-visibility-state={
+        evidence.localVisibilityState
+      }
       data-syncular-command-timeline-proof-error={
         commandTimelineProof.error ?? ''
       }
@@ -2613,8 +2629,17 @@ function CommandTimelineProofMarker({
       data-syncular-command-timeline-proof-local-apply-observed={
         proof.localApplyObserved
       }
+      data-syncular-command-timeline-proof-local-apply-commit-seq={
+        evidence.localApplyCommitSeq ?? ''
+      }
+      data-syncular-command-timeline-proof-local-apply-outbox-id={
+        evidence.localApplyOutboxId ?? ''
+      }
       data-syncular-command-timeline-proof-local-visibility-observed={
         proof.localVisibilityObserved
+      }
+      data-syncular-command-timeline-proof-local-visibility-source={
+        evidence.localVisibilitySource ?? ''
       }
       data-syncular-command-timeline-proof-local-visibility-state={
         commandTimelineProof.localVisibilityState ?? ''
@@ -2637,22 +2662,41 @@ function CommandTimelineProofMarker({
       data-syncular-command-timeline-proof-pull-reason-observed={
         proof.pullReasonObserved
       }
+      data-syncular-command-timeline-proof-pull-reason={
+        evidence.pullReason ?? ''
+      }
       data-syncular-command-timeline-proof-realtime-cursor-observed={
         proof.realtimeCursorObserved
+      }
+      data-syncular-command-timeline-proof-realtime-cursor={
+        evidence.realtimeCursor ?? ''
       }
       data-syncular-command-timeline-proof-request-correlated={
         proof.requestCorrelated
       }
+      data-syncular-command-timeline-proof-request-id={evidence.requestId ?? ''}
       data-syncular-command-timeline-proof-server-commit-observed={
         proof.serverCommitObserved
       }
+      data-syncular-command-timeline-proof-server-commit-seq={
+        evidence.serverCommitSeq ?? ''
+      }
+      data-syncular-command-timeline-proof-scope-joined={evidence.scopeJoined}
       data-syncular-command-timeline-proof-state={
         commandTimelineProof.state ?? ''
       }
       data-syncular-command-timeline-proof-status={commandTimelineProof.status}
+      data-syncular-command-timeline-proof-subscription-ids={evidence.subscriptionIds.join(
+        ','
+      )}
+      data-syncular-command-timeline-proof-sync-attempt-id={
+        evidence.syncAttemptId ?? ''
+      }
       data-syncular-command-timeline-proof-sync-attempt-observed={
         proof.syncAttemptObserved
       }
+      data-syncular-command-timeline-proof-trace-id={evidence.traceId ?? ''}
+      data-syncular-command-timeline-proof-span-id={evidence.spanId ?? ''}
       hidden
     />
   );

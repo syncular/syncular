@@ -217,6 +217,9 @@ const timeline = await syncular.commandTimeline({
 });
 console.debug(timeline.summary.proof.complete);
 console.debug(timeline.summary.proof.realtimeCursorObserved);
+console.debug(timeline.summary.evidence.requestId);
+console.debug(timeline.summary.evidence.realtimeCursor);
+console.debug(timeline.summary.evidence.pullReason);
 console.debug(timeline.summary.missingEvidence);
 console.debug(timeline.summary.requestIds);
 console.debug(timeline.trackedCommit.outbox?.outboxId);

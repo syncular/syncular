@@ -1498,6 +1498,13 @@ online propagation, or reconnect behavior can change.
   satisfy the server commit sequence link through `ackedCommitSeq`; any tracked
   redacted outbox summary also adds synthetic local-apply evidence because it
   proves the command was durably accepted locally.
+- The command-timeline evidence slice adds `summary.evidence` beside
+  `summary.proof`, so command artifacts expose concrete joined subscription
+  ids, request/sync/trace/span ids, server commit sequence, realtime cursor,
+  pull reason, local-apply outbox id/commit sequence, and local visibility
+  state/source. The starter browser-preview marker, smoke artifact, testkit
+  validation, and Console/Fleet ingestion now preserve those fields instead of
+  reducing the proof chain to booleans only.
 - `waitForSyncularLocalVisibility(...)` now emits redacted terminal evidence
   through `onEvidence`, including visible, timed-out, failed, trigger, table,
   changed-table, source, and local-query error context. Apps can pass the
@@ -2158,6 +2165,12 @@ online propagation, or reconnect behavior can change.
   default Hono CORS, and projected request ids into diagnostics, runtime
   timelines, command timelines, and support bundles so browser artifacts match
   server `sync_request_events.request_id`.
+- 2026-07-01: Added concrete command-timeline `summary.evidence` values for
+  scope join, subscription ids, request/sync/trace/span ids, server commit
+  sequence, realtime cursor, pull reason, local apply, and local visibility.
+  The generated starter marker and browser-preview smoke artifact now carry
+  those fields, `@syncular/testkit` validates them, and Console/Fleet ingests
+  them into diagnostic details plus compact transport stats.
 - 2026-07-01: Extended browser deployment preflight with lifecycle and
   multi-tab capability checks. The result now reports BroadcastChannel, Web
   Locks, page visibility, `pagehide`, `beforeunload`, resume/shutdown signal
@@ -2741,6 +2754,28 @@ Most recent sync request-id evidence rerun:
 - `bunx biome check packages/client/src/types.ts packages/client/src/diagnostics.ts packages/client/src/rust-client.ts packages/client/src/worker-entry.ts packages/client/src/worker-client.ts packages/client/src/worker-client.test.ts packages/client/src/runtime-timeline.ts packages/client/src/runtime-timeline.test.ts packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/src/support-bundle.ts packages/client/src/support-bundle.test.ts packages/client/src/console-diagnostics.ts packages/client/src/console-diagnostics.test.ts packages/client/src/__tests__/sync-hono.wasm.test.ts packages/server/src/hono/routes/shared.ts packages/server/src/hono/__tests__/create-server.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `bun run docs:stale-check`
 - `bun --cwd apps/docs types:check`
+- `git diff --check`
+
+Most recent command evidence propagation rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/command-timeline.test.ts packages/client/src/runtime-timeline.test.ts`
+  - Passed `8` tests proving `summary.evidence` alongside existing proof
+    booleans and runtime subscription id summary extraction.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/testkit/src/failure-artifacts.test.ts packages/server/src/hono/__tests__/console-routes.test.ts -t "failure artifact|browser preview failure"`
+  - Passed `9` focused tests proving the browser-preview artifact schema,
+    testkit validation, and Console/Fleet ingestion for command timeline
+    evidence values.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/testkit tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/server tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
+  - Passed the non-Chrome scaffold/build/preview artifact path and confirmed
+    the command-timeline marker is present in built assets. Chrome/Chromium was
+    not installed locally, so hosted Checks remain the real-browser proof.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/src/runtime-timeline.ts packages/client/src/runtime-timeline.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts packages/testkit/src/failure-artifacts.ts packages/testkit/src/failure-artifacts.test.ts packages/server/src/hono/console/schemas.ts packages/server/src/hono/console/routes/shared.ts packages/server/src/hono/__tests__/console-routes.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx apps/docs/content/docs/clients/javascript/testing/primitives.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `git diff --check`
 
 Most recent testkit negative-path response assertion rerun:
@@ -4448,9 +4483,12 @@ command-timeline proof marker is also confirmed in hosted Chrome through Checks
 run `28545477587`. Browser health now has a typed lifecycle operation
 projection for app chrome/support output and the same fields are carried in the
 browser-preview failure artifact, testkit assertions, and Console/Fleet
-ingestion. The next lifecycle-facing slice should extend the realtime proof
-chain with joined-scope/event/pull/apply/local-visibility evidence or add the
-first canonical negative-path E2E artifact for auth/scope/blob denial.
+ingestion. Command timeline proof artifacts now also carry the concrete
+joined-scope, request/sync, realtime cursor, pull reason, local apply, and
+local-visibility evidence through starter smoke, testkit assertions, and
+Console/Fleet ingestion. The next lifecycle-facing slice should add the first
+canonical negative-path E2E artifact for auth/scope/blob denial or deepen
+browser lifecycle coverage below the current generated task proof.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 suspension/shutdown lifecycle coverage, eviction and storage-shutdown browser

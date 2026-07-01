@@ -566,7 +566,12 @@ read-only review:
     point directly into command timelines instead of hand-writing a placeholder.
     The starter smoke now exercises that path through the generated app UI so
     browser artifacts carry the command proof booleans and missing-evidence
-    list instead of only a local-visibility timing.
+    list instead of only a local-visibility timing. Command timeline summaries
+    now also expose `summary.evidence`, carrying joined subscription ids,
+    request/sync/trace/span ids, server commit sequence, realtime cursor, pull
+    reason, local-apply outbox id/commit sequence, and local visibility
+    state/source; the starter browser-preview artifact, testkit assertions,
+    and Console/Fleet ingestion preserve those concrete values.
     Sync attempts now also carry a client-generated `requestId` through
     `x-request-id`, diagnostics, runtime timelines, command timelines, and
     support bundles, matching the server request event id used by Hono console

@@ -127,9 +127,12 @@ revoked subscriptions without parsing human error messages.
 
 `database.commandTimeline(...)` exposes `summary.proof` so E2E tests can
 assert the ordered command evidence chain without interpreting timeline event
-arrays. Use `requireCompleteCommandProof(...)` when the test should prove the
-whole chain, or `requireCommandProofEvidence(...)` for narrower browser or
-support-flow checks:
+arrays. It also exposes `summary.evidence` with the concrete subscription ids,
+request id, sync attempt id, realtime cursor, pull reason, local-apply link,
+and local visibility state/source for debugging failed proofs. Use
+`requireCompleteCommandProof(...)` when the test should prove the whole chain,
+or `requireCommandProofEvidence(...)` for narrower browser or support-flow
+checks:
 
 ```ts
 import {

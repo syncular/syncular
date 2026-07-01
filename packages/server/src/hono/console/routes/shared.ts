@@ -780,6 +780,7 @@ export function buildBrowserPreviewFailureClientDiagnosticIngest(
   const browserHealth = probe?.browserHealth ?? null;
   const deploymentPreflight = probe?.deploymentPreflight ?? null;
   const browserSupportPolicy = probe?.browserSupportPolicy ?? null;
+  const commandTimelineProof = probe?.commandTimelineProof ?? null;
   const supportBundle = probe?.supportBundle ?? null;
   const lifecycleResume = probe?.lifecycleResume ?? null;
   const lifecyclePause = probe?.lifecyclePause ?? null;
@@ -796,6 +797,7 @@ export function buildBrowserPreviewFailureClientDiagnosticIngest(
     browserHealth,
     deploymentPreflight,
     browserSupportPolicy,
+    commandTimelineProof,
     supportBundle,
     lifecycleResume,
     lifecyclePause,
@@ -929,6 +931,32 @@ export function buildBrowserPreviewFailureClientDiagnosticIngest(
           null,
         browserSupportPolicyFirstNextStep:
           browserSupportPolicy?.nextSteps[0] ?? null,
+        commandTimelineComplete: commandTimelineProof?.complete ?? null,
+        commandTimelineScopeJoined: commandTimelineProof?.scopeJoined ?? null,
+        commandTimelineSubscriptionIdCount:
+          commandTimelineProof?.subscriptionIdCount ??
+          commandTimelineProof?.subscriptionIds?.length ??
+          null,
+        commandTimelineFirstSubscriptionId:
+          commandTimelineProof?.subscriptionIds[0] ?? null,
+        commandTimelineRequestId: commandTimelineProof?.requestId ?? null,
+        commandTimelineSyncAttemptId:
+          commandTimelineProof?.syncAttemptId ?? null,
+        commandTimelineTraceId: commandTimelineProof?.traceId ?? null,
+        commandTimelineSpanId: commandTimelineProof?.spanId ?? null,
+        commandTimelineRealtimeCursor:
+          commandTimelineProof?.realtimeCursor ?? null,
+        commandTimelinePullReason: commandTimelineProof?.pullReason ?? null,
+        commandTimelineServerCommitSeq:
+          commandTimelineProof?.serverCommitSeq ?? null,
+        commandTimelineLocalApplyOutboxId:
+          commandTimelineProof?.localApplyOutboxId ?? null,
+        commandTimelineLocalApplyCommitSeq:
+          commandTimelineProof?.localApplyCommitSeq ?? null,
+        commandTimelineLocalVisibilityState:
+          commandTimelineProof?.localVisibilityState ?? null,
+        commandTimelineLocalVisibilitySource:
+          commandTimelineProof?.localVisibilitySource ?? null,
         deploymentPreflightMarkerInAssets:
           artifact.metrics.deploymentPreflightMarkerInAssets,
         deploymentPreflightStatus: deploymentPreflight?.status ?? null,

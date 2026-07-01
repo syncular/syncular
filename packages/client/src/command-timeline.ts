@@ -93,6 +93,7 @@ export interface SyncularCommandTimelineSummary {
   state: SyncularTrackedMutationState;
   requiresAction: boolean;
   proof: SyncularCommandTimelineProof;
+  evidence: SyncularCommandTimelineEvidence;
   matchedEventCount: number;
   contextEventCount: number;
   requestIds: string[];
@@ -112,6 +113,23 @@ export interface SyncularCommandTimelineProof {
   localApplyObserved: boolean;
   localVisibilityObserved: boolean;
   complete: boolean;
+}
+
+export interface SyncularCommandTimelineEvidence {
+  scopeJoined: boolean;
+  subscriptionIds: string[];
+  requestId?: string;
+  syncAttemptId?: string;
+  traceId?: string;
+  spanId?: string;
+  serverCommitSeq?: number;
+  realtimeCursor?: number | string | null;
+  pullReason?: string;
+  localApplyOutboxId?: string;
+  localApplyCommitSeq?: number;
+  localVisibilityState: SyncularCommandTimelineVisibilityState;
+  localVisibilityTrigger?: string;
+  localVisibilitySource?: string;
 }
 
 export interface SyncularCommandTimeline {
@@ -166,6 +184,7 @@ export async function getSyncularCommandTimeline(
     trackedCommit,
     runtimeEvents,
     localVisibility: options.localVisibility,
+    subscriptionIds: runtimeTimeline.summary.subscriptionIds,
   });
 
   return {
@@ -389,6 +408,7 @@ function summarizeCommandTimeline(args: {
   trackedCommit: SyncularTrackedMutationCommit;
   runtimeEvents: readonly SyncularCommandTimelineEvent[];
   localVisibility: SyncularCommandTimelineVisibilityEvidence | undefined;
+  subscriptionIds: readonly string[];
 }): SyncularCommandTimelineSummary {
   const missingEvidence = missingCommandEvidence(args);
   const proof = commandProof(args);
@@ -399,6 +419,7 @@ function summarizeCommandTimeline(args: {
       ...proof,
       complete: missingEvidence.length === 0,
     },
+    evidence: commandEvidence(args),
     matchedEventCount: args.runtimeEvents.filter(
       (event) => event.relation === 'matched'
     ).length,
@@ -426,6 +447,64 @@ function summarizeCommandTimeline(args: {
         .filter((value): value is string => Boolean(value))
     ),
     missingEvidence,
+  };
+}
+
+function commandEvidence(args: {
+  trackedCommit: SyncularTrackedMutationCommit;
+  runtimeEvents: readonly SyncularCommandTimelineEvent[];
+  localVisibility: SyncularCommandTimelineVisibilityEvidence | undefined;
+  subscriptionIds: readonly string[];
+}): SyncularCommandTimelineEvidence {
+  const subscriptionIds = uniqueSorted([...args.subscriptionIds]);
+  const requestId = firstEventText(args.runtimeEvents, 'requestId');
+  const syncAttemptId = firstEventText(args.runtimeEvents, 'syncAttemptId');
+  const traceId = firstEventText(args.runtimeEvents, 'traceId');
+  const spanId = firstEventText(args.runtimeEvents, 'spanId');
+  const serverCommitSeq =
+    args.trackedCommit.outbox?.ackedCommitSeq ??
+    firstEventDetailNumber(args.runtimeEvents, 'commitSeq');
+  const realtimeCursor = firstRealtimeCursor(args.runtimeEvents);
+  const pullReason = firstPullReason(args.runtimeEvents);
+  const localApplyOutboxId =
+    args.trackedCommit.outbox?.outboxId ??
+    firstEventDetailText(
+      args.runtimeEvents.filter((event) => event.phase === 'local-apply'),
+      'outboxId'
+    ) ??
+    firstEventDetailText(args.runtimeEvents, 'outboxId');
+  const localApplyCommitSeq =
+    args.trackedCommit.outbox?.ackedCommitSeq ??
+    firstEventDetailNumber(
+      args.runtimeEvents.filter((event) => event.phase === 'local-apply'),
+      'commitSeq'
+    ) ??
+    firstEventDetailNumber(args.runtimeEvents, 'commitSeq');
+  const localVisibilityState = args.localVisibility?.state ?? 'not-requested';
+  const localVisibilityTrigger = visibilityDetailText(
+    args.localVisibility,
+    'trigger'
+  );
+  const localVisibilitySource = visibilityDetailText(
+    args.localVisibility,
+    'source'
+  );
+
+  return {
+    scopeJoined: subscriptionIds.length > 0,
+    subscriptionIds,
+    ...(requestId ? { requestId } : {}),
+    ...(syncAttemptId ? { syncAttemptId } : {}),
+    ...(traceId ? { traceId } : {}),
+    ...(spanId ? { spanId } : {}),
+    ...(serverCommitSeq != null ? { serverCommitSeq } : {}),
+    ...(realtimeCursor !== undefined ? { realtimeCursor } : {}),
+    ...(pullReason ? { pullReason } : {}),
+    ...(localApplyOutboxId ? { localApplyOutboxId } : {}),
+    ...(localApplyCommitSeq != null ? { localApplyCommitSeq } : {}),
+    localVisibilityState,
+    ...(localVisibilityTrigger ? { localVisibilityTrigger } : {}),
+    ...(localVisibilitySource ? { localVisibilitySource } : {}),
   };
 }
 
@@ -516,6 +595,69 @@ function eventsHaveDetail(
   key: string
 ): boolean {
   return events.some((event) => event.details?.[key] != null);
+}
+
+function firstEventText(
+  events: readonly SyncularCommandTimelineEvent[],
+  key: 'requestId' | 'syncAttemptId' | 'traceId' | 'spanId'
+): string | undefined {
+  return events.find((event) => event[key])?.[key];
+}
+
+function firstEventDetailText(
+  events: readonly SyncularCommandTimelineEvent[],
+  key: string
+): string | undefined {
+  for (const event of events) {
+    const value = event.details?.[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return undefined;
+}
+
+function firstEventDetailNumber(
+  events: readonly SyncularCommandTimelineEvent[],
+  key: string
+): number | undefined {
+  for (const event of events) {
+    const value = event.details?.[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function firstRealtimeCursor(
+  events: readonly SyncularCommandTimelineEvent[]
+): number | string | null | undefined {
+  return events.find(
+    (event) => event.phase === 'realtime' && event.cursor !== undefined
+  )?.cursor;
+}
+
+function firstPullReason(
+  events: readonly SyncularCommandTimelineEvent[]
+): string | undefined {
+  for (const event of events) {
+    const reason = event.details?.reason ?? event.details?.pullReason;
+    if (typeof reason === 'string' && reason.length > 0) return reason;
+    if (
+      event.phase === 'sync' &&
+      typeof event.details?.requestType === 'string' &&
+      (event.details.requestType === 'syncPull' ||
+        event.details.requestType === 'syncOnce')
+    ) {
+      return event.details.requestType;
+    }
+  }
+  return undefined;
+}
+
+function visibilityDetailText(
+  visibility: SyncularCommandTimelineVisibilityEvidence | undefined,
+  key: string
+): string | undefined {
+  const value = visibility?.details?.[key];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 function eventsHavePullReason(

@@ -584,6 +584,44 @@ describe('console timeline route filters', () => {
           requiredEvidenceCount: 1,
           status: 'met',
         },
+        commandTimelineProof: {
+          clientCommitId: 'commit-self-check',
+          complete: true,
+          contextEventCount: 4,
+          count: 1,
+          durationMs: 6,
+          error: null,
+          errorCode: null,
+          eventCount: 7,
+          localApplyObserved: true,
+          localApplyCommitSeq: 42,
+          localApplyOutboxId: 'outbox-self-check',
+          localVisibilityObserved: true,
+          localVisibilitySource: 'query',
+          localVisibilityState: 'visible',
+          localVisibilityTrigger: 'initial',
+          matchedEventCount: 3,
+          missingEvidence: [],
+          missingEvidenceCount: 0,
+          outboxPersisted: true,
+          pullReasonObserved: true,
+          pullReason: 'syncPull',
+          realtimeCursorObserved: true,
+          realtimeCursor: 42,
+          requestCorrelated: true,
+          requestId: 'req-self-check',
+          scopeJoined: true,
+          serverCommitObserved: true,
+          serverCommitSeq: 42,
+          state: 'sent',
+          status: 'complete',
+          subscriptionIdCount: 1,
+          subscriptionIds: ['tasks:user-1'],
+          syncAttemptId: 'attempt-self-check',
+          syncAttemptObserved: true,
+          traceId: 'trace-self-check',
+          spanId: 'span-self-check',
+        },
         supportBundle: {
           status: 'failed',
           redacted: 'true',
@@ -2719,6 +2757,33 @@ describe('console timeline route filters', () => {
     expect(accepted.transportStats?.browserSupportPolicyFirstNextStep).toBe(
       'run reopen smoke'
     );
+    expect(accepted.transportStats?.commandTimelineComplete).toBe(true);
+    expect(accepted.transportStats?.commandTimelineScopeJoined).toBe(true);
+    expect(accepted.transportStats?.commandTimelineSubscriptionIdCount).toBe(1);
+    expect(accepted.transportStats?.commandTimelineFirstSubscriptionId).toBe(
+      'tasks:user-1'
+    );
+    expect(accepted.transportStats?.commandTimelineRequestId).toBe(
+      'req-self-check'
+    );
+    expect(accepted.transportStats?.commandTimelineSyncAttemptId).toBe(
+      'attempt-self-check'
+    );
+    expect(accepted.transportStats?.commandTimelineRealtimeCursor).toBe(42);
+    expect(accepted.transportStats?.commandTimelinePullReason).toBe('syncPull');
+    expect(accepted.transportStats?.commandTimelineServerCommitSeq).toBe(42);
+    expect(accepted.transportStats?.commandTimelineLocalApplyOutboxId).toBe(
+      'outbox-self-check'
+    );
+    expect(accepted.transportStats?.commandTimelineLocalApplyCommitSeq).toBe(
+      42
+    );
+    expect(accepted.transportStats?.commandTimelineLocalVisibilityState).toBe(
+      'visible'
+    );
+    expect(accepted.transportStats?.commandTimelineLocalVisibilitySource).toBe(
+      'query'
+    );
     expect(accepted.bootstrap?.status).toBe('ready');
     expect(accepted.bootstrap?.supportBundleIssueCount).toBe(1);
     expect(accepted.timingSummary?.count).toBe(1);
@@ -2783,6 +2848,12 @@ describe('console timeline route filters', () => {
           | undefined
       )?.requiredEvidence
     ).toEqual(['deployment preflight passed']);
+    const commandTimelineProof = diagnostic?.details?.commandTimelineProof as
+      | Record<string, unknown>
+      | undefined;
+    expect(commandTimelineProof?.pullReason).toBe('syncPull');
+    expect(commandTimelineProof?.requestId).toBe('req-self-check');
+    expect(commandTimelineProof?.subscriptionIds).toEqual(['tasks:user-1']);
     const deploymentPreflight = diagnostic?.details?.deploymentPreflight as
       | Record<string, unknown>
       | undefined;

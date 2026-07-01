@@ -143,8 +143,12 @@ local outbox row plus acked server commit sequence evidence from local support
 data. Its `summary.proof` gives tests and support tools direct booleans for
 the proof chain: outbox persisted, request correlated, sync attempt observed,
 server commit observed, realtime cursor observed, pull reason observed, local
-apply observed, and local visibility observed. In app tests, assert those
-fields with `requireCompleteCommandProof(...)` or
+apply observed, and local visibility observed. Its `summary.evidence` carries
+the concrete values behind those booleans, including joined subscription ids,
+request/sync/trace/span ids, server commit sequence, realtime cursor, pull
+reason, local-apply outbox id/commit sequence, and local visibility
+state/source. In app tests, assert the booleans with
+`requireCompleteCommandProof(...)` or
 `requireCommandProofEvidence(...)` from `@syncular/testkit`. Capture the latest
 `awaitLocalVisibility(..., { onEvidence })` value and pass it as
 `localVisibility` so the timeline records the concrete local query visibility
