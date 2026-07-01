@@ -15,15 +15,16 @@ import { Buffer } from 'node:buffer';
  *    browser and waits for the starter's Syncular health/schema/support lines.
  *    The browser path also proves pagehide/freeze/beforeunload pause
  *    evidence, restored-page, online, DOM and CDP page-lifecycle resume
- *    signals, two-tab lock-coordinated lifecycle resume, browser-observed lifecycle Web Lock
- *    contention timeout/recovery, browser-observed local recovery Web Lock
- *    contention timeout/recovery, storage preflight-to-recovery action
- *    mapping, browser-observed quota-pressure preflight classification,
- *    two-tab propagation, same-client page reload/reopen persistence,
- *    same-client duplicate-tab open/write contention, generated write pressure,
+ *    signals, two-tab lock-coordinated lifecycle resume, browser-observed
+ *    lifecycle Web Lock contention timeout/recovery, browser-observed local
+ *    recovery Web Lock contention timeout/recovery, storage
+ *    preflight-to-recovery action mapping, browser-observed quota-pressure
+ *    preflight classification, quota-exhausted generated writes, two-tab
+ *    propagation, same-client page reload/reopen persistence, same-client
+ *    duplicate-tab open/write contention, generated write pressure,
  *    same-profile browser process restart persistence, and
- *    service-worker-controlled PWA plus incognito memory-storage support-policy
- *    classification.
+ *    service-worker-controlled PWA plus incognito memory-storage
+ *    support-policy classification.
  *    After the happy path, the browser smoke also forces a hidden
  *    support-bundle marker failure and verifies the live
  *    browser-preview-failure artifact contract from real Chrome probe data.
@@ -55,6 +56,8 @@ const STARTER_LOCAL_RECOVERY_LOCK_NAME =
 const STARTER_LOCAL_RECOVERY_LOCK_TIMEOUT_MS = 1_000;
 const STARTER_WRITE_PRESSURE_PROOF_COUNT = 4;
 const STARTER_QUOTA_PRESSURE_FILL_BYTES = 8 * 1024 * 1024;
+const STARTER_QUOTA_EXHAUSTION_WRITE_MIN_BYTES = 2 * 1024 * 1024;
+const STARTER_QUOTA_EXHAUSTION_WRITE_EXTRA_BYTES = 512 * 1024;
 const STARTER_PWA_SMOKE_SERVICE_WORKER_PATH = '/__syncular-smoke-pwa-sw.js';
 const BROWSER_PREVIEW_SMOKE_TIMEOUT_MS = 180_000;
 const CDP_CONNECT_TIMEOUT_MS = 10_000;
@@ -980,6 +983,19 @@ type BrowserPreviewProbe = {
     titlePrefix: string | null;
     visibleCount: number;
   };
+  quotaExhaustionWriteProof: {
+    attemptedBytes: number;
+    availableBytes: number | null;
+    count: number;
+    durationMs: number | null;
+    error: string | null;
+    errorCode: string | null;
+    quotaBytes: number | null;
+    status: string | null;
+    usageBytes: number | null;
+    usageRatio: number | null;
+    writeFailed: boolean;
+  };
   starterTimeline: {
     bootstrapReadyMs: number | null;
     bootstrapStatus: string | null;
@@ -1220,6 +1236,24 @@ async function readStarterBrowserProbe(
     const writePressureProofRequestedCount = Number(writePressureProof?.getAttribute('data-syncular-write-pressure-proof-requested-count') ?? 0);
     const writePressureProofRunCount = Number(writePressureProof?.getAttribute('data-syncular-write-pressure-proof-run-count') ?? 0);
     const writePressureProofVisibleCount = Number(writePressureProof?.getAttribute('data-syncular-write-pressure-proof-visible-count') ?? 0);
+    const quotaExhaustionWriteProof = document.querySelector('[data-syncular-quota-exhaustion-write-proof-status]');
+    const quotaExhaustionWriteProofError = quotaExhaustionWriteProof?.getAttribute('data-syncular-quota-exhaustion-write-proof-error') ?? null;
+    const quotaExhaustionWriteProofErrorCode = quotaExhaustionWriteProof?.getAttribute('data-syncular-quota-exhaustion-write-proof-error-code') ?? null;
+    const quotaExhaustionWriteProofStatus = quotaExhaustionWriteProof?.getAttribute('data-syncular-quota-exhaustion-write-proof-status') ?? null;
+    const quotaExhaustionWriteProofWriteFailed = quotaExhaustionWriteProof?.getAttribute('data-syncular-quota-exhaustion-write-proof-write-failed') === 'true';
+    const readQuotaExhaustionWriteProofNumber = (name) => {
+      const value = quotaExhaustionWriteProof?.getAttribute(name) ?? null;
+      if (value === null || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number : null;
+    };
+    const quotaExhaustionWriteProofAttemptedBytes = Number(quotaExhaustionWriteProof?.getAttribute('data-syncular-quota-exhaustion-write-proof-attempted-bytes') ?? 0);
+    const quotaExhaustionWriteProofAvailableBytes = readQuotaExhaustionWriteProofNumber('data-syncular-quota-exhaustion-write-proof-available-bytes');
+    const quotaExhaustionWriteProofCount = Number(quotaExhaustionWriteProof?.getAttribute('data-syncular-quota-exhaustion-write-proof-count') ?? 0);
+    const quotaExhaustionWriteProofDurationMs = readQuotaExhaustionWriteProofNumber('data-syncular-quota-exhaustion-write-proof-duration-ms');
+    const quotaExhaustionWriteProofQuotaBytes = readQuotaExhaustionWriteProofNumber('data-syncular-quota-exhaustion-write-proof-quota-bytes');
+    const quotaExhaustionWriteProofUsageBytes = readQuotaExhaustionWriteProofNumber('data-syncular-quota-exhaustion-write-proof-usage-bytes');
+    const quotaExhaustionWriteProofUsageRatio = readQuotaExhaustionWriteProofNumber('data-syncular-quota-exhaustion-write-proof-usage-ratio');
     const starterTimeline = document.querySelector('[data-syncular-starter-database-open-ms]');
     const readStarterTimelineMs = (name) => {
       const value = starterTimeline?.getAttribute(name) ?? null;
@@ -1303,6 +1337,14 @@ async function readStarterBrowserProbe(
           : 'write pressure proof failed'
       );
     }
+    if (quotaExhaustionWriteProofStatus === 'failed') {
+      errors.push(
+        quotaExhaustionWriteProofErrorCode
+          ? 'quota exhaustion write proof failed: ' +
+              quotaExhaustionWriteProofErrorCode
+          : 'quota exhaustion write proof failed'
+      );
+    }
     return {
       ready:
         (durableHealthLine || memoryStorageHealthLine) &&
@@ -1315,6 +1357,7 @@ async function readStarterBrowserProbe(
         storageRecoveryProof !== null &&
         quotaPressureProof !== null &&
         writePressureProof !== null &&
+        quotaExhaustionWriteProof !== null &&
         starterTimeline !== null &&
         bootstrapStatus !== null &&
         databaseOpenMs !== null &&
@@ -1502,6 +1545,25 @@ async function readStarterBrowserProbe(
         status: writePressureProofStatus,
         titlePrefix: writePressureProofTitlePrefix === '' ? null : writePressureProofTitlePrefix,
         visibleCount: writePressureProofVisibleCount,
+      },
+      quotaExhaustionWriteProof: {
+        attemptedBytes: quotaExhaustionWriteProofAttemptedBytes,
+        availableBytes: quotaExhaustionWriteProofAvailableBytes,
+        count: quotaExhaustionWriteProofCount,
+        durationMs: quotaExhaustionWriteProofDurationMs,
+        error:
+          quotaExhaustionWriteProofError === ''
+            ? null
+            : quotaExhaustionWriteProofError,
+        errorCode:
+          quotaExhaustionWriteProofErrorCode === ''
+            ? null
+            : quotaExhaustionWriteProofErrorCode,
+        quotaBytes: quotaExhaustionWriteProofQuotaBytes,
+        status: quotaExhaustionWriteProofStatus,
+        usageBytes: quotaExhaustionWriteProofUsageBytes,
+        usageRatio: quotaExhaustionWriteProofUsageRatio,
+        writeFailed: quotaExhaustionWriteProofWriteFailed,
       },
       starterTimeline: {
         bootstrapReadyMs,
@@ -3374,6 +3436,19 @@ async function proveStarterQuotaPressurePreflight(args: {
       requireObservedQuotaPressure: true,
       session,
     });
+    log('real-browser smoke: proving quota-exhausted generated write');
+    const beforeExhaustion = await readStarterBrowserProbe(session);
+    const attemptedBytes = await dispatchStarterQuotaExhaustionWriteProof(
+      session,
+      quotaPressure
+    );
+    await waitForStarterQuotaExhaustionWriteCompletion({
+      attemptedBytes,
+      expectedCount: beforeExhaustion.quotaExhaustionWriteProof.count + 1,
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
   } finally {
     session?.close();
     await stopProcess(chrome.process);
@@ -3594,6 +3669,97 @@ async function waitForStarterQuotaPressureEvidence(args: {
   );
   throw new Error(
     `Timed out waiting for built preview quota-pressure preflight evidence. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
+function starterQuotaExhaustionWriteBytes(
+  quotaPressure: StarterOriginQuotaPressure
+): number {
+  return Math.max(
+    STARTER_QUOTA_EXHAUSTION_WRITE_MIN_BYTES,
+    Math.ceil(
+      quotaPressure.availableBytes + STARTER_QUOTA_EXHAUSTION_WRITE_EXTRA_BYTES
+    )
+  );
+}
+
+async function dispatchStarterQuotaExhaustionWriteProof(
+  session: CdpSession,
+  quotaPressure: StarterOriginQuotaPressure
+): Promise<number> {
+  const attemptedBytes = starterQuotaExhaustionWriteBytes(quotaPressure);
+  await session.evaluate(`(() => {
+    window.dispatchEvent(
+      new CustomEvent('syncular-starter-run-quota-exhaustion-write-proof', {
+        detail: ${JSON.stringify({
+          attemptedBytes,
+          availableBytes: quotaPressure.availableBytes,
+          overrideActive: quotaPressure.overrideActive,
+          quotaBytes: quotaPressure.quotaBytes,
+          source: 'chrome-devtools-protocol',
+          usageBytes: quotaPressure.usageBytes,
+          usageRatio: quotaPressure.usageRatio,
+        })},
+      })
+    );
+    return true;
+  })()`);
+  return attemptedBytes;
+}
+
+async function waitForStarterQuotaExhaustionWriteCompletion(args: {
+  attemptedBytes: number;
+  expectedCount: number;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'quota-exhaustion-write-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview quota-exhaustion write proof failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    const proof = probe.quotaExhaustionWriteProof;
+    if (
+      proof.status === 'complete' &&
+      proof.count >= args.expectedCount &&
+      proof.writeFailed === true &&
+      proof.error !== null &&
+      proof.durationMs !== null &&
+      proof.attemptedBytes === args.attemptedBytes &&
+      proof.availableBytes !== null &&
+      proof.attemptedBytes > proof.availableBytes &&
+      proof.quotaBytes !== null &&
+      proof.usageBytes !== null &&
+      proof.usageRatio !== null &&
+      proof.usageRatio >= 0.9
+    ) {
+      return;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'quota-exhaustion-write-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview quota-exhaustion write proof. Failure artifact: ${args.failureArtifactPath}`
   );
 }
 
@@ -3941,6 +4107,19 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         titlePrefix: 'write pressure self check',
         visibleCount: STARTER_WRITE_PRESSURE_PROOF_COUNT,
       },
+      quotaExhaustionWriteProof: {
+        attemptedBytes: STARTER_QUOTA_EXHAUSTION_WRITE_MIN_BYTES,
+        availableBytes: 524_288,
+        count: 1,
+        durationMs: 12,
+        error: 'Quota exceeded',
+        errorCode: 'browser.quota_exhausted',
+        quotaBytes: 10_485_760,
+        status: 'complete',
+        usageBytes: 9_961_472,
+        usageRatio: 0.95,
+        writeFailed: true,
+      },
       starterTimeline: {
         bootstrapReadyMs: 10,
         bootstrapStatus: 'ready',
@@ -4094,6 +4273,10 @@ function assertBrowserPreviewProbeShape(
   );
   assertBrowserPreviewQuotaPressureProofShape(probe.quotaPressureProof, path);
   assertBrowserPreviewWritePressureProofShape(probe.writePressureProof, path);
+  assertBrowserPreviewQuotaExhaustionWriteProofShape(
+    probe.quotaExhaustionWriteProof,
+    path
+  );
   assertBrowserPreviewStarterTimelineShape(probe.starterTimeline, path);
   assertBrowserPreviewStarterOpenShape(probe.starterOpen, path);
   if (
@@ -4603,6 +4786,52 @@ function assertBrowserPreviewWritePressureProofShape(
   ) {
     throw new Error(
       `${path} probe.writePressureProof.durationMs was not nullable non-negative number`
+    );
+  }
+}
+
+function assertBrowserPreviewQuotaExhaustionWriteProofShape(
+  value: unknown,
+  path: string
+): void {
+  if (!isRecord(value)) {
+    throw new Error(
+      `${path} probe.quotaExhaustionWriteProof was not a JSON object`
+    );
+  }
+  for (const key of ['error', 'errorCode', 'status'] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(
+        `${path} probe.quotaExhaustionWriteProof.${key} was not nullable text`
+      );
+    }
+  }
+  for (const key of ['attemptedBytes', 'count'] as const) {
+    if (
+      !isNonNegativeFiniteNumber(value[key]) ||
+      !Number.isInteger(value[key])
+    ) {
+      throw new Error(
+        `${path} probe.quotaExhaustionWriteProof.${key} was not a non-negative integer`
+      );
+    }
+  }
+  for (const key of [
+    'availableBytes',
+    'durationMs',
+    'quotaBytes',
+    'usageBytes',
+    'usageRatio',
+  ] as const) {
+    if (value[key] !== null && !isNonNegativeFiniteNumber(value[key])) {
+      throw new Error(
+        `${path} probe.quotaExhaustionWriteProof.${key} was not nullable non-negative number`
+      );
+    }
+  }
+  if (typeof value.writeFailed !== 'boolean') {
+    throw new Error(
+      `${path} probe.quotaExhaustionWriteProof.writeFailed was not boolean`
     );
   }
 }

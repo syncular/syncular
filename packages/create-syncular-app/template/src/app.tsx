@@ -130,6 +130,20 @@ type WritePressureProofPreview = {
   visibleCount: number;
 };
 
+type QuotaExhaustionWriteProofPreview = {
+  attemptedBytes: number;
+  availableBytes: number | null;
+  count: number;
+  durationMs: number | null;
+  error: string | null;
+  errorCode: string | null;
+  quotaBytes: number | null;
+  status: 'idle' | 'running' | 'complete' | 'failed';
+  usageBytes: number | null;
+  usageRatio: number | null;
+  writeFailed: boolean;
+};
+
 type StarterOpenPreview = {
   diagnosticCode: string | null;
   diagnosticCount: number;
@@ -267,6 +281,20 @@ const initialWritePressureProof: WritePressureProofPreview = {
   status: 'idle',
   titlePrefix: null,
   visibleCount: 0,
+};
+
+const initialQuotaExhaustionWriteProof: QuotaExhaustionWriteProofPreview = {
+  attemptedBytes: 0,
+  availableBytes: null,
+  count: 0,
+  durationMs: null,
+  error: null,
+  errorCode: null,
+  quotaBytes: null,
+  status: 'idle',
+  usageBytes: null,
+  usageRatio: null,
+  writeFailed: false,
 };
 
 const initialStarterOpen: StarterOpenPreview = {
@@ -689,10 +717,15 @@ function TaskPane({
     useState<QuotaPressureProofPreview>(initialQuotaPressureProof);
   const [writePressureProof, setWritePressureProof] =
     useState<WritePressureProofPreview>(initialWritePressureProof);
+  const [quotaExhaustionWriteProof, setQuotaExhaustionWriteProof] =
+    useState<QuotaExhaustionWriteProofPreview>(
+      initialQuotaExhaustionWriteProof
+    );
   const localRecoveryProofRunning = useRef(false);
   const storageRecoveryProofRunning = useRef(false);
   const quotaPressureProofRunning = useRef(false);
   const writePressureProofRunning = useRef(false);
+  const quotaExhaustionWriteProofRunning = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -1286,6 +1319,92 @@ function TaskPane({
     };
   }, [client, mutations]);
 
+  useEffect(() => {
+    const runProof = async (event: Event) => {
+      if (quotaExhaustionWriteProofRunning.current) return;
+      quotaExhaustionWriteProofRunning.current = true;
+      const detail = quotaExhaustionWriteProofDetailFromEvent(event);
+      const attemptedBytes = detail?.attemptedBytes ?? 2 * 1024 * 1024;
+      const startedAtMs = performance.now();
+      setQuotaExhaustionWriteProof((current) => ({
+        ...current,
+        attemptedBytes,
+        availableBytes: detail?.availableBytes ?? null,
+        durationMs: null,
+        error: null,
+        errorCode: null,
+        quotaBytes: detail?.quotaBytes ?? null,
+        status: 'running',
+        usageBytes: detail?.usageBytes ?? null,
+        usageRatio: detail?.usageRatio ?? null,
+        writeFailed: false,
+      }));
+
+      const idPrefix = `quota-exhaustion-${crypto.randomUUID()}-`;
+      const rowId =
+        idPrefix +
+        'x'.repeat(Math.max(0, Math.trunc(attemptedBytes) - idPrefix.length));
+      try {
+        await mutations.tasks.insert({
+          id: rowId,
+          title: 'quota exhaustion write proof',
+          completed: 0,
+          user_id: appActorId,
+          created_at: Date.now(),
+        });
+        try {
+          await mutations.tasks.delete(rowId);
+        } catch {
+          // Best effort only: if a quota-exhausted write unexpectedly succeeds,
+          // the proof should still report the unexpected success.
+        }
+        throw Object.assign(
+          new Error('Quota-exhaustion generated write unexpectedly succeeded'),
+          { code: 'browser.quota_exhaustion_write_succeeded' }
+        );
+      } catch (error) {
+        const errorCode = syncularErrorCode(error);
+        if (errorCode === 'browser.quota_exhaustion_write_succeeded') {
+          setQuotaExhaustionWriteProof((current) => ({
+            ...current,
+            count: current.count + 1,
+            durationMs: elapsedSince(startedAtMs),
+            error: errorMessage(error),
+            errorCode,
+            status: 'failed',
+            writeFailed: false,
+          }));
+          return;
+        }
+
+        setQuotaExhaustionWriteProof((current) => ({
+          ...current,
+          count: current.count + 1,
+          durationMs: elapsedSince(startedAtMs),
+          error: errorMessage(error),
+          errorCode,
+          status: 'complete',
+          writeFailed: true,
+        }));
+      } finally {
+        quotaExhaustionWriteProofRunning.current = false;
+      }
+    };
+    const onProof = (event: Event) => {
+      void runProof(event);
+    };
+    window.addEventListener(
+      'syncular-starter-run-quota-exhaustion-write-proof',
+      onProof
+    );
+    return () => {
+      window.removeEventListener(
+        'syncular-starter-run-quota-exhaustion-write-proof',
+        onProof
+      );
+    };
+  }, [mutations]);
+
   const rows = tasks ?? [];
   const doneCount = rows.filter((task) => task.completed).length;
   const queued = (outbox?.pending ?? 0) + (outbox?.sending ?? 0);
@@ -1362,6 +1481,9 @@ function TaskPane({
       <StorageRecoveryProofMarker storageRecoveryProof={storageRecoveryProof} />
       <QuotaPressureProofMarker quotaPressureProof={quotaPressureProof} />
       <WritePressureProofMarker writePressureProof={writePressureProof} />
+      <QuotaExhaustionWriteProofMarker
+        quotaExhaustionWriteProof={quotaExhaustionWriteProof}
+      />
       <StarterTimelineMarker starterTimeline={starterTimeline} />
 
       <form className="add-row" onSubmit={addTask}>
@@ -1575,6 +1697,51 @@ function WritePressureProofMarker({
       }
       data-syncular-write-pressure-proof-visible-count={
         writePressureProof.visibleCount
+      }
+      hidden
+    />
+  );
+}
+
+function QuotaExhaustionWriteProofMarker({
+  quotaExhaustionWriteProof,
+}: {
+  quotaExhaustionWriteProof: QuotaExhaustionWriteProofPreview;
+}) {
+  return (
+    <span
+      data-syncular-quota-exhaustion-write-proof-attempted-bytes={
+        quotaExhaustionWriteProof.attemptedBytes
+      }
+      data-syncular-quota-exhaustion-write-proof-available-bytes={
+        quotaExhaustionWriteProof.availableBytes ?? ''
+      }
+      data-syncular-quota-exhaustion-write-proof-count={
+        quotaExhaustionWriteProof.count
+      }
+      data-syncular-quota-exhaustion-write-proof-duration-ms={
+        quotaExhaustionWriteProof.durationMs ?? ''
+      }
+      data-syncular-quota-exhaustion-write-proof-error={
+        quotaExhaustionWriteProof.error ?? ''
+      }
+      data-syncular-quota-exhaustion-write-proof-error-code={
+        quotaExhaustionWriteProof.errorCode ?? ''
+      }
+      data-syncular-quota-exhaustion-write-proof-quota-bytes={
+        quotaExhaustionWriteProof.quotaBytes ?? ''
+      }
+      data-syncular-quota-exhaustion-write-proof-status={
+        quotaExhaustionWriteProof.status
+      }
+      data-syncular-quota-exhaustion-write-proof-usage-bytes={
+        quotaExhaustionWriteProof.usageBytes ?? ''
+      }
+      data-syncular-quota-exhaustion-write-proof-usage-ratio={
+        quotaExhaustionWriteProof.usageRatio ?? ''
+      }
+      data-syncular-quota-exhaustion-write-proof-write-failed={
+        quotaExhaustionWriteProof.writeFailed
       }
       hidden
     />
@@ -1829,6 +1996,37 @@ function nonNegativeFiniteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
     ? value
     : null;
+}
+
+function positiveFiniteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : null;
+}
+
+function quotaExhaustionWriteProofDetailFromEvent(event: Event): {
+  attemptedBytes: number;
+  availableBytes: number | null;
+  quotaBytes: number | null;
+  usageBytes: number | null;
+  usageRatio: number | null;
+} | null {
+  if (!(event instanceof CustomEvent)) return null;
+  const detail: unknown = event.detail;
+  if (detail == null || typeof detail !== 'object') return null;
+  const record = detail as Record<string, unknown>;
+  const attemptedBytes = positiveFiniteNumber(record.attemptedBytes);
+  if (attemptedBytes === null) return null;
+  const quotaBytes = nonNegativeFiniteNumber(record.quotaBytes);
+  const usageBytes = nonNegativeFiniteNumber(record.usageBytes);
+  const usageRatio = nonNegativeFiniteNumber(record.usageRatio);
+  return {
+    attemptedBytes: Math.min(Math.trunc(attemptedBytes), 8 * 1024 * 1024),
+    availableBytes: nonNegativeFiniteNumber(record.availableBytes),
+    quotaBytes,
+    usageBytes,
+    usageRatio: usageRatio !== null && usageRatio <= 1 ? usageRatio : null,
+  };
 }
 
 function quotaPressureProofNavigatorOverride(

@@ -88,7 +88,8 @@ until the full browser Worker/WASM suite is green on Linux.
   Lock contention, local recovery
   Web Lock contention, browser-observed storage preflight-to-recovery action
   mapping with capability-aware blob-cache clearing, browser-observed
-  quota-pressure preflight classification and recovery-action mapping, two-tab
+  quota-pressure preflight classification and recovery-action mapping,
+  quota-exhausted generated write rejection, two-tab
   propagation, same-client page reload/reopen persistence, same-client
   duplicate-tab open contention, generated write pressure, browser process
   restart persistence,
