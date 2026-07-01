@@ -151,12 +151,20 @@ async function fetchUntilReady(
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown = null;
   while (Date.now() < deadline) {
+    const controller = new AbortController();
+    const remainingMs = Math.max(1, deadline - Date.now());
+    const attemptTimeout = setTimeout(
+      () => controller.abort(),
+      Math.min(5_000, remainingMs)
+    );
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: controller.signal });
       if (response.ok) return response;
       lastError = new Error(`${url} returned ${response.status}`);
     } catch (error) {
       lastError = error;
+    } finally {
+      clearTimeout(attemptTimeout);
     }
     await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
   }

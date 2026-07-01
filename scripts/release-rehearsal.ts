@@ -9,7 +9,9 @@ interface Options {
   skipPublishDryRuns: boolean;
   skipFreshAppSmokes: boolean;
   skipFrameworkImportSmokes: boolean;
+  skipStarterSmoke: boolean;
   skipDocsStaleCheck: boolean;
+  requireStarterBrowserPreview: boolean;
   keepWorktree: boolean;
   workDir: string;
 }
@@ -26,6 +28,9 @@ options:
   --skip-fresh-app-smokes     Skip local fresh-app generation smokes
   --skip-framework-import-smokes
                               Skip local Next/Vite root import smokes
+  --skip-starter-smoke        Skip create-syncular-app built-preview smoke
+  --require-starter-browser-preview
+                              Require Chrome/Chromium CDP execution in the starter smoke
   --skip-docs-stale-check     Skip stale public-docs checks
   --work-dir <path>           Publish dry-run worktree path (default: .context/release-rehearsal/<version>)
   --keep-worktree             Keep the publish dry-run worktree after the run
@@ -64,7 +69,9 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
   let skipPublishDryRuns = false;
   let skipFreshAppSmokes = false;
   let skipFrameworkImportSmokes = false;
+  let skipStarterSmoke = false;
   let skipDocsStaleCheck = false;
+  let requireStarterBrowserPreview = false;
   let keepWorktree = false;
   let workDir = '';
 
@@ -93,6 +100,16 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
 
     if (arg === '--skip-framework-import-smokes') {
       skipFrameworkImportSmokes = true;
+      continue;
+    }
+
+    if (arg === '--skip-starter-smoke') {
+      skipStarterSmoke = true;
+      continue;
+    }
+
+    if (arg === '--require-starter-browser-preview') {
+      requireStarterBrowserPreview = true;
       continue;
     }
 
@@ -139,7 +156,9 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
     skipPublishDryRuns,
     skipFreshAppSmokes,
     skipFrameworkImportSmokes,
+    skipStarterSmoke,
     skipDocsStaleCheck,
+    requireStarterBrowserPreview,
     keepWorktree,
     workDir,
   };
@@ -308,6 +327,16 @@ async function main(): Promise<void> {
   }
   if (!options.skipFreshAppSmokes) {
     await run('bun', ['run', 'fresh-app-smokes']);
+  }
+  if (!options.skipStarterSmoke) {
+    await run('bun', [
+      '--cwd',
+      'packages/create-syncular-app',
+      'smoke',
+      ...(options.requireStarterBrowserPreview
+        ? ['--require-browser-preview']
+        : []),
+    ]);
   }
   if (!options.skipFrameworkImportSmokes) {
     await run('bun', ['run', 'framework-import-smokes']);

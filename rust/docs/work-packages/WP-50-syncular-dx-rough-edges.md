@@ -1530,6 +1530,16 @@ online propagation, or reconnect behavior can change.
   `?syncularClientId=...`; the CDP smoke opens a second tab with a distinct
   client id, creates a task in the first tab, and waits for the second tab to
   observe the task through the normal sync/realtime path.
+- 2026-07-01: Wired `bun run release:rehearsal` to run the
+  `create-syncular-app` built-preview smoke by default after fresh-app smokes
+  and before framework import smokes. Local rehearsal can skip it with
+  `--skip-starter-smoke`; Chrome-capable release runners can add
+  `--require-starter-browser-preview` to make the real-browser CDP path
+  mandatory.
+- 2026-07-01: Hardened the `create-syncular-app` smoke readiness polling with
+  a per-attempt fetch abort. A rehearsal-spawned starter run briefly exposed
+  that a single hanging fetch could bypass the outer readiness deadline; the
+  smoke now bounds each health/page/asset fetch attempt before retrying.
 - 2026-07-01: Added `scripts/framework-import-smokes.ts` plus the root
   `framework-import-smokes` script. The smoke builds a minimal Next 16 app
   with webpack, imports `@syncular/client` and `@syncular/server` roots from a
@@ -1876,9 +1886,16 @@ Most recent framework-import-smoke rerun:
 
 Most recent release-rehearsal framework-smoke wiring rerun:
 
-- `bunx biome check scripts/release-rehearsal.ts scripts/framework-import-smokes.ts package.json`
+- `bunx biome check scripts/release-rehearsal.ts scripts/framework-import-smokes.ts package.json RELEASING.md rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `bun scripts/release-rehearsal.ts --help`
-- `bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check`
+- `bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-framework-import-smokes`
+  - Ran the default starter built-preview smoke in rehearsal.
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, and built asset checks.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available.
+  - Confirmed the starter smoke returns cleanly from the rehearsal process
+    after the per-attempt fetch timeout guard.
 - `bun run docs:stale-check`
 - `git diff --check`
 
@@ -2098,9 +2115,11 @@ Most recent mutation-status rerun:
   now builds and serves Vite preview, verifies built assets, and can execute
   the built page through Chrome/Chromium CDP. Checks now has a dedicated
   `starter-browser-preview` job that installs Chrome and requires this path on
-  starter-relevant PRs and all pushes. Remaining work is to observe the new CI
-  job on hosted runners and mirror the same required browser smoke in release
-  rehearsal if release policy wants it there too.
+  starter-relevant PRs and all pushes. Release rehearsal now runs the starter
+  built-preview smoke by default and can require the Chrome/CDP path with
+  `--require-starter-browser-preview`. Remaining work is to observe the new CI
+  job on hosted runners and decide whether that strict release flag should be
+  mandatory for every stable release.
 - Adapter import side-effect isolation: the first root import graph smoke now
   proves root client/server imports do not statically reach optional Bun,
   Cloudflare, S3, Sentry, Neon, Tauri, React Native, or CRDT/Yjs subpaths.

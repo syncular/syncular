@@ -174,8 +174,11 @@ read-only review:
     `resumeFromBackground()` marker. The Chrome/CDP path now also opens a
     second generated-app tab with its own client id/database file, creates a
     task in the first tab, and waits for the second tab to observe it through
-    the normal sync/realtime path. Next slice: observe the hosted Chrome job or
-    continue broadening browser/framework runtime execution. The
+    the normal sync/realtime path. Release rehearsal now runs the
+    create-syncular-app built-preview smoke by default and can require the
+    Chrome/CDP path with `--require-starter-browser-preview`. Next slice:
+    observe the hosted Chrome job or continue broadening browser/framework
+    runtime execution. The
     post-publish
     JavaScript install smoke now
     also creates a fresh optional import matrix project that installs

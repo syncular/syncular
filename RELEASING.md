@@ -44,8 +44,11 @@ use `minor`), and describe the change. Commit the generated
 3. Refresh the lockfile and review: `bun install`, then inspect the diff
    (versions, changelogs, Cargo.toml files).
 4. Optionally rehearse: `bun run release:rehearsal` (npm + cargo publish
-   dry-runs in a clean worktree, fresh-app smokes, Next/Vite/Cloudflare
-   framework import smokes, docs stale check).
+   dry-runs in a clean worktree, fresh-app smokes, the
+   `create-syncular-app` built-preview smoke, Next/Vite/Cloudflare framework
+   import smokes, docs stale check). On a Chrome-capable release runner, add
+   `--require-starter-browser-preview` to make the starter's real-browser CDP
+   path mandatory instead of skipping when Chrome is unavailable.
    Native Node sqlite driver packaging is deliberately not part of the default
    release workflow because `better-sqlite3` / `sqlite3` installs depend on
    runner native-module support. Run the opt-in matrix on a native-capable Node
