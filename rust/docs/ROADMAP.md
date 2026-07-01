@@ -325,7 +325,12 @@ read-only review:
     preflight/support-policy markers to report `pwa`,
     `preflight-required`/`warning`, the activated controller state, and the
     redacted controller script path instead of treating PWAs as automatically
-    supported.
+    supported. The browser-preview smoke also now opens a fresh Chrome
+    incognito window with the starter explicitly configured for memory storage,
+    proving the public preflight/support-policy path reports
+    `ephemeral-development`/`ephemeral`, selects `private-browsing`, and marks
+    it `development-only`/`met` without claiming durable private-mode
+    persistence.
     Release
     rehearsal now runs the
     create-syncular-app
@@ -438,7 +443,10 @@ read-only review:
     starter artifacts without treating service workers as an automatic
     failure. The starter browser-preview smoke now includes a first real Chrome
     service-worker-controlled PWA classification proof, while keeping PWA
-    support preflight-gated until retained target evidence exists.
+    support preflight-gated until retained target evidence exists. It also
+    includes a first Chrome incognito memory-storage proof for the
+    private/development support-policy branch, while keeping real private-mode
+    durable-persistence semantics in the remaining browser matrix.
     Cloudflare local-runtime failure artifacts now feed Console/Fleet through
     `POST /console/client-diagnostics/cloudflare-runtime-failure`, preserving
     route, exit, bounded output, and safe R2 blob timing/byte metrics as

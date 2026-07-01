@@ -2,6 +2,7 @@ import {
   getSyncularBrowserDeploymentPreflight,
   type SyncularDiagnosticEvent,
   type SyncularRuntimeArtifactCandidate,
+  type SyncularStorage,
 } from '@syncular/client';
 import SyncularWorker from '@syncular/client/worker?worker';
 import type { Selectable } from 'kysely';
@@ -95,9 +96,19 @@ function currentClientId(): string {
   return normalized || defaultClientId;
 }
 
+export function currentStarterStorage(): SyncularStorage {
+  if (typeof window === 'undefined') return 'indexedDb';
+  const requested = new URLSearchParams(window.location.search).get(
+    'syncularStorage'
+  );
+  return requested === 'memory' ? 'memory' : 'indexedDb';
+}
+
 /**
- * Opens the local database (SQLite persisted in IndexedDB). The generated
- * factory installs the app schema before resolving. The React app registers
+ * Opens the local database. The default starter path persists SQLite through
+ * IndexedDB; the smoke harness can opt into memory storage to prove
+ * development-only browser support classification. The generated factory
+ * installs the app schema before resolving. The React app registers
  * subscriptions and starts the sync lifecycle after the local database is
  * mounted so first paint is not blocked on bootstrap/network/realtime work.
  */
@@ -105,6 +116,7 @@ export async function openAppClient(
   options: OpenAppClientOptions = {}
 ): Promise<AppSyncClient> {
   const clientId = currentClientId();
+  const storage = currentStarterStorage();
   const fileName =
     clientId === defaultClientId
       ? 'syncular-app-v1.sqlite'
@@ -114,7 +126,7 @@ export async function openAppClient(
   const preflight = await getSyncularBrowserDeploymentPreflight({
     requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
     runtimeArtifacts: syncularStarterRuntimeArtifacts,
-    storage: 'indexedDb',
+    storage,
     minimumQuotaBytes: 50 * 1024 * 1024,
   });
   if (preflight.status === 'not-ready') {
@@ -134,7 +146,7 @@ export async function openAppClient(
       actorId: appActorId,
       clientId,
       fileName,
-      storage: 'indexedDb',
+      storage,
     },
     worker: createSyncularStarterWorker,
     runtimeArtifacts: syncularStarterRuntimeArtifacts,

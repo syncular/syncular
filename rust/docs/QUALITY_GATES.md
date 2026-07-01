@@ -90,7 +90,9 @@ until the full browser Worker/WASM suite is green on Linux.
   mapping with capability-aware blob-cache clearing, two-tab propagation,
   same-client page reload/reopen persistence, same-client duplicate-tab open
   contention, generated write pressure, browser process restart persistence,
-  and live support-bundle failure artifact validation.
+  service-worker-controlled PWA support-policy classification, incognito
+  memory-storage development-policy classification, and live support-bundle
+  failure artifact validation.
   On a browser-capable CI runner, set
   `SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required` so missing Chrome fails instead
   of skipping the browser execution.

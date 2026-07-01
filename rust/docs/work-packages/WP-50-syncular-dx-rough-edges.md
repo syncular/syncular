@@ -3950,6 +3950,13 @@ Most recent mutation-status rerun:
   `pwa`, `preflight-required`/`warning`, activated controller state, and the
   redacted controller script path. That proves detection and artifact routing
   from real browser state without claiming PWA support is production-ready.
+  It also includes a first real Chrome incognito branch with explicit starter
+  memory storage, requiring the same public markers to report
+  `ephemeral-development`/`ephemeral`, `private-browsing`,
+  `development-only`/`met`, and
+  `browser_support.development_only_context`. This proves the
+  private/development policy path through real Chrome plus the starter runtime
+  without claiming durable private-mode persistence across browsers.
   Root source imports are now guarded by static graph checks, dynamic import
   checks, a Next 16 production-build smoke that imports the client/server
   roots from source and verifies the WASM glue dynamic import path is
@@ -4238,6 +4245,19 @@ Most recent mutation-status rerun:
   `real-browser smoke: proving service-worker-controlled PWA policy` and then
   `real-browser built-preview preflight smoke passed`, confirming the new
   service-worker-controlled PWA branch in hosted Chrome.
+- 2026-07-01: Added a real Chrome incognito memory-storage classification
+  branch to the starter smoke. The starter now has an explicit
+  `?syncularStorage=memory` smoke mode that keeps the default generated app on
+  IndexedDB, but lets the browser support policy prove the private/development
+  path from real app markers. The Chrome/CDP branch opens a fresh incognito
+  window, loads the starter with memory storage, and requires deployment
+  preflight to report `ephemeral-development`/`ephemeral` and browser support
+  policy to report `private-browsing`, `development-only`, `met`, and
+  `browser_support.development_only_context`. This verifies the support-matrix
+  classification without pretending incognito provides durable offline
+  persistence. Local `create-syncular-app` typecheck, focused Biome, and
+  non-Chrome scaffold smoke passed; hosted Chrome proof is pending the next
+  Checks run.
 
 ## Next Action
 
@@ -4248,11 +4268,14 @@ covered in hosted Chrome, and the same-database duplicate-tab writer branch is
 now also confirmed in hosted Chrome. The service-worker-controlled PWA
 classification proof is also covered in hosted Chrome: it verifies real
 controller evidence and support-policy `pwa`/`warning` classification without
-claiming installed-PWA offline/cache-update support.
+claiming installed-PWA offline/cache-update support. The next slice adds the
+first incognito memory-storage support-policy branch, pending hosted Chrome
+confirmation.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 suspension/shutdown lifecycle coverage, actual quota-exhaustion/eviction and
 storage-shutdown browser proof, lower-level storage contention/failure behavior
 beyond duplicate-tab generated writes, and browser/bundler matrix execution,
-especially Safari, Firefox, private mode, WebViews, installed-PWA cache/update
-semantics, and PWA offline persistence beyond controller classification.
+especially Safari, Firefox, real private-mode durable-persistence semantics,
+WebViews, installed-PWA cache/update semantics, and PWA offline persistence
+beyond controller classification.

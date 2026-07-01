@@ -23,6 +23,7 @@ import {
   type AppDb,
   type AppSyncClient,
   appActorId,
+  currentStarterStorage,
   installAppClientSubscriptions,
   openAppClient,
   type StarterOpenPhase,
@@ -238,7 +239,7 @@ const {
 const starterDeploymentPreflightOptions = {
   requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
   runtimeArtifacts: syncularStarterRuntimeArtifacts,
-  storage: 'indexedDb',
+  storage: currentStarterStorage(),
   minimumAvailableBytes: 25 * 1024 * 1024,
   minimumQuotaBytes: 50 * 1024 * 1024,
 } as const;
@@ -1899,7 +1900,7 @@ function HealthLine({ health }: { health: SyncularBrowserHealth }) {
     health.persistence.durable === true
       ? `${storage} durable`
       : health.persistence.durable === false
-        ? `${storage} memory`
+        ? 'memory storage'
         : 'storage pending';
   const subscriptions =
     health.subscriptions.total === 0
