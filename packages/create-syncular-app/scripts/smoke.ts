@@ -16,8 +16,8 @@ import { Buffer } from 'node:buffer';
  *    The browser path also proves restored-page and online lifecycle resume
  *    signals plus two-tab propagation. Browser failures write
  *    browser-preview-failure.json with redacted marker state under the smoke
- *    work dir. The normal smoke also self-checks that artifact shape so
- *    non-browser runners keep the failure contract covered.
+ *    work dir. The normal smoke also self-checks that artifact shape and safe
+ *    smoke metrics so non-browser runners keep the failure contract covered.
  *    Set SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required to fail when no browser
  *    is available.
  *
@@ -190,6 +190,10 @@ async function getFreePort(): Promise<number> {
   return port;
 }
 
+function elapsedSince(startedAtMs: number): number {
+  return Math.max(0, Date.now() - startedAtMs);
+}
+
 async function stopProcess(
   child: ReturnType<typeof spawn> | null
 ): Promise<void> {
@@ -207,7 +211,8 @@ async function stopProcess(
 async function verifyBuiltPreviewAssets(
   origin: string,
   pageBody: string
-): Promise<void> {
+): Promise<BuiltPreviewAssetMetrics> {
+  const startedAtMs = Date.now();
   if (!pageBody.includes('<div id="root">')) {
     throw new Error('Built preview page did not include the app root element');
   }
@@ -224,6 +229,13 @@ async function verifyBuiltPreviewAssets(
 
   let sawLifecycleResumeMarker = false;
   let sawSupportBundleMarker = false;
+  let totalAssetBytes = 0;
+  let jsAssetCount = 0;
+  let jsAssetBytes = 0;
+  let cssAssetCount = 0;
+  let cssAssetBytes = 0;
+  let otherAssetCount = 0;
+  let otherAssetBytes = 0;
   for (const assetPath of assetPaths) {
     const assetUrl = new URL(assetPath, origin);
     const response = await fetch(assetUrl);
@@ -237,13 +249,27 @@ async function verifyBuiltPreviewAssets(
       assetUrl.pathname.endsWith('.js') ||
       contentType.includes('javascript')
     ) {
+      jsAssetCount += 1;
       const assetBody = await response.text();
+      const assetBytes = Buffer.byteLength(assetBody, 'utf8');
+      totalAssetBytes += assetBytes;
+      jsAssetBytes += assetBytes;
       sawLifecycleResumeMarker ||= assetBody.includes(
         'data-syncular-lifecycle-resume-status'
       );
       sawSupportBundleMarker ||= assetBody.includes(
         'data-syncular-support-bundle-status'
       );
+    } else {
+      const assetBytes = (await response.arrayBuffer()).byteLength;
+      totalAssetBytes += assetBytes;
+      if (assetUrl.pathname.endsWith('.css') || contentType.includes('css')) {
+        cssAssetCount += 1;
+        cssAssetBytes += assetBytes;
+      } else {
+        otherAssetCount += 1;
+        otherAssetBytes += assetBytes;
+      }
     }
   }
   if (!sawSupportBundleMarker) {
@@ -256,9 +282,38 @@ async function verifyBuiltPreviewAssets(
       'Built preview assets did not include the lifecycle-resume smoke marker'
     );
   }
+
+  return {
+    assetCheckMs: elapsedSince(startedAtMs),
+    assetCount: assetPaths.length,
+    cssAssetBytes,
+    cssAssetCount,
+    jsAssetBytes,
+    jsAssetCount,
+    lifecycleResumeMarkerInAssets: sawLifecycleResumeMarker,
+    otherAssetBytes,
+    otherAssetCount,
+    supportBundleMarkerInAssets: sawSupportBundleMarker,
+    totalAssetBytes,
+  };
 }
 
+type BuiltPreviewAssetMetrics = {
+  assetCheckMs: number;
+  assetCount: number;
+  cssAssetBytes: number;
+  cssAssetCount: number;
+  jsAssetBytes: number;
+  jsAssetCount: number;
+  lifecycleResumeMarkerInAssets: boolean;
+  otherAssetBytes: number;
+  otherAssetCount: number;
+  supportBundleMarkerInAssets: boolean;
+  totalAssetBytes: number;
+};
+
 async function maybeRunBrowserPreviewSmoke(args: {
+  failureMetrics: BrowserPreviewFailureMetricsInput;
   origin: string;
   workDir: string;
 }): Promise<void> {
@@ -273,6 +328,7 @@ async function maybeRunBrowserPreviewSmoke(args: {
 
   await runBrowserPreviewSmoke({
     chrome,
+    failureMetrics: args.failureMetrics,
     origin: args.origin,
     failureArtifactPath: join(args.workDir, 'browser-preview-failure.json'),
     userDataDir: join(args.workDir, 'chrome-profile'),
@@ -296,6 +352,7 @@ function resolveChromeExecutable(): string | null {
 
 async function runBrowserPreviewSmoke(args: {
   chrome: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
   failureArtifactPath: string;
   origin: string;
   userDataDir: string;
@@ -329,10 +386,15 @@ async function runBrowserPreviewSmoke(args: {
       await session.send('Runtime.enable');
       await session.send('Page.enable');
       await session.send('Log.enable');
-      await waitForStarterBrowserReady(session, args.failureArtifactPath);
+      await waitForStarterBrowserReady(
+        session,
+        args.failureArtifactPath,
+        args.failureMetrics
+      );
       await proveStarterBrowserLifecycleResume(
         session,
-        args.failureArtifactPath
+        args.failureArtifactPath,
+        args.failureMetrics
       );
       const secondTarget = await createChromeTarget(
         debugPort,
@@ -344,8 +406,13 @@ async function runBrowserPreviewSmoke(args: {
       await secondSession.send('Runtime.enable');
       await secondSession.send('Page.enable');
       await secondSession.send('Log.enable');
-      await waitForStarterBrowserReady(secondSession, args.failureArtifactPath);
+      await waitForStarterBrowserReady(
+        secondSession,
+        args.failureArtifactPath,
+        args.failureMetrics
+      );
       await proveStarterTwoTabPropagation({
+        failureMetrics: args.failureMetrics,
         failureArtifactPath: args.failureArtifactPath,
         first: session,
         second: secondSession,
@@ -409,8 +476,32 @@ type BrowserPreviewProbe = {
 
 type BrowserPreviewFailureArtifact = {
   generatedAt: string;
+  metrics: BrowserPreviewFailureMetrics;
   reason: string;
   probe: BrowserPreviewProbe | null;
+};
+
+type BrowserPreviewFailureMetrics = {
+  artifactCreatedAfterMs: number;
+  assetCheckMs: number;
+  assetCount: number;
+  cssAssetBytes: number;
+  cssAssetCount: number;
+  jsAssetBytes: number;
+  jsAssetCount: number;
+  lifecycleResumeMarkerInAssets: boolean;
+  otherAssetBytes: number;
+  otherAssetCount: number;
+  previewReadyMs: number;
+  supportBundleMarkerInAssets: boolean;
+  totalAssetBytes: number;
+};
+
+type BrowserPreviewFailureMetricsInput = Omit<
+  BrowserPreviewFailureMetrics,
+  'artifactCreatedAfterMs'
+> & {
+  smokeStartedAtMs: number;
 };
 
 async function readStarterBrowserProbe(
@@ -488,7 +579,8 @@ async function readStarterBrowserProbe(
 
 async function waitForStarterBrowserReady(
   session: CdpSession,
-  failureArtifactPath: string
+  failureArtifactPath: string,
+  failureMetrics: BrowserPreviewFailureMetricsInput
 ): Promise<void> {
   const deadline = Date.now() + 60_000;
   let lastProbe: BrowserPreviewProbe | null = null;
@@ -499,7 +591,8 @@ async function waitForStarterBrowserReady(
       await writeBrowserPreviewFailureArtifact(
         failureArtifactPath,
         'page-reported-errors',
-        evaluation
+        evaluation,
+        failureMetrics
       );
       throw new Error(
         `Built preview browser smoke failed: ${evaluation.errors.join(
@@ -513,7 +606,8 @@ async function waitForStarterBrowserReady(
   await writeBrowserPreviewFailureArtifact(
     failureArtifactPath,
     'readiness-timeout',
-    lastProbe
+    lastProbe,
+    failureMetrics
   );
   throw new Error(
     `Timed out waiting for built preview browser readiness. Failure artifact: ${failureArtifactPath}`
@@ -522,7 +616,8 @@ async function waitForStarterBrowserReady(
 
 async function proveStarterBrowserLifecycleResume(
   session: CdpSession,
-  failureArtifactPath: string
+  failureArtifactPath: string,
+  failureMetrics: BrowserPreviewFailureMetricsInput
 ): Promise<void> {
   const initialProbe = await readStarterBrowserProbe(session);
   const pageshowCount = initialProbe.lifecycleResume.count + 1;
@@ -538,6 +633,7 @@ async function proveStarterBrowserLifecycleResume(
     expectedCount: pageshowCount,
     expectedReason: 'pageshow',
     failureArtifactPath,
+    failureMetrics,
     session,
     timeoutReason: 'lifecycle-pageshow-timeout',
   });
@@ -550,6 +646,7 @@ async function proveStarterBrowserLifecycleResume(
     expectedCount: pageshowCount + 1,
     expectedReason: 'online',
     failureArtifactPath,
+    failureMetrics,
     session,
     timeoutReason: 'lifecycle-online-timeout',
   });
@@ -559,6 +656,7 @@ async function waitForStarterLifecycleResume(args: {
   expectedCount: number;
   expectedReason: string;
   failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
   session: CdpSession;
   timeoutReason: string;
 }): Promise<void> {
@@ -571,7 +669,8 @@ async function waitForStarterLifecycleResume(args: {
       await writeBrowserPreviewFailureArtifact(
         args.failureArtifactPath,
         'lifecycle-resume-errors',
-        probe
+        probe,
+        args.failureMetrics
       );
       throw new Error(
         `Built preview lifecycle resume failed: ${probe.errors.join(
@@ -591,7 +690,8 @@ async function waitForStarterLifecycleResume(args: {
   await writeBrowserPreviewFailureArtifact(
     args.failureArtifactPath,
     args.timeoutReason,
-    lastProbe
+    lastProbe,
+    args.failureMetrics
   );
   throw new Error(
     `Timed out waiting for built preview lifecycle resume (${args.expectedReason}). Failure artifact: ${args.failureArtifactPath}`
@@ -599,6 +699,7 @@ async function waitForStarterLifecycleResume(args: {
 }
 
 async function proveStarterTwoTabPropagation(args: {
+  failureMetrics: BrowserPreviewFailureMetricsInput;
   failureArtifactPath: string;
   first: CdpSession;
   second: CdpSession;
@@ -627,7 +728,8 @@ async function proveStarterTwoTabPropagation(args: {
       await writeBrowserPreviewFailureArtifact(
         args.failureArtifactPath,
         'two-tab-propagation-errors',
-        probe
+        probe,
+        args.failureMetrics
       );
       throw new Error(
         `Built preview two-tab propagation failed: ${probe.errors.join(
@@ -644,7 +746,8 @@ async function proveStarterTwoTabPropagation(args: {
   await writeBrowserPreviewFailureArtifact(
     args.failureArtifactPath,
     'two-tab-propagation-timeout',
-    lastProbe
+    lastProbe,
+    args.failureMetrics
   );
   throw new Error(
     `Timed out waiting for built preview two-tab propagation. Failure artifact: ${args.failureArtifactPath}`
@@ -654,10 +757,12 @@ async function proveStarterTwoTabPropagation(args: {
 async function writeBrowserPreviewFailureArtifact(
   path: string,
   reason: string,
-  probe: BrowserPreviewProbe | null
+  probe: BrowserPreviewProbe | null,
+  metrics: BrowserPreviewFailureMetricsInput
 ): Promise<void> {
   const artifact: BrowserPreviewFailureArtifact = {
     generatedAt: new Date().toISOString(),
+    metrics: finalizeBrowserPreviewFailureMetrics(metrics),
     reason,
     probe,
   };
@@ -666,39 +771,46 @@ async function writeBrowserPreviewFailureArtifact(
 }
 
 async function verifyBrowserPreviewFailureArtifactSelfCheck(
-  workDir: string
+  workDir: string,
+  metrics: BrowserPreviewFailureMetricsInput
 ): Promise<void> {
   const path = join(workDir, 'browser-preview-failure.self-check.json');
-  await writeBrowserPreviewFailureArtifact(path, 'artifact-self-check', {
-    ready: false,
-    errors: ['support bundle export failed'],
-    markers: {
-      durableHealthLine: true,
-      schemaLine: true,
-      preflightFailure: false,
-      databaseOpening: false,
+  await writeBrowserPreviewFailureArtifact(
+    path,
+    'artifact-self-check',
+    {
+      ready: false,
+      errors: ['support bundle export failed'],
+      markers: {
+        durableHealthLine: true,
+        schemaLine: true,
+        preflightFailure: false,
+        databaseOpening: false,
+      },
+      supportBundle: {
+        status: 'failed',
+        redacted: 'true',
+        sectionCount: 4,
+        issueCount: 1,
+        requestIdCount: 0,
+        sectionErrorCount: 1,
+      },
+      lifecycleResume: {
+        status: 'complete',
+        count: 2,
+        reason: 'online',
+        error: null,
+      },
+      textExcerpt:
+        'Syncular support bundle failed after redacted export check.',
     },
-    supportBundle: {
-      status: 'failed',
-      redacted: 'true',
-      sectionCount: 4,
-      issueCount: 1,
-      requestIdCount: 0,
-      sectionErrorCount: 1,
-    },
-    lifecycleResume: {
-      status: 'complete',
-      count: 2,
-      reason: 'online',
-      error: null,
-    },
-    textExcerpt: 'Syncular support bundle failed after redacted export check.',
-  });
+    metrics
+  );
 
   const artifact = JSON.parse(await readFile(path, 'utf8')) as unknown;
   assertBrowserPreviewFailureArtifactShape(artifact, path);
   await rm(path, { force: true });
-  log('browser failure artifact shape check passed');
+  log('browser failure artifact shape and metrics check passed');
 }
 
 function assertBrowserPreviewFailureArtifactShape(
@@ -721,8 +833,63 @@ function assertBrowserPreviewFailureArtifactShape(
   ) {
     throw new Error(`${path} had an invalid reason value`);
   }
+  assertBrowserPreviewFailureMetricsShape(artifact.metrics, path);
   if (artifact.probe !== null) {
     assertBrowserPreviewProbeShape(artifact.probe, path);
+  }
+}
+
+function finalizeBrowserPreviewFailureMetrics(
+  metrics: BrowserPreviewFailureMetricsInput
+): BrowserPreviewFailureMetrics {
+  return {
+    artifactCreatedAfterMs: elapsedSince(metrics.smokeStartedAtMs),
+    assetCheckMs: metrics.assetCheckMs,
+    assetCount: metrics.assetCount,
+    cssAssetBytes: metrics.cssAssetBytes,
+    cssAssetCount: metrics.cssAssetCount,
+    jsAssetBytes: metrics.jsAssetBytes,
+    jsAssetCount: metrics.jsAssetCount,
+    lifecycleResumeMarkerInAssets: metrics.lifecycleResumeMarkerInAssets,
+    otherAssetBytes: metrics.otherAssetBytes,
+    otherAssetCount: metrics.otherAssetCount,
+    previewReadyMs: metrics.previewReadyMs,
+    supportBundleMarkerInAssets: metrics.supportBundleMarkerInAssets,
+    totalAssetBytes: metrics.totalAssetBytes,
+  };
+}
+
+function assertBrowserPreviewFailureMetricsShape(
+  metrics: unknown,
+  path: string
+): asserts metrics is BrowserPreviewFailureMetrics {
+  if (!isRecord(metrics)) {
+    throw new Error(`${path} metrics was not a JSON object`);
+  }
+  for (const key of [
+    'artifactCreatedAfterMs',
+    'assetCheckMs',
+    'assetCount',
+    'cssAssetBytes',
+    'cssAssetCount',
+    'jsAssetBytes',
+    'jsAssetCount',
+    'otherAssetBytes',
+    'otherAssetCount',
+    'previewReadyMs',
+    'totalAssetBytes',
+  ] as const) {
+    if (!isNonNegativeFiniteNumber(metrics[key])) {
+      throw new Error(`${path} metrics.${key} was not a non-negative number`);
+    }
+  }
+  for (const key of [
+    'lifecycleResumeMarkerInAssets',
+    'supportBundleMarkerInAssets',
+  ] as const) {
+    if (typeof metrics[key] !== 'boolean') {
+      throw new Error(`${path} metrics.${key} was not a boolean`);
+    }
   }
 }
 
@@ -944,6 +1111,7 @@ class CdpSession {
 }
 
 async function main(): Promise<void> {
+  const smokeStartedAtMs = Date.now();
   const configuredWorkDir = process.env.SYNCULAR_CSA_SMOKE_WORK_DIR;
   const workDir = configuredWorkDir
     ? isAbsolute(configuredWorkDir)
@@ -1064,11 +1232,21 @@ async function main(): Promise<void> {
     const previewOrigin = `http://127.0.0.1:${vitePort}`;
     const previewPage = await fetchUntilReady(`${previewOrigin}/`, 60_000);
     const previewBody = await previewPage.text();
-    await verifyBuiltPreviewAssets(previewOrigin, previewBody);
+    const previewReadyMs = elapsedSince(smokeStartedAtMs);
+    const assetMetrics = await verifyBuiltPreviewAssets(
+      previewOrigin,
+      previewBody
+    );
+    const failureMetrics: BrowserPreviewFailureMetricsInput = {
+      smokeStartedAtMs,
+      previewReadyMs,
+      ...assetMetrics,
+    };
     log('built preview asset check passed');
-    await verifyBrowserPreviewFailureArtifactSelfCheck(workDir);
+    await verifyBrowserPreviewFailureArtifactSelfCheck(workDir, failureMetrics);
 
     await maybeRunBrowserPreviewSmoke({
+      failureMetrics,
       origin: previewOrigin,
       workDir,
     });

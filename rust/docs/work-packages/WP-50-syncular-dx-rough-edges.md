@@ -1834,9 +1834,14 @@ online propagation, or reconnect behavior can change.
   inspectable support evidence.
 - 2026-07-01: Added a deterministic starter smoke self-check for the
   `browser-preview-failure.json` contract. The normal scaffold smoke now
-  writes, reads, validates, and removes a synthetic redacted failure artifact,
-  so non-browser runners prove the artifact shape even when Chrome/CDP is
-  skipped.
+  writes, reads, validates, and removes a synthetic redacted failure artifact
+  with safe preview/asset metrics, so non-browser runners prove the artifact
+  shape even when Chrome/CDP is skipped.
+- 2026-07-01: Extended `browser-preview-failure.json` with a redacted
+  `metrics` block: artifact-created elapsed time, built-preview ready time,
+  asset-check duration, asset counts/bytes, and support-bundle/lifecycle
+  marker booleans. This gives browser failure artifacts a small measurable
+  performance/durability context without adding app-facing API surface.
 - 2026-07-01: Made the starter browser-preview Checks job preserve the smoke
   work dir in `.context/starter-browser-preview-smoke` and upload
   `browser-preview-failure.json` on job failure, so hosted Chrome readiness
@@ -2072,7 +2077,8 @@ Most recent starter browser-failure artifact rerun:
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-browser-preview-smoke-local bun --cwd packages/create-syncular-app smoke`
   - Passed dev server health/page/module/preflight transform checks.
   - Passed Vite production build, preview serving, and built asset checks.
-  - Passed the deterministic browser failure artifact shape self-check.
+  - Passed the deterministic browser failure artifact shape and safe-metrics
+    self-check.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
     binary was available. The real failure artifact writer runs on
     browser-capable runners when the page reports health/support-bundle
@@ -2081,7 +2087,7 @@ Most recent starter browser-failure artifact rerun:
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-browser-preview-smoke-local-required bun --cwd packages/create-syncular-app smoke --require-browser-preview`
   - Failed locally only at the required browser step because no
     Chrome/Chromium binary was available, after the same build, preview asset
-    checks, and browser failure artifact shape self-check passed.
+    checks, and browser failure artifact shape/safe-metrics self-check passed.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `git diff --check`
 
@@ -2513,9 +2519,10 @@ Most recent mutation-status rerun:
   same marker when a browser is available. That browser path now writes a
   redacted `browser-preview-failure.json` artifact on readiness timeout or
   page-reported health/support-bundle failures, the normal scaffold smoke
-  self-checks the artifact shape without Chrome, and the Checks job uploads
-  that JSON on failure from a predictable smoke work directory. Remaining work
-  is to observe the hosted Chrome job for this proof and decide whether server
+  self-checks the artifact shape and safe smoke metrics without Chrome, and
+  the Checks job uploads that JSON on failure from a predictable smoke work
+  directory. Remaining work is to observe the hosted Chrome job for this proof
+  and decide whether server
   Console/Fleet should ingest the same artifact shape.
 - Outbox and conflict UX: first app-facing status slice is done for
   queued/sending/failed/acked outbox counts, unresolved/resolved conflicts,
@@ -2539,7 +2546,11 @@ Most recent mutation-status rerun:
 - Performance and failure artifacts: keep package/WASM size, bootstrap
   latency, local visibility delay, sync apply, realtime reconnect, blob fetch
   latency, storage/quota pressure, and redacted E2E failure artifacts
-  measurable.
+  measurable. The starter browser failure artifact now carries safe
+  preview/asset timing and byte metrics; remaining depth is to add richer
+  runtime-open, schema-readiness, bootstrap, local-visibility, realtime,
+  storage/quota, and blob-fetch measurements where browser/app flows can
+  expose them without manual log scraping.
 
 ## Next Action
 
