@@ -20,11 +20,12 @@ import { Buffer } from 'node:buffer';
  *    Lock contention timeout/recovery, browser-observed local recovery Web
  *    Lock contention timeout/recovery, storage
  *    preflight-to-recovery action mapping, browser-observed quota-pressure
- *    preflight classification, quota-exhausted generated writes, two-tab
- *    propagation, same-client page reload/reopen persistence, same-client
- *    duplicate-tab open/write contention, generated write pressure,
- *    same-profile browser process restart persistence, and
- *    service-worker-controlled PWA plus incognito memory-storage
+ *    preflight classification, quota-exhausted generated writes, browser
+ *    origin-storage eviction/rebootstrap recovery, two-tab propagation,
+ *    same-client page reload/reopen persistence, same-client duplicate-tab
+ *    open/write contention, generated write pressure, same-profile browser
+ *    process restart persistence, and service-worker-controlled PWA plus
+ *    incognito memory-storage
  *    support-policy classification.
  *    After the happy path, the browser smoke also forces a hidden
  *    support-bundle marker failure and verifies the live
@@ -59,6 +60,13 @@ const STARTER_WRITE_PRESSURE_PROOF_COUNT = 4;
 const STARTER_QUOTA_PRESSURE_FILL_BYTES = 8 * 1024 * 1024;
 const STARTER_QUOTA_EXHAUSTION_WRITE_MIN_BYTES = 2 * 1024 * 1024;
 const STARTER_QUOTA_EXHAUSTION_WRITE_EXTRA_BYTES = 512 * 1024;
+const STARTER_STORAGE_EVICTION_SENTINEL_BYTES = 1024 * 1024;
+const STARTER_STORAGE_EVICTION_SENTINEL_CACHE =
+  'syncular-storage-eviction-proof';
+const STARTER_STORAGE_EVICTION_SENTINEL_KEY =
+  '__syncular_storage_eviction_sentinel__';
+const STARTER_STORAGE_EVICTION_SENTINEL_URL =
+  '/__syncular-storage-eviction-proof.bin';
 const STARTER_PWA_SMOKE_SERVICE_WORKER_PATH = '/__syncular-smoke-pwa-sw.js';
 const BROWSER_PREVIEW_SMOKE_TIMEOUT_MS = 180_000;
 const CDP_CONNECT_TIMEOUT_MS = 10_000;
@@ -750,6 +758,16 @@ async function runBrowserPreviewSmoke(args: {
     origin: args.origin,
     userDataDir: `${args.userDataDir}-quota-pressure`,
   });
+  log('real-browser smoke: proving browser storage eviction recovery');
+  await proveStarterStorageEvictionRecovery({
+    chrome: args.chrome,
+    failureArtifactPath: storageEvictionFailureArtifactPath(
+      args.failureArtifactPath
+    ),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    userDataDir: `${args.userDataDir}-storage-eviction`,
+  });
   log('real-browser built-preview preflight smoke passed');
 }
 
@@ -777,6 +795,14 @@ function quotaPressureFailureArtifactPath(failureArtifactPath: string): string {
   return failureArtifactPath.endsWith('.json')
     ? failureArtifactPath.replace(/\.json$/u, '.quota-pressure.json')
     : `${failureArtifactPath}.quota-pressure.json`;
+}
+
+function storageEvictionFailureArtifactPath(
+  failureArtifactPath: string
+): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(/\.json$/u, '.storage-eviction.json')
+    : `${failureArtifactPath}.storage-eviction.json`;
 }
 
 async function withTimeout<T>(args: {
@@ -899,6 +925,24 @@ async function closeChromeTarget(
       `Chrome target close failed with ${response.status} ${response.statusText}`
     );
   }
+}
+
+async function closeStarterChromeTarget(args: {
+  debugPort: number;
+  session: CdpSession | null;
+  targetId: string | null;
+}): Promise<void> {
+  try {
+    args.session?.close();
+  } catch {
+    // Target cleanup below is the important part for storage-release proofs.
+  }
+  if (args.targetId !== null) {
+    await closeChromeTarget(args.debugPort, args.targetId).catch(
+      () => undefined
+    );
+  }
+  await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
 }
 
 function normalizeChromeWebSocketUrl(url: string): string {
@@ -3868,6 +3912,355 @@ async function proveStarterQuotaPressurePreflight(args: {
     session?.close();
     await stopProcess(chrome.process);
   }
+}
+
+async function proveStarterStorageEvictionRecovery(args: {
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  const clientId = 'web-storage-eviction';
+  const title = `storage eviction ${Date.now()}`;
+  let activeSession: CdpSession | null = null;
+  let activeTargetId: string | null = null;
+  let observerSession: CdpSession | null = null;
+  let observerTargetId: string | null = null;
+  let clearSession: CdpSession | null = null;
+  let clearTargetId: string | null = null;
+  let recoverySession: CdpSession | null = null;
+  let recoveryTargetId: string | null = null;
+  let lastProbe: BrowserPreviewProbe | null = null;
+
+  try {
+    const activeTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    activeTargetId = activeTarget.id;
+    activeSession = await CdpSession.connect(activeTarget.webSocketDebuggerUrl);
+    await enableChromeTarget(activeSession);
+    await navigateChromeTarget(
+      activeSession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularStorageEvictionProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      activeSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(activeSession);
+    await writeStarterStorageEvictionSentinel(activeSession);
+    const sentinelBefore =
+      await readStarterStorageEvictionSentinel(activeSession);
+    if (
+      sentinelBefore.cachePresent !== true ||
+      sentinelBefore.localStoragePresent !== true
+    ) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'storage-eviction-sentinel-write-missing',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview storage eviction sentinel was not visible before clear. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    const beforeTask = await readStarterBrowserProbe(activeSession);
+    lastProbe = beforeTask;
+    await submitStarterTask(activeSession, title);
+    await waitForStarterLocalVisibility({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+    });
+    await waitForStarterCommandTimelineProof({
+      expectedCount: beforeTask.commandTimelineProof.count + 1,
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+    });
+
+    const observerTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    observerTargetId = observerTarget.id;
+    observerSession = await CdpSession.connect(
+      observerTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(observerSession);
+    await navigateChromeTarget(
+      observerSession,
+      `${args.origin}/?syncularClientId=web-storage-eviction-observer&syncularStorageEvictionObserverProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      observerSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: observerSession,
+      title,
+      errorReason: 'storage-eviction-propagation-errors',
+      timeoutReason: 'storage-eviction-propagation-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview storage eviction propagation',
+    });
+
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: activeSession,
+      targetId: activeTargetId,
+    });
+    activeSession = null;
+    activeTargetId = null;
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: observerSession,
+      targetId: observerTargetId,
+    });
+    observerSession = null;
+    observerTargetId = null;
+
+    const clearTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    clearTargetId = clearTarget.id;
+    clearSession = await CdpSession.connect(clearTarget.webSocketDebuggerUrl);
+    await enableChromeTarget(clearSession);
+    await clearStarterOriginStorage(clearSession, args.origin);
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: clearSession,
+      targetId: clearTargetId,
+    });
+    clearSession = null;
+    clearTargetId = null;
+
+    const recoveryTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    recoveryTargetId = recoveryTarget.id;
+    recoverySession = await CdpSession.connect(
+      recoveryTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(recoverySession);
+    await navigateChromeTarget(
+      recoverySession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularStorageEvictionRecoveryProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      recoverySession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(recoverySession);
+    const sentinelAfter =
+      await readStarterStorageEvictionSentinel(recoverySession);
+    if (
+      sentinelAfter.cachePresent !== false ||
+      sentinelAfter.localStoragePresent !== false
+    ) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'storage-eviction-sentinel-still-present',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview storage eviction sentinel survived origin clear. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: recoverySession,
+      title,
+      errorReason: 'storage-eviction-recovery-errors',
+      timeoutReason: 'storage-eviction-recovery-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview storage eviction recovery',
+    });
+  } catch (error) {
+    await writeBrowserPreviewFailureArtifactIfMissing(
+      args.failureArtifactPath,
+      'storage-eviction-smoke-error',
+      lastProbe,
+      args.failureMetrics
+    );
+    throw error;
+  } finally {
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: recoverySession,
+      targetId: recoveryTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: clearSession,
+      targetId: clearTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: observerSession,
+      targetId: observerTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: activeSession,
+      targetId: activeTargetId,
+    });
+    await stopProcess(chrome.process);
+  }
+}
+
+type StarterStorageEvictionSentinelState = {
+  cachePresent: boolean | null;
+  localStoragePresent: boolean | null;
+};
+
+async function writeStarterStorageEvictionSentinel(
+  session: CdpSession
+): Promise<StarterStorageEvictionSentinelState> {
+  const result = await session.evaluate<
+    | {
+        ok: true;
+        cachePresent: boolean;
+        localStoragePresent: boolean;
+        storedBytes: number;
+      }
+    | { ok: false; reason: string }
+  >(`(async () => {
+    try {
+      const bytes = ${STARTER_STORAGE_EVICTION_SENTINEL_BYTES};
+      const cacheName = ${JSON.stringify(STARTER_STORAGE_EVICTION_SENTINEL_CACHE)};
+      const localStorageKey = ${JSON.stringify(STARTER_STORAGE_EVICTION_SENTINEL_KEY)};
+      const sentinelUrl = ${JSON.stringify(STARTER_STORAGE_EVICTION_SENTINEL_URL)};
+      if (typeof globalThis.localStorage?.setItem !== 'function') {
+        return { ok: false, reason: 'local-storage-unavailable' };
+      }
+      if (typeof globalThis.caches?.open !== 'function') {
+        return { ok: false, reason: 'cache-storage-unavailable' };
+      }
+
+      globalThis.localStorage.setItem(
+        localStorageKey,
+        'present:' + Date.now()
+      );
+      const cache = await globalThis.caches.open(cacheName);
+      const payload = new Uint8Array(bytes);
+      payload.fill(83);
+      await cache.put(
+        sentinelUrl,
+        new Response(new Blob([payload]), {
+          headers: { 'content-type': 'application/octet-stream' },
+        })
+      );
+      return {
+        ok: true,
+        cachePresent: Boolean(await cache.match(sentinelUrl)),
+        localStoragePresent:
+          globalThis.localStorage.getItem(localStorageKey) !== null,
+        storedBytes: bytes,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  })()`);
+  if (!result.ok) {
+    throw new Error(
+      `Could not write browser storage eviction sentinel: ${result.reason}`
+    );
+  }
+  if (!result.cachePresent || !result.localStoragePresent) {
+    throw new Error(
+      'Browser storage eviction sentinel write completed without readable cache/localStorage state'
+    );
+  }
+  return {
+    cachePresent: result.cachePresent,
+    localStoragePresent: result.localStoragePresent,
+  };
+}
+
+async function readStarterStorageEvictionSentinel(
+  session: CdpSession
+): Promise<StarterStorageEvictionSentinelState> {
+  const result = await session.evaluate<
+    | {
+        ok: true;
+        cachePresent: boolean | null;
+        localStoragePresent: boolean | null;
+      }
+    | { ok: false; reason: string }
+  >(`(async () => {
+    try {
+      const cacheName = ${JSON.stringify(STARTER_STORAGE_EVICTION_SENTINEL_CACHE)};
+      const localStorageKey = ${JSON.stringify(STARTER_STORAGE_EVICTION_SENTINEL_KEY)};
+      const sentinelUrl = ${JSON.stringify(STARTER_STORAGE_EVICTION_SENTINEL_URL)};
+      let localStoragePresent = null;
+      if (typeof globalThis.localStorage?.getItem === 'function') {
+        localStoragePresent =
+          globalThis.localStorage.getItem(localStorageKey) !== null;
+      }
+
+      let cachePresent = null;
+      if (
+        typeof globalThis.caches?.has === 'function' &&
+        typeof globalThis.caches?.open === 'function'
+      ) {
+        if (await globalThis.caches.has(cacheName)) {
+          const cache = await globalThis.caches.open(cacheName);
+          cachePresent = Boolean(await cache.match(sentinelUrl));
+        } else {
+          cachePresent = false;
+        }
+      }
+
+      return { ok: true, cachePresent, localStoragePresent };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  })()`);
+  if (!result.ok) {
+    throw new Error(
+      `Could not read browser storage eviction sentinel: ${result.reason}`
+    );
+  }
+  return {
+    cachePresent: result.cachePresent,
+    localStoragePresent: result.localStoragePresent,
+  };
+}
+
+async function clearStarterOriginStorage(
+  session: CdpSession,
+  origin: string
+): Promise<void> {
+  await session.send('Storage.clearDataForOrigin', {
+    origin,
+    storageTypes: 'all',
+  });
+  await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
 }
 
 type StarterOriginStorageUsage = {

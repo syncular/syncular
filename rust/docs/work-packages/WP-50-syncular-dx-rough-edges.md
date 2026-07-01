@@ -3969,16 +3969,22 @@ Most recent browser-health failure-artifact rerun:
   same-client tabs plus the separate observer tab through sync/realtime; if the
   duplicate tab is rejected by browser storage locking, the smoke still requires
   an explicit starter-open error and proves the active tab remains writable.
+  The branch now also adds a fresh-profile origin-storage
+  eviction/rebootstrap proof: it writes a Cache API/localStorage sentinel,
+  proves a generated task reached an observer tab through sync/realtime, closes
+  the app targets, clears the app origin through Chrome
+  `Storage.clearDataForOrigin`, reloads the same client id, requires the
+  sentinel to be gone, and waits for the task to restore from server state.
   Remaining work is richer browser lifecycle execution: discarded-tab
   suspension/restoration outside CDP lifecycle-state forcing, storage shutdown,
-  eviction, lower-level storage contention/failure behavior beyond the
-  same-database duplicate-tab branch, and deeper recovery coordination for
-  persistent browser databases beyond real target foreground/background
-  activation, dispatched page lifecycle events, CDP lifecycle forcing,
-  synthetic storage warning action mapping, browser-observed quota-pressure
-  preflight classification and recovery action mapping, hosted quota-exhausted
-  write rejection proof, and lock-serialized foreground resume/recovery
-  actions. Local
+  browser/host-driven eviction beyond explicit CDP origin clear, lower-level
+  storage contention/failure behavior beyond the same-database duplicate-tab
+  branch, and deeper recovery coordination for persistent browser databases
+  beyond real target foreground/background activation, dispatched page
+  lifecycle events, CDP lifecycle forcing, synthetic storage warning action
+  mapping, browser-observed quota-pressure preflight/recovery mapping,
+  quota-exhausted write rejection, and lock-serialized foreground
+  resume/recovery actions. Local
   execution of the new browser branches still needs a Chrome-capable runner;
   this machine has no Chrome/Chromium binary.
 - Local recovery controls: first plan/action slice is done for support bundles,
@@ -4031,12 +4037,17 @@ Most recent browser-health failure-artifact rerun:
   storage actions from live browser quota facts, then passes those same
   observed quota facts into the storage-recovery proof and requires the public
   recovery plan to map them to request-persistence and compaction actions.
-  Remaining work is richer
+  A fresh-profile Chrome/CDP proof now also writes a Cache API/localStorage
+  sentinel, proves a generated task reached an observer through sync/realtime,
+  clears the app origin through Chrome `Storage.clearDataForOrigin`, reloads
+  the same client id, requires the sentinel to be gone, and waits for the task
+  to restore from server state. Remaining work is richer
   browser-process proof: actual
   target-browser background/discard suspension and restoration,
-  shutdown/restart states, real storage shutdown, eviction behavior in a
-  browser, lower-level storage contention/failure behavior beyond duplicate-tab
-  generated writes, and deeper persistent database recovery coordination.
+  shutdown/restart states, real storage shutdown, browser/host-driven eviction
+  beyond explicit CDP origin clear, lower-level storage contention/failure
+  behavior beyond duplicate-tab generated writes, and deeper persistent
+  database recovery coordination.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,
@@ -4519,6 +4530,18 @@ Most recent browser-health failure-artifact rerun:
   installed locally; hosted Checks run `28551532309` on commit `8220c90f`
   passed the full matrix, including `starter-browser-preview`, confirming the
   target activation branch in Chrome.
+- 2026-07-02: Added a fresh-profile browser origin-storage
+  eviction/rebootstrap proof to the starter Chrome/CDP branch. The smoke opens
+  the generated app on a dedicated client id, writes a Cache API/localStorage
+  sentinel, creates a generated task, proves the task reached a separate
+  observer tab through sync/realtime, closes the app targets, clears the app
+  origin through Chrome `Storage.clearDataForOrigin`, reloads the same client
+  id, requires the sentinel to be absent, and waits for the task to restore
+  from server state. Local gates with Bun `1.3.9` passed:
+  `bun --cwd packages/create-syncular-app tsgo`,
+  `bunx biome check packages/create-syncular-app/scripts/smoke.ts`, and
+  `bun --cwd packages/create-syncular-app smoke`. Chrome was not installed
+  locally, so hosted Checks must confirm the real-browser branch.
 
 ## Next Action
 
@@ -4551,14 +4574,16 @@ invalid blob request/token, and blob access-denial outcomes. Destructive local
 recovery actions now expose data-loss/outbox safety metadata and block
 row-clearing actions while unsynced outbox work exists. Real browser target
 activation background/foreground coverage below the generated task proof is now
-confirmed in hosted Chrome. The next lifecycle follow-up should move to
-discarded-tab, shutdown/restart, eviction, and lower-level storage-failure
-behavior.
+confirmed in hosted Chrome. This slice adds explicit origin-storage
+eviction/rebootstrap recovery locally; hosted Chrome confirmation is pending.
+The next lifecycle follow-up should move to discarded-tab, shutdown/restart,
+browser/host-driven eviction beyond explicit CDP origin clear,
+storage-shutdown, and lower-level storage-failure behavior.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
-discard/shutdown lifecycle coverage, eviction and storage-shutdown browser
-proof, lower-level storage contention/failure behavior beyond duplicate-tab
-generated writes, and browser/bundler matrix execution, especially Safari,
-Firefox, real private-mode durable-persistence semantics, WebViews,
-installed-PWA cache/update semantics, and PWA offline persistence beyond
-controller classification.
+discard/shutdown lifecycle coverage, host-driven eviction and storage-shutdown
+browser proof, lower-level storage contention/failure behavior beyond
+duplicate-tab generated writes, and browser/bundler matrix execution,
+especially Safari, Firefox, real private-mode durable-persistence semantics,
+WebViews, installed-PWA cache/update semantics, and PWA offline persistence
+beyond controller classification.

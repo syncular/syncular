@@ -256,8 +256,14 @@ read-only review:
     has a bounded quota-exhausted generated write proof that attempts a
     generated mutation larger than the remaining Chrome/CDP quota budget and
     records the rejected write in the browser failure artifact; hosted Checks
-    run `28544353197` confirmed that branch in Chrome. Eviction and
-    storage-shutdown behavior remain matrix work. The starter now also records
+    run `28544353197` confirmed that branch in Chrome. The starter smoke now
+    also includes a fresh-profile origin-storage eviction/rebootstrap proof:
+    it writes a Cache API/localStorage sentinel, proves a synced task reached a
+    separate observer tab, clears the app origin through Chrome's
+    `Storage.clearDataForOrigin`, reloads the same client id, requires the
+    sentinel to be gone, and waits for the task to restore from server state.
+    Host-driven eviction and storage-shutdown behavior remain matrix work. The
+    starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply
     evidence, and local-visibility evidence in the hidden marker and browser
