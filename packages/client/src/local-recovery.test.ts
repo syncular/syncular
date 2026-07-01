@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import type { SyncularBrowserDeploymentPreflight } from './browser-deployment-preflight';
 import type { SyncularClientStatus } from './client';
 import {
   getSyncularLocalRecoveryPlan,
@@ -281,6 +282,116 @@ describe('local recovery plan', () => {
       'resetLocalSyncState',
       { subscriptionIds: ['sub-a'], clearSyncedRows: true },
     ]);
+  });
+
+  it('turns storage preflight quota and persistence warnings into recovery actions', async () => {
+    const client = new FakeRecoveryClient();
+    const plan = await getSyncularLocalRecoveryPlan(client, {
+      deploymentPreflight: storagePressurePreflight({
+        persistRequestSupported: true,
+      }),
+    });
+
+    expect(plan.status).toBe('maintenance-recommended');
+    const requestPersistence = requiredAction(
+      plan.actions,
+      'request-persistent-storage'
+    );
+    expect(requestPersistence).toMatchObject({
+      id: 'storage.request-persistence',
+      severity: 'warning',
+      source: 'storage',
+      destructive: false,
+      requiresConfirmation: false,
+      reasonCodes: ['browser.storage_persistence_not_granted'],
+    });
+
+    await expect(
+      runSyncularLocalRecoveryAction(client, requestPersistence, {
+        navigator: {
+          storage: {
+            async persist() {
+              return true;
+            },
+          },
+        },
+      })
+    ).resolves.toMatchObject({
+      action: 'request-persistent-storage',
+      supported: true,
+      granted: true,
+    });
+
+    const compact = requiredAction(plan.actions, 'compact-storage');
+    expect(compact).toMatchObject({
+      id: 'storage.compact',
+      severity: 'warning',
+      source: 'storage',
+      destructive: false,
+      reasonCodes: [
+        'browser.storage_pressure_high',
+        'browser.storage_quota_low',
+      ],
+    });
+    await expect(
+      runSyncularLocalRecoveryAction(client, compact)
+    ).resolves.toMatchObject({
+      action: 'compact-storage',
+      report: { ackedOutboxCommitsDeleted: 1 },
+    });
+
+    const clearCache = requiredAction(plan.actions, 'clear-blob-cache');
+    expect(clearCache).toMatchObject({
+      id: 'blob.clear-cache',
+      severity: 'warning',
+      destructive: true,
+      requiresConfirmation: true,
+      reasonCodes: [
+        'browser.storage_pressure_high',
+        'browser.storage_quota_low',
+      ],
+    });
+    await expect(
+      runSyncularLocalRecoveryAction(client, clearCache)
+    ).rejects.toBeInstanceOf(SyncularLocalRecoveryError);
+    await expect(
+      runSyncularLocalRecoveryAction(client, clearCache, {
+        confirmationText: clearCache.confirmationText,
+      })
+    ).resolves.toMatchObject({
+      action: 'clear-blob-cache',
+    });
+    expect(client.calls).toContainEqual(['compactStorage']);
+    expect(client.calls).toContainEqual(['clearBlobCache']);
+  });
+
+  it('does not offer browser persistence requests when preflight proves the API is unavailable', async () => {
+    const client = new FakeRecoveryClient();
+    const plan = await getSyncularLocalRecoveryPlan(client, {
+      deploymentPreflight: storagePressurePreflight({
+        persistRequestSupported: false,
+      }),
+    });
+
+    expect(
+      plan.actions.some(
+        (action) => action.kind === 'request-persistent-storage'
+      )
+    ).toBe(false);
+    await expect(
+      runSyncularLocalRecoveryAction(
+        client,
+        {
+          ...requiredAction(plan.actions, 'compact-storage'),
+          kind: 'request-persistent-storage',
+        },
+        { navigator: {} }
+      )
+    ).resolves.toMatchObject({
+      action: 'request-persistent-storage',
+      supported: false,
+      granted: null,
+    });
   });
 
   it('blocks destructive recovery actions when required multi-tab coordination is missing', async () => {
@@ -978,5 +1089,107 @@ function syncResult(): SyncularSyncResult {
       subscriptionStateMs: 0,
       notifyMs: 0,
     },
+  };
+}
+
+function storagePressurePreflight(options: {
+  persistRequestSupported: boolean;
+}): SyncularBrowserDeploymentPreflight {
+  return {
+    browser: {
+      crossOriginIsolated: false,
+      indexedDB: true,
+      secureContext: true,
+      serviceWorker: false,
+      serviceWorkerControlled: false,
+      serviceWorkerControllerScriptPath: null,
+      serviceWorkerControllerState: null,
+      webAssembly: true,
+      worker: true,
+    },
+    generatedAt: 1,
+    lifecycle: {
+      beforeUnloadEvent: true,
+      broadcastChannel: true,
+      multiTabMode: 'coordinated',
+      pageHideEvent: true,
+      pageVisibility: true,
+      resumeSignalAvailable: true,
+      shutdownSignalAvailable: true,
+      webLocks: true,
+    },
+    ready: false,
+    requiresAction: false,
+    runtimeAssets: {
+      assets: [],
+      checked: true,
+      requiredFeatures: [],
+    },
+    status: 'warning',
+    storage: {
+      availableBytes: 5_000,
+      durableRequired: true,
+      fallbackAllowed: false,
+      minimumAvailableBytes: 25_000,
+      opfsAvailable: null,
+      persisted: false,
+      persistenceSupported: true,
+      persistRequestSupported: options.persistRequestSupported,
+      quotaBytes: 100_000,
+      quotaPressure: 'high',
+      requested: 'indexedDb',
+      usageBytes: 95_000,
+      usageRatio: 0.95,
+    },
+    support: {
+      issueCodes: [
+        'browser.storage_persistence_not_granted',
+        'browser.storage_pressure_high',
+        'browser.storage_quota_low',
+      ],
+      persistence: 'evictable',
+      persistentOffline: true,
+      productionReady: false,
+      recommendedActions: ['requestPersistentStorage', 'freeStorageQuota'],
+      summary:
+        'Persistent offline browser storage is supported, but storage may be evicted or persistence could not be fully proven.',
+      tier: 'persistent-offline',
+    },
+    issues: [
+      {
+        code: 'browser.storage_persistence_not_granted',
+        details: {
+          persistRequestSupported: options.persistRequestSupported,
+        },
+        message: 'persistence not granted',
+        recommendedAction: 'requestPersistentStorage',
+        severity: 'warning',
+        target: 'storage',
+      },
+      {
+        code: 'browser.storage_pressure_high',
+        details: {
+          availableBytes: 5_000,
+          quotaBytes: 100_000,
+          usageBytes: 95_000,
+          usageRatio: 0.95,
+        },
+        message: 'storage pressure is high',
+        recommendedAction: 'freeStorageQuota',
+        severity: 'warning',
+        target: 'storage',
+      },
+      {
+        code: 'browser.storage_quota_low',
+        details: {
+          availableBytes: 5_000,
+          minimumAvailableBytes: 25_000,
+        },
+        message: 'available quota is low',
+        recommendedAction: 'freeStorageQuota',
+        severity: 'warning',
+        target: 'storage',
+      },
+    ],
   };
 }

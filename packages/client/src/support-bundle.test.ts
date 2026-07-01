@@ -457,6 +457,7 @@ function deploymentPreflight() {
       opfsAvailable: true,
       persisted: true,
       persistenceSupported: true,
+      persistRequestSupported: true,
       requested: 'opfsSahPool' as const,
     },
   };

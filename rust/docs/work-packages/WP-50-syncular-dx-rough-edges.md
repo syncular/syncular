@@ -2028,6 +2028,12 @@ online propagation, or reconnect behavior can change.
   starter hidden preflight marker and `browser-preview-failure.json` self-check
   now preserve those fields so browser artifacts can distinguish low total
   quota, low free space, high usage pressure, and persistence-grant gaps.
+- 2026-07-01: Wired browser deployment preflight storage warnings into local
+  recovery planning. Persistent-storage grant gaps now record whether
+  `navigator.storage.persist()` is requestable, the recovery plan can offer a
+  non-destructive persistent-storage request, and quota/pressure warnings map
+  to compaction plus confirmed blob-cache clearing actions with the originating
+  storage issue codes.
 - 2026-07-01: Added service-worker availability/control to browser deployment
   preflight and the starter hidden marker/failure artifact. PWA/service-worker
   pages are still preflight-gated, but cache-skew investigations now retain
@@ -3835,7 +3841,11 @@ Most recent mutation-status rerun:
   when the snapshot identifies errored subscription IDs. Destructive recovery
   actions now expose opt-in `browser.multi_tab_coordination_required` blockers
   when the app requires coordinated tabs and the browser preflight reports a
-  weaker or unknown multi-tab mode. The recovery executor itself can now
+  weaker or unknown multi-tab mode. Storage preflight persistence and quota
+  warnings now map to app-facing recovery actions: request persistent browser
+  storage when the API is available, compact local storage, or confirmed blob
+  cache clearing, with the original storage issue codes preserved on each
+  action. The recovery executor itself can now
   serialize actions through optional Web Locks, report lock state, or fail
   closed when a required lock is unavailable; bounded lock timeouts now fail
   with a typed timeout error and tests prove a timed-out queued recovery action
@@ -3854,9 +3864,10 @@ Most recent mutation-status rerun:
   row reaches local visibility, and an observer tab receives every row through
   sync/realtime. Remaining work is richer browser-process proof: actual
   target-browser background/discard suspension and restoration,
-  shutdown/restart states, storage shutdown, quota/eviction, same-database
-  multi-tab write contention beyond the duplicate-open and generated
-  write-pressure proofs, and deeper persistent database recovery coordination.
+  shutdown/restart states, real storage shutdown, quota-exhaustion and eviction
+  behavior in a browser, same-database multi-tab write contention beyond the
+  duplicate-open and generated write-pressure proofs, and deeper persistent
+  database recovery coordination.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,
@@ -4139,7 +4150,8 @@ starter browser-preview blocker is cleared, same-client duplicate-tab open
 contention and generated write pressure are now covered in hosted Chrome, and
 production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups are actual browser suspension/shutdown
-lifecycle coverage, quota/eviction and storage-shutdown recovery,
+lifecycle coverage, actual quota-exhaustion/eviction and storage-shutdown
+browser proof,
 same-database multi-tab write contention beyond duplicate-open/generated
 write-pressure proofs, and browser/bundler matrix execution, especially Safari,
 Firefox, private mode, WebViews, and PWAs.

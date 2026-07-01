@@ -417,6 +417,7 @@ function preflight(options: {
       durableRequired: options.persistence !== 'ephemeral',
       opfsAvailable: true,
       persistenceSupported: true,
+      persistRequestSupported: true,
       persisted: options.persistence === 'persistent',
     },
     runtimeAssets: {

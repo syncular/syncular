@@ -86,10 +86,10 @@ until the full browser Worker/WASM suite is green on Linux.
   visibility/pagehide/pageshow/online/DOM freeze-resume/CDP BFCache suspension
   plus visibilitychange recovery/beforeunload lifecycle evidence, lifecycle Web
   Lock contention, local recovery
-  Web Lock contention, two-tab propagation, same-client page reload/reopen
-  persistence, same-client duplicate-tab open contention, generated write
-  pressure, browser process restart persistence, and live support-bundle
-  failure artifact validation.
+  Web Lock contention, storage preflight-to-recovery action mapping, two-tab
+  propagation, same-client page reload/reopen persistence, same-client
+  duplicate-tab open contention, generated write pressure, browser process
+  restart persistence, and live support-bundle failure artifact validation.
   On a browser-capable CI runner, set
   `SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required` so missing Chrome fails instead
   of skipping the browser execution.

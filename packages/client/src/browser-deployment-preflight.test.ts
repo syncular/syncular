@@ -71,6 +71,7 @@ describe('Syncular browser deployment preflight', () => {
         durableRequired: true,
         opfsAvailable: true,
         persistenceSupported: true,
+        persistRequestSupported: false,
         persisted: true,
         availableBytes: 250 * 1024 * 1024 - 1024,
         quotaPressure: 'normal',
@@ -185,6 +186,45 @@ describe('Syncular browser deployment preflight', () => {
           severity: 'warning',
         }),
       ]),
+    });
+  });
+
+  it('reports persistent-storage request support when persistence is not granted yet', async () => {
+    await expect(
+      getSyncularBrowserDeploymentPreflight({
+        runtime: {
+          wasmGlueUrl: 'https://cdn.example/syncular.js',
+          wasmUrl: 'https://cdn.example/syncular_bg.wasm',
+        },
+        checkRuntimeAssets: false,
+        storage: 'indexedDb',
+        global: browserGlobal(),
+        navigator: browserNavigator({
+          opfs: true,
+          persisted: false,
+          persist: true,
+          quotaBytes: 250 * 1024 * 1024,
+        }),
+      })
+    ).resolves.toMatchObject({
+      status: 'warning',
+      support: {
+        issueCodes: ['browser.storage_persistence_not_granted'],
+        recommendedActions: ['requestPersistentStorage'],
+        persistence: 'evictable',
+      },
+      storage: {
+        persistenceSupported: true,
+        persistRequestSupported: true,
+        persisted: false,
+      },
+      issues: [
+        expect.objectContaining({
+          code: 'browser.storage_persistence_not_granted',
+          details: { persistRequestSupported: true },
+          recommendedAction: 'requestPersistentStorage',
+        }),
+      ],
     });
   });
 
@@ -564,6 +604,7 @@ function browserGlobal(
 function browserNavigator(options: {
   locks?: boolean;
   opfs: boolean;
+  persist?: boolean;
   persisted?: boolean;
   quotaBytes?: number;
   serviceWorker?: boolean;
@@ -609,6 +650,13 @@ function browserNavigator(options: {
               return options.persisted ?? false;
             },
           }),
+      ...(options.persist
+        ? {
+            async persist() {
+              return true;
+            },
+          }
+        : {}),
       ...(options.quotaBytes == null
         ? {}
         : {

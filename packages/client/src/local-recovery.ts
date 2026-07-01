@@ -1,4 +1,8 @@
-import type { SyncularBrowserDeploymentPreflightMultiTabMode } from './browser-deployment-preflight';
+import type {
+  SyncularBrowserDeploymentPreflight,
+  SyncularBrowserDeploymentPreflightIssueCode,
+  SyncularBrowserDeploymentPreflightMultiTabMode,
+} from './browser-deployment-preflight';
 import type { SyncularClientStatus } from './client';
 import type {
   SyncularBlobUploadQueueProcessOptions,
@@ -23,6 +27,7 @@ export type SyncularLocalRecoveryStatus =
 export type SyncularLocalRecoveryActionKind =
   | 'export-support-bundle'
   | 'resume-from-background'
+  | 'request-persistent-storage'
   | 'retry-blob-uploads'
   | 'compact-storage'
   | 'clear-blob-cache'
@@ -126,6 +131,12 @@ export interface SyncularLocalRecoveryPlanOptions {
    */
   multiTabMode?: SyncularBrowserDeploymentPreflightMultiTabMode;
   requireMultiTabCoordinationForDestructiveActions?: boolean;
+  /**
+   * Pass the current browser deployment preflight result so quota pressure,
+   * evictable storage, and persistence-grant gaps become app-facing recovery
+   * actions instead of diagnostics-only warnings.
+   */
+  deploymentPreflight?: SyncularBrowserDeploymentPreflight;
 }
 
 export type SyncularLocalRecoveryActionLockState =
@@ -142,6 +153,9 @@ export interface SyncularLocalRecoveryActionNavigator {
       options: { mode: 'exclusive'; signal?: AbortSignal },
       callback: () => T | Promise<T>
     ) => Promise<T>;
+  };
+  storage?: {
+    persist?: () => Promise<boolean>;
   };
 }
 
@@ -193,6 +207,11 @@ export type SyncularLocalRecoveryActionResultBase =
   | {
       action: 'resume-from-background';
       result: SyncularSyncResult;
+    }
+  | {
+      action: 'request-persistent-storage';
+      supported: boolean;
+      granted: boolean | null;
     }
   | {
       action: 'retry-blob-uploads';
@@ -348,6 +367,7 @@ export async function getSyncularLocalRecoveryPlan(
     ...actionsForLifecycle(status, snapshot),
     ...actionsForOutbox(status, snapshot),
     ...actionsForBlobUploads(status, snapshot),
+    ...actionsForStoragePreflight(options),
     ...actionsForHealth(health),
     ...actionsForRequestedOptions(options, status, snapshot),
   ];
@@ -501,6 +521,8 @@ async function runLocalRecoveryActionWithoutCoordination(
         action: action.kind,
         result: await client.resumeFromBackground(options.syncOptions),
       };
+    case 'request-persistent-storage':
+      return requestPersistentBrowserStorage(options.navigator);
     case 'retry-blob-uploads':
       return {
         action: action.kind,
@@ -782,6 +804,73 @@ function actionsForBlobUploads(
   ];
 }
 
+function actionsForStoragePreflight(
+  options: SyncularLocalRecoveryPlanOptions
+): SyncularLocalRecoveryAction[] {
+  const preflight = options.deploymentPreflight;
+  if (!preflight) return [];
+  const storageReasonCodes = storagePreflightReasonCodes(preflight);
+  if (storageReasonCodes.length === 0) return [];
+
+  const actions: SyncularLocalRecoveryAction[] = [];
+  const recommendedActions = new Set(preflight.support.recommendedActions);
+  const storageIssues = new Set(storageReasonCodes);
+
+  if (
+    recommendedActions.has('requestPersistentStorage') &&
+    preflight.storage.persistRequestSupported !== false
+  ) {
+    actions.push({
+      id: 'storage.request-persistence',
+      kind: 'request-persistent-storage',
+      severity: 'warning',
+      source: 'storage',
+      title: 'Request persistent browser storage',
+      description:
+        'Ask the browser to protect Syncular offline data from routine storage eviction. The browser may still deny the grant, so keep the preflight result visible.',
+      reasonCodes: storageReasonCodes.filter(isPersistenceStorageIssueCode),
+      destructive: false,
+      requiresConfirmation: false,
+    });
+  }
+
+  if (
+    recommendedActions.has('freeStorageQuota') ||
+    storageIssues.has('browser.storage_quota_low') ||
+    storageIssues.has('browser.storage_pressure_high')
+  ) {
+    const quotaReasonCodes = storageReasonCodes.filter(isQuotaStorageIssueCode);
+    actions.push({
+      id: 'storage.compact',
+      kind: 'compact-storage',
+      severity: 'warning',
+      source: 'storage',
+      title: 'Compact local storage for quota pressure',
+      description:
+        'Run bounded local cleanup for acked outbox commits, resolved conflicts, inactive sync state, tombstones, and blob cache before browser quota pressure turns into write failures.',
+      reasonCodes: quotaReasonCodes,
+      destructive: false,
+      requiresConfirmation: false,
+      compactStorageOptions: options.compactStorageOptions,
+    });
+    actions.push({
+      id: 'blob.clear-cache',
+      kind: 'clear-blob-cache',
+      severity: 'warning',
+      source: 'blob',
+      title: 'Clear local blob cache for quota pressure',
+      description:
+        'Clear cached blob bytes to free browser storage. Synced metadata and remote blob objects are not deleted.',
+      reasonCodes: quotaReasonCodes,
+      destructive: true,
+      requiresConfirmation: true,
+      confirmationText: 'clear local blob cache',
+    });
+  }
+
+  return actions.filter((action) => action.reasonCodes.length > 0);
+}
+
 function actionsForHealth(
   health: SyncularLocalHealthReport
 ): SyncularLocalRecoveryAction[] {
@@ -882,6 +971,36 @@ function actionsForRequestedOptions(
   return actions;
 }
 
+async function requestPersistentBrowserStorage(
+  navigatorRef?: SyncularLocalRecoveryActionNavigator
+): Promise<
+  Extract<
+    SyncularLocalRecoveryActionResultBase,
+    { action: 'request-persistent-storage' }
+  >
+> {
+  const resolvedNavigator =
+    navigatorRef ??
+    (
+      globalThis as unknown as {
+        navigator?: SyncularLocalRecoveryActionNavigator;
+      }
+    ).navigator;
+  const persist = resolvedNavigator?.storage?.persist;
+  if (typeof persist !== 'function') {
+    return {
+      action: 'request-persistent-storage',
+      supported: false,
+      granted: null,
+    };
+  }
+  return {
+    action: 'request-persistent-storage',
+    supported: true,
+    granted: await persist(),
+  };
+}
+
 function unresolvedOutboxCount(
   status: SyncularClientStatus | undefined,
   snapshot: SyncularDiagnosticSnapshot
@@ -889,6 +1008,48 @@ function unresolvedOutboxCount(
   const outbox = snapshot.outboxStats ?? status?.outbox;
   if (!outbox) return 0;
   return outbox.pending + outbox.sending + outbox.failed;
+}
+
+function storagePreflightReasonCodes(
+  preflight: SyncularBrowserDeploymentPreflight
+): SyncularBrowserDeploymentPreflightIssueCode[] {
+  return [
+    ...new Set(
+      preflight.issues
+        .filter((issue) => issue.target === 'storage')
+        .map((issue) => issue.code)
+        .filter(isStoragePreflightIssueCode)
+    ),
+  ].sort();
+}
+
+function isStoragePreflightIssueCode(
+  code: SyncularBrowserDeploymentPreflightIssueCode
+): code is SyncularBrowserDeploymentPreflightIssueCode {
+  return (
+    isPersistenceStorageIssueCode(code) ||
+    isQuotaStorageIssueCode(code) ||
+    code === 'browser.indexeddb_unavailable' ||
+    code === 'browser.opfs_unavailable'
+  );
+}
+
+function isPersistenceStorageIssueCode(
+  code: SyncularBrowserDeploymentPreflightIssueCode
+): boolean {
+  return (
+    code === 'browser.storage_persistence_not_granted' ||
+    code === 'browser.storage_persistence_unavailable'
+  );
+}
+
+function isQuotaStorageIssueCode(
+  code: SyncularBrowserDeploymentPreflightIssueCode
+): boolean {
+  return (
+    code === 'browser.storage_quota_low' ||
+    code === 'browser.storage_pressure_high'
+  );
 }
 
 function revokedSubscriptionIds(

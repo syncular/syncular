@@ -133,6 +133,7 @@ export interface SyncularBrowserDeploymentPreflightStorage {
   durableRequired: boolean;
   opfsAvailable: boolean | null;
   persistenceSupported: boolean | null;
+  persistRequestSupported: boolean | null;
   persisted: boolean | null;
   quotaPressure: SyncularBrowserDeploymentPreflightQuotaPressure;
   availableBytes?: number;
@@ -218,6 +219,7 @@ export interface SyncularBrowserDeploymentPreflightNavigator {
   };
   storage?: {
     getDirectory?: unknown;
+    persist?: () => Promise<boolean>;
     persisted?: () => Promise<boolean>;
     estimate?: () => Promise<{ quota?: number; usage?: number }>;
   };
@@ -445,6 +447,9 @@ async function summarizeStorage(args: {
   const persistenceSupported = durableRequired
     ? typeof args.navigatorRef?.storage?.persisted === 'function'
     : null;
+  const persistRequestSupported = durableRequired
+    ? typeof args.navigatorRef?.storage?.persist === 'function'
+    : null;
   const persisted =
     persistenceSupported === true
       ? await safeBooleanCall(args.navigatorRef?.storage?.persisted)
@@ -464,6 +469,7 @@ async function summarizeStorage(args: {
     durableRequired,
     opfsAvailable,
     persistenceSupported,
+    persistRequestSupported,
     persisted,
     quotaPressure,
     ...(availableBytes != null ? { availableBytes } : {}),
@@ -509,6 +515,7 @@ async function summarizeStorage(args: {
       recommendedAction: 'requestPersistentStorage',
       message:
         'The browser does not expose persistent-storage status; installed offline data may still be evicted under storage pressure.',
+      details: { persistRequestSupported },
     });
   } else if (durableRequired && persisted === false) {
     args.issues.push({
@@ -518,6 +525,7 @@ async function summarizeStorage(args: {
       recommendedAction: 'requestPersistentStorage',
       message:
         'Persistent browser storage is not currently granted; offline data may be evicted under storage pressure.',
+      details: { persistRequestSupported },
     });
   }
 

@@ -228,6 +228,11 @@ read-only review:
     optional Web Locks, can fail contended locks with
     `browser.web_locks_timeout`, and records lifecycle lock state plus timeout
     budget in the hidden marker and browser failure artifact.
+    Local recovery now consumes storage-related deployment-preflight warnings:
+    persistent-storage grant gaps can become a non-destructive
+    `navigator.storage.persist()` request when supported, while quota/pressure
+    warnings map to compaction and confirmed blob-cache clearing actions with
+    their original issue codes preserved.
     Browser preview artifacts now include starter timings for database open,
     browser health refresh, schema readiness, support-bundle export,
     bootstrap readiness, realtime connection, and generated-mutation local
