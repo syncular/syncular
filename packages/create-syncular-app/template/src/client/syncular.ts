@@ -46,6 +46,13 @@ export const syncularStarterRuntimeArtifacts = [
   },
 ] as const satisfies readonly SyncularRuntimeArtifactCandidate[];
 
+function createSyncularStarterWorker() {
+  return new Worker('/syncular/client/worker-entry.js', {
+    type: 'module',
+    credentials: 'same-origin',
+  });
+}
+
 const syncBaseUrl =
   import.meta.env.VITE_SYNCULAR_SYNC_URL ?? 'http://127.0.0.1:4100/sync';
 
@@ -94,6 +101,7 @@ export async function openAppClient(): Promise<AppSyncClient> {
       fileName,
       storage: 'indexedDb',
     },
+    worker: createSyncularStarterWorker,
     runtimeArtifacts: syncularStarterRuntimeArtifacts,
     requestTimeoutMs: 15_000,
     getHeaders: async () => ({

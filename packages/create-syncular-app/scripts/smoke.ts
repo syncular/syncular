@@ -345,14 +345,9 @@ async function verifyBuiltPreviewAssets(
 
 async function verifyBuiltPreviewRuntimeAssets(origin: string): Promise<void> {
   const assets = [
-    {
-      path: '/syncular/wasm-core/syncular.js',
-      expected: 'javascript',
-      label: 'Syncular WASM glue',
-    },
+    { path: '/syncular/wasm-core/syncular.js', label: 'Syncular WASM glue' },
     {
       path: '/syncular/wasm-core/syncular_bg.wasm',
-      expected: 'application/wasm',
       label: 'Syncular WASM binary',
     },
   ];
@@ -366,16 +361,64 @@ async function verifyBuiltPreviewRuntimeAssets(origin: string): Promise<void> {
       );
     }
     const contentType = response.headers.get('content-type') ?? '';
-    const valid =
-      asset.expected === 'javascript'
-        ? contentType.includes('javascript')
-        : contentType.split(';', 1)[0]?.trim() === asset.expected;
+    const expected = asset.path.endsWith('.wasm')
+      ? 'application/wasm'
+      : 'javascript';
+    const valid = isExpectedAssetContentType(contentType, expected);
     if (!valid) {
       throw new Error(
-        `${asset.label} asset ${assetUrl.href} was served as ${contentType}; expected ${asset.expected}`
+        `${asset.label} asset ${assetUrl.href} was served as ${contentType}; expected ${expected}`
       );
     }
   }
+
+  await verifyBuiltPreviewWorkerAssets(origin);
+}
+
+async function verifyBuiltPreviewWorkerAssets(origin: string): Promise<void> {
+  const pending = ['/syncular/client/worker-entry.js'];
+  const seen = new Set<string>();
+
+  for (let index = 0; index < pending.length; index += 1) {
+    const path = pending[index]!;
+    if (seen.has(path)) continue;
+    seen.add(path);
+
+    const assetUrl = new URL(path, origin);
+    const response = await fetch(assetUrl);
+    if (!response.ok) {
+      throw new Error(
+        `Syncular worker asset ${assetUrl.href} returned ${response.status}`
+      );
+    }
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!isExpectedAssetContentType(contentType, 'javascript')) {
+      throw new Error(
+        `Syncular worker asset ${assetUrl.href} was served as ${contentType}; expected javascript`
+      );
+    }
+
+    const source = await response.text();
+    for (const importedPath of collectStaticRelativeJavaScriptImports(source)) {
+      const importedUrl = new URL(importedPath, assetUrl);
+      if (importedUrl.origin !== new URL(origin).origin) continue;
+      pending.push(importedUrl.pathname);
+    }
+  }
+}
+
+function collectStaticRelativeJavaScriptImports(source: string): string[] {
+  const imports = new Set<string>();
+  const pattern =
+    /(?:import\s+[^'"]*?\s+from\s+|import\s*)['"](\.\/[a-z0-9-]+\.js)['"]/gi;
+  for (const match of source.matchAll(pattern)) imports.add(match[1]!);
+  return [...imports];
+}
+
+function isExpectedAssetContentType(contentType: string, expected: string) {
+  return expected === 'javascript'
+    ? contentType.includes('javascript')
+    : contentType.split(';', 1)[0]?.trim() === expected;
 }
 
 type BuiltPreviewAssetMetrics = {

@@ -1,4 +1,4 @@
-import { cp, readFile } from 'node:fs/promises';
+import { cp, mkdir, readdir, readFile } from 'node:fs/promises';
 import type { ServerResponse } from 'node:http';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
@@ -8,8 +8,10 @@ const require = createRequire(import.meta.url);
 const syncularClientRoot = dirname(
   require.resolve('@syncular/client/package.json')
 );
+const syncularClientDistDir = join(syncularClientRoot, 'dist');
 const syncularCoreRuntimeDir = join(syncularClientRoot, 'dist', 'wasm-core');
 const syncularRuntimeMountPath = '/syncular/wasm-core/';
+const syncularClientRuntimeMountPath = '/syncular/client/';
 const syncularRuntimeContentTypes = new Map([
   ['syncular.js', 'text/javascript; charset=utf-8'],
   ['syncular_bg.wasm', 'application/wasm'],
@@ -29,11 +31,16 @@ function syncularRuntimeAssets(): Plugin {
       installSyncularRuntimeMiddleware(server);
     },
     async closeBundle() {
-      await cp(
-        syncularCoreRuntimeDir,
-        resolve(root, outDir, 'syncular', 'wasm-core'),
-        { recursive: true }
-      );
+      await Promise.all([
+        cp(
+          syncularCoreRuntimeDir,
+          resolve(root, outDir, 'syncular', 'wasm-core'),
+          { recursive: true }
+        ),
+        copySyncularClientRuntimeAssets(
+          resolve(root, outDir, 'syncular', 'client')
+        ),
+      ]);
     },
   };
 }
@@ -52,10 +59,12 @@ async function serveSyncularRuntimeAsset(
   requestUrl: string | undefined,
   response: ServerResponse
 ) {
-  const asset = resolveSyncularRuntimeRequest(requestUrl);
+  const asset =
+    resolveSyncularRuntimeRequest(requestUrl) ??
+    resolveSyncularClientRuntimeRequest(requestUrl);
   if (!asset) return false;
 
-  const body = await readFile(join(syncularCoreRuntimeDir, asset.fileName));
+  const body = await readFile(join(asset.dir, asset.fileName));
   response.statusCode = 200;
   response.setHeader('content-type', asset.contentType);
   response.end(body);
@@ -68,7 +77,34 @@ function resolveSyncularRuntimeRequest(requestUrl: string | undefined) {
   if (!pathname.startsWith(syncularRuntimeMountPath)) return null;
   const fileName = pathname.slice(syncularRuntimeMountPath.length);
   const contentType = syncularRuntimeContentTypes.get(fileName);
-  return contentType ? { contentType, fileName } : null;
+  return contentType
+    ? { contentType, dir: syncularCoreRuntimeDir, fileName }
+    : null;
+}
+
+function resolveSyncularClientRuntimeRequest(requestUrl: string | undefined) {
+  if (!requestUrl) return null;
+  const pathname = new URL(requestUrl, 'http://syncular.local').pathname;
+  if (!pathname.startsWith(syncularClientRuntimeMountPath)) return null;
+  const fileName = pathname.slice(syncularClientRuntimeMountPath.length);
+  if (!/^[a-z0-9-]+\.js$/i.test(fileName)) return null;
+  return {
+    contentType: 'text/javascript; charset=utf-8',
+    dir: syncularClientDistDir,
+    fileName,
+  };
+}
+
+async function copySyncularClientRuntimeAssets(targetDir: string) {
+  await mkdir(targetDir, { recursive: true });
+  const entries = await readdir(syncularClientDistDir, { withFileTypes: true });
+  await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.js'))
+      .map((entry) =>
+        cp(join(syncularClientDistDir, entry.name), join(targetDir, entry.name))
+      )
+  );
 }
 
 export default defineConfig({
