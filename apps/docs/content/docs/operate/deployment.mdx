@@ -1,6 +1,6 @@
 ---
 title: Deployment
-description: Deploy the Syncular server with Docker, Cloudflare, Fly.io, or a plain VPS — health checks, CORS, rate limits, maintenance, and backups.
+description: Deploy the Syncular server with Docker, Cloudflare, Fly.io, or a plain VPS - health checks, CORS, rate limits, maintenance, backups, and restore drills.
 ---
 
 # Deployment
@@ -15,6 +15,8 @@ covers the deployment shapes and the production settings that matter.
 - you need a concrete shape for Docker, Cloudflare, Fly.io, or a VPS
 - you are building a go-live checklist around health checks, CORS, limits, and
   backups
+- you need repeatable restore, blob-storage, rate-limit, or credential
+  rotation drills
 
 ## Prerequisites
 
@@ -276,18 +278,34 @@ not protect WebSocket upgrades, so this guard matters in production.
 ## Rate limiting
 
 Sync routes rate-limit by default: 120 pulls and 60 pushes per minute per
-client. Tune or disable via `routes.rateLimit`:
+client. Treat these as starting points, not product policy. Tune or disable via
+`routes.rateLimit`:
 
 ```typescript
 routes: {
   rateLimit: {
-    pull: { maxRequests: 120, windowMs: 60_000 },
-    push: { maxRequests: 60, windowMs: 60_000 },
+    pull: { maxRequests: 120, windowMs: 60_000, includeHeaders: true },
+    push: { maxRequests: 60, windowMs: 60_000, includeHeaders: true },
   },
   // or, if a gateway in front already rate-limits:
   // rateLimit: false,
 }
 ```
+
+Use this tuning loop before launch and after any sync cadence change:
+
+1. Run the staging app with realistic tab counts, offline bursts, and blob
+   uploads.
+2. Record normal pull/push rates per `clientId` and actor, plus websocket
+   reconnect/message rates.
+3. Keep enough headroom for reconnect storms after deploys and restores.
+4. Alert on `sync.rate_limited`, `sync.websocket_connection_limit`, and
+   repeated `retryLater` recommended actions.
+5. If an edge gateway owns the public rate limit, keep Syncular's inner limit
+   enabled unless you have equivalent per-client visibility at the gateway.
+
+HTTP pull/push limits and websocket message limits are separate knobs. Raising
+one does not raise the other.
 
 ## WebSocket connection limits
 
@@ -346,6 +364,66 @@ app tables — all created by `ensureSyncSchema` plus your migrations.
 - After restoring to an older state, expect a wave of client re-bootstraps;
   consider raising `keepNewestCommits` temporarily.
 
+Run a restore drill before launch and on a recurring cadence:
+
+1. Restore the latest production backup into an isolated staging database.
+2. Run `ensureSyncSchema(db, dialect)` and your app migrations against the
+   restored database; they should be idempotent.
+3. Run `getSyncularServerSchemaReadiness(...)` and
+   `npx syncular schema check --json` against the same version set you plan to
+   deploy.
+4. Start the server on the restored database, call `GET <mount>/health`, and
+   perform a pull as a seeded test actor.
+5. Compare row counts for `sync_commits`, `sync_changes`,
+   `sync_blob_uploads` if blobs are enabled, and your largest app tables.
+6. Record the restore time, expected client re-bootstrap load, and the
+   rollback decision you would take if the drill were production.
+
+## Blob storage consistency
+
+The database is authoritative for blob metadata. External storage such as S3,
+R2, or the filesystem is authoritative for bytes. If you use the database blob
+adapter, the `sync_blobs` body table is covered by database backup and restore;
+if you use external storage, run a separate consistency check.
+
+A practical scheduled check:
+
+1. Sample recent and old `sync_blob_uploads` rows where `status = 'complete'`
+   for each active partition.
+2. For each sample, call the storage adapter's `exists(...)` or
+   `getMetadata(...)` path, or mint a signed URL through the normal blob route
+   with a service actor that should have access.
+3. Sample app rows in every configured `blobColumns` field and assert the
+   referenced hash has a complete `sync_blob_uploads` row in the same
+   partition.
+4. Alert separately for `blob_record_missing`, `storage_object_missing`, and
+   `signed_url_failed`; they point at metadata loss, byte loss, and credential
+   or signing failures respectively.
+5. Never delete an object by content hash until no configured scoped metadata
+   row can reference it and your product retention policy says the body is
+   disposable.
+
+When you enable `createBlobCleanupScheduler`, start with
+`deleteFromStorage: false` in staging and review the deleted candidates before
+allowing storage deletion in production.
+
+## Credential rotation
+
+Syncular does not own your app auth secrets; your `authenticate` function does.
+Plan rotations by credential class:
+
+- **App auth signing keys/session secrets:** deploy code that accepts both old
+  and new keys, issue new sessions, wait for old sessions to expire, then
+  remove the old key. Expect websocket clients to reconnect after refresh.
+- **Console token (`SYNC_CONSOLE_TOKEN` or `console.token`):** set a new token,
+  restart or redeploy the console route, have operators reconnect, and use
+  `Disconnect` with credential clearing on shared workstations.
+- **Console API keys:** use staged rotation from the Console Config view:
+  create the replacement key, update automation, then revoke the old key.
+- **Storage credentials:** rotate S3/R2/filesystem signer credentials with a
+  canary upload and download. Watch for `blob.signing_failed` and
+  `storage_object_missing` during and after the rotation.
+
 ## Multi-instance deployments
 
 Syncular servers are stateless between requests except for WebSocket
@@ -375,16 +453,19 @@ for their next HTTP pull instead of waking immediately.
   - [ ] Upgrade and rollback order reviewed in the
         [Upgrade Guide](/reference/upgrade-guide)
   - [ ] Backups configured and restore tested
+  - [ ] Last restore drill recorded with expected client re-bootstrap load
 - **Authentication**
   - [ ] `authenticate` validates real tokens/sessions; secrets from env, not source
+  - [ ] Auth, console, API-key, and storage credential rotation owners/cadence set
 - **Networking**
   - [ ] HTTPS enforced (proxy or platform TLS)
   - [ ] `routes.cors` restricted to your app origins
   - [ ] WebSocket origin allowlist covers exactly your app origins
-  - [ ] Rate limits left on (or consciously moved to a gateway)
+  - [ ] Rate limits tuned from staging traffic and left on (or consciously moved to a gateway)
 - **Maintenance**
   - [ ] `routes.prune` enabled with an `activeWindowMs` ≥ your users' realistic offline window
   - [ ] `routes.compact` enabled with `options.fullHistoryHours` set
+  - [ ] Blob consistency sampling configured when using external blob storage
   - [ ] Health endpoint wired into platform checks and alerting
 - **Console** (if enabled)
   - [ ] `SYNC_CONSOLE_TOKEN` is strong and rotated like any operator credential

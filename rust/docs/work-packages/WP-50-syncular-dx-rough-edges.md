@@ -1496,6 +1496,12 @@ online propagation, or reconnect behavior can change.
   smoke now proves the production build contains that marker and, when Chrome
   is available, waits for redacted support-bundle DOM evidence alongside the
   existing health/schema readiness checks.
+- 2026-07-01: Expanded production operations docs beyond the first upgrade
+  runbook. Deployment now includes restore-drill steps, blob storage
+  consistency sampling, rate-limit tuning, credential rotation cadence, and
+  checklist items for restore load, external blob stores, and rotation
+  ownership. The upgrade guide now requires those ops drills before a package
+  upgrade routes production traffic.
 
 ## Latest Gates
 
@@ -1676,6 +1682,12 @@ Most recent starter support-bundle artifact rerun:
     including the support-bundle marker in the production JavaScript asset.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
     binary was available.
+- `git diff --check`
+
+Most recent production-ops docs rerun:
+
+- `bun run docs:stale-check`
+- `bun --cwd apps/docs types:check`
 - `git diff --check`
 
 Most recent generated-helper rerun:
@@ -1995,9 +2007,10 @@ Most recent mutation-status rerun:
 - Upgrade and production ops runbooks: turn schema/package/protocol upgrade
   order, backup/restore, blob-store consistency, rate limits, credential
   rotation, local database recovery, and rollback into copyable operator docs.
-  The first upgrade/rollback slice is done; remaining production-ops depth is
-  blob-store consistency checks, rate-limit tuning, credential rotation
-  cadence, and richer backup/restore drills.
+  Upgrade/rollback docs are done, and production-ops depth now includes
+  restore drills, blob-store consistency checks, rate-limit tuning, and
+  credential rotation cadence. Remaining depth is to automate any of those
+  drills as `doctor`/Console checks once the manual runbooks stabilize.
 - Performance and failure artifacts: keep package/WASM size, bootstrap
   latency, local visibility delay, sync apply, realtime reconnect, blob fetch
   latency, storage/quota pressure, and redacted E2E failure artifacts
@@ -2008,8 +2021,9 @@ Most recent mutation-status rerun:
 Pick the next implementation slice from the remaining risks. Strong candidates
 are observing the new hosted starter browser-preview job, multi-tab lifecycle
 coverage, canonical real-browser support-bundle failure artifacts,
-browser/bundler matrix execution, or production-ops depth, because those
-remain broad DX holes after the first local recovery browser proof, upgrade
-runbook, built-preview asset smoke, runtime timeline helper, composed
-support-bundle helper, starter support-bundle marker, mutation status helper,
-command timeline evidence chain, and CI browser-smoke enforcement.
+browser/bundler matrix execution, or automating production-ops checks, because
+those remain broad DX holes after the first local recovery browser proof,
+upgrade runbook, production-ops runbook, built-preview asset smoke, runtime
+timeline helper, composed support-bundle helper, starter support-bundle marker,
+mutation status helper, command timeline evidence chain, and CI browser-smoke
+enforcement.

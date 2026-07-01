@@ -241,7 +241,11 @@ read-only review:
     sets, generated/schema checks, deploy-time schema setup, live readiness,
     server/client rollout order, browser preflight, recovery monitoring,
     support-window tightening, code/schema/database/browser-asset rollback,
-    and local client recovery. The `create-syncular-app` scaffold smoke now
+    and local client recovery. Production operations docs now add concrete
+    restore drills, blob storage consistency sampling, rate-limit tuning,
+    credential rotation cadence, and upgrade preflight checks so the remaining
+    ops prompts are copyable operator work rather than vague launch advice.
+    The `create-syncular-app` scaffold smoke now
     also builds the generated app, serves Vite preview, verifies built preview
     assets, and has an opt-in Chrome/Chromium CDP path for opening the built
     page and waiting for Syncular health/schema lines; local evidence passed

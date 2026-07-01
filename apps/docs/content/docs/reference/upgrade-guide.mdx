@@ -124,6 +124,27 @@ schema does not change:
    `requiredSchemaVersion` after old clients have aged out or product policy
    explicitly drops them.
 
+## Production operations before upgrading
+
+Do not treat an upgrade as only a package bump. Before routing production
+traffic to a new Syncular version, confirm the operational drills from
+[Deployment](/operate/deployment) are current:
+
+1. The latest database backup has been restored into staging and passed
+   `getSyncularServerSchemaReadiness(...)`.
+2. The restored server can answer `GET <mount>/health` and a seeded actor can
+   pull data.
+3. If blobs are enabled, sampled completed `sync_blob_uploads` rows have
+   matching bytes in the configured storage adapter, and sampled app
+   `blobColumns` references have metadata in the same partition.
+4. Rate limits have been checked against realistic reconnect/offline flush
+   traffic, including websocket message limits.
+5. App auth, Console token/API keys, and blob storage credentials have a named
+   owner and rotation path for the release window.
+6. The rollback decision is written down before deploy: code-only rollback,
+   forward-compatible server rollback, schema rollback, database restore, or
+   browser/runtime asset rollback.
+
 ## Rollback runbook
 
 Rollback depends on whether data/schema changed, not only on whether code
