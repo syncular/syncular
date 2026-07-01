@@ -19,7 +19,7 @@ import { Buffer } from 'node:buffer';
  *    contention timeout/recovery, browser-observed local recovery Web Lock
  *    contention timeout/recovery, two-tab propagation, same-client
  *    page reload/reopen persistence, same-client duplicate-tab open
- *    contention, and
+ *    contention, generated write pressure, and
  *    same-profile browser process restart persistence.
  *    After the happy path, the browser smoke also forces a hidden
  *    support-bundle marker failure and verifies the live
@@ -50,6 +50,7 @@ const STARTER_LIFECYCLE_RESUME_LOCK_TIMEOUT_MS = 10_000;
 const STARTER_LOCAL_RECOVERY_LOCK_NAME =
   'syncular:create-syncular-app:local-recovery';
 const STARTER_LOCAL_RECOVERY_LOCK_TIMEOUT_MS = 1_000;
+const STARTER_WRITE_PRESSURE_PROOF_COUNT = 4;
 const BROWSER_PREVIEW_SMOKE_TIMEOUT_MS = 180_000;
 const CDP_CONNECT_TIMEOUT_MS = 10_000;
 const CDP_COMMAND_TIMEOUT_MS = 30_000;
@@ -547,6 +548,13 @@ async function runBrowserPreviewSmoke(args: {
         origin: args.origin,
         title: propagatedTitle,
       });
+      log('real-browser smoke: proving generated write pressure');
+      await proveStarterGeneratedWritePressure({
+        failureMetrics: args.failureMetrics,
+        failureArtifactPath: args.failureArtifactPath,
+        active: secondSession,
+        observer: session,
+      });
     } finally {
       secondSession?.close();
       session.close();
@@ -830,6 +838,16 @@ type BrowserPreviewProbe = {
     lockTimeoutMs: number | null;
     status: string | null;
   };
+  writePressureProof: {
+    durationMs: number | null;
+    error: string | null;
+    errorCode: string | null;
+    requestedCount: number;
+    runCount: number;
+    status: string | null;
+    titlePrefix: string | null;
+    visibleCount: number;
+  };
   starterTimeline: {
     bootstrapReadyMs: number | null;
     bootstrapStatus: string | null;
@@ -1004,6 +1022,21 @@ async function readStarterBrowserProbe(
       return Number.isFinite(number) && number >= 0 ? number : null;
     };
     const localRecoveryProofLockTimeoutMs = readLocalRecoveryProofNumber('data-syncular-local-recovery-proof-lock-timeout-ms');
+    const writePressureProof = document.querySelector('[data-syncular-write-pressure-proof-status]');
+    const writePressureProofError = writePressureProof?.getAttribute('data-syncular-write-pressure-proof-error') ?? null;
+    const writePressureProofErrorCode = writePressureProof?.getAttribute('data-syncular-write-pressure-proof-error-code') ?? null;
+    const writePressureProofStatus = writePressureProof?.getAttribute('data-syncular-write-pressure-proof-status') ?? null;
+    const writePressureProofTitlePrefix = writePressureProof?.getAttribute('data-syncular-write-pressure-proof-title-prefix') ?? null;
+    const readWritePressureProofNumber = (name) => {
+      const value = writePressureProof?.getAttribute(name) ?? null;
+      if (value === null || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number : null;
+    };
+    const writePressureProofDurationMs = readWritePressureProofNumber('data-syncular-write-pressure-proof-duration-ms');
+    const writePressureProofRequestedCount = Number(writePressureProof?.getAttribute('data-syncular-write-pressure-proof-requested-count') ?? 0);
+    const writePressureProofRunCount = Number(writePressureProof?.getAttribute('data-syncular-write-pressure-proof-run-count') ?? 0);
+    const writePressureProofVisibleCount = Number(writePressureProof?.getAttribute('data-syncular-write-pressure-proof-visible-count') ?? 0);
     const starterTimeline = document.querySelector('[data-syncular-starter-database-open-ms]');
     const readStarterTimelineMs = (name) => {
       const value = starterTimeline?.getAttribute(name) ?? null;
@@ -1065,6 +1098,13 @@ async function readStarterBrowserProbe(
           : 'local visibility failed'
       );
     }
+    if (writePressureProofStatus === 'failed') {
+      errors.push(
+        writePressureProofErrorCode
+          ? 'write pressure proof failed: ' + writePressureProofErrorCode
+          : 'write pressure proof failed'
+      );
+    }
     return {
       ready:
         durableHealthLine &&
@@ -1074,6 +1114,7 @@ async function readStarterBrowserProbe(
         deploymentPreflightStatus !== null &&
         lifecycleResumeStatus !== null &&
         localRecoveryProof !== null &&
+        writePressureProof !== null &&
         starterTimeline !== null &&
         bootstrapStatus !== null &&
         databaseOpenMs !== null &&
@@ -1181,6 +1222,16 @@ async function readStarterBrowserProbe(
         lockState: localRecoveryProofLockState,
         lockTimeoutMs: localRecoveryProofLockTimeoutMs,
         status: localRecoveryProofStatus,
+      },
+      writePressureProof: {
+        durationMs: writePressureProofDurationMs,
+        error: writePressureProofError === '' ? null : writePressureProofError,
+        errorCode: writePressureProofErrorCode === '' ? null : writePressureProofErrorCode,
+        requestedCount: writePressureProofRequestedCount,
+        runCount: writePressureProofRunCount,
+        status: writePressureProofStatus,
+        titlePrefix: writePressureProofTitlePrefix === '' ? null : writePressureProofTitlePrefix,
+        visibleCount: writePressureProofVisibleCount,
       },
       starterTimeline: {
         bootstrapReadyMs,
@@ -2151,6 +2202,115 @@ async function waitForStarterText(args: {
   );
 }
 
+async function proveStarterGeneratedWritePressure(args: {
+  active: CdpSession;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  observer: CdpSession;
+}): Promise<void> {
+  const before = await readStarterBrowserProbe(args.active);
+  const titlePrefix = `write pressure ${Date.now()}`;
+  await dispatchStarterWritePressureProof(args.active, {
+    count: STARTER_WRITE_PRESSURE_PROOF_COUNT,
+    titlePrefix,
+  });
+  await waitForStarterWritePressureCompletion({
+    expectedRunCount: before.writePressureProof.runCount + 1,
+    expectedTitlePrefix: titlePrefix,
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    session: args.active,
+  });
+
+  for (let index = 1; index <= STARTER_WRITE_PRESSURE_PROOF_COUNT; index += 1) {
+    const title = `${titlePrefix} ${index}`;
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: args.active,
+      title,
+      errorReason: 'write-pressure-active-render-errors',
+      timeoutReason: 'write-pressure-active-render-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview generated write pressure on the active tab',
+    });
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: args.observer,
+      title,
+      errorReason: 'write-pressure-observer-render-errors',
+      timeoutReason: 'write-pressure-observer-render-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview generated write pressure propagation',
+    });
+  }
+}
+
+async function dispatchStarterWritePressureProof(
+  session: CdpSession,
+  detail: { count: number; titlePrefix: string }
+): Promise<void> {
+  await session.evaluate(`(() => {
+    window.dispatchEvent(
+      new CustomEvent('syncular-starter-run-write-pressure-proof', {
+        detail: ${JSON.stringify(detail)},
+      })
+    );
+    return true;
+  })()`);
+}
+
+async function waitForStarterWritePressureCompletion(args: {
+  expectedRunCount: number;
+  expectedTitlePrefix: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'write-pressure-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview generated write pressure failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    if (
+      probe.writePressureProof.status === 'complete' &&
+      probe.writePressureProof.runCount >= args.expectedRunCount &&
+      probe.writePressureProof.requestedCount ===
+        STARTER_WRITE_PRESSURE_PROOF_COUNT &&
+      probe.writePressureProof.visibleCount ===
+        STARTER_WRITE_PRESSURE_PROOF_COUNT &&
+      probe.writePressureProof.durationMs !== null &&
+      probe.writePressureProof.titlePrefix === args.expectedTitlePrefix
+    ) {
+      return;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'write-pressure-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview generated write pressure. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
 type SameClientDuplicateOpenOutcome = {
   status: 'blocked' | 'ready';
   probe: BrowserPreviewProbe;
@@ -2735,6 +2895,16 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         lockTimeoutMs: STARTER_LOCAL_RECOVERY_LOCK_TIMEOUT_MS,
         status: 'complete',
       },
+      writePressureProof: {
+        durationMs: 8,
+        error: null,
+        errorCode: null,
+        requestedCount: STARTER_WRITE_PRESSURE_PROOF_COUNT,
+        runCount: 1,
+        status: 'complete',
+        titlePrefix: 'write pressure self check',
+        visibleCount: STARTER_WRITE_PRESSURE_PROOF_COUNT,
+      },
       starterTimeline: {
         bootstrapReadyMs: 10,
         bootstrapStatus: 'ready',
@@ -2880,6 +3050,7 @@ function assertBrowserPreviewProbeShape(
   assertBrowserPreviewLifecycleResumeShape(probe.lifecycleResume, path);
   assertBrowserPreviewLifecyclePauseShape(probe.lifecyclePause, path);
   assertBrowserPreviewLocalRecoveryProofShape(probe.localRecoveryProof, path);
+  assertBrowserPreviewWritePressureProofShape(probe.writePressureProof, path);
   assertBrowserPreviewStarterTimelineShape(probe.starterTimeline, path);
   assertBrowserPreviewStarterOpenShape(probe.starterOpen, path);
   if (
@@ -3237,6 +3408,40 @@ function assertBrowserPreviewLocalRecoveryProofShape(
   ) {
     throw new Error(
       `${path} probe.localRecoveryProof.lockTimeoutMs was not nullable non-negative number`
+    );
+  }
+}
+
+function assertBrowserPreviewWritePressureProofShape(
+  value: unknown,
+  path: string
+): void {
+  if (!isRecord(value)) {
+    throw new Error(`${path} probe.writePressureProof was not a JSON object`);
+  }
+  for (const key of ['error', 'errorCode', 'status', 'titlePrefix'] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(
+        `${path} probe.writePressureProof.${key} was not nullable text`
+      );
+    }
+  }
+  for (const key of ['requestedCount', 'runCount', 'visibleCount'] as const) {
+    if (
+      !isNonNegativeFiniteNumber(value[key]) ||
+      !Number.isInteger(value[key])
+    ) {
+      throw new Error(
+        `${path} probe.writePressureProof.${key} was not a non-negative integer`
+      );
+    }
+  }
+  if (
+    value.durationMs !== null &&
+    !isNonNegativeFiniteNumber(value.durationMs)
+  ) {
+    throw new Error(
+      `${path} probe.writePressureProof.durationMs was not nullable non-negative number`
     );
   }
 }

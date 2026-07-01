@@ -2234,6 +2234,14 @@ online propagation, or reconnect behavior can change.
   existing task or settle into an explicit starter-open error instead of
   hanging, and the original tab must remain writable by accepting a fresh task
   after the duplicate attempt.
+- 2026-07-01: Added a generated write-pressure proof to the starter
+  Chrome/CDP path. The starter exposes a hidden marker that fires four
+  generated task mutations concurrently, waits for each row through
+  `awaitTaskVisibility(...)`, records requested/visible counts plus duration or
+  typed error code, and the browser smoke requires the active tab to render
+  every row and the observer tab to receive them through the normal
+  sync/realtime path. This narrows the write-contention risk to heavier
+  same-database multi-tab write storms and lower-level storage shutdown cases.
 - 2026-07-01: Extended the starter Chrome/CDP path with a same-profile
   browser-process restart proof. After the two-tab and reload/reopen checks,
   the smoke stops Chrome, starts a fresh Chrome process with the same profile
@@ -2858,13 +2866,13 @@ Most recent Cloudflare runtime Console UI summary rerun:
     row. The production build emitted the existing Vite large-chunk warning
     only.
 
-Most recent same-client duplicate-tab contention local rerun:
+Most recent generated write-pressure local rerun:
 
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/scripts/smoke.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/scripts/smoke.ts packages/create-syncular-app/template/src/app.tsx`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
   - Passed starter TypeScript checks.
-  - Biome checked the starter smoke script.
+  - Biome checked the starter smoke script and template app marker hook.
   - Passed dev server health/page/module/preflight transform checks.
   - Passed Vite production build, preview serving, built runtime asset checks,
     browser failure artifact shape self-check, and safe smoke metrics.
@@ -2873,14 +2881,20 @@ Most recent same-client duplicate-tab contention local rerun:
     duplicate tab with the same `syncularClientId` while the active same-client
     tab remains open. The duplicate must either become ready and show the
     existing task or report an explicit starter-open error, and the active tab
-    must still accept a fresh task after the duplicate attempt. This adds a
-    bounded same-client browser database contention proof between reload/reopen
-    persistence and browser-process restart persistence.
-  - Hosted Checks run
+    must still accept a fresh task after the duplicate attempt. The CDP path
+    then triggers the starter's hidden generated write-pressure marker: four
+    generated task mutations run concurrently, each must reach
+    `awaitTaskVisibility(...)`, all rows must render in the active tab, and the
+    observer tab must receive every row through sync/realtime before the
+    browser-process restart proof runs. This adds a bounded generated write
+    pressure proof while still leaving heavier same-database multi-tab write
+    storms as remaining work.
+  - Previous hosted Checks run
     <https://github.com/syncular/syncular/actions/runs/28534746069> passed on
-    commit `316955f9`, including `starter-browser-preview`, proving the new
+    commit `316955f9`, including `starter-browser-preview`, proving the
     duplicate-tab contention path in Chrome plus the full Rust/native package
-    matrix.
+    matrix before the generated write-pressure extension. The write-pressure
+    extension still needs hosted Chrome confirmation after push.
 
 Previous Chrome CDP lifecycle-state proof rerun:
 
@@ -3792,10 +3806,14 @@ Most recent mutation-status rerun:
   browser `resume` events through DOM-dispatched events, plus Chrome's
   `Page.setWebLifecycleState("frozen" | "active")` automation hook as BFCache
   suspension diagnostic evidence followed by app `visibilitychange` recovery.
+  The starter Chrome/CDP path now also includes a bounded generated
+  write-pressure proof: four generated mutations run concurrently in one app
+  tab, every row must pass local visibility, and the observer tab must receive
+  each row through sync/realtime.
   Remaining work is richer browser lifecycle execution: actual backgrounded or
   discarded tab suspension/restoration outside CDP lifecycle-state forcing,
-  storage shutdown, quota/eviction, database write contention beyond the
-  duplicate-open proof and local recovery action coordinator, and deeper
+  storage shutdown, quota/eviction, same-database multi-tab write contention
+  beyond duplicate-open and generated write-pressure proofs, and deeper
   recovery coordination for persistent browser databases beyond dispatched page
   lifecycle events, CDP lifecycle forcing, and lock-serialized foreground
   resume/recovery actions. Local
@@ -3827,11 +3845,14 @@ Most recent mutation-status rerun:
   recovery. The starter/browser-preview smoke also has a bounded same-client
   duplicate-tab open contention proof: the duplicate tab must either become
   ready with the existing task or report an explicit starter-open error, and the
-  active tab must stay writable. Remaining work is richer browser-process proof:
-  actual target-browser background/discard suspension and restoration,
-  shutdown/restart states, storage shutdown, quota/eviction, concurrent
-  database write contention beyond the duplicate-open proof and recovery action
-  coordinator, and deeper persistent database recovery coordination.
+  active tab must stay writable. The same browser path now adds a generated
+  write-pressure proof where four generated mutations run concurrently, each
+  row reaches local visibility, and an observer tab receives every row through
+  sync/realtime. Remaining work is richer browser-process proof: actual
+  target-browser background/discard suspension and restoration,
+  shutdown/restart states, storage shutdown, quota/eviction, same-database
+  multi-tab write contention beyond the duplicate-open and generated
+  write-pressure proofs, and deeper persistent database recovery coordination.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,
@@ -4111,9 +4132,11 @@ Most recent mutation-status rerun:
 
 Pick the next implementation slice from the remaining risks. The immediate
 starter browser-preview blocker is cleared, same-client duplicate-tab open
-contention is now covered in hosted Chrome, and production ops readiness is now
-part of release rehearsal when evidence is present or required. Strong
+contention is now covered in hosted Chrome, generated write pressure is covered
+locally and awaits hosted Chrome confirmation, and production ops readiness is
+now part of release rehearsal when evidence is present or required. Strong
 follow-ups are actual browser suspension/shutdown lifecycle coverage,
-quota/eviction and storage-shutdown recovery, concurrent database write
-contention beyond duplicate open, and browser/bundler matrix execution,
-especially Safari, Firefox, private mode, WebViews, and PWAs.
+quota/eviction and storage-shutdown recovery, same-database multi-tab write
+contention beyond duplicate-open/generated write-pressure proofs, and
+browser/bundler matrix execution, especially Safari, Firefox, private mode,
+WebViews, and PWAs.

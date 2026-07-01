@@ -73,6 +73,17 @@ type LocalRecoveryProofPreview = {
   status: 'idle' | 'running' | 'complete' | 'failed';
 };
 
+type WritePressureProofPreview = {
+  durationMs: number | null;
+  error: string | null;
+  errorCode: string | null;
+  requestedCount: number;
+  runCount: number;
+  status: 'idle' | 'running' | 'complete' | 'failed';
+  titlePrefix: string | null;
+  visibleCount: number;
+};
+
 type StarterOpenPreview = {
   diagnosticCode: string | null;
   diagnosticCount: number;
@@ -160,6 +171,17 @@ const initialLocalRecoveryProof: LocalRecoveryProofPreview = {
   lockState: 'not-requested',
   lockTimeoutMs: null,
   status: 'idle',
+};
+
+const initialWritePressureProof: WritePressureProofPreview = {
+  durationMs: null,
+  error: null,
+  errorCode: null,
+  requestedCount: 0,
+  runCount: 0,
+  status: 'idle',
+  titlePrefix: null,
+  visibleCount: 0,
 };
 
 const initialStarterOpen: StarterOpenPreview = {
@@ -576,7 +598,10 @@ function TaskPane({
     useState<SupportBundlePreview | null>(null);
   const [localRecoveryProof, setLocalRecoveryProof] =
     useState<LocalRecoveryProofPreview>(initialLocalRecoveryProof);
+  const [writePressureProof, setWritePressureProof] =
+    useState<WritePressureProofPreview>(initialWritePressureProof);
   const localRecoveryProofRunning = useRef(false);
+  const writePressureProofRunning = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -861,6 +886,118 @@ function TaskPane({
     };
   }, [client]);
 
+  useEffect(() => {
+    const runProof = async (requestedCount: number, titlePrefix: string) => {
+      if (writePressureProofRunning.current) return;
+      writePressureProofRunning.current = true;
+      const count = Math.min(Math.max(Math.trunc(requestedCount), 1), 8);
+      const prefix = titlePrefix.trim() || `write pressure ${Date.now()}`;
+      const startedAtMs = performance.now();
+      const entries = Array.from({ length: count }, (_, index) => ({
+        id: crypto.randomUUID(),
+        title: `${prefix} ${index + 1}`,
+      }));
+      setWritePressureProof((current) => ({
+        ...current,
+        durationMs: null,
+        error: null,
+        errorCode: null,
+        requestedCount: count,
+        status: 'running',
+        titlePrefix: prefix,
+        visibleCount: 0,
+      }));
+      try {
+        await Promise.all(
+          entries.map((entry, index) =>
+            mutations.tasks.insert({
+              id: entry.id,
+              title: entry.title,
+              completed: 0,
+              user_id: appActorId,
+              created_at: Date.now() + index,
+            })
+          )
+        );
+        const visibilityResults = await Promise.allSettled(
+          entries.map((entry) =>
+            client.awaitTaskVisibility(
+              ({ selectFrom }) =>
+                selectFrom('tasks')
+                  .select('id')
+                  .where('id', '=', entry.id)
+                  .limit(1),
+              { timeoutMs: 5_000 }
+            )
+          )
+        );
+        const visibleCount = visibilityResults.filter(
+          (result) => result.status === 'fulfilled'
+        ).length;
+        if (visibleCount !== entries.length) {
+          const firstFailure = visibilityResults.find(
+            (result) => result.status === 'rejected'
+          );
+          throw firstFailure?.reason ?? new Error('Local visibility failed');
+        }
+        setWritePressureProof((current) => ({
+          ...current,
+          durationMs: elapsedSince(startedAtMs),
+          error: null,
+          errorCode: null,
+          requestedCount: count,
+          runCount: current.runCount + 1,
+          status: 'complete',
+          titlePrefix: prefix,
+          visibleCount,
+        }));
+      } catch (error) {
+        setWritePressureProof((current) => ({
+          ...current,
+          durationMs: elapsedSince(startedAtMs),
+          error: errorMessage(error),
+          errorCode: syncularErrorCode(error),
+          requestedCount: count,
+          runCount: current.runCount + 1,
+          status: 'failed',
+          titlePrefix: prefix,
+        }));
+      } finally {
+        writePressureProofRunning.current = false;
+      }
+    };
+    const onProof = (event: Event) => {
+      const detail =
+        event instanceof CustomEvent &&
+        typeof event.detail === 'object' &&
+        event.detail !== null
+          ? (event.detail as {
+              count?: unknown;
+              titlePrefix?: unknown;
+            })
+          : {};
+      const count =
+        typeof detail.count === 'number' && Number.isFinite(detail.count)
+          ? detail.count
+          : 4;
+      const titlePrefix =
+        typeof detail.titlePrefix === 'string'
+          ? detail.titlePrefix.slice(0, 80)
+          : `write pressure ${Date.now()}`;
+      void runProof(count, titlePrefix);
+    };
+    window.addEventListener(
+      'syncular-starter-run-write-pressure-proof',
+      onProof
+    );
+    return () => {
+      window.removeEventListener(
+        'syncular-starter-run-write-pressure-proof',
+        onProof
+      );
+    };
+  }, [client, mutations]);
+
   const rows = tasks ?? [];
   const doneCount = rows.filter((task) => task.completed).length;
   const queued = (outbox?.pending ?? 0) + (outbox?.sending ?? 0);
@@ -934,6 +1071,7 @@ function TaskPane({
         <SupportBundleLine supportBundle={supportBundle} />
       ) : null}
       <LocalRecoveryProofMarker localRecoveryProof={localRecoveryProof} />
+      <WritePressureProofMarker writePressureProof={writePressureProof} />
       <StarterTimelineMarker starterTimeline={starterTimeline} />
 
       <form className="add-row" onSubmit={addTask}>
@@ -1001,6 +1139,36 @@ function LocalRecoveryProofMarker({
         localRecoveryProof.lockTimeoutMs ?? ''
       }
       data-syncular-local-recovery-proof-status={localRecoveryProof.status}
+      hidden
+    />
+  );
+}
+
+function WritePressureProofMarker({
+  writePressureProof,
+}: {
+  writePressureProof: WritePressureProofPreview;
+}) {
+  return (
+    <span
+      data-syncular-write-pressure-proof-duration-ms={
+        writePressureProof.durationMs ?? ''
+      }
+      data-syncular-write-pressure-proof-error={writePressureProof.error ?? ''}
+      data-syncular-write-pressure-proof-error-code={
+        writePressureProof.errorCode ?? ''
+      }
+      data-syncular-write-pressure-proof-requested-count={
+        writePressureProof.requestedCount
+      }
+      data-syncular-write-pressure-proof-run-count={writePressureProof.runCount}
+      data-syncular-write-pressure-proof-status={writePressureProof.status}
+      data-syncular-write-pressure-proof-title-prefix={
+        writePressureProof.titlePrefix ?? ''
+      }
+      data-syncular-write-pressure-proof-visible-count={
+        writePressureProof.visibleCount
+      }
       hidden
     />
   );
