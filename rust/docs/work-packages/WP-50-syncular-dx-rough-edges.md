@@ -1512,6 +1512,14 @@ online propagation, or reconnect behavior can change.
   Locks, page visibility, `pagehide`, `beforeunload`, resume/shutdown signal
   availability, and a multi-tab mode; apps can opt into failing the preflight
   when multi-tab coordination or page lifecycle resume signals are required.
+- 2026-07-01: Added
+  `installSyncularBrowserLifecycleResume(...)` to the root client package. The
+  helper installs browser-page lifecycle listeners, coalesces
+  `visibilitychange`, `pageshow`, and `online` signals, calls the managed
+  `resumeFromBackground()` catch-up path, surfaces resume errors to a caller
+  hook, and tears listeners down explicitly. The starter now installs it after
+  opening the generated database so foreground recovery does not depend on app
+  code calling `sync()` manually.
 - 2026-07-01: Added `scripts/framework-import-smokes.ts` plus the root
   `framework-import-smokes` script. The smoke builds a minimal Next 16 app
   with webpack, imports `@syncular/client` and `@syncular/server` roots from a
@@ -1712,6 +1720,21 @@ Most recent lifecycle/multi-tab preflight rerun:
 - `bun test packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts packages/client/src/support-bundle.test.ts`
 - `bun --cwd packages/client tsgo`
 - `bunx biome check packages/client/src/browser-deployment-preflight.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `bun run docs:stale-check`
+- `bun --cwd apps/docs types:check`
+- `git diff --check`
+
+Most recent browser lifecycle resume helper rerun:
+
+- `bun test packages/client/src/browser-lifecycle.test.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bun --cwd packages/create-syncular-app tsgo`
+- `bunx biome check packages/client/src/browser-lifecycle.ts packages/client/src/browser-lifecycle.test.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/create-syncular-app/template/src/app.tsx packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, and built asset checks.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available.
 - `bun run docs:stale-check`
 - `bun --cwd apps/docs types:check`
 - `git diff --check`
@@ -2071,10 +2094,14 @@ Most recent mutation-status rerun:
   adapter changes, but do not make platform-sensitive native module installs a
   default release blocker.
 - Multi-tab and lifecycle behavior: first preflight slice is done for browser
-  tab/lifecycle capabilities and opt-in required coordination checks. Remaining
-  work is real two-tab execution: tab suspension/resume, storage locks,
-  shutdown, app restarts, and recovery coordination for persistent browser
-  databases.
+  tab/lifecycle capabilities and opt-in required coordination checks. The
+  first browser-page helper slice is also done:
+  `installSyncularBrowserLifecycleResume(...)` coalesces visible-tab,
+  restored-page, and online signals into the managed
+  `resumeFromBackground()` catch-up path, and the starter installs it.
+  Remaining work is real two-tab execution: tab suspension/resume, storage
+  locks, shutdown, app restarts, and recovery coordination for persistent
+  browser databases.
 - Local recovery controls: first plan/action slice is done for support bundles,
   local health repairs, failed outbox/blob retries, compaction, cache clear,
   and guarded sync-state reset, with a focused Hono/WASM proof for corrupted

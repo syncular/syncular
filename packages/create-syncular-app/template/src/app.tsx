@@ -1,6 +1,8 @@
 import {
   getSyncularBrowserHealth,
+  installSyncularBrowserLifecycleResume,
   type SyncularBrowserHealth,
+  type SyncularBrowserLifecycleResumeController,
   type SyncularClientStatus,
   type SyncularSchemaReadinessResult,
   type SyncularSupportBundle,
@@ -33,6 +35,7 @@ export function App() {
   useEffect(() => {
     let disposed = false;
     let opened: AppSyncClient | null = null;
+    let lifecycleResume: SyncularBrowserLifecycleResumeController | null = null;
 
     void openAppClient()
       .then((nextClient) => {
@@ -41,6 +44,7 @@ export function App() {
           return;
         }
         opened = nextClient;
+        lifecycleResume = installSyncularBrowserLifecycleResume(nextClient);
         setClient(nextClient);
       })
       .catch((error) => {
@@ -49,6 +53,7 @@ export function App() {
 
     return () => {
       disposed = true;
+      lifecycleResume?.destroy();
       if (opened) void opened.close().catch(() => undefined);
     };
   }, []);

@@ -164,9 +164,13 @@ read-only review:
     redacted support-bundle summary after opening the database, and the
     scaffold smoke asserts that production assets contain the support-bundle
     marker plus waits for redacted support-bundle DOM evidence in the
-    Chrome/CDP preview path when a browser is available. Next slice: observe
-    the hosted Chrome job or continue with real multi-tab lifecycle/recovery
-    execution. The post-publish JavaScript install smoke now
+    Chrome/CDP preview path when a browser is available. Browser pages can now
+    install `installSyncularBrowserLifecycleResume(...)` to coalesce
+    `visibilitychange`, `pageshow`, and `online` signals into the managed
+    `resumeFromBackground()` catch-up path, and the starter installs it after
+    opening Syncular. Next slice: observe the hosted Chrome job or continue
+    with real two-tab lifecycle/recovery execution. The post-publish
+    JavaScript install smoke now
     also creates a fresh optional import matrix project that installs
     `@syncular/client`, `@syncular/server`, and the Bun-friendly optional peers,
     then imports the folded client/server subpaths for React, Sentry, Tauri,

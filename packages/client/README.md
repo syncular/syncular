@@ -674,6 +674,19 @@ Use `preflight.lifecycle.multiTabMode` to choose between coordinated multi-tab
 behavior, best-effort coordination, or a single-open-database-tab policy. If
 your host owns lifecycle signals instead of the browser page, call
 `resumeFromBackground()` from that host signal.
+For normal browser pages, install the lifecycle helper after opening the
+managed database so visible-tab, restored-page, and online signals run the
+foreground catch-up path without app code calling `sync()` directly:
+
+```ts
+import { installSyncularBrowserLifecycleResume } from '@syncular/client';
+
+const lifecycleResume = installSyncularBrowserLifecycleResume(syncular);
+
+window.addEventListener('beforeunload', () => {
+  lifecycleResume.destroy();
+});
+```
 
 ## Storage
 

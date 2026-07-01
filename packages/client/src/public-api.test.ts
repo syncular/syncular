@@ -13,6 +13,7 @@ import {
   getSyncularRuntimeTimeline,
   getSyncularSchemaReadiness,
   getSyncularSupportBundle,
+  installSyncularBrowserLifecycleResume,
   replaceSyncularAuthContext,
   resolveSyncularClientConfig,
   runSyncularLocalRecoveryAction,
@@ -65,6 +66,10 @@ describe('@syncular/client public API', () => {
 
   it('exports the browser deployment preflight helper', () => {
     expect(typeof getSyncularBrowserDeploymentPreflight).toBe('function');
+  });
+
+  it('exports the browser lifecycle resume helper', () => {
+    expect(typeof installSyncularBrowserLifecycleResume).toBe('function');
   });
 
   it('exports the local visibility helper', () => {

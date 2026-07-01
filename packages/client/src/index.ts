@@ -3,6 +3,7 @@ export * from './blob-limits';
 export * from './bridge-client';
 export * from './browser-deployment-preflight';
 export * from './browser-health';
+export * from './browser-lifecycle';
 export * from './client';
 export * from './client-config';
 export * from './command-history';

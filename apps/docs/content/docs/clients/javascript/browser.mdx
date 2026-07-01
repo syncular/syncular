@@ -103,6 +103,19 @@ database from multiple tabs should require multi-tab coordination and use the
 reported lifecycle fields to decide whether to allow multiple open tabs, use a
 single-open-tab policy, or call `resumeFromBackground()` from host lifecycle
 signals after tab suspension.
+For normal browser pages, install the lifecycle resume helper after opening the
+managed database so restored-page, visible-tab, and online signals trigger the
+foreground catch-up path without app code calling `sync()` directly:
+
+```ts
+import { installSyncularBrowserLifecycleResume } from '@syncular/client';
+
+const lifecycleResume = installSyncularBrowserLifecycleResume(syncular);
+
+window.addEventListener('beforeunload', () => {
+  lifecycleResume.destroy();
+});
+```
 
 ## React apps
 
