@@ -4256,8 +4256,11 @@ Most recent mutation-status rerun:
   `browser_support.development_only_context`. This verifies the support-matrix
   classification without pretending incognito provides durable offline
   persistence. Local `create-syncular-app` typecheck, focused Biome, and
-  non-Chrome scaffold smoke passed; hosted Chrome proof is pending the next
-  Checks run.
+  non-Chrome scaffold smoke passed; hosted Checks run `28540712560` on commit
+  `4028723a` then passed the full matrix, including `starter-browser-preview`.
+  The Chrome job log reached `real-browser smoke: proving incognito
+  memory-storage policy` and then `real-browser built-preview preflight smoke
+  passed`, confirming the incognito memory-storage branch in hosted Chrome.
 
 ## Next Action
 
@@ -4269,8 +4272,9 @@ now also confirmed in hosted Chrome. The service-worker-controlled PWA
 classification proof is also covered in hosted Chrome: it verifies real
 controller evidence and support-policy `pwa`/`warning` classification without
 claiming installed-PWA offline/cache-update support. The next slice adds the
-first incognito memory-storage support-policy branch, pending hosted Chrome
-confirmation.
+first incognito memory-storage support-policy branch, now confirmed in hosted
+Chrome. It verifies explicit ephemeral/development storage classification in an
+incognito Chrome window without claiming private-mode durable persistence.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 suspension/shutdown lifecycle coverage, actual quota-exhaustion/eviction and

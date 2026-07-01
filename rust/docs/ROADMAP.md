@@ -330,7 +330,10 @@ read-only review:
     proving the public preflight/support-policy path reports
     `ephemeral-development`/`ephemeral`, selects `private-browsing`, and marks
     it `development-only`/`met` without claiming durable private-mode
-    persistence.
+    persistence. Hosted Checks run `28540712560` on commit `4028723a`
+    confirmed that branch in Chrome; the `starter-browser-preview` log reached
+    `real-browser smoke: proving incognito memory-storage policy` before the
+    final built-preview pass marker.
     Release
     rehearsal now runs the
     create-syncular-app
@@ -446,7 +449,8 @@ read-only review:
     support preflight-gated until retained target evidence exists. It also
     includes a first Chrome incognito memory-storage proof for the
     private/development support-policy branch, while keeping real private-mode
-    durable-persistence semantics in the remaining browser matrix.
+    durable-persistence semantics in the remaining browser matrix. Hosted run
+    `28540712560` confirmed the incognito memory-storage proof in Chrome.
     Cloudflare local-runtime failure artifacts now feed Console/Fleet through
     `POST /console/client-diagnostics/cloudflare-runtime-failure`, preserving
     route, exit, bounded output, and safe R2 blob timing/byte metrics as
