@@ -67,11 +67,14 @@ type BrowserSupportPolicyPreview = {
   expectedPersistence: SyncularBrowserSupportPolicyEvaluation['expectedPersistence'];
   expectedSupportTier: SyncularBrowserSupportPolicyEvaluation['expectedSupportTier'];
   issueCount: number;
+  knownRisks: readonly string[];
+  nextSteps: readonly string[];
   observedPersistence: SyncularBrowserSupportPolicyEvaluation['observedPersistence'];
   observedSupportTier: SyncularBrowserSupportPolicyEvaluation['observedSupportTier'];
   policy: SyncularBrowserSupportPolicyEvaluation['policy'];
   preflightRequired: boolean;
   reasonCodes: readonly string[];
+  requiredEvidence: readonly string[];
   status: SyncularBrowserSupportPolicyEvaluation['status'];
 };
 
@@ -728,11 +731,14 @@ function summarizeBrowserSupportPolicy(
     expectedPersistence: evaluation.expectedPersistence,
     expectedSupportTier: evaluation.expectedSupportTier,
     issueCount: evaluation.issueCodes.length,
+    knownRisks: evaluation.knownRisks,
+    nextSteps: evaluation.nextSteps,
     observedPersistence: evaluation.observedPersistence,
     observedSupportTier: evaluation.observedSupportTier,
     policy: evaluation.policy,
     preflightRequired: evaluation.preflightRequired,
     reasonCodes: evaluation.reasonCodes,
+    requiredEvidence: evaluation.requiredEvidence,
     status: evaluation.status,
   };
 }
@@ -759,6 +765,18 @@ function BrowserSupportPolicyMarker({
       data-syncular-browser-support-policy-issue-count={
         browserSupportPolicy.issueCount
       }
+      data-syncular-browser-support-policy-known-risks={JSON.stringify(
+        browserSupportPolicy.knownRisks
+      )}
+      data-syncular-browser-support-policy-known-risk-count={
+        browserSupportPolicy.knownRisks.length
+      }
+      data-syncular-browser-support-policy-next-step-count={
+        browserSupportPolicy.nextSteps.length
+      }
+      data-syncular-browser-support-policy-next-steps={JSON.stringify(
+        browserSupportPolicy.nextSteps
+      )}
       data-syncular-browser-support-policy-observed-persistence={
         browserSupportPolicy.observedPersistence ?? ''
       }
@@ -774,6 +792,12 @@ function BrowserSupportPolicyMarker({
       )}
       data-syncular-browser-support-policy-reason-count={
         browserSupportPolicy.reasonCodes.length
+      }
+      data-syncular-browser-support-policy-required-evidence={JSON.stringify(
+        browserSupportPolicy.requiredEvidence
+      )}
+      data-syncular-browser-support-policy-required-evidence-count={
+        browserSupportPolicy.requiredEvidence.length
       }
       data-syncular-browser-support-policy-status={browserSupportPolicy.status}
       hidden

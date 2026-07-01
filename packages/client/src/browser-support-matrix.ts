@@ -66,9 +66,12 @@ export interface SyncularBrowserSupportPolicyEvaluation {
   observedPersistence: SyncularBrowserDeploymentPreflightPersistenceMode | null;
   preflightStatus: SyncularBrowserDeploymentPreflight['status'] | null;
   productionReady: boolean | null;
+  requiredEvidence: readonly string[];
+  knownRisks: readonly string[];
   issueCodes: readonly SyncularBrowserDeploymentPreflightIssueCode[];
   reasonCodes: readonly SyncularBrowserSupportPolicyReasonCode[];
   recommendedActions: readonly SyncularBrowserDeploymentPreflightRecommendedAction[];
+  nextSteps: readonly string[];
   summary: string;
 }
 
@@ -376,9 +379,12 @@ export function evaluateSyncularBrowserSupportPolicy(
     observedPersistence,
     preflightStatus,
     productionReady,
-    issueCodes,
-    reasonCodes,
-    recommendedActions,
+    requiredEvidence: [...policy.requiredEvidence],
+    knownRisks: [...policy.knownRisks],
+    issueCodes: [...issueCodes],
+    reasonCodes: [...reasonCodes],
+    recommendedActions: [...recommendedActions],
+    nextSteps: [...policy.nextSteps],
     summary: summarizeBrowserSupportPolicyEvaluation({
       policy,
       preflight,

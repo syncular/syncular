@@ -559,12 +559,18 @@ const ConsoleBrowserPreviewFailureProbeSchema = z
         expectedPersistence: ConsoleBrowserPreviewFailureNullableStringSchema,
         expectedSupportTier: ConsoleBrowserPreviewFailureNullableStringSchema,
         issueCount: z.number().int().nonnegative(),
+        knownRisks: z.array(z.string()).default([]),
+        knownRiskCount: z.number().int().nonnegative().optional(),
+        nextSteps: z.array(z.string()).default([]),
+        nextStepCount: z.number().int().nonnegative().optional(),
         observedPersistence: ConsoleBrowserPreviewFailureNullableStringSchema,
         observedSupportTier: ConsoleBrowserPreviewFailureNullableStringSchema,
         policy: ConsoleBrowserPreviewFailureNullableStringSchema,
         preflightRequired: ConsoleBrowserPreviewFailureNullableStringSchema,
         reasonCodes: z.array(z.string()).default([]),
         reasonCount: z.number().int().nonnegative().optional(),
+        requiredEvidence: z.array(z.string()).default([]),
+        requiredEvidenceCount: z.number().int().nonnegative().optional(),
         status: ConsoleBrowserPreviewFailureNullableStringSchema,
       })
       .passthrough()

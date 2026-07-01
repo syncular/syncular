@@ -703,6 +703,10 @@ production-readiness gaps, development-only contexts, unsupported contexts, or
 a fully met policy. Use those alongside preflight `issueCodes`: issue codes
 name missing browser or deployment capabilities, while reason codes explain the
 support-policy decision.
+`supportPolicy.requiredEvidence`, `supportPolicy.knownRisks`, and
+`supportPolicy.nextSteps` carry the matrix guidance for the selected context so
+failure artifacts and support bundles can show what evidence is still missing
+without scraping docs.
 
 The matrix does not sniff user agents and does not replace the deployment
 preflight. It names the product policy for common environments:

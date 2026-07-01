@@ -3271,6 +3271,12 @@ export interface operations {
                                 expectedPersistence: string | null;
                                 expectedSupportTier: string | null;
                                 issueCount: number;
+                                /** @default [] */
+                                knownRisks?: string[];
+                                knownRiskCount?: number;
+                                /** @default [] */
+                                nextSteps?: string[];
+                                nextStepCount?: number;
                                 observedPersistence: string | null;
                                 observedSupportTier: string | null;
                                 policy: string | null;
@@ -3278,6 +3284,9 @@ export interface operations {
                                 /** @default [] */
                                 reasonCodes?: string[];
                                 reasonCount?: number;
+                                /** @default [] */
+                                requiredEvidence?: string[];
+                                requiredEvidenceCount?: number;
                                 status: string | null;
                             } & {
                                 [key: string]: unknown;
@@ -3389,6 +3398,12 @@ export interface operations {
                             expectedPersistence: string | null;
                             expectedSupportTier: string | null;
                             issueCount: number;
+                            /** @default [] */
+                            knownRisks?: string[];
+                            knownRiskCount?: number;
+                            /** @default [] */
+                            nextSteps?: string[];
+                            nextStepCount?: number;
                             observedPersistence: string | null;
                             observedSupportTier: string | null;
                             policy: string | null;
@@ -3396,6 +3411,9 @@ export interface operations {
                             /** @default [] */
                             reasonCodes?: string[];
                             reasonCount?: number;
+                            /** @default [] */
+                            requiredEvidence?: string[];
+                            requiredEvidenceCount?: number;
                             status: string | null;
                         } & {
                             [key: string]: unknown;

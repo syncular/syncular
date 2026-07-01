@@ -1337,6 +1337,11 @@ online propagation, or reconnect behavior can change.
   target-host evidence gaps, persistence mismatches, production-readiness gaps,
   development-only contexts, unsupported contexts, and a fully met policy
   without parsing prose.
+- Browser support policy evaluations now also carry the selected context's
+  required evidence, known risks, and next steps. The starter browser marker,
+  failure artifact, smoke self-check, and Console/Fleet ingestion preserve
+  that guidance so unsupported or target-host-gated browser failures can tell
+  users what evidence to collect without a docs lookup.
 - The starter now calls browser deployment preflight before opening
   `createSyncularAppDatabase(...)`, using the generated required runtime
   feature list and its configured IndexedDB storage expectation. The scaffold
@@ -1945,6 +1950,10 @@ online propagation, or reconnect behavior can change.
   `browser-preview-failure.json` self-check. This separates deployment
   capability issue codes from product-policy verdict reasons in browser
   artifacts.
+- 2026-07-01: Threaded browser support-policy guidance through
+  `evaluateSyncularBrowserSupportPolicy(...)`, the generated app hidden
+  marker, `browser-preview-failure.json`, and Console/Fleet ingestion so
+  required evidence, known risks, and next steps survive artifact collection.
 - 2026-07-01: Added `packages/client/src/runtime-timeline.ts`, exported
   `getSyncularRuntimeTimeline(...)` from `@syncular/client`, and added
   `SyncularDatabase.runtimeTimeline(...)` as a managed database method. The
@@ -3280,9 +3289,11 @@ Most recent mutation-status rerun:
   deployment-preflight storage/quota facts so browser failures can separate
   quota, persistence, and support-tier problems from sync lifecycle failures.
   Browser preview artifacts now also carry the expected-vs-observed browser
-  support-policy status and reason codes for the starter's Chrome/Chromium
-  context, which lets Console/Fleet distinguish "preflight incomplete" from
-  "support policy not met" without user-agent sniffing or prose parsing.
+  support-policy status, reason codes, required evidence, known risks, and
+  next steps for the starter's Chrome/Chromium context, which lets
+  Console/Fleet distinguish "preflight incomplete" from "support policy not
+  met" and surface the missing evidence without user-agent sniffing or prose
+  parsing.
   The support-bundle marker now adds redacted runtime timeline counts for
   sync, realtime, local-apply, blob, cursors, request ids, sync-attempt ids,
   and latest phase codes, and refreshes on row changes. The Chrome/CDP path

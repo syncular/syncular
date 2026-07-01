@@ -127,6 +127,15 @@ describe('Syncular browser support matrix', () => {
       policy: 'supported-after-preflight',
       status: 'met',
       reasonCodes: ['browser_support.policy_met'],
+      requiredEvidence: expect.arrayContaining([
+        '`getSyncularBrowserDeploymentPreflight(...)` reports `persistent-offline`',
+      ]),
+      knownRisks: expect.arrayContaining([
+        'Storage can still be evicted when persistence is not granted',
+      ]),
+      nextSteps: expect.arrayContaining([
+        'Run the deployment preflight in the deployed page before opening the database',
+      ]),
       expectedSupportTier: 'persistent-offline',
       observedSupportTier: 'persistent-offline',
       expectedPersistence: 'persistent',
@@ -246,7 +255,40 @@ describe('Syncular browser support matrix', () => {
     ).toMatchObject({
       status: 'warning',
       reasonCodes: ['browser_support.target_evidence_required'],
+      requiredEvidence: expect.arrayContaining([
+        'Deployment preflight proves Worker, WebAssembly, IndexedDB, runtime assets, quota, and lifecycle support in the exact Firefox version',
+      ]),
+      nextSteps: expect.arrayContaining([
+        'Treat Firefox as preflight-gated until the project has a maintained Firefox runtime smoke',
+      ]),
     });
+  });
+
+  it('returns defensive policy guidance copies from evaluations', () => {
+    const evaluation = evaluateSyncularBrowserSupportPolicy(
+      'chromium-secure-page',
+      preflight({
+        persistence: 'persistent',
+        productionReady: true,
+        supportTier: 'persistent-offline',
+      })
+    );
+    (evaluation.requiredEvidence as string[]).push('mutated evidence');
+    (evaluation.knownRisks as string[]).push('mutated risk');
+    (evaluation.nextSteps as string[]).push('mutated next step');
+
+    const nextEvaluation = evaluateSyncularBrowserSupportPolicy(
+      'chromium-secure-page',
+      preflight({
+        persistence: 'persistent',
+        productionReady: true,
+        supportTier: 'persistent-offline',
+      })
+    );
+
+    expect(nextEvaluation.requiredEvidence).not.toContain('mutated evidence');
+    expect(nextEvaluation.knownRisks).not.toContain('mutated risk');
+    expect(nextEvaluation.nextSteps).not.toContain('mutated next step');
   });
 });
 

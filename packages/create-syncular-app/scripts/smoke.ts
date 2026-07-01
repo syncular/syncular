@@ -263,7 +263,12 @@ async function verifyBuiltPreviewAssets(
         assetBody.includes('data-syncular-lifecycle-resume-lock-state');
       sawBrowserSupportPolicyMarker ||=
         assetBody.includes('data-syncular-browser-support-policy-status') &&
-        assetBody.includes('data-syncular-browser-support-policy-reason-count');
+        assetBody.includes(
+          'data-syncular-browser-support-policy-reason-count'
+        ) &&
+        assetBody.includes(
+          'data-syncular-browser-support-policy-required-evidence-count'
+        );
       sawDeploymentPreflightMarker ||= assetBody.includes(
         'data-syncular-deployment-preflight-status'
       );
@@ -518,12 +523,18 @@ type BrowserPreviewProbe = {
     expectedPersistence: string | null;
     expectedSupportTier: string | null;
     issueCount: number;
+    knownRisks: string[];
+    knownRiskCount: number;
+    nextSteps: string[];
+    nextStepCount: number;
     observedPersistence: string | null;
     observedSupportTier: string | null;
     policy: string | null;
     preflightRequired: string | null;
     reasonCodes: string[];
     reasonCount: number;
+    requiredEvidence: string[];
+    requiredEvidenceCount: number;
     status: string | null;
   };
   supportBundle: {
@@ -650,6 +661,22 @@ async function readStarterBrowserProbe(
     const browserSupportPolicyExpectedPersistence = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-expected-persistence') ?? null;
     const browserSupportPolicyExpectedSupportTier = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-expected-support-tier') ?? null;
     const browserSupportPolicyIssueCount = Number(browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-issue-count') ?? 0);
+    const readBrowserSupportPolicyTextArray = (name) => {
+      const value = browserSupportPolicy?.getAttribute(name) ?? '';
+      if (value === '') return [];
+      try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed)
+          ? parsed.filter((item) => typeof item === 'string')
+          : [];
+      } catch {
+        return [];
+      }
+    };
+    const browserSupportPolicyKnownRisks = readBrowserSupportPolicyTextArray('data-syncular-browser-support-policy-known-risks');
+    const browserSupportPolicyKnownRiskCount = Number(browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-known-risk-count') ?? browserSupportPolicyKnownRisks.length);
+    const browserSupportPolicyNextSteps = readBrowserSupportPolicyTextArray('data-syncular-browser-support-policy-next-steps');
+    const browserSupportPolicyNextStepCount = Number(browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-next-step-count') ?? browserSupportPolicyNextSteps.length);
     const browserSupportPolicyObservedPersistence = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-observed-persistence') ?? null;
     const browserSupportPolicyObservedSupportTier = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-observed-support-tier') ?? null;
     const browserSupportPolicyPolicy = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-policy') ?? null;
@@ -657,6 +684,8 @@ async function readStarterBrowserProbe(
     const browserSupportPolicyReasonCodesText = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-reason-codes') ?? '';
     const browserSupportPolicyReasonCodes = browserSupportPolicyReasonCodesText === '' ? [] : browserSupportPolicyReasonCodesText.split(',').filter(Boolean);
     const browserSupportPolicyReasonCount = Number(browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-reason-count') ?? browserSupportPolicyReasonCodes.length);
+    const browserSupportPolicyRequiredEvidence = readBrowserSupportPolicyTextArray('data-syncular-browser-support-policy-required-evidence');
+    const browserSupportPolicyRequiredEvidenceCount = Number(browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-required-evidence-count') ?? browserSupportPolicyRequiredEvidence.length);
     const browserSupportPolicyStatus = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-status') ?? null;
     const lifecycleResume = document.querySelector('[data-syncular-lifecycle-resume-status]');
     const lifecycleResumeStatus = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-status') ?? null;
@@ -765,12 +794,18 @@ async function readStarterBrowserProbe(
         expectedPersistence: browserSupportPolicyExpectedPersistence,
         expectedSupportTier: browserSupportPolicyExpectedSupportTier,
         issueCount: browserSupportPolicyIssueCount,
+        knownRisks: browserSupportPolicyKnownRisks,
+        knownRiskCount: browserSupportPolicyKnownRiskCount,
+        nextSteps: browserSupportPolicyNextSteps,
+        nextStepCount: browserSupportPolicyNextStepCount,
         observedPersistence: browserSupportPolicyObservedPersistence,
         observedSupportTier: browserSupportPolicyObservedSupportTier,
         policy: browserSupportPolicyPolicy,
         preflightRequired: browserSupportPolicyPreflightRequired,
         reasonCodes: browserSupportPolicyReasonCodes,
         reasonCount: browserSupportPolicyReasonCount,
+        requiredEvidence: browserSupportPolicyRequiredEvidence,
+        requiredEvidenceCount: browserSupportPolicyRequiredEvidenceCount,
         status: browserSupportPolicyStatus,
       },
       supportBundle: {
@@ -1182,12 +1217,18 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         expectedPersistence: 'persistent',
         expectedSupportTier: 'persistent-offline',
         issueCount: 0,
+        knownRisks: ['storage can be evicted'],
+        knownRiskCount: 1,
+        nextSteps: ['run reopen smoke'],
+        nextStepCount: 1,
         observedPersistence: 'persistent',
         observedSupportTier: 'persistent-offline',
         policy: 'supported-after-preflight',
         preflightRequired: 'true',
         reasonCodes: ['browser_support.policy_met'],
         reasonCount: 1,
+        requiredEvidence: ['deployment preflight passed'],
+        requiredEvidenceCount: 1,
         status: 'met',
       },
       supportBundle: {
@@ -1464,24 +1505,57 @@ function assertBrowserPreviewSupportPolicyShape(
   if (!isRecord(value)) {
     throw new Error(`${path} probe.browserSupportPolicy was not a JSON object`);
   }
-  for (const key of ['actionCount', 'issueCount', 'reasonCount'] as const) {
+  for (const key of [
+    'actionCount',
+    'issueCount',
+    'knownRiskCount',
+    'nextStepCount',
+    'reasonCount',
+    'requiredEvidenceCount',
+  ] as const) {
     if (!isNonNegativeFiniteNumber(value[key])) {
       throw new Error(
         `${path} probe.browserSupportPolicy.${key} was not a non-negative number`
       );
     }
   }
-  if (
-    !Array.isArray(value.reasonCodes) ||
-    !value.reasonCodes.every((reasonCode) => typeof reasonCode === 'string')
-  ) {
+  for (const key of [
+    'knownRisks',
+    'nextSteps',
+    'reasonCodes',
+    'requiredEvidence',
+  ] as const) {
+    if (
+      !Array.isArray(value[key]) ||
+      !value[key].every((item) => typeof item === 'string')
+    ) {
+      throw new Error(
+        `${path} probe.browserSupportPolicy.${key} was not a text array`
+      );
+    }
+  }
+  const knownRisks = value.knownRisks as string[];
+  const nextSteps = value.nextSteps as string[];
+  const reasonCodes = value.reasonCodes as string[];
+  const requiredEvidence = value.requiredEvidence as string[];
+  if (value.knownRiskCount !== knownRisks.length) {
     throw new Error(
-      `${path} probe.browserSupportPolicy.reasonCodes was not a text array`
+      `${path} probe.browserSupportPolicy.knownRiskCount did not match knownRisks length`
     );
   }
-  if (value.reasonCount !== value.reasonCodes.length) {
+  if (value.nextStepCount !== nextSteps.length) {
+    throw new Error(
+      `${path} probe.browserSupportPolicy.nextStepCount did not match nextSteps length`
+    );
+  }
+  if (value.reasonCount !== reasonCodes.length) {
     throw new Error(
       `${path} probe.browserSupportPolicy.reasonCount did not match reasonCodes length`
+    );
+  }
+  if (value.requiredEvidenceCount !== requiredEvidence.length) {
+    throw new Error(
+      `${path} probe.browserSupportPolicy.requiredEvidenceCount did not match requiredEvidence length`
     );
   }
   for (const key of [

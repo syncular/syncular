@@ -550,12 +550,18 @@ describe('console timeline route filters', () => {
           expectedPersistence: 'persistent',
           expectedSupportTier: 'persistent-offline',
           issueCount: 0,
+          knownRisks: ['storage can be evicted'],
+          knownRiskCount: 1,
+          nextSteps: ['run reopen smoke'],
+          nextStepCount: 1,
           observedPersistence: 'persistent',
           observedSupportTier: 'persistent-offline',
           policy: 'supported-after-preflight',
           preflightRequired: 'true',
           reasonCodes: ['browser_support.policy_met'],
           reasonCount: 1,
+          requiredEvidence: ['deployment preflight passed'],
+          requiredEvidenceCount: 1,
           status: 'met',
         },
         supportBundle: {
@@ -2666,6 +2672,13 @@ describe('console timeline route filters', () => {
           | undefined
       )?.reasonCodes
     ).toEqual(['browser_support.policy_met']);
+    expect(
+      (
+        diagnostic?.details?.browserSupportPolicy as
+          | Record<string, unknown>
+          | undefined
+      )?.requiredEvidence
+    ).toEqual(['deployment preflight passed']);
     expect(
       (accepted.transportStats as Record<string, unknown> | undefined)
         ?.browserSupportPolicyMarkerInAssets
