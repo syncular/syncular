@@ -309,7 +309,11 @@ read-only review:
     deployment preflight evidence: when apps require coordinated tabs and the
     reported multi-tab mode is not `coordinated` or was not passed, the action
     is surfaced with a `browser.multi_tab_coordination_required` blocker
-    instead of running.
+    instead of running. `runSyncularLocalRecoveryAction(...)` now also accepts
+    optional Web Locks coordination so the action execution itself can
+    serialize across browser tabs, report lock state in the result, and fail
+    closed with `SyncularLocalRecoveryActionLockError` when a required lock is
+    unavailable.
     Runtime timeline artifacts now expose
     `getSyncularRuntimeTimeline(...)` and
     `SyncularDatabase.runtimeTimeline(...)`, projecting diagnostic snapshots

@@ -4,6 +4,7 @@ import {
   getSyncularLocalRecoveryPlan,
   runSyncularLocalRecoveryAction,
   type SyncularLocalRecoveryAction,
+  SyncularLocalRecoveryActionLockError,
   SyncularLocalRecoveryBlockedError,
   type SyncularLocalRecoveryClient,
   SyncularLocalRecoveryError,
@@ -344,6 +345,113 @@ describe('local recovery plan', () => {
     });
   });
 
+  it('serializes recovery actions through Web Locks when coordination is enabled', async () => {
+    const firstGate = createDeferred<void>();
+    const firstClient = new FakeRecoveryClient({
+      resetDelay: firstGate.promise,
+    });
+    const secondClient = new FakeRecoveryClient();
+    const locks = new FakeWebLocks();
+    const plan = await getSyncularLocalRecoveryPlan(firstClient, {
+      includeResetAction: true,
+      multiTabMode: 'coordinated',
+      requireMultiTabCoordinationForDestructiveActions: true,
+      resetClearSyncedRows: true,
+    });
+    const reset = requiredAction(plan.actions, 'reset-local-sync-state');
+    const options = {
+      confirmationText: reset.confirmationText,
+      lock: { name: 'syncular:test:local-recovery' },
+      navigator: { locks },
+    };
+
+    const first = runSyncularLocalRecoveryAction(firstClient, reset, options);
+    await Promise.resolve();
+    expect(firstClient.calls).toContainEqual([
+      'resetLocalSyncState',
+      { subscriptionIds: [], clearSyncedRows: true },
+    ]);
+
+    const second = runSyncularLocalRecoveryAction(secondClient, reset, options);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(
+      secondClient.calls.some(([call]) => call === 'resetLocalSyncState')
+    ).toBe(false);
+
+    firstGate.resolve();
+    await expect(first).resolves.toMatchObject({
+      action: 'reset-local-sync-state',
+      coordination: {
+        lockName: 'syncular:test:local-recovery',
+        lockRequired: false,
+        lockState: 'acquired',
+      },
+    });
+    await expect(second).resolves.toMatchObject({
+      action: 'reset-local-sync-state',
+      coordination: {
+        lockName: 'syncular:test:local-recovery',
+        lockRequired: false,
+        lockState: 'acquired',
+      },
+    });
+    expect(locks.requests).toEqual([
+      'syncular:test:local-recovery',
+      'syncular:test:local-recovery',
+    ]);
+  });
+
+  it('falls back when optional Web Locks recovery coordination is unavailable', async () => {
+    const client = new FakeRecoveryClient();
+    const plan = await getSyncularLocalRecoveryPlan(client, {
+      includeResetAction: true,
+      resetClearSyncedRows: true,
+    });
+    const reset = requiredAction(plan.actions, 'reset-local-sync-state');
+
+    await expect(
+      runSyncularLocalRecoveryAction(client, reset, {
+        confirmationText: reset.confirmationText,
+        lock: true,
+        navigator: {},
+      })
+    ).resolves.toMatchObject({
+      action: 'reset-local-sync-state',
+      coordination: {
+        lockName: 'syncular:local-recovery',
+        lockRequired: false,
+        lockState: 'unavailable',
+      },
+    });
+    expect(client.calls).toContainEqual([
+      'resetLocalSyncState',
+      { subscriptionIds: [], clearSyncedRows: true },
+    ]);
+  });
+
+  it('rejects when required Web Locks recovery coordination is unavailable', async () => {
+    const client = new FakeRecoveryClient();
+    const plan = await getSyncularLocalRecoveryPlan(client, {
+      includeResetAction: true,
+    });
+    const reset = requiredAction(plan.actions, 'reset-local-sync-state');
+
+    await expect(
+      runSyncularLocalRecoveryAction(client, reset, {
+        confirmationText: reset.confirmationText,
+        lock: {
+          name: 'syncular:test:required-local-recovery',
+          required: true,
+        },
+        navigator: {},
+      })
+    ).rejects.toBeInstanceOf(SyncularLocalRecoveryActionLockError);
+    expect(client.calls.some(([call]) => call === 'resetLocalSyncState')).toBe(
+      false
+    );
+  });
+
   it('adds a confirmed sign-out cleanup action only when the local outbox is empty', async () => {
     const client = new FakeRecoveryClient();
     const defaultPlan = await getSyncularLocalRecoveryPlan(client);
@@ -454,17 +562,20 @@ class FakeRecoveryClient implements SyncularLocalRecoveryClient {
   readonly #health: SyncularLocalHealthReport;
   readonly #snapshot: SyncularDiagnosticSnapshot;
   readonly #status: SyncularClientStatus;
+  readonly #resetDelay: Promise<void> | undefined;
 
   constructor(
     args: {
       health?: SyncularLocalHealthReport;
       snapshot?: SyncularDiagnosticSnapshot;
       status?: SyncularClientStatus;
+      resetDelay?: Promise<void>;
     } = {}
   ) {
     this.#health = args.health ?? healthyLocalHealth();
     this.#snapshot = args.snapshot ?? diagnosticSnapshot();
     this.#status = args.status ?? clientStatus();
+    this.#resetDelay = args.resetDelay;
   }
 
   async localHealthCheck() {
@@ -565,6 +676,7 @@ class FakeRecoveryClient implements SyncularLocalRecoveryClient {
     clearSyncedRows?: boolean;
   }) {
     this.calls.push(['resetLocalSyncState', request]);
+    await this.#resetDelay;
     return {
       resetSubscriptions: request?.subscriptionIds?.length ?? 0,
       deletedSubscriptionStates: 1,
@@ -573,6 +685,65 @@ class FakeRecoveryClient implements SyncularLocalRecoveryClient {
       clearedTables: request?.clearSyncedRows ? ['tasks'] : [],
     };
   }
+}
+
+class FakeWebLocks {
+  readonly requests: string[] = [];
+  #active = false;
+  readonly #queue: Array<() => void> = [];
+
+  async request<T>(
+    name: string,
+    options: { mode: 'exclusive' },
+    callback: () => T | Promise<T>
+  ): Promise<T> {
+    if (options.mode !== 'exclusive') {
+      throw new Error(`Unexpected lock mode ${options.mode}`);
+    }
+    this.requests.push(name);
+    await this.#acquire();
+    try {
+      return await callback();
+    } finally {
+      this.#release();
+    }
+  }
+
+  #acquire(): Promise<void> {
+    if (!this.#active) {
+      this.#active = true;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      this.#queue.push(() => {
+        this.#active = true;
+        resolve();
+      });
+    });
+  }
+
+  #release(): void {
+    const next = this.#queue.shift();
+    if (next) {
+      next();
+      return;
+    }
+    this.#active = false;
+  }
+}
+
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value?: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value?: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
 }
 
 function healthyLocalHealth(): SyncularLocalHealthReport {

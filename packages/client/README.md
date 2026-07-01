@@ -801,6 +801,7 @@ const action = plan.actions.find(
 if (action) {
   await syncular.runLocalRecoveryAction(action, {
     confirmationText: action.confirmationText,
+    lock: { name: 'syncular:my-app:local-recovery' },
   });
 }
 ```
@@ -825,7 +826,11 @@ pass the deployment preflight's `lifecycle.multiTabMode` and set
 actions then carry a `browser.multi_tab_coordination_required` blocker unless
 the preflight reports coordinated tabs. Missing preflight evidence also blocks
 when coordination is required; show that blocker and ask the user to close
-other tabs or move to a coordinated runtime before running the action.
+other tabs or move to a coordinated runtime before running the action. Passing
+`lock` to `runLocalRecoveryAction(...)` serializes the actual recovery work
+through Web Locks when the browser provides them; optional locks fall back to
+uncoordinated execution and required locks reject with
+`SyncularLocalRecoveryActionLockError`.
 
 ## CRDT Document Fields
 

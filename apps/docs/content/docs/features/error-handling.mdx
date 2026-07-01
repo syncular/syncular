@@ -185,6 +185,7 @@ const repair = plan.actions.find(
 if (repair) {
   await syncular.runLocalRecoveryAction(repair, {
     confirmationText: repair.confirmationText,
+    lock: { name: "syncular:my-app:local-recovery" },
   });
 }
 ```
@@ -204,7 +205,10 @@ In browser apps with persistent local databases, pass the deployment
 preflight's `lifecycle.multiTabMode` and set
 `requireMultiTabCoordinationForDestructiveActions: true` so destructive
 actions expose a `browser.multi_tab_coordination_required` blocker when tabs
-cannot be coordinated or the preflight mode was not passed.
+cannot be coordinated or the preflight mode was not passed. Passing `lock` to
+`runLocalRecoveryAction(...)` serializes the actual recovery work through Web
+Locks when available; optional locks fall back to uncoordinated execution, and
+required locks reject with `SyncularLocalRecoveryActionLockError`.
 
 Manual reconnect is just a lifecycle start/sync request:
 

@@ -1409,6 +1409,11 @@ online propagation, or reconnect behavior can change.
   `requireMultiTabCoordinationForDestructiveActions: true`; when the browser
   cannot coordinate tabs or the mode was not passed, destructive actions carry
   a `browser.multi_tab_coordination_required` blocker instead of running.
+- `runSyncularLocalRecoveryAction(...)` now accepts optional Web Locks
+  coordination, so browser apps can serialize destructive recovery execution
+  across tabs after preflight proves coordination. Results include lock name,
+  required flag, and lock state; required locks reject with
+  `SyncularLocalRecoveryActionLockError` before the client action runs.
 - The browser/Hono/WASM local-health test now exercises that plan/action API
   against the real Worker runtime for corrupted subscription state and
   orphaned verified roots, including the confirmation guardrail and successful
@@ -1874,6 +1879,11 @@ online propagation, or reconnect behavior can change.
 - 2026-07-01: Added opt-in browser multi-tab blockers for destructive local
   recovery actions so apps can require coordinated tabs before sync-state
   reset, sign-out cleanup, cache clear, or forced rebootstrap operations run.
+- 2026-07-01: Added optional Web Locks coordination to
+  `runSyncularLocalRecoveryAction(...)`. Recovery actions can now serialize
+  through an app-specific browser lock, fall back when optional locks are
+  unavailable, or fail closed with `SyncularLocalRecoveryActionLockError` when
+  the lock is required; action results report the observed coordination state.
 - 2026-06-30: Extended the Hono-backed browser/WASM local-health test so it
   repairs corrupted subscription state and orphaned verified roots through the
   new local recovery plan/action API instead of direct low-level repair calls.
@@ -2855,6 +2865,8 @@ Most recent framework-import quality-gate docs rerun:
 Most recent local-recovery rerun:
 
 - `bun test packages/client/src/local-recovery.test.ts packages/client/src/public-api.test.ts`
+  - Covers recovery Web Locks serialization, optional-lock fallback, and
+    required-lock failure before the client action runs.
 - `bun --cwd packages/client tsgo`
 - `bunx biome check packages/client/src/local-recovery.ts packages/client/src/local-recovery.test.ts packages/client/src/public-api.test.ts packages/client/README.md apps/docs/content/docs/features/error-handling.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `bun run docs:stale-check`
@@ -3113,8 +3125,10 @@ Most recent mutation-status rerun:
   when the snapshot identifies errored subscription IDs. Destructive recovery
   actions now expose opt-in `browser.multi_tab_coordination_required` blockers
   when the app requires coordinated tabs and the browser preflight reports a
-  weaker or unknown multi-tab mode. Remaining work is to prove richer recovery
-  coordination under real multi-tab browser suspension/resume, storage locks,
+  weaker or unknown multi-tab mode. The recovery executor itself can now
+  serialize actions through optional Web Locks, report lock state, or fail
+  closed when a required lock is unavailable. Remaining work is richer
+  browser-process proof: suspended/resumed tabs, storage-lock contention,
   shutdown, and restart states.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the

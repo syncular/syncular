@@ -128,12 +128,55 @@ export interface SyncularLocalRecoveryPlanOptions {
   requireMultiTabCoordinationForDestructiveActions?: boolean;
 }
 
+export type SyncularLocalRecoveryActionLockState =
+  | 'not-requested'
+  | 'waiting'
+  | 'acquired'
+  | 'unavailable';
+
+export interface SyncularLocalRecoveryActionNavigator {
+  locks?: {
+    request?: <T>(
+      name: string,
+      options: { mode: 'exclusive' },
+      callback: () => T | Promise<T>
+    ) => Promise<T>;
+  };
+}
+
+export interface SyncularLocalRecoveryActionLockOptions {
+  /**
+   * Web Locks name used to serialize local recovery work across browser tabs.
+   * Use an app-specific name when several independent Syncular databases can
+   * be open in the same origin.
+   */
+  name?: string;
+  /**
+   * When true, recovery rejects if the browser does not expose Web Locks
+   * instead of falling back to an uncoordinated action.
+   */
+  required?: boolean;
+}
+
+export interface SyncularLocalRecoveryActionCoordination {
+  lockName?: string;
+  lockRequired: boolean;
+  lockState: SyncularLocalRecoveryActionLockState;
+}
+
 export interface SyncularRunLocalRecoveryActionOptions {
   confirmationText?: string;
   syncOptions?: SyncularSyncRequestOptions;
+  navigator?: SyncularLocalRecoveryActionNavigator;
+  /**
+   * Optional Web Locks coordination for browser recovery actions. Pair this
+   * with `requireMultiTabCoordinationForDestructiveActions` in the recovery
+   * plan when destructive actions should only run under a browser tab lock.
+   */
+  lock?: boolean | SyncularLocalRecoveryActionLockOptions;
 }
 
-export type SyncularLocalRecoveryActionResult =
+export type SyncularLocalRecoveryActionResultBase =
   | {
       action: 'export-support-bundle';
       bundle: SyncularLocalSupportBundle;
@@ -169,6 +212,11 @@ export type SyncularLocalRecoveryActionResult =
       report: SyncularLocalSyncResetReport;
       clearedBlobCache: boolean;
     };
+
+export type SyncularLocalRecoveryActionResult =
+  SyncularLocalRecoveryActionResultBase & {
+    coordination: SyncularLocalRecoveryActionCoordination;
+  };
 
 export interface SyncularLocalRecoveryClient {
   localHealthCheck(): Promise<SyncularLocalHealthReport>;
@@ -231,6 +279,23 @@ export class SyncularLocalRecoveryBlockedError extends Error {
   }
 }
 
+export class SyncularLocalRecoveryActionLockError extends Error {
+  readonly code = 'syncular.local_recovery_web_locks_unavailable';
+  readonly action: SyncularLocalRecoveryAction;
+  readonly lockName: string;
+
+  constructor(action: SyncularLocalRecoveryAction, lockName: string) {
+    super(
+      `Browser Web Locks are unavailable; cannot coordinate Syncular local recovery action "${action.id}" for ${lockName}.`
+    );
+    this.name = 'SyncularLocalRecoveryActionLockError';
+    this.action = action;
+    this.lockName = lockName;
+  }
+}
+
+const DEFAULT_LOCAL_RECOVERY_LOCK_NAME = 'syncular:local-recovery';
+
 export async function getSyncularLocalRecoveryPlan(
   client: SyncularLocalRecoveryClient,
   options: SyncularLocalRecoveryPlanOptions = {}
@@ -284,6 +349,59 @@ export async function runSyncularLocalRecoveryAction(
   assertRecoveryActionNotBlocked(action);
   assertRecoveryActionConfirmed(action, options);
 
+  const lockOptions = normalizeLocalRecoveryLockOptions(options.lock);
+  const navigatorRef =
+    options.navigator ??
+    (
+      globalThis as unknown as {
+        navigator?: SyncularLocalRecoveryActionNavigator;
+      }
+    ).navigator;
+  const runAction = async (
+    coordination: SyncularLocalRecoveryActionCoordination
+  ): Promise<SyncularLocalRecoveryActionResult> => {
+    const result = await runLocalRecoveryActionWithoutCoordination(
+      client,
+      action,
+      options
+    );
+    return { ...result, coordination };
+  };
+
+  if (!lockOptions) {
+    return runAction(
+      createLocalRecoveryCoordination({ lockOptions, actionLockState: null })
+    );
+  }
+
+  const locks = navigatorRef?.locks;
+  if (typeof locks?.request !== 'function') {
+    if (lockOptions.required) {
+      throw new SyncularLocalRecoveryActionLockError(action, lockOptions.name);
+    }
+    return runAction(
+      createLocalRecoveryCoordination({
+        lockOptions,
+        actionLockState: 'unavailable',
+      })
+    );
+  }
+
+  return locks.request(lockOptions.name, { mode: 'exclusive' }, () =>
+    runAction(
+      createLocalRecoveryCoordination({
+        lockOptions,
+        actionLockState: 'acquired',
+      })
+    )
+  );
+}
+
+async function runLocalRecoveryActionWithoutCoordination(
+  client: SyncularLocalRecoveryClient,
+  action: SyncularLocalRecoveryAction,
+  options: SyncularRunLocalRecoveryActionOptions
+): Promise<SyncularLocalRecoveryActionResultBase> {
   switch (action.kind) {
     case 'export-support-bundle':
       return {
@@ -344,6 +462,34 @@ export async function runSyncularLocalRecoveryAction(
       };
     }
   }
+}
+
+function normalizeLocalRecoveryLockOptions(
+  lock: SyncularRunLocalRecoveryActionOptions['lock']
+): { name: string; required: boolean } | null {
+  if (!lock) return null;
+  if (lock === true) {
+    return {
+      name: DEFAULT_LOCAL_RECOVERY_LOCK_NAME,
+      required: false,
+    };
+  }
+  return {
+    name: lock.name?.trim() || DEFAULT_LOCAL_RECOVERY_LOCK_NAME,
+    required: lock.required === true,
+  };
+}
+
+function createLocalRecoveryCoordination(args: {
+  lockOptions: { name: string; required: boolean } | null;
+  actionLockState: SyncularLocalRecoveryActionLockState | null;
+}): SyncularLocalRecoveryActionCoordination {
+  return {
+    lockRequired: args.lockOptions?.required ?? false,
+    lockState:
+      args.actionLockState ?? (args.lockOptions ? 'waiting' : 'not-requested'),
+    ...(args.lockOptions ? { lockName: args.lockOptions.name } : {}),
+  };
 }
 
 function assertRecoveryActionNotBlocked(
