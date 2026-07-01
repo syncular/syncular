@@ -29,6 +29,9 @@ type LifecycleResumePreview = {
 type StarterTimelinePreview = {
   databaseOpenMs: number | null;
   healthRefreshMs: number | null;
+  localVisibilityErrorCode: string | null;
+  localVisibilityMs: number | null;
+  localVisibilityStatus: 'idle' | 'running' | 'visible' | 'failed';
   schemaReadinessMs: number | null;
   supportBundleExportMs: number | null;
 };
@@ -43,6 +46,9 @@ const initialLifecycleResume: LifecycleResumePreview = {
 const initialStarterTimeline: StarterTimelinePreview = {
   databaseOpenMs: null,
   healthRefreshMs: null,
+  localVisibilityErrorCode: null,
+  localVisibilityMs: null,
+  localVisibilityStatus: 'idle',
   schemaReadinessMs: null,
   supportBundleExportMs: null,
 };
@@ -289,16 +295,46 @@ function TaskPane({
     event.preventDefault();
     const title = inputRef.current?.value.trim();
     if (!title) return;
+    const taskId = crypto.randomUUID();
+    const visibilityStartedAtMs = performance.now();
     inputRef.current!.value = '';
+    updateStarterTimeline((current) => ({
+      ...current,
+      localVisibilityErrorCode: null,
+      localVisibilityMs: null,
+      localVisibilityStatus: 'running',
+    }));
     void mutations.tasks
       .insert({
-        id: crypto.randomUUID(),
+        id: taskId,
         title,
         completed: 0,
         user_id: appActorId,
         created_at: Date.now(),
       })
-      .catch(() => undefined);
+      .then(() =>
+        client.awaitTaskVisibility(
+          ({ selectFrom }) =>
+            selectFrom('tasks').select('id').where('id', '=', taskId).limit(1),
+          { timeoutMs: 5_000 }
+        )
+      )
+      .then(() => {
+        updateStarterTimeline((current) => ({
+          ...current,
+          localVisibilityErrorCode: null,
+          localVisibilityMs: elapsedSince(visibilityStartedAtMs),
+          localVisibilityStatus: 'visible',
+        }));
+      })
+      .catch((error) => {
+        updateStarterTimeline((current) => ({
+          ...current,
+          localVisibilityErrorCode: syncularErrorCode(error),
+          localVisibilityMs: elapsedSince(visibilityStartedAtMs),
+          localVisibilityStatus: 'failed',
+        }));
+      });
   };
 
   return (
@@ -366,6 +402,15 @@ function StarterTimelineMarker({
       }
       data-syncular-starter-health-refresh-ms={
         starterTimeline.healthRefreshMs ?? ''
+      }
+      data-syncular-starter-local-visibility-error-code={
+        starterTimeline.localVisibilityErrorCode ?? ''
+      }
+      data-syncular-starter-local-visibility-ms={
+        starterTimeline.localVisibilityMs ?? ''
+      }
+      data-syncular-starter-local-visibility-status={
+        starterTimeline.localVisibilityStatus
       }
       data-syncular-starter-schema-readiness-ms={
         starterTimeline.schemaReadinessMs ?? ''
@@ -558,6 +603,14 @@ function paneStatus(status: SyncularClientStatus): PaneStatus {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function syncularErrorCode(error: unknown): string {
+  if (error instanceof Error) {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === 'string' ? code : error.name;
+  }
+  return typeof error;
 }
 
 function elapsedSince(startedAtMs: number): number {

@@ -2196,6 +2196,23 @@ Most recent starter browser-failure artifact rerun:
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `git diff --check`
 
+Most recent starter local-visibility artifact rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-local-visibility-smoke bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, and built asset checks,
+    including the local-visibility timing marker in the starter timeline
+    asset check.
+  - Passed the deterministic browser failure artifact shape and safe-metrics
+    self-check with local-visibility timing fields.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available. On browser-capable runners the CDP path now creates
+    a generated task in the first tab, waits for the first tab's
+    local-visibility timing marker to become `visible`, and then waits for the
+    second tab to observe the row through the normal sync/realtime path.
+
 Most recent production-ops docs rerun:
 
 - `bun run docs:stale-check`
@@ -2669,10 +2686,12 @@ Most recent mutation-status rerun:
   measurable. The starter browser failure artifact now carries safe
   preview/asset timing and byte metrics plus starter runtime timings for
   database open, browser health refresh, schema readiness, and support-bundle
-  export when the browser probe can run; remaining depth is to add richer
-  bootstrap, local-visibility, realtime, storage/quota, and blob-fetch
-  measurements where browser/app flows can expose them without manual log
-  scraping.
+  export when the browser probe can run. The starter also records
+  generated-mutation local-visibility status and elapsed time, and the
+  Chrome/CDP path waits for that marker before proving two-tab propagation.
+  Remaining depth is to add richer bootstrap, realtime, storage/quota, and
+  blob-fetch measurements where browser/app flows can expose them without
+  manual log scraping.
 
 ## Next Action
 

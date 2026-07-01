@@ -204,8 +204,9 @@ read-only review:
     and runtime-timing markers, then waits for redacted support-bundle DOM
     evidence in the Chrome/CDP preview path when a browser is available.
     Browser preview artifacts now include starter timings for database open,
-    browser health refresh, schema readiness, and support-bundle export when
-    Chrome/CDP is available. The same smoke
+    browser health refresh, schema readiness, support-bundle export, and
+    generated-mutation local visibility when Chrome/CDP is available. The same
+    smoke
     self-checks the redacted browser failure artifact shape and safe smoke
     metrics even when no browser is installed. Browser pages can now
     install `installSyncularBrowserLifecycleResume(...)` to coalesce
@@ -217,7 +218,8 @@ read-only review:
     waits for a completed `resumeFromBackground()` marker, then dispatches
     `online` and waits for a second completed marker. The Chrome/CDP path now
     also opens a second generated-app tab with its own client id/database file,
-    creates a task in the first tab, and waits for the second tab to observe it
+    creates a task in the first tab, waits for the first tab's
+    local-visibility marker, and waits for the second tab to observe it
     through the normal sync/realtime path. Release rehearsal now runs the
     create-syncular-app built-preview smoke by default and can require the
     Chrome/CDP path with `--require-starter-browser-preview`. Next slice:

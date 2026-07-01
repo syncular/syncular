@@ -258,9 +258,9 @@ async function verifyBuiltPreviewAssets(
       sawLifecycleResumeMarker ||= assetBody.includes(
         'data-syncular-lifecycle-resume-status'
       );
-      sawStarterTimelineMarker ||= assetBody.includes(
-        'data-syncular-starter-database-open-ms'
-      );
+      sawStarterTimelineMarker ||=
+        assetBody.includes('data-syncular-starter-database-open-ms') &&
+        assetBody.includes('data-syncular-starter-local-visibility-ms');
       sawSupportBundleMarker ||= assetBody.includes(
         'data-syncular-support-bundle-status'
       );
@@ -485,6 +485,9 @@ type BrowserPreviewProbe = {
   starterTimeline: {
     databaseOpenMs: number | null;
     healthRefreshMs: number | null;
+    localVisibilityErrorCode: string | null;
+    localVisibilityMs: number | null;
+    localVisibilityStatus: string | null;
     marker: boolean;
     schemaReadinessMs: number | null;
     supportBundleExportMs: number | null;
@@ -549,6 +552,9 @@ async function readStarterBrowserProbe(
     };
     const databaseOpenMs = readStarterTimelineMs('data-syncular-starter-database-open-ms');
     const healthRefreshMs = readStarterTimelineMs('data-syncular-starter-health-refresh-ms');
+    const localVisibilityErrorCode = starterTimeline?.getAttribute('data-syncular-starter-local-visibility-error-code') ?? null;
+    const localVisibilityMs = readStarterTimelineMs('data-syncular-starter-local-visibility-ms');
+    const localVisibilityStatus = starterTimeline?.getAttribute('data-syncular-starter-local-visibility-status') ?? null;
     const schemaReadinessMs = readStarterTimelineMs('data-syncular-starter-schema-readiness-ms');
     const supportBundleExportMs = readStarterTimelineMs('data-syncular-starter-support-bundle-export-ms');
     const durableHealthLine = text.includes('indexedDb durable');
@@ -571,6 +577,13 @@ async function readStarterBrowserProbe(
     if (lifecycleResumeStatus === 'failed') {
       errors.push('lifecycle resume failed');
     }
+    if (localVisibilityStatus === 'failed') {
+      errors.push(
+        localVisibilityErrorCode
+          ? 'local visibility failed: ' + localVisibilityErrorCode
+          : 'local visibility failed'
+      );
+    }
     return {
       ready:
         durableHealthLine &&
@@ -580,6 +593,7 @@ async function readStarterBrowserProbe(
         starterTimeline !== null &&
         databaseOpenMs !== null &&
         healthRefreshMs !== null &&
+        localVisibilityStatus !== null &&
         schemaReadinessMs !== null &&
         supportBundleExportMs !== null &&
         supportBundleRedacted === 'true' &&
@@ -610,6 +624,9 @@ async function readStarterBrowserProbe(
       starterTimeline: {
         databaseOpenMs,
         healthRefreshMs,
+        localVisibilityErrorCode,
+        localVisibilityMs,
+        localVisibilityStatus,
         marker: starterTimeline !== null,
         schemaReadinessMs,
         supportBundleExportMs,
@@ -761,6 +778,12 @@ async function proveStarterTwoTabPropagation(args: {
     return true;
   })()`);
 
+  await waitForStarterLocalVisibility({
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    session: args.first,
+  });
+
   const deadline = Date.now() + 20_000;
   let lastProbe: BrowserPreviewProbe | null = null;
   while (Date.now() < deadline) {
@@ -793,6 +816,48 @@ async function proveStarterTwoTabPropagation(args: {
   );
   throw new Error(
     `Timed out waiting for built preview two-tab propagation. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
+async function waitForStarterLocalVisibility(args: {
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'local-visibility-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview local visibility failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    if (
+      probe.starterTimeline.localVisibilityStatus === 'visible' &&
+      probe.starterTimeline.localVisibilityMs !== null
+    ) {
+      return;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'local-visibility-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview local visibility. Failure artifact: ${args.failureArtifactPath}`
   );
 }
 
@@ -846,6 +911,9 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
       starterTimeline: {
         databaseOpenMs: 12,
         healthRefreshMs: 3,
+        localVisibilityErrorCode: null,
+        localVisibilityMs: 5,
+        localVisibilityStatus: 'visible',
         marker: true,
         schemaReadinessMs: 2,
         supportBundleExportMs: 4,
@@ -985,12 +1053,23 @@ function assertBrowserPreviewStarterTimelineShape(
   for (const key of [
     'databaseOpenMs',
     'healthRefreshMs',
+    'localVisibilityMs',
     'schemaReadinessMs',
     'supportBundleExportMs',
   ] as const) {
     if (value[key] !== null && !isNonNegativeFiniteNumber(value[key])) {
       throw new Error(
         `${path} probe.starterTimeline.${key} was not nullable non-negative number`
+      );
+    }
+  }
+  for (const key of [
+    'localVisibilityErrorCode',
+    'localVisibilityStatus',
+  ] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(
+        `${path} probe.starterTimeline.${key} was not nullable text`
       );
     }
   }
