@@ -224,21 +224,24 @@ read-only review:
     metrics even when no browser is installed. Browser pages can now
     install `installSyncularBrowserLifecycleResume(...)` to coalesce
     `visibilitychange`, `pageshow`, and `online` signals into the managed
-    `resumeFromBackground()` catch-up path, and the starter installs it after
-    opening Syncular. The starter now emits a hidden lifecycle-resume marker,
-    local asset smokes prove the marker is in the production bundle, and the
-    Chrome/CDP path dispatches a persisted `pageshow` restored-page signal,
-    waits for a completed `resumeFromBackground()` marker, then dispatches
-    `online` and waits for a second completed marker. The Chrome/CDP path now
-    also opens a second generated-app tab with its own client id/database file,
-    dispatches `online` in both tabs, verifies both lifecycle markers report
-    the starter Web Lock as acquired, creates a task in the first tab, waits
-    for the first tab's local-visibility marker, and waits for the second tab
-    to observe it through the normal sync/realtime path. The same CDP path now
-    navigates the second tab through a same-client page reload/reopen and waits
-    for the task to reappear after app startup, then restarts Chrome with the
-    same profile directory and verifies that the same client id can still see
-    the task in a fresh browser process. Release rehearsal now runs the
+    `resumeFromBackground()` catch-up path, and to report hidden-tab
+    `visibilitychange`, `pagehide`, and `beforeunload` pause/shutdown signals.
+    The starter installs it after opening Syncular and emits hidden lifecycle
+    markers for resume lock state plus pause count, `pagehide.persisted`, and
+    shutdown-signal count. Local asset smokes prove the marker is in the
+    production bundle, and the Chrome/CDP path dispatches a persisted
+    `pagehide`, a persisted `pageshow` restored-page signal, `online`, and
+    `beforeunload`, waiting for the corresponding marker evidence. The
+    Chrome/CDP path now also opens a second generated-app tab with its own
+    client id/database file, dispatches `online` in both tabs, verifies both
+    lifecycle markers report the starter Web Lock as acquired, creates a task
+    in the first tab, waits for the first tab's local-visibility marker, and
+    waits for the second tab to observe it through the normal sync/realtime
+    path. The same CDP path now navigates the second tab through a same-client
+    page reload/reopen and waits for the task to reappear after app startup,
+    then restarts Chrome with the same profile directory and verifies that the
+    same client id can still see the task in a fresh browser process. Release
+    rehearsal now runs the
     create-syncular-app
     built-preview smoke by default and can require the Chrome/CDP path with
     `--require-starter-browser-preview`. Next slice: observe the hosted Chrome

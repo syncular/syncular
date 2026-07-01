@@ -165,6 +165,9 @@ import { installSyncularBrowserLifecycleResume } from '@syncular/client';
 
 const lifecycleResume = installSyncularBrowserLifecycleResume(syncular, {
   lock: { name: 'syncular:my-app:lifecycle-resume' },
+  onPause(context) {
+    console.info(context.reason, context.persisted);
+  },
 });
 
 window.addEventListener('beforeunload', () => {
@@ -179,6 +182,9 @@ database. If Web Locks are unavailable the helper falls back to an
 uncoordinated resume by default; use `lock.required: true` only when your
 preflight requires coordinated tabs and you want a hard failure instead of
 best-effort recovery.
+The optional `onPause` callback reports hidden-tab, `pagehide`, and
+`beforeunload` signals so browser smokes and support artifacts can distinguish
+restored-page catch-up from shutdown/suspension intent.
 
 ## React apps
 

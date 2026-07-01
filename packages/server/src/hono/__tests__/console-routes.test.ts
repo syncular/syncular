@@ -588,6 +588,16 @@ describe('console timeline route filters', () => {
           count: 2,
           reason: 'online',
           error: null,
+          lockName: 'syncular:create-syncular-app:lifecycle-resume',
+          lockRequired: 'false',
+          lockState: 'acquired',
+        },
+        lifecyclePause: {
+          count: 2,
+          reason: 'beforeunload',
+          pagehidePersisted: 'true',
+          shutdownSignalCount: 1,
+          visibilityState: 'visible',
         },
         starterTimeline: {
           bootstrapReadyMs: 10,
@@ -2639,6 +2649,10 @@ describe('console timeline route filters', () => {
       (accepted.timingSummary?.latest as Record<string, unknown> | undefined)
         ?.localVisibilityMs
     ).toBe(5);
+    expect(
+      (accepted.timingSummary?.latest as Record<string, unknown> | undefined)
+        ?.lifecyclePauseCount
+    ).toBe(2);
 
     const diagnostic = accepted.recentDiagnostics[0];
     expect(diagnostic?.source).toBe('browser-preview');
@@ -2679,6 +2693,20 @@ describe('console timeline route filters', () => {
           | undefined
       )?.requiredEvidence
     ).toEqual(['deployment preflight passed']);
+    expect(
+      (
+        diagnostic?.details?.lifecyclePause as
+          | Record<string, unknown>
+          | undefined
+      )?.pagehidePersisted
+    ).toBe('true');
+    expect(
+      (
+        diagnostic?.details?.lifecyclePause as
+          | Record<string, unknown>
+          | undefined
+      )?.shutdownSignalCount
+    ).toBe(1);
     expect(
       (accepted.transportStats as Record<string, unknown> | undefined)
         ?.browserSupportPolicyMarkerInAssets

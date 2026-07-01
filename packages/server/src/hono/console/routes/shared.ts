@@ -781,6 +781,7 @@ export function buildBrowserPreviewFailureClientDiagnosticIngest(
   const browserSupportPolicy = probe?.browserSupportPolicy ?? null;
   const supportBundle = probe?.supportBundle ?? null;
   const lifecycleResume = probe?.lifecycleResume ?? null;
+  const lifecyclePause = probe?.lifecyclePause ?? null;
 
   const details = compactDiagnosticDetails({
     artifactSchema: 'create-syncular-app.browser-preview-failure.v1',
@@ -795,6 +796,7 @@ export function buildBrowserPreviewFailureClientDiagnosticIngest(
     browserSupportPolicy,
     supportBundle,
     lifecycleResume,
+    lifecyclePause,
     starterTimeline,
   });
 
@@ -846,6 +848,9 @@ export function buildBrowserPreviewFailureClientDiagnosticIngest(
           realtimeConnectedMs: starterTimeline?.realtimeConnectedMs ?? null,
           localVisibilityMs: starterTimeline?.localVisibilityMs ?? null,
           supportBundleExportMs: starterTimeline?.supportBundleExportMs ?? null,
+          lifecyclePauseCount: lifecyclePause?.count ?? null,
+          lifecycleShutdownSignalCount:
+            lifecyclePause?.shutdownSignalCount ?? null,
         }),
       ],
       bootstrap: compactDiagnosticDetails({

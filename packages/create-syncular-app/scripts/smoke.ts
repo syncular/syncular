@@ -13,8 +13,9 @@ import { Buffer } from 'node:buffer';
  *    `bun scripts/dev.ts --preview`.
  * 4. When Chrome/Chromium is available, opens the built preview in a real
  *    browser and waits for the starter's Syncular health/schema/support lines.
- *    The browser path also proves restored-page and online lifecycle resume
- *    signals, two-tab lock-coordinated lifecycle resume, two-tab
+ *    The browser path also proves pagehide/beforeunload pause evidence,
+ *    restored-page and online lifecycle resume signals, two-tab
+ *    lock-coordinated lifecycle resume, two-tab
  *    propagation, same-client page reload/reopen persistence, and
  *    same-profile browser process restart persistence.
  *    Browser failures write
@@ -606,6 +607,13 @@ type BrowserPreviewProbe = {
     lockRequired: string | null;
     lockState: string | null;
   };
+  lifecyclePause: {
+    count: number;
+    reason: string | null;
+    pagehidePersisted: string | null;
+    shutdownSignalCount: number;
+    visibilityState: string | null;
+  };
   starterTimeline: {
     bootstrapReadyMs: number | null;
     bootstrapStatus: string | null;
@@ -736,6 +744,11 @@ async function readStarterBrowserProbe(
     const lifecycleResumeLockName = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-lock-name') ?? null;
     const lifecycleResumeLockRequired = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-lock-required') ?? null;
     const lifecycleResumeLockState = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-lock-state') ?? null;
+    const lifecyclePauseCount = Number(lifecycleResume?.getAttribute('data-syncular-lifecycle-pause-count') ?? 0);
+    const lifecyclePauseReason = lifecycleResume?.getAttribute('data-syncular-lifecycle-pause-reason') ?? null;
+    const lifecyclePausePagehidePersisted = lifecycleResume?.getAttribute('data-syncular-lifecycle-pause-pagehide-persisted') ?? null;
+    const lifecyclePauseShutdownSignalCount = Number(lifecycleResume?.getAttribute('data-syncular-lifecycle-pause-shutdown-signal-count') ?? 0);
+    const lifecyclePauseVisibilityState = lifecycleResume?.getAttribute('data-syncular-lifecycle-pause-visibility-state') ?? null;
     const starterTimeline = document.querySelector('[data-syncular-starter-database-open-ms]');
     const readStarterTimelineMs = (name) => {
       const value = starterTimeline?.getAttribute(name) ?? null;
@@ -877,6 +890,13 @@ async function readStarterBrowserProbe(
         lockRequired: lifecycleResumeLockRequired,
         lockState: lifecycleResumeLockState,
       },
+      lifecyclePause: {
+        count: lifecyclePauseCount,
+        reason: lifecyclePauseReason,
+        pagehidePersisted: lifecyclePausePagehidePersisted,
+        shutdownSignalCount: lifecyclePauseShutdownSignalCount,
+        visibilityState: lifecyclePauseVisibilityState,
+      },
       starterTimeline: {
         bootstrapReadyMs,
         bootstrapStatus,
@@ -939,6 +959,28 @@ async function proveStarterBrowserLifecycleResume(
   failureMetrics: BrowserPreviewFailureMetricsInput
 ): Promise<void> {
   const initialProbe = await readStarterBrowserProbe(session);
+  const pagehideCount = initialProbe.lifecyclePause.count + 1;
+  await session.evaluate(`(() => {
+    let event;
+    if (typeof PageTransitionEvent === 'function') {
+      event = new PageTransitionEvent('pagehide', { persisted: true });
+    } else {
+      event = new Event('pagehide');
+      Object.defineProperty(event, 'persisted', { value: true });
+    }
+    window.dispatchEvent(event);
+    return true;
+  })()`);
+  await waitForStarterLifecyclePause({
+    expectedCount: pagehideCount,
+    expectedPagehidePersisted: 'true',
+    expectedReason: 'pagehide',
+    failureArtifactPath,
+    failureMetrics,
+    session,
+    timeoutReason: 'lifecycle-pagehide-timeout',
+  });
+
   const pageshowCount = initialProbe.lifecycleResume.count + 1;
   await session.evaluate(`(() => {
     const event =
@@ -968,6 +1010,20 @@ async function proveStarterBrowserLifecycleResume(
     failureMetrics,
     session,
     timeoutReason: 'lifecycle-online-timeout',
+  });
+
+  await session.evaluate(`(() => {
+    window.dispatchEvent(new Event('beforeunload'));
+    return true;
+  })()`);
+  await waitForStarterLifecyclePause({
+    expectedCount: pagehideCount + 1,
+    expectedReason: 'beforeunload',
+    expectedShutdownSignalCount: 1,
+    failureArtifactPath,
+    failureMetrics,
+    session,
+    timeoutReason: 'lifecycle-beforeunload-timeout',
   });
 }
 
@@ -1014,6 +1070,62 @@ async function waitForStarterLifecycleResume(args: {
   );
   throw new Error(
     `Timed out waiting for built preview lifecycle resume (${args.expectedReason}). Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
+async function waitForStarterLifecyclePause(args: {
+  expectedCount: number;
+  expectedPagehidePersisted?: string;
+  expectedReason: string;
+  expectedShutdownSignalCount?: number;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+  timeoutReason: string;
+}): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'lifecycle-pause-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview lifecycle pause failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    const pagehidePersistedMatches =
+      args.expectedPagehidePersisted === undefined ||
+      probe.lifecyclePause.pagehidePersisted === args.expectedPagehidePersisted;
+    const shutdownSignalMatches =
+      args.expectedShutdownSignalCount === undefined ||
+      probe.lifecyclePause.shutdownSignalCount >=
+        args.expectedShutdownSignalCount;
+    if (
+      probe.lifecyclePause.count >= args.expectedCount &&
+      probe.lifecyclePause.reason === args.expectedReason &&
+      pagehidePersistedMatches &&
+      shutdownSignalMatches
+    ) {
+      return;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    args.timeoutReason,
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview lifecycle pause (${args.expectedReason}). Failure artifact: ${args.failureArtifactPath}`
   );
 }
 
@@ -1438,6 +1550,13 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         lockRequired: 'false',
         lockState: 'acquired',
       },
+      lifecyclePause: {
+        count: 2,
+        reason: 'beforeunload',
+        pagehidePersisted: 'true',
+        shutdownSignalCount: 1,
+        visibilityState: 'visible',
+      },
       starterTimeline: {
         bootstrapReadyMs: 10,
         bootstrapStatus: 'ready',
@@ -1573,6 +1692,7 @@ function assertBrowserPreviewProbeShape(
   assertBrowserPreviewSupportPolicyShape(probe.browserSupportPolicy, path);
   assertBrowserPreviewSupportBundleShape(probe.supportBundle, path);
   assertBrowserPreviewLifecycleResumeShape(probe.lifecycleResume, path);
+  assertBrowserPreviewLifecyclePauseShape(probe.lifecyclePause, path);
   assertBrowserPreviewStarterTimelineShape(probe.starterTimeline, path);
   if (
     typeof probe.textExcerpt !== 'string' ||
@@ -1822,6 +1942,33 @@ function assertBrowserPreviewLifecycleResumeShape(
     throw new Error(
       `${path} probe.lifecycleResume.count was not a non-negative number`
     );
+  }
+}
+
+function assertBrowserPreviewLifecyclePauseShape(
+  value: unknown,
+  path: string
+): void {
+  if (!isRecord(value)) {
+    throw new Error(`${path} probe.lifecyclePause was not a JSON object`);
+  }
+  for (const key of [
+    'reason',
+    'pagehidePersisted',
+    'visibilityState',
+  ] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(
+        `${path} probe.lifecyclePause.${key} was not nullable text`
+      );
+    }
+  }
+  for (const key of ['count', 'shutdownSignalCount'] as const) {
+    if (!isNonNegativeFiniteNumber(value[key])) {
+      throw new Error(
+        `${path} probe.lifecyclePause.${key} was not a non-negative number`
+      );
+    }
   }
 }
 

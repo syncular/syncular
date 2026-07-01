@@ -6,6 +6,11 @@ export type SyncularBrowserLifecycleResumeReason =
   | 'pageshow'
   | 'visibilitychange';
 
+export type SyncularBrowserLifecyclePauseReason =
+  | 'beforeunload'
+  | 'pagehide'
+  | 'visibilitychange';
+
 export type SyncularBrowserLifecycleResumeLockState =
   | 'not-requested'
   | 'waiting'
@@ -17,6 +22,12 @@ export interface SyncularBrowserLifecycleResumeContext {
   lockName?: string;
   lockRequired: boolean;
   lockState: SyncularBrowserLifecycleResumeLockState;
+}
+
+export interface SyncularBrowserLifecyclePauseContext {
+  reason: SyncularBrowserLifecyclePauseReason;
+  persisted?: boolean;
+  visibilityState: string | null;
 }
 
 export interface SyncularBrowserLifecycleResumeClient {
@@ -91,6 +102,7 @@ export interface SyncularBrowserLifecycleResumeOptions {
     error: unknown,
     context: SyncularBrowserLifecycleResumeContext
   ) => void;
+  onPause?: (context: SyncularBrowserLifecyclePauseContext) => void;
 }
 
 export interface SyncularBrowserLifecycleResumeController {
@@ -206,11 +218,24 @@ export function installSyncularBrowserLifecycleResume(
     if (destroyed || isDocumentHidden(documentRef)) return;
     void resume(reason).catch(() => undefined);
   };
+  const notifyPause = (
+    reason: SyncularBrowserLifecyclePauseReason,
+    event?: Event
+  ): void => {
+    if (destroyed) return;
+    options.onPause?.({
+      reason,
+      ...(reason === 'pagehide' ? { persisted: eventPersisted(event) } : {}),
+      visibilityState: documentVisibilityState(documentRef),
+    });
+  };
 
   if (documentRef?.addEventListener) {
     const onVisibilityChange = () => {
       if (documentRef.visibilityState === 'visible') {
         resumeFromBrowserSignal('visibilitychange');
+      } else if (documentRef.visibilityState === 'hidden') {
+        notifyPause('visibilitychange');
       }
     };
     documentRef.addEventListener('visibilitychange', onVisibilityChange);
@@ -221,10 +246,16 @@ export function installSyncularBrowserLifecycleResume(
 
   if (globalRef.addEventListener) {
     const onPageShow = () => resumeFromBrowserSignal('pageshow');
+    const onPageHide = (event: Event) => notifyPause('pagehide', event);
+    const onBeforeUnload = () => notifyPause('beforeunload');
     const onOnline = () => resumeFromBrowserSignal('online');
+    globalRef.addEventListener('pagehide', onPageHide);
+    globalRef.addEventListener('beforeunload', onBeforeUnload);
     globalRef.addEventListener('pageshow', onPageShow);
     globalRef.addEventListener('online', onOnline);
     unsubscribers.push(() => {
+      globalRef.removeEventListener?.('pagehide', onPageHide);
+      globalRef.removeEventListener?.('beforeunload', onBeforeUnload);
       globalRef.removeEventListener?.('pageshow', onPageShow);
       globalRef.removeEventListener?.('online', onOnline);
     });
@@ -277,4 +308,17 @@ function isDocumentHidden(
   documentRef: SyncularBrowserLifecycleDocument | undefined
 ): boolean {
   return documentRef?.visibilityState === 'hidden';
+}
+
+function documentVisibilityState(
+  documentRef: SyncularBrowserLifecycleDocument | undefined
+): string | null {
+  return typeof documentRef?.visibilityState === 'string'
+    ? documentRef.visibilityState
+    : null;
+}
+
+function eventPersisted(event: Event | undefined): boolean {
+  if (!event || !('persisted' in event)) return false;
+  return (event as { persisted?: unknown }).persisted === true;
 }

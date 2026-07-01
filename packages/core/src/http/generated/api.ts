@@ -3320,6 +3320,15 @@ export interface operations {
                             } & {
                                 [key: string]: unknown;
                             };
+                            lifecyclePause: {
+                                count: number;
+                                reason: string | null;
+                                pagehidePersisted: string | null;
+                                shutdownSignalCount: number;
+                                visibilityState: string | null;
+                            } & {
+                                [key: string]: unknown;
+                            };
                             starterTimeline: {
                                 bootstrapReadyMs: number | null;
                                 bootstrapStatus: string | null;
@@ -3444,6 +3453,15 @@ export interface operations {
                             count: number;
                             reason: string | null;
                             error: string | null;
+                        } & {
+                            [key: string]: unknown;
+                        };
+                        lifecyclePause: {
+                            count: number;
+                            reason: string | null;
+                            pagehidePersisted: string | null;
+                            shutdownSignalCount: number;
+                            visibilityState: string | null;
                         } & {
                             [key: string]: unknown;
                         };

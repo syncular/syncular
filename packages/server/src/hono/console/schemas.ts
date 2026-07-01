@@ -604,6 +604,15 @@ const ConsoleBrowserPreviewFailureProbeSchema = z
         error: ConsoleBrowserPreviewFailureNullableStringSchema,
       })
       .passthrough(),
+    lifecyclePause: z
+      .object({
+        count: z.number().int().nonnegative(),
+        reason: ConsoleBrowserPreviewFailureNullableStringSchema,
+        pagehidePersisted: ConsoleBrowserPreviewFailureNullableStringSchema,
+        shutdownSignalCount: z.number().int().nonnegative(),
+        visibilityState: ConsoleBrowserPreviewFailureNullableStringSchema,
+      })
+      .passthrough(),
     starterTimeline: z
       .object({
         bootstrapReadyMs: ConsoleBrowserPreviewFailureNullableNumberSchema,

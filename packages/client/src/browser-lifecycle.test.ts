@@ -82,6 +82,33 @@ describe('Syncular browser lifecycle resume', () => {
     expect(completions).toEqual(['pageshow']);
   });
 
+  it('reports pause signals for hidden tabs and page shutdown', () => {
+    const client = new FakeResumeClient();
+    const document = new FakeDocument('visible');
+    const global = new FakeGlobal(document);
+    const pauses: string[] = [];
+    installSyncularBrowserLifecycleResume(client, {
+      global,
+      onPause(context) {
+        pauses.push(
+          `${context.reason}:${context.visibilityState}:${context.persisted ?? false}`
+        );
+      },
+    });
+
+    document.visibilityState = 'hidden';
+    document.dispatch('visibilitychange');
+    global.dispatch('pagehide', { persisted: true });
+    global.dispatch('beforeunload');
+
+    expect(pauses).toEqual([
+      'visibilitychange:hidden:false',
+      'pagehide:hidden:true',
+      'beforeunload:hidden:false',
+    ]);
+    expect(client.calls).toEqual([]);
+  });
+
   it('coalesces overlapping browser resume signals', async () => {
     const client = new FakeResumeClient({ deferred: true });
     const document = new FakeDocument('visible');
@@ -202,6 +229,8 @@ describe('Syncular browser lifecycle resume', () => {
 
     controller.destroy();
     document.dispatch('visibilitychange');
+    global.dispatch('pagehide');
+    global.dispatch('beforeunload');
     global.dispatch('pageshow');
     global.dispatch('online');
 
@@ -265,26 +294,26 @@ class FakeResumeClient {
 }
 
 class FakeDocument {
-  readonly #listeners = new Map<string, Set<() => void>>();
+  readonly #listeners = new Map<string, Set<(event?: unknown) => void>>();
 
   constructor(public visibilityState: 'hidden' | 'visible') {}
 
   addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
-    this.listeners(type).add(listener as () => void);
+    this.listeners(type).add(listener as (event?: unknown) => void);
   }
 
   removeEventListener(
     type: string,
     listener: EventListenerOrEventListenerObject
   ) {
-    this.listeners(type).delete(listener as () => void);
+    this.listeners(type).delete(listener as (event?: unknown) => void);
   }
 
-  dispatch(type: string): void {
-    for (const listener of this.listeners(type)) listener();
+  dispatch(type: string, event?: unknown): void {
+    for (const listener of this.listeners(type)) listener(event);
   }
 
-  private listeners(type: string): Set<() => void> {
+  private listeners(type: string): Set<(event?: unknown) => void> {
     let listeners = this.#listeners.get(type);
     if (!listeners) {
       listeners = new Set();
@@ -295,26 +324,26 @@ class FakeDocument {
 }
 
 class FakeGlobal {
-  readonly #listeners = new Map<string, Set<() => void>>();
+  readonly #listeners = new Map<string, Set<(event?: unknown) => void>>();
 
   constructor(public document: FakeDocument) {}
 
   addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
-    this.listeners(type).add(listener as () => void);
+    this.listeners(type).add(listener as (event?: unknown) => void);
   }
 
   removeEventListener(
     type: string,
     listener: EventListenerOrEventListenerObject
   ) {
-    this.listeners(type).delete(listener as () => void);
+    this.listeners(type).delete(listener as (event?: unknown) => void);
   }
 
-  dispatch(type: string): void {
-    for (const listener of this.listeners(type)) listener();
+  dispatch(type: string, event?: unknown): void {
+    for (const listener of this.listeners(type)) listener(event);
   }
 
-  private listeners(type: string): Set<() => void> {
+  private listeners(type: string): Set<(event?: unknown) => void> {
     let listeners = this.#listeners.get(type);
     if (!listeners) {
       listeners = new Set();

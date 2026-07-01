@@ -5,6 +5,7 @@ import {
   installSyncularBrowserLifecycleResume,
   type SyncularBrowserDeploymentPreflight,
   type SyncularBrowserHealth,
+  type SyncularBrowserLifecyclePauseReason,
   type SyncularBrowserLifecycleResumeController,
   type SyncularBrowserLifecycleResumeLockState,
   type SyncularBrowserSupportPolicyEvaluation,
@@ -27,11 +28,16 @@ import {
 type LifecycleResumePreview = {
   count: number;
   error: string | null;
+  lastPauseReason: SyncularBrowserLifecyclePauseReason | null;
   lastReason: string | null;
   lockName: string | null;
   lockRequired: boolean;
   lockState: SyncularBrowserLifecycleResumeLockState;
+  pagehidePersisted: boolean | null;
+  pauseCount: number;
   status: 'idle' | 'running' | 'complete' | 'failed';
+  shutdownSignalCount: number;
+  visibilityState: string | null;
 };
 
 type StarterTimelinePreview = {
@@ -81,11 +87,16 @@ type BrowserSupportPolicyPreview = {
 const initialLifecycleResume: LifecycleResumePreview = {
   count: 0,
   error: null,
+  lastPauseReason: null,
   lastReason: null,
   lockName: null,
   lockRequired: false,
   lockState: 'not-requested',
+  pagehidePersisted: null,
+  pauseCount: 0,
   status: 'idle',
+  shutdownSignalCount: 0,
+  visibilityState: null,
 };
 
 const initialStarterTimeline: StarterTimelinePreview = {
@@ -181,6 +192,23 @@ export function App() {
               }));
             }
           },
+          onPause(context) {
+            if (!disposed) {
+              setLifecycleResume((current) => ({
+                ...current,
+                lastPauseReason: context.reason,
+                pagehidePersisted:
+                  context.reason === 'pagehide'
+                    ? context.persisted === true
+                    : current.pagehidePersisted,
+                pauseCount: current.pauseCount + 1,
+                shutdownSignalCount:
+                  current.shutdownSignalCount +
+                  (context.reason === 'beforeunload' ? 1 : 0),
+                visibilityState: context.visibilityState,
+              }));
+            }
+          },
         });
         setStarterTimeline((current) => ({
           ...current,
@@ -240,6 +268,21 @@ function LifecycleResumeMarker({
         lifecycleResume.lockRequired
       )}
       data-syncular-lifecycle-resume-lock-state={lifecycleResume.lockState}
+      data-syncular-lifecycle-pause-count={lifecycleResume.pauseCount}
+      data-syncular-lifecycle-pause-pagehide-persisted={
+        lifecycleResume.pagehidePersisted === null
+          ? ''
+          : String(lifecycleResume.pagehidePersisted)
+      }
+      data-syncular-lifecycle-pause-reason={
+        lifecycleResume.lastPauseReason ?? ''
+      }
+      data-syncular-lifecycle-pause-shutdown-signal-count={
+        lifecycleResume.shutdownSignalCount
+      }
+      data-syncular-lifecycle-pause-visibility-state={
+        lifecycleResume.visibilityState ?? ''
+      }
       data-syncular-lifecycle-resume-reason={lifecycleResume.lastReason ?? ''}
       data-syncular-lifecycle-resume-status={lifecycleResume.status}
       hidden

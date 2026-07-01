@@ -2087,6 +2087,14 @@ online propagation, or reconnect behavior can change.
   `pageshow` event, waits for the lifecycle marker to report a completed
   `pageshow` catch-up, then dispatches `online` and waits for a second
   completed catch-up.
+- 2026-07-01: Extended the browser lifecycle helper with an app-facing pause
+  callback for hidden-tab `visibilitychange`, `pagehide`, and `beforeunload`
+  signals. The starter now records pause count, last pause reason,
+  `pagehide.persisted`, shutdown-signal count, and visibility state in its
+  hidden lifecycle marker; browser-preview failure artifacts and Console/Fleet
+  ingestion preserve the same `lifecyclePause` object. The CDP path now
+  dispatches a persisted `pagehide` before the restored-page `pageshow` proof
+  and dispatches `beforeunload` after the online catch-up proof.
 - 2026-07-01: Added the first starter two-tab runtime proof for Chrome-capable
   runners. The starter can derive a per-tab client id/database file from
   `?syncularClientId=...`; the CDP smoke opens a second tab with a distinct
@@ -2616,28 +2624,34 @@ Most recent browser lifecycle resume helper rerun:
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-lifecycle.test.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/server tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/console-routes.test.ts -t "browser preview failure"`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run generate:openapi`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/core tsgo`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/browser-lifecycle.ts packages/client/src/browser-lifecycle.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/browser-lifecycle.ts packages/client/src/browser-lifecycle.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts packages/server/src/hono/console/schemas.ts packages/server/src/hono/console/routes/shared.ts packages/server/src/hono/__tests__/console-routes.test.ts packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
   - Passed dev server health/page/module/preflight transform checks.
   - Passed Vite production build, preview serving, and built asset checks,
     including the lifecycle-resume lock-state and support-bundle markers in
     the production JavaScript asset.
   - Passed browser failure artifact shape self-check with lifecycle lock name,
-    required flag, and lock state.
+    required flag, lock state, `lifecyclePause.pagehidePersisted`, and
+    `lifecyclePause.shutdownSignalCount`.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
     binary was available. On browser-capable runners the same CDP path now
-    dispatches persisted `pageshow`, waits for a completed restored-page
-    lifecycle marker, dispatches `online`, waits for a second completed
-    lifecycle marker, opens a second tab with a distinct client id/database
-    file, dispatches `online` in both tabs, verifies both tabs report the
-    starter lifecycle Web Lock as acquired, creates a task in the first tab,
-    and waits for the second tab to observe it through sync/realtime. The
-    Chrome/CDP path now also navigates the second tab through a same-client
-    reload/reopen and waits for the task to reappear after app startup, then
-    stops Chrome, starts a fresh Chrome process with the same profile
-    directory and client id, and waits for the task to survive that
-    browser-process boundary.
+    dispatches persisted `pagehide`, verifies pause evidence, dispatches
+    persisted `pageshow`, waits for a completed restored-page lifecycle marker,
+    dispatches `online`, waits for a second completed lifecycle marker,
+    dispatches `beforeunload`, verifies shutdown-signal evidence, opens a
+    second tab with a distinct client id/database file, dispatches `online` in
+    both tabs, verifies both tabs report the starter lifecycle Web Lock as
+    acquired, creates a task in the first tab, and waits for the second tab to
+    observe it through sync/realtime. The Chrome/CDP path now also navigates
+    the second tab through a same-client reload/reopen and waits for the task
+    to reappear after app startup, then stops Chrome, starts a fresh Chrome
+    process with the same profile directory and client id, and waits for the
+    task to survive that browser-process boundary.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `git diff --check`
@@ -3289,22 +3303,25 @@ Most recent mutation-status rerun:
   `installSyncularBrowserLifecycleResume(...)` coalesces visible-tab,
   restored-page, and online signals into the managed
   `resumeFromBackground()` catch-up path, can serialize that catch-up through
-  optional Web Locks, and the starter installs it with a lifecycle-resume lock.
-  The starter browser smoke now asserts the marker exists in production assets
-  and, on Chrome-capable runners, dispatches persisted `pageshow`, waits for a
-  restored-page resume marker, dispatches `online`, and waits for a second
-  completed resume marker. The first Chrome two-tab runtime proof is also in
-  place: distinct generated-app tabs use distinct client ids/database files,
-  both tabs dispatch `online` and must report the starter lifecycle Web Lock
-  as acquired, one tab creates a task, and the second tab must observe it
+  optional Web Locks, reports hidden-tab `visibilitychange`, `pagehide`, and
+  `beforeunload` pause/shutdown signals, and the starter installs it with a
+  lifecycle-resume lock. The starter browser smoke now asserts the marker
+  exists in production assets and, on Chrome-capable runners, dispatches
+  persisted `pagehide`, verifies pause evidence, dispatches persisted
+  `pageshow`, waits for a restored-page resume marker, dispatches `online`,
+  waits for a second completed resume marker, dispatches `beforeunload`, and
+  verifies shutdown-signal evidence. The first Chrome two-tab runtime proof is
+  also in place: distinct generated-app tabs use distinct client ids/database
+  files, both tabs dispatch `online` and must report the starter lifecycle Web
+  Lock as acquired, one tab creates a task, and the second tab must observe it
   through the normal sync/realtime path. The CDP path now also performs a
-  same-client
-  reload/reopen after propagation and waits for the task to reappear after app
-  startup, then restarts Chrome with the same profile directory and waits for
-  the task to survive a fresh browser process. Remaining work is richer
-  two-tab lifecycle execution: true tab suspension/resume, storage shutdown,
-  quota/eviction, and deeper recovery coordination for persistent browser
-  databases beyond lock-serialized foreground resume.
+  same-client reload/reopen after propagation and waits for the task to
+  reappear after app startup, then restarts Chrome with the same profile
+  directory and waits for the task to survive a fresh browser process.
+  Remaining work is richer browser lifecycle execution: real tab suspension,
+  storage shutdown, quota/eviction, storage-lock contention, and deeper
+  recovery coordination for persistent browser databases beyond simulated
+  page lifecycle events and lock-serialized foreground resume.
 - Local recovery controls: first plan/action slice is done for support bundles,
   local health repairs, failed outbox/blob retries, compaction, cache clear,
   and guarded sync-state reset, with a focused Hono/WASM proof for corrupted
