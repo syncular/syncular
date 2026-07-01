@@ -2651,6 +2651,23 @@ describe('console timeline route filters', () => {
     expect(accepted.runtime?.packageName).toBe('@syncular/client');
     expect(accepted.runtime?.storage).toBe('persistent');
     expect(accepted.transportStats?.totalAssetBytes).toBe(14_176);
+    expect(accepted.transportStats?.deploymentPreflightStatus).toBe('ready');
+    expect(accepted.transportStats?.deploymentPreflightSupportTier).toBe(
+      'persistent-offline'
+    );
+    expect(accepted.transportStats?.deploymentPreflightQuotaPressure).toBe(
+      'normal'
+    );
+    expect(accepted.transportStats?.deploymentPreflightAvailableBytes).toBe(
+      107_374_178_304
+    );
+    expect(accepted.transportStats?.deploymentPreflightUsageRatio).toBe(
+      0.00000003814697265625
+    );
+    expect(accepted.transportStats?.serviceWorkerControlled).toBe('true');
+    expect(accepted.transportStats?.serviceWorkerControllerScriptPath).toBe(
+      '/__syncular/sw.js'
+    );
     expect(accepted.bootstrap?.status).toBe('ready');
     expect(accepted.bootstrap?.supportBundleIssueCount).toBe(1);
     expect(accepted.timingSummary?.count).toBe(1);

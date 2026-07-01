@@ -881,6 +881,29 @@ export function buildBrowserPreviewFailureClientDiagnosticIngest(
           artifact.metrics.browserSupportPolicyMarkerInAssets ?? null,
         deploymentPreflightMarkerInAssets:
           artifact.metrics.deploymentPreflightMarkerInAssets,
+        deploymentPreflightStatus: deploymentPreflight?.status ?? null,
+        deploymentPreflightSupportTier:
+          deploymentPreflight?.supportTier ?? null,
+        deploymentPreflightPersistence:
+          deploymentPreflight?.persistence ?? null,
+        deploymentPreflightQuotaPressure:
+          deploymentPreflight?.quotaPressure ?? null,
+        deploymentPreflightAvailableBytes:
+          deploymentPreflight?.availableBytes ?? null,
+        deploymentPreflightQuotaBytes: deploymentPreflight?.quotaBytes ?? null,
+        deploymentPreflightUsageBytes: deploymentPreflight?.usageBytes ?? null,
+        deploymentPreflightUsageRatio: deploymentPreflight?.usageRatio ?? null,
+        deploymentPreflightMinimumAvailableBytes:
+          deploymentPreflight?.minimumAvailableBytes ?? null,
+        deploymentPreflightMinimumQuotaBytes:
+          deploymentPreflight?.minimumQuotaBytes ?? null,
+        serviceWorker: deploymentPreflight?.serviceWorker ?? null,
+        serviceWorkerControlled:
+          deploymentPreflight?.serviceWorkerControlled ?? null,
+        serviceWorkerControllerState:
+          deploymentPreflight?.serviceWorkerControllerState ?? null,
+        serviceWorkerControllerScriptPath:
+          deploymentPreflight?.serviceWorkerControllerScriptPath ?? null,
         lifecycleResumeMarkerInAssets:
           artifact.metrics.lifecycleResumeMarkerInAssets,
         starterTimelineMarkerInAssets:

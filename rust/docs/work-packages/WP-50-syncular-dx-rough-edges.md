@@ -2378,6 +2378,11 @@ online propagation, or reconnect behavior can change.
   resume count/status/reason, Web Lock name/state/timeout, pause count/reason,
   shutdown count, and pause visibility state in the quick timing row as well
   as the detailed diagnostic payload.
+- 2026-07-01: Added deployment-preflight support/storage/PWA facts to the
+  Console browser-preview transport summary. Stored `browser.preview_failure`
+  snapshots now expose support tier, persistence, quota pressure, available
+  bytes, usage ratio, and service-worker controller context in quick list/detail
+  summaries as well as the full diagnostic payload.
 - 2026-07-01: Expanded production operations docs beyond the first upgrade
   runbook. Deployment now includes restore-drill steps, blob storage
   consistency sampling, rate-limit tuning, credential rotation cadence, and
@@ -2849,8 +2854,9 @@ Most recent browser-failure Console ingestion rerun:
     ingestion with client identity, sensitive-field rejection, normalized
     `browser.preview_failure` records, deployment-preflight storage/quota and
     service-worker controller detail preservation, lifecycle Web Lock detail
-    preservation, lifecycle timing-summary preservation, safe metrics/timing
-    preservation, and dropping the artifact page `textExcerpt`.
+    preservation, deployment-preflight transport summary preservation,
+    lifecycle timing-summary preservation, safe metrics/timing preservation,
+    and dropping the artifact page `textExcerpt`.
 
 Most recent starter local-visibility artifact rerun:
 
