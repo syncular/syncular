@@ -3949,6 +3949,11 @@ Most recent browser-health failure-artifact rerun:
   browser `resume` events through DOM-dispatched events, plus Chrome's
   `Page.setWebLifecycleState("frozen" | "active")` automation hook as BFCache
   suspension diagnostic evidence followed by app `visibilitychange` recovery.
+  The Chrome/CDP path now also brings a throwaway browser target to the
+  foreground before the synthetic lifecycle proof and requires the starter tab
+  to report real browser `document.visibilityState="hidden"` plus
+  `visibilitychange` pause evidence, then brings the starter tab back to the
+  foreground and requires the normal visible-tab resume marker.
   The starter Chrome/CDP path now also includes a bounded generated
   write-pressure proof: four generated mutations run concurrently in one app
   tab, every row must pass local visibility, and the observer tab must receive
@@ -3964,15 +3969,16 @@ Most recent browser-health failure-artifact rerun:
   same-client tabs plus the separate observer tab through sync/realtime; if the
   duplicate tab is rejected by browser storage locking, the smoke still requires
   an explicit starter-open error and proves the active tab remains writable.
-  Remaining work is richer browser lifecycle execution: actual backgrounded or
-  discarded tab suspension/restoration outside CDP lifecycle-state forcing,
-  storage shutdown, eviction, lower-level storage contention/failure behavior
-  beyond the same-database duplicate-tab branch, and deeper recovery
-  coordination for persistent browser databases beyond dispatched page
-  lifecycle events, CDP lifecycle forcing, synthetic storage warning action
-  mapping, browser-observed quota-pressure preflight classification and
-  recovery action mapping, hosted quota-exhausted write rejection proof, and
-  lock-serialized foreground resume/recovery actions. Local
+  Remaining work is richer browser lifecycle execution: discarded-tab
+  suspension/restoration outside CDP lifecycle-state forcing, storage shutdown,
+  eviction, lower-level storage contention/failure behavior beyond the
+  same-database duplicate-tab branch, and deeper recovery coordination for
+  persistent browser databases beyond real target foreground/background
+  activation, dispatched page lifecycle events, CDP lifecycle forcing,
+  synthetic storage warning action mapping, browser-observed quota-pressure
+  preflight classification and recovery action mapping, hosted quota-exhausted
+  write rejection proof, and lock-serialized foreground resume/recovery
+  actions. Local
   execution of the new browser branches still needs a Chrome-capable runner;
   this machine has no Chrome/Chromium binary.
 - Local recovery controls: first plan/action slice is done for support bundles,
@@ -4498,6 +4504,20 @@ Most recent browser-health failure-artifact rerun:
   `bunx biome check` for touched TypeScript and docs files,
   `bun run docs:stale-check`, and `bun --cwd apps/docs types:check`. Chrome
   was not installed locally, so the real-browser marker proof remains hosted.
+- 2026-07-02: Added a real browser target activation lifecycle proof to the
+  starter Chrome/CDP branch. Before the existing synthetic lifecycle proof
+  overrides `document.visibilityState`, the smoke opens a throwaway Chrome
+  target, brings it to the foreground, requires the starter tab's real
+  `document.visibilityState` to become `hidden`, waits for the public
+  lifecycle pause marker to record `visibilitychange` plus hidden visibility,
+  then brings the starter tab back to foreground and requires the normal
+  `visibilitychange` resume marker. Local gates with Bun `1.3.9` passed:
+  `bun --cwd packages/create-syncular-app tsgo`,
+  `bunx biome check packages/create-syncular-app/scripts/smoke.ts`,
+  `bun --cwd packages/create-syncular-app smoke`,
+  `bun run docs:stale-check`, and `git diff --check`. Chrome was not
+  installed locally, so hosted `starter-browser-preview` remains the
+  real-browser authority after push.
 
 ## Next Action
 
@@ -4529,11 +4549,13 @@ redacted negative-path proof for auth-required, forbidden/revoked scope,
 invalid blob request/token, and blob access-denial outcomes. Destructive local
 recovery actions now expose data-loss/outbox safety metadata and block
 row-clearing actions while unsynced outbox work exists. The next
-lifecycle-facing slice should deepen browser lifecycle coverage below the
-current generated task proof.
+lifecycle-facing slice adds real target activation background/foreground
+coverage below the current generated task proof; hosted Chrome should confirm
+that branch. After that, lifecycle follow-up should move to discarded-tab,
+shutdown/restart, eviction, and lower-level storage-failure behavior.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
-suspension/shutdown lifecycle coverage, eviction and storage-shutdown browser
+discard/shutdown lifecycle coverage, eviction and storage-shutdown browser
 proof, lower-level storage contention/failure behavior beyond duplicate-tab
 generated writes, and browser/bundler matrix execution, especially Safari,
 Firefox, real private-mode durable-persistence semantics, WebViews,

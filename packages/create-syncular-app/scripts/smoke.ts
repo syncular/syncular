@@ -14,10 +14,11 @@ import { Buffer } from 'node:buffer';
  * 4. When Chrome/Chromium is available, opens the built preview in a real
  *    browser and waits for the starter's Syncular health/schema/support lines.
  *    The browser path also proves pagehide/freeze/beforeunload pause
- *    evidence, restored-page, online, DOM and CDP page-lifecycle resume
- *    signals, two-tab lock-coordinated lifecycle resume, browser-observed
- *    lifecycle Web Lock contention timeout/recovery, browser-observed local
- *    recovery Web Lock contention timeout/recovery, storage
+ *    evidence, real browser target background/foreground visibility,
+ *    restored-page, online, DOM and CDP page-lifecycle resume signals,
+ *    two-tab lock-coordinated lifecycle resume, browser-observed lifecycle Web
+ *    Lock contention timeout/recovery, browser-observed local recovery Web
+ *    Lock contention timeout/recovery, storage
  *    preflight-to-recovery action mapping, browser-observed quota-pressure
  *    preflight classification, quota-exhausted generated writes, two-tab
  *    propagation, same-client page reload/reopen persistence, same-client
@@ -553,6 +554,28 @@ async function runBrowserPreviewSmoke(args: {
         args.failureArtifactPath,
         args.failureMetrics
       );
+      log('real-browser smoke: proving target activation lifecycle');
+      const backgroundTarget = await createChromeTarget(
+        chrome.debugPort,
+        'about:blank'
+      );
+      const backgroundSession = await CdpSession.connect(
+        backgroundTarget.webSocketDebuggerUrl
+      );
+      try {
+        await enableChromeTarget(backgroundSession);
+        await proveStarterBrowserTargetActivationLifecycle({
+          active: session,
+          background: backgroundSession,
+          failureArtifactPath: args.failureArtifactPath,
+          failureMetrics: args.failureMetrics,
+        });
+      } finally {
+        backgroundSession.close();
+        await closeChromeTarget(chrome.debugPort, backgroundTarget.id).catch(
+          () => undefined
+        );
+      }
       log('real-browser smoke: proving first page lifecycle');
       await proveStarterBrowserLifecycleResume(
         session,
@@ -836,7 +859,7 @@ async function startBrowserPreviewChrome(args: {
 async function createChromeTarget(
   debugPort: number,
   url: string
-): Promise<{ webSocketDebuggerUrl: string }> {
+): Promise<{ id: string; webSocketDebuggerUrl: string }> {
   const endpoint = `http://127.0.0.1:${debugPort}/json/new?${encodeURIComponent(
     url
   )}`;
@@ -847,15 +870,35 @@ async function createChromeTarget(
       `Chrome target creation failed with ${response.status} ${response.statusText}`
     );
   }
-  const target = (await response.json()) as { webSocketDebuggerUrl?: string };
-  if (!target.webSocketDebuggerUrl) {
+  const target = (await response.json()) as {
+    id?: string;
+    webSocketDebuggerUrl?: string;
+  };
+  if (!target.id || !target.webSocketDebuggerUrl) {
     throw new Error('Chrome target did not return a WebSocket debugger URL');
   }
   return {
+    id: target.id,
     webSocketDebuggerUrl: normalizeChromeWebSocketUrl(
       target.webSocketDebuggerUrl
     ),
   };
+}
+
+async function closeChromeTarget(
+  debugPort: number,
+  targetId: string
+): Promise<void> {
+  const endpoint = `http://127.0.0.1:${debugPort}/json/close/${encodeURIComponent(
+    targetId
+  )}`;
+  let response = await fetch(endpoint, { method: 'PUT' });
+  if (!response.ok) response = await fetch(endpoint);
+  if (!response.ok) {
+    throw new Error(
+      `Chrome target close failed with ${response.status} ${response.statusText}`
+    );
+  }
 }
 
 function normalizeChromeWebSocketUrl(url: string): string {
@@ -2033,11 +2076,132 @@ async function proveStarterBrowserLifecycleResume(
   });
 }
 
+async function proveStarterBrowserTargetActivationLifecycle(args: {
+  active: CdpSession;
+  background: CdpSession;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+}): Promise<void> {
+  const initialProbe = await readStarterBrowserProbe(args.active);
+  const initialVisibility = await readChromeDocumentVisibilityState(
+    args.active
+  );
+
+  await bringChromeTargetToFront(args.active);
+  await waitForStarterDocumentVisibility({
+    expectedState: 'visible',
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    session: args.active,
+    timeoutReason: 'lifecycle-target-initial-visible-timeout',
+  });
+  if (initialVisibility === 'hidden') {
+    await waitForStarterLifecycleResume({
+      expectedCount: initialProbe.lifecycleResume.count + 1,
+      expectedReason: 'visibilitychange',
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: args.active,
+      timeoutReason: 'lifecycle-target-initial-foreground-timeout',
+    });
+  }
+
+  const beforeBackground = await readStarterBrowserProbe(args.active);
+  await bringChromeTargetToFront(args.background);
+  await waitForStarterDocumentVisibility({
+    expectedState: 'hidden',
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    session: args.active,
+    timeoutReason: 'lifecycle-target-background-visibility-timeout',
+  });
+  await waitForStarterLifecyclePause({
+    expectedCount: beforeBackground.lifecyclePause.count + 1,
+    expectedReason: 'visibilitychange',
+    expectedVisibilityState: 'hidden',
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    session: args.active,
+    timeoutReason: 'lifecycle-target-background-pause-timeout',
+  });
+
+  const beforeForeground = await readStarterBrowserProbe(args.active);
+  await bringChromeTargetToFront(args.active);
+  await waitForStarterDocumentVisibility({
+    expectedState: 'visible',
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    session: args.active,
+    timeoutReason: 'lifecycle-target-foreground-visibility-timeout',
+  });
+  await waitForStarterLifecycleResume({
+    expectedCount: beforeForeground.lifecycleResume.count + 1,
+    expectedReason: 'visibilitychange',
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    session: args.active,
+    timeoutReason: 'lifecycle-target-foreground-resume-timeout',
+  });
+}
+
 async function setStarterChromeWebLifecycleState(
   session: CdpSession,
   state: 'active' | 'frozen'
 ): Promise<void> {
   await session.send('Page.setWebLifecycleState', { state });
+}
+
+async function bringChromeTargetToFront(session: CdpSession): Promise<void> {
+  await session.send('Page.bringToFront');
+}
+
+async function readChromeDocumentVisibilityState(
+  session: CdpSession
+): Promise<string | null> {
+  return session.evaluate<string | null>(`(() => {
+    return typeof document.visibilityState === 'string'
+      ? document.visibilityState
+      : null;
+  })()`);
+}
+
+async function waitForStarterDocumentVisibility(args: {
+  expectedState: 'hidden' | 'visible';
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+  timeoutReason: string;
+}): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    try {
+      const visibilityState = await readChromeDocumentVisibilityState(
+        args.session
+      );
+      if (visibilityState === args.expectedState) return;
+    } catch {
+      // Keep polling through transient execution-context changes while Chrome
+      // moves the page between foreground and background targets.
+    }
+    try {
+      lastProbe = await readStarterBrowserProbe(args.session);
+    } catch {
+      // A transient probe failure should not hide a later successful
+      // visibility transition.
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    args.timeoutReason,
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview document.visibilityState=${args.expectedState}. Failure artifact: ${args.failureArtifactPath}`
+  );
 }
 
 async function waitForStarterChromeLifecycleSuspension(args: {

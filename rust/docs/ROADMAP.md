@@ -317,9 +317,13 @@ read-only review:
     The starter installs it after opening Syncular and emits hidden lifecycle
     markers for resume lock state plus pause count, `pagehide.persisted`, and
     shutdown-signal count. Local asset smokes prove the marker is in the
-    production bundle, and the Chrome/CDP path dispatches hidden and visible
-    `visibilitychange` events, waits for hidden pause plus visible resume
-    marker evidence, then dispatches a persisted `pagehide`, a persisted
+    production bundle, and the Chrome/CDP path first brings a throwaway browser
+    target to the foreground to prove the starter tab receives real browser
+    `document.visibilityState="hidden"` plus pause evidence, then brings the
+    starter tab back to foreground and proves the real visible-tab resume. It
+    also dispatches hidden and visible `visibilitychange` events, waits for
+    hidden pause plus visible resume marker evidence, then dispatches a
+    persisted `pagehide`, a persisted
     `pageshow` restored-page signal, `online`, DOM `freeze`/`resume`, forces
     Chrome's CDP page lifecycle through `frozen` and `active` to observe the
     Chrome BFCache suspension diagnostic plus app `visibilitychange` recovery,
