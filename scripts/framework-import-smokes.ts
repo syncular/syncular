@@ -6,6 +6,15 @@ import { existsSync } from 'node:fs';
 import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { type AddressInfo, createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
+import { gunzipSync } from 'node:zlib';
+import {
+  decodeBinarySnapshotTable,
+  SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+} from '../packages/core/src/snapshot-chunks';
+import {
+  decodeBinarySyncPack,
+  isBinarySyncPackContentType,
+} from '../packages/core/src/sync-packs';
 
 const repoRoot = resolve(join(import.meta.dirname, '..'));
 const workDir = resolve(
@@ -62,6 +71,7 @@ async function runLocalWorkerRuntimeProbe(args: {
   wranglerBin: string;
   route: string;
   expectedText: string;
+  syncRouteBase?: string;
   webSocketExpectedText?: string;
   webSocketMessage?: string;
   webSocketRoute?: string;
@@ -118,6 +128,14 @@ async function runLocalWorkerRuntimeProbe(args: {
       await runBlobRouteFlow({
         origin: `http://127.0.0.1:${port}`,
         routeBase: args.blobRouteBase,
+        output,
+        getExit: () => exited,
+      });
+    }
+    if (args.syncRouteBase) {
+      await runSyncRouteFlow({
+        origin: `http://127.0.0.1:${port}`,
+        routeBase: args.syncRouteBase,
         output,
         getExit: () => exited,
       });
@@ -698,6 +716,180 @@ function webSocketDataToText(data: unknown): string {
   return String(data);
 }
 
+async function runSyncRouteFlow(args: {
+  origin: string;
+  routeBase: string;
+  output: string[];
+  getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
+}): Promise<void> {
+  const label = 'Cloudflare D1 sync route smoke';
+  const actorId = 'syncular-framework-actor';
+  const rowId = `syncular-framework-sync-task-${Date.now()}`;
+  const title = 'D1 sync route ready';
+  const syncUrl = `${args.origin}${args.routeBase}`;
+
+  const pushResponse = await fetchWorkerResponse({
+    label,
+    url: syncUrl,
+    init: {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-syncular-smoke-actor': actorId,
+      },
+      body: JSON.stringify({
+        clientId: 'syncular-framework-writer',
+        push: {
+          commits: [
+            {
+              clientCommitId: `commit-${rowId}`,
+              schemaVersion: 1,
+              operations: [
+                {
+                  table: 'syncular_framework_tasks',
+                  row_id: rowId,
+                  op: 'upsert',
+                  payload: {
+                    id: rowId,
+                    user_id: actorId,
+                    title,
+                    server_version: 0,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectOkResponse(label, 'push', pushResponse, args.output);
+  const pushBody = (await readSyncRouteResponse(
+    label,
+    'push',
+    pushResponse
+  )) as {
+    ok?: boolean;
+    push?: {
+      commits?: Array<{
+        results?: Array<{ status?: string }>;
+        status?: string;
+      }>;
+    };
+  };
+  const pushedCommit = pushBody.push?.commits?.[0];
+  if (
+    pushBody.ok !== true ||
+    pushedCommit?.status !== 'applied' ||
+    pushedCommit.results?.[0]?.status !== 'applied'
+  ) {
+    throw new Error(
+      `${label} push did not apply: ${JSON.stringify(pushBody).slice(0, 500)}`
+    );
+  }
+
+  const pullResponse = await fetchWorkerResponse({
+    label,
+    url: syncUrl,
+    init: {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-syncular-smoke-actor': actorId,
+      },
+      body: JSON.stringify({
+        clientId: 'syncular-framework-reader',
+        pull: {
+          schemaVersion: 1,
+          limitCommits: 10,
+          limitSnapshotRows: 10,
+          subscriptions: [
+            {
+              id: 'syncular-framework-tasks',
+              table: 'syncular_framework_tasks',
+              scopes: { user_id: actorId },
+              cursor: -1,
+              crdtStateVectors: [],
+            },
+          ],
+        },
+      }),
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectOkResponse(label, 'pull', pullResponse, args.output);
+  const pullBody = (await readSyncRouteResponse(
+    label,
+    'pull',
+    pullResponse
+  )) as {
+    ok?: boolean;
+    pull?: {
+      subscriptions?: Array<{
+        snapshots?: Array<{
+          chunks?: Array<{
+            encoding?: string;
+            id?: string;
+          }>;
+          rows?: unknown[];
+        }>;
+        status?: string;
+      }>;
+    };
+  };
+  const subscription = pullBody.pull?.subscriptions?.[0];
+  let snapshotRows = subscription?.snapshots?.flatMap(
+    (snapshot) => snapshot.rows ?? []
+  );
+  const firstChunk = subscription?.snapshots?.[0]?.chunks?.[0];
+  if (snapshotRows?.length === 0 && firstChunk?.id) {
+    if (firstChunk.encoding !== SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1) {
+      throw new Error(
+        `${label} returned unexpected snapshot chunk encoding: ${String(
+          firstChunk.encoding
+        )}`
+      );
+    }
+    const chunkResponse = await fetchWorkerResponse({
+      label,
+      url: `${syncUrl}/snapshot-chunks/${encodeURIComponent(firstChunk.id)}`,
+      init: {
+        headers: {
+          'x-syncular-smoke-actor': actorId,
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: actorId }),
+        },
+      },
+      output: args.output,
+      getExit: args.getExit,
+    });
+    await expectOkResponse(label, 'snapshot chunk', chunkResponse, args.output);
+    snapshotRows = decodeBinarySnapshotTable(
+      gunzipSync(new Uint8Array(await chunkResponse.arrayBuffer()))
+    ).rows;
+  }
+  const pulledRow = snapshotRows?.find(
+    (row): row is Record<string, unknown> =>
+      row !== null &&
+      typeof row === 'object' &&
+      !Array.isArray(row) &&
+      row.id === rowId
+  );
+  if (
+    pullBody.ok !== true ||
+    subscription?.status !== 'active' ||
+    pulledRow?.title !== title
+  ) {
+    throw new Error(
+      `${label} pull did not observe pushed row: ${JSON.stringify(
+        pullBody
+      ).slice(0, 500)}`
+    );
+  }
+}
+
 async function runBlobRouteFlow(args: {
   origin: string;
   routeBase: string;
@@ -732,7 +924,11 @@ async function runBlobRouteFlow(args: {
     getExit: args.getExit,
   });
   await expectOkResponse(label, 'upload init', initResponse, args.output);
-  const initBody = (await initResponse.json()) as {
+  const initBody = (await readJsonResponse(
+    label,
+    'upload init',
+    initResponse
+  )) as {
     exists?: boolean;
     headers?: Record<string, string>;
     uploadMethod?: string;
@@ -803,7 +999,11 @@ async function runBlobRouteFlow(args: {
     downloadUrlResponse,
     args.output
   );
-  const downloadUrlBody = (await downloadUrlResponse.json()) as {
+  const downloadUrlBody = (await readJsonResponse(
+    label,
+    'create download URL',
+    downloadUrlResponse
+  )) as {
     url?: string;
   };
   if (typeof downloadUrlBody.url !== 'string') {
@@ -877,6 +1077,37 @@ async function expectOkResponse(
       response.statusText
     }: ${(await response.text()).slice(0, 500)}\n${output.join('')}`
   );
+}
+
+async function readJsonResponse(
+  label: string,
+  step: string,
+  response: Response
+): Promise<unknown> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(
+      `${label} ${step} returned non-JSON ${response.status} ${
+        response.statusText
+      } (${response.headers.get('content-type') ?? 'no content-type'}): ${text.slice(
+        0,
+        500
+      )}; ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+async function readSyncRouteResponse(
+  label: string,
+  step: string,
+  response: Response
+): Promise<unknown> {
+  if (isBinarySyncPackContentType(response.headers.get('content-type'))) {
+    return decodeBinarySyncPack(new Uint8Array(await response.arrayBuffer()));
+  }
+  return readJsonResponse(label, step, response);
 }
 
 async function fetchTextWithTimeout(url: string, timeoutMs: number) {
@@ -1155,11 +1386,12 @@ async function writeCloudflareWorkerApp(appDir: string): Promise<void> {
     `import {
   createBlobManager,
   createDatabase,
+  createServerHandler,
   ensureBlobStorageSchemaSqlite,
   ensureSyncSchema,
 } from '@syncular/server';
 import { createD1Dialect } from '@syncular/server/d1';
-import { createBlobRoutes } from '@syncular/server/hono';
+import { createBlobRoutes, createSyncServer } from '@syncular/server/hono';
 import { createSqliteServerDialect } from '@syncular/server/sqlite';
 import {
   createHmacTokenSigner,
@@ -1177,7 +1409,9 @@ type Env = {
 export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
   async setup(app, env, upgradeWebSocket) {
     const d1Dialect = createD1Dialect(env.DB);
-    const syncDialect = createSqliteServerDialect();
+    const syncDialect = createSqliteServerDialect({
+      supportsTransactions: false,
+    });
     const db = createDatabase({
       dialect: d1Dialect,
       family: 'sqlite',
@@ -1194,7 +1428,39 @@ export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
       db,
       adapter: blobStorage,
     });
+    await ensureSyncSchema(db, syncDialect);
     await ensureBlobStorageSchemaSqlite(db);
+    await db.schema
+      .createTable('syncular_framework_tasks')
+      .ifNotExists()
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('user_id', 'text', (col) => col.notNull())
+      .addColumn('title', 'text', (col) => col.notNull())
+      .addColumn('server_version', 'integer', (col) =>
+        col.notNull().defaultTo(0)
+      )
+      .execute();
+    const { syncRoutes } = createSyncServer({
+      db,
+      dialect: syncDialect,
+      sync: {
+        handlers: [
+          createServerHandler({
+            table: 'syncular_framework_tasks',
+            scopes: ['user:{user_id}'],
+            resolveScopes: async (ctx) => ({
+              user_id: [ctx.actorId],
+            }),
+          }),
+        ],
+        authenticate: async (request) => {
+          const actorId = request.headers.get('x-syncular-smoke-actor');
+          return actorId ? { actorId } : null;
+        },
+      },
+      upgradeWebSocket,
+    });
+    app.route('/syncular-framework-import-smoke/full-sync', syncRoutes);
     app.route(
       '/syncular-framework-import-smoke/sync',
       createBlobRoutes({
@@ -1234,19 +1500,12 @@ export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
       if (d1Row?.syncular_ready !== 1) {
         throw new Error('D1 runtime query did not return the expected row');
       }
-      await ensureSyncSchema(db, syncDialect);
       const commitCountRow = await c.env.DB.prepare(
         'SELECT COUNT(*) AS sync_commit_count FROM sync_commits'
       ).first<{ sync_commit_count: number }>();
       if (typeof commitCountRow?.sync_commit_count !== 'number') {
         throw new Error('Syncular D1 core schema did not create sync_commits');
       }
-      await db.schema
-        .createTable('syncular_framework_tasks')
-        .ifNotExists()
-        .addColumn('id', 'text', (col) => col.primaryKey())
-        .addColumn('title', 'text', (col) => col.notNull())
-        .execute();
       const taskId = 'syncular-framework-smoke-task';
       await db
         .deleteFrom('syncular_framework_tasks')
@@ -1254,7 +1513,12 @@ export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
         .execute();
       await db
         .insertInto('syncular_framework_tasks')
-        .values({ id: taskId, title: 'D1 schema operation ready' })
+        .values({
+          id: taskId,
+          user_id: 'syncular-framework-actor',
+          title: 'D1 schema operation ready',
+          server_version: 0,
+        })
         .execute();
       const taskRow = await db
         .selectFrom('syncular_framework_tasks')
@@ -1471,7 +1735,7 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
       bundle.includes('syncular-cloudflare-websocket-echo')
     ) {
       console.log(
-        '[framework-import-smokes] Cloudflare DO/D1 schema/R2 blob routes/WebSocket import smoke passed'
+        '[framework-import-smokes] Cloudflare DO/D1 schema+sync/R2 blob routes/WebSocket import smoke passed'
       );
       await runLocalWorkerRuntimeProbe({
         appDir,
@@ -1479,13 +1743,14 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
         route: '/syncular-framework-import-smoke',
         expectedText: 'syncular-cloudflare-runtime-schema-io-ready',
         blobRouteBase: '/syncular-framework-import-smoke/sync',
+        syncRouteBase: '/syncular-framework-import-smoke/full-sync',
         webSocketRoute: '/syncular-framework-import-smoke/ws',
         webSocketMessage: 'syncular-cloudflare-websocket-ping',
         webSocketExpectedText:
           'syncular-cloudflare-websocket-echo:syncular-cloudflare-websocket-ping',
       });
       console.log(
-        '[framework-import-smokes] Cloudflare DO/D1 schema/R2 blob routes/WebSocket runtime IO smoke passed'
+        '[framework-import-smokes] Cloudflare DO/D1 schema+sync/R2 blob routes/WebSocket runtime IO smoke passed'
       );
       return;
     }

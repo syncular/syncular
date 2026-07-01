@@ -153,9 +153,11 @@ read-only review:
     verify a real request reaches the `createSyncWorkerWithDO(...)` route
     through those bindings, runs `ensureSyncSchema(...)` against D1, verifies
     the `sync_commits` table, performs D1 app-table insert/select/delete,
-    drives an R2-backed Syncular blob route upload/complete/download flow, and
-    echoes a message through a Durable Object WebSocket route. WASM glue dynamic imports
-    include webpack ignore metadata so the Next build stays warning-clean.
+    pushes through the Syncular HTTP route, pulls the row back through a binary
+    sync-pack and decoded snapshot chunk, drives an R2-backed Syncular blob
+    route upload/complete/download flow, and echoes a message through a
+    Durable Object WebSocket route. WASM glue dynamic imports include webpack
+    ignore metadata so the Next build stays warning-clean.
     Release rehearsal runs the framework import smoke by default before
     publish dry-runs, with an explicit skip flag for local iteration and an
     opt-in `--require-framework-vite-browser-runtime` flag for Chrome-capable

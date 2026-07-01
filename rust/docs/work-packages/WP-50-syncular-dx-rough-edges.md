@@ -640,6 +640,31 @@ browsers, SSR/bundlers, offline queues, and production operations.
   print the same ordered facts a human wants: command id, outbox seq, push
   request id, commit seq, realtime event cursor, pull reason, apply result, and
   local query visibility point.
+- Stability policy for codes and helper contracts: once app tests are expected
+  to assert error codes, event codes, readiness issue codes, and helper return
+  shapes, those codes need a versioning/deprecation promise. Adding new detail
+  is fine; renaming or reclassifying a public code should be treated like an
+  API break.
+- Generated-client ownership boundaries: generated mutations, generated
+  read-model helpers, server-owned columns, local-only tables, raw SQL access,
+  and advanced runtime escape hatches need crisp docs about who owns each
+  write/read path. The starter should not make accidental low-level patterns
+  look like the blessed app API.
+- Failure-driven docs examples: each major guide should include at least one
+  realistic failure or recovery state, not only a happy path. Users should see
+  what denied scope, stale generated output, missing browser persistence,
+  blob access failure, and realtime recovery look like before they hit them in
+  production.
+- Reproducible fixture topology: testkit and docs should agree on one small
+  domain model for scoped actors, membership, app rows, blobs, and local read
+  models. Keeping examples on one topology makes failures comparable across
+  starter smokes, browser tests, server route tests, support bundles, and the
+  console.
+- Documentation information architecture: the first-run docs should be a
+  product path, not a reference maze. Low-level pages can exist, but every
+  public setup topic should link back to the golden loop: scaffold, generate,
+  run, mutate, observe local visibility, go offline, recover, deploy checks,
+  and test the same behavior.
 
 ### Source Feedback Coverage Audit
 
@@ -956,6 +981,11 @@ online propagation, or reconnect behavior can change.
   outbox/conflict UX, local database maintenance, redacted support bundles,
   telemetry/SLO mapping, security authority modeling, upgrade/rollback states,
   API audience hygiene, and deterministic timeline artifacts.
+- A final feedback-retention pass kept the remaining cross-cutting DX
+  obligations that are easy to lose during implementation: public code/helper
+  stability policy, generated-client ownership boundaries, failure-driven docs
+  examples, reproducible fixture topology, and first-run docs that route users
+  through the golden app loop before reference pages.
 - The first browser deployment preflight slice adds
   `getSyncularBrowserDeploymentPreflight(...)` to `@syncular/client`, checking
   Worker/WebAssembly support, secure-context/cross-origin-isolation flags,
@@ -995,10 +1025,11 @@ online propagation, or reconnect behavior can change.
   credentials, and proves a local request reaches the DO route with those
   bindings available. The route runs `ensureSyncSchema(...)` on D1, verifies
   the `sync_commits` table exists, performs app-table insert/select/delete
-  through Kysely over D1, drives an R2-backed Syncular blob route
-  upload/complete/download flow, and uses a DO-backed WebSocket route to echo a
-  client message through the same `SyncDurableObject` upgrade bridge used by
-  realtime routes.
+  through Kysely over D1, pushes through the Syncular HTTP route, pulls the row
+  back through a binary sync-pack plus decoded snapshot chunk, drives an
+  R2-backed Syncular blob route upload/complete/download flow, and uses a
+  DO-backed WebSocket route to echo a client message through the same
+  `SyncDurableObject` upgrade bridge used by realtime routes.
 - The post-publish JavaScript install smoke now runs a release-time optional
   subpath import matrix by default. It installs `@syncular/client`,
   `@syncular/server`, and the Bun-friendly optional peers in a fresh npm
@@ -1508,6 +1539,11 @@ online propagation, or reconnect behavior can change.
   support tiers, first-run asset/version compatibility, recovery ownership,
   support-bundle provenance, browser reopen/restart persistence evidence,
   version-skew policy, and latency/durability evidence budgets.
+- 2026-07-01: Added a final retained-rough-edge pass for public code/helper
+  stability policy, generated-client ownership boundaries, failure-driven docs
+  examples, reproducible test fixture topology, and first-run docs that keep
+  users on the golden scaffold/generate/run/mutate/recover/deploy loop before
+  sending them into reference material.
 - 2026-07-01: Added `preflight.support` to
   `getSyncularBrowserDeploymentPreflight(...)`, classifying browser/deployment
   support as `persistent-offline`, `ephemeral-development`, `unsupported`, or
@@ -1672,6 +1708,14 @@ online propagation, or reconnect behavior can change.
   creates a tiny app table before insert/select/delete. This narrows the
   remaining D1 risk to full Syncular push/pull/realtime route flows rather
   than basic schema or app-table viability.
+- 2026-07-01: Extended the Cloudflare D1 proof from schema/app-table SQL to a
+  real Syncular HTTP push/pull route flow. The generated Worker now mounts
+  `createSyncServer(...)` with a scoped task handler over D1, the smoke pushes
+  an upsert through the public combined sync route, decodes the binary
+  sync-pack response, then pulls with a reader client, fetches the advertised
+  snapshot chunk, gunzips/decodes the binary table payload, and verifies the
+  pushed row. This narrows the remaining D1 risk to realtime-over-DO and
+  broader app/negative route cases rather than basic push/pull viability.
 - 2026-07-01: Extended the Cloudflare R2 proof from raw object IO to the
   Syncular Hono blob route happy path. The generated Worker now mounts
   `createBlobRoutes(...)` with an R2 adapter, blob manager, HMAC token signer,
@@ -2031,7 +2075,8 @@ Most recent framework-import-smoke rerun:
   - Passed the local `wrangler dev --local` runtime fetch/WebSocket proof for
     the generated `createSyncWorkerWithDO(...)` route through the `SYNC_DO`,
     D1, and R2 bindings, including `ensureSyncSchema(...)`, `sync_commits`
-    table query, D1 app-table insert/select/delete, R2-backed blob route
+    table query, D1 app-table insert/select/delete, Syncular HTTP push/pull
+    with binary sync-pack and decoded snapshot chunk, R2-backed blob route
     upload/complete/download, and Durable Object WebSocket echo.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/framework-import-smokes.ts --require-vite-browser-runtime`
   - Expected nonzero status locally because Chrome/Chromium is unavailable;
@@ -2348,15 +2393,15 @@ Most recent mutation-status rerun:
   `wrangler dev`, proving a real request reaches the
   `createSyncWorkerWithDO(...)` route through those bindings, runs
   `ensureSyncSchema(...)` against D1, verifies the `sync_commits` table,
-  performs D1 app-table insert/select/delete, drives an R2-backed blob route
-  upload/complete/download flow, and echoes through a DO-backed WebSocket
-  route. Release rehearsal now runs those framework proofs by default before
-  publish dry-runs and can require the Vite browser execution path on
-  Chrome-capable runners. Remaining matrix work is deeper browser/framework
-  execution beyond these proofs, especially full Syncular push/pull/realtime
-  route flows over D1, scoped/negative R2 blob route cases, full Syncular
-  realtime over Durable Object WebSocket, Safari, Firefox, private mode,
-  WebViews, and PWAs.
+  performs D1 app-table insert/select/delete, pushes and pulls through the
+  Syncular HTTP route with binary sync-pack plus decoded snapshot chunk,
+  drives an R2-backed blob route upload/complete/download flow, and echoes
+  through a DO-backed WebSocket route. Release rehearsal now runs those
+  framework proofs by default before publish dry-runs and can require the Vite
+  browser execution path on Chrome-capable runners. Remaining matrix work is
+  deeper browser/framework execution beyond these proofs, especially full
+  Syncular realtime over Durable Object WebSocket, scoped/negative D1 and R2
+  route cases, Safari, Firefox, private mode, WebViews, and PWAs.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.
