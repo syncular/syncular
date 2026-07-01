@@ -3817,9 +3817,16 @@ Most recent mutation-status rerun:
   `28522684015` then proved the app reaches `open ready` quickly and only
   wedges before the post-mount `subscriptions` phase, so the starter now gates
   the hook-heavy `TaskPane` behind a lightweight local-DB-ready shell until the
-  parent app effect has installed subscriptions and started sync. The next
-  hosted artifact should distinguish task-pane live query/support diagnostics
-  from lower-level local open, subscription install, background lifecycle, and
+  parent app effect has installed subscriptions and started sync. Hosted run
+  `28523189917` then reached `open subscriptions`, `open sync`,
+  `sync.syncOnce.completed`, `realtime.startRealtime.completed`, and
+  `sync.realtime.connect` before the next CDP readiness probe timed out. The
+  starter task list now avoids the live-query registration path during browser
+  preview startup: it runs a plain query and refetches on `rowsChanged`, keeping
+  the starter's browser proof on the core generated client/sync path while a
+  later dedicated test can isolate live-query behavior. The next hosted
+  artifact should distinguish task-pane support diagnostics from lower-level
+  local open, subscription install, background lifecycle, realtime, and
   page-thread starvation failures without raw browser inspection. Remaining
   depth is
   observing the next hosted browser/Cloudflare artifacts and deciding whether

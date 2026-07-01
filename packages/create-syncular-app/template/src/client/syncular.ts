@@ -38,7 +38,8 @@ export type StarterOpenPhase =
   | 'database'
   | 'ready'
   | 'subscriptions'
-  | 'sync';
+  | 'sync'
+  | 'taskpane';
 
 export interface OpenAppClientOptions {
   onDiagnostic?: (event: SyncularDiagnosticEvent) => void;

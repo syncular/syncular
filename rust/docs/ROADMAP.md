@@ -238,9 +238,11 @@ read-only review:
     commit the ready render; the starter now resolves after local
     database/schema setup, renders the local-first UI, then registers default
     subscriptions and starts sync in a post-mount frame-yielded background
-    effect, and only then mounts the hook-heavy task pane, while exposing a
-    hidden `starterOpen` phase/diagnostic marker that the Chrome/CDP artifact
-    records.
+    effect, and only then mounts the task pane. The starter task list uses a
+    plain query plus `rowsChanged` refetch instead of the live-query path so
+    browser preview startup does not depend on live-query registration, while a
+    hidden `starterOpen` phase/diagnostic marker records the phase trail for
+    Chrome/CDP artifacts.
     The Console client detail runtime panel now renders those browser-preview
     asset, support-policy, deployment-preflight, service-worker, quota, and
     lifecycle/Web Lock summaries from the stored quick fields, so operators

@@ -372,6 +372,7 @@ export function App() {
           reportStarterOpenPhase('sync');
           await client.start();
           if (disposed) return;
+          reportStarterOpenPhase('taskpane');
           setTaskPaneMounted(true);
         })().catch((error) => {
           if (!disposed) reportStarterOpenError(error);
@@ -507,13 +508,17 @@ function TaskPane({
   updateStarterTimeline: Dispatch<SetStateAction<StarterTimelinePreview>>;
 }) {
   // Live query: re-renders whenever synced rows change, locally or remotely.
-  const { data: tasks, error: queryError } = useSyncQuery(
+  const {
+    data: tasks,
+    error: queryError,
+    refetch: refetchTasks,
+  } = useSyncQuery(
     ({ selectFrom }) =>
       selectFrom('tasks')
         .selectAll()
         .orderBy('completed', 'asc')
         .orderBy('created_at', 'desc'),
-    { tables: ['tasks'] }
+    { refreshOnDataChange: false, tables: ['tasks'] }
   );
   const mutations = useMutations();
   const outbox = useOutboxStats();
@@ -528,6 +533,13 @@ function TaskPane({
   const [supportBundle, setSupportBundle] =
     useState<SupportBundlePreview | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    console.info('[syncular-starter]', 'taskpane', 'mounted');
+    return client.on('rowsChanged', (event) => {
+      if (event.changedTables.includes('tasks')) void refetchTasks();
+    });
+  }, [client, refetchTasks]);
 
   useEffect(() => {
     const bootstrapReady = status.lifecycle.bootstrap?.complete === true;
