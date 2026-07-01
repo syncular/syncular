@@ -145,11 +145,15 @@ read-only review:
     deploy previews can check Worker/WebAssembly support, secure-context and
     optional cross-origin-isolation flags, OPFS/IndexedDB durability,
     persistent-storage status, quota budgets, and served WASM asset
-    status/content types before opening a database; the starter now runs this
-    preflight before `createSyncularAppDatabase(...)`, and its scaffold smoke
-    checks the transformed preflight client module. Next slice: wire the
-    preflight into a real browser built-preview smoke or continue with multi-tab
-    lifecycle/recovery controls. The post-publish JavaScript install smoke now
+    status/content types before opening a database. It now also reports
+    BroadcastChannel, Web Locks, page visibility, `pagehide`, `beforeunload`,
+    resume/shutdown signal availability, and multi-tab mode, with opt-in
+    not-ready checks for apps that require tab coordination or page lifecycle
+    resume signals; the starter now runs this preflight before
+    `createSyncularAppDatabase(...)`, and its scaffold smoke checks the
+    transformed preflight client module. Next slice: wire the preflight into a
+    real browser built-preview smoke or continue with real multi-tab
+    lifecycle/recovery execution. The post-publish JavaScript install smoke now
     also creates a fresh optional import matrix project that installs
     `@syncular/client`, `@syncular/server`, and the Bun-friendly optional peers,
     then imports the folded client/server subpaths for React, Sentry, Tauri,

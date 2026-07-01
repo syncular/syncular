@@ -25,10 +25,12 @@ export type SyncularBrowserDeploymentPreflightIssueSeverity =
   | 'info';
 
 export type SyncularBrowserDeploymentPreflightIssueCode =
+  | 'browser.broadcast_channel_unavailable'
   | 'browser.cross_origin_isolation_missing'
   | 'browser.indexeddb_unavailable'
   | 'browser.insecure_context'
   | 'browser.opfs_unavailable'
+  | 'browser.page_lifecycle_unavailable'
   | 'browser.runtime_asset_bad_content_type'
   | 'browser.runtime_asset_bad_status'
   | 'browser.runtime_asset_file_url_unchecked'
@@ -37,22 +39,25 @@ export type SyncularBrowserDeploymentPreflightIssueCode =
   | 'browser.storage_persistence_unavailable'
   | 'browser.storage_quota_low'
   | 'browser.webassembly_unavailable'
+  | 'browser.web_locks_unavailable'
   | 'browser.worker_unavailable';
 
 export type SyncularBrowserDeploymentPreflightRecommendedAction =
+  | 'coordinateBrowserTabs'
   | 'configureCrossOriginIsolation'
   | 'configureHttpsOrLocalhost'
   | 'configureStaticAssetServing'
   | 'freeStorageQuota'
   | 'requestPersistentStorage'
   | 'selectSupportedStorage'
-  | 'serveRuntimeAssets';
+  | 'serveRuntimeAssets'
+  | 'wirePageLifecycleResume';
 
 export interface SyncularBrowserDeploymentPreflightIssue {
   code: SyncularBrowserDeploymentPreflightIssueCode;
   severity: SyncularBrowserDeploymentPreflightIssueSeverity;
   message: string;
-  target: 'browser' | 'storage' | 'runtime-assets';
+  target: 'browser' | 'lifecycle' | 'storage' | 'runtime-assets';
   recommendedAction?: SyncularBrowserDeploymentPreflightRecommendedAction;
   details?: Record<string, unknown>;
 }
@@ -82,6 +87,22 @@ export interface SyncularBrowserDeploymentPreflightBrowser {
   indexedDB: boolean | null;
 }
 
+export type SyncularBrowserDeploymentPreflightMultiTabMode =
+  | 'coordinated'
+  | 'best-effort'
+  | 'single-open-database-tab';
+
+export interface SyncularBrowserDeploymentPreflightLifecycle {
+  broadcastChannel: boolean | null;
+  webLocks: boolean | null;
+  pageVisibility: boolean | null;
+  pageHideEvent: boolean | null;
+  beforeUnloadEvent: boolean | null;
+  resumeSignalAvailable: boolean;
+  shutdownSignalAvailable: boolean;
+  multiTabMode: SyncularBrowserDeploymentPreflightMultiTabMode;
+}
+
 export interface SyncularBrowserDeploymentPreflightStorage {
   requested: SyncularStorage;
   fallbackAllowed: boolean;
@@ -100,6 +121,7 @@ export interface SyncularBrowserDeploymentPreflight {
   ready: boolean;
   requiresAction: boolean;
   browser: SyncularBrowserDeploymentPreflightBrowser;
+  lifecycle: SyncularBrowserDeploymentPreflightLifecycle;
   storage: SyncularBrowserDeploymentPreflightStorage;
   runtimeAssets: SyncularBrowserDeploymentPreflightRuntimeAssets;
   issues: SyncularBrowserDeploymentPreflightIssue[];
@@ -116,6 +138,8 @@ export interface SyncularBrowserDeploymentPreflightOptions {
    */
   storage?: SyncularStorage;
   requireCrossOriginIsolation?: boolean;
+  requireMultiTabCoordination?: boolean;
+  requirePageLifecycleResume?: boolean;
   checkRuntimeAssets?: boolean;
   minimumQuotaBytes?: number;
   fetch?: SyncularBrowserDeploymentPreflightFetch;
@@ -132,12 +156,23 @@ export type SyncularBrowserDeploymentPreflightFetch = (
 export interface SyncularBrowserDeploymentPreflightGlobal {
   Worker?: unknown;
   WebAssembly?: unknown;
+  BroadcastChannel?: unknown;
   indexedDB?: unknown;
+  document?: {
+    visibilityState?: unknown;
+    addEventListener?: unknown;
+  };
+  addEventListener?: unknown;
+  onbeforeunload?: unknown;
+  onpagehide?: unknown;
   isSecureContext?: boolean;
   crossOriginIsolated?: boolean;
 }
 
 export interface SyncularBrowserDeploymentPreflightNavigator {
+  locks?: {
+    request?: unknown;
+  };
   storage?: {
     getDirectory?: unknown;
     persisted?: () => Promise<boolean>;
@@ -153,6 +188,7 @@ export async function getSyncularBrowserDeploymentPreflight(
   const globalRef = resolveGlobal(options.global);
   const navigatorRef = resolveNavigator(options.navigator);
   const browser = summarizeBrowser(globalRef);
+  const lifecycle = summarizeLifecycle(globalRef, navigatorRef);
   const storage = await summarizeStorage({
     expectedStorage: resolveExpectedStorage(options.storage),
     storageWasExplicit: options.storage != null,
@@ -176,6 +212,12 @@ export async function getSyncularBrowserDeploymentPreflight(
     requireCrossOriginIsolation: options.requireCrossOriginIsolation === true,
     issues,
   });
+  addLifecycleIssues({
+    lifecycle,
+    requireMultiTabCoordination: options.requireMultiTabCoordination === true,
+    requirePageLifecycleResume: options.requirePageLifecycleResume === true,
+    issues,
+  });
 
   const status = summarizeStatus(issues);
 
@@ -185,6 +227,7 @@ export async function getSyncularBrowserDeploymentPreflight(
     ready: status === 'ready',
     requiresAction: issues.some((issue) => issue.severity === 'error'),
     browser,
+    lifecycle,
     storage,
     runtimeAssets,
     issues,
@@ -257,6 +300,38 @@ function summarizeBrowser(
         ? globalRef.crossOriginIsolated
         : null,
     indexedDB: globalRef.indexedDB != null,
+  };
+}
+
+function summarizeLifecycle(
+  globalRef: SyncularBrowserDeploymentPreflightGlobal,
+  navigatorRef?: SyncularBrowserDeploymentPreflightNavigator
+): SyncularBrowserDeploymentPreflightLifecycle {
+  const broadcastChannel = typeof globalRef.BroadcastChannel === 'function';
+  const webLocks = typeof navigatorRef?.locks?.request === 'function';
+  const pageVisibility =
+    typeof globalRef.document?.visibilityState === 'string' &&
+    typeof globalRef.document?.addEventListener === 'function';
+  const pageHideEvent =
+    typeof globalRef.addEventListener === 'function' &&
+    'onpagehide' in globalRef;
+  const beforeUnloadEvent =
+    typeof globalRef.addEventListener === 'function' &&
+    'onbeforeunload' in globalRef;
+  return {
+    broadcastChannel,
+    webLocks,
+    pageVisibility,
+    pageHideEvent,
+    beforeUnloadEvent,
+    resumeSignalAvailable: pageVisibility || pageHideEvent,
+    shutdownSignalAvailable: pageHideEvent || beforeUnloadEvent,
+    multiTabMode:
+      broadcastChannel && webLocks
+        ? 'coordinated'
+        : broadcastChannel || webLocks
+          ? 'best-effort'
+          : 'single-open-database-tab',
   };
 }
 
@@ -641,6 +716,47 @@ function addBrowserIssues(args: {
       recommendedAction: 'configureCrossOriginIsolation',
       message:
         'Cross-origin isolation is required by this Syncular deployment check but is not active.',
+    });
+  }
+}
+
+function addLifecycleIssues(args: {
+  lifecycle: SyncularBrowserDeploymentPreflightLifecycle;
+  requireMultiTabCoordination: boolean;
+  requirePageLifecycleResume: boolean;
+  issues: SyncularBrowserDeploymentPreflightIssue[];
+}) {
+  if (args.requireMultiTabCoordination && !args.lifecycle.broadcastChannel) {
+    args.issues.push({
+      code: 'browser.broadcast_channel_unavailable',
+      severity: 'error',
+      target: 'lifecycle',
+      recommendedAction: 'coordinateBrowserTabs',
+      message:
+        'BroadcastChannel is unavailable; this deployment requires browser-tab coordination before opening persistent Syncular databases in multiple tabs.',
+    });
+  }
+  if (args.requireMultiTabCoordination && !args.lifecycle.webLocks) {
+    args.issues.push({
+      code: 'browser.web_locks_unavailable',
+      severity: 'error',
+      target: 'lifecycle',
+      recommendedAction: 'coordinateBrowserTabs',
+      message:
+        'The Web Locks API is unavailable; this deployment requires a browser lock before running multi-tab local recovery or single-writer database work.',
+    });
+  }
+  if (
+    args.requirePageLifecycleResume &&
+    !args.lifecycle.resumeSignalAvailable
+  ) {
+    args.issues.push({
+      code: 'browser.page_lifecycle_unavailable',
+      severity: 'error',
+      target: 'lifecycle',
+      recommendedAction: 'wirePageLifecycleResume',
+      message:
+        'Page lifecycle visibility/pagehide signals are unavailable; this deployment requires a host signal that calls resumeFromBackground() after tab or app suspension.',
     });
   }
 }

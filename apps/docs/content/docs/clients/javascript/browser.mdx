@@ -75,7 +75,9 @@ real browser smoke so storage APIs reflect the target browser. The preflight
 does not start the Worker or open SQLite; it verifies Worker/WebAssembly
 support, HTTPS/localhost secure context for durable storage, OPFS/IndexedDB
 availability, persistent storage status, quota, and WASM asset status/content
-types.
+types. It also reports browser lifecycle and multi-tab primitives:
+`BroadcastChannel`, Web Locks, page visibility, `pagehide`, and
+`beforeunload`.
 
 ```ts
 import { getSyncularBrowserDeploymentPreflight } from '@syncular/client';
@@ -84,6 +86,8 @@ import { syncularGeneratedRequiredRuntimeFeatures } from './generated/syncular.g
 const preflight = await getSyncularBrowserDeploymentPreflight({
   requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
   minimumQuotaBytes: 50 * 1024 * 1024,
+  requireMultiTabCoordination: true,
+  requirePageLifecycleResume: true,
 });
 
 if (preflight.status === 'not-ready') {
@@ -94,7 +98,11 @@ if (preflight.status === 'not-ready') {
 Common issue codes include `browser.runtime_asset_bad_status`,
 `browser.runtime_asset_bad_content_type`, `browser.opfs_unavailable`,
 `browser.indexeddb_unavailable`, `browser.insecure_context`, and
-`browser.storage_persistence_not_granted`.
+`browser.storage_persistence_not_granted`. Apps that open the same durable
+database from multiple tabs should require multi-tab coordination and use the
+reported lifecycle fields to decide whether to allow multiple open tabs, use a
+single-open-tab policy, or call `resumeFromBackground()` from host lifecycle
+signals after tab suspension.
 
 ## React apps
 

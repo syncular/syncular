@@ -1484,6 +1484,11 @@ online propagation, or reconnect behavior can change.
   default Hono CORS, and projected request ids into diagnostics, runtime
   timelines, command timelines, and support bundles so browser artifacts match
   server `sync_request_events.request_id`.
+- 2026-07-01: Extended browser deployment preflight with lifecycle and
+  multi-tab capability checks. The result now reports BroadcastChannel, Web
+  Locks, page visibility, `pagehide`, `beforeunload`, resume/shutdown signal
+  availability, and a multi-tab mode; apps can opt into failing the preflight
+  when multi-tab coordination or page lifecycle resume signals are required.
 
 ## Latest Gates
 
@@ -1623,6 +1628,15 @@ Most recent sync request-id evidence rerun:
 - `bun --cwd packages/client tsgo`
 - `bun --cwd packages/server tsgo`
 - `bunx biome check packages/client/src/types.ts packages/client/src/diagnostics.ts packages/client/src/rust-client.ts packages/client/src/worker-entry.ts packages/client/src/worker-client.ts packages/client/src/worker-client.test.ts packages/client/src/runtime-timeline.ts packages/client/src/runtime-timeline.test.ts packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/src/support-bundle.ts packages/client/src/support-bundle.test.ts packages/client/src/console-diagnostics.ts packages/client/src/console-diagnostics.test.ts packages/client/src/__tests__/sync-hono.wasm.test.ts packages/server/src/hono/routes/shared.ts packages/server/src/hono/__tests__/create-server.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `bun run docs:stale-check`
+- `bun --cwd apps/docs types:check`
+- `git diff --check`
+
+Most recent lifecycle/multi-tab preflight rerun:
+
+- `bun test packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts packages/client/src/support-bundle.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bunx biome check packages/client/src/browser-deployment-preflight.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `bun run docs:stale-check`
 - `bun --cwd apps/docs types:check`
 - `git diff --check`
@@ -1890,7 +1904,10 @@ Most recent mutation-status rerun:
 - Browser deployment preflight: first helper slice is done for Worker/WASM
   assets, MIME/content types, cross-origin isolation option, OPFS/IndexedDB
   requirements, durable storage availability, fallback behavior, persistence
-  grant status, and quota budgets. The starter now runs the helper before
+  grant status, quota budgets, BroadcastChannel, Web Locks, page visibility,
+  `pagehide`, `beforeunload`, resume/shutdown signal availability, and
+  multi-tab mode. Apps can make missing tab coordination or page lifecycle
+  resume signals fail the preflight. The starter now runs the helper before
   opening Syncular. The scaffold smoke checks the transformed preflight module,
   now builds and serves Vite preview, verifies built assets, and can execute
   the built page through Chrome/Chromium CDP. Checks now has a dedicated
@@ -1909,9 +1926,11 @@ Most recent mutation-status rerun:
   subpaths. Remaining work is a separate native-driver/platform matrix for
   `better-sqlite3` and `sqlite3`, if release policy decides those native
   drivers should be installed on every release runner.
-- Multi-tab and lifecycle behavior: document and test two tabs, tab
-  suspension/resume, storage locks, shutdown, and app restarts for persistent
-  browser databases.
+- Multi-tab and lifecycle behavior: first preflight slice is done for browser
+  tab/lifecycle capabilities and opt-in required coordination checks. Remaining
+  work is real two-tab execution: tab suspension/resume, storage locks,
+  shutdown, app restarts, and recovery coordination for persistent browser
+  databases.
 - Local recovery controls: first plan/action slice is done for support bundles,
   local health repairs, failed outbox/blob retries, compaction, cache clear,
   and guarded sync-state reset, with a focused Hono/WASM proof for corrupted
@@ -1965,8 +1984,9 @@ Most recent mutation-status rerun:
 
 Pick the next implementation slice from the remaining risks. Strong candidates
 are observing the new hosted starter browser-preview job, multi-tab lifecycle
-coverage, real-browser support-bundle failure artifacts, or the missing
-low-level command timeline links, because those remain broad DX holes after
+coverage, real-browser support-bundle failure artifacts, browser/bundler matrix
+execution, or production-ops depth, because those remain broad DX holes after
 the first local recovery browser proof, upgrade runbook, built-preview asset
 smoke, runtime timeline helper, composed support-bundle helper, mutation
-status helper, and CI browser-smoke enforcement.
+status helper, command timeline evidence chain, and CI browser-smoke
+enforcement.

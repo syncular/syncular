@@ -43,6 +43,16 @@ describe('Syncular browser deployment preflight', () => {
         secureContext: true,
         indexedDB: true,
       },
+      lifecycle: {
+        broadcastChannel: true,
+        webLocks: true,
+        pageVisibility: true,
+        pageHideEvent: true,
+        beforeUnloadEvent: true,
+        resumeSignalAvailable: true,
+        shutdownSignalAvailable: true,
+        multiTabMode: 'coordinated',
+      },
       storage: {
         requested: 'opfsSahPool',
         fallbackAllowed: true,
@@ -221,10 +231,65 @@ describe('Syncular browser deployment preflight', () => {
       ]),
     });
   });
+
+  it('fails explicit multi-tab and resume requirements when lifecycle primitives are missing', async () => {
+    await expect(
+      getSyncularBrowserDeploymentPreflight({
+        runtime: {
+          wasmGlueUrl: 'https://cdn.example/syncular.js',
+          wasmUrl: 'https://cdn.example/syncular_bg.wasm',
+        },
+        checkRuntimeAssets: false,
+        requireMultiTabCoordination: true,
+        requirePageLifecycleResume: true,
+        global: browserGlobal({
+          broadcastChannel: false,
+          pageLifecycle: false,
+        }),
+        navigator: browserNavigator({
+          locks: false,
+          opfs: true,
+          persisted: true,
+        }),
+      })
+    ).resolves.toMatchObject({
+      status: 'not-ready',
+      requiresAction: true,
+      lifecycle: {
+        broadcastChannel: false,
+        webLocks: false,
+        pageVisibility: false,
+        pageHideEvent: false,
+        beforeUnloadEvent: false,
+        resumeSignalAvailable: false,
+        shutdownSignalAvailable: false,
+        multiTabMode: 'single-open-database-tab',
+      },
+      issues: expect.arrayContaining([
+        expect.objectContaining({
+          code: 'browser.broadcast_channel_unavailable',
+          target: 'lifecycle',
+          recommendedAction: 'coordinateBrowserTabs',
+        }),
+        expect.objectContaining({
+          code: 'browser.web_locks_unavailable',
+          target: 'lifecycle',
+          recommendedAction: 'coordinateBrowserTabs',
+        }),
+        expect.objectContaining({
+          code: 'browser.page_lifecycle_unavailable',
+          target: 'lifecycle',
+          recommendedAction: 'wirePageLifecycleResume',
+        }),
+      ]),
+    });
+  });
 });
 
 function browserGlobal(
   options: {
+    broadcastChannel?: boolean;
+    pageLifecycle?: boolean;
     worker?: boolean;
     webAssembly?: boolean;
     indexedDB?: boolean;
@@ -233,20 +298,46 @@ function browserGlobal(
   } = {}
 ): SyncularBrowserDeploymentPreflightGlobal {
   return {
+    BroadcastChannel:
+      options.broadcastChannel === false
+        ? undefined
+        : class BroadcastChannel {},
     Worker: options.worker === false ? undefined : class Worker {},
     WebAssembly: options.webAssembly === false ? undefined : {},
     indexedDB: options.indexedDB === false ? undefined : {},
+    document:
+      options.pageLifecycle === false
+        ? undefined
+        : {
+            visibilityState: 'visible',
+            addEventListener() {},
+          },
+    ...(options.pageLifecycle === false
+      ? {}
+      : {
+          addEventListener() {},
+          onbeforeunload: null,
+          onpagehide: null,
+        }),
     isSecureContext: options.secureContext ?? true,
     crossOriginIsolated: options.crossOriginIsolated ?? false,
   };
 }
 
 function browserNavigator(options: {
+  locks?: boolean;
   opfs: boolean;
   persisted?: boolean;
   quotaBytes?: number;
 }): SyncularBrowserDeploymentPreflightNavigator {
   return {
+    ...(options.locks === false
+      ? {}
+      : {
+          locks: {
+            request() {},
+          },
+        }),
     storage: {
       ...(options.opfs
         ? {

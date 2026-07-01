@@ -648,7 +648,9 @@ deployed page or a real browser smoke so storage APIs reflect the target
 browser. It does not start a Worker or mutate local SQLite; it checks
 Worker/WebAssembly support, secure context, OPFS/IndexedDB persistence, quota,
 persistent-storage status, and the served WASM runtime asset status/content
-types:
+types. It also reports multi-tab and page-lifecycle primitives such as
+`BroadcastChannel`, Web Locks, page visibility, `pagehide`, and
+`beforeunload`:
 
 ```ts
 import { getSyncularBrowserDeploymentPreflight } from '@syncular/client';
@@ -657,6 +659,8 @@ import { syncularGeneratedRequiredRuntimeFeatures } from './generated/syncular.g
 const preflight = await getSyncularBrowserDeploymentPreflight({
   requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
   minimumQuotaBytes: 50 * 1024 * 1024,
+  requireMultiTabCoordination: true,
+  requirePageLifecycleResume: true,
 });
 
 if (preflight.status === 'not-ready') {
@@ -665,6 +669,11 @@ if (preflight.status === 'not-ready') {
   );
 }
 ```
+
+Use `preflight.lifecycle.multiTabMode` to choose between coordinated multi-tab
+behavior, best-effort coordination, or a single-open-database-tab policy. If
+your host owns lifecycle signals instead of the browser page, call
+`resumeFromBackground()` from that host signal.
 
 ## Storage
 
