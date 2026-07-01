@@ -3813,10 +3813,15 @@ Most recent mutation-status rerun:
   blocking first paint on bootstrap/network/realtime work. It also records a
   hidden `starterOpen` phase/diagnostic marker, writes early phase changes
   directly to the marker before React can be starved, and mirrors
-  `[syncular-starter]` diagnostics into the Chrome/CDP log so the next hosted
-  artifact can distinguish local open, subscription install, background
-  lifecycle, and page-thread starvation failures without raw browser
-  inspection. Remaining depth is
+  `[syncular-starter]` diagnostics into the Chrome/CDP log. Hosted run
+  `28522684015` then proved the app reaches `open ready` quickly and only
+  wedges before the post-mount `subscriptions` phase, so the starter now gates
+  the hook-heavy `TaskPane` behind a lightweight local-DB-ready shell until the
+  parent app effect has installed subscriptions and started sync. The next
+  hosted artifact should distinguish task-pane live query/support diagnostics
+  from lower-level local open, subscription install, background lifecycle, and
+  page-thread starvation failures without raw browser inspection. Remaining
+  depth is
   observing the next hosted browser/Cloudflare artifacts and deciding whether
   future hosted artifact uploads need richer Console/Fleet orchestration.
 

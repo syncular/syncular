@@ -174,6 +174,7 @@ export function App() {
     useState<StarterOpenPreview>(initialStarterOpen);
   const [starterTimeline, setStarterTimeline] =
     useState<StarterTimelinePreview>(initialStarterTimeline);
+  const [taskPaneMounted, setTaskPaneMounted] = useState(false);
 
   const writeStarterOpenMarker = useCallback(
     (next: Partial<StarterOpenPreview>) => {
@@ -342,6 +343,7 @@ export function App() {
           ...current,
           databaseOpenMs: elapsedSince(appStartedAtMs),
         }));
+        setTaskPaneMounted(false);
         setClient(nextClient);
       })
       .catch((error) => {
@@ -369,6 +371,8 @@ export function App() {
           if (disposed) return;
           reportStarterOpenPhase('sync');
           await client.start();
+          if (disposed) return;
+          setTaskPaneMounted(true);
         })().catch((error) => {
           if (!disposed) reportStarterOpenError(error);
         });
@@ -395,17 +399,38 @@ export function App() {
         {client ? (
           <SyncProvider client={client}>
             <LifecycleResumeMarker lifecycleResume={lifecycleResume} />
-            <TaskPane
-              client={client}
-              starterTimeline={starterTimeline}
-              updateStarterTimeline={setStarterTimeline}
-            />
+            {taskPaneMounted ? (
+              <TaskPane
+                client={client}
+                starterTimeline={starterTimeline}
+                updateStarterTimeline={setStarterTimeline}
+              />
+            ) : (
+              <StarterReadyPane starterTimeline={starterTimeline} />
+            )}
           </SyncProvider>
         ) : (
           <p className="empty-state">Opening local database…</p>
         )}
       </section>
     </main>
+  );
+}
+
+function StarterReadyPane({
+  starterTimeline,
+}: {
+  starterTimeline: StarterTimelinePreview;
+}) {
+  return (
+    <>
+      <div className="pane-header">
+        <h2>Tasks</h2>
+        <StatusBadge state="loading" />
+      </div>
+      <StarterTimelineMarker starterTimeline={starterTimeline} />
+      <p className="empty-state">Local database ready. Starting sync…</p>
+    </>
   );
 }
 
