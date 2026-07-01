@@ -316,10 +316,16 @@ read-only review:
     between health, schema-readiness, deployment-preflight, and support-bundle
     collection, records hidden diagnostic phases, and omits the worker-local
     support-bundle section from the browser-preview bundle while still keeping
-    four redacted app-facing support sections. Local `create-syncular-app`
-    type/lint/smoke gates pass with Bun 1.3.9; next slice is observing the
-    hosted `starter-browser-preview` Chrome job for this diagnostic sequencing
-    change or continuing browser/framework runtime execution beyond Vite. The
+    four redacted app-facing support sections. Hosted run `28524549340`
+    confirmed the page now reaches repeated `diagnostics-ready` markers without
+    the old DevTools timeout, then exposed a lifecycle marker bug where
+    `onResumeComplete` dropped pause fields and made failure-artifact validation
+    see a non-numeric pause count; the starter now preserves pause fields and
+    avoids running heavyweight diagnostics on every lifecycle change. Local
+    `create-syncular-app` type/lint/smoke gates pass with Bun 1.3.9; next
+    slice is observing the hosted `starter-browser-preview` Chrome job for this
+    lifecycle marker fix or continuing browser/framework runtime execution
+    beyond Vite. The
     post-publish
     JavaScript install smoke now
     also creates a fresh optional import matrix project that installs

@@ -3832,10 +3832,17 @@ Most recent mutation-status rerun:
   deployment-preflight, and support-bundle collection, records hidden
   `diagnostics-*` phases for Chrome/CDP artifacts, and omits the worker-local
   support-bundle section from the browser-preview bundle while preserving four
-  redacted support sections. Local focused `tsgo`, lint, diff, and
-  `create-syncular-app` smoke gates pass with Bun 1.3.9; Chrome is not
-  installed locally, so the next hosted artifact remains the authority for the
-  required real-browser path. Remaining depth is observing that hosted
+  redacted support sections. Hosted run `28524549340` confirmed the old
+  DevTools timeout is gone and the page repeatedly reaches `diagnostics-ready`,
+  then failed while writing a failure artifact because `onResumeComplete`
+  replaced the lifecycle marker state without preserving pause fields, making
+  `data-syncular-lifecycle-pause-count` serialize as non-numeric. The starter
+  now preserves the pause fields on resume completion and keeps heavyweight
+  diagnostics off `lifecycleChanged` so support-bundle collection does not loop
+  on diagnostics that themselves emit lifecycle updates. Local focused `tsgo`,
+  lint, diff, and `create-syncular-app` smoke gates pass with Bun 1.3.9; Chrome
+  is not installed locally, so the next hosted artifact remains the authority
+  for the required real-browser path. Remaining depth is observing that hosted
   `starter-browser-preview` job and deciding whether future hosted artifact
   uploads need richer Console/Fleet orchestration.
 

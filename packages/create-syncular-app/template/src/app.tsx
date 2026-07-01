@@ -306,6 +306,7 @@ export function App() {
           onResumeComplete(_result, context) {
             if (!disposed) {
               setLifecycleResume((current) => ({
+                ...current,
                 count: current.count + 1,
                 error: null,
                 lastReason: context.reason,
@@ -740,12 +741,10 @@ function TaskPane({
     };
 
     refresh();
-    const unsubscribeLifecycle = client.on('lifecycleChanged', refresh);
     const unsubscribeBootstrap = client.on('bootstrapChanged', refresh);
     const unsubscribeRows = client.on('rowsChanged', refresh);
     return () => {
       disposed = true;
-      unsubscribeLifecycle();
       unsubscribeBootstrap();
       unsubscribeRows();
     };
