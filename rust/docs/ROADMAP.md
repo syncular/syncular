@@ -231,7 +231,13 @@ read-only review:
     get a first diagnosis without opening raw diagnostic JSON. Browser
     support-policy cards now show status, context, observed vs expected
     support/persistence, first reason, required evidence, known risk, and next
-    step.
+    step. Browser support policy now also exposes
+    `getSyncularBrowserSupportPolicyContextHint(...)`, which lets apps and the
+    starter choose the policy context from explicit app input or hard preflight
+    facts: service-worker controlled pages map to `pwa`,
+    ephemeral/development storage maps to `private-browsing`, and the helper
+    otherwise keeps the maintained Chrome/Chromium context without guessing
+    Safari or Firefox from user agents.
     Cloudflare runtime failure diagnostics now get the same first-triage
     treatment: the Console client detail runtime panel surfaces failed route,
     sync/blob/WebSocket route bases, exit/output context, and R2 blob

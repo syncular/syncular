@@ -690,11 +690,15 @@ recipes, and app diagnostics:
 import {
   evaluateSyncularBrowserSupportPolicy,
   getSyncularBrowserSupportMatrix,
+  getSyncularBrowserSupportPolicyContextHint,
 } from '@syncular/client';
 
 const supportMatrix = getSyncularBrowserSupportMatrix();
+const supportContext = getSyncularBrowserSupportPolicyContextHint({
+  preflight,
+});
 const supportPolicy = evaluateSyncularBrowserSupportPolicy(
-  'chromium-secure-page',
+  supportContext.context,
   preflight
 );
 ```
@@ -709,6 +713,11 @@ support-policy decision.
 `supportPolicy.nextSteps` carry the matrix guidance for the selected context so
 failure artifacts and support bundles can show what evidence is still missing
 without scraping docs.
+`getSyncularBrowserSupportPolicyContextHint(...)` only uses hard facts already
+in the preflight: an explicit app context wins, a service-worker controlled
+page hints `pwa`, and ephemeral/development storage hints `private-browsing`.
+It does not guess Safari or Firefox from a user agent; pass the explicit
+context when the product owns target-browser evidence.
 
 The matrix does not sniff user agents and does not replace the deployment
 preflight. It names the product policy for common environments:

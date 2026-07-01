@@ -9,6 +9,7 @@ import {
   evaluateSyncularBrowserSupportPolicy,
   getSyncularBrowserSupportMatrix,
   getSyncularBrowserSupportPolicy,
+  getSyncularBrowserSupportPolicyContextHint,
   type SyncularBrowserSupportContext,
 } from './browser-support-matrix';
 
@@ -143,6 +144,81 @@ describe('Syncular browser support matrix', () => {
       observedPersistence: 'persistent',
       preflightStatus: 'ready',
       productionReady: true,
+    });
+  });
+
+  it('suggests support policy contexts from hard preflight facts', () => {
+    expect(
+      getSyncularBrowserSupportPolicyContextHint({
+        context: 'safari-secure-page',
+        preflight: preflight({
+          persistence: 'persistent',
+          productionReady: true,
+          serviceWorkerControlled: true,
+          supportTier: 'persistent-offline',
+        }),
+      })
+    ).toMatchObject({
+      context: 'safari-secure-page',
+      source: 'explicit-context',
+      confidence: 'high',
+      reasonCodes: ['browser_support_context.explicit_context'],
+    });
+
+    expect(
+      getSyncularBrowserSupportPolicyContextHint({
+        preflight: preflight({
+          persistence: 'persistent',
+          productionReady: true,
+          serviceWorkerControlled: true,
+          supportTier: 'persistent-offline',
+        }),
+      })
+    ).toMatchObject({
+      context: 'pwa',
+      source: 'service-worker-controlled',
+      confidence: 'high',
+      reasonCodes: ['browser_support_context.service_worker_controlled'],
+    });
+
+    expect(
+      getSyncularBrowserSupportPolicyContextHint({
+        preflight: preflight({
+          persistence: 'ephemeral',
+          productionReady: false,
+          supportTier: 'ephemeral-development',
+        }),
+      })
+    ).toMatchObject({
+      context: 'private-browsing',
+      source: 'ephemeral-storage',
+      confidence: 'medium',
+      reasonCodes: ['browser_support_context.ephemeral_storage'],
+    });
+
+    expect(
+      getSyncularBrowserSupportPolicyContextHint({
+        preflight: preflight({
+          persistence: 'unsupported',
+          status: 'not-ready',
+          supportTier: 'unsupported',
+        }),
+      })
+    ).toMatchObject({
+      context: 'chromium-secure-page',
+      source: 'unsupported-storage',
+      confidence: 'low',
+      reasonCodes: ['browser_support_context.unsupported_storage'],
+    });
+
+    expect(getSyncularBrowserSupportPolicyContextHint()).toMatchObject({
+      context: 'chromium-secure-page',
+      source: 'default-context',
+      confidence: 'low',
+      reasonCodes: [
+        'browser_support_context.no_preflight',
+        'browser_support_context.default_context',
+      ],
     });
   });
 
@@ -297,6 +373,7 @@ function preflight(options: {
   issueCodes?: SyncularBrowserDeploymentPreflight['support']['issueCodes'];
   persistence: SyncularBrowserDeploymentPreflightPersistenceMode;
   productionReady?: boolean;
+  serviceWorkerControlled?: boolean;
   status?: SyncularBrowserDeploymentPreflightStatus;
   supportTier: SyncularBrowserDeploymentPreflightSupportTier;
 }): SyncularBrowserDeploymentPreflight {
@@ -315,6 +392,14 @@ function preflight(options: {
       secureContext: true,
       crossOriginIsolated: false,
       indexedDB: true,
+      serviceWorker: options.serviceWorkerControlled ?? false,
+      serviceWorkerControlled: options.serviceWorkerControlled ?? false,
+      serviceWorkerControllerState: options.serviceWorkerControlled
+        ? 'activated'
+        : null,
+      serviceWorkerControllerScriptPath: options.serviceWorkerControlled
+        ? '/sw.js'
+        : null,
     },
     lifecycle: {
       broadcastChannel: true,

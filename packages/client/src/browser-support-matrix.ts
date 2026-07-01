@@ -21,6 +21,26 @@ export type SyncularBrowserSupportPolicy =
   | 'development-only'
   | 'unsupported';
 
+export type SyncularBrowserSupportPolicyContextHintSource =
+  | 'explicit-context'
+  | 'service-worker-controlled'
+  | 'ephemeral-storage'
+  | 'unsupported-storage'
+  | 'default-context';
+
+export type SyncularBrowserSupportPolicyContextHintConfidence =
+  | 'high'
+  | 'medium'
+  | 'low';
+
+export type SyncularBrowserSupportPolicyContextHintReasonCode =
+  | 'browser_support_context.default_context'
+  | 'browser_support_context.ephemeral_storage'
+  | 'browser_support_context.explicit_context'
+  | 'browser_support_context.no_preflight'
+  | 'browser_support_context.service_worker_controlled'
+  | 'browser_support_context.unsupported_storage';
+
 export interface SyncularBrowserSupportMatrixEntry {
   context: SyncularBrowserSupportContext;
   label: string;
@@ -72,6 +92,24 @@ export interface SyncularBrowserSupportPolicyEvaluation {
   reasonCodes: readonly SyncularBrowserSupportPolicyReasonCode[];
   recommendedActions: readonly SyncularBrowserDeploymentPreflightRecommendedAction[];
   nextSteps: readonly string[];
+  summary: string;
+}
+
+export interface SyncularBrowserSupportPolicyContextHintOptions {
+  context?: SyncularBrowserSupportContext;
+  preflight?: SyncularBrowserDeploymentPreflight | null;
+  /**
+   * Context to use when hard preflight facts do not identify a more specific
+   * host. The default reflects the first maintained browser smoke.
+   */
+  defaultContext?: SyncularBrowserSupportContext;
+}
+
+export interface SyncularBrowserSupportPolicyContextHint {
+  context: SyncularBrowserSupportContext;
+  source: SyncularBrowserSupportPolicyContextHintSource;
+  confidence: SyncularBrowserSupportPolicyContextHintConfidence;
+  reasonCodes: readonly SyncularBrowserSupportPolicyContextHintReasonCode[];
   summary: string;
 }
 
@@ -354,6 +392,79 @@ export function getSyncularBrowserSupportPolicy(
   return cloneBrowserSupportMatrixEntry(entry);
 }
 
+export function getSyncularBrowserSupportPolicyContextHint(
+  options: SyncularBrowserSupportPolicyContextHintOptions = {}
+): SyncularBrowserSupportPolicyContextHint {
+  const defaultContext = options.defaultContext ?? 'chromium-secure-page';
+  const preflight = options.preflight;
+  if (options.context) {
+    return createBrowserSupportContextHint({
+      context: options.context,
+      source: 'explicit-context',
+      confidence: 'high',
+      reasonCodes: ['browser_support_context.explicit_context'],
+      summary: `Using explicit Syncular browser support context: ${getSyncularBrowserSupportPolicy(options.context).label}.`,
+    });
+  }
+
+  if (preflight?.browser.serviceWorkerControlled === true) {
+    return createBrowserSupportContextHint({
+      context: 'pwa',
+      source: 'service-worker-controlled',
+      confidence: 'high',
+      reasonCodes: ['browser_support_context.service_worker_controlled'],
+      summary:
+        'Deployment preflight reports a service-worker controlled page; using the PWA/service-worker support policy context.',
+    });
+  }
+
+  if (
+    preflight &&
+    (preflight.support.tier === 'ephemeral-development' ||
+      preflight.support.persistence === 'ephemeral' ||
+      preflight.storage.durableRequired === false)
+  ) {
+    return createBrowserSupportContextHint({
+      context: 'private-browsing',
+      source: 'ephemeral-storage',
+      confidence: 'medium',
+      reasonCodes: ['browser_support_context.ephemeral_storage'],
+      summary:
+        'Deployment preflight reports ephemeral or development-only storage; using the private/development browser support policy context.',
+    });
+  }
+
+  if (
+    preflight &&
+    (preflight.support.tier === 'unsupported' ||
+      preflight.support.persistence === 'unsupported')
+  ) {
+    return createBrowserSupportContextHint({
+      context: defaultContext,
+      source: 'unsupported-storage',
+      confidence: 'low',
+      reasonCodes: ['browser_support_context.unsupported_storage'],
+      summary:
+        'Deployment preflight reports unsupported browser storage; using the default support policy context while preserving unsupported preflight evidence.',
+    });
+  }
+
+  return createBrowserSupportContextHint({
+    context: defaultContext,
+    source: 'default-context',
+    confidence: preflight ? 'medium' : 'low',
+    reasonCodes: preflight
+      ? ['browser_support_context.default_context']
+      : [
+          'browser_support_context.no_preflight',
+          'browser_support_context.default_context',
+        ],
+    summary: preflight
+      ? `No service-worker or ephemeral-storage override was observed; using the default Syncular browser support context: ${getSyncularBrowserSupportPolicy(defaultContext).label}.`
+      : `No deployment preflight evidence is available; using the default Syncular browser support context: ${getSyncularBrowserSupportPolicy(defaultContext).label}.`,
+  });
+}
+
 export function evaluateSyncularBrowserSupportPolicy(
   context: SyncularBrowserSupportContext,
   preflight?: SyncularBrowserDeploymentPreflight | null
@@ -397,6 +508,15 @@ export function evaluateSyncularBrowserSupportPolicy(
       preflight,
       status,
     }),
+  };
+}
+
+function createBrowserSupportContextHint(
+  hint: SyncularBrowserSupportPolicyContextHint
+): SyncularBrowserSupportPolicyContextHint {
+  return {
+    ...hint,
+    reasonCodes: [...hint.reasonCodes],
   };
 }
 

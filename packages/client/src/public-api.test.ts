@@ -9,6 +9,7 @@ import {
   getSyncularBrowserHealth,
   getSyncularBrowserSupportMatrix,
   getSyncularBrowserSupportPolicy,
+  getSyncularBrowserSupportPolicyContextHint,
   getSyncularCommandTimeline,
   getSyncularLocalRecoveryPlan,
   getSyncularMutationStatus,
@@ -79,6 +80,7 @@ describe('@syncular/client public API', () => {
     expect(typeof evaluateSyncularBrowserSupportPolicy).toBe('function');
     expect(typeof getSyncularBrowserSupportMatrix).toBe('function');
     expect(typeof getSyncularBrowserSupportPolicy).toBe('function');
+    expect(typeof getSyncularBrowserSupportPolicyContextHint).toBe('function');
   });
 
   it('exports the browser lifecycle resume helper', () => {

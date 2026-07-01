@@ -1336,6 +1336,15 @@ online propagation, or reconnect behavior can change.
   starter records that expected-vs-observed policy result in its hidden smoke
   marker and `browser-preview-failure.json`, and Console/Fleet preserves the
   redacted policy status when ingesting starter browser artifacts.
+- Browser support policy context selection now has a public helper:
+  `getSyncularBrowserSupportPolicyContextHint(...)`. Explicit app context wins;
+  otherwise the helper only uses hard preflight facts, mapping
+  service-worker-controlled pages to `pwa`, ephemeral/development storage to
+  `private-browsing`, unsupported storage to the default context with low
+  confidence, and ordinary pages to the maintained Chrome/Chromium context
+  without Safari/Firefox user-agent guessing. The starter uses the hint before
+  evaluating policy so PWA/cache-skew and ephemeral-storage artifacts carry the
+  right policy context.
 - Browser support policy evaluations now include stable
   `browser_support.*` reason codes. The starter records those codes in its
   hidden smoke marker and `browser-preview-failure.json`, so app diagnostics
@@ -2028,6 +2037,12 @@ online propagation, or reconnect behavior can change.
   `evaluateSyncularBrowserSupportPolicy(...)`, the generated app hidden
   marker, `browser-preview-failure.json`, and Console/Fleet ingestion so
   required evidence, known risks, and next steps survive artifact collection.
+- 2026-07-01: Added
+  `getSyncularBrowserSupportPolicyContextHint(...)` and switched the starter
+  to use it before policy evaluation. This keeps explicit product context
+  authoritative, but lets preflight facts select `pwa` for service-worker
+  controlled pages and `private-browsing` for ephemeral/development storage,
+  while avoiding user-agent based Safari/Firefox guesses.
 - 2026-07-01: Added `packages/client/src/runtime-timeline.ts`, exported
   `getSyncularRuntimeTimeline(...)` from `@syncular/client`, and added
   `SyncularDatabase.runtimeTimeline(...)` as a managed database method. The
@@ -2707,11 +2722,24 @@ Most recent browser support-tier preflight rerun:
 
 Most recent browser support-matrix rerun:
 
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-support-matrix.test.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-support-matrix.test.ts packages/client/src/public-api.test.ts`
+  - Passed support-policy matrix and evaluation coverage, including the new
+    support-policy context hint helper for explicit contexts,
+    service-worker-controlled PWA pages, ephemeral/development storage,
+    unsupported storage, and no-preflight defaulting.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/browser-support-matrix.ts packages/client/src/browser-support-matrix.test.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/browser-support-matrix.ts packages/client/src/browser-support-matrix.test.ts packages/client/src/public-api.test.ts packages/create-syncular-app/template/src/app.tsx packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx`
+  - Passed for TypeScript files; Markdown/MDX is covered by stale-doc and
+    docs typecheck gates below.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-support-context-hint-smoke-2 bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, built asset checks, and
+    browser failure artifact shape self-check.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available.
 - `git diff --check`
 
 Most recent browser support-policy artifact rerun:
@@ -3593,8 +3621,11 @@ Most recent mutation-status rerun:
   contexts, private/incognito is development/test only, and SSR/build is
   unsupported for database open. The starter now evaluates observed preflight
   evidence against the Chrome/Chromium support policy and exports the result
-  into its built-preview marker and browser failure artifact, so the matrix is
-  represented in smoke evidence instead of docs alone.
+  into its built-preview marker and browser failure artifact, and the context
+  hint helper now lets starter/browser artifacts switch to `pwa` for
+  service-worker controlled pages or `private-browsing` for ephemeral storage
+  without guessing Safari/Firefox from a user agent. The matrix is represented
+  in smoke evidence instead of docs alone.
   Root source imports are now guarded by static graph checks, dynamic import
   checks, a Next 16 production-build smoke that imports the client/server
   roots from source and verifies the WASM glue dynamic import path is

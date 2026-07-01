@@ -2,6 +2,7 @@ import {
   evaluateSyncularBrowserSupportPolicy,
   getSyncularBrowserDeploymentPreflight,
   getSyncularBrowserHealth,
+  getSyncularBrowserSupportPolicyContextHint,
   installSyncularBrowserLifecycleResume,
   type SyncularBrowserDeploymentPreflight,
   type SyncularBrowserHealth,
@@ -436,7 +437,9 @@ function TaskPane({
             setBrowserSupportPolicy(
               summarizeBrowserSupportPolicy(
                 evaluateSyncularBrowserSupportPolicy(
-                  'chromium-secure-page',
+                  getSyncularBrowserSupportPolicyContextHint({
+                    preflight,
+                  }).context,
                   preflight
                 )
               )
@@ -465,7 +468,7 @@ function TaskPane({
             setBrowserSupportPolicy(
               summarizeBrowserSupportPolicy(
                 evaluateSyncularBrowserSupportPolicy(
-                  'chromium-secure-page',
+                  getSyncularBrowserSupportPolicyContextHint().context,
                   null
                 )
               )
