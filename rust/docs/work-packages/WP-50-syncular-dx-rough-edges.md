@@ -4048,16 +4048,17 @@ Most recent browser-health failure-artifact rerun:
   profile and client id with sync still held to prove the task restored
   from local browser storage, then reloads with normal sync startup and waits
   for a separate observer client to receive the replay through sync/realtime.
-  The next slice adds a renderer-crash replay proof for the same sync-held
+  The current slice adds a renderer-crash replay proof for the same sync-held
   generated-write flow: it opens a dedicated client with sync startup held,
   writes a generated task, waits for local visibility and rendered text, sends
   Chrome CDP `Page.crash` through a short bounded command, verifies the
   renderer is unavailable, reopens the same profile/client id with sync still
-  held to prove the row restored from persistent browser storage after abrupt
+  held to prove the task restored from persistent browser storage after abrupt
   renderer loss, then resumes normal sync and waits for a separate observer
-  client to receive the replay through sync/realtime. Local non-Chrome gates
-  pass; hosted Chrome confirmation is pending. A stronger targeted
-  offline-transport replay proof remains outstanding; globally forcing Chrome
+  client to receive the replay through sync/realtime. Hosted Checks run
+  `28554593391` on commit `84f3bbf1` confirmed this branch in Chrome. A
+  stronger targeted offline-transport replay proof remains outstanding;
+  globally forcing Chrome
   offline before the generated write blocked the starter runtime lifecycle and
   did not exercise the desired local mutation path.
   Remaining work is richer browser-process proof: actual
@@ -4598,7 +4599,13 @@ Most recent browser-health failure-artifact rerun:
   `bun --cwd packages/create-syncular-app tsgo`,
   `bunx biome check packages/create-syncular-app/scripts/smoke.ts`, and
   `bun --cwd packages/create-syncular-app smoke`. Chrome was not installed
-  locally, so hosted Chrome confirmation is pending.
+  locally; hosted Checks run `28554593391` on commit `84f3bbf1` passed the full
+  matrix, including `starter-browser-preview`. The Chrome job log reached
+  `real-browser smoke: proving shutdown replay recovery`,
+  `real-browser smoke: proving renderer-crash replay recovery`,
+  `real-browser smoke: proving browser storage eviction recovery`, and then
+  `real-browser built-preview preflight smoke passed`, confirming the new
+  renderer-crash replay branch in hosted Chrome.
 
 ## Next Action
 
@@ -4637,7 +4644,7 @@ The sync-held shutdown replay proof now covers a generated write surviving
 browser process stop/restart and replaying after normal sync resumes; hosted
 Checks run `28553329494` confirmed that branch in Chrome. The current slice
 adds renderer-crash replay recovery for the same sync-held generated-write
-flow; local non-Chrome gates pass and hosted Chrome confirmation is pending.
+flow; hosted Checks run `28554593391` confirmed that branch in Chrome.
 The next lifecycle follow-up after that should move to targeted
 sync-transport-offline replay, discarded-tab, browser/host-driven eviction
 beyond explicit CDP origin clear, storage-shutdown, and lower-level

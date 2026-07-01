@@ -274,10 +274,11 @@ read-only review:
     also has a sync-held renderer-crash replay proof. It crashes the page
     renderer through a short-bounded Chrome CDP `Page.crash`, verifies the
     renderer is unavailable, opens the same profile and client id with sync
-    still held to prove the row restored from persistent browser storage after
+    still held to prove the task restored from persistent browser storage after
     abrupt renderer loss, then resumes normal sync and waits for a separate
-    observer client to receive the replay. Hosted Chrome confirmation is
-    pending. A stronger targeted sync-transport-offline replay proof remains
+    observer client to receive the replay. Hosted Checks run `28554593391` on
+    commit `84f3bbf1` confirmed that branch in Chrome. A stronger targeted
+    sync-transport-offline replay proof remains
     outstanding; globally forcing Chrome offline before the generated write
     blocked the starter runtime lifecycle before local mutation evidence.
     Host-driven eviction and storage-shutdown behavior remain matrix work. The
