@@ -425,6 +425,16 @@ function deploymentPreflight() {
     ],
     ready: true,
     requiresAction: false,
+    support: {
+      issueCodes: ['browser.storage_quota_low' as const],
+      persistence: 'persistent' as const,
+      persistentOffline: true,
+      productionReady: false,
+      recommendedActions: ['freeStorageQuota' as const],
+      summary:
+        'Persistent offline browser storage is supported and persistent storage is currently granted.',
+      tier: 'persistent-offline' as const,
+    },
     runtimeAssets: {
       assets: [
         {

@@ -962,6 +962,11 @@ online propagation, or reconnect behavior can change.
   OPFS/IndexedDB durable storage availability, persistent-storage status,
   quota budgets, and served WASM runtime asset status/content types before a
   database is opened.
+- Browser deployment preflight now carries an explicit support decision:
+  `persistent-offline`, `ephemeral-development`, `unsupported`, or `unknown`,
+  plus persistence mode, production-readiness, issue codes, and recommended
+  actions. This keeps app health UI and release smokes from inferring
+  production browser support from scattered capability booleans.
 - The starter now calls browser deployment preflight before opening
   `createSyncularAppDatabase(...)`, using the generated required runtime
   feature list and its configured IndexedDB storage expectation. The scaffold
@@ -1485,6 +1490,12 @@ online propagation, or reconnect behavior can change.
   support tiers, first-run asset/version compatibility, recovery ownership,
   support-bundle provenance, browser reopen/restart persistence evidence,
   version-skew policy, and latency/durability evidence budgets.
+- 2026-07-01: Added `preflight.support` to
+  `getSyncularBrowserDeploymentPreflight(...)`, classifying browser/deployment
+  support as `persistent-offline`, `ephemeral-development`, `unsupported`, or
+  `unknown` with persistence mode, production readiness, issue codes, and
+  recommended actions. The starter error, package README, public browser docs,
+  and support-bundle tests now use the same support-tier vocabulary.
 - 2026-07-01: Added `packages/client/src/runtime-timeline.ts`, exported
   `getSyncularRuntimeTimeline(...)` from `@syncular/client`, and added
   `SyncularDatabase.runtimeTimeline(...)` as a managed database method. The
@@ -1795,6 +1806,20 @@ Most recent lifecycle/multi-tab preflight rerun:
 - `bun run docs:stale-check`
 - `bun --cwd apps/docs types:check`
 - `git diff --check`
+
+Most recent browser support-tier preflight rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-deployment-preflight.test.ts packages/client/src/support-bundle.test.ts packages/client/src/public-api.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/browser-deployment-preflight.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/support-bundle.test.ts packages/create-syncular-app/template/src/client/syncular.ts packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, and built asset checks.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available.
 
 Most recent browser lifecycle resume helper rerun:
 
@@ -2157,9 +2182,12 @@ Most recent mutation-status rerun:
   requirements, durable storage availability, fallback behavior, persistence
   grant status, quota budgets, BroadcastChannel, Web Locks, page visibility,
   `pagehide`, `beforeunload`, resume/shutdown signal availability, and
-  multi-tab mode. Apps can make missing tab coordination or page lifecycle
-  resume signals fail the preflight. The starter now runs the helper before
-  opening Syncular. The scaffold smoke checks the transformed preflight module,
+  multi-tab mode. It now also reports a single support tier and persistence
+  mode so apps can distinguish persistent offline support, development-only
+  memory storage, unsupported deployments, and unproven checks. Apps can make
+  missing tab coordination or page lifecycle resume signals fail the
+  preflight. The starter now runs the helper before opening Syncular. The
+  scaffold smoke checks the transformed preflight module,
   now builds and serves Vite preview, verifies built assets, and can execute
   the built page through Chrome/Chromium CDP. Checks now has a dedicated
   `starter-browser-preview` job that installs Chrome and requires this path on

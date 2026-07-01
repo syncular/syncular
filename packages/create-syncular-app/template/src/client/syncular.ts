@@ -67,7 +67,7 @@ export async function openAppClient(): Promise<AppSyncClient> {
   });
   if (preflight.status === 'not-ready') {
     throw new Error(
-      `Syncular browser preflight failed: ${preflight.issues
+      `Syncular browser preflight failed (${preflight.support.tier}): ${preflight.issues
         .filter((issue) => issue.severity === 'error')
         .map((issue) => issue.code)
         .join(', ')}`

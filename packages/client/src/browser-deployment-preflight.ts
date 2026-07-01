@@ -53,6 +53,19 @@ export type SyncularBrowserDeploymentPreflightRecommendedAction =
   | 'serveRuntimeAssets'
   | 'wirePageLifecycleResume';
 
+export type SyncularBrowserDeploymentPreflightSupportTier =
+  | 'persistent-offline'
+  | 'ephemeral-development'
+  | 'unsupported'
+  | 'unknown';
+
+export type SyncularBrowserDeploymentPreflightPersistenceMode =
+  | 'persistent'
+  | 'evictable'
+  | 'ephemeral'
+  | 'unsupported'
+  | 'unknown';
+
 export interface SyncularBrowserDeploymentPreflightIssue {
   code: SyncularBrowserDeploymentPreflightIssueCode;
   severity: SyncularBrowserDeploymentPreflightIssueSeverity;
@@ -115,11 +128,22 @@ export interface SyncularBrowserDeploymentPreflightStorage {
   minimumQuotaBytes?: number;
 }
 
+export interface SyncularBrowserDeploymentPreflightSupport {
+  tier: SyncularBrowserDeploymentPreflightSupportTier;
+  persistence: SyncularBrowserDeploymentPreflightPersistenceMode;
+  persistentOffline: boolean;
+  productionReady: boolean;
+  summary: string;
+  issueCodes: SyncularBrowserDeploymentPreflightIssueCode[];
+  recommendedActions: SyncularBrowserDeploymentPreflightRecommendedAction[];
+}
+
 export interface SyncularBrowserDeploymentPreflight {
   generatedAt: number;
   status: SyncularBrowserDeploymentPreflightStatus;
   ready: boolean;
   requiresAction: boolean;
+  support: SyncularBrowserDeploymentPreflightSupport;
   browser: SyncularBrowserDeploymentPreflightBrowser;
   lifecycle: SyncularBrowserDeploymentPreflightLifecycle;
   storage: SyncularBrowserDeploymentPreflightStorage;
@@ -220,12 +244,19 @@ export async function getSyncularBrowserDeploymentPreflight(
   });
 
   const status = summarizeStatus(issues);
+  const support = summarizeSupport({
+    issues,
+    runtimeAssets,
+    status,
+    storage,
+  });
 
   return {
     generatedAt: options.generatedAt ?? Date.now(),
     status,
     ready: status === 'ready',
     requiresAction: issues.some((issue) => issue.severity === 'error'),
+    support,
     browser,
     lifecycle,
     storage,
@@ -768,6 +799,105 @@ function summarizeStatus(
   if (issues.some((issue) => issue.severity === 'warning')) return 'warning';
   if (issues.some((issue) => issue.severity === 'info')) return 'unknown';
   return 'ready';
+}
+
+function summarizeSupport(args: {
+  status: SyncularBrowserDeploymentPreflightStatus;
+  storage: SyncularBrowserDeploymentPreflightStorage;
+  runtimeAssets: SyncularBrowserDeploymentPreflightRuntimeAssets;
+  issues: readonly SyncularBrowserDeploymentPreflightIssue[];
+}): SyncularBrowserDeploymentPreflightSupport {
+  const persistence = summarizePersistence(args.storage, args.issues);
+  const hasError = args.issues.some((issue) => issue.severity === 'error');
+  const tier = summarizeSupportTier({
+    hasError,
+    runtimeAssetsChecked: args.runtimeAssets.checked,
+    status: args.status,
+    storage: args.storage,
+  });
+  return {
+    tier,
+    persistence,
+    persistentOffline: tier === 'persistent-offline',
+    productionReady:
+      tier === 'persistent-offline' &&
+      persistence === 'persistent' &&
+      args.status === 'ready',
+    summary: summarizeSupportMessage(tier, persistence),
+    issueCodes: args.issues.map((issue) => issue.code),
+    recommendedActions: uniqueRecommendedActions(args.issues),
+  };
+}
+
+function summarizePersistence(
+  storage: SyncularBrowserDeploymentPreflightStorage,
+  issues: readonly SyncularBrowserDeploymentPreflightIssue[]
+): SyncularBrowserDeploymentPreflightPersistenceMode {
+  if (!storage.durableRequired) return 'ephemeral';
+  if (
+    issues.some(
+      (issue) => issue.target === 'storage' && issue.severity === 'error'
+    )
+  ) {
+    return 'unsupported';
+  }
+  if (storage.persisted === true) return 'persistent';
+  if (
+    storage.persistenceSupported === false ||
+    storage.persisted === false ||
+    storage.quotaBytes === 0
+  ) {
+    return 'evictable';
+  }
+  return 'unknown';
+}
+
+function summarizeSupportTier(args: {
+  hasError: boolean;
+  runtimeAssetsChecked: boolean;
+  status: SyncularBrowserDeploymentPreflightStatus;
+  storage: SyncularBrowserDeploymentPreflightStorage;
+}): SyncularBrowserDeploymentPreflightSupportTier {
+  if (args.hasError) return 'unsupported';
+  if (!args.storage.durableRequired) return 'ephemeral-development';
+  if (!args.runtimeAssetsChecked || args.status === 'unknown') return 'unknown';
+  return 'persistent-offline';
+}
+
+function summarizeSupportMessage(
+  tier: SyncularBrowserDeploymentPreflightSupportTier,
+  persistence: SyncularBrowserDeploymentPreflightPersistenceMode
+): string {
+  if (tier === 'persistent-offline' && persistence === 'persistent') {
+    return 'Persistent offline browser storage is supported and persistent storage is currently granted.';
+  }
+  if (tier === 'persistent-offline') {
+    return 'Persistent offline browser storage is supported, but storage may be evicted or persistence could not be fully proven.';
+  }
+  if (tier === 'ephemeral-development') {
+    return 'Syncular is configured for memory storage; this is suitable for development or tests, not production offline persistence.';
+  }
+  if (tier === 'unsupported') {
+    return 'This browser or deployment is missing a required Syncular capability.';
+  }
+  return 'Syncular browser support could not be fully proven by this preflight.';
+}
+
+function uniqueRecommendedActions(
+  issues: readonly SyncularBrowserDeploymentPreflightIssue[]
+): SyncularBrowserDeploymentPreflightRecommendedAction[] {
+  return [
+    ...new Set(
+      issues
+        .map((issue) => issue.recommendedAction)
+        .filter(
+          (
+            action
+          ): action is SyncularBrowserDeploymentPreflightRecommendedAction =>
+            action != null
+        )
+    ),
+  ];
 }
 
 function findRuntimeArtifactName(

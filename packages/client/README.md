@@ -650,7 +650,11 @@ Worker/WebAssembly support, secure context, OPFS/IndexedDB persistence, quota,
 persistent-storage status, and the served WASM runtime asset status/content
 types. It also reports multi-tab and page-lifecycle primitives such as
 `BroadcastChannel`, Web Locks, page visibility, `pagehide`, and
-`beforeunload`:
+`beforeunload`. Use `preflight.support.tier` for the production support
+decision: `persistent-offline` means durable offline storage is supported,
+`ephemeral-development` means memory storage was intentionally selected,
+`unsupported` means a required capability is missing, and `unknown` means the
+preflight did not prove enough runtime/deployment state:
 
 ```ts
 import { getSyncularBrowserDeploymentPreflight } from '@syncular/client';
@@ -665,7 +669,9 @@ const preflight = await getSyncularBrowserDeploymentPreflight({
 
 if (preflight.status === 'not-ready') {
   throw new Error(
-    preflight.issues.map((issue) => issue.code).join(', ')
+    `${preflight.support.tier}: ${preflight.issues
+      .map((issue) => issue.code)
+      .join(', ')}`
   );
 }
 ```

@@ -77,7 +77,9 @@ support, HTTPS/localhost secure context for durable storage, OPFS/IndexedDB
 availability, persistent storage status, quota, and WASM asset status/content
 types. It also reports browser lifecycle and multi-tab primitives:
 `BroadcastChannel`, Web Locks, page visibility, `pagehide`, and
-`beforeunload`.
+`beforeunload`. The result also includes `preflight.support.tier`, which is the
+app-facing support decision: `persistent-offline`,
+`ephemeral-development`, `unsupported`, or `unknown`.
 
 ```ts
 import { getSyncularBrowserDeploymentPreflight } from '@syncular/client';
@@ -91,7 +93,7 @@ const preflight = await getSyncularBrowserDeploymentPreflight({
 });
 
 if (preflight.status === 'not-ready') {
-  console.error(preflight.issues);
+  console.error(preflight.support.tier, preflight.issues);
 }
 ```
 

@@ -37,6 +37,14 @@ describe('Syncular browser deployment preflight', () => {
       status: 'ready',
       ready: true,
       requiresAction: false,
+      support: {
+        tier: 'persistent-offline',
+        persistence: 'persistent',
+        persistentOffline: true,
+        productionReady: true,
+        issueCodes: [],
+        recommendedActions: [],
+      },
       browser: {
         worker: true,
         webAssembly: true,
@@ -99,6 +107,14 @@ describe('Syncular browser deployment preflight', () => {
       status: 'not-ready',
       ready: false,
       requiresAction: true,
+      support: {
+        tier: 'unsupported',
+        persistence: 'unsupported',
+        persistentOffline: false,
+        productionReady: false,
+        issueCodes: ['browser.opfs_unavailable'],
+        recommendedActions: ['selectSupportedStorage'],
+      },
       storage: {
         requested: 'opfsSahPool',
         fallbackAllowed: false,
@@ -115,13 +131,21 @@ describe('Syncular browser deployment preflight', () => {
   });
 
   it('warns when the default OPFS request can fall back to IndexedDB', async () => {
+    const fetch = fakeFetch({
+      'https://cdn.example/syncular.js': response(
+        200,
+        'application/javascript'
+      ),
+      'https://cdn.example/syncular_bg.wasm': response(200, 'application/wasm'),
+    });
+
     await expect(
       getSyncularBrowserDeploymentPreflight({
         runtime: {
           wasmGlueUrl: 'https://cdn.example/syncular.js',
           wasmUrl: 'https://cdn.example/syncular_bg.wasm',
         },
-        checkRuntimeAssets: false,
+        fetch,
         global: browserGlobal(),
         navigator: browserNavigator({ opfs: false, persisted: false }),
       })
@@ -129,6 +153,16 @@ describe('Syncular browser deployment preflight', () => {
       status: 'warning',
       ready: false,
       requiresAction: false,
+      support: {
+        tier: 'persistent-offline',
+        persistence: 'evictable',
+        persistentOffline: true,
+        productionReady: false,
+        recommendedActions: [
+          'selectSupportedStorage',
+          'requestPersistentStorage',
+        ],
+      },
       storage: {
         requested: 'opfsSahPool',
         fallbackAllowed: true,
@@ -144,6 +178,75 @@ describe('Syncular browser deployment preflight', () => {
           severity: 'warning',
         }),
       ]),
+    });
+  });
+
+  it('labels intentional memory storage as development-only ephemeral support', async () => {
+    await expect(
+      getSyncularBrowserDeploymentPreflight({
+        runtime: {
+          wasmGlueUrl: 'https://cdn.example/syncular.js',
+          wasmUrl: 'https://cdn.example/syncular_bg.wasm',
+        },
+        checkRuntimeAssets: false,
+        storage: 'memory',
+        global: browserGlobal(),
+        navigator: browserNavigator({ opfs: false }),
+      })
+    ).resolves.toMatchObject({
+      status: 'ready',
+      ready: true,
+      requiresAction: false,
+      support: {
+        tier: 'ephemeral-development',
+        persistence: 'ephemeral',
+        persistentOffline: false,
+        productionReady: false,
+        issueCodes: [],
+        recommendedActions: [],
+      },
+      storage: {
+        requested: 'memory',
+        durableRequired: false,
+      },
+    });
+  });
+
+  it('keeps durable support unknown when runtime assets were not checked', async () => {
+    await expect(
+      getSyncularBrowserDeploymentPreflight({
+        runtime: {
+          wasmGlueUrl: 'https://cdn.example/syncular.js',
+          wasmUrl: 'https://cdn.example/syncular_bg.wasm',
+        },
+        checkRuntimeAssets: false,
+        storage: 'indexedDb',
+        global: browserGlobal(),
+        navigator: browserNavigator({
+          opfs: false,
+          persisted: true,
+          quotaBytes: 250 * 1024 * 1024,
+        }),
+      })
+    ).resolves.toMatchObject({
+      status: 'ready',
+      ready: true,
+      requiresAction: false,
+      support: {
+        tier: 'unknown',
+        persistence: 'persistent',
+        persistentOffline: false,
+        productionReady: false,
+        issueCodes: [],
+        recommendedActions: [],
+      },
+      runtimeAssets: {
+        checked: false,
+      },
+      storage: {
+        requested: 'indexedDb',
+        durableRequired: true,
+      },
     });
   });
 
