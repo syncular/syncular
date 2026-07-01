@@ -3283,9 +3283,12 @@ async function proveStarterQuotaPressurePreflight(args: {
       args.failureArtifactPath,
       args.failureMetrics
     );
-    await configureStarterQuotaPressure(session, args.origin);
+    const quotaPressure = await configureStarterQuotaPressure(
+      session,
+      args.origin
+    );
     const before = await readStarterBrowserProbe(session);
-    await dispatchStarterQuotaPressureProof(session);
+    await dispatchStarterQuotaPressureProof(session, quotaPressure);
     await waitForStarterQuotaPressureEvidence({
       expectedCount: before.quotaPressureProof.count + 1,
       failureArtifactPath: args.failureArtifactPath,
@@ -3304,10 +3307,18 @@ type StarterOriginStorageUsage = {
   usageBytes: number | null;
 };
 
+type StarterOriginQuotaPressure = {
+  availableBytes: number;
+  overrideActive: boolean | null;
+  quotaBytes: number;
+  usageBytes: number;
+  usageRatio: number;
+};
+
 async function configureStarterQuotaPressure(
   session: CdpSession,
   origin: string
-): Promise<void> {
+): Promise<StarterOriginQuotaPressure> {
   await fillStarterOriginStorageForQuotaPressure(session);
   const before = await readStarterOriginStorageUsage(session, origin);
   if (
@@ -3338,6 +3349,13 @@ async function configureStarterQuotaPressure(
       `Chrome quota override did not create high storage pressure: ${after.usageBytes}/${after.quotaBytes}`
     );
   }
+  return {
+    availableBytes: Math.max(0, after.quotaBytes - after.usageBytes),
+    overrideActive: after.overrideActive,
+    quotaBytes: after.quotaBytes,
+    usageBytes: after.usageBytes,
+    usageRatio: after.usageBytes / after.quotaBytes,
+  };
 }
 
 async function fillStarterOriginStorageForQuotaPressure(
@@ -3425,11 +3443,21 @@ async function readStarterOriginStorageUsage(
 }
 
 async function dispatchStarterQuotaPressureProof(
-  session: CdpSession
+  session: CdpSession,
+  quotaPressure: StarterOriginQuotaPressure
 ): Promise<void> {
   await session.evaluate(`(() => {
     window.dispatchEvent(
-      new Event('syncular-starter-run-quota-pressure-proof')
+      new CustomEvent('syncular-starter-run-quota-pressure-proof', {
+        detail: ${JSON.stringify({
+          availableBytes: quotaPressure.availableBytes,
+          overrideActive: quotaPressure.overrideActive,
+          quotaBytes: quotaPressure.quotaBytes,
+          source: 'chrome-devtools-protocol',
+          usageBytes: quotaPressure.usageBytes,
+          usageRatio: quotaPressure.usageRatio,
+        })},
+      })
     );
     return true;
   })()`);

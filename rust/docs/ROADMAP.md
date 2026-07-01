@@ -239,10 +239,11 @@ read-only review:
     and blob-cache clearing when a blob-capable runtime offers it, through
     public recovery APIs. The starter Chrome/CDP smoke also now opens a fresh
     profile, fills origin storage through the browser Cache API, applies
-    Chrome's origin quota override, and reruns the public deployment preflight
-    helper from the app to prove `browser.storage_pressure_high` and high
-    usage-ratio evidence come from real browser quota facts, while keeping
-    full quota exhaustion and eviction behavior as remaining matrix work.
+    Chrome's origin quota override, passes the post-override CDP usage/quota
+    facts into the app's public deployment preflight helper, and proves
+    `browser.storage_pressure_high` plus high usage-ratio evidence from real
+    browser quota facts, while keeping full quota exhaustion and eviction
+    behavior as remaining matrix work.
     Browser preview artifacts now include starter timings for database open,
     browser health refresh, schema readiness, support-bundle export,
     bootstrap readiness, realtime connection, and generated-mutation local

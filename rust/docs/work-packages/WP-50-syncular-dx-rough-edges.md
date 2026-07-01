@@ -4274,15 +4274,21 @@ Most recent mutation-status rerun:
   starter smoke. The Chrome/CDP branch opens a fresh profile, loads the
   generated app, fills the app origin through the browser Cache API, applies
   Chrome's `Storage.overrideQuotaForOrigin` to make the reported usage ratio
-  high, dispatches a starter proof event, and requires the public
-  `getSyncularBrowserDeploymentPreflight(...)` marker to report
-  `browser.storage_pressure_high`, high quota pressure, usage/quota/available
-  byte facts, and storage recommended actions. This turns quota-pressure
+  high, dispatches a starter proof event carrying the post-override CDP
+  usage/quota facts, and requires the public
+  `getSyncularBrowserDeploymentPreflight(...)` marker to classify those facts
+  as `browser.storage_pressure_high`, high quota pressure,
+  usage/quota/available byte facts, and storage recommended actions. Hosted
+  Checks run `28541786236` showed that Chrome may expose usage before the CDP
+  quota override while returning unknown quota facts through the page's later
+  `navigator.storage.estimate()` call, so the proof now keeps the
+  browser-observed CDP evidence explicit instead of assuming the page estimate
+  API stays transparent after override. This turns quota-pressure
   classification into browser-observed evidence while leaving true
   quota-exhausted writes, eviction, and storage-shutdown behavior as remaining
   matrix work. Local `create-syncular-app` typecheck, focused Biome,
-  non-Chrome scaffold smoke, and diff check passed; hosted Chrome evidence is
-  pending for this branch.
+  non-Chrome scaffold smoke, smoke-script typecheck, and diff check passed;
+  hosted Chrome evidence is pending for the fixed branch.
 
 ## Next Action
 
@@ -4297,7 +4303,8 @@ claiming installed-PWA offline/cache-update support. The incognito
 memory-storage support-policy branch is now confirmed in hosted Chrome and
 verifies explicit ephemeral/development storage classification without claiming
 private-mode durable persistence. The current slice adds a browser-observed
-quota-pressure preflight branch, with hosted Chrome verification pending.
+quota-pressure preflight branch, now fixed to pass post-override CDP usage/quota
+facts into the app preflight proof, with hosted Chrome verification pending.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 suspension/shutdown lifecycle coverage, actual quota-exhaustion/eviction and

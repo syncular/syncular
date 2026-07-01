@@ -5,6 +5,7 @@ import {
   getSyncularBrowserSupportPolicyContextHint,
   installSyncularBrowserLifecycleResume,
   type SyncularBrowserDeploymentPreflight,
+  type SyncularBrowserDeploymentPreflightNavigator,
   type SyncularBrowserHealth,
   type SyncularBrowserLifecyclePauseReason,
   type SyncularBrowserLifecycleResumeController,
@@ -103,6 +104,11 @@ type QuotaPressureProofPreview = {
   supportTier: SyncularBrowserDeploymentPreflight['support']['tier'];
   usageBytes: number | null;
   usageRatio: number | null;
+};
+
+type QuotaPressureProofDetail = {
+  quotaBytes: number;
+  usageBytes: number;
 };
 
 type WritePressureProofPreview = {
@@ -1056,7 +1062,7 @@ function TaskPane({
   }, [client]);
 
   useEffect(() => {
-    const runProof = async () => {
+    const runProof = async (event: Event) => {
       if (quotaPressureProofRunning.current) return;
       quotaPressureProofRunning.current = true;
       setQuotaPressureProof((current) => ({
@@ -1068,8 +1074,15 @@ function TaskPane({
         status: 'running',
       }));
       try {
+        const detail = quotaPressureProofDetailFromEvent(event);
+        const navigatorOverride = quotaPressureProofNavigatorOverride(detail);
         const preflight = await getSyncularBrowserDeploymentPreflight(
-          starterDeploymentPreflightOptions
+          navigatorOverride
+            ? {
+                ...starterDeploymentPreflightOptions,
+                navigator: navigatorOverride,
+              }
+            : starterDeploymentPreflightOptions
         );
         const issueCodes = preflight.issues.map((issue) => issue.code);
         if (
@@ -1111,8 +1124,8 @@ function TaskPane({
         quotaPressureProofRunning.current = false;
       }
     };
-    const onProof = () => {
-      void runProof();
+    const onProof = (event: Event) => {
+      void runProof(event);
     };
     window.addEventListener(
       'syncular-starter-run-quota-pressure-proof',
@@ -1738,6 +1751,64 @@ function failedDeploymentPreflightPreview(
     usageRatio: null,
     usageBytes: null,
   };
+}
+
+function quotaPressureProofDetailFromEvent(
+  event: Event
+): QuotaPressureProofDetail | null {
+  if (!(event instanceof CustomEvent)) return null;
+  const detail: unknown = event.detail;
+  if (detail == null || typeof detail !== 'object') return null;
+  const record = detail as Record<string, unknown>;
+  const quotaBytes = nonNegativeFiniteNumber(record.quotaBytes);
+  const usageBytes = nonNegativeFiniteNumber(record.usageBytes);
+  if (quotaBytes === null || usageBytes === null) return null;
+  return { quotaBytes, usageBytes };
+}
+
+function nonNegativeFiniteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? value
+    : null;
+}
+
+function quotaPressureProofNavigatorOverride(
+  detail: QuotaPressureProofDetail | null
+): SyncularBrowserDeploymentPreflightNavigator | null {
+  if (!detail) return null;
+  const liveNavigator =
+    typeof navigator === 'undefined'
+      ? undefined
+      : (navigator as SyncularBrowserDeploymentPreflightNavigator);
+  const liveStorage = liveNavigator?.storage;
+  const next: SyncularBrowserDeploymentPreflightNavigator = {};
+  if (liveNavigator?.locks) next.locks = liveNavigator.locks;
+  if (liveNavigator?.serviceWorker) {
+    next.serviceWorker = liveNavigator.serviceWorker;
+  }
+
+  const storage: NonNullable<
+    SyncularBrowserDeploymentPreflightNavigator['storage']
+  > = {
+    estimate: async () => ({
+      quota: detail.quotaBytes,
+      usage: detail.usageBytes,
+    }),
+  };
+  const getDirectory = liveStorage?.getDirectory;
+  if (typeof getDirectory === 'function') {
+    storage.getDirectory = () => getDirectory.call(liveStorage);
+  }
+  const persist = liveStorage?.persist;
+  if (typeof persist === 'function') {
+    storage.persist = () => persist.call(liveStorage);
+  }
+  const persisted = liveStorage?.persisted;
+  if (typeof persisted === 'function') {
+    storage.persisted = () => persisted.call(liveStorage);
+  }
+  next.storage = storage;
+  return next;
 }
 
 async function starterStorageRecoveryDeploymentPreflight(): Promise<SyncularBrowserDeploymentPreflight> {
