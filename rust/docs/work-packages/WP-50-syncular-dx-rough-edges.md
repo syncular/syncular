@@ -929,12 +929,14 @@ online propagation, or reconnect behavior can change.
   source entrypoints and checks known exports, catching top-level browser,
   native-driver, or optional-peer side effects that static graph walking could
   miss.
-- A first Next/SSR framework import smoke now builds a minimal Next 16 app
-  through webpack, imports `@syncular/client` and `@syncular/server` roots,
-  aliases workspace package roots to source so stale ignored `dist` leftovers
-  cannot affect the result, and verifies those root imports stay
-  warning-clean after WASM glue dynamic imports gained webpack ignore
-  metadata.
+- Framework import smokes now build a minimal Next 16 SSR app through webpack
+  and a minimal Vite 8 browser app. The Next path imports
+  `@syncular/client` and `@syncular/server` roots, aliases workspace package
+  roots to source so stale ignored `dist` leftovers cannot affect the result,
+  and verifies those root imports stay warning-clean after WASM glue dynamic
+  imports gained webpack ignore metadata. The Vite path imports the client
+  root through browser-conditioned package exports and verifies the production
+  bundle contains the expected Syncular marker.
 - The post-publish JavaScript install smoke now runs a release-time optional
   subpath import matrix by default. It installs `@syncular/client`,
   `@syncular/server`, and the Bun-friendly optional peers in a fresh npm
@@ -1513,6 +1515,13 @@ online propagation, or reconnect behavior can change.
   imports alongside the existing Vite ignore metadata, keeping runtime WASM
   asset loading external and removing the Next production-build warning for
   expression-based dynamic imports.
+- 2026-07-01: Extended `framework-import-smokes` with a minimal Vite 8 browser
+  production build that imports `@syncular/client` from a TypeScript browser
+  entrypoint, follows the package browser condition instead of source aliases,
+  and asserts the built JavaScript bundle contains the expected Syncular root
+  import marker. The smoke resolver now also understands Bun's
+  `node_modules/.bun/<package>@.../node_modules/<package>` dependency layout so
+  it can reuse workspace-installed Vite without a network install.
 - 2026-07-01: Wired the `create-syncular-app` starter to export a composed
   redacted support-bundle summary after the database opens. The task panel now
   exposes stable support-bundle DOM markers for status, redaction, section
@@ -1766,9 +1775,7 @@ Most recent native-sqlite-matrix script rerun:
 
 Most recent framework-import-smoke rerun:
 
-- `bunx biome check scripts/framework-import-smokes.ts packages/client/src/wasm-runtime.ts packages/client/src/rust-client.ts packages/client/src/worker-entry.ts package.json`
-- `bun --cwd packages/client tsgo`
-- `bun test packages/client/src/public-api.test.ts packages/client/src/browser-deployment-preflight.test.ts`
+- `bunx biome check scripts/framework-import-smokes.ts package.json`
 - `bun run framework-import-smokes`
 - `bun run docs:stale-check`
 - `git diff --check`
@@ -2018,11 +2025,13 @@ Most recent mutation-status rerun:
   environments users actually build with: Vite, Next/SSR, Bun, Node,
   Cloudflare, Chrome, Safari, Firefox, private mode, WebViews, and PWAs.
   Root source imports are now guarded by static graph checks, dynamic import
-  checks, and a Next 16 production-build smoke that imports the client/server
+  checks, a Next 16 production-build smoke that imports the client/server
   roots from source and verifies the WASM glue dynamic import path is
-  warning-clean under webpack. Remaining matrix work is real browser/framework
-  execution beyond this first Next/SSR build proof, especially Vite runtime,
-  Cloudflare, Safari, Firefox, private mode, WebViews, and PWAs.
+  warning-clean under webpack, and a Vite 8 browser production-build smoke
+  that follows browser-conditioned package exports for the client root.
+  Remaining matrix work is real browser/framework execution beyond these build
+  proofs, especially Vite runtime, Cloudflare, Safari, Firefox, private mode,
+  WebViews, and PWAs.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.

@@ -45,11 +45,23 @@ async function linkPackage(appDir: string, name: string, target: string) {
 }
 
 function workspaceDependencyPath(name: string): string {
+  const bunStore = join(repoRoot, 'node_modules/.bun');
+  const bunStoreName = name.replace('/', '+');
+  const bunStoreCandidates = existsSync(bunStore)
+    ? Array.from(
+        new Bun.Glob(`${bunStoreName}@*/node_modules/${name}`).scanSync({
+          cwd: bunStore,
+        })
+      ).map((candidate) => join(bunStore, candidate))
+    : [];
   const candidates = [
     join(repoRoot, 'node_modules', name),
     join(repoRoot, 'apps/docs/node_modules', name),
     join(repoRoot, 'packages/client/node_modules', name),
     join(repoRoot, 'packages/server/node_modules', name),
+    join(repoRoot, 'packages/create-syncular-app/node_modules', name),
+    join(repoRoot, 'packages/console/node_modules', name),
+    ...bunStoreCandidates,
   ];
   const found = candidates.find((candidate) => existsSync(candidate));
   if (!found) {
@@ -162,18 +174,74 @@ export default function Page() {
   );
 }
 
-async function main(): Promise<void> {
-  const appDir = join(workDir, 'next-root-imports');
-  await rm(workDir, { recursive: true, force: true });
-  await mkdir(appDir, { recursive: true });
-  await writeNextApp(appDir);
+async function writeViteApp(appDir: string): Promise<void> {
+  await mkdir(join(appDir, 'src'), { recursive: true });
+  await writeFile(
+    join(appDir, 'package.json'),
+    `${JSON.stringify(
+      {
+        private: true,
+        type: 'module',
+        scripts: {
+          build: 'vite build',
+        },
+        dependencies: {
+          '@syncular/client': 'workspace:*',
+          '@syncular/core': 'workspace:*',
+          vite: 'workspace:*',
+        },
+      },
+      null,
+      2
+    )}\n`,
+    'utf8'
+  );
+  await writeFile(
+    join(appDir, 'index.html'),
+    `<div id="app"></div><script type="module" src="/src/main.ts"></script>\n`,
+    'utf8'
+  );
+  await writeFile(
+    join(appDir, 'src', 'main.ts'),
+    `import {
+  getSyncularBrowserHealth,
+  getSyncularSupportBundle,
+} from '@syncular/client';
 
+const checks = [
+  ['client health', getSyncularBrowserHealth],
+  ['client support bundle', getSyncularSupportBundle],
+] as const;
+
+for (const [label, value] of checks) {
+  if (typeof value !== 'function') {
+    throw new Error(label + ' root import was not a function');
+  }
+}
+
+document
+  .querySelector('#app')
+  ?.setAttribute('data-syncular-vite-root-import', 'ready');
+`,
+    'utf8'
+  );
+}
+
+async function linkSyncularWorkspacePackages(appDir: string): Promise<void> {
   await linkPackage(
     appDir,
     '@syncular/client',
     join(repoRoot, 'packages/client')
   );
   await linkPackage(appDir, '@syncular/core', join(repoRoot, 'packages/core'));
+}
+
+async function runNextRootImportSmoke(): Promise<void> {
+  const appDir = join(workDir, 'next-root-imports');
+  await mkdir(appDir, { recursive: true });
+  await writeNextApp(appDir);
+
+  await linkSyncularWorkspacePackages(appDir);
   await linkPackage(
     appDir,
     '@syncular/server',
@@ -183,18 +251,53 @@ async function main(): Promise<void> {
   await linkPackage(appDir, 'react', workspaceDependencyPath('react'));
   await linkPackage(appDir, 'react-dom', workspaceDependencyPath('react-dom'));
 
+  await run(
+    'node',
+    [join(appDir, 'node_modules/next/dist/bin/next'), 'build', '--webpack'],
+    {
+      cwd: appDir,
+      env: {
+        NEXT_TELEMETRY_DISABLED: '1',
+      },
+    }
+  );
+  console.log('[framework-import-smokes] Next root import smoke passed');
+}
+
+async function runViteClientRootImportSmoke(): Promise<void> {
+  const appDir = join(workDir, 'vite-client-root-imports');
+  await mkdir(appDir, { recursive: true });
+  await writeViteApp(appDir);
+
+  await linkSyncularWorkspacePackages(appDir);
+  await linkPackage(appDir, 'vite', workspaceDependencyPath('vite'));
+
+  await run('node', [join(appDir, 'node_modules/vite/bin/vite.js'), 'build'], {
+    cwd: appDir,
+  });
+
+  const bundleDir = join(appDir, 'dist/assets');
+  const bundleNames = Array.from(
+    new Bun.Glob('*.js').scanSync({ cwd: bundleDir })
+  );
+  for (const bundleName of bundleNames) {
+    const bundle = await Bun.file(join(bundleDir, bundleName)).text();
+    if (bundle.includes('data-syncular-vite-root-import')) {
+      console.log('[framework-import-smokes] Vite root import smoke passed');
+      return;
+    }
+  }
+
+  throw new Error(
+    `Vite build did not contain the Syncular root import marker in ${bundleDir}`
+  );
+}
+
+async function main(): Promise<void> {
+  await rm(workDir, { recursive: true, force: true });
   try {
-    await run(
-      'node',
-      [join(appDir, 'node_modules/next/dist/bin/next'), 'build', '--webpack'],
-      {
-        cwd: appDir,
-        env: {
-          NEXT_TELEMETRY_DISABLED: '1',
-        },
-      }
-    );
-    console.log('[framework-import-smokes] Next root import smoke passed');
+    await runNextRootImportSmoke();
+    await runViteClientRootImportSmoke();
   } finally {
     if (!keep) {
       await rm(workDir, { recursive: true, force: true });
