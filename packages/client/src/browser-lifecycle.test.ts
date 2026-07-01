@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'bun:test';
-import { installSyncularBrowserLifecycleResume } from './browser-lifecycle';
+import {
+  installSyncularBrowserLifecycleResume,
+  SyncularBrowserLifecycleResumeLockError,
+} from './browser-lifecycle';
 import type { SyncularSyncRequestOptions, SyncularSyncResult } from './types';
 
 describe('Syncular browser lifecycle resume', () => {
@@ -101,6 +104,92 @@ describe('Syncular browser lifecycle resume', () => {
 
     global.dispatch('online');
     expect(client.calls).toEqual(['resume', 'resume']);
+  });
+
+  it('serializes resume through Web Locks when coordination is enabled', async () => {
+    const firstClient = new FakeResumeClient({ deferred: true });
+    const secondClient = new FakeResumeClient({ deferred: true });
+    const locks = new FakeWebLocks();
+    const starts: string[] = [];
+    const navigator = { locks };
+    const first = installSyncularBrowserLifecycleResume(firstClient, {
+      lock: { name: 'syncular:test:resume' },
+      navigator,
+      onResumeStart(context) {
+        starts.push(`first:${context.lockState}:${context.lockName}`);
+      },
+    });
+    const second = installSyncularBrowserLifecycleResume(secondClient, {
+      lock: { name: 'syncular:test:resume' },
+      navigator,
+      onResumeStart(context) {
+        starts.push(`second:${context.lockState}:${context.lockName}`);
+      },
+    });
+
+    const firstResume = first.resume('manual');
+    const secondResume = second.resume('online');
+
+    await waitFor(() => firstClient.calls.length === 1);
+    expect(locks.requests).toEqual([
+      'syncular:test:resume',
+      'syncular:test:resume',
+    ]);
+    expect(firstClient.calls).toEqual(['resume']);
+    expect(secondClient.calls).toEqual([]);
+    expect(starts).toEqual(['first:acquired:syncular:test:resume']);
+
+    firstClient.resolveNext('first');
+    await firstResume;
+
+    await waitFor(() => secondClient.calls.length === 1);
+    expect(starts).toEqual([
+      'first:acquired:syncular:test:resume',
+      'second:acquired:syncular:test:resume',
+    ]);
+    secondClient.resolveNext('second');
+    await secondResume;
+  });
+
+  it('falls back when optional Web Locks coordination is unavailable', async () => {
+    const client = new FakeResumeClient();
+    const starts: string[] = [];
+    const controller = installSyncularBrowserLifecycleResume(client, {
+      lock: true,
+      navigator: {},
+      syncOptions: ({ lockState }) => ({
+        syncAttempt: { id: `resume:${lockState}`, startedAt: 1 },
+      }),
+      onResumeStart(context) {
+        starts.push(`${context.lockState}:${context.lockRequired}`);
+      },
+    });
+
+    await controller.resume('manual');
+
+    expect(client.calls).toEqual(['resume:unavailable']);
+    expect(starts).toEqual(['unavailable:false']);
+  });
+
+  it('rejects when required Web Locks coordination is unavailable', async () => {
+    const client = new FakeResumeClient();
+    const errors: string[] = [];
+    const controller = installSyncularBrowserLifecycleResume(client, {
+      lock: { name: 'syncular:test:required', required: true },
+      navigator: {},
+      onResumeError(error, context) {
+        errors.push(
+          `${error instanceof SyncularBrowserLifecycleResumeLockError}:${context.lockState}:${context.lockRequired}:${context.lockName}`
+        );
+      },
+    });
+
+    await expect(controller.resume('manual')).rejects.toBeInstanceOf(
+      SyncularBrowserLifecycleResumeLockError
+    );
+
+    expect(client.calls).toEqual([]);
+    expect(errors).toEqual(['true:unavailable:true:syncular:test:required']);
   });
 
   it('removes page listeners when destroyed', () => {
@@ -232,6 +321,32 @@ class FakeGlobal {
       this.#listeners.set(type, listeners);
     }
     return listeners;
+  }
+}
+
+class FakeWebLocks {
+  readonly requests: string[] = [];
+  #active = false;
+  readonly #queue: Array<() => void> = [];
+
+  async request<T>(
+    name: string,
+    _options: { mode: 'exclusive' },
+    callback: () => T | Promise<T>
+  ): Promise<T> {
+    this.requests.push(name);
+    while (this.#active) {
+      await new Promise<void>((resolve) => {
+        this.#queue.push(resolve);
+      });
+    }
+    this.#active = true;
+    try {
+      return await callback();
+    } finally {
+      this.#active = false;
+      this.#queue.shift()?.();
+    }
   }
 }
 

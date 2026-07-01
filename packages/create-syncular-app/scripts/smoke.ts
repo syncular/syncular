@@ -258,9 +258,9 @@ async function verifyBuiltPreviewAssets(
       const assetBytes = Buffer.byteLength(assetBody, 'utf8');
       totalAssetBytes += assetBytes;
       jsAssetBytes += assetBytes;
-      sawLifecycleResumeMarker ||= assetBody.includes(
-        'data-syncular-lifecycle-resume-status'
-      );
+      sawLifecycleResumeMarker ||=
+        assetBody.includes('data-syncular-lifecycle-resume-status') &&
+        assetBody.includes('data-syncular-lifecycle-resume-lock-state');
       sawBrowserSupportPolicyMarker ||= assetBody.includes(
         'data-syncular-browser-support-policy-status'
       );
@@ -548,6 +548,9 @@ type BrowserPreviewProbe = {
     count: number;
     reason: string | null;
     error: string | null;
+    lockName: string | null;
+    lockRequired: string | null;
+    lockState: string | null;
   };
   starterTimeline: {
     bootstrapReadyMs: number | null;
@@ -655,6 +658,9 @@ async function readStarterBrowserProbe(
     const lifecycleResumeCount = Number(lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-count') ?? 0);
     const lifecycleResumeReason = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-reason') ?? null;
     const lifecycleResumeError = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-error') ?? null;
+    const lifecycleResumeLockName = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-lock-name') ?? null;
+    const lifecycleResumeLockRequired = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-lock-required') ?? null;
+    const lifecycleResumeLockState = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-lock-state') ?? null;
     const starterTimeline = document.querySelector('[data-syncular-starter-database-open-ms]');
     const readStarterTimelineMs = (name) => {
       const value = starterTimeline?.getAttribute(name) ?? null;
@@ -784,6 +790,9 @@ async function readStarterBrowserProbe(
         count: lifecycleResumeCount,
         reason: lifecycleResumeReason,
         error: lifecycleResumeError,
+        lockName: lifecycleResumeLockName,
+        lockRequired: lifecycleResumeLockRequired,
+        lockState: lifecycleResumeLockState,
       },
       starterTimeline: {
         bootstrapReadyMs,
@@ -1196,6 +1205,9 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         count: 2,
         reason: 'online',
         error: null,
+        lockName: 'syncular:create-syncular-app:lifecycle-resume',
+        lockRequired: 'false',
+        lockState: 'acquired',
       },
       starterTimeline: {
         bootstrapReadyMs: 10,
@@ -1517,7 +1529,14 @@ function assertBrowserPreviewLifecycleResumeShape(
   if (!isRecord(value)) {
     throw new Error(`${path} probe.lifecycleResume was not a JSON object`);
   }
-  for (const key of ['status', 'reason', 'error'] as const) {
+  for (const key of [
+    'status',
+    'reason',
+    'error',
+    'lockName',
+    'lockRequired',
+    'lockState',
+  ] as const) {
     if (value[key] !== null && typeof value[key] !== 'string') {
       throw new Error(
         `${path} probe.lifecycleResume.${key} was not nullable text`

@@ -204,7 +204,12 @@ read-only review:
     redacted support-bundle summary after opening the database, and the
     scaffold smoke asserts that production assets contain the support-bundle
     and runtime-timing markers, then waits for redacted support-bundle DOM
-    evidence in the Chrome/CDP preview path when a browser is available.
+    evidence in the Chrome/CDP preview path when a browser is available. The
+    starter also installs the browser lifecycle resume helper, which coalesces
+    restored-page, visible-tab, and online signals into the managed
+    `resumeFromBackground()` path, can serialize foreground catch-up through
+    optional Web Locks, and records lifecycle lock state in the hidden marker
+    and browser failure artifact.
     Browser preview artifacts now include starter timings for database open,
     browser health refresh, schema readiness, support-bundle export,
     bootstrap readiness, realtime connection, and generated-mutation local

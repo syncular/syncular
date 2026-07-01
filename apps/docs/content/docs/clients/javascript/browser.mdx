@@ -152,12 +152,22 @@ foreground catch-up path without app code calling `sync()` directly:
 ```ts
 import { installSyncularBrowserLifecycleResume } from '@syncular/client';
 
-const lifecycleResume = installSyncularBrowserLifecycleResume(syncular);
+const lifecycleResume = installSyncularBrowserLifecycleResume(syncular, {
+  lock: { name: 'syncular:my-app:lifecycle-resume' },
+});
 
 window.addEventListener('beforeunload', () => {
   lifecycleResume.destroy();
 });
 ```
+
+The optional `lock` setting serializes foreground catch-up through the browser
+Web Locks API when the host provides it. That keeps multi-tab resume and local
+recovery work from running concurrently against the same persistent browser
+database. If Web Locks are unavailable the helper falls back to an
+uncoordinated resume by default; use `lock.required: true` only when your
+preflight requires coordinated tabs and you want a hard failure instead of
+best-effort recovery.
 
 ## React apps
 

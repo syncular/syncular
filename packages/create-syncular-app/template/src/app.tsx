@@ -6,6 +6,7 @@ import {
   type SyncularBrowserDeploymentPreflight,
   type SyncularBrowserHealth,
   type SyncularBrowserLifecycleResumeController,
+  type SyncularBrowserLifecycleResumeLockState,
   type SyncularBrowserSupportPolicyEvaluation,
   type SyncularClientStatus,
   type SyncularSchemaReadinessResult,
@@ -27,6 +28,9 @@ type LifecycleResumePreview = {
   count: number;
   error: string | null;
   lastReason: string | null;
+  lockName: string | null;
+  lockRequired: boolean;
+  lockState: SyncularBrowserLifecycleResumeLockState;
   status: 'idle' | 'running' | 'complete' | 'failed';
 };
 
@@ -74,6 +78,9 @@ const initialLifecycleResume: LifecycleResumePreview = {
   count: 0,
   error: null,
   lastReason: null,
+  lockName: null,
+  lockRequired: false,
+  lockState: 'not-requested',
   status: 'idle',
 };
 
@@ -130,12 +137,16 @@ export function App() {
         }
         opened = nextClient;
         lifecycleResume = installSyncularBrowserLifecycleResume(nextClient, {
+          lock: { name: 'syncular:create-syncular-app:lifecycle-resume' },
           onResumeStart(context) {
             if (!disposed) {
               setLifecycleResume((current) => ({
                 ...current,
                 error: null,
                 lastReason: context.reason,
+                lockName: context.lockName ?? null,
+                lockRequired: context.lockRequired,
+                lockState: context.lockState,
                 status: 'running',
               }));
             }
@@ -146,6 +157,9 @@ export function App() {
                 count: current.count + 1,
                 error: null,
                 lastReason: context.reason,
+                lockName: context.lockName ?? null,
+                lockRequired: context.lockRequired,
+                lockState: context.lockState,
                 status: 'complete',
               }));
             }
@@ -156,6 +170,9 @@ export function App() {
                 ...current,
                 error: errorMessage(error),
                 lastReason: context.reason,
+                lockName: context.lockName ?? null,
+                lockRequired: context.lockRequired,
+                lockState: context.lockState,
                 status: 'failed',
               }));
             }
@@ -214,6 +231,11 @@ function LifecycleResumeMarker({
     <span
       data-syncular-lifecycle-resume-count={lifecycleResume.count}
       data-syncular-lifecycle-resume-error={lifecycleResume.error ?? ''}
+      data-syncular-lifecycle-resume-lock-name={lifecycleResume.lockName ?? ''}
+      data-syncular-lifecycle-resume-lock-required={String(
+        lifecycleResume.lockRequired
+      )}
+      data-syncular-lifecycle-resume-lock-state={lifecycleResume.lockState}
       data-syncular-lifecycle-resume-reason={lifecycleResume.lastReason ?? ''}
       data-syncular-lifecycle-resume-status={lifecycleResume.status}
       hidden
