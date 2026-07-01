@@ -52,6 +52,8 @@ const STARTER_LOCAL_RECOVERY_LOCK_TIMEOUT_MS = 1_000;
 const BROWSER_PREVIEW_SMOKE_TIMEOUT_MS = 180_000;
 const CDP_CONNECT_TIMEOUT_MS = 10_000;
 const CDP_COMMAND_TIMEOUT_MS = 30_000;
+const CHROME_BFCACHE_LIFECYCLE_SUSPENSION_TEXT =
+  'Page entered Back-Forward Cache';
 const keep = process.argv.includes('--keep');
 const requireBrowserPreviewSmoke =
   process.env.SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE === 'required' ||
@@ -3310,7 +3312,7 @@ class CdpSession {
           }
         | undefined;
       const details = params?.exceptionDetails;
-      this.#errors.push(
+      this.#recordBrowserDiagnostic(
         formatBrowserDiagnostic(
           details?.exception?.description ??
             details?.text ??
@@ -3339,7 +3341,7 @@ class CdpSession {
           params.entry.networkRequestId === undefined
             ? undefined
             : this.#requests.get(params.entry.networkRequestId);
-        this.#errors.push(
+        this.#recordBrowserDiagnostic(
           formatBrowserDiagnostic(
             params.entry.text ?? 'Browser log error',
             params.entry.url ?? request?.url,
@@ -3384,7 +3386,7 @@ class CdpSession {
         response?.mimeType?.includes('text/html') &&
         isModuleLikeAssetUrl(url)
       ) {
-        this.#errors.push(
+        this.#recordBrowserDiagnostic(
           `Browser loaded ${params?.type ?? 'asset'} ${url} as ${
             response.mimeType
           }${response.status === undefined ? '' : ` (${response.status})`}`
@@ -3410,7 +3412,7 @@ class CdpSession {
         ? this.#requests.get(params.requestId)
         : undefined;
       if (request) {
-        this.#errors.push(
+        this.#recordBrowserDiagnostic(
           `Browser request failed: ${params?.type ?? request.type ?? 'asset'} ${
             request.url
           }${params?.errorText ? ` (${params.errorText})` : ''}`
@@ -3428,6 +3430,13 @@ class CdpSession {
       clearTimeout(waiter.timeout);
       waiter.resolve(message.params);
     }
+  }
+
+  #recordBrowserDiagnostic(message: string): void {
+    if (message.includes(CHROME_BFCACHE_LIFECYCLE_SUSPENSION_TEXT)) {
+      return;
+    }
+    this.#errors.push(message);
   }
 }
 
