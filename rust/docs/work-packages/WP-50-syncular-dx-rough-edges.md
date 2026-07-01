@@ -1616,6 +1616,11 @@ online propagation, or reconnect behavior can change.
   import marker. The smoke resolver now also understands Bun's
   `node_modules/.bun/<package>@.../node_modules/<package>` dependency layout so
   it can reuse workspace-installed Vite without a network install.
+- 2026-07-01: Extended the Vite framework smoke from bundle inspection to
+  production-preview serving proof. After `vite build`, the smoke starts
+  `vite preview` on a free localhost port, fetches the built HTML, verifies it
+  references the expected bundle, fetches that served JavaScript asset, and
+  asserts the Syncular marker is present over HTTP.
 - 2026-07-01: Extended `framework-import-smokes` with a minimal Cloudflare
   Worker dry-run build through Wrangler. The generated Worker imports
   `@syncular/server/cloudflare`, exports a `SyncDurableObject` subclass,
@@ -1962,12 +1967,15 @@ Most recent framework-import-smoke rerun:
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/framework-import-smokes.ts`
   - Passed the Next 16 SSR production build proof.
   - Passed the Vite 8 browser production build proof.
+  - Passed the Vite production-preview HTTP proof for the built HTML and
+    served JavaScript bundle marker.
   - Passed the Wrangler dry-run Cloudflare Worker bundle proof.
   - Passed the local `wrangler dev --local` runtime fetch proof for the
     generated `createSyncWorker(...)` route.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke`
   - Confirmed release rehearsal still runs the framework smoke by default and
-    returns cleanly after the new local Cloudflare Worker runtime probe.
+    returns cleanly after the Vite preview HTTP proof and local Cloudflare
+    Worker runtime probe.
 - `bun run docs:stale-check`
 - `git diff --check`
 
@@ -2256,14 +2264,15 @@ Most recent mutation-status rerun:
   checks, a Next 16 production-build smoke that imports the client/server
   roots from source and verifies the WASM glue dynamic import path is
   warning-clean under webpack, and a Vite 8 browser production-build smoke
-  that follows browser-conditioned package exports for the client root. The
-  Cloudflare smoke now bundles `@syncular/server/cloudflare` through Wrangler
-  dry-run and then starts the generated Worker with local `wrangler dev`,
-  proving a real request reaches the `createSyncWorker(...)` route. Release
-  rehearsal now runs those framework proofs by default before publish dry-runs.
-  Remaining matrix work is real browser/framework execution beyond these
-  proofs, especially Vite runtime, deeper Cloudflare binding/Durable Object
-  variants, Safari, Firefox, private mode, WebViews, and PWAs.
+  that follows browser-conditioned package exports for the client root and
+  serves the built HTML/JavaScript through Vite preview. The Cloudflare smoke
+  now bundles `@syncular/server/cloudflare` through Wrangler dry-run and then
+  starts the generated Worker with local `wrangler dev`, proving a real
+  request reaches the `createSyncWorker(...)` route. Release rehearsal now
+  runs those framework proofs by default before publish dry-runs. Remaining
+  matrix work is real browser/framework execution beyond these proofs,
+  especially browser-executed Vite runtime, deeper Cloudflare binding/Durable
+  Object variants, Safari, Firefox, private mode, WebViews, and PWAs.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.

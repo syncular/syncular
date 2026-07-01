@@ -102,7 +102,69 @@ async function runLocalWorkerRuntimeProbe(args: {
 
   try {
     await waitForHttpText({
+      label: 'Cloudflare Worker runtime smoke',
       url: `http://127.0.0.1:${port}${args.route}`,
+      expectedText: args.expectedText,
+      output,
+      getExit: () => exited,
+    });
+  } finally {
+    await stopProcess(child);
+  }
+}
+
+async function runVitePreviewRuntimeProbe(args: {
+  appDir: string;
+  viteBin: string;
+  bundlePath: string;
+  expectedText: string;
+}): Promise<void> {
+  const port = await getFreePort();
+  const output: string[] = [];
+  let exited: { code: number | null; signal: NodeJS.Signals | null } | null =
+    null;
+  console.log(
+    `[framework-import-smokes] $ node ${args.viteBin} preview --host 127.0.0.1 --port ${port} --strictPort`
+  );
+  const child = spawn(
+    'node',
+    [
+      args.viteBin,
+      'preview',
+      '--host',
+      '127.0.0.1',
+      '--port',
+      String(port),
+      '--strictPort',
+    ],
+    {
+      cwd: args.appDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: process.env,
+    }
+  );
+  child.stdout?.on('data', (chunk) =>
+    appendProcessOutput(output, 'stdout', chunk)
+  );
+  child.stderr?.on('data', (chunk) =>
+    appendProcessOutput(output, 'stderr', chunk)
+  );
+  child.on('exit', (code, signal) => {
+    exited = { code, signal };
+  });
+
+  const baseUrl = `http://127.0.0.1:${port}`;
+  try {
+    await waitForHttpText({
+      label: 'Vite preview root smoke',
+      url: `${baseUrl}/`,
+      expectedText: args.bundlePath,
+      output,
+      getExit: () => exited,
+    });
+    await waitForHttpText({
+      label: 'Vite preview bundle smoke',
+      url: `${baseUrl}${args.bundlePath}`,
       expectedText: args.expectedText,
       output,
       getExit: () => exited,
@@ -124,25 +186,26 @@ function appendProcessOutput(
 }
 
 async function waitForHttpText(args: {
+  label: string;
   url: string;
   expectedText: string;
   output: string[];
   getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
-}): Promise<void> {
+}): Promise<string> {
   const deadline = Date.now() + 30_000;
   let lastError = 'no request attempted';
   while (Date.now() < deadline) {
     const exit = args.getExit();
     if (exit) {
       throw new Error(
-        `Cloudflare Worker runtime smoke exited before serving ${args.url}: code=${
+        `${args.label} exited before serving ${args.url}: code=${
           exit.code ?? 'null'
         } signal=${exit.signal ?? 'null'}\n${args.output.join('')}`
       );
     }
     try {
       const text = await fetchTextWithTimeout(args.url, 1_000);
-      if (text.includes(args.expectedText)) return;
+      if (text.includes(args.expectedText)) return text;
       lastError = `unexpected response body: ${text.slice(0, 200)}`;
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
@@ -150,7 +213,7 @@ async function waitForHttpText(args: {
     await Bun.sleep(250);
   }
   throw new Error(
-    `Timed out waiting for Cloudflare Worker runtime smoke at ${args.url}: ${lastError}\n${args.output.join(
+    `Timed out waiting for ${args.label} at ${args.url}: ${lastError}\n${args.output.join(
       ''
     )}`
   );
@@ -483,8 +546,9 @@ async function runViteClientRootImportSmoke(): Promise<void> {
 
   await linkSyncularWorkspacePackages(appDir);
   await linkPackage(appDir, 'vite', workspaceDependencyPath('vite'));
+  const viteBin = join(appDir, 'node_modules/vite/bin/vite.js');
 
-  await run('node', [join(appDir, 'node_modules/vite/bin/vite.js'), 'build'], {
+  await run('node', [viteBin, 'build'], {
     cwd: appDir,
   });
 
@@ -496,6 +560,15 @@ async function runViteClientRootImportSmoke(): Promise<void> {
     const bundle = await Bun.file(join(bundleDir, bundleName)).text();
     if (bundle.includes('data-syncular-vite-root-import')) {
       console.log('[framework-import-smokes] Vite root import smoke passed');
+      await runVitePreviewRuntimeProbe({
+        appDir,
+        viteBin,
+        bundlePath: `/assets/${bundleName}`,
+        expectedText: 'data-syncular-vite-root-import',
+      });
+      console.log(
+        '[framework-import-smokes] Vite preview runtime smoke passed'
+      );
       return;
     }
   }
