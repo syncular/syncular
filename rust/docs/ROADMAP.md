@@ -158,10 +158,13 @@ read-only review:
     pushes through the Syncular HTTP route, pulls the row back through a binary
     sync-pack and decoded snapshot chunk, rejects unauthenticated sync and a
     forbidden-scope write with stable envelopes, rejects a wrong-scope snapshot
-    chunk download, drives an R2-backed Syncular blob route
-    upload/complete/download flow, rejects a forbidden blob download URL with
-    stable access details, and echoes a message through a Durable Object
-    WebSocket route. WASM glue dynamic imports include webpack
+    chunk download, opens real Syncular realtime reader/writer WebSockets over
+    the Durable Object upgrade bridge, pushes through the writer socket, and
+    decodes the reader's binary sync-pack delta for the D1 row, drives an
+    R2-backed Syncular blob route upload/complete/download flow, rejects a
+    forbidden blob download URL with stable access details, and echoes a
+    message through a Durable Object WebSocket route. WASM glue dynamic
+    imports include webpack
     ignore metadata so the Next build stays warning-clean.
     Release rehearsal runs the framework import smoke by default before
     publish dry-runs, with an explicit skip flag for local iteration and an

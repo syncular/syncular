@@ -1030,11 +1030,13 @@ online propagation, or reconnect behavior can change.
   through the Syncular HTTP route, pulls the row back through a binary
   sync-pack plus decoded snapshot chunk, rejects unauthenticated sync and a
   forbidden-scope write with stable envelopes, rejects a wrong-scope snapshot
-  chunk download, drives an R2-backed Syncular blob route
-  upload/complete/download flow, rejects a forbidden blob download URL with
-  stable access details, and uses a DO-backed WebSocket route to echo a client
-  message through the same `SyncDurableObject` upgrade bridge used by realtime
-  routes.
+  chunk download, opens real Syncular realtime reader/writer WebSockets over
+  the same `SyncDurableObject` upgrade bridge, pushes a D1 row through the
+  writer socket, decodes the reader's binary sync-pack delta for that row,
+  drives an R2-backed Syncular blob route upload/complete/download flow,
+  rejects a forbidden blob download URL with stable access details, and uses a
+  DO-backed WebSocket route to echo a client message through the same upgrade
+  bridge as a lower-level transport proof.
 - The post-publish JavaScript install smoke now runs a release-time optional
   subpath import matrix by default. It installs `@syncular/client`,
   `@syncular/server`, and the Bun-friendly optional peers in a fresh npm
@@ -1730,6 +1732,13 @@ online propagation, or reconnect behavior can change.
   `sync.forbidden`, and wrong-scope snapshot chunk access returns
   `sync.forbidden`; the R2 blob smoke now asserts a forbidden actor cannot mint
   a download URL and receives `blob.forbidden` with stable access details.
+- 2026-07-01: Extended the Cloudflare WebSocket proof from a low-level Durable
+  Object echo to the real Syncular realtime route. After the D1 pull records a
+  reader subscription, the smoke opens reader and writer realtime WebSockets
+  through local `wrangler dev`, negotiates `binary-sync-pack-v1`, sends a
+  WebSocket push through the writer connection, asserts the writer
+  `push-response` is applied, decodes the reader's binary sync-pack delta, and
+  verifies the pushed D1 row is present.
 - 2026-07-01: Extended the Cloudflare R2 proof from raw object IO to the
   Syncular Hono blob route happy path. The generated Worker now mounts
   `createBlobRoutes(...)` with an R2 adapter, blob manager, HMAC token signer,
@@ -1742,8 +1751,9 @@ online propagation, or reconnect behavior can change.
   WebSocket echo route. The generated `SyncDurableObject` now receives
   `upgradeWebSocket`, registers `/syncular-framework-import-smoke/ws`, and the
   smoke opens a local `ws://` client, sends a ping, and waits for the echoed
-  marker. This proves the local Wrangler + Durable Object WebSocket bridge
-  carries data without claiming full Syncular realtime session coverage yet.
+  marker. This proves the local Wrangler + Durable Object WebSocket bridge can
+  carry non-Syncular traffic and remains a lower-level transport regression
+  guard alongside the real Syncular realtime route proof.
 - 2026-07-01: Made `framework-import-smokes` use a run-specific temporary
   workspace by default so a direct local smoke and a release-rehearsal smoke
   cannot delete each other's generated Next/Vite/Cloudflare app directories.
@@ -2085,16 +2095,17 @@ Most recent framework-import-smoke rerun:
   - Skipped the optional Vite Chrome/CDP browser-runtime proof because no
     Chrome/Chromium binary was available on this local machine.
   - Passed the Wrangler dry-run Cloudflare Durable Object + D1 schema/authz +
-    R2 blob authz + WebSocket bundle/binding proof.
+    Syncular realtime + R2 blob authz + WebSocket bundle/binding proof.
   - Passed the local `wrangler dev --local` runtime fetch/WebSocket proof for
     the generated `createSyncWorkerWithDO(...)` route through the `SYNC_DO`,
     D1, and R2 bindings, including `ensureSyncSchema(...)`, `sync_commits`
     table query, D1 app-table insert/select/delete, Syncular HTTP push/pull
     with binary sync-pack and decoded snapshot chunk, `sync.auth_required`,
     forbidden-scope `sync.forbidden`, wrong-scope snapshot-chunk
-    `sync.forbidden`, R2-backed blob route upload/complete/download,
-    forbidden `blob.forbidden` download URL details, and Durable Object
-    WebSocket echo.
+    `sync.forbidden`, real Syncular realtime reader/writer WebSockets with
+    WebSocket push-response and decoded binary sync-pack delta, R2-backed blob
+    route upload/complete/download, forbidden `blob.forbidden` download URL
+    details, and Durable Object WebSocket echo.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/framework-import-smokes.ts --require-vite-browser-runtime`
   - Expected nonzero status locally because Chrome/Chromium is unavailable;
     confirms the required Vite browser-runtime path fails loudly instead of
@@ -2116,8 +2127,8 @@ Most recent release-rehearsal framework-smoke wiring rerun:
 - `bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke`
   - Ran version stamp dry-runs, then the default framework import smoke.
   - Passed Next, Vite build/preview, and Cloudflare Durable Object + D1
-    schema/authz + R2 blob authz + WebSocket dry-run/runtime IO proofs while
-    skipping optional local Chrome execution.
+    schema/authz + Syncular realtime + R2 blob authz + WebSocket
+    dry-run/runtime IO proofs while skipping optional local Chrome execution.
 - `bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke --require-framework-vite-browser-runtime`
   - Expected nonzero status locally because the new required Vite
     browser-runtime flag is passed through and no Chrome/Chromium binary is
@@ -2414,15 +2425,18 @@ Most recent mutation-status rerun:
   performs D1 app-table insert/select/delete, pushes and pulls through the
   Syncular HTTP route with binary sync-pack plus decoded snapshot chunk,
   rejects unauthenticated sync, rejects a forbidden-scope write, rejects
-  wrong-scope snapshot chunk access, drives an R2-backed blob route
-  upload/complete/download flow, rejects a forbidden blob download URL with
-  stable access details, and echoes through a DO-backed WebSocket route.
+  wrong-scope snapshot chunk access, opens real Syncular realtime
+  reader/writer WebSockets over the Durable Object upgrade bridge, pushes
+  through the writer socket, decodes the reader's binary sync-pack delta for
+  the D1 row, drives an R2-backed blob route upload/complete/download flow,
+  rejects a forbidden blob download URL with stable access details, and echoes
+  through a DO-backed WebSocket route.
   Release rehearsal now runs those framework proofs by default before publish
   dry-runs and can require the Vite browser execution path on Chrome-capable
   runners. Remaining matrix work is deeper browser/framework execution beyond
-  these proofs, especially full Syncular realtime over Durable Object
-  WebSocket, richer scoped/negative D1 and R2 route matrix cases, Safari,
-  Firefox, private mode, WebViews, and PWAs.
+  these proofs, especially richer multi-client/browser Syncular realtime over
+  Durable Object WebSocket, richer scoped/negative D1 and R2 route matrix
+  cases, Safari, Firefox, private mode, WebViews, and PWAs.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.

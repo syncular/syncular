@@ -46,9 +46,10 @@ until the full browser Worker/WASM suite is green on Linux.
   probes that perform Syncular schema creation on D1, D1 app-table
   insert/select/delete, Syncular push/pull over D1 with binary sync-pack and
   snapshot-chunk decode, stable unauthenticated and forbidden-scope sync
-  failures, an R2-backed Syncular blob route upload/complete/download flow,
-  stable forbidden blob access details, and a Durable Object WebSocket echo
-  through those bindings.
+  failures, a real Syncular realtime route over the Durable Object WebSocket
+  bridge with a WebSocket push and binary sync-pack delta, an R2-backed
+  Syncular blob route upload/complete/download flow, stable forbidden blob
+  access details, and a Durable Object WebSocket echo through those bindings.
   For release/post-publish
   checks,
   `bun scripts/post-publish-install-smokes.ts --version <version>` also runs

@@ -716,6 +716,32 @@ function webSocketDataToText(data: unknown): string {
   return String(data);
 }
 
+function isBinaryWebSocketData(data: unknown): boolean {
+  return typeof data !== 'string';
+}
+
+function webSocketDataToBytes(data: unknown): Uint8Array {
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  throw new Error(`Unsupported binary WebSocket data: ${typeof data}`);
+}
+
+function closeWebSocket(socket: WebSocket | null): void {
+  if (
+    socket &&
+    (socket.readyState === WebSocket.CONNECTING ||
+      socket.readyState === WebSocket.OPEN)
+  ) {
+    try {
+      socket.close();
+    } catch {
+      // ignore close errors during cleanup
+    }
+  }
+}
+
 async function runSyncRouteFlow(args: {
   origin: string;
   routeBase: string;
@@ -724,6 +750,7 @@ async function runSyncRouteFlow(args: {
 }): Promise<void> {
   const label = 'Cloudflare D1 sync route smoke';
   const actorId = 'syncular-framework-actor';
+  const readerClientId = 'syncular-framework-reader';
   const rowId = `syncular-framework-sync-task-${Date.now()}`;
   const title = 'D1 sync route ready';
   const syncUrl = `${args.origin}${args.routeBase}`;
@@ -901,7 +928,7 @@ async function runSyncRouteFlow(args: {
         'x-syncular-smoke-actor': actorId,
       },
       body: JSON.stringify({
-        clientId: 'syncular-framework-reader',
+        clientId: readerClientId,
         pull: {
           schemaVersion: 1,
           limitCommits: 10,
@@ -1009,6 +1036,360 @@ async function runSyncRouteFlow(args: {
       `${label} pull did not observe pushed row: ${JSON.stringify(
         pullBody
       ).slice(0, 500)}`
+    );
+  }
+
+  await runSyncularRealtimeRouteFlow({
+    actorId,
+    origin: args.origin,
+    output: args.output,
+    readerClientId,
+    routeBase: args.routeBase,
+    getExit: args.getExit,
+  });
+}
+
+async function runSyncularRealtimeRouteFlow(args: {
+  actorId: string;
+  origin: string;
+  output: string[];
+  readerClientId: string;
+  routeBase: string;
+  getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
+}): Promise<void> {
+  const label = 'Cloudflare Syncular realtime route smoke';
+  const writerClientId = 'syncular-framework-realtime-writer';
+  const rowId = `syncular-framework-realtime-task-${Date.now()}`;
+  const title = 'D1 realtime route ready';
+  const requestId = `request-${rowId}`;
+  const readerUrl = syncularRealtimeUrl({
+    actorId: args.actorId,
+    clientId: args.readerClientId,
+    origin: args.origin,
+    routeBase: args.routeBase,
+  });
+  const writerUrl = syncularRealtimeUrl({
+    actorId: args.actorId,
+    clientId: writerClientId,
+    origin: args.origin,
+    routeBase: args.routeBase,
+  });
+
+  let readerSocket: WebSocket | null = null;
+  let writerSocket: WebSocket | null = null;
+  let settled = false;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let exitPoll: ReturnType<typeof setInterval> | undefined;
+  let readerHello = false;
+  let writerHello = false;
+  let writerPushSent = false;
+  let writerResponseApplied = false;
+  let readerPackApplied = false;
+  let lastError = 'no realtime WebSocket event observed';
+
+  await new Promise<void>((resolvePromise, reject) => {
+    const cleanup = () => {
+      if (timeout) clearTimeout(timeout);
+      if (exitPoll) clearInterval(exitPoll);
+      closeWebSocket(readerSocket);
+      closeWebSocket(writerSocket);
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const pass = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolvePromise();
+    };
+    const maybeSendWriterPush = () => {
+      if (!readerHello || !writerHello || writerPushSent) return;
+      writerPushSent = true;
+      writerSocket?.send(
+        JSON.stringify({
+          type: 'push',
+          requestId,
+          clientCommitId: `commit-${rowId}`,
+          schemaVersion: 1,
+          operations: [
+            {
+              table: 'syncular_framework_tasks',
+              row_id: rowId,
+              op: 'upsert',
+              payload: {
+                id: rowId,
+                user_id: args.actorId,
+                title,
+                server_version: 0,
+              },
+            },
+          ],
+        })
+      );
+      lastError = 'writer push sent; waiting for push-response and reader pack';
+    };
+    const maybePass = () => {
+      if (writerResponseApplied && readerPackApplied) pass();
+    };
+
+    timeout = setTimeout(() => {
+      fail(
+        new Error(
+          `Timed out waiting for ${label}: ${lastError}\n${args.output.join(
+            ''
+          )}`
+        )
+      );
+    }, 30_000);
+    exitPoll = setInterval(() => {
+      const exit = args.getExit();
+      if (!exit) return;
+      fail(
+        new Error(
+          `${label} worker exited before realtime proof completed: code=${
+            exit.code ?? 'null'
+          } signal=${exit.signal ?? 'null'}\n${args.output.join('')}`
+        )
+      );
+    }, 250);
+
+    try {
+      readerSocket = new WebSocket(readerUrl);
+      writerSocket = new WebSocket(writerUrl);
+      readerSocket.binaryType = 'arraybuffer';
+      writerSocket.binaryType = 'arraybuffer';
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+
+    readerSocket.addEventListener('open', () => {
+      lastError = 'reader websocket opened without hello';
+    });
+    writerSocket.addEventListener('open', () => {
+      lastError = 'writer websocket opened without hello';
+    });
+    readerSocket.addEventListener('message', (event) => {
+      if (settled) return;
+      if (isBinaryWebSocketData(event.data)) {
+        let pack: ReturnType<typeof decodeBinarySyncPack>;
+        try {
+          pack = decodeBinarySyncPack(webSocketDataToBytes(event.data));
+        } catch (error) {
+          fail(
+            new Error(
+              `${label} reader received undecodable binary sync-pack: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            )
+          );
+          return;
+        }
+        const pushedChange = pack.pull?.subscriptions
+          ?.flatMap((subscription) => subscription.commits ?? [])
+          .flatMap((commit) => commit.changes ?? [])
+          .find(
+            (change) =>
+              change.table === 'syncular_framework_tasks' &&
+              change.row_id === rowId &&
+              change.op === 'upsert'
+          );
+        if (
+          pushedChange?.row_json &&
+          typeof pushedChange.row_json === 'object' &&
+          !Array.isArray(pushedChange.row_json) &&
+          pushedChange.row_json.title === title
+        ) {
+          readerPackApplied = true;
+          lastError =
+            'reader binary sync-pack applied; waiting for writer response';
+          maybePass();
+          return;
+        }
+        fail(
+          new Error(
+            `${label} reader binary sync-pack did not contain pushed row: ${JSON.stringify(
+              pack
+            ).slice(0, 500)}`
+          )
+        );
+        return;
+      }
+
+      let message: { event?: string; data?: unknown };
+      try {
+        message = parseRealtimeMessage(label, 'reader', event.data);
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      if (message.event === 'hello') {
+        const data = message.data as Record<string, unknown>;
+        if (
+          data.actorId !== args.actorId ||
+          data.clientId !== args.readerClientId ||
+          data.syncPackEncoding !== 'binary-sync-pack-v1'
+        ) {
+          fail(
+            new Error(
+              `${label} reader hello had unexpected data: ${JSON.stringify(
+                message
+              ).slice(0, 500)}`
+            )
+          );
+          return;
+        }
+        readerHello = true;
+        lastError = 'reader hello received; waiting for writer hello';
+        maybeSendWriterPush();
+        return;
+      }
+      if (message.event === 'sync') {
+        fail(
+          new Error(
+            `${label} reader received JSON sync wakeup instead of binary sync-pack: ${JSON.stringify(
+              message
+            ).slice(0, 500)}`
+          )
+        );
+        return;
+      }
+      if (message.event === 'error') {
+        fail(
+          new Error(
+            `${label} reader realtime error: ${JSON.stringify(message).slice(
+              0,
+              500
+            )}`
+          )
+        );
+      }
+    });
+    writerSocket.addEventListener('message', (event) => {
+      if (settled) return;
+      if (isBinaryWebSocketData(event.data)) return;
+      let message: { event?: string; data?: unknown };
+      try {
+        message = parseRealtimeMessage(label, 'writer', event.data);
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      if (message.event === 'hello') {
+        const data = message.data as Record<string, unknown>;
+        if (
+          data.actorId !== args.actorId ||
+          data.clientId !== writerClientId ||
+          data.syncPackEncoding !== 'binary-sync-pack-v1'
+        ) {
+          fail(
+            new Error(
+              `${label} writer hello had unexpected data: ${JSON.stringify(
+                message
+              ).slice(0, 500)}`
+            )
+          );
+          return;
+        }
+        writerHello = true;
+        lastError = 'writer hello received; waiting for reader pack';
+        maybeSendWriterPush();
+        return;
+      }
+      if (message.event === 'push-response') {
+        const data = message.data as {
+          ok?: boolean;
+          requestId?: string;
+          results?: Array<{ status?: string }>;
+          status?: string;
+        };
+        if (
+          data.requestId !== requestId ||
+          data.ok !== true ||
+          data.status !== 'applied' ||
+          data.results?.[0]?.status !== 'applied'
+        ) {
+          fail(
+            new Error(
+              `${label} writer push-response did not apply: ${JSON.stringify(
+                message
+              ).slice(0, 500)}`
+            )
+          );
+          return;
+        }
+        writerResponseApplied = true;
+        lastError = 'writer push-response applied; waiting for reader pack';
+        maybePass();
+        return;
+      }
+      if (message.event === 'error') {
+        fail(
+          new Error(
+            `${label} writer realtime error: ${JSON.stringify(message).slice(
+              0,
+              500
+            )}`
+          )
+        );
+      }
+    });
+
+    for (const [role, socket] of [
+      ['reader', readerSocket],
+      ['writer', writerSocket],
+    ] as const) {
+      socket.addEventListener('error', () => {
+        lastError = `${role} websocket error event`;
+      });
+      socket.addEventListener('close', (event) => {
+        if (settled) return;
+        fail(
+          new Error(
+            `${label} ${role} websocket closed before proof completed: code=${
+              event.code
+            } reason=${event.reason || 'null'}; ${lastError}\n${args.output.join(
+              ''
+            )}`
+          )
+        );
+      });
+    }
+  });
+}
+
+function syncularRealtimeUrl(args: {
+  actorId: string;
+  clientId: string;
+  origin: string;
+  routeBase: string;
+}): string {
+  const url = new URL(`${args.origin}${args.routeBase}/realtime`);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.searchParams.set('actorId', args.actorId);
+  url.searchParams.set('clientId', args.clientId);
+  url.searchParams.set('syncPackEncoding', 'binary-sync-pack-v1');
+  return url.toString();
+}
+
+function parseRealtimeMessage(
+  label: string,
+  role: string,
+  data: unknown
+): { event?: string; data?: unknown } {
+  const text = webSocketDataToText(data);
+  try {
+    return JSON.parse(text) as { event?: string; data?: unknown };
+  } catch (error) {
+    throw new Error(
+      `${label} ${role} received non-JSON realtime frame: ${text.slice(
+        0,
+        500
+      )}; ${error instanceof Error ? error.message : String(error)}`
     );
   }
 }
@@ -1666,7 +2047,9 @@ export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
           }),
         ],
         authenticate: async (request) => {
-          const actorId = request.headers.get('x-syncular-smoke-actor');
+          const actorId =
+            request.headers.get('x-syncular-smoke-actor') ??
+            new URL(request.url).searchParams.get('actorId');
           return actorId ? { actorId } : null;
         },
       },
@@ -1976,7 +2359,7 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
       bundle.includes('syncular-cloudflare-websocket-echo')
     ) {
       console.log(
-        '[framework-import-smokes] Cloudflare DO/D1 schema+sync authz/R2 blob authz/WebSocket import smoke passed'
+        '[framework-import-smokes] Cloudflare DO/D1 schema+sync authz+realtime/R2 blob authz/WebSocket import smoke passed'
       );
       await runLocalWorkerRuntimeProbe({
         appDir,
@@ -1991,7 +2374,7 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
           'syncular-cloudflare-websocket-echo:syncular-cloudflare-websocket-ping',
       });
       console.log(
-        '[framework-import-smokes] Cloudflare DO/D1 schema+sync authz/R2 blob authz/WebSocket runtime IO smoke passed'
+        '[framework-import-smokes] Cloudflare DO/D1 schema+sync authz+realtime/R2 blob authz/WebSocket runtime IO smoke passed'
       );
       return;
     }
