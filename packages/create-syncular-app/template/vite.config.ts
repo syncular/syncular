@@ -12,6 +12,7 @@ const syncularClientDistDir = join(syncularClientRoot, 'dist');
 const syncularCoreRuntimeDir = join(syncularClientRoot, 'dist', 'wasm-core');
 const syncularRuntimeMountPath = '/syncular/wasm-core/';
 const syncularClientRuntimeMountPath = '/syncular/client/';
+const syncularClientRuntimeDirs = ['', 'wasm-bindings'] as const;
 const syncularRuntimeContentTypes = new Map([
   ['syncular.js', 'text/javascript; charset=utf-8'],
   ['syncular_bg.wasm', 'application/wasm'],
@@ -87,7 +88,9 @@ function resolveSyncularClientRuntimeRequest(requestUrl: string | undefined) {
   const pathname = new URL(requestUrl, 'http://syncular.local').pathname;
   if (!pathname.startsWith(syncularClientRuntimeMountPath)) return null;
   const fileName = pathname.slice(syncularClientRuntimeMountPath.length);
-  if (!/^[a-z0-9-]+\.js$/i.test(fileName)) return null;
+  if (!/^(?:[a-z0-9-]+|wasm-bindings\/[a-z0-9-]+)\.js$/i.test(fileName)) {
+    return null;
+  }
   return {
     contentType: 'text/javascript; charset=utf-8',
     dir: syncularClientDistDir,
@@ -96,14 +99,20 @@ function resolveSyncularClientRuntimeRequest(requestUrl: string | undefined) {
 }
 
 async function copySyncularClientRuntimeAssets(targetDir: string) {
-  await mkdir(targetDir, { recursive: true });
-  const entries = await readdir(syncularClientDistDir, { withFileTypes: true });
   await Promise.all(
-    entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith('.js'))
-      .map((entry) =>
-        cp(join(syncularClientDistDir, entry.name), join(targetDir, entry.name))
-      )
+    syncularClientRuntimeDirs.map(async (runtimeDir) => {
+      const sourceDir = join(syncularClientDistDir, runtimeDir);
+      const outputDir = join(targetDir, runtimeDir);
+      await mkdir(outputDir, { recursive: true });
+      const entries = await readdir(sourceDir, { withFileTypes: true });
+      await Promise.all(
+        entries
+          .filter((entry) => entry.isFile() && entry.name.endsWith('.js'))
+          .map((entry) =>
+            cp(join(sourceDir, entry.name), join(outputDir, entry.name))
+          )
+      );
+    })
   );
 }
 
