@@ -70,16 +70,13 @@ async function runLocalWorkerRuntimeProbe(args: {
     [
       args.wranglerBin,
       'dev',
-      'src/worker.ts',
+      '--config',
+      'wrangler.jsonc',
       '--local',
       '--port',
       String(port),
       '--ip',
       '127.0.0.1',
-      '--name',
-      'syncular-framework-import-smoke',
-      '--compatibility-date',
-      '2026-01-01',
       '--show-interactive-dev-session',
       'false',
       '--log-level',
@@ -106,7 +103,7 @@ async function runLocalWorkerRuntimeProbe(args: {
 
   try {
     await waitForHttpText({
-      label: 'Cloudflare Worker runtime smoke',
+      label: 'Cloudflare Durable Object runtime smoke',
       url: `http://127.0.0.1:${port}${args.route}`,
       expectedText: args.expectedText,
       output,
@@ -834,21 +831,53 @@ async function writeCloudflareWorkerApp(appDir: string): Promise<void> {
     join(appDir, 'src', 'worker.ts'),
     `import {
   SyncDurableObject,
-  createSyncWorker,
+  createSyncWorkerWithDO,
 } from '@syncular/server/cloudflare';
 
-type Env = Record<string, never>;
+type Env = {
+  SYNC_DO: DurableObjectNamespace;
+};
 
 export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
-  setup() {}
+  setup(app) {
+    app.get('/syncular-framework-import-smoke', (c) => {
+      if (!c.env.SYNC_DO) {
+        throw new Error('Durable Object binding was not available');
+      }
+      return c.text('syncular-cloudflare-durable-object-ready');
+    });
+  }
 }
 
-export default createSyncWorker<Env>((app) => {
-  app.get('/syncular-framework-import-smoke', (c) =>
-    c.text('syncular-cloudflare-root-import-ready')
-  );
-});
+export default createSyncWorkerWithDO<Env>('SYNC_DO');
 `,
+    'utf8'
+  );
+  await writeFile(
+    join(appDir, 'wrangler.jsonc'),
+    `${JSON.stringify(
+      {
+        name: 'syncular-framework-import-smoke',
+        main: 'src/worker.ts',
+        compatibility_date: '2026-01-01',
+        durable_objects: {
+          bindings: [
+            {
+              name: 'SYNC_DO',
+              class_name: 'SyncularSmokeDurableObject',
+            },
+          ],
+        },
+        migrations: [
+          {
+            tag: 'v1',
+            new_classes: ['SyncularSmokeDurableObject'],
+          },
+        ],
+      },
+      null,
+      2
+    )}\n`,
     'utf8'
   );
 }
@@ -954,14 +983,11 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
     [
       wranglerBin,
       'deploy',
-      'src/worker.ts',
+      '--config',
+      'wrangler.jsonc',
       '--dry-run',
       '--outdir',
       outDir,
-      '--name',
-      'syncular-framework-import-smoke',
-      '--compatibility-date',
-      '2026-01-01',
     ],
     {
       cwd: appDir,
@@ -976,18 +1002,18 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
   );
   for (const bundleName of bundleNames) {
     const bundle = await Bun.file(join(outDir, bundleName)).text();
-    if (bundle.includes('syncular-cloudflare-root-import-ready')) {
+    if (bundle.includes('syncular-cloudflare-durable-object-ready')) {
       console.log(
-        '[framework-import-smokes] Cloudflare Worker root import smoke passed'
+        '[framework-import-smokes] Cloudflare Durable Object import smoke passed'
       );
       await runLocalWorkerRuntimeProbe({
         appDir,
         wranglerBin,
         route: '/syncular-framework-import-smoke',
-        expectedText: 'syncular-cloudflare-root-import-ready',
+        expectedText: 'syncular-cloudflare-durable-object-ready',
       });
       console.log(
-        '[framework-import-smokes] Cloudflare Worker runtime smoke passed'
+        '[framework-import-smokes] Cloudflare Durable Object runtime smoke passed'
       );
       return;
     }

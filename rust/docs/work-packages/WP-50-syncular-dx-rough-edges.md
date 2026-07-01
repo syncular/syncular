@@ -988,9 +988,9 @@ online propagation, or reconnect behavior can change.
   browser-conditioned package exports and verifies the production bundle
   contains the expected Syncular marker, then serves the built preview and can
   execute it in Chrome/CDP to observe the browser root import marker. The
-  Cloudflare path imports
-  `@syncular/server/cloudflare` and verifies Wrangler can bundle a Worker
-  without deploy credentials.
+  Cloudflare path imports `@syncular/server/cloudflare`, declares a `SYNC_DO`
+  Durable Object binding, verifies Wrangler can bundle the Worker without
+  deploy credentials, and proves a local request reaches the DO route.
 - The post-publish JavaScript install smoke now runs a release-time optional
   subpath import matrix by default. It installs `@syncular/client`,
   `@syncular/server`, and the Bun-friendly optional peers in a fresh npm
@@ -1643,15 +1643,15 @@ online propagation, or reconnect behavior can change.
   references the expected bundle, fetches that served JavaScript asset, and
   asserts the Syncular marker is present over HTTP.
 - 2026-07-01: Extended `framework-import-smokes` with a minimal Cloudflare
-  Worker dry-run build through Wrangler. The generated Worker imports
+  Durable Object dry-run build through Wrangler. The generated Worker imports
   `@syncular/server/cloudflare`, exports a `SyncDurableObject` subclass,
-  registers a tiny `createSyncWorker(...)` route, disables Wrangler telemetry
-  for the local smoke, and asserts the bundled Worker contains the expected
-  Syncular marker.
+  declares a `SYNC_DO` binding in `wrangler.jsonc`, routes through
+  `createSyncWorkerWithDO(...)`, disables Wrangler telemetry for the local
+  smoke, and asserts the bundled Worker contains the expected Syncular marker.
 - 2026-07-01: Extended the Cloudflare framework smoke from build-only to
-  runtime proof. After the Wrangler dry-run bundle check, the smoke starts
-  `wrangler dev --local` on a free localhost port, fetches the generated
-  `createSyncWorker(...)` route, asserts the expected response text, and
+  runtime proof. After the Wrangler dry-run bundle/binding check, the smoke
+  starts `wrangler dev --local` on a free localhost port, fetches the
+  generated Durable Object route, asserts the expected response text, and
   tears down the local Worker process with bounded interrupt/terminate/kill
   cleanup so the gate cannot hang after a successful request.
 - 2026-07-01: Made `framework-import-smokes` use a run-specific temporary
@@ -1995,9 +1995,10 @@ Most recent framework-import-smoke rerun:
     served JavaScript bundle marker.
   - Skipped the optional Vite Chrome/CDP browser-runtime proof because no
     Chrome/Chromium binary was available on this local machine.
-  - Passed the Wrangler dry-run Cloudflare Worker bundle proof.
+  - Passed the Wrangler dry-run Cloudflare Durable Object bundle/binding proof.
   - Passed the local `wrangler dev --local` runtime fetch proof for the
-    generated `createSyncWorker(...)` route.
+    generated `createSyncWorkerWithDO(...)` route through the `SYNC_DO`
+    binding.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/framework-import-smokes.ts --require-vite-browser-runtime`
   - Expected nonzero status locally because Chrome/Chromium is unavailable;
     confirms the required Vite browser-runtime path fails loudly instead of
@@ -2005,7 +2006,7 @@ Most recent framework-import-smoke rerun:
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke`
   - Confirmed release rehearsal still runs the framework smoke by default and
     returns cleanly after the Vite preview HTTP proof, optional local Chrome
-    skip, and local Cloudflare Worker runtime probe.
+    skip, and local Cloudflare Durable Object runtime probe.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke --require-framework-vite-browser-runtime`
   - Expected nonzero status locally because release rehearsal passes the new
     required Vite browser-runtime flag through to `framework-import-smokes`
@@ -2019,8 +2020,8 @@ Most recent release-rehearsal framework-smoke wiring rerun:
 - `bun scripts/release-rehearsal.ts --help`
 - `bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke`
   - Ran version stamp dry-runs, then the default framework import smoke.
-  - Passed Next, Vite build/preview, and Cloudflare dry-run/runtime proofs
-    while skipping optional local Chrome execution.
+  - Passed Next, Vite build/preview, and Cloudflare Durable Object
+    dry-run/runtime proofs while skipping optional local Chrome execution.
 - `bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke --require-framework-vite-browser-runtime`
   - Expected nonzero status locally because the new required Vite
     browser-runtime flag is passed through and no Chrome/Chromium binary is
@@ -2306,15 +2307,15 @@ Most recent mutation-status rerun:
   that follows browser-conditioned package exports for the client root and
   serves the built HTML/JavaScript through Vite preview, with an optional
   Chrome/CDP execution path that observes the browser root import marker.
-  The Cloudflare smoke now bundles `@syncular/server/cloudflare` through
-  Wrangler dry-run and then
-  starts the generated Worker with local `wrangler dev`, proving a real
-  request reaches the `createSyncWorker(...)` route. Release rehearsal now
-  runs those framework proofs by default before publish dry-runs and can
-  require the Vite browser execution path on Chrome-capable runners.
+  The Cloudflare smoke now declares a `SYNC_DO` Durable Object binding, bundles
+  `@syncular/server/cloudflare` through Wrangler dry-run, and starts the
+  generated Worker with local `wrangler dev`, proving a real request reaches
+  the `createSyncWorkerWithDO(...)` route through that binding. Release
+  rehearsal now runs those framework proofs by default before publish dry-runs
+  and can require the Vite browser execution path on Chrome-capable runners.
   Remaining matrix work is deeper browser/framework execution beyond these
-  proofs, especially Cloudflare binding/Durable Object variants, Safari,
-  Firefox, private mode, WebViews, and PWAs.
+  proofs, especially Cloudflare D1/R2 bindings, Durable Object WebSocket
+  variants, Safari, Firefox, private mode, WebViews, and PWAs.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.
