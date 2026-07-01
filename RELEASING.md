@@ -45,6 +45,19 @@ use `minor`), and describe the change. Commit the generated
    (versions, changelogs, Cargo.toml files).
 4. Optionally rehearse: `bun run release:rehearsal` (npm + cargo publish
    dry-runs in a clean worktree, fresh-app smokes, docs stale check).
+   To exercise native Node sqlite driver packaging on a runner with native
+   module support, also run:
+
+   ```sh
+   SYNCULAR_POST_PUBLISH_NATIVE_SQLITE_MATRIX=1 \
+     bun run release:post-publish-smokes -- --version X.Y.Z --skip-rust
+   ```
+
+   That opt-in smoke creates a fresh Node project, installs
+   `@syncular/server`, `better-sqlite3`, and `sqlite3`, imports
+   `@syncular/server/better-sqlite3` plus `@syncular/server/sqlite3`, and runs
+   a small in-memory Kysely query through both drivers. It is disabled by
+   default because native module installs are platform-sensitive.
 5. Commit (`chore: release vX.Y.Z`), then tag and push:
 
    ```sh

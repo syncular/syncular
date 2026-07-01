@@ -1362,6 +1362,14 @@ online propagation, or reconnect behavior can change.
   for React, Sentry, Tauri, React Native, CRDT/Yjs, Hono, Cloudflare, Bun
   SQLite, D1, LibSQL, Neon, PGlite, Postgres, SQLite, filesystem, S3,
   service-worker, relay, and snapshot artifact helpers.
+- 2026-07-01: Added an opt-in native sqlite driver matrix to
+  `scripts/post-publish-install-smokes.ts` controlled by
+  `SYNCULAR_POST_PUBLISH_NATIVE_SQLITE_MATRIX`. It creates a fresh Node
+  project, installs the published `@syncular/server` plus `better-sqlite3` and
+  `sqlite3`, imports `@syncular/server/better-sqlite3` and
+  `@syncular/server/sqlite3`, and runs a tiny in-memory Kysely query through
+  both drivers. The default remains off because native module installs are
+  platform-sensitive and should be enabled deliberately by release policy.
 - 2026-06-30: Expanded the rough-edge register with additional implementation
   prompts for browser support and SSR/bundler matrices, lifecycle state-machine
   semantics, version/asset compatibility, negative-path recipes,
@@ -1733,6 +1741,13 @@ Most recent optional-import-matrix rerun:
   optional subpath exports from `@syncular/client` and `@syncular/server`
 - `git diff --check`
 
+Most recent native-sqlite-matrix script rerun:
+
+- `bunx biome check scripts/post-publish-install-smokes.ts`
+- `bun scripts/post-publish-install-smokes.ts --help`
+- `bun run docs:stale-check`
+- `git diff --check`
+
 Most recent local-recovery rerun:
 
 - `bun test packages/client/src/local-recovery.test.ts packages/client/src/public-api.test.ts`
@@ -1954,9 +1969,9 @@ Most recent mutation-status rerun:
   graphs before a subpath is actually used.
   The post-publish JavaScript install smoke now owns the first release-time
   optional subpath install/import matrix for Bun-friendly client/server
-  subpaths. Remaining work is a separate native-driver/platform matrix for
-  `better-sqlite3` and `sqlite3`, if release policy decides those native
-  drivers should be installed on every release runner.
+  subpaths and has an opt-in native sqlite matrix for `better-sqlite3` and
+  `sqlite3`. Remaining work is a release-policy decision on which native
+  driver OS/Node matrix should enable that opt-in gate.
 - Multi-tab and lifecycle behavior: first preflight slice is done for browser
   tab/lifecycle capabilities and opt-in required coordination checks. Remaining
   work is real two-tab execution: tab suspension/resume, storage locks,

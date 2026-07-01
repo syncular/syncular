@@ -163,9 +163,13 @@ read-only review:
     then imports the folded client/server subpaths for React, Sentry, Tauri,
     React Native, CRDT/Yjs, Hono, Cloudflare, Bun SQLite, D1, LibSQL, Neon,
     PGlite, Postgres, SQLite, filesystem, S3, service-worker, relay, and
-    snapshot artifact helpers. The rough-edge register now also carries the
-    next-layer product prompts for browser support and SSR/bundler matrices,
-    lifecycle state-machine semantics, version/asset compatibility,
+    snapshot artifact helpers. The same post-publish smoke now has an opt-in
+    native sqlite matrix that installs `better-sqlite3` and `sqlite3`, imports
+    `@syncular/server/better-sqlite3` plus `@syncular/server/sqlite3` in Node,
+    and runs a tiny in-memory Kysely query through both drivers on runners that
+    choose to enable native module coverage. The rough-edge register now also
+    carries the next-layer product prompts for browser support and SSR/bundler
+    matrices, lifecycle state-machine semantics, version/asset compatibility,
     negative-path recipes, outbox/conflict UX, local database maintenance,
     redacted support bundles, telemetry/SLO mapping, security authority
     modeling, upgrade/rollback states, API audience hygiene, and deterministic

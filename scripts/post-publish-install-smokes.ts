@@ -37,6 +37,12 @@ environment:
                               Force-enable or disable the optional subpath
                               install/import matrix. Enabled by default for
                               the JavaScript smoke.
+
+  SYNCULAR_POST_PUBLISH_NATIVE_SQLITE_MATRIX=1|0
+                              Force-enable the native Node sqlite driver
+                              install/import matrix for better-sqlite3 and
+                              sqlite3. Disabled by default because it installs
+                              native modules.
 `;
 }
 
@@ -248,6 +254,26 @@ function optionalImportMatrixDecision(): { run: boolean; reason?: string } {
   }
 
   return { run: true };
+}
+
+function nativeSqliteMatrixDecision(): { run: boolean; reason?: string } {
+  const configured = readBooleanEnv(
+    'SYNCULAR_POST_PUBLISH_NATIVE_SQLITE_MATRIX'
+  );
+  if (configured !== null) {
+    return {
+      run: configured,
+      reason: configured
+        ? undefined
+        : 'disabled by SYNCULAR_POST_PUBLISH_NATIVE_SQLITE_MATRIX=0',
+    };
+  }
+
+  return {
+    run: false,
+    reason:
+      'disabled by default because it installs native sqlite driver modules',
+  };
 }
 
 async function writeTaskMigration(appDir: string): Promise<void> {
@@ -753,6 +779,86 @@ console.log('published optional subpath import matrix passed');
   await run(bunBin, ['optional-imports.mjs'], { cwd: matrixDir });
 }
 
+async function runJsNativeSqliteMatrix(options: Options): Promise<void> {
+  const matrixDir = join(options.workDir, 'js-native-sqlite-matrix');
+  await mkdir(matrixDir, { recursive: true });
+  await writeFile(
+    join(matrixDir, 'package.json'),
+    `${JSON.stringify(
+      {
+        private: true,
+        type: 'module',
+        scripts: {
+          smoke: 'node ./native-sqlite-imports.mjs',
+        },
+      },
+      null,
+      2
+    )}\n`,
+    'utf8'
+  );
+  await writeFile(
+    join(matrixDir, 'native-sqlite-imports.mjs'),
+    `import { Kysely } from 'kysely';
+import { createBetterSqlite3Dialect } from '@syncular/server/better-sqlite3';
+import { createSqlite3Dialect } from '@syncular/server/sqlite3';
+
+async function exerciseDialect(label, dialect) {
+  const db = new Kysely({ dialect });
+  try {
+    await db.schema
+      .createTable('native_sqlite_smoke')
+      .addColumn('id', 'text', (column) => column.primaryKey())
+      .addColumn('label', 'text', (column) => column.notNull())
+      .execute();
+    await db
+      .insertInto('native_sqlite_smoke')
+      .values({ id: 'one', label })
+      .execute();
+    const row = await db
+      .selectFrom('native_sqlite_smoke')
+      .selectAll()
+      .where('id', '=', 'one')
+      .executeTakeFirst();
+    if (row?.label !== label) {
+      throw new Error(label + ' did not round-trip a row');
+    }
+  } finally {
+    await db.destroy();
+  }
+}
+
+await exerciseDialect(
+  '@syncular/server/better-sqlite3',
+  createBetterSqlite3Dialect({ path: ':memory:' })
+);
+await exerciseDialect(
+  '@syncular/server/sqlite3',
+  createSqlite3Dialect({ path: ':memory:' })
+);
+
+console.log('published native sqlite driver matrix passed');
+`,
+    'utf8'
+  );
+
+  await run(
+    'npm',
+    [
+      'install',
+      '--registry',
+      options.npmRegistry,
+      atVersion('@syncular/server', options.version),
+      'better-sqlite3',
+      'kysely',
+      'kysely-generic-sqlite',
+      'sqlite3',
+    ],
+    { cwd: matrixDir }
+  );
+  await run('node', ['native-sqlite-imports.mjs'], { cwd: matrixDir });
+}
+
 async function runRustSmoke(options: Options): Promise<void> {
   const rustDir = join(options.workDir, 'rust-app');
   const cargoHome = join(options.workDir, 'cargo-home');
@@ -861,6 +967,14 @@ async function main(): Promise<void> {
       } else {
         console.warn(
           `[post-publish-install-smokes] Skipping optional import matrix: ${optionalMatrix.reason}.`
+        );
+      }
+      const nativeSqliteMatrix = nativeSqliteMatrixDecision();
+      if (nativeSqliteMatrix.run) {
+        await runJsNativeSqliteMatrix(options);
+      } else {
+        console.warn(
+          `[post-publish-install-smokes] Skipping native sqlite driver matrix: ${nativeSqliteMatrix.reason}.`
         );
       }
     }
