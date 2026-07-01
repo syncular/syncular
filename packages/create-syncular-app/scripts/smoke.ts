@@ -19,13 +19,15 @@ import { Buffer } from 'node:buffer';
  *    is available.
  *
  * Usage: bun scripts/smoke.ts [--keep] [--require-browser-preview]
+ * Set SYNCULAR_CSA_SMOKE_WORK_DIR to keep artifacts in a predictable
+ * repo-root-relative or absolute path.
  */
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 const packageDir = resolve(join(import.meta.dirname, '..'));
 const repoRoot = resolve(join(packageDir, '../..'));
@@ -581,7 +583,12 @@ class CdpSession {
 }
 
 async function main(): Promise<void> {
-  const workDir = join(tmpdir(), `csa-smoke-${Date.now()}`);
+  const configuredWorkDir = process.env.SYNCULAR_CSA_SMOKE_WORK_DIR;
+  const workDir = configuredWorkDir
+    ? isAbsolute(configuredWorkDir)
+      ? configuredWorkDir
+      : resolve(repoRoot, configuredWorkDir)
+    : join(tmpdir(), `csa-smoke-${Date.now()}`);
   const appDir = join(workDir, 'my-app');
   const syncPort = await getFreePort();
   const vitePort = await getFreePort();
@@ -707,7 +714,7 @@ async function main(): Promise<void> {
     log('smoke test passed');
   } finally {
     await stopProcess(devProcess);
-    if (keep) {
+    if (keep || configuredWorkDir) {
       log(`keeping ${workDir}`);
     } else {
       await rm(workDir, { recursive: true, force: true });

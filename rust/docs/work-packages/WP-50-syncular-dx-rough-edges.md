@@ -1566,6 +1566,10 @@ online propagation, or reconnect behavior can change.
   marker booleans, support-bundle counts, redaction state, issue/request-id
   counts, and a bounded text excerpt so hosted Chrome failures produce
   inspectable support evidence.
+- 2026-07-01: Made the starter browser-preview Checks job preserve the smoke
+  work dir in `.context/starter-browser-preview-smoke` and upload
+  `browser-preview-failure.json` on job failure, so hosted Chrome readiness
+  failures leave downloadable redacted support evidence instead of only logs.
 - 2026-07-01: Expanded production operations docs beyond the first upgrade
   runbook. Deployment now includes restore-drill steps, blob storage
   consistency sampling, rate-limit tuning, credential rotation cadence, and
@@ -1773,13 +1777,15 @@ Most recent starter browser-failure artifact rerun:
 
 - `bunx biome check packages/create-syncular-app/scripts/smoke.ts`
 - `bun --cwd packages/create-syncular-app tsgo`
-- `bun --cwd packages/create-syncular-app smoke`
+- `ruby -e 'require "yaml"; YAML.load_file(".github/workflows/checks.yml"); puts "workflow yaml ok"'`
+- `SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-browser-preview-smoke-local bun --cwd packages/create-syncular-app smoke`
   - Passed dev server health/page/module/preflight transform checks.
   - Passed Vite production build, preview serving, and built asset checks.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
     binary was available. The artifact writer runs on browser-capable runners
     when the page reports health/support-bundle failures or readiness times
-    out.
+    out; this rerun also proved configured smoke work dirs resolve under the
+    repo root, matching the Checks upload path.
 - `bun run docs:stale-check`
 - `git diff --check`
 
@@ -2139,9 +2145,10 @@ Most recent mutation-status rerun:
   asserts the production build contains it; the Chrome/CDP smoke waits for the
   same marker when a browser is available. That browser path now writes a
   redacted `browser-preview-failure.json` artifact on readiness timeout or
-  page-reported health/support-bundle failures. Remaining work is to observe
-  the hosted Chrome job for this proof and decide whether server Console/Fleet
-  should ingest the same artifact shape.
+  page-reported health/support-bundle failures, and the Checks job uploads that
+  JSON on failure from a predictable smoke work directory. Remaining work is to
+  observe the hosted Chrome job for this proof and decide whether server
+  Console/Fleet should ingest the same artifact shape.
 - Outbox and conflict UX: first app-facing status slice is done for
   queued/sending/failed/acked outbox counts, unresolved/resolved conflicts,
   conflict detail rows, last mutation-related errors, and recommended actions.

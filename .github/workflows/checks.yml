@@ -152,7 +152,16 @@ jobs:
         env:
           CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
           SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE: required
+          SYNCULAR_CSA_SMOKE_WORK_DIR: .context/starter-browser-preview-smoke
         run: bun --cwd packages/create-syncular-app smoke --require-browser-preview
+
+      - name: Upload browser preview failure artifact
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: starter-browser-preview-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: .context/starter-browser-preview-smoke/browser-preview-failure.json
 
   rust-native:
     needs: changes
