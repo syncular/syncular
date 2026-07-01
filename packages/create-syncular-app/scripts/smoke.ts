@@ -610,6 +610,7 @@ type BrowserPreviewProbe = {
     lockName: string | null;
     lockRequired: string | null;
     lockState: string | null;
+    lockTimeoutMs: number | null;
   };
   lifecyclePause: {
     count: number;
@@ -747,11 +748,18 @@ async function readStarterBrowserProbe(
     const lifecycleResume = document.querySelector('[data-syncular-lifecycle-resume-status]');
     const lifecycleResumeStatus = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-status') ?? null;
     const lifecycleResumeCount = Number(lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-count') ?? 0);
+    const readLifecycleResumeNumber = (name) => {
+      const value = lifecycleResume?.getAttribute(name) ?? null;
+      if (value === null || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number : null;
+    };
     const lifecycleResumeReason = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-reason') ?? null;
     const lifecycleResumeError = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-error') ?? null;
     const lifecycleResumeLockName = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-lock-name') ?? null;
     const lifecycleResumeLockRequired = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-lock-required') ?? null;
     const lifecycleResumeLockState = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-lock-state') ?? null;
+    const lifecycleResumeLockTimeoutMs = readLifecycleResumeNumber('data-syncular-lifecycle-resume-lock-timeout-ms');
     const lifecyclePauseCount = Number(lifecycleResume?.getAttribute('data-syncular-lifecycle-pause-count') ?? 0);
     const lifecyclePauseReason = lifecycleResume?.getAttribute('data-syncular-lifecycle-pause-reason') ?? null;
     const lifecyclePausePagehidePersisted = lifecycleResume?.getAttribute('data-syncular-lifecycle-pause-pagehide-persisted') ?? null;
@@ -901,6 +909,7 @@ async function readStarterBrowserProbe(
         lockName: lifecycleResumeLockName,
         lockRequired: lifecycleResumeLockRequired,
         lockState: lifecycleResumeLockState,
+        lockTimeoutMs: lifecycleResumeLockTimeoutMs,
       },
       lifecyclePause: {
         count: lifecyclePauseCount,
@@ -1565,6 +1574,7 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         lockName: STARTER_LIFECYCLE_RESUME_LOCK_NAME,
         lockRequired: 'false',
         lockState: 'acquired',
+        lockTimeoutMs: 10_000,
       },
       lifecyclePause: {
         count: 2,
@@ -1961,6 +1971,14 @@ function assertBrowserPreviewLifecycleResumeShape(
   if (!isNonNegativeFiniteNumber(value.count)) {
     throw new Error(
       `${path} probe.lifecycleResume.count was not a non-negative number`
+    );
+  }
+  if (
+    value.lockTimeoutMs !== null &&
+    !isNonNegativeFiniteNumber(value.lockTimeoutMs)
+  ) {
+    throw new Error(
+      `${path} probe.lifecycleResume.lockTimeoutMs was not nullable non-negative number`
     );
   }
 }

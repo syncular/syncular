@@ -33,6 +33,7 @@ type LifecycleResumePreview = {
   lockName: string | null;
   lockRequired: boolean;
   lockState: SyncularBrowserLifecycleResumeLockState;
+  lockTimeoutMs: number | null;
   pagehidePersisted: boolean | null;
   pauseCount: number;
   status: 'idle' | 'running' | 'complete' | 'failed';
@@ -96,6 +97,7 @@ const initialLifecycleResume: LifecycleResumePreview = {
   lockName: null,
   lockRequired: false,
   lockState: 'not-requested',
+  lockTimeoutMs: null,
   pagehidePersisted: null,
   pauseCount: 0,
   status: 'idle',
@@ -157,7 +159,10 @@ export function App() {
         }
         opened = nextClient;
         lifecycleResume = installSyncularBrowserLifecycleResume(nextClient, {
-          lock: { name: 'syncular:create-syncular-app:lifecycle-resume' },
+          lock: {
+            name: 'syncular:create-syncular-app:lifecycle-resume',
+            timeoutMs: 10_000,
+          },
           onResumeStart(context) {
             if (!disposed) {
               setLifecycleResume((current) => ({
@@ -167,6 +172,7 @@ export function App() {
                 lockName: context.lockName ?? null,
                 lockRequired: context.lockRequired,
                 lockState: context.lockState,
+                lockTimeoutMs: context.lockTimeoutMs ?? null,
                 status: 'running',
               }));
             }
@@ -180,6 +186,7 @@ export function App() {
                 lockName: context.lockName ?? null,
                 lockRequired: context.lockRequired,
                 lockState: context.lockState,
+                lockTimeoutMs: context.lockTimeoutMs ?? null,
                 status: 'complete',
               }));
             }
@@ -193,6 +200,7 @@ export function App() {
                 lockName: context.lockName ?? null,
                 lockRequired: context.lockRequired,
                 lockState: context.lockState,
+                lockTimeoutMs: context.lockTimeoutMs ?? null,
                 status: 'failed',
               }));
             }
@@ -273,6 +281,9 @@ function LifecycleResumeMarker({
         lifecycleResume.lockRequired
       )}
       data-syncular-lifecycle-resume-lock-state={lifecycleResume.lockState}
+      data-syncular-lifecycle-resume-lock-timeout-ms={
+        lifecycleResume.lockTimeoutMs ?? ''
+      }
       data-syncular-lifecycle-pause-count={lifecycleResume.pauseCount}
       data-syncular-lifecycle-pause-pagehide-persisted={
         lifecycleResume.pagehidePersisted === null

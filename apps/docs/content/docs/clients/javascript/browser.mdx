@@ -171,7 +171,10 @@ foreground catch-up path without app code calling `sync()` directly:
 import { installSyncularBrowserLifecycleResume } from '@syncular/client';
 
 const lifecycleResume = installSyncularBrowserLifecycleResume(syncular, {
-  lock: { name: 'syncular:my-app:lifecycle-resume' },
+  lock: {
+    name: 'syncular:my-app:lifecycle-resume',
+    timeoutMs: 10_000,
+  },
   onPause(context) {
     console.info(context.reason, context.persisted);
   },
@@ -188,7 +191,11 @@ recovery work from running concurrently against the same persistent browser
 database. If Web Locks are unavailable the helper falls back to an
 uncoordinated resume by default; use `lock.required: true` only when your
 preflight requires coordinated tabs and you want a hard failure instead of
-best-effort recovery.
+best-effort recovery. Use `lock.timeoutMs` to fail foreground catch-up with
+`browser.web_locks_timeout` when another tab holds the lock too long; the
+resume error context reports `lockState: "timed-out"` and the configured
+timeout so support artifacts can point at lock contention rather than a
+generic lifecycle timeout.
 The optional `onPause` callback reports hidden-tab, `pagehide`, and
 `beforeunload` signals so browser smokes and support artifacts can distinguish
 restored-page catch-up from shutdown/suspension intent.

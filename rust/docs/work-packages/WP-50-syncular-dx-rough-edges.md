@@ -2107,6 +2107,12 @@ online propagation, or reconnect behavior can change.
   typed `SyncularBrowserLifecycleResumeLockError`. Resume callbacks now expose
   lock name, required flag, and lock state, and the starter records those
   fields in the hidden lifecycle marker and browser failure artifact.
+- 2026-07-01: Added bounded lifecycle Web Lock contention handling. Apps can
+  pass `lock.timeoutMs`; if another tab holds the lifecycle resume lock too
+  long, the helper aborts the queued lock request, rejects with
+  `SyncularBrowserLifecycleResumeLockTimeoutError`, reports
+  `lockState: "timed-out"`, and records the configured timeout in the starter
+  lifecycle marker and browser failure artifact.
 - 2026-07-01: Extended the starter lifecycle helper proof with completion
   callbacks and hidden DOM markers for resume status/count/reason/error. The
   scaffold smoke now proves the production bundle contains the lifecycle
@@ -2672,20 +2678,18 @@ Most recent Cloudflare runtime artifact ingestion rerun:
 
 Most recent browser lifecycle resume helper rerun:
 
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-lifecycle.test.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-lifecycle.test.ts packages/client/src/public-api.test.ts`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/server tsgo`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/console-routes.test.ts -t "browser preview failure"`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run generate:openapi`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/core tsgo`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/browser-lifecycle.ts packages/client/src/browser-lifecycle.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts packages/server/src/hono/console/schemas.ts packages/server/src/hono/console/routes/shared.ts packages/server/src/hono/__tests__/console-routes.test.ts packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/browser-lifecycle.ts packages/client/src/browser-lifecycle.test.ts packages/client/src/public-api.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts apps/docs/content/docs/clients/javascript/browser.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `git diff --check`
   - Passed dev server health/page/module/preflight transform checks.
   - Passed Vite production build, preview serving, and built asset checks,
-    including the lifecycle-resume lock-state and support-bundle markers in
-    the production JavaScript asset.
+    including the lifecycle-resume lock-state, lock-timeout, and
+    support-bundle markers in the production JavaScript asset.
   - Passed browser failure artifact shape self-check with lifecycle lock name,
     required flag, lock state, `lifecyclePause.pagehidePersisted`, and
     `lifecyclePause.shutdownSignalCount`.
@@ -3384,10 +3388,13 @@ Most recent mutation-status rerun:
   same-client reload/reopen after propagation and waits for the task to
   reappear after app startup, then restarts Chrome with the same profile
   directory and waits for the task to survive a fresh browser process.
-  Remaining work is richer browser lifecycle execution: real tab suspension,
-  storage shutdown, quota/eviction, storage-lock contention, and deeper
-  recovery coordination for persistent browser databases beyond simulated
-  page lifecycle events and lock-serialized foreground resume.
+  The helper now also has an opt-in bounded Web Lock contention path:
+  `lock.timeoutMs` aborts a stuck lock request and reports
+  `browser.web_locks_timeout` with `lockState: "timed-out"`. Remaining work
+  is richer browser lifecycle execution: real tab suspension, storage
+  shutdown, quota/eviction, browser-observed storage-lock contention, and
+  deeper recovery coordination for persistent browser databases beyond
+  simulated page lifecycle events and lock-serialized foreground resume.
 - Local recovery controls: first plan/action slice is done for support bundles,
   local health repairs, failed outbox/blob retries, compaction, cache clear,
   and guarded sync-state reset, with a focused Hono/WASM proof for corrupted

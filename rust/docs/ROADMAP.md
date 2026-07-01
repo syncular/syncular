@@ -217,8 +217,9 @@ read-only review:
     starter also installs the browser lifecycle resume helper, which coalesces
     restored-page, visible-tab, and online signals into the managed
     `resumeFromBackground()` path, can serialize foreground catch-up through
-    optional Web Locks, and records lifecycle lock state in the hidden marker
-    and browser failure artifact.
+    optional Web Locks, can fail contended locks with
+    `browser.web_locks_timeout`, and records lifecycle lock state plus timeout
+    budget in the hidden marker and browser failure artifact.
     Browser preview artifacts now include starter timings for database open,
     browser health refresh, schema readiness, support-bundle export,
     bootstrap readiness, realtime connection, and generated-mutation local

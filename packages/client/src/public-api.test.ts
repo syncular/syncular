@@ -28,6 +28,7 @@ import {
   SYNCULAR_WASM_ARTIFACT_FILE,
   SYNCULAR_WASM_BINARY_FILE,
   SYNCULAR_WASM_GLUE_FILE,
+  SyncularBrowserLifecycleResumeLockTimeoutError,
   SyncularCommandHistoryError,
   SyncularLocalRecoveryActionLockError,
   SyncularLocalRecoveryBlockedError,
@@ -81,6 +82,9 @@ describe('@syncular/client public API', () => {
 
   it('exports the browser lifecycle resume helper', () => {
     expect(typeof installSyncularBrowserLifecycleResume).toBe('function');
+    expect(typeof SyncularBrowserLifecycleResumeLockTimeoutError).toBe(
+      'function'
+    );
   });
 
   it('exports the local visibility helper', () => {

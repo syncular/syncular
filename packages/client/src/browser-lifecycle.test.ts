@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   installSyncularBrowserLifecycleResume,
   SyncularBrowserLifecycleResumeLockError,
+  SyncularBrowserLifecycleResumeLockTimeoutError,
 } from './browser-lifecycle';
 import type { SyncularSyncRequestOptions, SyncularSyncResult } from './types';
 
@@ -219,6 +220,41 @@ describe('Syncular browser lifecycle resume', () => {
     expect(errors).toEqual(['true:unavailable:true:syncular:test:required']);
   });
 
+  it('rejects contended lifecycle Web Locks after the configured timeout', async () => {
+    const firstClient = new FakeResumeClient({ deferred: true });
+    const secondClient = new FakeResumeClient();
+    const locks = new FakeWebLocks();
+    const navigator = { locks };
+    const errors: string[] = [];
+    const first = installSyncularBrowserLifecycleResume(firstClient, {
+      lock: { name: 'syncular:test:contended' },
+      navigator,
+    });
+    const second = installSyncularBrowserLifecycleResume(secondClient, {
+      lock: { name: 'syncular:test:contended', timeoutMs: 5 },
+      navigator,
+      onResumeError(error, context) {
+        errors.push(
+          `${error instanceof SyncularBrowserLifecycleResumeLockTimeoutError}:${context.lockState}:${context.lockTimeoutMs}:${context.lockName}`
+        );
+      },
+    });
+
+    const firstResume = first.resume('manual');
+    await waitFor(() => firstClient.calls.length === 1);
+
+    const secondResume = second.resume('online');
+
+    await expect(secondResume).rejects.toBeInstanceOf(
+      SyncularBrowserLifecycleResumeLockTimeoutError
+    );
+    expect(secondClient.calls).toEqual([]);
+    expect(errors).toEqual(['true:timed-out:5:syncular:test:contended']);
+
+    firstClient.resolveNext('first');
+    await firstResume;
+  });
+
   it('removes page listeners when destroyed', () => {
     const client = new FakeResumeClient();
     const document = new FakeDocument('visible');
@@ -356,27 +392,78 @@ class FakeGlobal {
 class FakeWebLocks {
   readonly requests: string[] = [];
   #active = false;
-  readonly #queue: Array<() => void> = [];
+  readonly #queue: FakeWebLockWaiter[] = [];
 
   async request<T>(
     name: string,
-    _options: { mode: 'exclusive' },
+    options: { mode: 'exclusive'; signal?: AbortSignal },
     callback: () => T | Promise<T>
   ): Promise<T> {
     this.requests.push(name);
-    while (this.#active) {
-      await new Promise<void>((resolve) => {
-        this.#queue.push(resolve);
-      });
+    if (options.signal?.aborted) throw abortError();
+    if (this.#active) {
+      await this.waitForTurn(options.signal);
     }
     this.#active = true;
     try {
       return await callback();
     } finally {
       this.#active = false;
-      this.#queue.shift()?.();
+      this.releaseNext();
     }
   }
+
+  private waitForTurn(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(abortError());
+    return new Promise((resolve, reject) => {
+      const waiter: FakeWebLockWaiter = {
+        cleanup: () => {},
+        reject: (error) => {
+          waiter.cleanup();
+          reject(error);
+        },
+        resolve: () => {
+          waiter.cleanup();
+          resolve();
+        },
+        signal,
+      };
+      const onAbort = () => {
+        const index = this.#queue.indexOf(waiter);
+        if (index >= 0) this.#queue.splice(index, 1);
+        waiter.reject(abortError());
+      };
+      waiter.cleanup = () => signal?.removeEventListener('abort', onAbort);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      this.#queue.push(waiter);
+    });
+  }
+
+  private releaseNext(): void {
+    while (this.#queue.length > 0) {
+      const waiter = this.#queue.shift();
+      if (!waiter) return;
+      if (waiter.signal?.aborted) {
+        waiter.reject(abortError());
+        continue;
+      }
+      waiter.resolve();
+      return;
+    }
+  }
+}
+
+interface FakeWebLockWaiter {
+  cleanup(): void;
+  reject(error: unknown): void;
+  resolve(): void;
+  signal?: AbortSignal;
+}
+
+function abortError(): Error {
+  const error = new Error('AbortError');
+  error.name = 'AbortError';
+  return error;
 }
 
 function syncResult(label: string): SyncularSyncResult {

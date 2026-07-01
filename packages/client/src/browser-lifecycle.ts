@@ -15,6 +15,7 @@ export type SyncularBrowserLifecycleResumeLockState =
   | 'not-requested'
   | 'waiting'
   | 'acquired'
+  | 'timed-out'
   | 'unavailable';
 
 export interface SyncularBrowserLifecycleResumeContext {
@@ -22,6 +23,7 @@ export interface SyncularBrowserLifecycleResumeContext {
   lockName?: string;
   lockRequired: boolean;
   lockState: SyncularBrowserLifecycleResumeLockState;
+  lockTimeoutMs?: number;
 }
 
 export interface SyncularBrowserLifecyclePauseContext {
@@ -52,7 +54,7 @@ export interface SyncularBrowserLifecycleNavigator {
   locks?: {
     request?: <T>(
       name: string,
-      options: { mode: 'exclusive' },
+      options: { mode: 'exclusive'; signal?: AbortSignal },
       callback: () => T | Promise<T>
     ) => Promise<T>;
   };
@@ -82,6 +84,13 @@ export interface SyncularBrowserLifecycleResumeLockOptions {
    * of falling back to an uncoordinated catch-up.
    */
   required?: boolean;
+  /**
+   * Optional maximum time to wait for the browser Web Lock. When the timeout
+   * expires, the resume rejects with
+   * `SyncularBrowserLifecycleResumeLockTimeoutError` instead of hanging behind
+   * another tab indefinitely.
+   */
+  timeoutMs?: number;
 }
 
 export interface SyncularBrowserLifecycleResumeOptions {
@@ -124,7 +133,27 @@ export class SyncularBrowserLifecycleResumeLockError extends Error {
   }
 }
 
+export class SyncularBrowserLifecycleResumeLockTimeoutError extends Error {
+  readonly code = 'browser.web_locks_timeout';
+
+  constructor(
+    readonly lockName: string,
+    readonly timeoutMs: number
+  ) {
+    super(
+      `Timed out waiting ${timeoutMs}ms for Syncular lifecycle resume Web Lock ${lockName}.`
+    );
+    this.name = 'SyncularBrowserLifecycleResumeLockTimeoutError';
+  }
+}
+
 const DEFAULT_LIFECYCLE_RESUME_LOCK_NAME = 'syncular:lifecycle-resume';
+
+type NormalizedLifecycleResumeLockOptions = {
+  name: string;
+  required: boolean;
+  timeoutMs?: number;
+};
 
 export function installSyncularBrowserLifecycleResume(
   client: SyncularBrowserLifecycleResumeClient,
@@ -184,15 +213,66 @@ export function installSyncularBrowserLifecycleResume(
         return runResume(callbackContext);
       }
 
-      return locks.request(lockOptions.name, { mode: 'exclusive' }, () =>
-        runResume(
-          createResumeContext({
+      let timeoutError: SyncularBrowserLifecycleResumeLockTimeoutError | null =
+        null;
+      let timedOut = false;
+      const abortController =
+        lockOptions.timeoutMs != null && typeof AbortController !== 'undefined'
+          ? new AbortController()
+          : null;
+      const lockRequestOptions = {
+        mode: 'exclusive' as const,
+        ...(abortController ? { signal: abortController.signal } : {}),
+      };
+      const request = locks
+        .request(lockOptions.name, lockRequestOptions, () => {
+          if (timedOut) {
+            throw (
+              timeoutError ??
+              new SyncularBrowserLifecycleResumeLockTimeoutError(
+                lockOptions.name,
+                lockOptions.timeoutMs ?? 0
+              )
+            );
+          }
+          return runResume(
+            createResumeContext({
+              lockOptions,
+              lockState: 'acquired',
+              reason,
+            })
+          );
+        })
+        .catch((error) => {
+          if (timeoutError) throw timeoutError;
+          throw error;
+        });
+
+      if (lockOptions.timeoutMs == null) {
+        return request;
+      }
+
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+      const timeout = new Promise<SyncularSyncResult>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          timedOut = true;
+          timeoutError = new SyncularBrowserLifecycleResumeLockTimeoutError(
+            lockOptions.name,
+            lockOptions.timeoutMs ?? 0
+          );
+          callbackContext = createResumeContext({
             lockOptions,
-            lockState: 'acquired',
+            lockState: 'timed-out',
             reason,
-          })
-        )
-      );
+          });
+          abortController?.abort();
+          reject(timeoutError);
+        }, lockOptions.timeoutMs);
+      });
+
+      return Promise.race([request, timeout]).finally(() => {
+        if (timeoutId) clearTimeout(timeoutId);
+      });
     };
 
     inFlight = runWithOptionalLock()
@@ -276,7 +356,7 @@ export function installSyncularBrowserLifecycleResume(
 
 function normalizeLockOptions(
   lock: SyncularBrowserLifecycleResumeOptions['lock']
-): { name: string; required: boolean } | null {
+): NormalizedLifecycleResumeLockOptions | null {
   if (!lock) return null;
   if (lock === true) {
     return {
@@ -287,11 +367,14 @@ function normalizeLockOptions(
   return {
     name: lock.name?.trim() || DEFAULT_LIFECYCLE_RESUME_LOCK_NAME,
     required: lock.required === true,
+    ...(normalizeTimeoutMs(lock.timeoutMs) != null
+      ? { timeoutMs: normalizeTimeoutMs(lock.timeoutMs) }
+      : {}),
   };
 }
 
 function createResumeContext(args: {
-  lockOptions: { name: string; required: boolean } | null;
+  lockOptions: NormalizedLifecycleResumeLockOptions | null;
   lockState?: SyncularBrowserLifecycleResumeLockState;
   reason: SyncularBrowserLifecycleResumeReason;
 }): SyncularBrowserLifecycleResumeContext {
@@ -301,7 +384,18 @@ function createResumeContext(args: {
     lockState:
       args.lockState ?? (args.lockOptions ? 'waiting' : 'not-requested'),
     ...(args.lockOptions ? { lockName: args.lockOptions.name } : {}),
+    ...(args.lockOptions?.timeoutMs != null
+      ? { lockTimeoutMs: args.lockOptions.timeoutMs }
+      : {}),
   };
+}
+
+function normalizeTimeoutMs(timeoutMs: unknown): number | undefined {
+  if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs)) {
+    return undefined;
+  }
+  const normalized = Math.ceil(timeoutMs);
+  return normalized > 0 ? normalized : undefined;
 }
 
 function isDocumentHidden(
