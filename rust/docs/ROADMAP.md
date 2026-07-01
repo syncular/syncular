@@ -277,12 +277,17 @@ read-only review:
     still held to prove the task restored from persistent browser storage after
     abrupt renderer loss, then resumes normal sync and waits for a separate
     observer client to receive the replay. Hosted Checks run `28554593391` on
-    commit `84f3bbf1` confirmed that branch in Chrome. A stronger targeted
-    sync-transport-offline replay proof remains
-    outstanding; globally forcing Chrome offline before the generated write
-    blocked the starter runtime lifecycle before local mutation evidence.
-    Host-driven eviction and storage-shutdown behavior remain matrix work. The
-    starter now also records
+    commit `84f3bbf1` confirmed that branch in Chrome. The starter smoke now
+    also has a targeted sync-transport replay proof behind the smoke-only
+    `SYNCULAR_STARTER_SMOKE_FAILPOINTS` route: it blocks only one client's
+    `/sync` POSTs, creates a generated task, requires local visibility and a
+    server-observed blocked push count while the route is failing, clears the
+    failpoint, dispatches `online`, awaits the public `resumeFromBackground()`
+    recovery path, and requires a
+    separate observer client to receive the replay. Local pinned-Bun
+    `create-syncular-app` typecheck, focused Biome, and non-Chrome scaffold
+    smoke passed; hosted Chrome confirmation is pending. Host-driven eviction
+    and storage-shutdown behavior remain matrix work. The starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply
     evidence, and local-visibility evidence in the hidden marker and browser

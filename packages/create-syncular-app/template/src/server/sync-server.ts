@@ -9,6 +9,7 @@ import {
 import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
 import { createSyncServer } from '@syncular/server/hono';
 import { createSqliteServerDialect } from '@syncular/server/sqlite';
+import type { Context, Next } from 'hono';
 import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
 import type { Kysely } from 'kysely';
@@ -31,6 +32,27 @@ interface AppSyncServer {
  */
 const DEMO_TOKEN = 'demo-user';
 const DEMO_ACTOR_ID = 'demo-user';
+const smokeFailpointsEnabled =
+  process.env.SYNCULAR_STARTER_SMOKE_FAILPOINTS === '1';
+
+type SyncTransportFailpointState = {
+  blockedClientIds: Set<string>;
+  blockedPostCount: number;
+  blockedPushCount: number;
+  blockedRequestCount: number;
+  lastBlockedClientId: string | null;
+  lastBlockedPath: string | null;
+};
+
+type SyncTransportFailpointView = {
+  blockedClientIds: string[];
+  blockedPostCount: number;
+  blockedPushCount: number;
+  blockedRequestCount: number;
+  enabled: boolean;
+  lastBlockedClientId: string | null;
+  lastBlockedPath: string | null;
+};
 
 export async function startSyncServer(
   options: { port?: number; databasePath?: string } = {}
@@ -89,9 +111,26 @@ export async function startSyncServer(
     upgradeWebSocket,
   });
 
-  const app = new Hono()
-    .get('/health', (c) => c.json({ ok: true }))
-    .route('/sync', syncRoutes);
+  const syncTransportFailpoint = smokeFailpointsEnabled
+    ? createSyncTransportFailpoint()
+    : null;
+  const app = new Hono().get('/health', (c) => c.json({ ok: true }));
+
+  if (syncTransportFailpoint) {
+    app
+      .get('/__syncular-smoke/sync-transport', (c) =>
+        c.json(syncTransportFailpoint.view())
+      )
+      .post('/__syncular-smoke/sync-transport', async (c) => {
+        const body = await c.req.json().catch(() => ({}));
+        syncTransportFailpoint.configure(body);
+        return c.json(syncTransportFailpoint.view());
+      })
+      .use('/sync', syncTransportFailpoint.middleware)
+      .use('/sync/*', syncTransportFailpoint.middleware);
+  }
+
+  app.route('/sync', syncRoutes);
 
   const server = Bun.serve({
     hostname: '127.0.0.1',
@@ -126,4 +165,113 @@ async function ensureAppTables(db: Kysely<AppServerDb>) {
     .addColumn('created_at', 'bigint', (col) => col.notNull().defaultTo(0))
     .addColumn('server_version', 'bigint', (col) => col.notNull().defaultTo(0))
     .execute();
+}
+
+function createSyncTransportFailpoint() {
+  const state: SyncTransportFailpointState = {
+    blockedClientIds: new Set(),
+    blockedPostCount: 0,
+    blockedPushCount: 0,
+    blockedRequestCount: 0,
+    lastBlockedClientId: null,
+    lastBlockedPath: null,
+  };
+
+  const view = (): SyncTransportFailpointView => ({
+    blockedClientIds: [...state.blockedClientIds].sort(),
+    blockedPostCount: state.blockedPostCount,
+    blockedPushCount: state.blockedPushCount,
+    blockedRequestCount: state.blockedRequestCount,
+    enabled: true,
+    lastBlockedClientId: state.lastBlockedClientId,
+    lastBlockedPath: state.lastBlockedPath,
+  });
+
+  const configure = (body: unknown) => {
+    if (!isRecord(body)) return;
+    const clientId =
+      typeof body.clientId === 'string'
+        ? normalizeFailpointClientId(body.clientId)
+        : null;
+    const blocked = body.blocked === true;
+    if (body.reset === true) {
+      state.blockedClientIds.clear();
+      state.blockedPostCount = 0;
+      state.blockedPushCount = 0;
+      state.blockedRequestCount = 0;
+      state.lastBlockedClientId = null;
+      state.lastBlockedPath = null;
+    }
+    if (!clientId) return;
+    if (blocked) {
+      state.blockedClientIds.add(clientId);
+    } else {
+      state.blockedClientIds.delete(clientId);
+    }
+  };
+
+  const middleware = async (
+    c: Context,
+    next: Next
+  ): Promise<Response | undefined> => {
+    if (c.req.method !== 'POST') {
+      await next();
+      return;
+    }
+
+    const body = await c.req.raw
+      .clone()
+      .json()
+      .catch(() => null);
+    const clientId = readSyncTransportClientId(body);
+    if (!clientId || !state.blockedClientIds.has(clientId)) {
+      await next();
+      return;
+    }
+
+    const pathname = new URL(c.req.url).pathname;
+    state.blockedRequestCount += 1;
+    state.blockedPostCount += 1;
+    state.lastBlockedClientId = clientId;
+    state.lastBlockedPath = pathname;
+    if (isRecord(body) && isRecord(body.push)) {
+      state.blockedPushCount += 1;
+    }
+
+    const origin = c.req.header('origin');
+    const headers = new Headers({
+      'content-type': 'application/json',
+      'x-syncular-smoke-failpoint': 'sync-transport',
+    });
+    if (origin) {
+      headers.set('access-control-allow-origin', origin);
+      headers.set('vary', 'Origin');
+    }
+
+    return new Response(
+      JSON.stringify({
+        error: {
+          code: 'sync.transport_failpoint',
+          message: 'Sync transport disabled by create-syncular-app smoke test',
+        },
+      }),
+      { headers, status: 503 }
+    );
+  };
+
+  return { configure, middleware, view };
+}
+
+function readSyncTransportClientId(body: unknown): string | null {
+  if (!isRecord(body) || typeof body.clientId !== 'string') return null;
+  return normalizeFailpointClientId(body.clientId);
+}
+
+function normalizeFailpointClientId(value: string): string | null {
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

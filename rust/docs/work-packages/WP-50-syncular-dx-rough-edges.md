@@ -4056,11 +4056,16 @@ Most recent browser-health failure-artifact rerun:
   held to prove the task restored from persistent browser storage after abrupt
   renderer loss, then resumes normal sync and waits for a separate observer
   client to receive the replay through sync/realtime. Hosted Checks run
-  `28554593391` on commit `84f3bbf1` confirmed this branch in Chrome. A
-  stronger targeted offline-transport replay proof remains outstanding;
-  globally forcing Chrome
-  offline before the generated write blocked the starter runtime lifecycle and
-  did not exercise the desired local mutation path.
+  `28554593391` on commit `84f3bbf1` confirmed this branch in Chrome. The
+  current slice adds a targeted sync-transport replay proof behind a smoke-only
+  server failpoint: the smoke blocks only one generated-app client's `/sync`
+  POSTs, creates a generated task, requires local visibility and rendered text,
+  waits for the server failpoint to count a blocked push from that exact
+  client, clears the failpoint, dispatches `online`, awaits the public
+  `resumeFromBackground()` recovery path, and requires a separate observer
+  client to receive the replay through sync/realtime. Local pinned-Bun
+  typecheck, focused Biome, and non-Chrome scaffold smoke pass; hosted Chrome
+  confirmation is pending.
   Remaining work is richer browser-process proof: actual
   target-browser background/discard suspension and restoration,
   real storage shutdown, browser/host-driven eviction beyond explicit CDP
@@ -4606,6 +4611,23 @@ Most recent browser-health failure-artifact rerun:
   `real-browser smoke: proving browser storage eviction recovery`, and then
   `real-browser built-preview preflight smoke passed`, confirming the new
   renderer-crash replay branch in hosted Chrome.
+- 2026-07-02: Added a targeted sync-transport replay proof to the starter
+  Chrome/CDP branch. The template sync server now exposes a smoke-only
+  `SYNCULAR_STARTER_SMOKE_FAILPOINTS=1` failpoint that can block one client's
+  `/sync` POSTs and count blocked push attempts without putting the whole
+  browser offline. The browser smoke opens a dedicated client, enables that
+  failpoint for the client id, creates a generated task, waits for local
+  visibility plus rendered text, requires the server failpoint to count a
+  blocked push from that exact client, clears the failpoint, dispatches
+  `online`, awaits the public `resumeFromBackground()` recovery path, and waits
+  for a separate observer client to receive the replay through sync/realtime.
+  This replaces the discarded global Chrome-offline attempt with targeted
+  transport evidence for the generated write/outbox path. Local gates with Bun
+  `1.3.9` passed:
+  `bun --cwd packages/create-syncular-app tsgo`,
+  `bunx biome check packages/create-syncular-app/scripts/smoke.ts packages/create-syncular-app/template/src/server/sync-server.ts`,
+  and `bun --cwd packages/create-syncular-app smoke`. Chrome was not installed
+  locally, so hosted Chrome confirmation remains pending.
 
 ## Next Action
 
@@ -4645,10 +4667,12 @@ browser process stop/restart and replaying after normal sync resumes; hosted
 Checks run `28553329494` confirmed that branch in Chrome. The current slice
 adds renderer-crash replay recovery for the same sync-held generated-write
 flow; hosted Checks run `28554593391` confirmed that branch in Chrome.
-The next lifecycle follow-up after that should move to targeted
-sync-transport-offline replay, discarded-tab, browser/host-driven eviction
-beyond explicit CDP origin clear, storage-shutdown, and lower-level
-storage-failure behavior.
+The current slice adds targeted sync-transport replay behind a smoke-only
+server failpoint; it now awaits the public `resumeFromBackground()` recovery
+path after restoring transport, local pinned-Bun gates pass, and hosted Chrome
+confirmation is pending. The next lifecycle follow-up after that should move
+to discarded-tab, browser/host-driven eviction beyond explicit CDP origin
+clear, storage-shutdown, and lower-level storage-failure behavior.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 discard/shutdown lifecycle coverage, host-driven eviction and storage-shutdown

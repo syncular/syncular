@@ -1503,6 +1503,27 @@ function TaskPane({
     };
   }, [mutations]);
 
+  useEffect(() => {
+    const onProof = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{
+          reject?: (reason: string) => void;
+          resolve?: (result: { pushedCommits: number }) => void;
+        }>
+      ).detail;
+      void client
+        .resumeFromBackground()
+        .then((result) =>
+          detail?.resolve?.({ pushedCommits: result.pushedCommits })
+        )
+        .catch((error) => detail?.reject?.(errorMessage(error)));
+    };
+    window.addEventListener('syncular-starter-run-resume-proof', onProof);
+    return () => {
+      window.removeEventListener('syncular-starter-run-resume-proof', onProof);
+    };
+  }, [client]);
+
   const rows = tasks ?? [];
   const doneCount = rows.filter((task) => task.completed).length;
   const queued = (outbox?.pending ?? 0) + (outbox?.sending ?? 0);

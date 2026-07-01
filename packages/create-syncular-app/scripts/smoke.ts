@@ -499,6 +499,7 @@ type BuiltPreviewAssetMetrics = {
 async function maybeRunBrowserPreviewSmoke(args: {
   failureMetrics: BrowserPreviewFailureMetricsInput;
   origin: string;
+  syncOrigin: string;
   workDir: string;
 }): Promise<void> {
   const chrome = resolveChromeExecutable();
@@ -514,6 +515,7 @@ async function maybeRunBrowserPreviewSmoke(args: {
     chrome,
     failureMetrics: args.failureMetrics,
     origin: args.origin,
+    syncOrigin: args.syncOrigin,
     failureArtifactPath: join(args.workDir, 'browser-preview-failure.json'),
     userDataDir: join(args.workDir, 'chrome-profile'),
   });
@@ -539,6 +541,7 @@ async function runBrowserPreviewSmoke(args: {
   failureMetrics: BrowserPreviewFailureMetricsInput;
   failureArtifactPath: string;
   origin: string;
+  syncOrigin: string;
   userDataDir: string;
 }): Promise<void> {
   const targetUrl = `${args.origin}/`;
@@ -741,6 +744,17 @@ async function runBrowserPreviewSmoke(args: {
     origin: args.origin,
     userDataDir: `${args.userDataDir}-renderer-crash-replay`,
   });
+  log('real-browser smoke: proving targeted sync-transport replay recovery');
+  await proveStarterSyncTransportReplayRecovery({
+    chrome: args.chrome,
+    failureArtifactPath: syncTransportReplayFailureArtifactPath(
+      args.failureArtifactPath
+    ),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    syncOrigin: args.syncOrigin,
+    userDataDir: `${args.userDataDir}-sync-transport-replay`,
+  });
   log('real-browser smoke: proving support-bundle failure artifact');
   await proveStarterSupportBundleFailureArtifact({
     chrome: args.chrome,
@@ -840,6 +854,14 @@ function rendererCrashReplayFailureArtifactPath(
   return failureArtifactPath.endsWith('.json')
     ? failureArtifactPath.replace(/\.json$/u, '.renderer-crash-replay.json')
     : `${failureArtifactPath}.renderer-crash-replay.json`;
+}
+
+function syncTransportReplayFailureArtifactPath(
+  failureArtifactPath: string
+): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(/\.json$/u, '.sync-transport-replay.json')
+    : `${failureArtifactPath}.sync-transport-replay.json`;
 }
 
 async function withTimeout<T>(args: {
@@ -3914,6 +3936,404 @@ async function proveStarterRendererCrashReplayRecovery(args: {
   }
 }
 
+type StarterSyncTransportFailpointState = {
+  blockedClientIds: string[];
+  blockedPostCount: number;
+  blockedPushCount: number;
+  blockedRequestCount: number;
+  enabled: boolean;
+  lastBlockedClientId: string | null;
+  lastBlockedPath: string | null;
+};
+
+async function proveStarterSyncTransportReplayRecovery(args: {
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  syncOrigin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const clientId = 'web-sync-transport-replay';
+  const observerClientId = 'web-sync-transport-replay-observer';
+  const title = `sync transport replay ${Date.now()}`;
+  const chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  let activeSession: CdpSession | null = null;
+  let activeTargetId: string | null = null;
+  let observerSession: CdpSession | null = null;
+  let observerTargetId: string | null = null;
+  let lastProbe: BrowserPreviewProbe | null = null;
+
+  try {
+    await resetStarterSyncTransportFailpoint(args.syncOrigin);
+    const activeTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    activeTargetId = activeTarget.id;
+    activeSession = await CdpSession.connect(activeTarget.webSocketDebuggerUrl);
+    await enableChromeTarget(activeSession);
+    await navigateChromeTarget(
+      activeSession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularSyncTransportReplayProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      activeSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(activeSession);
+
+    const blockedBefore = await configureStarterSyncTransportFailpoint({
+      blocked: true,
+      clientId,
+      syncOrigin: args.syncOrigin,
+    });
+    await submitStarterTask(activeSession, title);
+    await waitForStarterLocalVisibility({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+    });
+    await waitForStarterRenderedText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+      timeoutMessage:
+        'Timed out waiting for built preview sync-transport replay local render while transport was blocked',
+      timeoutReason: 'sync-transport-local-render-timeout',
+      title,
+    });
+    await waitForStarterSyncTransportBlockedPush({
+      expectedBlockedPushCount: blockedBefore.blockedPushCount + 1,
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+      syncOrigin: args.syncOrigin,
+      targetClientId: clientId,
+    });
+
+    await configureStarterSyncTransportFailpoint({
+      blocked: false,
+      clientId,
+      syncOrigin: args.syncOrigin,
+    });
+    await dispatchStarterOnlineEvent(activeSession);
+    await waitForStarterResumeReplayPush({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+    });
+
+    const observerTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    observerTargetId = observerTarget.id;
+    observerSession = await CdpSession.connect(
+      observerTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(observerSession);
+    await navigateChromeTarget(
+      observerSession,
+      `${args.origin}/?syncularClientId=${observerClientId}&syncularSyncTransportReplayObserverProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      observerSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: observerSession,
+      title,
+      errorReason: 'sync-transport-replay-propagation-errors',
+      timeoutReason: 'sync-transport-replay-propagation-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview sync-transport replay propagation',
+    });
+  } catch (error) {
+    await writeBrowserPreviewFailureArtifactIfMissing(
+      args.failureArtifactPath,
+      'sync-transport-replay-smoke-error',
+      lastProbe,
+      args.failureMetrics
+    );
+    throw error;
+  } finally {
+    await configureStarterSyncTransportFailpoint({
+      blocked: false,
+      clientId,
+      syncOrigin: args.syncOrigin,
+    }).catch(() => undefined);
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: observerSession,
+      targetId: observerTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: activeSession,
+      targetId: activeTargetId,
+    });
+    await stopProcess(chrome.process);
+  }
+}
+
+type StarterResumeProofResult = {
+  pushedCommits: number;
+};
+
+async function waitForStarterResumeReplayPush(args: {
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  let lastResult: StarterResumeProofResult | null = null;
+  while (Date.now() < deadline) {
+    const result = await runStarterResumeProof({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: args.session,
+    });
+    lastResult = result;
+    if (result.pushedCommits > 0) return;
+    try {
+      lastProbe = await readStarterBrowserProbe(args.session);
+      if (lastProbe.errors.length > 0) {
+        await writeBrowserPreviewFailureArtifact(
+          args.failureArtifactPath,
+          'sync-transport-resume-push-errors',
+          lastProbe,
+          args.failureMetrics
+        );
+        throw new Error(
+          `Built preview sync-transport replay resume failed: ${lastProbe.errors.join(
+            ', '
+          )}. Failure artifact: ${args.failureArtifactPath}`
+        );
+      }
+    } catch (error) {
+      if (lastProbe?.errors.length) throw error;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+  }
+
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'sync-transport-resume-push-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview sync-transport replay resume to push a queued commit (last pushedCommits ${
+      lastResult?.pushedCommits ?? 0
+    }). Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
+async function runStarterResumeProof(args: {
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<StarterResumeProofResult> {
+  try {
+    const result = await args.session.evaluate<StarterResumeProofResult>(
+      `(() => new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        callback(value);
+      };
+      const timeout = setTimeout(() => {
+        finish(reject, new Error('Timed out waiting for starter resume proof'));
+      }, 15_000);
+      window.dispatchEvent(
+        new CustomEvent('syncular-starter-run-resume-proof', {
+          detail: {
+            resolve: (result) =>
+              finish(resolve, {
+                pushedCommits:
+                  result &&
+                  typeof result === 'object' &&
+                  Number.isFinite(result.pushedCommits)
+                    ? result.pushedCommits
+                    : 0,
+              }),
+            reject: (reason) =>
+              finish(
+                reject,
+                new Error(
+                  typeof reason === 'string' ? reason : 'Starter resume proof failed'
+                )
+              ),
+          },
+        })
+      );
+    }))()`
+    );
+    return {
+      pushedCommits: Number.isFinite(result?.pushedCommits)
+        ? result.pushedCommits
+        : 0,
+    };
+  } catch (error) {
+    const probe = await readStarterBrowserProbe(args.session).catch(() => null);
+    await writeBrowserPreviewFailureArtifact(
+      args.failureArtifactPath,
+      'sync-transport-resume-proof-error',
+      probe,
+      args.failureMetrics
+    );
+    throw new Error(
+      `Built preview starter resume proof failed: ${describeError(
+        error
+      )}. Failure artifact: ${args.failureArtifactPath}`
+    );
+  }
+}
+
+async function resetStarterSyncTransportFailpoint(
+  syncOrigin: string
+): Promise<StarterSyncTransportFailpointState> {
+  return configureStarterSyncTransportFailpoint({
+    reset: true,
+    syncOrigin,
+  });
+}
+
+async function configureStarterSyncTransportFailpoint(args: {
+  blocked?: boolean;
+  clientId?: string;
+  reset?: boolean;
+  syncOrigin: string;
+}): Promise<StarterSyncTransportFailpointState> {
+  const response = await fetch(
+    `${args.syncOrigin}/__syncular-smoke/sync-transport`,
+    {
+      body: JSON.stringify({
+        blocked: args.blocked,
+        clientId: args.clientId,
+        reset: args.reset,
+      }),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    }
+  );
+  if (!response.ok) {
+    throw new Error(
+      `Starter sync-transport failpoint configure failed with ${response.status}`
+    );
+  }
+  return readStarterSyncTransportFailpointResponse(response);
+}
+
+async function readStarterSyncTransportFailpoint(
+  syncOrigin: string
+): Promise<StarterSyncTransportFailpointState> {
+  const response = await fetch(`${syncOrigin}/__syncular-smoke/sync-transport`);
+  if (!response.ok) {
+    throw new Error(
+      `Starter sync-transport failpoint status failed with ${response.status}`
+    );
+  }
+  return readStarterSyncTransportFailpointResponse(response);
+}
+
+async function readStarterSyncTransportFailpointResponse(
+  response: Response
+): Promise<StarterSyncTransportFailpointState> {
+  const value = await response.json();
+  assertStarterSyncTransportFailpointState(value);
+  return value;
+}
+
+function assertStarterSyncTransportFailpointState(
+  value: unknown
+): asserts value is StarterSyncTransportFailpointState {
+  if (!isRecord(value)) {
+    throw new Error('Starter sync-transport failpoint response was not object');
+  }
+  if (value.enabled !== true) {
+    throw new Error('Starter sync-transport failpoint was not enabled');
+  }
+  if (
+    !Array.isArray(value.blockedClientIds) ||
+    !value.blockedClientIds.every((entry) => typeof entry === 'string')
+  ) {
+    throw new Error(
+      'Starter sync-transport failpoint blockedClientIds was not string[]'
+    );
+  }
+  for (const key of [
+    'blockedPostCount',
+    'blockedPushCount',
+    'blockedRequestCount',
+  ] as const) {
+    if (
+      !isNonNegativeFiniteNumber(value[key]) ||
+      !Number.isInteger(value[key])
+    ) {
+      throw new Error(
+        `Starter sync-transport failpoint ${key} was not a non-negative integer`
+      );
+    }
+  }
+  for (const key of ['lastBlockedClientId', 'lastBlockedPath'] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(
+        `Starter sync-transport failpoint ${key} was not nullable string`
+      );
+    }
+  }
+}
+
+async function waitForStarterSyncTransportBlockedPush(args: {
+  expectedBlockedPushCount: number;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+  syncOrigin: string;
+  targetClientId: string;
+}): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const failpoint = await readStarterSyncTransportFailpoint(args.syncOrigin);
+    if (
+      failpoint.blockedPushCount >= args.expectedBlockedPushCount &&
+      failpoint.lastBlockedClientId === args.targetClientId &&
+      failpoint.lastBlockedPath?.endsWith('/sync') === true
+    ) {
+      return;
+    }
+    try {
+      lastProbe = await readStarterBrowserProbe(args.session);
+    } catch {
+      // Keep polling failpoint state; the artifact can use the last probe.
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'sync-transport-blocked-push-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for blocked sync-transport push proof. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
 async function crashStarterChromeRenderer(session: CdpSession): Promise<void> {
   const crashed = session
     .waitForEvent('Inspector.targetCrashed', 5_000)
@@ -6862,6 +7282,7 @@ async function main(): Promise<void> {
     const appEnv = {
       ...process.env,
       SYNC_PORT: String(syncPort),
+      SYNCULAR_STARTER_SMOKE_FAILPOINTS: '1',
       PORT: String(vitePort),
       VITE_SYNCULAR_SYNC_URL: `http://127.0.0.1:${syncPort}/sync`,
     };
@@ -6984,6 +7405,7 @@ async function main(): Promise<void> {
     await maybeRunBrowserPreviewSmoke({
       failureMetrics,
       origin: previewOrigin,
+      syncOrigin: `http://127.0.0.1:${syncPort}`,
       workDir,
     });
 
