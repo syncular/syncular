@@ -1807,6 +1807,14 @@ online propagation, or reconnect behavior can change.
   a signed download URL, and verifies the downloaded bytes. This narrows the
   remaining R2 risk to scoped/negative blob route cases and larger app-level
   blob flows rather than basic R2-backed route viability.
+- 2026-07-01: Expanded the Cloudflare route proof with a broader negative
+  D1/R2 route matrix. The D1 sync smoke now proves a cross-actor pull returns
+  an empty `revoked` subscription instead of leaking scoped data, and snapshot
+  chunk downloads reject missing scope headers as `sync.invalid_request` before
+  wrong-scope requests fail as `sync.forbidden`. The R2 blob smoke now also
+  proves unauthenticated upload initiation, invalid upload-init bodies, invalid
+  direct-upload tokens, and cross-actor upload completion return stable error
+  envelopes before the happy-path upload/complete/download flow continues.
 - 2026-07-01: Extended the Cloudflare runtime proof with a DO-backed
   WebSocket echo route. The generated `SyncDurableObject` now receives
   `upgradeWebSocket`, registers `/syncular-framework-import-smoke/ws`, and the
@@ -2519,21 +2527,24 @@ Most recent mutation-status rerun:
   `ensureSyncSchema(...)` against D1, verifies the `sync_commits` table,
   performs D1 app-table insert/select/delete, pushes and pulls through the
   Syncular HTTP route with binary sync-pack plus decoded snapshot chunk,
-  rejects unauthenticated sync, rejects a forbidden-scope write, rejects
-  wrong-scope snapshot chunk access, opens real Syncular realtime
-  reader/writer WebSockets over the Durable Object upgrade bridge, pushes
-  through the writer socket, decodes the reader's binary sync-pack delta for
-  the D1 row, drives an R2-backed blob route upload/complete/download flow,
-  rejects a forbidden blob download URL with stable access details, and echoes
-  through a DO-backed WebSocket route. The same local runtime proof now
+  rejects unauthenticated sync, proves cross-actor pulls become empty revoked
+  subscriptions, rejects a forbidden-scope write, rejects missing-scope and
+  wrong-scope snapshot chunk access, opens real Syncular realtime reader/writer
+  WebSockets over the Durable Object upgrade bridge, pushes through the writer
+  socket, decodes the reader's binary sync-pack delta for the D1 row, drives
+  an R2-backed blob route upload/complete/download flow, rejects
+  unauthenticated upload initiation, invalid upload-init bodies, invalid
+  direct-upload tokens, forbidden upload completion, and forbidden blob
+  download URLs with stable access details, and echoes through a DO-backed
+  WebSocket route. The same local runtime proof now
   self-checks a bounded Cloudflare failure artifact so failed DO/D1/R2/WebSocket
   runs can leave route, exit, and recent-output context instead of logs alone.
   Release rehearsal now runs those framework proofs by default before publish
   dry-runs and can require the Vite browser execution path on Chrome-capable
   runners. Remaining matrix work is deeper browser/framework execution beyond
   these proofs, especially richer multi-client/browser Syncular realtime over
-  Durable Object WebSocket, richer scoped/negative D1 and R2 route matrix
-  cases, Safari, Firefox, private mode, WebViews, and PWAs.
+  Durable Object WebSocket, larger app-level scoped D1/R2 route combinations,
+  Safari, Firefox, private mode, WebViews, and PWAs.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.

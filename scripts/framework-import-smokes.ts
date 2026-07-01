@@ -1144,6 +1144,67 @@ async function runSyncRouteFlow(args: {
       ).slice(0, 500)}`
     );
   }
+  const forbiddenReadResponse = await fetchWorkerResponse({
+    label,
+    url: syncUrl,
+    init: {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-syncular-smoke-actor': `${actorId}-other`,
+      },
+      body: JSON.stringify({
+        clientId: 'syncular-framework-forbidden-reader',
+        pull: {
+          schemaVersion: 1,
+          limitCommits: 1,
+          limitSnapshotRows: 1,
+          subscriptions: [
+            {
+              id: 'syncular-framework-forbidden-tasks',
+              table: 'syncular_framework_tasks',
+              scopes: { user_id: actorId },
+              cursor: -1,
+              crdtStateVectors: [],
+            },
+          ],
+        },
+      }),
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectOkResponse(
+    label,
+    'revoked-scope pull envelope',
+    forbiddenReadResponse,
+    args.output
+  );
+  const forbiddenReadBody = (await readSyncRouteResponse(
+    label,
+    'revoked-scope pull',
+    forbiddenReadResponse
+  )) as {
+    ok?: boolean;
+    pull?: {
+      subscriptions?: Array<{
+        scopes?: Record<string, unknown>;
+        status?: string;
+      }>;
+    };
+  };
+  const forbiddenReadSubscription = forbiddenReadBody.pull?.subscriptions?.[0];
+  if (
+    forbiddenReadBody.ok !== true ||
+    forbiddenReadSubscription?.status !== 'revoked' ||
+    Object.keys(forbiddenReadSubscription.scopes ?? {}).length !== 0
+  ) {
+    throw new Error(
+      `${label} revoked-scope pull did not produce an empty revoked subscription: ${JSON.stringify(
+        forbiddenReadBody
+      ).slice(0, 500)}`
+    );
+  }
 
   const unauthenticatedResponse = await fetchWorkerResponse({
     label,
@@ -1254,6 +1315,25 @@ async function runSyncRouteFlow(args: {
     snapshotRows = decodeBinarySnapshotTable(
       gunzipSync(new Uint8Array(await chunkResponse.arrayBuffer()))
     ).rows;
+    const missingScopeChunkResponse = await fetchWorkerResponse({
+      label,
+      url: `${syncUrl}/snapshot-chunks/${encodeURIComponent(firstChunk.id)}`,
+      init: {
+        headers: {
+          'x-syncular-smoke-actor': actorId,
+        },
+      },
+      output: args.output,
+      getExit: args.getExit,
+    });
+    await expectJsonErrorResponse(label, 'missing-scope snapshot chunk', {
+      response: missingScopeChunkResponse,
+      output: args.output,
+      status: 400,
+      code: 'sync.invalid_request',
+      category: 'invalid-request',
+      recommendedAction: 'fixRequest',
+    });
     const forbiddenChunkResponse = await fetchWorkerResponse({
       label,
       url: `${syncUrl}/snapshot-chunks/${encodeURIComponent(firstChunk.id)}`,
@@ -1669,6 +1749,13 @@ async function runBlobRouteFlow(args: {
     'x-syncular-smoke-partition': partitionId,
   };
 
+  await assertBlobRouteNegativeMatrix({
+    origin: args.origin,
+    routeBase: args.routeBase,
+    output: args.output,
+    getExit: args.getExit,
+  });
+
   const initResponse = await fetchWorkerResponse({
     label,
     url: `${args.origin}${args.routeBase}/blobs/upload`,
@@ -1717,6 +1804,30 @@ async function runBlobRouteFlow(args: {
     getExit: args.getExit,
   });
   await expectOkResponse(label, 'upload bytes', uploadResponse, args.output);
+
+  const forbiddenCompleteResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+      hash
+    )}/complete`,
+    init: {
+      method: 'POST',
+      headers: {
+        'x-syncular-smoke-actor': `${actorId}-other`,
+        'x-syncular-smoke-partition': partitionId,
+      },
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectJsonErrorResponse(label, 'forbidden upload completion', {
+    response: forbiddenCompleteResponse,
+    output: args.output,
+    status: 403,
+    code: 'blob.forbidden',
+    category: 'forbidden',
+    recommendedAction: 'checkPermissions',
+  });
 
   const completeResponse = await fetchWorkerResponse({
     label,
@@ -1832,6 +1943,105 @@ async function runBlobRouteFlow(args: {
     throw new Error(
       `${label} forbidden download URL returned unexpected details: ${JSON.stringify(
         forbiddenDownloadUrlBody
+      ).slice(0, 500)}`
+    );
+  }
+}
+
+async function assertBlobRouteNegativeMatrix(args: {
+  origin: string;
+  routeBase: string;
+  output: string[];
+  getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
+}): Promise<void> {
+  const label = 'Cloudflare R2 blob route smoke';
+  const invalidHash = `sha256:${'0'.repeat(64)}`;
+  const unauthenticatedUploadInitResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}/blobs/upload`,
+    init: {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        hash: invalidHash,
+        size: 1,
+        mimeType: 'application/octet-stream',
+      }),
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectJsonErrorResponse(label, 'unauthenticated upload init', {
+    response: unauthenticatedUploadInitResponse,
+    output: args.output,
+    status: 401,
+    code: 'sync.auth_required',
+    category: 'auth-required',
+    recommendedAction: 'refreshAuth',
+  });
+
+  const invalidUploadInitResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}/blobs/upload`,
+    init: {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-syncular-smoke-actor': 'syncular-framework-actor',
+      },
+      body: JSON.stringify({}),
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectJsonErrorResponse(label, 'invalid upload init', {
+    response: invalidUploadInitResponse,
+    output: args.output,
+    status: 400,
+    code: 'blob.invalid_request',
+    category: 'blob',
+    recommendedAction: 'fixRequest',
+  });
+
+  const invalidDirectUploadTokenResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+      invalidHash
+    )}/upload?token=invalid-token`,
+    init: {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/octet-stream',
+      },
+      body: new Uint8Array([1]),
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  const invalidTokenBody = await expectJsonErrorResponse(
+    label,
+    'invalid direct-upload token',
+    {
+      response: invalidDirectUploadTokenResponse,
+      output: args.output,
+      status: 401,
+      code: 'blob.invalid_token',
+      category: 'auth-required',
+      recommendedAction: 'refreshAuth',
+    }
+  );
+  const invalidTokenDetails = invalidTokenBody.details as
+    | Record<string, unknown>
+    | undefined;
+  if (
+    invalidTokenDetails?.failureKind !== 'invalid_token' ||
+    invalidTokenDetails.tokenAction !== 'upload'
+  ) {
+    throw new Error(
+      `${label} invalid direct-upload token returned unexpected details: ${JSON.stringify(
+        invalidTokenBody
       ).slice(0, 500)}`
     );
   }

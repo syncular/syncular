@@ -156,13 +156,16 @@ read-only review:
     through those bindings, runs `ensureSyncSchema(...)` against D1, verifies
     the `sync_commits` table, performs D1 app-table insert/select/delete,
     pushes through the Syncular HTTP route, pulls the row back through a binary
-    sync-pack and decoded snapshot chunk, rejects unauthenticated sync and a
-    forbidden-scope write with stable envelopes, rejects a wrong-scope snapshot
-    chunk download, opens real Syncular realtime reader/writer WebSockets over
-    the Durable Object upgrade bridge, pushes through the writer socket, and
-    decodes the reader's binary sync-pack delta for the D1 row, drives an
-    R2-backed Syncular blob route upload/complete/download flow, rejects a
-    forbidden blob download URL with stable access details, and echoes a
+    sync-pack and decoded snapshot chunk, rejects unauthenticated sync, proves
+    a cross-actor pull is returned as an empty revoked subscription, rejects a
+    forbidden-scope write with stable envelopes, rejects missing-scope and
+    wrong-scope snapshot chunk downloads, opens real Syncular realtime
+    reader/writer WebSockets over the Durable Object upgrade bridge, pushes
+    through the writer socket, and decodes the reader's binary sync-pack delta
+    for the D1 row, drives an R2-backed Syncular blob route
+    upload/complete/download flow, rejects unauthenticated and invalid upload
+    initiation, invalid direct-upload tokens, forbidden upload completion, and
+    forbidden blob download URLs with stable access details, and echoes a
     message through a Durable Object WebSocket route. WASM glue dynamic
     imports include webpack
     ignore metadata so the Next build stays warning-clean.

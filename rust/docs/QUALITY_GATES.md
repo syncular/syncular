@@ -45,11 +45,13 @@ until the full browser Worker/WASM suite is green on Linux.
   Object, D1, R2, and WebSocket routes under Wrangler and answer local runtime
   probes that perform Syncular schema creation on D1, D1 app-table
   insert/select/delete, Syncular push/pull over D1 with binary sync-pack and
-  snapshot-chunk decode, stable unauthenticated and forbidden-scope sync
+  snapshot-chunk decode, stable unauthenticated, revoked-scope,
+  forbidden-scope, missing-snapshot-scope, and forbidden snapshot-chunk sync
   failures, a real Syncular realtime route over the Durable Object WebSocket
   bridge with a WebSocket push and binary sync-pack delta, an R2-backed
-  Syncular blob route upload/complete/download flow, stable forbidden blob
-  access details, and a Durable Object WebSocket echo through those bindings.
+  Syncular blob route upload/complete/download flow, stable unauthenticated,
+  invalid-init, invalid-token, forbidden-completion, and forbidden-download
+  blob failures, and a Durable Object WebSocket echo through those bindings.
   For release/post-publish
   checks,
   `bun scripts/post-publish-install-smokes.ts --version <version>` also runs
