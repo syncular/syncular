@@ -46,6 +46,13 @@ status code, duration, operation/row counts, and affected scopes. See
 [Operations Setup](/operate/operations-setup) for the endpoints and retention
 settings.
 
+Rate-limited Sync requests emit the `sync.rate_limit` event and return the
+stable `sync.rate_limited` envelope. The response `details` include the
+operation type, actor id, current window count, limit, remaining count,
+window duration, reset timestamp, and retry-after values, so tests and support
+tools can distinguish pull throttling from push throttling without matching
+message text.
+
 ### Client side
 
 Pass a `diagnostics` sink when creating the client to receive every diagnostic

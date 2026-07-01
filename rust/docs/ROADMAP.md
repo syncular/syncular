@@ -106,11 +106,15 @@ read-only review:
     command-timeline evidence chains, stable failure-artifact assertion helpers
     for browser-preview and Cloudflare runtime artifacts, explicit project
     membership support in the bundled tasks fixture, and binary
-    sync-pack-aware combined response parsing for real route tests. Public docs now lead Fresh JavaScript apps through
-    `create-syncular-app`, include a JavaScript import decision table, describe
-    optional client/server integrations as subpaths with optional peers, and
-    guard the starter-proven `src/generated/syncular.generated.ts` filename
-    through stale-pattern checks. Contributor docs now lead app evaluation with
+    sync-pack-aware combined response parsing for real route tests. Hono
+    rate-limit envelopes and `sync.rate_limit` logs now include structured
+    actor, operation type, window count, reset, and retry-after details so
+    pull/push throttling can be diagnosed without message matching. Public
+    docs now lead Fresh JavaScript apps through `create-syncular-app`, include
+    a JavaScript import decision table, describe optional client/server
+    integrations as subpaths with optional peers, and guard the starter-proven
+    `src/generated/syncular.generated.ts` filename through stale-pattern
+    checks. Contributor docs now lead app evaluation with
     `create-syncular-app`, document the pinned Bun `1.3.9` local gate path,
     call out the Linux Worker/WASM exclusion in generic `bun test`, and remove
     stale Bun `1.3.13`/`1.3.14` guidance. Browser health now exposes

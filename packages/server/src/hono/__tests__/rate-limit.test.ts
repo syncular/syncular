@@ -75,4 +75,82 @@ describe('rate limiter store isolation', () => {
     // Long limiter must still be limited.
     expect((await app.request('http://localhost/long')).status).toBe(429);
   });
+
+  it('returns structured default rate-limit details', async () => {
+    const app = new Hono();
+
+    app.use(
+      '/limited',
+      createRateLimiter({
+        maxRequests: 1,
+        windowMs: 60_000,
+        keyGenerator: () => 'actor-1',
+      })
+    );
+
+    app.get('/limited', (c) => c.text('ok'));
+
+    expect((await app.request('http://localhost/limited')).status).toBe(200);
+
+    const limited = await app.request('http://localhost/limited');
+    const body = await limited.json();
+
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('Retry-After')).toBeTruthy();
+    expect(body).toMatchObject({
+      error: 'sync.rate_limited',
+      code: 'sync.rate_limited',
+      category: 'rate-limited',
+      retryable: true,
+      recommendedAction: 'retryLater',
+      details: {
+        current: 1,
+        limit: 1,
+        maxRequests: 1,
+        remaining: 0,
+        windowMs: 60_000,
+      },
+    });
+    expect(body.details.retryAfterMs).toBeGreaterThan(0);
+    expect(body.details.retryAfterSec).toBeGreaterThan(0);
+    expect(body.details.resetAt).toBeGreaterThan(Date.now());
+  });
+
+  it('adds safe route-specific details to rate-limit responses', async () => {
+    const app = new Hono();
+
+    app.use(
+      '/pull',
+      createRateLimiter({
+        maxRequests: 1,
+        windowMs: 60_000,
+        keyGenerator: () => 'actor-1',
+        details: (_c, context) => ({
+          actorId: context.key,
+          operationType: 'pull',
+        }),
+      })
+    );
+
+    app.get('/pull', (c) => c.text('ok'));
+
+    expect((await app.request('http://localhost/pull')).status).toBe(200);
+
+    const limited = await app.request('http://localhost/pull');
+    const body = await limited.json();
+
+    expect(limited.status).toBe(429);
+    expect(body).toMatchObject({
+      error: 'sync.rate_limited',
+      details: {
+        actorId: 'actor-1',
+        operationType: 'pull',
+        current: 1,
+        limit: 1,
+        maxRequests: 1,
+        remaining: 0,
+        windowMs: 60_000,
+      },
+    });
+  });
 });

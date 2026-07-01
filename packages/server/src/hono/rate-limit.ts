@@ -44,9 +44,30 @@ export interface RateLimitConfig {
   ) => Response | Promise<Response>;
 
   /**
+   * Adds safe, structured fields to the default rate-limited error details
+   * and log event. Use this to include route-specific context such as
+   * operation type, actor id, table, scope, or subscription id.
+   */
+  details?: (
+    c: Context,
+    context: RateLimitContext
+  ) => Record<string, unknown> | Promise<Record<string, unknown>>;
+
+  /**
    * Whether to skip rate limiting in test environments (default: false)
    */
   skipInTest?: boolean;
+}
+
+export interface RateLimitContext {
+  key: string;
+  current: number;
+  maxRequests: number;
+  remaining: number;
+  resetAt: number;
+  retryAfterMs: number;
+  retryAfterSec: number;
+  windowMs: number;
 }
 
 /**
@@ -205,6 +226,7 @@ export function createRateLimiter(
     keyGenerator,
     includeHeaders = DEFAULT_RATE_LIMIT_CONFIG.includeHeaders,
     onRateLimited,
+    details,
     skipInTest = DEFAULT_RATE_LIMIT_CONFIG.skipInTest,
   } = config;
 
@@ -236,6 +258,28 @@ export function createRateLimiter(
     if (!result.allowed) {
       const retryAfterMs = result.resetAt - Date.now();
       const retryAfterSec = Math.ceil(retryAfterMs / 1000);
+      const context: RateLimitContext = {
+        key,
+        current: result.current,
+        maxRequests,
+        remaining: result.remaining,
+        resetAt: result.resetAt,
+        retryAfterMs,
+        retryAfterSec,
+        windowMs,
+      };
+      const detailFields = details ? await details(c, context) : {};
+      const rateLimitDetails = {
+        ...detailFields,
+        current: result.current,
+        limit: maxRequests,
+        maxRequests,
+        remaining: result.remaining,
+        resetAt: result.resetAt,
+        retryAfterMs,
+        retryAfterSec,
+        windowMs,
+      };
 
       // Log rate limit event
       logSyncEvent({
@@ -244,6 +288,7 @@ export function createRateLimiter(
         current: result.current,
         maxRequests,
         retryAfterMs,
+        ...detailFields,
       });
 
       // Add Retry-After header
@@ -257,7 +302,7 @@ export function createRateLimiter(
       return c.json(
         createSyncularErrorResponse('sync.rate_limited', {
           message: 'Too many requests. Please try again later.',
-          details: { retryAfterMs, retryAfterSec },
+          details: rateLimitDetails,
         }),
         429
       );

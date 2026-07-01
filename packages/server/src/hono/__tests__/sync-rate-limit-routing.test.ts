@@ -152,6 +152,31 @@ describe('createSyncRoutes rate limit routing', () => {
     expect(pushFirst.status).toBe(200);
     expect(pullSecond.status).toBe(429);
     expect(pushSecond.status).toBe(429);
+
+    await expect(pullSecond.json()).resolves.toMatchObject({
+      error: 'sync.rate_limited',
+      details: {
+        actorId: 'u1',
+        operationType: 'pull',
+        current: 1,
+        limit: 1,
+        maxRequests: 1,
+        remaining: 0,
+        windowMs: 60_000,
+      },
+    });
+    await expect(pushSecond.json()).resolves.toMatchObject({
+      error: 'sync.rate_limited',
+      details: {
+        actorId: 'u1',
+        operationType: 'push',
+        current: 1,
+        limit: 1,
+        maxRequests: 1,
+        remaining: 0,
+        windowMs: 60_000,
+      },
+    });
   });
 
   it('authenticates once per combined sync request with rate limiting enabled', async () => {

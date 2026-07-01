@@ -1500,20 +1500,30 @@ export function createSyncRoutesContext<
       rateLimitConfig?.push ?? DEFAULT_SYNC_RATE_LIMITS.push;
 
     const createAuthBasedRateLimiter = (
-      limitConfig: Omit<SyncRateLimitConfig['pull'], never> | false | undefined
+      limitConfig:
+        | Exclude<SyncRateLimitConfig['pull'], false | undefined>
+        | false
+        | undefined,
+      operationType: 'pull' | 'push'
     ) => {
       if (limitConfig === false || !limitConfig) return null;
+      const { details, ...rateLimiterConfig } = limitConfig;
       return createRateLimiter({
-        ...limitConfig,
+        ...rateLimiterConfig,
         keyGenerator: async (c) => {
           const auth = await getAuth(c);
           return auth?.actorId ?? null;
         },
+        details: async (c, context) => ({
+          ...(details ? await details(c, context) : {}),
+          actorId: context.key,
+          operationType,
+        }),
       });
     };
 
-    const pullLimiter = createAuthBasedRateLimiter(pullRateLimit);
-    const pushLimiter = createAuthBasedRateLimiter(pushRateLimit);
+    const pullLimiter = createAuthBasedRateLimiter(pullRateLimit, 'pull');
+    const pushLimiter = createAuthBasedRateLimiter(pushRateLimit, 'push');
 
     const syncRateLimiter: MiddlewareHandler = async (c, next) => {
       if (!pullLimiter && !pushLimiter) return next();

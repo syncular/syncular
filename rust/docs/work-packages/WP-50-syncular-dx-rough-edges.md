@@ -733,10 +733,13 @@ contract, not to preserve the notes as a second backlog.
   auth, real server routes, real browser client, realtime enabled, durable
   browser persistence, safe failure artifacts, and no mocked persistence.
 - Stable log marker conventions are partially shipped through testkit
-  diagnostic marker helpers. Server logs, client health, generated diagnostics,
-  console events, and testkit assertions still need a shared event-code shape
-  for rate limits, revoked subscriptions, bootstrap timeout, schema errors,
-  blob errors, realtime reconnect, realtime event delivery, and local apply.
+  diagnostic marker helpers and structured Hono rate-limit details. Rate
+  limit envelopes and logs now include actor, operation type, window counts,
+  reset, and retry-after data. Server logs, client health, generated
+  diagnostics, console events, and testkit assertions still need a shared
+  event-code shape for revoked subscriptions, bootstrap timeout, schema
+  errors, blob errors, realtime reconnect, realtime event delivery, local
+  apply, and deeper scope/subscription-specific throttling context.
 - API audience labels and privacy boundaries are partially shipped through the
   diagnostic detail policy and observability docs. Continue labeling surfaces
   as UI-facing, operator/deploy, debug/console, testkit/E2E, or advanced, and
@@ -1618,6 +1621,12 @@ online propagation, or reconnect behavior can change.
   support-policy count consistency, support-bundle redaction,
   lifecycle-resume/pause evidence, safe blob timing metrics, and rejected
   sensitive keys or known raw secret values before Console/Fleet ingestion.
+- 2026-07-01: Added structured Hono rate-limit details for sync route
+  diagnostics. The generic limiter now exposes stable count/window/retry
+  fields in `sync.rate_limited` responses and log events, while combined sync
+  routes add safe `actorId` plus `operationType` details so pull and push
+  throttling can be distinguished in tests, logs, and support reports without
+  matching prose.
 - The testkit `postSyncCombinedRequest(...)` helper now accepts the current
   binary sync-pack response format as well as JSON, so docs examples using the
   real combined route are executable again.
@@ -3155,6 +3164,15 @@ Most recent support-bundle rerun:
 - `bunx biome check packages/client/src/support-bundle.ts packages/client/src/support-bundle.test.ts packages/client/src/database.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx`
 - `bun --cwd apps/docs types:check`
 - `bun run docs:stale-check`
+- `git diff --check`
+
+Most recent sync rate-limit details rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/rate-limit.test.ts packages/server/src/hono/__tests__/sync-rate-limit-routing.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/server tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/server/src/hono/rate-limit.ts packages/server/src/hono/routes/context.ts packages/server/src/hono/__tests__/rate-limit.test.ts packages/server/src/hono/__tests__/sync-rate-limit-routing.test.ts apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `git diff --check`
 
 Most recent mutation-status rerun:
