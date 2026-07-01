@@ -88,6 +88,23 @@ type StorageRecoveryProofPreview = {
   status: 'idle' | 'running' | 'complete' | 'failed';
 };
 
+type QuotaPressureProofPreview = {
+  actionCount: number;
+  availableBytes: number | null;
+  count: number;
+  error: string | null;
+  errorCode: string | null;
+  issueCodes: string[];
+  issueCount: number;
+  persistence: SyncularBrowserDeploymentPreflight['support']['persistence'];
+  quotaBytes: number | null;
+  quotaPressure: SyncularBrowserDeploymentPreflight['storage']['quotaPressure'];
+  status: 'idle' | 'running' | 'complete' | 'failed';
+  supportTier: SyncularBrowserDeploymentPreflight['support']['tier'];
+  usageBytes: number | null;
+  usageRatio: number | null;
+};
+
 type WritePressureProofPreview = {
   durationMs: number | null;
   error: string | null;
@@ -200,6 +217,23 @@ const initialStorageRecoveryProof: StorageRecoveryProofPreview = {
   requestPersistenceOffered: false,
   requestPersistenceSupported: null,
   status: 'idle',
+};
+
+const initialQuotaPressureProof: QuotaPressureProofPreview = {
+  actionCount: 0,
+  availableBytes: null,
+  count: 0,
+  error: null,
+  errorCode: null,
+  issueCodes: [],
+  issueCount: 0,
+  persistence: 'unknown',
+  quotaBytes: null,
+  quotaPressure: 'unknown',
+  status: 'idle',
+  supportTier: 'unknown',
+  usageBytes: null,
+  usageRatio: null,
 };
 
 const initialWritePressureProof: WritePressureProofPreview = {
@@ -629,10 +663,13 @@ function TaskPane({
     useState<LocalRecoveryProofPreview>(initialLocalRecoveryProof);
   const [storageRecoveryProof, setStorageRecoveryProof] =
     useState<StorageRecoveryProofPreview>(initialStorageRecoveryProof);
+  const [quotaPressureProof, setQuotaPressureProof] =
+    useState<QuotaPressureProofPreview>(initialQuotaPressureProof);
   const [writePressureProof, setWritePressureProof] =
     useState<WritePressureProofPreview>(initialWritePressureProof);
   const localRecoveryProofRunning = useRef(false);
   const storageRecoveryProofRunning = useRef(false);
+  const quotaPressureProofRunning = useRef(false);
   const writePressureProofRunning = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -1019,6 +1056,77 @@ function TaskPane({
   }, [client]);
 
   useEffect(() => {
+    const runProof = async () => {
+      if (quotaPressureProofRunning.current) return;
+      quotaPressureProofRunning.current = true;
+      setQuotaPressureProof((current) => ({
+        ...current,
+        error: null,
+        errorCode: null,
+        issueCodes: [],
+        issueCount: 0,
+        status: 'running',
+      }));
+      try {
+        const preflight = await getSyncularBrowserDeploymentPreflight(
+          starterDeploymentPreflightOptions
+        );
+        const issueCodes = preflight.issues.map((issue) => issue.code);
+        if (
+          preflight.storage.quotaPressure !== 'high' ||
+          !issueCodes.includes('browser.storage_pressure_high')
+        ) {
+          throw Object.assign(
+            new Error(
+              `Browser quota pressure was not observed: ${preflight.storage.quotaPressure}`
+            ),
+            { code: 'browser.storage_pressure_not_observed' }
+          );
+        }
+        setQuotaPressureProof((current) => ({
+          actionCount: preflight.support.recommendedActions.length,
+          availableBytes: preflight.storage.availableBytes ?? null,
+          count: current.count + 1,
+          error: null,
+          errorCode: null,
+          issueCodes,
+          issueCount: preflight.issues.length,
+          persistence: preflight.support.persistence,
+          quotaBytes: preflight.storage.quotaBytes ?? null,
+          quotaPressure: preflight.storage.quotaPressure,
+          status: 'complete',
+          supportTier: preflight.support.tier,
+          usageBytes: preflight.storage.usageBytes ?? null,
+          usageRatio: preflight.storage.usageRatio ?? null,
+        }));
+      } catch (error) {
+        setQuotaPressureProof((current) => ({
+          ...current,
+          count: current.count + 1,
+          error: errorMessage(error),
+          errorCode: syncularErrorCode(error),
+          status: 'failed',
+        }));
+      } finally {
+        quotaPressureProofRunning.current = false;
+      }
+    };
+    const onProof = () => {
+      void runProof();
+    };
+    window.addEventListener(
+      'syncular-starter-run-quota-pressure-proof',
+      onProof
+    );
+    return () => {
+      window.removeEventListener(
+        'syncular-starter-run-quota-pressure-proof',
+        onProof
+      );
+    };
+  }, []);
+
+  useEffect(() => {
     const runProof = async (requestedCount: number, titlePrefix: string) => {
       if (writePressureProofRunning.current) return;
       writePressureProofRunning.current = true;
@@ -1204,6 +1312,7 @@ function TaskPane({
       ) : null}
       <LocalRecoveryProofMarker localRecoveryProof={localRecoveryProof} />
       <StorageRecoveryProofMarker storageRecoveryProof={storageRecoveryProof} />
+      <QuotaPressureProofMarker quotaPressureProof={quotaPressureProof} />
       <WritePressureProofMarker writePressureProof={writePressureProof} />
       <StarterTimelineMarker starterTimeline={starterTimeline} />
 
@@ -1317,6 +1426,54 @@ function StorageRecoveryProofMarker({
           : String(storageRecoveryProof.requestPersistenceSupported)
       }
       data-syncular-storage-recovery-proof-status={storageRecoveryProof.status}
+      hidden
+    />
+  );
+}
+
+function QuotaPressureProofMarker({
+  quotaPressureProof,
+}: {
+  quotaPressureProof: QuotaPressureProofPreview;
+}) {
+  return (
+    <span
+      data-syncular-quota-pressure-proof-action-count={
+        quotaPressureProof.actionCount
+      }
+      data-syncular-quota-pressure-proof-available-bytes={
+        quotaPressureProof.availableBytes ?? ''
+      }
+      data-syncular-quota-pressure-proof-count={quotaPressureProof.count}
+      data-syncular-quota-pressure-proof-error={quotaPressureProof.error ?? ''}
+      data-syncular-quota-pressure-proof-error-code={
+        quotaPressureProof.errorCode ?? ''
+      }
+      data-syncular-quota-pressure-proof-issue-codes={quotaPressureProof.issueCodes.join(
+        ','
+      )}
+      data-syncular-quota-pressure-proof-issue-count={
+        quotaPressureProof.issueCount
+      }
+      data-syncular-quota-pressure-proof-persistence={
+        quotaPressureProof.persistence
+      }
+      data-syncular-quota-pressure-proof-quota-bytes={
+        quotaPressureProof.quotaBytes ?? ''
+      }
+      data-syncular-quota-pressure-proof-quota-pressure={
+        quotaPressureProof.quotaPressure
+      }
+      data-syncular-quota-pressure-proof-status={quotaPressureProof.status}
+      data-syncular-quota-pressure-proof-support-tier={
+        quotaPressureProof.supportTier
+      }
+      data-syncular-quota-pressure-proof-usage-bytes={
+        quotaPressureProof.usageBytes ?? ''
+      }
+      data-syncular-quota-pressure-proof-usage-ratio={
+        quotaPressureProof.usageRatio ?? ''
+      }
       hidden
     />
   );

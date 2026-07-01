@@ -87,9 +87,10 @@ until the full browser Worker/WASM suite is green on Linux.
   plus visibilitychange recovery/beforeunload lifecycle evidence, lifecycle Web
   Lock contention, local recovery
   Web Lock contention, browser-observed storage preflight-to-recovery action
-  mapping with capability-aware blob-cache clearing, two-tab propagation,
-  same-client page reload/reopen persistence, same-client duplicate-tab open
-  contention, generated write pressure, browser process restart persistence,
+  mapping with capability-aware blob-cache clearing, browser-observed
+  quota-pressure preflight classification, two-tab propagation, same-client
+  page reload/reopen persistence, same-client duplicate-tab open contention,
+  generated write pressure, browser process restart persistence,
   service-worker-controlled PWA support-policy classification, incognito
   memory-storage development-policy classification, and live support-bundle
   failure artifact validation.

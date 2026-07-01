@@ -18,9 +18,10 @@ import { Buffer } from 'node:buffer';
  *    signals, two-tab lock-coordinated lifecycle resume, browser-observed lifecycle Web Lock
  *    contention timeout/recovery, browser-observed local recovery Web Lock
  *    contention timeout/recovery, storage preflight-to-recovery action
- *    mapping, two-tab propagation, same-client page reload/reopen persistence,
- *    same-client duplicate-tab open/write contention, generated write
- *    pressure, same-profile browser process restart persistence, and
+ *    mapping, browser-observed quota-pressure preflight classification,
+ *    two-tab propagation, same-client page reload/reopen persistence,
+ *    same-client duplicate-tab open/write contention, generated write pressure,
+ *    same-profile browser process restart persistence, and
  *    service-worker-controlled PWA plus incognito memory-storage support-policy
  *    classification.
  *    After the happy path, the browser smoke also forces a hidden
@@ -53,6 +54,7 @@ const STARTER_LOCAL_RECOVERY_LOCK_NAME =
   'syncular:create-syncular-app:local-recovery';
 const STARTER_LOCAL_RECOVERY_LOCK_TIMEOUT_MS = 1_000;
 const STARTER_WRITE_PRESSURE_PROOF_COUNT = 4;
+const STARTER_QUOTA_PRESSURE_FILL_BYTES = 8 * 1024 * 1024;
 const STARTER_PWA_SMOKE_SERVICE_WORKER_PATH = '/__syncular-smoke-pwa-sw.js';
 const BROWSER_PREVIEW_SMOKE_TIMEOUT_MS = 180_000;
 const CDP_CONNECT_TIMEOUT_MS = 10_000;
@@ -684,6 +686,16 @@ async function runBrowserPreviewSmoke(args: {
     origin: args.origin,
     userDataDir: `${args.userDataDir}-incognito-memory`,
   });
+  log('real-browser smoke: proving browser-observed quota pressure');
+  await proveStarterQuotaPressurePreflight({
+    chrome: args.chrome,
+    failureArtifactPath: quotaPressureFailureArtifactPath(
+      args.failureArtifactPath
+    ),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    userDataDir: `${args.userDataDir}-quota-pressure`,
+  });
   log('real-browser built-preview preflight smoke passed');
 }
 
@@ -705,6 +717,12 @@ function incognitoMemoryFailureArtifactPath(
   return failureArtifactPath.endsWith('.json')
     ? failureArtifactPath.replace(/\.json$/u, '.incognito-memory.json')
     : `${failureArtifactPath}.incognito-memory.json`;
+}
+
+function quotaPressureFailureArtifactPath(failureArtifactPath: string): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(/\.json$/u, '.quota-pressure.json')
+    : `${failureArtifactPath}.quota-pressure.json`;
 }
 
 async function withTimeout<T>(args: {
@@ -928,6 +946,22 @@ type BrowserPreviewProbe = {
     requestPersistenceSupported: string | null;
     status: string | null;
   };
+  quotaPressureProof: {
+    actionCount: number;
+    availableBytes: number | null;
+    count: number;
+    error: string | null;
+    errorCode: string | null;
+    issueCodes: string[];
+    issueCount: number;
+    persistence: string | null;
+    quotaBytes: number | null;
+    quotaPressure: string | null;
+    status: string | null;
+    supportTier: string | null;
+    usageBytes: number | null;
+    usageRatio: number | null;
+  };
   writePressureProof: {
     durationMs: number | null;
     error: string | null;
@@ -1126,6 +1160,28 @@ async function readStarterBrowserProbe(
     const storageRecoveryProofRequestPersistenceOffered = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-request-persistence-offered') ?? null;
     const storageRecoveryProofRequestPersistenceSupported = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-request-persistence-supported') ?? null;
     const storageRecoveryProofStatus = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-status') ?? null;
+    const quotaPressureProof = document.querySelector('[data-syncular-quota-pressure-proof-status]');
+    const readQuotaPressureProofNumber = (name) => {
+      const value = quotaPressureProof?.getAttribute(name) ?? null;
+      if (value === null || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number : null;
+    };
+    const quotaPressureProofActionCount = Number(quotaPressureProof?.getAttribute('data-syncular-quota-pressure-proof-action-count') ?? 0);
+    const quotaPressureProofAvailableBytes = readQuotaPressureProofNumber('data-syncular-quota-pressure-proof-available-bytes');
+    const quotaPressureProofCount = Number(quotaPressureProof?.getAttribute('data-syncular-quota-pressure-proof-count') ?? 0);
+    const quotaPressureProofError = quotaPressureProof?.getAttribute('data-syncular-quota-pressure-proof-error') ?? null;
+    const quotaPressureProofErrorCode = quotaPressureProof?.getAttribute('data-syncular-quota-pressure-proof-error-code') ?? null;
+    const quotaPressureProofIssueCodesText = quotaPressureProof?.getAttribute('data-syncular-quota-pressure-proof-issue-codes') ?? '';
+    const quotaPressureProofIssueCodes = quotaPressureProofIssueCodesText === '' ? [] : quotaPressureProofIssueCodesText.split(',').filter(Boolean);
+    const quotaPressureProofIssueCount = Number(quotaPressureProof?.getAttribute('data-syncular-quota-pressure-proof-issue-count') ?? 0);
+    const quotaPressureProofPersistence = quotaPressureProof?.getAttribute('data-syncular-quota-pressure-proof-persistence') ?? null;
+    const quotaPressureProofQuotaBytes = readQuotaPressureProofNumber('data-syncular-quota-pressure-proof-quota-bytes');
+    const quotaPressureProofQuotaPressure = quotaPressureProof?.getAttribute('data-syncular-quota-pressure-proof-quota-pressure') ?? null;
+    const quotaPressureProofStatus = quotaPressureProof?.getAttribute('data-syncular-quota-pressure-proof-status') ?? null;
+    const quotaPressureProofSupportTier = quotaPressureProof?.getAttribute('data-syncular-quota-pressure-proof-support-tier') ?? null;
+    const quotaPressureProofUsageBytes = readQuotaPressureProofNumber('data-syncular-quota-pressure-proof-usage-bytes');
+    const quotaPressureProofUsageRatio = readQuotaPressureProofNumber('data-syncular-quota-pressure-proof-usage-ratio');
     const writePressureProof = document.querySelector('[data-syncular-write-pressure-proof-status]');
     const writePressureProofError = writePressureProof?.getAttribute('data-syncular-write-pressure-proof-error') ?? null;
     const writePressureProofErrorCode = writePressureProof?.getAttribute('data-syncular-write-pressure-proof-error-code') ?? null;
@@ -1210,6 +1266,13 @@ async function readStarterBrowserProbe(
           : 'storage recovery proof failed'
       );
     }
+    if (quotaPressureProofStatus === 'failed') {
+      errors.push(
+        quotaPressureProofErrorCode
+          ? 'quota pressure proof failed: ' + quotaPressureProofErrorCode
+          : 'quota pressure proof failed'
+      );
+    }
     if (writePressureProofStatus === 'failed') {
       errors.push(
         writePressureProofErrorCode
@@ -1227,6 +1290,7 @@ async function readStarterBrowserProbe(
         lifecycleResumeStatus !== null &&
         localRecoveryProof !== null &&
         storageRecoveryProof !== null &&
+        quotaPressureProof !== null &&
         writePressureProof !== null &&
         starterTimeline !== null &&
         bootstrapStatus !== null &&
@@ -1362,6 +1426,35 @@ async function readStarterBrowserProbe(
             ? null
             : storageRecoveryProofRequestPersistenceSupported,
         status: storageRecoveryProofStatus,
+      },
+      quotaPressureProof: {
+        actionCount: quotaPressureProofActionCount,
+        availableBytes: quotaPressureProofAvailableBytes,
+        count: quotaPressureProofCount,
+        error:
+          quotaPressureProofError === '' ? null : quotaPressureProofError,
+        errorCode:
+          quotaPressureProofErrorCode === ''
+            ? null
+            : quotaPressureProofErrorCode,
+        issueCodes: quotaPressureProofIssueCodes,
+        issueCount: quotaPressureProofIssueCount,
+        persistence:
+          quotaPressureProofPersistence === ''
+            ? null
+            : quotaPressureProofPersistence,
+        quotaBytes: quotaPressureProofQuotaBytes,
+        quotaPressure:
+          quotaPressureProofQuotaPressure === ''
+            ? null
+            : quotaPressureProofQuotaPressure,
+        status: quotaPressureProofStatus,
+        supportTier:
+          quotaPressureProofSupportTier === ''
+            ? null
+            : quotaPressureProofSupportTier,
+        usageBytes: quotaPressureProofUsageBytes,
+        usageRatio: quotaPressureProofUsageRatio,
       },
       writePressureProof: {
         durationMs: writePressureProofDurationMs,
@@ -3166,6 +3259,237 @@ async function waitForStarterIncognitoMemoryStorageEvidence(args: {
   );
 }
 
+async function proveStarterQuotaPressurePreflight(args: {
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  const url = `${args.origin}/?syncularClientId=web-quota-pressure&syncularQuotaPressureProof=${Date.now()}`;
+  let session: CdpSession | null = null;
+
+  try {
+    const target = await createChromeTarget(chrome.debugPort, 'about:blank');
+    session = await CdpSession.connect(target.webSocketDebuggerUrl);
+    await enableChromeTarget(session);
+    await navigateChromeTarget(session, url);
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await configureStarterQuotaPressure(session, args.origin);
+    const before = await readStarterBrowserProbe(session);
+    await dispatchStarterQuotaPressureProof(session);
+    await waitForStarterQuotaPressureEvidence({
+      expectedCount: before.quotaPressureProof.count + 1,
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+  } finally {
+    session?.close();
+    await stopProcess(chrome.process);
+  }
+}
+
+type StarterOriginStorageUsage = {
+  overrideActive: boolean | null;
+  quotaBytes: number | null;
+  usageBytes: number | null;
+};
+
+async function configureStarterQuotaPressure(
+  session: CdpSession,
+  origin: string
+): Promise<void> {
+  await fillStarterOriginStorageForQuotaPressure(session);
+  const before = await readStarterOriginStorageUsage(session, origin);
+  if (
+    before.usageBytes == null ||
+    before.usageBytes < STARTER_QUOTA_PRESSURE_FILL_BYTES / 2
+  ) {
+    throw new Error(
+      `Chrome did not report enough origin storage usage for quota-pressure proof: ${before.usageBytes ?? 'unknown'}`
+    );
+  }
+  const quotaSize = Math.max(
+    Math.ceil(before.usageBytes / 0.92),
+    before.usageBytes + 512 * 1024
+  );
+  await session.send('Storage.overrideQuotaForOrigin', {
+    origin,
+    quotaSize,
+  });
+  const after = await readStarterOriginStorageUsage(session, origin);
+  if (after.overrideActive !== true) {
+    throw new Error('Chrome did not report an active quota override');
+  }
+  if (after.quotaBytes == null || after.usageBytes == null) {
+    throw new Error('Chrome quota override did not expose usage/quota data');
+  }
+  if (after.usageBytes / after.quotaBytes < 0.9) {
+    throw new Error(
+      `Chrome quota override did not create high storage pressure: ${after.usageBytes}/${after.quotaBytes}`
+    );
+  }
+}
+
+async function fillStarterOriginStorageForQuotaPressure(
+  session: CdpSession
+): Promise<void> {
+  const result = await session.evaluate<
+    | {
+        ok: true;
+        quotaBytes: number | null;
+        storedBytes: number;
+        usageBytes: number | null;
+      }
+    | { ok: false; reason: string }
+  >(`(async () => {
+    const bytes = ${STARTER_QUOTA_PRESSURE_FILL_BYTES};
+    const storage = globalThis.navigator?.storage;
+    if (typeof storage?.estimate !== 'function') {
+      return { ok: false, reason: 'storage-estimate-unavailable' };
+    }
+    if (typeof globalThis.caches?.open !== 'function') {
+      return { ok: false, reason: 'cache-storage-unavailable' };
+    }
+
+    const cache = await globalThis.caches.open('syncular-quota-pressure-proof');
+    const payload = new Uint8Array(bytes);
+    payload.fill(65);
+    await cache.put(
+      '/__syncular-quota-pressure-proof.bin?bytes=' + bytes + '&t=' + Date.now(),
+      new Response(new Blob([payload]), {
+        headers: { 'content-type': 'application/octet-stream' },
+      })
+    );
+    const estimate = await storage.estimate();
+    return {
+      ok: true,
+      quotaBytes:
+        typeof estimate.quota === 'number' && Number.isFinite(estimate.quota)
+          ? estimate.quota
+          : null,
+      storedBytes: bytes,
+      usageBytes:
+        typeof estimate.usage === 'number' && Number.isFinite(estimate.usage)
+          ? estimate.usage
+          : null,
+    };
+  })()`);
+  if (!result.ok) {
+    throw new Error(
+      `Could not fill browser origin storage for quota-pressure proof: ${result.reason}`
+    );
+  }
+  if (
+    result.usageBytes == null ||
+    result.usageBytes < STARTER_QUOTA_PRESSURE_FILL_BYTES / 2
+  ) {
+    throw new Error(
+      `Browser storage estimate did not include quota-pressure payload: ${result.usageBytes ?? 'unknown'}`
+    );
+  }
+}
+
+async function readStarterOriginStorageUsage(
+  session: CdpSession,
+  origin: string
+): Promise<StarterOriginStorageUsage> {
+  const result = (await session.send('Storage.getUsageAndQuota', {
+    origin,
+  })) as {
+    overrideActive?: unknown;
+    quota?: unknown;
+    usage?: unknown;
+  };
+  return {
+    overrideActive:
+      typeof result.overrideActive === 'boolean' ? result.overrideActive : null,
+    quotaBytes:
+      typeof result.quota === 'number' && Number.isFinite(result.quota)
+        ? result.quota
+        : null,
+    usageBytes:
+      typeof result.usage === 'number' && Number.isFinite(result.usage)
+        ? result.usage
+        : null,
+  };
+}
+
+async function dispatchStarterQuotaPressureProof(
+  session: CdpSession
+): Promise<void> {
+  await session.evaluate(`(() => {
+    window.dispatchEvent(
+      new Event('syncular-starter-run-quota-pressure-proof')
+    );
+    return true;
+  })()`);
+}
+
+async function waitForStarterQuotaPressureEvidence(args: {
+  expectedCount: number;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'quota-pressure-proof-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview quota-pressure proof failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    if (
+      probe.quotaPressureProof.status === 'complete' &&
+      probe.quotaPressureProof.count >= args.expectedCount &&
+      probe.quotaPressureProof.quotaPressure === 'high' &&
+      probe.quotaPressureProof.issueCodes.includes(
+        'browser.storage_pressure_high'
+      ) &&
+      probe.quotaPressureProof.usageRatio !== null &&
+      probe.quotaPressureProof.usageRatio >= 0.9 &&
+      probe.quotaPressureProof.quotaBytes !== null &&
+      probe.quotaPressureProof.usageBytes !== null &&
+      probe.quotaPressureProof.availableBytes !== null &&
+      probe.quotaPressureProof.issueCount >= 1 &&
+      probe.quotaPressureProof.actionCount >= 1
+    ) {
+      return;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'quota-pressure-proof-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview quota-pressure preflight evidence. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
 async function forceStarterSupportBundleFailureMarker(
   session: CdpSession
 ): Promise<void> {
@@ -3476,6 +3800,22 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         requestPersistenceSupported: 'true',
         status: 'complete',
       },
+      quotaPressureProof: {
+        actionCount: 1,
+        availableBytes: 524_288,
+        count: 1,
+        error: null,
+        errorCode: null,
+        issueCodes: ['browser.storage_pressure_high'],
+        issueCount: 1,
+        persistence: 'evictable',
+        quotaBytes: 10_485_760,
+        quotaPressure: 'high',
+        status: 'complete',
+        supportTier: 'unknown',
+        usageBytes: 9_961_472,
+        usageRatio: 0.95,
+      },
       writePressureProof: {
         durationMs: 8,
         error: null,
@@ -3637,6 +3977,7 @@ function assertBrowserPreviewProbeShape(
     probe.storageRecoveryProof,
     path
   );
+  assertBrowserPreviewQuotaPressureProofShape(probe.quotaPressureProof, path);
   assertBrowserPreviewWritePressureProofShape(probe.writePressureProof, path);
   assertBrowserPreviewStarterTimelineShape(probe.starterTimeline, path);
   assertBrowserPreviewStarterOpenShape(probe.starterOpen, path);
@@ -4037,6 +4378,59 @@ function assertBrowserPreviewStorageRecoveryProofShape(
     ) {
       throw new Error(
         `${path} probe.storageRecoveryProof.${key} was not a non-negative integer`
+      );
+    }
+  }
+}
+
+function assertBrowserPreviewQuotaPressureProofShape(
+  value: unknown,
+  path: string
+): void {
+  if (!isRecord(value)) {
+    throw new Error(`${path} probe.quotaPressureProof was not a JSON object`);
+  }
+  if (
+    !Array.isArray(value.issueCodes) ||
+    value.issueCodes.some((issueCode) => typeof issueCode !== 'string')
+  ) {
+    throw new Error(
+      `${path} probe.quotaPressureProof.issueCodes was not a string array`
+    );
+  }
+  for (const key of ['actionCount', 'count', 'issueCount'] as const) {
+    if (
+      !isNonNegativeFiniteNumber(value[key]) ||
+      !Number.isInteger(value[key])
+    ) {
+      throw new Error(
+        `${path} probe.quotaPressureProof.${key} was not a non-negative integer`
+      );
+    }
+  }
+  for (const key of [
+    'availableBytes',
+    'quotaBytes',
+    'usageBytes',
+    'usageRatio',
+  ] as const) {
+    if (value[key] !== null && !isNonNegativeFiniteNumber(value[key])) {
+      throw new Error(
+        `${path} probe.quotaPressureProof.${key} was not nullable non-negative number`
+      );
+    }
+  }
+  for (const key of [
+    'error',
+    'errorCode',
+    'persistence',
+    'quotaPressure',
+    'status',
+    'supportTier',
+  ] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(
+        `${path} probe.quotaPressureProof.${key} was not nullable text`
       );
     }
   }

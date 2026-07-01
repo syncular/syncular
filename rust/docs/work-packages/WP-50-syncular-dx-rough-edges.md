@@ -3800,7 +3800,12 @@ Most recent mutation-status rerun:
   `starter-browser-preview` job that installs Chrome and requires this path on
   starter-relevant PRs and all pushes. Release rehearsal now runs the starter
   built-preview smoke by default and can require the Chrome/CDP path with
-  `--require-starter-browser-preview`. Current hosted observation on
+  `--require-starter-browser-preview`. The starter Chrome/CDP path now also
+  fills browser origin storage in a fresh profile, applies Chrome's origin
+  quota override, and reruns the public deployment preflight helper from the
+  app so high quota-pressure warnings are proven from browser-reported usage
+  and quota rather than only synthetic preflight fixtures. Current hosted
+  observation on
   2026-07-01: latest checked `main` Checks run `28459201533` at
   `origin/main` `7f0081b6` did not contain a `starter-browser-preview` job,
   and `git show origin/main:.github/workflows/checks.yml` also lacks the job,
@@ -3878,8 +3883,8 @@ Most recent mutation-status rerun:
   contention/failure behavior beyond the same-database duplicate-tab branch,
   and deeper recovery coordination for persistent browser databases beyond
   dispatched page lifecycle events, CDP lifecycle forcing, synthetic storage
-  warning action mapping, and lock-serialized foreground resume/recovery
-  actions. Local
+  warning action mapping, browser-observed quota-pressure preflight
+  classification, and lock-serialized foreground resume/recovery actions. Local
   execution of the new browser branches still needs a Chrome-capable runner;
   this machine has no Chrome/Chromium binary.
 - Local recovery controls: first plan/action slice is done for support bundles,
@@ -3921,7 +3926,11 @@ Most recent mutation-status rerun:
   The generated app browser smoke now also proves that a
   synthetic storage-warning deployment preflight produces and can run the
   expected request-persistence, compaction, and confirmed blob-cache clearing
-  actions through public local recovery APIs. Remaining work is richer
+  actions through public local recovery APIs. A fresh-profile Chrome/CDP proof
+  now also fills origin storage, applies a browser quota override, and requires
+  the public app preflight marker to expose `browser.storage_pressure_high`,
+  high usage ratio, quota bytes, usage bytes, available bytes, and recommended
+  storage actions from live browser quota facts. Remaining work is richer
   browser-process proof: actual
   target-browser background/discard suspension and restoration,
   shutdown/restart states, real storage shutdown, quota-exhaustion and eviction
@@ -4261,6 +4270,19 @@ Most recent mutation-status rerun:
   The Chrome job log reached `real-browser smoke: proving incognito
   memory-storage policy` and then `real-browser built-preview preflight smoke
   passed`, confirming the incognito memory-storage branch in hosted Chrome.
+- 2026-07-01: Added a real Chrome quota-pressure preflight proof to the
+  starter smoke. The Chrome/CDP branch opens a fresh profile, loads the
+  generated app, fills the app origin through the browser Cache API, applies
+  Chrome's `Storage.overrideQuotaForOrigin` to make the reported usage ratio
+  high, dispatches a starter proof event, and requires the public
+  `getSyncularBrowserDeploymentPreflight(...)` marker to report
+  `browser.storage_pressure_high`, high quota pressure, usage/quota/available
+  byte facts, and storage recommended actions. This turns quota-pressure
+  classification into browser-observed evidence while leaving true
+  quota-exhausted writes, eviction, and storage-shutdown behavior as remaining
+  matrix work. Local `create-syncular-app` typecheck, focused Biome,
+  non-Chrome scaffold smoke, and diff check passed; hosted Chrome evidence is
+  pending for this branch.
 
 ## Next Action
 
@@ -4271,10 +4293,11 @@ covered in hosted Chrome, and the same-database duplicate-tab writer branch is
 now also confirmed in hosted Chrome. The service-worker-controlled PWA
 classification proof is also covered in hosted Chrome: it verifies real
 controller evidence and support-policy `pwa`/`warning` classification without
-claiming installed-PWA offline/cache-update support. The next slice adds the
-first incognito memory-storage support-policy branch, now confirmed in hosted
-Chrome. It verifies explicit ephemeral/development storage classification in an
-incognito Chrome window without claiming private-mode durable persistence.
+claiming installed-PWA offline/cache-update support. The incognito
+memory-storage support-policy branch is now confirmed in hosted Chrome and
+verifies explicit ephemeral/development storage classification without claiming
+private-mode durable persistence. The current slice adds a browser-observed
+quota-pressure preflight branch, with hosted Chrome verification pending.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 suspension/shutdown lifecycle coverage, actual quota-exhaustion/eviction and

@@ -237,7 +237,12 @@ read-only review:
     with a synthetic storage-warning preflight, proving the generated app
     exposes and can run request-persistence plus compaction in the core runtime,
     and blob-cache clearing when a blob-capable runtime offers it, through
-    public recovery APIs.
+    public recovery APIs. The starter Chrome/CDP smoke also now opens a fresh
+    profile, fills origin storage through the browser Cache API, applies
+    Chrome's origin quota override, and reruns the public deployment preflight
+    helper from the app to prove `browser.storage_pressure_high` and high
+    usage-ratio evidence come from real browser quota facts, while keeping
+    full quota exhaustion and eviction behavior as remaining matrix work.
     Browser preview artifacts now include starter timings for database open,
     browser health refresh, schema readiness, support-bundle export,
     bootstrap readiness, realtime connection, and generated-mutation local
