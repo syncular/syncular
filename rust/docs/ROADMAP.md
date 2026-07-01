@@ -146,7 +146,9 @@ read-only review:
     browser-conditioned package exports, serves the built HTML/JavaScript
     through Vite preview, and can execute that built preview in Chrome/CDP to
     observe the browser root import marker. Cloudflare coverage now declares
-    `SYNC_DO`, D1, and R2 bindings, bundles `@syncular/server/cloudflare`,
+    `SYNC_DO`, D1, and R2 bindings, aliases the Syncular Cloudflare/server/core
+    subpaths to workspace source so stale `dist` output cannot hide local
+    route behavior, bundles `@syncular/server/cloudflare`,
     `@syncular/server/d1`, `@syncular/server/sqlite`,
     `@syncular/server/hono`, and the R2 adapter through Wrangler dry-run, and
     serves the generated Durable Object Worker through local `wrangler dev` to
@@ -154,9 +156,12 @@ read-only review:
     through those bindings, runs `ensureSyncSchema(...)` against D1, verifies
     the `sync_commits` table, performs D1 app-table insert/select/delete,
     pushes through the Syncular HTTP route, pulls the row back through a binary
-    sync-pack and decoded snapshot chunk, drives an R2-backed Syncular blob
-    route upload/complete/download flow, and echoes a message through a
-    Durable Object WebSocket route. WASM glue dynamic imports include webpack
+    sync-pack and decoded snapshot chunk, rejects unauthenticated sync and a
+    forbidden-scope write with stable envelopes, rejects a wrong-scope snapshot
+    chunk download, drives an R2-backed Syncular blob route
+    upload/complete/download flow, rejects a forbidden blob download URL with
+    stable access details, and echoes a message through a Durable Object
+    WebSocket route. WASM glue dynamic imports include webpack
     ignore metadata so the Next build stays warning-clean.
     Release rehearsal runs the framework import smoke by default before
     publish dry-runs, with an explicit skip flag for local iteration and an

@@ -790,6 +790,107 @@ async function runSyncRouteFlow(args: {
     );
   }
 
+  const forbiddenRowId = `${rowId}-forbidden`;
+  const forbiddenPushResponse = await fetchWorkerResponse({
+    label,
+    url: syncUrl,
+    init: {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-syncular-smoke-actor': actorId,
+      },
+      body: JSON.stringify({
+        clientId: 'syncular-framework-forbidden-writer',
+        push: {
+          commits: [
+            {
+              clientCommitId: `commit-${forbiddenRowId}`,
+              schemaVersion: 1,
+              operations: [
+                {
+                  table: 'syncular_framework_tasks',
+                  row_id: forbiddenRowId,
+                  op: 'upsert',
+                  payload: {
+                    id: forbiddenRowId,
+                    user_id: `${actorId}-other`,
+                    title: 'D1 sync route forbidden write',
+                    server_version: 0,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectOkResponse(
+    label,
+    'forbidden-scope push envelope',
+    forbiddenPushResponse,
+    args.output
+  );
+  const forbiddenPushBody = (await readSyncRouteResponse(
+    label,
+    'forbidden-scope push',
+    forbiddenPushResponse
+  )) as {
+    ok?: boolean;
+    push?: {
+      commits?: Array<{
+        results?: Array<{ code?: string; status?: string }>;
+        status?: string;
+      }>;
+    };
+  };
+  const forbiddenCommit = forbiddenPushBody.push?.commits?.[0];
+  if (
+    forbiddenPushBody.ok !== true ||
+    forbiddenCommit?.status !== 'rejected' ||
+    forbiddenCommit.results?.[0]?.status !== 'error' ||
+    forbiddenCommit.results?.[0]?.code !== 'sync.forbidden'
+  ) {
+    throw new Error(
+      `${label} forbidden-scope push did not produce sync.forbidden: ${JSON.stringify(
+        forbiddenPushBody
+      ).slice(0, 500)}`
+    );
+  }
+
+  const unauthenticatedResponse = await fetchWorkerResponse({
+    label,
+    url: syncUrl,
+    init: {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        clientId: 'syncular-framework-unauthenticated',
+        pull: {
+          schemaVersion: 1,
+          limitCommits: 1,
+          limitSnapshotRows: 1,
+          subscriptions: [],
+        },
+      }),
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectJsonErrorResponse(label, 'unauthenticated sync', {
+    response: unauthenticatedResponse,
+    output: args.output,
+    status: 401,
+    code: 'sync.auth_required',
+    category: 'auth-required',
+    recommendedAction: 'refreshAuth',
+  });
+
   const pullResponse = await fetchWorkerResponse({
     label,
     url: syncUrl,
@@ -869,6 +970,28 @@ async function runSyncRouteFlow(args: {
     snapshotRows = decodeBinarySnapshotTable(
       gunzipSync(new Uint8Array(await chunkResponse.arrayBuffer()))
     ).rows;
+    const forbiddenChunkResponse = await fetchWorkerResponse({
+      label,
+      url: `${syncUrl}/snapshot-chunks/${encodeURIComponent(firstChunk.id)}`,
+      init: {
+        headers: {
+          'x-syncular-smoke-actor': actorId,
+          'x-syncular-snapshot-scopes': JSON.stringify({
+            user_id: `${actorId}-other`,
+          }),
+        },
+      },
+      output: args.output,
+      getExit: args.getExit,
+    });
+    await expectJsonErrorResponse(label, 'forbidden snapshot chunk', {
+      response: forbiddenChunkResponse,
+      output: args.output,
+      status: 403,
+      code: 'sync.forbidden',
+      category: 'forbidden',
+      recommendedAction: 'checkPermissions',
+    });
   }
   const pulledRow = snapshotRows?.find(
     (row): row is Record<string, unknown> =>
@@ -1032,6 +1155,48 @@ async function runBlobRouteFlow(args: {
       `${label} downloaded unexpected content: ${downloadedText.slice(0, 200)}`
     );
   }
+
+  const forbiddenDownloadUrlResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+      hash
+    )}/url`,
+    init: {
+      headers: {
+        'x-syncular-smoke-actor': 'syncular-framework-intruder',
+        'x-syncular-smoke-partition': partitionId,
+      },
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  const forbiddenDownloadUrlBody = await expectJsonErrorResponse(
+    label,
+    'forbidden download URL',
+    {
+      response: forbiddenDownloadUrlResponse,
+      output: args.output,
+      status: 403,
+      code: 'blob.forbidden',
+      category: 'forbidden',
+      recommendedAction: 'checkPermissions',
+    }
+  );
+  const forbiddenDetails = forbiddenDownloadUrlBody.details as
+    | Record<string, unknown>
+    | undefined;
+  if (
+    forbiddenDetails?.failureKind !== 'blob_access_denied' ||
+    forbiddenDetails.accessReason !== 'access_denied' ||
+    forbiddenDetails.accessStage !== 'unknown' ||
+    forbiddenDetails.partitionId !== partitionId
+  ) {
+    throw new Error(
+      `${label} forbidden download URL returned unexpected details: ${JSON.stringify(
+        forbiddenDownloadUrlBody
+      ).slice(0, 500)}`
+    );
+  }
 }
 
 function resolveWorkerRouteUrl(origin: string, candidate: string): string {
@@ -1077,6 +1242,53 @@ async function expectOkResponse(
       response.statusText
     }: ${(await response.text()).slice(0, 500)}\n${output.join('')}`
   );
+}
+
+async function expectJsonErrorResponse(
+  label: string,
+  step: string,
+  args: {
+    category: string;
+    code: string;
+    output: string[];
+    recommendedAction: string;
+    response: Response;
+    status: number;
+  }
+): Promise<Record<string, unknown>> {
+  const text = await args.response.text();
+  if (args.response.status !== args.status) {
+    throw new Error(
+      `${label} ${step} expected ${args.status} but received ${
+        args.response.status
+      } ${args.response.statusText}: ${text.slice(0, 500)}\n${args.output.join(
+        ''
+      )}`
+    );
+  }
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(text) as Record<string, unknown>;
+  } catch (error) {
+    throw new Error(
+      `${label} ${step} returned non-JSON error body: ${text.slice(0, 500)}; ${
+        error instanceof Error ? error.message : String(error)
+      }\n${args.output.join('')}`
+    );
+  }
+  if (
+    body.error !== args.code ||
+    body.code !== args.code ||
+    body.category !== args.category ||
+    body.recommendedAction !== args.recommendedAction
+  ) {
+    throw new Error(
+      `${label} ${step} returned unexpected error envelope: ${JSON.stringify(
+        body
+      ).slice(0, 500)}\n${args.output.join('')}`
+    );
+  }
+  return body;
 }
 
 async function readJsonResponse(
@@ -1569,6 +1781,35 @@ export default createSyncWorkerWithDO<Env>('SYNC_DO');
         name: 'syncular-framework-import-smoke',
         main: 'src/worker.ts',
         compatibility_date: '2026-01-01',
+        alias: {
+          '@syncular/core': join(repoRoot, 'packages/core/src/index.ts'),
+          '@syncular/core/http': join(
+            repoRoot,
+            'packages/core/src/http/index.ts'
+          ),
+          '@syncular/core/http/blob': join(
+            repoRoot,
+            'packages/core/src/http/blob.ts'
+          ),
+          '@syncular/core/sentry': join(
+            repoRoot,
+            'packages/core/src/sentry.ts'
+          ),
+          '@syncular/server': join(repoRoot, 'packages/server/src/index.ts'),
+          '@syncular/server/cloudflare': join(
+            repoRoot,
+            'packages/server/src/cloudflare/index.ts'
+          ),
+          '@syncular/server/d1': join(repoRoot, 'packages/server/src/d1.ts'),
+          '@syncular/server/hono': join(
+            repoRoot,
+            'packages/server/src/hono/index.ts'
+          ),
+          '@syncular/server/sqlite': join(
+            repoRoot,
+            'packages/server/src/sqlite/index.ts'
+          ),
+        },
         d1_databases: [
           {
             binding: 'DB',
@@ -1735,7 +1976,7 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
       bundle.includes('syncular-cloudflare-websocket-echo')
     ) {
       console.log(
-        '[framework-import-smokes] Cloudflare DO/D1 schema+sync/R2 blob routes/WebSocket import smoke passed'
+        '[framework-import-smokes] Cloudflare DO/D1 schema+sync authz/R2 blob authz/WebSocket import smoke passed'
       );
       await runLocalWorkerRuntimeProbe({
         appDir,
@@ -1750,7 +1991,7 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
           'syncular-cloudflare-websocket-echo:syncular-cloudflare-websocket-ping',
       });
       console.log(
-        '[framework-import-smokes] Cloudflare DO/D1 schema+sync/R2 blob routes/WebSocket runtime IO smoke passed'
+        '[framework-import-smokes] Cloudflare DO/D1 schema+sync authz/R2 blob authz/WebSocket runtime IO smoke passed'
       );
       return;
     }
