@@ -24,8 +24,8 @@ import { Buffer } from 'node:buffer';
  *    origin-storage eviction/rebootstrap recovery, two-tab propagation,
  *    same-client page reload/reopen persistence, same-client duplicate-tab
  *    open/write contention, generated write pressure, same-profile browser
- *    process restart persistence, and service-worker-controlled PWA plus
- *    incognito memory-storage
+ *    process restart persistence, sync-held shutdown replay recovery, and
+ *    service-worker-controlled PWA plus incognito memory-storage
  *    support-policy classification.
  *    After the happy path, the browser smoke also forces a hidden
  *    support-bundle marker failure and verifies the live
@@ -720,6 +720,16 @@ async function runBrowserPreviewSmoke(args: {
     );
     throw error;
   }
+  log('real-browser smoke: proving shutdown replay recovery');
+  await proveStarterShutdownReplayRecovery({
+    chrome: args.chrome,
+    failureArtifactPath: shutdownReplayFailureArtifactPath(
+      args.failureArtifactPath
+    ),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    userDataDir: `${args.userDataDir}-shutdown-replay`,
+  });
   log('real-browser smoke: proving support-bundle failure artifact');
   await proveStarterSupportBundleFailureArtifact({
     chrome: args.chrome,
@@ -803,6 +813,14 @@ function storageEvictionFailureArtifactPath(
   return failureArtifactPath.endsWith('.json')
     ? failureArtifactPath.replace(/\.json$/u, '.storage-eviction.json')
     : `${failureArtifactPath}.storage-eviction.json`;
+}
+
+function shutdownReplayFailureArtifactPath(
+  failureArtifactPath: string
+): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(/\.json$/u, '.shutdown-replay.json')
+    : `${failureArtifactPath}.shutdown-replay.json`;
 }
 
 async function withTimeout<T>(args: {
@@ -3105,6 +3123,40 @@ async function waitForStarterText(args: {
   );
 }
 
+async function waitForStarterRenderedText(args: {
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+  timeoutMessage: string;
+  timeoutReason: string;
+  title: string;
+}): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const visible = await args.session.evaluate<boolean>(
+      `document.body?.innerText.includes(${JSON.stringify(args.title)}) ?? false`
+    );
+    if (visible) return;
+    try {
+      lastProbe = await readStarterBrowserProbe(args.session);
+    } catch {
+      // Keep polling the rendered page; the final artifact can still use the
+      // last successful probe if navigation or startup is briefly noisy.
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+  }
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    args.timeoutReason,
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `${args.timeoutMessage}. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
 async function proveStarterGeneratedWritePressure(args: {
   active: CdpSession;
   failureArtifactPath: string;
@@ -3508,6 +3560,177 @@ async function proveStarterBrowserProcessRestart(args: {
   } finally {
     session?.close();
     await stopProcess(chrome.process);
+  }
+}
+
+async function proveStarterShutdownReplayRecovery(args: {
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const clientId = 'web-shutdown-replay';
+  const title = `shutdown replay ${Date.now()}`;
+  let chrome: { debugPort: number; process: ReturnType<typeof spawn> } | null =
+    await startBrowserPreviewChrome({
+      chrome: args.chrome,
+      userDataDir: args.userDataDir,
+    });
+  let activeSession: CdpSession | null = null;
+  let activeTargetId: string | null = null;
+  let recoverySession: CdpSession | null = null;
+  let recoveryTargetId: string | null = null;
+  let observerSession: CdpSession | null = null;
+  let observerTargetId: string | null = null;
+  let lastProbe: BrowserPreviewProbe | null = null;
+
+  try {
+    const activeTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    activeTargetId = activeTarget.id;
+    activeSession = await CdpSession.connect(activeTarget.webSocketDebuggerUrl);
+    await enableChromeTarget(activeSession);
+    await navigateChromeTarget(
+      activeSession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularSyncStartup=manual&syncularShutdownReplayProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      activeSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(activeSession);
+    await submitStarterTask(activeSession, title);
+    await waitForStarterLocalVisibility({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+    });
+    await waitForStarterRenderedText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+      timeoutMessage:
+        'Timed out waiting for built preview shutdown replay local render before browser stop',
+      timeoutReason: 'shutdown-replay-local-render-timeout',
+      title,
+    });
+
+    activeSession.close();
+    activeSession = null;
+    activeTargetId = null;
+    await stopProcess(chrome.process);
+    chrome = null;
+
+    chrome = await startBrowserPreviewChrome({
+      chrome: args.chrome,
+      userDataDir: args.userDataDir,
+    });
+    const recoveryTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    recoveryTargetId = recoveryTarget.id;
+    recoverySession = await CdpSession.connect(
+      recoveryTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(recoverySession);
+    await navigateChromeTarget(
+      recoverySession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularSyncStartup=manual&syncularShutdownReplayRestoreProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      recoverySession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(recoverySession);
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: recoverySession,
+      title,
+      errorReason: 'shutdown-replay-local-restore-errors',
+      timeoutReason: 'shutdown-replay-local-restore-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview shutdown replay local restore',
+    });
+
+    await navigateChromeTarget(
+      recoverySession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularShutdownReplayOnlineProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      recoverySession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await dispatchStarterOnlineEvent(recoverySession);
+
+    const observerTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    observerTargetId = observerTarget.id;
+    observerSession = await CdpSession.connect(
+      observerTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(observerSession);
+    await navigateChromeTarget(
+      observerSession,
+      `${args.origin}/?syncularClientId=web-shutdown-replay-observer&syncularShutdownReplayObserverProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      observerSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: observerSession,
+      title,
+      errorReason: 'shutdown-replay-propagation-errors',
+      timeoutReason: 'shutdown-replay-propagation-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview shutdown replay propagation',
+    });
+  } catch (error) {
+    await writeBrowserPreviewFailureArtifactIfMissing(
+      args.failureArtifactPath,
+      'shutdown-replay-smoke-error',
+      lastProbe,
+      args.failureMetrics
+    );
+    throw error;
+  } finally {
+    if (chrome !== null) {
+      await closeStarterChromeTarget({
+        debugPort: chrome.debugPort,
+        session: observerSession,
+        targetId: observerTargetId,
+      });
+      await closeStarterChromeTarget({
+        debugPort: chrome.debugPort,
+        session: recoverySession,
+        targetId: recoveryTargetId,
+      });
+      await closeStarterChromeTarget({
+        debugPort: chrome.debugPort,
+        session: activeSession,
+        targetId: activeTargetId,
+      });
+      await stopProcess(chrome.process);
+    } else {
+      try {
+        activeSession?.close();
+      } catch {
+        // The browser process was already stopped for the shutdown proof.
+      }
+    }
   }
 }
 

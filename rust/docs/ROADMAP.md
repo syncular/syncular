@@ -262,9 +262,15 @@ read-only review:
     separate observer tab, clears the app origin through Chrome's
     `Storage.clearDataForOrigin`, reloads the same client id, requires the
     sentinel to be gone, and waits for the task to restore from server state.
-    Hosted Checks run `28552359995` confirmed that branch in Chrome. Host-driven
-    eviction and storage-shutdown behavior remain matrix work. The starter now
-    also records
+    Hosted Checks run `28552359995` confirmed that branch in Chrome. The
+    starter smoke now also has a sync-held shutdown replay proof: it opens a
+    dedicated client with sync startup deliberately held, creates a generated
+    task, waits for local visibility and rendered local text, stops Chrome,
+    restarts the same profile and client id with sync still held to prove the
+    unsynced row restored from the persistent browser database, then reloads
+    with normal sync startup and waits for a separate observer client to
+    receive the replay through sync/realtime. Host-driven eviction and
+    storage-shutdown behavior remain matrix work. The starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply
     evidence, and local-visibility evidence in the hidden marker and browser
@@ -356,9 +362,13 @@ read-only review:
     visibility proof, and requires the observer tab to see every row through
     sync/realtime, then restarts Chrome with the same profile directory and
     verifies that the same client id can still see the task in a fresh browser
-    process. The branch now also writes a no-cache pass-through service worker
-    into the built starter preview, opens a fresh Chrome profile, registers the
-    worker, reloads under service-worker control, and requires the starter's
+    process. It also runs a sync-held shutdown replay proof for an unsynced
+    generated task: manual sync startup, local visibility before browser stop,
+    same-profile local restore after restart, and observer propagation after
+    normal sync resumes. The branch now also writes a no-cache pass-through
+    service worker into the built starter preview, opens a fresh Chrome
+    profile, registers the worker, reloads under service-worker control, and
+    requires the starter's
     preflight/support-policy markers to report `pwa`,
     `preflight-required`/`warning`, the activated controller state, and the
     redacted controller script path instead of treating PWAs as automatically

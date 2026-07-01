@@ -104,6 +104,14 @@ export function currentStarterStorage(): SyncularStorage {
   return requested === 'memory' ? 'memory' : 'indexedDb';
 }
 
+export function currentStarterSyncStartup(): 'auto' | 'manual' {
+  if (typeof window === 'undefined') return 'auto';
+  const requested = new URLSearchParams(window.location.search).get(
+    'syncularSyncStartup'
+  );
+  return requested === 'manual' ? 'manual' : 'auto';
+}
+
 /**
  * Opens the local database. The default starter path persists SQLite through
  * IndexedDB; the smoke harness can opt into memory storage to prove

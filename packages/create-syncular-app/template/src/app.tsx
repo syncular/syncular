@@ -31,6 +31,7 @@ import {
   type AppSyncClient,
   appActorId,
   currentStarterStorage,
+  currentStarterSyncStartup,
   installAppClientSubscriptions,
   openAppClient,
   type StarterOpenPhase,
@@ -605,6 +606,11 @@ export function App() {
 
   useEffect(() => {
     if (!client) return undefined;
+    if (currentStarterSyncStartup() === 'manual') {
+      reportStarterOpenPhase('taskpane');
+      setTaskPaneMounted(true);
+      return undefined;
+    }
     let disposed = false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const frame = requestAnimationFrame(() => {
