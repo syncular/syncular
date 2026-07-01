@@ -253,7 +253,9 @@ read-only review:
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply
     evidence, and local-visibility evidence in the hidden marker and browser
-    failure artifact; hosted Chrome confirmation for that branch is pending.
+    failure artifact; hosted Checks run `28545477587` on commit `479912a9`
+    passed the full matrix, including `starter-browser-preview`, confirming the
+    command-timeline marker gate in hosted Chrome.
     Browser preview artifacts now include starter timings for database open,
     browser health refresh, schema readiness, support-bundle export,
     bootstrap readiness, realtime connection, and generated-mutation local

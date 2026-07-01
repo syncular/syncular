@@ -4340,7 +4340,13 @@ Most recent mutation-status rerun:
   persistence, local-apply evidence, and local-visibility evidence without
   pretending the starter UI has proven every server/realtime proof link. Local
   `create-syncular-app` typecheck, smoke-script typecheck, focused Biome, and
-  non-Chrome scaffold smoke passed; hosted Chrome confirmation is pending.
+  non-Chrome scaffold smoke passed; hosted Checks run `28545477587` on commit
+  `479912a9` passed the full matrix, including `starter-browser-preview`. The
+  Chrome job log reached `real-browser smoke: proving two-tab propagation`,
+  `real-browser smoke: proving generated write pressure`, and then
+  `real-browser built-preview preflight smoke passed`; because the generated
+  task path now requires the command-timeline marker before that pass marker,
+  this confirms the command-timeline proof gate in hosted Chrome.
 
 ## Next Action
 
@@ -4359,9 +4365,9 @@ quota-pressure preflight branch, now fixed to pass post-override CDP usage/quota
 facts into the app preflight proof and confirmed in hosted Chrome. The current
 slice extends those browser-observed quota facts into storage recovery action
 mapping, now confirmed in hosted Chrome. The quota-exhausted generated write
-rejection proof is also confirmed in hosted Chrome. The current unhosted slice
-adds a generated command-timeline proof marker to the starter browser path and
-needs hosted `starter-browser-preview` confirmation after push.
+rejection proof is also confirmed in hosted Chrome. The generated
+command-timeline proof marker is also confirmed in hosted Chrome through Checks
+run `28545477587`.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 suspension/shutdown lifecycle coverage, eviction and storage-shutdown browser
