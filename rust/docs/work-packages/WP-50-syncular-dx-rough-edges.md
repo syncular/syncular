@@ -4541,7 +4541,11 @@ Most recent browser-health failure-artifact rerun:
   `bun --cwd packages/create-syncular-app tsgo`,
   `bunx biome check packages/create-syncular-app/scripts/smoke.ts`, and
   `bun --cwd packages/create-syncular-app smoke`. Chrome was not installed
-  locally, so hosted Checks must confirm the real-browser branch.
+  locally; hosted Checks run `28552359995` on commit `8bacb017` passed the full
+  matrix, including `starter-browser-preview`. The Chrome job log reached
+  `real-browser smoke: proving browser storage eviction recovery` and then
+  `real-browser built-preview preflight smoke passed`, confirming the
+  origin-clear recovery branch in hosted Chrome.
 
 ## Next Action
 
@@ -4574,8 +4578,8 @@ invalid blob request/token, and blob access-denial outcomes. Destructive local
 recovery actions now expose data-loss/outbox safety metadata and block
 row-clearing actions while unsynced outbox work exists. Real browser target
 activation background/foreground coverage below the generated task proof is now
-confirmed in hosted Chrome. This slice adds explicit origin-storage
-eviction/rebootstrap recovery locally; hosted Chrome confirmation is pending.
+confirmed in hosted Chrome. Explicit origin-storage eviction/rebootstrap
+recovery is also confirmed in hosted Chrome through Checks run `28552359995`.
 The next lifecycle follow-up should move to discarded-tab, shutdown/restart,
 browser/host-driven eviction beyond explicit CDP origin clear,
 storage-shutdown, and lower-level storage-failure behavior.

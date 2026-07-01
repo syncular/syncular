@@ -262,8 +262,9 @@ read-only review:
     separate observer tab, clears the app origin through Chrome's
     `Storage.clearDataForOrigin`, reloads the same client id, requires the
     sentinel to be gone, and waits for the task to restore from server state.
-    Host-driven eviction and storage-shutdown behavior remain matrix work. The
-    starter now also records
+    Hosted Checks run `28552359995` confirmed that branch in Chrome. Host-driven
+    eviction and storage-shutdown behavior remain matrix work. The starter now
+    also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply
     evidence, and local-visibility evidence in the hidden marker and browser
