@@ -3769,15 +3769,21 @@ Most recent mutation-status rerun:
   `cloudflare.runtime_failure` diagnostic records. Console client detail views
   now surface both artifact families from the stored quick fields instead of
   requiring raw JSON inspection for the first triage pass. Release rehearsal
-  now owns the focused Console ingestion proof for both artifact families.
-  Remaining depth is observing hosted browser/Cloudflare artifacts and
+  now owns the focused Console ingestion proof for both artifact families. The
+  hosted starter browser-preview job exposed that the extra release
+  `wasm-opt --all-features` pass emitted typed function references (`(ref N)`)
+  that Bun could compile but hosted Chrome rejected during runtime
+  initialization with `WebAssembly.instantiate(): unknown type form: 0 @+202`;
+  release WASM packaging now uses explicit browser-safe optimizer feature flags
+  instead. Remaining depth is observing hosted browser/Cloudflare artifacts and
   deciding whether future hosted artifact uploads need richer Console/Fleet
   orchestration.
 
 ## Next Action
 
 Pick the next implementation slice from the remaining risks. Strong candidates
-are observing the new hosted starter browser-preview job, deeper browser
+are observing the hosted starter browser-preview job after the browser-safe
+WASM optimizer fix, deeper browser
 suspension/shutdown lifecycle coverage, canonical real-browser support-bundle
 failure artifacts,
 browser/bundler matrix execution, or automating production-ops checks, because

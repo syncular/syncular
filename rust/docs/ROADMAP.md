@@ -184,7 +184,11 @@ read-only review:
     The Vite production-preview proof now self-checks the browser-runtime
     failure artifact shape without requiring Chrome, while Chrome-capable
     runners can still execute the page and upload the real artifact on
-    timeout.
+    timeout. Browser WASM release packaging now avoids the blanket
+    `wasm-opt --all-features` pass after hosted Chrome rejected the optimized
+    core runtime with `WebAssembly.instantiate(): unknown type form: 0 @+202`;
+    the optimizer now enables only the browser-safe feature set needed by the
+    wasm-bindgen output.
     The local Cloudflare `wrangler dev --local` proof now self-checks a
     bounded runtime failure artifact so DO/D1/R2/WebSocket failures leave
     route, exit, recent-output context, and safe R2 blob route timing/byte

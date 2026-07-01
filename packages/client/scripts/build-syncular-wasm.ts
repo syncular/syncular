@@ -35,6 +35,14 @@ const wasmFeatures = readArgValue('--features') ?? 'web-owned-sqlite';
 const wasmVariant = readArgValue('--variant') ?? inferWasmVariant(wasmFeatures);
 const artifactName = readArgValue('--artifact-name') ?? wasmVariant;
 const releaseOptLevel = readArgValue('--release-opt-level');
+const browserSafeWasmOptFeatures = [
+  '--enable-reference-types',
+  '--enable-bulk-memory',
+  '--enable-nontrapping-float-to-int',
+  '--enable-multivalue',
+  '--enable-sign-ext',
+  '--enable-mutable-globals',
+];
 const wasmClang =
   process.env.CC_wasm32_unknown_unknown ??
   [
@@ -266,7 +274,7 @@ function optimizeWasmRelease(wasmPath: string): void {
   const result = Bun.spawnSync(
     [
       'wasm-opt',
-      '--all-features',
+      ...browserSafeWasmOptFeatures,
       '-Oz',
       '--strip-producers',
       '--zero-filled-memory',

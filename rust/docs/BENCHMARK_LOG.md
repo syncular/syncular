@@ -7624,3 +7624,33 @@ Decision:
   `dist/wasm`, `dist/wasm-core`, and `dist/wasm-perf`.
 - Do not rely on cleaning local scratch directories before publish; the
   package manifest should make accidental artifact shipping impossible.
+
+## 2026-07-01 - Browser-Safe Core WASM Optimizer Flags
+
+Context: the hosted `starter-browser-preview` job loaded the built
+`create-syncular-app` preview and then timed out at database open. The uploaded
+failure artifact showed the page text
+`WebAssembly.instantiate(): unknown type form: 0 @+202`. The release core WASM
+validated with `wasm-tools` and compiled in Bun, but `wasm-tools print` showed
+typed function-reference signatures (`(ref N)`) after the extra
+`wasm-opt --all-features -Oz` pass. The wasm-pack release output did not have
+those typed references.
+
+Measured core artifact variants:
+
+| Variant | Raw bytes | Gzip bytes | Typed `(ref N)` signatures |
+| --- | ---: | ---: | --- |
+| wasm-pack release output before extra pass | `1,732,529` | `768,421` | no |
+| extra `wasm-opt -Oz` with default/browser-safe features | `1,718,698` | `768,466` | no |
+| previous extra `wasm-opt --all-features -Oz` output | `1,706,612` | `770,070` | yes |
+| rebuilt package core artifact with explicit browser-safe flags | `1,718,547` | `768,351` | no |
+
+Decision:
+
+- Retain the extra release optimizer pass, but replace blanket
+  `--all-features` with explicit browser-safe feature flags:
+  reference types, bulk memory, nontrapping float-to-int, multivalue, sign-ext,
+  and mutable globals.
+- Accept the roughly `+11.9KiB` raw delta versus the previous all-features
+  artifact because the gzip output is slightly smaller in this probe and the
+  resulting module stays compatible with baseline browser WASM parsing.
