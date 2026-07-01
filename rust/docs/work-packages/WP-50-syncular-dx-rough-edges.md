@@ -3661,6 +3661,23 @@ Most recent mutation-status rerun:
 - `bun run docs:stale-check`
 - `git diff --check`
 
+Most recent browser-health failure-artifact rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/testkit/src/failure-artifacts.test.ts packages/server/src/hono/__tests__/console-routes.test.ts -t "failure artifact|browser preview failure"`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/testkit tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/server tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/scripts/smoke.ts packages/testkit/src/failure-artifacts.ts packages/testkit/src/failure-artifacts.test.ts packages/server/src/hono/console/schemas.ts packages/server/src/hono/console/routes/shared.ts packages/server/src/hono/__tests__/console-routes.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
+  - Passed built-preview asset checks, runtime asset checks, and the
+    deterministic `browser-preview-failure.json` self-check with the new
+    `browserHealth` probe section.
+  - Skipped the real-browser CDP check because no Chrome/Chromium binary was
+    available locally.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `git diff --check`
+
 ## Sequencing
 
 1. Golden path starter and smoke: first retained slice is done for the
@@ -4393,6 +4410,21 @@ Most recent mutation-status rerun:
   `git diff --check`. Chrome was not installed locally, so the starter smoke
   used the non-Chrome path; hosted browser proof remains a follow-up if this
   marker becomes a required browser artifact assertion.
+- 2026-07-01: Promoted the browser-health lifecycle projection into the
+  starter browser-preview failure artifact contract. Built-preview asset
+  checks now require the browser-health marker strings, the failure probe now
+  carries `browserHealth` status, lifecycle stage, recovery owner,
+  blocked-operation count, and generated-mutation/local-visibility/sync-now
+  availability, `@syncular/testkit` validates the section, and Console/Fleet
+  ingestion preserves the same fields in diagnostic details plus compact
+  transport stats. Local gates with Bun `1.3.9` passed:
+  `bun test packages/testkit/src/failure-artifacts.test.ts packages/server/src/hono/__tests__/console-routes.test.ts -t "failure artifact|browser preview failure"`,
+  `bun --cwd packages/create-syncular-app tsgo`,
+  `bun --cwd packages/testkit tsgo`, `bun --cwd packages/server tsgo`,
+  focused Biome check, `bun --cwd packages/create-syncular-app smoke`,
+  `bun run docs:stale-check`, `bun --cwd apps/docs types:check`, and
+  `git diff --check`. Chrome was not installed locally, so hosted Checks should
+  remain the real-browser proof for the marker in built Chrome artifacts.
 
 ## Next Action
 
@@ -4414,9 +4446,11 @@ mapping, now confirmed in hosted Chrome. The quota-exhausted generated write
 rejection proof is also confirmed in hosted Chrome. The generated
 command-timeline proof marker is also confirmed in hosted Chrome through Checks
 run `28545477587`. Browser health now has a typed lifecycle operation
-projection for app chrome and support output; the next lifecycle-facing slice
-should either promote these marker fields into the browser failure artifact or
-extend the realtime proof chain with joined-scope/event/pull/apply evidence.
+projection for app chrome/support output and the same fields are carried in the
+browser-preview failure artifact, testkit assertions, and Console/Fleet
+ingestion. The next lifecycle-facing slice should extend the realtime proof
+chain with joined-scope/event/pull/apply/local-visibility evidence or add the
+first canonical negative-path E2E artifact for auth/scope/blob denial.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 suspension/shutdown lifecycle coverage, eviction and storage-shutdown browser

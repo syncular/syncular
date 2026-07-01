@@ -504,7 +504,9 @@ const ConsoleBrowserPreviewFailureMetricsSchema = z
     artifactCreatedAfterMs: z.number().nonnegative(),
     assetCheckMs: z.number().nonnegative(),
     assetCount: z.number().int().nonnegative(),
+    browserHealthMarkerInAssets: z.boolean().optional(),
     browserSupportPolicyMarkerInAssets: z.boolean().optional(),
+    commandTimelineMarkerInAssets: z.boolean().optional(),
     cssAssetBytes: z.number().int().nonnegative(),
     cssAssetCount: z.number().int().nonnegative(),
     deploymentPreflightMarkerInAssets: z.boolean(),
@@ -515,6 +517,7 @@ const ConsoleBrowserPreviewFailureMetricsSchema = z
     otherAssetCount: z.number().int().nonnegative(),
     previewReadyMs: z.number().nonnegative(),
     starterTimelineMarkerInAssets: z.boolean(),
+    storageRecoveryMarkerInAssets: z.boolean().optional(),
     supportBundleMarkerInAssets: z.boolean(),
     totalAssetBytes: z.number().int().nonnegative(),
   })
@@ -538,6 +541,18 @@ const ConsoleBrowserPreviewFailureProbeSchema = z
         databaseOpening: z.boolean(),
       })
       .passthrough(),
+    browserHealth: z
+      .object({
+        blockedOperationCount: z.number().int().nonnegative(),
+        generatedMutation: ConsoleBrowserPreviewFailureNullableStringSchema,
+        lifecycleStage: ConsoleBrowserPreviewFailureNullableStringSchema,
+        localVisibility: ConsoleBrowserPreviewFailureNullableStringSchema,
+        recoveryOwner: ConsoleBrowserPreviewFailureNullableStringSchema,
+        status: ConsoleBrowserPreviewFailureNullableStringSchema,
+        syncNow: ConsoleBrowserPreviewFailureNullableStringSchema,
+      })
+      .passthrough()
+      .optional(),
     deploymentPreflight: z
       .object({
         actionCount: z.number().int().nonnegative(),

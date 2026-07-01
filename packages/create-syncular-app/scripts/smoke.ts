@@ -287,6 +287,7 @@ async function verifyBuiltPreviewAssets(
   }
 
   let sawLifecycleResumeMarker = false;
+  let sawBrowserHealthMarker = false;
   let sawBrowserSupportPolicyMarker = false;
   let sawCommandTimelineMarker = false;
   let sawDeploymentPreflightMarker = false;
@@ -321,6 +322,10 @@ async function verifyBuiltPreviewAssets(
       sawLifecycleResumeMarker ||=
         assetBody.includes('data-syncular-lifecycle-resume-status') &&
         assetBody.includes('data-syncular-lifecycle-resume-lock-state');
+      sawBrowserHealthMarker ||=
+        assetBody.includes('data-syncular-browser-health-lifecycle-stage') &&
+        assetBody.includes('data-syncular-browser-health-recovery-owner') &&
+        assetBody.includes('data-syncular-browser-health-sync-now');
       sawBrowserSupportPolicyMarker ||=
         assetBody.includes('data-syncular-browser-support-policy-status') &&
         assetBody.includes(
@@ -375,6 +380,11 @@ async function verifyBuiltPreviewAssets(
       'Built preview assets did not include the browser support-policy smoke marker'
     );
   }
+  if (!sawBrowserHealthMarker) {
+    throw new Error(
+      'Built preview assets did not include the browser health lifecycle smoke marker'
+    );
+  }
   if (!sawLifecycleResumeMarker) {
     throw new Error(
       'Built preview assets did not include the lifecycle-resume smoke marker'
@@ -399,6 +409,7 @@ async function verifyBuiltPreviewAssets(
   return {
     assetCheckMs: elapsedSince(startedAtMs),
     assetCount: assetPaths.length,
+    browserHealthMarkerInAssets: sawBrowserHealthMarker,
     browserSupportPolicyMarkerInAssets: sawBrowserSupportPolicyMarker,
     commandTimelineMarkerInAssets: sawCommandTimelineMarker,
     cssAssetBytes,
@@ -455,6 +466,7 @@ function isExpectedAssetContentType(contentType: string, expected: string) {
 type BuiltPreviewAssetMetrics = {
   assetCheckMs: number;
   assetCount: number;
+  browserHealthMarkerInAssets: boolean;
   browserSupportPolicyMarkerInAssets: boolean;
   commandTimelineMarkerInAssets: boolean;
   cssAssetBytes: number;
@@ -862,6 +874,15 @@ type BrowserPreviewProbe = {
     preflightFailure: boolean;
     databaseOpening: boolean;
   };
+  browserHealth: {
+    blockedOperationCount: number;
+    generatedMutation: string | null;
+    lifecycleStage: string | null;
+    localVisibility: string | null;
+    recoveryOwner: string | null;
+    status: string | null;
+    syncNow: string | null;
+  };
   deploymentPreflight: {
     actionCount: number;
     availableBytes: number | null;
@@ -1071,6 +1092,7 @@ type BrowserPreviewFailureMetrics = {
   artifactCreatedAfterMs: number;
   assetCheckMs: number;
   assetCount: number;
+  browserHealthMarkerInAssets: boolean;
   browserSupportPolicyMarkerInAssets: boolean;
   commandTimelineMarkerInAssets: boolean;
   cssAssetBytes: number;
@@ -1100,6 +1122,14 @@ async function readStarterBrowserProbe(
 ): Promise<BrowserPreviewProbe> {
   return session.evaluate<BrowserPreviewProbe>(`(() => {
     const text = document.body?.innerText ?? '';
+    const browserHealth = document.querySelector('[data-syncular-browser-health-status]');
+    const browserHealthBlockedOperationCount = Number(browserHealth?.getAttribute('data-syncular-browser-health-blocked-operation-count') ?? 0);
+    const browserHealthGeneratedMutation = browserHealth?.getAttribute('data-syncular-browser-health-generated-mutation') ?? null;
+    const browserHealthLifecycleStage = browserHealth?.getAttribute('data-syncular-browser-health-lifecycle-stage') ?? null;
+    const browserHealthLocalVisibility = browserHealth?.getAttribute('data-syncular-browser-health-local-visibility') ?? null;
+    const browserHealthRecoveryOwner = browserHealth?.getAttribute('data-syncular-browser-health-recovery-owner') ?? null;
+    const browserHealthStatus = browserHealth?.getAttribute('data-syncular-browser-health-status') ?? null;
+    const browserHealthSyncNow = browserHealth?.getAttribute('data-syncular-browser-health-sync-now') ?? null;
     const supportBundle = document.querySelector('[data-syncular-support-bundle-status]');
     const supportBundleStatus = supportBundle?.getAttribute('data-syncular-support-bundle-status') ?? null;
     const supportBundleRedacted = supportBundle?.getAttribute('data-syncular-support-bundle-redacted') ?? null;
@@ -1457,6 +1487,27 @@ async function readStarterBrowserProbe(
         schemaLine,
         preflightFailure,
         databaseOpening,
+      },
+      browserHealth: {
+        blockedOperationCount: browserHealthBlockedOperationCount,
+        generatedMutation:
+          browserHealthGeneratedMutation === ''
+            ? null
+            : browserHealthGeneratedMutation,
+        lifecycleStage:
+          browserHealthLifecycleStage === ''
+            ? null
+            : browserHealthLifecycleStage,
+        localVisibility:
+          browserHealthLocalVisibility === ''
+            ? null
+            : browserHealthLocalVisibility,
+        recoveryOwner:
+          browserHealthRecoveryOwner === ''
+            ? null
+            : browserHealthRecoveryOwner,
+        status: browserHealthStatus === '' ? null : browserHealthStatus,
+        syncNow: browserHealthSyncNow === '' ? null : browserHealthSyncNow,
       },
       deploymentPreflight: {
         actionCount: deploymentPreflightActionCount,
@@ -4158,6 +4209,15 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         preflightFailure: false,
         databaseOpening: false,
       },
+      browserHealth: {
+        blockedOperationCount: 0,
+        generatedMutation: 'available',
+        lifecycleStage: 'realtime-live',
+        localVisibility: 'available',
+        recoveryOwner: 'runtime',
+        status: 'healthy',
+        syncNow: 'available',
+      },
       deploymentPreflight: {
         actionCount: 0,
         availableBytes: 107_374_178_304,
@@ -4404,6 +4464,7 @@ function finalizeBrowserPreviewFailureMetrics(
     artifactCreatedAfterMs: elapsedSince(metrics.smokeStartedAtMs),
     assetCheckMs: metrics.assetCheckMs,
     assetCount: metrics.assetCount,
+    browserHealthMarkerInAssets: metrics.browserHealthMarkerInAssets,
     browserSupportPolicyMarkerInAssets:
       metrics.browserSupportPolicyMarkerInAssets,
     commandTimelineMarkerInAssets: metrics.commandTimelineMarkerInAssets,
@@ -4449,6 +4510,7 @@ function assertBrowserPreviewFailureMetricsShape(
     }
   }
   for (const key of [
+    'browserHealthMarkerInAssets',
     'browserSupportPolicyMarkerInAssets',
     'commandTimelineMarkerInAssets',
     'deploymentPreflightMarkerInAssets',
@@ -4480,6 +4542,7 @@ function assertBrowserPreviewProbeShape(
     throw new Error(`${path} probe.errors was not a string array`);
   }
   assertBrowserPreviewMarkersShape(probe.markers, path);
+  assertBrowserPreviewBrowserHealthShape(probe.browserHealth, path);
   assertBrowserPreviewDeploymentPreflightShape(probe.deploymentPreflight, path);
   assertBrowserPreviewSupportPolicyShape(probe.browserSupportPolicy, path);
   assertBrowserPreviewSupportBundleShape(probe.supportBundle, path);
@@ -4590,6 +4653,37 @@ function assertBrowserPreviewMarkersShape(value: unknown, path: string): void {
   ] as const) {
     if (typeof value[key] !== 'boolean') {
       throw new Error(`${path} probe.markers.${key} was not a boolean`);
+    }
+  }
+}
+
+function assertBrowserPreviewBrowserHealthShape(
+  value: unknown,
+  path: string
+): void {
+  if (!isRecord(value)) {
+    throw new Error(`${path} probe.browserHealth was not a JSON object`);
+  }
+  if (
+    !isNonNegativeFiniteNumber(value.blockedOperationCount) ||
+    !Number.isInteger(value.blockedOperationCount)
+  ) {
+    throw new Error(
+      `${path} probe.browserHealth.blockedOperationCount was not a non-negative integer`
+    );
+  }
+  for (const key of [
+    'generatedMutation',
+    'lifecycleStage',
+    'localVisibility',
+    'recoveryOwner',
+    'status',
+    'syncNow',
+  ] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(
+        `${path} probe.browserHealth.${key} was not nullable text`
+      );
     }
   }
 }

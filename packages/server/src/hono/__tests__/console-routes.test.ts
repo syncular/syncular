@@ -509,7 +509,9 @@ describe('console timeline route filters', () => {
         artifactCreatedAfterMs: 18,
         assetCheckMs: 7,
         assetCount: 4,
+        browserHealthMarkerInAssets: true,
         browserSupportPolicyMarkerInAssets: true,
+        commandTimelineMarkerInAssets: true,
         cssAssetBytes: 2048,
         cssAssetCount: 1,
         deploymentPreflightMarkerInAssets: true,
@@ -520,6 +522,7 @@ describe('console timeline route filters', () => {
         otherAssetCount: 1,
         previewReadyMs: 42,
         starterTimelineMarkerInAssets: true,
+        storageRecoveryMarkerInAssets: true,
         supportBundleMarkerInAssets: true,
         totalAssetBytes: 14_176,
       },
@@ -531,6 +534,15 @@ describe('console timeline route filters', () => {
           schemaLine: true,
           preflightFailure: false,
           databaseOpening: false,
+        },
+        browserHealth: {
+          blockedOperationCount: 0,
+          generatedMutation: 'available',
+          lifecycleStage: 'realtime-live',
+          localVisibility: 'available',
+          recoveryOwner: 'runtime',
+          status: 'healthy',
+          syncNow: 'available',
         },
         deploymentPreflight: {
           actionCount: 0,
@@ -2671,6 +2683,20 @@ describe('console timeline route filters', () => {
     expect(accepted.transportStats?.browserSupportPolicy).toBe(
       'supported-after-preflight'
     );
+    expect(accepted.transportStats?.browserHealthMarkerInAssets).toBe(true);
+    expect(accepted.transportStats?.browserHealthStatus).toBe('healthy');
+    expect(accepted.transportStats?.browserHealthLifecycleStage).toBe(
+      'realtime-live'
+    );
+    expect(accepted.transportStats?.browserHealthRecoveryOwner).toBe('runtime');
+    expect(accepted.transportStats?.browserHealthBlockedOperationCount).toBe(0);
+    expect(accepted.transportStats?.browserHealthGeneratedMutation).toBe(
+      'available'
+    );
+    expect(accepted.transportStats?.browserHealthLocalVisibility).toBe(
+      'available'
+    );
+    expect(accepted.transportStats?.browserHealthSyncNow).toBe('available');
     expect(accepted.transportStats?.browserSupportPolicyStatus).toBe('met');
     expect(accepted.transportStats?.browserSupportPolicyContext).toBe(
       'chromium-secure-page'
@@ -2736,6 +2762,13 @@ describe('console timeline route filters', () => {
           | undefined
       )?.status
     ).toBe('met');
+    expect(
+      (
+        diagnostic?.details?.browserHealth as
+          | Record<string, unknown>
+          | undefined
+      )?.lifecycleStage
+    ).toBe('realtime-live');
     expect(
       (
         diagnostic?.details?.browserSupportPolicy as

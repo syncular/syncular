@@ -529,7 +529,10 @@ read-only review:
     Testkit can now assert those browser-preview artifacts plus Cloudflare
     runtime failure artifacts for redaction, bounded excerpts, lifecycle
     evidence, support-policy count consistency, and safe blob timing metrics
-    before ingestion. Mutation queue
+    before ingestion. The browser-preview artifact now also carries browser
+    health lifecycle stage, recovery owner, blocked-operation count, and
+    generated mutation, local visibility, plus immediate sync operation
+    availability through testkit and Console/Fleet ingestion. Mutation queue
     UX now has
     `getSyncularMutationStatus(...)` and
     `SyncularDatabase.mutationStatus(...)`, summarizing outbox queue state,

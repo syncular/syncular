@@ -777,6 +777,7 @@ export function buildBrowserPreviewFailureClientDiagnosticIngest(
   const generatedAt = browserPreviewArtifactGeneratedAtMs(artifact);
   const reason = truncateDiagnosticText(artifact.reason, 500);
   const starterTimeline = probe?.starterTimeline ?? null;
+  const browserHealth = probe?.browserHealth ?? null;
   const deploymentPreflight = probe?.deploymentPreflight ?? null;
   const browserSupportPolicy = probe?.browserSupportPolicy ?? null;
   const supportBundle = probe?.supportBundle ?? null;
@@ -792,6 +793,7 @@ export function buildBrowserPreviewFailureClientDiagnosticIngest(
     probeTextExcerptLength: probe?.textExcerpt.length ?? 0,
     markers: probe?.markers ?? null,
     metrics: artifact.metrics,
+    browserHealth,
     deploymentPreflight,
     browserSupportPolicy,
     supportBundle,
@@ -879,6 +881,17 @@ export function buildBrowserPreviewFailureClientDiagnosticIngest(
         otherAssetBytes: artifact.metrics.otherAssetBytes,
         browserSupportPolicyMarkerInAssets:
           artifact.metrics.browserSupportPolicyMarkerInAssets ?? null,
+        browserHealthMarkerInAssets:
+          artifact.metrics.browserHealthMarkerInAssets ?? null,
+        browserHealthStatus: browserHealth?.status ?? null,
+        browserHealthLifecycleStage: browserHealth?.lifecycleStage ?? null,
+        browserHealthRecoveryOwner: browserHealth?.recoveryOwner ?? null,
+        browserHealthBlockedOperationCount:
+          browserHealth?.blockedOperationCount ?? null,
+        browserHealthGeneratedMutation:
+          browserHealth?.generatedMutation ?? null,
+        browserHealthLocalVisibility: browserHealth?.localVisibility ?? null,
+        browserHealthSyncNow: browserHealth?.syncNow ?? null,
         browserSupportPolicy: browserSupportPolicy?.policy ?? null,
         browserSupportPolicyStatus: browserSupportPolicy?.status ?? null,
         browserSupportPolicyContext: browserSupportPolicy?.context ?? null,

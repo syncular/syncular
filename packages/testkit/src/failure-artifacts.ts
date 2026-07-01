@@ -32,7 +32,9 @@ export type SyncularBrowserPreviewFailureMetrics = {
   artifactCreatedAfterMs: number;
   assetCheckMs: number;
   assetCount: number;
+  browserHealthMarkerInAssets: boolean;
   browserSupportPolicyMarkerInAssets: boolean;
+  commandTimelineMarkerInAssets: boolean;
   cssAssetBytes: number;
   cssAssetCount: number;
   deploymentPreflightMarkerInAssets: boolean;
@@ -43,6 +45,7 @@ export type SyncularBrowserPreviewFailureMetrics = {
   otherAssetCount: number;
   previewReadyMs: number;
   starterTimelineMarkerInAssets: boolean;
+  storageRecoveryMarkerInAssets: boolean;
   supportBundleMarkerInAssets: boolean;
   totalAssetBytes: number;
 };
@@ -51,6 +54,7 @@ export type SyncularBrowserPreviewProbe = {
   ready: boolean;
   errors: string[];
   markers: Record<string, boolean>;
+  browserHealth: Record<string, unknown>;
   deploymentPreflight: Record<string, unknown>;
   browserSupportPolicy: Record<string, unknown>;
   supportBundle: Record<string, unknown>;
@@ -209,10 +213,13 @@ function assertBrowserPreviewFailureMetrics(
     assertNonNegativeNumber(value[key], `${path}.${key}`);
   }
   for (const key of [
+    'browserHealthMarkerInAssets',
     'browserSupportPolicyMarkerInAssets',
+    'commandTimelineMarkerInAssets',
     'deploymentPreflightMarkerInAssets',
     'lifecycleResumeMarkerInAssets',
     'starterTimelineMarkerInAssets',
+    'storageRecoveryMarkerInAssets',
     'supportBundleMarkerInAssets',
   ] as const) {
     assertBoolean(value[key], `${path}.${key}`);
@@ -227,6 +234,7 @@ function assertBrowserPreviewProbe(value: unknown, path: string): void {
   for (const [key, marker] of Object.entries(value.markers)) {
     assertBoolean(marker, `${path}.markers.${key}`);
   }
+  assertBrowserHealth(value.browserHealth, `${path}.browserHealth`);
   assertRecord(value.deploymentPreflight, `${path}.deploymentPreflight`);
   assertRecord(value.browserSupportPolicy, `${path}.browserSupportPolicy`);
   assertBrowserSupportPolicyCounts(
@@ -251,6 +259,24 @@ function assertBrowserPreviewProbe(value: unknown, path: string): void {
     BROWSER_TEXT_EXCERPT_MAX,
     `${path}.textExcerpt`
   );
+}
+
+function assertBrowserHealth(value: unknown, path: string): void {
+  assertRecord(value, path);
+  assertNonNegativeNumber(
+    value.blockedOperationCount,
+    `${path}.blockedOperationCount`
+  );
+  for (const key of [
+    'generatedMutation',
+    'lifecycleStage',
+    'localVisibility',
+    'recoveryOwner',
+    'status',
+    'syncNow',
+  ] as const) {
+    assertNullableString(value[key], `${path}.${key}`);
+  }
 }
 
 function assertBrowserSupportPolicyCounts(value: unknown, path: string): void {
