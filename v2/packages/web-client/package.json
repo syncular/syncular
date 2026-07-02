@@ -1,0 +1,17 @@
+{
+  "name": "@syncular-v2/web-client",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./bun": "./src/bun-database.ts",
+    "./wasm": "./src/wasm-database.ts"
+  },
+  "dependencies": {
+    "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
+    "@syncular-v2/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncular-v2/server": "workspace:*"
+  }
+}
