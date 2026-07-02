@@ -5090,6 +5090,20 @@ Most recent browser-health failure-artifact rerun:
   `8245fc98` passed the full matrix, including `test`,
   `starter-webkit-runtime-matrix`, `starter-firefox-runtime-matrix`,
   `starter-browser-preview`, `rust-browser-wasm`, and the native/package jobs.
+  Follow-up Checks run `28576482734` on docs-only commit `32fdccf5` then failed
+  only in `starter-browser-preview`: hosted Chrome recorded an expected
+  app-window offline-restart WASM request diagnostic before the restarted CDP
+  session installed its expected-offline ignore list. The smoke now installs
+  that narrow ignore list before enabling CDP Runtime/Log/Network domains, so
+  expected server-down app-window restart diagnostics are filtered without
+  hiding later unexpected browser errors. Local Bun `1.3.9` static gates passed:
+  `bun --cwd packages/create-syncular-app tsgo`, `bunx biome check
+  packages/create-syncular-app/scripts/smoke.ts`, and `git diff --check`.
+  Local `--require-browser-preview` could not provide the authoritative proof on
+  this macOS machine: no Chrome/Chromium was discoverable, and the downloaded
+  Playwright Chromium timed out in the initial CDP page navigation before
+  reaching this app-window branch. Hosted `starter-browser-preview` remains the
+  proof source for the Chrome/CDP path.
 
 ## Next Action
 

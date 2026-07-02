@@ -6299,8 +6299,6 @@ async function proveStarterPwaAppWindowDisplayMode(args: {
       urlIncludes: `syncularClientId=${clientId}`,
     });
     session = await CdpSession.connect(restartTarget.webSocketDebuggerUrl);
-    await enableChromeTarget(session);
-    await installStarterPwaSmokeDiagnostics(session);
     session.ignoreBrowserDiagnosticsContaining([
       `clientId=${clientId}`,
       '/sync/realtime?',
@@ -6309,6 +6307,8 @@ async function proveStarterPwaAppWindowDisplayMode(args: {
       '/syncular/wasm-core/syncular_bg.wasm',
       'syncularPwaAppWindowOfflineRestart=',
     ]);
+    await enableChromeTarget(session);
+    await installStarterPwaSmokeDiagnostics(session);
     await setChromeTargetOffline(session, true);
     offline = true;
     if ((await readStarterNavigatorOnline(session)) !== false) {
