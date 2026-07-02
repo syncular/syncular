@@ -5103,7 +5103,10 @@ Most recent browser-health failure-artifact rerun:
   this macOS machine: no Chrome/Chromium was discoverable, and the downloaded
   Playwright Chromium timed out in the initial CDP page navigation before
   reaching this app-window branch. Hosted `starter-browser-preview` remains the
-  proof source for the Chrome/CDP path.
+  proof source for the Chrome/CDP path. Manual Checks run `28577112619` on
+  commit `eabe20df` passed the full matrix, including `starter-browser-preview`,
+  `starter-webkit-runtime-matrix`, `starter-firefox-runtime-matrix`, `test`,
+  `rust-browser-wasm`, and the native/package jobs.
 
 ## Next Action
 
