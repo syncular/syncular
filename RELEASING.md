@@ -111,6 +111,18 @@ follow-ups have not been executed yet** — they need a credentialed
 - File the Bun worker-message-delivery regression upstream from the prepared
   draft in `.context/bun-1.3.14-worker-delivery-issue-draft.md` (not a
   registry task, but the CI Bun 1.3.9 pin has no exit without it).
+- After the next patch release ships: deprecate the broken-WASM versions.
+  Every published `@syncular/client` 0.1.x through 0.1.3 shipped
+  `dist/wasm*/syncular_bg.wasm` artifacts corrupted by Ubuntu's apt
+  binaryen 108 — they fail `WebAssembly.Module` compilation in every engine,
+  so the browser runtime is unusable from those versions:
+
+  ```sh
+  for v in 0.1.1 0.1.2 0.1.3; do
+    npm deprecate "@syncular/client@$v" \
+      "Browser WASM artifacts in 0.1.0-0.1.3 are corrupt (built with binaryen 108) - upgrade to the first release after 0.1.3."
+  done
+  ```
 
 The original post-consolidation follow-ups:
 
