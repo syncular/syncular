@@ -4852,6 +4852,21 @@ Most recent browser-health failure-artifact rerun:
   online `HEAD` probes network-pass-through and only writes successful `GET`
   runtime responses to the smoke cache; offline `HEAD` probes still match the
   warmed `GET` entries with `ignoreMethod`.
+- 2026-07-02: Hosted Checks run `28564720341` on commit `9796ee5e` advanced
+  past PWA policy/readiness and into the offline reload proof. The page stayed
+  service-worker controlled, kept the PWA support-policy evidence, and rendered
+  the offline-created task after reopening, but smoke telemetry timed out with
+  zero runtime cache-hit events because the service worker still fetched the
+  runtime assets from the preview server with network `200` responses under
+  CDP page-target offline emulation. The follow-up now stops the preview server
+  for only the PWA offline proof, keeps the same offline/navigation/cache-hit
+  assertions, and restarts the preview server in cleanup before subsequent
+  browser smoke branches. Local Bun `1.3.9` gates passed:
+  `bunx biome check packages/create-syncular-app/scripts/smoke.ts`,
+  `bun --cwd packages/create-syncular-app tsgo`, and
+  `bun --cwd packages/create-syncular-app smoke`. Chrome is not installed
+  locally, so hosted confirmation for the explicit server-down offline proof is
+  still required.
 
 ## Next Action
 
@@ -4944,13 +4959,16 @@ the smoke worker only intercepted `GET`. The current follow-up handles cached
 offline `HEAD` runtime asset probes in the smoke worker. Hosted Checks run
 `28564524682` then failed only in `starter-browser-preview` because the online
 controlled-page `HEAD` probes were being written to Cache API, which rejects
-non-`GET` requests. The current follow-up makes online `HEAD` probes
-network-pass-through while preserving cached offline `HEAD` fallback, and the
-next hosted run should confirm that evidence in hosted Chrome before moving to
-host/browser eviction beyond explicit CDP origin/database clears,
-Clear-Site-Data, same-origin IndexedDB deletion, and PWA offline cache/reopen,
-plus storage failure/coordination behavior below the already-covered OPFS
-fallback and fallback-failure classification.
+non-`GET` requests. Hosted Checks run `28564720341` then advanced to the
+offline reload proof: the page reopened under service-worker control and
+rendered the offline-created task, but service-worker telemetry still recorded
+network `200` runtime-asset fetches under CDP offline emulation. The current
+follow-up stops the preview server during only this PWA offline proof and
+restarts it in cleanup, so the next hosted run should confirm real Cache API
+navigation/runtime hits before moving to host/browser eviction beyond explicit
+CDP origin/database clears, Clear-Site-Data, same-origin IndexedDB deletion,
+and PWA offline cache/reopen, plus storage failure/coordination behavior below
+the already-covered OPFS fallback and fallback-failure classification.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain host-driven eviction
 and deeper storage-failure browser proof, lower-level storage

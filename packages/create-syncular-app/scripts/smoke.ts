@@ -87,6 +87,12 @@ const STARTER_BROWSER_RUNTIME_ASSETS = [
     label: 'Syncular WASM binary',
   },
 ] as const;
+
+type BrowserPreviewServerControl = {
+  start: () => Promise<void>;
+  stop: () => Promise<void>;
+};
+
 const STARTER_PWA_SMOKE_DIAGNOSTIC_SCRIPT = `(() => {
   globalThis.__syncularSmokePwaEvents ??= [];
   if (globalThis.__syncularSmokePwaListenerInstalled === true) return;
@@ -769,6 +775,7 @@ type BuiltPreviewAssetMetrics = {
 async function maybeRunBrowserPreviewSmoke(args: {
   failureMetrics: BrowserPreviewFailureMetricsInput;
   origin: string;
+  previewServer: BrowserPreviewServerControl;
   syncOrigin: string;
   workDir: string;
 }): Promise<void> {
@@ -785,6 +792,7 @@ async function maybeRunBrowserPreviewSmoke(args: {
     chrome,
     failureMetrics: args.failureMetrics,
     origin: args.origin,
+    previewServer: args.previewServer,
     syncOrigin: args.syncOrigin,
     failureArtifactPath: join(args.workDir, 'browser-preview-failure.json'),
     userDataDir: join(args.workDir, 'chrome-profile'),
@@ -811,6 +819,7 @@ async function runBrowserPreviewSmoke(args: {
   failureMetrics: BrowserPreviewFailureMetricsInput;
   failureArtifactPath: string;
   origin: string;
+  previewServer: BrowserPreviewServerControl;
   syncOrigin: string;
   userDataDir: string;
 }): Promise<void> {
@@ -1071,6 +1080,7 @@ async function runBrowserPreviewSmoke(args: {
     ),
     failureMetrics: args.failureMetrics,
     origin: args.origin,
+    previewServer: args.previewServer,
     userDataDir: `${args.userDataDir}-pwa-offline`,
   });
   log('real-browser smoke: proving incognito memory-storage policy');
@@ -5873,6 +5883,7 @@ async function proveStarterPwaOfflineReopenPersistence(args: {
   failureArtifactPath: string;
   failureMetrics: BrowserPreviewFailureMetricsInput;
   origin: string;
+  previewServer: BrowserPreviewServerControl;
   userDataDir: string;
 }): Promise<void> {
   const chrome = await startBrowserPreviewChrome({
@@ -5885,6 +5896,9 @@ async function proveStarterPwaOfflineReopenPersistence(args: {
   let targetId: string | null = null;
   let lastProbe: BrowserPreviewProbe | null = null;
   let offline = false;
+  let previewStopped = false;
+  let caughtError: unknown = null;
+  let previewRestartError: unknown = null;
 
   try {
     const target = await createChromeTarget(chrome.debugPort, 'about:blank');
@@ -5966,6 +5980,8 @@ async function proveStarterPwaOfflineReopenPersistence(args: {
         'Timed out waiting for built preview PWA offline task before offline reload',
     });
 
+    await args.previewServer.stop();
+    previewStopped = true;
     await setChromeTargetOffline(session, true);
     offline = true;
     session.ignoreBrowserDiagnosticsContaining([
@@ -6040,10 +6056,15 @@ async function proveStarterPwaOfflineReopenPersistence(args: {
       lastProbe,
       args.failureMetrics
     );
-    throw error;
+    caughtError = error;
   } finally {
     if (offline && session !== null) {
       await setChromeTargetOffline(session, false).catch(() => undefined);
+    }
+    if (previewStopped) {
+      await args.previewServer.start().catch((error) => {
+        previewRestartError = error;
+      });
     }
     await closeStarterChromeTarget({
       debugPort: chrome.debugPort,
@@ -6052,6 +6073,8 @@ async function proveStarterPwaOfflineReopenPersistence(args: {
     });
     await stopProcess(chrome.process);
   }
+  if (caughtError !== null) throw caughtError;
+  if (previewRestartError !== null) throw previewRestartError;
 }
 
 type StarterPwaSmokeCacheState = {
@@ -10112,13 +10135,28 @@ async function main(): Promise<void> {
     // app and wait for the preflight-gated local database to open.
     await runLinkedViteBuild(appDir, appEnv);
     await writeBuiltPreviewSmokeServiceWorker(appDir);
-    devProcess = spawn('bun', ['scripts/dev.ts', '--preview'], {
-      cwd: appDir,
-      stdio: 'inherit',
-      env: appEnv,
-    });
-
     const previewOrigin = `http://127.0.0.1:${vitePort}`;
+    const syncOrigin = `http://127.0.0.1:${syncPort}`;
+    const previewServer: BrowserPreviewServerControl = {
+      start: async () => {
+        if (devProcess?.exitCode === null && devProcess.signalCode === null) {
+          return;
+        }
+        devProcess = spawn('bun', ['scripts/dev.ts', '--preview'], {
+          cwd: appDir,
+          stdio: 'inherit',
+          env: appEnv,
+        });
+        await fetchUntilReady(`${syncOrigin}/health`, 60_000);
+        await fetchUntilReady(`${previewOrigin}/`, 60_000);
+      },
+      stop: async () => {
+        await stopProcess(devProcess);
+        devProcess = null;
+      },
+    };
+
+    await previewServer.start();
     const previewPage = await fetchUntilReady(`${previewOrigin}/`, 60_000);
     const previewBody = await previewPage.text();
     const previewReadyMs = elapsedSince(smokeStartedAtMs);
@@ -10143,7 +10181,8 @@ async function main(): Promise<void> {
     await maybeRunBrowserPreviewSmoke({
       failureMetrics,
       origin: previewOrigin,
-      syncOrigin: `http://127.0.0.1:${syncPort}`,
+      previewServer,
+      syncOrigin,
       workDir,
     });
 

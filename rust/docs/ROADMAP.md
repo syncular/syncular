@@ -390,8 +390,13 @@ read-only review:
     current follow-up keeps online `HEAD` probes network-pass-through, caches
     only successful `GET` runtime responses, and still uses `ignoreMethod` to
     serve warmed `GET` entries for offline `HEAD` probes.
-    Hosted Chrome confirmation for this HEAD preflight/cache fix is still
-    pending.
+    Hosted Checks run `28564720341` on commit `9796ee5e` advanced into the
+    offline reload branch: the page reopened, kept the PWA policy evidence, and
+    rendered the offline-created task, but service-worker telemetry still saw
+    network `200` responses under CDP offline emulation. The current follow-up
+    stops the preview server for only the PWA offline proof, then restarts it in
+    cleanup, so the hosted proof no longer depends on page-target network
+    emulation taking the service-worker process offline.
     Host-driven eviction beyond explicit CDP storage clears, Clear-Site-Data,
     same-origin IndexedDB deletion, and PWA offline cache/reopen, plus deeper
     storage/coordination failures below the covered fallback and
