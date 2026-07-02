@@ -25,7 +25,8 @@ import { Buffer } from 'node:buffer';
  *    eviction/rebootstrap recovery, Clear-Site-Data server-driven storage
  *    eviction/rebootstrap recovery, same-origin IndexedDB deletion
  *    recovery, PWA app-window display-mode classification with installed-window
- *    runtime cache-refresh and service-worker update activation, PWA
+ *    runtime cache-refresh, offline restart, and service-worker update
+ *    activation, PWA
  *    service-worker update activation, PWA online runtime cache refresh, PWA
  *    offline cache/reopen persistence, two-tab propagation, same-client page
  *    reload/reopen persistence, same-client duplicate-tab open/write
@@ -1214,6 +1215,7 @@ async function runBrowserPreviewSmoke(args: {
     ),
     failureMetrics: args.failureMetrics,
     origin: args.origin,
+    previewServer: args.previewServer,
     userDataDir: `${args.userDataDir}-pwa-app-window`,
   });
   log('real-browser smoke: proving PWA service-worker update activation');
@@ -6081,17 +6083,23 @@ async function proveStarterPwaAppWindowDisplayMode(args: {
   failureArtifactPath: string;
   failureMetrics: BrowserPreviewFailureMetricsInput;
   origin: string;
+  previewServer: BrowserPreviewServerControl;
   userDataDir: string;
 }): Promise<void> {
   const clientId = 'web-pwa-app-window';
   const appUrl = `${args.origin}/?syncularClientId=${clientId}&syncularPwaAppWindowProof=${Date.now()}`;
+  const offlineRestartUrl = `${appUrl}&syncularSyncStartup=manual&syncularPwaAppWindowOfflineRestart=${Date.now()}`;
+  const offlineRestartTitle = `pwa app-window offline restart ${Date.now()}`;
   const initialVersion = `syncular-smoke-sw-app-window-initial-${Date.now()}`;
   const updatedVersion = `syncular-smoke-sw-app-window-next-${Date.now()}`;
   let chrome: { debugPort: number; process: ReturnType<typeof spawn> } | null =
     null;
   let session: CdpSession | null = null;
   let lastProbe: BrowserPreviewProbe | null = null;
+  let offline = false;
+  let previewStopped = false;
   let caughtError: unknown = null;
+  let previewRestartError: unknown = null;
   let restoreError: unknown = null;
 
   await writeBuiltPreviewSmokeServiceWorker(args.appDir, {
@@ -6247,6 +6255,123 @@ async function proveStarterPwaAppWindowDisplayMode(args: {
         )}. Failure artifact: ${args.failureArtifactPath}`
       );
     }
+
+    const beforeRestartProbe = await readStarterBrowserProbe(session);
+    lastProbe = beforeRestartProbe;
+    await submitStarterTask(session, offlineRestartTitle);
+    await waitForStarterLocalVisibility({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+    await waitForStarterCommandTimelineProof({
+      expectedCount: beforeRestartProbe.commandTimelineProof.count + 1,
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+      title: offlineRestartTitle,
+      errorReason: 'pwa-app-window-online-task-errors',
+      timeoutReason: 'pwa-app-window-online-task-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview PWA app-window task before offline restart',
+    });
+
+    session.close();
+    session = null;
+    await stopProcess(chrome.process);
+    chrome = null;
+
+    await args.previewServer.stop();
+    previewStopped = true;
+
+    chrome = await startBrowserPreviewChrome({
+      appUrl: 'about:blank',
+      chrome: args.chrome,
+      userDataDir: args.userDataDir,
+    });
+    const restartTarget = await findChromePageTarget({
+      debugPort: chrome.debugPort,
+      urlIncludes: 'about:blank',
+    });
+    session = await CdpSession.connect(restartTarget.webSocketDebuggerUrl);
+    await enableChromeTarget(session);
+    await installStarterPwaSmokeDiagnostics(session);
+    session.ignoreBrowserDiagnosticsContaining([
+      `clientId=${clientId}`,
+      '/sync/realtime?',
+      'net::ERR_CONNECTION_REFUSED',
+      '/syncular/wasm-core/syncular.js',
+      '/syncular/wasm-core/syncular_bg.wasm',
+      'syncularPwaAppWindowOfflineRestart=',
+    ]);
+    await setChromeTargetOffline(session, true);
+    offline = true;
+    if ((await readStarterNavigatorOnline(session)) !== false) {
+      lastProbe = await readStarterBrowserProbe(session);
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-app-window-offline-network-emulation-unverified',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA app-window offline restart proof could not verify navigator.onLine=false. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    await navigateChromeTarget(session, offlineRestartUrl);
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterPwaAppWindowDisplayModeEvidence({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+    await waitForStarterPwaServiceWorkerEvidence({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+    await waitForStarterPwaSmokeOfflineRuntimeServed({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+      title: offlineRestartTitle,
+      errorReason: 'pwa-app-window-offline-restart-errors',
+      timeoutReason: 'pwa-app-window-offline-restart-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview PWA app-window offline restart persistence',
+    });
+
+    const restartedVersion =
+      await readStarterPwaSmokeServiceWorkerVersion(session);
+    if (!restartedVersion.ok || restartedVersion.version !== updatedVersion) {
+      lastProbe = await readStarterBrowserProbe(session);
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-app-window-offline-restart-version-unexpected',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA app-window offline restart did not keep updated worker version: ${JSON.stringify(
+          restartedVersion
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
   } catch (error) {
     caughtError = error;
     await writeBrowserPreviewFailureArtifactIfMissing(
@@ -6256,14 +6381,23 @@ async function proveStarterPwaAppWindowDisplayMode(args: {
       args.failureMetrics
     );
   } finally {
+    if (offline && session !== null) {
+      await setChromeTargetOffline(session, false).catch(() => undefined);
+    }
     await writeBuiltPreviewSmokeServiceWorker(args.appDir).catch((error) => {
       restoreError = error;
     });
+    if (previewStopped) {
+      await args.previewServer.start().catch((error) => {
+        previewRestartError = error;
+      });
+    }
     session?.close();
     if (chrome !== null) await stopProcess(chrome.process);
   }
 
   if (caughtError !== null) throw caughtError;
+  if (previewRestartError !== null) throw previewRestartError;
   if (restoreError !== null) throw restoreError;
 }
 

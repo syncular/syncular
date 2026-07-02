@@ -5002,6 +5002,22 @@ Most recent browser-health failure-artifact rerun:
   `git diff --check`; Chrome was not installed locally, so hosted Checks run
   `28573568397` on commit `9eca8755` confirmed the extended app-window branch
   in Chrome and passed the full matrix.
+- 2026-07-02: Extended the Chrome app-window PWA branch into the first
+  installed-window offline restart and update-skew proof. After the existing
+  app-window display-mode, service-worker control, runtime cache-refresh, and
+  `registration.update()` checks, the smoke now creates a generated task,
+  waits for local visibility and command-timeline evidence, stops the browser,
+  stops the preview server, relaunches Chrome as an app-window with the same
+  profile from `about:blank`, forces CDP offline mode, navigates to the same
+  generated-app client id with sync startup held manual, requires
+  service-worker navigation/runtime cache-hit telemetry, requires the task to
+  render from persistent browser storage, and reads the active smoke worker
+  version to prove the updated controller survived the offline restart. Local
+  Bun `1.3.9` gates passed so far: `bun --cwd packages/create-syncular-app
+  tsgo`, focused Biome on `packages/create-syncular-app/scripts/smoke.ts`, and
+  `bun --cwd packages/create-syncular-app smoke`. Chrome was not installed
+  locally, so hosted `starter-browser-preview` confirmation is still required
+  for the new app-window offline restart branch.
 - 2026-07-02: Added the first maintained Firefox starter runtime matrix path.
   The generated starter now accepts a validated
   `syncularBrowserSupportContext` URL parameter so target-browser smokes can
@@ -5150,10 +5166,20 @@ full matrix. Clean stable-version release rehearsals now require the strict
 starter real-browser preview and Vite browser-runtime proofs automatically,
 closing the previous release-flag decision while leaving `--allow-dirty`
 rehearsals available for local iteration without Chrome/Chromium.
+The current app-window PWA slice extends that branch beyond display-mode,
+runtime cache-refresh, and update activation by proving a same-profile
+app-window offline restart: a generated task reaches local visibility, Chrome
+is stopped, the preview server is stopped, Chrome relaunches as an app-window
+from `about:blank` under CDP offline mode, the service worker serves the
+navigation/runtime assets from cache, the same client id renders the task from
+persistent browser storage with sync startup held manual, and the updated
+service-worker version remains active. Local pinned-Bun focused typecheck,
+Biome, and non-Chrome scaffold smoke passed; hosted Chrome confirmation is
+pending.
 Remaining lifecycle/storage work is host/browser eviction beyond explicit CDP
 origin/database clears/Clear-Site-Data/same-origin IndexedDB deletion,
-fully installed-PWA offline/restart/update-skew semantics beyond the
-now-machine-readable app-window display-mode/cache-refresh/update proof plus
+deeper fully installed-PWA host semantics beyond the now-machine-readable
+app-window display-mode/cache-refresh/offline-restart/update proof plus
 smoke-only PWA offline/cache-refresh/service-worker update proofs, and storage
 coordination/failure behavior below the
 already-covered OPFS fallback and fallback-failure classification.
@@ -5168,7 +5194,7 @@ branches, and
 browser/bundler matrix execution, especially Safari, Firefox, real private-mode
 durable-persistence semantics, WebViews, Firefox realtime, reopen,
 persistence, and lifecycle proof beyond the runtime/support-policy smoke,
-fully installed-PWA offline/restart/update-skew semantics beyond the
-app-window cache-refresh/update proof, and PWA cache-update semantics beyond
-these smoke-only/app-window runtime cache-refresh and service-worker update
-activation proofs.
+deeper fully installed-PWA host semantics beyond the app-window
+cache-refresh/offline-restart/update proof, and PWA cache-update semantics
+beyond these smoke-only/app-window runtime cache-refresh, offline restart, and
+service-worker update activation proofs.

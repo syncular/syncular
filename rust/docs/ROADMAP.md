@@ -445,11 +445,20 @@ read-only review:
     real-browser preview and Vite browser-runtime proofs automatically; dirty
     local rehearsals keep those browser executions opt-in through
     `--allow-dirty`.
+    The current app-window follow-up extends the installed-window PWA branch:
+    after cache-refresh and service-worker update activation, the smoke creates
+    a generated task, restarts the browser process with the same profile,
+    stops the preview server, relaunches through a Chrome app-window target
+    while CDP reports offline, requires service-worker runtime cache hits,
+    proves the task reopens from persistent browser storage, and checks that
+    the updated service-worker version remains active. Local pinned-Bun
+    focused Biome, create-syncular-app typecheck, and non-Chrome scaffold smoke
+    passed; hosted Chrome confirmation is still required for this branch.
     Remaining matrix work is host-driven eviction beyond explicit CDP storage
-    clears/Clear-Site-Data/same-origin IndexedDB deletion, fully installed-PWA
-    offline/restart/update-skew semantics beyond the app-window
-    display-mode/cache-refresh/update proof plus smoke-only PWA offline,
-    cache-refresh, and service-worker update proofs, Firefox
+    clears/Clear-Site-Data/same-origin IndexedDB deletion, deeper fully
+    installed-PWA host semantics beyond the app-window
+    display-mode/cache-refresh/offline-restart/update proof plus smoke-only PWA
+    offline, cache-refresh, and service-worker update proofs, Firefox
     realtime/reopen/persistence/lifecycle semantics beyond the maintained
     Firefox runtime/support-policy smoke, plus deeper
     storage/coordination failures below the covered fallback and

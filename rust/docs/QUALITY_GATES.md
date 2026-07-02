@@ -100,8 +100,9 @@ until the full browser Worker/WASM suite is green on Linux.
   recovery,
   service-worker-controlled PWA support-policy classification, PWA app-window
   display-mode support-policy classification, app-window PWA runtime
-  cache-refresh and service-worker update activation, incognito memory-storage
-  development-policy classification, and live support-bundle failure artifact
+  cache-refresh, offline restart persistence, and service-worker update
+  activation, incognito memory-storage development-policy classification, and
+  live support-bundle failure artifact
   validation.
   The separate `starter-firefox-runtime-matrix` Checks job installs Playwright
   Firefox and runs `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox bun --cwd
