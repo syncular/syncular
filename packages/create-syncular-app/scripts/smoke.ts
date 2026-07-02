@@ -87,6 +87,21 @@ const STARTER_BROWSER_RUNTIME_ASSETS = [
     label: 'Syncular WASM binary',
   },
 ] as const;
+const STARTER_PWA_SMOKE_DIAGNOSTIC_SCRIPT = `(() => {
+  globalThis.__syncularSmokePwaEvents ??= [];
+  if (globalThis.__syncularSmokePwaListenerInstalled === true) return;
+  globalThis.__syncularSmokePwaListenerInstalled = true;
+  const remember = (event) => {
+    const events = globalThis.__syncularSmokePwaEvents;
+    if (!Array.isArray(events)) return;
+    events.push(event);
+    while (events.length > 80) events.shift();
+  };
+  globalThis.navigator?.serviceWorker?.addEventListener('message', (event) => {
+    if (event.data?.type !== 'SYNCULAR_SMOKE_PWA_EVENT') return;
+    remember(event.data.event);
+  });
+})()`;
 const STARTER_CLEAR_SITE_DATA_SMOKE_PATH = '/__syncular-smoke/clear-site-data';
 const STARTER_STORAGE_ADMIN_SMOKE_PATH = '/__syncular-smoke/storage-admin';
 const BROWSER_PREVIEW_SMOKE_TIMEOUT_MS = 180_000;
@@ -206,10 +221,56 @@ self.addEventListener('message', (event) => {
   if (event.data?.type === 'SYNCULAR_SMOKE_SKIP_WAITING') {
     event.waitUntil(self.skipWaiting());
   }
+  if (event.data?.type === 'SYNCULAR_SMOKE_READ_EVENTS') {
+    event.ports?.[0]?.postMessage({
+      type: 'SYNCULAR_SMOKE_PWA_EVENTS',
+      events: smokeEvents.slice(),
+    });
+  }
 });
 
 const CACHE_NAME = ${JSON.stringify(STARTER_PWA_SMOKE_CACHE)};
 const NAVIGATION_CACHE_KEY = ${JSON.stringify(STARTER_PWA_SMOKE_NAVIGATION_CACHE_KEY)};
+const RUNTIME_ASSET_PATHS = ${JSON.stringify(
+      STARTER_BROWSER_RUNTIME_ASSETS.map((asset) => asset.path)
+    )};
+const SMOKE_EVENT_LIMIT = 80;
+const smokeEvents = [];
+
+function smokeRequestEvent(phase, request, extra = {}) {
+  const url = new URL(request.url);
+  return {
+    at: Date.now(),
+    destination: request.destination || null,
+    error: typeof extra.error === 'string' ? extra.error.slice(0, 240) : null,
+    mode: request.mode || null,
+    path: url.pathname,
+    phase,
+    runtimeAsset: RUNTIME_ASSET_PATHS.includes(url.pathname),
+    status: typeof extra.status === 'number' ? extra.status : null,
+  };
+}
+
+function shouldTraceSmokeRequest(request) {
+  const url = new URL(request.url);
+  return request.mode === 'navigate' || RUNTIME_ASSET_PATHS.includes(url.pathname);
+}
+
+function rememberSmokeEvent(event) {
+  smokeEvents.push(event);
+  while (smokeEvents.length > SMOKE_EVENT_LIMIT) smokeEvents.shift();
+  self.clients
+    .matchAll({ includeUncontrolled: true, type: 'window' })
+    .then((clients) => {
+      for (const client of clients) {
+        client.postMessage({
+          type: 'SYNCULAR_SMOKE_PWA_EVENT',
+          event,
+        });
+      }
+    })
+    .catch(() => undefined);
+}
 
 function navigationCacheRequest() {
   return new Request(new URL(NAVIGATION_CACHE_KEY, self.location.origin).href);
@@ -232,13 +293,31 @@ async function navigationResponse(request) {
   try {
     const response = await fetch(request);
     await cacheNavigation(response);
+    rememberSmokeEvent(
+      smokeRequestEvent('navigation-network', request, {
+        status: response.status,
+      })
+    );
     return response;
-  } catch {
+  } catch (error) {
+    rememberSmokeEvent(
+      smokeRequestEvent('navigation-network-failed', request, {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    );
     const cached =
       (await cache.match(navigationCacheRequest())) ??
       (await cache.match('/')) ??
       (await cache.match('/index.html'));
-    if (cached) return cached;
+    if (cached) {
+      rememberSmokeEvent(
+        smokeRequestEvent('navigation-cache-hit', request, {
+          status: cached.status,
+        })
+      );
+      return cached;
+    }
+    rememberSmokeEvent(smokeRequestEvent('navigation-cache-miss', request));
     return new Response(
       '<!doctype html><title>Syncular offline smoke unavailable</title>',
       {
@@ -251,16 +330,41 @@ async function navigationResponse(request) {
 
 async function cachedAssetResponse(request) {
   const cache = await caches.open(CACHE_NAME);
+  const trace = shouldTraceSmokeRequest(request);
   try {
     const response = await fetch(request);
     await cacheAsset(request, response);
+    if (trace) {
+      rememberSmokeEvent(
+        smokeRequestEvent('asset-network', request, {
+          status: response.status,
+        })
+      );
+    }
     return response;
-  } catch {
+  } catch (error) {
+    if (trace) {
+      rememberSmokeEvent(
+        smokeRequestEvent('asset-network-failed', request, {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      );
+    }
     const cached = await cache.match(request, {
       ignoreSearch: true,
       ignoreVary: true,
     });
-    if (cached) return cached;
+    if (cached) {
+      if (trace) {
+        rememberSmokeEvent(
+          smokeRequestEvent('asset-cache-hit', request, {
+            status: cached.status,
+          })
+        );
+      }
+      return cached;
+    }
+    if (trace) rememberSmokeEvent(smokeRequestEvent('asset-cache-miss', request));
     return new Response('', { status: 504 });
   }
 }
@@ -1572,6 +1676,27 @@ type BrowserPreviewProbe = {
     usageRatio: number | null;
     writeFailed: boolean;
   };
+  pwaSmoke: {
+    controlled: boolean;
+    controllerScriptPath: string | null;
+    controllerState: string | null;
+    eventCount: number;
+    events: Array<{
+      at: number | null;
+      destination: string | null;
+      error: string | null;
+      mode: string | null;
+      path: string;
+      phase: string;
+      runtimeAsset: boolean;
+      status: number | null;
+    }>;
+    navigationCacheHitCount: number;
+    runtimeCacheHitCount: number;
+    runtimeCacheMissCount: number;
+    runtimeFetchEventCount: number;
+    runtimeNetworkFailureCount: number;
+  };
   storageShutdownProof: {
     closed: boolean;
     count: number;
@@ -1647,9 +1772,13 @@ type BrowserPreviewFailureMetricsInput = Omit<
 };
 
 async function readStarterBrowserProbe(
-  session: CdpSession
+  session: CdpSession,
+  options: { allowBrowserDiagnostics?: boolean } = {}
 ): Promise<BrowserPreviewProbe> {
-  return session.evaluate<BrowserPreviewProbe>(`(() => {
+  const evaluate = options.allowBrowserDiagnostics
+    ? session.evaluateAllowingBrowserDiagnostics.bind(session)
+    : session.evaluate.bind(session);
+  return evaluate<BrowserPreviewProbe>(`(async () => {
     const text = document.body?.innerText ?? '';
     const browserHealth = document.querySelector('[data-syncular-browser-health-status]');
     const browserHealthBlockedOperationCount = Number(browserHealth?.getAttribute('data-syncular-browser-health-blocked-operation-count') ?? 0);
@@ -1955,6 +2084,71 @@ async function readStarterBrowserProbe(
     const starterOpenDiagnosticSource = starterOpen?.getAttribute('data-syncular-starter-open-diagnostic-source') ?? null;
     const starterOpenError = starterOpen?.getAttribute('data-syncular-starter-open-error') ?? null;
     const starterOpenPhase = starterOpen?.getAttribute('data-syncular-starter-open-phase') ?? null;
+    const normalizePwaSmokeEvent = (event) => {
+      const record = event && typeof event === 'object' ? event : {};
+      const at = Number(record.at);
+      const status = Number(record.status);
+      return {
+        at: Number.isFinite(at) && at >= 0 ? at : null,
+        destination:
+          typeof record.destination === 'string' ? record.destination : null,
+        error: typeof record.error === 'string' ? record.error.slice(0, 240) : null,
+        mode: typeof record.mode === 'string' ? record.mode : null,
+        path: typeof record.path === 'string' ? record.path.slice(0, 240) : '',
+        phase:
+          typeof record.phase === 'string'
+            ? record.phase.slice(0, 80)
+            : 'unknown',
+        runtimeAsset: record.runtimeAsset === true,
+        status: Number.isFinite(status) && status >= 0 ? status : null,
+      };
+    };
+    const readServiceWorkerPwaSmokeEvents = () =>
+      new Promise((resolve) => {
+        const controller = globalThis.navigator?.serviceWorker?.controller;
+        if (!controller || typeof MessageChannel !== 'function') {
+          resolve([]);
+          return;
+        }
+        const channel = new MessageChannel();
+        const timeout = setTimeout(() => resolve([]), 500);
+        channel.port1.onmessage = (event) => {
+          clearTimeout(timeout);
+          const events = Array.isArray(event.data?.events) ? event.data.events : [];
+          resolve(events);
+        };
+        try {
+          controller.postMessage(
+            { type: 'SYNCULAR_SMOKE_READ_EVENTS' },
+            [channel.port2]
+          );
+        } catch {
+          clearTimeout(timeout);
+          resolve([]);
+        }
+      });
+    const pagePwaSmokeEvents = Array.isArray(globalThis.__syncularSmokePwaEvents)
+      ? globalThis.__syncularSmokePwaEvents
+      : [];
+    const serviceWorkerPwaSmokeEvents =
+      await readServiceWorkerPwaSmokeEvents();
+    const pwaSmokeEvents = [...pagePwaSmokeEvents, ...serviceWorkerPwaSmokeEvents]
+      .map(normalizePwaSmokeEvent)
+      .filter((event) => event.path !== '')
+      .slice(-80);
+    const pwaSmokeRuntimeEvents = pwaSmokeEvents.filter(
+      (event) => event.runtimeAsset
+    );
+    const pwaSmokeController =
+      globalThis.navigator?.serviceWorker?.controller ?? null;
+    const pwaSmokeControllerScriptPath = (() => {
+      if (!pwaSmokeController?.scriptURL) return null;
+      try {
+        return new URL(pwaSmokeController.scriptURL, location.href).pathname;
+      } catch {
+        return pwaSmokeController.scriptURL;
+      }
+    })();
     const durableHealthLine = text.includes('indexedDb durable');
     const memoryStorageHealthLine = text.includes('memory storage');
     const schemaLine = text.includes('schema v');
@@ -2339,6 +2533,26 @@ async function readStarterBrowserProbe(
         usageRatio: quotaExhaustionWriteProofUsageRatio,
         writeFailed: quotaExhaustionWriteProofWriteFailed,
       },
+      pwaSmoke: {
+        controlled: pwaSmokeController !== null,
+        controllerScriptPath: pwaSmokeControllerScriptPath,
+        controllerState: pwaSmokeController?.state ?? null,
+        eventCount: pwaSmokeEvents.length,
+        events: pwaSmokeEvents,
+        navigationCacheHitCount: pwaSmokeEvents.filter(
+          (event) => event.phase === 'navigation-cache-hit'
+        ).length,
+        runtimeCacheHitCount: pwaSmokeRuntimeEvents.filter(
+          (event) => event.phase === 'asset-cache-hit'
+        ).length,
+        runtimeCacheMissCount: pwaSmokeRuntimeEvents.filter(
+          (event) => event.phase === 'asset-cache-miss'
+        ).length,
+        runtimeFetchEventCount: pwaSmokeRuntimeEvents.length,
+        runtimeNetworkFailureCount: pwaSmokeRuntimeEvents.filter(
+          (event) => event.phase === 'asset-network-failed'
+        ).length,
+      },
       storageShutdownProof: {
         closed: storageShutdownProofClosed,
         count: storageShutdownProofCount,
@@ -2402,10 +2616,13 @@ async function waitForStarterBrowserReady(
     try {
       evaluation = await readStarterBrowserProbe(session);
     } catch (error) {
+      const failureProbe = await readStarterBrowserProbe(session, {
+        allowBrowserDiagnostics: true,
+      }).catch(() => lastProbe);
       await writeBrowserPreviewFailureArtifact(
         failureArtifactPath,
         'readiness-probe-error',
-        lastProbe,
+        failureProbe,
         failureMetrics
       );
       throw new Error(
@@ -5502,6 +5719,19 @@ type StarterSmokeServiceWorkerRegistrationResult =
     }
   | { ok: false; reason: string };
 
+async function installStarterPwaSmokeDiagnostics(
+  session: CdpSession
+): Promise<void> {
+  await session
+    .send('Page.addScriptToEvaluateOnNewDocument', {
+      source: STARTER_PWA_SMOKE_DIAGNOSTIC_SCRIPT,
+    })
+    .catch(() => undefined);
+  await session
+    .evaluateAllowingBrowserDiagnostics(STARTER_PWA_SMOKE_DIAGNOSTIC_SCRIPT)
+    .catch(() => undefined);
+}
+
 async function registerStarterSmokeServiceWorker(
   session: CdpSession
 ): Promise<StarterSmokeServiceWorkerRegistrationResult> {
@@ -5652,6 +5882,7 @@ async function proveStarterPwaOfflineReopenPersistence(args: {
     targetId = target.id;
     session = await CdpSession.connect(target.webSocketDebuggerUrl);
     await enableChromeTarget(session);
+    await installStarterPwaSmokeDiagnostics(session);
     await navigateChromeTarget(
       session,
       `${args.origin}/?syncularClientId=${clientId}&syncularPwaOfflineWarm=${Date.now()}`
@@ -5728,6 +5959,11 @@ async function proveStarterPwaOfflineReopenPersistence(args: {
 
     await setChromeTargetOffline(session, true);
     offline = true;
+    session.ignoreBrowserDiagnosticsContaining([
+      '/syncular/wasm-core/syncular.js',
+      '/syncular/wasm-core/syncular_bg.wasm',
+      'syncularPwaOfflineRecovery=',
+    ]);
     if ((await readStarterNavigatorOnline(session)) !== false) {
       lastProbe = await readStarterBrowserProbe(session);
       await writeBrowserPreviewFailureArtifact(
@@ -5750,6 +5986,11 @@ async function proveStarterPwaOfflineReopenPersistence(args: {
       args.failureArtifactPath,
       args.failureMetrics
     );
+    await waitForStarterPwaSmokeOfflineRuntimeServed({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
     lastProbe = await readStarterBrowserProbe(session);
     if (
       lastProbe.deploymentPreflight.serviceWorker !== 'true' ||
@@ -5991,6 +6232,55 @@ async function waitForStarterPwaSmokeCacheWarm(args: {
   throw new Error(
     `Timed out waiting for built preview PWA cache warm evidence: ${JSON.stringify(
       lastCache
+    )}. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
+async function waitForStarterPwaSmokeOfflineRuntimeServed(args: {
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    const pwaSmoke = probe.pwaSmoke;
+    if (pwaSmoke.runtimeCacheMissCount > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-offline-runtime-cache-miss',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA offline runtime cache proof failed: ${JSON.stringify(
+          pwaSmoke
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    if (
+      pwaSmoke.controlled &&
+      pwaSmoke.navigationCacheHitCount >= 1 &&
+      pwaSmoke.runtimeCacheHitCount >= STARTER_BROWSER_RUNTIME_ASSETS.length &&
+      pwaSmoke.runtimeNetworkFailureCount >=
+        STARTER_BROWSER_RUNTIME_ASSETS.length
+    ) {
+      return;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'pwa-offline-runtime-cache-hit-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview PWA offline runtime cache-hit evidence: ${JSON.stringify(
+      lastProbe?.pwaSmoke ?? null
     )}. Failure artifact: ${args.failureArtifactPath}`
   );
 }
@@ -8192,6 +8482,29 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         usageRatio: 0.95,
         writeFailed: true,
       },
+      pwaSmoke: {
+        controlled: true,
+        controllerScriptPath: STARTER_PWA_SMOKE_SERVICE_WORKER_PATH,
+        controllerState: 'activated',
+        eventCount: 1,
+        events: [
+          {
+            at: Date.now(),
+            destination: 'script',
+            error: null,
+            mode: 'same-origin',
+            path: '/syncular/wasm-core/syncular.js',
+            phase: 'asset-cache-hit',
+            runtimeAsset: true,
+            status: 200,
+          },
+        ],
+        navigationCacheHitCount: 0,
+        runtimeCacheHitCount: 1,
+        runtimeCacheMissCount: 0,
+        runtimeFetchEventCount: 1,
+        runtimeNetworkFailureCount: 1,
+      },
       storageShutdownProof: {
         closed: true,
         count: 1,
@@ -8372,6 +8685,7 @@ function assertBrowserPreviewProbeShape(
     probe.quotaExhaustionWriteProof,
     path
   );
+  assertBrowserPreviewPwaSmokeShape(probe.pwaSmoke, path);
   assertBrowserPreviewStorageShutdownProofShape(
     probe.storageShutdownProof,
     path
@@ -9090,6 +9404,71 @@ function assertBrowserPreviewQuotaExhaustionWriteProofShape(
   }
 }
 
+function assertBrowserPreviewPwaSmokeShape(value: unknown, path: string): void {
+  if (!isRecord(value)) {
+    throw new Error(`${path} probe.pwaSmoke was not a JSON object`);
+  }
+  for (const key of ['controlled'] as const) {
+    if (typeof value[key] !== 'boolean') {
+      throw new Error(`${path} probe.pwaSmoke.${key} was not boolean`);
+    }
+  }
+  for (const key of ['controllerScriptPath', 'controllerState'] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(`${path} probe.pwaSmoke.${key} was not nullable text`);
+    }
+  }
+  for (const key of [
+    'eventCount',
+    'navigationCacheHitCount',
+    'runtimeCacheHitCount',
+    'runtimeCacheMissCount',
+    'runtimeFetchEventCount',
+    'runtimeNetworkFailureCount',
+  ] as const) {
+    if (
+      !isNonNegativeFiniteNumber(value[key]) ||
+      !Number.isInteger(value[key])
+    ) {
+      throw new Error(
+        `${path} probe.pwaSmoke.${key} was not a non-negative integer`
+      );
+    }
+  }
+  if (!Array.isArray(value.events)) {
+    throw new Error(`${path} probe.pwaSmoke.events was not an array`);
+  }
+  for (const event of value.events) {
+    if (!isRecord(event)) {
+      throw new Error(`${path} probe.pwaSmoke.events item was not an object`);
+    }
+    for (const key of ['path', 'phase'] as const) {
+      if (typeof event[key] !== 'string') {
+        throw new Error(`${path} probe.pwaSmoke.events.${key} was not text`);
+      }
+    }
+    for (const key of ['destination', 'error', 'mode'] as const) {
+      if (event[key] !== null && typeof event[key] !== 'string') {
+        throw new Error(
+          `${path} probe.pwaSmoke.events.${key} was not nullable text`
+        );
+      }
+    }
+    for (const key of ['at', 'status'] as const) {
+      if (event[key] !== null && !isNonNegativeFiniteNumber(event[key])) {
+        throw new Error(
+          `${path} probe.pwaSmoke.events.${key} was not nullable non-negative number`
+        );
+      }
+    }
+    if (typeof event.runtimeAsset !== 'boolean') {
+      throw new Error(
+        `${path} probe.pwaSmoke.events.runtimeAsset was not boolean`
+      );
+    }
+  }
+}
+
 function assertBrowserPreviewStorageShutdownProofShape(
   value: unknown,
   path: string
@@ -9166,6 +9545,7 @@ class CdpSession {
     { resolve(value: unknown): void; reject(reason: unknown): void }
   >();
   #errors: string[] = [];
+  #ignoredBrowserDiagnosticSubstrings = new Set<string>();
   #chromeLifecycleSuspensionCount = 0;
   #eventWaiters = new Set<CdpEventWaiter>();
   #requests = new Map<string, { type?: string; url: string }>();
@@ -9303,7 +9683,18 @@ class CdpSession {
   }
 
   async evaluate<T>(expression: string): Promise<T> {
-    if (this.#errors.length > 0) {
+    return this.#evaluate(expression, { failOnBrowserDiagnostics: true });
+  }
+
+  async evaluateAllowingBrowserDiagnostics<T>(expression: string): Promise<T> {
+    return this.#evaluate(expression, { failOnBrowserDiagnostics: false });
+  }
+
+  async #evaluate<T>(
+    expression: string,
+    options: { failOnBrowserDiagnostics: boolean }
+  ): Promise<T> {
+    if (options.failOnBrowserDiagnostics && this.#errors.length > 0) {
       throw new Error(`Browser runtime error: ${this.#errors.join('\n')}`);
     }
     const response = (await this.send('Runtime.evaluate', {
@@ -9329,6 +9720,14 @@ class CdpSession {
 
   chromeLifecycleSuspensionCount(): number {
     return this.#chromeLifecycleSuspensionCount;
+  }
+
+  ignoreBrowserDiagnosticsContaining(substrings: string[]): void {
+    for (const substring of substrings) {
+      if (substring.length > 0) {
+        this.#ignoredBrowserDiagnosticSubstrings.add(substring);
+      }
+    }
   }
 
   close(): void {
@@ -9539,6 +9938,9 @@ class CdpSession {
     if (message.includes(CHROME_BFCACHE_LIFECYCLE_SUSPENSION_TEXT)) {
       this.#chromeLifecycleSuspensionCount += 1;
       return;
+    }
+    for (const substring of this.#ignoredBrowserDiagnosticSubstrings) {
+      if (message.includes(substring)) return;
     }
     this.#errors.push(message);
   }

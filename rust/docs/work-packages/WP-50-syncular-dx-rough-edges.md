@@ -4901,9 +4901,19 @@ adds a PWA offline cache/reopen persistence branch: the smoke-only service
 worker caches the built app/runtime assets on a controlled online load, Chrome
 is forced offline through CDP, and the same generated-app client id reloads
 with sync startup held manual before the smoke requires the locally inserted
-task to reappear from the persistent browser database. The next follow-up
-should confirm the corrected exact-runtime-asset branch in hosted Chrome and
-then move to host/browser eviction beyond explicit CDP origin/database clears,
+task to reappear from the persistent browser database. Hosted check runs
+`28562746749`, `28563036328`, and `28563286189` still fail only in
+`starter-browser-preview`: the exact WASM runtime asset cache warm proof passes,
+but hosted Chrome records `net::ERR_INTERNET_DISCONNECTED` for
+`/syncular/wasm-core/syncular.js` and
+`/syncular/wasm-core/syncular_bg.wasm` after the offline reload. The current
+follow-up adds smoke-only service-worker telemetry plus a diagnostic probe path
+that can read the page after CDP has recorded browser request failures. The
+offline branch now ignores only the expected network-first offline diagnostics
+for the recovery navigation and exact runtime asset URLs, then requires the
+telemetry to prove service-worker navigation and runtime Cache API hits. The
+next follow-up should confirm that evidence in hosted Chrome and then move to
+host/browser eviction beyond explicit CDP origin/database clears,
 Clear-Site-Data, same-origin IndexedDB deletion, and PWA offline cache/reopen,
 plus storage failure/coordination behavior below the already-covered OPFS
 fallback and fallback-failure classification.

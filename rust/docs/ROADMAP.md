@@ -368,8 +368,15 @@ read-only review:
     under canonical default `Request` keys and lets the smoke worker fallback
     match cached assets with `ignoreVary`.
     Local pinned-Bun focused Biome, create-syncular-app typecheck, and
-    non-Chrome scaffold smoke passed again; hosted Chrome confirmation for the
-    corrected branch is still pending.
+    non-Chrome scaffold smoke passed again. Hosted Checks run `28563286189` on
+    commit `89901ec5` still failed only in `starter-browser-preview`: hosted
+    Chrome records disconnected network fetches for the same exact WASM runtime
+    assets after the offline reload. The next follow-up adds smoke-only
+    service-worker telemetry plus a diagnostic probe path that can read the page
+    after CDP has recorded browser request failures. It also ignores only the
+    expected network-first offline diagnostics for the recovery navigation and
+    exact runtime asset URLs, then requires telemetry-backed service-worker
+    navigation/runtime Cache API hits.
     Host-driven eviction beyond explicit CDP storage clears, Clear-Site-Data,
     same-origin IndexedDB deletion, and PWA offline cache/reopen, plus deeper
     storage/coordination failures below the covered fallback and
