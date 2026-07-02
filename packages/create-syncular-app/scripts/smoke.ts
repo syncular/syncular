@@ -4641,9 +4641,35 @@ async function discardStarterTabViaChromeDiscards(args: {
 }): Promise<StarterDiscardsTabResult> {
   return await args.session.evaluate<StarterDiscardsTabResult>(
     `(async () => {
-      const { getOrCreateDetailsProvider } =
-        await import('chrome://discards/discards.js');
-      const provider = getOrCreateDetailsProvider();
+      const getProvider = async () => {
+        let lastState = null;
+        for (let index = 0; index < 80; index += 1) {
+          const main = document.querySelector('discards-main');
+          const tab = main?.shadowRoot?.querySelector('discards-tab');
+          const provider = tab?.discardsDetailsProvider_;
+          if (
+            provider &&
+            typeof provider.getTabDiscardsInfo === 'function' &&
+            typeof provider.setAutoDiscardable === 'function' &&
+            typeof provider.discardById === 'function' &&
+            typeof provider.loadById === 'function'
+          ) {
+            return provider;
+          }
+          lastState = {
+            hasMain: Boolean(main),
+            hasMainShadowRoot: Boolean(main?.shadowRoot),
+            hasTab: Boolean(tab),
+            hasProvider: Boolean(provider),
+          };
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+        throw new Error(
+          'Timed out waiting for chrome://discards provider: ' +
+            JSON.stringify(lastState)
+        );
+      };
+      const provider = await getProvider();
       const targetUrlPart = ${JSON.stringify(args.tabUrlIncludes)};
       const serialize = (info) => ({
         canDiscard: Boolean(info.canDiscard),
