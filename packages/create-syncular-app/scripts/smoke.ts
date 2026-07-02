@@ -26,8 +26,8 @@ import { Buffer } from 'node:buffer';
  *    open/write contention, generated write pressure, same-profile browser
  *    process restart persistence, sync-held shutdown replay recovery,
  *    renderer-crash replay recovery, explicit storage shutdown replay
- *    recovery, and service-worker-controlled PWA plus incognito memory-storage
- *    support-policy classification.
+ *    recovery, discarded-tab recovery, and service-worker-controlled PWA plus
+ *    incognito memory-storage support-policy classification.
  *    After the happy path, the browser smoke also forces a hidden
  *    support-bundle marker failure and verifies the live
  *    browser-preview-failure artifact contract from real Chrome probe data.
@@ -778,6 +778,16 @@ async function runBrowserPreviewSmoke(args: {
     origin: args.origin,
     userDataDir: `${args.userDataDir}-storage-shutdown-replay`,
   });
+  log('real-browser smoke: proving discarded-tab recovery');
+  await proveStarterDiscardedTabRecovery({
+    chrome: args.chrome,
+    failureArtifactPath: discardedTabRecoveryFailureArtifactPath(
+      args.failureArtifactPath
+    ),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    userDataDir: `${args.userDataDir}-discarded-tab-recovery`,
+  });
   log('real-browser smoke: proving support-bundle failure artifact');
   await proveStarterSupportBundleFailureArtifact({
     chrome: args.chrome,
@@ -895,6 +905,14 @@ function storageShutdownReplayFailureArtifactPath(
     : `${failureArtifactPath}.storage-shutdown-replay.json`;
 }
 
+function discardedTabRecoveryFailureArtifactPath(
+  failureArtifactPath: string
+): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(/\.json$/u, '.discarded-tab-recovery.json')
+    : `${failureArtifactPath}.discarded-tab-recovery.json`;
+}
+
 async function withTimeout<T>(args: {
   description: string;
   operation: Promise<T>;
@@ -999,6 +1017,73 @@ async function createChromeTarget(
       target.webSocketDebuggerUrl
     ),
   };
+}
+
+type ChromeTargetListEntry = {
+  id?: string;
+  type?: string;
+  url?: string;
+  webSocketDebuggerUrl?: string;
+};
+
+async function listChromeTargets(
+  debugPort: number
+): Promise<ChromeTargetListEntry[]> {
+  const endpoint = `http://127.0.0.1:${debugPort}/json/list`;
+  const response = await fetch(endpoint);
+  if (!response.ok) {
+    throw new Error(
+      `Chrome target list failed with ${response.status} ${response.statusText}`
+    );
+  }
+  const targets = (await response.json()) as ChromeTargetListEntry[];
+  return targets;
+}
+
+async function findChromePageTarget(args: {
+  debugPort: number;
+  urlIncludes: string;
+}): Promise<{ id: string; webSocketDebuggerUrl: string }> {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const targets = await listChromeTargets(args.debugPort);
+    const target = targets.find(
+      (candidate) =>
+        candidate.type === 'page' &&
+        typeof candidate.id === 'string' &&
+        typeof candidate.webSocketDebuggerUrl === 'string' &&
+        typeof candidate.url === 'string' &&
+        candidate.url.includes(args.urlIncludes)
+    );
+    if (target?.id && target.webSocketDebuggerUrl) {
+      return {
+        id: target.id,
+        webSocketDebuggerUrl: normalizeChromeWebSocketUrl(
+          target.webSocketDebuggerUrl
+        ),
+      };
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+  throw new Error(
+    `Timed out waiting for Chrome target containing URL ${args.urlIncludes}`
+  );
+}
+
+async function activateChromeTargetById(
+  debugPort: number,
+  targetId: string
+): Promise<void> {
+  const endpoint = `http://127.0.0.1:${debugPort}/json/activate/${encodeURIComponent(
+    targetId
+  )}`;
+  let response = await fetch(endpoint, { method: 'PUT' });
+  if (!response.ok) response = await fetch(endpoint);
+  if (!response.ok) {
+    throw new Error(
+      `Chrome target activation failed with ${response.status} ${response.statusText}`
+    );
+  }
 }
 
 async function closeChromeTarget(
@@ -4342,6 +4427,281 @@ async function proveStarterStorageShutdownReplayRecovery(args: {
     });
     await stopProcess(chrome.process);
   }
+}
+
+type StarterDiscardsTabState = {
+  canDiscard: boolean;
+  cannotDiscardReasons: string[];
+  discardCount: number;
+  discardReason: number;
+  id: number;
+  loadingState: number;
+  state: number;
+  tabUrl: string;
+  title: string;
+  visibility: number;
+};
+
+type StarterDiscardsTabResult = {
+  before: StarterDiscardsTabState;
+  discarded: StarterDiscardsTabState;
+  loaded: StarterDiscardsTabState;
+};
+
+async function proveStarterDiscardedTabRecovery(args: {
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const clientId = 'web-discarded-tab-recovery';
+  const observerClientId = 'web-discarded-tab-recovery-observer';
+  const title = `discarded tab replay ${Date.now()}`;
+  const chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  let activeSession: CdpSession | null = null;
+  let activeTargetId: string | null = null;
+  let discardsSession: CdpSession | null = null;
+  let discardsTargetId: string | null = null;
+  let recoverySession: CdpSession | null = null;
+  let recoveryTargetId: string | null = null;
+  let observerSession: CdpSession | null = null;
+  let observerTargetId: string | null = null;
+  let lastProbe: BrowserPreviewProbe | null = null;
+
+  try {
+    const activeTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    activeTargetId = activeTarget.id;
+    activeSession = await CdpSession.connect(activeTarget.webSocketDebuggerUrl);
+    await enableChromeTarget(activeSession);
+    await navigateChromeTarget(
+      activeSession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularSyncStartup=manual&syncularDiscardedTabProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      activeSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(activeSession);
+    await submitStarterTask(activeSession, title);
+    await waitForStarterLocalVisibility({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+    });
+    await waitForStarterRenderedText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+      timeoutMessage:
+        'Timed out waiting for built preview discarded-tab local render before discard',
+      timeoutReason: 'discarded-tab-local-render-timeout',
+      title,
+    });
+    lastProbe = await readStarterBrowserProbe(activeSession);
+
+    const discardsTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    discardsTargetId = discardsTarget.id;
+    discardsSession = await CdpSession.connect(
+      discardsTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(discardsSession);
+    await navigateChromeTarget(discardsSession, 'chrome://discards/');
+
+    // A DevTools attachment can make a tab non-discardable, so detach before
+    // asking Chrome's own discards WebUI to unload the hidden starter tab.
+    activeSession.close();
+    activeSession = null;
+
+    const discardResult = await discardStarterTabViaChromeDiscards({
+      session: discardsSession,
+      tabUrlIncludes: `syncularClientId=${clientId}`,
+    });
+    if (discardResult.discarded.state !== 5) {
+      throw new Error(
+        `Chrome did not report the starter tab as discarded: state=${discardResult.discarded.state}`
+      );
+    }
+    if (discardResult.loaded.loadingState === 0) {
+      throw new Error('Chrome did not reload the discarded starter tab');
+    }
+
+    const recoveryTarget = await findChromePageTarget({
+      debugPort: chrome.debugPort,
+      urlIncludes: `syncularClientId=${clientId}`,
+    });
+    recoveryTargetId = recoveryTarget.id;
+    await activateChromeTargetById(chrome.debugPort, recoveryTarget.id);
+    recoverySession = await CdpSession.connect(
+      recoveryTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(recoverySession);
+    await waitForStarterBrowserReady(
+      recoverySession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(recoverySession);
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: recoverySession,
+      title,
+      errorReason: 'discarded-tab-local-restore-errors',
+      timeoutReason: 'discarded-tab-local-restore-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview discarded-tab local restore',
+    });
+
+    await navigateChromeTarget(
+      recoverySession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularDiscardedTabOnlineProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      recoverySession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await dispatchStarterOnlineEvent(recoverySession);
+
+    const observerTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    observerTargetId = observerTarget.id;
+    observerSession = await CdpSession.connect(
+      observerTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(observerSession);
+    await navigateChromeTarget(
+      observerSession,
+      `${args.origin}/?syncularClientId=${observerClientId}&syncularDiscardedTabObserverProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      observerSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: observerSession,
+      title,
+      errorReason: 'discarded-tab-propagation-errors',
+      timeoutReason: 'discarded-tab-propagation-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview discarded-tab replay propagation',
+    });
+  } catch (error) {
+    await writeBrowserPreviewFailureArtifactIfMissing(
+      args.failureArtifactPath,
+      'discarded-tab-recovery-smoke-error',
+      lastProbe,
+      args.failureMetrics
+    );
+    throw error;
+  } finally {
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: observerSession,
+      targetId: observerTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: recoverySession,
+      targetId: recoveryTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: discardsSession,
+      targetId: discardsTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: activeSession,
+      targetId: activeTargetId,
+    });
+    await stopProcess(chrome.process);
+  }
+}
+
+async function discardStarterTabViaChromeDiscards(args: {
+  session: CdpSession;
+  tabUrlIncludes: string;
+}): Promise<StarterDiscardsTabResult> {
+  return await args.session.evaluate<StarterDiscardsTabResult>(
+    `(async () => {
+      const { getOrCreateDetailsProvider } =
+        await import('chrome://discards/discards.js');
+      const provider = getOrCreateDetailsProvider();
+      const targetUrlPart = ${JSON.stringify(args.tabUrlIncludes)};
+      const serialize = (info) => ({
+        canDiscard: Boolean(info.canDiscard),
+        cannotDiscardReasons: Array.isArray(info.cannotDiscardReasons)
+          ? info.cannotDiscardReasons.map(String)
+          : [],
+        discardCount: Number(info.discardCount ?? 0),
+        discardReason: Number(info.discardReason ?? -1),
+        id: Number(info.id),
+        loadingState: Number(info.loadingState ?? -1),
+        state: Number(info.state ?? -1),
+        tabUrl: String(info.tabUrl ?? ''),
+        title: String(info.title ?? ''),
+        visibility: Number(info.visibility ?? -1),
+      });
+      const findTab = async () => {
+        const response = await provider.getTabDiscardsInfo();
+        const infos = Array.isArray(response.infos)
+          ? response.infos.map(serialize)
+          : [];
+        return infos.find((info) => info.tabUrl.includes(targetUrlPart)) ?? null;
+      };
+      const waitForTab = async (predicate, label) => {
+        let last = null;
+        for (let index = 0; index < 80; index += 1) {
+          last = await findTab();
+          if (last && predicate(last)) return last;
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+        throw new Error(
+          'Timed out waiting for discards tab state: ' +
+            label +
+            '; last=' +
+            JSON.stringify(last)
+        );
+      };
+
+      const before = await waitForTab(
+        (info) => info.state !== 5,
+        'starter tab present before discard'
+      );
+      await provider.setAutoDiscardable(before.id, true);
+      await provider.discardById(before.id, 2);
+      const discarded = await waitForTab(
+        (info) =>
+          info.state === 5 &&
+          info.loadingState === 0 &&
+          info.discardCount > before.discardCount,
+        'starter tab discarded'
+      );
+      await provider.loadById(before.id);
+      const loaded = await waitForTab(
+        (info) => info.state !== 5 && info.loadingState !== 0,
+        'starter tab loaded after discard'
+      );
+      return { before, discarded, loaded };
+    })()`
+  );
 }
 
 type StarterStorageShutdownProofResult = {
