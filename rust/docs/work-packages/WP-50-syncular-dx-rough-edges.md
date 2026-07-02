@@ -4209,8 +4209,9 @@ Most recent browser-health failure-artifact rerun:
   runners. Remaining matrix work is deeper browser/framework execution beyond
   the policy matrix and existing proofs, especially richer
   multi-client/browser Syncular realtime over Durable Object WebSocket,
-  Safari, Firefox, private mode, WebViews, installed-PWA cache/update
-  semantics beyond the offline reopen proof, and installed-PWA update skew.
+  Safari, Firefox, private mode, WebViews, fully installed-PWA
+  offline/restart/update-skew semantics beyond the current tab and
+  app-window PWA proofs.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.
@@ -4960,10 +4961,10 @@ Most recent browser-health failure-artifact rerun:
   The generated starter's hidden deployment-preflight marker and
   `browser-preview-failure.json` shape preserve the same fields, so hosted
   artifacts can distinguish service-worker-controlled pages from
-  installed/standalone app launches without user-agent guessing. This does not
-  claim installed-PWA cache/update support is complete; it makes the missing
-  target-host evidence explicit and machine-readable. Local Bun `1.3.9` gates
-  passed: focused browser preflight/support-matrix tests, full
+  installed/standalone app launches without user-agent guessing. At this point
+  the slice did not claim installed-PWA cache/update support was complete; it
+  made the missing target-host evidence explicit and machine-readable. Local
+  Bun `1.3.9` gates passed: focused browser preflight/support-matrix tests, full
   `packages/client` tests, `bun --cwd packages/client tsgo`, `bun --cwd
   packages/create-syncular-app tsgo`, `bun --cwd packages/create-syncular-app
   smoke`, focused Biome, `bun run docs:stale-check`, and `git diff --check`.
@@ -4982,6 +4983,24 @@ Most recent browser-health failure-artifact rerun:
   docs:stale-check`, and `git diff --check`; Chrome was not installed locally,
   so hosted Checks run `28571045521` on commit `8c058d06` confirmed the
   app-window branch in Chrome and passed the full matrix.
+- 2026-07-02: Extended the Chrome app-window PWA branch beyond display-mode
+  classification. The app-window proof now writes a unique initial smoke
+  service-worker version, launches the built starter with Chrome
+  `--app=<starter-url>`, registers and controls the smoke worker inside that
+  app-window target, requires both installed-app display-mode evidence and
+  service-worker-controlled PWA support-policy evidence, warms the Syncular
+  runtime assets, poisons the cached WASM glue with a stale marker, proves the
+  app-window refresh path replaces that stale cache entry with a live asset,
+  then rewrites the smoke worker to a new version and requires
+  `registration.update()` to activate the new controller version. This moves
+  installed-window cache-refresh/update behavior out of pure tab-context smoke
+  coverage while still leaving fully installed-PWA offline/restart/update-skew
+  semantics open. Local Bun `1.3.9` gates passed: `bun --cwd
+  packages/create-syncular-app tsgo`, focused Biome on
+  `packages/create-syncular-app/scripts/smoke.ts`, `bun --cwd
+  packages/create-syncular-app smoke`, `bun run docs:stale-check`, and
+  `git diff --check`; Chrome was not installed locally, so hosted Checks must
+  confirm the extended app-window branch.
 - 2026-07-02: Added the first maintained Firefox starter runtime matrix path.
   The generated starter now accepts a validated
   `syncularBrowserSupportContext` URL parameter so target-browser smokes can
@@ -5025,10 +5044,10 @@ now also confirmed in hosted Chrome. The service-worker-controlled PWA
 classification proof is also covered in hosted Chrome: it verifies real
 controller evidence and support-policy `pwa`/`warning` classification without
 claiming installed-PWA offline/cache-update support. The Chrome app-window
-display-mode proof is now also confirmed in hosted Chrome: hosted Checks run
-`28571045521` on commit `8c058d06` passed the full matrix after proving the
-installed/standalone PWA context without claiming fully installed-PWA
-cache/update semantics. The incognito
+display-mode proof is now also confirmed in hosted Chrome, and the current
+slice extends that branch to prove app-window runtime cache-refresh plus
+service-worker update activation while still leaving fully installed-PWA
+offline/restart/update-skew semantics open. The incognito
 memory-storage support-policy branch is now confirmed in hosted Chrome and
 verifies explicit ephemeral/development storage classification without claiming
 private-mode durable persistence. The current slice adds a browser-observed
@@ -5132,9 +5151,9 @@ closing the previous release-flag decision while leaving `--allow-dirty`
 rehearsals available for local iteration without Chrome/Chromium.
 Remaining lifecycle/storage work is host/browser eviction beyond explicit CDP
 origin/database clears/Clear-Site-Data/same-origin IndexedDB deletion,
-installed-PWA cache/update semantics beyond the now-machine-readable
-display-mode evidence, Chrome app-window display-mode proof, plus smoke-only
-PWA offline/cache-refresh/service-worker update proofs, and storage
+fully installed-PWA offline/restart/update-skew semantics beyond the
+now-machine-readable app-window display-mode/cache-refresh/update proof plus
+smoke-only PWA offline/cache-refresh/service-worker update proofs, and storage
 coordination/failure behavior below the
 already-covered OPFS fallback and fallback-failure classification.
 Production ops readiness is now part of release rehearsal when evidence is
@@ -5148,6 +5167,7 @@ branches, and
 browser/bundler matrix execution, especially Safari, Firefox, real private-mode
 durable-persistence semantics, WebViews, Firefox realtime, reopen,
 persistence, and lifecycle proof beyond the runtime/support-policy smoke,
-installed-PWA cache/update semantics using fully installed launches beyond the
-app-window display-mode proof, and PWA cache-update semantics beyond these
-smoke-only runtime cache-refresh and service-worker update activation proofs.
+fully installed-PWA offline/restart/update-skew semantics beyond the
+app-window cache-refresh/update proof, and PWA cache-update semantics beyond
+these smoke-only/app-window runtime cache-refresh and service-worker update
+activation proofs.

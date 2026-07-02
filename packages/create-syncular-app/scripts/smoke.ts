@@ -24,7 +24,8 @@ import { Buffer } from 'node:buffer';
  *    database-storage eviction/rebootstrap recovery, browser origin-storage
  *    eviction/rebootstrap recovery, Clear-Site-Data server-driven storage
  *    eviction/rebootstrap recovery, same-origin IndexedDB deletion
- *    recovery, PWA app-window display-mode classification, PWA
+ *    recovery, PWA app-window display-mode classification with installed-window
+ *    runtime cache-refresh and service-worker update activation, PWA
  *    service-worker update activation, PWA online runtime cache refresh, PWA
  *    offline cache/reopen persistence, two-tab propagation, same-client page
  *    reload/reopen persistence, same-client duplicate-tab open/write
@@ -1206,6 +1207,7 @@ async function runBrowserPreviewSmoke(args: {
   });
   log('real-browser smoke: proving PWA app-window display-mode policy');
   await proveStarterPwaAppWindowDisplayMode({
+    appDir: args.appDir,
     chrome: args.chrome,
     failureArtifactPath: pwaAppWindowFailureArtifactPath(
       args.failureArtifactPath
@@ -6074,6 +6076,7 @@ async function waitForStarterPwaServiceWorkerEvidence(args: {
 }
 
 async function proveStarterPwaAppWindowDisplayMode(args: {
+  appDir: string;
   chrome: string;
   failureArtifactPath: string;
   failureMetrics: BrowserPreviewFailureMetricsInput;
@@ -6082,20 +6085,32 @@ async function proveStarterPwaAppWindowDisplayMode(args: {
 }): Promise<void> {
   const clientId = 'web-pwa-app-window';
   const appUrl = `${args.origin}/?syncularClientId=${clientId}&syncularPwaAppWindowProof=${Date.now()}`;
-  const chrome = await startBrowserPreviewChrome({
-    appUrl,
-    chrome: args.chrome,
-    userDataDir: args.userDataDir,
-  });
+  const initialVersion = `syncular-smoke-sw-app-window-initial-${Date.now()}`;
+  const updatedVersion = `syncular-smoke-sw-app-window-next-${Date.now()}`;
+  let chrome: { debugPort: number; process: ReturnType<typeof spawn> } | null =
+    null;
   let session: CdpSession | null = null;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  let caughtError: unknown = null;
+  let restoreError: unknown = null;
+
+  await writeBuiltPreviewSmokeServiceWorker(args.appDir, {
+    version: initialVersion,
+  });
 
   try {
+    chrome = await startBrowserPreviewChrome({
+      appUrl,
+      chrome: args.chrome,
+      userDataDir: args.userDataDir,
+    });
     const target = await findChromePageTarget({
       debugPort: chrome.debugPort,
       urlIncludes: `syncularClientId=${clientId}`,
     });
     session = await CdpSession.connect(target.webSocketDebuggerUrl);
     await enableChromeTarget(session);
+    await installStarterPwaSmokeDiagnostics(session);
     await waitForStarterBrowserReady(
       session,
       args.failureArtifactPath,
@@ -6106,10 +6121,150 @@ async function proveStarterPwaAppWindowDisplayMode(args: {
       failureMetrics: args.failureMetrics,
       session,
     });
+
+    const registration = await registerStarterSmokeServiceWorker(session);
+    if (!registration.ok) {
+      lastProbe = await readStarterBrowserProbe(session);
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-app-window-service-worker-registration-failed',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA app-window service worker registration failed: ${registration.reason}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    await navigateChromeTarget(
+      session,
+      `${appUrl}&syncularPwaAppWindowControlled=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterPwaAppWindowDisplayModeEvidence({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+    await waitForStarterPwaServiceWorkerEvidence({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+
+    const beforeVersion =
+      await readStarterPwaSmokeServiceWorkerVersion(session);
+    if (!beforeVersion.ok || beforeVersion.version !== initialVersion) {
+      lastProbe = await readStarterBrowserProbe(session);
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-app-window-initial-version-unexpected',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA app-window proof could not read initial worker version: ${JSON.stringify(
+          beforeVersion
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    await warmStarterPwaSmokeRuntimeAssets({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+    await waitForStarterPwaSmokeCacheWarm({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+
+    const stale = await poisonStarterPwaRuntimeCache(session);
+    if (!stale.ok) {
+      lastProbe = await readStarterBrowserProbe(session);
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-app-window-stale-cache-write-failed',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA app-window stale cache write failed: ${JSON.stringify(
+          stale
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    await warmStarterPwaSmokeRuntimeAssets({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+    await waitForStarterPwaSmokeCacheWarm({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+
+    const refreshed = await readStarterPwaRuntimeCacheRefreshResult(session);
+    if (!refreshed.ok) {
+      lastProbe = await readStarterBrowserProbe(session);
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-app-window-cache-refresh-failed',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA app-window runtime cache-refresh proof failed: ${JSON.stringify(
+          refreshed
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    await writeBuiltPreviewSmokeServiceWorker(args.appDir, {
+      version: updatedVersion,
+    });
+    const update = await updateStarterPwaSmokeServiceWorker(
+      session,
+      updatedVersion
+    );
+    if (!update.ok) {
+      lastProbe = await readStarterBrowserProbe(session);
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-app-window-update-activation-failed',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA app-window service-worker update proof failed: ${JSON.stringify(
+          update
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+  } catch (error) {
+    caughtError = error;
+    await writeBrowserPreviewFailureArtifactIfMissing(
+      args.failureArtifactPath,
+      'pwa-app-window-smoke-error',
+      lastProbe,
+      args.failureMetrics
+    );
   } finally {
+    await writeBuiltPreviewSmokeServiceWorker(args.appDir).catch((error) => {
+      restoreError = error;
+    });
     session?.close();
-    await stopProcess(chrome.process);
+    if (chrome !== null) await stopProcess(chrome.process);
   }
+
+  if (caughtError !== null) throw caughtError;
+  if (restoreError !== null) throw restoreError;
 }
 
 async function waitForStarterPwaAppWindowDisplayModeEvidence(args: {

@@ -99,7 +99,8 @@ until the full browser Worker/WASM suite is green on Linux.
   recovery, database-storage eviction recovery, origin-storage eviction
   recovery,
   service-worker-controlled PWA support-policy classification, PWA app-window
-  display-mode support-policy classification, incognito memory-storage
+  display-mode support-policy classification, app-window PWA runtime
+  cache-refresh and service-worker update activation, incognito memory-storage
   development-policy classification, and live support-bundle failure artifact
   validation.
   The separate `starter-firefox-runtime-matrix` Checks job installs Playwright

@@ -446,11 +446,12 @@ read-only review:
     local rehearsals keep those browser executions opt-in through
     `--allow-dirty`.
     Remaining matrix work is host-driven eviction beyond explicit CDP storage
-    clears/Clear-Site-Data/same-origin IndexedDB deletion, installed-PWA
-    cache/update semantics beyond the app-window display-mode proof plus
-    smoke-only PWA offline, cache-refresh, and service-worker update proofs,
-    Firefox realtime/reopen/persistence/lifecycle semantics beyond the
-    maintained Firefox runtime/support-policy smoke, plus deeper
+    clears/Clear-Site-Data/same-origin IndexedDB deletion, fully installed-PWA
+    offline/restart/update-skew semantics beyond the app-window
+    display-mode/cache-refresh/update proof plus smoke-only PWA offline,
+    cache-refresh, and service-worker update proofs, Firefox
+    realtime/reopen/persistence/lifecycle semantics beyond the maintained
+    Firefox runtime/support-policy smoke, plus deeper
     storage/coordination failures below the covered fallback and
     fallback-failure cases.
     The starter now also records
