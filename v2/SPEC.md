@@ -1,6 +1,6 @@
 # Syncular Protocol Specification (v2) — DRAFT
 
-Status: **B1 draft — full normative text, vectors pending.** This document
+Status: **B1 — full normative text, golden vectors generated.** This document
 is normative: implementations conform to this spec and the golden vectors in
 `spec/vectors/`; divergence is an implementation bug. A change to wire
 format or semantics requires a version bump per §9 and updated vectors in
@@ -41,12 +41,12 @@ absorbed by transport compression, §1.3).
 | `i64` | 8 bytes signed two's-complement LE. Values MUST be within ±(2^53−1); a reader MUST reject values outside that range (JS safe-integer contract, unchanged from v1) |
 | `f64` | 8 bytes IEEE-754 binary64 LE |
 | `bool` | `u8`, `0x00` = false, `0x01` = true; any other byte is a decode error |
-| `str` | `u32` byte length + UTF-8 bytes. One string encoding only (v1's dual string16/string32 is dropped) |
+| `str` | `u32` byte length + UTF-8 bytes. One string encoding only (v1's dual string16/string32 is dropped). Bytes that are not well-formed UTF-8 are a decode error |
 | `bytes` | `u32` byte length + raw bytes |
 | `opt(T)` | presence `u8` (`0x00` absent, `0x01` present; other values are a decode error) followed by `T` iff present. Used **only** where a field is semantically nullable — structural optionality is expressed by frame presence (§1.2), never by option bytes |
 | `list(T)` | `u32` count + count × `T` |
-| `map` | `u32` count + count × (`str` key, value). Keys MUST be unique; encoders MUST emit keys in ascending code-unit order (canonical encoding) |
-| `json` | `str` containing a JSON document. Used only for host-opaque values (`params`, `details`, resume tokens). Host-opaque means exactly that: a decoder MUST preserve the raw string byte-for-byte and a re-encoder MUST emit it unchanged — round-trip fidelity, never re-canonicalization |
+| `map` | `u32` count + count × (`str` key, value). Keys MUST be unique; encoders MUST emit keys in ascending code-unit order (canonical encoding). A decoder MUST reject duplicate or out-of-order keys — non-canonical key order is a decode error, not a tolerated variant |
+| `json` | `str` containing a JSON document. Used only for host-opaque values (`params`, `details`, resume tokens). A decoder MUST validate that the string parses as a JSON document (a value that does not is a decode error) but MUST NOT act on or re-serialize the parsed value. Host-opaque means exactly that: a decoder MUST preserve the raw string byte-for-byte and a re-encoder MUST emit it unchanged — round-trip fidelity, never re-canonicalization |
 
 **Canonical encoding.** For every value there is exactly one valid byte
 sequence (map key ordering, minimal presence bytes, no padding). Golden
@@ -286,6 +286,14 @@ Rules:
    bytes. This is the forward-compat rule (§9). Unknown frame types may
    appear at any position between the header frame and `END`; the
    ordering constraints of rule 4 apply to known frame types only.
+   "Unknown" means a `frameType` with no layout in this wire version for
+   *either* message kind: a frame type registered for the other message
+   kind (e.g. `SUB_START` in a request) is not unknown — it is a decode
+   error. Skipping means "do not interpret", never "drop": a decoder
+   whose output is re-encoded (golden-vector round-trips, proxies,
+   tooling) MUST preserve skipped frames byte-for-byte in their original
+   positions, so re-encoding reproduces the input exactly. Their debug
+   rendering is defined in §11.1 rule 9.
 3. A frame's payload MUST be exactly `frameLength` bytes when decoded per
    its record layout; trailing bytes inside a known frame are a decode
    error (frames are versioned by `wireVersion`, never extended in place).
@@ -426,7 +434,54 @@ frames MUST NOT both appear for the same subscription in one response
 On receiving `ERROR`, the client applies §1.4 rule 5, then treats the
 whole request as having failed with that error (already-completed
 subscriptions keep their applied data and cursors). A server MUST NOT
-emit further frames after `ERROR` except the terminating `END`.
+emit further frames after `ERROR` except the terminating `END`. The
+"next frame MUST be END" rule admits no frame of **any** type between
+`ERROR` and `END` — unknown frame types included; a decoder MUST reject
+a message that carries one (the skip rule of §1.2 rule 2 does not apply
+past `ERROR`).
+
+### 1.7 Decode errors vs request validation
+
+Two validation layers exist, and the boundary is normative so that
+independent codecs agree byte-for-byte on which messages are
+*undecodable* (the golden vectors' `invalid/` cases pin this layer):
+
+- **Decode errors** — detectable from one message alone, with no host,
+  schema, or cross-frame state. Exactly these, and nothing more:
+  envelope and framing violations (§1.2); frame-grammar violations
+  (§1.5, §1.6); primitive-encoding violations, enum bytes, and `opt()`
+  presence invariants (Conventions); and the following single-frame
+  field-table constraints — `clientId` non-empty and
+  `schemaVersion ≥ 1` (§1.5), `clientCommitId` non-empty and
+  `operations ≥ 1` (§6.1, the latter as `sync.empty_commit`), change
+  `tableIndex` in range (§4.5), `accept` bits 4–7 zero (§4.2), the
+  `url`/`urlExpiresAtMs` presence tie (§5.4), and the structural
+  validity of a `SEGMENT_INLINE` payload as a rows segment (§5.7 —
+  structural only; the column-table schema check stays with the
+  receiver, §5.2). A conformant decoder MUST
+  reject all of these with the named error (`sync.invalid_request`
+  unless a code is named above) and MUST NOT reject anything else at
+  decode time.
+- **Request validation** — everything requiring cross-frame, host, or
+  schema state, performed by the server *after* a successful decode:
+  duplicate subscription ids and requested `'*'` values
+  (`sync.invalid_subscription`, §3.2, §4.1), unknown tables
+  (`sync.unknown_table`), `clientId` actor binding
+  (`sync.invalid_client_id`), operation caps
+  (`sync.too_many_operations`), and row-payload decode against the
+  generated row codec (§6.1 — still reported as `sync.invalid_request`,
+  but by the server: the envelope codec carries payloads as opaque
+  `bytes` and cannot know the schema). These MUST NOT be decode errors
+  of the envelope codec.
+
+Response-side semantic expectations that are not `opt()` ties (e.g.
+`reasonCode` emptiness for `active`, `effectiveScopes` emptiness when
+not `active`, `results` cardinality in §6.3) are producer conformance
+rules, not decode errors. The `accept` bitmask illustrates the line: a
+set bit 4–7 is a decode error (explicitly flagged in the §4.2 field
+table); the "client MUST set at least bits 0 and 1" requirement is a
+client conformance rule, not a decode error — a server MAY reject its
+absence as request validation.
 
 ---
 
@@ -507,6 +562,9 @@ sides, a **row codec** for each supported `schemaVersion`:
   from v1), followed by the non-null values in column order, each encoded
   per the table above.
 - Setting a null bit for a non-nullable column is a decode error.
+- Padding bits of the bitmap (bit positions ≥ columnCount in the final
+  byte) MUST be zero; a set padding bit is a decode error (canonical
+  encoding — one byte sequence per row).
 
 The row codec is used for change payloads in `COMMIT` frames (§4.5),
 row data inside rows segments (§5.2), push operation payloads (§6.1),
@@ -898,6 +956,15 @@ current partial block) in memory — this is the §1.4 requirement carried
 into segment application. The end marker (`rowCount = 0`) is mandatory;
 a segment that ends without it is truncated.
 
+**Error codes.** Structural decode failures of a rows segment — bad
+magic, unsupported `formatVersion`, non-zero flags, reserved column
+flag bits, an unknown column type tag, a block whose rows do not consume
+exactly `byteLength`, row-codec violations (§2.4), truncation, a missing
+end marker, or trailing bytes after it — are `sync.invalid_request`.
+`sync.schema_mismatch` is reserved for the column-table-vs-generated-
+schema comparison above, which only the receiver can perform: a
+standalone segment decode (tooling, vectors) never produces it.
+
 ### 5.3 SQLite segments (`mediaType = sqlite`) — premier path
 
 The segment bytes are a complete, well-formed **SQLite database file**
@@ -1016,7 +1083,11 @@ for clients without signed-URL support.
 
 ### 5.7 `SEGMENT_INLINE` frame
 
-Payload = one complete rows segment (§5.2, including magic). Servers
+Payload = one complete rows segment (§5.2, including magic). A payload
+that is not a structurally valid rows segment is a decode error
+(`sync.invalid_request`, per §5.2's error-code rule; the column-table
+schema check remains the receiver's, and the raw payload bytes are
+preserved for re-encoding like any other binary field). Servers
 SHOULD inline segments smaller than 256 KiB (uncompressed) to avoid a
 second round-trip for small tables; servers MUST NOT inline sqlite
 segments. Semantics are identical to a referenced rows segment.
@@ -1042,7 +1113,7 @@ Operation record:
 | `rowId` | `str` | |
 | `op` | `u8` | `1` = upsert, `2` = delete |
 | `baseVersion` | `opt(i64)` | Optimistic-concurrency token (§6.2); absent = last-write-wins |
-| `payload` | `opt(bytes)` | Full row encoded with the generated row codec (§2.4) for the request's `schemaVersion` — binary both ways per the §0 decision. MUST be present for `upsert` and absent for `delete`; either violation, or bytes that fail row-codec decode, is a decode error (`sync.invalid_request`) |
+| `payload` | `opt(bytes)` | Full row encoded with the generated row codec (§2.4) for the request's `schemaVersion` — binary both ways per the §0 decision. MUST be present for `upsert` and absent for `delete`; a violation is a decode error (`sync.invalid_request`). Bytes that fail row-codec decode are rejected by the server as request validation (§1.7) — the envelope codec carries the payload as opaque `bytes` |
 
 Servers MUST enforce an operation-count cap per request (host-configured;
 exceeding it is `sync.too_many_operations` with the whole batch
@@ -1408,10 +1479,14 @@ tooling).
 2. Field order within a frame object follows the field tables in this
    document, top to bottom.
 3. Absent `opt()` fields are **omitted** (never `null`).
-4. Binary fields (`row`, push `payload`, `serverRow`, segment payloads) are standard **base64**
-   strings; hashes and `segmentId` stay in their native hex/string form.
+4. Binary fields (`row`, push `payload`, `serverRow`, segment payloads —
+   including the whole `SEGMENT_INLINE` frame payload, which renders as
+   `{"type":"SEGMENT_INLINE","payload":"<base64>"}`, never as a nested
+   rule-8 object) are standard **base64** strings; hashes and
+   `segmentId` stay in their native hex/string form.
 5. Enums render as their spec names (`"upsert"`, `"active"`,
-   `"sqlite"`, …), not their byte values.
+   `"sqlite"`, …), not their byte values. Bitmask fields (`accept`) are
+   not enums and render as their numeric value.
 6. `i64` renders as a JSON number (safe by the ±2^53−1 contract);
    timestamps stay numeric epoch ms.
 7. `json`-typed fields are embedded as parsed JSON objects, not
@@ -1419,7 +1494,13 @@ tooling).
 8. Rows segments render as `{"magic":"SSG2","formatVersion":1,
    "table":…,"schemaVersion":…,"columns":[…],"blocks":[[…rows as
    objects…]]}` with rows as name→value objects (names from the column
-   table; `bytes` values base64).
+   table; columns as `{"name":…,"type":…,"nullable":…}` with the type
+   name, not the tag). NULL column values render as JSON `null`;
+   `bytes` values are base64; `json`-typed column values render parsed
+   (rule 7).
+9. Unknown frames preserved by the skip rule (§1.2 rule 2) render as
+   `{"type":"UNKNOWN","frameType":<byte value as number>,
+   "payload":"<base64>"}`.
 
 ### 11.2 Canonical JSON (for digests)
 
@@ -1435,9 +1516,11 @@ match across implementations).
 
 Location and per-case requirements are defined in
 [`spec/vectors/README.md`](spec/vectors/README.md): for each case a
-canonical `.bin`, its §11 JSON rendering as `.json`, a per-kind
-`manifest.json`, and `invalid/` cases named by expected error. Decode,
-byte-exact re-encode, and negative-case checks are CI-blocking for every
+canonical `.bin`, its §11 JSON rendering as `.json`, and a per-kind
+`manifest.json`. `invalid/` cases carry descriptive slug names (several
+share an error code, so names describe the violation); the expected
+error code is declared per case in `manifest.json`. Decode, byte-exact
+re-encode, and negative-case checks are CI-blocking for every
 implementation in this tree.
 
 Directory layout (message kind = top-level directory):
@@ -1448,14 +1531,15 @@ spec/vectors/
     <case>.bin  <case>.json  manifest.json  invalid/…
 ```
 
-Initial vector set (built in B1 second half, once the reference codec
-exists — binaries are generated by the codec under test review, never
-hand-hexed):
+Initial vector set (binaries are generated deterministically by the
+reference codec via `packages/core/scripts/generate-vectors.ts`, never
+hand-hexed; a second implementation regenerating them must produce
+byte-identical output):
 
 | # | Case | Covers |
 |---|---|---|
 | 1 | `request/pull-minimal` | Smallest legal request: header + pull + one caught-up subscription |
-| 2 | `request/pull-bootstrap` | `cursor = -1`, `accept` bits incl. sqlite + signed URLs, `params`, resumed `bootstrapState` round-trip |
+| 2 | `request/pull-bootstrap` | Two subscriptions — a single subscription cannot carry both: fresh bootstrap (`cursor = -1`, `params`) + resumed bootstrap (`cursor` at the §4.7 pin, `bootstrapState` round-trip); `accept` bits incl. sqlite + signed URLs |
 | 3 | `request/push-multi-commit` | Two commits: upsert with `baseVersion`, delete, row-codec payload edge cases (NULL bitmap, empty string, non-BMP unicode, `json`-typed column raw-string round-trip) |
 | 4 | `request/combined` | Push + pull in one envelope (§1.5 ordering) |
 | 5 | `response/pull-empty` | Active subscription, zero commits, cursor advanced anyway (§4.5) |
@@ -1471,7 +1555,9 @@ hand-hexed):
 | 15 | `response/schema-floor` | `requiredSchemaVersion` present |
 | 16 | `segment/rows-two-blocks` | SSG2 with two row blocks + end marker, all column types, nullable columns |
 | 17 | `realtime/wake` + `realtime/hello` | JSON control vectors (`.json` only — no binary form) |
-| — | `*/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, bool byte > 1, unknown enum byte (e.g. `op = 3`), upsert without payload, null bit on non-nullable column, rows segment without end marker |
+| — | `request/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload |
+| — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`) |
+| — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker |
 
 ---
 
