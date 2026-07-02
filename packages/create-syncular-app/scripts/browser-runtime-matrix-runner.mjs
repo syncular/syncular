@@ -429,6 +429,14 @@ async function readMatrixProbe(page, diagnostics) {
             'data-syncular-starter-local-visibility-ms'
           ),
           localVisibilityStatus: starterLocalVisibilityStatus,
+          realtimeConnectedMs: readNumber(
+            starterTimeline,
+            'data-syncular-starter-realtime-connected-ms'
+          ),
+          realtimeStatus:
+            starterTimeline?.getAttribute(
+              'data-syncular-starter-realtime-status'
+            ) ?? null,
         },
         lifecyclePause: {
           count: lifecyclePauseCount,
@@ -819,6 +827,54 @@ async function waitForMatrixEvidence(args) {
   );
 }
 
+async function waitForMatrixRealtimeConnected(args) {
+  const deadline = Date.now() + 30_000;
+  let lastProbe = null;
+  const proofName = args.proofName ?? 'realtime connected';
+  const reasonSuffix = args.reasonSuffix ?? 'realtime-connected';
+  while (Date.now() < deadline) {
+    const probe = await readMatrixProbe(args.page, args.diagnostics);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeFailureArtifact(args.failureArtifact, {
+        browser: args.browserName,
+        generatedAt: new Date().toISOString(),
+        metrics: args.metrics,
+        probe,
+        reason: `${args.browserName}-runtime-matrix-${reasonSuffix}-errors`,
+        supportContext: args.supportContext,
+        url: args.url,
+      });
+      throw new Error(
+        `Built preview ${args.browserName} ${proofName} proof failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifact}`
+      );
+    }
+    if (
+      probe.ready &&
+      probe.starterTimeline.realtimeStatus === 'connected' &&
+      probe.starterTimeline.realtimeConnectedMs !== null
+    ) {
+      return probe;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  await writeFailureArtifact(args.failureArtifact, {
+    browser: args.browserName,
+    generatedAt: new Date().toISOString(),
+    metrics: args.metrics,
+    probe: lastProbe,
+    reason: `${args.browserName}-runtime-matrix-${reasonSuffix}-timeout`,
+    supportContext: args.supportContext,
+    url: args.url,
+  });
+  throw new Error(
+    `Timed out waiting for built preview ${args.browserName} ${proofName} proof. Failure artifact: ${args.failureArtifact}`
+  );
+}
+
 function attachPageDiagnostics(page, browserName, recordDiagnostic) {
   page.on('console', (message) => {
     const text = message.text();
@@ -861,6 +917,107 @@ async function openMatrixPage(context, browserName, recordDiagnostic) {
   const page = context.pages()[0] ?? (await context.newPage());
   attachPageDiagnostics(page, browserName, recordDiagnostic);
   return page;
+}
+
+function matrixUrlWithParams(url, params) {
+  const next = new URL(url);
+  for (const [name, value] of Object.entries(params)) {
+    if (value === null || value === undefined) {
+      next.searchParams.delete(name);
+    } else {
+      next.searchParams.set(name, String(value));
+    }
+  }
+  return next.href;
+}
+
+async function proveMatrixRealtimePropagation(args) {
+  const writerUrl = matrixUrlWithParams(args.url, {
+    syncularBrowserMatrixProof: `realtime-writer-${Date.now()}`,
+    syncularClientId: `matrix-${args.browserName}-realtime-writer`,
+    syncularSyncStartup: null,
+  });
+  const observerUrl = matrixUrlWithParams(args.url, {
+    syncularBrowserMatrixProof: `realtime-observer-${Date.now()}`,
+    syncularClientId: `matrix-${args.browserName}-realtime-observer`,
+    syncularSyncStartup: null,
+  });
+  const writerPage = await args.context.newPage();
+  attachPageDiagnostics(writerPage, args.browserName, args.recordDiagnostic);
+  const observerPage = await args.context.newPage();
+  attachPageDiagnostics(observerPage, args.browserName, args.recordDiagnostic);
+  try {
+    await writerPage.goto(writerUrl, { timeout: 60_000, waitUntil: 'load' });
+    await observerPage.goto(observerUrl, {
+      timeout: 60_000,
+      waitUntil: 'load',
+    });
+    const writerConnectedProbe = await waitForMatrixRealtimeConnected({
+      browserName: args.browserName,
+      diagnostics: args.diagnostics,
+      failureArtifact: args.failureArtifact,
+      metrics: args.metrics,
+      page: writerPage,
+      proofName: 'writer realtime connected',
+      reasonSuffix: 'realtime-writer-connected',
+      supportContext: args.supportContext,
+      url: writerUrl,
+    });
+    await waitForMatrixRealtimeConnected({
+      browserName: args.browserName,
+      diagnostics: args.diagnostics,
+      failureArtifact: args.failureArtifact,
+      metrics: args.metrics,
+      page: observerPage,
+      proofName: 'observer realtime connected',
+      reasonSuffix: 'realtime-observer-connected',
+      supportContext: args.supportContext,
+      url: observerUrl,
+    });
+    const title = `${args.browserName} matrix realtime ${Date.now()}`;
+    await submitMatrixTask(writerPage, title);
+    await waitForMatrixLocalWriteProof({
+      browserName: args.browserName,
+      diagnostics: args.diagnostics,
+      expectedCommandCount: writerConnectedProbe.commandTimeline.count + 1,
+      failureArtifact: args.failureArtifact,
+      metrics: args.metrics,
+      page: writerPage,
+      supportContext: args.supportContext,
+      title,
+      url: writerUrl,
+    });
+    await waitForMatrixTaskText({
+      browserName: args.browserName,
+      diagnostics: args.diagnostics,
+      failureArtifact: args.failureArtifact,
+      metrics: args.metrics,
+      page: observerPage,
+      proofName: 'realtime observer propagation',
+      reasonSuffix: 'realtime-observer-propagation',
+      supportContext: args.supportContext,
+      title,
+      url: observerUrl,
+    });
+    return title;
+  } finally {
+    await observerPage.close().catch(() => undefined);
+    await writerPage.close().catch(() => undefined);
+  }
+}
+
+async function proveMatrixEphemeralRealtimePropagation(args) {
+  const browser = await args.browserType.launch({ headless: true });
+  const context = await browser.newContext();
+  try {
+    return await proveMatrixRealtimePropagation({
+      ...args,
+      context,
+    });
+  } finally {
+    await context.close().catch(() => undefined);
+    await browser.close().catch(() => undefined);
+  }
 }
 
 async function main() {
@@ -995,8 +1152,28 @@ async function main() {
       title,
       url,
     });
+    const realtimePropagation =
+      browserName === 'firefox'
+        ? 'skipped-playwright-firefox-websocket'
+        : 'passed';
+    if (realtimePropagation === 'passed') {
+      await page.close().catch(() => undefined);
+      page = null;
+      await context.close();
+      context = null;
+      await proveMatrixEphemeralRealtimePropagation({
+        browserName,
+        browserType,
+        diagnostics,
+        failureArtifact,
+        metrics,
+        recordDiagnostic,
+        supportContext,
+        url,
+      });
+    }
     console.log(
-      `[csa-smoke] ${browserName} runtime matrix evidence passed: context=${probe.browserSupportPolicy.context} tier=${probe.deploymentPreflight.supportTier} lifecycleResumeCount=${lifecycleProbe.lifecycleResume.count} localWriteCount=${writeProbe.commandTimeline.count} sameContextFreshPage=passed persistentProfileReopen=passed`
+      `[csa-smoke] ${browserName} runtime matrix evidence passed: context=${probe.browserSupportPolicy.context} tier=${probe.deploymentPreflight.supportTier} lifecycleResumeCount=${lifecycleProbe.lifecycleResume.count} localWriteCount=${writeProbe.commandTimeline.count} sameContextFreshPage=passed persistentProfileReopen=passed realtimePropagation=${realtimePropagation}`
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
