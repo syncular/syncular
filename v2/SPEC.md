@@ -702,7 +702,23 @@ When `SUB_START.status = revoked`:
 - Pending outbox commits that write into the revoked scope will be
   rejected on push by write-path authorization (§3.4); the client SHOULD
   drop them locally on revocation instead of replaying them into
-  guaranteed rejections.
+  guaranteed rejections. The drop is **whole-commit**: when any upsert
+  in a pending commit provably lands in the revoked effective scopes
+  (its scope-column values match them under the purge rule above), the
+  entire commit is dropped — commits are atomic (§6.4) and their content
+  is pinned by the idempotency key (§2.3), so operations are never
+  removed individually. Delete operations carry no row values to test,
+  so delete-only commits are not provably in scope: they replay and rely
+  on server-side rejection (§3.4) or the idempotent absent-row `applied`
+  of §6.2. Both outcomes surface to the app — a local drop and a
+  `rejected` result are each visible, never silent.
+
+While the subscription stays `active`, each pull's `effectiveScopes`
+echo **replaces** the persisted copy. A narrowing echo (fewer values
+than before) purges nothing: the purge contract fires only on
+`status = revoked`. Rows outside the narrowed effective scopes simply
+stop receiving changes; they are cleaned up by the §5.6 first-page rule
+on the next fresh bootstrap, or by an eventual revocation.
 
 ### 3.4 Write-path authorization
 
@@ -780,6 +796,15 @@ server). Bit 0 without bit 1 means the server delivers every rows
 segment **inline**, regardless of the §5.7 size guidance — the SHOULD
 yields to the client's declared capability. Bit 1 without bit 0 means
 every rows segment is delivered as a `SEGMENT_REF`.
+
+**Client baseline.** A client that implements no optional segment
+capability sends `accept = 0b0011` (inline + external rows) — the
+reference client's default. The mask is also a client-side contract: a
+client MUST reject a `SEGMENT_REF` whose `mediaType` it did not
+advertise (fail loud as `sync.invalid_request`, aborting per §1.4
+rule 5) rather than skip or guess — a server that ignores the mask is
+broken, and silently dropping a bootstrap segment would corrupt the
+snapshot.
 
 ### 4.3 `SUBSCRIPTION` frame
 
@@ -1135,15 +1160,36 @@ for clients without signed-URL support.
 ### 5.6 Segment application contract (client)
 
 - Segments for a table replace-or-upsert: the client applies rows by
-  primary key (`INSERT OR REPLACE` semantics). On the **first page**
-  (`rowCursor` absent) of a table in a fresh bootstrap, the client MUST
-  first delete local rows for the subscription's scope (same matching
-  rule as the purge contract, §3.3) so removed rows don't survive
-  re-bootstrap.
+  primary key (`INSERT OR REPLACE` semantics). On the **first page** of
+  a table in a **fresh** bootstrap, the client MUST first delete local
+  rows for the subscription's scope (same matching rule as the purge
+  contract, §3.3, against the `SUB_START` effective-scope echo) so
+  removed rows don't survive re-bootstrap.
+- **First-page detection.** A bootstrap is *fresh* iff the request
+  carried `cursor < 0` and no `bootstrapState` (a resumed bootstrap
+  never re-clears — its earlier pages already applied). For a
+  `SEGMENT_REF`, the first page is the descriptor with `rowCursor`
+  absent. A `SEGMENT_INLINE` carries no descriptor: the first segment
+  delivered for the subscription in the response is the first page.
+- **Fail closed at the clear too.** The first-page delete uses the §3.3
+  matching rule *including its fail-closed clause*: with no local
+  scope-column mapping for an effective key, the client MUST NOT clear
+  the table, MUST mark the subscription failed with
+  `sync.scope_revoked` (a fatal configuration error — stop syncing the
+  table), and MUST NOT persist the subscription's `SUB_END` values. The
+  failure is subscription-local: the rest of the response still
+  applies.
 - Rows-segment blocks and sqlite-segment imports are applied
   transactionally per §1.4/§5.2; the resume token is persisted only at
   `SUB_END`, so a crash mid-segment resumes conservatively (re-applying a
   block is safe by upsert idempotency).
+- **Segment rows have no server version** (SSG2 carries none, §5.2; the
+  sqlite metadata table stores no per-row versions either, §5.3). A
+  client MUST NOT synthesize a `baseVersion` from a segment-applied
+  row; until a `COMMIT` change (§4.5) or a conflict record (§6.3)
+  supplies the row's `server_version`, optimistic-concurrency pushes
+  for it need an app-supplied version or fall back to last-write-wins
+  (§6.2).
 
 ### 5.7 `SEGMENT_INLINE` frame
 
@@ -1305,9 +1351,14 @@ v1). The client contract:
   a client MUST NOT reorder or coalesce commits once a push containing
   them may have reached the server (the idempotency key pins their
   content).
-- Local reads see outbox state applied optimistically; on `applied`, the
-  optimistic rows are reconciled with the server-versioned rows delivered
-  by the pull/realtime path.
+- Local reads see outbox state applied optimistically. Reconciliation
+  is **outbox replay on top**: whenever server data has been applied (a
+  pull response or a realtime delta, §8.2 — including one that aborted
+  mid-way, §1.4 rule 5), the client re-applies every still-pending
+  outbox commit over the fresh server state. Server rows thus replace
+  optimistic state exactly when the commit that produced it has drained
+  (`applied`/`cached`) or been dropped; pending writes stay visible
+  throughout.
 
 ### 7.2 Replay and idempotent retry
 
@@ -1319,6 +1370,19 @@ v1). The client contract:
   surface the terminating result, and decide (app policy) whether later
   outbox commits are still valid — commits that depended on rejected
   state SHOULD be rebased or dropped before continuing replay.
+  Mechanically, "stop optimistic display" is: the commit leaves the
+  outbox (exception: the `sync.idempotency_cache_miss` result of §6.3
+  is a serving failure, not an outcome — the commit stays queued and
+  retries); rows its upserts targeted that exist **only optimistically**
+  (created by local writes, never confirmed by any server-delivered row
+  or segment) MUST be deleted — the §7.1 replay re-establishes any that
+  later pending commits still write. Rows the commit merely overwrote
+  keep their stale-optimistic content until the pull half delivers the
+  server row — for a conflict, the record's `serverRow` (§6.3) lets the
+  app resolve without waiting. A rejected `delete` leaves the row
+  locally absent until the server re-delivers it (a later change or a
+  re-bootstrap): surfacing the rejection is the client's job; restoring
+  the row is app policy.
 - Push and pull SHOULD ride the same combined request (§1.5): a replaying
   client gets its own changes back in the pull half, converging in one
   round-trip.
@@ -1397,6 +1461,24 @@ the socket for continuity.
   The server uses acks to trim its per-connection replay buffer (if it
   keeps one) and to update the client cursor record (§4.5) without an
   HTTP pull.
+- **Client-side application.** A delta applies exactly like a pull
+  response (§4.5), per section: only subscriptions that are locally
+  `active` and not mid-bootstrap (no resume token pending, §4.7) apply;
+  skipped sections advance nothing and are repaired by the
+  subscription's own next pull (a bootstrapping subscription's post-pin
+  replay already covers the window). A client that does not apply a
+  received delta message at all — a pull in flight over the same
+  database, a decode or apply failure — MUST treat the drop as a
+  wake-up (§8.3: run a pull soon): a server without a replay buffer
+  never resends, and later deltas would otherwise apply over the gap
+  silently.
+- **Ack points.** After applying a delta, the client acks the highest
+  applied `SUB_END.nextCursor` in it. After an HTTP pull while the
+  connection is live, the client acks the minimum cursor across its
+  active, non-bootstrapping subscriptions that have synced at least
+  once — the contiguity-safe floor, and the ack that lifts the
+  reference server's delta suppression after a catch-up pull. No such
+  subscription, no ack.
 - Flow control: the server bounds in-flight unacked deltas and per-window
   message counts (host-configured); when exceeded, or when a delta would
   exceed the host's max message size, it drops to a wake-up.
@@ -1430,6 +1512,13 @@ wake-up as "run a pull soon", never as data.
   evidence: 13 ms server fanout, ~2 s client-side wake-contention tail at
   250+ clients).
 - Multiple wake-ups and local triggers MUST coalesce into one pull.
+- **Scheduling is host policy.** Timers — reconnect backoff, wake
+  jitter, when the coalesced pull actually runs — live in the app
+  shell, not the protocol core. The core exposes one coalesced
+  **sync-needed signal**: set by `hello.requiresSync`, by every
+  wake-up, and by every client-side delta drop (§8.2); cleared when a
+  pull round *begins*, so a wake-up landing mid-round survives the
+  round and triggers another pull.
 - **Catch-up prefers segments**: when a recovery pull arrives with a
   cursor far behind (server heuristic; suggested threshold: the gap
   exceeds `limitCommits` or a host-set row estimate), the server SHOULD
