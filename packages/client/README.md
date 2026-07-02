@@ -684,8 +684,9 @@ deployed page or a real browser smoke so storage APIs reflect the target
 browser. It does not start a Worker or mutate local SQLite; it checks
 Worker/WebAssembly support, secure context, OPFS/IndexedDB persistence, quota,
 persistent-storage status, and the served WASM runtime asset status/content
-types. It also reports multi-tab and page-lifecycle primitives such as
-`BroadcastChannel`, Web Locks, page visibility, `pagehide`, and
+types. It also reports service-worker control, redacted controller script path,
+installed-app display-mode evidence, and multi-tab/page-lifecycle primitives
+such as `BroadcastChannel`, Web Locks, page visibility, `pagehide`, and
 `beforeunload`. Use `preflight.support.tier` for the production support
 decision: `persistent-offline` means durable offline storage is supported,
 `ephemeral-development` means memory storage was intentionally selected,
@@ -748,10 +749,11 @@ support-policy decision.
 failure artifacts and support bundles can show what evidence is still missing
 without scraping docs.
 `getSyncularBrowserSupportPolicyContextHint(...)` only uses hard facts already
-in the preflight: an explicit app context wins, a service-worker controlled
-page hints `pwa`, and ephemeral/development storage hints `private-browsing`.
-It does not guess Safari or Firefox from a user agent; pass the explicit
-context when the product owns target-browser evidence.
+in the preflight: an explicit app context wins, installed-app display-mode
+evidence or a service-worker controlled page hints `pwa`, and
+ephemeral/development storage hints `private-browsing`. It does not guess
+Safari or Firefox from a user agent; pass the explicit context when the product
+owns target-browser evidence.
 
 The matrix does not sniff user agents and does not replace the deployment
 preflight. It names the product policy for common environments:

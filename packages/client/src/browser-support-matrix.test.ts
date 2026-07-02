@@ -168,6 +168,23 @@ describe('Syncular browser support matrix', () => {
     expect(
       getSyncularBrowserSupportPolicyContextHint({
         preflight: preflight({
+          installedApp: true,
+          persistence: 'persistent',
+          productionReady: true,
+          serviceWorkerControlled: true,
+          supportTier: 'persistent-offline',
+        }),
+      })
+    ).toMatchObject({
+      context: 'pwa',
+      source: 'installed-app-display-mode',
+      confidence: 'high',
+      reasonCodes: ['browser_support_context.installed_app_display_mode'],
+    });
+
+    expect(
+      getSyncularBrowserSupportPolicyContextHint({
+        preflight: preflight({
           persistence: 'persistent',
           productionReady: true,
           serviceWorkerControlled: true,
@@ -370,6 +387,7 @@ describe('Syncular browser support matrix', () => {
 });
 
 function preflight(options: {
+  installedApp?: boolean;
   issueCodes?: SyncularBrowserDeploymentPreflight['support']['issueCodes'];
   persistence: SyncularBrowserDeploymentPreflightPersistenceMode;
   productionReady?: boolean;
@@ -392,6 +410,8 @@ function preflight(options: {
       secureContext: true,
       crossOriginIsolated: false,
       indexedDB: true,
+      displayMode: options.installedApp ? 'standalone' : 'browser',
+      installedApp: options.installedApp ?? false,
       serviceWorker: options.serviceWorkerControlled ?? false,
       serviceWorkerControlled: options.serviceWorkerControlled ?? false,
       serviceWorkerControllerState: options.serviceWorkerControlled

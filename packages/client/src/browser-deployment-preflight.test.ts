@@ -424,6 +424,79 @@ describe('Syncular browser deployment preflight', () => {
     });
   });
 
+  it('reports installed-app display mode without requiring user-agent guesses', async () => {
+    await expect(
+      getSyncularBrowserDeploymentPreflight({
+        runtime: {
+          wasmGlueUrl: 'https://cdn.example/syncular.js',
+          wasmUrl: 'https://cdn.example/syncular_bg.wasm',
+        },
+        checkRuntimeAssets: false,
+        storage: 'indexedDb',
+        global: browserGlobal({ displayMode: 'standalone' }),
+        navigator: browserNavigator({
+          opfs: true,
+          persisted: true,
+          quotaBytes: 250 * 1024 * 1024,
+        }),
+      })
+    ).resolves.toMatchObject({
+      status: 'ready',
+      browser: {
+        displayMode: 'standalone',
+        installedApp: true,
+        serviceWorkerControlled: false,
+      },
+    });
+
+    await expect(
+      getSyncularBrowserDeploymentPreflight({
+        runtime: {
+          wasmGlueUrl: 'https://cdn.example/syncular.js',
+          wasmUrl: 'https://cdn.example/syncular_bg.wasm',
+        },
+        checkRuntimeAssets: false,
+        storage: 'indexedDb',
+        global: browserGlobal({ displayMode: 'browser' }),
+        navigator: browserNavigator({
+          opfs: true,
+          persisted: true,
+          quotaBytes: 250 * 1024 * 1024,
+        }),
+      })
+    ).resolves.toMatchObject({
+      browser: {
+        displayMode: 'browser',
+        installedApp: false,
+      },
+    });
+  });
+
+  it('uses the iOS standalone signal when display-mode media queries do not report an app launch', async () => {
+    await expect(
+      getSyncularBrowserDeploymentPreflight({
+        runtime: {
+          wasmGlueUrl: 'https://cdn.example/syncular.js',
+          wasmUrl: 'https://cdn.example/syncular_bg.wasm',
+        },
+        checkRuntimeAssets: false,
+        storage: 'indexedDb',
+        global: browserGlobal({ displayMode: 'browser' }),
+        navigator: browserNavigator({
+          opfs: true,
+          persisted: true,
+          quotaBytes: 250 * 1024 * 1024,
+          standalone: true,
+        }),
+      })
+    ).resolves.toMatchObject({
+      browser: {
+        displayMode: 'standalone',
+        installedApp: true,
+      },
+    });
+  });
+
   it('flags runtime assets served as HTML or missing from deployment', async () => {
     const fetch = fakeFetch({
       'https://app.example/assets/syncular.js': response(200, 'text/html'),
@@ -566,6 +639,13 @@ describe('Syncular browser deployment preflight', () => {
 function browserGlobal(
   options: {
     broadcastChannel?: boolean;
+    displayMode?:
+      | 'browser'
+      | 'standalone'
+      | 'minimal-ui'
+      | 'fullscreen'
+      | 'window-controls-overlay'
+      | 'unknown';
     pageLifecycle?: boolean;
     worker?: boolean;
     webAssembly?: boolean;
@@ -598,6 +678,16 @@ function browserGlobal(
         }),
     isSecureContext: options.secureContext ?? true,
     crossOriginIsolated: options.crossOriginIsolated ?? false,
+    ...(options.displayMode == null
+      ? {}
+      : {
+          matchMedia(query: string) {
+            const expected = `(display-mode: ${options.displayMode})`;
+            return {
+              matches: options.displayMode !== 'unknown' && query === expected,
+            };
+          },
+        }),
   };
 }
 
@@ -611,9 +701,11 @@ function browserNavigator(options: {
   serviceWorkerControlled?: boolean;
   serviceWorkerControllerScriptURL?: string;
   serviceWorkerControllerState?: string;
+  standalone?: boolean;
   usageBytes?: number;
 }): SyncularBrowserDeploymentPreflightNavigator {
   return {
+    ...(options.standalone == null ? {} : { standalone: options.standalone }),
     ...(options.locks === false
       ? {}
       : {

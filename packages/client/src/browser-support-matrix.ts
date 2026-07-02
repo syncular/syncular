@@ -23,6 +23,7 @@ export type SyncularBrowserSupportPolicy =
 
 export type SyncularBrowserSupportPolicyContextHintSource =
   | 'explicit-context'
+  | 'installed-app-display-mode'
   | 'service-worker-controlled'
   | 'ephemeral-storage'
   | 'unsupported-storage'
@@ -37,6 +38,7 @@ export type SyncularBrowserSupportPolicyContextHintReasonCode =
   | 'browser_support_context.default_context'
   | 'browser_support_context.ephemeral_storage'
   | 'browser_support_context.explicit_context'
+  | 'browser_support_context.installed_app_display_mode'
   | 'browser_support_context.no_preflight'
   | 'browser_support_context.service_worker_controlled'
   | 'browser_support_context.unsupported_storage';
@@ -317,7 +319,8 @@ const SYNCULAR_BROWSER_SUPPORT_MATRIX: readonly SyncularBrowserSupportMatrixEntr
       expectedPersistence: 'unknown',
       preflightRequired: true,
       requiredEvidence: [
-        'Deployment preflight runs through the service-worker controlled page and verifies current JS/WASM assets',
+        'Deployment preflight runs through the service-worker controlled or installed-app page and verifies current JS/WASM assets',
+        'Deployment preflight records display-mode/installed-app evidence when the app is launched outside a normal browser tab',
         'The app proves reopen or restart persistence after installation',
         'Cache/version skew policy is tested for generated client, JS glue, WASM binary, and server schema versions',
       ],
@@ -404,6 +407,17 @@ export function getSyncularBrowserSupportPolicyContextHint(
       confidence: 'high',
       reasonCodes: ['browser_support_context.explicit_context'],
       summary: `Using explicit Syncular browser support context: ${getSyncularBrowserSupportPolicy(options.context).label}.`,
+    });
+  }
+
+  if (preflight?.browser.installedApp === true) {
+    return createBrowserSupportContextHint({
+      context: 'pwa',
+      source: 'installed-app-display-mode',
+      confidence: 'high',
+      reasonCodes: ['browser_support_context.installed_app_display_mode'],
+      summary:
+        'Deployment preflight reports installed-app display-mode evidence; using the PWA/installed-app support policy context.',
     });
   }
 

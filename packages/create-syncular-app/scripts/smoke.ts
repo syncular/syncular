@@ -1568,6 +1568,8 @@ type BrowserPreviewProbe = {
   deploymentPreflight: {
     actionCount: number;
     availableBytes: number | null;
+    displayMode: string | null;
+    installedApp: string | null;
     issueCount: number;
     minimumAvailableBytes: number | null;
     minimumQuotaBytes: number | null;
@@ -1949,6 +1951,8 @@ async function readStarterBrowserProbe(
     };
     const deploymentPreflightActionCount = Number(deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-action-count') ?? 0);
     const deploymentPreflightAvailableBytes = readDeploymentPreflightNumber('data-syncular-deployment-preflight-available-bytes');
+    const deploymentPreflightDisplayMode = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-display-mode') ?? null;
+    const deploymentPreflightInstalledApp = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-installed-app') ?? null;
     const deploymentPreflightIssueCount = Number(deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-issue-count') ?? 0);
     const deploymentPreflightMinimumAvailableBytes = readDeploymentPreflightNumber('data-syncular-deployment-preflight-minimum-available-bytes');
     const deploymentPreflightMinimumQuotaBytes = readDeploymentPreflightNumber('data-syncular-deployment-preflight-minimum-quota-bytes');
@@ -2365,6 +2369,8 @@ async function readStarterBrowserProbe(
       deploymentPreflight: {
         actionCount: deploymentPreflightActionCount,
         availableBytes: deploymentPreflightAvailableBytes,
+        displayMode: deploymentPreflightDisplayMode,
+        installedApp: deploymentPreflightInstalledApp,
         issueCount: deploymentPreflightIssueCount,
         minimumAvailableBytes: deploymentPreflightMinimumAvailableBytes,
         minimumQuotaBytes: deploymentPreflightMinimumQuotaBytes,
@@ -8963,6 +8969,8 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
       deploymentPreflight: {
         actionCount: 0,
         availableBytes: 107_374_178_304,
+        displayMode: 'browser',
+        installedApp: 'false',
         issueCount: 0,
         minimumAvailableBytes: 26_214_400,
         minimumQuotaBytes: 52_428_800,
@@ -9519,6 +9527,8 @@ function assertBrowserPreviewDeploymentPreflightShape(
   for (const key of [
     'persistence',
     'persisted',
+    'displayMode',
+    'installedApp',
     'quotaPressure',
     'serviceWorker',
     'serviceWorkerControlled',

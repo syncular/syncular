@@ -486,7 +486,8 @@ read-only review:
     step. Browser support policy now also exposes
     `getSyncularBrowserSupportPolicyContextHint(...)`, which lets apps and the
     starter choose the policy context from explicit app input or hard preflight
-    facts: service-worker controlled pages map to `pwa`,
+    facts: installed-app display-mode evidence or service-worker controlled
+    pages map to `pwa`,
     ephemeral/development storage maps to `private-browsing`, and the helper
     otherwise keeps the maintained Chrome/Chromium context without guessing
     Safari or Firefox from user agents.
@@ -668,10 +669,11 @@ read-only review:
     expected-vs-observed browser support status, stable policy reason codes,
     required evidence, known risks, and next steps through Console ingestion.
     Browser deployment preflight now also reports service-worker availability,
-    whether the page is service-worker controlled, controller state, and a
-    redacted controller script path, so PWA/cache-skew context survives into
-    starter artifacts without treating service workers as an automatic
-    failure. The starter browser-preview smoke now includes a first real Chrome
+    whether the page is service-worker controlled, controller state, a redacted
+    controller script path, display-mode, and whether the launch looks
+    installed/standalone, so PWA/cache-skew context survives into starter
+    artifacts without treating service workers as an automatic failure. The
+    starter browser-preview smoke now includes a first real Chrome
     service-worker-controlled PWA classification proof, while keeping PWA
     support preflight-gated until retained target evidence exists. It also
     includes a first Chrome incognito memory-storage proof for the

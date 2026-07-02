@@ -200,6 +200,8 @@ type StarterOpenPreview = {
 type DeploymentPreflightPreview = {
   actionCount: number;
   availableBytes: number | null;
+  displayMode: SyncularBrowserDeploymentPreflight['browser']['displayMode'];
+  installedApp: boolean | null;
   issueCount: number;
   minimumAvailableBytes: number | null;
   minimumQuotaBytes: number | null;
@@ -2252,6 +2254,14 @@ function DeploymentPreflightMarker({
       data-syncular-deployment-preflight-available-bytes={
         deploymentPreflight.availableBytes ?? ''
       }
+      data-syncular-deployment-preflight-display-mode={
+        deploymentPreflight.displayMode ?? ''
+      }
+      data-syncular-deployment-preflight-installed-app={
+        deploymentPreflight.installedApp === null
+          ? ''
+          : String(deploymentPreflight.installedApp)
+      }
       data-syncular-deployment-preflight-issue-count={
         deploymentPreflight.issueCount
       }
@@ -2336,6 +2346,8 @@ function summarizeDeploymentPreflight(
   return {
     actionCount: preflight.support.recommendedActions.length,
     availableBytes: preflight.storage.availableBytes ?? null,
+    displayMode: preflight.browser.displayMode,
+    installedApp: preflight.browser.installedApp,
     issueCount: preflight.issues.length,
     minimumAvailableBytes: preflight.storage.minimumAvailableBytes ?? null,
     minimumQuotaBytes: preflight.storage.minimumQuotaBytes ?? null,
@@ -2363,6 +2375,8 @@ function failedDeploymentPreflightPreview(
   return {
     actionCount: 1,
     availableBytes: null,
+    displayMode: null,
+    installedApp: null,
     issueCount: 1,
     minimumAvailableBytes:
       starterDeploymentPreflightOptions.minimumAvailableBytes,

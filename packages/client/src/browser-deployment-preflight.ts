@@ -67,6 +67,14 @@ export type SyncularBrowserDeploymentPreflightPersistenceMode =
   | 'unsupported'
   | 'unknown';
 
+export type SyncularBrowserDeploymentPreflightDisplayMode =
+  | 'browser'
+  | 'standalone'
+  | 'minimal-ui'
+  | 'fullscreen'
+  | 'window-controls-overlay'
+  | 'unknown';
+
 export type SyncularBrowserDeploymentPreflightQuotaPressure =
   | 'unknown'
   | 'normal'
@@ -105,6 +113,8 @@ export interface SyncularBrowserDeploymentPreflightBrowser {
   secureContext: boolean | null;
   crossOriginIsolated: boolean | null;
   indexedDB: boolean | null;
+  displayMode: SyncularBrowserDeploymentPreflightDisplayMode | null;
+  installedApp: boolean | null;
   serviceWorker: boolean | null;
   serviceWorkerControlled: boolean | null;
   serviceWorkerControllerState: string | null;
@@ -198,6 +208,7 @@ export interface SyncularBrowserDeploymentPreflightGlobal {
   Worker?: unknown;
   WebAssembly?: unknown;
   BroadcastChannel?: unknown;
+  matchMedia?: unknown;
   indexedDB?: unknown;
   document?: {
     visibilityState?: unknown;
@@ -211,6 +222,7 @@ export interface SyncularBrowserDeploymentPreflightGlobal {
 }
 
 export interface SyncularBrowserDeploymentPreflightNavigator {
+  standalone?: unknown;
   locks?: {
     request?: unknown;
   };
@@ -352,6 +364,7 @@ function summarizeBrowser(
   const serviceWorkerControllerRecord = isRecord(serviceWorkerController)
     ? serviceWorkerController
     : null;
+  const displayMode = summarizeDisplayMode(globalRef, navigatorRef);
   return {
     worker: typeof globalRef.Worker === 'function',
     webAssembly: globalRef.WebAssembly != null,
@@ -364,6 +377,8 @@ function summarizeBrowser(
         ? globalRef.crossOriginIsolated
         : null,
     indexedDB: globalRef.indexedDB != null,
+    displayMode: displayMode.mode,
+    installedApp: displayMode.installedApp,
     serviceWorker: serviceWorkerAvailable,
     serviceWorkerControlled,
     serviceWorkerControllerState:
@@ -374,6 +389,70 @@ function summarizeBrowser(
       serviceWorkerControllerRecord?.scriptURL
     ),
   };
+}
+
+function summarizeDisplayMode(
+  globalRef: SyncularBrowserDeploymentPreflightGlobal,
+  navigatorRef?: SyncularBrowserDeploymentPreflightNavigator
+): {
+  mode: SyncularBrowserDeploymentPreflightDisplayMode | null;
+  installedApp: boolean | null;
+} {
+  const navigatorStandalone =
+    typeof navigatorRef?.standalone === 'boolean'
+      ? navigatorRef.standalone
+      : null;
+  const appLikeModes: SyncularBrowserDeploymentPreflightDisplayMode[] = [
+    'standalone',
+    'minimal-ui',
+    'fullscreen',
+    'window-controls-overlay',
+  ];
+  const matchMedia =
+    typeof globalRef.matchMedia === 'function'
+      ? (globalRef.matchMedia as (
+          query: string
+        ) => { matches?: unknown } | null)
+      : null;
+
+  if (matchMedia) {
+    for (const mode of appLikeModes) {
+      if (safeMediaQueryMatches(matchMedia, `(display-mode: ${mode})`)) {
+        return {
+          mode,
+          installedApp: mode !== 'browser',
+        };
+      }
+    }
+  }
+
+  if (navigatorStandalone === true) {
+    return { mode: 'standalone', installedApp: true };
+  }
+  if (
+    matchMedia &&
+    safeMediaQueryMatches(matchMedia, '(display-mode: browser)')
+  ) {
+    return { mode: 'browser', installedApp: false };
+  }
+  if (navigatorStandalone === false) {
+    return { mode: matchMedia ? 'unknown' : null, installedApp: false };
+  }
+  if (!matchMedia) {
+    return { mode: null, installedApp: null };
+  }
+  return { mode: 'unknown', installedApp: null };
+}
+
+function safeMediaQueryMatches(
+  matchMedia: (query: string) => { matches?: unknown } | null,
+  query: string
+): boolean {
+  try {
+    return matchMedia(query)?.matches === true;
+  } catch {
+    return false;
+  }
 }
 
 function summarizeServiceWorkerScriptPath(scriptUrl: unknown): string | null {

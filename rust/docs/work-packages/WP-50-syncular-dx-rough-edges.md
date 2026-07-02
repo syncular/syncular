@@ -1318,8 +1318,8 @@ online propagation, or reconnect behavior can change.
   OPFS/IndexedDB durable storage availability, persistent-storage status,
   quota budgets, available free-space budgets, storage usage ratio, quota
   pressure, service-worker availability/control, controller state, redacted
-  controller script path, and served WASM runtime asset status/content types
-  before a database is opened.
+  controller script path, installed-app display-mode evidence, and served WASM
+  runtime asset status/content types before a database is opened.
 - Browser deployment preflight now carries an explicit support decision:
   `persistent-offline`, `ephemeral-development`, `unsupported`, or `unknown`,
   plus persistence mode, production-readiness, issue codes, and recommended
@@ -1338,13 +1338,13 @@ online propagation, or reconnect behavior can change.
   redacted policy status when ingesting starter browser artifacts.
 - Browser support policy context selection now has a public helper:
   `getSyncularBrowserSupportPolicyContextHint(...)`. Explicit app context wins;
-  otherwise the helper only uses hard preflight facts, mapping
-  service-worker-controlled pages to `pwa`, ephemeral/development storage to
-  `private-browsing`, unsupported storage to the default context with low
-  confidence, and ordinary pages to the maintained Chrome/Chromium context
-  without Safari/Firefox user-agent guessing. The starter uses the hint before
-  evaluating policy so PWA/cache-skew and ephemeral-storage artifacts carry the
-  right policy context.
+  otherwise the helper only uses hard preflight facts, mapping installed-app
+  display-mode evidence and service-worker-controlled pages to `pwa`,
+  ephemeral/development storage to `private-browsing`, unsupported storage to
+  the default context with low confidence, and ordinary pages to the maintained
+  Chrome/Chromium context without Safari/Firefox user-agent guessing. The
+  starter uses the hint before evaluating policy so installed-PWA/PWA
+  cache-skew and ephemeral-storage artifacts carry the right policy context.
 - Browser support policy evaluations now include stable
   `browser_support.*` reason codes. The starter records those codes in its
   hidden smoke marker and `browser-preview-failure.json`, so app diagnostics
@@ -3900,10 +3900,10 @@ Most recent browser-health failure-artifact rerun:
   grant status, quota budgets, BroadcastChannel, Web Locks, page visibility,
   `pagehide`, `beforeunload`, resume/shutdown signal availability,
   service-worker availability/control, controller state, redacted controller
-  script path, and multi-tab mode. It now also reports a single support tier
-  and persistence mode so apps can distinguish persistent offline support,
-  development-only memory storage, unsupported deployments, and unproven
-  checks. Apps can make
+  script path, installed-app display-mode evidence, and multi-tab mode. It now
+  also reports a single support tier and persistence mode so apps can
+  distinguish persistent offline support, development-only memory storage,
+  unsupported deployments, and unproven checks. Apps can make
   missing tab coordination or page lifecycle resume signals fail the
   preflight. The starter now runs the helper before opening Syncular. The
   scaffold smoke checks the transformed preflight module,
@@ -4151,9 +4151,10 @@ Most recent browser-health failure-artifact rerun:
   evidence against the Chrome/Chromium support policy and exports the result
   into its built-preview marker and browser failure artifact, and the context
   hint helper now lets starter/browser artifacts switch to `pwa` for
-  service-worker controlled pages or `private-browsing` for ephemeral storage
-  without guessing Safari/Firefox from a user agent. The matrix is represented
-  in smoke evidence instead of docs alone. This branch adds the first real
+  installed-app display-mode evidence or service-worker controlled pages to
+  `pwa`, or `private-browsing` for ephemeral storage without guessing
+  Safari/Firefox from a user agent. The matrix is represented in smoke evidence
+  instead of docs alone. This branch adds the first real
   Chrome service-worker-controlled PWA classification proof: the starter smoke
   writes a temporary pass-through service worker into the built preview, opens a
   fresh Chrome profile, registers the worker, reloads under controller, and
@@ -4950,6 +4951,22 @@ Most recent browser-health failure-artifact rerun:
   rust/docs/QUALITY_GATES.md rust/docs/ROADMAP.md
   rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`,
   `bun run docs:stale-check`, and `git diff --check`.
+- 2026-07-02: Added installed-app display-mode evidence to browser deployment
+  preflight and starter browser artifacts. The public preflight now reports
+  `browser.displayMode` plus `browser.installedApp` from display-mode media
+  queries or the iOS standalone signal, and
+  `getSyncularBrowserSupportPolicyContextHint(...)` routes that hard evidence
+  to the PWA policy context before the looser service-worker-controlled hint.
+  The generated starter's hidden deployment-preflight marker and
+  `browser-preview-failure.json` shape preserve the same fields, so hosted
+  artifacts can distinguish service-worker-controlled pages from
+  installed/standalone app launches without user-agent guessing. This does not
+  claim installed-PWA cache/update support is complete; it makes the missing
+  target-host evidence explicit and machine-readable. Local Bun `1.3.9` gates
+  passed: focused browser preflight/support-matrix tests, full
+  `packages/client` tests, `bun --cwd packages/client tsgo`, `bun --cwd
+  packages/create-syncular-app tsgo`, `bun --cwd packages/create-syncular-app
+  smoke`, focused Biome, `bun run docs:stale-check`, and `git diff --check`.
 
 ## Next Action
 
@@ -5064,10 +5081,10 @@ closing the previous release-flag decision while leaving `--allow-dirty`
 rehearsals available for local iteration without Chrome/Chromium.
 Remaining lifecycle/storage work is host/browser eviction beyond explicit CDP
 origin/database clears/Clear-Site-Data/same-origin IndexedDB deletion,
-installed-PWA cache/update semantics beyond the smoke-only PWA offline,
-cache-refresh, and service-worker update proofs, and storage coordination/
-failure behavior below the already-covered OPFS fallback and
-fallback-failure classification.
+installed-PWA cache/update semantics beyond the now-machine-readable
+display-mode evidence plus smoke-only PWA offline/cache-refresh/service-worker
+update proofs, and storage coordination/failure behavior below the
+already-covered OPFS fallback and fallback-failure classification.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain host-driven eviction
 and deeper storage-failure browser proof, lower-level storage
@@ -5077,6 +5094,7 @@ crash, explicit shutdown close, discarded-tab recovery, database-storage
 eviction, Clear-Site-Data storage eviction, and same-origin IndexedDB deletion
 branches, and
 browser/bundler matrix execution, especially Safari, Firefox, real private-mode
-durable-persistence semantics, WebViews, installed-PWA cache/update semantics,
-and PWA cache-update semantics beyond these smoke-only runtime cache-refresh
-and service-worker update activation proofs.
+durable-persistence semantics, WebViews, installed-PWA cache/update semantics
+using real standalone/installed launches, and PWA cache-update semantics beyond
+these smoke-only runtime cache-refresh and service-worker update activation
+proofs.
