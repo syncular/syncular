@@ -3981,16 +3981,22 @@ Most recent browser-health failure-artifact rerun:
   non-browser scaffold smoke verifies the endpoint/header contract, and the
   Chrome path can request that endpoint, require IndexedDB/localStorage
   sentinel removal without using CDP storage clear, and reload the same client
-  id from server state.
+  id from server state. The branch now also adds a same-origin IndexedDB
+  deletion/rebootstrap proof path: the Vite dev/preview template exposes a
+  smoke-only same-origin storage-admin page without app runtime side effects,
+  the non-browser scaffold smoke verifies the page contract, and the Chrome
+  path can delete IndexedDB databases through `indexedDB.deleteDatabase(...)`,
+  require Cache API/localStorage sentinels to survive while the IndexedDB
+  sentinel disappears, and reload the same client id from server state.
   Remaining work is richer browser/host eviction and storage-failure
   execution beyond explicit CDP origin clear, Clear-Site-Data storage clear,
-  same-database duplicate-tab writes, storage shutdown, and discarded-tab
-  recovery, plus deeper recovery coordination for persistent browser databases
-  beyond real target foreground/background activation, dispatched page
-  lifecycle events, CDP lifecycle forcing, synthetic storage warning action
-  mapping, browser-observed quota-pressure preflight/recovery mapping,
-  quota-exhausted write rejection, and lock-serialized foreground resume/recovery
-  actions. Local
+  same-origin IndexedDB deletion, same-database duplicate-tab writes, storage
+  shutdown, and discarded-tab recovery, plus deeper recovery coordination for
+  persistent browser databases beyond real target foreground/background
+  activation, dispatched page lifecycle events, CDP lifecycle forcing,
+  synthetic storage warning action mapping, browser-observed quota-pressure
+  preflight/recovery mapping, quota-exhausted write rejection, and
+  lock-serialized foreground resume/recovery actions. Local
   execution of the new browser branches still needs a Chrome-capable runner;
   this machine has no Chrome/Chromium binary.
 - Local recovery controls: first plan/action slice is done for support bundles,
@@ -4757,6 +4763,24 @@ Most recent browser-health failure-artifact rerun:
   `bunx biome check packages/create-syncular-app/scripts/smoke.ts packages/create-syncular-app/template/vite.config.ts`,
   `bun --cwd packages/create-syncular-app tsgo`, and
   `bun --cwd packages/create-syncular-app smoke`. Chrome was not installed
+  locally, so hosted Checks run `28561229781` on commit `6d5ac13b` confirmed
+  the branch in hosted Chrome and passed the full matrix.
+- 2026-07-02: Added a same-origin IndexedDB deletion/rebootstrap proof to the
+  generated starter smoke. The scaffolded Vite dev/preview server now exposes a
+  smoke-only same-origin storage-admin page under
+  `SYNCULAR_STARTER_SMOKE_FAILPOINTS=1` without mounting the generated app or
+  sending `Clear-Site-Data`; the non-browser smoke verifies that route is
+  `no-store` HTML with a ready marker. The Chrome branch writes Cache API,
+  localStorage, and IndexedDB sentinels, creates a generated task, proves it
+  reached an observer through sync/realtime, closes the app targets, opens the
+  storage-admin page, deletes IndexedDB databases through
+  `indexedDB.deleteDatabase(...)`, requires the starter database plus sentinel
+  database to be deleted while Cache API/localStorage sentinels survive, then
+  reloads the same client id and waits for the task to restore from server
+  state. Local gates with Bun `1.3.9` passed:
+  `bunx biome check packages/create-syncular-app/scripts/smoke.ts packages/create-syncular-app/template/vite.config.ts`,
+  `bun --cwd packages/create-syncular-app tsgo`, and
+  `bun --cwd packages/create-syncular-app smoke`. Chrome was not installed
   locally, so hosted `starter-browser-preview` confirmation is still required
   for the new browser branch.
 
@@ -4822,17 +4846,25 @@ eviction/rebootstrap branch: a smoke-only Vite dev/preview endpoint returns
 `Clear-Site-Data: "storage"`, the non-browser scaffold smoke verifies the
 header contract, and the Chrome path clears IndexedDB/localStorage sentinels
 through that response header before rehydrating the same client id from server
-state. The next lifecycle follow-up should confirm that branch in hosted Chrome
-and then move to host/browser eviction beyond explicit CDP origin/database
-clears and Clear-Site-Data, plus storage failure/coordination behavior below
-the already-covered OPFS fallback and fallback-failure classification.
+state; hosted Checks run `28561229781` confirmed that branch in Chrome. The
+current slice adds a same-origin IndexedDB deletion branch: a smoke-only
+storage-admin page gives the browser a same-origin execution context without
+mounting the generated app, the non-browser scaffold smoke verifies the route,
+and the Chrome path deletes IndexedDB databases through
+`indexedDB.deleteDatabase(...)` before rehydrating the same client id from
+server state. The next lifecycle follow-up should confirm that branch in hosted
+Chrome and then move to host/browser eviction beyond explicit CDP
+origin/database clears, Clear-Site-Data, and same-origin IndexedDB deletion,
+plus storage failure/coordination behavior below the already-covered OPFS
+fallback and fallback-failure classification.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain host-driven eviction
 and deeper storage-failure browser proof, lower-level storage
 contention/failure behavior beyond the already-covered OPFS install fallback,
 fallback-failure classification, duplicate-tab generated writes, renderer
 crash, explicit shutdown close, discarded-tab recovery, database-storage
-eviction, and Clear-Site-Data storage eviction branches, and
+eviction, Clear-Site-Data storage eviction, and same-origin IndexedDB deletion
+branches, and
 browser/bundler matrix execution, especially Safari, Firefox, real private-mode
 durable-persistence semantics, WebViews, installed-PWA cache/update semantics,
 and PWA offline persistence beyond controller classification.

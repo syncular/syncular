@@ -339,12 +339,19 @@ read-only review:
     `Clear-Site-Data: "storage"` Vite dev/preview endpoint, verifies that
     header in the non-Chrome scaffold smoke, and adds a Chrome branch that
     clears IndexedDB/localStorage through that server response before reloading
-    the same generated-app client id from server state. Local pinned-Bun
-    focused Biome, create-syncular-app typecheck, and non-Chrome scaffold smoke
-    passed; hosted Chrome confirmation for that new branch is still pending.
-    Host-driven eviction beyond explicit CDP storage clears and
-    Clear-Site-Data, plus deeper storage/coordination failures below the
-    covered fallback and fallback-failure cases, remain matrix work.
+    the same generated-app client id from server state; hosted Checks run
+    `28561229781` confirmed that branch in Chrome. The current starter smoke
+    slice adds a smoke-only same-origin storage-admin page, verifies it in the
+    non-Chrome scaffold smoke, and adds a Chrome branch that deletes IndexedDB
+    databases through `indexedDB.deleteDatabase(...)` while proving
+    Cache/localStorage sentinels survive and the same generated-app client id
+    rehydrates from server state. Local pinned-Bun focused Biome,
+    create-syncular-app typecheck, and non-Chrome scaffold smoke passed;
+    hosted Chrome confirmation for that new branch is still pending.
+    Host-driven eviction beyond explicit CDP storage clears, Clear-Site-Data,
+    and same-origin IndexedDB deletion, plus deeper storage/coordination
+    failures below the covered fallback and fallback-failure cases, remain
+    matrix work.
     The starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply

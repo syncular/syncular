@@ -15,6 +15,7 @@ const syncularRuntimeContentTypes = new Map([
   ['syncular_bg.wasm', 'application/wasm'],
 ]);
 const syncularSmokeClearSiteDataPath = '/__syncular-smoke/clear-site-data';
+const syncularSmokeStorageAdminPath = '/__syncular-smoke/storage-admin';
 
 type SyncularMiddlewareStack = {
   use(handler: SyncularMiddlewareHandler): void;
@@ -66,16 +67,26 @@ function installSyncularSmokeMiddleware(server: SyncularMiddlewareServer) {
 
   server.middlewares.use((request, response, next) => {
     const pathname = resolveRequestPathname(request.url);
-    if (pathname !== syncularSmokeClearSiteDataPath) {
-      next();
+    if (pathname === syncularSmokeClearSiteDataPath) {
+      response.statusCode = 200;
+      response.setHeader('cache-control', 'no-store');
+      response.setHeader('clear-site-data', '"storage"');
+      response.setHeader('content-type', 'text/plain; charset=utf-8');
+      response.end('syncular smoke storage clear requested\n');
       return;
     }
 
-    response.statusCode = 200;
-    response.setHeader('cache-control', 'no-store');
-    response.setHeader('clear-site-data', '"storage"');
-    response.setHeader('content-type', 'text/plain; charset=utf-8');
-    response.end('syncular smoke storage clear requested\n');
+    if (pathname === syncularSmokeStorageAdminPath) {
+      response.statusCode = 200;
+      response.setHeader('cache-control', 'no-store');
+      response.setHeader('content-type', 'text/html; charset=utf-8');
+      response.end(
+        '<!doctype html><title>Syncular smoke storage admin</title><main data-syncular-smoke-storage-admin="ready">ready</main>\n'
+      );
+      return;
+    }
+
+    next();
   });
 }
 

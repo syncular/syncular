@@ -23,7 +23,8 @@ import { Buffer } from 'node:buffer';
  *    preflight classification, quota-exhausted generated writes, browser
  *    database-storage eviction/rebootstrap recovery, browser origin-storage
  *    eviction/rebootstrap recovery, Clear-Site-Data server-driven storage
- *    eviction/rebootstrap recovery, two-tab propagation,
+ *    eviction/rebootstrap recovery, same-origin IndexedDB deletion
+ *    recovery, two-tab propagation,
  *    same-client page reload/reopen persistence, same-client duplicate-tab
  *    open/write contention, generated write pressure, same-profile browser
  *    process restart persistence, sync-held shutdown replay recovery,
@@ -77,6 +78,7 @@ const STARTER_STORAGE_EVICTION_SENTINEL_URL =
 const STARTER_DATABASE_STORAGE_EVICTION_TYPES = 'indexeddb,file_systems';
 const STARTER_PWA_SMOKE_SERVICE_WORKER_PATH = '/__syncular-smoke-pwa-sw.js';
 const STARTER_CLEAR_SITE_DATA_SMOKE_PATH = '/__syncular-smoke/clear-site-data';
+const STARTER_STORAGE_ADMIN_SMOKE_PATH = '/__syncular-smoke/storage-admin';
 const BROWSER_PREVIEW_SMOKE_TIMEOUT_MS = 180_000;
 const CDP_CONNECT_TIMEOUT_MS = 10_000;
 const CDP_COMMAND_TIMEOUT_MS = 30_000;
@@ -518,6 +520,40 @@ async function verifyBuiltPreviewClearSiteDataEndpoint(
   }
 }
 
+async function verifyBuiltPreviewStorageAdminEndpoint(
+  origin: string
+): Promise<void> {
+  const response = await fetch(
+    new URL(
+      `${STARTER_STORAGE_ADMIN_SMOKE_PATH}?selfCheck=${Date.now()}`,
+      origin
+    )
+  );
+  if (!response.ok) {
+    throw new Error(
+      `Built preview storage-admin smoke endpoint returned ${response.status}`
+    );
+  }
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.includes('text/html')) {
+    throw new Error(
+      `Built preview storage-admin smoke endpoint returned ${contentType || '<missing>'}`
+    );
+  }
+  const cacheControl = response.headers.get('cache-control') ?? '';
+  if (!cacheControl.toLowerCase().includes('no-store')) {
+    throw new Error(
+      `Built preview storage-admin smoke endpoint was cacheable: ${cacheControl || '<missing>'}`
+    );
+  }
+  const body = await response.text();
+  if (!body.includes('data-syncular-smoke-storage-admin="ready"')) {
+    throw new Error(
+      'Built preview storage-admin smoke endpoint did not expose the ready marker'
+    );
+  }
+}
+
 function isExpectedAssetContentType(contentType: string, expected: string) {
   return expected === 'javascript'
     ? contentType.includes('javascript')
@@ -892,6 +928,16 @@ async function runBrowserPreviewSmoke(args: {
     origin: args.origin,
     userDataDir: `${args.userDataDir}-clear-site-data-storage-eviction`,
   });
+  log('real-browser smoke: proving same-origin IndexedDB deletion recovery');
+  await proveStarterSameOriginIndexedDbDeletionRecovery({
+    chrome: args.chrome,
+    failureArtifactPath: sameOriginIndexedDbDeletionFailureArtifactPath(
+      args.failureArtifactPath
+    ),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    userDataDir: `${args.userDataDir}-same-origin-indexeddb-deletion`,
+  });
   log('real-browser built-preview preflight smoke passed');
 }
 
@@ -946,6 +992,17 @@ function clearSiteDataStorageEvictionFailureArtifactPath(
         '.clear-site-data-storage-eviction.json'
       )
     : `${failureArtifactPath}.clear-site-data-storage-eviction.json`;
+}
+
+function sameOriginIndexedDbDeletionFailureArtifactPath(
+  failureArtifactPath: string
+): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(
+        /\.json$/u,
+        '.same-origin-indexeddb-deletion.json'
+      )
+    : `${failureArtifactPath}.same-origin-indexeddb-deletion.json`;
 }
 
 function shutdownReplayFailureArtifactPath(
@@ -6287,6 +6344,243 @@ async function proveStarterClearSiteDataStorageEvictionRecovery(args: {
   }
 }
 
+async function proveStarterSameOriginIndexedDbDeletionRecovery(args: {
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  const clientId = 'web-same-origin-indexeddb-deletion';
+  const title = `same origin indexeddb deletion ${Date.now()}`;
+  let activeSession: CdpSession | null = null;
+  let activeTargetId: string | null = null;
+  let observerSession: CdpSession | null = null;
+  let observerTargetId: string | null = null;
+  let clearSession: CdpSession | null = null;
+  let clearTargetId: string | null = null;
+  let recoverySession: CdpSession | null = null;
+  let recoveryTargetId: string | null = null;
+  let lastProbe: BrowserPreviewProbe | null = null;
+
+  try {
+    const activeTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    activeTargetId = activeTarget.id;
+    activeSession = await CdpSession.connect(activeTarget.webSocketDebuggerUrl);
+    await enableChromeTarget(activeSession);
+    await navigateChromeTarget(
+      activeSession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularSameOriginIndexedDbDeletionProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      activeSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(activeSession);
+    await writeStarterStorageEvictionSentinel(activeSession);
+    const sentinelBefore =
+      await readStarterStorageEvictionSentinel(activeSession);
+    if (
+      sentinelBefore.cachePresent !== true ||
+      sentinelBefore.indexedDbPresent !== true ||
+      sentinelBefore.localStoragePresent !== true
+    ) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'same-origin-indexeddb-deletion-sentinel-write-missing',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview same-origin IndexedDB deletion sentinel was not fully visible before delete. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    const beforeTask = await readStarterBrowserProbe(activeSession);
+    lastProbe = beforeTask;
+    await submitStarterTask(activeSession, title);
+    await waitForStarterLocalVisibility({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+    });
+    await waitForStarterCommandTimelineProof({
+      expectedCount: beforeTask.commandTimelineProof.count + 1,
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+    });
+
+    const observerTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    observerTargetId = observerTarget.id;
+    observerSession = await CdpSession.connect(
+      observerTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(observerSession);
+    await navigateChromeTarget(
+      observerSession,
+      `${args.origin}/?syncularClientId=web-same-origin-indexeddb-deletion-observer&syncularSameOriginIndexedDbDeletionObserverProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      observerSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: observerSession,
+      title,
+      errorReason: 'same-origin-indexeddb-deletion-propagation-errors',
+      timeoutReason: 'same-origin-indexeddb-deletion-propagation-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview same-origin IndexedDB deletion propagation',
+    });
+
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: activeSession,
+      targetId: activeTargetId,
+    });
+    activeSession = null;
+    activeTargetId = null;
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: observerSession,
+      targetId: observerTargetId,
+    });
+    observerSession = null;
+    observerTargetId = null;
+
+    const clearTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    clearTargetId = clearTarget.id;
+    clearSession = await CdpSession.connect(clearTarget.webSocketDebuggerUrl);
+    await enableChromeTarget(clearSession);
+    const deletion = await deleteStarterIndexedDbDatabasesViaSameOriginPage(
+      clearSession,
+      args.origin
+    );
+    if (
+      !deletion.deletedNames.includes(
+        STARTER_STORAGE_EVICTION_SENTINEL_INDEXEDDB
+      ) ||
+      !deletion.deletedNames.some(
+        (name) => name !== STARTER_STORAGE_EVICTION_SENTINEL_INDEXEDDB
+      ) ||
+      deletion.remainingNames.length > 0
+    ) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'same-origin-indexeddb-deletion-incomplete',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview same-origin IndexedDB deletion was incomplete: before=${deletion.beforeNames.join(',') || '<none>'} deleted=${deletion.deletedNames.join(',') || '<none>'} remaining=${deletion.remainingNames.join(',') || '<none>'}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: clearSession,
+      targetId: clearTargetId,
+    });
+    clearSession = null;
+    clearTargetId = null;
+
+    const recoveryTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    recoveryTargetId = recoveryTarget.id;
+    recoverySession = await CdpSession.connect(
+      recoveryTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(recoverySession);
+    await navigateChromeTarget(
+      recoverySession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularSameOriginIndexedDbDeletionRecoveryProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      recoverySession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(recoverySession);
+    const sentinelAfter =
+      await readStarterStorageEvictionSentinel(recoverySession);
+    if (
+      sentinelAfter.cachePresent !== true ||
+      sentinelAfter.localStoragePresent !== true ||
+      sentinelAfter.indexedDbPresent !== false
+    ) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'same-origin-indexeddb-deletion-sentinel-unexpected-state',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview same-origin IndexedDB deletion did not preserve Cache/localStorage while clearing IndexedDB. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: recoverySession,
+      title,
+      errorReason: 'same-origin-indexeddb-deletion-recovery-errors',
+      timeoutReason: 'same-origin-indexeddb-deletion-recovery-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview same-origin IndexedDB deletion recovery',
+    });
+  } catch (error) {
+    await writeBrowserPreviewFailureArtifactIfMissing(
+      args.failureArtifactPath,
+      'same-origin-indexeddb-deletion-smoke-error',
+      lastProbe,
+      args.failureMetrics
+    );
+    throw error;
+  } finally {
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: recoverySession,
+      targetId: recoveryTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: clearSession,
+      targetId: clearTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: observerSession,
+      targetId: observerTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: activeSession,
+      targetId: activeTargetId,
+    });
+    await stopProcess(chrome.process);
+  }
+}
+
 type StarterStorageEvictionSentinelState = {
   cachePresent: boolean | null;
   indexedDbPresent: boolean | null;
@@ -6530,6 +6824,101 @@ async function clearStarterStorageViaClearSiteData(
   throw new Error(
     `Clear-Site-Data did not clear browser storage sentinel: indexedDb=${lastState?.indexedDbPresent ?? 'unknown'} localStorage=${lastState?.localStoragePresent ?? 'unknown'}`
   );
+}
+
+type StarterIndexedDbDeletionResult = {
+  beforeNames: string[];
+  blockedNames: string[];
+  deletedNames: string[];
+  remainingNames: string[];
+};
+
+async function deleteStarterIndexedDbDatabasesViaSameOriginPage(
+  session: CdpSession,
+  origin: string
+): Promise<StarterIndexedDbDeletionResult> {
+  await navigateChromeTarget(
+    session,
+    `${origin}${STARTER_STORAGE_ADMIN_SMOKE_PATH}?t=${Date.now()}`
+  );
+
+  const result = await session.evaluate<
+    | {
+        ok: true;
+        beforeNames: string[];
+        blockedNames: string[];
+        deletedNames: string[];
+        remainingNames: string[];
+      }
+    | { ok: false; reason: string }
+  >(`(async () => {
+    try {
+      const indexedDB = globalThis.indexedDB;
+      if (typeof indexedDB?.databases !== 'function') {
+        return { ok: false, reason: 'indexeddb-databases-unavailable' };
+      }
+      if (typeof indexedDB.deleteDatabase !== 'function') {
+        return { ok: false, reason: 'indexeddb-delete-unavailable' };
+      }
+      const listNames = async () =>
+        (await indexedDB.databases())
+          .map((databaseInfo) => databaseInfo.name)
+          .filter((name) => typeof name === 'string' && name.length > 0)
+          .sort();
+      const beforeNames = await listNames();
+      const blockedNames = [];
+      const deletedNames = [];
+      const deleteDatabase = (name) =>
+        new Promise((resolve, reject) => {
+          let blocked = false;
+          let settled = false;
+          const request = indexedDB.deleteDatabase(name);
+          const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            reject(new Error('indexeddb-delete-timeout:' + name + (blocked ? ':blocked' : '')));
+          }, 5000);
+          request.onblocked = () => {
+            blocked = true;
+          };
+          request.onerror = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            reject(request.error ?? new Error('indexeddb-delete-failed:' + name));
+          };
+          request.onsuccess = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve({ blocked });
+          };
+        });
+      for (const name of beforeNames) {
+        const deleteResult = await deleteDatabase(name);
+        if (deleteResult.blocked) blockedNames.push(name);
+        deletedNames.push(name);
+      }
+      return {
+        ok: true,
+        beforeNames,
+        blockedNames,
+        deletedNames,
+        remainingNames: await listNames(),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  })()`);
+  if (!result.ok) {
+    throw new Error(
+      `Could not delete IndexedDB databases from same-origin storage-admin page: ${result.reason}`
+    );
+  }
+  return result;
 }
 
 async function clearStarterDatabaseStorage(
@@ -8852,6 +9241,8 @@ async function main(): Promise<void> {
     log('built preview runtime asset check passed');
     await verifyBuiltPreviewClearSiteDataEndpoint(previewOrigin);
     log('built preview Clear-Site-Data smoke endpoint check passed');
+    await verifyBuiltPreviewStorageAdminEndpoint(previewOrigin);
+    log('built preview storage-admin smoke endpoint check passed');
     await verifyBrowserPreviewFailureArtifactSelfCheck(workDir, failureMetrics);
 
     await maybeRunBrowserPreviewSmoke({
