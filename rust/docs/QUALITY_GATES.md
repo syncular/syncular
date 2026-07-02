@@ -109,13 +109,15 @@ until the full browser Worker/WASM suite is green on Linux.
   WebKit and run `bun --cwd packages/create-syncular-app smoke
   --browser-runtime-matrix=<firefox|webkit> --browser-runtime-matrix-only`,
   proving the built starter opens in those engines, emits ready-or-warning
-  deployment preflight evidence, and reports the explicit
-  `firefox-secure-page` or `safari-secure-page` support policy path while
-  keeping Firefox and
-  Safari/WebKit preflight-gated for realtime, reopen, persistence, and
-  lifecycle evidence. These runtime matrices use manual sync startup so
-  Playwright does not intercept the starter realtime WebSocket; Chrome remains
-  the maintained browser realtime/lifecycle proof in `starter-browser-preview`.
+  deployment preflight evidence, reports the explicit `firefox-secure-page` or
+  `safari-secure-page` support policy path, creates a generated local task with
+  local apply/outbox/local-visibility command-timeline evidence, and reloads the
+  same Playwright context to prove that task renders from local browser storage.
+  Firefox and Safari/WebKit stay preflight-gated for realtime, broader reopen
+  host semantics, durable persistence policy, and lifecycle evidence. These
+  runtime matrices use manual sync startup so Playwright does not intercept the
+  starter realtime WebSocket; Chrome remains the maintained browser
+  realtime/lifecycle proof in `starter-browser-preview`.
   On a browser-capable CI runner, set
   `SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required` so missing Chrome fails instead
   of skipping the browser execution.

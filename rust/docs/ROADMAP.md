@@ -699,24 +699,20 @@ read-only review:
     private/development support-policy branch, while keeping real private-mode
     durable-persistence semantics in the remaining browser matrix. Hosted run
     `28540712560` confirmed the incognito memory-storage proof in Chrome.
-    The starter Checks matrix now also has a Playwright Firefox runtime smoke
-    that passes `syncularBrowserSupportContext=firefox-secure-page`, opens the
-    built starter in Firefox with manual sync startup, and requires
+    The starter Checks matrix now has Playwright Firefox and WebKit runtime
+    smokes that pass explicit `firefox-secure-page` and `safari-secure-page`
+    contexts, open the built starter with manual sync startup, require
     deployment-preflight evidence plus
-    `firefox-secure-page`/`preflight-required`/`warning` support-policy markers
-    without claiming Firefox realtime/reopen/persistence/lifecycle support.
-    The Firefox Checks job runs this as browser-runtime-matrix-only so the
-    Chrome/CDP realtime and lifecycle proof stays owned by
-    `starter-browser-preview`.
-    The current follow-up adds the matching Playwright WebKit runtime smoke:
-    it passes `syncularBrowserSupportContext=safari-secure-page`, opens the
-    built starter in WebKit with manual sync startup, and requires deployment
-    preflight evidence plus
-    `safari-secure-page`/`preflight-required`/`warning` support-policy markers
-    without claiming Safari/WebKit realtime/reopen/persistence/lifecycle
-    support. A dedicated `starter-webkit-runtime-matrix` Checks job owns this
-    runtime/support-policy proof, and hosted Checks run `28576137057` on
-    commit `8245fc98` confirmed it inside the full matrix.
+    `*-secure-page`/`preflight-required`/`warning` support-policy markers, then
+    create a generated task, require local apply/outbox/local-visibility command
+    evidence, reload the same Playwright context, and require the task to render
+    from local browser storage. This proves target-browser local-write/reload
+    execution without claiming Firefox/Safari/WebKit realtime, broader reopen
+    host semantics, durable persistence policy, or lifecycle support. Dedicated
+    `starter-firefox-runtime-matrix` and `starter-webkit-runtime-matrix` Checks
+    jobs own these proofs; hosted Checks run `28576137057` on commit `8245fc98`
+    confirmed the first WebKit matrix inside the full matrix before the local
+    write/reload extension.
     Cloudflare local-runtime failure artifacts now feed Console/Fleet through
     `POST /console/client-diagnostics/cloudflare-runtime-failure`, preserving
     route, exit, bounded output, and safe R2 blob timing/byte metrics as

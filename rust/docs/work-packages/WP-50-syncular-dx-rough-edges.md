@@ -5107,6 +5107,26 @@ Most recent browser-health failure-artifact rerun:
   commit `eabe20df` passed the full matrix, including `starter-browser-preview`,
   `starter-webkit-runtime-matrix`, `starter-firefox-runtime-matrix`, `test`,
   `rust-browser-wasm`, and the native/package jobs.
+- 2026-07-02: Extended the Playwright Firefox/WebKit runtime matrix beyond
+  open/preflight/support-policy evidence into a bounded target-browser local
+  write/reload proof. The runner now submits a generated task in the built
+  starter, waits for local apply/outbox/local-visibility command-timeline
+  evidence without requiring realtime cursor evidence, reloads the same
+  Playwright browser context, and requires the task to render from local browser
+  storage. This intentionally still uses manual sync startup and does not claim
+  Firefox/Safari/WebKit realtime, broader reopen host semantics, durable
+  persistence policy, or lifecycle support. Local Bun `1.3.9` gates passed:
+  `node --check packages/create-syncular-app/scripts/browser-runtime-matrix-runner.mjs`,
+  `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox bun --cwd
+  packages/create-syncular-app smoke --browser-runtime-matrix=firefox
+  --browser-runtime-matrix-only`, and
+  `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=webkit bun --cwd packages/create-syncular-app
+  smoke --browser-runtime-matrix=webkit --browser-runtime-matrix-only` with
+  `PLAYWRIGHT_BROWSERS_PATH=.context/ms-playwright`. The first Firefox local run
+  deliberately caught an overbroad proof assertion: the command timeline had
+  local apply/outbox/local visibility but not realtime cursor evidence under
+  manual startup, so the final runner requires only the local command evidence
+  this matrix slice is meant to prove.
 
 ## Next Action
 
@@ -5238,10 +5258,13 @@ follow-up fixed the `--app=about:blank` target assumption.
 The current WebKit/Safari runtime-matrix slice adds a dedicated
 `starter-webkit-runtime-matrix` Checks job using Playwright WebKit and the
 explicit `safari-secure-page` support context. It mirrors the Firefox
-runtime/support-policy proof while keeping Safari/WebKit durable persistence,
-realtime, reopen, and lifecycle support preflight-gated until deeper target
-evidence exists. Hosted Checks run `28576137057` on commit `8245fc98` passed
-the full matrix, including `starter-webkit-runtime-matrix`.
+runtime/support-policy proof and now both matrix jobs also prove a generated
+local write with local command evidence plus same-context reload rendering from
+browser storage. Safari/WebKit and Firefox durable persistence policy, realtime,
+broader reopen host semantics, and lifecycle support remain preflight-gated
+until deeper target evidence exists. Hosted Checks run `28576137057` on commit
+`8245fc98` passed the full matrix, including `starter-webkit-runtime-matrix`,
+before the local-write/reload extension.
 Remaining lifecycle/storage work is host/browser eviction beyond explicit CDP
 origin/database clears/Clear-Site-Data/same-origin IndexedDB deletion,
 deeper fully installed-PWA host semantics beyond the now-machine-readable

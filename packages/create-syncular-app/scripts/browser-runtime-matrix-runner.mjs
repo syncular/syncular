@@ -123,6 +123,26 @@ async function readMatrixProbe(page, diagnostics) {
         policy?.getAttribute(
           'data-syncular-browser-support-policy-status'
         ) ?? null;
+      const commandTimelineStatus =
+        commandTimeline?.getAttribute(
+          'data-syncular-command-timeline-proof-status'
+        ) ?? null;
+      const commandTimelineErrorCode =
+        commandTimeline?.getAttribute(
+          'data-syncular-command-timeline-proof-error-code'
+        ) ?? null;
+      const starterCommandTimelineStatus =
+        starterTimeline?.getAttribute(
+          'data-syncular-starter-command-timeline-status'
+        ) ?? null;
+      const starterLocalVisibilityStatus =
+        starterTimeline?.getAttribute(
+          'data-syncular-starter-local-visibility-status'
+        ) ?? null;
+      const starterLocalVisibilityErrorCode =
+        starterTimeline?.getAttribute(
+          'data-syncular-starter-local-visibility-error-code'
+        ) ?? null;
       const errors = [];
       if (browserDiagnostics.length > 0) {
         errors.push(...browserDiagnostics);
@@ -145,6 +165,20 @@ async function readMatrixProbe(page, diagnostics) {
       }
       if (supportBundleStatus !== null && supportBundleRedacted !== 'true') {
         errors.push('support bundle was not redacted');
+      }
+      if (commandTimelineStatus === 'failed') {
+        errors.push(
+          commandTimelineErrorCode
+            ? `command timeline proof failed: ${commandTimelineErrorCode}`
+            : 'command timeline proof failed'
+        );
+      }
+      if (starterLocalVisibilityStatus === 'failed') {
+        errors.push(
+          starterLocalVisibilityErrorCode
+            ? `local visibility failed: ${starterLocalVisibilityErrorCode}`
+            : 'local visibility failed'
+        );
       }
 
       return {
@@ -283,10 +317,53 @@ async function readMatrixProbe(page, diagnostics) {
             ) ?? null,
         },
         commandTimeline: {
-          status:
+          complete:
             commandTimeline?.getAttribute(
-              'data-syncular-command-timeline-proof-status'
+              'data-syncular-command-timeline-proof-complete'
+            ) === 'true',
+          count: Number(
+            commandTimeline?.getAttribute(
+              'data-syncular-command-timeline-proof-count'
+            ) ?? 0
+          ),
+          durationMs: readNumber(
+            commandTimeline,
+            'data-syncular-command-timeline-proof-duration-ms'
+          ),
+          eventCount: Number(
+            commandTimeline?.getAttribute(
+              'data-syncular-command-timeline-proof-event-count'
+            ) ?? 0
+          ),
+          localApplyObserved:
+            commandTimeline?.getAttribute(
+              'data-syncular-command-timeline-proof-local-apply-observed'
+            ) === 'true',
+          localVisibilityObserved:
+            commandTimeline?.getAttribute(
+              'data-syncular-command-timeline-proof-local-visibility-observed'
+            ) === 'true',
+          localVisibilityState:
+            commandTimeline?.getAttribute(
+              'data-syncular-command-timeline-proof-local-visibility-state'
             ) ?? null,
+          missingEvidence: readTextArray(
+            commandTimeline,
+            'data-syncular-command-timeline-proof-missing-evidence'
+          ),
+          outboxPersisted:
+            commandTimeline?.getAttribute(
+              'data-syncular-command-timeline-proof-outbox-persisted'
+            ) === 'true',
+          status: commandTimelineStatus,
+        },
+        starterTimeline: {
+          commandTimelineStatus: starterCommandTimelineStatus,
+          localVisibilityMs: readNumber(
+            starterTimeline,
+            'data-syncular-starter-local-visibility-ms'
+          ),
+          localVisibilityStatus: starterLocalVisibilityStatus,
         },
         supportBundle: {
           issueCount: Number(
@@ -306,6 +383,127 @@ async function readMatrixProbe(page, diagnostics) {
       };
     },
     { diagnostics }
+  );
+}
+
+async function submitMatrixTask(page, title) {
+  await page.evaluate((taskTitle) => {
+    const input = document.querySelector('input[aria-label="New task"]');
+    if (!(input instanceof HTMLInputElement)) {
+      throw new Error('Task input not found');
+    }
+    input.value = taskTitle;
+    const form = input.closest('form');
+    if (!(form instanceof HTMLFormElement)) {
+      throw new Error('Task form not found');
+    }
+    form.requestSubmit();
+  }, title);
+}
+
+async function waitForMatrixLocalWriteProof(args) {
+  const deadline = Date.now() + 20_000;
+  let lastProbe = null;
+  while (Date.now() < deadline) {
+    const probe = await readMatrixProbe(args.page, args.diagnostics);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeFailureArtifact(args.failureArtifact, {
+        browser: args.browserName,
+        generatedAt: new Date().toISOString(),
+        metrics: args.metrics,
+        probe,
+        reason: `${args.browserName}-runtime-matrix-local-write-errors`,
+        supportContext: args.supportContext,
+        title: args.title,
+        url: args.url,
+      });
+      throw new Error(
+        `Built preview ${args.browserName} local write proof failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifact}`
+      );
+    }
+    const textHasTitle = probe.textExcerpt.includes(args.title);
+    const proof = probe.commandTimeline;
+    if (
+      textHasTitle &&
+      probe.starterTimeline.localVisibilityStatus === 'visible' &&
+      probe.starterTimeline.localVisibilityMs !== null &&
+      probe.starterTimeline.commandTimelineStatus === 'complete' &&
+      proof.status === 'complete' &&
+      proof.count >= args.expectedCommandCount &&
+      proof.durationMs !== null &&
+      proof.eventCount >= 3 &&
+      proof.outboxPersisted &&
+      proof.localApplyObserved &&
+      proof.localVisibilityObserved &&
+      proof.localVisibilityState === 'visible' &&
+      !proof.missingEvidence.includes('outbox-status') &&
+      !proof.missingEvidence.includes('local-apply') &&
+      !proof.missingEvidence.includes('local-visibility')
+    ) {
+      return probe;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  await writeFailureArtifact(args.failureArtifact, {
+    browser: args.browserName,
+    generatedAt: new Date().toISOString(),
+    metrics: args.metrics,
+    probe: lastProbe,
+    reason: `${args.browserName}-runtime-matrix-local-write-timeout`,
+    supportContext: args.supportContext,
+    title: args.title,
+    url: args.url,
+  });
+  throw new Error(
+    `Timed out waiting for built preview ${args.browserName} local write proof. Failure artifact: ${args.failureArtifact}`
+  );
+}
+
+async function waitForMatrixTaskText(args) {
+  const deadline = Date.now() + 20_000;
+  let lastProbe = null;
+  while (Date.now() < deadline) {
+    const probe = await readMatrixProbe(args.page, args.diagnostics);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeFailureArtifact(args.failureArtifact, {
+        browser: args.browserName,
+        generatedAt: new Date().toISOString(),
+        metrics: args.metrics,
+        probe,
+        reason: `${args.browserName}-runtime-matrix-reload-errors`,
+        supportContext: args.supportContext,
+        title: args.title,
+        url: args.url,
+      });
+      throw new Error(
+        `Built preview ${args.browserName} reload persistence proof failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifact}`
+      );
+    }
+    if (probe.ready && probe.textExcerpt.includes(args.title)) {
+      return probe;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  await writeFailureArtifact(args.failureArtifact, {
+    browser: args.browserName,
+    generatedAt: new Date().toISOString(),
+    metrics: args.metrics,
+    probe: lastProbe,
+    reason: `${args.browserName}-runtime-matrix-reload-timeout`,
+    supportContext: args.supportContext,
+    title: args.title,
+    url: args.url,
+  });
+  throw new Error(
+    `Timed out waiting for built preview ${args.browserName} reload persistence proof. Failure artifact: ${args.failureArtifact}`
   );
 }
 
@@ -428,8 +626,41 @@ async function main() {
       supportContext,
       url,
     });
+    const title = `${browserName} matrix local write ${Date.now()}`;
+    await submitMatrixTask(page, title);
+    const writeProbe = await waitForMatrixLocalWriteProof({
+      browserName,
+      diagnostics,
+      expectedCommandCount: probe.commandTimeline.count + 1,
+      failureArtifact,
+      metrics,
+      page,
+      supportContext,
+      title,
+      url,
+    });
+    await page.reload({ timeout: 60_000, waitUntil: 'load' });
+    await waitForMatrixEvidence({
+      browserName,
+      diagnostics,
+      failureArtifact,
+      metrics,
+      page,
+      supportContext,
+      url,
+    });
+    await waitForMatrixTaskText({
+      browserName,
+      diagnostics,
+      failureArtifact,
+      metrics,
+      page,
+      supportContext,
+      title,
+      url,
+    });
     console.log(
-      `[csa-smoke] ${browserName} runtime matrix evidence passed: context=${probe.browserSupportPolicy.context} tier=${probe.deploymentPreflight.supportTier}`
+      `[csa-smoke] ${browserName} runtime matrix evidence passed: context=${probe.browserSupportPolicy.context} tier=${probe.deploymentPreflight.supportTier} localWriteCount=${writeProbe.commandTimeline.count}`
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
