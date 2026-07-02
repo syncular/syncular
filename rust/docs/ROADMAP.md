@@ -427,6 +427,15 @@ read-only review:
     commit `0d211bbe` passed the full matrix, including
     `starter-browser-preview`, confirming the service-worker update activation
     branch in hosted Chrome.
+    The runtime/version-alignment follow-up adds non-throwing schema-readiness
+    diagnostics for mixed client deploys: generated app `schemaReadiness()`
+    now passes the expected Syncular package name/version, worker protocol,
+    selected WASM artifact URLs, and required Rust runtime features into
+    `getSyncularSchemaReadiness(...)`. Stale package/protocol/WASM asset/Rust
+    feature mismatches now produce stable `runtime.*` issue codes with
+    redacted asset URL details instead of relying on later worker-open errors.
+    Local pinned-Bun focused schema-readiness tests, client unit tests,
+    client/create-app typechecks, Biome, and codegen output checks passed.
     Remaining matrix work is host-driven eviction beyond explicit CDP storage
     clears/Clear-Site-Data/same-origin IndexedDB deletion, installed-PWA
     cache/update semantics beyond the smoke-only PWA offline, cache-refresh,

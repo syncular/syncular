@@ -5000,6 +5000,18 @@ replaced by the live asset. The PWA service-worker update activation branch is
 also confirmed in hosted Chrome: hosted Checks run `28566859795` on commit
 `0d211bbe` passed the full matrix after rewriting the smoke worker and
 requiring `registration.update()` to deliver the updated controller version.
+The latest runtime/version-alignment slice adds typed mixed-deploy diagnostics
+to schema readiness: `getSyncularSchemaReadiness(...)` accepts expected
+runtime identity, compares package name/version, worker protocol, optional
+Rust crate/schema metadata, required Rust runtime features, and worker/WASM
+asset URLs against the opened runtime, and reports stable `runtime.*` issue
+codes with redacted asset URL details. Generated app `schemaReadiness()` now
+injects the expected Syncular package constants, worker protocol, selected
+runtime artifact URLs, and generated required Rust features automatically, so
+stale JS/WASM/service-worker/CDN deploys can fail as named readiness issues
+instead of generic worker/runtime open errors. Local pinned-Bun focused
+schema-readiness tests, full client unit tests, client/create-app typechecks,
+Biome, and codegen output checks passed.
 Remaining lifecycle/storage work is host/browser eviction beyond explicit CDP
 origin/database clears/Clear-Site-Data/same-origin IndexedDB deletion,
 installed-PWA cache/update semantics beyond the smoke-only PWA offline,

@@ -6119,7 +6119,7 @@ fn generate_typescript_module(
     out.push_str("// Source: migrations/*.sql and generated Syncular codegen handoff\n\n");
     let runtime_import_path = config.typescript_runtime_import_path()?;
     out.push_str(&format!(
-        "import {{ SYNCULAR_PACKAGE_NAME, SYNCULAR_PACKAGE_VERSION, SYNCULAR_WORKER_PROTOCOL_VERSION, createSyncularCommandHistory, createSyncularDatabase, withSyncularSchemaWrites }} from {};\n",
+        "import {{ SYNCULAR_PACKAGE_NAME, SYNCULAR_PACKAGE_VERSION, SYNCULAR_WORKER_PROTOCOL_VERSION, createSyncularCommandHistory, createSyncularDatabase, getSyncularRuntimeArtifact, selectSyncularRuntimeArtifact, withSyncularSchemaWrites }} from {};\n",
         ts_string(runtime_import_path)
     ));
     out.push_str(&format!(
@@ -6944,7 +6944,7 @@ fn generate_typescript_module(
     out.push_str("  mutations: SyncularAppMutations;\n");
     out.push_str("  leasedMutations: SyncularAppMutations;\n");
     out.push_str("  commandHistory: SyncularCommandHistory;\n");
-    out.push_str("  schemaReadiness(options?: Omit<SyncularSchemaReadinessOptions, 'generatedSchemaVersion'>): Promise<SyncularSchemaReadinessResult>;\n");
+    out.push_str("  schemaReadiness(options?: Omit<SyncularSchemaReadinessOptions, 'generatedSchemaVersion' | 'expectedRuntime'>): Promise<SyncularSchemaReadinessResult>;\n");
     for table in &user_tables {
         let method_name =
             lower_camel_case(&format!("await_{}_visibility", singular_name(&table.name)));
@@ -7064,7 +7064,8 @@ fn generate_typescript_module(
     out.push_str("    appDatabase.mutations = commandHistory.wrapMutations(database.mutations, 'mutations') as SyncularAppMutations;\n");
     out.push_str("    appDatabase.leasedMutations = commandHistory.wrapMutations(database.leasedMutations, 'leasedMutations') as SyncularAppMutations;\n");
     out.push_str("    const rootSchemaReadiness = database.schemaReadiness.bind(database);\n");
-    out.push_str("    appDatabase.schemaReadiness = (readinessOptions) => rootSchemaReadiness({ ...readinessOptions, generatedSchemaVersion: syncularGeneratedSchemaVersion });\n");
+    out.push_str("    const expectedRuntimeArtifact = typeof options.runtime === 'string' ? getSyncularRuntimeArtifact(options.runtime) : (options.runtime ?? selectSyncularRuntimeArtifact(syncularGeneratedRequiredRuntimeFeatures, options.runtimeArtifacts));\n");
+    out.push_str("    appDatabase.schemaReadiness = (readinessOptions) => rootSchemaReadiness({ ...readinessOptions, generatedSchemaVersion: syncularGeneratedSchemaVersion, expectedRuntime: { packageName: SYNCULAR_PACKAGE_NAME, packageVersion: SYNCULAR_PACKAGE_VERSION, workerProtocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION, requiredRustFeatures: syncularGeneratedRequiredRuntimeFeatures, wasmGlueUrl: expectedRuntimeArtifact.wasmGlueUrl, wasmUrl: expectedRuntimeArtifact.wasmUrl } });\n");
     for table in &user_tables {
         let method_name =
             lower_camel_case(&format!("await_{}_visibility", singular_name(&table.name)));
@@ -12367,7 +12368,7 @@ CREATE TABLE tasks (
         let output = generate_typescript_module(&tables, &config, 7, None)?;
 
         assert!(output.contains(
-            "import { SYNCULAR_PACKAGE_NAME, SYNCULAR_PACKAGE_VERSION, SYNCULAR_WORKER_PROTOCOL_VERSION, createSyncularCommandHistory, createSyncularDatabase, withSyncularSchemaWrites } from '@app/sync-runtime';"
+            "import { SYNCULAR_PACKAGE_NAME, SYNCULAR_PACKAGE_VERSION, SYNCULAR_WORKER_PROTOCOL_VERSION, createSyncularCommandHistory, createSyncularDatabase, getSyncularRuntimeArtifact, selectSyncularRuntimeArtifact, withSyncularSchemaWrites } from '@app/sync-runtime';"
         ));
         assert!(output.contains(
             "import type { CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularEmbeddedMigration, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularLocalVisibilityOptions, SyncularLocalVisibilityQuery, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularSchemaReadinessOptions, SyncularSchemaReadinessResult, SyncularYjsPayloadEnvelope } from '@app/sync-runtime';"
@@ -12385,7 +12386,7 @@ CREATE TABLE tasks (
         assert!(output.contains("leasedMutations: SyncularAppMutations;"));
         assert!(output.contains("commandHistory: SyncularCommandHistory;"));
         assert!(output.contains(
-            "schemaReadiness(options?: Omit<SyncularSchemaReadinessOptions, 'generatedSchemaVersion'>): Promise<SyncularSchemaReadinessResult>;"
+            "schemaReadiness(options?: Omit<SyncularSchemaReadinessOptions, 'generatedSchemaVersion' | 'expectedRuntime'>): Promise<SyncularSchemaReadinessResult>;"
         ));
         assert!(output.contains(
             "awaitTaskVisibility<TResult>(query: SyncularLocalVisibilityQuery<SyncularAppDb, TResult>, options?: Omit<SyncularLocalVisibilityOptions<TResult>, 'tables'>): Promise<TResult>;"
@@ -12466,7 +12467,10 @@ CREATE TABLE tasks (
             output.contains("const rootSchemaReadiness = database.schemaReadiness.bind(database);")
         );
         assert!(output.contains(
-            "appDatabase.schemaReadiness = (readinessOptions) => rootSchemaReadiness({ ...readinessOptions, generatedSchemaVersion: syncularGeneratedSchemaVersion });"
+            "const expectedRuntimeArtifact = typeof options.runtime === 'string' ? getSyncularRuntimeArtifact(options.runtime) : (options.runtime ?? selectSyncularRuntimeArtifact(syncularGeneratedRequiredRuntimeFeatures, options.runtimeArtifacts));"
+        ));
+        assert!(output.contains(
+            "appDatabase.schemaReadiness = (readinessOptions) => rootSchemaReadiness({ ...readinessOptions, generatedSchemaVersion: syncularGeneratedSchemaVersion, expectedRuntime: { packageName: SYNCULAR_PACKAGE_NAME, packageVersion: SYNCULAR_PACKAGE_VERSION, workerProtocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION, requiredRustFeatures: syncularGeneratedRequiredRuntimeFeatures, wasmGlueUrl: expectedRuntimeArtifact.wasmGlueUrl, wasmUrl: expectedRuntimeArtifact.wasmUrl } });"
         ));
         assert!(output.contains(
             "appDatabase.awaitTaskVisibility = (query, visibilityOptions) => database.awaitLocalVisibility(query, { ...visibilityOptions, tables: ['tasks'] });"

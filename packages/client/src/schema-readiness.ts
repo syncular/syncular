@@ -19,13 +19,26 @@ export type SyncularSchemaReadinessIssueCode =
   | 'schema.server_schema_stale'
   | 'schema.server_newer_available'
   | 'runtime.info_unavailable'
-  | 'runtime.schema_state_unavailable';
+  | 'runtime.schema_state_unavailable'
+  | 'runtime.package_mismatch'
+  | 'runtime.package_version_mismatch'
+  | 'runtime.worker_protocol_mismatch'
+  | 'runtime.rust_info_missing'
+  | 'runtime.rust_crate_mismatch'
+  | 'runtime.rust_crate_version_mismatch'
+  | 'runtime.rust_schema_version_mismatch'
+  | 'runtime.rust_feature_missing'
+  | 'runtime.worker_asset_mismatch'
+  | 'runtime.wasm_glue_asset_mismatch'
+  | 'runtime.wasm_asset_mismatch';
 
 export type SyncularSchemaReadinessAction =
   | 'openDatabase'
   | 'runSyncularGenerate'
   | 'runSchemaMigrations'
   | 'redeployServer'
+  | 'redeployClient'
+  | 'refreshRuntimeAssets'
   | 'upgradeClient'
   | 'inspectRuntime'
   | 'recreateLocalDatabase';
@@ -50,6 +63,24 @@ export interface SyncularSchemaReadinessServerState {
   source?: string;
 }
 
+export type SyncularSchemaReadinessRuntimeAssetInput = string | URL | Request;
+
+export interface SyncularSchemaReadinessExpectedRuntime {
+  packageName?: string;
+  packageVersion?: string;
+  workerProtocolVersion?: number;
+  rust?: {
+    crateName?: string;
+    crateVersion?: string;
+    schemaVersion?: number;
+    features?: readonly string[];
+  };
+  requiredRustFeatures?: readonly string[];
+  workerUrl?: SyncularSchemaReadinessRuntimeAssetInput;
+  wasmGlueUrl?: SyncularSchemaReadinessRuntimeAssetInput;
+  wasmUrl?: SyncularSchemaReadinessRuntimeAssetInput;
+}
+
 export interface SyncularSchemaReadinessOptions {
   /**
    * Pass the schema version baked into the generated client. Without it the
@@ -57,6 +88,12 @@ export interface SyncularSchemaReadinessOptions {
    * output freshness.
    */
   generatedSchemaVersion?: number;
+  /**
+   * Expected runtime identity for the app bundle that is calling this helper.
+   * Generated clients fill this automatically so mixed JS/WASM/worker deploys
+   * produce stable issue codes instead of later worker-open failures.
+   */
+  expectedRuntime?: SyncularSchemaReadinessExpectedRuntime;
   server?: SyncularSchemaReadinessServerState;
   now?: () => number;
 }
@@ -98,10 +135,9 @@ export async function getSyncularSchemaReadiness(
     client.generatedSchemaState(),
   ]);
 
-  const runtime =
-    runtimeResult.status === 'fulfilled'
-      ? summarizeRuntimeInfo(runtimeResult.value)
-      : null;
+  const runtimeInfo =
+    runtimeResult.status === 'fulfilled' ? runtimeResult.value : null;
+  const runtime = runtimeInfo ? summarizeRuntimeInfo(runtimeInfo) : null;
   const localSchema =
     schemaResult.status === 'fulfilled' ? schemaResult.value : null;
 
@@ -122,6 +158,12 @@ export async function getSyncularSchemaReadiness(
       recommendedAction: 'inspectRuntime',
       details: errorDetails(schemaResult.reason),
     });
+  }
+
+  if (runtimeInfo && options.expectedRuntime) {
+    issues.push(
+      ...runtimeCompatibilityIssues(runtimeInfo, options.expectedRuntime)
+    );
   }
 
   const generatedSchemaVersion =
@@ -161,6 +203,188 @@ export async function getSyncularSchemaReadiness(
     serverSchema: options.server ?? null,
     issues,
   };
+}
+
+function runtimeCompatibilityIssues(
+  runtime: SyncularRuntimeInfo,
+  expected: SyncularSchemaReadinessExpectedRuntime
+): SyncularSchemaReadinessIssue[] {
+  const issues: SyncularSchemaReadinessIssue[] = [];
+
+  if (
+    expected.packageName !== undefined &&
+    runtime.packageName !== expected.packageName
+  ) {
+    issues.push({
+      code: 'runtime.package_mismatch',
+      severity: 'error',
+      message:
+        'The Syncular runtime package does not match the generated app bundle.',
+      recommendedAction: 'redeployClient',
+      details: {
+        expectedPackageName: expected.packageName,
+        actualPackageName: runtime.packageName,
+      },
+    });
+  }
+
+  if (
+    expected.packageVersion !== undefined &&
+    runtime.packageVersion !== expected.packageVersion
+  ) {
+    issues.push({
+      code: 'runtime.package_version_mismatch',
+      severity: 'error',
+      message:
+        'The Syncular runtime package version does not match the generated app bundle.',
+      recommendedAction: 'redeployClient',
+      details: {
+        expectedPackageVersion: expected.packageVersion,
+        actualPackageVersion: runtime.packageVersion,
+      },
+    });
+  }
+
+  if (
+    expected.workerProtocolVersion !== undefined &&
+    runtime.workerProtocolVersion !== expected.workerProtocolVersion
+  ) {
+    issues.push({
+      code: 'runtime.worker_protocol_mismatch',
+      severity: 'error',
+      message:
+        'The Syncular worker protocol version does not match the generated app bundle.',
+      recommendedAction: 'redeployClient',
+      details: {
+        expectedWorkerProtocolVersion: expected.workerProtocolVersion,
+        actualWorkerProtocolVersion: runtime.workerProtocolVersion,
+      },
+    });
+  }
+
+  const requiredRustFeatures = new Set([
+    ...(expected.rust?.features ?? []),
+    ...(expected.requiredRustFeatures ?? []),
+  ]);
+  const expectsRust =
+    expected.rust !== undefined || requiredRustFeatures.size > 0;
+
+  if (expectsRust && !runtime.rust) {
+    issues.push({
+      code: 'runtime.rust_info_missing',
+      severity: 'error',
+      message:
+        'The Syncular runtime did not report Rust runtime information required by this app.',
+      recommendedAction: 'redeployClient',
+      details: {
+        expectedRustFeatures: [...requiredRustFeatures],
+      },
+    });
+  }
+
+  if (runtime.rust) {
+    if (
+      expected.rust?.crateName !== undefined &&
+      runtime.rust.crateName !== expected.rust.crateName
+    ) {
+      issues.push({
+        code: 'runtime.rust_crate_mismatch',
+        severity: 'error',
+        message:
+          'The Syncular Rust runtime crate does not match the generated app bundle.',
+        recommendedAction: 'redeployClient',
+        details: {
+          expectedRustCrateName: expected.rust.crateName,
+          actualRustCrateName: runtime.rust.crateName,
+        },
+      });
+    }
+
+    if (
+      expected.rust?.crateVersion !== undefined &&
+      runtime.rust.crateVersion !== expected.rust.crateVersion
+    ) {
+      issues.push({
+        code: 'runtime.rust_crate_version_mismatch',
+        severity: 'error',
+        message:
+          'The Syncular Rust runtime crate version does not match the generated app bundle.',
+        recommendedAction: 'redeployClient',
+        details: {
+          expectedRustCrateVersion: expected.rust.crateVersion,
+          actualRustCrateVersion: runtime.rust.crateVersion,
+        },
+      });
+    }
+
+    if (
+      expected.rust?.schemaVersion !== undefined &&
+      runtime.rust.schemaVersion !== expected.rust.schemaVersion
+    ) {
+      issues.push({
+        code: 'runtime.rust_schema_version_mismatch',
+        severity: 'error',
+        message:
+          'The Syncular Rust runtime schema version does not match the generated app bundle.',
+        recommendedAction: 'redeployClient',
+        details: {
+          expectedRustSchemaVersion: expected.rust.schemaVersion,
+          actualRustSchemaVersion: runtime.rust.schemaVersion,
+        },
+      });
+    }
+
+    const availableFeatures = new Set(runtime.rust.features);
+    const missingFeatures = [...requiredRustFeatures].filter(
+      (feature) => !availableFeatures.has(feature)
+    );
+    if (missingFeatures.length > 0) {
+      issues.push({
+        code: 'runtime.rust_feature_missing',
+        severity: 'error',
+        message:
+          'The Syncular Rust runtime is missing features required by this app.',
+        recommendedAction: 'redeployClient',
+        details: {
+          missingRustFeatures: missingFeatures,
+          actualRustFeatures: runtime.rust.features,
+        },
+      });
+    }
+  }
+
+  assetMismatchIssue({
+    issues,
+    code: 'runtime.worker_asset_mismatch',
+    message:
+      'The Syncular worker asset URL does not match the generated app bundle.',
+    expected: expected.workerUrl,
+    actual: runtime.workerUrl,
+    expectedKey: 'expectedWorkerUrl',
+    actualKey: 'actualWorkerUrl',
+  });
+  assetMismatchIssue({
+    issues,
+    code: 'runtime.wasm_glue_asset_mismatch',
+    message:
+      'The Syncular WASM glue asset URL does not match the generated app bundle.',
+    expected: expected.wasmGlueUrl,
+    actual: runtime.wasmGlueUrl,
+    expectedKey: 'expectedWasmGlueUrl',
+    actualKey: 'actualWasmGlueUrl',
+  });
+  assetMismatchIssue({
+    issues,
+    code: 'runtime.wasm_asset_mismatch',
+    message:
+      'The Syncular WASM binary asset URL does not match the generated app bundle.',
+    expected: expected.wasmUrl,
+    actual: runtime.wasmUrl,
+    expectedKey: 'expectedWasmUrl',
+    actualKey: 'actualWasmUrl',
+  });
+
+  return issues;
 }
 
 function localSchemaIssues(args: {
@@ -352,10 +576,69 @@ function normalizeSchemaVersion(
     : null;
 }
 
+function assetMismatchIssue(args: {
+  issues: SyncularSchemaReadinessIssue[];
+  code: Extract<
+    SyncularSchemaReadinessIssueCode,
+    | 'runtime.worker_asset_mismatch'
+    | 'runtime.wasm_glue_asset_mismatch'
+    | 'runtime.wasm_asset_mismatch'
+  >;
+  message: string;
+  expected?: SyncularSchemaReadinessRuntimeAssetInput;
+  actual?: string;
+  expectedKey: string;
+  actualKey: string;
+}): void {
+  const expected = runtimeAssetHref(args.expected);
+  if (expected === undefined) return;
+  if (args.actual === expected) return;
+
+  args.issues.push({
+    code: args.code,
+    severity: 'error',
+    message: args.message,
+    recommendedAction: 'refreshRuntimeAssets',
+    details: {
+      [args.expectedKey]: redactRuntimeAssetUrl(expected),
+      [args.actualKey]:
+        args.actual === undefined ? null : redactRuntimeAssetUrl(args.actual),
+    },
+  });
+}
+
+function runtimeAssetHref(
+  value: SyncularSchemaReadinessRuntimeAssetInput | undefined
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') return value;
+  if (value instanceof URL) return value.href;
+  return value.url;
+}
+
+function redactRuntimeAssetUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return url.href;
+  } catch {
+    return value.replace(/[?#].*$/, '');
+  }
+}
+
 function readinessStatus(
   issues: readonly SyncularSchemaReadinessIssue[]
 ): SyncularSchemaReadinessStatus {
-  if (issues.some((issue) => issue.code.startsWith('runtime.'))) {
+  if (
+    issues.some(
+      (issue) =>
+        issue.code === 'runtime.info_unavailable' ||
+        issue.code === 'runtime.schema_state_unavailable'
+    )
+  ) {
     return 'unknown';
   }
   if (issues.some((issue) => issue.severity === 'error')) {

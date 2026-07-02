@@ -12,6 +12,14 @@ describe('getSyncularSchemaReadiness', () => {
     await expect(
       getSyncularSchemaReadiness(client, {
         generatedSchemaVersion: 8,
+        expectedRuntime: {
+          packageName: '@syncular/client',
+          packageVersion: '0.1.3',
+          workerProtocolVersion: 2,
+          requiredRustFeatures: ['web-owned-sqlite-core'],
+          wasmGlueUrl: 'http://localhost/wasm/syncular.js',
+          wasmUrl: 'http://localhost/wasm/syncular_bg.wasm',
+        },
         now: () => 1,
       })
     ).resolves.toMatchObject({
@@ -26,6 +34,134 @@ describe('getSyncularSchemaReadiness', () => {
         currentSchemaVersion: 8,
       },
       issues: [],
+    });
+  });
+
+  it('reports mixed runtime package, protocol, and asset deploys as typed blockers', async () => {
+    const client = fakeSchemaClient({
+      runtime: {
+        packageVersion: '0.1.2',
+        workerProtocolVersion: 1,
+        wasmGlueUrl: 'https://cdn.example/old/syncular.js?token=secret',
+        wasmUrl: 'https://cdn.example/old/syncular_bg.wasm#cache',
+      },
+    });
+
+    const result = await getSyncularSchemaReadiness(client, {
+      generatedSchemaVersion: 8,
+      expectedRuntime: {
+        packageName: '@syncular/client',
+        packageVersion: '0.1.3',
+        workerProtocolVersion: 2,
+        wasmGlueUrl: 'https://cdn.example/new/syncular.js?token=expected',
+        wasmUrl: 'https://cdn.example/new/syncular_bg.wasm#expected',
+      },
+    });
+
+    expect(result.status).toBe('not-ready');
+    expect(result.ready).toBe(false);
+    expect(result.requiresAction).toBe(true);
+    expect(result.issues.map((issue) => issue.code)).toEqual([
+      'runtime.package_version_mismatch',
+      'runtime.worker_protocol_mismatch',
+      'runtime.wasm_glue_asset_mismatch',
+      'runtime.wasm_asset_mismatch',
+    ]);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        recommendedAction: 'redeployClient',
+        details: {
+          expectedPackageVersion: '0.1.3',
+          actualPackageVersion: '0.1.2',
+        },
+      }),
+      expect.objectContaining({
+        recommendedAction: 'redeployClient',
+        details: {
+          expectedWorkerProtocolVersion: 2,
+          actualWorkerProtocolVersion: 1,
+        },
+      }),
+      expect.objectContaining({
+        recommendedAction: 'refreshRuntimeAssets',
+        details: {
+          expectedWasmGlueUrl: 'https://cdn.example/new/syncular.js',
+          actualWasmGlueUrl: 'https://cdn.example/old/syncular.js',
+        },
+      }),
+      expect.objectContaining({
+        recommendedAction: 'refreshRuntimeAssets',
+        details: {
+          expectedWasmUrl: 'https://cdn.example/new/syncular_bg.wasm',
+          actualWasmUrl: 'https://cdn.example/old/syncular_bg.wasm',
+        },
+      }),
+    ]);
+  });
+
+  it('reports missing Rust runtime features without throwing', async () => {
+    const client = fakeSchemaClient({
+      runtime: {
+        rust: {
+          crateName: 'syncular-runtime',
+          crateVersion: '0.1.3',
+          schemaVersion: 8,
+          features: ['web-owned-sqlite-core'],
+        },
+      },
+    });
+
+    const result = await getSyncularSchemaReadiness(client, {
+      generatedSchemaVersion: 8,
+      expectedRuntime: {
+        rust: {
+          crateName: 'syncular-runtime',
+          crateVersion: '0.1.3',
+          schemaVersion: 8,
+        },
+        requiredRustFeatures: ['web-owned-sqlite-core', 'blobs', 'crdt-yjs'],
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: 'not-ready',
+      ready: false,
+      requiresAction: true,
+      issues: [
+        {
+          code: 'runtime.rust_feature_missing',
+          severity: 'error',
+          recommendedAction: 'redeployClient',
+          details: {
+            missingRustFeatures: ['blobs', 'crdt-yjs'],
+            actualRustFeatures: ['web-owned-sqlite-core'],
+          },
+        },
+      ],
+    });
+  });
+
+  it('reports missing Rust runtime information when the generated app requires it', async () => {
+    const client = fakeSchemaClient({ runtime: { rust: undefined } });
+
+    const result = await getSyncularSchemaReadiness(client, {
+      generatedSchemaVersion: 8,
+      expectedRuntime: {
+        requiredRustFeatures: ['web-owned-sqlite-core'],
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: 'not-ready',
+      issues: [
+        {
+          code: 'runtime.rust_info_missing',
+          recommendedAction: 'redeployClient',
+          details: {
+            expectedRustFeatures: ['web-owned-sqlite-core'],
+          },
+        },
+      ],
     });
   });
 
