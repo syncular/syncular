@@ -4700,9 +4700,11 @@ Most recent browser-health failure-artifact rerun:
   verifies the IndexedDB sentinel is removed, so the two branches distinguish
   database-storage eviction from full origin data loss. Local gates with Bun
   `1.3.9` passed: `bun --cwd packages/create-syncular-app tsgo`,
-  `bunx biome check packages/create-syncular-app/scripts/smoke.ts`, and
-  `bun --cwd packages/create-syncular-app smoke`. Chrome was not installed
-  locally, so hosted Chrome proof is pending.
+  `bunx biome check packages/create-syncular-app/scripts/smoke.ts`,
+  `bun --cwd packages/create-syncular-app smoke`, full pre-push gate, and
+  `git diff --check`. Chrome was not installed locally, so hosted Checks run
+  `28559198325` on commit `9f63634a` confirmed the branch in hosted Chrome and
+  passed the full matrix.
 
 ## Next Action
 
@@ -4753,8 +4755,9 @@ discarded-tab recovery through Chrome's internal discards provider plus real
 target activation/restoration; hosted Checks run `28558449113` confirmed that
 branch in Chrome. The current slice adds database-storage-only eviction proof
 by clearing Chrome `indexeddb,file_systems` storage while proving Cache API and
-localStorage sentinels survive; hosted Chrome proof is pending. The next
-lifecycle follow-up should move to host/browser eviction beyond explicit CDP
+localStorage sentinels survive; hosted Checks run `28559198325` confirmed that
+branch in Chrome. The next lifecycle follow-up should move to host/browser
+eviction beyond explicit CDP
 origin/database clears and lower-level storage failure behavior.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain host-driven eviction

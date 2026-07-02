@@ -314,8 +314,11 @@ read-only review:
     reached a separate observer tab, clears only Chrome `indexeddb,file_systems`
     storage for the origin, requires Cache/localStorage to survive while the
     IndexedDB sentinel is gone, and waits for the same client id to rehydrate
-    the task from server state. Local pinned-Bun typecheck, focused Biome, and
-    non-Chrome scaffold smoke passed; hosted Chrome proof is pending.
+    the task from server state. Local pinned-Bun typecheck, focused Biome,
+    non-Chrome scaffold smoke, full pre-push gate, and diff check passed;
+    hosted Checks run `28559198325` on commit `9f63634a` passed the full
+    matrix, including `starter-browser-preview`, confirming the
+    database-storage eviction branch in hosted Chrome.
     Host-driven eviction beyond explicit CDP storage clears and deeper storage
     failure/coordination behavior remain matrix work.
     The starter now also records
