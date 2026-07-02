@@ -1,0 +1,77 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 1,
+  "msgKind": "response",
+  "frames": [
+    {
+      "type": "RESP_HEADER"
+    },
+    {
+      "type": "SUB_START",
+      "id": "sub-notes",
+      "status": "active",
+      "reasonCode": "",
+      "effectiveScopes": {
+        "project": [
+          "p1"
+        ]
+      },
+      "bootstrap": false
+    },
+    {
+      "type": "COMMIT",
+      "commitSeq": 43,
+      "createdAtMs": 1782993600000,
+      "actorId": "actor-1",
+      "tables": [
+        "notes"
+      ],
+      "changes": [
+        {
+          "tableIndex": 0,
+          "rowId": "n-2",
+          "op": "upsert",
+          "rowVersion": 1,
+          "scopes": {
+            "project": "p1"
+          },
+          "row": "AgMAAABuLTIKAAAAcGxhaW4gYm9kefn/////////AAAAAAAAwD8ACgAAAHsiayI6dHJ1ZX0FAAAAAAEC/v8="
+        }
+      ]
+    },
+    {
+      "type": "COMMIT",
+      "commitSeq": 44,
+      "createdAtMs": 1782993601000,
+      "actorId": "actor-2",
+      "tables": [
+        "notes",
+        "tasks"
+      ],
+      "changes": [
+        {
+          "tableIndex": 0,
+          "rowId": "n-1",
+          "op": "upsert",
+          "rowVersion": 4,
+          "scopes": {
+            "project": "p1"
+          },
+          "row": "iAMAAABuLTETAAAA8J+TnSBkw6lqw6AgdnUg8J2EngAAAAAAAAAAAAAMQAEoAAAAeyJ0YWdzIjogWyJhIiwgImIiXSwgICJ1bmljb2RlIjogIvCdlJgifQ=="
+        },
+        {
+          "tableIndex": 1,
+          "rowId": "task-9",
+          "op": "delete",
+          "scopes": {
+            "project": "p1"
+          }
+        }
+      ]
+    },
+    {
+      "type": "SUB_END",
+      "nextCursor": 44
+    }
+  ]
+}

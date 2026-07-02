@@ -1,11 +1,18 @@
 /**
- * Protocol constants (B1 seeds these; SPEC.md §9 is normative).
+ * @syncular-v2/core — reference SSP2 codec (SPEC.md is normative).
  *
- * DRAFT: the wire version becomes meaningful when the first golden vectors
- * land in spec/vectors/. Until then this exists so the toolchain has real
- * code to check.
+ * Dependency-free: primitives (Conventions), envelope + framing (§1),
+ * schema-IR row codec (§2.4), SSG2 rows segments (§5.2), message codecs
+ * (§1.5/§1.6), realtime control messages (§8), the §11 canonical JSON
+ * debug rendering, and §11.2 canonical JSON for digests.
  */
-export const PROTOCOL_WIRE_VERSION = 1;
-
-/** Magic bytes opening every v2 sync pack envelope (SPEC.md §1). DRAFT. */
-export const SYNC_PACK_MAGIC = 'SSP2';
+export * from './bytes';
+export * from './canonical-json';
+export * from './constants';
+export * from './errors';
+export * from './frames';
+export * from './message';
+export * from './realtime';
+export * from './render';
+export * from './row-codec';
+export * from './segment';

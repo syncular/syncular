@@ -1,0 +1,92 @@
+{
+  "magic": "SSG2",
+  "formatVersion": 1,
+  "table": "notes",
+  "schemaVersion": 1,
+  "columns": [
+    {
+      "name": "id",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "name": "title",
+      "type": "string",
+      "nullable": true
+    },
+    {
+      "name": "body",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "name": "count",
+      "type": "integer",
+      "nullable": true
+    },
+    {
+      "name": "score",
+      "type": "float",
+      "nullable": false
+    },
+    {
+      "name": "done",
+      "type": "boolean",
+      "nullable": false
+    },
+    {
+      "name": "meta",
+      "type": "json",
+      "nullable": true
+    },
+    {
+      "name": "blob",
+      "type": "bytes",
+      "nullable": true
+    }
+  ],
+  "blocks": [
+    [
+      {
+        "id": "n-2",
+        "title": null,
+        "body": "plain body",
+        "count": -7,
+        "score": 0.125,
+        "done": false,
+        "meta": {
+          "k": true
+        },
+        "blob": "AAEC/v8="
+      },
+      {
+        "id": "n-1",
+        "title": "📝 déjà vu 𝄞",
+        "body": "",
+        "count": null,
+        "score": 3.5,
+        "done": true,
+        "meta": {
+          "tags": [
+            "a",
+            "b"
+          ],
+          "unicode": "𝔘"
+        },
+        "blob": null
+      }
+    ],
+    [
+      {
+        "id": "n-3",
+        "title": "ζ",
+        "body": "boundary",
+        "count": 9007199254740991,
+        "score": -1.5,
+        "done": true,
+        "meta": null,
+        "blob": ""
+      }
+    ]
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "kind": "segment",
+  "generatedBy": "packages/core/scripts/generate-vectors.ts",
+  "cases": [
+    {
+      "name": "rows-two-blocks",
+      "bin": "rows-two-blocks.bin",
+      "json": "rows-two-blocks.json",
+      "covers": "SSG2 with two row blocks + end marker, all column types, nullable columns"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "null-bit-on-non-nullable",
+      "bin": "invalid/null-bit-on-non-nullable.bin",
+      "error": "sync.invalid_request",
+      "covers": "Null bitmap bit set for a non-nullable column"
+    },
+    {
+      "name": "missing-end-marker",
+      "bin": "invalid/missing-end-marker.bin",
+      "error": "sync.invalid_request",
+      "covers": "Rows segment truncated before the mandatory rowCount = 0 end marker"
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "kind": "response",
+  "generatedBy": "packages/core/scripts/generate-vectors.ts",
+  "cases": [
+    {
+      "name": "pull-empty",
+      "bin": "pull-empty.bin",
+      "json": "pull-empty.json",
+      "covers": "Active subscription, zero commits, cursor advanced anyway (SPEC.md §4.5)"
+    },
+    {
+      "name": "commits-incremental",
+      "bin": "commits-incremental.bin",
+      "json": "commits-incremental.json",
+      "covers": "Two COMMIT frames; row codec exercising every column type incl. NULLs, bytes, non-BMP strings; scope map on changes"
+    },
+    {
+      "name": "bootstrap-segments",
+      "bin": "bootstrap-segments.bin",
+      "json": "bootstrap-segments.json",
+      "covers": "SEGMENT_REF (sqlite, with signed URL) + SEGMENT_REF (rows, no URL) + SEGMENT_INLINE; incomplete bootstrapState in SUB_END"
+    },
+    {
+      "name": "push-applied",
+      "bin": "push-applied.bin",
+      "json": "push-applied.json",
+      "covers": "All-applied result with commitSeq"
+    },
+    {
+      "name": "push-conflict",
+      "bin": "push-conflict.bin",
+      "json": "push-conflict.json",
+      "covers": "Rejected commit; conflict record with serverVersion + serverRow"
+    },
+    {
+      "name": "push-cached",
+      "bin": "push-cached.bin",
+      "json": "push-cached.json",
+      "covers": "Idempotent replay: status = cached, original results"
+    },
+    {
+      "name": "subscription-revoked",
+      "bin": "subscription-revoked.bin",
+      "json": "subscription-revoked.json",
+      "covers": "SUB_START status revoked, reason sync.scope_revoked, empty effective scopes"
+    },
+    {
+      "name": "cursor-reset",
+      "bin": "cursor-reset.bin",
+      "json": "cursor-reset.json",
+      "covers": "SUB_START status reset, reason sync.cursor_expired (horizon signal)"
+    },
+    {
+      "name": "error-mid-stream",
+      "bin": "error-mid-stream.bin",
+      "json": "error-mid-stream.json",
+      "covers": "RESP_HEADER + SUB_START + ERROR + END: partially streamed failure (SPEC.md §1.4 abort rule)"
+    },
+    {
+      "name": "unknown-frame-skip",
+      "bin": "unknown-frame-skip.bin",
+      "json": "unknown-frame-skip.json",
+      "covers": "A reserved/unknown frame type between known frames — MUST decode with the frame skipped (SPEC.md §9)"
+    },
+    {
+      "name": "schema-floor",
+      "bin": "schema-floor.bin",
+      "json": "schema-floor.json",
+      "covers": "requiredSchemaVersion present"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "bool-byte-out-of-range",
+      "bin": "invalid/bool-byte-out-of-range.bin",
+      "error": "sync.invalid_request",
+      "covers": "SUB_START.bootstrap bool byte 0x02"
+    }
+  ]
+}

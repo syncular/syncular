@@ -1,0 +1,26 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 1,
+  "msgKind": "response",
+  "frames": [
+    {
+      "type": "RESP_HEADER"
+    },
+    {
+      "type": "SUB_START",
+      "id": "sub-notes",
+      "status": "active",
+      "reasonCode": "",
+      "effectiveScopes": {
+        "project": [
+          "p1"
+        ]
+      },
+      "bootstrap": false
+    },
+    {
+      "type": "SUB_END",
+      "nextCursor": 57
+    }
+  ]
+}

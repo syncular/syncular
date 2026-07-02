@@ -1,0 +1,42 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 1,
+  "msgKind": "request",
+  "frames": [
+    {
+      "type": "REQ_HEADER",
+      "clientId": "client-a",
+      "schemaVersion": 1
+    },
+    {
+      "type": "PUSH_COMMIT",
+      "clientCommitId": "c-0001",
+      "operations": [
+        {
+          "table": "notes",
+          "rowId": "n-1",
+          "op": "upsert",
+          "baseVersion": 3,
+          "payload": "iAMAAABuLTETAAAA8J+TnSBkw6lqw6AgdnUg8J2EngAAAAAAAAAAAAAMQAEoAAAAeyJ0YWdzIjogWyJhIiwgImIiXSwgICJ1bmljb2RlIjogIvCdlJgifQ=="
+        },
+        {
+          "table": "notes",
+          "rowId": "n-2",
+          "op": "upsert",
+          "payload": "AgMAAABuLTIKAAAAcGxhaW4gYm9kefn/////////AAAAAAAAwD8ACgAAAHsiayI6dHJ1ZX0FAAAAAAEC/v8="
+        }
+      ]
+    },
+    {
+      "type": "PUSH_COMMIT",
+      "clientCommitId": "c-0002",
+      "operations": [
+        {
+          "table": "notes",
+          "rowId": "n-3",
+          "op": "delete"
+        }
+      ]
+    }
+  ]
+}

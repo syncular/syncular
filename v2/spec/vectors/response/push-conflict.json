@@ -1,0 +1,25 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 1,
+  "msgKind": "response",
+  "frames": [
+    {
+      "type": "RESP_HEADER"
+    },
+    {
+      "type": "PUSH_RESULT",
+      "clientCommitId": "c-0002",
+      "status": "rejected",
+      "results": [
+        {
+          "opIndex": 0,
+          "status": "conflict",
+          "code": "sync.version_conflict",
+          "message": "baseVersion 3 does not match server_version 7",
+          "serverVersion": 7,
+          "serverRow": "AgMAAABuLTIKAAAAcGxhaW4gYm9kefn/////////AAAAAAAAwD8ACgAAAHsiayI6dHJ1ZX0FAAAAAAEC/v8="
+        }
+      ]
+    }
+  ]
+}

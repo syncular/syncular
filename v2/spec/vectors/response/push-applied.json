@@ -1,0 +1,26 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 1,
+  "msgKind": "response",
+  "frames": [
+    {
+      "type": "RESP_HEADER"
+    },
+    {
+      "type": "PUSH_RESULT",
+      "clientCommitId": "c-0001",
+      "status": "applied",
+      "commitSeq": 58,
+      "results": [
+        {
+          "opIndex": 0,
+          "status": "applied"
+        },
+        {
+          "opIndex": 1,
+          "status": "applied"
+        }
+      ]
+    }
+  ]
+}

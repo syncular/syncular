@@ -1,0 +1,17 @@
+{
+  "kind": "realtime",
+  "generatedBy": "packages/core/scripts/generate-vectors.ts",
+  "cases": [
+    {
+      "name": "hello",
+      "json": "hello.json",
+      "covers": "Connect handshake control message (SPEC.md §8.1)"
+    },
+    {
+      "name": "wake",
+      "json": "wake.json",
+      "covers": "Wake-up control message (SPEC.md §8.3)"
+    }
+  ],
+  "invalid": []
+}

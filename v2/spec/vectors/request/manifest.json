@@ -1,0 +1,74 @@
+{
+  "kind": "request",
+  "generatedBy": "packages/core/scripts/generate-vectors.ts",
+  "cases": [
+    {
+      "name": "pull-minimal",
+      "bin": "pull-minimal.bin",
+      "json": "pull-minimal.json",
+      "covers": "Smallest legal request: header + pull + one caught-up subscription"
+    },
+    {
+      "name": "pull-bootstrap",
+      "bin": "pull-bootstrap.bin",
+      "json": "pull-bootstrap.json",
+      "covers": "cursor = -1, accept bits incl. sqlite + signed URLs, params, resumed bootstrapState round-trip"
+    },
+    {
+      "name": "push-multi-commit",
+      "bin": "push-multi-commit.bin",
+      "json": "push-multi-commit.json",
+      "covers": "Two commits: upsert with baseVersion, delete, row-codec payload edge cases (NULL bitmap, empty string, non-BMP unicode, json-typed column raw-string round-trip)"
+    },
+    {
+      "name": "combined",
+      "bin": "combined.bin",
+      "json": "combined.json",
+      "covers": "Push + pull in one envelope (SPEC.md §1.5 ordering)"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "truncated-no-end",
+      "bin": "invalid/truncated-no-end.bin",
+      "error": "sync.invalid_request",
+      "covers": "Truncated envelope: body ends without an END frame"
+    },
+    {
+      "name": "bad-magic",
+      "bin": "invalid/bad-magic.bin",
+      "error": "sync.invalid_request",
+      "covers": "Envelope magic is SSP1, not SSP2"
+    },
+    {
+      "name": "unsupported-wire-version",
+      "bin": "invalid/unsupported-wire-version.bin",
+      "error": "sync.invalid_request",
+      "covers": "wireVersion 999 is rejected before reading frames"
+    },
+    {
+      "name": "nonzero-flags",
+      "bin": "invalid/nonzero-flags.bin",
+      "error": "sync.invalid_request",
+      "covers": "Envelope flags byte must be 0x00"
+    },
+    {
+      "name": "overlong-frame-length",
+      "bin": "invalid/overlong-frame-length.bin",
+      "error": "sync.invalid_request",
+      "covers": "Frame length prefix exceeds the remaining bytes"
+    },
+    {
+      "name": "op-enum-out-of-range",
+      "bin": "invalid/op-enum-out-of-range.bin",
+      "error": "sync.invalid_request",
+      "covers": "Push operation op byte 3 (unknown enum byte)"
+    },
+    {
+      "name": "upsert-without-payload",
+      "bin": "invalid/upsert-without-payload.bin",
+      "error": "sync.invalid_request",
+      "covers": "Upsert operation with absent payload (presence invariant)"
+    }
+  ]
+}

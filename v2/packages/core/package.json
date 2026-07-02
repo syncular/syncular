@@ -4,5 +4,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "scripts": {
+    "generate:vectors": "bun run scripts/generate-vectors.ts"
   }
 }
