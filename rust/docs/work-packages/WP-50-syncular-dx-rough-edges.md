@@ -5155,6 +5155,22 @@ Most recent browser-health failure-artifact rerun:
   `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=webkit bun --cwd packages/create-syncular-app
   smoke --browser-runtime-matrix=webkit --browser-runtime-matrix-only` with
   `PLAYWRIGHT_BROWSERS_PATH=.context/ms-playwright`.
+- 2026-07-02: Extended the Firefox/WebKit runtime matrix across a same-context
+  page reopen boundary. After the generated local write and same-page reload
+  persistence proof, the Playwright runner now closes the app page, opens a
+  fresh page in the same browser context, reruns the runtime/support-policy
+  readiness probe, and requires the task to render from local browser storage
+  again. This is stronger than reload while still not claiming full
+  browser-process restart, target activation, Web Lock coordination, realtime,
+  or durable support-policy status for Firefox/Safari/WebKit. Local Bun `1.3.9`
+  gates passed: `node --check
+  packages/create-syncular-app/scripts/browser-runtime-matrix-runner.mjs`,
+  `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox bun --cwd
+  packages/create-syncular-app smoke --browser-runtime-matrix=firefox
+  --browser-runtime-matrix-only`, and
+  `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=webkit bun --cwd packages/create-syncular-app
+  smoke --browser-runtime-matrix=webkit --browser-runtime-matrix-only` with
+  `PLAYWRIGHT_BROWSERS_PATH=.context/ms-playwright`.
 
 ## Next Action
 
@@ -5288,11 +5304,12 @@ The current WebKit/Safari runtime-matrix slice adds a dedicated
 explicit `safari-secure-page` support context. It mirrors the Firefox
 runtime/support-policy proof and now both matrix jobs also prove DOM lifecycle
 helper pause/resume signal handling plus a generated local write with local
-command evidence and same-context reload rendering from browser storage.
-Safari/WebKit and Firefox durable persistence policy, realtime, broader reopen
-host semantics, target activation, and Web Lock lifecycle coordination remain
-preflight-gated until deeper target evidence exists. Hosted Checks run
-`28576137057` on commit `8245fc98` passed the full matrix, including
+command evidence, same-page reload rendering, and same-context page reopen
+rendering from browser storage.
+Safari/WebKit and Firefox durable persistence policy, realtime, broader
+host/process reopen semantics, target activation, and Web Lock lifecycle
+coordination remain preflight-gated until deeper target evidence exists. Hosted
+Checks run `28576137057` on commit `8245fc98` passed the full matrix, including
 `starter-webkit-runtime-matrix`, before the local-write/reload extension.
 Remaining lifecycle/storage work is host/browser eviction beyond explicit CDP
 origin/database clears/Clear-Site-Data/same-origin IndexedDB deletion,
@@ -5310,9 +5327,10 @@ crash, explicit shutdown close, discarded-tab recovery, database-storage
 eviction, Clear-Site-Data storage eviction, and same-origin IndexedDB deletion
 branches, and
 browser/bundler matrix execution, especially Safari/WebKit and Firefox realtime,
-reopen, persistence, target activation, and Web Lock lifecycle coordination proof
-beyond the runtime/support-policy/local DOM-signal smokes, real private-mode
-durable-persistence semantics, WebViews,
+process restart/reopen, persistence, target activation, and Web Lock lifecycle
+coordination proof beyond the runtime/support-policy/local DOM-signal and
+same-context reopen smokes, real private-mode durable-persistence semantics,
+WebViews,
 deeper fully installed-PWA host semantics beyond the app-window
 cache-refresh/offline-restart/update proof, and PWA cache-update semantics
 beyond these smoke-only/app-window runtime cache-refresh, offline restart, and

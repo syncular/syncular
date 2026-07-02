@@ -722,6 +722,8 @@ async function waitForMatrixLocalWriteProof(args) {
 async function waitForMatrixTaskText(args) {
   const deadline = Date.now() + 20_000;
   let lastProbe = null;
+  const proofName = args.proofName ?? 'reload persistence';
+  const reasonSuffix = args.reasonSuffix ?? 'reload';
   while (Date.now() < deadline) {
     const probe = await readMatrixProbe(args.page, args.diagnostics);
     lastProbe = probe;
@@ -731,13 +733,13 @@ async function waitForMatrixTaskText(args) {
         generatedAt: new Date().toISOString(),
         metrics: args.metrics,
         probe,
-        reason: `${args.browserName}-runtime-matrix-reload-errors`,
+        reason: `${args.browserName}-runtime-matrix-${reasonSuffix}-errors`,
         supportContext: args.supportContext,
         title: args.title,
         url: args.url,
       });
       throw new Error(
-        `Built preview ${args.browserName} reload persistence proof failed: ${probe.errors.join(
+        `Built preview ${args.browserName} ${proofName} proof failed: ${probe.errors.join(
           ', '
         )}. Failure artifact: ${args.failureArtifact}`
       );
@@ -753,13 +755,13 @@ async function waitForMatrixTaskText(args) {
     generatedAt: new Date().toISOString(),
     metrics: args.metrics,
     probe: lastProbe,
-    reason: `${args.browserName}-runtime-matrix-reload-timeout`,
+    reason: `${args.browserName}-runtime-matrix-${reasonSuffix}-timeout`,
     supportContext: args.supportContext,
     title: args.title,
     url: args.url,
   });
   throw new Error(
-    `Timed out waiting for built preview ${args.browserName} reload persistence proof. Failure artifact: ${args.failureArtifact}`
+    `Timed out waiting for built preview ${args.browserName} ${proofName} proof. Failure artifact: ${args.failureArtifact}`
   );
 }
 
@@ -817,27 +819,7 @@ async function waitForMatrixEvidence(args) {
   );
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const browserName = requiredArg(args, 'browser');
-  const browserType = browserTypes[browserName];
-  if (!browserType) {
-    throw new Error(`Unsupported Playwright browser: ${browserName}`);
-  }
-  const url = requiredArg(args, 'url');
-  const supportContext = requiredArg(args, 'support-context');
-  const failureArtifact = requiredArg(args, 'failure-artifact');
-  const metricsJson = args.get('metrics-json') ?? '{}';
-  const metrics = JSON.parse(metricsJson);
-  const diagnostics = [];
-  const browser = await browserType.launch({ headless: true });
-  const context = await browser.newContext();
-  const page = await context.newPage();
-  const recordDiagnostic = (message) => {
-    diagnostics.push(message);
-    while (diagnostics.length > 20) diagnostics.shift();
-  };
-
+function attachPageDiagnostics(page, browserName, recordDiagnostic) {
   page.on('console', (message) => {
     const text = message.text();
     if (text.includes('[syncular-starter]')) {
@@ -867,10 +849,31 @@ async function main() {
     ) {
       return;
     }
-    recordDiagnostic(
-      formatBrowserDiagnostic(errorText, request.url())
-    );
+    recordDiagnostic(formatBrowserDiagnostic(errorText, request.url()));
   });
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const browserName = requiredArg(args, 'browser');
+  const browserType = browserTypes[browserName];
+  if (!browserType) {
+    throw new Error(`Unsupported Playwright browser: ${browserName}`);
+  }
+  const url = requiredArg(args, 'url');
+  const supportContext = requiredArg(args, 'support-context');
+  const failureArtifact = requiredArg(args, 'failure-artifact');
+  const metricsJson = args.get('metrics-json') ?? '{}';
+  const metrics = JSON.parse(metricsJson);
+  const diagnostics = [];
+  const browser = await browserType.launch({ headless: true });
+  const context = await browser.newContext();
+  let page = await context.newPage();
+  const recordDiagnostic = (message) => {
+    diagnostics.push(message);
+    while (diagnostics.length > 20) diagnostics.shift();
+  };
+  attachPageDiagnostics(page, browserName, recordDiagnostic);
 
   try {
     await page.goto(url, { timeout: 60_000, waitUntil: 'load' });
@@ -925,8 +928,33 @@ async function main() {
       title,
       url,
     });
+    await page.close();
+    page = await context.newPage();
+    attachPageDiagnostics(page, browserName, recordDiagnostic);
+    await page.goto(url, { timeout: 60_000, waitUntil: 'load' });
+    await waitForMatrixEvidence({
+      browserName,
+      diagnostics,
+      failureArtifact,
+      metrics,
+      page,
+      supportContext,
+      url,
+    });
+    await waitForMatrixTaskText({
+      browserName,
+      diagnostics,
+      failureArtifact,
+      metrics,
+      page,
+      proofName: 'same-context reopen persistence',
+      reasonSuffix: 'same-context-reopen',
+      supportContext,
+      title,
+      url,
+    });
     console.log(
-      `[csa-smoke] ${browserName} runtime matrix evidence passed: context=${probe.browserSupportPolicy.context} tier=${probe.deploymentPreflight.supportTier} lifecycleResumeCount=${lifecycleProbe.lifecycleResume.count} localWriteCount=${writeProbe.commandTimeline.count}`
+      `[csa-smoke] ${browserName} runtime matrix evidence passed: context=${probe.browserSupportPolicy.context} tier=${probe.deploymentPreflight.supportTier} lifecycleResumeCount=${lifecycleProbe.lifecycleResume.count} localWriteCount=${writeProbe.commandTimeline.count} sameContextReopen=passed`
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
