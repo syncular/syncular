@@ -6118,13 +6118,25 @@ fn generate_typescript_module(
     );
     out.push_str("// Source: migrations/*.sql and generated Syncular codegen handoff\n\n");
     let runtime_import_path = config.typescript_runtime_import_path()?;
+    let subscription_readiness_import_path = format!(
+        "{}/subscription-readiness",
+        runtime_import_path.trim_end_matches('/')
+    );
     out.push_str(&format!(
         "import {{ SYNCULAR_PACKAGE_NAME, SYNCULAR_PACKAGE_VERSION, SYNCULAR_WORKER_PROTOCOL_VERSION, createSyncularCommandHistory, createSyncularDatabase, getSyncularRuntimeArtifact, selectSyncularRuntimeArtifact, withSyncularSchemaWrites }} from {};\n",
         ts_string(runtime_import_path)
     ));
     out.push_str(&format!(
-        "import type {{ CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularEmbeddedMigration, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularLocalVisibilityOptions, SyncularLocalVisibilityQuery, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularSchemaReadinessOptions, SyncularSchemaReadinessResult, SyncularYjsPayloadEnvelope }} from {};\n\n",
+        "import {{ getSyncularSubscriptionReadiness }} from {};\n",
+        ts_string(&subscription_readiness_import_path)
+    ));
+    out.push_str(&format!(
+        "import type {{ CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularEmbeddedMigration, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularLocalVisibilityOptions, SyncularLocalVisibilityQuery, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularSchemaReadinessOptions, SyncularSchemaReadinessResult, SyncularYjsPayloadEnvelope }} from {};\n",
         ts_string(runtime_import_path)
+    ));
+    out.push_str(&format!(
+        "import type {{ SyncularSubscriptionReadinessOptions, SyncularSubscriptionReadinessResult }} from {};\n\n",
+        ts_string(&subscription_readiness_import_path)
     ));
     let read_model_table_config = TableCodegenConfig::default();
     let uses_generated_columns = tables_use_generated_columns(&user_tables, config)
@@ -6945,11 +6957,19 @@ fn generate_typescript_module(
     out.push_str("  leasedMutations: SyncularAppMutations;\n");
     out.push_str("  commandHistory: SyncularCommandHistory;\n");
     out.push_str("  schemaReadiness(options?: Omit<SyncularSchemaReadinessOptions, 'generatedSchemaVersion' | 'expectedRuntime'>): Promise<SyncularSchemaReadinessResult>;\n");
+    out.push_str("  subscriptionReadiness(options?: Omit<SyncularSubscriptionReadinessOptions, 'expectedSubscriptions'>): Promise<SyncularSubscriptionReadinessResult>;\n");
     for table in &user_tables {
         let method_name =
             lower_camel_case(&format!("await_{}_visibility", singular_name(&table.name)));
         out.push_str(&format!(
             "  {method_name}<TResult>(query: SyncularLocalVisibilityQuery<SyncularAppDb, TResult>, options?: Omit<SyncularLocalVisibilityOptions<TResult>, 'tables'>): Promise<TResult>;\n"
+        ));
+        let readiness_method_name = lower_camel_case(&format!(
+            "{}_subscription_readiness",
+            singular_name(&table.name)
+        ));
+        out.push_str(&format!(
+            "  {readiness_method_name}(options?: Omit<SyncularSubscriptionReadinessOptions, 'expectedSubscriptions' | 'tables'>): Promise<SyncularSubscriptionReadinessResult>;\n"
         ));
     }
     out.push_str("};\n");
@@ -7051,8 +7071,9 @@ fn generate_typescript_module(
     );
     out.push_str("    }\n");
     out.push_str(
-        "    await database.client.setSubscriptions(resolveSyncularAppSubscriptions(options));\n",
+        "    const syncularAppSubscriptions = resolveSyncularAppSubscriptions(options);\n",
     );
+    out.push_str("    await database.client.setSubscriptions(syncularAppSubscriptions);\n");
     out.push_str("    const appDatabase = database as unknown as SyncularAppDatabase;\n");
     out.push_str("    const commandHistory = createSyncularCommandHistory<SyncularAppDb>({\n");
     out.push_str("      client: database.client,\n");
@@ -7064,13 +7085,24 @@ fn generate_typescript_module(
     out.push_str("    appDatabase.mutations = commandHistory.wrapMutations(database.mutations, 'mutations') as SyncularAppMutations;\n");
     out.push_str("    appDatabase.leasedMutations = commandHistory.wrapMutations(database.leasedMutations, 'leasedMutations') as SyncularAppMutations;\n");
     out.push_str("    const rootSchemaReadiness = database.schemaReadiness.bind(database);\n");
+    out.push_str("    const subscriptionReadinessClient = { diagnosticSnapshot: () => database.client.diagnosticSnapshot(), getStatus: () => database.getStatus() };\n");
     out.push_str("    const expectedRuntimeArtifact = typeof options.runtime === 'string' ? getSyncularRuntimeArtifact(options.runtime) : (options.runtime ?? selectSyncularRuntimeArtifact(syncularGeneratedRequiredRuntimeFeatures, options.runtimeArtifacts));\n");
     out.push_str("    appDatabase.schemaReadiness = (readinessOptions) => rootSchemaReadiness({ ...readinessOptions, generatedSchemaVersion: syncularGeneratedSchemaVersion, expectedRuntime: { packageName: SYNCULAR_PACKAGE_NAME, packageVersion: SYNCULAR_PACKAGE_VERSION, workerProtocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION, requiredRustFeatures: syncularGeneratedRequiredRuntimeFeatures, wasmGlueUrl: expectedRuntimeArtifact.wasmGlueUrl, wasmUrl: expectedRuntimeArtifact.wasmUrl } });\n");
+    out.push_str("    appDatabase.subscriptionReadiness = (readinessOptions) => getSyncularSubscriptionReadiness(subscriptionReadinessClient, { ...readinessOptions, expectedSubscriptions: syncularAppSubscriptions });\n");
     for table in &user_tables {
         let method_name =
             lower_camel_case(&format!("await_{}_visibility", singular_name(&table.name)));
         out.push_str(&format!(
             "    appDatabase.{method_name} = (query, visibilityOptions) => database.awaitLocalVisibility(query, {{ ...visibilityOptions, tables: [{}] }});\n",
+            ts_string(&table.name)
+        ));
+        let readiness_method_name = lower_camel_case(&format!(
+            "{}_subscription_readiness",
+            singular_name(&table.name)
+        ));
+        out.push_str(&format!(
+            "    appDatabase.{readiness_method_name} = (readinessOptions) => getSyncularSubscriptionReadiness(subscriptionReadinessClient, {{ ...readinessOptions, expectedSubscriptions: syncularAppSubscriptions.filter((subscription) => subscription.table === {}), tables: [{}] }});\n",
+            ts_string(&table.name),
             ts_string(&table.name)
         ));
     }
@@ -12371,7 +12403,13 @@ CREATE TABLE tasks (
             "import { SYNCULAR_PACKAGE_NAME, SYNCULAR_PACKAGE_VERSION, SYNCULAR_WORKER_PROTOCOL_VERSION, createSyncularCommandHistory, createSyncularDatabase, getSyncularRuntimeArtifact, selectSyncularRuntimeArtifact, withSyncularSchemaWrites } from '@app/sync-runtime';"
         ));
         assert!(output.contains(
+            "import { getSyncularSubscriptionReadiness } from '@app/sync-runtime/subscription-readiness';"
+        ));
+        assert!(output.contains(
             "import type { CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularEmbeddedMigration, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularLocalVisibilityOptions, SyncularLocalVisibilityQuery, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularSchemaReadinessOptions, SyncularSchemaReadinessResult, SyncularYjsPayloadEnvelope } from '@app/sync-runtime';"
+        ));
+        assert!(output.contains(
+            "import type { SyncularSubscriptionReadinessOptions, SyncularSubscriptionReadinessResult } from '@app/sync-runtime/subscription-readiness';"
         ));
         assert!(output.contains("import { sql, type Generated, type Kysely } from 'kysely';"));
         assert!(output.contains(
@@ -12389,7 +12427,13 @@ CREATE TABLE tasks (
             "schemaReadiness(options?: Omit<SyncularSchemaReadinessOptions, 'generatedSchemaVersion' | 'expectedRuntime'>): Promise<SyncularSchemaReadinessResult>;"
         ));
         assert!(output.contains(
+            "subscriptionReadiness(options?: Omit<SyncularSubscriptionReadinessOptions, 'expectedSubscriptions'>): Promise<SyncularSubscriptionReadinessResult>;"
+        ));
+        assert!(output.contains(
             "awaitTaskVisibility<TResult>(query: SyncularLocalVisibilityQuery<SyncularAppDb, TResult>, options?: Omit<SyncularLocalVisibilityOptions<TResult>, 'tables'>): Promise<TResult>;"
+        ));
+        assert!(output.contains(
+            "taskSubscriptionReadiness(options?: Omit<SyncularSubscriptionReadinessOptions, 'expectedSubscriptions' | 'tables'>): Promise<SyncularSubscriptionReadinessResult>;"
         ));
         assert!(output.contains(
             "awaitProjectVisibility<TResult>(query: SyncularLocalVisibilityQuery<SyncularAppDb, TResult>, options?: Omit<SyncularLocalVisibilityOptions<TResult>, 'tables'>): Promise<TResult>;"
@@ -12454,10 +12498,12 @@ CREATE TABLE tasks (
             .contains("await withSyncularSchemaWrites(database, ensureSyncularAppBaseSchema);"));
         assert!(!output.contains("ensureSyncularAppLiveSchema"));
         assert!(!output.contains("assertSyncularAppTablesEmptyForLiveSchema"));
-        assert!(output.contains("await database.client.setSubscriptions("));
         assert!(output.contains(
-            "await database.client.setSubscriptions(resolveSyncularAppSubscriptions(options));"
+            "const syncularAppSubscriptions = resolveSyncularAppSubscriptions(options);"
         ));
+        assert!(
+            output.contains("await database.client.setSubscriptions(syncularAppSubscriptions);")
+        );
         assert!(
             output.contains("const commandHistory = createSyncularCommandHistory<SyncularAppDb>")
         );
@@ -12467,13 +12513,22 @@ CREATE TABLE tasks (
             output.contains("const rootSchemaReadiness = database.schemaReadiness.bind(database);")
         );
         assert!(output.contains(
+            "const subscriptionReadinessClient = { diagnosticSnapshot: () => database.client.diagnosticSnapshot(), getStatus: () => database.getStatus() };"
+        ));
+        assert!(output.contains(
             "const expectedRuntimeArtifact = typeof options.runtime === 'string' ? getSyncularRuntimeArtifact(options.runtime) : (options.runtime ?? selectSyncularRuntimeArtifact(syncularGeneratedRequiredRuntimeFeatures, options.runtimeArtifacts));"
         ));
         assert!(output.contains(
             "appDatabase.schemaReadiness = (readinessOptions) => rootSchemaReadiness({ ...readinessOptions, generatedSchemaVersion: syncularGeneratedSchemaVersion, expectedRuntime: { packageName: SYNCULAR_PACKAGE_NAME, packageVersion: SYNCULAR_PACKAGE_VERSION, workerProtocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION, requiredRustFeatures: syncularGeneratedRequiredRuntimeFeatures, wasmGlueUrl: expectedRuntimeArtifact.wasmGlueUrl, wasmUrl: expectedRuntimeArtifact.wasmUrl } });"
         ));
         assert!(output.contains(
+            "appDatabase.subscriptionReadiness = (readinessOptions) => getSyncularSubscriptionReadiness(subscriptionReadinessClient, { ...readinessOptions, expectedSubscriptions: syncularAppSubscriptions });"
+        ));
+        assert!(output.contains(
             "appDatabase.awaitTaskVisibility = (query, visibilityOptions) => database.awaitLocalVisibility(query, { ...visibilityOptions, tables: ['tasks'] });"
+        ));
+        assert!(output.contains(
+            "appDatabase.taskSubscriptionReadiness = (readinessOptions) => getSyncularSubscriptionReadiness(subscriptionReadinessClient, { ...readinessOptions, expectedSubscriptions: syncularAppSubscriptions.filter((subscription) => subscription.table === 'tasks'), tables: ['tasks'] });"
         ));
         assert!(output.contains(
             "appDatabase.awaitProjectVisibility = (query, visibilityOptions) => database.awaitLocalVisibility(query, { ...visibilityOptions, tables: ['projects'] });"

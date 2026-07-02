@@ -2610,6 +2610,21 @@ online propagation, or reconnect behavior can change.
 Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 `.context/bun-1.3.9` binary.
 
+Most recent subscription-readiness rerun:
+
+- `bun test packages/client/src/subscription-readiness.test.ts packages/client/src/public-api.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bun --cwd packages/create-syncular-app tsgo`
+- `bunx biome check packages/client/src/subscription-readiness.ts packages/client/src/subscription-readiness.test.ts packages/client/src/database.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `cargo fmt --all --check` from `rust/`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen typescript_module_supports_multiple_app_tables`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir packages/create-syncular-app/template --check`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
+- `bun --cwd packages/create-syncular-app smoke`
+- `bun run docs:stale-check`
+- `bun --cwd apps/docs types:check`
+- `bun run bundle:check`
+
 - `bun test packages/client/src/browser-health.test.ts packages/client/src/local-visibility.test.ts packages/client/src/public-api.test.ts`
 - `bun --cwd packages/client tsgo`
 - `bun --cwd packages/core tsgo`
@@ -3808,6 +3823,17 @@ Most recent browser-health failure-artifact rerun:
     enforces that path in a dedicated Chrome-provisioned starter job for
     starter-relevant PRs and all pushes; remaining work is to observe the
     hosted runner and decide whether release rehearsal should also require it.
+14. Subscription readiness: first app-facing slice is done with the
+    `@syncular/client/subscription-readiness` helper, generated app
+    `subscriptionReadiness()` wrappers, and table helpers such as
+    `taskSubscriptionReadiness()`. The helper projects diagnostic snapshots into
+    redacted ready/waiting/action-required/missing/unknown status with stable
+    issue codes for auth-required, revoked, rate-limited, schema, runtime,
+    storage, offline, bootstrap-pending, and missing-subscription blockers.
+    Generated wrappers inject the resolved generated subscriptions so app code
+    does not pass subscription constants, the root `createSyncularDatabase`
+    bundle stays under the budget guard, and the starter emits a hidden
+    subscription-readiness marker for smoke/failure artifacts.
 
 ## Resolved Decisions
 

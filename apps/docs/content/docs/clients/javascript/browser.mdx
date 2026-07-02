@@ -175,6 +175,27 @@ policy evaluator returns `met`, `warning`, `not-met`, or `not-applicable`;
 did not prove enough target evidence, such as when runtime assets are checked by
 an outer browser smoke instead of the page itself.
 
+For view-level subscription state, generated databases expose
+`subscriptionReadiness()` and table helpers such as
+`taskSubscriptionReadiness()`. They use the public
+`@syncular/client/subscription-readiness` helper under the hood. Use them when
+UI needs to know whether a scoped view is ready, still bootstrapping, missing an
+expected generated subscription, or blocked by auth, revocation, rate limits,
+schema/runtime/storage issues, offline state, or another stable diagnostic:
+
+```ts
+const tasks = await syncular.taskSubscriptionReadiness();
+
+if (tasks.status === 'action-required') {
+  reportSyncularIssue(tasks.issues[0]?.code, tasks.issues[0]?.recommendedAction);
+}
+```
+
+The helper returns safe support fields only: subscription ids, table names,
+scope/parameter key names and counts, issue codes, diagnostics, and recommended
+actions. It does not expose scope values, bearer tokens, signed URLs, or request
+payloads.
+
 For normal browser pages, install the lifecycle resume helper after opening the
 managed database so restored-page, visible-tab, and online signals trigger the
 foreground catch-up path without app code calling `sync()` directly:

@@ -2,7 +2,9 @@
 // Source: migrations/*.sql and generated Syncular codegen handoff
 
 import { SYNCULAR_PACKAGE_NAME, SYNCULAR_PACKAGE_VERSION, SYNCULAR_WORKER_PROTOCOL_VERSION, createSyncularCommandHistory, createSyncularDatabase, getSyncularRuntimeArtifact, selectSyncularRuntimeArtifact, withSyncularSchemaWrites } from '../../../../../packages/client/src';
+import { getSyncularSubscriptionReadiness } from '../../../../../packages/client/src/subscription-readiness';
 import type { CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularEmbeddedMigration, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularLocalVisibilityOptions, SyncularLocalVisibilityQuery, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularSchemaReadinessOptions, SyncularSchemaReadinessResult, SyncularYjsPayloadEnvelope } from '../../../../../packages/client/src';
+import type { SyncularSubscriptionReadinessOptions, SyncularSubscriptionReadinessResult } from '../../../../../packages/client/src/subscription-readiness';
 
 import { sql, type Generated, type Kysely } from 'kysely';
 import { codecs, type BlobRef, type ColumnCodecSource } from '@syncular/core';
@@ -907,9 +909,13 @@ export type SyncularAppDatabase = Omit<SyncularDatabase<SyncularAppDb>, 'mutatio
   leasedMutations: SyncularAppMutations;
   commandHistory: SyncularCommandHistory;
   schemaReadiness(options?: Omit<SyncularSchemaReadinessOptions, 'generatedSchemaVersion' | 'expectedRuntime'>): Promise<SyncularSchemaReadinessResult>;
+  subscriptionReadiness(options?: Omit<SyncularSubscriptionReadinessOptions, 'expectedSubscriptions'>): Promise<SyncularSubscriptionReadinessResult>;
   awaitCommentVisibility<TResult>(query: SyncularLocalVisibilityQuery<SyncularAppDb, TResult>, options?: Omit<SyncularLocalVisibilityOptions<TResult>, 'tables'>): Promise<TResult>;
+  commentSubscriptionReadiness(options?: Omit<SyncularSubscriptionReadinessOptions, 'expectedSubscriptions' | 'tables'>): Promise<SyncularSubscriptionReadinessResult>;
   awaitProjectVisibility<TResult>(query: SyncularLocalVisibilityQuery<SyncularAppDb, TResult>, options?: Omit<SyncularLocalVisibilityOptions<TResult>, 'tables'>): Promise<TResult>;
+  projectSubscriptionReadiness(options?: Omit<SyncularSubscriptionReadinessOptions, 'expectedSubscriptions' | 'tables'>): Promise<SyncularSubscriptionReadinessResult>;
   awaitTaskVisibility<TResult>(query: SyncularLocalVisibilityQuery<SyncularAppDb, TResult>, options?: Omit<SyncularLocalVisibilityOptions<TResult>, 'tables'>): Promise<TResult>;
+  taskSubscriptionReadiness(options?: Omit<SyncularSubscriptionReadinessOptions, 'expectedSubscriptions' | 'tables'>): Promise<SyncularSubscriptionReadinessResult>;
 };
 export type SyncularAppSubscriptionsOption =
   | false
@@ -1000,7 +1006,8 @@ export async function createSyncularAppDatabase(
     } else if (schemaInstallMode !== 'none') {
       throw new Error(`Unknown Syncular schemaInstallMode: ${schemaInstallMode}`);
     }
-    await database.client.setSubscriptions(resolveSyncularAppSubscriptions(options));
+    const syncularAppSubscriptions = resolveSyncularAppSubscriptions(options);
+    await database.client.setSubscriptions(syncularAppSubscriptions);
     const appDatabase = database as unknown as SyncularAppDatabase;
     const commandHistory = createSyncularCommandHistory<SyncularAppDb>({
       client: database.client,
@@ -1012,11 +1019,16 @@ export async function createSyncularAppDatabase(
     appDatabase.mutations = commandHistory.wrapMutations(database.mutations, 'mutations') as SyncularAppMutations;
     appDatabase.leasedMutations = commandHistory.wrapMutations(database.leasedMutations, 'leasedMutations') as SyncularAppMutations;
     const rootSchemaReadiness = database.schemaReadiness.bind(database);
+    const subscriptionReadinessClient = { diagnosticSnapshot: () => database.client.diagnosticSnapshot(), getStatus: () => database.getStatus() };
     const expectedRuntimeArtifact = typeof options.runtime === 'string' ? getSyncularRuntimeArtifact(options.runtime) : (options.runtime ?? selectSyncularRuntimeArtifact(syncularGeneratedRequiredRuntimeFeatures, options.runtimeArtifacts));
     appDatabase.schemaReadiness = (readinessOptions) => rootSchemaReadiness({ ...readinessOptions, generatedSchemaVersion: syncularGeneratedSchemaVersion, expectedRuntime: { packageName: SYNCULAR_PACKAGE_NAME, packageVersion: SYNCULAR_PACKAGE_VERSION, workerProtocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION, requiredRustFeatures: syncularGeneratedRequiredRuntimeFeatures, wasmGlueUrl: expectedRuntimeArtifact.wasmGlueUrl, wasmUrl: expectedRuntimeArtifact.wasmUrl } });
+    appDatabase.subscriptionReadiness = (readinessOptions) => getSyncularSubscriptionReadiness(subscriptionReadinessClient, { ...readinessOptions, expectedSubscriptions: syncularAppSubscriptions });
     appDatabase.awaitCommentVisibility = (query, visibilityOptions) => database.awaitLocalVisibility(query, { ...visibilityOptions, tables: ['comments'] });
+    appDatabase.commentSubscriptionReadiness = (readinessOptions) => getSyncularSubscriptionReadiness(subscriptionReadinessClient, { ...readinessOptions, expectedSubscriptions: syncularAppSubscriptions.filter((subscription) => subscription.table === 'comments'), tables: ['comments'] });
     appDatabase.awaitProjectVisibility = (query, visibilityOptions) => database.awaitLocalVisibility(query, { ...visibilityOptions, tables: ['projects'] });
+    appDatabase.projectSubscriptionReadiness = (readinessOptions) => getSyncularSubscriptionReadiness(subscriptionReadinessClient, { ...readinessOptions, expectedSubscriptions: syncularAppSubscriptions.filter((subscription) => subscription.table === 'projects'), tables: ['projects'] });
     appDatabase.awaitTaskVisibility = (query, visibilityOptions) => database.awaitLocalVisibility(query, { ...visibilityOptions, tables: ['tasks'] });
+    appDatabase.taskSubscriptionReadiness = (readinessOptions) => getSyncularSubscriptionReadiness(subscriptionReadinessClient, { ...readinessOptions, expectedSubscriptions: syncularAppSubscriptions.filter((subscription) => subscription.table === 'tasks'), tables: ['tasks'] });
     if (options.lifecycle?.autoStart ?? (options.config.mode ?? 'remote') === 'remote') {
       await database.start();
     }

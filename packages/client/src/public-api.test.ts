@@ -148,6 +148,10 @@ describe('@syncular/client public API', () => {
     expect('loadSyncularWasmGlue' in clientApi).toBe(false);
   });
 
+  it('keeps subscription readiness on its diagnostic subpath', () => {
+    expect('getSyncularSubscriptionReadiness' in clientApi).toBe(false);
+  });
+
   it('defaults generated app storage to OPFS SAH', () => {
     expect(
       resolveSyncularClientConfig({

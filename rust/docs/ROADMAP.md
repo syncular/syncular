@@ -87,10 +87,15 @@ read-only review:
     `SyncularDatabase.schemaReadiness(...)` for structured generated/runtime/
     local/server schema drift diagnostics, add `syncular schema check --json`
     for deploy/CI file-level readiness over config, migrations, and generated
-    client/server output, and add `getSyncularServerSchemaReadiness(...)` for
-    live database readiness over Syncular core tables, app tables, and server
-    required/latest schema versions. The fresh generated JavaScript app smoke
-    now includes user+campaign scope, proves a campaign-scope switch through
+    client/server output, add `getSyncularServerSchemaReadiness(...)` for live
+    database readiness over Syncular core tables, app tables, and server
+    required/latest schema versions, and add
+    the subpath `getSyncularSubscriptionReadiness(...)` helper plus generated
+    `subscriptionReadiness()`/table helpers for redacted per-subscription/table
+    ready/waiting/action-required/missing diagnostics without increasing the
+    root client bundle beyond the budget guard. The fresh generated JavaScript
+    app smoke now includes user+campaign scope, proves a
+    campaign-scope switch through
     `replaceAuthContext(...)` plus `awaitLocalVisibility(...)`, asserts schema
     readiness from generated app metadata, and runs the schema-check command.
     Blob routes now accept structured scoped access decisions from

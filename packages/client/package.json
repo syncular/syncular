@@ -53,6 +53,14 @@
         "default": "./dist/sentry.js"
       }
     },
+    "./subscription-readiness": {
+      "bun": "./src/subscription-readiness.ts",
+      "browser": "./src/subscription-readiness.ts",
+      "import": {
+        "types": "./dist/subscription-readiness.d.ts",
+        "default": "./dist/subscription-readiness.js"
+      }
+    },
     "./react": {
       "bun": "./src/react/index.ts",
       "browser": "./src/react/index.ts",

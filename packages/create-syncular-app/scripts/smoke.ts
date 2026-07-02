@@ -526,6 +526,7 @@ async function verifyBuiltPreviewAssets(
   let sawStarterTimelineMarker = false;
   let sawStorageShutdownMarker = false;
   let sawStorageRecoveryMarker = false;
+  let sawSubscriptionReadinessMarker = false;
   let sawSupportBundleMarker = false;
   let totalAssetBytes = 0;
   let jsAssetCount = 0;
@@ -583,6 +584,9 @@ async function verifyBuiltPreviewAssets(
         assetBody.includes(
           'data-syncular-storage-shutdown-proof-post-close-error-code'
         );
+      sawSubscriptionReadinessMarker ||=
+        assetBody.includes('data-syncular-subscription-readiness-status') &&
+        assetBody.includes('data-syncular-subscription-readiness-total');
       sawSupportBundleMarker ||=
         assetBody.includes('data-syncular-support-bundle-status') &&
         assetBody.includes('data-syncular-support-bundle-timeline-event-count');
@@ -614,6 +618,11 @@ async function verifyBuiltPreviewAssets(
   if (!sawDeploymentPreflightMarker) {
     throw new Error(
       'Built preview assets did not include the deployment-preflight smoke marker'
+    );
+  }
+  if (!sawSubscriptionReadinessMarker) {
+    throw new Error(
+      'Built preview assets did not include the subscription-readiness smoke marker'
     );
   }
   if (!sawBrowserSupportPolicyMarker) {

@@ -524,6 +524,31 @@ stage, recovery owner, and fixed operation availability for local reads,
 generated mutations, local-visibility waits, explicit sync, auth replacement,
 resume, support-bundle export, and destructive local recovery.
 
+For view-level subscription state, generated databases expose
+`subscriptionReadiness()` plus table helpers such as
+`taskSubscriptionReadiness()`. They wrap `getSyncularSubscriptionReadiness(...)`
+from `@syncular/client/subscription-readiness` with the generated subscription
+list, so UI code can distinguish ready, waiting, missing, action-required, and
+unknown states without parsing raw diagnostics:
+
+```ts
+const readiness = await syncular.taskSubscriptionReadiness();
+
+if (readiness.requiresAction) {
+  showRecovery(
+    readiness.issues[0]?.code,
+    readiness.issues[0]?.recommendedAction
+  );
+}
+```
+
+Readiness issues use stable codes for auth-required, revoked subscriptions,
+rate limits, schema/runtime/storage blockers, offline state, bootstrap pending,
+and missing generated subscriptions. Subscription readiness output is redacted
+for app/support use: it includes subscription ids, tables, scope/parameter key
+names and counts, blockers, diagnostics, and recommended actions, but not scope
+values, bearer tokens, signed URLs, or request payloads.
+
 For E2E failures and support reports, use `runtimeTimeline()` to turn the
 current snapshot plus recent diagnostics into an ordered, redacted sequence of
 runtime, lifecycle, bootstrap, sync, auth, realtime, local-apply, outbox,

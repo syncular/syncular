@@ -21,6 +21,7 @@ import {
   type SyncularLocalRecoveryActionOutboxSafetyStatus,
   type SyncularLocalVisibilityEvidence,
   type SyncularSchemaReadinessResult,
+  type SyncularSubscriptionReadinessResult,
   type SyncularSupportBundle,
 } from '@syncular/client';
 import { createSyncularReact } from '@syncular/client/react';
@@ -68,6 +69,7 @@ type StarterTimelinePreview = {
   realtimeConnectedMs: number | null;
   realtimeStatus: 'pending' | 'connected';
   schemaReadinessMs: number | null;
+  subscriptionReadinessMs: number | null;
   supportBundleExportMs: number | null;
 };
 
@@ -261,6 +263,7 @@ const initialStarterTimeline: StarterTimelinePreview = {
   realtimeConnectedMs: null,
   realtimeStatus: 'pending',
   schemaReadinessMs: null,
+  subscriptionReadinessMs: null,
   supportBundleExportMs: null,
 };
 
@@ -807,6 +810,8 @@ function TaskPane({
   const [health, setHealth] = useState<SyncularBrowserHealth | null>(null);
   const [schemaReadiness, setSchemaReadiness] =
     useState<SyncularSchemaReadinessResult | null>(null);
+  const [subscriptionReadiness, setSubscriptionReadiness] =
+    useState<SyncularSubscriptionReadinessResult | null>(null);
   const [supportBundle, setSupportBundle] =
     useState<SupportBundlePreview | null>(null);
   const [commandTimelineProof, setCommandTimelineProof] =
@@ -920,6 +925,29 @@ function TaskPane({
           updateStarterTimeline((current) => ({
             ...current,
             schemaReadinessMs: elapsedSince(schemaStartedAtMs),
+          }));
+        }
+      }
+
+      reportStarterOpenPhase('diagnostics-subscriptions');
+      await yieldStarterFrame();
+      const subscriptionStartedAtMs = performance.now();
+      try {
+        const nextSubscriptionReadiness =
+          await client.taskSubscriptionReadiness();
+        if (!disposed) {
+          setSubscriptionReadiness(nextSubscriptionReadiness);
+          updateStarterTimeline((current) => ({
+            ...current,
+            subscriptionReadinessMs: elapsedSince(subscriptionStartedAtMs),
+          }));
+        }
+      } catch {
+        if (!disposed) {
+          setSubscriptionReadiness(null);
+          updateStarterTimeline((current) => ({
+            ...current,
+            subscriptionReadinessMs: elapsedSince(subscriptionStartedAtMs),
           }));
         }
       }
@@ -1785,6 +1813,11 @@ function TaskPane({
       {schemaReadiness ? (
         <SchemaLine schemaReadiness={schemaReadiness} />
       ) : null}
+      {subscriptionReadiness ? (
+        <SubscriptionReadinessMarker
+          subscriptionReadiness={subscriptionReadiness}
+        />
+      ) : null}
       {deploymentPreflight ? (
         <DeploymentPreflightMarker deploymentPreflight={deploymentPreflight} />
       ) : null}
@@ -2148,6 +2181,9 @@ function StarterTimelineMarker({
       data-syncular-starter-realtime-status={starterTimeline.realtimeStatus}
       data-syncular-starter-schema-readiness-ms={
         starterTimeline.schemaReadinessMs ?? ''
+      }
+      data-syncular-starter-subscription-readiness-ms={
+        starterTimeline.subscriptionReadinessMs ?? ''
       }
       data-syncular-starter-support-bundle-export-ms={
         starterTimeline.supportBundleExportMs ?? ''
@@ -2939,6 +2975,40 @@ function SchemaLine({
       : `schema ${schemaReadiness.status}`;
 
   return <p className={`health-line ${schemaReadiness.status}`}>{label}</p>;
+}
+
+function SubscriptionReadinessMarker({
+  subscriptionReadiness,
+}: {
+  subscriptionReadiness: SyncularSubscriptionReadinessResult;
+}) {
+  const firstIssue = subscriptionReadiness.issues[0];
+  const firstItem = subscriptionReadiness.items[0];
+  return (
+    <div
+      data-syncular-subscription-readiness-action-required={
+        subscriptionReadiness.summary.actionRequired
+      }
+      data-syncular-subscription-readiness-first-issue-code={
+        firstIssue?.code ?? ''
+      }
+      data-syncular-subscription-readiness-first-subscription-id={
+        firstItem?.id ?? ''
+      }
+      data-syncular-subscription-readiness-ready={
+        subscriptionReadiness.summary.ready
+      }
+      data-syncular-subscription-readiness-status={subscriptionReadiness.status}
+      data-syncular-subscription-readiness-table={firstItem?.table ?? ''}
+      data-syncular-subscription-readiness-total={
+        subscriptionReadiness.summary.total
+      }
+      data-syncular-subscription-readiness-waiting={
+        subscriptionReadiness.summary.waiting
+      }
+      hidden
+    />
+  );
 }
 
 function HealthLine({ health }: { health: SyncularBrowserHealth }) {
