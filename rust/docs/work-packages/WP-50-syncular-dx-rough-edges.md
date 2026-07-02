@@ -5080,7 +5080,14 @@ Most recent browser-health failure-artifact rerun:
   `browser_support.target_evidence_required`. The matrix runner now accepts
   ready-or-warning deployment preflight evidence for target-browser
   support-policy runs while still failing closed on `failed` or `not-ready`
-  preflight. Hosted confirmation of that fix is still pending.
+  preflight. Hosted Checks run `28575804216` on commit `27ce26f9` confirmed
+  `starter-webkit-runtime-matrix`, `starter-firefox-runtime-matrix`, and
+  `starter-browser-preview`, but the generic `test` job hit a separate
+  Bun/PGlite transient `RuntimeError: access to a null reference` during
+  PostgreSQL introspection before the workflow retry guard knew that
+  signature. The retry guard now retries that signature once alongside the
+  existing PGlite abort signatures. Final full-matrix confirmation after this
+  retry-guard update is still pending.
 
 ## Next Action
 
