@@ -1,0 +1,34 @@
+name: V2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'v2/**'
+      - '.github/workflows/v2.yml'
+  pull_request:
+    paths:
+      - 'v2/**'
+      - '.github/workflows/v2.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: v2
+    steps:
+      - uses: actions/checkout@v4
+
+      # v2 deliberately tracks the LATEST Bun — it has no WASM worker
+      # bridge, so the root repo's 1.3.9 pin does not apply here.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check (typecheck + lint + test)
+        run: bun run check
