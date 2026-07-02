@@ -297,7 +297,18 @@ read-only review:
     replay. Local pinned-Bun `create-syncular-app` typecheck, focused Biome,
     non-Chrome scaffold smoke, and diff check passed; hosted Checks run
     `28556559139` on commit `c4054d92` passed the full matrix, including
-    `starter-browser-preview`, confirming the branch in hosted Chrome.
+    `starter-browser-preview`, confirming the branch in hosted Chrome. The
+    starter smoke now also has an explicit discarded-tab recovery proof: it
+    writes a generated task with sync startup held, proves local visibility,
+    uses Chrome's internal `chrome://discards` provider to discard the hidden
+    starter target, reactivates the real target to force restoration, verifies
+    the task still renders from persistent browser storage, then resumes normal
+    sync and requires a separate observer to receive the replay. Local
+    pinned-Bun typecheck, focused Biome, non-Chrome scaffold smoke, full
+    pre-push gate, and diff check passed; hosted Checks run `28558449113` on
+    commit `49d1b4d4` passed the full matrix, including
+    `starter-browser-preview`, confirming the discarded-tab branch in hosted
+    Chrome.
     Host-driven eviction beyond explicit CDP origin clear and deeper storage
     failure/coordination behavior remain matrix work.
     The starter now also records

@@ -92,7 +92,9 @@ until the full browser Worker/WASM suite is green on Linux.
   quota-exhausted generated write rejection, two-tab
   propagation, same-client page reload/reopen persistence, same-client
   duplicate-tab open contention, generated write pressure, browser process
-  restart persistence,
+  restart persistence, sync-held shutdown replay, renderer-crash replay,
+  targeted sync-transport replay, storage-shutdown replay, discarded-tab
+  recovery,
   service-worker-controlled PWA support-policy classification, incognito
   memory-storage development-policy classification, and live support-bundle
   failure artifact validation.

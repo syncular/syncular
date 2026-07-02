@@ -3975,14 +3975,13 @@ Most recent browser-health failure-artifact rerun:
   the app targets, clears the app origin through Chrome
   `Storage.clearDataForOrigin`, reloads the same client id, requires the
   sentinel to be gone, and waits for the task to restore from server state.
-  Remaining work is richer browser lifecycle execution: discarded-tab
-  suspension/restoration outside CDP lifecycle-state forcing, storage shutdown,
-  browser/host-driven eviction beyond explicit CDP origin clear, lower-level
-  storage contention/failure behavior beyond the same-database duplicate-tab
-  branch, and deeper recovery coordination for persistent browser databases
-  beyond real target foreground/background activation, dispatched page
-  lifecycle events, CDP lifecycle forcing, synthetic storage warning action
-  mapping, browser-observed quota-pressure preflight/recovery mapping,
+  Remaining work is richer browser/host eviction and storage-failure
+  execution beyond explicit CDP origin clear, same-database duplicate-tab
+  writes, storage shutdown, and discarded-tab recovery, plus deeper recovery
+  coordination for persistent browser databases beyond real target
+  foreground/background activation, dispatched page lifecycle events, CDP
+  lifecycle forcing, synthetic storage warning action mapping,
+  browser-observed quota-pressure preflight/recovery mapping,
   quota-exhausted write rejection, and lock-serialized foreground
   resume/recovery actions. Local
   execution of the new browser branches still needs a Chrome-capable runner;
@@ -4078,12 +4077,20 @@ Most recent browser-health failure-artifact rerun:
   the replay through sync/realtime. Hosted Checks run `28556559139` on commit
   `c4054d92` passed the full matrix, including `starter-browser-preview`,
   confirming this branch in Chrome.
-  Remaining work is richer browser-process proof: actual
-  target-browser background/discard suspension and restoration,
-  browser/host-driven eviction beyond explicit CDP origin clear, lower-level
-  storage contention/failure behavior beyond duplicate-tab generated writes,
-  renderer crash, and explicit client shutdown close, and deeper persistent
-  database recovery coordination.
+  The current slice adds an explicit discarded-tab recovery proof for the
+  generated app. The smoke writes a generated task with sync held, proves local
+  visibility plus rendered text, uses Chrome's internal `chrome://discards`
+  provider to discard the hidden starter target, activates the real target to
+  force restoration, proves the task still renders from persistent browser
+  storage, then resumes normal sync and waits for a separate observer client to
+  receive the replay through sync/realtime. Hosted Checks run `28558449113` on
+  commit `49d1b4d4` passed the full matrix, including
+  `starter-browser-preview`, confirming this branch in Chrome.
+  Remaining work is richer browser/host proof: host-driven eviction beyond
+  explicit CDP origin clear and lower-level storage contention/failure
+  behavior beyond the already-covered duplicate-tab generated writes,
+  renderer crash, explicit client shutdown close, and discarded-tab recovery
+  branches, plus deeper persistent database recovery coordination.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,
@@ -4662,6 +4669,26 @@ Most recent browser-health failure-artifact rerun:
   `bun --cwd packages/create-syncular-app smoke`, and `git diff --check`.
   Chrome was not installed locally, so hosted Checks run `28556559139` on commit
   `c4054d92` confirmed the branch in hosted Chrome and passed the full matrix.
+- 2026-07-02: Added a real discarded-tab recovery proof to the starter
+  Chrome/CDP branch. The proof opens a dedicated generated-app client with
+  sync startup held, writes a generated task, waits for local visibility and
+  rendered text, opens Chrome's internal `chrome://discards` page, enables
+  internal debug pages through the Chrome profile `Local State` pref, discards
+  the hidden starter target through the discards provider, activates the real
+  target to force restoration, proves the task still renders from persistent
+  browser storage, then resumes normal sync and waits for a separate observer
+  client to receive the replay through sync/realtime. Hosted iterations first
+  exposed `chrome://discards` import failures, disabled internal debug pages,
+  and brittle `loadingState`/internal-row reload assumptions; the retained
+  proof now uses the internal page only to prove discard happened, and uses the
+  real starter target plus app-visible data to prove recovery. Local gates with
+  Bun `1.3.9` passed: `bun --cwd packages/create-syncular-app tsgo`,
+  `bunx biome check packages/create-syncular-app/scripts/smoke.ts`,
+  `bun --cwd packages/create-syncular-app smoke`, full pre-push static checks
+  plus `bun test packages tests/unit tests/dialects tests/typegen && bun run
+  client:test`, and `git diff --check`. Chrome was not installed locally, so
+  hosted Checks run `28558449113` on commit `49d1b4d4` confirmed the branch in
+  hosted Chrome and passed the full matrix.
 
 ## Next Action
 
@@ -4707,16 +4734,18 @@ Chrome. The current slice adds explicit storage-shutdown replay by closing the
 generated app client, verifying closed lifecycle/status plus `worker.closed`
 post-close rejection, reopening the same persistent browser database with sync
 held, and then replaying to an observer after normal sync resumes; hosted Checks
-run `28556559139` confirmed that branch in Chrome. The next lifecycle follow-up
-should move to discarded-tab/background suspension and restoration,
-browser/host-driven eviction beyond explicit CDP origin clear, and lower-level
-storage-failure behavior.
+run `28556559139` confirmed that branch in Chrome. The current slice adds
+discarded-tab recovery through Chrome's internal discards provider plus real
+target activation/restoration; hosted Checks run `28558449113` confirmed that
+branch in Chrome. The next lifecycle follow-up should move to host/browser
+eviction beyond explicit CDP origin clear and lower-level storage failure
+behavior.
 Production ops readiness is now part of release rehearsal when evidence is
-present or required. Strong follow-ups after that remain actual browser
-discard/background lifecycle coverage, host-driven eviction and deeper
-storage-failure browser proof, lower-level storage contention/failure behavior
-beyond duplicate-tab generated writes, renderer crash, and explicit shutdown
-close, and browser/bundler matrix execution,
+present or required. Strong follow-ups after that remain host-driven eviction
+and deeper storage-failure browser proof, lower-level storage
+contention/failure behavior beyond the already-covered duplicate-tab
+generated writes, renderer crash, explicit shutdown close, and discarded-tab
+recovery branches, and browser/bundler matrix execution,
 especially Safari, Firefox, real private-mode durable-persistence semantics,
 WebViews, installed-PWA cache/update semantics, and PWA offline persistence
 beyond controller classification.
