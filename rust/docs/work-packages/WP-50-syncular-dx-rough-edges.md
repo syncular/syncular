@@ -4689,6 +4689,20 @@ Most recent browser-health failure-artifact rerun:
   client:test`, and `git diff --check`. Chrome was not installed locally, so
   hosted Checks run `28558449113` on commit `49d1b4d4` confirmed the branch in
   hosted Chrome and passed the full matrix.
+- 2026-07-02: Added a database-storage-only eviction/rebootstrap proof to the
+  starter Chrome/CDP branch. The proof opens a dedicated generated-app client,
+  writes Cache API, localStorage, and IndexedDB sentinels, creates a generated
+  task, proves the task reached a separate observer tab through sync/realtime,
+  closes the app targets, clears only Chrome `indexeddb,file_systems` storage
+  for the origin, reopens the same client id, requires Cache/localStorage to
+  survive while the IndexedDB sentinel is gone, and waits for the task to
+  restore from server state. The existing all-origin clear proof now also
+  verifies the IndexedDB sentinel is removed, so the two branches distinguish
+  database-storage eviction from full origin data loss. Local gates with Bun
+  `1.3.9` passed: `bun --cwd packages/create-syncular-app tsgo`,
+  `bunx biome check packages/create-syncular-app/scripts/smoke.ts`, and
+  `bun --cwd packages/create-syncular-app smoke`. Chrome was not installed
+  locally, so hosted Chrome proof is pending.
 
 ## Next Action
 
@@ -4737,15 +4751,17 @@ held, and then replaying to an observer after normal sync resumes; hosted Checks
 run `28556559139` confirmed that branch in Chrome. The current slice adds
 discarded-tab recovery through Chrome's internal discards provider plus real
 target activation/restoration; hosted Checks run `28558449113` confirmed that
-branch in Chrome. The next lifecycle follow-up should move to host/browser
-eviction beyond explicit CDP origin clear and lower-level storage failure
-behavior.
+branch in Chrome. The current slice adds database-storage-only eviction proof
+by clearing Chrome `indexeddb,file_systems` storage while proving Cache API and
+localStorage sentinels survive; hosted Chrome proof is pending. The next
+lifecycle follow-up should move to host/browser eviction beyond explicit CDP
+origin/database clears and lower-level storage failure behavior.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain host-driven eviction
 and deeper storage-failure browser proof, lower-level storage
 contention/failure behavior beyond the already-covered duplicate-tab
-generated writes, renderer crash, explicit shutdown close, and discarded-tab
-recovery branches, and browser/bundler matrix execution,
-especially Safari, Firefox, real private-mode durable-persistence semantics,
-WebViews, installed-PWA cache/update semantics, and PWA offline persistence
-beyond controller classification.
+generated writes, renderer crash, explicit shutdown close, discarded-tab
+recovery, and database-storage eviction branches, and browser/bundler matrix
+execution, especially Safari, Firefox, real private-mode durable-persistence
+semantics, WebViews, installed-PWA cache/update semantics, and PWA offline
+persistence beyond controller classification.

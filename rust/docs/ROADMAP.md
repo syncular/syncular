@@ -258,8 +258,8 @@ read-only review:
     records the rejected write in the browser failure artifact; hosted Checks
     run `28544353197` confirmed that branch in Chrome. The starter smoke now
     also includes a fresh-profile origin-storage eviction/rebootstrap proof:
-    it writes a Cache API/localStorage sentinel, proves a synced task reached a
-    separate observer tab, clears the app origin through Chrome's
+    it writes a Cache API/localStorage/IndexedDB sentinel, proves a synced task
+    reached a separate observer tab, clears the app origin through Chrome's
     `Storage.clearDataForOrigin`, reloads the same client id, requires the
     sentinel to be gone, and waits for the task to restore from server state.
     Hosted Checks run `28552359995` confirmed that branch in Chrome. The
@@ -309,7 +309,14 @@ read-only review:
     commit `49d1b4d4` passed the full matrix, including
     `starter-browser-preview`, confirming the discarded-tab branch in hosted
     Chrome.
-    Host-driven eviction beyond explicit CDP origin clear and deeper storage
+    The current slice adds a database-storage-only eviction proof: it writes
+    Cache API, localStorage, and IndexedDB sentinels, proves a synced task
+    reached a separate observer tab, clears only Chrome `indexeddb,file_systems`
+    storage for the origin, requires Cache/localStorage to survive while the
+    IndexedDB sentinel is gone, and waits for the same client id to rehydrate
+    the task from server state. Local pinned-Bun typecheck, focused Biome, and
+    non-Chrome scaffold smoke passed; hosted Chrome proof is pending.
+    Host-driven eviction beyond explicit CDP storage clears and deeper storage
     failure/coordination behavior remain matrix work.
     The starter now also records
     a browser-observable command-timeline proof after generated task creation,

@@ -21,7 +21,8 @@ import { Buffer } from 'node:buffer';
  *    Lock contention timeout/recovery, storage
  *    preflight-to-recovery action mapping, browser-observed quota-pressure
  *    preflight classification, quota-exhausted generated writes, browser
- *    origin-storage eviction/rebootstrap recovery, two-tab propagation,
+ *    database-storage eviction/rebootstrap recovery, browser origin-storage
+ *    eviction/rebootstrap recovery, two-tab propagation,
  *    same-client page reload/reopen persistence, same-client duplicate-tab
  *    open/write contention, generated write pressure, same-profile browser
  *    process restart persistence, sync-held shutdown replay recovery,
@@ -64,10 +65,15 @@ const STARTER_QUOTA_EXHAUSTION_WRITE_EXTRA_BYTES = 512 * 1024;
 const STARTER_STORAGE_EVICTION_SENTINEL_BYTES = 1024 * 1024;
 const STARTER_STORAGE_EVICTION_SENTINEL_CACHE =
   'syncular-storage-eviction-proof';
+const STARTER_STORAGE_EVICTION_SENTINEL_INDEXEDDB =
+  'syncular-storage-eviction-proof';
+const STARTER_STORAGE_EVICTION_SENTINEL_INDEXEDDB_STORE = 'sentinels';
+const STARTER_STORAGE_EVICTION_SENTINEL_INDEXEDDB_KEY = 'database-storage';
 const STARTER_STORAGE_EVICTION_SENTINEL_KEY =
   '__syncular_storage_eviction_sentinel__';
 const STARTER_STORAGE_EVICTION_SENTINEL_URL =
   '/__syncular-storage-eviction-proof.bin';
+const STARTER_DATABASE_STORAGE_EVICTION_TYPES = 'indexeddb,file_systems';
 const STARTER_PWA_SMOKE_SERVICE_WORKER_PATH = '/__syncular-smoke-pwa-sw.js';
 const BROWSER_PREVIEW_SMOKE_TIMEOUT_MS = 180_000;
 const CDP_CONNECT_TIMEOUT_MS = 10_000;
@@ -826,6 +832,16 @@ async function runBrowserPreviewSmoke(args: {
     origin: args.origin,
     userDataDir: `${args.userDataDir}-quota-pressure`,
   });
+  log('real-browser smoke: proving browser database-storage eviction recovery');
+  await proveStarterDatabaseStorageEvictionRecovery({
+    chrome: args.chrome,
+    failureArtifactPath: databaseStorageEvictionFailureArtifactPath(
+      args.failureArtifactPath
+    ),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    userDataDir: `${args.userDataDir}-database-storage-eviction`,
+  });
   log('real-browser smoke: proving browser storage eviction recovery');
   await proveStarterStorageEvictionRecovery({
     chrome: args.chrome,
@@ -863,6 +879,14 @@ function quotaPressureFailureArtifactPath(failureArtifactPath: string): string {
   return failureArtifactPath.endsWith('.json')
     ? failureArtifactPath.replace(/\.json$/u, '.quota-pressure.json')
     : `${failureArtifactPath}.quota-pressure.json`;
+}
+
+function databaseStorageEvictionFailureArtifactPath(
+  failureArtifactPath: string
+): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(/\.json$/u, '.database-storage-eviction.json')
+    : `${failureArtifactPath}.database-storage-eviction.json`;
 }
 
 function storageEvictionFailureArtifactPath(
@@ -5569,6 +5593,221 @@ async function proveStarterQuotaPressurePreflight(args: {
   }
 }
 
+async function proveStarterDatabaseStorageEvictionRecovery(args: {
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  const clientId = 'web-database-storage-eviction';
+  const title = `database storage eviction ${Date.now()}`;
+  let activeSession: CdpSession | null = null;
+  let activeTargetId: string | null = null;
+  let observerSession: CdpSession | null = null;
+  let observerTargetId: string | null = null;
+  let clearSession: CdpSession | null = null;
+  let clearTargetId: string | null = null;
+  let recoverySession: CdpSession | null = null;
+  let recoveryTargetId: string | null = null;
+  let lastProbe: BrowserPreviewProbe | null = null;
+
+  try {
+    const activeTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    activeTargetId = activeTarget.id;
+    activeSession = await CdpSession.connect(activeTarget.webSocketDebuggerUrl);
+    await enableChromeTarget(activeSession);
+    await navigateChromeTarget(
+      activeSession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularDatabaseStorageEvictionProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      activeSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(activeSession);
+    await writeStarterStorageEvictionSentinel(activeSession);
+    const sentinelBefore =
+      await readStarterStorageEvictionSentinel(activeSession);
+    if (
+      sentinelBefore.cachePresent !== true ||
+      sentinelBefore.indexedDbPresent !== true ||
+      sentinelBefore.localStoragePresent !== true
+    ) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'database-storage-eviction-sentinel-write-missing',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview database-storage eviction sentinel was not fully visible before clear. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    const beforeTask = await readStarterBrowserProbe(activeSession);
+    lastProbe = beforeTask;
+    await submitStarterTask(activeSession, title);
+    await waitForStarterLocalVisibility({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+    });
+    await waitForStarterCommandTimelineProof({
+      expectedCount: beforeTask.commandTimelineProof.count + 1,
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+    });
+
+    const observerTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    observerTargetId = observerTarget.id;
+    observerSession = await CdpSession.connect(
+      observerTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(observerSession);
+    await navigateChromeTarget(
+      observerSession,
+      `${args.origin}/?syncularClientId=web-database-storage-eviction-observer&syncularDatabaseStorageEvictionObserverProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      observerSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: observerSession,
+      title,
+      errorReason: 'database-storage-eviction-propagation-errors',
+      timeoutReason: 'database-storage-eviction-propagation-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview database-storage eviction propagation',
+    });
+
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: activeSession,
+      targetId: activeTargetId,
+    });
+    activeSession = null;
+    activeTargetId = null;
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: observerSession,
+      targetId: observerTargetId,
+    });
+    observerSession = null;
+    observerTargetId = null;
+
+    const clearTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    clearTargetId = clearTarget.id;
+    clearSession = await CdpSession.connect(clearTarget.webSocketDebuggerUrl);
+    await enableChromeTarget(clearSession);
+    await clearStarterDatabaseStorage(clearSession, args.origin);
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: clearSession,
+      targetId: clearTargetId,
+    });
+    clearSession = null;
+    clearTargetId = null;
+
+    const recoveryTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    recoveryTargetId = recoveryTarget.id;
+    recoverySession = await CdpSession.connect(
+      recoveryTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(recoverySession);
+    await navigateChromeTarget(
+      recoverySession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularDatabaseStorageEvictionRecoveryProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      recoverySession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(recoverySession);
+    const sentinelAfter =
+      await readStarterStorageEvictionSentinel(recoverySession);
+    if (
+      sentinelAfter.cachePresent !== true ||
+      sentinelAfter.localStoragePresent !== true ||
+      sentinelAfter.indexedDbPresent !== false
+    ) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'database-storage-eviction-sentinel-unexpected-state',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview database-storage eviction did not only clear IndexedDB/FileSystem state. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: recoverySession,
+      title,
+      errorReason: 'database-storage-eviction-recovery-errors',
+      timeoutReason: 'database-storage-eviction-recovery-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview database-storage eviction recovery',
+    });
+  } catch (error) {
+    await writeBrowserPreviewFailureArtifactIfMissing(
+      args.failureArtifactPath,
+      'database-storage-eviction-smoke-error',
+      lastProbe,
+      args.failureMetrics
+    );
+    throw error;
+  } finally {
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: recoverySession,
+      targetId: recoveryTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: clearSession,
+      targetId: clearTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: observerSession,
+      targetId: observerTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: activeSession,
+      targetId: activeTargetId,
+    });
+    await stopProcess(chrome.process);
+  }
+}
+
 async function proveStarterStorageEvictionRecovery(args: {
   chrome: string;
   failureArtifactPath: string;
@@ -5615,6 +5854,7 @@ async function proveStarterStorageEvictionRecovery(args: {
       await readStarterStorageEvictionSentinel(activeSession);
     if (
       sentinelBefore.cachePresent !== true ||
+      sentinelBefore.indexedDbPresent !== true ||
       sentinelBefore.localStoragePresent !== true
     ) {
       await writeBrowserPreviewFailureArtifact(
@@ -5726,6 +5966,7 @@ async function proveStarterStorageEvictionRecovery(args: {
       await readStarterStorageEvictionSentinel(recoverySession);
     if (
       sentinelAfter.cachePresent !== false ||
+      sentinelAfter.indexedDbPresent !== false ||
       sentinelAfter.localStoragePresent !== false
     ) {
       await writeBrowserPreviewFailureArtifact(
@@ -5784,6 +6025,7 @@ async function proveStarterStorageEvictionRecovery(args: {
 
 type StarterStorageEvictionSentinelState = {
   cachePresent: boolean | null;
+  indexedDbPresent: boolean | null;
   localStoragePresent: boolean | null;
 };
 
@@ -5794,6 +6036,7 @@ async function writeStarterStorageEvictionSentinel(
     | {
         ok: true;
         cachePresent: boolean;
+        indexedDbPresent: boolean;
         localStoragePresent: boolean;
         storedBytes: number;
       }
@@ -5810,6 +6053,13 @@ async function writeStarterStorageEvictionSentinel(
       if (typeof globalThis.caches?.open !== 'function') {
         return { ok: false, reason: 'cache-storage-unavailable' };
       }
+      const indexedDB = globalThis.indexedDB;
+      if (typeof indexedDB?.open !== 'function') {
+        return { ok: false, reason: 'indexeddb-unavailable' };
+      }
+      if (typeof indexedDB.databases !== 'function') {
+        return { ok: false, reason: 'indexeddb-databases-unavailable' };
+      }
 
       globalThis.localStorage.setItem(
         localStorageKey,
@@ -5824,9 +6074,36 @@ async function writeStarterStorageEvictionSentinel(
           headers: { 'content-type': 'application/octet-stream' },
         })
       );
+      const indexedDbName = ${JSON.stringify(STARTER_STORAGE_EVICTION_SENTINEL_INDEXEDDB)};
+      const indexedDbStore = ${JSON.stringify(STARTER_STORAGE_EVICTION_SENTINEL_INDEXEDDB_STORE)};
+      const indexedDbKey = ${JSON.stringify(STARTER_STORAGE_EVICTION_SENTINEL_INDEXEDDB_KEY)};
+      const openDatabase = () =>
+        new Promise((resolve, reject) => {
+          const request = indexedDB.open(indexedDbName, 1);
+          request.onupgradeneeded = () => {
+            const db = request.result;
+            if (!db.objectStoreNames.contains(indexedDbStore)) {
+              db.createObjectStore(indexedDbStore);
+            }
+          };
+          request.onerror = () => reject(request.error ?? new Error('indexeddb open failed'));
+          request.onsuccess = () => resolve(request.result);
+        });
+      const database = await openDatabase();
+      await new Promise((resolve, reject) => {
+        const transaction = database.transaction(indexedDbStore, 'readwrite');
+        transaction.objectStore(indexedDbStore).put('present:' + Date.now(), indexedDbKey);
+        transaction.onerror = () => reject(transaction.error ?? new Error('indexeddb write failed'));
+        transaction.oncomplete = () => resolve(true);
+      });
+      database.close();
+      const indexedDbPresent = (await indexedDB.databases()).some(
+        (databaseInfo) => databaseInfo.name === indexedDbName
+      );
       return {
         ok: true,
         cachePresent: Boolean(await cache.match(sentinelUrl)),
+        indexedDbPresent,
         localStoragePresent:
           globalThis.localStorage.getItem(localStorageKey) !== null,
         storedBytes: bytes,
@@ -5843,13 +6120,18 @@ async function writeStarterStorageEvictionSentinel(
       `Could not write browser storage eviction sentinel: ${result.reason}`
     );
   }
-  if (!result.cachePresent || !result.localStoragePresent) {
+  if (
+    !result.cachePresent ||
+    !result.indexedDbPresent ||
+    !result.localStoragePresent
+  ) {
     throw new Error(
-      'Browser storage eviction sentinel write completed without readable cache/localStorage state'
+      'Browser storage eviction sentinel write completed without readable cache/IndexedDB/localStorage state'
     );
   }
   return {
     cachePresent: result.cachePresent,
+    indexedDbPresent: result.indexedDbPresent,
     localStoragePresent: result.localStoragePresent,
   };
 }
@@ -5861,12 +6143,16 @@ async function readStarterStorageEvictionSentinel(
     | {
         ok: true;
         cachePresent: boolean | null;
+        indexedDbPresent: boolean | null;
         localStoragePresent: boolean | null;
       }
     | { ok: false; reason: string }
   >(`(async () => {
     try {
       const cacheName = ${JSON.stringify(STARTER_STORAGE_EVICTION_SENTINEL_CACHE)};
+      const indexedDbName = ${JSON.stringify(STARTER_STORAGE_EVICTION_SENTINEL_INDEXEDDB)};
+      const indexedDbStore = ${JSON.stringify(STARTER_STORAGE_EVICTION_SENTINEL_INDEXEDDB_STORE)};
+      const indexedDbKey = ${JSON.stringify(STARTER_STORAGE_EVICTION_SENTINEL_INDEXEDDB_KEY)};
       const localStorageKey = ${JSON.stringify(STARTER_STORAGE_EVICTION_SENTINEL_KEY)};
       const sentinelUrl = ${JSON.stringify(STARTER_STORAGE_EVICTION_SENTINEL_URL)};
       let localStoragePresent = null;
@@ -5888,7 +6174,43 @@ async function readStarterStorageEvictionSentinel(
         }
       }
 
-      return { ok: true, cachePresent, localStoragePresent };
+      let indexedDbPresent = null;
+      const indexedDB = globalThis.indexedDB;
+      if (
+        typeof indexedDB?.databases === 'function' &&
+        typeof indexedDB?.open === 'function'
+      ) {
+        const databases = await indexedDB.databases();
+        if (!databases.some((databaseInfo) => databaseInfo.name === indexedDbName)) {
+          indexedDbPresent = false;
+        } else {
+          indexedDbPresent = await new Promise((resolve) => {
+            const request = indexedDB.open(indexedDbName);
+            request.onerror = () => resolve(false);
+            request.onsuccess = () => {
+              const database = request.result;
+              if (!database.objectStoreNames.contains(indexedDbStore)) {
+                database.close();
+                resolve(false);
+                return;
+              }
+              const transaction = database.transaction(indexedDbStore, 'readonly');
+              const getRequest = transaction.objectStore(indexedDbStore).get(indexedDbKey);
+              getRequest.onerror = () => {
+                database.close();
+                resolve(false);
+              };
+              getRequest.onsuccess = () => {
+                const present = getRequest.result !== undefined;
+                database.close();
+                resolve(present);
+              };
+            };
+          });
+        }
+      }
+
+      return { ok: true, cachePresent, indexedDbPresent, localStoragePresent };
     } catch (error) {
       return {
         ok: false,
@@ -5903,6 +6225,7 @@ async function readStarterStorageEvictionSentinel(
   }
   return {
     cachePresent: result.cachePresent,
+    indexedDbPresent: result.indexedDbPresent,
     localStoragePresent: result.localStoragePresent,
   };
 }
@@ -5914,6 +6237,17 @@ async function clearStarterOriginStorage(
   await session.send('Storage.clearDataForOrigin', {
     origin,
     storageTypes: 'all',
+  });
+  await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+}
+
+async function clearStarterDatabaseStorage(
+  session: CdpSession,
+  origin: string
+): Promise<void> {
+  await session.send('Storage.clearDataForOrigin', {
+    origin,
+    storageTypes: STARTER_DATABASE_STORAGE_EVICTION_TYPES,
   });
   await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
 }

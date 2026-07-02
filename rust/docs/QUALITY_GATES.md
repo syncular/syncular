@@ -94,6 +94,7 @@ until the full browser Worker/WASM suite is green on Linux.
   duplicate-tab open contention, generated write pressure, browser process
   restart persistence, sync-held shutdown replay, renderer-crash replay,
   targeted sync-transport replay, storage-shutdown replay, discarded-tab
+  recovery, database-storage eviction recovery, origin-storage eviction
   recovery,
   service-worker-controlled PWA support-policy classification, incognito
   memory-storage development-policy classification, and live support-bundle
