@@ -37,6 +37,15 @@ function formatBrowserDiagnostic(message, url, lineNumber, columnNumber) {
   return url ? `${message} (${url}${location})` : message;
 }
 
+function isCanceledRequestFailure(message) {
+  return (
+    message === 'net::ERR_ABORTED' ||
+    message === 'NS_BINDING_ABORTED' ||
+    message.toLowerCase().includes('request cancelled') ||
+    message.toLowerCase().includes('request canceled')
+  );
+}
+
 async function writeFailureArtifact(path, artifact) {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');
@@ -598,6 +607,10 @@ async function main() {
   });
   page.on('requestfailed', (request) => {
     const resourceType = request.resourceType();
+    const errorText = request.failure()?.errorText ?? 'Browser request failed';
+    if (isCanceledRequestFailure(errorText)) {
+      return;
+    }
     if (
       resourceType !== 'document' &&
       resourceType !== 'fetch' &&
@@ -608,10 +621,7 @@ async function main() {
       return;
     }
     recordDiagnostic(
-      formatBrowserDiagnostic(
-        request.failure()?.errorText ?? 'Browser request failed',
-        request.url()
-      )
+      formatBrowserDiagnostic(errorText, request.url())
     );
   });
 

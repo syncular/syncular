@@ -5127,6 +5127,17 @@ Most recent browser-health failure-artifact rerun:
   local apply/outbox/local visibility but not realtime cursor evidence under
   manual startup, so the final runner requires only the local command evidence
   this matrix slice is meant to prove.
+- 2026-07-02: Hosted Checks run `28577914021` on commit `0ab02295` passed every
+  job except `starter-webkit-runtime-matrix`. The failure artifact showed the
+  first WebKit proof had reached ready state, submitted the generated task, and
+  recorded local write/sync evidence, but the reload pass treated a transient
+  Playwright `Load request cancelled` event for `syncular_bg.wasm` as a sticky
+  fatal diagnostic. The matrix runner now matches the Chrome/CDP smoke behavior
+  by ignoring navigation-canceled request failures (`Load request cancelled`,
+  `Load request canceled`, `net::ERR_ABORTED`, and `NS_BINDING_ABORTED`) while
+  keeping real document/fetch/script/worker/XHR request failures fatal. Local Bun
+  `1.3.9` WebKit matrix smoke with `PLAYWRIGHT_BROWSERS_PATH=.context/ms-playwright`
+  passed after the fix.
 
 ## Next Action
 
