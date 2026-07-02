@@ -397,6 +397,13 @@ read-only review:
     stops the preview server for only the PWA offline proof, then restarts it in
     cleanup, so the hosted proof no longer depends on page-target network
     emulation taking the service-worker process offline.
+    Hosted Checks run `28565138186` on commit `c9475577` still failed only in
+    `starter-browser-preview`: stopping the preview server intentionally caused
+    the already-open page's realtime WebSocket/sync attempts to log
+    `ERR_CONNECTION_REFUSED` before the offline reload proof. The current
+    follow-up registers those server-down diagnostics as expected for this
+    PWA-offline client before stopping the server; the cache-hit telemetry gate
+    remains unchanged.
     Host-driven eviction beyond explicit CDP storage clears, Clear-Site-Data,
     same-origin IndexedDB deletion, and PWA offline cache/reopen, plus deeper
     storage/coordination failures below the covered fallback and

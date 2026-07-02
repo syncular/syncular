@@ -4867,6 +4867,15 @@ Most recent browser-health failure-artifact rerun:
   `bun --cwd packages/create-syncular-app smoke`. Chrome is not installed
   locally, so hosted confirmation for the explicit server-down offline proof is
   still required.
+- 2026-07-02: Hosted Checks run `28565138186` on commit `c9475577` still
+  failed only in `starter-browser-preview`: the explicit preview-server stop
+  worked, but the already-open PWA page logged expected realtime WebSocket and
+  sync connection-refused diagnostics before the offline reload proof could
+  read `navigator.onLine`. The current follow-up registers those
+  server-intentionally-down diagnostics before stopping the preview server while
+  leaving the service-worker navigation/runtime cache-hit telemetry gate
+  unchanged. Local Bun `1.3.9` focused Biome, create-syncular-app typecheck,
+  docs stale check, diff check, and non-Chrome scaffold smoke passed.
 
 ## Next Action
 
@@ -4964,7 +4973,10 @@ offline reload proof: the page reopened under service-worker control and
 rendered the offline-created task, but service-worker telemetry still recorded
 network `200` runtime-asset fetches under CDP offline emulation. The current
 follow-up stops the preview server during only this PWA offline proof and
-restarts it in cleanup, so the next hosted run should confirm real Cache API
+restarts it in cleanup. Hosted Checks run `28565138186` then failed on expected
+server-down realtime/sync diagnostics from the already-open PWA client; the
+current follow-up allowlists those intentional diagnostics before stopping the
+server, so the next hosted run should confirm real Cache API
 navigation/runtime hits before moving to host/browser eviction beyond explicit
 CDP origin/database clears, Clear-Site-Data, same-origin IndexedDB deletion,
 and PWA offline cache/reopen, plus storage failure/coordination behavior below

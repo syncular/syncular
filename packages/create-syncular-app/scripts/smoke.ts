@@ -5980,15 +5980,18 @@ async function proveStarterPwaOfflineReopenPersistence(args: {
         'Timed out waiting for built preview PWA offline task before offline reload',
     });
 
-    await args.previewServer.stop();
-    previewStopped = true;
-    await setChromeTargetOffline(session, true);
-    offline = true;
     session.ignoreBrowserDiagnosticsContaining([
+      `clientId=${clientId}`,
+      '/sync/realtime?',
+      'net::ERR_CONNECTION_REFUSED',
       '/syncular/wasm-core/syncular.js',
       '/syncular/wasm-core/syncular_bg.wasm',
       'syncularPwaOfflineRecovery=',
     ]);
+    await args.previewServer.stop();
+    previewStopped = true;
+    await setChromeTargetOffline(session, true);
+    offline = true;
     if ((await readStarterNavigatorOnline(session)) !== false) {
       lastProbe = await readStarterBrowserProbe(session);
       await writeBrowserPreviewFailureArtifact(
