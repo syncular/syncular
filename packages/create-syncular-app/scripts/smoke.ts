@@ -1523,7 +1523,6 @@ async function navigateChromeTarget(
 async function startBrowserPreviewChrome(args: {
   appUrl?: string;
   chrome: string;
-  incognito?: boolean;
   userDataDir: string;
 }): Promise<{ debugPort: number; process: ReturnType<typeof spawn> }> {
   await mkdir(args.userDataDir, { recursive: true });
@@ -1541,7 +1540,6 @@ async function startBrowserPreviewChrome(args: {
     '--remote-debugging-address=127.0.0.1',
     `--remote-debugging-port=${debugPort}`,
     `--user-data-dir=${args.userDataDir}`,
-    ...(args.incognito ? ['--incognito'] : []),
     args.appUrl === undefined ? 'about:blank' : `--app=${args.appUrl}`,
   ];
   const chrome = spawn(args.chrome, chromeArgs, { stdio: 'ignore' });
@@ -1554,6 +1552,25 @@ async function startBrowserPreviewChrome(args: {
   }
 
   return { debugPort, process: chrome };
+}
+
+async function getChromeBrowserWebSocketUrl(
+  debugPort: number
+): Promise<string> {
+  const endpoint = `http://127.0.0.1:${debugPort}/json/version`;
+  const response = await fetch(endpoint);
+  if (!response.ok) {
+    throw new Error(
+      `Chrome browser version endpoint failed with ${response.status} ${response.statusText}`
+    );
+  }
+  const version = (await response.json()) as {
+    webSocketDebuggerUrl?: string;
+  };
+  if (!version.webSocketDebuggerUrl) {
+    throw new Error('Chrome browser endpoint did not expose a WebSocket URL');
+  }
+  return normalizeChromeWebSocketUrl(version.webSocketDebuggerUrl);
 }
 
 async function enableChromeInternalDebugPages(
@@ -1597,6 +1614,66 @@ async function createChromeTarget(
       target.webSocketDebuggerUrl
     ),
   };
+}
+
+type ChromeOffTheRecordTarget = {
+  browserContextId: string;
+  browserSession: CdpSession;
+  id: string;
+  webSocketDebuggerUrl: string;
+};
+
+async function createChromeOffTheRecordTarget(
+  debugPort: number,
+  url: string
+): Promise<ChromeOffTheRecordTarget> {
+  const browserSession = await CdpSession.connect(
+    await getChromeBrowserWebSocketUrl(debugPort)
+  );
+  try {
+    const contextResult = (await browserSession.send(
+      'Target.createBrowserContext',
+      { disposeOnDetach: true }
+    )) as { browserContextId?: string };
+    const browserContextId = contextResult.browserContextId;
+    if (!browserContextId) {
+      throw new Error('Chrome off-the-record context creation returned no id');
+    }
+
+    const targetResult = (await browserSession.send('Target.createTarget', {
+      browserContextId,
+      url,
+    })) as { targetId?: string };
+    const targetId = targetResult.targetId;
+    if (!targetId) {
+      throw new Error('Chrome off-the-record target creation returned no id');
+    }
+    const target = await findChromeTargetById(debugPort, targetId);
+    return {
+      browserContextId,
+      browserSession,
+      id: target.id,
+      webSocketDebuggerUrl: target.webSocketDebuggerUrl,
+    };
+  } catch (error) {
+    browserSession.close();
+    throw error;
+  }
+}
+
+async function disposeChromeOffTheRecordTarget(
+  target: ChromeOffTheRecordTarget | null
+): Promise<void> {
+  if (target === null) return;
+  try {
+    await target.browserSession
+      .send('Target.disposeBrowserContext', {
+        browserContextId: target.browserContextId,
+      })
+      .catch(() => undefined);
+  } finally {
+    target.browserSession.close();
+  }
 }
 
 type ChromeTargetListEntry = {
@@ -1648,6 +1725,32 @@ async function findChromePageTarget(args: {
   throw new Error(
     `Timed out waiting for Chrome target containing URL ${args.urlIncludes}`
   );
+}
+
+async function findChromeTargetById(
+  debugPort: number,
+  targetId: string
+): Promise<{ id: string; webSocketDebuggerUrl: string }> {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const targets = await listChromeTargets(debugPort);
+    const target = targets.find(
+      (candidate) =>
+        candidate.id === targetId &&
+        candidate.type === 'page' &&
+        typeof candidate.webSocketDebuggerUrl === 'string'
+    );
+    if (target?.id && target.webSocketDebuggerUrl) {
+      return {
+        id: target.id,
+        webSocketDebuggerUrl: normalizeChromeWebSocketUrl(
+          target.webSocketDebuggerUrl
+        ),
+      };
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+  throw new Error(`Timed out waiting for Chrome target ${targetId}`);
 }
 
 async function activateChromeTargetById(
@@ -7611,15 +7714,18 @@ async function proveStarterIncognitoMemoryStoragePolicy(args: {
 }): Promise<void> {
   const chrome = await startBrowserPreviewChrome({
     chrome: args.chrome,
-    incognito: true,
     userDataDir: args.userDataDir,
   });
   const url = `${args.origin}/?syncularClientId=web-incognito-memory&syncularStorage=memory&syncularIncognitoMemoryProof=${Date.now()}`;
   let session: CdpSession | null = null;
+  let privateTarget: ChromeOffTheRecordTarget | null = null;
 
   try {
-    const target = await createChromeTarget(chrome.debugPort, 'about:blank');
-    session = await CdpSession.connect(target.webSocketDebuggerUrl);
+    privateTarget = await createChromeOffTheRecordTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    session = await CdpSession.connect(privateTarget.webSocketDebuggerUrl);
     await enableChromeTarget(session);
     await navigateChromeTarget(session, url);
     await waitForStarterBrowserReady(
@@ -7634,6 +7740,7 @@ async function proveStarterIncognitoMemoryStoragePolicy(args: {
     });
   } finally {
     session?.close();
+    await disposeChromeOffTheRecordTarget(privateTarget);
     await stopProcess(chrome.process);
   }
 }
@@ -7708,14 +7815,17 @@ async function proveStarterIncognitoDefaultStorageRestart(args: {
   const title = `incognito default storage ${Date.now()}`;
   let chrome = await startBrowserPreviewChrome({
     chrome: args.chrome,
-    incognito: true,
     userDataDir: args.userDataDir,
   });
   let session: CdpSession | null = null;
+  let privateTarget: ChromeOffTheRecordTarget | null = null;
 
   try {
-    const target = await createChromeTarget(chrome.debugPort, 'about:blank');
-    session = await CdpSession.connect(target.webSocketDebuggerUrl);
+    privateTarget = await createChromeOffTheRecordTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    session = await CdpSession.connect(privateTarget.webSocketDebuggerUrl);
     await enableChromeTarget(session);
     await navigateChromeTarget(session, url);
     await waitForStarterBrowserReady(
@@ -7744,18 +7854,22 @@ async function proveStarterIncognitoDefaultStorageRestart(args: {
   } finally {
     session?.close();
     session = null;
+    await disposeChromeOffTheRecordTarget(privateTarget);
+    privateTarget = null;
     await stopProcess(chrome.process);
   }
 
   chrome = await startBrowserPreviewChrome({
     chrome: args.chrome,
-    incognito: true,
     userDataDir: args.userDataDir,
   });
 
   try {
-    const target = await createChromeTarget(chrome.debugPort, 'about:blank');
-    session = await CdpSession.connect(target.webSocketDebuggerUrl);
+    privateTarget = await createChromeOffTheRecordTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    session = await CdpSession.connect(privateTarget.webSocketDebuggerUrl);
     await enableChromeTarget(session);
     await navigateChromeTarget(session, url);
     await waitForStarterBrowserReady(
@@ -7777,6 +7891,7 @@ async function proveStarterIncognitoDefaultStorageRestart(args: {
     });
   } finally {
     session?.close();
+    await disposeChromeOffTheRecordTarget(privateTarget);
     await stopProcess(chrome.process);
   }
 }

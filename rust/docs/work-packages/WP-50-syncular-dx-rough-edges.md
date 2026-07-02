@@ -4172,8 +4172,8 @@ Most recent browser-health failure-artifact rerun:
   `pwa`, `preflight-required`/`warning`, activated controller state, and the
   redacted controller script path. That proves detection and artifact routing
   from real browser state without claiming PWA support is production-ready.
-  It also includes a first real Chrome incognito branch with explicit starter
-  memory storage, requiring the same public markers to report
+  It also includes a first real Chrome off-the-record context branch with
+  explicit starter memory storage, requiring the same public markers to report
   `ephemeral-development`/`ephemeral`, `private-browsing`,
   `development-only`/`met`, and
   `browser_support.development_only_context`. This proves the
@@ -4467,16 +4467,17 @@ Most recent browser-health failure-artifact rerun:
   `real-browser smoke: proving service-worker-controlled PWA policy` and then
   `real-browser built-preview preflight smoke passed`, confirming the new
   service-worker-controlled PWA branch in hosted Chrome.
-- 2026-07-01: Added a real Chrome incognito memory-storage classification
+- 2026-07-01: Added a real Chrome off-the-record memory-storage classification
   branch to the starter smoke. The starter now has an explicit
   `?syncularStorage=memory` smoke mode that keeps the default generated app on
   IndexedDB, but lets the browser support policy prove the private/development
-  path from real app markers. The Chrome/CDP branch opens a fresh incognito
-  window, loads the starter with memory storage, and requires deployment
-  preflight to report `ephemeral-development`/`ephemeral` and browser support
-  policy to report `private-browsing`, `development-only`, `met`, and
+  path from real app markers. The Chrome/CDP branch creates a fresh
+  off-the-record browser context, loads the starter with memory storage, and
+  requires deployment preflight to report `ephemeral-development`/`ephemeral`
+  and browser support policy to report `private-browsing`,
+  `development-only`, `met`, and
   `browser_support.development_only_context`. This verifies the support-matrix
-  classification without pretending incognito provides durable offline
+  classification without pretending private browsing provides durable offline
   persistence. Local `create-syncular-app` typecheck, focused Biome, and
   non-Chrome scaffold smoke passed; hosted Checks run `28540712560` on commit
   `4028723a` then passed the full matrix, including `starter-browser-preview`.
@@ -5276,16 +5277,20 @@ Most recent browser-health failure-artifact rerun:
   complete under `lockState: "acquired"`. This closes the first non-Chrome
   lifecycle Web Lock timeout/recovery proof while still leaving real target
   activation and broader host/browser lifecycle semantics as follow-ups.
-- 2026-07-02: Added a Chrome incognito default-storage restart proof next to
-  the existing explicit memory-storage policy proof. The browser preview smoke
-  now opens a private Chrome process with default IndexedDB storage, forces the
-  `private-browsing` support-policy context, holds sync startup manual, writes a
-  generated task, requires local visibility and command-timeline
-  evidence, stops the private process, relaunches a private Chrome process with
-  the same client id, and requires that task to remain absent. This proves the
-  private-mode warning that same-page local writes can pass while restart
-  persistence fails, without claiming cross-browser private-mode durable
-  offline support.
+- 2026-07-02: Added a Chrome off-the-record default-storage restart proof next
+  to the existing explicit memory-storage policy proof. The browser preview
+  smoke now creates a real CDP off-the-record browser context with default
+  IndexedDB storage, forces the `private-browsing` support-policy context,
+  holds sync startup manual, writes a generated task, requires local visibility
+  and command-timeline evidence, stops the Chrome process, relaunches Chrome,
+  creates a fresh off-the-record context with the same client id, and requires
+  that task to remain absent. Hosted Checks run `28585076188` caught the first
+  attempt using Chrome's `/json/new` default-profile target despite
+  `--incognito`; the harness now uses `Target.createBrowserContext` and
+  `Target.createTarget` so this proof covers the private context instead of a
+  persistent default profile. This proves the private-mode warning that
+  same-page local writes can pass while restart persistence fails, without
+  claiming cross-browser private-mode durable offline support.
 
 ## Next Action
 
@@ -5300,12 +5305,13 @@ claiming installed-PWA offline/cache-update support. The Chrome app-window
 display-mode proof is now also confirmed in hosted Chrome, and the current
 slice extends that branch to prove app-window runtime cache-refresh plus
 service-worker update activation while still leaving fully installed-PWA
-offline/restart/update-skew semantics open. The incognito
-memory-storage support-policy branch is now confirmed in hosted Chrome and
-verifies explicit ephemeral/development storage classification. The current
-incognito default-storage branch also proves a private Chrome browser-local
-rendered write does not survive private-process restart when sync is held
-manual, without claiming cross-browser private-mode durable persistence. The
+offline/restart/update-skew semantics open. The off-the-record memory-storage
+support-policy branch is now confirmed in hosted Chrome and verifies explicit
+ephemeral/development storage classification. The current off-the-record
+default-storage branch also proves a private Chrome browser-local rendered
+write does not survive a fresh off-the-record context after process restart
+when sync is held manual, without claiming cross-browser private-mode durable
+persistence. The
 browser-observed quota-pressure preflight branch is now fixed to pass
 post-override CDP usage/quota facts into the app preflight proof and confirmed
 in hosted Chrome. That branch extends those browser-observed quota facts into

@@ -575,14 +575,15 @@ read-only review:
     `preflight-required`/`warning`, the activated controller state, and the
     redacted controller script path instead of treating PWAs as automatically
     supported. The browser-preview smoke also now opens a fresh Chrome
-    incognito window with the starter explicitly configured for memory storage,
-    proving the public preflight/support-policy path reports
+    off-the-record browser context with the starter explicitly configured for
+    memory storage, proving the public preflight/support-policy path reports
     `ephemeral-development`/`ephemeral`, selects `private-browsing`, and marks
     it `development-only`/`met`. The browser preview smoke now also opens
-    default IndexedDB storage under a private-browsing context with sync held
-    manual, proves a generated task reaches local visibility, restarts the
-    private Chrome process, and requires that task to be absent after the
-    private restart. Hosted Checks run `28540712560` on commit `4028723a`
+    default IndexedDB storage under an off-the-record context with sync held
+    manual, proves a generated task reaches local visibility, restarts Chrome,
+    creates a fresh off-the-record context with the same client id, and
+    requires that task to be absent after restart. Hosted Checks run
+    `28540712560` on commit `4028723a`
     confirmed the earlier memory branch in Chrome; the
     `starter-browser-preview` log reached
     `real-browser smoke: proving incognito memory-storage policy` before the
@@ -701,13 +702,17 @@ read-only review:
     starter browser-preview smoke now includes first real Chrome
     service-worker-controlled and app-window display-mode PWA classification
     proofs, while keeping PWA support preflight-gated until retained target
-    evidence exists. It also includes a first Chrome incognito memory-storage
-    proof for the private/development support-policy branch. The Chrome
-    incognito branch now also opens default IndexedDB storage with sync held
-    manual, proves a generated task reaches local visibility, restarts the
-    private browser process, and requires that local state to be absent on the
-    next private launch, preserving the stance that private browsing is
-    development/test-only instead of durable offline storage. Hosted run
+    evidence exists. It also includes a first Chrome off-the-record
+    memory-storage proof for the private/development support-policy branch.
+    The Chrome off-the-record branch now also opens default IndexedDB storage
+    with sync held manual, proves a generated task reaches local visibility,
+    restarts Chrome, creates a fresh off-the-record browser context with the
+    same client id, and requires that local state to be absent on the next
+    private launch, preserving the stance that private browsing is
+    development/test-only instead of durable offline storage. The Chrome/CDP
+    harness uses `Target.createBrowserContext`/`Target.createTarget` for those
+    private contexts instead of relying on `/json/new` after a process-level
+    `--incognito` flag. Hosted run
     `28540712560` confirmed the incognito memory-storage proof in Chrome before
     the restart non-persistence extension.
     The starter Checks matrix now has Playwright Firefox and WebKit runtime
