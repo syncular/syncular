@@ -5203,6 +5203,22 @@ Most recent browser-health failure-artifact rerun:
   `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=webkit bun --cwd packages/create-syncular-app
   smoke --browser-runtime-matrix=webkit --browser-runtime-matrix-only` with
   `PLAYWRIGHT_BROWSERS_PATH=.context/ms-playwright`.
+- 2026-07-02: Followed the hosted rerun `28580707549`: Firefox passed, while
+  WebKit exposed a separate Linux access-control failure loading
+  `/syncular/wasm-core/syncular_bg.wasm` during a repeated app open. The starter
+  Vite runtime-asset middleware now serves Syncular WASM/glue assets with
+  `access-control-allow-origin: *` and
+  `cross-origin-resource-policy: same-origin`, and the built-preview runtime
+  asset self-check asserts those headers. Local Bun `1.3.9` gates passed:
+  `bun --cwd packages/create-syncular-app tsgo`, `bunx biome check
+  packages/create-syncular-app/scripts/smoke.ts
+  packages/create-syncular-app/template/vite.config.ts`,
+  `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox bun --cwd
+  packages/create-syncular-app smoke --browser-runtime-matrix=firefox
+  --browser-runtime-matrix-only`, and
+  `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=webkit bun --cwd packages/create-syncular-app
+  smoke --browser-runtime-matrix=webkit --browser-runtime-matrix-only` with
+  `PLAYWRIGHT_BROWSERS_PATH=.context/ms-playwright`.
 
 ## Next Action
 

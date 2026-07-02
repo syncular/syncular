@@ -734,6 +734,20 @@ async function verifyBuiltPreviewRuntimeAssets(origin: string): Promise<void> {
         `${asset.label} asset ${assetUrl.href} was served as ${contentType}; expected ${expected}`
       );
     }
+    const accessControlAllowOrigin =
+      response.headers.get('access-control-allow-origin') ?? '';
+    if (accessControlAllowOrigin !== '*') {
+      throw new Error(
+        `${asset.label} asset ${assetUrl.href} returned access-control-allow-origin=${accessControlAllowOrigin || '<missing>'}; expected *`
+      );
+    }
+    const crossOriginResourcePolicy =
+      response.headers.get('cross-origin-resource-policy') ?? '';
+    if (crossOriginResourcePolicy !== 'same-origin') {
+      throw new Error(
+        `${asset.label} asset ${assetUrl.href} returned cross-origin-resource-policy=${crossOriginResourcePolicy || '<missing>'}; expected same-origin`
+      );
+    }
   }
 }
 

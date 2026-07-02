@@ -14,6 +14,10 @@ const syncularRuntimeContentTypes = new Map([
   ['syncular.js', 'text/javascript; charset=utf-8'],
   ['syncular_bg.wasm', 'application/wasm'],
 ]);
+const syncularRuntimeHeaders = new Map([
+  ['access-control-allow-origin', '*'],
+  ['cross-origin-resource-policy', 'same-origin'],
+]);
 const syncularSmokeClearSiteDataPath = '/__syncular-smoke/clear-site-data';
 const syncularSmokeStorageAdminPath = '/__syncular-smoke/storage-admin';
 
@@ -110,6 +114,9 @@ async function serveSyncularRuntimeAsset(
   const body = await readFile(join(asset.dir, asset.fileName));
   response.statusCode = 200;
   response.setHeader('content-type', asset.contentType);
+  for (const [name, value] of syncularRuntimeHeaders) {
+    response.setHeader(name, value);
+  }
   response.end(body);
   return true;
 }
