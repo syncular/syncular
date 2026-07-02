@@ -121,15 +121,50 @@ spec (non-contractual — the lesson of silently-broken tooling).
 storage / auth / blob-store as interfaces — framework-free. `resolveScopes`
 runs in the host process (the moat: sync lives inside the user's backend
 next to their auth). SQLite storage first (dev-speed), Postgres second.
-Snapshot artifacts are the *default* bootstrap path, not opt-in. Hono
+Snapshot segments are the *default* bootstrap path, not opt-in. Hono
 adapter as a ~50-line wrapper proves the boundary.
+
+Performance-by-construction (v1 evidence in parentheses):
+- **Scope-fanout indexes designed into the storage schema** — a
+  commit→scope inverted index from day one (v1's
+  `readScopeIndexedCommitSeqsForPull` could scan wide before LIMIT; the
+  covering-index fix was never retrofitted).
+- **Streaming encode, no full-response buffering**; server memory stays
+  flat during large bootstraps (v1 sat at 295–400MB avg) — memory is a
+  bench metric, not a hope.
+- **Signed-URL segment delivery**: content-addressed segments servable from
+  R2/S3/CDN via short-lived signed URLs, direct-proxy as fallback — the
+  bootstrap-storm answer; server egress for cold starts approaches zero.
+- **Multi-instance fanout** via Postgres LISTEN/NOTIFY spec'd as a
+  primitive, not a bolted-on broadcaster interface.
 
 ### B3. Web client core: TypeScript on sqlite-wasm
 `@sqlite.org/sqlite-wasm` + OPFS. Worker-*optional* by design (main-thread
 mode for simple apps; worker mode behind a bridge surface capped at ~10
-message types). Outbox, cursor tracking, bootstrap-from-artifact, apply,
+message types). Outbox, cursor tracking, bootstrap-from-segment, apply,
 conflict surfacing. Local SQL (Kysely) is the query API — that promise is
 unchanged.
+
+Architectural upgrades over v1:
+- **Multi-tab is first-class**: one core per origin via Web Locks leader
+  election (SharedWorker where available), other tabs are followers over
+  BroadcastChannel — one sync loop, one websocket, one DB, N tabs. (v1's
+  OPFS-sahpool exclusivity made multi-tab awkward: per-tab clients and DB
+  files. No competitor does this cleanly either.)
+- **SQLite-image bootstrap**: importing a prebuilt scoped DB image is near
+  file-copy speed in sqlite-wasm — the headline bootstrap path (v1's
+  artifact lane already proved 204ms vs 467ms at 100k).
+- **Apply-path discipline**: one transaction per pack, prepared statements,
+  columnar decode straight into bind params; streaming apply overlaps
+  network and SQLite writes (v1 decoded whole packs — 2.07s sequential
+  wall at 500k row-chunks).
+- **Reconnect coalescing**: catch-up prefers segments over row pulls, with
+  jittered wake coalescing (WP-32's ~2s tail at 250+ clients was
+  client-side contention; server fanout was 13ms).
+- **Perf budgets in CI from day one**: apply-rate (rows/sec), bootstrap
+  micro-bench, and bundle size regress loudly in `v2.yml` — the TS-core
+  bet lives or dies on these numbers, so they are not discovered at the
+  gate.
 
 ### B4. Conformance runner + test doctrine
 Implementation-agnostic scenario definitions ported from
@@ -168,7 +203,12 @@ Evaluate when B6 lands or at the timebox, whichever first:
 fields → auth leases → presence/realtime hardening → console event stream;
 each spec'd before built), Rust core re-enters as the *native* runtime via
 the conformance suite, old tree enters sunset (0.1.x patches only,
-migration guide, then archive).
+migration guide, then archive). Post-parity differentiators (named now,
+built on demand): **windowed sync / local eviction** (TTL cold rows out of
+the local DB while they stay server-side — none of the benchmarked
+competitors do partial local retention well) and **fine-grained live-query
+invalidation** (table-level at first — v1's model — with the design leaving
+room for table→rowid dependency sets).
 **Fail →** v2 folds: keep the spec, vectors, conformance runner, and test
 doctrine (independently valuable, portable back to the old tree), write up
 why, return to the old tree with Phases 1–2 of the original incremental
