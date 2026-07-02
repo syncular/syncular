@@ -1,0 +1,30 @@
+{
+  "manifestVersion": 1,
+  "migrations": "./migrations",
+  "schemaVersions": [
+    { "version": 1, "through": "0001_initial" },
+    { "version": 2, "through": "0002_add_task_estimate" }
+  ],
+  "tables": [
+    { "name": "tasks", "scopes": ["project:{project_id}"] },
+    {
+      "name": "docs",
+      "scopes": [
+        "org:{org_id}",
+        { "pattern": "project:{projectId}", "column": "project_id" }
+      ]
+    }
+  ],
+  "subscriptions": [
+    {
+      "name": "projectTasks",
+      "table": "tasks",
+      "scopes": { "project_id": ["{projectId}"] }
+    },
+    {
+      "name": "acmeDocs",
+      "table": "docs",
+      "scopes": { "org_id": ["acme"], "projectId": ["{projectId}"] }
+    }
+  ]
+}

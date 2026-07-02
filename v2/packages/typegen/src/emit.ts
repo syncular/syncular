@@ -1,0 +1,177 @@
+/**
+ * TS emitter: neutral IR → one standalone generated module exporting
+ *
+ * - `schema` — a ServerSchema-compatible object (structurally typed; the
+ *   generated file imports nothing),
+ * - a `<Table>Row` interface per table,
+ * - `<Table>Insert` / `<Table>Update` mutation-input shapes honoring
+ *   nullability,
+ * - a `<name>Subscription` helper constant per manifest subscription with
+ *   a typed requested-scopes builder.
+ *
+ * The header carries the IR hash so `--check` verifies freshness
+ * byte-exactly.
+ */
+import type { IrColumnType, IrDocument, IrSubscription, IrTable } from './ir';
+
+const TS_TYPE: Readonly<Record<IrColumnType, string>> = {
+  string: 'string',
+  integer: 'number',
+  float: 'number',
+  boolean: 'boolean',
+  json: 'string',
+  bytes: 'Uint8Array',
+};
+
+function pascalCase(name: string): string {
+  return name
+    .split(/[_-]+/)
+    .filter((part) => part.length > 0)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('');
+}
+
+function quote(value: string): string {
+  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+}
+
+const IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+function propertyKey(name: string): string {
+  return IDENTIFIER_RE.test(name) ? name : quote(name);
+}
+
+function emitSchema(ir: IrDocument): string {
+  const lines: string[] = [];
+  lines.push('/** ServerSchema-compatible schema object (SPEC §2.4, §3.1). */');
+  lines.push('export const schema = {');
+  lines.push(`  version: ${ir.schemaVersion},`);
+  lines.push('  tables: [');
+  for (const table of ir.tables) {
+    lines.push('    {');
+    lines.push(`      name: ${quote(table.name)},`);
+    lines.push('      columns: [');
+    for (const column of table.columns) {
+      lines.push(
+        `        { name: ${quote(column.name)}, type: ${quote(column.type)}, nullable: ${column.nullable} },`,
+      );
+    }
+    lines.push('      ],');
+    lines.push(`      primaryKey: ${quote(table.primaryKey)},`);
+    lines.push('      scopes: [');
+    for (const scope of table.scopes) {
+      lines.push(
+        `        { pattern: ${quote(scope.pattern)}, column: ${quote(scope.column)} },`,
+      );
+    }
+    lines.push('      ],');
+    lines.push('    },');
+  }
+  lines.push('  ],');
+  lines.push('} as const;');
+  return lines.join('\n');
+}
+
+function emitRowInterfaces(table: IrTable): string {
+  const type = pascalCase(table.name);
+  const lines: string[] = [];
+  lines.push(`/** One ${table.name} row (§2.4 column order). */`);
+  lines.push(`export interface ${type}Row {`);
+  for (const column of table.columns) {
+    const ts = TS_TYPE[column.type];
+    lines.push(
+      `  ${propertyKey(column.name)}: ${ts}${column.nullable ? ' | null' : ''};`,
+    );
+  }
+  lines.push('}');
+  lines.push('');
+  lines.push(`/** Insert shape: nullable columns may be omitted. */`);
+  lines.push(`export interface ${type}Insert {`);
+  for (const column of table.columns) {
+    const ts = TS_TYPE[column.type];
+    lines.push(
+      column.nullable
+        ? `  ${propertyKey(column.name)}?: ${ts} | null;`
+        : `  ${propertyKey(column.name)}: ${ts};`,
+    );
+  }
+  lines.push('}');
+  lines.push('');
+  lines.push(
+    `/** Update shape: primary key required, all other columns optional. */`,
+  );
+  lines.push(`export interface ${type}Update {`);
+  for (const column of table.columns) {
+    const ts = TS_TYPE[column.type];
+    if (column.name === table.primaryKey) {
+      lines.push(`  ${propertyKey(column.name)}: ${ts};`);
+    } else {
+      lines.push(
+        `  ${propertyKey(column.name)}?: ${ts}${column.nullable ? ' | null' : ''};`,
+      );
+    }
+  }
+  lines.push('}');
+  return lines.join('\n');
+}
+
+function emitSubscription(sub: IrSubscription): string {
+  const params: string[] = [];
+  for (const scope of sub.scopes) {
+    for (const value of scope.values) {
+      if (value.kind === 'parameter' && !params.includes(value.name)) {
+        params.push(value.name);
+      }
+    }
+  }
+  const lines: string[] = [];
+  const paramsType = `${pascalCase(sub.name)}Params`;
+  if (params.length > 0) {
+    lines.push(`export interface ${paramsType} {`);
+    for (const param of params) {
+      lines.push(`  ${propertyKey(param)}: string;`);
+    }
+    lines.push('}');
+    lines.push('');
+  }
+  lines.push(
+    `/** Requested-scope template for the ${quote(sub.name)} subscription. */`,
+  );
+  lines.push(`export const ${sub.name}Subscription = {`);
+  lines.push(`  name: ${quote(sub.name)},`);
+  lines.push(`  table: ${quote(sub.table)},`);
+  const args = params.length > 0 ? `params: ${paramsType}` : '';
+  lines.push(`  scopes: (${args}): Record<string, string[]> => ({`);
+  for (const scope of sub.scopes) {
+    const values = scope.values
+      .map((value) =>
+        value.kind === 'literal'
+          ? quote(value.value)
+          : `params.${propertyKey(value.name)}`,
+      )
+      .join(', ');
+    lines.push(`    ${propertyKey(scope.variable)}: [${values}],`);
+  }
+  lines.push('  }),');
+  lines.push('} as const;');
+  return lines.join('\n');
+}
+
+export function emitModule(ir: IrDocument, hash: string): string {
+  const parts: string[] = [];
+  parts.push(
+    [
+      '// Generated by @syncular-v2/typegen — DO NOT EDIT.',
+      `// irVersion: ${ir.irVersion}`,
+      `// irHash: ${hash}`,
+    ].join('\n'),
+  );
+  parts.push(emitSchema(ir));
+  for (const table of ir.tables) {
+    parts.push(emitRowInterfaces(table));
+  }
+  for (const sub of ir.subscriptions) {
+    parts.push(emitSubscription(sub));
+  }
+  return `${parts.join('\n\n')}\n`;
+}
