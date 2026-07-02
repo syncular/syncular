@@ -5010,8 +5010,10 @@ Most recent browser-health failure-artifact rerun:
   `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox bun --cwd
   packages/create-syncular-app smoke --browser-runtime-matrix=firefox
   --browser-runtime-matrix-only`, `bun run check`,
-  `bun run docs:stale-check`, and `git diff --check`; hosted Checks must
-  confirm the Firefox job.
+  `bun run docs:stale-check`, and `git diff --check`. Hosted Checks run
+  `28572809116` on commit `97773b48` confirmed the split: `test`,
+  `starter-browser-preview`, `rust-browser-wasm`, and
+  `starter-firefox-runtime-matrix` all passed.
 
 ## Next Action
 
