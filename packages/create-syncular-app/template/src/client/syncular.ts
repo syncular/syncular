@@ -61,6 +61,7 @@ export interface OpenAppClientOptions {
 export const appActorId = 'demo-user';
 const appToken = 'demo-user';
 const defaultClientId = 'web';
+const defaultLifecycleLockTimeoutMs = 10_000;
 export const syncularStarterRuntimeArtifacts = [
   {
     name: 'core',
@@ -111,6 +112,21 @@ export function currentStarterSyncStartup(): 'auto' | 'manual' {
     'syncularSyncStartup'
   );
   return requested === 'manual' ? 'manual' : 'auto';
+}
+
+export function currentStarterLifecycleLockTimeoutMs(): number {
+  if (typeof window === 'undefined') return defaultLifecycleLockTimeoutMs;
+  const requested = new URLSearchParams(window.location.search).get(
+    'syncularLifecycleLockTimeoutMs'
+  );
+  if (!requested) return defaultLifecycleLockTimeoutMs;
+  const parsed = Number(requested);
+  if (!Number.isFinite(parsed)) return defaultLifecycleLockTimeoutMs;
+  const rounded = Math.trunc(parsed);
+  if (rounded < 250 || rounded > defaultLifecycleLockTimeoutMs) {
+    return defaultLifecycleLockTimeoutMs;
+  }
+  return rounded;
 }
 
 export function currentStarterBrowserSupportContext():

@@ -6,6 +6,7 @@ import { chromium, firefox, webkit } from '@playwright/test';
 const browserTypes = { chromium, firefox, webkit };
 const STARTER_LIFECYCLE_RESUME_LOCK_NAME =
   'syncular:create-syncular-app:lifecycle-resume';
+const STARTER_LIFECYCLE_RESUME_LOCK_TIMEOUT_MS = 1_000;
 
 function parseArgs(argv) {
   const args = new Map();
@@ -570,7 +571,13 @@ async function waitForMatrixLifecycleResume(args) {
   while (Date.now() < deadline) {
     const probe = await readMatrixProbe(args.page, args.diagnostics);
     lastProbe = probe;
-    if (probe.errors.length > 0) {
+    const unexpectedErrors =
+      args.ignoreLifecycleResumeFailure === true
+        ? probe.errors.filter(
+            (error) => !error.startsWith('lifecycle resume failed')
+          )
+        : probe.errors;
+    if (unexpectedErrors.length > 0) {
       await writeFailureArtifact(args.failureArtifact, {
         browser: args.browserName,
         generatedAt: new Date().toISOString(),
@@ -581,7 +588,7 @@ async function waitForMatrixLifecycleResume(args) {
         url: args.url,
       });
       throw new Error(
-        `Built preview ${args.browserName} lifecycle resume proof failed: ${probe.errors.join(
+        `Built preview ${args.browserName} lifecycle resume proof failed: ${unexpectedErrors.join(
           ', '
         )}. Failure artifact: ${args.failureArtifact}`
       );
@@ -635,6 +642,127 @@ async function waitForMatrixLifecycleResume(args) {
 async function readMatrixWebLocksSupported(page) {
   return page.evaluate(
     () => typeof navigator.locks?.request === 'function'
+  );
+}
+
+async function holdMatrixLifecycleResumeLock(page) {
+  return page.evaluate(
+    async ({ lockName }) => {
+      const locks = globalThis.navigator?.locks;
+      if (typeof locks?.request !== 'function') {
+        return { ok: false, reason: 'web-locks-unavailable' };
+      }
+      const existingRelease =
+        globalThis.__syncularMatrixHeldLifecycleLockRelease;
+      if (typeof existingRelease === 'function') {
+        existingRelease();
+        try {
+          await globalThis.__syncularMatrixHeldLifecycleLockPromise;
+        } catch {
+          // Ignore cleanup errors from a previous setup attempt.
+        }
+      }
+      globalThis.__syncularMatrixHeldLifecycleLockAcquired = false;
+      globalThis.__syncularMatrixHeldLifecycleLockPromise = locks.request(
+        lockName,
+        { mode: 'exclusive' },
+        () =>
+          new Promise((resolve) => {
+            globalThis.__syncularMatrixHeldLifecycleLockAcquired = true;
+            globalThis.__syncularMatrixHeldLifecycleLockRelease = () => {
+              globalThis.__syncularMatrixHeldLifecycleLockRelease = null;
+              resolve(true);
+            };
+          })
+      );
+      globalThis.__syncularMatrixHeldLifecycleLockPromise.catch(
+        () => undefined
+      );
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        if (
+          globalThis.__syncularMatrixHeldLifecycleLockAcquired === true &&
+          typeof globalThis.__syncularMatrixHeldLifecycleLockRelease ===
+            'function'
+        ) {
+          return { ok: true };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return { ok: false, reason: 'lock-acquire-timeout' };
+    },
+    { lockName: STARTER_LIFECYCLE_RESUME_LOCK_NAME }
+  );
+}
+
+async function releaseMatrixLifecycleResumeLock(page) {
+  await page.evaluate(async () => {
+    const release = globalThis.__syncularMatrixHeldLifecycleLockRelease;
+    if (typeof release !== 'function') return true;
+    release();
+    try {
+      await Promise.race([
+        globalThis.__syncularMatrixHeldLifecycleLockPromise,
+        new Promise((resolve) => setTimeout(resolve, 1_000)),
+      ]);
+    } catch {
+      // The matrix only needs the lock released; cleanup rejections are nonfatal.
+    }
+    return true;
+  });
+}
+
+async function waitForMatrixLifecycleLockTimeout(args) {
+  const deadline =
+    Date.now() + STARTER_LIFECYCLE_RESUME_LOCK_TIMEOUT_MS + 7_500;
+  let lastProbe = null;
+  while (Date.now() < deadline) {
+    const probe = await readMatrixProbe(args.page, args.diagnostics);
+    lastProbe = probe;
+    const unexpectedErrors = probe.errors.filter(
+      (error) => !error.startsWith('lifecycle resume failed')
+    );
+    if (unexpectedErrors.length > 0) {
+      await writeFailureArtifact(args.failureArtifact, {
+        browser: args.browserName,
+        generatedAt: new Date().toISOString(),
+        metrics: args.metrics,
+        probe,
+        reason: `${args.browserName}-runtime-matrix-lifecycle-lock-contention-errors`,
+        supportContext: args.supportContext,
+        url: args.url,
+      });
+      throw new Error(
+        `Built preview ${args.browserName} lifecycle Web Lock contention proof failed: ${unexpectedErrors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifact}`
+      );
+    }
+    const errorText = probe.lifecycleResume.error ?? '';
+    if (
+      probe.lifecycleResume.status === 'failed' &&
+      probe.lifecycleResume.reason === 'online' &&
+      probe.lifecycleResume.lockName === STARTER_LIFECYCLE_RESUME_LOCK_NAME &&
+      probe.lifecycleResume.lockState === 'timed-out' &&
+      probe.lifecycleResume.lockTimeoutMs ===
+        STARTER_LIFECYCLE_RESUME_LOCK_TIMEOUT_MS &&
+      errorText.includes('Timed out waiting')
+    ) {
+      return probe;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  await writeFailureArtifact(args.failureArtifact, {
+    browser: args.browserName,
+    generatedAt: new Date().toISOString(),
+    metrics: args.metrics,
+    probe: lastProbe,
+    reason: `${args.browserName}-runtime-matrix-lifecycle-lock-contention-timeout`,
+    supportContext: args.supportContext,
+    url: args.url,
+  });
+  throw new Error(
+    `Timed out waiting for built preview ${args.browserName} lifecycle Web Lock contention. Failure artifact: ${args.failureArtifact}`
   );
 }
 
@@ -707,6 +835,49 @@ async function proveMatrixLifecycleSignals(args) {
     expectedLifecycleLockState: expectedLockState,
     webLocksSupported,
   };
+}
+
+async function proveMatrixLifecycleLockContention(args) {
+  const before = await readMatrixProbe(args.page, args.diagnostics);
+  const webLocksSupported = await readMatrixWebLocksSupported(args.page);
+  if (!webLocksSupported) return 'skipped-web-locks-unavailable';
+
+  const holdResult = await holdMatrixLifecycleResumeLock(args.page);
+  if (!holdResult.ok) {
+    await writeFailureArtifact(args.failureArtifact, {
+      browser: args.browserName,
+      generatedAt: new Date().toISOString(),
+      metrics: args.metrics,
+      probe: before,
+      reason: `${args.browserName}-runtime-matrix-lifecycle-lock-contention-setup-failed`,
+      setupReason: holdResult.reason,
+      supportContext: args.supportContext,
+      url: args.url,
+    });
+    throw new Error(
+      `Could not hold built preview ${args.browserName} lifecycle Web Lock (${holdResult.reason}). Failure artifact: ${args.failureArtifact}`
+    );
+  }
+
+  let timeoutProbe = null;
+  try {
+    await dispatchMatrixLifecycleEvent(args.page, 'online');
+    timeoutProbe = await waitForMatrixLifecycleLockTimeout(args);
+  } finally {
+    await releaseMatrixLifecycleResumeLock(args.page);
+  }
+
+  await dispatchMatrixLifecycleEvent(args.page, 'online');
+  await waitForMatrixLifecycleResume({
+    ...args,
+    expectedCount: (timeoutProbe ?? before).lifecycleResume.count + 1,
+    expectedLockName: STARTER_LIFECYCLE_RESUME_LOCK_NAME,
+    expectedLockState: 'acquired',
+    expectedReason: 'online',
+    ignoreLifecycleResumeFailure: true,
+    timeoutReason: 'lifecycle-lock-contention-recovery-timeout',
+  });
+  return 'passed';
 }
 
 async function waitForMatrixLocalWriteProof(args) {
@@ -1071,7 +1242,9 @@ async function main() {
   if (!browserType) {
     throw new Error(`Unsupported Playwright browser: ${browserName}`);
   }
-  const url = requiredArg(args, 'url');
+  const url = matrixUrlWithParams(requiredArg(args, 'url'), {
+    syncularLifecycleLockTimeoutMs: STARTER_LIFECYCLE_RESUME_LOCK_TIMEOUT_MS,
+  });
   const supportContext = requiredArg(args, 'support-context');
   const failureArtifact = requiredArg(args, 'failure-artifact');
   const metricsJson = args.get('metrics-json') ?? '{}';
@@ -1112,6 +1285,16 @@ async function main() {
       supportContext,
       url,
     });
+    const lifecycleLockContention =
+      await proveMatrixLifecycleLockContention({
+        browserName,
+        diagnostics,
+        failureArtifact,
+        metrics,
+        page,
+        supportContext,
+        url,
+      });
     const title = `${browserName} matrix local write ${Date.now()}`;
     await submitMatrixTask(page, title);
     const writeProbe = await waitForMatrixLocalWriteProof({
@@ -1217,7 +1400,7 @@ async function main() {
       });
     }
     console.log(
-      `[csa-smoke] ${browserName} runtime matrix evidence passed: context=${probe.browserSupportPolicy.context} tier=${probe.deploymentPreflight.supportTier} lifecycleResumeCount=${lifecycleProbe.lifecycleResume.count} lifecycleLockState=${lifecycleProbe.lifecycleResume.lockState} localWriteCount=${writeProbe.commandTimeline.count} sameContextFreshPage=passed persistentProfileReopen=passed realtimePropagation=${realtimePropagation}`
+      `[csa-smoke] ${browserName} runtime matrix evidence passed: context=${probe.browserSupportPolicy.context} tier=${probe.deploymentPreflight.supportTier} lifecycleResumeCount=${lifecycleProbe.lifecycleResume.count} lifecycleLockState=${lifecycleProbe.lifecycleResume.lockState} lifecycleLockContention=${lifecycleLockContention} localWriteCount=${writeProbe.commandTimeline.count} sameContextFreshPage=passed persistentProfileReopen=passed realtimePropagation=${realtimePropagation}`
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

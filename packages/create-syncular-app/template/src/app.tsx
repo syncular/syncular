@@ -32,6 +32,7 @@ import {
   type AppSyncClient,
   appActorId,
   currentStarterBrowserSupportContext,
+  currentStarterLifecycleLockTimeoutMs,
   currentStarterStorage,
   currentStarterSyncStartup,
   installAppClientSubscriptions,
@@ -551,7 +552,7 @@ export function App() {
         lifecycleResume = installSyncularBrowserLifecycleResume(nextClient, {
           lock: {
             name: 'syncular:create-syncular-app:lifecycle-resume',
-            timeoutMs: 10_000,
+            timeoutMs: currentStarterLifecycleLockTimeoutMs(),
           },
           onResumeStart(context) {
             if (!disposed) {

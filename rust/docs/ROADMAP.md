@@ -467,8 +467,7 @@ read-only review:
     display-mode/cache-refresh/offline-restart/update proof plus smoke-only PWA
     offline, cache-refresh, and service-worker update proofs, Firefox realtime
     beyond the maintained Firefox runtime/support-policy/local persistence
-    smoke, non-Chrome Web Lock contention/failure semantics beyond the
-    maintained lifecycle lock-acquisition proof, plus deeper
+    smoke, target activation outside Chrome, plus deeper
     storage/coordination failures below the covered fallback and
     fallback-failure cases.
     The starter now also records
@@ -715,7 +714,10 @@ read-only review:
     render from local browser storage after each boundary. The matrix now also
     asserts lifecycle Web Lock evidence in the secure target browser: resume
     events must report the starter lifecycle lock name and `lockState:
-    "acquired"` when Web Locks are available. The WebKit job now also opens
+    "acquired"` when Web Locks are available, then hold that lock, require the
+    public lifecycle marker to report a bounded `browser.web_locks_timeout`,
+    release the lock, and require the next foreground resume to recover under
+    an acquired lock. The WebKit job now also opens
     auto-start writer/observer clients with separate browser database ids and
     proves realtime-connected propagation by requiring the observer to render
     the writer's generated task; Firefox logs
@@ -724,8 +726,8 @@ read-only review:
     assertions can run. This proves target-browser DOM lifecycle signal
     handling plus local-write, reload, same-context fresh-page,
     persistent-profile relaunch execution, lifecycle Web Lock acquisition, and
-    WebKit realtime propagation without claiming Firefox realtime, target
-    activation, non-Chrome Web Lock contention/failure behavior, or full
+    lifecycle Web Lock timeout/recovery behavior, plus WebKit realtime
+    propagation without claiming Firefox realtime, real target activation, or full
     support-policy status. Dedicated
     `starter-firefox-runtime-matrix` and `starter-webkit-runtime-matrix` Checks
     jobs own these proofs; hosted Checks run `28576137057` on commit `8245fc98`

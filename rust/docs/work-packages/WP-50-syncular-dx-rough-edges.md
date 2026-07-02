@@ -5266,6 +5266,16 @@ Most recent browser-health failure-artifact rerun:
   packages/create-syncular-app/template/vite.config.ts`, `bun run
   docs:stale-check`, `git diff --check`, and both Firefox/WebKit matrix smokes
   with `PLAYWRIGHT_BROWSERS_PATH=.context/ms-playwright`.
+- 2026-07-02: Extended the Firefox/WebKit runtime matrix from Web Lock
+  acquisition into bounded contention and recovery evidence. The runner now
+  opens the generated starter with
+  `syncularLifecycleLockTimeoutMs=1000`, holds the real starter lifecycle Web
+  Lock in the page, dispatches an `online` resume, requires the public
+  lifecycle marker to report `lockState: "timed-out"` and the timeout budget,
+  releases the lock, dispatches `online` again, and requires the next resume to
+  complete under `lockState: "acquired"`. This closes the first non-Chrome
+  lifecycle Web Lock timeout/recovery proof while still leaving real target
+  activation and broader host/browser lifecycle semantics as follow-ups.
 
 ## Next Action
 
@@ -5402,14 +5412,16 @@ helper pause/resume signal handling plus a generated local write with local
 command evidence, same-page reload rendering, and same-context fresh-page
 rendering, plus persistent-profile relaunch rendering from browser storage.
 The lifecycle branch now also asserts the starter lifecycle Web Lock name and
-requires lock acquisition when the secure target browser exposes Web Locks.
+requires lock acquisition when the secure target browser exposes Web Locks, then
+proves a bounded Web Lock timeout and recovery path through the same public
+lifecycle marker.
 The WebKit/Safari branch now also opens auto-start writer and observer clients
 and proves realtime propagation by requiring the observer to render the writer's
 generated task. Firefox realtime remains explicitly skipped because Playwright
 Firefox crashes in WebSocket-open instrumentation before app assertions can
-run; target activation, Web Lock contention/failure behavior outside Chrome,
-host eviction semantics, and full support-policy status remain preflight-gated
-until deeper target evidence exists. Hosted
+run; target activation, broader host/browser lifecycle semantics, host eviction
+semantics, and full support-policy status remain preflight-gated until deeper
+target evidence exists. Hosted
 Checks run `28576137057` on commit `8245fc98` passed the full matrix, including
 `starter-webkit-runtime-matrix`, before the local-write/reload extension. Hosted
 Checks run `28583002937` then caught a Linux WebKit access-control rejection on
@@ -5431,11 +5443,10 @@ crash, explicit shutdown close, discarded-tab recovery, database-storage
 eviction, Clear-Site-Data storage eviction, and same-origin IndexedDB deletion
 branches, and
 browser/bundler matrix execution, especially Firefox realtime plus
-Safari/WebKit and Firefox target activation, Web Lock contention/failure
-behavior beyond basic lifecycle lock acquisition, and host-eviction/storage
-failure proof beyond the runtime/support-policy/local DOM-signal,
-same-context fresh-page, persistent-profile relaunch, lifecycle Web Lock
-acquisition, and WebKit realtime propagation smokes, real
+Safari/WebKit and Firefox target activation, and host-eviction/storage failure
+proof beyond the runtime/support-policy/local DOM-signal, same-context
+fresh-page, persistent-profile relaunch, lifecycle Web Lock acquisition and
+bounded timeout/recovery, and WebKit realtime propagation smokes, real
 private-mode durable-persistence semantics, WebViews,
 deeper fully installed-PWA host semantics beyond the app-window
 cache-refresh/offline-restart/update proof, and PWA cache-update semantics

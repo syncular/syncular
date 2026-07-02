@@ -116,12 +116,16 @@ until the full browser Worker/WASM suite is green on Linux.
   `freeze`, `resume`, and `beforeunload` signals, reloads the same page, opens a
   fresh page in the same Playwright context, then closes and relaunches the same
   persistent Playwright profile to prove that task renders from local browser
-  storage after each boundary.
-  Firefox and Safari/WebKit stay preflight-gated for realtime, target
-  activation, Web Lock lifecycle coordination, and broader support-policy
-  evidence. These runtime matrices use manual sync startup so Playwright does
-  not intercept the starter realtime WebSocket; Chrome remains the maintained
-  browser realtime/lifecycle proof in `starter-browser-preview`.
+  storage after each boundary. When Web Locks are available, those matrix jobs
+  also hold the starter lifecycle lock, require a bounded
+  `browser.web_locks_timeout` marker, release the lock, and require the next
+  resume to recover under an acquired lock. Firefox and Safari/WebKit stay
+  preflight-gated for realtime beyond maintained WebKit propagation, real target
+  activation, broader host lifecycle/storage semantics, and full
+  support-policy evidence. These runtime matrices use manual sync startup so
+  Playwright does not intercept the starter realtime WebSocket; Chrome remains
+  the maintained broad browser realtime/lifecycle proof in
+  `starter-browser-preview`.
   On a browser-capable CI runner, set
   `SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required` so missing Chrome fails instead
   of skipping the browser execution.
