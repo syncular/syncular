@@ -944,9 +944,10 @@ async function main() {
       title,
       url,
     });
-    await page.close();
+    const previousPage = page;
     page = await context.newPage();
     attachPageDiagnostics(page, browserName, recordDiagnostic);
+    await previousPage.close().catch(() => undefined);
     await page.goto(url, { timeout: 60_000, waitUntil: 'load' });
     await waitForMatrixEvidence({
       browserName,
@@ -963,8 +964,8 @@ async function main() {
       failureArtifact,
       metrics,
       page,
-      proofName: 'same-context reopen persistence',
-      reasonSuffix: 'same-context-reopen',
+      proofName: 'same-context fresh-page persistence',
+      reasonSuffix: 'same-context-fresh-page',
       supportContext,
       title,
       url,
@@ -995,7 +996,7 @@ async function main() {
       url,
     });
     console.log(
-      `[csa-smoke] ${browserName} runtime matrix evidence passed: context=${probe.browserSupportPolicy.context} tier=${probe.deploymentPreflight.supportTier} lifecycleResumeCount=${lifecycleProbe.lifecycleResume.count} localWriteCount=${writeProbe.commandTimeline.count} sameContextReopen=passed persistentProfileReopen=passed`
+      `[csa-smoke] ${browserName} runtime matrix evidence passed: context=${probe.browserSupportPolicy.context} tier=${probe.deploymentPreflight.supportTier} lifecycleResumeCount=${lifecycleProbe.lifecycleResume.count} localWriteCount=${writeProbe.commandTimeline.count} sameContextFreshPage=passed persistentProfileReopen=passed`
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

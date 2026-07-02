@@ -113,10 +113,10 @@ until the full browser Worker/WASM suite is green on Linux.
   `safari-secure-page` support policy path, creates a generated local task with
   local apply/outbox/local-visibility command-timeline evidence, exercises the
   starter lifecycle helper through DOM `pagehide`, `pageshow`, `online`,
-  `freeze`, `resume`, and `beforeunload` signals, reloads the same page, closes
-  it, opens a fresh page in the same Playwright context, then closes and
-  relaunches the same persistent Playwright profile to prove that task renders
-  from local browser storage after each boundary.
+  `freeze`, `resume`, and `beforeunload` signals, reloads the same page, opens a
+  fresh page in the same Playwright context, then closes and relaunches the same
+  persistent Playwright profile to prove that task renders from local browser
+  storage after each boundary.
   Firefox and Safari/WebKit stay preflight-gated for realtime, target
   activation, Web Lock lifecycle coordination, and broader support-policy
   evidence. These runtime matrices use manual sync startup so Playwright does

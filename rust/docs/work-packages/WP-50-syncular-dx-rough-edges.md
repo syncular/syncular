@@ -5156,9 +5156,9 @@ Most recent browser-health failure-artifact rerun:
   smoke --browser-runtime-matrix=webkit --browser-runtime-matrix-only` with
   `PLAYWRIGHT_BROWSERS_PATH=.context/ms-playwright`.
 - 2026-07-02: Extended the Firefox/WebKit runtime matrix across a same-context
-  page reopen boundary. After the generated local write and same-page reload
-  persistence proof, the Playwright runner now closes the app page, opens a
-  fresh page in the same browser context, reruns the runtime/support-policy
+  fresh-page boundary. After the generated local write and same-page reload
+  persistence proof, the Playwright runner now opens a fresh page in the same
+  browser context, closes the previous page, reruns the runtime/support-policy
   readiness probe, and requires the task to render from local browser storage
   again. This is stronger than reload while still not claiming full
   browser-process restart, target activation, Web Lock coordination, realtime,
@@ -5174,13 +5174,28 @@ Most recent browser-health failure-artifact rerun:
 - 2026-07-02: Extended the Firefox/WebKit runtime matrix across a persistent
   profile relaunch boundary. The runner now launches each target browser with a
   dedicated persistent Playwright profile directory, proves generated local
-  write/reload/same-context reopen visibility, closes the browser context,
+  write/reload/same-context fresh-page visibility, closes the browser context,
   relaunches the same profile, reruns runtime/support-policy readiness, and
   requires the same generated task to render again from browser storage. This
   proves a stronger process/profile persistence boundary for Firefox and
   WebKit/Safari without claiming realtime, target activation, Web Lock
   lifecycle coordination, host eviction semantics, or full support-policy
   status. Local Bun `1.3.9` gates passed: `node --check
+  packages/create-syncular-app/scripts/browser-runtime-matrix-runner.mjs`,
+  `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox bun --cwd
+  packages/create-syncular-app smoke --browser-runtime-matrix=firefox
+  --browser-runtime-matrix-only`, and
+  `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=webkit bun --cwd packages/create-syncular-app
+  smoke --browser-runtime-matrix=webkit --browser-runtime-matrix-only` with
+  `PLAYWRIGHT_BROWSERS_PATH=.context/ms-playwright`.
+- 2026-07-02: Tightened the same-context fresh-page proof after hosted Checks
+  run `28580198107` exposed a Linux Playwright persistent-context edge in both
+  Firefox and WebKit. Closing the only page before opening the replacement page
+  could tear down or destabilize the persistent context (`Browser.newPage`
+  failed in Firefox; WebKit reported the target/context closed). The runner now
+  opens the fresh page first, attaches diagnostics, and only then closes the
+  previous page; the separate persistent-profile relaunch proof remains the hard
+  close/reopen boundary. Local Bun `1.3.9` gates passed again: `node --check
   packages/create-syncular-app/scripts/browser-runtime-matrix-runner.mjs`,
   `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox bun --cwd
   packages/create-syncular-app smoke --browser-runtime-matrix=firefox
@@ -5321,7 +5336,7 @@ The current WebKit/Safari runtime-matrix slice adds a dedicated
 explicit `safari-secure-page` support context. It mirrors the Firefox
 runtime/support-policy proof and now both matrix jobs also prove DOM lifecycle
 helper pause/resume signal handling plus a generated local write with local
-command evidence, same-page reload rendering, and same-context page reopen
+command evidence, same-page reload rendering, and same-context fresh-page
 rendering, plus persistent-profile relaunch rendering from browser storage.
 Safari/WebKit and Firefox realtime, target activation, Web Lock lifecycle
 coordination, host eviction semantics, and full support-policy status remain
@@ -5346,7 +5361,7 @@ branches, and
 browser/bundler matrix execution, especially Safari/WebKit and Firefox realtime,
 target activation, Web Lock lifecycle coordination, and host-eviction/storage
 failure proof beyond the runtime/support-policy/local DOM-signal,
-same-context reopen, and persistent-profile relaunch smokes, real private-mode
+same-context fresh-page, and persistent-profile relaunch smokes, real private-mode
 durable-persistence semantics, WebViews,
 deeper fully installed-PWA host semantics beyond the app-window
 cache-refresh/offline-restart/update proof, and PWA cache-update semantics

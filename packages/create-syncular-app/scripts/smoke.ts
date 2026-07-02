@@ -46,7 +46,7 @@ import { Buffer } from 'node:buffer';
  *    is available. Set SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox, webkit,
  *    or all, or pass --browser-runtime-matrix=firefox,webkit to also prove
  *    explicit target-browser runtime/support-policy markers plus generated
- *    local write, reload persistence, same-context page reopen persistence,
+ *    local write, reload persistence, same-context fresh-page persistence,
  *    persistent-profile relaunch persistence, and DOM lifecycle signal paths
  *    through Playwright. Pass
  *    --browser-runtime-matrix-only to skip the Chrome/CDP proof that is owned by
