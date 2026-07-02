@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { createClientBridgeHarness } from '../../../testkit/src';
+import { createClientBridgeHarness } from '../../../testkit/src/client-bridge';
 import { createSyncularNativeClient } from './index';
 
 describe('@syncular/client/react-native', () => {
