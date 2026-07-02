@@ -46,12 +46,22 @@ absorbed by transport compression, §1.3).
 | `opt(T)` | presence `u8` (`0x00` absent, `0x01` present; other values are a decode error) followed by `T` iff present. Used **only** where a field is semantically nullable — structural optionality is expressed by frame presence (§1.2), never by option bytes |
 | `list(T)` | `u32` count + count × `T` |
 | `map` | `u32` count + count × (`str` key, value). Keys MUST be unique; encoders MUST emit keys in ascending code-unit order (canonical encoding) |
-| `json` | `str` containing a JSON document. Used only for host-opaque values (`params`, `details`, push payloads, resume tokens) |
+| `json` | `str` containing a JSON document. Used only for host-opaque values (`params`, `details`, push payloads, resume tokens). Host-opaque means exactly that: a decoder MUST preserve the raw string byte-for-byte and a re-encoder MUST emit it unchanged — round-trip fidelity, never re-canonicalization |
 
 **Canonical encoding.** For every value there is exactly one valid byte
 sequence (map key ordering, minimal presence bytes, no padding). Golden
 vectors verify byte-for-byte round-trips; an encoder that produces
-different bytes for the same value is non-conformant.
+different bytes for the same value is non-conformant. For `json`-typed
+values the one-byte-sequence rule applies to the container (`str`
+framing); the JSON text itself is an opaque payload preserved verbatim
+(see the `json` row above).
+
+**Enums and presence invariants.** Every `u8` enum field in this
+document (`msgKind`, `op`, `status`, `mediaType`, …) admits only the
+values listed in its field table; any other byte is a decode error (the
+`bool` rule above, generalized). Where a field table ties an `opt()`
+field's presence to another field's value (e.g. `row` present iff
+`op` = upsert), a violation is likewise a decode error.
 
 Hashes are SHA-256 rendered as 64 lowercase hex characters unless stated
 otherwise. Timestamps are Unix epoch **milliseconds** as `i64`.
@@ -108,14 +118,23 @@ concretely below and in the referenced sections.
       compact column descriptor table — not for inference, but as a
       checksum the receiver validates against its generated schema, and so
       independent tooling can decode segments (the ssp1.js lesson).
-      Client→server push payloads travel as canonical JSON (§6.1): the
+      Client→server push payloads travel as JSON (§6.1): the
       server must treat them as hostile input and validate anyway, and push
-      volume is negligible next to pull volume.
+      volume is negligible next to pull volume. Two further points: an
+      offline outbox written under schema version N must still replay
+      after an upgrade to N+1 — JSON payloads survive that, while
+      codec-pinned binary payloads would entangle the outbox with retired
+      schema versions. And `json` values are preserved as raw strings on
+      round-trip (see Conventions), so golden vectors stay byte-exact
+      without forcing payload canonicalization on clients.
 
       > DECISION NEEDED (Benjamin): push payloads as JSON (`json`
       > primitive) while pull rows are binary — confirm the asymmetry. The
       > alternative (schema-encoded pushes) saves little and forces the
       > client to embed encoders for partial/unvalidated rows.
+      > Reviewer recommendation: approve — the server re-validates either
+      > way, and JSON keeps offline outboxes replayable across schema
+      > upgrades instead of pinning them to retired codecs.
 
 - [x] **Signed-URL segment delivery.** DECISION: **change** (pre-approved).
       Segment descriptors MAY carry a short-lived signed URL; authorization
@@ -183,6 +202,11 @@ removed), both accreted in wire v10–v13:
       > integrity from the v2 core wire (reserved frame `0x17`, revisit at
       > the parity ladder). It is a security feature, so the cut needs
       > explicit sign-off.
+      > Reviewer recommendation: approve — nothing in the skeleton
+      > consumes the chain, it costs a hash finalization inside every push
+      > transaction, and the reserved frame keeps reinstatement
+      > non-breaking (the request-side `verifiedRoot` companion will also
+      > need a new frame slot when it returns).
 
 - [x] **CRDT state-vector hints** (`crdtStateVectors`) — dropped; CRDT is
       a named skeleton non-goal. Frame-level room is reserved (§9).
@@ -191,9 +215,15 @@ Two smaller cuts, recorded here because they change request shapes:
 
 - [x] **`dedupeRows` request flag** — dropped. Big-gap catch-up prefers
       segments (§8.4), which makes the dedupe mode's payload savings moot,
-      and it removes a whole response-shape variant.
+      and it removes a whole response-shape variant. It was also a
+      correctness wart: v1's dedupe path regrouped only the latest change
+      per row into synthetic commit objects, so clients could observe
+      partial commits — violating the commit-atomicity spine (§6.4).
 
       > DECISION NEEDED (Benjamin): confirm dropping `dedupeRows`.
+      > Reviewer recommendation: approve — it deletes more than bytes: the
+      > synthetic partial commits it produced broke the "commit is the
+      > atomic unit" invariant that §6.4 makes load-bearing.
 
 - [x] **Commit `createdAt` becomes epoch-ms `i64`** (v1: ISO-8601 string).
       Cheaper, fixed-width, no timezone ambiguity. The JSON rendering
@@ -263,9 +293,11 @@ Rules:
 
 1. The frame sequence MUST end with an `END` frame (`frameType 0x00`,
    `frameLength 0`). A body that ends without `END` is **truncated** and
-   MUST be rejected; partially applied data is rolled back per §1.4.
+   MUST be rejected; the abort rule of §1.4 rule 5 applies.
 2. A reader MUST skip an unknown `frameType` by consuming `frameLength`
-   bytes. This is the forward-compat rule (§9).
+   bytes. This is the forward-compat rule (§9). Unknown frame types may
+   appear at any position between the header frame and `END`; the
+   ordering constraints of rule 4 apply to known frame types only.
 3. A frame's payload MUST be exactly `frameLength` bytes when decoded per
    its record layout; trailing bytes inside a known frame are a decode
    error (frames are versioned by `wireVersion`, never extended in place).
@@ -327,11 +359,18 @@ a streaming reader needs:
 4. **Apply transaction**: one local write transaction per `COMMIT` frame,
    and one per rows-segment *block* (§5.2). Durable client state (cursor,
    bootstrap resume token) is persisted only when `SUB_END` is processed.
-5. **Rollback rule**: on a decode error, an in-band `ERROR` frame, or a
-   truncated stream, the reader MUST roll back any partially applied data
-   for the currently open subscription and MUST NOT persist its `SUB_END`
-   values. Data from subscriptions whose `SUB_END` was already processed
-   is kept — each subscription is an independent atomic unit.
+5. **Abort rule**: on a decode error, an in-band `ERROR` frame, or a
+   truncated stream, the reader MUST abort the currently open
+   subscription: roll back the *current in-progress* local transaction
+   (the open `COMMIT` frame or rows-segment block, rule 4) and MUST NOT
+   persist that subscription's `SUB_END` values (`nextCursor`,
+   `bootstrapState`). Frames already committed under rule 4 stay
+   committed — they are repaired by re-pull idempotency: the cursor and
+   resume token were not advanced, so the next pull re-delivers the same
+   window, and re-applying commits and segment blocks is safe (upserts
+   and deletes are idempotent, §5.6). Subscriptions whose `SUB_END` was
+   already processed keep their applied data and cursors — each
+   subscription is an independent unit of progress.
 
 This is why `nextCursor` and the bootstrap resume token live in `SUB_END`
 (a trailer), not `SUB_START`: the server may not know them until it has
@@ -367,7 +406,8 @@ per subscription, in request order:
   COMMIT × k                    incremental changes (§4.5)
   (SEGMENT_REF | SEGMENT_INLINE) × m    bootstrap data (§5)
   SUB_END
-ERROR                           0 or 1, may appear anywhere after RESP_HEADER
+ERROR                           0 or 1, may appear anywhere after RESP_HEADER;
+                                if present, the next frame MUST be END
 END
 ```
 
@@ -397,7 +437,8 @@ frames MUST NOT both appear for the same subscription in one response
 
 On receiving `ERROR`, the client applies §1.4 rule 5, then treats the
 whole request as having failed with that error (already-completed
-subscriptions keep their applied data and cursors).
+subscriptions keep their applied data and cursors). A server MUST NOT
+emit further frames after `ERROR` except the terminating `END`.
 
 ---
 
@@ -446,9 +487,12 @@ Unchanged from v1.
 The idempotency key for a push commit is the triple
 **(partition, `clientId`, `clientCommitId`)**. A server MUST persist the
 full commit result before acknowledging, and a replay of the same key
-MUST return the cached result byte-equivalent except for commit `status`,
-which becomes `cached` (§6.3). Exactly-once apply per client commit;
-at-least-once delivery of results. Unchanged from v1.
+MUST return the persisted result byte-equivalent: an
+originally-`applied` commit is returned with `status = cached`; an
+originally-`rejected` commit is returned with `status` still `rejected`
+(§6.3). `cached` means "this already applied — you may have missed the
+ack"; a rejection replays as itself. Exactly-once apply per client
+commit; at-least-once delivery of results. Unchanged from v1.
 
 ### 2.4 Schema IR and the generated row codec
 
@@ -460,7 +504,7 @@ Column types (shared by the row codec and rows segments; tags on the wire):
 | `2` | `integer` | `i64` |
 | `3` | `float` | `f64` |
 | `4` | `boolean` | `bool` |
-| `5` | `json` | `str` containing canonical JSON |
+| `5` | `json` | `str` containing a JSON document (raw string preserved on round-trip, see Conventions) |
 | `6` | `bytes` | `bytes` |
 
 Unchanged from v1's binary-table-v1 tag assignment.
@@ -488,7 +532,8 @@ encoding.
 
 **Unchanged from v1 — semantics ported verbatim.** Scopes are the crown
 jewels of the design; nothing in this section is simplified except the
-wire shape of scope values (always lists, §0).
+wire shape of scope values (always lists, §0) and one fail-loud
+tightening: `'*'` is rejected in *requested* scopes (§3.2).
 
 ### 3.1 Scope patterns and stored scopes
 
@@ -503,9 +548,9 @@ wire shape of scope values (always lists, §0).
 - A change emitted without a stored-scope object is a server bug and MUST
   reject the commit with `sync.missing_scopes` (fail loud, roll back).
 - Stored scopes index the log: the server maintains a commit→scope-key
-  inverted index (scope key = `prefix:value`) so pulls filter by scope
-  without scanning (a v2 storage-schema requirement per REVISE B2; the
-  index itself is not wire-visible).
+  inverted index (scope key = the pattern's literal prefix + `:` +
+  value) so pulls filter by scope without scanning (a v2 storage-schema
+  requirement per REVISE B2; the index itself is not wire-visible).
 
 ### 3.2 Requested, allowed, effective
 
@@ -516,16 +561,23 @@ On every pull (and on realtime connect), per subscription:
 2. The server validates that every requested key is a variable declared
    by the table's patterns. An unknown key fails the whole request with
    `sync.invalid_subscription` (fail loud — a typo'd scope key must never
-   silently widen or narrow access).
+   silently widen or narrow access). A requested *value* of `'*'` also
+   fails the request with `sync.invalid_subscription`: the wildcard is
+   reserved for allowed scopes (v2 tightening — in v1 a requested `'*'`
+   passed through and then matched only rows whose stored value was
+   literally `*`, a silent-empty-data footgun).
 3. The host's `resolveScopes(ctx)` returns **allowed scopes** for this
    actor: variable → list of values, where the value `'*'` means "any
    value for this variable". The same key validation applies to the
    result (a handler returning undeclared keys is a server bug: fail the
    request, do not guess).
-4. **Effective = requested ∩ allowed**, computed per key:
+4. **Effective = requested ∩ allowed**, computed per requested key (keys
+   present only in allowed never enter effective):
    - key absent from allowed → key excluded entirely;
    - allowed contains `'*'` → the requested values pass through;
-   - otherwise set intersection of the value lists.
+   - otherwise set intersection of the value lists; an **empty
+     intersection excludes the key entirely** — a requested key never
+     survives with an empty list (it then revokes via rule 5).
 5. The subscription is **revoked** when any of:
    - `resolveScopes` threw (fail-loud: no data on errors — an
      authorization bug must fence, not leak);
@@ -549,7 +601,12 @@ When `SUB_START.status = revoked`:
   echoes the request cursor unchanged.
 - The client MUST stop pulling the subscription and MUST purge local rows
   belonging to it: delete rows whose generated local scope columns match
-  the subscription's **requested** scope values.
+  the **last effective scopes** echoed in `SUB_START` while the
+  subscription was active — the client MUST persist those per
+  subscription for exactly this purpose (unchanged from v1). Requested
+  values that never became effective are not purged: the grant being
+  revoked is the effective one, and local-only rows outside it are not
+  the server's to destroy.
 - **Fail closed**: if the client's generated schema has no local
   scope-column mapping for the table, the client MUST NOT clear the whole
   table as an approximation; it MUST surface `sync.scope_revoked` as a
@@ -562,18 +619,33 @@ When `SUB_START.status = revoked`:
 
 ### 3.4 Write-path authorization
 
-On every push operation (unchanged from v1):
+On every push operation (semantics unchanged from v1):
 
 1. The server resolves allowed scopes for the actor (same
-   `resolveScopes`, resolved once per request and memoized).
-2. It extracts the row's scope values for **all** declared scope
-   variables of the table. A missing or empty scope column value ⇒ deny.
+   `resolveScopes`). In v2 the result is resolved at most once per
+   request and memoized; resolvers MUST be stable within a request.
+2. It selects the **authorization row**: for an operation targeting an
+   existing row (upsert onto an existing row, or delete), the row **as
+   currently stored** — never the pushed payload; for an insert (no
+   existing row), the pushed payload plus the primary key. It extracts
+   that row's scope values for **all** declared scope variables of the
+   table. A missing or empty scope column value ⇒ deny.
 3. For every declared variable: the row's value MUST be present in the
    actor's allowed values for that variable, or the allowed values
    contain `'*'`. **All declared keys are required** — there is no
    partial pass.
 4. Any denial, or a throwing `resolveScopes`, rejects the operation with
    `sync.forbidden` (non-retryable) and rolls back the commit (§6.4).
+5. **Scope columns are immutable on update.** The server MUST strip all
+   declared scope columns from the update set of every upsert that
+   targets an existing row (both the `baseVersion` and last-write-wins
+   paths). Clients cannot re-home a row across scopes by push; scope
+   migration is server-emitted only (§2.2). Scope columns are written
+   only on insert, where step 2 authorized exactly those values.
+
+Rules 2 and 5 are load-bearing together: authorizing the pushed payload
+instead of the stored row, or letting an update change a scope column,
+each opens a cross-scope write that v1 forbids.
 
 ### 3.5 Scope digest
 
@@ -602,10 +674,15 @@ interpreted, by the server. Unchanged from v1.
 | `limitCommits` | `i32` | Max changes across returned commits per subscription. Server clamps to [1, 1000]; `0` = server default (1000) |
 | `limitSnapshotRows` | `i32` | Bootstrap page size in rows. Server clamps to [1, 50000]; `0` = default (1000) |
 | `maxSnapshotPages` | `i32` | Max bootstrap pages materialized per pull. Server clamps to [1, 50]; `0` = default (4) |
-| `accept` | `u8` bitmask | Segment delivery capabilities: bit 0 = inline rows segments, bit 1 = external rows segments, bit 2 = sqlite segments, bit 3 = signed URLs. A client MUST set at least bits 0 and 1 (rows support is mandatory) |
+| `accept` | `u8` bitmask | Segment delivery capabilities: bit 0 = inline rows segments, bit 1 = external rows segments, bit 2 = sqlite segments, bit 3 = signed URLs; bits 4–7 MUST be 0 (a set unknown bit is a decode error). A client MUST set at least bits 0 and 1 (rows support is mandatory) |
 
-Limits and defaults are unchanged from v1; the clamp is silent (the
-response reflects the clamped behavior, not an error).
+Defaults and clamp ranges are the v1 values; the clamp is silent (the
+response reflects the clamped behavior, not an error). **Deliberate
+change from v1:** `limitCommits` counts *changes*, not commits — v1
+bounded the number of commits scanned, which left response size
+unbounded for large commits. The limit is where the server stops adding
+further commits; a single commit whose own change count exceeds it is
+still delivered whole and alone (commits are never split, §4.5).
 
 ### 4.3 `SUBSCRIPTION` frame
 
@@ -720,10 +797,13 @@ Servers prune the commit log. The contract:
 
 ### 4.7 Bootstrap state machine
 
-A subscription **bootstraps** when any of: `cursor < 0`;
-`cursor < horizonSeq`  (after the `reset` round-trip); `cursor >
-maxCommitSeq` (client from the future — treat as corrupt state); or the
-server has declared its log discontinuous (host-initiated resync).
+A subscription **bootstraps** when any of: the request carries a
+`bootstrapState` token (a resume — this is what keeps a part-way
+bootstrap in bootstrap mode, since its cursor already equals the pin);
+`cursor < 0`; `cursor < horizonSeq` (after the `reset` round-trip);
+`cursor > maxCommitSeq` (client from the future — treat as corrupt
+state); or the server has declared its log discontinuous
+(host-initiated resync).
 
 Bootstrap is **resumable, pinned, and paged** (mechanics unchanged from
 v1):
@@ -743,9 +823,14 @@ v1):
 - If a resumed `asOfCommitSeq < horizonSeq`, the server MUST restart the
   bootstrap from scratch (fresh pin) rather than resume across pruned
   history.
-- On completion, `SUB_END.nextCursor = asOfCommitSeq`: incremental pulls
-  take over from the pinned point; nothing is lost between the pin and
-  now because the next pull replays `asOfCommitSeq < commitSeq ≤ latest`.
+- **Every** bootstrap response — complete or not — sets
+  `SUB_END.nextCursor = asOfCommitSeq`. A resuming client therefore
+  presents `cursor = asOfCommitSeq` plus the round-tripped resume token;
+  the token, not the cursor, is what marks the subscription as still
+  bootstrapping.
+- On completion (`bootstrapState` omitted), incremental pulls take over
+  from the pinned point; nothing is lost between the pin and now because
+  the next pull replays `asOfCommitSeq < commitSeq ≤ latest`.
 
 **Phases.** v1's client had named bootstrap phases (critical /
 interactive / background). v2 does not encode phases in the protocol:
@@ -879,12 +964,20 @@ payloadJson = {"v":1,"seg":"<segmentId>","sd":"<scopeDigest>",
                "aud":"<partition token>","exp":<unix seconds>}
 ```
 
-The verifier MUST check the MAC, `exp` (with ≤ 60 s skew allowance),
-`seg` equality with the requested segment, and `aud` against the
-partition. `sd` binds the token to the effective scopes that were
-authorized at issuance — issuance happens inside the pull, immediately
-after scope resolution, so a signed URL is never minted for scopes the
-actor did not hold at that moment. TTL SHOULD be ≤ 15 minutes: the
+`exp` is unix **seconds** (JWT convention) — the sole non-millisecond
+timestamp in this spec. `aud` is an opaque host-chosen value that MUST
+be stable per partition and MUST NOT let clients derive the internal
+partition id (a keyed derivation such as `HMAC(key, partitionId)`
+satisfies both); it is minted and verified by the same host, and clients
+treat the whole `st` token as opaque — §2.1's "partitions never appear
+on the wire" holds in the sense that no *client-interpretable* partition
+field exists. The verifier MUST check the MAC, `exp` (with ≤ 60 s skew
+allowance), `seg` equality with the requested segment, `sd` equality
+with the segment's stored `scopeDigest`, and `aud` equality with the
+value derived from the segment's partition. `sd` binds the token to the
+effective scopes that were authorized at issuance — issuance happens
+inside the pull, immediately after scope resolution, so a signed URL is
+never minted for scopes the actor did not hold at that moment. TTL SHOULD be ≤ 15 minutes: the
 revocation window for already-issued URLs equals the TTL, which is the
 accepted trade for CDN offload (the pull itself re-authorizes every
 time, so new URLs stop immediately on revocation).
@@ -911,7 +1004,9 @@ for clients without signed-URL support.
   "scopes query param lesson" as a MUST: a segment reference obtained
   earlier is not a bearer capability; only signed URLs are (deliberately,
   with short TTL).
-- Unknown or expired segment ⇒ HTTP 404 `sync.segment_expired`.
+- Unknown segment ⇒ HTTP 404 `sync.not_found`; known-but-expired
+  segment ⇒ HTTP 404 `sync.segment_expired` (§10.2 — the retryable one:
+  re-pulling mints fresh descriptors).
 - Response headers: `Content-Type: application/octet-stream`,
   `ETag: "<segmentId>"`, `Cache-Control: private, max-age=0`,
   `Vary: Authorization, X-Syncular-Scopes`. `If-None-Match` with a
@@ -958,7 +1053,7 @@ Operation record:
 | `rowId` | `str` | |
 | `op` | `u8` | `1` = upsert, `2` = delete |
 | `baseVersion` | `opt(i64)` | Optimistic-concurrency token (§6.2); absent = last-write-wins |
-| `payload` | `opt(json)` | Full row payload for upsert (canonical JSON, §0 decision); absent for delete |
+| `payload` | `opt(json)` | Full row payload; MUST be present for `upsert` and absent for `delete` — a violation is a decode error (`sync.invalid_request`). JSON per the §0 decision; raw string preserved on round-trip (Conventions) |
 
 Servers MUST enforce an operation-count cap per request (host-configured;
 exceeding it is `sync.too_many_operations` with the whole batch
@@ -972,8 +1067,12 @@ Unchanged from v1:
   baseVersion`, apply with `server_version = baseVersion + 1`; else
   **conflict** (`sync.version_conflict`).
 - `baseVersion == 0`, row absent: insert with `server_version = 1`. If a
-  concurrent insert wins the race, return **conflict** with the winner's
-  version and row.
+  concurrent insert wins the race, the server MUST re-authorize the
+  winner's row against the actor's allowed scopes (§3.4 steps 2–3)
+  **before** disclosing anything: if authorized, return **conflict**
+  with the winner's version and row; if denied, reject with
+  `sync.forbidden` — a conflict record must never leak a row from a
+  scope the actor does not hold.
 - `baseVersion` present and ≠ 0, row absent: error `sync.row_missing`.
 - `baseVersion` absent (upsert): last-write-wins; `server_version`
   increments from the current value (or 1 on insert).
@@ -988,7 +1087,7 @@ One per `PUSH_COMMIT`, in request order:
 |---|---|---|
 | `clientCommitId` | `str` | Echo |
 | `status` | `u8` | `1` = `applied`, `2` = `cached`, `3` = `rejected` |
-| `commitSeq` | `opt(i64)` | Present for `applied` and `cached` |
+| `commitSeq` | `opt(i64)` | Present for `applied` and `cached`; absent for `rejected` — deliberate change from v1, which sometimes echoed the rolled-back sequence number (a rejected commit is invisible to pulls, so its number means nothing to clients) |
 | `results` | `u32` count × result record | See below |
 
 Result record — tagged union:
@@ -1009,15 +1108,19 @@ Semantics (unchanged from v1):
 
 - **`applied`**: every operation applied; `results` lists one `applied`
   record per operation.
-- **`cached`**: idempotent replay — the persisted original results are
-  returned unchanged with `status = cached`. If the server cannot read
-  its own cached result it answers `sync.idempotency_cache_miss`
-  (retryable) for that commit rather than re-applying.
+- **`cached`**: idempotent replay of an **applied** commit — the
+  persisted original results are returned unchanged with
+  `status = cached`. A replayed **rejected** commit returns its
+  persisted rejected result unchanged (`status` stays `rejected`, §2.3).
+  If the server cannot read its own cached result it answers
+  `sync.idempotency_cache_miss` (retryable) for that commit rather than
+  re-applying.
 - **`rejected`**: `results` contains the record(s) of the terminating
   operation only (operations before it were rolled back; operations
   after it were never attempted). Unchanged from v1.
 - A `clientCommitId` duplicated **within one request** is processed once;
-  subsequent occurrences return `cached`.
+  subsequent occurrences return the persisted result per the replay rule
+  (§2.3): `cached` if it applied, `rejected` if it rejected.
 
 ### 6.4 Atomicity and ordering
 
@@ -1107,6 +1210,14 @@ WebSocket at `GET <mount>/realtime?clientId=<id>`. Host authentication
 runs at upgrade; the server resolves the actor's effective scopes for the
 client's known subscriptions and registers the connection against the
 matching scope keys.
+
+**Where "known subscriptions" come from:** the subscription list (ids,
+tables, requested scopes) of the client's most recent HTTP pull. Servers
+MUST persist that list per (partition, `clientId`) when processing a
+pull — alongside the cursor record of §4.5 — and load it at WebSocket
+upgrade (unchanged from v1 mechanics). A client that has never pulled
+has no registered subscriptions: it receives `hello` with
+`requiresSync: true` and no deltas until a pull registers them.
 
 Control messages are JSON text frames; deltas are binary frames
 containing a complete SSP2 **response** message (§1.6) — one envelope
@@ -1261,14 +1372,13 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.invalid_subscription` | invalid-request | no | fixRequest | Duplicate subscription id; undeclared scope key (requested **or** resolved — §3.2) |
 | `sync.empty_commit` | invalid-request | no | fixRequest | `PUSH_COMMIT` with zero operations |
 | `sync.unknown_table` | schema-mismatch | no | regenerateClient | Subscription or operation names a table the server doesn't handle |
-| `sync.unsupported_operation` | invalid-request | no | fixRequest | Operation type not allowed for the table |
 | `sync.row_missing` | not-found | no | forceResync | Upsert with `baseVersion ≠ 0` targeting an absent row (§6.2) |
 | `sync.version_conflict` | conflict | no | resolveConflict | `baseVersion` mismatch (§6.2) — appears as a conflict result, not a request error |
 | `sync.constraint_violation` | invalid-request | no | fixRequest | Server-side data constraint (unique/FK/not-null) rejected the write |
 | `sync.missing_scopes` | internal | no | inspectServer | Handler emitted a change without stored scopes (§3.1) |
 | `sync.idempotency_cache_miss` | internal | yes | retryLater | Cached push result unreadable on replay (§6.3) |
 | `sync.too_many_operations` | invalid-request | no | splitBatch | Push exceeds the operation cap (§6.1) |
-| `sync.not_found` | not-found | no | forceResync | Unknown segment id or sync resource |
+| `sync.not_found` | not-found | no | forceResync | Unknown segment id (§5.5) or sync resource |
 | `sync.segment_expired` | not-found | yes | retryLater | Segment TTL elapsed (§5.1); re-pull mints fresh descriptors — *new in v2* |
 | `sync.cursor_expired` | reset-required | no | rebootstrap | Cursor behind the pruning horizon (§4.6) — *new in v2*; delivered as `SUB_START` reason code |
 | `sync.scope_revoked` | scope-revoked | no | checkPermissions | Subscription revoked (§3.3) — delivered as `SUB_START` reason code |
@@ -1282,8 +1392,11 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 Removed from the wire catalog (v1 had 63 codes): all client-local codes
 (`sync.offline`, `sync.transport_failed`, `storage.*`, `worker.*`,
 `runtime.*`) — client SDKs may keep such codes internally but they are
-not protocol; `sync.integrity_rejected` and `sync.websocket_not_configured`
-(no v2 producer); `console.*`, `proxy.*`, `blob.*` (post-gate features).
+not protocol; `sync.integrity_rejected`, `sync.websocket_not_configured`,
+and `sync.unsupported_operation` (no v2 producer — the wire `op` byte
+admits only upsert/delete and v2 defines no per-table operation
+restriction; reserved if such a capability lands); `console.*`,
+`proxy.*`, `blob.*` (post-gate features).
 **Reserved** (must not be reused for other meanings): the seven
 `sync.auth_lease_*` codes (§7.3).
 
@@ -1364,12 +1477,12 @@ hand-hexed):
 | 10 | `response/push-cached` | Idempotent replay: `status = cached`, original results |
 | 11 | `response/subscription-revoked` | `SUB_START` status `revoked`, reason `sync.scope_revoked`, empty effective scopes |
 | 12 | `response/cursor-reset` | `SUB_START` status `reset`, reason `sync.cursor_expired` (horizon signal) |
-| 13 | `response/error-mid-stream` | `RESP_HEADER` + `SUB_START` + `ERROR` + `END`: partially streamed failure (§1.4 rollback) |
+| 13 | `response/error-mid-stream` | `RESP_HEADER` + `SUB_START` + `ERROR` + `END`: partially streamed failure (§1.4 abort rule) |
 | 14 | `response/unknown-frame-skip` | A reserved/unknown frame type between known frames — MUST decode with the frame skipped (§9) |
 | 15 | `response/schema-floor` | `requiredSchemaVersion` present |
 | 16 | `segment/rows-two-blocks` | SSG2 with two row blocks + end marker, all column types, nullable columns |
 | 17 | `realtime/wake` + `realtime/hello` | JSON control vectors (`.json` only — no binary form) |
-| — | `*/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, bool byte > 1, null bit on non-nullable column, rows segment without end marker |
+| — | `*/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, bool byte > 1, unknown enum byte (e.g. `op = 3`), upsert without payload, null bit on non-nullable column, rows segment without end marker |
 
 ---
 
@@ -1411,7 +1524,7 @@ not a prose test.
    the last persisted `bootstrapState`. The server resumes at the pinned
    `asOfCommitSeq` from the recorded table/row cursor; no rows are lost
    or duplicated versus an uninterrupted bootstrap, and completion hands
-   off to incremental pulls at the pin (§4.7, §5.6, §1.4 rollback rule).
+   off to incremental pulls at the pin (§4.7, §5.6, §1.4 abort rule).
 
 6. **Conflict resolve and rebase.** Clients A and B edit the same row
    from the same `baseVersion`; the loser receives a `rejected` commit
