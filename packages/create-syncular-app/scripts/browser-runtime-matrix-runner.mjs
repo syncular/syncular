@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { chromium, firefox, webkit } from '@playwright/test';
 
 const browserTypes = { chromium, firefox, webkit };
@@ -853,6 +853,16 @@ function attachPageDiagnostics(page, browserName, recordDiagnostic) {
   });
 }
 
+async function openPersistentMatrixContext(browserType, profileDir) {
+  return browserType.launchPersistentContext(profileDir, { headless: true });
+}
+
+async function openMatrixPage(context, browserName, recordDiagnostic) {
+  const page = context.pages()[0] ?? (await context.newPage());
+  attachPageDiagnostics(page, browserName, recordDiagnostic);
+  return page;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const browserName = requiredArg(args, 'browser');
@@ -866,16 +876,22 @@ async function main() {
   const metricsJson = args.get('metrics-json') ?? '{}';
   const metrics = JSON.parse(metricsJson);
   const diagnostics = [];
-  const browser = await browserType.launch({ headless: true });
-  const context = await browser.newContext();
-  let page = await context.newPage();
+  const profileDir = join(
+    dirname(failureArtifact),
+    `${browserName}-runtime-matrix-profile`
+  );
+  let context = null;
+  let page = null;
   const recordDiagnostic = (message) => {
     diagnostics.push(message);
     while (diagnostics.length > 20) diagnostics.shift();
   };
-  attachPageDiagnostics(page, browserName, recordDiagnostic);
 
   try {
+    await rm(profileDir, { force: true, recursive: true });
+    await mkdir(profileDir, { recursive: true });
+    context = await openPersistentMatrixContext(browserType, profileDir);
+    page = await openMatrixPage(context, browserName, recordDiagnostic);
     await page.goto(url, { timeout: 60_000, waitUntil: 'load' });
     const probe = await waitForMatrixEvidence({
       browserName,
@@ -953,8 +969,33 @@ async function main() {
       title,
       url,
     });
+    await context.close();
+    context = await openPersistentMatrixContext(browserType, profileDir);
+    page = await openMatrixPage(context, browserName, recordDiagnostic);
+    await page.goto(url, { timeout: 60_000, waitUntil: 'load' });
+    await waitForMatrixEvidence({
+      browserName,
+      diagnostics,
+      failureArtifact,
+      metrics,
+      page,
+      supportContext,
+      url,
+    });
+    await waitForMatrixTaskText({
+      browserName,
+      diagnostics,
+      failureArtifact,
+      metrics,
+      page,
+      proofName: 'persistent-profile reopen persistence',
+      reasonSuffix: 'persistent-profile-reopen',
+      supportContext,
+      title,
+      url,
+    });
     console.log(
-      `[csa-smoke] ${browserName} runtime matrix evidence passed: context=${probe.browserSupportPolicy.context} tier=${probe.deploymentPreflight.supportTier} lifecycleResumeCount=${lifecycleProbe.lifecycleResume.count} localWriteCount=${writeProbe.commandTimeline.count} sameContextReopen=passed`
+      `[csa-smoke] ${browserName} runtime matrix evidence passed: context=${probe.browserSupportPolicy.context} tier=${probe.deploymentPreflight.supportTier} lifecycleResumeCount=${lifecycleProbe.lifecycleResume.count} localWriteCount=${writeProbe.commandTimeline.count} sameContextReopen=passed persistentProfileReopen=passed`
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -972,8 +1013,10 @@ async function main() {
     }
     throw error;
   } finally {
-    await context.close().catch(() => undefined);
-    await browser.close().catch(() => undefined);
+    await context?.close().catch(() => undefined);
+    await rm(profileDir, { force: true, recursive: true }).catch(
+      () => undefined
+    );
   }
 }
 

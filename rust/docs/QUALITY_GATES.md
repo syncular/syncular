@@ -114,14 +114,14 @@ until the full browser Worker/WASM suite is green on Linux.
   local apply/outbox/local-visibility command-timeline evidence, exercises the
   starter lifecycle helper through DOM `pagehide`, `pageshow`, `online`,
   `freeze`, `resume`, and `beforeunload` signals, reloads the same page, closes
-  it, then opens a fresh page in the same Playwright context to prove that task
-  renders from local browser storage after both boundaries.
-  Firefox and Safari/WebKit stay preflight-gated for realtime, broader
-  host/process reopen semantics, durable persistence policy, target activation,
-  and Web Lock lifecycle coordination evidence. These runtime matrices use
-  manual sync startup so Playwright does not intercept the starter realtime
-  WebSocket; Chrome remains the maintained browser realtime/lifecycle proof in
-  `starter-browser-preview`.
+  it, opens a fresh page in the same Playwright context, then closes and
+  relaunches the same persistent Playwright profile to prove that task renders
+  from local browser storage after each boundary.
+  Firefox and Safari/WebKit stay preflight-gated for realtime, target
+  activation, Web Lock lifecycle coordination, and broader support-policy
+  evidence. These runtime matrices use manual sync startup so Playwright does
+  not intercept the starter realtime WebSocket; Chrome remains the maintained
+  browser realtime/lifecycle proof in `starter-browser-preview`.
   On a browser-capable CI runner, set
   `SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required` so missing Chrome fails instead
   of skipping the browser execution.

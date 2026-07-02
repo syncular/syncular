@@ -707,13 +707,13 @@ read-only review:
     exercise the starter lifecycle helper through DOM `pagehide`, `pageshow`,
     `online`, `freeze`, `resume`, and `beforeunload` signals, create a generated
     task, require local apply/outbox/local-visibility command evidence, reload the
-    same page, close it, open a fresh page in the same Playwright context, and
-    require the task to render from local browser storage after each boundary.
-    This proves target-browser DOM lifecycle signal handling plus local-write,
-    reload, and same-context page reopen execution without claiming
-    Firefox/Safari/WebKit realtime, broader host/process reopen semantics,
-    durable persistence policy, target activation, or Web Lock lifecycle
-    coordination support. Dedicated
+    same page, close it, open a fresh page in the same Playwright context, close
+    and relaunch the same persistent Playwright profile, and require the task to
+    render from local browser storage after each boundary. This proves
+    target-browser DOM lifecycle signal handling plus local-write, reload,
+    same-context page reopen, and persistent-profile relaunch execution without
+    claiming Firefox/Safari/WebKit realtime, target activation, Web Lock
+    lifecycle coordination, or full support-policy status. Dedicated
     `starter-firefox-runtime-matrix` and `starter-webkit-runtime-matrix` Checks
     jobs own these proofs; hosted Checks run `28576137057` on commit `8245fc98`
     confirmed the first WebKit matrix inside the full matrix before the local
