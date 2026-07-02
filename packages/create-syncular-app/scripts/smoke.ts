@@ -41,9 +41,12 @@ import { Buffer } from 'node:buffer';
  *    work dir. The normal smoke also self-checks that artifact shape and safe
  *    smoke metrics so non-browser runners keep the failure contract covered.
  *    Set SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required to fail when no browser
- *    is available.
+ *    is available. Set SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox or pass
+ *    --browser-runtime-matrix=firefox to also prove explicit target-browser
+ *    runtime/support-policy markers through Playwright.
  *
  * Usage: bun scripts/smoke.ts [--keep] [--require-browser-preview]
+ *   [--browser-runtime-matrix=firefox]
  * Set SYNCULAR_CSA_SMOKE_WORK_DIR to keep artifacts in a predictable
  * repo-root-relative or absolute path.
  */
@@ -122,6 +125,24 @@ const keep = process.argv.includes('--keep');
 const requireBrowserPreviewSmoke =
   process.env.SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE === 'required' ||
   process.argv.includes('--require-browser-preview');
+const browserRuntimeMatrixArg = process.argv.find((arg) =>
+  arg.startsWith('--browser-runtime-matrix=')
+);
+
+type BrowserRuntimeMatrixBrowser = 'chromium' | 'firefox' | 'webkit';
+type BrowserRuntimeMatrixSupportContext =
+  | 'chromium-secure-page'
+  | 'firefox-secure-page'
+  | 'safari-secure-page';
+
+const BROWSER_RUNTIME_MATRIX_CONTEXTS = {
+  chromium: 'chromium-secure-page',
+  firefox: 'firefox-secure-page',
+  webkit: 'safari-secure-page',
+} as const satisfies Record<
+  BrowserRuntimeMatrixBrowser,
+  BrowserRuntimeMatrixSupportContext
+>;
 
 function log(message: string): void {
   console.log(`[csa-smoke] ${message}`);
@@ -822,6 +843,86 @@ async function maybeRunBrowserPreviewSmoke(args: {
     failureArtifactPath: join(args.workDir, 'browser-preview-failure.json'),
     userDataDir: join(args.workDir, 'chrome-profile'),
   });
+}
+
+function requestedBrowserRuntimeMatrixBrowsers(): BrowserRuntimeMatrixBrowser[] {
+  const raw =
+    process.env.SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX ??
+    process.env.SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX_BROWSERS ??
+    browserRuntimeMatrixArg?.slice('--browser-runtime-matrix='.length) ??
+    '';
+  if (raw.trim() === '') return [];
+
+  const values =
+    raw === 'all'
+      ? (['chromium', 'firefox', 'webkit'] as const)
+      : raw.split(',').map((value) => value.trim().toLowerCase());
+  const browsers: BrowserRuntimeMatrixBrowser[] = [];
+  for (const value of values) {
+    if (value !== 'chromium' && value !== 'firefox' && value !== 'webkit') {
+      throw new Error(
+        `Unsupported browser runtime matrix entry: ${value || '<empty>'}`
+      );
+    }
+    if (!browsers.includes(value)) browsers.push(value);
+  }
+  return browsers;
+}
+
+async function maybeRunBrowserRuntimeMatrixSmoke(args: {
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  workDir: string;
+}): Promise<void> {
+  const browsers = requestedBrowserRuntimeMatrixBrowsers();
+  if (browsers.length === 0) return;
+
+  for (const browserName of browsers) {
+    log(`browser runtime matrix: proving ${browserName} starter runtime`);
+    await proveStarterBrowserRuntimeMatrix({
+      browserName,
+      failureArtifactPath: browserRuntimeMatrixFailureArtifactPath(
+        args.workDir,
+        browserName
+      ),
+      failureMetrics: args.failureMetrics,
+      origin: args.origin,
+    });
+  }
+}
+
+function browserRuntimeMatrixFailureArtifactPath(
+  workDir: string,
+  browserName: BrowserRuntimeMatrixBrowser
+): string {
+  return join(workDir, `browser-preview-${browserName}-matrix.json`);
+}
+
+async function proveStarterBrowserRuntimeMatrix(args: {
+  browserName: BrowserRuntimeMatrixBrowser;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+}): Promise<void> {
+  const supportContext = BROWSER_RUNTIME_MATRIX_CONTEXTS[args.browserName];
+  const url = `${args.origin}/?syncularClientId=matrix-${args.browserName}&syncularBrowserSupportContext=${supportContext}&syncularSyncStartup=manual&syncularBrowserMatrixProof=${Date.now()}`;
+  await run(
+    process.env.NODE_BIN ?? 'node',
+    [
+      join(packageDir, 'scripts/browser-runtime-matrix-runner.mjs'),
+      '--browser',
+      args.browserName,
+      '--url',
+      url,
+      '--support-context',
+      supportContext,
+      '--failure-artifact',
+      args.failureArtifactPath,
+      '--metrics-json',
+      JSON.stringify(args.failureMetrics),
+    ],
+    { cwd: repoRoot, env: process.env }
+  );
 }
 
 function resolveChromeExecutable(): string | null {
@@ -1868,13 +1969,20 @@ type BrowserPreviewFailureMetricsInput = Omit<
   smokeStartedAtMs: number;
 };
 
+type BrowserProbeReader = {
+  evaluate<T>(expression: string): Promise<T>;
+  evaluateAllowingBrowserDiagnostics?<T>(expression: string): Promise<T>;
+};
+
 async function readStarterBrowserProbe(
-  session: CdpSession,
+  session: BrowserProbeReader,
   options: { allowBrowserDiagnostics?: boolean } = {}
 ): Promise<BrowserPreviewProbe> {
-  const evaluate = options.allowBrowserDiagnostics
-    ? session.evaluateAllowingBrowserDiagnostics.bind(session)
-    : session.evaluate.bind(session);
+  const evaluate =
+    options.allowBrowserDiagnostics &&
+    session.evaluateAllowingBrowserDiagnostics
+      ? session.evaluateAllowingBrowserDiagnostics.bind(session)
+      : session.evaluate.bind(session);
   return evaluate<BrowserPreviewProbe>(`(async () => {
     const text = document.body?.innerText ?? '';
     const browserHealth = document.querySelector('[data-syncular-browser-health-status]');
@@ -2706,7 +2814,7 @@ async function readStarterBrowserProbe(
 }
 
 async function waitForStarterBrowserReady(
-  session: CdpSession,
+  session: BrowserProbeReader,
   failureArtifactPath: string,
   failureMetrics: BrowserPreviewFailureMetricsInput
 ): Promise<void> {
@@ -10950,6 +11058,11 @@ async function main(): Promise<void> {
       origin: previewOrigin,
       previewServer,
       syncOrigin,
+      workDir,
+    });
+    await maybeRunBrowserRuntimeMatrixSmoke({
+      failureMetrics,
+      origin: previewOrigin,
       workDir,
     });
 

@@ -353,7 +353,7 @@ describe('Syncular browser support matrix', () => {
         'Deployment preflight proves Worker, WebAssembly, IndexedDB, runtime assets, quota, and lifecycle support in the exact Firefox version',
       ]),
       nextSteps: expect.arrayContaining([
-        'Treat Firefox as preflight-gated until the project has a maintained Firefox runtime smoke',
+        'Keep Firefox preflight-gated until maintained Firefox reopen, persistence, and lifecycle smokes prove the target version',
       ]),
     });
   });

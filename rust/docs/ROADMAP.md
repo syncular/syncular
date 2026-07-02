@@ -449,7 +449,9 @@ read-only review:
     clears/Clear-Site-Data/same-origin IndexedDB deletion, installed-PWA
     cache/update semantics beyond the app-window display-mode proof plus
     smoke-only PWA offline, cache-refresh, and service-worker update proofs,
-    plus deeper storage/coordination failures below the covered fallback and
+    Firefox realtime/reopen/persistence/lifecycle semantics beyond the
+    maintained Firefox runtime/support-policy smoke, plus deeper
+    storage/coordination failures below the covered fallback and
     fallback-failure cases.
     The starter now also records
     a browser-observable command-timeline proof after generated task creation,
@@ -682,6 +684,12 @@ read-only review:
     private/development support-policy branch, while keeping real private-mode
     durable-persistence semantics in the remaining browser matrix. Hosted run
     `28540712560` confirmed the incognito memory-storage proof in Chrome.
+    The starter Checks matrix now also has a Playwright Firefox runtime smoke
+    that passes `syncularBrowserSupportContext=firefox-secure-page`, opens the
+    built starter in Firefox with manual sync startup, and requires
+    deployment-preflight evidence plus
+    `firefox-secure-page`/`preflight-required`/`warning` support-policy markers
+    without claiming Firefox realtime/reopen/persistence/lifecycle support.
     Cloudflare local-runtime failure artifacts now feed Console/Fleet through
     `POST /console/client-diagnostics/cloudflare-runtime-failure`, preserving
     route, exit, bounded output, and safe R2 blob timing/byte metrics as

@@ -1,5 +1,6 @@
 import {
   getSyncularBrowserDeploymentPreflight,
+  type SyncularBrowserSupportContext,
   type SyncularDiagnosticEvent,
   type SyncularRuntimeArtifactCandidate,
   type SyncularStorage,
@@ -110,6 +111,31 @@ export function currentStarterSyncStartup(): 'auto' | 'manual' {
     'syncularSyncStartup'
   );
   return requested === 'manual' ? 'manual' : 'auto';
+}
+
+export function currentStarterBrowserSupportContext():
+  | SyncularBrowserSupportContext
+  | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const requested = new URLSearchParams(window.location.search).get(
+    'syncularBrowserSupportContext'
+  );
+  if (isSyncularBrowserSupportContext(requested)) return requested;
+  return undefined;
+}
+
+function isSyncularBrowserSupportContext(
+  value: string | null
+): value is SyncularBrowserSupportContext {
+  return (
+    value === 'chromium-secure-page' ||
+    value === 'firefox-secure-page' ||
+    value === 'safari-secure-page' ||
+    value === 'private-browsing' ||
+    value === 'webview' ||
+    value === 'pwa' ||
+    value === 'ssr-build'
+  );
 }
 
 /**

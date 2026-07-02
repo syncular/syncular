@@ -4982,6 +4982,31 @@ Most recent browser-health failure-artifact rerun:
   docs:stale-check`, and `git diff --check`; Chrome was not installed locally,
   so hosted Checks run `28571045521` on commit `8c058d06` confirmed the
   app-window branch in Chrome and passed the full matrix.
+- 2026-07-02: Added the first maintained Firefox starter runtime matrix path.
+  The generated starter now accepts a validated
+  `syncularBrowserSupportContext` URL parameter so target-browser smokes can
+  pass explicit support-policy context without user-agent guessing. The
+  `create-syncular-app` smoke has an opt-in Playwright matrix runner
+  (`SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox` or
+  `--browser-runtime-matrix=firefox`) that opens the built preview in Firefox
+  with manual sync startup, waits for deployment
+  preflight/support-bundle/readiness markers, and requires
+  `firefox-secure-page`/`preflight-required`/`warning` with
+  `browser_support.target_evidence_required`. Checks now include a dedicated
+  `starter-firefox-runtime-matrix` job that installs Playwright Firefox and
+  runs that smoke. Firefox remains preflight-gated for realtime, reopen,
+  persistence, and lifecycle evidence; this slice proves runtime/support-policy
+  execution, not production durable Firefox support. Local Bun `1.3.9` gates
+  passed so far: `bun install --frozen-lockfile`, `bun test
+  packages/client/src/browser-support-matrix.test.ts`, `bun --cwd
+  packages/client tsgo`, `bun --cwd packages/create-syncular-app tsgo`,
+  `node --check` on the new matrix runner, focused Biome, `bun --cwd
+  packages/create-syncular-app smoke`, `bunx playwright --version`, local
+  Playwright Firefox install into
+  `.context/ms-playwright`, `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox bun
+  --cwd packages/create-syncular-app smoke --browser-runtime-matrix=firefox`,
+  `bun run docs:stale-check`, and `git diff --check`; hosted Checks must
+  confirm the Firefox job.
 
 ## Next Action
 
@@ -5114,7 +5139,8 @@ crash, explicit shutdown close, discarded-tab recovery, database-storage
 eviction, Clear-Site-Data storage eviction, and same-origin IndexedDB deletion
 branches, and
 browser/bundler matrix execution, especially Safari, Firefox, real private-mode
-durable-persistence semantics, WebViews, installed-PWA cache/update semantics
-using fully installed launches beyond the app-window display-mode proof, and
-PWA cache-update semantics beyond these smoke-only runtime cache-refresh and
-service-worker update activation proofs.
+durable-persistence semantics, WebViews, Firefox realtime, reopen,
+persistence, and lifecycle proof beyond the runtime/support-policy smoke,
+installed-PWA cache/update semantics using fully installed launches beyond the
+app-window display-mode proof, and PWA cache-update semantics beyond these
+smoke-only runtime cache-refresh and service-worker update activation proofs.

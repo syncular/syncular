@@ -31,6 +31,7 @@ import {
   type AppDb,
   type AppSyncClient,
   appActorId,
+  currentStarterBrowserSupportContext,
   currentStarterStorage,
   currentStarterSyncStartup,
   installAppClientSubscriptions,
@@ -973,6 +974,7 @@ function TaskPane({
             summarizeBrowserSupportPolicy(
               evaluateSyncularBrowserSupportPolicy(
                 getSyncularBrowserSupportPolicyContextHint({
+                  context: currentStarterBrowserSupportContext(),
                   preflight,
                 }).context,
                 preflight
@@ -988,7 +990,9 @@ function TaskPane({
           setBrowserSupportPolicy(
             summarizeBrowserSupportPolicy(
               evaluateSyncularBrowserSupportPolicy(
-                getSyncularBrowserSupportPolicyContextHint().context,
+                getSyncularBrowserSupportPolicyContextHint({
+                  context: currentStarterBrowserSupportContext(),
+                }).context,
                 null
               )
             )

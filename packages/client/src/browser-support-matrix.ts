@@ -199,7 +199,7 @@ const SYNCULAR_BROWSER_SUPPORT_MATRIX: readonly SyncularBrowserSupportMatrixEntr
         'wirePageLifecycleResume',
       ],
       nextSteps: [
-        'Treat Firefox as preflight-gated until the project has a maintained Firefox runtime smoke',
+        'Keep Firefox preflight-gated until maintained Firefox reopen, persistence, and lifecycle smokes prove the target version',
       ],
     },
     {

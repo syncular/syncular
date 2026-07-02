@@ -768,6 +768,13 @@ preflight. It names the product policy for common environments:
 | Installed PWA/service-worker page | preflight required | `unknown` |
 | SSR/build context | unsupported for database open | `unsupported` |
 
+The starter Checks matrix maintains a Firefox runtime smoke with an explicit
+`firefox-secure-page` context. That proves the generated app can open, run
+deployment preflight, and report the Firefox support policy path. The Firefox
+runtime smoke uses manual sync startup, so Chrome remains the maintained
+browser realtime proof; Firefox stays preflight-gated until realtime, reopen,
+persistence, and lifecycle evidence exists for the target version.
+
 Treat `unknown` as "collect target-host preflight and persistence evidence,"
 not as implicit support. Private/incognito mode should not promise production
 offline persistence. SSR/build contexts may import the root package, but
