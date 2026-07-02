@@ -24,14 +24,15 @@ import { Buffer } from 'node:buffer';
  *    database-storage eviction/rebootstrap recovery, browser origin-storage
  *    eviction/rebootstrap recovery, Clear-Site-Data server-driven storage
  *    eviction/rebootstrap recovery, same-origin IndexedDB deletion
- *    recovery, PWA service-worker update activation, PWA online runtime cache
- *    refresh, PWA offline cache/reopen persistence, two-tab propagation,
- *    same-client page reload/reopen persistence, same-client duplicate-tab
- *    open/write contention, generated write pressure, same-profile browser
- *    process restart persistence, sync-held shutdown replay recovery,
- *    renderer-crash replay recovery, explicit storage shutdown replay
- *    recovery, discarded-tab recovery, and service-worker-controlled PWA plus
- *    incognito memory-storage support-policy classification.
+ *    recovery, PWA app-window display-mode classification, PWA
+ *    service-worker update activation, PWA online runtime cache refresh, PWA
+ *    offline cache/reopen persistence, two-tab propagation, same-client page
+ *    reload/reopen persistence, same-client duplicate-tab open/write
+ *    contention, generated write pressure, same-profile browser process
+ *    restart persistence, sync-held shutdown replay recovery, renderer-crash
+ *    replay recovery, explicit storage shutdown replay recovery, discarded-tab
+ *    recovery, and service-worker-controlled PWA plus incognito memory-storage
+ *    support-policy classification.
  *    After the happy path, the browser smoke also forces a hidden
  *    support-bundle marker failure and verifies the live
  *    browser-preview-failure artifact contract from real Chrome probe data.
@@ -1097,6 +1098,16 @@ async function runBrowserPreviewSmoke(args: {
     origin: args.origin,
     userDataDir: `${args.userDataDir}-pwa`,
   });
+  log('real-browser smoke: proving PWA app-window display-mode policy');
+  await proveStarterPwaAppWindowDisplayMode({
+    chrome: args.chrome,
+    failureArtifactPath: pwaAppWindowFailureArtifactPath(
+      args.failureArtifactPath
+    ),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    userDataDir: `${args.userDataDir}-pwa-app-window`,
+  });
   log('real-browser smoke: proving PWA service-worker update activation');
   await proveStarterPwaServiceWorkerUpdateActivation({
     appDir: args.appDir,
@@ -1206,6 +1217,12 @@ function pwaOfflineFailureArtifactPath(failureArtifactPath: string): string {
   return failureArtifactPath.endsWith('.json')
     ? failureArtifactPath.replace(/\.json$/u, '.pwa-offline.json')
     : `${failureArtifactPath}.pwa-offline.json`;
+}
+
+function pwaAppWindowFailureArtifactPath(failureArtifactPath: string): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(/\.json$/u, '.pwa-app-window.json')
+    : `${failureArtifactPath}.pwa-app-window.json`;
 }
 
 function pwaUpdateFailureArtifactPath(failureArtifactPath: string): string {
@@ -1359,6 +1376,7 @@ async function navigateChromeTarget(
 }
 
 async function startBrowserPreviewChrome(args: {
+  appUrl?: string;
   chrome: string;
   incognito?: boolean;
   userDataDir: string;
@@ -1379,7 +1397,7 @@ async function startBrowserPreviewChrome(args: {
     `--remote-debugging-port=${debugPort}`,
     `--user-data-dir=${args.userDataDir}`,
     ...(args.incognito ? ['--incognito'] : []),
-    'about:blank',
+    args.appUrl === undefined ? 'about:blank' : `--app=${args.appUrl}`,
   ];
   const chrome = spawn(args.chrome, chromeArgs, { stdio: 'ignore' });
 
@@ -5939,6 +5957,104 @@ async function waitForStarterPwaServiceWorkerEvidence(args: {
   );
   throw new Error(
     `Timed out waiting for built preview PWA service worker policy evidence. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
+async function proveStarterPwaAppWindowDisplayMode(args: {
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const clientId = 'web-pwa-app-window';
+  const appUrl = `${args.origin}/?syncularClientId=${clientId}&syncularPwaAppWindowProof=${Date.now()}`;
+  const chrome = await startBrowserPreviewChrome({
+    appUrl,
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  let session: CdpSession | null = null;
+
+  try {
+    const target = await findChromePageTarget({
+      debugPort: chrome.debugPort,
+      urlIncludes: `syncularClientId=${clientId}`,
+    });
+    session = await CdpSession.connect(target.webSocketDebuggerUrl);
+    await enableChromeTarget(session);
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterPwaAppWindowDisplayModeEvidence({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+  } finally {
+    session?.close();
+    await stopProcess(chrome.process);
+  }
+}
+
+async function waitForStarterPwaAppWindowDisplayModeEvidence(args: {
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<void> {
+  const appLikeDisplayModes = [
+    'fullscreen',
+    'minimal-ui',
+    'standalone',
+    'window-controls-overlay',
+  ];
+  const deadline = Date.now() + 20_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-app-window-policy-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA app-window policy proof failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    if (
+      probe.deploymentPreflight.installedApp === 'true' &&
+      appLikeDisplayModes.includes(
+        probe.deploymentPreflight.displayMode ?? ''
+      ) &&
+      probe.browserSupportPolicy.context === 'pwa' &&
+      probe.browserSupportPolicy.policy === 'preflight-required' &&
+      probe.browserSupportPolicy.status === 'warning' &&
+      probe.browserSupportPolicy.reasonCodes.includes(
+        'browser_support.target_evidence_required'
+      )
+    ) {
+      return;
+    }
+
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'pwa-app-window-policy-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview PWA app-window policy evidence. Failure artifact: ${args.failureArtifactPath}`
   );
 }
 

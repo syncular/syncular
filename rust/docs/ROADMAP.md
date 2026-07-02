@@ -447,9 +447,10 @@ read-only review:
     `--allow-dirty`.
     Remaining matrix work is host-driven eviction beyond explicit CDP storage
     clears/Clear-Site-Data/same-origin IndexedDB deletion, installed-PWA
-    cache/update semantics beyond the smoke-only PWA offline, cache-refresh,
-    and service-worker update proofs, plus deeper storage/coordination
-    failures below the covered fallback and fallback-failure cases.
+    cache/update semantics beyond the app-window display-mode proof plus
+    smoke-only PWA offline, cache-refresh, and service-worker update proofs,
+    plus deeper storage/coordination failures below the covered fallback and
+    fallback-failure cases.
     The starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply
@@ -673,10 +674,11 @@ read-only review:
     controller script path, display-mode, and whether the launch looks
     installed/standalone, so PWA/cache-skew context survives into starter
     artifacts without treating service workers as an automatic failure. The
-    starter browser-preview smoke now includes a first real Chrome
-    service-worker-controlled PWA classification proof, while keeping PWA
-    support preflight-gated until retained target evidence exists. It also
-    includes a first Chrome incognito memory-storage proof for the
+    starter browser-preview smoke now includes first real Chrome
+    service-worker-controlled and app-window display-mode PWA classification
+    proofs, while keeping PWA support preflight-gated until retained target
+    evidence exists. It also includes a first Chrome incognito memory-storage
+    proof for the
     private/development support-policy branch, while keeping real private-mode
     durable-persistence semantics in the remaining browser matrix. Hosted run
     `28540712560` confirmed the incognito memory-storage proof in Chrome.

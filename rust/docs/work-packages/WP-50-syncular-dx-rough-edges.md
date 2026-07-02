@@ -4967,6 +4967,20 @@ Most recent browser-health failure-artifact rerun:
   `packages/client` tests, `bun --cwd packages/client tsgo`, `bun --cwd
   packages/create-syncular-app tsgo`, `bun --cwd packages/create-syncular-app
   smoke`, focused Biome, `bun run docs:stale-check`, and `git diff --check`.
+- 2026-07-02: Added a real Chrome app-window display-mode branch to the
+  starter browser-preview smoke. The branch launches the built preview with
+  Chrome `--app=<starter-url>`, waits for the generated starter readiness
+  markers, and requires `data-syncular-deployment-preflight-installed-app` to
+  be true, an app-like display mode to be recorded, and the browser support
+  policy to classify the launch as `pwa`/`preflight-required` with
+  `browser_support.target_evidence_required`. The new branch writes a separate
+  `.pwa-app-window.json` failure artifact, proving the installed/standalone
+  evidence path independently from service-worker control while still leaving
+  full installed-PWA cache/update semantics to the browser matrix. Local Bun
+  `1.3.9` gates passed: `bun --cwd packages/create-syncular-app tsgo`,
+  `bun --cwd packages/create-syncular-app smoke`, focused Biome, `bun run
+  docs:stale-check`, and `git diff --check`; Chrome was not installed locally,
+  so hosted Checks must confirm the app-window branch.
 
 ## Next Action
 
@@ -4977,7 +4991,9 @@ covered in hosted Chrome, and the same-database duplicate-tab writer branch is
 now also confirmed in hosted Chrome. The service-worker-controlled PWA
 classification proof is also covered in hosted Chrome: it verifies real
 controller evidence and support-policy `pwa`/`warning` classification without
-claiming installed-PWA offline/cache-update support. The incognito
+claiming installed-PWA offline/cache-update support. The current slice adds a
+Chrome app-window display-mode proof for the installed/standalone PWA context
+without claiming fully installed-PWA cache/update semantics. The incognito
 memory-storage support-policy branch is now confirmed in hosted Chrome and
 verifies explicit ephemeral/development storage classification without claiming
 private-mode durable persistence. The current slice adds a browser-observed
@@ -5082,8 +5098,9 @@ rehearsals available for local iteration without Chrome/Chromium.
 Remaining lifecycle/storage work is host/browser eviction beyond explicit CDP
 origin/database clears/Clear-Site-Data/same-origin IndexedDB deletion,
 installed-PWA cache/update semantics beyond the now-machine-readable
-display-mode evidence plus smoke-only PWA offline/cache-refresh/service-worker
-update proofs, and storage coordination/failure behavior below the
+display-mode evidence, Chrome app-window display-mode proof, plus smoke-only
+PWA offline/cache-refresh/service-worker update proofs, and storage
+coordination/failure behavior below the
 already-covered OPFS fallback and fallback-failure classification.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain host-driven eviction
@@ -5095,6 +5112,6 @@ eviction, Clear-Site-Data storage eviction, and same-origin IndexedDB deletion
 branches, and
 browser/bundler matrix execution, especially Safari, Firefox, real private-mode
 durable-persistence semantics, WebViews, installed-PWA cache/update semantics
-using real standalone/installed launches, and PWA cache-update semantics beyond
-these smoke-only runtime cache-refresh and service-worker update activation
-proofs.
+using fully installed launches beyond the app-window display-mode proof, and
+PWA cache-update semantics beyond these smoke-only runtime cache-refresh and
+service-worker update activation proofs.

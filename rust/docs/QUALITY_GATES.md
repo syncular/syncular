@@ -98,9 +98,10 @@ until the full browser Worker/WASM suite is green on Linux.
   targeted sync-transport replay, storage-shutdown replay, discarded-tab
   recovery, database-storage eviction recovery, origin-storage eviction
   recovery,
-  service-worker-controlled PWA support-policy classification, incognito
-  memory-storage development-policy classification, and live support-bundle
-  failure artifact validation.
+  service-worker-controlled PWA support-policy classification, PWA app-window
+  display-mode support-policy classification, incognito memory-storage
+  development-policy classification, and live support-bundle failure artifact
+  validation.
   On a browser-capable CI runner, set
   `SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required` so missing Chrome fails instead
   of skipping the browser execution.
