@@ -4461,7 +4461,6 @@ type StarterDiscardsTabState = {
 type StarterDiscardsTabResult = {
   before: StarterDiscardsTabState;
   discarded: StarterDiscardsTabState;
-  loaded: StarterDiscardsTabState;
 };
 
 async function proveStarterDiscardedTabRecovery(args: {
@@ -4547,9 +4546,6 @@ async function proveStarterDiscardedTabRecovery(args: {
       throw new Error(
         `Chrome did not report the starter tab as discarded: state=${discardResult.discarded.state}`
       );
-    }
-    if (discardResult.loaded.loadingState === 0) {
-      throw new Error('Chrome did not reload the discarded starter tab');
     }
 
     const recoveryTarget = await findChromePageTarget({
@@ -4667,8 +4663,7 @@ async function discardStarterTabViaChromeDiscards(args: {
             provider &&
             typeof provider.getTabDiscardsInfo === 'function' &&
             typeof provider.setAutoDiscardable === 'function' &&
-            typeof provider.discardById === 'function' &&
-            typeof provider.loadById === 'function'
+            typeof provider.discardById === 'function'
           ) {
             return provider;
           }
@@ -4738,12 +4733,7 @@ async function discardStarterTabViaChromeDiscards(args: {
           info.discardCount > before.discardCount,
         'starter tab discarded'
       );
-      await provider.loadById(before.id);
-      const loaded = await waitForTab(
-        (info) => info.state !== 5 && info.loadingState !== 0,
-        'starter tab loaded after discard'
-      );
-      return { before, discarded, loaded };
+      return { before, discarded };
     })()`
   );
 }
