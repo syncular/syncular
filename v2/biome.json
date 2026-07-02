@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "files": {
-    "includes": ["**/*.ts", "**/*.tsx", "!**/*.d.ts"]
+    "includes": ["**/*.ts", "**/*.tsx", "!**/*.d.ts", "!**/*.generated.ts"]
   },
   "vcs": { "useIgnoreFile": true },
   "assist": { "actions": { "source": { "organizeImports": "on" } } },

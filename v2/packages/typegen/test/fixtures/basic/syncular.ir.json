@@ -1,0 +1,165 @@
+{
+  "irVersion": 1,
+  "schemaVersion": 2,
+  "schemaVersions": [
+    {
+      "version": 1,
+      "migrations": [
+        "0001_initial"
+      ]
+    },
+    {
+      "version": 2,
+      "migrations": [
+        "0002_add_task_estimate"
+      ]
+    }
+  ],
+  "tables": [
+    {
+      "name": "tasks",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "done",
+          "type": "boolean",
+          "nullable": false
+        },
+        {
+          "name": "priority",
+          "type": "integer",
+          "nullable": true
+        },
+        {
+          "name": "meta",
+          "type": "json",
+          "nullable": true
+        },
+        {
+          "name": "estimate",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "estimated_at",
+          "type": "integer",
+          "nullable": true
+        }
+      ],
+      "scopes": [
+        {
+          "pattern": "project:{project_id}",
+          "variable": "project_id",
+          "column": "project_id"
+        }
+      ],
+      "extensions": {}
+    },
+    {
+      "name": "docs",
+      "primaryKey": "id",
+      "columns": [
+        {
+          "name": "id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "org_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "project_id",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "score",
+          "type": "float",
+          "nullable": true
+        },
+        {
+          "name": "attachment",
+          "type": "bytes",
+          "nullable": true
+        }
+      ],
+      "scopes": [
+        {
+          "pattern": "org:{org_id}",
+          "variable": "org_id",
+          "column": "org_id"
+        },
+        {
+          "pattern": "project:{projectId}",
+          "variable": "projectId",
+          "column": "project_id"
+        }
+      ],
+      "extensions": {}
+    }
+  ],
+  "subscriptions": [
+    {
+      "name": "projectTasks",
+      "table": "tasks",
+      "scopes": [
+        {
+          "variable": "project_id",
+          "values": [
+            {
+              "kind": "parameter",
+              "name": "projectId"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "acmeDocs",
+      "table": "docs",
+      "scopes": [
+        {
+          "variable": "org_id",
+          "values": [
+            {
+              "kind": "literal",
+              "value": "acme"
+            }
+          ]
+        },
+        {
+          "variable": "projectId",
+          "values": [
+            {
+              "kind": "parameter",
+              "name": "projectId"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "extensions": {}
+}
