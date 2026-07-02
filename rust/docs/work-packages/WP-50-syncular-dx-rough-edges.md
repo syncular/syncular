@@ -3988,17 +3988,23 @@ Most recent browser-health failure-artifact rerun:
   path can delete IndexedDB databases through `indexedDB.deleteDatabase(...)`,
   require Cache API/localStorage sentinels to survive while the IndexedDB
   sentinel disappears, and reload the same client id from server state.
+  The branch now also adds a PWA offline cache/reopen persistence proof path:
+  the smoke-only service worker caches the built app shell, JS, worker, and
+  WASM assets during a controlled online load, the Chrome path forces the page
+  offline through CDP network emulation, reloads the same generated-app client
+  id with sync startup held manual, and requires the locally inserted task to
+  reappear from the persistent browser database under service-worker control.
   Remaining work is richer browser/host eviction and storage-failure
   execution beyond explicit CDP origin clear, Clear-Site-Data storage clear,
-  same-origin IndexedDB deletion, same-database duplicate-tab writes, storage
-  shutdown, and discarded-tab recovery, plus deeper recovery coordination for
-  persistent browser databases beyond real target foreground/background
-  activation, dispatched page lifecycle events, CDP lifecycle forcing,
-  synthetic storage warning action mapping, browser-observed quota-pressure
-  preflight/recovery mapping, quota-exhausted write rejection, and
-  lock-serialized foreground resume/recovery actions. Local
-  execution of the new browser branches still needs a Chrome-capable runner;
-  this machine has no Chrome/Chromium binary.
+  same-origin IndexedDB deletion, PWA offline cache/reopen, same-database
+  duplicate-tab writes, storage shutdown, and discarded-tab recovery, plus
+  deeper recovery coordination for persistent browser databases beyond real
+  target foreground/background activation, dispatched page lifecycle events,
+  CDP lifecycle forcing, synthetic storage warning action mapping,
+  browser-observed quota-pressure preflight/recovery mapping, quota-exhausted
+  write rejection, and lock-serialized foreground resume/recovery actions.
+  Local execution of the new browser branches still needs a Chrome-capable
+  runner; this machine has no Chrome/Chromium binary.
 - Local recovery controls: first plan/action slice is done for support bundles,
   local health repairs, failed outbox/blob retries, compaction, cache clear,
   and guarded sync-state reset, with a focused Hono/WASM proof for corrupted
@@ -4175,8 +4181,7 @@ Most recent browser-health failure-artifact rerun:
   the policy matrix and existing proofs, especially richer
   multi-client/browser Syncular realtime over Durable Object WebSocket,
   Safari, Firefox, private mode, WebViews, installed-PWA cache/update
-  semantics, and PWA offline persistence beyond the first service-worker
-  controller classification proof.
+  semantics beyond the offline reopen proof, and installed-PWA update skew.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.
@@ -4783,6 +4788,21 @@ Most recent browser-health failure-artifact rerun:
   `bun --cwd packages/create-syncular-app smoke`. Chrome was not installed
   locally, so hosted Checks run `28561926866` on commit `7869834b` confirmed
   the branch in Chrome and passed the full matrix.
+- 2026-07-02: Added a PWA offline cache/reopen persistence proof to the
+  generated starter smoke. The smoke-only service worker now caches same-origin
+  navigation, JS, worker, and WASM assets on a controlled online load. The
+  Chrome branch registers that worker, warms the cache, creates a generated
+  task, verifies local visibility/command-timeline evidence, forces
+  `navigator.onLine=false` through CDP network emulation, reloads the same
+  client id with `syncularSyncStartup=manual`, and requires the task to
+  reappear from the persistent browser database while the page remains
+  service-worker controlled and classified under the PWA support policy. Local
+  gates with Bun `1.3.9` passed:
+  `bunx biome check packages/create-syncular-app/scripts/smoke.ts` and
+  `bun --cwd packages/create-syncular-app tsgo`, and
+  `bun --cwd packages/create-syncular-app smoke`. Chrome is not installed
+  locally, so hosted `starter-browser-preview` confirmation is still required
+  for the new browser branch.
 
 ## Next Action
 
@@ -4854,8 +4874,14 @@ and the Chrome path deletes IndexedDB databases through
 `indexedDB.deleteDatabase(...)` before rehydrating the same client id from
 server state; hosted Checks run `28561926866` on commit `7869834b` confirmed
 that branch in Chrome and passed the full matrix. The next lifecycle follow-up
-should move to host/browser eviction beyond explicit CDP origin/database
-clears, Clear-Site-Data, and same-origin IndexedDB deletion, plus storage
+adds a PWA offline cache/reopen persistence branch: the smoke-only service
+worker caches the built app/runtime assets on a controlled online load, Chrome
+is forced offline through CDP, and the same generated-app client id reloads
+with sync startup held manual before the smoke requires the locally inserted
+task to reappear from the persistent browser database. The next follow-up
+should confirm that branch in hosted Chrome and then move to host/browser
+eviction beyond explicit CDP origin/database clears, Clear-Site-Data,
+same-origin IndexedDB deletion, and PWA offline cache/reopen, plus storage
 failure/coordination behavior below the already-covered OPFS fallback and
 fallback-failure classification.
 Production ops readiness is now part of release rehearsal when evidence is
@@ -4868,4 +4894,4 @@ eviction, Clear-Site-Data storage eviction, and same-origin IndexedDB deletion
 branches, and
 browser/bundler matrix execution, especially Safari, Firefox, real private-mode
 durable-persistence semantics, WebViews, installed-PWA cache/update semantics,
-and PWA offline persistence beyond controller classification.
+and PWA cache-update semantics beyond the new offline reopen proof.

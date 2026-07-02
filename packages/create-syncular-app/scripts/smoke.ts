@@ -24,7 +24,7 @@ import { Buffer } from 'node:buffer';
  *    database-storage eviction/rebootstrap recovery, browser origin-storage
  *    eviction/rebootstrap recovery, Clear-Site-Data server-driven storage
  *    eviction/rebootstrap recovery, same-origin IndexedDB deletion
- *    recovery, two-tab propagation,
+ *    recovery, PWA offline cache/reopen persistence, two-tab propagation,
  *    same-client page reload/reopen persistence, same-client duplicate-tab
  *    open/write contention, generated write pressure, same-profile browser
  *    process restart persistence, sync-held shutdown replay recovery,
@@ -77,6 +77,9 @@ const STARTER_STORAGE_EVICTION_SENTINEL_URL =
   '/__syncular-storage-eviction-proof.bin';
 const STARTER_DATABASE_STORAGE_EVICTION_TYPES = 'indexeddb,file_systems';
 const STARTER_PWA_SMOKE_SERVICE_WORKER_PATH = '/__syncular-smoke-pwa-sw.js';
+const STARTER_PWA_SMOKE_CACHE = 'syncular-smoke-pwa-v1';
+const STARTER_PWA_SMOKE_NAVIGATION_CACHE_KEY =
+  '/__syncular-smoke-pwa-navigation';
 const STARTER_CLEAR_SITE_DATA_SMOKE_PATH = '/__syncular-smoke/clear-site-data';
 const STARTER_STORAGE_ADMIN_SMOKE_PATH = '/__syncular-smoke/storage-admin';
 const BROWSER_PREVIEW_SMOKE_TIMEOUT_MS = 180_000;
@@ -181,6 +184,9 @@ async function writeBuiltPreviewSmokeServiceWorker(
 ): Promise<void> {
   await writeFile(
     join(appDir, 'dist', STARTER_PWA_SMOKE_SERVICE_WORKER_PATH.slice(1)),
+    // This worker is smoke-only. It intentionally behaves like a tiny app-shell
+    // cache so the browser preview can prove service-worker controlled offline
+    // reloads without changing the starter user's production template.
     `self.addEventListener('install', (event) => {
   event.waitUntil(self.skipWaiting());
 });
@@ -195,7 +201,71 @@ self.addEventListener('message', (event) => {
   }
 });
 
-self.addEventListener('fetch', () => {});
+const CACHE_NAME = ${JSON.stringify(STARTER_PWA_SMOKE_CACHE)};
+const NAVIGATION_CACHE_KEY = ${JSON.stringify(STARTER_PWA_SMOKE_NAVIGATION_CACHE_KEY)};
+
+function navigationCacheRequest() {
+  return new Request(new URL(NAVIGATION_CACHE_KEY, self.location.origin).href);
+}
+
+async function cacheNavigation(response) {
+  if (!response || !response.ok) return;
+  const cache = await caches.open(CACHE_NAME);
+  await cache.put(navigationCacheRequest(), response.clone());
+}
+
+async function cacheAsset(request, response) {
+  if (!response || !response.ok) return;
+  const cache = await caches.open(CACHE_NAME);
+  await cache.put(request, response.clone());
+}
+
+async function navigationResponse(request) {
+  const cache = await caches.open(CACHE_NAME);
+  try {
+    const response = await fetch(request);
+    await cacheNavigation(response);
+    return response;
+  } catch {
+    const cached =
+      (await cache.match(navigationCacheRequest())) ??
+      (await cache.match('/')) ??
+      (await cache.match('/index.html'));
+    if (cached) return cached;
+    return new Response(
+      '<!doctype html><title>Syncular offline smoke unavailable</title>',
+      {
+        status: 503,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      }
+    );
+  }
+}
+
+async function cachedAssetResponse(request) {
+  const cache = await caches.open(CACHE_NAME);
+  try {
+    const response = await fetch(request);
+    await cacheAsset(request, response);
+    return response;
+  } catch {
+    const cached = await cache.match(request, { ignoreSearch: true });
+    if (cached) return cached;
+    return new Response('', { status: 504 });
+  }
+}
+
+self.addEventListener('fetch', (event) => {
+  const request = event.request;
+  if (request.method !== 'GET') return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+  event.respondWith(
+    request.mode === 'navigate'
+      ? navigationResponse(request)
+      : cachedAssetResponse(request)
+  );
+});
 `,
     'utf8'
   );
@@ -878,6 +948,16 @@ async function runBrowserPreviewSmoke(args: {
     origin: args.origin,
     userDataDir: `${args.userDataDir}-pwa`,
   });
+  log('real-browser smoke: proving PWA offline cache/reopen persistence');
+  await proveStarterPwaOfflineReopenPersistence({
+    chrome: args.chrome,
+    failureArtifactPath: pwaOfflineFailureArtifactPath(
+      args.failureArtifactPath
+    ),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    userDataDir: `${args.userDataDir}-pwa-offline`,
+  });
   log('real-browser smoke: proving incognito memory-storage policy');
   await proveStarterIncognitoMemoryStoragePolicy({
     chrome: args.chrome,
@@ -951,6 +1031,12 @@ function pwaFailureArtifactPath(failureArtifactPath: string): string {
   return failureArtifactPath.endsWith('.json')
     ? failureArtifactPath.replace(/\.json$/u, '.pwa.json')
     : `${failureArtifactPath}.pwa.json`;
+}
+
+function pwaOfflineFailureArtifactPath(failureArtifactPath: string): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(/\.json$/u, '.pwa-offline.json')
+    : `${failureArtifactPath}.pwa-offline.json`;
 }
 
 function incognitoMemoryFailureArtifactPath(
@@ -5538,6 +5624,306 @@ async function waitForStarterPwaServiceWorkerEvidence(args: {
   );
   throw new Error(
     `Timed out waiting for built preview PWA service worker policy evidence. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
+async function proveStarterPwaOfflineReopenPersistence(args: {
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  const clientId = 'web-pwa-offline';
+  const title = `pwa offline reopen ${Date.now()}`;
+  let session: CdpSession | null = null;
+  let targetId: string | null = null;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  let offline = false;
+
+  try {
+    const target = await createChromeTarget(chrome.debugPort, 'about:blank');
+    targetId = target.id;
+    session = await CdpSession.connect(target.webSocketDebuggerUrl);
+    await enableChromeTarget(session);
+    await navigateChromeTarget(
+      session,
+      `${args.origin}/?syncularClientId=${clientId}&syncularPwaOfflineWarm=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+
+    const registration = await registerStarterSmokeServiceWorker(session);
+    if (!registration.ok) {
+      lastProbe = await readStarterBrowserProbe(session);
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-offline-service-worker-registration-failed',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA offline service worker registration failed: ${registration.reason}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    await navigateChromeTarget(
+      session,
+      `${args.origin}/?syncularClientId=${clientId}&syncularPwaOfflineControlled=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterPwaServiceWorkerEvidence({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+    await waitForStarterPwaSmokeCacheWarm({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+
+    const beforeTask = await readStarterBrowserProbe(session);
+    lastProbe = beforeTask;
+    await submitStarterTask(session, title);
+    await waitForStarterLocalVisibility({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+    await waitForStarterCommandTimelineProof({
+      expectedCount: beforeTask.commandTimelineProof.count + 1,
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+      title,
+      errorReason: 'pwa-offline-online-task-errors',
+      timeoutReason: 'pwa-offline-online-task-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview PWA offline task before offline reload',
+    });
+
+    await setChromeTargetOffline(session, true);
+    offline = true;
+    if ((await readStarterNavigatorOnline(session)) !== false) {
+      lastProbe = await readStarterBrowserProbe(session);
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-offline-network-emulation-unverified',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA offline proof could not verify navigator.onLine=false. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    await navigateChromeTarget(
+      session,
+      `${args.origin}/?syncularClientId=${clientId}&syncularSyncStartup=manual&syncularPwaOfflineRecovery=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(session);
+    if (
+      lastProbe.deploymentPreflight.serviceWorker !== 'true' ||
+      lastProbe.deploymentPreflight.serviceWorkerControlled !== 'true' ||
+      lastProbe.browserSupportPolicy.context !== 'pwa' ||
+      lastProbe.browserSupportPolicy.policy !== 'preflight-required' ||
+      lastProbe.browserSupportPolicy.status !== 'warning'
+    ) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-offline-policy-unexpected',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA offline reload did not keep service-worker policy evidence. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    await waitForStarterPwaSmokeCacheWarm({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+      title,
+      errorReason: 'pwa-offline-reopen-errors',
+      timeoutReason: 'pwa-offline-reopen-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview PWA offline reopen persistence',
+    });
+  } catch (error) {
+    await writeBrowserPreviewFailureArtifactIfMissing(
+      args.failureArtifactPath,
+      'pwa-offline-reopen-smoke-error',
+      lastProbe,
+      args.failureMetrics
+    );
+    throw error;
+  } finally {
+    if (offline && session !== null) {
+      await setChromeTargetOffline(session, false).catch(() => undefined);
+    }
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session,
+      targetId,
+    });
+    await stopProcess(chrome.process);
+  }
+}
+
+type StarterPwaSmokeCacheState = {
+  cacheNames: string[];
+  cachedPathnames: string[];
+  jsAssetCached: boolean;
+  navigationCached: boolean;
+  wasmAssetCached: boolean;
+};
+
+async function readStarterPwaSmokeCacheState(
+  session: CdpSession
+): Promise<StarterPwaSmokeCacheState> {
+  return session.evaluate<StarterPwaSmokeCacheState>(`(async () => {
+    if (!globalThis.caches) {
+      return {
+        cacheNames: [],
+        cachedPathnames: [],
+        jsAssetCached: false,
+        navigationCached: false,
+        wasmAssetCached: false,
+      };
+    }
+    const cacheName = ${JSON.stringify(STARTER_PWA_SMOKE_CACHE)};
+    const navigationCacheKey = ${JSON.stringify(STARTER_PWA_SMOKE_NAVIGATION_CACHE_KEY)};
+    const cacheNames = await caches.keys();
+    if (!cacheNames.includes(cacheName)) {
+      return {
+        cacheNames,
+        cachedPathnames: [],
+        jsAssetCached: false,
+        navigationCached: false,
+        wasmAssetCached: false,
+      };
+    }
+    const cache = await caches.open(cacheName);
+    const keys = await cache.keys();
+    const cachedPathnames = keys.map((request) => {
+      try {
+        return new URL(request.url).pathname;
+      } catch {
+        return request.url;
+      }
+    });
+    return {
+      cacheNames,
+      cachedPathnames,
+      jsAssetCached: cachedPathnames.some((pathname) => pathname.endsWith('.js')),
+      navigationCached: cachedPathnames.includes(navigationCacheKey),
+      wasmAssetCached: cachedPathnames.some((pathname) => pathname.endsWith('.wasm')),
+    };
+  })()`);
+}
+
+async function waitForStarterPwaSmokeCacheWarm(args: {
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  let lastCache: StarterPwaSmokeCacheState | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-offline-cache-warm-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA cache warm proof failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    lastCache = await readStarterPwaSmokeCacheState(args.session);
+    if (
+      lastCache.navigationCached &&
+      lastCache.jsAssetCached &&
+      lastCache.wasmAssetCached
+    ) {
+      return;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'pwa-offline-cache-warm-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview PWA cache warm evidence: ${JSON.stringify(
+      lastCache
+    )}. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
+async function setChromeTargetOffline(
+  session: CdpSession,
+  offline: boolean
+): Promise<void> {
+  await session.send('Network.emulateNetworkConditions', {
+    offline,
+    latency: 0,
+    downloadThroughput: offline ? 0 : -1,
+    uploadThroughput: offline ? 0 : -1,
+    connectionType: offline ? 'none' : 'wifi',
+  });
+  await session
+    .send('Network.overrideNetworkState', {
+      offline,
+      latency: 0,
+      downloadThroughput: offline ? 0 : -1,
+      uploadThroughput: offline ? 0 : -1,
+      connectionType: offline ? 'none' : 'wifi',
+    })
+    .catch(() => undefined);
+}
+
+async function readStarterNavigatorOnline(
+  session: CdpSession
+): Promise<boolean | null> {
+  return session.evaluate<boolean | null>(
+    `typeof navigator.onLine === 'boolean' ? navigator.onLine : null`
   );
 }
 

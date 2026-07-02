@@ -349,10 +349,19 @@ read-only review:
     create-syncular-app typecheck, and non-Chrome scaffold smoke passed;
     hosted Checks run `28561926866` on commit `7869834b` confirmed that
     branch in Chrome and passed the full matrix.
+    The current starter smoke slice also makes the smoke-only service worker
+    cache the built app/runtime assets and adds a PWA offline cache/reopen
+    branch: Chrome registers the worker, warms the cache, creates a generated
+    task, forces `navigator.onLine=false` through CDP network emulation,
+    reloads the same client id with sync startup held manual, and requires the
+    task to reappear from the persistent browser database under service-worker
+    control. Local pinned-Bun focused Biome, create-syncular-app typecheck,
+    and non-Chrome scaffold smoke passed; hosted Chrome confirmation for that
+    new branch is still pending.
     Host-driven eviction beyond explicit CDP storage clears, Clear-Site-Data,
-    and same-origin IndexedDB deletion, plus deeper storage/coordination
-    failures below the covered fallback and fallback-failure cases, remain
-    matrix work.
+    same-origin IndexedDB deletion, and PWA offline cache/reopen, plus deeper
+    storage/coordination failures below the covered fallback and
+    fallback-failure cases, remain matrix work.
     The starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply
