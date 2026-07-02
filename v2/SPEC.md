@@ -46,7 +46,7 @@ absorbed by transport compression, §1.3).
 | `opt(T)` | presence `u8` (`0x00` absent, `0x01` present; other values are a decode error) followed by `T` iff present. Used **only** where a field is semantically nullable — structural optionality is expressed by frame presence (§1.2), never by option bytes |
 | `list(T)` | `u32` count + count × `T` |
 | `map` | `u32` count + count × (`str` key, value). Keys MUST be unique; encoders MUST emit keys in ascending code-unit order (canonical encoding) |
-| `json` | `str` containing a JSON document. Used only for host-opaque values (`params`, `details`, push payloads, resume tokens). Host-opaque means exactly that: a decoder MUST preserve the raw string byte-for-byte and a re-encoder MUST emit it unchanged — round-trip fidelity, never re-canonicalization |
+| `json` | `str` containing a JSON document. Used only for host-opaque values (`params`, `details`, resume tokens). Host-opaque means exactly that: a decoder MUST preserve the raw string byte-for-byte and a re-encoder MUST emit it unchanged — round-trip fidelity, never re-canonicalization |
 
 **Canonical encoding.** For every value there is exactly one valid byte
 sequence (map key ordering, minimal presence bytes, no padding). Golden
@@ -118,23 +118,19 @@ concretely below and in the referenced sections.
       compact column descriptor table — not for inference, but as a
       checksum the receiver validates against its generated schema, and so
       independent tooling can decode segments (the ssp1.js lesson).
-      Client→server push payloads travel as JSON (§6.1): the
-      server must treat them as hostile input and validate anyway, and push
-      volume is negligible next to pull volume. Two further points: an
-      offline outbox written under schema version N must still replay
-      after an upgrade to N+1 — JSON payloads survive that, while
-      codec-pinned binary payloads would entangle the outbox with retired
-      schema versions. And `json` values are preserved as raw strings on
-      round-trip (see Conventions), so golden vectors stay byte-exact
-      without forcing payload canonicalization on clients.
-
-      > DECISION NEEDED (Benjamin): push payloads as JSON (`json`
-      > primitive) while pull rows are binary — confirm the asymmetry. The
-      > alternative (schema-encoded pushes) saves little and forces the
-      > client to embed encoders for partial/unvalidated rows.
-      > Reviewer recommendation: approve — the server re-validates either
-      > way, and JSON keeps offline outboxes replayable across schema
-      > upgrades instead of pinning them to retired codecs.
+      Client→server push payloads use the **same generated row codec**
+      (§6.1): the wire is binary in both directions, one encoding per
+      table per schema version, no JSON/binary asymmetry to specify or
+      conformance-test twice. RESOLVED (Benjamin, 2026-07-02): binary
+      both ways — the draft's JSON-push alternative was rejected. The
+      server still treats decoded payloads as hostile input and
+      authorizes/validates per §3.4; the codec only enforces shape
+      (types, null bitmap), never trust. Consequence for outboxes: a
+      push is encoded for the request's `schemaVersion`, so clients
+      SHOULD persist outbox entries in a schema-agnostic local form and
+      encode at send time with their current codec — a pending commit
+      written under schema N replays after an upgrade to N+1 by
+      re-encoding, not by the server accepting retired encodings.
 
 - [x] **Signed-URL segment delivery.** DECISION: **change** (pre-approved).
       Segment descriptors MAY carry a short-lived signed URL; authorization
@@ -198,15 +194,10 @@ removed), both accreted in wire v10–v13:
       field) — dropped. It exists to serve verification features that are
       post-gate non-goals; frame type `0x17` is reserved for its return.
 
-      > DECISION NEEDED (Benjamin): confirm dropping commit-chain
-      > integrity from the v2 core wire (reserved frame `0x17`, revisit at
-      > the parity ladder). It is a security feature, so the cut needs
-      > explicit sign-off.
-      > Reviewer recommendation: approve — nothing in the skeleton
-      > consumes the chain, it costs a hash finalization inside every push
-      > transaction, and the reserved frame keeps reinstatement
-      > non-breaking (the request-side `verifiedRoot` companion will also
-      > need a new frame slot when it returns).
+      > RESOLVED (Benjamin, 2026-07-02): approved — dropped from the v2
+      > core wire. Frame `0x17` stays reserved; when verified history
+      > returns at the parity ladder, the request-side `verifiedRoot`
+      > companion will also need a new frame slot.
 
 - [x] **CRDT state-vector hints** (`crdtStateVectors`) — dropped; CRDT is
       a named skeleton non-goal. Frame-level room is reserved (§9).
@@ -220,10 +211,7 @@ Two smaller cuts, recorded here because they change request shapes:
       per row into synthetic commit objects, so clients could observe
       partial commits — violating the commit-atomicity spine (§6.4).
 
-      > DECISION NEEDED (Benjamin): confirm dropping `dedupeRows`.
-      > Reviewer recommendation: approve — it deletes more than bytes: the
-      > synthetic partial commits it produced broke the "commit is the
-      > atomic unit" invariant that §6.4 makes load-bearing.
+      > RESOLVED (Benjamin, 2026-07-02): approved — dropped.
 
 - [x] **Commit `createdAt` becomes epoch-ms `i64`** (v1: ISO-8601 string).
       Cheaper, fixed-width, no timezone ambiguity. The JSON rendering
@@ -520,8 +508,9 @@ sides, a **row codec** for each supported `schemaVersion`:
   per the table above.
 - Setting a null bit for a non-nullable column is a decode error.
 
-The row codec is used for change payloads in `COMMIT` frames (§4.5) and
-row data inside rows segments (§5.2). There is no runtime fallback: a
+The row codec is used for change payloads in `COMMIT` frames (§4.5),
+row data inside rows segments (§5.2), push operation payloads (§6.1),
+and conflict `serverRow` values (§6.3). There is no runtime fallback: a
 server that cannot codec a table for the client's `schemaVersion` MUST
 answer with `requiredSchemaVersion` (§1.6), never with a degraded
 encoding.
@@ -1053,7 +1042,7 @@ Operation record:
 | `rowId` | `str` | |
 | `op` | `u8` | `1` = upsert, `2` = delete |
 | `baseVersion` | `opt(i64)` | Optimistic-concurrency token (§6.2); absent = last-write-wins |
-| `payload` | `opt(json)` | Full row payload; MUST be present for `upsert` and absent for `delete` — a violation is a decode error (`sync.invalid_request`). JSON per the §0 decision; raw string preserved on round-trip (Conventions) |
+| `payload` | `opt(bytes)` | Full row encoded with the generated row codec (§2.4) for the request's `schemaVersion` — binary both ways per the §0 decision. MUST be present for `upsert` and absent for `delete`; either violation, or bytes that fail row-codec decode, is a decode error (`sync.invalid_request`) |
 
 Servers MUST enforce an operation-count cap per request (host-configured;
 exceeding it is `sync.too_many_operations` with the whole batch
@@ -1099,7 +1088,7 @@ Result record — tagged union:
 | conflict: `code` | `str` | e.g. `sync.version_conflict` |
 | conflict: `message` | `str` | |
 | conflict: `serverVersion` | `i64` | Current server row version |
-| conflict: `serverRow` | `json` | Current server row (client shape) — the client resolves against this without another round-trip |
+| conflict: `serverRow` | `bytes` | Current server row encoded with the generated row codec (§2.4) for the request's `schemaVersion` — the client resolves against this without another round-trip |
 | error: `code` | `str` | |
 | error: `message` | `str` | |
 | error: `retryable` | `bool` | |
@@ -1419,7 +1408,7 @@ tooling).
 2. Field order within a frame object follows the field tables in this
    document, top to bottom.
 3. Absent `opt()` fields are **omitted** (never `null`).
-4. Binary fields (`row`, segment payloads) are standard **base64**
+4. Binary fields (`row`, push `payload`, `serverRow`, segment payloads) are standard **base64**
    strings; hashes and `segmentId` stay in their native hex/string form.
 5. Enums render as their spec names (`"upsert"`, `"active"`,
    `"sqlite"`, …), not their byte values.
@@ -1467,7 +1456,7 @@ hand-hexed):
 |---|---|---|
 | 1 | `request/pull-minimal` | Smallest legal request: header + pull + one caught-up subscription |
 | 2 | `request/pull-bootstrap` | `cursor = -1`, `accept` bits incl. sqlite + signed URLs, `params`, resumed `bootstrapState` round-trip |
-| 3 | `request/push-multi-commit` | Two commits: upsert with `baseVersion`, delete, JSON payload edge cases (empty string, non-BMP unicode, nested JSON) |
+| 3 | `request/push-multi-commit` | Two commits: upsert with `baseVersion`, delete, row-codec payload edge cases (NULL bitmap, empty string, non-BMP unicode, `json`-typed column raw-string round-trip) |
 | 4 | `request/combined` | Push + pull in one envelope (§1.5 ordering) |
 | 5 | `response/pull-empty` | Active subscription, zero commits, cursor advanced anyway (§4.5) |
 | 6 | `response/commits-incremental` | Two `COMMIT` frames; row codec exercising every column type incl. NULLs, `bytes`, non-BMP strings; scope map on changes |
