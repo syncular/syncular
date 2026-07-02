@@ -4826,6 +4826,25 @@ Most recent browser-health failure-artifact rerun:
   `/syncular/wasm-core/syncular_bg.wasm` into the smoke cache under canonical
   default `Request` keys before forcing offline mode. Hosted confirmation for
   that stricter fallback is still pending.
+- 2026-07-02: Hosted Checks run `28563286189` on commit `89901ec5` still failed
+  only in `starter-browser-preview`: hosted Chrome recorded expected
+  `net::ERR_INTERNET_DISCONNECTED` diagnostics for the exact runtime asset
+  paths after the offline reload. The follow-up added smoke-only service-worker
+  telemetry, a diagnostic probe path that can still read the page after CDP
+  browser request diagnostics, and a narrower offline diagnostic allowlist for
+  only the recovery navigation/runtime asset URLs, backed by required
+  service-worker Cache API hit evidence. Hosted Checks run `28564187460` on
+  commit `1bdbe3b2` then failed only in `starter-browser-preview` with the app
+  preflight reporting `browser.runtime_asset_unreachable`; the artifact proved
+  the page was service-worker controlled, but offline preflight asset probes
+  used `HEAD`, and the smoke worker had only handled `GET`. The current
+  follow-up handles `GET` and `HEAD`, matches cached runtime assets with
+  `ignoreMethod`, and returns header-only cached responses for offline `HEAD`
+  probes. Local Bun `1.3.9` gates passed: `bunx biome check
+  packages/create-syncular-app/scripts/smoke.ts`, `bun --cwd
+  packages/create-syncular-app tsgo`, and `bun --cwd packages/create-syncular-app
+  smoke`. Chrome is not installed locally, so hosted confirmation for the HEAD
+  preflight fallback is still required.
 
 ## Next Action
 
@@ -4911,9 +4930,13 @@ follow-up adds smoke-only service-worker telemetry plus a diagnostic probe path
 that can read the page after CDP has recorded browser request failures. The
 offline branch now ignores only the expected network-first offline diagnostics
 for the recovery navigation and exact runtime asset URLs, then requires the
-telemetry to prove service-worker navigation and runtime Cache API hits. The
-next follow-up should confirm that evidence in hosted Chrome and then move to
-host/browser eviction beyond explicit CDP origin/database clears,
+telemetry to prove service-worker navigation and runtime Cache API hits. Hosted
+Checks run `28564187460` then failed only in `starter-browser-preview` because
+the app's offline deployment preflight probes runtime assets with `HEAD`, while
+the smoke worker only intercepted `GET`. The current follow-up handles cached
+offline `HEAD` runtime asset probes in the smoke worker, and the next hosted run
+should confirm that evidence in hosted Chrome before moving to host/browser
+eviction beyond explicit CDP origin/database clears,
 Clear-Site-Data, same-origin IndexedDB deletion, and PWA offline cache/reopen,
 plus storage failure/coordination behavior below the already-covered OPFS
 fallback and fallback-failure classification.

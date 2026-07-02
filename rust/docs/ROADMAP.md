@@ -377,6 +377,14 @@ read-only review:
     expected network-first offline diagnostics for the recovery navigation and
     exact runtime asset URLs, then requires telemetry-backed service-worker
     navigation/runtime Cache API hits.
+    Hosted Checks run `28564187460` on commit `1bdbe3b2` still failed only in
+    `starter-browser-preview`, but the uploaded artifact narrowed the issue to
+    the app's offline deployment preflight: it probes runtime assets with
+    `HEAD`, while the smoke-only worker only intercepted `GET`. The current
+    follow-up handles cached offline `HEAD` runtime asset probes in the smoke
+    worker with `ignoreMethod` cache matching and header-only cached responses.
+    Hosted Chrome confirmation for this HEAD preflight fallback is still
+    pending.
     Host-driven eviction beyond explicit CDP storage clears, Clear-Site-Data,
     same-origin IndexedDB deletion, and PWA offline cache/reopen, plus deeper
     storage/coordination failures below the covered fallback and

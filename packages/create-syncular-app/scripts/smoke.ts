@@ -331,6 +331,14 @@ async function navigationResponse(request) {
 async function cachedAssetResponse(request) {
   const cache = await caches.open(CACHE_NAME);
   const trace = shouldTraceSmokeRequest(request);
+  const cachedAssetResponseForRequest = (cached) => {
+    if (request.method !== 'HEAD') return cached;
+    return new Response(null, {
+      headers: cached.headers,
+      status: cached.status,
+      statusText: cached.statusText,
+    });
+  };
   try {
     const response = await fetch(request);
     await cacheAsset(request, response);
@@ -351,6 +359,7 @@ async function cachedAssetResponse(request) {
       );
     }
     const cached = await cache.match(request, {
+      ignoreMethod: true,
       ignoreSearch: true,
       ignoreVary: true,
     });
@@ -362,7 +371,7 @@ async function cachedAssetResponse(request) {
           })
         );
       }
-      return cached;
+      return cachedAssetResponseForRequest(cached);
     }
     if (trace) rememberSmokeEvent(smokeRequestEvent('asset-cache-miss', request));
     return new Response('', { status: 504 });
@@ -371,7 +380,7 @@ async function cachedAssetResponse(request) {
 
 self.addEventListener('fetch', (event) => {
   const request = event.request;
-  if (request.method !== 'GET') return;
+  if (request.method !== 'GET' && request.method !== 'HEAD') return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
   event.respondWith(
