@@ -108,9 +108,10 @@ until the full browser Worker/WASM suite is green on Linux.
   `starter-webkit-runtime-matrix` Checks jobs install Playwright Firefox or
   WebKit and run `bun --cwd packages/create-syncular-app smoke
   --browser-runtime-matrix=<firefox|webkit> --browser-runtime-matrix-only`,
-  proving the built starter opens in those engines, emits deployment preflight
-  evidence, and reports the explicit `firefox-secure-page` or
-  `safari-secure-page` support policy path while keeping Firefox and
+  proving the built starter opens in those engines, emits ready-or-warning
+  deployment preflight evidence, and reports the explicit
+  `firefox-secure-page` or `safari-secure-page` support policy path while
+  keeping Firefox and
   Safari/WebKit preflight-gated for realtime, reopen, persistence, and
   lifecycle evidence. These runtime matrices use manual sync startup so
   Playwright does not intercept the starter realtime WebSocket; Chrome remains

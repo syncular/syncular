@@ -5072,8 +5072,15 @@ Most recent browser-health failure-artifact rerun:
   check packages/create-syncular-app/scripts/smoke.ts`, `git diff --check`,
   workflow YAML parse, `bun run docs:stale-check`, the non-Chrome scaffold
   smoke, and the targeted Playwright WebKit runtime matrix smoke with
-  `PLAYWRIGHT_BROWSERS_PATH=.context/ms-playwright`. Hosted confirmation is
-  still pending for the new job.
+  `PLAYWRIGHT_BROWSERS_PATH=.context/ms-playwright`. Hosted Checks run
+  `28575451143` caught the Linux WebKit distinction this job is meant to
+  expose: deployment preflight can be `warning` with evictable persistence
+  while the explicit `safari-secure-page` support policy still reports
+  `preflight-required`/`warning` with
+  `browser_support.target_evidence_required`. The matrix runner now accepts
+  ready-or-warning deployment preflight evidence for target-browser
+  support-policy runs while still failing closed on `failed` or `not-ready`
+  preflight. Hosted confirmation of that fix is still pending.
 
 ## Next Action
 

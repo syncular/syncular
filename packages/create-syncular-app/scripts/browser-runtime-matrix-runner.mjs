@@ -333,7 +333,7 @@ async function waitForMatrixEvidence(args) {
     }
     if (
       probe.ready &&
-      probe.deploymentPreflight.status === 'ready' &&
+      ['ready', 'warning'].includes(probe.deploymentPreflight.status) &&
       probe.deploymentPreflight.supportTier !== null &&
       probe.browserSupportPolicy.context === args.supportContext &&
       probe.browserSupportPolicy.expectedSupportTier === 'unknown' &&
