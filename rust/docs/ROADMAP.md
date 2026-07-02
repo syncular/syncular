@@ -347,7 +347,8 @@ read-only review:
     Cache/localStorage sentinels survive and the same generated-app client id
     rehydrates from server state. Local pinned-Bun focused Biome,
     create-syncular-app typecheck, and non-Chrome scaffold smoke passed;
-    hosted Chrome confirmation for that new branch is still pending.
+    hosted Checks run `28561926866` on commit `7869834b` confirmed that
+    branch in Chrome and passed the full matrix.
     Host-driven eviction beyond explicit CDP storage clears, Clear-Site-Data,
     and same-origin IndexedDB deletion, plus deeper storage/coordination
     failures below the covered fallback and fallback-failure cases, remain

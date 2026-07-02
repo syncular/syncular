@@ -4781,8 +4781,8 @@ Most recent browser-health failure-artifact rerun:
   `bunx biome check packages/create-syncular-app/scripts/smoke.ts packages/create-syncular-app/template/vite.config.ts`,
   `bun --cwd packages/create-syncular-app tsgo`, and
   `bun --cwd packages/create-syncular-app smoke`. Chrome was not installed
-  locally, so hosted `starter-browser-preview` confirmation is still required
-  for the new browser branch.
+  locally, so hosted Checks run `28561926866` on commit `7869834b` confirmed
+  the branch in Chrome and passed the full matrix.
 
 ## Next Action
 
@@ -4847,16 +4847,17 @@ eviction/rebootstrap branch: a smoke-only Vite dev/preview endpoint returns
 header contract, and the Chrome path clears IndexedDB/localStorage sentinels
 through that response header before rehydrating the same client id from server
 state; hosted Checks run `28561229781` confirmed that branch in Chrome. The
-current slice adds a same-origin IndexedDB deletion branch: a smoke-only
+latest slice adds a same-origin IndexedDB deletion branch: a smoke-only
 storage-admin page gives the browser a same-origin execution context without
 mounting the generated app, the non-browser scaffold smoke verifies the route,
 and the Chrome path deletes IndexedDB databases through
 `indexedDB.deleteDatabase(...)` before rehydrating the same client id from
-server state. The next lifecycle follow-up should confirm that branch in hosted
-Chrome and then move to host/browser eviction beyond explicit CDP
-origin/database clears, Clear-Site-Data, and same-origin IndexedDB deletion,
-plus storage failure/coordination behavior below the already-covered OPFS
-fallback and fallback-failure classification.
+server state; hosted Checks run `28561926866` on commit `7869834b` confirmed
+that branch in Chrome and passed the full matrix. The next lifecycle follow-up
+should move to host/browser eviction beyond explicit CDP origin/database
+clears, Clear-Site-Data, and same-origin IndexedDB deletion, plus storage
+failure/coordination behavior below the already-covered OPFS fallback and
+fallback-failure classification.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain host-driven eviction
 and deeper storage-failure browser proof, lower-level storage
