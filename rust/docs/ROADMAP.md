@@ -362,6 +362,11 @@ read-only review:
     exact Syncular runtime bridge assets; the follow-up now explicitly warms and
     requires `/syncular/wasm-core/syncular.js` and
     `/syncular/wasm-core/syncular_bg.wasm` before the offline reload proof.
+    Hosted Checks run `28563036328` on commit `e9f20ca5` again failed only in
+    `starter-browser-preview`, narrowing the issue to browser cache matching for
+    later script/WASM requests; the next follow-up stores those runtime assets
+    under canonical default `Request` keys and lets the smoke worker fallback
+    match cached assets with `ignoreVary`.
     Local pinned-Bun focused Biome, create-syncular-app typecheck, and
     non-Chrome scaffold smoke passed again; hosted Chrome confirmation for the
     corrected branch is still pending.

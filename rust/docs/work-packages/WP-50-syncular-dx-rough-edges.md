@@ -4817,6 +4817,15 @@ Most recent browser-health failure-artifact rerun:
   `bun --cwd packages/create-syncular-app smoke`. Chrome is not installed
   locally, so hosted confirmation for the corrected PWA offline branch is still
   required.
+- 2026-07-02: Hosted Checks run `28563036328` on commit `e9f20ca5` again failed
+  only in `starter-browser-preview` with the same offline runtime-asset fetches.
+  That narrowed the issue past exact cache key presence and into browser cache
+  matching semantics for the later script/WASM requests. The smoke worker now
+  matches cached fallback assets with `ignoreSearch` plus `ignoreVary`, and the
+  runtime warm step writes `/syncular/wasm-core/syncular.js` and
+  `/syncular/wasm-core/syncular_bg.wasm` into the smoke cache under canonical
+  default `Request` keys before forcing offline mode. Hosted confirmation for
+  that stricter fallback is still pending.
 
 ## Next Action
 

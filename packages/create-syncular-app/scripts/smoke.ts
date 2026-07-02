@@ -256,7 +256,10 @@ async function cachedAssetResponse(request) {
     await cacheAsset(request, response);
     return response;
   } catch {
-    const cached = await cache.match(request, { ignoreSearch: true });
+    const cached = await cache.match(request, {
+      ignoreSearch: true,
+      ignoreVary: true,
+    });
     if (cached) return cached;
     return new Response('', { status: 504 });
   }
@@ -5829,9 +5832,12 @@ async function warmStarterPwaSmokeRuntimeAssets(args: {
   const result =
     await args.session.evaluate<StarterPwaSmokeRuntimeAssetWarmResult>(`(async () => {
     const assets = ${JSON.stringify(STARTER_BROWSER_RUNTIME_ASSETS)};
+    const cacheName = ${JSON.stringify(STARTER_PWA_SMOKE_CACHE)};
+    const cache = await caches.open(cacheName);
     const failures = [];
     for (const asset of assets) {
       try {
+        const request = new Request(new URL(asset.path, location.origin).href);
         const response = await fetch(asset.path, { cache: 'reload' });
         if (!response.ok) {
           failures.push({
@@ -5841,6 +5847,7 @@ async function warmStarterPwaSmokeRuntimeAssets(args: {
           });
           continue;
         }
+        await cache.put(request, response.clone());
         await response.arrayBuffer();
       } catch (error) {
         failures.push({
