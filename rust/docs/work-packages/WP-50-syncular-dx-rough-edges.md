@@ -5086,8 +5086,10 @@ Most recent browser-health failure-artifact rerun:
   Bun/PGlite transient `RuntimeError: access to a null reference` during
   PostgreSQL introspection before the workflow retry guard knew that
   signature. The retry guard now retries that signature once alongside the
-  existing PGlite abort signatures. Final full-matrix confirmation after this
-  retry-guard update is still pending.
+  existing PGlite abort signatures. Hosted Checks run `28576137057` on commit
+  `8245fc98` passed the full matrix, including `test`,
+  `starter-webkit-runtime-matrix`, `starter-firefox-runtime-matrix`,
+  `starter-browser-preview`, `rust-browser-wasm`, and the native/package jobs.
 
 ## Next Action
 
@@ -5221,7 +5223,8 @@ The current WebKit/Safari runtime-matrix slice adds a dedicated
 explicit `safari-secure-page` support context. It mirrors the Firefox
 runtime/support-policy proof while keeping Safari/WebKit durable persistence,
 realtime, reopen, and lifecycle support preflight-gated until deeper target
-evidence exists. Hosted confirmation is pending.
+evidence exists. Hosted Checks run `28576137057` on commit `8245fc98` passed
+the full matrix, including `starter-webkit-runtime-matrix`.
 Remaining lifecycle/storage work is host/browser eviction beyond explicit CDP
 origin/database clears/Clear-Site-Data/same-origin IndexedDB deletion,
 deeper fully installed-PWA host semantics beyond the now-machine-readable

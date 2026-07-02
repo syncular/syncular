@@ -715,7 +715,8 @@ read-only review:
     `safari-secure-page`/`preflight-required`/`warning` support-policy markers
     without claiming Safari/WebKit realtime/reopen/persistence/lifecycle
     support. A dedicated `starter-webkit-runtime-matrix` Checks job owns this
-    runtime/support-policy proof.
+    runtime/support-policy proof, and hosted Checks run `28576137057` on
+    commit `8245fc98` confirmed it inside the full matrix.
     Cloudflare local-runtime failure artifacts now feed Console/Fleet through
     `POST /console/client-diagnostics/cloudflare-runtime-failure`, preserving
     route, exit, bounded output, and safe R2 blob timing/byte metrics as
