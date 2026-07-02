@@ -4716,6 +4716,16 @@ Most recent browser-health failure-artifact rerun:
   `bun --cwd packages/client tsgo`,
   `bunx biome check packages/client/src/worker-client.ts packages/client/src/worker-client.test.ts`,
   and `git diff --check`.
+- 2026-07-02: Promoted storage fallback from a worker diagnostic into
+  app-facing browser health and support-bundle summaries. Browser health now
+  exposes `persistence.issueCodes` plus `fallbackSeverity`, so OPFS -> IndexedDB
+  fallback remains a durable mode with `browser.storage_fallback` while
+  fallback to memory also reports `browser.storage_ephemeral`; generated
+  mutations remain available for durable fallback, and support bundles include
+  these persistence issue codes without scraping the fallback reason text.
+  Local gates with Bun `1.3.9` passed:
+  `bun test packages/client/src/browser-health.test.ts packages/client/src/support-bundle.test.ts`
+  and `bun --cwd packages/client tsgo`.
 
 ## Next Action
 
@@ -4770,9 +4780,11 @@ localStorage sentinels survive; hosted Checks run `28559198325` confirmed that
 branch in Chrome. The current slice tightens lower-level OPFS capability
 fallback so default storage degrades to IndexedDB only for OPFS/SAH install or
 sync access-handle failures while explicit OPFS and unrelated OPFS-looking open
-errors fail loudly. The next lifecycle follow-up should move to host/browser
-eviction beyond explicit CDP origin/database clears and deeper storage failure
-behavior beyond OPFS install capability fallback.
+errors fail loudly, and app-facing browser health/support bundles now preserve
+that fallback as `browser.storage_fallback` without classifying durable
+IndexedDB fallback as memory-only storage. The next lifecycle follow-up should
+move to host/browser eviction beyond explicit CDP origin/database clears and
+deeper storage failure behavior beyond OPFS install capability fallback.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain host-driven eviction
 and deeper storage-failure browser proof, lower-level storage

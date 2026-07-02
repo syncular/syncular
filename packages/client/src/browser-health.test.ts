@@ -46,6 +46,7 @@ describe('Syncular browser health', () => {
         durable: true,
         storage: 'indexedDb',
         effectiveStorage: 'indexedDb',
+        issueCodes: [],
       },
       subscriptions: {
         total: 1,
@@ -83,7 +84,49 @@ describe('Syncular browser health', () => {
         storage: 'indexedDb',
         effectiveStorage: 'memory',
         fallback,
+        fallbackSeverity: 'ephemeral',
+        issueCodes: ['browser.storage_fallback', 'browser.storage_ephemeral'],
         reason: fallback.reason,
+      },
+    });
+  });
+
+  it('reports durable storage fallback without pretending persistence is memory-only', async () => {
+    const fallback: SyncularStorageFallbackInfo = {
+      from: 'opfsSahPool',
+      to: 'indexedDb',
+      reason: 'Storage: install opfs-sahpool vfs: sync access handle failed',
+    };
+    const client = fakeHealthClient({
+      snapshot: makeSnapshot({ storageFallback: fallback }),
+      status: makeStatus(),
+    });
+
+    await expect(getSyncularBrowserHealth(client)).resolves.toMatchObject({
+      status: 'ok',
+      requiresAction: false,
+      persistence: {
+        status: 'durable',
+        durable: true,
+        storage: 'indexedDb',
+        effectiveStorage: 'indexedDb',
+        fallback,
+        fallbackSeverity: 'durable',
+        issueCodes: ['browser.storage_fallback'],
+        reason: fallback.reason,
+      },
+      lifecycle: {
+        recoveryOwner: 'none',
+        operations: expect.arrayContaining([
+          expect.objectContaining({
+            operation: 'generated-mutation',
+            availability: 'available',
+          }),
+          expect.objectContaining({
+            operation: 'destructive-local-recovery',
+            availability: 'advanced',
+          }),
+        ]),
       },
     });
   });

@@ -409,6 +409,7 @@ function collectBrowserHealthIssueCodes(
   health: SyncularSupportBundleBrowserHealth | undefined
 ): string[] {
   return [
+    ...(health?.persistence.issueCodes ?? []),
     ...(health?.recommendedActions.map((action) => action.code) ?? []),
     ...(health?.recentErrors.flatMap((error) =>
       error.code ? [error.code] : []

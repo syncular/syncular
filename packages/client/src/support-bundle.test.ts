@@ -18,6 +18,16 @@ describe('support bundle', () => {
   it('composes redacted browser, schema, timeline, preflight, and local support data', async () => {
     const client = new FakeSupportClient({
       snapshot: diagnosticSnapshot({
+        runtime: {
+          ...runtimeInfo(),
+          storage: 'indexedDb',
+          storageFallback: {
+            from: 'opfsSahPool',
+            to: 'indexedDb',
+            reason:
+              'Storage: install opfs-sahpool vfs: sync access handle failed',
+          },
+        },
         recentDiagnostics: [
           diagnosticEvent({
             at: 123,
@@ -87,6 +97,7 @@ describe('support bundle', () => {
     });
     expect(bundle.summary.issueCodes).toEqual(
       expect.arrayContaining([
+        'browser.storage_fallback',
         'browser.storage_quota_low',
         'local.subscription_state_orphaned',
         'schema.local_schema_stale',

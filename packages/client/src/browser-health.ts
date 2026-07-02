@@ -24,6 +24,14 @@ export type SyncularBrowserHealthStatus =
 
 export type SyncularBrowserPersistenceStatus = 'durable' | 'memory' | 'unknown';
 
+export type SyncularBrowserPersistenceIssueCode =
+  | 'browser.storage_fallback'
+  | 'browser.storage_ephemeral';
+
+export type SyncularBrowserPersistenceFallbackSeverity =
+  | 'durable'
+  | 'ephemeral';
+
 export type SyncularBrowserHealthLifecycleStage =
   | 'destroyed'
   | 'requires-action'
@@ -80,6 +88,8 @@ export interface SyncularBrowserHealthPersistence {
   storage: SyncularStorage | null;
   effectiveStorage: SyncularStorage | null;
   fallback?: SyncularStorageFallbackInfo;
+  fallbackSeverity?: SyncularBrowserPersistenceFallbackSeverity;
+  issueCodes: SyncularBrowserPersistenceIssueCode[];
   reason?: string;
 }
 
@@ -270,6 +280,16 @@ function summarizePersistence(
     effectiveStorage == null ? null : effectiveStorage !== 'memory';
   const status: SyncularBrowserPersistenceStatus =
     durable === null ? 'unknown' : durable ? 'durable' : 'memory';
+  const fallbackSeverity =
+    runtime.storageFallback && durable !== null
+      ? durable
+        ? 'durable'
+        : 'ephemeral'
+      : undefined;
+  const issueCodes: SyncularBrowserPersistenceIssueCode[] = [
+    ...(runtime.storageFallback ? (['browser.storage_fallback'] as const) : []),
+    ...(durable === false ? (['browser.storage_ephemeral'] as const) : []),
+  ];
   const reason =
     runtime.storageFallback?.reason ??
     (effectiveStorage === 'memory'
@@ -282,6 +302,8 @@ function summarizePersistence(
     storage,
     effectiveStorage,
     ...(runtime.storageFallback ? { fallback: runtime.storageFallback } : {}),
+    ...(fallbackSeverity ? { fallbackSeverity } : {}),
+    issueCodes,
     ...(reason ? { reason } : {}),
   };
 }

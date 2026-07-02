@@ -325,9 +325,15 @@ read-only review:
     with the original reason, and keeps explicit OPFS requests plus unrelated
     OPFS-looking open errors as loud failures. Local pinned-Bun client
     typecheck, focused worker-client tests, focused Biome, and diff check
-    passed. Host-driven eviction beyond explicit CDP storage clears and deeper
-    storage/coordination failures beyond OPFS install capability fallback
-    remain matrix work.
+    passed. Browser health and support bundles now also carry storage fallback
+    as explicit persistence issue codes: durable OPFS -> IndexedDB fallback
+    stays durable and keeps generated mutations available, while memory
+    fallback is separately marked ephemeral, and support-bundle summaries
+    include those persistence issue codes without relying on human text. Local
+    pinned-Bun focused browser-health/support-bundle tests and client
+    typecheck passed. Host-driven eviction beyond explicit CDP storage clears
+    and deeper storage/coordination failures beyond OPFS install capability
+    fallback remain matrix work.
     The starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply
