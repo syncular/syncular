@@ -420,6 +420,14 @@ frames MUST NOT both appear for the same subscription in one response
 | `requiredSchemaVersion` | `opt(i32)` | If present, the client's `schemaVersion` is no longer served; the client MUST stop syncing and surface an upgrade requirement (`sync.client_schema_unsupported` semantics). Unchanged from v1 |
 | `latestSchemaVersion` | `opt(i32)` | Informational: newest schema version the server knows. MUST NOT block syncing. Unchanged from v1 |
 
+**Schema-floor response.** When the request's `schemaVersion` is not
+served — below the floor *or* newer than anything the server knows —
+the entire response is `RESP_HEADER` with **both**
+`requiredSchemaVersion` and `latestSchemaVersion` present, followed by
+`END`. Nothing else is processed: no push commit is attempted and no
+subscription is answered (§2.4 forbids degraded encodings, and an
+unserved version cannot codec row payloads in either direction).
+
 **`ERROR` frame payload** (in-band, mid-stream failure):
 
 | Field | Type |
@@ -474,14 +482,29 @@ independent codecs agree byte-for-byte on which messages are
   `bytes` and cannot know the schema). These MUST NOT be decode errors
   of the envelope codec.
 
+Request validation has **two failure surfaces**, split by request half:
+
+- **Request-level** — fails the whole request (HTTP-level JSON per
+  §1.1, or an in-band `ERROR` frame if streaming already began):
+  duplicate subscription ids, requested `'*'` values, undeclared scope
+  keys (requested *or* resolved, §3.2), a **subscription** naming an
+  unknown table (§4.3), `clientId` actor binding (§1.5), and the
+  operation cap (§6.1).
+- **Commit-level** — rejects only the enclosing `PUSH_COMMIT`: its
+  `PUSH_RESULT` is `rejected` with one `error` result record (§6.3)
+  and the batch continues (§6.4). This is the surface for a push
+  **operation** naming an unknown table (`sync.unknown_table`) and for
+  a `payload` that fails row-codec decode (`sync.invalid_request`).
+
 Response-side semantic expectations that are not `opt()` ties (e.g.
 `reasonCode` emptiness for `active`, `effectiveScopes` emptiness when
 not `active`, `results` cardinality in §6.3) are producer conformance
 rules, not decode errors. The `accept` bitmask illustrates the line: a
 set bit 4–7 is a decode error (explicitly flagged in the §4.2 field
 table); the "client MUST set at least bits 0 and 1" requirement is a
-client conformance rule, not a decode error — a server MAY reject its
-absence as request validation.
+client conformance rule, not a decode error — the server rejects the
+joint absence of bits 0 and 1 as request validation
+(`sync.invalid_request`, §4.2).
 
 ---
 
@@ -570,8 +593,8 @@ The row codec is used for change payloads in `COMMIT` frames (§4.5),
 row data inside rows segments (§5.2), push operation payloads (§6.1),
 and conflict `serverRow` values (§6.3). There is no runtime fallback: a
 server that cannot codec a table for the client's `schemaVersion` MUST
-answer with `requiredSchemaVersion` (§1.6), never with a degraded
-encoding.
+answer with `requiredSchemaVersion` — the schema-floor response of
+§1.6, which processes nothing — never with a degraded encoding.
 
 ---
 
@@ -588,6 +611,13 @@ tightening: `'*'` is rejected in *requested* scopes (§3.2).
   `{ pattern: 'prefix:{variable}', column: 'column_name' }`. Exactly one
   `{variable}` per pattern; a variable MUST NOT map to two different
   columns.
+- Every synced table MUST declare **at least one** scope pattern — a
+  schema-compile-time requirement (configuring a table without one is a
+  server bug, rejected before serving). Rationale: a zero-scope table
+  can never produce a non-empty effective map, so every subscription to
+  it would revoke under §3.2 rule 5; "global" tables are modeled with
+  an explicit scope column shared by all rows, never by omitting
+  patterns.
 - On every applied change the server extracts the declared columns from
   the row (upsert: the row after the write; delete: the row before
   removal) and stores them as **stored scopes**: a `map` of
@@ -613,13 +643,23 @@ On every pull (and on realtime connect), per subscription:
    reserved for allowed scopes (v2 tightening — in v1 a requested `'*'`
    passed through and then matched only rows whose stored value was
    literally `*`, a silent-empty-data footgun).
-3. The host's `resolveScopes(ctx)` returns **allowed scopes** for this
-   actor: variable → list of values, where the value `'*'` means "any
-   value for this variable". The same key validation applies to the
-   result (a handler returning undeclared keys is a server bug: fail the
-   request, do not guess).
-4. **Effective = requested ∩ allowed**, computed per requested key (keys
-   present only in allowed never enter effective):
+3. The host's `resolveScopes(actor)` returns **allowed scopes** for the
+   actor as one map covering every scope variable the actor holds,
+   across all tables: variable → list of values, where the value `'*'`
+   means "any value for this variable". There is one resolver per
+   server, not one per table; it is invoked **at most once per
+   request** and the result memoized — §3.4 step 1 authorizes writes
+   against the same memoized result, and resolvers MUST be stable
+   within a request. Key validation on the result is against the
+   **union of variables declared by any table in the schema**: a key
+   declared by no table is a server bug and fails the whole request
+   with `sync.invalid_subscription` (fail loud, do not guess). Keys
+   declared only by *other* tables are legal in the result; they simply
+   do not participate in this table's intersection (rule 4).
+4. **Effective = requested ∩ allowed**, computed per requested key —
+   the intersection therefore runs over this table's declared variables
+   only, since requested keys were validated in rule 2 (keys present
+   only in allowed never enter effective):
    - key absent from allowed → key excluded entirely;
    - allowed contains `'*'` → the requested values pass through;
    - otherwise set intersection of the value lists; an **empty
@@ -676,7 +716,9 @@ On every push operation (semantics unchanged from v1):
    currently stored** — never the pushed payload; for an insert (no
    existing row), the pushed payload plus the primary key. It extracts
    that row's scope values for **all** declared scope variables of the
-   table. A missing or empty scope column value ⇒ deny.
+   table. A missing or empty scope column value ⇒ deny. A delete
+   targeting an absent row has no authorization row: it is applied
+   idempotently, emits no change, and performs no scope check (§6.2).
 3. For every declared variable: the row's value MUST be present in the
    actor's allowed values for that variable, or the allowed values
    contain `'*'`. **All declared keys are required** — there is no
@@ -731,12 +773,20 @@ unbounded for large commits. The limit is where the server stops adding
 further commits; a single commit whose own change count exceeds it is
 still delivered whole and alone (commits are never split, §4.5).
 
+**Rows acceptance is enforced.** A `PULL_HEADER` whose `accept` has
+neither bit 0 nor bit 1 set MUST be rejected as request validation with
+`sync.invalid_request` (this specifies the behavior §1.7 assigns to the
+server). Bit 0 without bit 1 means the server delivers every rows
+segment **inline**, regardless of the §5.7 size guidance — the SHOULD
+yields to the client's declared capability. Bit 1 without bit 0 means
+every rows segment is delivered as a `SEGMENT_REF`.
+
 ### 4.3 `SUBSCRIPTION` frame
 
 | Field | Type | Semantics |
 |---|---|---|
 | `id` | `str` | §4.1 |
-| `table` | `str` | Unknown table fails the request: `sync.unknown_table` |
+| `table` | `str` | Unknown table fails the **whole request**: `sync.unknown_table` (request-level, §1.7 — contrast the commit-level rule for push operations, §6.1) |
 | `scopes` | `map` of `str` → `list(str)` | Requested scopes (§3.2) |
 | `params` | `opt(json)` | Host-opaque snapshot parameters |
 | `cursor` | `i64` | Last fully-applied `commitSeq`; `-1` = never synced (bootstrap needed) |
@@ -870,6 +920,13 @@ v1):
 - If a resumed `asOfCommitSeq < horizonSeq`, the server MUST restart the
   bootstrap from scratch (fresh pin) rather than resume across pruned
   history.
+- A `bootstrapState` that does not parse as the shape above, or whose
+  `tables` do not correspond to the subscription, MUST be handled the
+  same way: silently restart the bootstrap with a fresh pin. An
+  unusable resume token is never a request error — clients round-trip
+  the token opaquely, so a bad token means corrupt client state, and
+  bootstrap is self-healing by construction (a fresh bootstrap always
+  converges).
 - **Every** bootstrap response — complete or not — sets
   `SUB_END.nextCursor = asOfCommitSeq`. A resuming client therefore
   presents `cursor = asOfCommitSeq` plus the round-tripped resume token;
@@ -987,6 +1044,13 @@ the descriptor before applying. Servers SHOULD produce sqlite segments as
 the default bootstrap path when the client advertises support
 (`accept` bit 2); rows segments remain the fallback for clients that
 don't.
+
+**Skeleton status (B2).** The reference server does not yet *generate*
+sqlite segments — production is the SHOULD above; rows segments and
+`SEGMENT_INLINE` are the mandatory paths (§5.2, §5.7). Descriptors,
+segment stores, and the download endpoint MUST nevertheless carry and
+accept `mediaType = sqlite` (§5.4), so the premier path lands later
+without a wire or interface change.
 
 ### 5.4 `SEGMENT_REF` frame — the descriptor
 
@@ -1113,11 +1177,14 @@ Operation record:
 | `rowId` | `str` | |
 | `op` | `u8` | `1` = upsert, `2` = delete |
 | `baseVersion` | `opt(i64)` | Optimistic-concurrency token (§6.2); absent = last-write-wins |
-| `payload` | `opt(bytes)` | Full row encoded with the generated row codec (§2.4) for the request's `schemaVersion` — binary both ways per the §0 decision. MUST be present for `upsert` and absent for `delete`; a violation is a decode error (`sync.invalid_request`). Bytes that fail row-codec decode are rejected by the server as request validation (§1.7) — the envelope codec carries the payload as opaque `bytes` |
+| `payload` | `opt(bytes)` | Full row encoded with the generated row codec (§2.4) for the request's `schemaVersion` — binary both ways per the §0 decision. MUST be present for `upsert` and absent for `delete`; a violation is a decode error (`sync.invalid_request`). Bytes that fail row-codec decode are rejected by the server as **commit-level** request validation (§1.7): the enclosing commit is `rejected` with one `error` result record (`sync.invalid_request`, §6.3) — the envelope codec carries the payload as opaque `bytes` |
 
-Servers MUST enforce an operation-count cap per request (host-configured;
-exceeding it is `sync.too_many_operations` with the whole batch
-unapplied — the client splits and retries).
+Servers MUST enforce an operation-count cap per request, counted as the
+**total operations across all `PUSH_COMMIT` frames in the request**
+(host-configured; the reference default is 500). Exceeding it is a
+request-level validation failure (§1.7) rejected before any commit is
+attempted: `sync.too_many_operations` with the whole batch unapplied —
+the client splits and retries.
 
 ### 6.2 Conflict detection
 
@@ -1136,8 +1203,13 @@ Unchanged from v1:
 - `baseVersion` present and ≠ 0, row absent: error `sync.row_missing`.
 - `baseVersion` absent (upsert): last-write-wins; `server_version`
   increments from the current value (or 1 on insert).
-- `delete`: no version check; deleting an absent row is `applied`
-  (idempotent).
+- `delete`: no version check. Deleting an **absent** row is `applied`
+  (idempotent) with **no authorization check and no emitted change**:
+  there is no stored row to select as the §3.4 authorization row, and
+  an unconditional `applied` discloses nothing. Deleting an
+  **existing** row authorizes against the stored row per §3.4; denial
+  is `sync.forbidden` — which necessarily reveals that the row exists,
+  the accepted cost of fail-loud authorization.
 
 ### 6.3 `PUSH_RESULT` frame
 
@@ -1174,7 +1246,12 @@ Semantics (unchanged from v1):
   persisted rejected result unchanged (`status` stays `rejected`, §2.3).
   If the server cannot read its own cached result it answers
   `sync.idempotency_cache_miss` (retryable) for that commit rather than
-  re-applying.
+  re-applying. Encoding of that answer: a `PUSH_RESULT` with
+  `status = rejected`, no `commitSeq`, and exactly one `error` result
+  record at `opIndex = 0` carrying
+  `code = "sync.idempotency_cache_miss"`, `retryable = true`. This
+  result MUST NOT be persisted — it reports a serving failure, not the
+  commit's outcome; a later retry may find the record readable again.
 - **`rejected`**: `results` contains the record(s) of the terminating
   operation only (operations before it were rolled back; operations
   after it were never attempted). Unchanged from v1.
@@ -1278,6 +1355,9 @@ pull — alongside the cursor record of §4.5 — and load it at WebSocket
 upgrade (unchanged from v1 mechanics). A client that has never pulled
 has no registered subscriptions: it receives `hello` with
 `requiresSync: true` and no deltas until a pull registers them.
+Registrations are **fixed for the life of the connection**: a pull that
+changes the subscription list takes effect at the next connect, not
+mid-session.
 
 Control messages are JSON text frames; deltas are binary frames
 containing a complete SSP2 **response** message (§1.6) — one envelope
@@ -1304,12 +1384,19 @@ the socket for continuity.
   `SUB_START` / `COMMIT`(s) / `SUB_END` with the advanced `nextCursor`.
 - Deltas MUST be cursor-contiguous per connection: a delta starting past
   the client's last delivered cursor is forbidden — the server sends a
-  wake-up (§8.3) instead when it cannot bridge the gap from its replay
-  buffer.
+  wake-up (§8.3) instead when it cannot bridge the gap. A per-connection
+  replay buffer is an OPTIONAL optimization; the reference server keeps
+  **none**: a session that is behind at connect
+  (`cursor < latestCursor`) or that dropped a delta (flow control,
+  oversize) suppresses further deltas and answers each subsequent
+  matching commit with a coalescible `catchup-required` wake-up, until
+  an ack reaches the highest `commitSeq` the connection has observed —
+  then deltas resume.
 - The client acknowledges applied deltas:
   `{"type":"ack","cursor":<highest contiguously applied commitSeq>}`.
-  The server uses acks to trim its per-connection replay buffer and to
-  update the client cursor record (§4.5) without an HTTP pull.
+  The server uses acks to trim its per-connection replay buffer (if it
+  keeps one) and to update the client cursor record (§4.5) without an
+  HTTP pull.
 - Flow control: the server bounds in-flight unacked deltas and per-window
   message counts (host-configured); when exceeded, or when a delta would
   exceed the host's max message size, it drops to a wake-up.
@@ -1431,7 +1518,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.invalid_client_id` | invalid-request | no | resetClientId | `clientId` bound to a different actor (§1.5) |
 | `sync.invalid_subscription` | invalid-request | no | fixRequest | Duplicate subscription id; undeclared scope key (requested **or** resolved — §3.2) |
 | `sync.empty_commit` | invalid-request | no | fixRequest | `PUSH_COMMIT` with zero operations |
-| `sync.unknown_table` | schema-mismatch | no | regenerateClient | Subscription or operation names a table the server doesn't handle |
+| `sync.unknown_table` | schema-mismatch | no | regenerateClient | Subscription (request-level) or push operation (commit-level, §1.7) names a table the server doesn't handle |
 | `sync.row_missing` | not-found | no | forceResync | Upsert with `baseVersion ≠ 0` targeting an absent row (§6.2) |
 | `sync.version_conflict` | conflict | no | resolveConflict | `baseVersion` mismatch (§6.2) — appears as a conflict result, not a request error |
 | `sync.constraint_violation` | invalid-request | no | fixRequest | Server-side data constraint (unique/FK/not-null) rejected the write |
