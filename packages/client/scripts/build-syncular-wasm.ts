@@ -21,6 +21,11 @@ import {
   SYNCULAR_WASM_OUT_NAME,
 } from '../src/wasm-bindings/runtime-contract';
 
+// Binaryen releases older than this mis-encode the type section of modules
+// produced by current rustc (Ubuntu 24.04's apt ships 108, which emitted
+// artifacts no engine could parse — shipped broken in 0.1.0–0.1.3).
+const MIN_WASM_OPT_VERSION = 118;
+
 const packageRoot = path.resolve(import.meta.dir, '..');
 const repoRoot = path.resolve(packageRoot, '../..');
 const outDir = path.resolve(
@@ -121,6 +126,7 @@ if (!dev) {
   writeWasmProfileArtifact(wasmPath);
 }
 stripWasmCustomSections(wasmPath);
+assertWasmModuleParses(wasmPath);
 writeFileSync(path.join(outDir, '.syncular-wasm-profile'), `${profile}\n`);
 writeRuntimeArtifactManifest({
   artifactName,
@@ -261,6 +267,14 @@ function optimizeWasmRelease(wasmPath: string): void {
       ].join(' ')
     );
   }
+  const versionNumber = Number(
+    version.stdout.toString().match(/\d+/)?.[0] ?? Number.NaN
+  );
+  if (!(versionNumber >= MIN_WASM_OPT_VERSION)) {
+    throw new Error(
+      `[syncular-wasm] wasm-opt ${versionNumber} is too old (need >= ${MIN_WASM_OPT_VERSION}); it corrupts modules built by current rustc. Install a recent Binaryen release.`
+    );
+  }
 
   const tmpPath = `${wasmPath}.opt`;
   const result = Bun.spawnSync(
@@ -298,6 +312,17 @@ function writeWasmProfileArtifact(wasmPath: string): void {
       SYNCULAR_WASM_BINARY_FILE.replace(/\.wasm$/, '.profile.wasm')
     )
   );
+}
+
+function assertWasmModuleParses(wasmPath: string): void {
+  const bytes = readFileSync(wasmPath);
+  try {
+    new WebAssembly.Module(bytes);
+  } catch (error) {
+    throw new Error(
+      `[syncular-wasm] ${wasmPath} fails WebAssembly compilation — the toolchain (wasm-opt/binaryen version?) produced a module no engine can load: ${error}`
+    );
+  }
 }
 
 function stripWasmCustomSections(wasmPath: string): void {

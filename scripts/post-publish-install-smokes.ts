@@ -531,6 +531,7 @@ console.log('published JS runtime smoke passed');
       'published JS app did not generate the expected client output'
     );
   }
+  await assertPublishedWasmParses(jsDir);
   const runtimeSmoke = jsRuntimeSmokeDecision();
   if (runtimeSmoke.run) {
     await run(bunBin, ['runtime-smoke.ts'], { cwd: jsDir });
@@ -540,6 +541,36 @@ console.log('published JS runtime smoke passed');
     );
   }
   await run(bunBin, ['smoke.mjs'], { cwd: jsDir });
+}
+
+// Engine-level parse check of every shipped WASM artifact. Unlike the worker
+// runtime smoke this has no platform skips, so a corrupt artifact (e.g. the
+// binaryen-108 builds shipped in 0.1.0–0.1.3) fails the smoke everywhere.
+async function assertPublishedWasmParses(jsDir: string): Promise<void> {
+  const wasmDistRoot = join(jsDir, 'node_modules/@syncular/client/dist');
+  const variants = ['wasm', 'wasm-core', 'wasm-perf'];
+  let checked = 0;
+  for (const variant of variants) {
+    const wasmPath = join(wasmDistRoot, variant, 'syncular_bg.wasm');
+    if (!existsSync(wasmPath)) continue;
+    const bytes = await readFile(wasmPath);
+    try {
+      new WebAssembly.Module(bytes);
+    } catch (error) {
+      throw new Error(
+        `published @syncular/client artifact dist/${variant}/syncular_bg.wasm fails WebAssembly compilation: ${error}`
+      );
+    }
+    checked += 1;
+  }
+  if (checked === 0) {
+    throw new Error(
+      `published @syncular/client did not ship any WASM artifacts under ${wasmDistRoot}`
+    );
+  }
+  console.log(
+    `[post-publish-install-smokes] ${checked} published WASM artifact(s) parse OK`
+  );
 }
 
 async function runRustSmoke(options: Options): Promise<void> {
