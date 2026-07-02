@@ -4895,6 +4895,18 @@ Most recent browser-health failure-artifact rerun:
   `28566130045` on commit `d33643c0` passed the full matrix, including
   `starter-browser-preview`, confirming the real-browser cache-refresh branch
   in hosted Chrome.
+- 2026-07-02: Added a PWA service-worker update activation proof to the
+  generated starter smoke. The proof writes a unique initial version into the
+  smoke-only built service worker, registers it in a fresh Chrome profile,
+  verifies the controlled page can read that controller version over
+  `postMessage`, rewrites the same built worker file to a new version, calls
+  `registration.update()`, and requires the controlled page to observe the new
+  service-worker controller version. The branch restores the default smoke
+  worker afterward so later PWA proofs keep their normal file shape. Local Bun
+  `1.3.9` focused Biome, create-syncular-app typecheck, non-Chrome scaffold
+  smoke, and diff check passed. Chrome is not installed locally, so hosted
+  `starter-browser-preview` confirmation is still required for this
+  real-browser service-worker update branch.
 
 ## Next Action
 
@@ -4986,8 +4998,11 @@ online with `cache: "reload"`, and requiring the cached response to be
 replaced by the live asset. Remaining lifecycle/storage work is host/browser
 eviction beyond explicit CDP origin/database clears, Clear-Site-Data,
 same-origin IndexedDB deletion, PWA offline cache/reopen, and PWA online
-runtime cache-refresh, plus storage failure/coordination behavior below the
-already-covered OPFS fallback and fallback-failure classification.
+runtime cache-refresh. The current follow-up adds a PWA service-worker update
+activation proof by rewriting the smoke worker and requiring
+`registration.update()` to deliver the updated controller version in hosted
+Chrome. Storage failure/coordination behavior below the already-covered OPFS
+fallback and fallback-failure classification also remains open.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain host-driven eviction
 and deeper storage-failure browser proof, lower-level storage
@@ -4998,5 +5013,5 @@ eviction, Clear-Site-Data storage eviction, and same-origin IndexedDB deletion
 branches, and
 browser/bundler matrix execution, especially Safari, Firefox, real private-mode
 durable-persistence semantics, WebViews, installed-PWA cache/update semantics,
-and PWA cache-update semantics beyond this smoke-only runtime cache-refresh
-proof.
+and PWA cache-update semantics beyond these smoke-only runtime cache-refresh
+and service-worker update activation proofs.

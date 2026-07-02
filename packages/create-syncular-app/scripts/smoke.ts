@@ -24,8 +24,8 @@ import { Buffer } from 'node:buffer';
  *    database-storage eviction/rebootstrap recovery, browser origin-storage
  *    eviction/rebootstrap recovery, Clear-Site-Data server-driven storage
  *    eviction/rebootstrap recovery, same-origin IndexedDB deletion
- *    recovery, PWA online runtime cache refresh, PWA offline cache/reopen
- *    persistence, two-tab propagation,
+ *    recovery, PWA service-worker update activation, PWA online runtime cache
+ *    refresh, PWA offline cache/reopen persistence, two-tab propagation,
  *    same-client page reload/reopen persistence, same-client duplicate-tab
  *    open/write contention, generated write pressure, same-profile browser
  *    process restart persistence, sync-held shutdown replay recovery,
@@ -81,6 +81,7 @@ const STARTER_PWA_SMOKE_SERVICE_WORKER_PATH = '/__syncular-smoke-pwa-sw.js';
 const STARTER_PWA_SMOKE_CACHE = 'syncular-smoke-pwa-v1';
 const STARTER_PWA_SMOKE_NAVIGATION_CACHE_KEY =
   '/__syncular-smoke-pwa-navigation';
+const STARTER_PWA_SMOKE_DEFAULT_SERVICE_WORKER_VERSION = 'syncular-smoke-sw-v1';
 const STARTER_BROWSER_RUNTIME_ASSETS = [
   { path: '/syncular/wasm-core/syncular.js', label: 'Syncular WASM glue' },
   {
@@ -209,14 +210,19 @@ async function runLinkedViteBuild(
 }
 
 async function writeBuiltPreviewSmokeServiceWorker(
-  appDir: string
+  appDir: string,
+  options: { version?: string } = {}
 ): Promise<void> {
+  const version =
+    options.version ?? STARTER_PWA_SMOKE_DEFAULT_SERVICE_WORKER_VERSION;
   await writeFile(
     join(appDir, 'dist', STARTER_PWA_SMOKE_SERVICE_WORKER_PATH.slice(1)),
     // This worker is smoke-only. It intentionally behaves like a tiny app-shell
     // cache so the browser preview can prove service-worker controlled offline
     // reloads without changing the starter user's production template.
-    `self.addEventListener('install', (event) => {
+    `const SMOKE_SW_VERSION = ${JSON.stringify(version)};
+
+self.addEventListener('install', (event) => {
   event.waitUntil(self.skipWaiting());
 });
 
@@ -232,6 +238,12 @@ self.addEventListener('message', (event) => {
     event.ports?.[0]?.postMessage({
       type: 'SYNCULAR_SMOKE_PWA_EVENTS',
       events: smokeEvents.slice(),
+    });
+  }
+  if (event.data?.type === 'SYNCULAR_SMOKE_READ_VERSION') {
+    event.ports?.[0]?.postMessage({
+      type: 'SYNCULAR_SMOKE_PWA_VERSION',
+      version: SMOKE_SW_VERSION,
     });
   }
 });
@@ -774,6 +786,7 @@ type BuiltPreviewAssetMetrics = {
 };
 
 async function maybeRunBrowserPreviewSmoke(args: {
+  appDir: string;
   failureMetrics: BrowserPreviewFailureMetricsInput;
   origin: string;
   previewServer: BrowserPreviewServerControl;
@@ -790,6 +803,7 @@ async function maybeRunBrowserPreviewSmoke(args: {
   }
 
   await runBrowserPreviewSmoke({
+    appDir: args.appDir,
     chrome,
     failureMetrics: args.failureMetrics,
     origin: args.origin,
@@ -816,6 +830,7 @@ function resolveChromeExecutable(): string | null {
 }
 
 async function runBrowserPreviewSmoke(args: {
+  appDir: string;
   chrome: string;
   failureMetrics: BrowserPreviewFailureMetricsInput;
   failureArtifactPath: string;
@@ -1073,6 +1088,15 @@ async function runBrowserPreviewSmoke(args: {
     origin: args.origin,
     userDataDir: `${args.userDataDir}-pwa`,
   });
+  log('real-browser smoke: proving PWA service-worker update activation');
+  await proveStarterPwaServiceWorkerUpdateActivation({
+    appDir: args.appDir,
+    chrome: args.chrome,
+    failureArtifactPath: pwaUpdateFailureArtifactPath(args.failureArtifactPath),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    userDataDir: `${args.userDataDir}-pwa-update`,
+  });
   log('real-browser smoke: proving PWA runtime cache refresh');
   await proveStarterPwaRuntimeCacheRefresh({
     chrome: args.chrome,
@@ -1173,6 +1197,12 @@ function pwaOfflineFailureArtifactPath(failureArtifactPath: string): string {
   return failureArtifactPath.endsWith('.json')
     ? failureArtifactPath.replace(/\.json$/u, '.pwa-offline.json')
     : `${failureArtifactPath}.pwa-offline.json`;
+}
+
+function pwaUpdateFailureArtifactPath(failureArtifactPath: string): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(/\.json$/u, '.pwa-update.json')
+    : `${failureArtifactPath}.pwa-update.json`;
 }
 
 function pwaRuntimeCacheRefreshFailureArtifactPath(
@@ -5897,6 +5927,385 @@ async function waitForStarterPwaServiceWorkerEvidence(args: {
   );
 }
 
+type StarterPwaSmokeServiceWorkerVersionResult = {
+  controllerScriptPath: string | null;
+  controllerState: string | null;
+  ok: boolean;
+  reason: string | null;
+  version: string | null;
+};
+
+type StarterPwaSmokeServiceWorkerUpdateResult = {
+  afterVersion: StarterPwaSmokeServiceWorkerVersionResult | null;
+  beforeVersion: StarterPwaSmokeServiceWorkerVersionResult | null;
+  expectedVersion: string;
+  fetchedHasExpectedVersion: boolean;
+  fetchedStatus: number | null;
+  ok: boolean;
+  reason: string | null;
+  registrationState: {
+    active: string | null;
+    installing: string | null;
+    waiting: string | null;
+  };
+};
+
+async function proveStarterPwaServiceWorkerUpdateActivation(args: {
+  appDir: string;
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const initialVersion = `syncular-smoke-sw-update-initial-${Date.now()}`;
+  const updatedVersion = `syncular-smoke-sw-update-next-${Date.now()}`;
+  await writeBuiltPreviewSmokeServiceWorker(args.appDir, {
+    version: initialVersion,
+  });
+
+  const chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  const baseUrl = `${args.origin}/?syncularClientId=web-pwa-update&syncularPwaUpdate=${Date.now()}`;
+  let session: CdpSession | null = null;
+  let targetId: string | null = null;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  let caughtError: unknown = null;
+  let restoreError: unknown = null;
+
+  try {
+    const target = await createChromeTarget(chrome.debugPort, 'about:blank');
+    targetId = target.id;
+    session = await CdpSession.connect(target.webSocketDebuggerUrl);
+    await enableChromeTarget(session);
+    await installStarterPwaSmokeDiagnostics(session);
+    await navigateChromeTarget(session, baseUrl);
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+
+    const registration = await registerStarterSmokeServiceWorker(session);
+    if (!registration.ok) {
+      lastProbe = await readStarterBrowserProbe(session);
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-update-service-worker-registration-failed',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA update service worker registration failed: ${registration.reason}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    await navigateChromeTarget(
+      session,
+      `${baseUrl}&syncularPwaUpdateControlled=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterPwaServiceWorkerEvidence({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+
+    const beforeVersion =
+      await readStarterPwaSmokeServiceWorkerVersion(session);
+    if (!beforeVersion.ok || beforeVersion.version !== initialVersion) {
+      lastProbe = await readStarterBrowserProbe(session);
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-update-initial-version-unexpected',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA update proof could not read initial worker version: ${JSON.stringify(
+          beforeVersion
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    await writeBuiltPreviewSmokeServiceWorker(args.appDir, {
+      version: updatedVersion,
+    });
+    const update = await updateStarterPwaSmokeServiceWorker(
+      session,
+      updatedVersion
+    );
+    if (!update.ok) {
+      lastProbe = await readStarterBrowserProbe(session);
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-update-activation-failed',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA service-worker update proof failed: ${JSON.stringify(
+          update
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+  } catch (error) {
+    caughtError = error;
+    await writeBrowserPreviewFailureArtifactIfMissing(
+      args.failureArtifactPath,
+      'pwa-update-smoke-error',
+      lastProbe,
+      args.failureMetrics
+    );
+  } finally {
+    await writeBuiltPreviewSmokeServiceWorker(args.appDir).catch((error) => {
+      restoreError = error;
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session,
+      targetId,
+    });
+    await stopProcess(chrome.process);
+  }
+
+  if (caughtError !== null) throw caughtError;
+  if (restoreError !== null) throw restoreError;
+}
+
+async function readStarterPwaSmokeServiceWorkerVersion(
+  session: CdpSession
+): Promise<StarterPwaSmokeServiceWorkerVersionResult> {
+  return session.evaluate<StarterPwaSmokeServiceWorkerVersionResult>(
+    `(async () => {
+      const serviceWorker = globalThis.navigator?.serviceWorker;
+      const controller = serviceWorker?.controller ?? null;
+      const controllerScriptPath =
+        controller?.scriptURL == null
+          ? null
+          : new URL(controller.scriptURL, window.location.href).pathname;
+      const controllerState = controller?.state ?? null;
+      if (!controller) {
+        return {
+          controllerScriptPath,
+          controllerState,
+          ok: false,
+          reason: 'service-worker-controller-missing',
+          version: null,
+        };
+      }
+
+      try {
+        const version = await new Promise((resolve, reject) => {
+          const channel = new MessageChannel();
+          const timeout = setTimeout(() => {
+            channel.port1.close();
+            reject(new Error('timed out waiting for service worker version'));
+          }, 5_000);
+          channel.port1.onmessage = (event) => {
+            clearTimeout(timeout);
+            channel.port1.close();
+            const data = event.data;
+            resolve(
+              data?.type === 'SYNCULAR_SMOKE_PWA_VERSION' &&
+                typeof data.version === 'string'
+                ? data.version
+                : null
+            );
+          };
+          controller.postMessage(
+            { type: 'SYNCULAR_SMOKE_READ_VERSION' },
+            [channel.port2]
+          );
+        });
+        return {
+          controllerScriptPath,
+          controllerState,
+          ok: typeof version === 'string',
+          reason: typeof version === 'string' ? null : 'invalid-version-response',
+          version: typeof version === 'string' ? version : null,
+        };
+      } catch (error) {
+        return {
+          controllerScriptPath,
+          controllerState,
+          ok: false,
+          reason: error instanceof Error ? error.message : String(error),
+          version: null,
+        };
+      }
+    })()`
+  );
+}
+
+async function updateStarterPwaSmokeServiceWorker(
+  session: CdpSession,
+  expectedVersion: string
+): Promise<StarterPwaSmokeServiceWorkerUpdateResult> {
+  return session.evaluate<StarterPwaSmokeServiceWorkerUpdateResult>(
+    `(async () => {
+      const expectedVersion = ${JSON.stringify(expectedVersion)};
+      const scriptPath = ${JSON.stringify(STARTER_PWA_SMOKE_SERVICE_WORKER_PATH)};
+      const serviceWorker = globalThis.navigator?.serviceWorker;
+      const emptyRegistrationState = {
+        active: null,
+        installing: null,
+        waiting: null,
+      };
+      const readVersion = async () => {
+        const controller = serviceWorker?.controller ?? null;
+        const controllerScriptPath =
+          controller?.scriptURL == null
+            ? null
+            : new URL(controller.scriptURL, window.location.href).pathname;
+        const controllerState = controller?.state ?? null;
+        if (!controller) {
+          return {
+            controllerScriptPath,
+            controllerState,
+            ok: false,
+            reason: 'service-worker-controller-missing',
+            version: null,
+          };
+        }
+        try {
+          const version = await new Promise((resolve, reject) => {
+            const channel = new MessageChannel();
+            const timeout = setTimeout(() => {
+              channel.port1.close();
+              reject(new Error('timed out waiting for service worker version'));
+            }, 2_000);
+            channel.port1.onmessage = (event) => {
+              clearTimeout(timeout);
+              channel.port1.close();
+              const data = event.data;
+              resolve(
+                data?.type === 'SYNCULAR_SMOKE_PWA_VERSION' &&
+                  typeof data.version === 'string'
+                  ? data.version
+                  : null
+              );
+            };
+            controller.postMessage(
+              { type: 'SYNCULAR_SMOKE_READ_VERSION' },
+              [channel.port2]
+            );
+          });
+          return {
+            controllerScriptPath,
+            controllerState,
+            ok: typeof version === 'string',
+            reason:
+              typeof version === 'string' ? null : 'invalid-version-response',
+            version: typeof version === 'string' ? version : null,
+          };
+        } catch (error) {
+          return {
+            controllerScriptPath,
+            controllerState,
+            ok: false,
+            reason: error instanceof Error ? error.message : String(error),
+            version: null,
+          };
+        }
+      };
+      const registrationState = (registration) => ({
+        active: registration?.active?.state ?? null,
+        installing: registration?.installing?.state ?? null,
+        waiting: registration?.waiting?.state ?? null,
+      });
+      const beforeVersion = await readVersion();
+      if (typeof serviceWorker?.getRegistration !== 'function') {
+        return {
+          afterVersion: null,
+          beforeVersion,
+          expectedVersion,
+          fetchedHasExpectedVersion: false,
+          fetchedStatus: null,
+          ok: false,
+          reason: 'service-worker-registration-api-unavailable',
+          registrationState: emptyRegistrationState,
+        };
+      }
+      let registration =
+        (await serviceWorker.getRegistration('/')) ?? (await serviceWorker.ready);
+      if (!registration) {
+        return {
+          afterVersion: null,
+          beforeVersion,
+          expectedVersion,
+          fetchedHasExpectedVersion: false,
+          fetchedStatus: null,
+          ok: false,
+          reason: 'service-worker-registration-missing',
+          registrationState: emptyRegistrationState,
+        };
+      }
+
+      const response = await fetch(scriptPath, { cache: 'reload' });
+      const responseText = await response.clone().text();
+      const fetchedHasExpectedVersion =
+        response.ok && responseText.includes(expectedVersion);
+      if (!fetchedHasExpectedVersion) {
+        return {
+          afterVersion: await readVersion(),
+          beforeVersion,
+          expectedVersion,
+          fetchedHasExpectedVersion,
+          fetchedStatus: response.status,
+          ok: false,
+          reason: 'updated-service-worker-script-not-served',
+          registrationState: registrationState(registration),
+        };
+      }
+
+      registration = await registration.update();
+      const deadline = Date.now() + 15_000;
+      let afterVersion = await readVersion();
+      while (Date.now() < deadline) {
+        registration =
+          (await serviceWorker.getRegistration('/')) ?? registration;
+        if (registration.waiting) {
+          registration.waiting.postMessage({
+            type: 'SYNCULAR_SMOKE_SKIP_WAITING',
+          });
+        }
+        if (afterVersion.version === expectedVersion) {
+          return {
+            afterVersion,
+            beforeVersion,
+            expectedVersion,
+            fetchedHasExpectedVersion,
+            fetchedStatus: response.status,
+            ok: true,
+            reason: null,
+            registrationState: registrationState(registration),
+          };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        afterVersion = await readVersion();
+      }
+
+      return {
+        afterVersion,
+        beforeVersion,
+        expectedVersion,
+        fetchedHasExpectedVersion,
+        fetchedStatus: response.status,
+        ok: false,
+        reason: 'updated-service-worker-controller-timeout',
+        registrationState: registrationState(registration),
+      };
+    })()`
+  );
+}
+
 type StarterPwaRuntimeCacheRefreshResult = {
   cachedTextLength: number | null;
   marker: string;
@@ -10401,6 +10810,7 @@ async function main(): Promise<void> {
     await verifyBrowserPreviewFailureArtifactSelfCheck(workDir, failureMetrics);
 
     await maybeRunBrowserPreviewSmoke({
+      appDir,
       failureMetrics,
       origin: previewOrigin,
       previewServer,
