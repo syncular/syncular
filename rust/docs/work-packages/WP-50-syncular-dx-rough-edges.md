@@ -4803,6 +4803,20 @@ Most recent browser-health failure-artifact rerun:
   `bun --cwd packages/create-syncular-app smoke`. Chrome is not installed
   locally, so hosted `starter-browser-preview` confirmation is still required
   for the new browser branch.
+- 2026-07-02: Hosted Checks run `28562746749` on commit `9485734e` failed only
+  in `starter-browser-preview` and exposed that the first PWA offline cache
+  proof was too broad: it accepted any cached `.js`/`.wasm`, then the offline
+  reload failed to fetch `/syncular/wasm-core/syncular.js` and
+  `/syncular/wasm-core/syncular_bg.wasm`. The follow-up smoke change now keeps
+  those runtime asset paths in one shared list, explicitly warms them from the
+  service-worker-controlled page before forcing offline mode, and requires exact
+  cache entries for both runtime assets before the offline reload proof can pass.
+  Local gates with Bun `1.3.9` passed:
+  `bunx biome check packages/create-syncular-app/scripts/smoke.ts`,
+  `bun --cwd packages/create-syncular-app tsgo`, and
+  `bun --cwd packages/create-syncular-app smoke`. Chrome is not installed
+  locally, so hosted confirmation for the corrected PWA offline branch is still
+  required.
 
 ## Next Action
 
@@ -4879,11 +4893,11 @@ worker caches the built app/runtime assets on a controlled online load, Chrome
 is forced offline through CDP, and the same generated-app client id reloads
 with sync startup held manual before the smoke requires the locally inserted
 task to reappear from the persistent browser database. The next follow-up
-should confirm that branch in hosted Chrome and then move to host/browser
-eviction beyond explicit CDP origin/database clears, Clear-Site-Data,
-same-origin IndexedDB deletion, and PWA offline cache/reopen, plus storage
-failure/coordination behavior below the already-covered OPFS fallback and
-fallback-failure classification.
+should confirm the corrected exact-runtime-asset branch in hosted Chrome and
+then move to host/browser eviction beyond explicit CDP origin/database clears,
+Clear-Site-Data, same-origin IndexedDB deletion, and PWA offline cache/reopen,
+plus storage failure/coordination behavior below the already-covered OPFS
+fallback and fallback-failure classification.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain host-driven eviction
 and deeper storage-failure browser proof, lower-level storage

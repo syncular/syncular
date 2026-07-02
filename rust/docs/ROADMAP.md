@@ -356,8 +356,15 @@ read-only review:
     reloads the same client id with sync startup held manual, and requires the
     task to reappear from the persistent browser database under service-worker
     control. Local pinned-Bun focused Biome, create-syncular-app typecheck,
-    and non-Chrome scaffold smoke passed; hosted Chrome confirmation for that
-    new branch is still pending.
+    and non-Chrome scaffold smoke passed. Hosted Checks run `28562746749` on
+    commit `9485734e` failed only in `starter-browser-preview` and showed the
+    first cache proof accepted generic `.js`/`.wasm` entries while missing the
+    exact Syncular runtime bridge assets; the follow-up now explicitly warms and
+    requires `/syncular/wasm-core/syncular.js` and
+    `/syncular/wasm-core/syncular_bg.wasm` before the offline reload proof.
+    Local pinned-Bun focused Biome, create-syncular-app typecheck, and
+    non-Chrome scaffold smoke passed again; hosted Chrome confirmation for the
+    corrected branch is still pending.
     Host-driven eviction beyond explicit CDP storage clears, Clear-Site-Data,
     same-origin IndexedDB deletion, and PWA offline cache/reopen, plus deeper
     storage/coordination failures below the covered fallback and

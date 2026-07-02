@@ -80,6 +80,13 @@ const STARTER_PWA_SMOKE_SERVICE_WORKER_PATH = '/__syncular-smoke-pwa-sw.js';
 const STARTER_PWA_SMOKE_CACHE = 'syncular-smoke-pwa-v1';
 const STARTER_PWA_SMOKE_NAVIGATION_CACHE_KEY =
   '/__syncular-smoke-pwa-navigation';
+const STARTER_BROWSER_RUNTIME_ASSETS = [
+  { path: '/syncular/wasm-core/syncular.js', label: 'Syncular WASM glue' },
+  {
+    path: '/syncular/wasm-core/syncular_bg.wasm',
+    label: 'Syncular WASM binary',
+  },
+] as const;
 const STARTER_CLEAR_SITE_DATA_SMOKE_PATH = '/__syncular-smoke/clear-site-data';
 const STARTER_STORAGE_ADMIN_SMOKE_PATH = '/__syncular-smoke/storage-admin';
 const BROWSER_PREVIEW_SMOKE_TIMEOUT_MS = 180_000;
@@ -533,15 +540,7 @@ async function verifyBuiltPreviewAssets(
 }
 
 async function verifyBuiltPreviewRuntimeAssets(origin: string): Promise<void> {
-  const assets = [
-    { path: '/syncular/wasm-core/syncular.js', label: 'Syncular WASM glue' },
-    {
-      path: '/syncular/wasm-core/syncular_bg.wasm',
-      label: 'Syncular WASM binary',
-    },
-  ];
-
-  for (const asset of assets) {
+  for (const asset of STARTER_BROWSER_RUNTIME_ASSETS) {
     const assetUrl = new URL(asset.path, origin);
     const response = await fetch(assetUrl);
     if (!response.ok) {
@@ -5688,6 +5687,11 @@ async function proveStarterPwaOfflineReopenPersistence(args: {
       failureMetrics: args.failureMetrics,
       session,
     });
+    await warmStarterPwaSmokeRuntimeAssets({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
     await waitForStarterPwaSmokeCacheWarm({
       failureArtifactPath: args.failureArtifactPath,
       failureMetrics: args.failureMetrics,
@@ -5801,9 +5805,69 @@ type StarterPwaSmokeCacheState = {
   cacheNames: string[];
   cachedPathnames: string[];
   jsAssetCached: boolean;
+  missingRuntimeAssetPathnames: string[];
   navigationCached: boolean;
+  runtimeJsAssetCached: boolean;
+  runtimeWasmAssetCached: boolean;
   wasmAssetCached: boolean;
 };
+
+type StarterPwaSmokeRuntimeAssetWarmResult = {
+  failures: Array<{
+    error: string | null;
+    path: string;
+    status: number | null;
+  }>;
+  ok: boolean;
+};
+
+async function warmStarterPwaSmokeRuntimeAssets(args: {
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<void> {
+  const result =
+    await args.session.evaluate<StarterPwaSmokeRuntimeAssetWarmResult>(`(async () => {
+    const assets = ${JSON.stringify(STARTER_BROWSER_RUNTIME_ASSETS)};
+    const failures = [];
+    for (const asset of assets) {
+      try {
+        const response = await fetch(asset.path, { cache: 'reload' });
+        if (!response.ok) {
+          failures.push({
+            error: null,
+            path: asset.path,
+            status: response.status,
+          });
+          continue;
+        }
+        await response.arrayBuffer();
+      } catch (error) {
+        failures.push({
+          error: error instanceof Error ? error.message : String(error),
+          path: asset.path,
+          status: null,
+        });
+      }
+    }
+    return { failures, ok: failures.length === 0 };
+  })()`);
+
+  if (result.ok) return;
+
+  const probe = await readStarterBrowserProbe(args.session);
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'pwa-offline-runtime-asset-warm-failed',
+    probe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Built preview PWA runtime asset warm failed: ${JSON.stringify(
+      result.failures
+    )}. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
 
 async function readStarterPwaSmokeCacheState(
   session: CdpSession
@@ -5814,19 +5878,28 @@ async function readStarterPwaSmokeCacheState(
         cacheNames: [],
         cachedPathnames: [],
         jsAssetCached: false,
+        missingRuntimeAssetPathnames: [],
         navigationCached: false,
+        runtimeJsAssetCached: false,
+        runtimeWasmAssetCached: false,
         wasmAssetCached: false,
       };
     }
     const cacheName = ${JSON.stringify(STARTER_PWA_SMOKE_CACHE)};
     const navigationCacheKey = ${JSON.stringify(STARTER_PWA_SMOKE_NAVIGATION_CACHE_KEY)};
+    const runtimeAssetPathnames = ${JSON.stringify(
+      STARTER_BROWSER_RUNTIME_ASSETS.map((asset) => asset.path)
+    )};
     const cacheNames = await caches.keys();
     if (!cacheNames.includes(cacheName)) {
       return {
         cacheNames,
         cachedPathnames: [],
         jsAssetCached: false,
+        missingRuntimeAssetPathnames: runtimeAssetPathnames,
         navigationCached: false,
+        runtimeJsAssetCached: false,
+        runtimeWasmAssetCached: false,
         wasmAssetCached: false,
       };
     }
@@ -5839,11 +5912,27 @@ async function readStarterPwaSmokeCacheState(
         return request.url;
       }
     });
+    const runtimeJsAssetPathname = runtimeAssetPathnames.find((pathname) =>
+      pathname.endsWith('.js')
+    );
+    const runtimeWasmAssetPathname = runtimeAssetPathnames.find((pathname) =>
+      pathname.endsWith('.wasm')
+    );
+    const missingRuntimeAssetPathnames = runtimeAssetPathnames.filter(
+      (pathname) => !cachedPathnames.includes(pathname)
+    );
     return {
       cacheNames,
       cachedPathnames,
       jsAssetCached: cachedPathnames.some((pathname) => pathname.endsWith('.js')),
+      missingRuntimeAssetPathnames,
       navigationCached: cachedPathnames.includes(navigationCacheKey),
+      runtimeJsAssetCached:
+        runtimeJsAssetPathname !== undefined &&
+        cachedPathnames.includes(runtimeJsAssetPathname),
+      runtimeWasmAssetCached:
+        runtimeWasmAssetPathname !== undefined &&
+        cachedPathnames.includes(runtimeWasmAssetPathname),
       wasmAssetCached: cachedPathnames.some((pathname) => pathname.endsWith('.wasm')),
     };
   })()`);
@@ -5877,6 +5966,8 @@ async function waitForStarterPwaSmokeCacheWarm(args: {
     if (
       lastCache.navigationCached &&
       lastCache.jsAssetCached &&
+      lastCache.runtimeJsAssetCached &&
+      lastCache.runtimeWasmAssetCached &&
       lastCache.wasmAssetCached
     ) {
       return;
