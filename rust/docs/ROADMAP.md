@@ -441,6 +441,10 @@ read-only review:
     redacted asset URL details instead of relying on later worker-open errors.
     Local pinned-Bun focused schema-readiness tests, client unit tests,
     client/create-app typechecks, Biome, and codegen output checks passed.
+    Clean stable-version release rehearsals now require the strict starter
+    real-browser preview and Vite browser-runtime proofs automatically; dirty
+    local rehearsals keep those browser executions opt-in through
+    `--allow-dirty`.
     Remaining matrix work is host-driven eviction beyond explicit CDP storage
     clears/Clear-Site-Data/same-origin IndexedDB deletion, installed-PWA
     cache/update semantics beyond the smoke-only PWA offline, cache-refresh,
@@ -809,8 +813,10 @@ read-only review:
     same ops readiness check when `syncular.ops.json` or `--ops-config` is
     present. Stable release rehearsals can fail closed with
     `--require-ops-readiness` while local-only rehearsals may still skip missing
-    evidence; browser/CDP, framework-import, post-publish install, and publish
-    dry-run gates remain in release rehearsal.
+    evidence; clean stable-version rehearsals always require the
+    Chrome/Chromium starter browser preview and Vite browser-runtime proofs.
+    Browser/CDP, framework-import, post-publish install, and publish dry-run
+    gates remain in release rehearsal.
     Console Ops can now ingest that JSON through
     `POST /console/ops/readiness`, stores a redacted `ops_readiness`
     operation-audit event with local paths omitted, exposes the latest report

@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 
-interface Options {
+export interface Options {
   version: string;
   allowDirty: boolean;
   skipPublishDryRuns: boolean;
@@ -48,6 +48,10 @@ options:
   --skip-docs-stale-check     Skip stale public-docs checks
   --work-dir <path>           Publish dry-run worktree path (default: .context/release-rehearsal/<version>)
   --keep-worktree             Keep the publish dry-run worktree after the run
+
+Clean stable-version rehearsals require the starter real-browser preview and
+Vite browser-runtime proofs automatically. Use --allow-dirty for local-only
+iteration on machines without Chrome/Chromium.
 `;
 }
 
@@ -226,6 +230,36 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
   };
 }
 
+export function isStableReleaseVersion(version: string): boolean {
+  return /^\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?$/u.test(version.trim());
+}
+
+export function applyStableReleaseBrowserRequirements(
+  options: Options
+): Options {
+  if (!isStableReleaseVersion(options.version) || options.allowDirty) {
+    return { ...options };
+  }
+
+  if (options.skipStarterSmoke) {
+    throw new Error(
+      'Stable release rehearsal requires the create-syncular-app built-preview smoke. Use --allow-dirty for local-only iteration before skipping starter smoke.'
+    );
+  }
+
+  if (options.skipFrameworkImportSmokes) {
+    throw new Error(
+      'Stable release rehearsal requires framework import smokes. Use --allow-dirty for local-only iteration before skipping framework import smokes.'
+    );
+  }
+
+  return {
+    ...options,
+    requireStarterBrowserPreview: true,
+    requireFrameworkViteBrowserRuntime: true,
+  };
+}
+
 async function runCapture(
   command: string,
   args: string[],
@@ -400,7 +434,15 @@ async function runPublishDryRuns(
 }
 
 async function main(): Promise<void> {
-  const options = await parseArgs(process.argv.slice(2));
+  const parsedOptions = await parseArgs(process.argv.slice(2));
+  const stableBrowserRequirementsActive =
+    isStableReleaseVersion(parsedOptions.version) && !parsedOptions.allowDirty;
+  const options = applyStableReleaseBrowserRequirements(parsedOptions);
+  if (stableBrowserRequirementsActive) {
+    console.log(
+      `[release-rehearsal] stable version ${options.version}; requiring starter browser preview and Vite browser runtime proofs`
+    );
+  }
   const sourceDirty = await verifyGitState(options);
 
   await run('bun', [
@@ -455,10 +497,12 @@ async function main(): Promise<void> {
   }
 }
 
-try {
-  await main();
-} catch (error) {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`[release-rehearsal] ${message}`);
-  process.exitCode = 1;
+if (import.meta.main) {
+  try {
+    await main();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[release-rehearsal] ${message}`);
+    process.exitCode = 1;
+  }
 }

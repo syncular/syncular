@@ -3821,8 +3821,10 @@ Most recent browser-health failure-artifact rerun:
     Lock timeout/recovery, two-tab propagation, reload/reopen persistence, and
     same-profile browser-process restart persistence. The Checks workflow now
     enforces that path in a dedicated Chrome-provisioned starter job for
-    starter-relevant PRs and all pushes; remaining work is to observe the
-    hosted runner and decide whether release rehearsal should also require it.
+    starter-relevant PRs and all pushes. Clean stable-version release
+    rehearsals now require the real-browser starter proof and the Vite
+    browser-runtime proof automatically; dirty/local rehearsals keep the
+    optional path for machines without Chrome/Chromium.
 14. Subscription readiness: first app-facing slice is done with the
     `@syncular/client/subscription-readiness` helper, generated app
     `subscriptionReadiness()` wrappers, and table helpers such as
@@ -3917,14 +3919,14 @@ Most recent browser-health failure-artifact rerun:
   and quota rather than only synthetic preflight fixtures. The same
   post-override CDP usage/quota facts now also feed the starter's public local
   recovery plan proof so `browser.storage_pressure_high` action mapping is
-  covered by observed browser quota facts. Current hosted
-  observation on
-  2026-07-01: latest checked `main` Checks run `28459201533` at
-  `origin/main` `7f0081b6` did not contain a `starter-browser-preview` job,
-  and `git show origin/main:.github/workflows/checks.yml` also lacks the job,
-  while this branch's `HEAD` `c7f32182` contains it. Remaining work is to
-  observe the job after this branch is pushed/merged and then decide whether
-  that strict release flag should be mandatory for every stable release.
+  covered by observed browser quota facts. Hosted Checks run `28569279199` on
+  commit `a839873a` passed the full matrix, including
+  `starter-browser-preview`, after the latest public subscription-readiness
+  slice. The strict release decision is now closed for stable packages: clean
+  stable-version release rehearsals automatically require the starter
+  real-browser preview and Vite browser-runtime proof, while
+  `--allow-dirty` remains the local-iteration path for machines without
+  Chrome/Chromium.
 - Adapter import side-effect isolation: the first root import graph smoke now
   proves root client/server imports do not statically reach optional Bun,
   Cloudflare, S3, Sentry, Neon, Tauri, React Native, or CRDT/Yjs subpaths.
@@ -4934,6 +4936,20 @@ Most recent browser-health failure-artifact rerun:
   `0d211bbe` passed the full matrix, including `starter-browser-preview`,
   confirming the real-browser service-worker update activation branch in
   hosted Chrome.
+- 2026-07-02: Closed the stable-release strict-browser decision. Clean
+  stable-version `scripts/release-rehearsal.ts` runs now automatically require
+  the create-syncular-app real-browser preview and Vite browser-runtime proof,
+  while prerelease and `--allow-dirty` local-iteration rehearsals keep those
+  browser executions opt-in. The script rejects clean stable rehearsals that
+  try to skip the starter or framework proof owners. Local Bun `1.3.9` gates
+  passed: `bun test scripts/release-rehearsal.test.ts`, `bunx tsgo
+  --ignoreConfig --noEmit --target ES2022 --module ESNext --moduleResolution
+  Bundler --types bun --skipLibCheck scripts/release-rehearsal.ts
+  scripts/release-rehearsal.test.ts`, `bunx biome check
+  scripts/release-rehearsal.ts scripts/release-rehearsal.test.ts RELEASING.md
+  rust/docs/QUALITY_GATES.md rust/docs/ROADMAP.md
+  rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`,
+  `bun run docs:stale-check`, and `git diff --check`.
 
 ## Next Action
 
@@ -5038,6 +5054,14 @@ stale JS/WASM/service-worker/CDN deploys can fail as named readiness issues
 instead of generic worker/runtime open errors. Local pinned-Bun focused
 schema-readiness tests, full client unit tests, client/create-app typechecks,
 Biome, and codegen output checks passed.
+The latest subscription-readiness slice exposes a public
+`@syncular/client/subscription-readiness` helper plus generated
+`subscriptionReadiness()`/table wrappers without growing the root bundle past
+budget, and hosted Checks run `28569279199` on commit `a839873a` passed the
+full matrix. Clean stable-version release rehearsals now require the strict
+starter real-browser preview and Vite browser-runtime proofs automatically,
+closing the previous release-flag decision while leaving `--allow-dirty`
+rehearsals available for local iteration without Chrome/Chromium.
 Remaining lifecycle/storage work is host/browser eviction beyond explicit CDP
 origin/database clears/Clear-Site-Data/same-origin IndexedDB deletion,
 installed-PWA cache/update semantics beyond the smoke-only PWA offline,

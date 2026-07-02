@@ -47,13 +47,12 @@ use `minor`), and describe the change. Commit the generated
    dry-runs in a clean worktree, fresh-app smokes, the
    `create-syncular-app` built-preview smoke, Next/Vite/Cloudflare framework
    import smokes, focused Console failure-artifact ingestion tests, docs stale
-   check). Use `--skip-console-artifact-ingestion` only for local iteration
-   that is not proving release readiness. On a Chrome-capable release runner,
-   add `--require-starter-browser-preview` to make the starter's real-browser
-   CDP path mandatory instead of skipping when Chrome is unavailable; add
-   `--require-framework-vite-browser-runtime` to require the Vite framework
-   smoke to execute the built preview in Chrome and observe the browser root
-   import marker.
+   check). For clean stable-version rehearsals, the script automatically
+   requires the starter's real-browser CDP path and the Vite browser-runtime
+   proof; run it on a Chrome-capable release runner. Use `--allow-dirty` plus
+   skip flags only for local iteration that is not proving release readiness.
+   Use `--skip-console-artifact-ingestion` only for the same local-iteration
+   case.
    Native Node sqlite driver packaging is deliberately not part of the default
    release workflow because `better-sqlite3` / `sqlite3` installs depend on
    runner native-module support. Run the opt-in matrix on a native-capable Node

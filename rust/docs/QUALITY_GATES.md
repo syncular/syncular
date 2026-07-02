@@ -62,8 +62,10 @@ until the full browser Worker/WASM suite is green on Linux.
   `SYNCULAR_POST_PUBLISH_OPTIONAL_IMPORT_MATRIX=0` is set.
 - Release rehearsal changes: run
   `bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs`
-  for local iteration. When proving a stable release with production evidence,
-  pass `--ops-config <path>` or provide `syncular.ops.json`, and add
+  for local iteration. Clean stable-version rehearsals automatically require
+  the starter real-browser preview and Vite browser-runtime proof, so use a
+  Chrome-capable release runner. When proving a stable release with production
+  evidence, pass `--ops-config <path>` or provide `syncular.ops.json`, and add
   `--require-ops-readiness` so missing restore/blob/credential/rate-limit/log
   retention/support-window evidence fails the rehearsal.
 - Native sqlite adapter changes (`@syncular/server/better-sqlite3` or
