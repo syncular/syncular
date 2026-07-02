@@ -5007,17 +5007,17 @@ Most recent browser-health failure-artifact rerun:
   app-window display-mode, service-worker control, runtime cache-refresh, and
   `registration.update()` checks, the smoke now creates a generated task,
   waits for local visibility and command-timeline evidence, stops the browser,
-  stops the preview server, relaunches Chrome as an app-window with the same
-  profile from `about:blank`, forces CDP offline mode, navigates to the same
-  generated-app client id with sync startup held manual, requires
-  service-worker navigation/runtime cache-hit telemetry, requires the task to
-  render from persistent browser storage, and reads the active smoke worker
-  version to prove the updated controller survived the offline restart. Local
-  Bun `1.3.9` gates passed so far: `bun --cwd packages/create-syncular-app
-  tsgo`, focused Biome on `packages/create-syncular-app/scripts/smoke.ts`, and
-  `bun --cwd packages/create-syncular-app smoke`. Chrome was not installed
-  locally, so hosted `starter-browser-preview` confirmation is still required
-  for the new app-window offline restart branch.
+  stops the preview server, relaunches the generated app URL directly as a
+  Chrome app-window with the same profile and sync startup held manual,
+  verifies CDP reports offline after attach, requires service-worker
+  navigation/runtime cache-hit telemetry, requires the task to render from
+  persistent browser storage, and reads the active smoke worker version to
+  prove the updated controller survived the offline restart. Local Bun `1.3.9`
+  gates passed so far: `bun --cwd packages/create-syncular-app tsgo`, focused
+  Biome on `packages/create-syncular-app/scripts/smoke.ts`, and `bun --cwd
+  packages/create-syncular-app smoke`. Chrome was not installed locally, so
+  hosted `starter-browser-preview` confirmation is still required for the new
+  app-window offline restart branch.
 - 2026-07-02: Added the first maintained Firefox starter runtime matrix path.
   The generated starter now accepts a validated
   `syncularBrowserSupportContext` URL parameter so target-browser smokes can
@@ -5169,13 +5169,13 @@ rehearsals available for local iteration without Chrome/Chromium.
 The current app-window PWA slice extends that branch beyond display-mode,
 runtime cache-refresh, and update activation by proving a same-profile
 app-window offline restart: a generated task reaches local visibility, Chrome
-is stopped, the preview server is stopped, Chrome relaunches as an app-window
-from `about:blank` under CDP offline mode, the service worker serves the
-navigation/runtime assets from cache, the same client id renders the task from
-persistent browser storage with sync startup held manual, and the updated
-service-worker version remains active. Local pinned-Bun focused typecheck,
-Biome, and non-Chrome scaffold smoke passed; hosted Chrome confirmation is
-pending.
+is stopped, the preview server is stopped, Chrome relaunches the generated app
+URL directly as an app-window, CDP reports offline after attach, the service
+worker serves the navigation/runtime assets from cache, the same client id
+renders the task from persistent browser storage with sync startup held manual,
+and the updated service-worker version remains active. Local pinned-Bun
+focused typecheck, Biome, and non-Chrome scaffold smoke passed; hosted Chrome
+confirmation is pending.
 Remaining lifecycle/storage work is host/browser eviction beyond explicit CDP
 origin/database clears/Clear-Site-Data/same-origin IndexedDB deletion,
 deeper fully installed-PWA host semantics beyond the now-machine-readable

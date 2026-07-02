@@ -6290,13 +6290,13 @@ async function proveStarterPwaAppWindowDisplayMode(args: {
     previewStopped = true;
 
     chrome = await startBrowserPreviewChrome({
-      appUrl: 'about:blank',
+      appUrl: offlineRestartUrl,
       chrome: args.chrome,
       userDataDir: args.userDataDir,
     });
     const restartTarget = await findChromePageTarget({
       debugPort: chrome.debugPort,
-      urlIncludes: 'about:blank',
+      urlIncludes: `syncularClientId=${clientId}`,
     });
     session = await CdpSession.connect(restartTarget.webSocketDebuggerUrl);
     await enableChromeTarget(session);
@@ -6324,7 +6324,6 @@ async function proveStarterPwaAppWindowDisplayMode(args: {
       );
     }
 
-    await navigateChromeTarget(session, offlineRestartUrl);
     await waitForStarterBrowserReady(
       session,
       args.failureArtifactPath,

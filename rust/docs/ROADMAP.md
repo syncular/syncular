@@ -448,10 +448,11 @@ read-only review:
     The current app-window follow-up extends the installed-window PWA branch:
     after cache-refresh and service-worker update activation, the smoke creates
     a generated task, restarts the browser process with the same profile,
-    stops the preview server, relaunches through a Chrome app-window target
-    while CDP reports offline, requires service-worker runtime cache hits,
-    proves the task reopens from persistent browser storage, and checks that
-    the updated service-worker version remains active. Local pinned-Bun
+    stops the preview server, relaunches the generated app URL directly
+    through a Chrome app-window target, verifies CDP reports offline after
+    attach, requires service-worker runtime cache hits, proves the task reopens
+    from persistent browser storage, and checks that the updated
+    service-worker version remains active. Local pinned-Bun
     focused Biome, create-syncular-app typecheck, and non-Chrome scaffold smoke
     passed; hosted Chrome confirmation is still required for this branch.
     Remaining matrix work is host-driven eviction beyond explicit CDP storage
