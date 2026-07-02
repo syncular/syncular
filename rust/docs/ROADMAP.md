@@ -331,9 +331,13 @@ read-only review:
     fallback is separately marked ephemeral, and support-bundle summaries
     include those persistence issue codes without relying on human text. Local
     pinned-Bun focused browser-health/support-bundle tests and client
-    typecheck passed. Host-driven eviction beyond explicit CDP storage clears
-    and deeper storage/coordination failures beyond OPFS install capability
-    fallback remain matrix work.
+    typecheck passed. The fallback-also-fails path now rejects as
+    `storage.failed` with both the original OPFS capability/open failure and
+    the IndexedDB fallback failure preserved in error details; focused
+    pinned-Bun worker-client storage tests and the full worker-client test file
+    passed. Host-driven eviction beyond explicit CDP storage clears and deeper
+    storage/coordination failures below the covered fallback and
+    fallback-failure cases remain matrix work.
     The starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply

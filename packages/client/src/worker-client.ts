@@ -238,12 +238,17 @@ export async function createSyncularWorkerClient(
       isOpfsOpenFailure(err)
     ) {
       const fallbackConfig = { ...config, storage: 'indexedDb' as const };
-      client.setStorageFallback({
+      const fallbackInfo: SyncularStorageFallbackInfo = {
         from: SYNCULAR_DEFAULT_STORAGE,
         to: fallbackConfig.storage,
         reason: errorMessage(err),
-      });
-      await client.open(fallbackConfig, runtime);
+      };
+      client.setStorageFallback(fallbackInfo);
+      try {
+        await client.open(fallbackConfig, runtime);
+      } catch (fallbackErr) {
+        throw createStorageFallbackFailureError(err, fallbackErr, fallbackInfo);
+      }
     } else {
       throw err;
     }
@@ -2117,6 +2122,45 @@ function isOpfsOpenFailure(error: unknown): boolean {
       message
     )
   );
+}
+
+function createStorageFallbackFailureError(
+  opfsError: unknown,
+  fallbackError: unknown,
+  fallback: SyncularStorageFallbackInfo
+): SyncularWorkerError {
+  return new SyncularWorkerError(
+    createSyncularWorkerErrorPayload(
+      'storage.failed',
+      `Syncular browser storage could not open ${fallback.from} or ${fallback.to}.`,
+      {
+        details: {
+          from: fallback.from,
+          to: fallback.to,
+          opfsFailure: summarizeStorageOpenFailure(opfsError),
+          fallbackFailure: summarizeStorageOpenFailure(fallbackError),
+        },
+      }
+    )
+  );
+}
+
+function summarizeStorageOpenFailure(error: unknown): Record<string, unknown> {
+  const summary: Record<string, unknown> = { message: errorMessage(error) };
+  if (error instanceof SyncularWorkerError) {
+    summary.code = error.code;
+    if (error.category !== undefined) summary.category = error.category;
+    summary.retryable = error.retryable;
+    if (error.recommendedAction !== undefined) {
+      summary.recommendedAction = error.recommendedAction;
+    }
+    if (error.details !== undefined) summary.details = error.details;
+    return summary;
+  }
+  if (error instanceof Error) {
+    summary.name = error.name;
+  }
+  return summary;
 }
 
 function shouldEmitOperationalState(

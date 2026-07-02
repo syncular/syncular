@@ -4726,6 +4726,16 @@ Most recent browser-health failure-artifact rerun:
   Local gates with Bun `1.3.9` passed:
   `bun test packages/client/src/browser-health.test.ts packages/client/src/support-bundle.test.ts`
   and `bun --cwd packages/client tsgo`.
+- 2026-07-02: Added the lower-level fallback-failure classification slice in
+  `@syncular/client`. If default OPFS open fails with an allowed capability
+  error and the IndexedDB retry also fails, `createSyncularWorkerClient(...)`
+  now rejects with one `storage.failed` error whose details preserve both the
+  original `opfsFailure` and the `fallbackFailure`, instead of dropping the
+  OPFS context behind the final IndexedDB error. The successful fallback path
+  still emits `storage.fallback` and returns durable IndexedDB as before. Local
+  gates with Bun `1.3.9` passed:
+  `bun test packages/client/src/worker-client.test.ts -t "storage"` and
+  `bun test packages/client/src/worker-client.test.ts`.
 
 ## Next Action
 
@@ -4782,15 +4792,19 @@ fallback so default storage degrades to IndexedDB only for OPFS/SAH install or
 sync access-handle failures while explicit OPFS and unrelated OPFS-looking open
 errors fail loudly, and app-facing browser health/support bundles now preserve
 that fallback as `browser.storage_fallback` without classifying durable
-IndexedDB fallback as memory-only storage. The next lifecycle follow-up should
-move to host/browser eviction beyond explicit CDP origin/database clears and
-deeper storage failure behavior beyond OPFS install capability fallback.
+IndexedDB fallback as memory-only storage. The fallback-also-fails path now
+rejects as `storage.failed` with both OPFS and IndexedDB failure details
+preserved. The next lifecycle follow-up should move to host/browser eviction
+beyond explicit CDP origin/database clears and storage failure/coordination
+behavior below the already-covered OPFS fallback and fallback-failure
+classification.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain host-driven eviction
 and deeper storage-failure browser proof, lower-level storage
 contention/failure behavior beyond the already-covered OPFS install fallback,
-duplicate-tab generated writes, renderer crash, explicit shutdown close,
-discarded-tab recovery, and database-storage eviction branches, and
+fallback-failure classification, duplicate-tab generated writes, renderer
+crash, explicit shutdown close, discarded-tab recovery, and database-storage
+eviction branches, and
 browser/bundler matrix execution, especially Safari, Firefox, real private-mode
 durable-persistence semantics, WebViews, installed-PWA cache/update semantics,
 and PWA offline persistence beyond controller classification.

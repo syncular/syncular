@@ -1648,6 +1648,85 @@ describe('Syncular worker client', () => {
     await expect(promise).resolves.toBeInstanceOf(SyncularWorkerClient);
   });
 
+  it('keeps both storage open failures when IndexedDB fallback also fails', async () => {
+    const worker = new FakeWorker();
+    const diagnostics: SyncularDiagnosticEvent[] = [];
+    const promise = createSyncularWorkerClient({
+      worker: worker.asWorker(),
+      requestTimeoutMs: 100,
+      diagnostics: (event) => diagnostics.push(event),
+      config: {
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client',
+      },
+    });
+
+    await waitForMessages(worker, 1);
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
+      ok: false,
+      error: {
+        code: 'worker.failed',
+        message: 'Storage: install opfs-sahpool vfs: sync access handle failed',
+      },
+    });
+
+    await waitForMessages(worker, 2);
+    expect(worker.messages[1]).toMatchObject({
+      type: 'open',
+      config: { storage: 'indexedDb' },
+    });
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
+      ok: false,
+      error: {
+        code: 'storage.failed',
+        message: 'Storage: IndexedDB open failed: quota exceeded',
+        details: { storage: 'indexedDb' },
+      },
+    });
+
+    await expect(promise).rejects.toMatchObject({
+      code: 'storage.failed',
+      category: 'storage',
+      retryable: false,
+      recommendedAction: 'inspectStorage',
+      message:
+        'Syncular browser storage could not open opfsSahPool or indexedDb.',
+      details: {
+        from: 'opfsSahPool',
+        to: 'indexedDb',
+        opfsFailure: {
+          code: 'worker.failed',
+          message:
+            'Storage: install opfs-sahpool vfs: sync access handle failed',
+        },
+        fallbackFailure: {
+          code: 'storage.failed',
+          message: 'Storage: IndexedDB open failed: quota exceeded',
+          details: { storage: 'indexedDb' },
+        },
+      },
+    });
+    expect(worker.messages).toHaveLength(2);
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        level: 'warn',
+        source: 'storage',
+        code: 'storage.fallback',
+        details: {
+          from: 'opfsSahPool',
+          to: 'indexedDb',
+          reason:
+            'Storage: install opfs-sahpool vfs: sync access handle failed',
+        },
+      })
+    );
+  });
+
   it('does not fallback when OPFS storage was explicitly requested', async () => {
     const worker = new FakeWorker();
     const promise = createSyncularWorkerClient({
