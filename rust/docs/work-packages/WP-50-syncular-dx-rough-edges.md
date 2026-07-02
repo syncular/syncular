@@ -5055,6 +5055,25 @@ Most recent browser-health failure-artifact rerun:
   `28572809116` on commit `97773b48` confirmed the split: `test`,
   `starter-browser-preview`, `rust-browser-wasm`, and
   `starter-firefox-runtime-matrix` all passed.
+- 2026-07-02: Added the matching maintained WebKit/Safari starter runtime
+  matrix path. The existing Playwright runtime matrix runner already supported
+  `webkit` and maps it to the explicit `safari-secure-page` support-policy
+  context; Checks now include a dedicated `starter-webkit-runtime-matrix` job
+  that installs Playwright WebKit and runs
+  `bun --cwd packages/create-syncular-app smoke --browser-runtime-matrix=webkit
+  --browser-runtime-matrix-only`. The smoke opens the built starter in WebKit
+  with manual sync startup, waits for deployment
+  preflight/support-bundle/readiness markers, and requires
+  `safari-secure-page`/`preflight-required`/`warning` with
+  `browser_support.target_evidence_required`. This proves the Safari/WebKit
+  runtime/support-policy execution path without claiming durable Safari
+  persistence, realtime, reopen, or lifecycle support. Local Bun `1.3.9`
+  gates passed: `bun --cwd packages/create-syncular-app tsgo`, `bunx biome
+  check packages/create-syncular-app/scripts/smoke.ts`, `git diff --check`,
+  workflow YAML parse, `bun run docs:stale-check`, the non-Chrome scaffold
+  smoke, and the targeted Playwright WebKit runtime matrix smoke with
+  `PLAYWRIGHT_BROWSERS_PATH=.context/ms-playwright`. Hosted confirmation is
+  still pending for the new job.
 
 ## Next Action
 
@@ -5183,6 +5202,12 @@ focused typecheck, Biome, and non-Chrome scaffold smoke passed. Hosted Checks
 run `28574658892` on commit `21763367` passed the full matrix, including
 `starter-browser-preview`, after the previous hosted run caught and the
 follow-up fixed the `--app=about:blank` target assumption.
+The current WebKit/Safari runtime-matrix slice adds a dedicated
+`starter-webkit-runtime-matrix` Checks job using Playwright WebKit and the
+explicit `safari-secure-page` support context. It mirrors the Firefox
+runtime/support-policy proof while keeping Safari/WebKit durable persistence,
+realtime, reopen, and lifecycle support preflight-gated until deeper target
+evidence exists. Hosted confirmation is pending.
 Remaining lifecycle/storage work is host/browser eviction beyond explicit CDP
 origin/database clears/Clear-Site-Data/same-origin IndexedDB deletion,
 deeper fully installed-PWA host semantics beyond the now-machine-readable
@@ -5198,9 +5223,9 @@ fallback-failure classification, duplicate-tab generated writes, renderer
 crash, explicit shutdown close, discarded-tab recovery, database-storage
 eviction, Clear-Site-Data storage eviction, and same-origin IndexedDB deletion
 branches, and
-browser/bundler matrix execution, especially Safari, Firefox, real private-mode
-durable-persistence semantics, WebViews, Firefox realtime, reopen,
-persistence, and lifecycle proof beyond the runtime/support-policy smoke,
+browser/bundler matrix execution, especially Safari/WebKit and Firefox realtime,
+reopen, persistence, and lifecycle proof beyond the runtime/support-policy
+smokes, real private-mode durable-persistence semantics, WebViews,
 deeper fully installed-PWA host semantics beyond the app-window
 cache-refresh/offline-restart/update proof, and PWA cache-update semantics
 beyond these smoke-only/app-window runtime cache-refresh, offline restart, and

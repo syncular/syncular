@@ -189,6 +189,32 @@ jobs:
           if-no-files-found: ignore
           path: .context/starter-firefox-runtime-matrix-smoke/browser-preview-*.json
 
+  starter-webkit-runtime-matrix:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.starter == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+
+      - name: Setup WebKit for Playwright
+        run: bunx playwright install --with-deps webkit
+
+      - name: Run create-syncular-app WebKit runtime matrix smoke
+        env:
+          SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX: webkit
+          SYNCULAR_CSA_SMOKE_WORK_DIR: .context/starter-webkit-runtime-matrix-smoke
+        run: bun --cwd packages/create-syncular-app smoke --browser-runtime-matrix=webkit --browser-runtime-matrix-only
+
+      - name: Upload WebKit runtime matrix failure artifact
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: starter-webkit-runtime-matrix-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: .context/starter-webkit-runtime-matrix-smoke/browser-preview-*.json
+
   rust-native:
     needs: changes
     if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'

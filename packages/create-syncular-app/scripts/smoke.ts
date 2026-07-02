@@ -43,14 +43,14 @@ import { Buffer } from 'node:buffer';
  *    work dir. The normal smoke also self-checks that artifact shape and safe
  *    smoke metrics so non-browser runners keep the failure contract covered.
  *    Set SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required to fail when no browser
- *    is available. Set SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox or pass
- *    --browser-runtime-matrix=firefox to also prove explicit target-browser
- *    runtime/support-policy markers through Playwright. Pass
+ *    is available. Set SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox, webkit,
+ *    or all, or pass --browser-runtime-matrix=firefox,webkit to also prove
+ *    explicit target-browser runtime/support-policy markers through Playwright. Pass
  *    --browser-runtime-matrix-only to skip the Chrome/CDP proof that is owned
  *    by the dedicated starter-browser-preview CI job.
  *
  * Usage: bun scripts/smoke.ts [--keep] [--require-browser-preview]
- *   [--browser-runtime-matrix=firefox] [--browser-runtime-matrix-only]
+ *   [--browser-runtime-matrix=firefox|webkit|all] [--browser-runtime-matrix-only]
  * Set SYNCULAR_CSA_SMOKE_WORK_DIR to keep artifacts in a predictable
  * repo-root-relative or absolute path.
  */
