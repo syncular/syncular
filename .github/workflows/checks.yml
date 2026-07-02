@@ -184,6 +184,17 @@ jobs:
           bun --cwd packages/client build:wasm:dev
           bun --cwd packages/client size:wasm
 
+      # The src/__tests__ WASM integration fixtures are excluded from the
+      # coverage job's glob, so this is the one job that runs them. They are
+      # flaky under Bun >=1.3.13; setup-environment pins 1.3.9 where they
+      # are stable.
+      - name: Run WASM integration fixtures
+        env:
+          CC_wasm32_unknown_unknown: clang
+        run: |
+          bun --cwd packages/client test:wasm:hono
+          bun --cwd packages/client test:wasm:variants
+
       - name: Upload browser WASM artifact
         uses: actions/upload-artifact@v4
         with:
