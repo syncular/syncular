@@ -4980,7 +4980,8 @@ Most recent browser-health failure-artifact rerun:
   `1.3.9` gates passed: `bun --cwd packages/create-syncular-app tsgo`,
   `bun --cwd packages/create-syncular-app smoke`, focused Biome, `bun run
   docs:stale-check`, and `git diff --check`; Chrome was not installed locally,
-  so hosted Checks must confirm the app-window branch.
+  so hosted Checks run `28571045521` on commit `8c058d06` confirmed the
+  app-window branch in Chrome and passed the full matrix.
 
 ## Next Action
 
@@ -4991,9 +4992,11 @@ covered in hosted Chrome, and the same-database duplicate-tab writer branch is
 now also confirmed in hosted Chrome. The service-worker-controlled PWA
 classification proof is also covered in hosted Chrome: it verifies real
 controller evidence and support-policy `pwa`/`warning` classification without
-claiming installed-PWA offline/cache-update support. The current slice adds a
-Chrome app-window display-mode proof for the installed/standalone PWA context
-without claiming fully installed-PWA cache/update semantics. The incognito
+claiming installed-PWA offline/cache-update support. The Chrome app-window
+display-mode proof is now also confirmed in hosted Chrome: hosted Checks run
+`28571045521` on commit `8c058d06` passed the full matrix after proving the
+installed/standalone PWA context without claiming fully installed-PWA
+cache/update semantics. The incognito
 memory-storage support-policy branch is now confirmed in hosted Chrome and
 verifies explicit ephemeral/development storage classification without claiming
 private-mode durable persistence. The current slice adds a browser-observed
