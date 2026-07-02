@@ -4876,6 +4876,13 @@ Most recent browser-health failure-artifact rerun:
   leaving the service-worker navigation/runtime cache-hit telemetry gate
   unchanged. Local Bun `1.3.9` focused Biome, create-syncular-app typecheck,
   docs stale check, diff check, and non-Chrome scaffold smoke passed.
+- 2026-07-02: Hosted Checks run `28565395806` on commit `46689179` passed the
+  full matrix, including `starter-browser-preview`. That confirms the explicit
+  preview-server-down PWA offline proof in hosted Chrome: the same generated-app
+  client id reopens under service-worker control, renders the offline-created
+  task from persistent browser storage, and requires service-worker
+  navigation/runtime Cache API hit telemetry while only allowlisting the
+  intentional server-down diagnostics for that proof.
 
 ## Next Action
 
@@ -4946,41 +4953,24 @@ mounting the generated app, the non-browser scaffold smoke verifies the route,
 and the Chrome path deletes IndexedDB databases through
 `indexedDB.deleteDatabase(...)` before rehydrating the same client id from
 server state; hosted Checks run `28561926866` on commit `7869834b` confirmed
-that branch in Chrome and passed the full matrix. The next lifecycle follow-up
-adds a PWA offline cache/reopen persistence branch: the smoke-only service
-worker caches the built app/runtime assets on a controlled online load, Chrome
-is forced offline through CDP, and the same generated-app client id reloads
-with sync startup held manual before the smoke requires the locally inserted
-task to reappear from the persistent browser database. Hosted check runs
-`28562746749`, `28563036328`, and `28563286189` still fail only in
-`starter-browser-preview`: the exact WASM runtime asset cache warm proof passes,
-but hosted Chrome records `net::ERR_INTERNET_DISCONNECTED` for
-`/syncular/wasm-core/syncular.js` and
-`/syncular/wasm-core/syncular_bg.wasm` after the offline reload. The current
-follow-up adds smoke-only service-worker telemetry plus a diagnostic probe path
-that can read the page after CDP has recorded browser request failures. The
-offline branch now ignores only the expected network-first offline diagnostics
-for the recovery navigation and exact runtime asset URLs, then requires the
-telemetry to prove service-worker navigation and runtime Cache API hits. Hosted
-Checks run `28564187460` then failed only in `starter-browser-preview` because
-the app's offline deployment preflight probes runtime assets with `HEAD`, while
-the smoke worker only intercepted `GET`. The current follow-up handles cached
-offline `HEAD` runtime asset probes in the smoke worker. Hosted Checks run
-`28564524682` then failed only in `starter-browser-preview` because the online
-controlled-page `HEAD` probes were being written to Cache API, which rejects
-non-`GET` requests. Hosted Checks run `28564720341` then advanced to the
-offline reload proof: the page reopened under service-worker control and
-rendered the offline-created task, but service-worker telemetry still recorded
-network `200` runtime-asset fetches under CDP offline emulation. The current
-follow-up stops the preview server during only this PWA offline proof and
-restarts it in cleanup. Hosted Checks run `28565138186` then failed on expected
-server-down realtime/sync diagnostics from the already-open PWA client; the
-current follow-up allowlists those intentional diagnostics before stopping the
-server, so the next hosted run should confirm real Cache API
-navigation/runtime hits before moving to host/browser eviction beyond explicit
-CDP origin/database clears, Clear-Site-Data, same-origin IndexedDB deletion,
-and PWA offline cache/reopen, plus storage failure/coordination behavior below
-the already-covered OPFS fallback and fallback-failure classification.
+that branch in Chrome and passed the full matrix. The PWA offline cache/reopen
+persistence branch is now also confirmed in hosted Chrome: the smoke-only
+service worker caches the built app/runtime assets on a controlled online load,
+the proof warms the exact Syncular WASM bridge assets, stops the preview server
+during only the offline proof, reloads the same generated-app client id with
+sync startup held manual, and requires the locally inserted task to reappear
+from persistent browser storage under service-worker control. Intermediate
+hosted runs caught the sharp edges: exact runtime asset warming, cached
+fallback matching, `HEAD` preflight handling, avoiding Cache API writes for
+non-`GET` requests, service-worker process network behavior under CDP offline
+emulation, and expected server-down sync/realtime diagnostics. Hosted Checks
+run `28565395806` on commit `46689179` passed the full matrix, including
+`starter-browser-preview`, and confirmed real service-worker navigation/runtime
+Cache API hit telemetry. Remaining lifecycle/storage work is host/browser
+eviction beyond explicit CDP origin/database clears, Clear-Site-Data,
+same-origin IndexedDB deletion, and PWA offline cache/reopen, plus storage
+failure/coordination behavior below the already-covered OPFS fallback and
+fallback-failure classification.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain host-driven eviction
 and deeper storage-failure browser proof, lower-level storage

@@ -400,10 +400,12 @@ read-only review:
     Hosted Checks run `28565138186` on commit `c9475577` still failed only in
     `starter-browser-preview`: stopping the preview server intentionally caused
     the already-open page's realtime WebSocket/sync attempts to log
-    `ERR_CONNECTION_REFUSED` before the offline reload proof. The current
-    follow-up registers those server-down diagnostics as expected for this
-    PWA-offline client before stopping the server; the cache-hit telemetry gate
-    remains unchanged.
+    `ERR_CONNECTION_REFUSED` before the offline reload proof. The follow-up
+    registers those server-down diagnostics as expected for this PWA-offline
+    client before stopping the server; hosted Checks run `28565395806` on
+    commit `46689179` then passed the full matrix, including
+    `starter-browser-preview`, confirming the PWA offline navigation/runtime
+    cache-hit telemetry gate in hosted Chrome.
     Host-driven eviction beyond explicit CDP storage clears, Clear-Site-Data,
     same-origin IndexedDB deletion, and PWA offline cache/reopen, plus deeper
     storage/coordination failures below the covered fallback and
