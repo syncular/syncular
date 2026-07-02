@@ -25,8 +25,8 @@ import { Buffer } from 'node:buffer';
  *    same-client page reload/reopen persistence, same-client duplicate-tab
  *    open/write contention, generated write pressure, same-profile browser
  *    process restart persistence, sync-held shutdown replay recovery,
- *    renderer-crash replay recovery, and service-worker-controlled PWA plus
- *    incognito memory-storage
+ *    renderer-crash replay recovery, explicit storage shutdown replay
+ *    recovery, and service-worker-controlled PWA plus incognito memory-storage
  *    support-policy classification.
  *    After the happy path, the browser smoke also forces a hidden
  *    support-bundle marker failure and verifies the live
@@ -302,6 +302,7 @@ async function verifyBuiltPreviewAssets(
   let sawCommandTimelineMarker = false;
   let sawDeploymentPreflightMarker = false;
   let sawStarterTimelineMarker = false;
+  let sawStorageShutdownMarker = false;
   let sawStorageRecoveryMarker = false;
   let sawSupportBundleMarker = false;
   let totalAssetBytes = 0;
@@ -355,6 +356,11 @@ async function verifyBuiltPreviewAssets(
       sawStorageRecoveryMarker ||=
         assetBody.includes('data-syncular-storage-recovery-proof-status') &&
         assetBody.includes('data-syncular-storage-recovery-proof-action-kinds');
+      sawStorageShutdownMarker ||=
+        assetBody.includes('data-syncular-storage-shutdown-proof-status') &&
+        assetBody.includes(
+          'data-syncular-storage-shutdown-proof-post-close-error-code'
+        );
       sawSupportBundleMarker ||=
         assetBody.includes('data-syncular-support-bundle-status') &&
         assetBody.includes('data-syncular-support-bundle-timeline-event-count');
@@ -413,6 +419,11 @@ async function verifyBuiltPreviewAssets(
       'Built preview assets did not include the storage recovery proof marker'
     );
   }
+  if (!sawStorageShutdownMarker) {
+    throw new Error(
+      'Built preview assets did not include the storage shutdown proof marker'
+    );
+  }
   if (!sawCommandTimelineMarker) {
     throw new Error(
       'Built preview assets did not include the command timeline proof marker'
@@ -434,6 +445,7 @@ async function verifyBuiltPreviewAssets(
     otherAssetBytes,
     otherAssetCount,
     starterTimelineMarkerInAssets: sawStarterTimelineMarker,
+    storageShutdownMarkerInAssets: sawStorageShutdownMarker,
     storageRecoveryMarkerInAssets: sawStorageRecoveryMarker,
     supportBundleMarkerInAssets: sawSupportBundleMarker,
     totalAssetBytes,
@@ -491,6 +503,7 @@ type BuiltPreviewAssetMetrics = {
   otherAssetBytes: number;
   otherAssetCount: number;
   starterTimelineMarkerInAssets: boolean;
+  storageShutdownMarkerInAssets: boolean;
   storageRecoveryMarkerInAssets: boolean;
   supportBundleMarkerInAssets: boolean;
   totalAssetBytes: number;
@@ -755,6 +768,16 @@ async function runBrowserPreviewSmoke(args: {
     syncOrigin: args.syncOrigin,
     userDataDir: `${args.userDataDir}-sync-transport-replay`,
   });
+  log('real-browser smoke: proving storage shutdown replay recovery');
+  await proveStarterStorageShutdownReplayRecovery({
+    chrome: args.chrome,
+    failureArtifactPath: storageShutdownReplayFailureArtifactPath(
+      args.failureArtifactPath
+    ),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    userDataDir: `${args.userDataDir}-storage-shutdown-replay`,
+  });
   log('real-browser smoke: proving support-bundle failure artifact');
   await proveStarterSupportBundleFailureArtifact({
     chrome: args.chrome,
@@ -862,6 +885,14 @@ function syncTransportReplayFailureArtifactPath(
   return failureArtifactPath.endsWith('.json')
     ? failureArtifactPath.replace(/\.json$/u, '.sync-transport-replay.json')
     : `${failureArtifactPath}.sync-transport-replay.json`;
+}
+
+function storageShutdownReplayFailureArtifactPath(
+  failureArtifactPath: string
+): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(/\.json$/u, '.storage-shutdown-replay.json')
+    : `${failureArtifactPath}.storage-shutdown-replay.json`;
 }
 
 async function withTimeout<T>(args: {
@@ -1220,6 +1251,17 @@ type BrowserPreviewProbe = {
     usageRatio: number | null;
     writeFailed: boolean;
   };
+  storageShutdownProof: {
+    closed: boolean;
+    count: number;
+    durationMs: number | null;
+    error: string | null;
+    errorCode: string | null;
+    lifecyclePhase: string | null;
+    mutationRejected: boolean;
+    postCloseErrorCode: string | null;
+    status: string | null;
+  };
   starterTimeline: {
     bootstrapReadyMs: number | null;
     bootstrapStatus: string | null;
@@ -1270,6 +1312,7 @@ type BrowserPreviewFailureMetrics = {
   otherAssetCount: number;
   previewReadyMs: number;
   starterTimelineMarkerInAssets: boolean;
+  storageShutdownMarkerInAssets: boolean;
   storageRecoveryMarkerInAssets: boolean;
   supportBundleMarkerInAssets: boolean;
   totalAssetBytes: number;
@@ -1549,6 +1592,22 @@ async function readStarterBrowserProbe(
     const quotaExhaustionWriteProofQuotaBytes = readQuotaExhaustionWriteProofNumber('data-syncular-quota-exhaustion-write-proof-quota-bytes');
     const quotaExhaustionWriteProofUsageBytes = readQuotaExhaustionWriteProofNumber('data-syncular-quota-exhaustion-write-proof-usage-bytes');
     const quotaExhaustionWriteProofUsageRatio = readQuotaExhaustionWriteProofNumber('data-syncular-quota-exhaustion-write-proof-usage-ratio');
+    const storageShutdownProof = document.querySelector('[data-syncular-storage-shutdown-proof-status]');
+    const storageShutdownProofClosed = storageShutdownProof?.getAttribute('data-syncular-storage-shutdown-proof-closed') === 'true';
+    const storageShutdownProofCount = Number(storageShutdownProof?.getAttribute('data-syncular-storage-shutdown-proof-count') ?? 0);
+    const storageShutdownProofError = storageShutdownProof?.getAttribute('data-syncular-storage-shutdown-proof-error') ?? null;
+    const storageShutdownProofErrorCode = storageShutdownProof?.getAttribute('data-syncular-storage-shutdown-proof-error-code') ?? null;
+    const storageShutdownProofLifecyclePhase = storageShutdownProof?.getAttribute('data-syncular-storage-shutdown-proof-lifecycle-phase') ?? null;
+    const storageShutdownProofMutationRejected = storageShutdownProof?.getAttribute('data-syncular-storage-shutdown-proof-mutation-rejected') === 'true';
+    const storageShutdownProofPostCloseErrorCode = storageShutdownProof?.getAttribute('data-syncular-storage-shutdown-proof-post-close-error-code') ?? null;
+    const storageShutdownProofStatus = storageShutdownProof?.getAttribute('data-syncular-storage-shutdown-proof-status') ?? null;
+    const readStorageShutdownProofNumber = (name) => {
+      const value = storageShutdownProof?.getAttribute(name) ?? null;
+      if (value === null || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number : null;
+    };
+    const storageShutdownProofDurationMs = readStorageShutdownProofNumber('data-syncular-storage-shutdown-proof-duration-ms');
     const starterTimeline = document.querySelector('[data-syncular-starter-database-open-ms]');
     const readStarterTimelineMs = (name) => {
       const value = starterTimeline?.getAttribute(name) ?? null;
@@ -1648,6 +1707,13 @@ async function readStarterBrowserProbe(
           : 'quota exhaustion write proof failed'
       );
     }
+    if (storageShutdownProofStatus === 'failed') {
+      errors.push(
+        storageShutdownProofErrorCode
+          ? 'storage shutdown proof failed: ' + storageShutdownProofErrorCode
+          : 'storage shutdown proof failed'
+      );
+    }
     return {
       ready:
         (durableHealthLine || memoryStorageHealthLine) &&
@@ -1662,6 +1728,7 @@ async function readStarterBrowserProbe(
         quotaPressureProof !== null &&
         writePressureProof !== null &&
         quotaExhaustionWriteProof !== null &&
+        storageShutdownProof !== null &&
         starterTimeline !== null &&
         bootstrapStatus !== null &&
         databaseOpenMs !== null &&
@@ -1950,6 +2017,29 @@ async function readStarterBrowserProbe(
         usageBytes: quotaExhaustionWriteProofUsageBytes,
         usageRatio: quotaExhaustionWriteProofUsageRatio,
         writeFailed: quotaExhaustionWriteProofWriteFailed,
+      },
+      storageShutdownProof: {
+        closed: storageShutdownProofClosed,
+        count: storageShutdownProofCount,
+        durationMs: storageShutdownProofDurationMs,
+        error:
+          storageShutdownProofError === ''
+            ? null
+            : storageShutdownProofError,
+        errorCode:
+          storageShutdownProofErrorCode === ''
+            ? null
+            : storageShutdownProofErrorCode,
+        lifecyclePhase:
+          storageShutdownProofLifecyclePhase === ''
+            ? null
+            : storageShutdownProofLifecyclePhase,
+        mutationRejected: storageShutdownProofMutationRejected,
+        postCloseErrorCode:
+          storageShutdownProofPostCloseErrorCode === ''
+            ? null
+            : storageShutdownProofPostCloseErrorCode,
+        status: storageShutdownProofStatus,
       },
       starterTimeline: {
         bootstrapReadyMs,
@@ -4084,6 +4174,285 @@ async function proveStarterSyncTransportReplayRecovery(args: {
   }
 }
 
+async function proveStarterStorageShutdownReplayRecovery(args: {
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const clientId = 'web-storage-shutdown-replay';
+  const title = `storage shutdown replay ${Date.now()}`;
+  const chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  let activeSession: CdpSession | null = null;
+  let activeTargetId: string | null = null;
+  let recoverySession: CdpSession | null = null;
+  let recoveryTargetId: string | null = null;
+  let observerSession: CdpSession | null = null;
+  let observerTargetId: string | null = null;
+  let lastProbe: BrowserPreviewProbe | null = null;
+
+  try {
+    const activeTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    activeTargetId = activeTarget.id;
+    activeSession = await CdpSession.connect(activeTarget.webSocketDebuggerUrl);
+    await enableChromeTarget(activeSession);
+    await navigateChromeTarget(
+      activeSession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularSyncStartup=manual&syncularStorageShutdownReplayProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      activeSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(activeSession);
+    await submitStarterTask(activeSession, title);
+    await waitForStarterLocalVisibility({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+    });
+    await waitForStarterRenderedText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+      timeoutMessage:
+        'Timed out waiting for built preview storage-shutdown local render before close',
+      timeoutReason: 'storage-shutdown-local-render-timeout',
+      title,
+    });
+    await runStarterStorageShutdownProof({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+    });
+    await waitForStarterStorageShutdownProof({
+      expectedCount: (lastProbe.storageShutdownProof.count ?? 0) + 1,
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: activeSession,
+      targetId: activeTargetId,
+    });
+    activeSession = null;
+    activeTargetId = null;
+
+    const recoveryTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    recoveryTargetId = recoveryTarget.id;
+    recoverySession = await CdpSession.connect(
+      recoveryTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(recoverySession);
+    await navigateChromeTarget(
+      recoverySession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularSyncStartup=manual&syncularStorageShutdownRestoreProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      recoverySession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(recoverySession);
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: recoverySession,
+      title,
+      errorReason: 'storage-shutdown-local-restore-errors',
+      timeoutReason: 'storage-shutdown-local-restore-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview storage-shutdown local restore',
+    });
+
+    await navigateChromeTarget(
+      recoverySession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularStorageShutdownOnlineProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      recoverySession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await dispatchStarterOnlineEvent(recoverySession);
+
+    const observerTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    observerTargetId = observerTarget.id;
+    observerSession = await CdpSession.connect(
+      observerTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(observerSession);
+    await navigateChromeTarget(
+      observerSession,
+      `${args.origin}/?syncularClientId=web-storage-shutdown-replay-observer&syncularStorageShutdownObserverProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      observerSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: observerSession,
+      title,
+      errorReason: 'storage-shutdown-propagation-errors',
+      timeoutReason: 'storage-shutdown-propagation-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview storage-shutdown replay propagation',
+    });
+  } catch (error) {
+    await writeBrowserPreviewFailureArtifactIfMissing(
+      args.failureArtifactPath,
+      'storage-shutdown-replay-smoke-error',
+      lastProbe,
+      args.failureMetrics
+    );
+    throw error;
+  } finally {
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: observerSession,
+      targetId: observerTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: recoverySession,
+      targetId: recoveryTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: activeSession,
+      targetId: activeTargetId,
+    });
+    await stopProcess(chrome.process);
+  }
+}
+
+type StarterStorageShutdownProofResult = {
+  closed: boolean;
+  lifecyclePhase: string;
+  mutationRejected: boolean;
+  postCloseErrorCode: string | null;
+};
+
+async function runStarterStorageShutdownProof(args: {
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<StarterStorageShutdownProofResult> {
+  try {
+    return await args.session.evaluate<StarterStorageShutdownProofResult>(
+      `(() => new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        callback(value);
+      };
+      const timeout = setTimeout(() => {
+        finish(reject, new Error('Timed out waiting for starter storage shutdown proof'));
+      }, 15_000);
+      window.dispatchEvent(
+        new CustomEvent('syncular-starter-run-storage-shutdown-proof', {
+          detail: {
+            resolve: (result) => finish(resolve, result),
+            reject: (reason) =>
+              finish(
+                reject,
+                new Error(
+                  typeof reason === 'string'
+                    ? reason
+                    : 'Starter storage shutdown proof failed'
+                )
+              ),
+          },
+        })
+      );
+    }))()`
+    );
+  } catch (error) {
+    const probe = await readStarterBrowserProbe(args.session).catch(() => null);
+    await writeBrowserPreviewFailureArtifact(
+      args.failureArtifactPath,
+      'storage-shutdown-proof-error',
+      probe,
+      args.failureMetrics
+    );
+    throw new Error(
+      `Built preview starter storage shutdown proof failed: ${describeError(
+        error
+      )}. Failure artifact: ${args.failureArtifactPath}`
+    );
+  }
+}
+
+async function waitForStarterStorageShutdownProof(args: {
+  expectedCount: number;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'storage-shutdown-proof-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview storage shutdown proof failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    const proof = probe.storageShutdownProof;
+    if (
+      proof.status === 'complete' &&
+      proof.count >= args.expectedCount &&
+      proof.closed &&
+      proof.lifecyclePhase === 'closed' &&
+      proof.mutationRejected &&
+      proof.postCloseErrorCode === 'worker.closed' &&
+      proof.durationMs !== null
+    ) {
+      return;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'storage-shutdown-proof-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview storage shutdown proof. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
 type StarterResumeProofResult = {
   pushedCommits: number;
 };
@@ -5931,6 +6300,17 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         usageRatio: 0.95,
         writeFailed: true,
       },
+      storageShutdownProof: {
+        closed: true,
+        count: 1,
+        durationMs: 10,
+        error: null,
+        errorCode: null,
+        lifecyclePhase: 'closed',
+        mutationRejected: true,
+        postCloseErrorCode: 'worker.closed',
+        status: 'complete',
+      },
       starterTimeline: {
         bootstrapReadyMs: 10,
         bootstrapStatus: 'ready',
@@ -6014,6 +6394,7 @@ function finalizeBrowserPreviewFailureMetrics(
     otherAssetCount: metrics.otherAssetCount,
     previewReadyMs: metrics.previewReadyMs,
     starterTimelineMarkerInAssets: metrics.starterTimelineMarkerInAssets,
+    storageShutdownMarkerInAssets: metrics.storageShutdownMarkerInAssets,
     storageRecoveryMarkerInAssets: metrics.storageRecoveryMarkerInAssets,
     supportBundleMarkerInAssets: metrics.supportBundleMarkerInAssets,
     totalAssetBytes: metrics.totalAssetBytes,
@@ -6051,6 +6432,7 @@ function assertBrowserPreviewFailureMetricsShape(
     'deploymentPreflightMarkerInAssets',
     'lifecycleResumeMarkerInAssets',
     'starterTimelineMarkerInAssets',
+    'storageShutdownMarkerInAssets',
     'storageRecoveryMarkerInAssets',
     'supportBundleMarkerInAssets',
   ] as const) {
@@ -6096,6 +6478,10 @@ function assertBrowserPreviewProbeShape(
   assertBrowserPreviewWritePressureProofShape(probe.writePressureProof, path);
   assertBrowserPreviewQuotaExhaustionWriteProofShape(
     probe.quotaExhaustionWriteProof,
+    path
+  );
+  assertBrowserPreviewStorageShutdownProofShape(
+    probe.storageShutdownProof,
     path
   );
   assertBrowserPreviewStarterTimelineShape(probe.starterTimeline, path);
@@ -6808,6 +7194,51 @@ function assertBrowserPreviewQuotaExhaustionWriteProofShape(
   if (typeof value.writeFailed !== 'boolean') {
     throw new Error(
       `${path} probe.quotaExhaustionWriteProof.writeFailed was not boolean`
+    );
+  }
+}
+
+function assertBrowserPreviewStorageShutdownProofShape(
+  value: unknown,
+  path: string
+): void {
+  if (!isRecord(value)) {
+    throw new Error(`${path} probe.storageShutdownProof was not a JSON object`);
+  }
+  for (const key of [
+    'error',
+    'errorCode',
+    'lifecyclePhase',
+    'postCloseErrorCode',
+    'status',
+  ] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(
+        `${path} probe.storageShutdownProof.${key} was not nullable text`
+      );
+    }
+  }
+  for (const key of ['closed', 'mutationRejected'] as const) {
+    if (typeof value[key] !== 'boolean') {
+      throw new Error(
+        `${path} probe.storageShutdownProof.${key} was not boolean`
+      );
+    }
+  }
+  if (
+    !isNonNegativeFiniteNumber(value.count) ||
+    !Number.isInteger(value.count)
+  ) {
+    throw new Error(
+      `${path} probe.storageShutdownProof.count was not a non-negative integer`
+    );
+  }
+  if (
+    value.durationMs !== null &&
+    !isNonNegativeFiniteNumber(value.durationMs)
+  ) {
+    throw new Error(
+      `${path} probe.storageShutdownProof.durationMs was not nullable non-negative number`
     );
   }
 }

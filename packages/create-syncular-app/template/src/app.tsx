@@ -174,6 +174,18 @@ type QuotaExhaustionWriteProofPreview = {
   writeFailed: boolean;
 };
 
+type StorageShutdownProofPreview = {
+  closed: boolean;
+  count: number;
+  durationMs: number | null;
+  error: string | null;
+  errorCode: string | null;
+  lifecyclePhase: SyncularClientStatus['lifecycle']['phase'] | null;
+  mutationRejected: boolean;
+  postCloseErrorCode: string | null;
+  status: 'idle' | 'running' | 'complete' | 'failed';
+};
+
 type StarterOpenPreview = {
   diagnosticCode: string | null;
   diagnosticCount: number;
@@ -366,6 +378,18 @@ const initialQuotaExhaustionWriteProof: QuotaExhaustionWriteProofPreview = {
   usageBytes: null,
   usageRatio: null,
   writeFailed: false,
+};
+
+const initialStorageShutdownProof: StorageShutdownProofPreview = {
+  closed: false,
+  count: 0,
+  durationMs: null,
+  error: null,
+  errorCode: null,
+  lifecyclePhase: null,
+  mutationRejected: false,
+  postCloseErrorCode: null,
+  status: 'idle',
 };
 
 const initialStarterOpen: StarterOpenPreview = {
@@ -799,11 +823,14 @@ function TaskPane({
     useState<QuotaExhaustionWriteProofPreview>(
       initialQuotaExhaustionWriteProof
     );
+  const [storageShutdownProof, setStorageShutdownProof] =
+    useState<StorageShutdownProofPreview>(initialStorageShutdownProof);
   const localRecoveryProofRunning = useRef(false);
   const storageRecoveryProofRunning = useRef(false);
   const quotaPressureProofRunning = useRef(false);
   const writePressureProofRunning = useRef(false);
   const quotaExhaustionWriteProofRunning = useRef(false);
+  const storageShutdownProofRunning = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -1524,6 +1551,106 @@ function TaskPane({
     };
   }, [client]);
 
+  useEffect(() => {
+    const runProof = async (event: Event) => {
+      const detail = (
+        event as CustomEvent<{
+          reject?: (reason: string) => void;
+          resolve?: (result: {
+            closed: boolean;
+            lifecyclePhase: SyncularClientStatus['lifecycle']['phase'];
+            mutationRejected: boolean;
+            postCloseErrorCode: string | null;
+          }) => void;
+        }>
+      ).detail;
+      if (storageShutdownProofRunning.current) {
+        detail?.reject?.('Starter storage shutdown proof is already running');
+        return;
+      }
+      storageShutdownProofRunning.current = true;
+      const startedAtMs = performance.now();
+      setStorageShutdownProof((current) => ({
+        ...initialStorageShutdownProof,
+        count: current.count,
+        status: 'running',
+      }));
+      try {
+        await client.close();
+        const status = client.getStatus();
+        let mutationRejected = false;
+        let postCloseErrorCode: string | null = null;
+        try {
+          await mutations.tasks.insert({
+            id: crypto.randomUUID(),
+            title: 'storage shutdown rejected write',
+            completed: 0,
+            user_id: appActorId,
+            created_at: Date.now(),
+          });
+        } catch (error) {
+          mutationRejected = true;
+          postCloseErrorCode = syncularErrorCode(error);
+        }
+        if (
+          status.connection.closed !== true ||
+          status.lifecycle.phase !== 'closed' ||
+          !mutationRejected ||
+          postCloseErrorCode !== 'worker.closed'
+        ) {
+          throw Object.assign(
+            new Error(
+              `Storage shutdown proof did not close cleanly: closed=${status.connection.closed}, phase=${status.lifecycle.phase}, rejected=${mutationRejected}, code=${postCloseErrorCode ?? 'none'}`
+            ),
+            { code: 'storage.shutdown_incomplete' }
+          );
+        }
+        setStorageShutdownProof((current) => ({
+          closed: true,
+          count: current.count + 1,
+          durationMs: elapsedSince(startedAtMs),
+          error: null,
+          errorCode: null,
+          lifecyclePhase: status.lifecycle.phase,
+          mutationRejected,
+          postCloseErrorCode,
+          status: 'complete',
+        }));
+        detail?.resolve?.({
+          closed: true,
+          lifecyclePhase: status.lifecycle.phase,
+          mutationRejected,
+          postCloseErrorCode,
+        });
+      } catch (error) {
+        setStorageShutdownProof((current) => ({
+          ...current,
+          count: current.count + 1,
+          durationMs: elapsedSince(startedAtMs),
+          error: errorMessage(error),
+          errorCode: syncularErrorCode(error),
+          status: 'failed',
+        }));
+        detail?.reject?.(errorMessage(error));
+      } finally {
+        storageShutdownProofRunning.current = false;
+      }
+    };
+    const onProof = (event: Event) => {
+      void runProof(event);
+    };
+    window.addEventListener(
+      'syncular-starter-run-storage-shutdown-proof',
+      onProof
+    );
+    return () => {
+      window.removeEventListener(
+        'syncular-starter-run-storage-shutdown-proof',
+        onProof
+      );
+    };
+  }, [client, mutations]);
+
   const rows = tasks ?? [];
   const doneCount = rows.filter((task) => task.completed).length;
   const queued = (outbox?.pending ?? 0) + (outbox?.sending ?? 0);
@@ -1677,6 +1804,7 @@ function TaskPane({
       <QuotaExhaustionWriteProofMarker
         quotaExhaustionWriteProof={quotaExhaustionWriteProof}
       />
+      <StorageShutdownProofMarker storageShutdownProof={storageShutdownProof} />
       <StarterTimelineMarker starterTimeline={starterTimeline} />
 
       <form className="add-row" onSubmit={addTask}>
@@ -1870,6 +1998,41 @@ function QuotaPressureProofMarker({
       data-syncular-quota-pressure-proof-usage-ratio={
         quotaPressureProof.usageRatio ?? ''
       }
+      hidden
+    />
+  );
+}
+
+function StorageShutdownProofMarker({
+  storageShutdownProof,
+}: {
+  storageShutdownProof: StorageShutdownProofPreview;
+}) {
+  return (
+    <span
+      data-syncular-storage-shutdown-proof-closed={String(
+        storageShutdownProof.closed
+      )}
+      data-syncular-storage-shutdown-proof-count={storageShutdownProof.count}
+      data-syncular-storage-shutdown-proof-duration-ms={
+        storageShutdownProof.durationMs ?? ''
+      }
+      data-syncular-storage-shutdown-proof-error={
+        storageShutdownProof.error ?? ''
+      }
+      data-syncular-storage-shutdown-proof-error-code={
+        storageShutdownProof.errorCode ?? ''
+      }
+      data-syncular-storage-shutdown-proof-lifecycle-phase={
+        storageShutdownProof.lifecyclePhase ?? ''
+      }
+      data-syncular-storage-shutdown-proof-mutation-rejected={String(
+        storageShutdownProof.mutationRejected
+      )}
+      data-syncular-storage-shutdown-proof-post-close-error-code={
+        storageShutdownProof.postCloseErrorCode ?? ''
+      }
+      data-syncular-storage-shutdown-proof-status={storageShutdownProof.status}
       hidden
     />
   );
