@@ -283,11 +283,13 @@ read-only review:
     `/sync` POSTs, creates a generated task, requires local visibility and a
     server-observed blocked push count while the route is failing, clears the
     failpoint, dispatches `online`, awaits the public `resumeFromBackground()`
-    recovery path, and requires a
-    separate observer client to receive the replay. Local pinned-Bun
-    `create-syncular-app` typecheck, focused Biome, and non-Chrome scaffold
-    smoke passed; hosted Chrome confirmation is pending. Host-driven eviction
-    and storage-shutdown behavior remain matrix work. The starter now also records
+    recovery path until it reports a pushed commit, and requires a separate
+    observer client to receive the replay. Local pinned-Bun `create-syncular-app`
+    typecheck, focused Biome, and non-Chrome scaffold smoke passed; hosted
+    Checks run `28555819882` on commit `855c6749` passed the full matrix,
+    including `starter-browser-preview`, confirming the branch in hosted
+    Chrome. Host-driven eviction and storage-shutdown behavior remain matrix work.
+    The starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply
     evidence, and local-visibility evidence in the hidden marker and browser

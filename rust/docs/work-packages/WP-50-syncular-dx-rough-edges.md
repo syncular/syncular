@@ -4062,10 +4062,11 @@ Most recent browser-health failure-artifact rerun:
   POSTs, creates a generated task, requires local visibility and rendered text,
   waits for the server failpoint to count a blocked push from that exact
   client, clears the failpoint, dispatches `online`, awaits the public
-  `resumeFromBackground()` recovery path, and requires a separate observer
-  client to receive the replay through sync/realtime. Local pinned-Bun
-  typecheck, focused Biome, and non-Chrome scaffold smoke pass; hosted Chrome
-  confirmation is pending.
+  `resumeFromBackground()` recovery path until it reports a pushed commit, and
+  requires a separate observer client to receive the replay through
+  sync/realtime. Hosted Checks run `28555819882` on commit `855c6749` passed
+  the full matrix, including `starter-browser-preview`, confirming this branch
+  in Chrome.
   Remaining work is richer browser-process proof: actual
   target-browser background/discard suspension and restoration,
   real storage shutdown, browser/host-driven eviction beyond explicit CDP
@@ -4619,15 +4620,21 @@ Most recent browser-health failure-artifact rerun:
   failpoint for the client id, creates a generated task, waits for local
   visibility plus rendered text, requires the server failpoint to count a
   blocked push from that exact client, clears the failpoint, dispatches
-  `online`, awaits the public `resumeFromBackground()` recovery path, and waits
-  for a separate observer client to receive the replay through sync/realtime.
-  This replaces the discarded global Chrome-offline attempt with targeted
-  transport evidence for the generated write/outbox path. Local gates with Bun
-  `1.3.9` passed:
+  `online`, awaits the public `resumeFromBackground()` recovery path until it
+  reports a pushed commit, and waits for a separate observer client to receive
+  the replay through sync/realtime. An intermediate hosted run
+  `28555521871` failed with `sync-transport-replay-propagation-timeout`,
+  showing that a single immediate resume can race the one-second outbox retry
+  backoff after a transport error; the proof now loops through the public
+  resume API until replay actually pushes. This replaces the discarded global
+  Chrome-offline attempt with targeted transport evidence for the generated
+  write/outbox path. Local gates with Bun `1.3.9` passed:
   `bun --cwd packages/create-syncular-app tsgo`,
-  `bunx biome check packages/create-syncular-app/scripts/smoke.ts packages/create-syncular-app/template/src/server/sync-server.ts`,
-  and `bun --cwd packages/create-syncular-app smoke`. Chrome was not installed
-  locally, so hosted Chrome confirmation remains pending.
+  `bunx biome check packages/create-syncular-app/scripts/smoke.ts packages/create-syncular-app/template/src/app.tsx`,
+  `bun --cwd packages/create-syncular-app smoke`,
+  `bun run docs:stale-check`, and `git diff --check`. Chrome was not installed
+  locally, so hosted Checks run `28555819882` on commit `855c6749` confirmed
+  the branch in hosted Chrome and passed the full matrix.
 
 ## Next Action
 
@@ -4668,11 +4675,10 @@ Checks run `28553329494` confirmed that branch in Chrome. The current slice
 adds renderer-crash replay recovery for the same sync-held generated-write
 flow; hosted Checks run `28554593391` confirmed that branch in Chrome.
 The current slice adds targeted sync-transport replay behind a smoke-only
-server failpoint; it now awaits the public `resumeFromBackground()` recovery
-path after restoring transport, local pinned-Bun gates pass, and hosted Chrome
-confirmation is pending. The next lifecycle follow-up after that should move
-to discarded-tab, browser/host-driven eviction beyond explicit CDP origin
-clear, storage-shutdown, and lower-level storage-failure behavior.
+server failpoint; hosted Checks run `28555819882` confirmed that branch in
+Chrome. The next lifecycle follow-up should move to discarded-tab,
+browser/host-driven eviction beyond explicit CDP origin clear,
+storage-shutdown, and lower-level storage-failure behavior.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 discard/shutdown lifecycle coverage, host-driven eviction and storage-shutdown
