@@ -97,11 +97,22 @@ also stamps versions for app deploy builds in `deploy.yml`.
 If a longer-lived prerelease train is ever needed, Changesets supports it
 natively (`bunx changeset pre enter next` / `pre exit`); we don't use it today.
 
-## One-time follow-ups after the next stable release
+## One-time follow-ups (registry repair — blocked on interactive npm login)
 
-The next stable release (recommended: **0.1.0** — the pending changeset is a
-`minor`, covering the dialects merge and the umbrella-CLI breaking changes;
-`0.1.0` sorts above the last published `0.0.6-248`) must also:
+Status 2026-07-02: **0.1.3 is the shipped stable release, but these registry
+follow-ups have not been executed yet** — they need a credentialed
+`npm login`, which CI's trusted publishing does not provide. Also pending:
+
+- Deprecate the uninstallable `0.1.0` artifacts per-version: the `0.1.0`
+  publishes went out with literal `workspace:*` dependency ranges and cannot
+  be installed; deprecate that exact version of each affected `@syncular/*`
+  package (e.g. `npm deprecate @syncular/client@0.1.0 "Broken publish
+  (workspace:* ranges) — install 0.1.3 or later."`).
+- File the Bun worker-message-delivery regression upstream from the prepared
+  draft in `.context/bun-1.3.14-worker-delivery-issue-draft.md` (not a
+  registry task, but the CI Bun 1.3.9 pin has no exit without it).
+
+The original post-consolidation follow-ups:
 
 1. Deprecate the old published JavaScript packages that are no longer workspace
    packages after the folded package surface ships:
@@ -133,8 +144,10 @@ The next stable release (recommended: **0.1.0** — the pending changeset is a
      "Internalized into @syncular/console and no longer published as a public package."
    ```
 
-2. The 7 old `@syncular/dialect-*` packages already show as deprecated in the
-   npm registry as of 2026-06-16. If the message needs to be refreshed, rerun:
+2. Rewrite the 7 old `@syncular/dialect-*` deprecation messages. They show as
+   deprecated since 2026-06-16, but the live messages point at
+   `@syncular/dialects`, which 404s — the correct target is
+   `@syncular/server/<driver>`:
 
    ```sh
    for p in dialect-better-sqlite3 dialect-bun-sqlite dialect-d1 \
