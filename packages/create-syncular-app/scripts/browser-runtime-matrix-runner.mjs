@@ -94,6 +94,12 @@ async function readMatrixProbe(page, diagnostics) {
       const lifecycleResume = document.querySelector(
         '[data-syncular-lifecycle-resume-status]'
       );
+      const readLifecycleResumeNumber = (name) => {
+        const value = lifecycleResume?.getAttribute(name) ?? null;
+        if (value === null || value === '') return null;
+        const number = Number(value);
+        return Number.isFinite(number) && number >= 0 ? number : null;
+      };
       const localRecovery = document.querySelector(
         '[data-syncular-local-recovery-proof-status]'
       );
@@ -152,6 +158,49 @@ async function readMatrixProbe(page, diagnostics) {
         starterTimeline?.getAttribute(
           'data-syncular-starter-local-visibility-error-code'
         ) ?? null;
+      const lifecycleResumeStatus =
+        lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-status') ??
+        null;
+      const lifecycleResumeCount =
+        readLifecycleResumeNumber('data-syncular-lifecycle-resume-count') ?? 0;
+      const lifecycleResumeReason =
+        lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-reason') ??
+        null;
+      const lifecycleResumeError =
+        lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-error') ??
+        null;
+      const lifecycleResumeLockName =
+        lifecycleResume?.getAttribute(
+          'data-syncular-lifecycle-resume-lock-name'
+        ) ?? null;
+      const lifecycleResumeLockRequired =
+        lifecycleResume?.getAttribute(
+          'data-syncular-lifecycle-resume-lock-required'
+        ) ?? null;
+      const lifecycleResumeLockState =
+        lifecycleResume?.getAttribute(
+          'data-syncular-lifecycle-resume-lock-state'
+        ) ?? null;
+      const lifecycleResumeLockTimeoutMs = readLifecycleResumeNumber(
+        'data-syncular-lifecycle-resume-lock-timeout-ms'
+      );
+      const lifecyclePauseCount =
+        readLifecycleResumeNumber('data-syncular-lifecycle-pause-count') ?? 0;
+      const lifecyclePauseReason =
+        lifecycleResume?.getAttribute('data-syncular-lifecycle-pause-reason') ??
+        null;
+      const lifecyclePausePagehidePersisted =
+        lifecycleResume?.getAttribute(
+          'data-syncular-lifecycle-pause-pagehide-persisted'
+        ) ?? null;
+      const lifecyclePauseShutdownSignalCount =
+        readLifecycleResumeNumber(
+          'data-syncular-lifecycle-pause-shutdown-signal-count'
+        ) ?? 0;
+      const lifecyclePauseVisibilityState =
+        lifecycleResume?.getAttribute(
+          'data-syncular-lifecycle-pause-visibility-state'
+        ) ?? null;
       const errors = [];
       if (browserDiagnostics.length > 0) {
         errors.push(...browserDiagnostics);
@@ -174,6 +223,13 @@ async function readMatrixProbe(page, diagnostics) {
       }
       if (supportBundleStatus !== null && supportBundleRedacted !== 'true') {
         errors.push('support bundle was not redacted');
+      }
+      if (lifecycleResumeStatus === 'failed') {
+        errors.push(
+          lifecycleResumeError
+            ? `lifecycle resume failed: ${lifecycleResumeError}`
+            : 'lifecycle resume failed'
+        );
       }
       if (commandTimelineStatus === 'failed') {
         errors.push(
@@ -374,6 +430,23 @@ async function readMatrixProbe(page, diagnostics) {
           ),
           localVisibilityStatus: starterLocalVisibilityStatus,
         },
+        lifecyclePause: {
+          count: lifecyclePauseCount,
+          pagehidePersisted: lifecyclePausePagehidePersisted,
+          reason: lifecyclePauseReason,
+          shutdownSignalCount: lifecyclePauseShutdownSignalCount,
+          visibilityState: lifecyclePauseVisibilityState,
+        },
+        lifecycleResume: {
+          count: lifecycleResumeCount,
+          error: lifecycleResumeError,
+          lockName: lifecycleResumeLockName,
+          lockRequired: lifecycleResumeLockRequired,
+          lockState: lifecycleResumeLockState,
+          lockTimeoutMs: lifecycleResumeLockTimeoutMs,
+          reason: lifecycleResumeReason,
+          status: lifecycleResumeStatus,
+        },
         supportBundle: {
           issueCount: Number(
             supportBundle?.getAttribute(
@@ -408,6 +481,180 @@ async function submitMatrixTask(page, title) {
     }
     form.requestSubmit();
   }, title);
+}
+
+async function dispatchMatrixLifecycleEvent(page, type) {
+  await page.evaluate((eventType) => {
+    if (eventType === 'pagehide' || eventType === 'pageshow') {
+      let event;
+      if (typeof PageTransitionEvent === 'function') {
+        event = new PageTransitionEvent(eventType, { persisted: true });
+      } else {
+        event = new Event(eventType);
+        Object.defineProperty(event, 'persisted', { value: true });
+      }
+      window.dispatchEvent(event);
+      return;
+    }
+    window.dispatchEvent(new Event(eventType));
+  }, type);
+}
+
+async function waitForMatrixLifecyclePause(args) {
+  const deadline = Date.now() + 15_000;
+  let lastProbe = null;
+  while (Date.now() < deadline) {
+    const probe = await readMatrixProbe(args.page, args.diagnostics);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeFailureArtifact(args.failureArtifact, {
+        browser: args.browserName,
+        generatedAt: new Date().toISOString(),
+        metrics: args.metrics,
+        probe,
+        reason: `${args.browserName}-runtime-matrix-lifecycle-pause-errors`,
+        supportContext: args.supportContext,
+        url: args.url,
+      });
+      throw new Error(
+        `Built preview ${args.browserName} lifecycle pause proof failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifact}`
+      );
+    }
+    const pagehidePersistedMatches =
+      args.expectedPagehidePersisted === undefined ||
+      probe.lifecyclePause.pagehidePersisted === args.expectedPagehidePersisted;
+    const shutdownSignalMatches =
+      args.expectedShutdownSignalCount === undefined ||
+      probe.lifecyclePause.shutdownSignalCount >=
+        args.expectedShutdownSignalCount;
+    if (
+      probe.lifecyclePause.count >= args.expectedCount &&
+      probe.lifecyclePause.reason === args.expectedReason &&
+      pagehidePersistedMatches &&
+      shutdownSignalMatches
+    ) {
+      return probe;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  await writeFailureArtifact(args.failureArtifact, {
+    browser: args.browserName,
+    generatedAt: new Date().toISOString(),
+    metrics: args.metrics,
+    probe: lastProbe,
+    reason: `${args.browserName}-runtime-matrix-${args.timeoutReason}`,
+    supportContext: args.supportContext,
+    url: args.url,
+  });
+  throw new Error(
+    `Timed out waiting for built preview ${args.browserName} lifecycle pause (${args.expectedReason}). Failure artifact: ${args.failureArtifact}`
+  );
+}
+
+async function waitForMatrixLifecycleResume(args) {
+  const deadline = Date.now() + 15_000;
+  let lastProbe = null;
+  while (Date.now() < deadline) {
+    const probe = await readMatrixProbe(args.page, args.diagnostics);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeFailureArtifact(args.failureArtifact, {
+        browser: args.browserName,
+        generatedAt: new Date().toISOString(),
+        metrics: args.metrics,
+        probe,
+        reason: `${args.browserName}-runtime-matrix-lifecycle-resume-errors`,
+        supportContext: args.supportContext,
+        url: args.url,
+      });
+      throw new Error(
+        `Built preview ${args.browserName} lifecycle resume proof failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifact}`
+      );
+    }
+    if (
+      probe.lifecycleResume.status === 'complete' &&
+      probe.lifecycleResume.count >= args.expectedCount &&
+      probe.lifecycleResume.reason === args.expectedReason
+    ) {
+      return probe;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  await writeFailureArtifact(args.failureArtifact, {
+    browser: args.browserName,
+    generatedAt: new Date().toISOString(),
+    metrics: args.metrics,
+    probe: lastProbe,
+    reason: `${args.browserName}-runtime-matrix-${args.timeoutReason}`,
+    supportContext: args.supportContext,
+    url: args.url,
+  });
+  throw new Error(
+    `Timed out waiting for built preview ${args.browserName} lifecycle resume (${args.expectedReason}). Failure artifact: ${args.failureArtifact}`
+  );
+}
+
+async function proveMatrixLifecycleSignals(args) {
+  const initialProbe = await readMatrixProbe(args.page, args.diagnostics);
+  const pagehideCount = initialProbe.lifecyclePause.count + 1;
+  await dispatchMatrixLifecycleEvent(args.page, 'pagehide');
+  await waitForMatrixLifecyclePause({
+    ...args,
+    expectedCount: pagehideCount,
+    expectedPagehidePersisted: 'true',
+    expectedReason: 'pagehide',
+    timeoutReason: 'lifecycle-pagehide-timeout',
+  });
+
+  const pageshowCount = initialProbe.lifecycleResume.count + 1;
+  await dispatchMatrixLifecycleEvent(args.page, 'pageshow');
+  await waitForMatrixLifecycleResume({
+    ...args,
+    expectedCount: pageshowCount,
+    expectedReason: 'pageshow',
+    timeoutReason: 'lifecycle-pageshow-timeout',
+  });
+
+  await dispatchMatrixLifecycleEvent(args.page, 'online');
+  await waitForMatrixLifecycleResume({
+    ...args,
+    expectedCount: pageshowCount + 1,
+    expectedReason: 'online',
+    timeoutReason: 'lifecycle-online-timeout',
+  });
+
+  const freezeCount = pagehideCount + 1;
+  await dispatchMatrixLifecycleEvent(args.page, 'freeze');
+  await waitForMatrixLifecyclePause({
+    ...args,
+    expectedCount: freezeCount,
+    expectedReason: 'freeze',
+    timeoutReason: 'lifecycle-freeze-timeout',
+  });
+
+  await dispatchMatrixLifecycleEvent(args.page, 'resume');
+  await waitForMatrixLifecycleResume({
+    ...args,
+    expectedCount: pageshowCount + 2,
+    expectedReason: 'resume',
+    timeoutReason: 'lifecycle-resume-event-timeout',
+  });
+
+  await dispatchMatrixLifecycleEvent(args.page, 'beforeunload');
+  return waitForMatrixLifecyclePause({
+    ...args,
+    expectedCount: freezeCount + 1,
+    expectedReason: 'beforeunload',
+    expectedShutdownSignalCount:
+      initialProbe.lifecyclePause.shutdownSignalCount + 1,
+    timeoutReason: 'lifecycle-beforeunload-timeout',
+  });
 }
 
 async function waitForMatrixLocalWriteProof(args) {
@@ -636,6 +883,15 @@ async function main() {
       supportContext,
       url,
     });
+    const lifecycleProbe = await proveMatrixLifecycleSignals({
+      browserName,
+      diagnostics,
+      failureArtifact,
+      metrics,
+      page,
+      supportContext,
+      url,
+    });
     const title = `${browserName} matrix local write ${Date.now()}`;
     await submitMatrixTask(page, title);
     const writeProbe = await waitForMatrixLocalWriteProof({
@@ -670,7 +926,7 @@ async function main() {
       url,
     });
     console.log(
-      `[csa-smoke] ${browserName} runtime matrix evidence passed: context=${probe.browserSupportPolicy.context} tier=${probe.deploymentPreflight.supportTier} localWriteCount=${writeProbe.commandTimeline.count}`
+      `[csa-smoke] ${browserName} runtime matrix evidence passed: context=${probe.browserSupportPolicy.context} tier=${probe.deploymentPreflight.supportTier} lifecycleResumeCount=${lifecycleProbe.lifecycleResume.count} localWriteCount=${writeProbe.commandTimeline.count}`
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

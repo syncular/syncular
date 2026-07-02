@@ -704,11 +704,14 @@ read-only review:
     contexts, open the built starter with manual sync startup, require
     deployment-preflight evidence plus
     `*-secure-page`/`preflight-required`/`warning` support-policy markers, then
-    create a generated task, require local apply/outbox/local-visibility command
-    evidence, reload the same Playwright context, and require the task to render
-    from local browser storage. This proves target-browser local-write/reload
-    execution without claiming Firefox/Safari/WebKit realtime, broader reopen
-    host semantics, durable persistence policy, or lifecycle support. Dedicated
+    exercise the starter lifecycle helper through DOM `pagehide`, `pageshow`,
+    `online`, `freeze`, `resume`, and `beforeunload` signals, create a generated
+    task, require local apply/outbox/local-visibility command evidence, reload the
+    same Playwright context, and require the task to render from local browser
+    storage. This proves target-browser DOM lifecycle signal handling plus
+    local-write/reload execution without claiming Firefox/Safari/WebKit realtime,
+    broader reopen host semantics, durable persistence policy, target activation,
+    or Web Lock lifecycle coordination support. Dedicated
     `starter-firefox-runtime-matrix` and `starter-webkit-runtime-matrix` Checks
     jobs own these proofs; hosted Checks run `28576137057` on commit `8245fc98`
     confirmed the first WebKit matrix inside the full matrix before the local

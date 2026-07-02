@@ -772,12 +772,14 @@ The starter Checks matrix maintains Firefox and WebKit runtime smokes with
 explicit `firefox-secure-page` and `safari-secure-page` contexts. Those prove
 the generated app can open, run deployment preflight, and report the target
 support-policy paths. They also create a generated task, require local
-apply/outbox/local-visibility command evidence, reload the same Playwright
-context, and require that task to render from local browser storage. These
-runtime smokes use manual sync startup, so Chrome remains the maintained browser
-realtime proof; Firefox and Safari/WebKit stay preflight-gated until realtime,
-broader reopen host semantics, durable persistence policy, and lifecycle
-evidence exists for the target version.
+apply/outbox/local-visibility command evidence, exercise the lifecycle helper
+through DOM `pagehide`, `pageshow`, `online`, `freeze`, `resume`, and
+`beforeunload` signals, reload the same Playwright context, and require that task
+to render from local browser storage. These runtime smokes use manual sync
+startup, so Chrome remains the maintained browser realtime proof; Firefox and
+Safari/WebKit stay preflight-gated until realtime, broader reopen host semantics,
+durable persistence policy, target activation, and Web Lock lifecycle
+coordination evidence exists for the target version.
 
 Treat `unknown` as "collect target-host preflight and persistence evidence,"
 not as implicit support. Private/incognito mode should not promise production
