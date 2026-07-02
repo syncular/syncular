@@ -3975,15 +3975,22 @@ Most recent browser-health failure-artifact rerun:
   the app targets, clears the app origin through Chrome
   `Storage.clearDataForOrigin`, reloads the same client id, requires the
   sentinel to be gone, and waits for the task to restore from server state.
+  The branch now also adds a server-driven Clear-Site-Data storage
+  eviction/rebootstrap proof path: the Vite dev/preview template exposes a
+  smoke-only same-origin endpoint with `Clear-Site-Data: "storage"`, the
+  non-browser scaffold smoke verifies the endpoint/header contract, and the
+  Chrome path can request that endpoint, require IndexedDB/localStorage
+  sentinel removal without using CDP storage clear, and reload the same client
+  id from server state.
   Remaining work is richer browser/host eviction and storage-failure
-  execution beyond explicit CDP origin clear, same-database duplicate-tab
-  writes, storage shutdown, and discarded-tab recovery, plus deeper recovery
-  coordination for persistent browser databases beyond real target
-  foreground/background activation, dispatched page lifecycle events, CDP
-  lifecycle forcing, synthetic storage warning action mapping,
-  browser-observed quota-pressure preflight/recovery mapping,
-  quota-exhausted write rejection, and lock-serialized foreground
-  resume/recovery actions. Local
+  execution beyond explicit CDP origin clear, Clear-Site-Data storage clear,
+  same-database duplicate-tab writes, storage shutdown, and discarded-tab
+  recovery, plus deeper recovery coordination for persistent browser databases
+  beyond real target foreground/background activation, dispatched page
+  lifecycle events, CDP lifecycle forcing, synthetic storage warning action
+  mapping, browser-observed quota-pressure preflight/recovery mapping,
+  quota-exhausted write rejection, and lock-serialized foreground resume/recovery
+  actions. Local
   execution of the new browser branches still needs a Chrome-capable runner;
   this machine has no Chrome/Chromium binary.
 - Local recovery controls: first plan/action slice is done for support bundles,
@@ -4087,10 +4094,11 @@ Most recent browser-health failure-artifact rerun:
   commit `49d1b4d4` passed the full matrix, including
   `starter-browser-preview`, confirming this branch in Chrome.
   Remaining work is richer browser/host proof: host-driven eviction beyond
-  explicit CDP origin clear and lower-level storage contention/failure
-  behavior beyond the already-covered duplicate-tab generated writes,
-  renderer crash, explicit client shutdown close, and discarded-tab recovery
-  branches, plus deeper persistent database recovery coordination.
+  explicit CDP origin clear and Clear-Site-Data storage clear, and lower-level
+  storage contention/failure behavior beyond the already-covered duplicate-tab
+  generated writes, renderer crash, explicit client shutdown close, and
+  discarded-tab recovery branches, plus deeper persistent database recovery
+  coordination.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,
@@ -4736,6 +4744,21 @@ Most recent browser-health failure-artifact rerun:
   gates with Bun `1.3.9` passed:
   `bun test packages/client/src/worker-client.test.ts -t "storage"` and
   `bun test packages/client/src/worker-client.test.ts`.
+- 2026-07-02: Added a server-driven Clear-Site-Data storage
+  eviction/rebootstrap proof path to the generated starter smoke. The
+  scaffolded Vite dev/preview server now exposes a smoke-only same-origin
+  `Clear-Site-Data: "storage"` endpoint under
+  `SYNCULAR_STARTER_SMOKE_FAILPOINTS=1`; the non-browser smoke verifies the
+  header contract, and the Chrome branch requests that endpoint after a synced
+  generated task reaches an observer, requires IndexedDB/localStorage sentinels
+  to disappear without using CDP storage clear, then reloads the same client id
+  and waits for the task to restore from server state. Local gates with Bun
+  `1.3.9` passed:
+  `bunx biome check packages/create-syncular-app/scripts/smoke.ts packages/create-syncular-app/template/vite.config.ts`,
+  `bun --cwd packages/create-syncular-app tsgo`, and
+  `bun --cwd packages/create-syncular-app smoke`. Chrome was not installed
+  locally, so hosted `starter-browser-preview` confirmation is still required
+  for the new browser branch.
 
 ## Next Action
 
@@ -4794,17 +4817,22 @@ errors fail loudly, and app-facing browser health/support bundles now preserve
 that fallback as `browser.storage_fallback` without classifying durable
 IndexedDB fallback as memory-only storage. The fallback-also-fails path now
 rejects as `storage.failed` with both OPFS and IndexedDB failure details
-preserved. The next lifecycle follow-up should move to host/browser eviction
-beyond explicit CDP origin/database clears and storage failure/coordination
-behavior below the already-covered OPFS fallback and fallback-failure
-classification.
+preserved. The current slice adds a server-driven Clear-Site-Data storage
+eviction/rebootstrap branch: a smoke-only Vite dev/preview endpoint returns
+`Clear-Site-Data: "storage"`, the non-browser scaffold smoke verifies the
+header contract, and the Chrome path clears IndexedDB/localStorage sentinels
+through that response header before rehydrating the same client id from server
+state. The next lifecycle follow-up should confirm that branch in hosted Chrome
+and then move to host/browser eviction beyond explicit CDP origin/database
+clears and Clear-Site-Data, plus storage failure/coordination behavior below
+the already-covered OPFS fallback and fallback-failure classification.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain host-driven eviction
 and deeper storage-failure browser proof, lower-level storage
 contention/failure behavior beyond the already-covered OPFS install fallback,
 fallback-failure classification, duplicate-tab generated writes, renderer
-crash, explicit shutdown close, discarded-tab recovery, and database-storage
-eviction branches, and
+crash, explicit shutdown close, discarded-tab recovery, database-storage
+eviction, and Clear-Site-Data storage eviction branches, and
 browser/bundler matrix execution, especially Safari, Firefox, real private-mode
 durable-persistence semantics, WebViews, installed-PWA cache/update semantics,
 and PWA offline persistence beyond controller classification.

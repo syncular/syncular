@@ -1,8 +1,8 @@
 import { cp, readFile } from 'node:fs/promises';
-import type { ServerResponse } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
-import { defineConfig, type Plugin, type ViteDevServer } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 
 const require = createRequire(import.meta.url);
 const syncularClientRoot = dirname(
@@ -14,6 +14,21 @@ const syncularRuntimeContentTypes = new Map([
   ['syncular.js', 'text/javascript; charset=utf-8'],
   ['syncular_bg.wasm', 'application/wasm'],
 ]);
+const syncularSmokeClearSiteDataPath = '/__syncular-smoke/clear-site-data';
+
+type SyncularMiddlewareStack = {
+  use(handler: SyncularMiddlewareHandler): void;
+};
+
+type SyncularMiddlewareServer = {
+  middlewares: SyncularMiddlewareStack;
+};
+
+type SyncularMiddlewareHandler = (
+  request: IncomingMessage,
+  response: ServerResponse,
+  next: (error?: unknown) => void
+) => void;
 
 function syncularRuntimeAssets(): Plugin {
   let root = process.cwd();
@@ -26,7 +41,10 @@ function syncularRuntimeAssets(): Plugin {
       outDir = config.build.outDir;
     },
     configureServer(server) {
-      installSyncularRuntimeMiddleware(server);
+      installSyncularMiddlewares(server);
+    },
+    configurePreviewServer(server) {
+      installSyncularMiddlewares(server);
     },
     async closeBundle() {
       await cp(
@@ -38,7 +56,30 @@ function syncularRuntimeAssets(): Plugin {
   };
 }
 
-function installSyncularRuntimeMiddleware(server: ViteDevServer) {
+function installSyncularMiddlewares(server: SyncularMiddlewareServer) {
+  installSyncularSmokeMiddleware(server);
+  installSyncularRuntimeMiddleware(server);
+}
+
+function installSyncularSmokeMiddleware(server: SyncularMiddlewareServer) {
+  if (process.env.SYNCULAR_STARTER_SMOKE_FAILPOINTS !== '1') return;
+
+  server.middlewares.use((request, response, next) => {
+    const pathname = resolveRequestPathname(request.url);
+    if (pathname !== syncularSmokeClearSiteDataPath) {
+      next();
+      return;
+    }
+
+    response.statusCode = 200;
+    response.setHeader('cache-control', 'no-store');
+    response.setHeader('clear-site-data', '"storage"');
+    response.setHeader('content-type', 'text/plain; charset=utf-8');
+    response.end('syncular smoke storage clear requested\n');
+  });
+}
+
+function installSyncularRuntimeMiddleware(server: SyncularMiddlewareServer) {
   server.middlewares.use((request, response, next) => {
     void serveSyncularRuntimeAsset(request.url, response)
       .then((served) => {
@@ -62,9 +103,14 @@ async function serveSyncularRuntimeAsset(
   return true;
 }
 
-function resolveSyncularRuntimeRequest(requestUrl: string | undefined) {
+function resolveRequestPathname(requestUrl: string | undefined): string | null {
   if (!requestUrl) return null;
-  const pathname = new URL(requestUrl, 'http://syncular.local').pathname;
+  return new URL(requestUrl, 'http://syncular.local').pathname;
+}
+
+function resolveSyncularRuntimeRequest(requestUrl: string | undefined) {
+  const pathname = resolveRequestPathname(requestUrl);
+  if (!pathname) return null;
   if (!pathname.startsWith(syncularRuntimeMountPath)) return null;
   const fileName = pathname.slice(syncularRuntimeMountPath.length);
   const contentType = syncularRuntimeContentTypes.get(fileName);

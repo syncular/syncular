@@ -22,6 +22,7 @@ import { Buffer } from 'node:buffer';
  *    preflight-to-recovery action mapping, browser-observed quota-pressure
  *    preflight classification, quota-exhausted generated writes, browser
  *    database-storage eviction/rebootstrap recovery, browser origin-storage
+ *    eviction/rebootstrap recovery, Clear-Site-Data server-driven storage
  *    eviction/rebootstrap recovery, two-tab propagation,
  *    same-client page reload/reopen persistence, same-client duplicate-tab
  *    open/write contention, generated write pressure, same-profile browser
@@ -75,6 +76,7 @@ const STARTER_STORAGE_EVICTION_SENTINEL_URL =
   '/__syncular-storage-eviction-proof.bin';
 const STARTER_DATABASE_STORAGE_EVICTION_TYPES = 'indexeddb,file_systems';
 const STARTER_PWA_SMOKE_SERVICE_WORKER_PATH = '/__syncular-smoke-pwa-sw.js';
+const STARTER_CLEAR_SITE_DATA_SMOKE_PATH = '/__syncular-smoke/clear-site-data';
 const BROWSER_PREVIEW_SMOKE_TIMEOUT_MS = 180_000;
 const CDP_CONNECT_TIMEOUT_MS = 10_000;
 const CDP_COMMAND_TIMEOUT_MS = 30_000;
@@ -488,6 +490,34 @@ async function verifyBuiltPreviewRuntimeAssets(origin: string): Promise<void> {
   }
 }
 
+async function verifyBuiltPreviewClearSiteDataEndpoint(
+  origin: string
+): Promise<void> {
+  const response = await fetch(
+    new URL(
+      `${STARTER_CLEAR_SITE_DATA_SMOKE_PATH}?selfCheck=${Date.now()}`,
+      origin
+    )
+  );
+  if (!response.ok) {
+    throw new Error(
+      `Built preview Clear-Site-Data smoke endpoint returned ${response.status}`
+    );
+  }
+  const clearSiteData = response.headers.get('clear-site-data') ?? '';
+  if (clearSiteData !== '"storage"') {
+    throw new Error(
+      `Built preview Clear-Site-Data smoke endpoint returned ${clearSiteData || '<missing>'}`
+    );
+  }
+  const cacheControl = response.headers.get('cache-control') ?? '';
+  if (!cacheControl.toLowerCase().includes('no-store')) {
+    throw new Error(
+      `Built preview Clear-Site-Data smoke endpoint was cacheable: ${cacheControl || '<missing>'}`
+    );
+  }
+}
+
 function isExpectedAssetContentType(contentType: string, expected: string) {
   return expected === 'javascript'
     ? contentType.includes('javascript')
@@ -852,6 +882,16 @@ async function runBrowserPreviewSmoke(args: {
     origin: args.origin,
     userDataDir: `${args.userDataDir}-storage-eviction`,
   });
+  log('real-browser smoke: proving Clear-Site-Data storage eviction recovery');
+  await proveStarterClearSiteDataStorageEvictionRecovery({
+    chrome: args.chrome,
+    failureArtifactPath: clearSiteDataStorageEvictionFailureArtifactPath(
+      args.failureArtifactPath
+    ),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    userDataDir: `${args.userDataDir}-clear-site-data-storage-eviction`,
+  });
   log('real-browser built-preview preflight smoke passed');
 }
 
@@ -895,6 +935,17 @@ function storageEvictionFailureArtifactPath(
   return failureArtifactPath.endsWith('.json')
     ? failureArtifactPath.replace(/\.json$/u, '.storage-eviction.json')
     : `${failureArtifactPath}.storage-eviction.json`;
+}
+
+function clearSiteDataStorageEvictionFailureArtifactPath(
+  failureArtifactPath: string
+): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(
+        /\.json$/u,
+        '.clear-site-data-storage-eviction.json'
+      )
+    : `${failureArtifactPath}.clear-site-data-storage-eviction.json`;
 }
 
 function shutdownReplayFailureArtifactPath(
@@ -6023,6 +6074,219 @@ async function proveStarterStorageEvictionRecovery(args: {
   }
 }
 
+async function proveStarterClearSiteDataStorageEvictionRecovery(args: {
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  const clientId = 'web-clear-site-data-storage-eviction';
+  const title = `clear site data storage eviction ${Date.now()}`;
+  let activeSession: CdpSession | null = null;
+  let activeTargetId: string | null = null;
+  let observerSession: CdpSession | null = null;
+  let observerTargetId: string | null = null;
+  let clearSession: CdpSession | null = null;
+  let clearTargetId: string | null = null;
+  let recoverySession: CdpSession | null = null;
+  let recoveryTargetId: string | null = null;
+  let lastProbe: BrowserPreviewProbe | null = null;
+
+  try {
+    const activeTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    activeTargetId = activeTarget.id;
+    activeSession = await CdpSession.connect(activeTarget.webSocketDebuggerUrl);
+    await enableChromeTarget(activeSession);
+    await navigateChromeTarget(
+      activeSession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularClearSiteDataStorageEvictionProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      activeSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(activeSession);
+    await writeStarterStorageEvictionSentinel(activeSession);
+    const sentinelBefore =
+      await readStarterStorageEvictionSentinel(activeSession);
+    if (
+      sentinelBefore.indexedDbPresent !== true ||
+      sentinelBefore.localStoragePresent !== true
+    ) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'clear-site-data-storage-eviction-sentinel-write-missing',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview Clear-Site-Data storage eviction sentinel was not visible before clear. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    const beforeTask = await readStarterBrowserProbe(activeSession);
+    lastProbe = beforeTask;
+    await submitStarterTask(activeSession, title);
+    await waitForStarterLocalVisibility({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+    });
+    await waitForStarterCommandTimelineProof({
+      expectedCount: beforeTask.commandTimelineProof.count + 1,
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+    });
+
+    const observerTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    observerTargetId = observerTarget.id;
+    observerSession = await CdpSession.connect(
+      observerTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(observerSession);
+    await navigateChromeTarget(
+      observerSession,
+      `${args.origin}/?syncularClientId=web-clear-site-data-storage-eviction-observer&syncularClearSiteDataStorageEvictionObserverProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      observerSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: observerSession,
+      title,
+      errorReason: 'clear-site-data-storage-eviction-propagation-errors',
+      timeoutReason: 'clear-site-data-storage-eviction-propagation-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview Clear-Site-Data storage eviction propagation',
+    });
+
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: activeSession,
+      targetId: activeTargetId,
+    });
+    activeSession = null;
+    activeTargetId = null;
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: observerSession,
+      targetId: observerTargetId,
+    });
+    observerSession = null;
+    observerTargetId = null;
+
+    const clearTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    clearTargetId = clearTarget.id;
+    clearSession = await CdpSession.connect(clearTarget.webSocketDebuggerUrl);
+    await enableChromeTarget(clearSession);
+    await clearStarterStorageViaClearSiteData(clearSession, args.origin);
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: clearSession,
+      targetId: clearTargetId,
+    });
+    clearSession = null;
+    clearTargetId = null;
+
+    const recoveryTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    recoveryTargetId = recoveryTarget.id;
+    recoverySession = await CdpSession.connect(
+      recoveryTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(recoverySession);
+    await navigateChromeTarget(
+      recoverySession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularClearSiteDataStorageEvictionRecoveryProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      recoverySession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(recoverySession);
+    const sentinelAfter =
+      await readStarterStorageEvictionSentinel(recoverySession);
+    if (
+      sentinelAfter.indexedDbPresent !== false ||
+      sentinelAfter.localStoragePresent !== false
+    ) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'clear-site-data-storage-eviction-sentinel-still-present',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview Clear-Site-Data storage eviction did not clear browser storage. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: recoverySession,
+      title,
+      errorReason: 'clear-site-data-storage-eviction-recovery-errors',
+      timeoutReason: 'clear-site-data-storage-eviction-recovery-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview Clear-Site-Data storage eviction recovery',
+    });
+  } catch (error) {
+    await writeBrowserPreviewFailureArtifactIfMissing(
+      args.failureArtifactPath,
+      'clear-site-data-storage-eviction-smoke-error',
+      lastProbe,
+      args.failureMetrics
+    );
+    throw error;
+  } finally {
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: recoverySession,
+      targetId: recoveryTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: clearSession,
+      targetId: clearTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: observerSession,
+      targetId: observerTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: activeSession,
+      targetId: activeTargetId,
+    });
+    await stopProcess(chrome.process);
+  }
+}
+
 type StarterStorageEvictionSentinelState = {
   cachePresent: boolean | null;
   indexedDbPresent: boolean | null;
@@ -6239,6 +6503,33 @@ async function clearStarterOriginStorage(
     storageTypes: 'all',
   });
   await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+}
+
+async function clearStarterStorageViaClearSiteData(
+  session: CdpSession,
+  origin: string
+): Promise<void> {
+  await navigateChromeTarget(
+    session,
+    `${origin}${STARTER_CLEAR_SITE_DATA_SMOKE_PATH}?t=${Date.now()}`
+  );
+
+  const deadline = Date.now() + 5_000;
+  let lastState: StarterStorageEvictionSentinelState | null = null;
+  while (Date.now() < deadline) {
+    lastState = await readStarterStorageEvictionSentinel(session);
+    if (
+      lastState.indexedDbPresent === false &&
+      lastState.localStoragePresent === false
+    ) {
+      return;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+
+  throw new Error(
+    `Clear-Site-Data did not clear browser storage sentinel: indexedDb=${lastState?.indexedDbPresent ?? 'unknown'} localStorage=${lastState?.localStoragePresent ?? 'unknown'}`
+  );
 }
 
 async function clearStarterDatabaseStorage(
@@ -8559,6 +8850,8 @@ async function main(): Promise<void> {
     };
     log('built preview asset check passed');
     log('built preview runtime asset check passed');
+    await verifyBuiltPreviewClearSiteDataEndpoint(previewOrigin);
+    log('built preview Clear-Site-Data smoke endpoint check passed');
     await verifyBrowserPreviewFailureArtifactSelfCheck(workDir, failureMetrics);
 
     await maybeRunBrowserPreviewSmoke({
