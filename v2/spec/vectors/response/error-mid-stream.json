@@ -1,0 +1,33 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 1,
+  "msgKind": "response",
+  "frames": [
+    {
+      "type": "RESP_HEADER"
+    },
+    {
+      "type": "SUB_START",
+      "id": "sub-notes",
+      "status": "active",
+      "reasonCode": "",
+      "effectiveScopes": {
+        "project": [
+          "p1"
+        ]
+      },
+      "bootstrap": false
+    },
+    {
+      "type": "ERROR",
+      "code": "sync.missing_scopes",
+      "message": "handler emitted a change without stored scopes",
+      "category": "internal",
+      "retryable": false,
+      "recommendedAction": "inspectServer",
+      "details": {
+        "table": "notes"
+      }
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "event": "hello",
+  "data": {
+    "protocolVersion": 1,
+    "sessionId": "sess-0001",
+    "actorId": "actor-1",
+    "clientId": "client-a",
+    "cursor": 57,
+    "latestCursor": 64,
+    "requiresSync": true,
+    "timestamp": 1782993600000
+  }
+}

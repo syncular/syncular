@@ -1,0 +1,57 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 1,
+  "msgKind": "request",
+  "frames": [
+    {
+      "type": "REQ_HEADER",
+      "clientId": "client-a",
+      "schemaVersion": 2
+    },
+    {
+      "type": "PULL_HEADER",
+      "limitCommits": 500,
+      "limitSnapshotRows": 2000,
+      "maxSnapshotPages": 8,
+      "accept": 15
+    },
+    {
+      "type": "SUBSCRIPTION",
+      "id": "sub-notes",
+      "table": "notes",
+      "scopes": {
+        "project": [
+          "p1",
+          "p2"
+        ],
+        "team": [
+          "t9"
+        ]
+      },
+      "params": {
+        "includeArchived": false
+      },
+      "cursor": -1
+    },
+    {
+      "type": "SUBSCRIPTION",
+      "id": "sub-tasks",
+      "table": "tasks",
+      "scopes": {
+        "project": [
+          "p1"
+        ]
+      },
+      "cursor": 100,
+      "bootstrapState": {
+        "asOfCommitSeq": 100,
+        "tables": [
+          "projects",
+          "tasks"
+        ],
+        "tableIndex": 1,
+        "rowCursor": "task-0500"
+      }
+    }
+  ]
+}

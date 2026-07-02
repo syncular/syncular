@@ -1,0 +1,43 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 1,
+  "msgKind": "request",
+  "frames": [
+    {
+      "type": "REQ_HEADER",
+      "clientId": "client-a",
+      "schemaVersion": 1
+    },
+    {
+      "type": "PUSH_COMMIT",
+      "clientCommitId": "c-0003",
+      "operations": [
+        {
+          "table": "notes",
+          "rowId": "n-2",
+          "op": "upsert",
+          "baseVersion": 1,
+          "payload": "AgMAAABuLTIKAAAAcGxhaW4gYm9kefn/////////AAAAAAAAwD8ACgAAAHsiayI6dHJ1ZX0FAAAAAAEC/v8="
+        }
+      ]
+    },
+    {
+      "type": "PULL_HEADER",
+      "limitCommits": 0,
+      "limitSnapshotRows": 0,
+      "maxSnapshotPages": 0,
+      "accept": 7
+    },
+    {
+      "type": "SUBSCRIPTION",
+      "id": "sub-notes",
+      "table": "notes",
+      "scopes": {
+        "project": [
+          "p1"
+        ]
+      },
+      "cursor": 42
+    }
+  ]
+}

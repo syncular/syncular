@@ -1,0 +1,12 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 1,
+  "msgKind": "response",
+  "frames": [
+    {
+      "type": "RESP_HEADER",
+      "requiredSchemaVersion": 3,
+      "latestSchemaVersion": 5
+    }
+  ]
+}
