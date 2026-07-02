@@ -690,6 +690,9 @@ read-only review:
     deployment-preflight evidence plus
     `firefox-secure-page`/`preflight-required`/`warning` support-policy markers
     without claiming Firefox realtime/reopen/persistence/lifecycle support.
+    The Firefox Checks job runs this as browser-runtime-matrix-only so the
+    Chrome/CDP realtime and lifecycle proof stays owned by
+    `starter-browser-preview`.
     Cloudflare local-runtime failure artifacts now feed Console/Fleet through
     `POST /console/client-diagnostics/cloudflare-runtime-failure`, preserving
     route, exit, bounded output, and safe R2 blob timing/byte metrics as

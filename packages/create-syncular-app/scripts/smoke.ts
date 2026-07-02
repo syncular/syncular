@@ -43,10 +43,12 @@ import { Buffer } from 'node:buffer';
  *    Set SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required to fail when no browser
  *    is available. Set SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox or pass
  *    --browser-runtime-matrix=firefox to also prove explicit target-browser
- *    runtime/support-policy markers through Playwright.
+ *    runtime/support-policy markers through Playwright. Pass
+ *    --browser-runtime-matrix-only to skip the Chrome/CDP proof that is owned
+ *    by the dedicated starter-browser-preview CI job.
  *
  * Usage: bun scripts/smoke.ts [--keep] [--require-browser-preview]
- *   [--browser-runtime-matrix=firefox]
+ *   [--browser-runtime-matrix=firefox] [--browser-runtime-matrix-only]
  * Set SYNCULAR_CSA_SMOKE_WORK_DIR to keep artifacts in a predictable
  * repo-root-relative or absolute path.
  */
@@ -125,6 +127,9 @@ const keep = process.argv.includes('--keep');
 const requireBrowserPreviewSmoke =
   process.env.SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE === 'required' ||
   process.argv.includes('--require-browser-preview');
+const browserRuntimeMatrixOnly =
+  process.env.SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX_ONLY === '1' ||
+  process.argv.includes('--browser-runtime-matrix-only');
 const browserRuntimeMatrixArg = process.argv.find((arg) =>
   arg.startsWith('--browser-runtime-matrix=')
 );
@@ -11052,14 +11057,25 @@ async function main(): Promise<void> {
     log('built preview storage-admin smoke endpoint check passed');
     await verifyBrowserPreviewFailureArtifactSelfCheck(workDir, failureMetrics);
 
-    await maybeRunBrowserPreviewSmoke({
-      appDir,
-      failureMetrics,
-      origin: previewOrigin,
-      previewServer,
-      syncOrigin,
-      workDir,
-    });
+    if (browserRuntimeMatrixOnly) {
+      if (requestedBrowserRuntimeMatrixBrowsers().length === 0) {
+        throw new Error(
+          '--browser-runtime-matrix-only requires at least one browser runtime matrix entry'
+        );
+      }
+      log(
+        'browser runtime matrix only: skipping Chrome/CDP browser preview smoke'
+      );
+    } else {
+      await maybeRunBrowserPreviewSmoke({
+        appDir,
+        failureMetrics,
+        origin: previewOrigin,
+        previewServer,
+        syncOrigin,
+        workDir,
+      });
+    }
     await maybeRunBrowserRuntimeMatrixSmoke({
       failureMetrics,
       origin: previewOrigin,

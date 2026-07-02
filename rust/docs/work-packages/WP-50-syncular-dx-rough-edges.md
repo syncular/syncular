@@ -4994,9 +4994,11 @@ Most recent browser-health failure-artifact rerun:
   `firefox-secure-page`/`preflight-required`/`warning` with
   `browser_support.target_evidence_required`. Checks now include a dedicated
   `starter-firefox-runtime-matrix` job that installs Playwright Firefox and
-  runs that smoke. Firefox remains preflight-gated for realtime, reopen,
-  persistence, and lifecycle evidence; this slice proves runtime/support-policy
-  execution, not production durable Firefox support. Local Bun `1.3.9` gates
+  runs that smoke in browser-runtime-matrix-only mode so Chrome/CDP realtime and
+  lifecycle coverage remains owned by `starter-browser-preview`. Firefox
+  remains preflight-gated for realtime, reopen, persistence, and lifecycle
+  evidence; this slice proves runtime/support-policy execution, not production
+  durable Firefox support. Local Bun `1.3.9` gates
   passed so far: `bun install --frozen-lockfile`, `bun test
   packages/client/src/browser-support-matrix.test.ts`, `bun --cwd
   packages/client tsgo`, `bun --cwd packages/create-syncular-app tsgo`,
@@ -5005,6 +5007,9 @@ Most recent browser-health failure-artifact rerun:
   Playwright Firefox install into
   `.context/ms-playwright`, `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox bun
   --cwd packages/create-syncular-app smoke --browser-runtime-matrix=firefox`,
+  `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox bun --cwd
+  packages/create-syncular-app smoke --browser-runtime-matrix=firefox
+  --browser-runtime-matrix-only`, `bun run check`,
   `bun run docs:stale-check`, and `git diff --check`; hosted Checks must
   confirm the Firefox job.
 

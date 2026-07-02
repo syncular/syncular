@@ -179,7 +179,7 @@ jobs:
         env:
           SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX: firefox
           SYNCULAR_CSA_SMOKE_WORK_DIR: .context/starter-firefox-runtime-matrix-smoke
-        run: bun --cwd packages/create-syncular-app smoke --browser-runtime-matrix=firefox
+        run: bun --cwd packages/create-syncular-app smoke --browser-runtime-matrix=firefox --browser-runtime-matrix-only
 
       - name: Upload Firefox runtime matrix failure artifact
         uses: actions/upload-artifact@v4

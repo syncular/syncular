@@ -104,13 +104,14 @@ until the full browser Worker/WASM suite is green on Linux.
   validation.
   The separate `starter-firefox-runtime-matrix` Checks job installs Playwright
   Firefox and runs `SYNCULAR_CSA_BROWSER_RUNTIME_MATRIX=firefox bun --cwd
-  packages/create-syncular-app smoke --browser-runtime-matrix=firefox`, proving
-  the built starter opens in Firefox, emits deployment preflight evidence, and
-  reports the explicit `firefox-secure-page` support policy path while keeping
-  Firefox preflight-gated for realtime, reopen, persistence, and lifecycle
-  evidence. This Firefox runtime matrix uses manual sync startup so Playwright
-  Firefox does not intercept the starter realtime WebSocket; Chrome remains the
-  maintained browser realtime proof.
+  packages/create-syncular-app smoke --browser-runtime-matrix=firefox
+  --browser-runtime-matrix-only`, proving the built starter opens in Firefox,
+  emits deployment preflight evidence, and reports the explicit
+  `firefox-secure-page` support policy path while keeping Firefox
+  preflight-gated for realtime, reopen, persistence, and lifecycle evidence.
+  This Firefox runtime matrix uses manual sync startup so Playwright Firefox
+  does not intercept the starter realtime WebSocket; Chrome remains the
+  maintained browser realtime/lifecycle proof in `starter-browser-preview`.
   On a browser-capable CI runner, set
   `SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required` so missing Chrome fails instead
   of skipping the browser execution.

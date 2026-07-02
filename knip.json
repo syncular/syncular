@@ -146,7 +146,8 @@
       "includeEntryExports": false,
       "entry": [
         "src/cli.ts",
-        "scripts/*.ts"
+        "scripts/*.ts",
+        "scripts/*.mjs"
       ]
     },
     "rust/examples/todo-app": {
