@@ -406,10 +406,19 @@ read-only review:
     commit `46689179` then passed the full matrix, including
     `starter-browser-preview`, confirming the PWA offline navigation/runtime
     cache-hit telemetry gate in hosted Chrome.
+    The current PWA follow-up adds a separate online runtime cache-refresh
+    proof: the hosted Chrome smoke registers the smoke-only service worker in a
+    fresh profile, writes a deliberately stale Syncular WASM glue response into
+    the smoke Cache API entry, warms runtime assets online with
+    `cache: "reload"`, and requires the stale marker/header to be replaced by
+    the live runtime asset before moving on to the offline branch. Local
+    pinned-Bun focused Biome, create-syncular-app typecheck, non-Chrome
+    scaffold smoke, and diff check passed; hosted `starter-browser-preview`
+    confirmation is still required for the new real-browser branch.
     Host-driven eviction beyond explicit CDP storage clears, Clear-Site-Data,
-    same-origin IndexedDB deletion, and PWA offline cache/reopen, plus deeper
-    storage/coordination failures below the covered fallback and
-    fallback-failure cases, remain matrix work.
+    same-origin IndexedDB deletion, PWA offline cache/reopen, and PWA online
+    runtime cache refresh, plus deeper storage/coordination failures below the
+    covered fallback and fallback-failure cases, remain matrix work.
     The starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply

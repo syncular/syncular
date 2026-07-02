@@ -24,7 +24,8 @@ import { Buffer } from 'node:buffer';
  *    database-storage eviction/rebootstrap recovery, browser origin-storage
  *    eviction/rebootstrap recovery, Clear-Site-Data server-driven storage
  *    eviction/rebootstrap recovery, same-origin IndexedDB deletion
- *    recovery, PWA offline cache/reopen persistence, two-tab propagation,
+ *    recovery, PWA online runtime cache refresh, PWA offline cache/reopen
+ *    persistence, two-tab propagation,
  *    same-client page reload/reopen persistence, same-client duplicate-tab
  *    open/write contention, generated write pressure, same-profile browser
  *    process restart persistence, sync-held shutdown replay recovery,
@@ -1072,6 +1073,16 @@ async function runBrowserPreviewSmoke(args: {
     origin: args.origin,
     userDataDir: `${args.userDataDir}-pwa`,
   });
+  log('real-browser smoke: proving PWA runtime cache refresh');
+  await proveStarterPwaRuntimeCacheRefresh({
+    chrome: args.chrome,
+    failureArtifactPath: pwaRuntimeCacheRefreshFailureArtifactPath(
+      args.failureArtifactPath
+    ),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    userDataDir: `${args.userDataDir}-pwa-cache-refresh`,
+  });
   log('real-browser smoke: proving PWA offline cache/reopen persistence');
   await proveStarterPwaOfflineReopenPersistence({
     chrome: args.chrome,
@@ -1162,6 +1173,14 @@ function pwaOfflineFailureArtifactPath(failureArtifactPath: string): string {
   return failureArtifactPath.endsWith('.json')
     ? failureArtifactPath.replace(/\.json$/u, '.pwa-offline.json')
     : `${failureArtifactPath}.pwa-offline.json`;
+}
+
+function pwaRuntimeCacheRefreshFailureArtifactPath(
+  failureArtifactPath: string
+): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(/\.json$/u, '.pwa-cache-refresh.json')
+    : `${failureArtifactPath}.pwa-cache-refresh.json`;
 }
 
 function incognitoMemoryFailureArtifactPath(
@@ -5878,6 +5897,133 @@ async function waitForStarterPwaServiceWorkerEvidence(args: {
   );
 }
 
+type StarterPwaRuntimeCacheRefreshResult = {
+  cachedTextLength: number | null;
+  marker: string;
+  ok: boolean;
+  path: string;
+  staleHeader: string | null;
+  status: number | null;
+};
+
+async function proveStarterPwaRuntimeCacheRefresh(args: {
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  const baseUrl = `${args.origin}/?syncularClientId=web-pwa-cache-refresh&syncularPwaCacheRefresh=${Date.now()}`;
+  let session: CdpSession | null = null;
+  let targetId: string | null = null;
+  let lastProbe: BrowserPreviewProbe | null = null;
+
+  try {
+    const target = await createChromeTarget(chrome.debugPort, 'about:blank');
+    targetId = target.id;
+    session = await CdpSession.connect(target.webSocketDebuggerUrl);
+    await enableChromeTarget(session);
+    await installStarterPwaSmokeDiagnostics(session);
+    await navigateChromeTarget(session, baseUrl);
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+
+    const registration = await registerStarterSmokeServiceWorker(session);
+    if (!registration.ok) {
+      lastProbe = await readStarterBrowserProbe(session);
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-cache-refresh-service-worker-registration-failed',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA cache-refresh service worker registration failed: ${registration.reason}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    await navigateChromeTarget(
+      session,
+      `${baseUrl}&syncularPwaCacheRefreshControlled=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterPwaServiceWorkerEvidence({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+
+    const stale = await poisonStarterPwaRuntimeCache(session);
+    if (!stale.ok) {
+      lastProbe = await readStarterBrowserProbe(session);
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-cache-refresh-stale-write-failed',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA cache-refresh stale write failed: ${JSON.stringify(
+          stale
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    await warmStarterPwaSmokeRuntimeAssets({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+    await waitForStarterPwaSmokeCacheWarm({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+
+    const refreshed = await readStarterPwaRuntimeCacheRefreshResult(session);
+    if (!refreshed.ok) {
+      lastProbe = await readStarterBrowserProbe(session);
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'pwa-cache-refresh-stale-entry-survived',
+        lastProbe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview PWA runtime cache-refresh proof failed: ${JSON.stringify(
+          refreshed
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+  } catch (error) {
+    await writeBrowserPreviewFailureArtifactIfMissing(
+      args.failureArtifactPath,
+      'pwa-cache-refresh-smoke-error',
+      lastProbe,
+      args.failureMetrics
+    );
+    throw error;
+  } finally {
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session,
+      targetId,
+    });
+    await stopProcess(chrome.process);
+  }
+}
+
 async function proveStarterPwaOfflineReopenPersistence(args: {
   chrome: string;
   failureArtifactPath: string;
@@ -6099,6 +6245,79 @@ type StarterPwaSmokeRuntimeAssetWarmResult = {
   }>;
   ok: boolean;
 };
+
+async function poisonStarterPwaRuntimeCache(
+  session: CdpSession
+): Promise<StarterPwaRuntimeCacheRefreshResult> {
+  return session.evaluate<StarterPwaRuntimeCacheRefreshResult>(`(async () => {
+    const cacheName = ${JSON.stringify(STARTER_PWA_SMOKE_CACHE)};
+    const assetPath = ${JSON.stringify(STARTER_BROWSER_RUNTIME_ASSETS[0].path)};
+    const marker = 'syncular-smoke-stale-runtime-cache:' + Date.now();
+    const cache = await caches.open(cacheName);
+    const request = new Request(new URL(assetPath, location.origin).href);
+    await cache.put(
+      request,
+      new Response(marker, {
+        headers: {
+          'content-type': 'application/javascript; charset=utf-8',
+          'x-syncular-smoke-cache-proof': 'stale',
+        },
+        status: 200,
+      })
+    );
+    const cached = await cache.match(request, {
+      ignoreSearch: true,
+      ignoreVary: true,
+    });
+    const cachedText = cached === undefined ? null : await cached.clone().text();
+    const staleHeader =
+      cached === undefined
+        ? null
+        : cached.headers.get('x-syncular-smoke-cache-proof');
+    return {
+      cachedTextLength: cachedText === null ? null : cachedText.length,
+      marker,
+      ok: cachedText === marker && staleHeader === 'stale',
+      path: assetPath,
+      staleHeader,
+      status: cached?.status ?? null,
+    };
+  })()`);
+}
+
+async function readStarterPwaRuntimeCacheRefreshResult(
+  session: CdpSession
+): Promise<StarterPwaRuntimeCacheRefreshResult> {
+  return session.evaluate<StarterPwaRuntimeCacheRefreshResult>(`(async () => {
+    const cacheName = ${JSON.stringify(STARTER_PWA_SMOKE_CACHE)};
+    const assetPath = ${JSON.stringify(STARTER_BROWSER_RUNTIME_ASSETS[0].path)};
+    const markerPrefix = 'syncular-smoke-stale-runtime-cache:';
+    const cache = await caches.open(cacheName);
+    const request = new Request(new URL(assetPath, location.origin).href);
+    const cached = await cache.match(request, {
+      ignoreSearch: true,
+      ignoreVary: true,
+    });
+    const cachedText = cached === undefined ? null : await cached.clone().text();
+    const staleHeader =
+      cached === undefined
+        ? null
+        : cached.headers.get('x-syncular-smoke-cache-proof');
+    return {
+      cachedTextLength: cachedText === null ? null : cachedText.length,
+      marker: markerPrefix,
+      ok:
+        cached !== undefined &&
+        cached.ok &&
+        staleHeader !== 'stale' &&
+        cachedText !== null &&
+        !cachedText.includes(markerPrefix),
+      path: assetPath,
+      staleHeader,
+      status: cached?.status ?? null,
+    };
+  })()`);
+}
 
 async function warmStarterPwaSmokeRuntimeAssets(args: {
   failureArtifactPath: string;
