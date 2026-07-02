@@ -11,6 +11,10 @@
  *      packages/client/src/wasm-bindings/runtime-contract.ts.
  *   4. create-syncular-app's FALLBACK_SYNCULAR_VERSION_RANGE.
  *   5. Cargo crate versions via scripts/stamp-cargo-versions.ts.
+ *   6. Committed codegen outputs that embed the crate version
+ *      (syncularNativeExpectedCrateVersion in generated Swift/Kotlin) —
+ *      regenerated with the freshly stamped workspace syncular-codegen so
+ *      version bumps stop breaking `rust:codegen:check`.
  *
  * Usage: bun scripts/sync-versions.ts
  * (wired into the root `version` script: `changeset version && bun scripts/sync-versions.ts`)
@@ -142,6 +146,43 @@ function syncCargoVersions(version: string): void {
   }
 }
 
+/**
+ * In-repo manifests with committed `generated/` output. The Rust codegen
+ * stamps env!("CARGO_PKG_VERSION") into the generated Swift/Kotlin
+ * (`syncularNativeExpectedCrateVersion`), so these must be regenerated after
+ * every crate version stamp or `rust:codegen:check` goes red on the next bump.
+ */
+const GENERATED_MANIFEST_DIRS = [
+  'rust/examples/todo-app',
+  'apps/demo',
+  'packages/create-syncular-app/template',
+];
+
+function regenerateVersionedCodegenOutputs(): void {
+  for (const manifestDir of GENERATED_MANIFEST_DIRS) {
+    const result = spawnSync(
+      'cargo',
+      [
+        'run',
+        '--manifest-path',
+        join(repoRoot, 'rust/Cargo.toml'),
+        '-p',
+        'syncular-codegen',
+        '--',
+        '--manifest-dir',
+        join(repoRoot, manifestDir),
+      ],
+      { cwd: repoRoot, stdio: 'inherit' }
+    );
+    if (result.status !== 0) {
+      throw new Error(
+        `syncular-codegen failed for ${manifestDir} (exit ${result.status})`
+      );
+    }
+    console.log(`  regenerated codegen outputs → ${manifestDir}`);
+  }
+}
+
 const packageJsonPaths = await listWorkspacePackageJsonPaths();
 const version = readReleaseVersion();
 console.log(`Syncing release version: ${version}\n`);
@@ -149,3 +190,4 @@ syncRootPackageVersion(version);
 syncRuntimeContract(version);
 syncCreateAppFallbackRange(version);
 syncCargoVersions(version);
+regenerateVersionedCodegenOutputs();
