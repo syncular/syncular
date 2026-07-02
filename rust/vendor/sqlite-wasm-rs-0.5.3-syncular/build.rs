@@ -20,19 +20,11 @@ const FULL_FEATURED: [&str; 10] = [
     "-DSQLITE_ENABLE_FTS5",
 ];
 
-#[cfg(feature = "sqlite3mc")]
-const SQLITE3_MC_FEATURED: [&str; 2] = ["-D__WASM__", "-DARGON2_NO_THREADS"];
-
 const UPDATE_BINDGEN_ENV: &str = "SQLITE_WASM_RS_UPDATE_BINDGEN";
 
 fn main() {
     println!("cargo::rerun-if-env-changed={UPDATE_BINDGEN_ENV}");
     println!("cargo::rerun-if-changed=shim");
-
-    #[cfg(feature = "sqlite3mc")]
-    println!("cargo::rerun-if-changed=sqlite3mc");
-
-    #[cfg(not(feature = "sqlite3mc"))]
     println!("cargo::rerun-if-changed=sqlite3");
 
     compile();
@@ -46,10 +38,7 @@ fn main() {
         bindgen(&output);
 
         if update_bindgen {
-            #[cfg(not(feature = "sqlite3mc"))]
             const SQLITE3_BINDGEN: &str = "src/bindings/sqlite3_bindgen.rs";
-            #[cfg(feature = "sqlite3mc")]
-            const SQLITE3_BINDGEN: &str = "src/bindings/sqlite3mc_bindgen.rs";
             std::fs::copy(&output, SQLITE3_BINDGEN).unwrap();
         }
     }
@@ -57,10 +46,7 @@ fn main() {
 
 #[cfg(feature = "bindgen")]
 fn bindgen(output: &std::path::PathBuf) {
-    #[cfg(not(feature = "sqlite3mc"))]
     const SQLITE3_HEADER: &str = "sqlite3/sqlite3.h";
-    #[cfg(feature = "sqlite3mc")]
-    const SQLITE3_HEADER: &str = "sqlite3mc/sqlite3mc_amalgamation.h";
 
     use bindgen::callbacks::{IntKind, ParseCallbacks};
 
@@ -154,11 +140,6 @@ fn bindgen(output: &std::path::PathBuf) {
 
     bindings = bindings.clang_args(FULL_FEATURED);
 
-    #[cfg(feature = "sqlite3mc")]
-    {
-        bindings = bindings.clang_args(SQLITE3_MC_FEATURED);
-    }
-
     bindings = bindings
         .blocklist_function("sqlite3_vmprintf")
         .blocklist_function("sqlite3_vsnprintf")
@@ -227,10 +208,7 @@ fn compile() {
         "internal/shgetc.c",
     ];
 
-    #[cfg(not(feature = "sqlite3mc"))]
     const SQLITE3_SOURCE: &str = "sqlite3/sqlite3.c";
-    #[cfg(feature = "sqlite3mc")]
-    const SQLITE3_SOURCE: &str = "sqlite3mc/sqlite3mc_amalgamation.c";
 
     let mut cc = cc::Build::new();
     cc.warnings(false)
@@ -246,8 +224,6 @@ fn compile() {
         .flag("shim/wasm-shim.h");
 
     cc.flags(FULL_FEATURED);
-    #[cfg(feature = "sqlite3mc")]
-    cc.flags(SQLITE3_MC_FEATURED);
 
     cc.compile("wsqlite3");
 }
