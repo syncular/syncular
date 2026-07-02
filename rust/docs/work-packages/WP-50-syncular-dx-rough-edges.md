@@ -5015,9 +5015,14 @@ Most recent browser-health failure-artifact rerun:
   prove the updated controller survived the offline restart. Local Bun `1.3.9`
   gates passed so far: `bun --cwd packages/create-syncular-app tsgo`, focused
   Biome on `packages/create-syncular-app/scripts/smoke.ts`, and `bun --cwd
-  packages/create-syncular-app smoke`. Chrome was not installed locally, so
-  hosted `starter-browser-preview` confirmation is still required for the new
-  app-window offline restart branch.
+  packages/create-syncular-app smoke`. Chrome was not installed locally.
+  Hosted Checks run `28574340108` on commit `5e28623c` first failed only in
+  `starter-browser-preview` and showed the original `--app=about:blank`
+  restart target was not observable on the hosted runner. The follow-up
+  relaunches the generated app URL directly while the preview server is
+  stopped; hosted Checks run `28574658892` on commit `21763367` passed the full
+  matrix, including `starter-browser-preview`, confirming the app-window
+  offline restart/update-version branch in Chrome.
 - 2026-07-02: Added the first maintained Firefox starter runtime matrix path.
   The generated starter now accepts a validated
   `syncularBrowserSupportContext` URL parameter so target-browser smokes can
@@ -5174,8 +5179,10 @@ URL directly as an app-window, CDP reports offline after attach, the service
 worker serves the navigation/runtime assets from cache, the same client id
 renders the task from persistent browser storage with sync startup held manual,
 and the updated service-worker version remains active. Local pinned-Bun
-focused typecheck, Biome, and non-Chrome scaffold smoke passed; hosted Chrome
-confirmation is pending.
+focused typecheck, Biome, and non-Chrome scaffold smoke passed. Hosted Checks
+run `28574658892` on commit `21763367` passed the full matrix, including
+`starter-browser-preview`, after the previous hosted run caught and the
+follow-up fixed the `--app=about:blank` target assumption.
 Remaining lifecycle/storage work is host/browser eviction beyond explicit CDP
 origin/database clears/Clear-Site-Data/same-origin IndexedDB deletion,
 deeper fully installed-PWA host semantics beyond the now-machine-readable

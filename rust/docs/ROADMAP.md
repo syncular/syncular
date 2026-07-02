@@ -454,7 +454,11 @@ read-only review:
     from persistent browser storage, and checks that the updated
     service-worker version remains active. Local pinned-Bun
     focused Biome, create-syncular-app typecheck, and non-Chrome scaffold smoke
-    passed; hosted Chrome confirmation is still required for this branch.
+    passed. Hosted Checks run `28574340108` first caught a hosted-only
+    `--app=about:blank` target assumption, then hosted Checks run
+    `28574658892` on commit `21763367` passed the full matrix, including
+    `starter-browser-preview`, confirming the direct app-window offline restart
+    launch in Chrome.
     Remaining matrix work is host-driven eviction beyond explicit CDP storage
     clears/Clear-Site-Data/same-origin IndexedDB deletion, deeper fully
     installed-PWA host semantics beyond the app-window
