@@ -2110,10 +2110,12 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
 function isOpfsOpenFailure(error: unknown): boolean {
   if (!(error instanceof SyncularWorkerError)) return false;
   const message = errorMessage(error).toLowerCase();
+  if (message.includes('install opfs-sahpool vfs')) return true;
   return (
-    message.includes('opfs') ||
-    message.includes('sahpool') ||
-    message.includes('sync access handle')
+    message.includes('sync access handle') &&
+    /failed|unavailable|unsupported|not supported|not available|denied|blocked|securityerror|notallowederror|nomodificationallowederror/u.test(
+      message
+    )
   );
 }
 

@@ -1527,9 +1527,11 @@ describe('Syncular worker client', () => {
 
   it('falls back to IndexedDB when default OPFS open fails', async () => {
     const worker = new FakeWorker();
+    const diagnostics: SyncularDiagnosticEvent[] = [];
     const promise = createSyncularWorkerClient({
       worker: worker.asWorker(),
       requestTimeoutMs: 100,
+      diagnostics: (event) => diagnostics.push(event),
       config: {
         baseUrl: '/sync',
         actorId: 'actor',
@@ -1585,8 +1587,126 @@ describe('Syncular worker client', () => {
       storageFallback: {
         from: 'opfsSahPool',
         to: 'indexedDb',
+        reason: 'Storage: install opfs-sahpool vfs: sync access handle failed',
       },
     });
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        level: 'warn',
+        source: 'storage',
+        code: 'storage.fallback',
+        details: {
+          from: 'opfsSahPool',
+          to: 'indexedDb',
+          reason:
+            'Storage: install opfs-sahpool vfs: sync access handle failed',
+        },
+      })
+    );
+  });
+
+  it('falls back to IndexedDB when default OPFS install reports a missing storage directory API', async () => {
+    const worker = new FakeWorker();
+    const promise = createSyncularWorkerClient({
+      worker: worker.asWorker(),
+      requestTimeoutMs: 100,
+      config: {
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client',
+      },
+    });
+
+    await waitForMessages(worker, 1);
+    expect(worker.messages[0]).toMatchObject({
+      type: 'open',
+      config: { storage: 'opfsSahPool' },
+    });
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
+      ok: false,
+      error: {
+        code: 'worker.failed',
+        message:
+          'Storage: install opfs-sahpool vfs: navigator.storage.getDirectory is not a function',
+      },
+    });
+
+    await waitForMessages(worker, 2);
+    expect(worker.messages[1]).toMatchObject({
+      type: 'open',
+      config: { storage: 'indexedDb' },
+    });
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+
+    await expect(promise).resolves.toBeInstanceOf(SyncularWorkerClient);
+  });
+
+  it('does not fallback when OPFS storage was explicitly requested', async () => {
+    const worker = new FakeWorker();
+    const promise = createSyncularWorkerClient({
+      worker: worker.asWorker(),
+      requestTimeoutMs: 100,
+      config: {
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client',
+        storage: 'opfsSahPool',
+      },
+    });
+
+    await waitForMessages(worker, 1);
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
+      ok: false,
+      error: {
+        code: 'worker.failed',
+        message: 'Storage: install opfs-sahpool vfs: sync access handle failed',
+      },
+    });
+
+    await expect(promise).rejects.toMatchObject({
+      code: 'worker.failed',
+      message: 'Storage: install opfs-sahpool vfs: sync access handle failed',
+    });
+    expect(worker.messages).toHaveLength(1);
+  });
+
+  it('does not fallback for non-install OPFS open errors', async () => {
+    const worker = new FakeWorker();
+    const promise = createSyncularWorkerClient({
+      worker: worker.asWorker(),
+      requestTimeoutMs: 100,
+      config: {
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client',
+      },
+    });
+
+    await waitForMessages(worker, 1);
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
+      ok: false,
+      error: {
+        code: 'worker.failed',
+        message: 'Storage: OPFS database checksum mismatch while opening data',
+      },
+    });
+
+    await expect(promise).rejects.toMatchObject({
+      code: 'worker.failed',
+      message: 'Storage: OPFS database checksum mismatch while opening data',
+    });
+    expect(worker.messages).toHaveLength(1);
   });
 
   it('passes fresh auth headers through the worker before sync', async () => {

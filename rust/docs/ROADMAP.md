@@ -319,8 +319,15 @@ read-only review:
     hosted Checks run `28559198325` on commit `9f63634a` passed the full
     matrix, including `starter-browser-preview`, confirming the
     database-storage eviction branch in hosted Chrome.
-    Host-driven eviction beyond explicit CDP storage clears and deeper storage
-    failure/coordination behavior remain matrix work.
+    The current slice tightens lower-level OPFS fallback behavior: default
+    storage now falls back to IndexedDB only for OPFS/SAH VFS install or sync
+    access-handle capability failures, emits a `storage.fallback` diagnostic
+    with the original reason, and keeps explicit OPFS requests plus unrelated
+    OPFS-looking open errors as loud failures. Local pinned-Bun client
+    typecheck, focused worker-client tests, focused Biome, and diff check
+    passed. Host-driven eviction beyond explicit CDP storage clears and deeper
+    storage/coordination failures beyond OPFS install capability fallback
+    remain matrix work.
     The starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply
