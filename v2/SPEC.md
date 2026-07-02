@@ -27,8 +27,32 @@ Candidates — each gets an explicit keep/change decision recorded here:
 - [ ] Unify snapshot **chunks** vs **artifacts** into one content-addressed
       "bootstrap segment" concept with a media-type field (row-frames |
       sqlite-artifact), one cache/auth story, one download endpoint.
-- [ ] One compression framing rule (length-prefixed zstd or gzip sections;
-      pick one codec) instead of per-section conventions.
+- [ ] **Compression moves to the transport.** Sections travel raw; HTTP
+      responses use native `Content-Encoding` (zstd preferred, gzip
+      fallback) and segment downloads use `DecompressionStream`. Removes
+      decompression code from the client bundle, uses native zlib on the
+      server, keeps responses CDN-cacheable. Decide at-rest compression for
+      stored segments separately (server-side concern).
+- [ ] **Streaming-friendly framing.** Table segments are self-delimiting so
+      the server can stream-encode and the client can begin applying while
+      later segments are still in flight (v1 decoded whole packs; 500k
+      row-chunk bootstrap was 2.07s of sequential fetch→decode→apply).
+- [ ] **Schema-known encoding is mandatory.** Codecs are generated from the
+      schema IR on both sides; runtime column inference does not exist in
+      v2 (v1's generic path paid +46% encode overhead — make that class of
+      cost unrepresentable).
+- [ ] **Signed-URL segment delivery.** Bootstrap segments are
+      content-addressed and may be served via short-lived signed URLs
+      (R2/S3/CDN) instead of proxying bytes through the sync server —
+      the bootstrap-storm answer. Direct serving stays as the fallback.
+- [ ] **SQLite-image segments are the premier bootstrap format** (v1
+      evidence: 204ms vs 467ms at 100k). In the TS core, importing a
+      prebuilt scoped DB image via sqlite-wasm is near file-copy speed.
+      Row-frame segments remain the fallback media type.
+- [ ] **Pruning horizon is normative.** Define the log-retention contract:
+      a cursor older than the horizon ⇒ forced re-bootstrap, with the exact
+      client-visible signaling (v1 has prune/compact but the semantics live
+      only in code).
 - [ ] Error envelope: keep the 63-code catalog's *shape* (code, category,
       retryable, recommendedAction) but prune codes that no longer have a
       producer.
@@ -83,7 +107,10 @@ signed payload / expiry / server validation on replay.
 ## 8. Realtime
 Delta push with cursor continuity, "pull required" wake-ups with reason
 codes, heartbeat, reconnect + catch-up contract, presence (scope-keyed
-ephemera) as an extension section.
+ephemera) as an extension section. Reconnect storms are a first-class
+design input: catch-up prefers bootstrap segments over row pulls, and
+clients apply jittered coalescing (v1's WP-32 evidence: server fanout to
+100 clients in 13ms, but ~2s client-side wake-contention tail at 250+).
 
 ## 9. Versioning & evolution
 Explicit wire version; what constitutes a breaking change; client/server
