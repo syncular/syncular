@@ -417,19 +417,21 @@ read-only review:
     commit `d33643c0` passed the full matrix, including
     `starter-browser-preview`, confirming the runtime cache-refresh branch in
     hosted Chrome.
-    The current PWA follow-up adds smoke-only service-worker update activation
+    The PWA follow-up also adds smoke-only service-worker update activation
     coverage: the browser proof registers a uniquely versioned worker, verifies
     the controlled page can read that version over `postMessage`, rewrites the
     built worker file to a second version, calls `registration.update()`, and
     requires the controlled page to observe the updated controller version.
     Local pinned-Bun focused Biome, create-syncular-app typecheck, non-Chrome
-    scaffold smoke, and diff check passed; hosted `starter-browser-preview`
-    confirmation is still required for this real-browser update branch.
-    Host-driven eviction beyond explicit CDP storage clears, Clear-Site-Data,
-    same-origin IndexedDB deletion, PWA offline cache/reopen, and PWA online
-    runtime cache refresh/service-worker update activation, plus deeper
-    storage/coordination failures below the covered fallback and
-    fallback-failure cases, remain matrix work.
+    scaffold smoke, and diff check passed; hosted Checks run `28566859795` on
+    commit `0d211bbe` passed the full matrix, including
+    `starter-browser-preview`, confirming the service-worker update activation
+    branch in hosted Chrome.
+    Remaining matrix work is host-driven eviction beyond explicit CDP storage
+    clears/Clear-Site-Data/same-origin IndexedDB deletion, installed-PWA
+    cache/update semantics beyond the smoke-only PWA offline, cache-refresh,
+    and service-worker update proofs, plus deeper storage/coordination
+    failures below the covered fallback and fallback-failure cases.
     The starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply

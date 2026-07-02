@@ -4904,9 +4904,10 @@ Most recent browser-health failure-artifact rerun:
   service-worker controller version. The branch restores the default smoke
   worker afterward so later PWA proofs keep their normal file shape. Local Bun
   `1.3.9` focused Biome, create-syncular-app typecheck, non-Chrome scaffold
-  smoke, and diff check passed. Chrome is not installed locally, so hosted
-  `starter-browser-preview` confirmation is still required for this
-  real-browser service-worker update branch.
+  smoke, and diff check passed. Hosted Checks run `28566859795` on commit
+  `0d211bbe` passed the full matrix, including `starter-browser-preview`,
+  confirming the real-browser service-worker update activation branch in
+  hosted Chrome.
 
 ## Next Action
 
@@ -4995,14 +4996,16 @@ also confirmed in hosted Chrome: hosted Checks run `28566130045` on commit
 `d33643c0` passed the full matrix after poisoning the smoke Cache API entry
 for the Syncular WASM glue with a stale marker, warming the runtime assets
 online with `cache: "reload"`, and requiring the cached response to be
-replaced by the live asset. Remaining lifecycle/storage work is host/browser
-eviction beyond explicit CDP origin/database clears, Clear-Site-Data,
-same-origin IndexedDB deletion, PWA offline cache/reopen, and PWA online
-runtime cache-refresh. The current follow-up adds a PWA service-worker update
-activation proof by rewriting the smoke worker and requiring
-`registration.update()` to deliver the updated controller version in hosted
-Chrome. Storage failure/coordination behavior below the already-covered OPFS
-fallback and fallback-failure classification also remains open.
+replaced by the live asset. The PWA service-worker update activation branch is
+also confirmed in hosted Chrome: hosted Checks run `28566859795` on commit
+`0d211bbe` passed the full matrix after rewriting the smoke worker and
+requiring `registration.update()` to deliver the updated controller version.
+Remaining lifecycle/storage work is host/browser eviction beyond explicit CDP
+origin/database clears/Clear-Site-Data/same-origin IndexedDB deletion,
+installed-PWA cache/update semantics beyond the smoke-only PWA offline,
+cache-refresh, and service-worker update proofs, and storage coordination/
+failure behavior below the already-covered OPFS fallback and
+fallback-failure classification.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain host-driven eviction
 and deeper storage-failure browser proof, lower-level storage
