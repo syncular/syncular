@@ -4844,7 +4844,14 @@ Most recent browser-health failure-artifact rerun:
   packages/create-syncular-app/scripts/smoke.ts`, `bun --cwd
   packages/create-syncular-app tsgo`, and `bun --cwd packages/create-syncular-app
   smoke`. Chrome is not installed locally, so hosted confirmation for the HEAD
-  preflight fallback is still required.
+  preflight fallback is still required. Hosted Checks run `28564524682` on
+  commit `48f7f916` failed only in `starter-browser-preview` before the offline
+  reload branch: the controlled PWA page's online preflight issued `HEAD`
+  runtime-asset probes, and the smoke worker tried to `cache.put(...)` those
+  `HEAD` requests, which the Cache API rejects. The current follow-up keeps
+  online `HEAD` probes network-pass-through and only writes successful `GET`
+  runtime responses to the smoke cache; offline `HEAD` probes still match the
+  warmed `GET` entries with `ignoreMethod`.
 
 ## Next Action
 
@@ -4934,9 +4941,13 @@ telemetry to prove service-worker navigation and runtime Cache API hits. Hosted
 Checks run `28564187460` then failed only in `starter-browser-preview` because
 the app's offline deployment preflight probes runtime assets with `HEAD`, while
 the smoke worker only intercepted `GET`. The current follow-up handles cached
-offline `HEAD` runtime asset probes in the smoke worker, and the next hosted run
-should confirm that evidence in hosted Chrome before moving to host/browser
-eviction beyond explicit CDP origin/database clears,
+offline `HEAD` runtime asset probes in the smoke worker. Hosted Checks run
+`28564524682` then failed only in `starter-browser-preview` because the online
+controlled-page `HEAD` probes were being written to Cache API, which rejects
+non-`GET` requests. The current follow-up makes online `HEAD` probes
+network-pass-through while preserving cached offline `HEAD` fallback, and the
+next hosted run should confirm that evidence in hosted Chrome before moving to
+host/browser eviction beyond explicit CDP origin/database clears,
 Clear-Site-Data, same-origin IndexedDB deletion, and PWA offline cache/reopen,
 plus storage failure/coordination behavior below the already-covered OPFS
 fallback and fallback-failure classification.

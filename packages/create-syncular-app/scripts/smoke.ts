@@ -341,7 +341,7 @@ async function cachedAssetResponse(request) {
   };
   try {
     const response = await fetch(request);
-    await cacheAsset(request, response);
+    if (request.method === 'GET') await cacheAsset(request, response);
     if (trace) {
       rememberSmokeEvent(
         smokeRequestEvent('asset-network', request, {

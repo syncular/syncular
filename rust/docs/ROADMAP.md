@@ -383,7 +383,14 @@ read-only review:
     `HEAD`, while the smoke-only worker only intercepted `GET`. The current
     follow-up handles cached offline `HEAD` runtime asset probes in the smoke
     worker with `ignoreMethod` cache matching and header-only cached responses.
-    Hosted Chrome confirmation for this HEAD preflight fallback is still
+    Hosted Checks run `28564524682` on commit `48f7f916` still failed only in
+    `starter-browser-preview`, this time before the offline reload branch: the
+    controlled PWA page's online preflight sent `HEAD` runtime-asset probes, and
+    the smoke worker tried to write those `HEAD` requests into Cache API. The
+    current follow-up keeps online `HEAD` probes network-pass-through, caches
+    only successful `GET` runtime responses, and still uses `ignoreMethod` to
+    serve warmed `GET` entries for offline `HEAD` probes.
+    Hosted Chrome confirmation for this HEAD preflight/cache fix is still
     pending.
     Host-driven eviction beyond explicit CDP storage clears, Clear-Site-Data,
     same-origin IndexedDB deletion, and PWA offline cache/reopen, plus deeper
