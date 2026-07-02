@@ -4891,9 +4891,10 @@ Most recent browser-health failure-artifact rerun:
   warms the runtime assets online with `cache: "reload"`, and requires the
   cached entry to lose the stale marker/header before the offline reopen branch
   runs. Local Bun `1.3.9` focused Biome, create-syncular-app typecheck,
-  non-Chrome scaffold smoke, and diff check passed. Chrome is not installed
-  locally, so hosted `starter-browser-preview` confirmation is still required
-  for this real-browser cache-refresh branch.
+  non-Chrome scaffold smoke, and diff check passed. Hosted Checks run
+  `28566130045` on commit `d33643c0` passed the full matrix, including
+  `starter-browser-preview`, confirming the real-browser cache-refresh branch
+  in hosted Chrome.
 
 ## Next Action
 
@@ -4977,14 +4978,15 @@ non-`GET` requests, service-worker process network behavior under CDP offline
 emulation, and expected server-down sync/realtime diagnostics. Hosted Checks
 run `28565395806` on commit `46689179` passed the full matrix, including
 `starter-browser-preview`, and confirmed real service-worker navigation/runtime
-Cache API hit telemetry. The current follow-up adds a PWA online runtime
-cache-refresh branch before the offline proof: it poisons the smoke Cache API
-entry for the Syncular WASM glue with a stale marker, warms the runtime assets
-online with `cache: "reload"`, and requires the cached response to be replaced
-by the live asset. Remaining lifecycle/storage work is host/browser eviction
-beyond explicit CDP origin/database clears, Clear-Site-Data, same-origin
-IndexedDB deletion, PWA offline cache/reopen, and PWA online runtime
-cache-refresh, plus storage failure/coordination behavior below the
+Cache API hit telemetry. The PWA online runtime cache-refresh branch is now
+also confirmed in hosted Chrome: hosted Checks run `28566130045` on commit
+`d33643c0` passed the full matrix after poisoning the smoke Cache API entry
+for the Syncular WASM glue with a stale marker, warming the runtime assets
+online with `cache: "reload"`, and requiring the cached response to be
+replaced by the live asset. Remaining lifecycle/storage work is host/browser
+eviction beyond explicit CDP origin/database clears, Clear-Site-Data,
+same-origin IndexedDB deletion, PWA offline cache/reopen, and PWA online
+runtime cache-refresh, plus storage failure/coordination behavior below the
 already-covered OPFS fallback and fallback-failure classification.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain host-driven eviction

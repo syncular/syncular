@@ -413,8 +413,10 @@ read-only review:
     `cache: "reload"`, and requires the stale marker/header to be replaced by
     the live runtime asset before moving on to the offline branch. Local
     pinned-Bun focused Biome, create-syncular-app typecheck, non-Chrome
-    scaffold smoke, and diff check passed; hosted `starter-browser-preview`
-    confirmation is still required for the new real-browser branch.
+    scaffold smoke, and diff check passed; hosted Checks run `28566130045` on
+    commit `d33643c0` passed the full matrix, including
+    `starter-browser-preview`, confirming the runtime cache-refresh branch in
+    hosted Chrome.
     Host-driven eviction beyond explicit CDP storage clears, Clear-Site-Data,
     same-origin IndexedDB deletion, PWA offline cache/reopen, and PWA online
     runtime cache refresh, plus deeper storage/coordination failures below the
