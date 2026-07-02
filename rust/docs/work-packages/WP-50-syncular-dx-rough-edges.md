@@ -5218,7 +5218,7 @@ Most recent browser-health failure-artifact rerun:
   `/syncular/wasm-core/syncular_bg.wasm` during a repeated app open. The starter
   Vite runtime-asset middleware now serves Syncular WASM/glue assets with
   `access-control-allow-origin: *` and
-  `cross-origin-resource-policy: same-origin`, and the built-preview runtime
+  `cross-origin-resource-policy: cross-origin`, and the built-preview runtime
   asset self-check asserts those headers. Local Bun `1.3.9` gates passed:
   `bun --cwd packages/create-syncular-app tsgo`, `bunx biome check
   packages/create-syncular-app/scripts/smoke.ts
@@ -5252,6 +5252,20 @@ Most recent browser-health failure-artifact rerun:
   `lifecycleLockState=acquired`. This closes basic Firefox/Safari/WebKit
   lifecycle Web Lock acquisition evidence while leaving real target activation
   and non-Chrome lock contention/failure semantics as separate follow-ups.
+- 2026-07-02: Hosted Checks run `28583002937` confirmed the remaining WebKit
+  failure was the Linux WebKit runtime-asset policy, not the lifecycle Web Lock
+  proof: the browser rejected worker-side fetching of
+  `/syncular/wasm-core/syncular_bg.wasm` with access-control checks before the
+  starter could emit deployment or health markers. The starter runtime asset
+  middleware and self-check now require `cross-origin-resource-policy:
+  cross-origin`, keeping the explicit `access-control-allow-origin: *` header
+  while avoiding WebKit treating public worker-fetched WASM/glue artifacts as
+  same-origin-only. Local Bun `1.3.9` gates passed: `bun --cwd
+  packages/create-syncular-app tsgo`, `bunx biome check
+  packages/create-syncular-app/scripts/smoke.ts
+  packages/create-syncular-app/template/vite.config.ts`, `bun run
+  docs:stale-check`, `git diff --check`, and both Firefox/WebKit matrix smokes
+  with `PLAYWRIGHT_BROWSERS_PATH=.context/ms-playwright`.
 
 ## Next Action
 
@@ -5397,7 +5411,10 @@ run; target activation, Web Lock contention/failure behavior outside Chrome,
 host eviction semantics, and full support-policy status remain preflight-gated
 until deeper target evidence exists. Hosted
 Checks run `28576137057` on commit `8245fc98` passed the full matrix, including
-`starter-webkit-runtime-matrix`, before the local-write/reload extension.
+`starter-webkit-runtime-matrix`, before the local-write/reload extension. Hosted
+Checks run `28583002937` then caught a Linux WebKit access-control rejection on
+the worker-fetched WASM artifact, so the starter runtime asset policy now uses
+`cross-origin-resource-policy: cross-origin` and the smoke asserts that header.
 Remaining lifecycle/storage work is host/browser eviction beyond explicit CDP
 origin/database clears/Clear-Site-Data/same-origin IndexedDB deletion,
 deeper fully installed-PWA host semantics beyond the now-machine-readable

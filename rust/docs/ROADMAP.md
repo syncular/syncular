@@ -730,7 +730,11 @@ read-only review:
     `starter-firefox-runtime-matrix` and `starter-webkit-runtime-matrix` Checks
     jobs own these proofs; hosted Checks run `28576137057` on commit `8245fc98`
     confirmed the first WebKit matrix inside the full matrix before the local
-    write/reload extension.
+    write/reload extension. Hosted Checks run `28583002937` later caught a
+    Linux WebKit access-control rejection on the worker-fetched WASM artifact,
+    so the starter Vite runtime asset middleware now serves Syncular
+    WASM/glue assets with `cross-origin-resource-policy: cross-origin` and the
+    built-preview runtime asset self-check asserts that policy.
     Cloudflare local-runtime failure artifacts now feed Console/Fleet through
     `POST /console/client-diagnostics/cloudflare-runtime-failure`, preserving
     route, exit, bounded output, and safe R2 blob timing/byte metrics as

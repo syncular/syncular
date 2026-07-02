@@ -16,7 +16,7 @@ const syncularRuntimeContentTypes = new Map([
 ]);
 const syncularRuntimeHeaders = new Map([
   ['access-control-allow-origin', '*'],
-  ['cross-origin-resource-policy', 'same-origin'],
+  ['cross-origin-resource-policy', 'cross-origin'],
 ]);
 const syncularSmokeClearSiteDataPath = '/__syncular-smoke/clear-site-data';
 const syncularSmokeStorageAdminPath = '/__syncular-smoke/storage-admin';

@@ -743,9 +743,9 @@ async function verifyBuiltPreviewRuntimeAssets(origin: string): Promise<void> {
     }
     const crossOriginResourcePolicy =
       response.headers.get('cross-origin-resource-policy') ?? '';
-    if (crossOriginResourcePolicy !== 'same-origin') {
+    if (crossOriginResourcePolicy !== 'cross-origin') {
       throw new Error(
-        `${asset.label} asset ${assetUrl.href} returned cross-origin-resource-policy=${crossOriginResourcePolicy || '<missing>'}; expected same-origin`
+        `${asset.label} asset ${assetUrl.href} returned cross-origin-resource-policy=${crossOriginResourcePolicy || '<missing>'}; expected cross-origin`
       );
     }
   }
