@@ -963,6 +963,7 @@ async function startBrowserPreviewChrome(args: {
   userDataDir: string;
 }): Promise<{ debugPort: number; process: ReturnType<typeof spawn> }> {
   await mkdir(args.userDataDir, { recursive: true });
+  await enableChromeInternalDebugPages(args.userDataDir);
   const debugPort = await getFreePort();
   const chromeArgs = [
     '--headless=new',
@@ -989,6 +990,20 @@ async function startBrowserPreviewChrome(args: {
   }
 
   return { debugPort, process: chrome };
+}
+
+async function enableChromeInternalDebugPages(
+  userDataDir: string
+): Promise<void> {
+  const localStatePath = join(userDataDir, 'Local State');
+  const localState = existsSync(localStatePath)
+    ? (JSON.parse(await readFile(localStatePath, 'utf8')) as Record<
+        string,
+        unknown
+      >)
+    : {};
+  localState.internal_only_uis_enabled = true;
+  await writeFile(localStatePath, JSON.stringify(localState));
 }
 
 async function createChromeTarget(
