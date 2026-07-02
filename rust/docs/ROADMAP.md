@@ -288,7 +288,18 @@ read-only review:
     typecheck, focused Biome, and non-Chrome scaffold smoke passed; hosted
     Checks run `28555819882` on commit `855c6749` passed the full matrix,
     including `starter-browser-preview`, confirming the branch in hosted
-    Chrome. Host-driven eviction and storage-shutdown behavior remain matrix work.
+    Chrome. The starter smoke now also has an explicit storage-shutdown replay
+    proof: it closes the generated app client, requires public status/lifecycle
+    to report closed, requires a post-close generated mutation to reject with
+    `worker.closed`, reopens the same profile and client id with sync still
+    held to prove the task restored from the persistent browser database, then
+    resumes normal sync and waits for a separate observer client to receive the
+    replay. Local pinned-Bun `create-syncular-app` typecheck, focused Biome,
+    non-Chrome scaffold smoke, and diff check passed; hosted Checks run
+    `28556559139` on commit `c4054d92` passed the full matrix, including
+    `starter-browser-preview`, confirming the branch in hosted Chrome.
+    Host-driven eviction beyond explicit CDP origin clear and deeper storage
+    failure/coordination behavior remain matrix work.
     The starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply

@@ -4067,11 +4067,22 @@ Most recent browser-health failure-artifact rerun:
   sync/realtime. Hosted Checks run `28555819882` on commit `855c6749` passed
   the full matrix, including `starter-browser-preview`, confirming this branch
   in Chrome.
+  The current slice adds an explicit storage-shutdown replay proof for the
+  actual generated app client. The hidden template proof closes the client,
+  requires `getStatus()` to report a closed connection and closed lifecycle
+  phase, then requires a post-close generated mutation to reject with
+  `worker.closed`. The browser smoke writes a generated task with sync held,
+  runs the shutdown proof, reopens the same profile/client id with sync still
+  held to prove the task restored from persistent browser storage, then reloads
+  with normal sync startup and waits for a separate observer client to receive
+  the replay through sync/realtime. Hosted Checks run `28556559139` on commit
+  `c4054d92` passed the full matrix, including `starter-browser-preview`,
+  confirming this branch in Chrome.
   Remaining work is richer browser-process proof: actual
   target-browser background/discard suspension and restoration,
-  real storage shutdown, browser/host-driven eviction beyond explicit CDP
-  origin clear, lower-level storage contention/failure behavior beyond
-  duplicate-tab generated writes and renderer crash, and deeper persistent
+  browser/host-driven eviction beyond explicit CDP origin clear, lower-level
+  storage contention/failure behavior beyond duplicate-tab generated writes,
+  renderer crash, and explicit client shutdown close, and deeper persistent
   database recovery coordination.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
@@ -4635,6 +4646,22 @@ Most recent browser-health failure-artifact rerun:
   `bun run docs:stale-check`, and `git diff --check`. Chrome was not installed
   locally, so hosted Checks run `28555819882` on commit `855c6749` confirmed
   the branch in hosted Chrome and passed the full matrix.
+- 2026-07-02: Added an explicit browser storage-shutdown replay proof to the
+  starter Chrome/CDP branch. The template exposes a hidden
+  `syncular-starter-run-storage-shutdown-proof` event that closes the actual
+  generated app client, requires `getStatus()` to report a closed connection and
+  `closed` lifecycle phase, and requires a post-close generated mutation to
+  reject with `worker.closed`. The browser smoke writes a generated task with
+  sync startup held, waits for local visibility plus rendered text, runs the
+  shutdown proof, reopens the same Chrome profile/client id with sync still held
+  to prove the task restored from persistent browser storage, then reloads with
+  normal sync startup and waits for a separate observer client to receive the
+  replay through sync/realtime. Local gates with Bun `1.3.9` passed:
+  `bun --cwd packages/create-syncular-app tsgo`,
+  `bunx biome check packages/create-syncular-app/scripts/smoke.ts packages/create-syncular-app/template/src/app.tsx`,
+  `bun --cwd packages/create-syncular-app smoke`, and `git diff --check`.
+  Chrome was not installed locally, so hosted Checks run `28556559139` on commit
+  `c4054d92` confirmed the branch in hosted Chrome and passed the full matrix.
 
 ## Next Action
 
@@ -4676,14 +4703,20 @@ adds renderer-crash replay recovery for the same sync-held generated-write
 flow; hosted Checks run `28554593391` confirmed that branch in Chrome.
 The current slice adds targeted sync-transport replay behind a smoke-only
 server failpoint; hosted Checks run `28555819882` confirmed that branch in
-Chrome. The next lifecycle follow-up should move to discarded-tab,
-browser/host-driven eviction beyond explicit CDP origin clear,
-storage-shutdown, and lower-level storage-failure behavior.
+Chrome. The current slice adds explicit storage-shutdown replay by closing the
+generated app client, verifying closed lifecycle/status plus `worker.closed`
+post-close rejection, reopening the same persistent browser database with sync
+held, and then replaying to an observer after normal sync resumes; hosted Checks
+run `28556559139` confirmed that branch in Chrome. The next lifecycle follow-up
+should move to discarded-tab/background suspension and restoration,
+browser/host-driven eviction beyond explicit CDP origin clear, and lower-level
+storage-failure behavior.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
-discard/shutdown lifecycle coverage, host-driven eviction and storage-shutdown
-browser proof, lower-level storage contention/failure behavior beyond
-duplicate-tab generated writes, and browser/bundler matrix execution,
+discard/background lifecycle coverage, host-driven eviction and deeper
+storage-failure browser proof, lower-level storage contention/failure behavior
+beyond duplicate-tab generated writes, renderer crash, and explicit shutdown
+close, and browser/bundler matrix execution,
 especially Safari, Firefox, real private-mode durable-persistence semantics,
 WebViews, installed-PWA cache/update semantics, and PWA offline persistence
 beyond controller classification.
