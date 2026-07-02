@@ -5242,6 +5242,16 @@ Most recent browser-health failure-artifact rerun:
   persistent and ephemeral Playwright Firefox attempts crash inside Playwright
   `_onWebSocketOpened` as soon as a realtime WebSocket opens; this remains a
   tooling gap, not a Firefox product support claim.
+- 2026-07-02: Tightened the Firefox/WebKit runtime matrix lifecycle proof to
+  assert Web Lock evidence instead of only counting resume events. The runner
+  now reads Web Locks availability from the secure preview page, expects
+  lifecycle resumes to report the starter lifecycle lock name, and requires
+  `lockState: "acquired"` when Web Locks are available or `"unavailable"` only
+  when the target browser really lacks `navigator.locks`. Local Bun `1.3.9`
+  Firefox and WebKit matrix smokes both passed with
+  `lifecycleLockState=acquired`. This closes basic Firefox/Safari/WebKit
+  lifecycle Web Lock acquisition evidence while leaving real target activation
+  and non-Chrome lock contention/failure semantics as separate follow-ups.
 
 ## Next Action
 
@@ -5377,13 +5387,15 @@ runtime/support-policy proof and now both matrix jobs also prove DOM lifecycle
 helper pause/resume signal handling plus a generated local write with local
 command evidence, same-page reload rendering, and same-context fresh-page
 rendering, plus persistent-profile relaunch rendering from browser storage.
+The lifecycle branch now also asserts the starter lifecycle Web Lock name and
+requires lock acquisition when the secure target browser exposes Web Locks.
 The WebKit/Safari branch now also opens auto-start writer and observer clients
 and proves realtime propagation by requiring the observer to render the writer's
 generated task. Firefox realtime remains explicitly skipped because Playwright
 Firefox crashes in WebSocket-open instrumentation before app assertions can
-run; target activation, Web Lock lifecycle coordination, host eviction
-semantics, and full support-policy status remain preflight-gated until deeper
-target evidence exists. Hosted
+run; target activation, Web Lock contention/failure behavior outside Chrome,
+host eviction semantics, and full support-policy status remain preflight-gated
+until deeper target evidence exists. Hosted
 Checks run `28576137057` on commit `8245fc98` passed the full matrix, including
 `starter-webkit-runtime-matrix`, before the local-write/reload extension.
 Remaining lifecycle/storage work is host/browser eviction beyond explicit CDP
@@ -5402,10 +5414,11 @@ crash, explicit shutdown close, discarded-tab recovery, database-storage
 eviction, Clear-Site-Data storage eviction, and same-origin IndexedDB deletion
 branches, and
 browser/bundler matrix execution, especially Firefox realtime plus
-Safari/WebKit and Firefox target activation, Web Lock lifecycle coordination,
-and host-eviction/storage failure proof beyond the
-runtime/support-policy/local DOM-signal, same-context fresh-page,
-persistent-profile relaunch, and WebKit realtime propagation smokes, real
+Safari/WebKit and Firefox target activation, Web Lock contention/failure
+behavior beyond basic lifecycle lock acquisition, and host-eviction/storage
+failure proof beyond the runtime/support-policy/local DOM-signal,
+same-context fresh-page, persistent-profile relaunch, lifecycle Web Lock
+acquisition, and WebKit realtime propagation smokes, real
 private-mode durable-persistence semantics, WebViews,
 deeper fully installed-PWA host semantics beyond the app-window
 cache-refresh/offline-restart/update proof, and PWA cache-update semantics

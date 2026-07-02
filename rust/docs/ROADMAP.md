@@ -467,8 +467,10 @@ read-only review:
     display-mode/cache-refresh/offline-restart/update proof plus smoke-only PWA
     offline, cache-refresh, and service-worker update proofs, Firefox realtime
     beyond the maintained Firefox runtime/support-policy/local persistence
-    smoke, plus deeper storage/coordination failures below the covered fallback
-    and fallback-failure cases.
+    smoke, non-Chrome Web Lock contention/failure semantics beyond the
+    maintained lifecycle lock-acquisition proof, plus deeper
+    storage/coordination failures below the covered fallback and
+    fallback-failure cases.
     The starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply
@@ -710,17 +712,21 @@ read-only review:
     task, require local apply/outbox/local-visibility command evidence, reload the
     same page, open a fresh page in the same Playwright context, close and
     relaunch the same persistent Playwright profile, and require the task to
-    render from local browser storage after each boundary. The WebKit job now
-    also opens auto-start writer/observer clients with separate browser database
-    ids and proves realtime-connected propagation by requiring the observer to
-    render the writer's generated task; Firefox logs
+    render from local browser storage after each boundary. The matrix now also
+    asserts lifecycle Web Lock evidence in the secure target browser: resume
+    events must report the starter lifecycle lock name and `lockState:
+    "acquired"` when Web Locks are available. The WebKit job now also opens
+    auto-start writer/observer clients with separate browser database ids and
+    proves realtime-connected propagation by requiring the observer to render
+    the writer's generated task; Firefox logs
     `realtimePropagation=skipped-playwright-firefox-websocket` because
     Playwright Firefox crashes in its WebSocket-open instrumentation before app
     assertions can run. This proves target-browser DOM lifecycle signal
     handling plus local-write, reload, same-context fresh-page,
-    persistent-profile relaunch execution, and WebKit realtime propagation
-    without claiming Firefox realtime, target activation, Web Lock lifecycle
-    coordination, or full support-policy status. Dedicated
+    persistent-profile relaunch execution, lifecycle Web Lock acquisition, and
+    WebKit realtime propagation without claiming Firefox realtime, target
+    activation, non-Chrome Web Lock contention/failure behavior, or full
+    support-policy status. Dedicated
     `starter-firefox-runtime-matrix` and `starter-webkit-runtime-matrix` Checks
     jobs own these proofs; hosted Checks run `28576137057` on commit `8245fc98`
     confirmed the first WebKit matrix inside the full matrix before the local

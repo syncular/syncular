@@ -4,6 +4,8 @@ import { dirname, join } from 'node:path';
 import { chromium, firefox, webkit } from '@playwright/test';
 
 const browserTypes = { chromium, firefox, webkit };
+const STARTER_LIFECYCLE_RESUME_LOCK_NAME =
+  'syncular:create-syncular-app:lifecycle-resume';
 
 function parseArgs(argv) {
   const args = new Map();
@@ -584,12 +586,34 @@ async function waitForMatrixLifecycleResume(args) {
         )}. Failure artifact: ${args.failureArtifact}`
       );
     }
-    if (
+    const resumeMatches =
       probe.lifecycleResume.status === 'complete' &&
       probe.lifecycleResume.count >= args.expectedCount &&
-      probe.lifecycleResume.reason === args.expectedReason
-    ) {
-      return probe;
+      probe.lifecycleResume.reason === args.expectedReason;
+    if (resumeMatches) {
+      const lockNameMatches =
+        args.expectedLockName === undefined ||
+        probe.lifecycleResume.lockName === args.expectedLockName;
+      const lockStateMatches =
+        args.expectedLockState === undefined ||
+        probe.lifecycleResume.lockState === args.expectedLockState;
+      if (lockNameMatches && lockStateMatches) {
+        return probe;
+      }
+      await writeFailureArtifact(args.failureArtifact, {
+        browser: args.browserName,
+        expectedLockName: args.expectedLockName,
+        expectedLockState: args.expectedLockState,
+        generatedAt: new Date().toISOString(),
+        metrics: args.metrics,
+        probe,
+        reason: `${args.browserName}-runtime-matrix-lifecycle-lock-mismatch`,
+        supportContext: args.supportContext,
+        url: args.url,
+      });
+      throw new Error(
+        `Built preview ${args.browserName} lifecycle resume lock proof failed: expected ${args.expectedLockName ?? '<any>'}/${args.expectedLockState ?? '<any>'}, observed ${probe.lifecycleResume.lockName ?? '<none>'}/${probe.lifecycleResume.lockState ?? '<none>'}. Failure artifact: ${args.failureArtifact}`
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -608,8 +632,20 @@ async function waitForMatrixLifecycleResume(args) {
   );
 }
 
+async function readMatrixWebLocksSupported(page) {
+  return page.evaluate(
+    () => typeof navigator.locks?.request === 'function'
+  );
+}
+
 async function proveMatrixLifecycleSignals(args) {
   const initialProbe = await readMatrixProbe(args.page, args.diagnostics);
+  const webLocksSupported = await readMatrixWebLocksSupported(args.page);
+  const expectedLockState = webLocksSupported ? 'acquired' : 'unavailable';
+  const expectedLock = {
+    expectedLockName: STARTER_LIFECYCLE_RESUME_LOCK_NAME,
+    expectedLockState,
+  };
   const pagehideCount = initialProbe.lifecyclePause.count + 1;
   await dispatchMatrixLifecycleEvent(args.page, 'pagehide');
   await waitForMatrixLifecyclePause({
@@ -624,6 +660,7 @@ async function proveMatrixLifecycleSignals(args) {
   await dispatchMatrixLifecycleEvent(args.page, 'pageshow');
   await waitForMatrixLifecycleResume({
     ...args,
+    ...expectedLock,
     expectedCount: pageshowCount,
     expectedReason: 'pageshow',
     timeoutReason: 'lifecycle-pageshow-timeout',
@@ -632,6 +669,7 @@ async function proveMatrixLifecycleSignals(args) {
   await dispatchMatrixLifecycleEvent(args.page, 'online');
   await waitForMatrixLifecycleResume({
     ...args,
+    ...expectedLock,
     expectedCount: pageshowCount + 1,
     expectedReason: 'online',
     timeoutReason: 'lifecycle-online-timeout',
@@ -649,13 +687,14 @@ async function proveMatrixLifecycleSignals(args) {
   await dispatchMatrixLifecycleEvent(args.page, 'resume');
   await waitForMatrixLifecycleResume({
     ...args,
+    ...expectedLock,
     expectedCount: pageshowCount + 2,
     expectedReason: 'resume',
     timeoutReason: 'lifecycle-resume-event-timeout',
   });
 
   await dispatchMatrixLifecycleEvent(args.page, 'beforeunload');
-  return waitForMatrixLifecyclePause({
+  const finalProbe = await waitForMatrixLifecyclePause({
     ...args,
     expectedCount: freezeCount + 1,
     expectedReason: 'beforeunload',
@@ -663,6 +702,11 @@ async function proveMatrixLifecycleSignals(args) {
       initialProbe.lifecyclePause.shutdownSignalCount + 1,
     timeoutReason: 'lifecycle-beforeunload-timeout',
   });
+  return {
+    ...finalProbe,
+    expectedLifecycleLockState: expectedLockState,
+    webLocksSupported,
+  };
 }
 
 async function waitForMatrixLocalWriteProof(args) {
@@ -1173,7 +1217,7 @@ async function main() {
       });
     }
     console.log(
-      `[csa-smoke] ${browserName} runtime matrix evidence passed: context=${probe.browserSupportPolicy.context} tier=${probe.deploymentPreflight.supportTier} lifecycleResumeCount=${lifecycleProbe.lifecycleResume.count} localWriteCount=${writeProbe.commandTimeline.count} sameContextFreshPage=passed persistentProfileReopen=passed realtimePropagation=${realtimePropagation}`
+      `[csa-smoke] ${browserName} runtime matrix evidence passed: context=${probe.browserSupportPolicy.context} tier=${probe.deploymentPreflight.supportTier} lifecycleResumeCount=${lifecycleProbe.lifecycleResume.count} lifecycleLockState=${lifecycleProbe.lifecycleResume.lockState} localWriteCount=${writeProbe.commandTimeline.count} sameContextFreshPage=passed persistentProfileReopen=passed realtimePropagation=${realtimePropagation}`
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
