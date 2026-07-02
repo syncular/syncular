@@ -467,9 +467,10 @@ read-only review:
     display-mode/cache-refresh/offline-restart/update proof plus smoke-only PWA
     offline, cache-refresh, and service-worker update proofs, Firefox realtime
     beyond the maintained Firefox runtime/support-policy/local persistence
-    smoke, target activation outside Chrome, plus deeper
-    storage/coordination failures below the covered fallback and
-    fallback-failure cases.
+    smoke, target activation outside Chrome, cross-browser private-mode and
+    WebView host semantics beyond the maintained Chrome incognito restart
+    non-persistence proof, plus deeper storage/coordination failures below the
+    covered fallback and fallback-failure cases.
     The starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply
@@ -577,9 +578,13 @@ read-only review:
     incognito window with the starter explicitly configured for memory storage,
     proving the public preflight/support-policy path reports
     `ephemeral-development`/`ephemeral`, selects `private-browsing`, and marks
-    it `development-only`/`met` without claiming durable private-mode
-    persistence. Hosted Checks run `28540712560` on commit `4028723a`
-    confirmed that branch in Chrome; the `starter-browser-preview` log reached
+    it `development-only`/`met`. The browser preview smoke now also opens
+    default IndexedDB storage under a private-browsing context with sync held
+    manual, proves a generated task reaches local visibility, restarts the
+    private Chrome process, and requires that task to be absent after the
+    private restart. Hosted Checks run `28540712560` on commit `4028723a`
+    confirmed the earlier memory branch in Chrome; the
+    `starter-browser-preview` log reached
     `real-browser smoke: proving incognito memory-storage policy` before the
     final built-preview pass marker.
     Release
@@ -697,10 +702,14 @@ read-only review:
     service-worker-controlled and app-window display-mode PWA classification
     proofs, while keeping PWA support preflight-gated until retained target
     evidence exists. It also includes a first Chrome incognito memory-storage
-    proof for the
-    private/development support-policy branch, while keeping real private-mode
-    durable-persistence semantics in the remaining browser matrix. Hosted run
-    `28540712560` confirmed the incognito memory-storage proof in Chrome.
+    proof for the private/development support-policy branch. The Chrome
+    incognito branch now also opens default IndexedDB storage with sync held
+    manual, proves a generated task reaches local visibility, restarts the
+    private browser process, and requires that local state to be absent on the
+    next private launch, preserving the stance that private browsing is
+    development/test-only instead of durable offline storage. Hosted run
+    `28540712560` confirmed the incognito memory-storage proof in Chrome before
+    the restart non-persistence extension.
     The starter Checks matrix now has Playwright Firefox and WebKit runtime
     smokes that pass explicit `firefox-secure-page` and `safari-secure-page`
     contexts, open the built starter with manual sync startup, require

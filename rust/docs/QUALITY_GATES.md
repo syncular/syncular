@@ -101,9 +101,9 @@ until the full browser Worker/WASM suite is green on Linux.
   service-worker-controlled PWA support-policy classification, PWA app-window
   display-mode support-policy classification, app-window PWA runtime
   cache-refresh, offline restart persistence, and service-worker update
-  activation, incognito memory-storage development-policy classification, and
-  live support-bundle failure artifact
-  validation.
+  activation, incognito memory-storage development-policy classification,
+  incognito default-storage restart non-persistence, and live support-bundle
+  failure artifact validation.
   The separate `starter-firefox-runtime-matrix` and
   `starter-webkit-runtime-matrix` Checks jobs install Playwright Firefox or
   WebKit and run `bun --cwd packages/create-syncular-app smoke

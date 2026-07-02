@@ -1275,6 +1275,16 @@ async function runBrowserPreviewSmoke(args: {
     origin: args.origin,
     userDataDir: `${args.userDataDir}-incognito-memory`,
   });
+  log('real-browser smoke: proving incognito default-storage restart');
+  await proveStarterIncognitoDefaultStorageRestart({
+    chrome: args.chrome,
+    failureArtifactPath: incognitoDefaultStorageFailureArtifactPath(
+      args.failureArtifactPath
+    ),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    userDataDir: `${args.userDataDir}-incognito-default-storage`,
+  });
   log('real-browser smoke: proving browser-observed quota pressure');
   await proveStarterQuotaPressurePreflight({
     chrome: args.chrome,
@@ -1372,6 +1382,14 @@ function incognitoMemoryFailureArtifactPath(
   return failureArtifactPath.endsWith('.json')
     ? failureArtifactPath.replace(/\.json$/u, '.incognito-memory.json')
     : `${failureArtifactPath}.incognito-memory.json`;
+}
+
+function incognitoDefaultStorageFailureArtifactPath(
+  failureArtifactPath: string
+): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(/\.json$/u, '.incognito-default-storage.json')
+    : `${failureArtifactPath}.incognito-default-storage.json`;
 }
 
 function quotaPressureFailureArtifactPath(failureArtifactPath: string): string {
@@ -4025,6 +4043,63 @@ async function waitForStarterText(args: {
   throw new Error(
     `${args.timeoutMessage}. Failure artifact: ${args.failureArtifactPath}`
   );
+}
+
+async function proveStarterTextAbsent(args: {
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+  title: string;
+  visibleReason: string;
+}): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        `${args.visibleReason}-errors`,
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview absent-text proof failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    const visible = await args.session.evaluate<boolean>(
+      `document.body?.innerText.includes(${JSON.stringify(args.title)}) ?? false`
+    );
+    if (visible) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        args.visibleReason,
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview unexpectedly rendered ${JSON.stringify(
+          args.title
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+  }
+
+  if (!lastProbe?.ready) {
+    await writeBrowserPreviewFailureArtifact(
+      args.failureArtifactPath,
+      `${args.visibleReason}-not-ready`,
+      lastProbe,
+      args.failureMetrics
+    );
+    throw new Error(
+      `Built preview absent-text proof did not stay ready. Failure artifact: ${args.failureArtifactPath}`
+    );
+  }
 }
 
 async function waitForStarterRenderedText(args: {
@@ -7618,6 +7693,149 @@ async function waitForStarterIncognitoMemoryStorageEvidence(args: {
   );
   throw new Error(
     `Timed out waiting for built preview incognito memory-storage policy evidence. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
+async function proveStarterIncognitoDefaultStorageRestart(args: {
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const clientId = 'web-incognito-default-storage';
+  const url = `${args.origin}/?syncularClientId=${clientId}&syncularBrowserSupportContext=private-browsing&syncularSyncStartup=manual&syncularIncognitoDefaultStorageProof=${Date.now()}`;
+  const title = `incognito default storage ${Date.now()}`;
+  let chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    incognito: true,
+    userDataDir: args.userDataDir,
+  });
+  let session: CdpSession | null = null;
+
+  try {
+    const target = await createChromeTarget(chrome.debugPort, 'about:blank');
+    session = await CdpSession.connect(target.webSocketDebuggerUrl);
+    await enableChromeTarget(session);
+    await navigateChromeTarget(session, url);
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterIncognitoDefaultStorageEvidence({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+    const before = await readStarterBrowserProbe(session);
+    await submitStarterTask(session, title);
+    await waitForStarterLocalVisibility({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+    await waitForStarterCommandTimelineProof({
+      expectedCount: before.commandTimelineProof.count + 1,
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+  } finally {
+    session?.close();
+    session = null;
+    await stopProcess(chrome.process);
+  }
+
+  chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    incognito: true,
+    userDataDir: args.userDataDir,
+  });
+
+  try {
+    const target = await createChromeTarget(chrome.debugPort, 'about:blank');
+    session = await CdpSession.connect(target.webSocketDebuggerUrl);
+    await enableChromeTarget(session);
+    await navigateChromeTarget(session, url);
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterIncognitoDefaultStorageEvidence({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+    });
+    await proveStarterTextAbsent({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session,
+      title,
+      visibleReason: 'incognito-default-storage-restart-persisted',
+    });
+  } finally {
+    session?.close();
+    await stopProcess(chrome.process);
+  }
+}
+
+async function waitForStarterIncognitoDefaultStorageEvidence(args: {
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'incognito-default-storage-policy-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview incognito default-storage policy proof failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+
+    if (
+      (probe.deploymentPreflight.status === 'ready' ||
+        probe.deploymentPreflight.status === 'warning') &&
+      probe.deploymentPreflight.supportTier === 'persistent-offline' &&
+      probe.deploymentPreflight.persistence !== 'ephemeral' &&
+      probe.browserSupportPolicy.context === 'private-browsing' &&
+      probe.browserSupportPolicy.expectedSupportTier ===
+        'ephemeral-development' &&
+      probe.browserSupportPolicy.expectedPersistence === 'ephemeral' &&
+      probe.browserSupportPolicy.observedSupportTier === 'persistent-offline' &&
+      probe.browserSupportPolicy.observedPersistence !== 'ephemeral' &&
+      probe.browserSupportPolicy.policy === 'development-only' &&
+      probe.browserSupportPolicy.status === 'warning' &&
+      probe.browserSupportPolicy.reasonCodes.includes(
+        'browser_support.development_only_mismatch'
+      )
+    ) {
+      return;
+    }
+
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'incognito-default-storage-policy-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview incognito default-storage policy evidence. Failure artifact: ${args.failureArtifactPath}`
   );
 }
 

@@ -5276,6 +5276,16 @@ Most recent browser-health failure-artifact rerun:
   complete under `lockState: "acquired"`. This closes the first non-Chrome
   lifecycle Web Lock timeout/recovery proof while still leaving real target
   activation and broader host/browser lifecycle semantics as follow-ups.
+- 2026-07-02: Added a Chrome incognito default-storage restart proof next to
+  the existing explicit memory-storage policy proof. The browser preview smoke
+  now opens a private Chrome process with default IndexedDB storage, forces the
+  `private-browsing` support-policy context, holds sync startup manual, writes a
+  generated task, requires local visibility and command-timeline
+  evidence, stops the private process, relaunches a private Chrome process with
+  the same client id, and requires that task to remain absent. This proves the
+  private-mode warning that same-page local writes can pass while restart
+  persistence fails, without claiming cross-browser private-mode durable
+  offline support.
 
 ## Next Action
 
@@ -5292,12 +5302,15 @@ slice extends that branch to prove app-window runtime cache-refresh plus
 service-worker update activation while still leaving fully installed-PWA
 offline/restart/update-skew semantics open. The incognito
 memory-storage support-policy branch is now confirmed in hosted Chrome and
-verifies explicit ephemeral/development storage classification without claiming
-private-mode durable persistence. The current slice adds a browser-observed
-quota-pressure preflight branch, now fixed to pass post-override CDP usage/quota
-facts into the app preflight proof and confirmed in hosted Chrome. The current
-slice extends those browser-observed quota facts into storage recovery action
-mapping, now confirmed in hosted Chrome. The quota-exhausted generated write
+verifies explicit ephemeral/development storage classification. The current
+incognito default-storage branch also proves a private Chrome browser-local
+rendered write does not survive private-process restart when sync is held
+manual, without claiming cross-browser private-mode durable persistence. The
+browser-observed quota-pressure preflight branch is now fixed to pass
+post-override CDP usage/quota facts into the app preflight proof and confirmed
+in hosted Chrome. That branch extends those browser-observed quota facts into
+storage recovery action mapping, now confirmed in hosted Chrome. The
+quota-exhausted generated write
 rejection proof is also confirmed in hosted Chrome. The generated
 command-timeline proof marker is also confirmed in hosted Chrome through Checks
 run `28545477587`. Browser health now has a typed lifecycle operation
@@ -5447,7 +5460,8 @@ Safari/WebKit and Firefox target activation, and host-eviction/storage failure
 proof beyond the runtime/support-policy/local DOM-signal, same-context
 fresh-page, persistent-profile relaunch, lifecycle Web Lock acquisition and
 bounded timeout/recovery, and WebKit realtime propagation smokes, real
-private-mode durable-persistence semantics, WebViews,
+cross-browser private-mode semantics beyond Chrome incognito restart
+non-persistence, WebViews,
 deeper fully installed-PWA host semantics beyond the app-window
 cache-refresh/offline-restart/update proof, and PWA cache-update semantics
 beyond these smoke-only/app-window runtime cache-refresh, offline restart, and
