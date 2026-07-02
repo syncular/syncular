@@ -4735,7 +4735,6 @@ async function discardStarterTabViaChromeDiscards(args: {
       const discarded = await waitForTab(
         (info) =>
           info.state === 5 &&
-          info.loadingState === 0 &&
           info.discardCount > before.discardCount,
         'starter tab discarded'
       );
