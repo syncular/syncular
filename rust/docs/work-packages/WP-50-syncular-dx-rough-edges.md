@@ -1368,6 +1368,10 @@ online propagation, or reconnect behavior can change.
   source entrypoints and checks known exports, catching top-level browser,
   native-driver, or optional-peer side effects that static graph walking could
   miss.
+- `bun run imports:check` now also validates the `@syncular/client` and
+  `@syncular/server` package export maps, requiring the canonical folded
+  subpaths and rejecting stale split-package, `db/*`, and `storage/*`
+  subpaths.
 - Framework import smokes now build a minimal Next 16 SSR app through webpack,
   a minimal Vite 8 browser app, and a minimal Cloudflare Worker through
   Wrangler dry-run. The Next path imports `@syncular/client` and
@@ -1924,6 +1928,12 @@ online propagation, or reconnect behavior can change.
   `imports:check` script to statically walk the `@syncular/client` and
   `@syncular/server` root import graphs and fail if they reach optional
   adapter subpaths or optional peer packages.
+- 2026-07-02: Extended `scripts/check-import-boundaries.ts` to validate the
+  client/server package export maps directly, requiring canonical folded
+  subpaths such as `@syncular/client/react`, `@syncular/server/bun-sqlite`,
+  `@syncular/server/filesystem`, `@syncular/server/s3`, and
+  `@syncular/server/cloudflare/sentry`, while rejecting stale split-package,
+  `db/*`, and `storage/*` subpaths.
 - 2026-06-30: Extended `scripts/post-publish-install-smokes.ts` with a
   JavaScript optional subpath import matrix controlled by
   `SYNCULAR_POST_PUBLISH_OPTIONAL_IMPORT_MATRIX`. The matrix creates a fresh

@@ -22,6 +22,13 @@ type RuntimeImportTarget = {
   expectedExports: string[];
 };
 
+type PackageExportTarget = {
+  label: string;
+  packageJson: string;
+  requiredSubpaths: string[];
+  forbiddenSubpaths: string[];
+};
+
 const repoRoot = resolve(join(import.meta.dirname, '..'));
 
 const targets: BoundaryTarget[] = [
@@ -122,6 +129,69 @@ const runtimeImportTargets: RuntimeImportTarget[] = [
   },
 ];
 
+const packageExportTargets: PackageExportTarget[] = [
+  {
+    label: '@syncular/client',
+    packageJson: 'packages/client/package.json',
+    requiredSubpaths: [
+      '.',
+      './crdt-yjs',
+      './react',
+      './react-native',
+      './sentry',
+      './subscription-readiness',
+      './tauri',
+      './worker',
+    ],
+    forbiddenSubpaths: [
+      './client-crdt-adapters',
+      './client-javascript-bindings',
+      './client-react-native',
+      './client-tauri',
+    ],
+  },
+  {
+    label: '@syncular/server',
+    packageJson: 'packages/server/package.json',
+    requiredSubpaths: [
+      '.',
+      './better-sqlite3',
+      './bun-sqlite',
+      './cloudflare',
+      './cloudflare/durable-object',
+      './cloudflare/r2',
+      './cloudflare/sentry',
+      './cloudflare/worker',
+      './crdt-yjs',
+      './d1',
+      './filesystem',
+      './hono',
+      './libsql',
+      './neon',
+      './pglite',
+      './postgres',
+      './s3',
+      './service-worker',
+      './sqlite',
+      './sqlite3',
+    ],
+    forbiddenSubpaths: [
+      './db/better-sqlite3',
+      './db/bun-sqlite',
+      './db/d1',
+      './db/libsql',
+      './db/neon',
+      './db/pglite',
+      './db/postgres',
+      './db/sqlite',
+      './db/sqlite3',
+      './observability-sentry',
+      './storage/filesystem',
+      './storage/s3',
+    ],
+  },
+];
+
 const staticImportPattern =
   /\b(?:import|export)\s+(?:type\s+)?(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]/g;
 const dynamicImportPattern = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
@@ -139,6 +209,9 @@ async function main(): Promise<void> {
   for (const target of runtimeImportTargets) {
     failures.push(...(await checkRuntimeImport(target)));
   }
+  for (const target of packageExportTargets) {
+    failures.push(...(await checkPackageExports(target)));
+  }
 
   if (failures.length > 0) {
     console.error(
@@ -148,6 +221,34 @@ async function main(): Promise<void> {
     );
     process.exitCode = 1;
   }
+}
+
+async function checkPackageExports(
+  target: PackageExportTarget
+): Promise<string[]> {
+  const packageJsonPath = resolve(repoRoot, target.packageJson);
+  const packageJson = JSON.parse(await readFile(packageJsonPath, 'utf8')) as {
+    exports?: unknown;
+  };
+  const exportMap =
+    packageJson.exports && typeof packageJson.exports === 'object'
+      ? (packageJson.exports as Record<string, unknown>)
+      : {};
+  const exportNames = new Set(Object.keys(exportMap));
+  const failures = [
+    ...target.requiredSubpaths
+      .filter((subpath) => !exportNames.has(subpath))
+      .map((subpath) => `${target.label} is missing export ${subpath}`),
+    ...target.forbiddenSubpaths
+      .filter((subpath) => exportNames.has(subpath))
+      .map(
+        (subpath) => `${target.label} still exports stale subpath ${subpath}`
+      ),
+  ];
+  console.log(
+    `[imports:check] ${target.label}: package exports checked ${exportNames.size} subpaths`
+  );
+  return failures;
 }
 
 async function checkRuntimeImport(

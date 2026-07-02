@@ -154,7 +154,9 @@ read-only review:
     has a root import graph smoke through `bun run imports:check`, proving the
     root client/server packages do not reach optional subpath files or peers;
     the same check now dynamically imports the root client/server source
-    entrypoints to catch top-level browser/native side effects before release.
+    entrypoints to catch top-level browser/native side effects before release,
+    and validates the package export maps keep the canonical folded subpaths
+    while rejecting stale `db/*`, `storage/*`, and split-package aliases.
     Framework import smokes now cover a Next 16 SSR production build that
     imports `@syncular/client` plus `@syncular/server` roots, and a Vite 8
     browser production build that imports the `@syncular/client` root through
