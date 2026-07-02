@@ -966,6 +966,7 @@ async function startBrowserPreviewChrome(args: {
   const debugPort = await getFreePort();
   const chromeArgs = [
     '--headless=new',
+    '--allow-chrome-scheme-url',
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-background-networking',
@@ -4657,10 +4658,13 @@ async function discardStarterTabViaChromeDiscards(args: {
             return provider;
           }
           lastState = {
+            bodyText: document.body?.textContent?.slice(0, 200) ?? null,
             hasMain: Boolean(main),
             hasMainShadowRoot: Boolean(main?.shadowRoot),
             hasTab: Boolean(tab),
             hasProvider: Boolean(provider),
+            title: document.title,
+            url: document.URL,
           };
           await new Promise((resolve) => setTimeout(resolve, 250));
         }
