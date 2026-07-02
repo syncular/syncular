@@ -22,8 +22,6 @@ include = [
     "build.rs",
     "sqlite3/**/*.c",
     "sqlite3/**/*.h",
-    "sqlite3mc/**/*.c",
-    "sqlite3mc/**/*.h",
     "shim/**/*.h",
     "shim/**/*.c",
     "Cargo.toml",
@@ -54,9 +52,6 @@ repository = "https://github.com/Spxg/sqlite-wasm-rs"
 
 [package.metadata.docs.rs]
 targets = ["wasm32-unknown-unknown"]
-
-[features]
-sqlite3mc = []
 
 [lib]
 name = "sqlite_wasm_rs"
