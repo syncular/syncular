@@ -4999,8 +4999,9 @@ Most recent browser-health failure-artifact rerun:
   packages/create-syncular-app tsgo`, focused Biome on
   `packages/create-syncular-app/scripts/smoke.ts`, `bun --cwd
   packages/create-syncular-app smoke`, `bun run docs:stale-check`, and
-  `git diff --check`; Chrome was not installed locally, so hosted Checks must
-  confirm the extended app-window branch.
+  `git diff --check`; Chrome was not installed locally, so hosted Checks run
+  `28573568397` on commit `9eca8755` confirmed the extended app-window branch
+  in Chrome and passed the full matrix.
 - 2026-07-02: Added the first maintained Firefox starter runtime matrix path.
   The generated starter now accepts a validated
   `syncularBrowserSupportContext` URL parameter so target-browser smokes can
