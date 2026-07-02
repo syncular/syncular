@@ -1,5 +1,9 @@
 # Syncular Improvement Plan
 
+> **Superseded (2026-07-02):** this plan is complete. The active plan is
+> [`REVISE.md`](./REVISE.md) (v2 clean-tree rebuild + Track A old-tree
+> stabilization).
+
 Critical review of the monorepo (2026-06-11), prioritized for drastic wins in
 code reduction, performance, and DX. Each item lists motivation, scope, and
 status. Baselines below; re-measure against them after each change.
@@ -290,9 +294,11 @@ uncommitted in the bench clone).
   `@syncular/client/react-native`, `@syncular/client/tauri`) are export-map
   subpaths or deleted package names now; do not publish them as packages.
 - **Demo app rebuild** — make apps/demo a real reference app: own
-  schema/codegen, @syncular/client/react hooks, two-pane live sync. In progress.
+  schema/codegen, @syncular/client/react hooks, two-pane live sync.
+  DONE: shipped with 0.1.3 (`apps/demo`).
 - **create-syncular-app** — scaffolding CLI generating a minimal full-stack
-  app, derived from the rebuilt demo. Pending demo.
+  app, derived from the rebuilt demo. DONE: shipped with 0.1.3
+  (`packages/create-syncular-app`, published as `create-syncular-app`).
 - **Docs restructure** — full audit done; plan + target IA in
   `apps/docs/DOCS_PLAN.md`; execution in 6 phases, starts after
   demo/create-app land (hello-world builds on them).

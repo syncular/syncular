@@ -64,8 +64,8 @@ cargo add serde serde_json uuid
 # Test fixtures for generated Rust/native clients
 cargo add --dev syncular-testkit
 
-# Codegen CLI for app schemas
-cargo install syncular-codegen --locked --version 0.1.0
+# Codegen CLI for app schemas (match the syncular crate version you installed)
+cargo install syncular-codegen --locked
 ```
 
 Rust apps still define the app contract with `@syncular/typegen` at development
