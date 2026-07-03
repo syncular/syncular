@@ -101,9 +101,16 @@ the old tree archived.
       (§5.3); the §5.6 no-synthesis rule is replaced by full §6.2
       participation. Vectors regenerated, both codecs, both clients,
       conformance scenario B.9. (Unblocks item 1.1.)
-- [ ] Windowed sync / eviction: spec the cursor/purge semantics for
-      partial local retention EARLY (post-parity differentiator, but its
-      spec shape constrains blobs + invalidation design).
+- [x] Windowed sync / eviction: DESIGNED 2026-07-03 — `DESIGN-eviction.md`.
+      Windows = scope-value sets (no second mechanism); window-scoped
+      subscriptions (window change = sub-set diff, re-entry = image
+      re-bootstrap); eviction fused with unsubscribe, outbox-pinned rows
+      excepted. W1 ships with ZERO wire/server changes, sequenced after
+      the WS-native loop. Blob (B1–B4) + invalidation (I1–I4) constraints
+      enumerated for items 2.1/3.1. Two SPEC notes to resolve at W1:
+      §4.7-phasing vs §8.1-replace ambiguity (one-line edit, resolve in
+      windowing's favor); §8.1 fixed registration covered by WS loop.
+      Implementation itself stays post-parity.
 - [ ] Segment compression posture: zstd/CDN-encoding for segment bytes at
       rest/transfer (ids hash uncompressed bytes — already spec'd; pick
       the shipped default).
