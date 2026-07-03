@@ -199,20 +199,68 @@ Evaluate when B6 lands or at the timebox, whichever first:
 - DX: fresh clone → `cd v2 && bun install && bun test` green in one step,
   latest Bun, no cargo.
 
-**Pass →** v2 becomes mainline: parity ladder begins (order: blobs → CRDT
-fields → auth leases → presence/realtime hardening → console event stream;
-each spec'd before built), Rust core re-enters as the *native* runtime via
-the conformance suite, old tree enters sunset (0.1.x patches only,
-migration guide, then archive). Post-parity differentiators (named now,
-built on demand): **windowed sync / local eviction** (TTL cold rows out of
-the local DB while they stay server-side — none of the benchmarked
-competitors do partial local retention well) and **fine-grained live-query
-invalidation** (table-level at first — v1's model — with the design leaving
-room for table→rowid dependency sets).
+**Pass →** v2 becomes mainline: the perf rungs land first, then the parity
+ladder (ordering revised 2026-07-03, see Direction decisions below):
+performance rungs (sqlite-image segments → worker+OPFS mode → signed-URL
+client path) → blobs → CRDT fields → auth leases → presence/realtime
+hardening → console event stream; each spec'd before built. The Rust core
+re-enters as the *native* runtime via the conformance suite, old tree
+enters sunset (0.1.x patches only, migration guide, then archive).
+Post-parity differentiators (named now, built on demand): **windowed sync /
+local eviction** (TTL cold rows out of the local DB while they stay
+server-side — none of the benchmarked competitors do partial local
+retention well; spec the eviction/cursor semantics EARLY, before the ladder
+builds on top) and **fine-grained live-query invalidation** (design-time
+rule: live queries invalidate by table/scope-key touched per commit, never
+re-run-everything — decided before React bindings exist, not retrofitted).
 **Fail →** v2 folds: keep the spec, vectors, conformance runner, and test
 doctrine (independently valuable, portable back to the old tree), write up
 why, return to the old tree with Phases 1–2 of the original incremental
 plan.
+
+---
+
+## Direction decisions (2026-07-03, confirmed by Benjamin)
+
+Decided after the gate data landed, while the skeleton is still cheap to
+steer. The theme: **no fallbacks** — one good path per concern, a support
+floor instead of a degradation ladder, and no subsystem whose only job is
+to paper over a platform we shouldn't target.
+
+1. **WebSocket-native sync loop, no HTTP fallback.** The client has exactly
+   one sync loop: sync rounds, deltas and wake-ups as SSP2 bytes over the
+   socket. No polling mode, no degraded loop, ever. `POST /sync` remains as
+   a second *framing* of the same `handleSyncRequest(bytes)` — for
+   push-only producers, curl debugging and server-to-server integration —
+   but clients never touch it and it adds zero protocol surface. Segments
+   stay on HTTP by design: that is the CDN/signed-URL bulk path, not a
+   fallback.
+2. **One persistent browser mode: whole core in a worker on OPFS
+   (`opfs-sahpool` VFS).** SAHPool needs no COOP/COEP and no
+   SharedArrayBuffer and is the fast OPFS variant. The entire client (core
+   + socket + SQLite) runs in the worker; the UI thread gets a thin RPC
+   (query/mutate/subscribe/status — well under the 10-message cap).
+   In-memory sqlite-wasm stays only as an *explicit* ephemeral mode
+   (tests/demos/SSR). **Never IndexedDB.** Browsers without OPFS are
+   explicitly unsupported (support floor ~2023+), failing loud — not a
+   fallback ladder. (Supersedes B3's "main-thread mode for simple apps"
+   wording: main-thread = ephemeral only.)
+3. **No client-side migration engine.** On a schema bump: keep the outbox
+   (already schema-agnostic by design), wipe local tables, re-bootstrap,
+   replay. Bootstrap-from-segment is fast enough that the migration
+   subsystem is not worth carrying, and every upgrade exercises the
+   bootstrap path instead of a rarely-run migration path. The server keeps
+   N-version codec support for transition windows (it needs that anyway).
+4. **sqlite-image segments are the first post-gate perf rung** — ahead of
+   blobs. v1's 204 ms artifact lane won because bootstrap was "attach a
+   SQLite file," not "insert 100k rows"; v2's 360 ms rows lane is the
+   proof of headroom. Signed-URL client advertising (accept bit 3)
+   lands with it: bootstrap storms at ~zero server egress.
+
+Size-gate re-scope, same date: the ≤~1 MB criterion applies to
+**syncular's own client JS** (measured 42 KB raw / 13 KB gzip vs v1's
+218 KB); stock-SQLite vendor bytes (wasm + glue) are reported for context
+but do not gate — the same way Rust binary size doesn't.
 
 ---
 
@@ -250,3 +298,23 @@ two-client sync.
   Plan rewritten; B0 scaffold landing with this commit. Next actions:
   Track A item 1–2 (old tree, reconcile `wp50-dx-health` first) and B1
   (spec extraction) in parallel.
+- 2026-07-02 (later): Track A complete (first green main + Deploy in a
+  month). Old tree subsequently **frozen entirely** per Benjamin — no
+  repairs, no patch releases (the broken-WASM 0.1.x artifacts stay as-is;
+  fix + changeset sit on main unreleased).
+- 2026-07-03: **B1–B6 all complete**, plus the Rust POC Benjamin pulled
+  forward from post-gate: a clean-room Rust codec (written from SPEC.md
+  alone) passed all golden vectors on its first run, and a clean-room Rust
+  client passes the full 35-scenario conformance catalog against the TS
+  server — the two-cores-one-written-protocol thesis is *proven*, not
+  promised. Cross-implementation audit found and resolved 4 vector-unpinned
+  codec divergences (31 vector cases now). Gate self-assessment: all four
+  criteria PASS (conformance 319 tests / 35×2 pairings; perf 359–383 ms @
+  100k vs 408 ms line; size 42 KB own JS vs 218 KB line after the
+  ownership re-scope; DX one-step). Direction decisions above confirmed.
+  Remaining work to "done" tracked in `v2/TODO.md`. **Gate decision
+  (kill/merge) is Benjamin's call; everything is committed locally,
+  unpushed.** Known open spec question: SSG2 segments carry no
+  server_version (client rule §5.6 covers it; a version column is the
+  alternative — decide before the Rust core implements segments... which
+  it now has, conformantly, so a change means new vectors).
