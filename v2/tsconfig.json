@@ -13,5 +13,10 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["packages/**/*.ts", "spec/**/*.ts"]
+  "include": [
+    "packages/**/*.ts",
+    "spec/**/*.ts",
+    "apps/**/*.ts",
+    "bench/**/*.ts"
+  ]
 }

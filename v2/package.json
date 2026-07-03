@@ -2,9 +2,10 @@
   "name": "syncular-v2",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*"],
+  "workspaces": ["packages/*", "apps/*", "bench"],
   "scripts": {
     "check": "bun run typecheck && bun run lint && bun test",
+    "bench": "bun run --cwd bench bench",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "lint:fix": "biome check --fix ."

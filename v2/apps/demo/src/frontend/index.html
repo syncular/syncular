@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>syncular v2 — two-pane demo</title>
+  <script type="importmap">
+    { "imports": { "@sqlite.org/sqlite-wasm": "/vendor/sqlite-wasm/index.mjs" } }
+  </script>
+  <style>
+    :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
+    body { margin: 0; padding: 1rem; }
+    header { display: flex; align-items: baseline; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    header h1 { font-size: 1.1rem; margin: 0; }
+    header .hint { opacity: 0.7; font-size: 0.85rem; }
+    main { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: start; }
+    .pane { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); border-radius: 8px; padding: 0.75rem; }
+    .pane.offline { border-color: #d97706; }
+    .pane h2 { margin: 0 0 0.5rem; font-size: 1rem; display: flex; align-items: center; gap: 0.5rem; }
+    .badge { font-size: 0.7rem; padding: 0.1rem 0.45rem; border-radius: 999px; border: 1px solid currentColor; opacity: 0.8; }
+    .badge.online { color: #16a34a; }
+    .badge.offline { color: #d97706; }
+    .statusline { font-size: 0.78rem; opacity: 0.75; margin: 0.25rem 0 0.5rem; min-height: 1.1em; }
+    form.add { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
+    form.add input { flex: 1; padding: 0.35rem 0.5rem; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    td { padding: 0.3rem 0.25rem; border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
+    td.title { width: 100%; }
+    tr.done td.title { text-decoration: line-through; opacity: 0.55; }
+    td .ver { font-size: 0.7rem; opacity: 0.5; margin-left: 0.35rem; }
+    button { cursor: pointer; }
+    .conflicts { margin-top: 0.6rem; font-size: 0.8rem; }
+    .conflicts .item { border: 1px solid #dc2626; border-radius: 6px; padding: 0.4rem 0.5rem; margin-top: 0.35rem; }
+    .conflicts .item code { font-size: 0.75rem; }
+    @media (max-width: 780px) { main { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>syncular v2 — two-pane convergence demo</h1>
+    <span class="hint">two independent SyncClients (sqlite-wasm) syncing through one server</span>
+    <button id="conflict-btn" disabled>Simulate conflict</button>
+    <span id="global-status" class="hint"></span>
+  </header>
+  <main>
+    <section class="pane" id="pane-a"></section>
+    <section class="pane" id="pane-b"></section>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
