@@ -20,6 +20,7 @@ import {
   createBenchServer,
   seedServerRows,
 } from './loopback';
+import { reportPgLane, runPgLane } from './pg-lane';
 
 // accept 0b0011 pins the rows lane (the client's default now advertises
 // sqlite images, §4.2) — the rows number stays comparable across runs.
@@ -540,6 +541,13 @@ async function main(): Promise<void> {
   console.log(
     `  js ${fmtKb(bundle.jsRaw)} (gzip ${fmtKb(bundle.jsGzip)}), wasm ${fmtKb(bundle.wasmRaw)}`,
   );
+
+  // Env-gated Postgres lane (§4.1): the production database path. Never part
+  // of CI budgets — it needs a real Postgres at SYNCULAR_PG_URL — so it runs
+  // for information only and skips cleanly when unconfigured.
+  console.log('bench: pg lane…');
+  const pg = await runPgLane(WORKLOAD.bigRows, WORKLOAD.propIterations);
+  console.log(reportPgLane(pg));
 
   if (CI_MODE) {
     // Budgets gate; RESULTS.md stays the curated full-workload record.

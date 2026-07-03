@@ -37,6 +37,8 @@ function sqlType(column: RowColumn): string {
       return 'INTEGER';
     case 'bytes':
       return 'BLOB';
+    default:
+      throw new Error(`unsupported column type: ${String(column.type)}`);
   }
 }
 

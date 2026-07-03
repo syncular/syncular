@@ -3,9 +3,13 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./pglite": "./src/pg-executor-pglite.ts"
   },
   "dependencies": {
     "@syncular-v2/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.4"
   }
 }
