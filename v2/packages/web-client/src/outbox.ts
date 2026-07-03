@@ -80,10 +80,31 @@ export function deleteOutboxCommit(
   ]);
 }
 
+/**
+ * §7.4.4: after a schema bump, a persisted upsert may name a column the new
+ * schema no longer has. The value has nowhere to go and there is no
+ * migration — surface it as `sync.outbox_incompatible` (client-local, §10.3)
+ * so the caller can drop the commit through the rejection channel.
+ */
+export class OutboxEncodeError extends ClientSyncError {
+  constructor(message: string) {
+    super('sync.outbox_incompatible', message, false);
+  }
+}
+
 function orderedValues(
   table: CompiledClientTable,
   values: Readonly<Record<string, JsonRowValue>>,
 ) {
+  // Any persisted key that is not a column of the CURRENT schema means the
+  // bump removed (or renamed) it — the commit cannot be expressed now.
+  for (const key of Object.keys(values)) {
+    if (!table.columnIndex.has(key)) {
+      throw new OutboxEncodeError(
+        `outbox commit references column ${JSON.stringify(key)} on ${JSON.stringify(table.name)}, which the current schema no longer has (§7.4.4)`,
+      );
+    }
+  }
   return table.columns.map((column) => {
     const value = values[column.name];
     if (value === undefined) return null;
@@ -112,9 +133,9 @@ export function encodeOutboxCommit(
     }
     const table = schema.tables.get(op.table);
     if (table === undefined) {
-      throw new ClientSyncError(
-        'sync.unknown_table',
-        `outbox commit ${commit.clientCommitId} targets unknown table ${JSON.stringify(op.table)}`,
+      // §7.4.4: the bump removed this table — the commit cannot be encoded.
+      throw new OutboxEncodeError(
+        `outbox commit ${commit.clientCommitId} targets table ${JSON.stringify(op.table)}, which the current schema no longer has (§7.4.4)`,
       );
     }
     if (op.values === undefined) {

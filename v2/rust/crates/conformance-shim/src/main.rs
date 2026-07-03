@@ -538,6 +538,23 @@ fn dispatch(
             let lease = need_client(client)?.lease_state().cloned();
             Ok(json!({ "lease": lease }))
         }
+        "upgrading" => {
+            // §7.4.5: true while a schema-bump reset + first re-bootstrap runs.
+            let value = need_client(client)?.upgrading();
+            Ok(json!({ "value": value }))
+        }
+        "recreateWithSchema" => {
+            // §7.4.2 "app ships new code": swap to the new schema on the SAME
+            // in-memory database (the Rust core has no persistent restart, so
+            // recreation IS the boot). Fires the §7.4.1 marker check.
+            let schema = params
+                .get("schema")
+                .ok_or_else(|| client_err("recreateWithSchema missing schema".to_owned()))?;
+            need_client(client)?
+                .recreate_with_schema(schema)
+                .map_err(client_err)?;
+            Ok(json!({}))
+        }
         "connectRealtime" => {
             need_client(client)?
                 .connect_realtime(io)

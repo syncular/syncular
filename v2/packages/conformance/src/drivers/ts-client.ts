@@ -107,15 +107,83 @@ function toReport(summary: SyncSummary): ClientSyncResult {
   };
 }
 
-class TsClientInstance implements ClientInstance {
-  readonly #client: SyncClient;
-  readonly #db: BunClientDatabase;
-  readonly #schema: DriverSchema;
+/**
+ * Build a `SyncClient` on a given database + schema, wiring the harness
+ * endpoints. Shared by `create` (fresh DB) and `recreateWithSchema`
+ * (§7.4.2 — new schema, SAME DB), so an upgrade reuses the exact same
+ * transport seam the fresh client had.
+ */
+async function constructClient(
+  db: BunClientDatabase,
+  schema: DriverSchema,
+  options: ClientCreateOptions,
+): Promise<SyncClient> {
+  const endpoints = options.endpoints;
+  const nowMs = options.nowMs;
+  const fetchSegmentUrl = endpoints.fetchSegmentUrl?.bind(endpoints);
+  const segments = Object.assign(
+    (request: {
+      segmentId: string;
+      table: string;
+      requestedScopesJson: string;
+    }) => endpoints.downloadSegment(request),
+    fetchSegmentUrl !== undefined ? { fetchUrl: fetchSegmentUrl } : {},
+  );
+  const uploadBlob = endpoints.uploadBlob?.bind(endpoints);
+  const downloadBlob = endpoints.downloadBlob?.bind(endpoints);
+  const blobs =
+    uploadBlob !== undefined && downloadBlob !== undefined
+      ? {
+          upload: (blobId: string, bytes: Uint8Array, mediaType?: string) =>
+            uploadBlob(blobId, bytes, mediaType),
+          download: (blobId: string) => downloadBlob(blobId),
+        }
+      : undefined;
+  const client = new SyncClient({
+    database: db,
+    schema: toClientSchema(schema),
+    clientId: options.clientId,
+    ...(options.limits !== undefined ? { limits: options.limits } : {}),
+    ...(nowMs !== undefined ? { now: () => nowMs } : {}),
+    transport: (bytes) => endpoints.sync(bytes),
+    segments,
+    ...(blobs !== undefined ? { blobs } : {}),
+    realtime: async (handlers) => {
+      const connection = await endpoints.connectRealtime({
+        onText: (text) => handlers.onText(text),
+        onBinary: (bytes) => handlers.onBinary(bytes),
+        onClose: () => handlers.onClose?.(),
+      });
+      return {
+        send: (text) => connection.send(text),
+        sendBytes: (bytes) => connection.sendBinary(bytes),
+        close: () => {
+          connection.close();
+          handlers.onClose?.();
+        },
+      };
+    },
+  });
+  await client.start();
+  return client;
+}
 
-  constructor(client: SyncClient, db: BunClientDatabase, schema: DriverSchema) {
+class TsClientInstance implements ClientInstance {
+  #client: SyncClient;
+  readonly #db: BunClientDatabase;
+  #schema: DriverSchema;
+  readonly #options: ClientCreateOptions;
+
+  constructor(
+    client: SyncClient,
+    db: BunClientDatabase,
+    schema: DriverSchema,
+    options: ClientCreateOptions,
+  ) {
     this.#client = client;
     this.#db = db;
     this.#schema = schema;
+    this.#options = options;
   }
 
   async subscribe(input: {
@@ -272,6 +340,27 @@ class TsClientInstance implements ClientInstance {
     return this.#client.leaseState;
   }
 
+  async upgrading(): Promise<boolean> {
+    return this.#client.upgrading;
+  }
+
+  /**
+   * §7.4.2 "app ships new code": close the current core, then open a new
+   * core with the new schema on the SAME database — the boot-time §7.4.1
+   * marker check fires and drives the wipe/re-bootstrap. Returns `this`
+   * with the swapped core so the driver handle stays stable.
+   */
+  async recreateWithSchema(schema: DriverSchema): Promise<ClientInstance> {
+    // Release the leader lock the old core holds; the DB stays open.
+    await this.#client.close();
+    this.#client = await constructClient(this.#db, schema, {
+      ...this.#options,
+      schema,
+    });
+    this.#schema = schema;
+    return this;
+  }
+
   async connectRealtime(): Promise<void> {
     await this.#client.connectRealtime();
   }
@@ -306,60 +395,12 @@ class TsClientInstance implements ClientInstance {
 export const tsClientDriver: ClientDriver = {
   name: 'ts-web-client(bun:sqlite)',
   async create(options: ClientCreateOptions): Promise<ClientInstance> {
-    const db = new BunClientDatabase();
-    const endpoints = options.endpoints;
-    const nowMs = options.nowMs;
-    // §5.4 capability negotiation: the downloader exposes `fetchUrl` iff
+    // §5.4 capability negotiation: `constructClient` exposes `fetchUrl` iff
     // the harness endpoints have a URL host — that presence is what makes
-    // the client core advertise accept bit 3.
-    const fetchSegmentUrl = endpoints.fetchSegmentUrl?.bind(endpoints);
-    const segments = Object.assign(
-      (request: {
-        segmentId: string;
-        table: string;
-        requestedScopesJson: string;
-      }) => endpoints.downloadSegment(request),
-      fetchSegmentUrl !== undefined ? { fetchUrl: fetchSegmentUrl } : {},
-    );
-    // §5.9 blob transport: present iff the harness endpoints support blobs.
-    const uploadBlob = endpoints.uploadBlob?.bind(endpoints);
-    const downloadBlob = endpoints.downloadBlob?.bind(endpoints);
-    const blobs =
-      uploadBlob !== undefined && downloadBlob !== undefined
-        ? {
-            upload: (blobId: string, bytes: Uint8Array, mediaType?: string) =>
-              uploadBlob(blobId, bytes, mediaType),
-            download: (blobId: string) => downloadBlob(blobId),
-          }
-        : undefined;
-    const client = new SyncClient({
-      database: db,
-      schema: toClientSchema(options.schema),
-      clientId: options.clientId,
-      ...(options.limits !== undefined ? { limits: options.limits } : {}),
-      // §5.4 expiry checks run on the harness clock when pinned.
-      ...(nowMs !== undefined ? { now: () => nowMs } : {}),
-      transport: (bytes) => endpoints.sync(bytes),
-      segments,
-      ...(blobs !== undefined ? { blobs } : {}),
-      realtime: async (handlers) => {
-        const connection = await endpoints.connectRealtime({
-          onText: (text) => handlers.onText(text),
-          onBinary: (bytes) => handlers.onBinary(bytes),
-          onClose: () => handlers.onClose?.(),
-        });
-        return {
-          send: (text) => connection.send(text),
-          sendBytes: (bytes) => connection.sendBinary(bytes),
-          close: () => {
-            connection.close();
-            handlers.onClose?.();
-          },
-        };
-      },
-    });
-    await client.start();
-    return new TsClientInstance(client, db, options.schema);
+    // the client core advertise accept bit 3. §5.9 blob transport likewise.
+    const db = new BunClientDatabase();
+    const client = await constructClient(db, options.schema, options);
+    return new TsClientInstance(client, db, options.schema, options);
   },
 };
 

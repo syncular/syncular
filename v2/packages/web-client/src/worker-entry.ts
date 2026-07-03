@@ -275,6 +275,10 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       onConflict: (conflict) => {
         post({ t: 'event', event: { kind: 'conflict', conflict } });
       },
+      onUpgrading: (upgrading) => {
+        // §7.4.5: surface the schema-bump reset + completion to the UI thread.
+        post({ t: 'event', event: { kind: 'upgrading', upgrading } });
+      },
     });
     await started.start();
     realtimeConnector =
@@ -309,6 +313,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     rejections: () => requireClient().rejections,
     schemaFloor: () => requireClient().schemaFloor,
     leaseState: () => requireClient().leaseState,
+    upgrading: () => requireClient().upgrading,
     syncNeeded: () => requireClient().syncNeeded,
     pendingCommits: () => requireClient().pendingCommits(),
     subscriptions: () => requireClient().subscriptions(),

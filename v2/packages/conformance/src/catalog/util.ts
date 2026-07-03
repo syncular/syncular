@@ -52,15 +52,18 @@ export async function seedRows(
 ): Promise<void> {
   await ctx.server.setAllowedScopes(actorId, ALL_SCOPES);
   seedCounter += 1;
+  // Seed at the SERVER's schema version (§7.4 scenarios run a bumped
+  // server): the codec and the REQ_HEADER schemaVersion must both match
+  // the version the server serves, or the push hits the schema floor.
   const result = await ctx.rawSync(
     actorId,
     [
       rawPushCommit(
         `seed-${seedCounter}-${crypto.randomUUID()}`,
-        rows.map((row) => rawUpsert(ctx.schema, table, row)),
+        rows.map((row) => rawUpsert(ctx.serverSchema, table, row)),
       ),
     ],
-    { clientId: `seed-${actorId}` },
+    { clientId: `seed-${actorId}`, schemaVersion: ctx.serverSchema.version },
   );
   check(result.ok, 'seed push failed at request level');
   if (result.ok) {

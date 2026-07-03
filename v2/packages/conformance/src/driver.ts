@@ -451,6 +451,19 @@ export interface ClientInstance {
       }
     | undefined
   >;
+  /** §7.4.5: true while a schema-bump reset + first re-bootstrap is in
+   * flight (undefined for a driver that predates the schema-bump rung). */
+  upgrading?(): Promise<boolean>;
+
+  /**
+   * §7.4.2: the "app ships new code" step — recreate the client core with a
+   * NEW generated schema while KEEPING this client's local database
+   * (identity, outbox, and existing tables). Models a real upgrade: the
+   * boot-time §7.4.1 marker check fires and drives the wipe/re-bootstrap
+   * flow. Returns the new instance; the old handle MUST NOT be used after.
+   * Present only for client drivers that support keeping the DB (additive).
+   */
+  recreateWithSchema?(schema: DriverSchema): Promise<ClientInstance>;
 
   /**
    * §5.9 blob API. `uploadBlob` stages bytes and returns the canonical

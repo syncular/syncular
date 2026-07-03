@@ -36,6 +36,7 @@ import type {
   ClientSyncResult,
   CodecDriver,
   CodecRoundtrip,
+  DriverSchema,
   JsonValue,
 } from '../driver';
 import { bytesToHex, hexToBytes } from '../raw';
@@ -602,6 +603,27 @@ class RustClientInstance implements ClientInstance {
       'syncNeeded',
     );
     return result.value === true;
+  }
+
+  async upgrading(): Promise<boolean> {
+    const result = asObject(
+      await this.#shim.call('upgrading', {}),
+      'upgrading',
+    );
+    return result.value === true;
+  }
+
+  /**
+   * §7.4.2 "app ships new code": swap the shim's core to a new schema on the
+   * SAME in-memory DB (identity, outbox, tables preserved). The §7.4.1
+   * marker check drives the wipe/re-bootstrap. Returns `this` — the shim
+   * process (and its DB) is unchanged.
+   */
+  async recreateWithSchema(schema: DriverSchema): Promise<ClientInstance> {
+    await this.#shim.call('recreateWithSchema', {
+      schema: schema as unknown as JsonValue,
+    });
+    return this;
   }
 
   async uploadBlob(
