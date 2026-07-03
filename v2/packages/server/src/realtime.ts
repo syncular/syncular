@@ -19,6 +19,7 @@ import {
 } from '@syncular-v2/core';
 import type { ResolveScopes } from './context';
 import { syncError } from './errors';
+import { emitEvent, type SyncularServerEvents } from './events';
 import type { ServerSchema } from './schema';
 import { type CompiledSchema, compileSchema } from './schema';
 import {
@@ -35,6 +36,8 @@ export interface RealtimeHubConfig {
   readonly clock?: () => number;
   /** Deltas larger than this become `delta-too-large` wake-ups (§8.2). */
   readonly maxDeltaBytes?: number;
+  /** Optional structured-events sink (`realtime.*` events). */
+  readonly events?: SyncularServerEvents;
 }
 
 export interface RealtimeConnectOptions {
@@ -64,11 +67,14 @@ export class RealtimeSession {
   wakePending: boolean;
   lastKnownSeq: number;
   readonly registrations: readonly Registration[];
+  /** Epoch-ms (hub clock) at registration, for `realtime.closed`. */
+  readonly openedAtMs: number;
   #send: (data: string | Uint8Array) => void;
   #hub: RealtimeHub;
   #clock: () => number;
   #maxDeltaBytes: number;
   #storage: ServerStorage;
+  #events: SyncularServerEvents | undefined;
 
   constructor(
     hub: RealtimeHub,
@@ -79,6 +85,7 @@ export class RealtimeSession {
     clock: () => number,
     maxDeltaBytes: number,
     storage: ServerStorage,
+    events: SyncularServerEvents | undefined,
   ) {
     this.sessionId = crypto.randomUUID();
     this.partition = options.partition;
@@ -88,11 +95,13 @@ export class RealtimeSession {
     this.lastKnownSeq = latestSeq;
     this.wakePending = cursor < latestSeq;
     this.registrations = registrations;
+    this.openedAtMs = clock();
     this.#send = options.send;
     this.#hub = hub;
     this.#clock = clock;
     this.#maxDeltaBytes = maxDeltaBytes;
     this.#storage = storage;
+    this.#events = events;
   }
 
   /** Feed an inbound text frame (client → server control message, §8.2). */
@@ -157,6 +166,18 @@ export class RealtimeSession {
         },
       }),
     );
+    const events = this.#events;
+    if (events !== undefined) {
+      emitEvent(events, {
+        type: 'realtime.wake',
+        atMs: this.#clock(),
+        partition: this.partition,
+        actorId: this.actorId,
+        clientId: this.clientId,
+        sessionId: this.sessionId,
+        reason,
+      });
+    }
   }
 
   /** Called by the hub for every applied commit, in commitSeq order. */
@@ -225,6 +246,20 @@ export class RealtimeSession {
     }
     this.#send(bytes);
     this.cursor = commit.commitSeq;
+    const events = this.#events;
+    if (events !== undefined) {
+      emitEvent(events, {
+        type: 'realtime.delta',
+        atMs: this.#clock(),
+        partition: this.partition,
+        actorId: this.actorId,
+        clientId: this.clientId,
+        sessionId: this.sessionId,
+        commitSeq: commit.commitSeq,
+        bytes: bytes.length,
+        changes: sections.reduce((n, s) => n + s.changes.length, 0),
+      });
+    }
   }
 
   close(): void {
@@ -270,7 +305,18 @@ export class RealtimeHub {
         actorId: options.actorId,
       });
       resolved = { ok: true, allowed };
-    } catch {
+    } catch (error) {
+      const events = this.#config.events;
+      if (events !== undefined) {
+        emitEvent(events, {
+          type: 'scopes.resolve_failed',
+          atMs: clock(),
+          partition: options.partition,
+          actorId: options.actorId,
+          phase: 'realtime',
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
       resolved = { ok: false };
     }
     const registrations: Registration[] = [];
@@ -300,6 +346,7 @@ export class RealtimeHub {
       clock,
       this.#config.maxDeltaBytes ?? DEFAULT_MAX_DELTA_BYTES,
       storage,
+      this.#config.events,
     );
     this.#sessions.add(session);
     options.send(
@@ -317,11 +364,39 @@ export class RealtimeHub {
         },
       }),
     );
+    const events = this.#config.events;
+    if (events !== undefined) {
+      emitEvent(events, {
+        type: 'realtime.opened',
+        atMs: clock(),
+        partition: options.partition,
+        actorId: options.actorId,
+        clientId: options.clientId,
+        sessionId: session.sessionId,
+        registrations: registrations.length,
+        cursor,
+        latestSeq,
+      });
+    }
     return session;
   }
 
   disconnect(session: RealtimeSession): void {
-    this.#sessions.delete(session);
+    if (!this.#sessions.delete(session)) return;
+    const events = this.#config.events;
+    if (events !== undefined) {
+      const clock = this.#config.clock ?? Date.now;
+      const now = clock();
+      emitEvent(events, {
+        type: 'realtime.closed',
+        atMs: now,
+        partition: session.partition,
+        actorId: session.actorId,
+        clientId: session.clientId,
+        sessionId: session.sessionId,
+        durationMs: now - session.openedAtMs,
+      });
+    }
   }
 
   /** RealtimeNotifier: fan an applied commit out to matching sessions. */

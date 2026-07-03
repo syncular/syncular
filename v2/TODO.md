@@ -96,9 +96,14 @@ the old tree archived.
       decide if it returns at all.
 - [ ] **Segment store backends**: S3/R2 for production segment storage +
       the CDN delivery story end-to-end.
-- [ ] **Ops posture**: structured server events/metrics hooks (what v1's
-      Sentry adapter did, as a neutral interface), horizon/pruning
-      scheduling guidance, load-test suite ported to v2 lanes.
+- [ ] **Ops posture**: events seam + pruning guidance LANDED 2026-07-03 —
+      `SyncularServerEvents` on the server config (12 typed JSON-able
+      events across request/push/pull/segment/realtime/prune/resolver;
+      fire-and-forget, zero-cost when unset, ctx-clock timing),
+      `consoleJsonEvents()` reference sink, demo wiring behind
+      `SYNCULAR_DEMO_EVENTS=1`, horizon/pruning runbook in
+      packages/server/README.md. Still open: load-test suite ported to
+      v2 lanes.
 
 ## 5. Protocol/spec debts (small, decide-and-pin)
 

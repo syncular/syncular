@@ -9,6 +9,7 @@
  */
 export * from './context';
 export * from './errors';
+export * from './events';
 export * from './frame-bytes';
 export * from './handler';
 export * from './prune';

@@ -14,6 +14,7 @@ import {
 } from '@syncular-v2/core';
 import type { SyncRequestContext } from './context';
 import { clockOf, limitsOf } from './context';
+import type { PullSegmentSummary } from './events';
 import type { CompiledSchema, CompiledTable } from './schema';
 import { scopeDigest } from './scopes';
 import type { SegmentRecord } from './segment-store';
@@ -59,6 +60,15 @@ export interface SubscriptionPlan {
 export interface SubscriptionResult {
   readonly nextCursor: number;
   readonly active: boolean;
+}
+
+/**
+ * Mutable per-section collector for the `pull.served` event. Only created
+ * when an events sink is configured — with `trace` undefined the pull path
+ * does zero extra work (`trace?.…` short-circuits argument evaluation).
+ */
+export interface PullSectionTrace {
+  readonly segments: PullSegmentSummary[];
 }
 
 interface BootstrapToken {
@@ -187,6 +197,7 @@ async function* sqliteImageSegment(
   plan: SubscriptionPlan,
   asOf: number,
   digest: string,
+  trace: PullSectionTrace | undefined,
 ): AsyncGenerator<ResponseFrame, boolean> {
   const { storage, segments, partition } = ctx;
   const now = clockOf(ctx)();
@@ -202,6 +213,13 @@ async function* sqliteImageSegment(
     now,
   );
   if (existing !== undefined) {
+    trace?.segments.push({
+      mediaType: 'sqlite',
+      delivery: 'ref',
+      origin: 'reused',
+      bytes: existing.byteLength,
+      rows: existing.rowCount,
+    });
     yield segmentRefFrame(
       existing,
       await signedUrlFields(ctx, limits, existing.segmentId, digest, now),
@@ -253,6 +271,13 @@ async function* sqliteImageSegment(
     bytes,
     now,
   );
+  trace?.segments.push({
+    mediaType: 'sqlite',
+    delivery: 'ref',
+    origin: 'built',
+    bytes: record.byteLength,
+    rows: record.rowCount,
+  });
   yield segmentRefFrame(
     record,
     await signedUrlFields(ctx, limits, record.segmentId, digest, now),
@@ -267,6 +292,7 @@ async function* bootstrapSegments(
   plan: SubscriptionPlan,
   asOf: number,
   startRowCursor: string | null,
+  trace: PullSectionTrace | undefined,
 ): AsyncGenerator<
   ResponseFrame,
   { complete: boolean; rowCursor: string | null }
@@ -286,6 +312,7 @@ async function* bootstrapSegments(
       plan,
       asOf,
       digest,
+      trace,
     );
     if (imaged) return { complete: true, rowCursor: null };
   }
@@ -320,6 +347,13 @@ async function* bootstrapSegments(
       canInline &&
       (bytes.length <= serverLimits.inlineSegmentMaxBytes || !canExternal);
     if (inline) {
+      trace?.segments.push({
+        mediaType: 'rows',
+        delivery: 'inline',
+        origin: 'built',
+        bytes: bytes.length,
+        rows: pageRows.length,
+      });
       yield { type: 'SEGMENT_INLINE', payload: bytes };
     } else {
       const record = await segments.put(
@@ -337,6 +371,13 @@ async function* bootstrapSegments(
         bytes,
         now,
       );
+      trace?.segments.push({
+        mediaType: 'rows',
+        delivery: 'ref',
+        origin: 'built',
+        bytes: record.byteLength,
+        rows: record.rowCount,
+      });
       yield segmentRefFrame(
         record,
         await signedUrlFields(ctx, limits, record.segmentId, digest, now),
@@ -359,6 +400,7 @@ export async function* subscriptionSection(
   plan: SubscriptionPlan,
   maxSeq: number,
   horizonSeq: number,
+  trace?: PullSectionTrace,
 ): AsyncGenerator<ResponseFrame, SubscriptionResult> {
   const sub = plan.frame;
 
@@ -419,6 +461,7 @@ export async function* subscriptionSection(
       plan,
       asOf,
       startCursor,
+      trace,
     );
     if (outcome.complete) {
       yield { type: 'SUB_END', nextCursor: asOf };

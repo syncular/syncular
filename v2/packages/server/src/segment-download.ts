@@ -10,7 +10,8 @@
 import type { ScopeMap } from '@syncular-v2/core';
 import type { SyncRequestContext } from './context';
 import { clockOf } from './context';
-import { syncError } from './errors';
+import { SyncError, syncError } from './errors';
+import { emitEvent } from './events';
 import { compileSchema } from './schema';
 import { computeEffective, type ResolvedScopes, scopeDigest } from './scopes';
 import type { SegmentRecord } from './segment-store';
@@ -58,6 +59,43 @@ export async function handleSegmentDownload(
   ctx: SyncRequestContext,
   request: SegmentDownloadRequest,
 ): Promise<SegmentDownloadResult> {
+  const events = ctx.events;
+  if (events === undefined) return downloadSegment(ctx, request);
+  const clock = clockOf(ctx);
+  const startedAtMs = clock();
+  try {
+    const result = await downloadSegment(ctx, request);
+    emitEvent(events, {
+      type: 'segment.downloaded',
+      atMs: clock(),
+      partition: ctx.partition,
+      actorId: ctx.actorId,
+      segmentId: request.segmentId,
+      outcome: 'ok',
+      mediaType: result.record.mediaType,
+      bytes: result.bytes.length,
+      durationMs: clock() - startedAtMs,
+    });
+    return result;
+  } catch (error) {
+    emitEvent(events, {
+      type: 'segment.downloaded',
+      atMs: clock(),
+      partition: ctx.partition,
+      actorId: ctx.actorId,
+      segmentId: request.segmentId,
+      outcome: 'error',
+      errorCode: error instanceof SyncError ? error.code : 'internal',
+      durationMs: clock() - startedAtMs,
+    });
+    throw error;
+  }
+}
+
+async function downloadSegment(
+  ctx: SyncRequestContext,
+  request: SegmentDownloadRequest,
+): Promise<SegmentDownloadResult> {
   const entry = await ctx.segments.get(request.segmentId);
   if (entry === undefined || entry.record.partition !== ctx.partition) {
     throw syncError('sync.not_found', 'unknown segment (§5.5)');
@@ -91,7 +129,18 @@ export async function handleSegmentDownload(
       actorId: ctx.actorId,
     });
     resolved = { ok: true, allowed };
-  } catch {
+  } catch (error) {
+    const events = ctx.events;
+    if (events !== undefined) {
+      emitEvent(events, {
+        type: 'scopes.resolve_failed',
+        atMs: clockOf(ctx)(),
+        partition: ctx.partition,
+        actorId: ctx.actorId,
+        phase: 'segment-download',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
     resolved = { ok: false };
   }
   const outcome = computeEffective(requested, resolved);

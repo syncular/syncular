@@ -5,6 +5,7 @@
  * and `actorId` from host authentication (§1.1).
  */
 import type { ScopeMap } from '@syncular-v2/core';
+import type { SyncularServerEvents } from './events';
 import type { ServerSchema } from './schema';
 import type { SegmentStore } from './segment-store';
 import type { SignedUrlConfig } from './signed-url';
@@ -55,6 +56,11 @@ export interface SyncServerConfig {
   readonly limits?: Partial<ServerLimits>;
   readonly signedUrls?: SignedUrlConfig;
   readonly realtime?: RealtimeNotifier;
+  /**
+   * Optional structured-events sink (ops seam). Absent ⇒ zero cost: no
+   * event objects are built. A throwing sink never affects processing.
+   */
+  readonly events?: SyncularServerEvents;
 }
 
 /** Per-request context: the config plus host-authenticated identity. */

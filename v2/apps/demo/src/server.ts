@@ -16,6 +16,7 @@ import {
   type RequestFrame,
 } from '@syncular-v2/core';
 import {
+  consoleJsonEvents,
   createRealtimeHub,
   handleSyncRequest,
   MemorySegmentStore,
@@ -39,13 +40,23 @@ const segments = new MemorySegmentStore();
 /** Demo authorization: the single demo actor may see every list. */
 const resolveScopes = () => ({ list_id: ['*'] });
 
-const hub = createRealtimeHub({ schema, storage, resolveScopes });
+/** Optional ops events: SYNCULAR_DEMO_EVENTS=1 → one JSON line per event. */
+const events =
+  process.env.SYNCULAR_DEMO_EVENTS === '1' ? consoleJsonEvents() : undefined;
+
+const hub = createRealtimeHub({
+  schema,
+  storage,
+  resolveScopes,
+  ...(events !== undefined ? { events } : {}),
+});
 const config: SyncServerConfig = {
   schema,
   storage,
   segments,
   resolveScopes,
   realtime: hub,
+  ...(events !== undefined ? { events } : {}),
 };
 const hono = createSyncularHono({
   config,

@@ -6,6 +6,7 @@
  * commits older than the age-force limit may be pruned regardless; at
  * least the newest `minRetainedCommits` commits are always retained.
  */
+import { emitEvent, type SyncularServerEvents } from './events';
 import type { ServerStorage } from './storage';
 
 export interface RetentionPolicy {
@@ -28,6 +29,8 @@ export interface PruneOptions {
   readonly partition: string;
   readonly nowMs: number;
   readonly retention?: Partial<RetentionPolicy>;
+  /** Optional structured-events sink (`prune.completed`). */
+  readonly events?: SyncularServerEvents;
 }
 
 /** Advance the horizon per §4.6 and delete commits at or below it. */
@@ -51,9 +54,22 @@ export async function pruneCommitLog(options: PruneOptions): Promise<number> {
   const target = Math.min(Math.max(cursorFloor, forcedSeq), retainFloor);
   const current = await storage.getHorizonSeq(partition);
   const horizon = Math.max(current, Math.max(0, target));
+  let removedCommits = 0;
   if (horizon > current) {
     await storage.setHorizonSeq(partition, horizon);
-    await storage.pruneCommitsThrough(partition, horizon);
+    removedCommits = await storage.pruneCommitsThrough(partition, horizon);
+  }
+  const events = options.events;
+  if (events !== undefined) {
+    emitEvent(events, {
+      type: 'prune.completed',
+      atMs: nowMs,
+      partition,
+      previousHorizonSeq: current,
+      horizonSeq: horizon,
+      advanced: horizon > current,
+      removedCommits,
+    });
   }
   return horizon;
 }

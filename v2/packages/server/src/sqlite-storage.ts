@@ -378,8 +378,8 @@ export class SqliteServerStorage implements ServerStorage {
       .run(seq, partition);
   }
 
-  async pruneCommitsThrough(partition: string, seq: number): Promise<void> {
-    this.db
+  async pruneCommitsThrough(partition: string, seq: number): Promise<number> {
+    const removed = this.db
       .query('DELETE FROM sync_commits WHERE partition=? AND commit_seq<=?')
       .run(partition, seq);
     this.db
@@ -390,6 +390,7 @@ export class SqliteServerStorage implements ServerStorage {
         'DELETE FROM sync_change_scopes WHERE partition=? AND commit_seq<=?',
       )
       .run(partition, seq);
+    return Number(removed.changes);
   }
 
   async getCommitSeqBefore(

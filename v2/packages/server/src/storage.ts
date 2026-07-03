@@ -144,8 +144,11 @@ export interface ServerStorage {
   getMaxCommitSeq(partition: string): Promise<number>;
   getHorizonSeq(partition: string): Promise<number>;
   setHorizonSeq(partition: string, seq: number): Promise<void>;
-  /** Deletes commits with `commitSeq <= seq` (log, changes, scope index). */
-  pruneCommitsThrough(partition: string, seq: number): Promise<void>;
+  /**
+   * Deletes commits with `commitSeq <= seq` (log, changes, scope index).
+   * Returns the number of commits removed (ops observability).
+   */
+  pruneCommitsThrough(partition: string, seq: number): Promise<number>;
   /** Newest commitSeq created strictly before the timestamp; 0 if none. */
   getCommitSeqBefore(
     partition: string,
