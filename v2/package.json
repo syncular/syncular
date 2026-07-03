@@ -2,7 +2,7 @@
   "name": "syncular-v2",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "apps/*", "bench"],
+  "workspaces": ["packages/*", "apps/*", "examples/*", "bench"],
   "scripts": {
     "check": "bun run typecheck && bun run lint && bun test",
     "bench": "bun run --cwd bench bench",
