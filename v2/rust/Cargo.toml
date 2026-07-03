@@ -1,3 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/ssp2", "crates/client", "crates/conformance-shim"]
+members = [
+  "crates/ssp2",
+  "crates/client",
+  "crates/command",
+  "crates/conformance-shim",
+  "crates/ffi",
+]

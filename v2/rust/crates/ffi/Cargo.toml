@@ -1,0 +1,40 @@
+[package]
+name = "syncular-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "Syncular v2 Rust client core packaged as a C-ABI native library — the shipping native runtime for iOS/Android/JVM/desktop over the shared command surface"
+license = "UNLICENSED"
+publish = false
+
+[lib]
+name = "syncular"
+# cdylib: the shared object apps dlopen/link at runtime (.dylib/.so/.dll).
+# staticlib: the archive for static linking (iOS xcframework, embed in a host).
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+syncular-client = { path = "../client" }
+syncular-command = { path = "../command" }
+serde_json = "1"
+
+# The native transport lane — HTTP + WS owned by the Rust core. Feature-gated
+# so the conformance/dependency-lean build stays transport-inverted: the shim
+# proves the command surface with the harness holding the endpoints, and this
+# HTTP/WS stack (which never ships to JS users) is compiled only for native
+# app builds. ureq: minimal blocking HTTP, rustls, no async runtime.
+# tungstenite: the de-facto minimal sync WS implementation (hand-rolling WS
+# framing/masking/close is decidedly not minimal). Both are widely-used and
+# maintained; the sync/blocking pair matches the client's synchronous,
+# host-driven API with zero executor.
+[dependencies.ureq]
+version = "2"
+optional = true
+
+[dependencies.tungstenite]
+version = "0.24"
+optional = true
+features = ["rustls-tls-webpki-roots"]
+
+[features]
+default = []
+native-transport = ["dep:ureq", "dep:tungstenite"]

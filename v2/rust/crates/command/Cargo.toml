@@ -1,0 +1,12 @@
+[package]
+name = "syncular-command"
+version = "0.1.0"
+edition = "2021"
+description = "Shared JSON command router over the Syncular v2 Rust client core — one command surface consumed by both the conformance shim and the FFI native core"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+ssp2 = { path = "../ssp2" }
+syncular-client = { path = "../client" }
+serde_json = "1"
