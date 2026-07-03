@@ -28,6 +28,7 @@ import {
 import {
   applyCommitFrame,
   applyRowsSegment,
+  applySqliteSegment,
   deleteLocalRow,
   deleteScopedRows,
   upsertLocalRow,
@@ -158,7 +159,11 @@ export interface SyncClientLimits {
   readonly limitCommits?: number;
   readonly limitSnapshotRows?: number;
   readonly maxSnapshotPages?: number;
-  /** §4.2 accept bitmask; defaults to inline + external rows (0b0011). */
+  /**
+   * §4.2 accept bitmask; defaults to inline + external rows (0b0011)
+   * plus sqlite images (bit 2) when the database backend implements
+   * `withSqliteImage` and a segment downloader is configured (§5.3).
+   */
   readonly accept?: number;
 }
 
@@ -189,6 +194,10 @@ export interface SubscribeInput {
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
+
+/** §4.2 accept bits the client cares about. */
+const ACCEPT_ROWS_BASELINE = 0b0011;
+const ACCEPT_SQLITE = 1 << 2;
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest(
@@ -322,6 +331,20 @@ export class SyncClient {
   /** §8: a hello/wake-up asked for a pull that has not run yet. */
   get syncNeeded(): boolean {
     return this.#needsPull;
+  }
+
+  /**
+   * §4.2 accept mask: the configured override, or the rows baseline plus
+   * bit 2 when the backend can import sqlite images (§5.3) and a segment
+   * downloader exists (sqlite segments are never inline, §5.7).
+   */
+  #acceptMask(): number {
+    const configured = this.#config.limits?.accept;
+    if (configured !== undefined) return configured;
+    const sqliteCapable =
+      typeof this.#db.withSqliteImage === 'function' &&
+      this.#config.segments !== undefined;
+    return ACCEPT_ROWS_BASELINE | (sqliteCapable ? ACCEPT_SQLITE : 0);
   }
 
   subscriptions(): SubscriptionRecord[] {
@@ -466,7 +489,7 @@ export class SyncClient {
           limitCommits: limits?.limitCommits ?? 0,
           limitSnapshotRows: limits?.limitSnapshotRows ?? 0,
           maxSnapshotPages: limits?.maxSnapshotPages ?? 0,
-          accept: limits?.accept ?? 0b0011,
+          accept: this.#acceptMask(),
         },
         ...subs.map(
           (sub): RequestFrame => ({
@@ -689,9 +712,13 @@ export class SyncClient {
             const segment = decodeRowsSegment(frame.payload);
             this.#applySegmentOrFail(
               section,
-              segment,
-              section.fresh && !section.cleared,
               summary,
+              (table, clearFirst, effective) =>
+                applyRowsSegment(this.#db, this.#schema, table, segment, {
+                  clearFirst,
+                  effective,
+                }),
+              section.fresh && !section.cleared,
             );
             break;
           }
@@ -703,16 +730,64 @@ export class SyncClient {
             ) {
               break;
             }
+            // §4.2: a descriptor whose mediaType was not advertised is a
+            // broken server — fail loud, never skip or guess.
+            if (
+              frame.mediaType === 'sqlite' &&
+              (this.#acceptMask() & ACCEPT_SQLITE) === 0
+            ) {
+              throw new ClientSyncError(
+                'sync.invalid_request',
+                'SEGMENT_REF mediaType sqlite was not advertised in accept (§4.2)',
+              );
+            }
             const bytes = await this.#downloadSegment(frame, section.sub);
-            const segment = decodeRowsSegment(bytes);
-            this.#applySegmentOrFail(
-              section,
-              segment,
-              section.fresh &&
-                !section.cleared &&
-                frame.rowCursor === undefined,
-              summary,
-            );
+            if (frame.mediaType === 'sqlite') {
+              // §5.3: images are whole-table — a paged descriptor is
+              // invalid, and the image is always its table's first page.
+              if (
+                frame.rowCursor !== undefined ||
+                frame.nextRowCursor !== undefined
+              ) {
+                throw new ClientSyncError(
+                  'sync.invalid_request',
+                  'sqlite segments are whole-table: rowCursor/nextRowCursor must be absent (§5.3)',
+                );
+              }
+              this.#applySegmentOrFail(
+                section,
+                summary,
+                (table, clearFirst, effective) =>
+                  applySqliteSegment(
+                    this.#db,
+                    this.#schema,
+                    table,
+                    bytes,
+                    {
+                      table: frame.table,
+                      rowCount: frame.rowCount,
+                      asOfCommitSeq: frame.asOfCommitSeq,
+                      scopeDigest: frame.scopeDigest,
+                    },
+                    { clearFirst, effective },
+                  ),
+                section.fresh && !section.cleared,
+              );
+            } else {
+              const segment = decodeRowsSegment(bytes);
+              this.#applySegmentOrFail(
+                section,
+                summary,
+                (table, clearFirst, effective) =>
+                  applyRowsSegment(this.#db, this.#schema, table, segment, {
+                    clearFirst,
+                    effective,
+                  }),
+                section.fresh &&
+                  !section.cleared &&
+                  frame.rowCursor === undefined,
+              );
+            }
             break;
           }
           case 'SUB_END': {
@@ -871,26 +946,28 @@ export class SyncClient {
   }
 
   /**
-   * Apply a segment; a §5.6/§3.3 fail-closed error (no local scope-column
-   * mapping) marks the subscription `failed` and stops syncing the table
-   * without failing the whole request.
+   * Apply a segment (rows or sqlite image); a §5.6/§3.3 fail-closed error
+   * (no local scope-column mapping) marks the subscription `failed` and
+   * stops syncing the table without failing the whole request.
    */
   #applySegmentOrFail(
     section: OpenSection,
-    segment: ReturnType<typeof decodeRowsSegment>,
-    clearFirst: boolean,
     summary: MutableSummary,
+    apply: (
+      table: CompiledClientTable,
+      clearFirst: boolean,
+      effective: ScopeMap,
+    ) => number,
+    clearFirst: boolean,
   ): void {
     const sub = section.sub;
     if (sub === undefined) return;
     const table = this.#table(sub.table);
     try {
-      summary.segmentRowsApplied += applyRowsSegment(
-        this.#db,
-        this.#schema,
+      summary.segmentRowsApplied += apply(
         table,
-        segment,
-        { clearFirst, effective: section.start.effectiveScopes },
+        clearFirst,
+        section.start.effectiveScopes,
       );
       section.cleared = true;
     } catch (error) {
@@ -922,12 +999,6 @@ export class SyncClient {
     frame: SegmentRefFrame,
     sub: SubscriptionRecord,
   ): Promise<Uint8Array> {
-    if (frame.mediaType !== 'rows') {
-      throw new ClientSyncError(
-        'sync.invalid_request',
-        `unsupported segment mediaType ${JSON.stringify(frame.mediaType)} (the B3 client advertises rows only)`,
-      );
-    }
     const downloader = this.#config.segments;
     if (downloader === undefined) {
       throw new ClientSyncError(

@@ -829,8 +829,11 @@ yields to the client's declared capability. Bit 1 without bit 0 means
 every rows segment is delivered as a `SEGMENT_REF`.
 
 **Client baseline.** A client that implements no optional segment
-capability sends `accept = 0b0011` (inline + external rows) — the
-reference client's default. The mask is also a client-side contract: a
+capability sends `accept = 0b0011` (inline + external rows). The
+reference clients advertise bit 2 in addition (`0b0111`) whenever their
+database backend can import sqlite images (§5.3) and a segment
+downloader is configured — the premier path is the default wherever it
+is possible, per §0. The mask is also a client-side contract: a
 client MUST reject a `SEGMENT_REF` whose `mediaType` it did not
 advertise (fail loud as `sync.invalid_request`, aborting per §1.4
 rule 5) rather than skip or guess — a server that ignores the mask is
@@ -972,7 +975,10 @@ v1):
 - Each pull continues from (`tableIndex`, `rowCursor`), emitting up to
   `maxSnapshotPages` pages of up to `limitSnapshotRows` rows as segments
   (§5), then returns the advanced resume token — or omits it when every
-  table is exhausted, which is the completion signal.
+  table is exhausted, which is the completion signal. A table served as
+  a sqlite image (§5.3) is exhausted by that single segment: the image
+  is whole-table, counts as one page, and is only chosen when the resume
+  position is at the table's start (null row cursor).
 - If a resumed `asOfCommitSeq < horizonSeq`, the server MUST restart the
   bootstrap from scratch (fresh pin) rather than resume across pruned
   history.
@@ -1094,35 +1100,107 @@ standalone segment decode (tooling, vectors) never produces it.
 ### 5.3 SQLite segments (`mediaType = sqlite`) — premier path
 
 The segment bytes are a complete, well-formed **SQLite database file**
-containing:
+(the v1 artifact lane's 204 ms vs 467 ms at 100k rows is the motivating
+number: bootstrap becomes "import a database", not "insert N rows").
 
-- one table named as the target table, with the schema-IR columns **plus
-  a `_syncular_version INTEGER NOT NULL` column** holding each row's
-  `server_version` (§2.2, value ≥ 1) — the sqlite-image form of §5.2's
-  per-row `serverVersion`, so both segment formats seed §6.2 conflict
-  detection (§5.6) — holding exactly the snapshot rows; and
-- a metadata table `_syncular_segment` with a single row:
-  `(format INTEGER = 1, "table" TEXT, schemaVersion INTEGER,
-  asOfCommitSeq INTEGER, scopeDigest TEXT, rowCount INTEGER,
-  rowCursor TEXT NULL, nextRowCursor TEXT NULL, isFirstPage INTEGER,
-  isLastPage INTEGER)` — the descriptor duplicated inside the file so a
-  segment at rest is self-describing.
+**Whole-table, never paged.** A sqlite segment covers the subscription's
+**entire** effective-scope row set for one table at the bootstrap pin —
+the same rows a complete sequence of §5.2 rows pages would deliver (same
+matching rule, same `asOfCommitSeq`). Consequences, all normative:
 
-Clients import via ATTACH + `INSERT INTO … SELECT` or direct image adoption
-where the whole local table is being replaced (near file-copy speed in
-sqlite-wasm; the v1 artifact lane's 204 ms vs 467 ms at 100k rows is the
-motivating number). A client MUST validate `_syncular_segment` against
-the descriptor before applying. Servers SHOULD produce sqlite segments as
-the default bootstrap path when the client advertises support
-(`accept` bit 2); rows segments remain the fallback for clients that
-don't.
+- The descriptor's `rowCursor` and `nextRowCursor` MUST be absent (the
+  image is both the first and the last page of its table); a client
+  receiving a sqlite `SEGMENT_REF` with either present MUST reject it
+  (`sync.invalid_request`, aborting per §1.4 rule 5).
+- `limitSnapshotRows` and `maxSnapshotPages` (§4.2) do not constrain the
+  image lane; against `maxSnapshotPages` an image counts as one page.
+- The sqlite lane is chosen only at the **start of a table** (§4.7
+  resume position with a null row cursor). A bootstrap resumed mid-table
+  MUST continue on the rows lane at the same pin — a server MUST NOT
+  switch lanes mid-table (re-clearing already-applied pages is the §5.6
+  first-page rule's job, and a resumed bootstrap never re-clears).
+- Delivery is by `SEGMENT_REF` only; servers MUST NOT inline sqlite
+  segments (§5.7).
 
-**Skeleton status (B2).** The reference server does not yet *generate*
-sqlite segments — production is the SHOULD above; rows segments and
-`SEGMENT_INLINE` are the mandatory paths (§5.2, §5.7). Descriptors,
-segment stores, and the download endpoint MUST nevertheless carry and
-accept `mediaType = sqlite` (§5.4), so the premier path lands later
-without a wire or interface change.
+**File contents.** Exactly two tables:
+
+- One data table named as the target table: the schema-IR columns in
+  declaration order (§2.4), **plus a `_syncular_version INTEGER NOT
+  NULL` column last**, holding each row's `server_version` (§2.2, value
+  ≥ 1) — the sqlite-image form of §5.2's per-row `serverVersion`, so
+  both segment formats seed §6.2 conflict detection (§5.6). Declared
+  column type affinities follow the §2.4 types (`string`/`json` →
+  `TEXT`, `integer` → `INTEGER`, `float` → `REAL`, `boolean` →
+  `INTEGER`, `bytes` → `BLOB`); non-nullable columns are declared `NOT
+  NULL` and the primary-key column `PRIMARY KEY`. Cell encodings:
+  `boolean` as `0`/`1`, `json` as the raw string preserved verbatim
+  (already validated when the row entered the log — receivers do not
+  re-validate it at image apply), NULL for null, everything else its
+  natural SQLite type.
+- A metadata table `_syncular_segment` with **exactly one row** and
+  exactly these columns: `format INTEGER NOT NULL` (this document
+  specifies format `1`), `"table" TEXT NOT NULL`, `schemaVersion
+  INTEGER NOT NULL`, `asOfCommitSeq INTEGER NOT NULL`, `scopeDigest
+  TEXT NOT NULL` (§3.5), `rowCount INTEGER NOT NULL` — the descriptor
+  duplicated inside the file so a segment at rest is self-describing.
+  (DECISION: the draft's `rowCursor`/`nextRowCursor`/`isFirstPage`/
+  `isLastPage` columns are dropped — a format-1 image is inherently
+  whole-table, and dead always-NULL variance is exactly what v2 kills.)
+
+**Application contract** (the §5.6 rules, specialized): the client
+applies the whole image in **one local transaction** — the §5.6
+fresh-bootstrap first-page clear (an image is always the first page),
+then replace-or-upsert every image row by primary key with
+`_syncular_version` landing as the row's last-known `server_version`.
+Mechanics are implementation detail (ATTACH + `INSERT INTO … SELECT`,
+`sqlite3_deserialize`, or row copy); the contract is replace-all
+semantics plus version seeding. Before applying, the client MUST:
+
+1. verify the content address (§5.1) — this is the sole integrity check
+   for the bytes themselves;
+2. reject bytes that do not open as a SQLite database, a missing or
+   multi-row `_syncular_segment`, or metadata that does not match the
+   descriptor and the client's own state (`format` = 1, `"table"`,
+   `asOfCommitSeq`, `scopeDigest`, `rowCount` each equal to the
+   descriptor's fields; `schemaVersion` equal to the client's) — all
+   `sync.invalid_request`, aborting per §1.4 rule 5 (the cursor and
+   resume token stay unpersisted; re-pulling recovers);
+3. validate the data table's column names **and order** against the
+   generated schema for (`table`, `schemaVersion`) plus the trailing
+   `_syncular_version` — a mismatch is fatal (`sync.schema_mismatch`),
+   exactly the §5.2 column-table rule (validate, never infer). Declared
+   affinities and NOT NULL constraints are producer conformance rules;
+   receivers MAY additionally check them.
+
+**Determinism and reuse.** Sqlite images are **not** required to be
+byte-deterministic: SQLite files embed page-layout and library-version
+detail that no cross-implementation canon can reasonably pin. The
+content address pins exactly the bytes the server served (integrity and
+cacheability per §5.1), not a canonical encoding — golden vectors
+therefore never pin image bytes, and two conformant servers may produce
+different `segmentId`s for the same logical snapshot. Cross-client dedup
+consequently comes from server-side reuse, not hash convergence: a
+server SHOULD serve one stored image per (partition, table,
+schemaVersion, scope digest, `asOfCommitSeq`) and MUST NOT rebuild per
+client while an unexpired one exists for that key — the §5.1
+build-once SHOULD made hard for the format where identical bytes cannot
+be assumed. This is the bootstrap-storm answer: N clients holding the
+same scopes at the same pin download one image (from the CDN, with
+§5.4 signed URLs).
+
+**Eligibility.** Servers SHOULD produce a sqlite segment when the
+client advertises `accept` bit 2 (§4.2) and the table's snapshot
+exceeds one rows page (more than the clamped `limitSnapshotRows` rows
+at the pin — the reference server's rule); below that, inline rows
+segments already avoid the extra round-trip. A client that does not
+advertise bit 2 is served the rows lane (§5.2) by capability
+negotiation — rows segments remain mandatory-to-implement, so this is
+version-skew tolerance, not a fallback path in the REVISE sense.
+
+**Error codes.** No new codes: structural/metadata failures are
+`sync.invalid_request`, the column check is `sync.schema_mismatch`,
+download-side failures are §5.5's (`sync.not_found`,
+`sync.segment_expired`, `sync.forbidden`).
 
 ### 5.4 `SEGMENT_REF` frame — the descriptor
 
@@ -1226,10 +1304,10 @@ for clients without signed-URL support.
   table), and MUST NOT persist the subscription's `SUB_END` values. The
   failure is subscription-local: the rest of the response still
   applies.
-- Rows-segment blocks and sqlite-segment imports are applied
-  transactionally per §1.4/§5.2; the resume token is persisted only at
-  `SUB_END`, so a crash mid-segment resumes conservatively (re-applying a
-  block is safe by upsert idempotency).
+- Rows-segment blocks are applied transactionally per §1.4/§5.2; a
+  sqlite image applies as one transaction (§5.3). The resume token is
+  persisted only at `SUB_END`, so a crash mid-segment resumes
+  conservatively (re-applying a block is safe by upsert idempotency).
 - **Segment rows carry their server version** (per-row `serverVersion`
   in SSG2, §5.2; the `_syncular_version` column in sqlite images, §5.3).
   A client MUST store it as the row's last-known `server_version`,
@@ -1904,3 +1982,19 @@ not a prose test.
    applies cleanly, and a stale `baseVersion` yields
    `sync.version_conflict` with the current `serverVersion`/`serverRow`
    (§5.2, §5.6, §6.2).
+
+10. **SQLite-image bootstrap.** (a) Equivalence: a client advertising
+    `accept` bit 2 bootstraps an image-eligible table in a single pull
+    (no paging, `bootstrapState` never emitted) and ends row-, value-
+    and version-identical to a rows-lane control client, with
+    incremental handoff at the pin (§5.3, §5.6, §4.7). (b) Descriptor
+    shape and reuse: the sqlite `SEGMENT_REF` carries no
+    `rowCursor`/`nextRowCursor`, and a second client with the same
+    scopes at the same pin receives the **same** `segmentId` (server
+    reuse, §5.3 determinism rule). (c) Integrity: corrupted image bytes
+    fail the content address, abort per §1.4 rule 5 with
+    `sync.invalid_request`, persist nothing, and the re-pull converges.
+    (d) Capability gating: without bit 2 the same table bootstraps via
+    paged rows segments (§4.2 negotiation). (e) Lane pinning: a
+    bootstrap resumed mid-table stays on the rows lane even when the
+    resuming pull advertises bit 2 (§5.3, §4.7).

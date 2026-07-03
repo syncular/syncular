@@ -12,6 +12,7 @@ import { lifecycleScenarios } from './lifecycle';
 import { offlineScenarios } from './offline';
 import { realtimeScenarios } from './realtime';
 import { scopeScenarios } from './scopes';
+import { sqliteImageScenarios } from './sqlite-image';
 import { vectorScenarios } from './vectors';
 
 export const CATALOG: readonly Scenario[] = [
@@ -20,6 +21,7 @@ export const CATALOG: readonly Scenario[] = [
   ...conflictScenarios,
   ...scopeScenarios,
   ...bootstrapScenarios,
+  ...sqliteImageScenarios,
   ...lifecycleScenarios,
   ...realtimeScenarios,
   ...errorScenarios,

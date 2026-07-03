@@ -27,8 +27,10 @@ use crate::values::{
     json_to_column_value, render_row_id_json, scope_map_to_json, sort_scope_map,
 };
 
-/// §4.2 client baseline: inline + external rows segments.
-const DEFAULT_ACCEPT: u8 = 0b0011;
+/// §4.2 default: the rows baseline plus sqlite images (§5.3) — rusqlite
+/// can always import an image, so the premier path is advertised unless
+/// the host overrides `limits.accept`.
+const DEFAULT_ACCEPT: u8 = 0b0111;
 const ACCEPT_INLINE_ROWS: u8 = 1 << 0;
 const ACCEPT_EXTERNAL_ROWS: u8 = 1 << 1;
 const ACCEPT_SQLITE: u8 = 1 << 2;
@@ -137,6 +139,57 @@ fn cv_to_sql(value: &Option<ColumnValue>) -> SqlValue {
         Some(ColumnValue::Boolean(b)) => SqlValue::Integer(i64::from(*b)),
         Some(ColumnValue::Json(raw)) => SqlValue::Text(raw.0.clone()),
         Some(ColumnValue::Bytes(b)) => SqlValue::Blob(b.clone()),
+    }
+}
+
+/// §5.3 image cell → row-codec value, strict per the declared column type
+/// (`boolean` from INTEGER 0/1, `json` from its raw TEXT, NULL only when
+/// nullable). Mismatches are image-producer violations.
+fn sql_ref_to_column_value(
+    column: &Column,
+    value: rusqlite::types::ValueRef<'_>,
+) -> Result<Option<ColumnValue>, String> {
+    use rusqlite::types::ValueRef;
+    use ssp2::segment::ColumnType;
+    let mismatch = || {
+        Err(format!(
+            "image column {:?} holds a value of the wrong type",
+            column.name
+        ))
+    };
+    match value {
+        ValueRef::Null => {
+            if !column.nullable {
+                return Err(format!(
+                    "image column {:?} is NULL but not nullable",
+                    column.name
+                ));
+            }
+            Ok(None)
+        }
+        ValueRef::Integer(i) => match column.ty {
+            ColumnType::Integer => Ok(Some(ColumnValue::Integer(i))),
+            ColumnType::Boolean => Ok(Some(ColumnValue::Boolean(i != 0))),
+            ColumnType::Float => Ok(Some(ColumnValue::Float(i as f64))),
+            _ => mismatch(),
+        },
+        ValueRef::Real(f) => match column.ty {
+            ColumnType::Float => Ok(Some(ColumnValue::Float(f))),
+            _ => mismatch(),
+        },
+        ValueRef::Text(t) => {
+            let text = std::str::from_utf8(t)
+                .map_err(|_| format!("image column {:?} is not UTF-8", column.name))?;
+            match column.ty {
+                ColumnType::String => Ok(Some(ColumnValue::String(text.to_owned()))),
+                ColumnType::Json => Ok(Some(ColumnValue::Json(RawJson(text.to_owned())))),
+                _ => mismatch(),
+            }
+        }
+        ValueRef::Blob(b) => match column.ty {
+            ColumnType::Bytes => Ok(Some(ColumnValue::Bytes(b.to_vec()))),
+            _ => mismatch(),
+        },
     }
 }
 
@@ -971,7 +1024,11 @@ impl SyncClient {
                     segment_id,
                     media_type,
                     table,
+                    row_count,
+                    as_of_commit_seq,
+                    scope_digest,
                     row_cursor,
+                    next_row_cursor,
                     url,
                     url_expires_at_ms,
                     ..
@@ -992,12 +1049,6 @@ impl SyncClient {
                                 "SEGMENT_REF mediaType {} was not advertised in accept (§4.2)",
                                 media_type.name()
                             ),
-                        ));
-                    }
-                    if media_type == MediaType::Sqlite {
-                        return Err(SectionError::Abort(
-                            "sync.invalid_request".to_owned(),
-                            "sqlite segments are not implemented by this client".to_owned(),
                         ));
                     }
                     let requested_scopes_json =
@@ -1022,12 +1073,36 @@ impl SyncClient {
                             "segment bytes do not match the content address (§5.1)".to_owned(),
                         ));
                     }
-                    let segment = decode_rows_segment(&bytes)
-                        .map_err(|e| SectionError::Abort(e.code.as_str().to_owned(), e.detail))?;
-                    let first = row_cursor.is_none();
-                    saw_segment = true;
-                    let applied = self.apply_segment(sub_index, &segment, fresh && first)?;
-                    report.segment_rows_applied += applied;
+                    if media_type == MediaType::Sqlite {
+                        // §5.3: images are whole-table — a paged sqlite
+                        // descriptor is invalid.
+                        if row_cursor.is_some() || next_row_cursor.is_some() {
+                            return Err(SectionError::Abort(
+                                "sync.invalid_request".to_owned(),
+                                "sqlite segments are whole-table: rowCursor/nextRowCursor must be absent (§5.3)"
+                                    .to_owned(),
+                            ));
+                        }
+                        let first = !saw_segment;
+                        saw_segment = true;
+                        let applied = self.apply_sqlite_segment(
+                            sub_index,
+                            &bytes,
+                            fresh && first,
+                            row_count,
+                            as_of_commit_seq,
+                            &scope_digest,
+                        )?;
+                        report.segment_rows_applied += applied;
+                    } else {
+                        let segment = decode_rows_segment(&bytes).map_err(|e| {
+                            SectionError::Abort(e.code.as_str().to_owned(), e.detail)
+                        })?;
+                        let first = row_cursor.is_none();
+                        saw_segment = true;
+                        let applied = self.apply_segment(sub_index, &segment, fresh && first)?;
+                        report.segment_rows_applied += applied;
+                    }
                 }
                 Frame::Unknown { .. } => {}
                 _ => {
@@ -1134,6 +1209,208 @@ impl SyncClient {
                     .map_err(|m| SectionError::Abort("sync.invalid_request".to_owned(), m))?;
                 applied += 1;
             }
+        }
+        Ok(applied)
+    }
+
+    /// §5.3 sqlite-image application: validate the in-file metadata
+    /// against the descriptor, validate column names/order against the
+    /// generated schema, run the §5.6 first-page clear when fresh, then
+    /// replace-or-upsert every image row with its `_syncular_version`.
+    /// Mechanics: the image lands in a temp file read through a second
+    /// rusqlite connection (semantics identical to ATTACH + INSERT…SELECT;
+    /// ATTACH is unavailable inside the open section savepoint).
+    fn apply_sqlite_segment(
+        &mut self,
+        sub_index: usize,
+        bytes: &[u8],
+        first_fresh_page: bool,
+        row_count: i64,
+        as_of_commit_seq: i64,
+        scope_digest: &str,
+    ) -> Result<u32, SectionError> {
+        let invalid = |detail: &str| {
+            SectionError::Abort(
+                "sync.invalid_request".to_owned(),
+                format!("sqlite segment rejected: {detail} (§5.3)"),
+            )
+        };
+        let (sub_table, effective) = {
+            let sub = &self.subs[sub_index];
+            (sub.table.clone(), sub.effective.clone().unwrap_or_default())
+        };
+        let table = self.schema.table(&sub_table).cloned().ok_or_else(|| {
+            SectionError::Abort(
+                "sync.schema_mismatch".to_owned(),
+                format!("subscription table {sub_table:?} is not in the client schema"),
+            )
+        })?;
+
+        let path = std::env::temp_dir().join(format!("syncular-image-{}.db", uuid::Uuid::new_v4()));
+        std::fs::write(&path, bytes).map_err(|_| invalid("image temp file write failed"))?;
+        let img = match rusqlite::Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) {
+            Ok(conn) => conn,
+            Err(_) => {
+                let _ = std::fs::remove_file(&path);
+                return Err(invalid("bytes do not open as a SQLite database"));
+            }
+        };
+        let outcome = self.apply_sqlite_image(
+            &img,
+            &table,
+            first_fresh_page,
+            &effective,
+            row_count,
+            as_of_commit_seq,
+            scope_digest,
+        );
+        drop(img);
+        let _ = std::fs::remove_file(&path);
+        outcome
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_sqlite_image(
+        &mut self,
+        img: &rusqlite::Connection,
+        table: &crate::schema::TableSchema,
+        first_fresh_page: bool,
+        effective: &[(String, Vec<String>)],
+        row_count: i64,
+        as_of_commit_seq: i64,
+        scope_digest: &str,
+    ) -> Result<u32, SectionError> {
+        let invalid = |detail: String| {
+            SectionError::Abort(
+                "sync.invalid_request".to_owned(),
+                format!("sqlite segment rejected: {detail} (§5.3)"),
+            )
+        };
+
+        // 1. Metadata vs descriptor + client state (§5.3 rule 2; exactly
+        //    one row).
+        type MetaRow = (i64, String, i64, i64, String, i64, i64);
+        let meta: MetaRow = img
+            .query_row(
+                "SELECT format, \"table\", \"schemaVersion\", \"asOfCommitSeq\",
+                        \"scopeDigest\", \"rowCount\",
+                        (SELECT count(*) FROM _syncular_segment)
+                 FROM _syncular_segment",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .map_err(|_| invalid("missing or unreadable _syncular_segment metadata".to_owned()))?;
+        let (format, meta_table, schema_version, pin, digest, meta_rows, meta_count) = meta;
+        if meta_count != 1 {
+            return Err(invalid(format!(
+                "_syncular_segment must contain exactly one row, found {meta_count}"
+            )));
+        }
+        if format != 1 {
+            return Err(invalid(format!("format {format}")));
+        }
+        if meta_table != table.name {
+            return Err(invalid(format!("image table {meta_table:?}")));
+        }
+        if schema_version != i64::from(self.schema.version) {
+            return Err(invalid(format!("schemaVersion {schema_version}")));
+        }
+        if pin != as_of_commit_seq {
+            return Err(invalid(format!("asOfCommitSeq {pin}")));
+        }
+        if digest != scope_digest {
+            return Err(invalid("scopeDigest mismatch".to_owned()));
+        }
+        if meta_rows != row_count {
+            return Err(invalid(format!("rowCount {meta_rows}")));
+        }
+
+        // 2. Column names and order vs the generated schema (§5.3 rule 3).
+        let mut names: Vec<String> = Vec::new();
+        {
+            let mut stmt = img
+                .prepare(&format!("PRAGMA table_info({})", quote_ident(&table.name)))
+                .map_err(|_| invalid("image data table missing".to_owned()))?;
+            let mut rows = stmt
+                .query([])
+                .map_err(|_| invalid("image data table unreadable".to_owned()))?;
+            while let Some(row) = rows
+                .next()
+                .map_err(|_| invalid("image data table unreadable".to_owned()))?
+            {
+                names.push(
+                    row.get::<_, String>(1)
+                        .map_err(|_| invalid("image data table unreadable".to_owned()))?,
+                );
+            }
+        }
+        let mut expected: Vec<&str> = table.columns.iter().map(|c| c.name.as_str()).collect();
+        expected.push("_syncular_version");
+        if names.len() != expected.len() || names.iter().zip(expected.iter()).any(|(a, b)| a != b) {
+            return Err(SectionError::Abort(
+                "sync.schema_mismatch".to_owned(),
+                "sqlite segment columns do not match the generated schema (§5.3)".to_owned(),
+            ));
+        }
+
+        // 3. §5.6 first-page clear (fail closed without a mapping), then
+        //    replace-or-upsert with the image-carried server versions.
+        if first_fresh_page {
+            self.purge_scope_rows(&table.name, effective)
+                .map_err(|()| SectionError::FailClosed)?;
+        }
+        let column_list: Vec<String> = names.iter().map(|n| quote_ident(n)).collect();
+        let mut stmt = img
+            .prepare(&format!(
+                "SELECT {} FROM {}",
+                column_list.join(", "),
+                quote_ident(&table.name)
+            ))
+            .map_err(|_| invalid("image data table unreadable".to_owned()))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|_| invalid("image data table unreadable".to_owned()))?;
+        let mut applied = 0u32;
+        while let Some(row) = rows
+            .next()
+            .map_err(|_| invalid("image row unreadable".to_owned()))?
+        {
+            let mut values: Row = Vec::with_capacity(table.columns.len());
+            for (i, column) in table.columns.iter().enumerate() {
+                let cell = row
+                    .get_ref(i)
+                    .map_err(|_| invalid("image row unreadable".to_owned()))?;
+                values.push(sql_ref_to_column_value(column, cell).map_err(&invalid)?);
+            }
+            let version: i64 = row
+                .get(table.columns.len())
+                .map_err(|_| invalid("image row unreadable".to_owned()))?;
+            if version < 1 {
+                return Err(invalid(format!(
+                    "row _syncular_version must be >= 1, got {version}"
+                )));
+            }
+            self.write_base_row(&table.name, &values, version)
+                .map_err(|m| SectionError::Abort("sync.invalid_request".to_owned(), m))?;
+            applied += 1;
+        }
+        if i64::from(applied) != row_count {
+            return Err(invalid(format!(
+                "image holds {applied} rows, descriptor says {row_count}"
+            )));
         }
         Ok(applied)
     }

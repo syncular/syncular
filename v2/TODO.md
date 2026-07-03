@@ -15,12 +15,19 @@ the old tree archived.
 
 ## 1. Performance rungs (first — before feature parity)
 
-- [ ] **sqlite-image segments** (`mediaType: sqlite`, SPEC §5.3): server
-      generates prebuilt scoped DB images, web client imports them at
-      near-file-copy speed, Rust client attaches them. The headline
-      bootstrap path (v1 artifact lane: 204 ms). Decide the SSG2
-      version-column question first — it affects both segment formats and
-      needs new vectors either way.
+- [x] **sqlite-image segments**: LANDED 2026-07-03 — `mediaType: sqlite`
+      end to end. SPEC §5.3 completed to implementable (whole-table
+      images, exact `_syncular_segment` metadata columns, one-transaction
+      apply, non-deterministic bytes + server-side reuse as the
+      bootstrap-storm rule, rows-lane pinning on mid-table resume);
+      server builds/stores/reuses images on bun:sqlite behind
+      `SegmentStore.find`; TS client imports via the optional
+      `ClientDatabase.withSqliteImage` (bun: temp-file ATTACH; wasm:
+      `sqlite3_deserialize`) and advertises accept bit 2 when capable;
+      Rust client applies via rusqlite; conformance B.10 (4 scenarios,
+      both pairings); bench image lane + `imageBootstrapRowsPerSecFloor`
+      CI budget. Wire shape unchanged — no vector regeneration (image
+      bytes are deliberately not vector-pinned, §5.3).
 - [ ] **Worker + OPFS mode** (Direction decision 2): whole client core in a
       worker on `opfs-sahpool`, thin RPC to the UI thread, in-memory as
       explicit-ephemeral only. Persistence lands here; the demo drops its

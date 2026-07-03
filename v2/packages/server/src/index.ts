@@ -20,5 +20,6 @@ export * from './scopes';
 export * from './segment-download';
 export * from './segment-store';
 export * from './signed-url';
+export * from './sqlite-image';
 export * from './sqlite-storage';
 export * from './storage';

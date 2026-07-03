@@ -167,6 +167,130 @@ export function deleteScopedRows(
   );
 }
 
+/** Descriptor fields a sqlite image is validated against (§5.3). */
+export interface SqliteSegmentDescriptor {
+  readonly table: string;
+  readonly rowCount: number;
+  readonly asOfCommitSeq: number;
+  readonly scopeDigest: string;
+}
+
+const IMAGE_ALIAS = 'syncular_image';
+
+function imageInvalid(detail: string): never {
+  throw new ClientSyncError(
+    'sync.invalid_request',
+    `sqlite segment rejected: ${detail} (§5.3)`,
+  );
+}
+
+/**
+ * Apply a §5.3 sqlite-image segment in ONE local transaction: validate
+ * the in-file metadata against the descriptor, validate the data table's
+ * column names/order against the generated schema, run the §5.6
+ * first-page clear when fresh, then copy every row with a single
+ * `INSERT OR REPLACE … SELECT` — `_syncular_version` lands in
+ * `_sync_version` exactly like a rows segment's per-row `serverVersion`.
+ */
+export function applySqliteSegment(
+  db: ClientDatabase,
+  schema: CompiledClientSchema,
+  table: CompiledClientTable,
+  bytes: Uint8Array,
+  descriptor: SqliteSegmentDescriptor,
+  options: { readonly clearFirst: boolean; readonly effective: ScopeMap },
+): number {
+  const withImage = db.withSqliteImage?.bind(db);
+  if (withImage === undefined) {
+    throw new ClientSyncError(
+      'sync.invalid_request',
+      'received a sqlite segment but the database backend cannot import images (§4.2: do not advertise accept bit 2)',
+    );
+  }
+  if (descriptor.table !== table.name) {
+    imageInvalid(`descriptor table ${JSON.stringify(descriptor.table)}`);
+  }
+  return withImage(bytes, IMAGE_ALIAS, () => {
+    // 1. Metadata vs descriptor (§5.3 rule 2). A file that is not a
+    //    SQLite database or lacks the metadata table fails right here.
+    let meta: ReturnType<ClientDatabase['query']>;
+    try {
+      meta = db.query(
+        `SELECT format, "table" AS tbl, "schemaVersion" AS sv,
+                "asOfCommitSeq" AS pin, "scopeDigest" AS sd,
+                "rowCount" AS rc
+         FROM ${IMAGE_ALIAS}."_syncular_segment"`,
+      );
+    } catch {
+      imageInvalid('bytes are not a SQLite image with _syncular_segment');
+    }
+    const record = meta[0];
+    if (meta.length !== 1 || record === undefined) {
+      imageInvalid('_syncular_segment must contain exactly one row');
+    }
+    if (record.format !== 1) imageInvalid(`format ${String(record.format)}`);
+    if (record.tbl !== table.name) {
+      imageInvalid(`image table ${String(record.tbl)}`);
+    }
+    if (Number(record.sv) !== schema.version) {
+      imageInvalid(`schemaVersion ${String(record.sv)}`);
+    }
+    if (Number(record.pin) !== descriptor.asOfCommitSeq) {
+      imageInvalid(`asOfCommitSeq ${String(record.pin)}`);
+    }
+    if (record.sd !== descriptor.scopeDigest) {
+      imageInvalid('scopeDigest mismatch');
+    }
+    if (Number(record.rc) !== descriptor.rowCount) {
+      imageInvalid(`rowCount ${String(record.rc)}`);
+    }
+
+    // 2. Column names and order vs the generated schema (§5.3 rule 3 —
+    //    sync.schema_mismatch, the §5.2 rule specialized).
+    const info = db.query(
+      `PRAGMA ${IMAGE_ALIAS}.table_info(${quoteIdent(table.name)})`,
+    );
+    const expected = [
+      ...table.columns.map((column) => column.name),
+      '_syncular_version',
+    ];
+    const actual = info.map((row) => String(row.name));
+    if (
+      actual.length !== expected.length ||
+      expected.some((name, index) => actual[index] !== name)
+    ) {
+      throw new ClientSyncError(
+        'sync.schema_mismatch',
+        `sqlite segment for ${JSON.stringify(table.name)} does not match the generated schema: columns [${actual.join(', ')}] (§5.3)`,
+      );
+    }
+
+    // 3. One transaction: fresh-bootstrap clear, then replace-or-upsert.
+    const names = table.columns.map((column) => quoteIdent(column.name));
+    return db.transaction(() => {
+      if (options.clearFirst) {
+        deleteScopedRows(db, table, options.effective);
+      }
+      db.exec(
+        `INSERT OR REPLACE INTO ${quoteIdent(table.name)}
+           (${[...names, quoteIdent(SYNC_VERSION_COLUMN)].join(', ')})
+         SELECT ${[...names, quoteIdent('_syncular_version')].join(', ')}
+         FROM ${IMAGE_ALIAS}.${quoteIdent(table.name)}`,
+      );
+      const counted = db.query(
+        `SELECT count(*) AS n FROM ${IMAGE_ALIAS}.${quoteIdent(table.name)}`,
+      )[0];
+      const applied = Number(counted?.n ?? 0);
+      if (applied !== descriptor.rowCount) {
+        imageInvalid(
+          `image holds ${applied} rows, descriptor says ${descriptor.rowCount}`,
+        );
+      }
+      return applied;
+    });
+  });
+}
+
 /**
  * Apply a decoded rows segment: each block in one local transaction
  * (§5.2/§1.4); `clearFirst` implements the §5.6 fresh-bootstrap first-page

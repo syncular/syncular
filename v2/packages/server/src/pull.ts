@@ -16,7 +16,9 @@ import type { SyncRequestContext } from './context';
 import { clockOf, limitsOf } from './context';
 import type { CompiledSchema, CompiledTable } from './schema';
 import { scopeDigest } from './scopes';
+import type { SegmentRecord } from './segment-store';
 import { signSegmentToken } from './signed-url';
+import { buildSqliteImage } from './sqlite-image';
 import type { StoredCommit, StoredRow } from './storage';
 
 /** §4.2 accept bitmask. */
@@ -123,6 +125,141 @@ function chunkRows(rows: SegmentRow[], size: number): SegmentRow[][] {
   return blocks;
 }
 
+/** §5.4 signed-URL fields for a descriptor, when the client asked (bit 3). */
+async function signedUrlFields(
+  ctx: SyncRequestContext,
+  limits: PullLimits,
+  segmentId: string,
+  digest: string,
+  now: number,
+): Promise<{ url?: string; urlExpiresAtMs?: number }> {
+  if ((limits.accept & ACCEPT_SIGNED_URLS) === 0 || !ctx.signedUrls) return {};
+  const exp = Math.floor(now / 1000) + (ctx.signedUrls.ttlSeconds ?? 900);
+  const token = await signSegmentToken(ctx.signedUrls.key, {
+    v: 1,
+    seg: segmentId,
+    sd: digest,
+    aud: ctx.signedUrls.audience(ctx.partition),
+    exp,
+  });
+  return {
+    url: `${ctx.signedUrls.baseUrl}/${segmentId}?st=${token}`,
+    urlExpiresAtMs: exp * 1000,
+  };
+}
+
+function segmentRefFrame(
+  record: SegmentRecord,
+  extra: { url?: string; urlExpiresAtMs?: number },
+): ResponseFrame {
+  return {
+    type: 'SEGMENT_REF',
+    segmentId: record.segmentId,
+    mediaType: record.mediaType,
+    table: record.table,
+    byteLength: record.byteLength,
+    rowCount: record.rowCount,
+    asOfCommitSeq: record.asOfCommitSeq,
+    scopeDigest: record.scopeDigest,
+    ...(record.rowCursor !== null ? { rowCursor: record.rowCursor } : {}),
+    ...(record.nextRowCursor !== null
+      ? { nextRowCursor: record.nextRowCursor }
+      : {}),
+    ...(extra.url !== undefined ? { url: extra.url } : {}),
+    ...(extra.urlExpiresAtMs !== undefined
+      ? { urlExpiresAtMs: extra.urlExpiresAtMs }
+      : {}),
+  };
+}
+
+/**
+ * §5.3 sqlite-image lane: only at the start of a table, only when the
+ * client advertised bit 2, and only when the snapshot exceeds one rows
+ * page. Reuses an unexpired stored image for the same (partition, table,
+ * schemaVersion, scope digest, pin) instead of rebuilding — the
+ * bootstrap-storm rule. Returns false when the table is not eligible
+ * (the rows lane takes over).
+ */
+async function* sqliteImageSegment(
+  ctx: SyncRequestContext,
+  schema: CompiledSchema,
+  limits: PullLimits,
+  plan: SubscriptionPlan,
+  asOf: number,
+  digest: string,
+): AsyncGenerator<ResponseFrame, boolean> {
+  const { storage, segments, partition } = ctx;
+  const now = clockOf(ctx)();
+  const existing = await segments.find(
+    {
+      partition,
+      table: plan.table.name,
+      schemaVersion: schema.version,
+      mediaType: 'sqlite',
+      scopeDigest: digest,
+      asOfCommitSeq: asOf,
+    },
+    now,
+  );
+  if (existing !== undefined) {
+    yield segmentRefFrame(
+      existing,
+      await signedUrlFields(ctx, limits, existing.segmentId, digest, now),
+    );
+    return true;
+  }
+  // Eligibility probe (§5.3): image only when the snapshot exceeds one
+  // rows page — smaller tables stay on the (typically inline) rows lane.
+  const probe = await storage.scanRows(partition, {
+    table: plan.table.name,
+    scopeFilter: plan.effective,
+    afterRowId: null,
+    limit: limits.limitSnapshotRows + 1,
+  });
+  if (probe.length <= limits.limitSnapshotRows) return false;
+  const rows: StoredRow[] = [];
+  let afterRowId: string | null = null;
+  for (;;) {
+    const scanned: StoredRow[] = await storage.scanRows(partition, {
+      table: plan.table.name,
+      scopeFilter: plan.effective,
+      afterRowId,
+      limit: 50_000,
+    });
+    rows.push(...scanned);
+    const last = scanned[scanned.length - 1];
+    if (scanned.length < 50_000 || last === undefined) break;
+    afterRowId = last.rowId;
+  }
+  const bytes = buildSqliteImage({
+    table: plan.table,
+    schemaVersion: schema.version,
+    asOfCommitSeq: asOf,
+    scopeDigest: digest,
+    rows,
+  });
+  const record = await segments.put(
+    {
+      partition,
+      table: plan.table.name,
+      schemaVersion: schema.version,
+      mediaType: 'sqlite',
+      scopeDigest: digest,
+      asOfCommitSeq: asOf,
+      rowCount: rows.length,
+      rowCursor: null,
+      nextRowCursor: null,
+    },
+    bytes,
+    now,
+  );
+  yield segmentRefFrame(
+    record,
+    await signedUrlFields(ctx, limits, record.segmentId, digest, now),
+  );
+  return true;
+}
+
 async function* bootstrapSegments(
   ctx: SyncRequestContext,
   schema: CompiledSchema,
@@ -138,6 +275,20 @@ async function* bootstrapSegments(
   const serverLimits = limitsOf(ctx);
   const digest = await scopeDigest(plan.effective);
   const now = clockOf(ctx)();
+  // §5.3: the sqlite-image lane — whole-table, chosen only at the start
+  // of a table (a mid-table resume stays on the rows lane, never
+  // switching lanes), and only when the client advertised bit 2.
+  if ((limits.accept & ACCEPT_SQLITE) !== 0 && startRowCursor === null) {
+    const imaged = yield* sqliteImageSegment(
+      ctx,
+      schema,
+      limits,
+      plan,
+      asOf,
+      digest,
+    );
+    if (imaged) return { complete: true, rowCursor: null };
+  }
   let rowCursor = startRowCursor;
   for (let page = 0; page < limits.maxSnapshotPages; page++) {
     const scanned = await storage.scanRows(partition, {
@@ -186,34 +337,10 @@ async function* bootstrapSegments(
         bytes,
         now,
       );
-      let url: string | undefined;
-      let urlExpiresAtMs: number | undefined;
-      if ((limits.accept & ACCEPT_SIGNED_URLS) !== 0 && ctx.signedUrls) {
-        const exp = Math.floor(now / 1000) + (ctx.signedUrls.ttlSeconds ?? 900);
-        const token = await signSegmentToken(ctx.signedUrls.key, {
-          v: 1,
-          seg: record.segmentId,
-          sd: digest,
-          aud: ctx.signedUrls.audience(partition),
-          exp,
-        });
-        url = `${ctx.signedUrls.baseUrl}/${record.segmentId}?st=${token}`;
-        urlExpiresAtMs = exp * 1000;
-      }
-      yield {
-        type: 'SEGMENT_REF',
-        segmentId: record.segmentId,
-        mediaType: 'rows',
-        table: plan.table.name,
-        byteLength: bytes.length,
-        rowCount: pageRows.length,
-        asOfCommitSeq: asOf,
-        scopeDigest: digest,
-        ...(rowCursor !== null ? { rowCursor } : {}),
-        ...(nextRowCursor !== null ? { nextRowCursor } : {}),
-        ...(url !== undefined ? { url } : {}),
-        ...(urlExpiresAtMs !== undefined ? { urlExpiresAtMs } : {}),
-      };
+      yield segmentRefFrame(
+        record,
+        await signedUrlFields(ctx, limits, record.segmentId, digest, now),
+      );
     }
     if (!hasMore) return { complete: true, rowCursor: null };
     rowCursor = nextRowCursor;
