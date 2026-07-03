@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "migrations": "./migrations",
+  "output": {
+    "ir": "./syncular.ir.json",
+    "module": "./src/syncular.generated.ts"
+  },
+  "schemaVersions": [{ "version": 1, "through": "0001_initial" }],
+  "tables": [{ "name": "todos", "scopes": ["list:{list_id}"] }],
+  "subscriptions": [
+    {
+      "name": "todoList",
+      "table": "todos",
+      "scopes": { "list_id": ["{listId}"] }
+    }
+  ]
+}

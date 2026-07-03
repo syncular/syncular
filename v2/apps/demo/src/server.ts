@@ -1,0 +1,218 @@
+/**
+ * B6 demo backend: one Bun process serving
+ * - POST /sync + GET /segments/:id via the B2 server-hono adapter,
+ * - GET /realtime as a WebSocket wired to the server's RealtimeHub,
+ * - the static frontend (built with Bun.build at startup) with COOP/COEP
+ *   headers, and the sqlite-wasm package files under /vendor/sqlite-wasm/.
+ *
+ * Storage is bun:sqlite (in-memory by default; set SYNCULAR_DEMO_DB=path
+ * for a file). The schema is the typegen-generated module (B5 dogfood).
+ */
+import { dirname, join } from 'node:path';
+import {
+  encodeMessage,
+  encodeRow,
+  PROTOCOL_WIRE_VERSION,
+  type RequestFrame,
+} from '@syncular-v2/core';
+import {
+  createRealtimeHub,
+  handleSyncRequest,
+  MemorySegmentStore,
+  type RealtimeSession,
+  SqliteServerStorage,
+  type SyncServerConfig,
+} from '@syncular-v2/server';
+import { createSyncularHono } from '@syncular-v2/server-hono';
+import { schema, type TodosRow } from './syncular.generated';
+
+const PORT = Number(process.env.PORT ?? 8787);
+const PARTITION = 'demo';
+const ACTOR_ID = 'demo-user';
+
+// -- sync server ------------------------------------------------------------
+
+const storage = new SqliteServerStorage(
+  process.env.SYNCULAR_DEMO_DB ?? ':memory:',
+);
+const segments = new MemorySegmentStore();
+/** Demo authorization: the single demo actor may see every list. */
+const resolveScopes = () => ({ list_id: ['*'] });
+
+const hub = createRealtimeHub({ schema, storage, resolveScopes });
+const config: SyncServerConfig = {
+  schema,
+  storage,
+  segments,
+  resolveScopes,
+  realtime: hub,
+};
+const hono = createSyncularHono({
+  config,
+  authenticate: async () => ({ actorId: ACTOR_ID, partition: PARTITION }),
+});
+
+/** Seed a few rows through the real push path (idempotent per process). */
+async function seed(): Promise<void> {
+  if ((await storage.getMaxCommitSeq(PARTITION)) > 0) return;
+  const table = schema.tables[0];
+  const now = Date.now();
+  const rows: TodosRow[] = [
+    'Open this page in two panes',
+    'Toggle a pane offline and keep editing',
+    'Bring it back online and watch the outbox drain',
+  ].map((title, index) => ({
+    id: `seed-${index + 1}`,
+    list_id: 'demo',
+    title,
+    done: false,
+    position: index + 1,
+    updated_at_ms: now,
+  }));
+  const frames: RequestFrame[] = [
+    { type: 'REQ_HEADER', clientId: 'seed', schemaVersion: schema.version },
+    {
+      type: 'PUSH_COMMIT',
+      clientCommitId: 'seed-commit-1',
+      operations: rows.map((row) => ({
+        table: 'todos',
+        rowId: row.id,
+        op: 'upsert' as const,
+        payload: encodeRow(table.columns, [
+          row.id,
+          row.list_id,
+          row.title,
+          row.done,
+          row.position,
+          row.updated_at_ms,
+        ]),
+      })),
+    },
+    {
+      type: 'PULL_HEADER',
+      limitCommits: 0,
+      limitSnapshotRows: 0,
+      maxSnapshotPages: 0,
+      accept: 0b0011,
+    },
+  ];
+  await handleSyncRequest(
+    encodeMessage({
+      wireVersion: PROTOCOL_WIRE_VERSION,
+      msgKind: 'request',
+      frames,
+    }),
+    { ...config, partition: PARTITION, actorId: ACTOR_ID },
+  );
+}
+
+// -- frontend build + static assets ------------------------------------------
+
+const build = await Bun.build({
+  entrypoints: [join(import.meta.dir, 'frontend', 'main.ts')],
+  target: 'browser',
+  // Resolved in the browser via the import map in index.html; the package
+  // files (JS glue + sqlite3.wasm) are served under /vendor/sqlite-wasm/.
+  external: ['@sqlite.org/sqlite-wasm'],
+  sourcemap: 'inline',
+});
+const appJsArtifact = build.outputs[0];
+if (appJsArtifact === undefined) {
+  throw new Error('frontend build produced no output');
+}
+const appJs = await appJsArtifact.text();
+const indexHtml = await Bun.file(
+  join(import.meta.dir, 'frontend', 'index.html'),
+).text();
+
+const wasmDir = dirname(
+  Bun.resolveSync('@sqlite.org/sqlite-wasm', import.meta.dir),
+);
+/** Only the files the sqlite-wasm ESM entry actually references. */
+const WASM_FILES: Record<string, string> = {
+  'index.mjs': 'text/javascript',
+  'sqlite3.wasm': 'application/wasm',
+  'sqlite3-opfs-async-proxy.js': 'text/javascript',
+  'sqlite3-worker1.mjs': 'text/javascript',
+};
+
+/** COOP/COEP so OPFS-capable contexts get cross-origin isolation. */
+const STATIC_HEADERS = {
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'require-corp',
+  'Cache-Control': 'no-store',
+};
+
+function staticResponse(body: string | Uint8Array, type: string): Response {
+  return new Response(body as BodyInit, {
+    headers: { ...STATIC_HEADERS, 'Content-Type': type },
+  });
+}
+
+// -- one process, one port ----------------------------------------------------
+
+interface SocketData {
+  clientId: string;
+  session?: RealtimeSession;
+}
+
+await seed();
+
+const server = Bun.serve<SocketData, never>({
+  port: PORT,
+  async fetch(request, bunServer) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    if (path === '/realtime') {
+      const clientId = url.searchParams.get('clientId') ?? crypto.randomUUID();
+      if (bunServer.upgrade(request, { data: { clientId } })) {
+        return undefined as unknown as Response;
+      }
+      return new Response('expected a websocket upgrade', { status: 400 });
+    }
+    if (path === '/sync' || path.startsWith('/segments/')) {
+      return hono.fetch(request);
+    }
+    if (path === '/' || path === '/index.html') {
+      return staticResponse(indexHtml, 'text/html; charset=utf-8');
+    }
+    if (path === '/app.js') {
+      return staticResponse(appJs, 'text/javascript; charset=utf-8');
+    }
+    if (path.startsWith('/vendor/sqlite-wasm/')) {
+      const name = path.slice('/vendor/sqlite-wasm/'.length);
+      const type = WASM_FILES[name];
+      if (type !== undefined) {
+        const bytes = await Bun.file(join(wasmDir, name)).bytes();
+        return staticResponse(bytes, type);
+      }
+    }
+    return new Response('not found', { status: 404 });
+  },
+  websocket: {
+    open(ws) {
+      hub
+        .connect({
+          partition: PARTITION,
+          actorId: ACTOR_ID,
+          clientId: ws.data.clientId,
+          send: (data) => {
+            ws.send(data);
+          },
+        })
+        .then((session) => {
+          ws.data.session = session;
+        })
+        .catch(() => ws.close(1011, 'realtime connect failed'));
+    },
+    message(ws, message) {
+      if (typeof message === 'string') ws.data.session?.handleMessage(message);
+    },
+    close(ws) {
+      ws.data.session?.close();
+    },
+  },
+});
+
+console.log(`syncular v2 demo: http://localhost:${server.port}`);

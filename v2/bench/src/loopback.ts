@@ -1,0 +1,171 @@
+/**
+ * The bench loopback lane: client core + real server library exchanging
+ * in-process bytes on bun:sqlite — the same lane philosophy as the
+ * conformance loopback (no sockets, no serialization beyond the wire
+ * bytes themselves).
+ */
+import { encodeRow } from '@syncular-v2/core';
+import {
+  createRealtimeHub,
+  handleSegmentDownload,
+  handleSyncRequest,
+  MemorySegmentStore,
+  type RealtimeHub,
+  SqliteServerStorage,
+  type SyncRequestContext,
+} from '@syncular-v2/server';
+import {
+  type ClientSchema,
+  SyncClient,
+  type SyncClientLimits,
+} from '@syncular-v2/web-client';
+import { openBunDatabase } from '@syncular-v2/web-client/bun';
+import {
+  ACTOR_ID,
+  COLUMNS,
+  PARTITION,
+  PROJECT_ID,
+  rowId,
+  rowValues,
+  SCHEMA,
+  seededRandom,
+  TABLE,
+} from './fixture';
+
+export interface BenchServer {
+  readonly storage: SqliteServerStorage;
+  readonly hub: RealtimeHub;
+  readonly ctx: SyncRequestContext;
+  close(): void;
+}
+
+export function createBenchServer(): BenchServer {
+  const storage = new SqliteServerStorage();
+  const segments = new MemorySegmentStore();
+  const resolveScopes = () => ({ project_id: ['*'] });
+  const hub = createRealtimeHub({ schema: SCHEMA, storage, resolveScopes });
+  const ctx: SyncRequestContext = {
+    partition: PARTITION,
+    actorId: ACTOR_ID,
+    schema: SCHEMA,
+    storage,
+    segments,
+    resolveScopes,
+    realtime: hub,
+  };
+  return { storage, hub, ctx, close: () => storage.db.close() };
+}
+
+/** Seed N deterministic rows straight into server storage (not timed). */
+export async function seedServerRows(
+  server: BenchServer,
+  count: number,
+): Promise<void> {
+  const rand = seededRandom(0xb6b6b6);
+  const tx = await server.storage.begin(PARTITION);
+  for (let i = 0; i < count; i++) {
+    const values = rowValues(i, rand);
+    await tx.upsertRow(TABLE, {
+      rowId: rowId(i),
+      serverVersion: 1,
+      scopes: { project_id: PROJECT_ID },
+      payload: encodeRow(COLUMNS, values),
+    });
+  }
+  await tx.commit();
+}
+
+const CLIENT_SCHEMA: ClientSchema = {
+  version: SCHEMA.version,
+  tables: SCHEMA.tables.map((table) => ({
+    name: table.name,
+    columns: table.columns,
+    primaryKey: table.primaryKey,
+    scopes: table.scopes,
+  })),
+};
+
+export interface BenchClient {
+  readonly client: SyncClient;
+  /** Resolves once the client acked a realtime cursor ≥ `cursor`. */
+  waitForAck(cursor: number): Promise<void>;
+  close(): Promise<void>;
+}
+
+export async function createBenchClient(
+  server: BenchServer,
+  options?: { limits?: SyncClientLimits; realtime?: boolean },
+): Promise<BenchClient> {
+  const ackWaiters: Array<{ threshold: number; resolve: () => void }> = [];
+  let maxAck = -1;
+  const observeAck = (text: string) => {
+    try {
+      const parsed = JSON.parse(text) as { type?: string; cursor?: number };
+      if (parsed.type === 'ack' && typeof parsed.cursor === 'number') {
+        maxAck = Math.max(maxAck, parsed.cursor);
+        for (let i = ackWaiters.length - 1; i >= 0; i--) {
+          const waiter = ackWaiters[i];
+          if (waiter !== undefined && maxAck >= waiter.threshold) {
+            ackWaiters.splice(i, 1);
+            waiter.resolve();
+          }
+        }
+      }
+    } catch {
+      // ignore unparseable control messages
+    }
+  };
+
+  const client = new SyncClient({
+    database: openBunDatabase(),
+    schema: CLIENT_SCHEMA,
+    clientId: crypto.randomUUID(),
+    transport: (bytes) => handleSyncRequest(bytes, server.ctx),
+    segments: async (request) => {
+      const result = await handleSegmentDownload(server.ctx, {
+        segmentId: request.segmentId,
+        scopesHeader: request.requestedScopesJson,
+      });
+      return result.bytes;
+    },
+    ...(options?.limits !== undefined ? { limits: options.limits } : {}),
+    ...(options?.realtime === true
+      ? {
+          realtime: async (handlers) => {
+            const session = await server.hub.connect({
+              partition: PARTITION,
+              actorId: ACTOR_ID,
+              clientId: client.clientId,
+              send: (data) => {
+                if (typeof data === 'string') handlers.onText(data);
+                else handlers.onBinary(data);
+              },
+            });
+            return {
+              send: (text: string) => {
+                observeAck(text);
+                session.handleMessage(text);
+              },
+              close: () => session.close(),
+            };
+          },
+        }
+      : {}),
+  });
+  await client.start();
+  client.subscribe({
+    id: 'bench',
+    table: TABLE,
+    scopes: { project_id: [PROJECT_ID] },
+  });
+  return {
+    client,
+    waitForAck(cursor: number): Promise<void> {
+      if (maxAck >= cursor) return Promise.resolve();
+      return new Promise((resolve) => {
+        ackWaiters.push({ threshold: cursor, resolve });
+      });
+    },
+    close: () => client.close(),
+  };
+}

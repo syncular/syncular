@@ -11,6 +11,28 @@
         "typescript": "^5.9.0",
       },
     },
+    "apps/demo": {
+      "name": "@syncular-v2/demo",
+      "dependencies": {
+        "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
+        "@syncular-v2/core": "workspace:*",
+        "@syncular-v2/server": "workspace:*",
+        "@syncular-v2/server-hono": "workspace:*",
+        "@syncular-v2/web-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncular-v2/typegen": "workspace:*",
+      },
+    },
+    "bench": {
+      "name": "@syncular-v2/bench",
+      "dependencies": {
+        "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
+        "@syncular-v2/core": "workspace:*",
+        "@syncular-v2/server": "workspace:*",
+        "@syncular-v2/web-client": "workspace:*",
+      },
+    },
     "packages/conformance": {
       "name": "@syncular-v2/conformance",
       "dependencies": {
@@ -80,9 +102,13 @@
 
     "@sqlite.org/sqlite-wasm": ["@sqlite.org/sqlite-wasm@3.53.0-build1", "", {}, "sha512-PfWPWN2n+/37doa8oh2/oUXk4OOsRYZsxc1W1sDXIGb/Pu5Yrb+f2eyYpgQMGITVX7HVgxhs9P18Rc6I97ym/g=="],
 
+    "@syncular-v2/bench": ["@syncular-v2/bench@workspace:bench"],
+
     "@syncular-v2/conformance": ["@syncular-v2/conformance@workspace:packages/conformance"],
 
     "@syncular-v2/core": ["@syncular-v2/core@workspace:packages/core"],
+
+    "@syncular-v2/demo": ["@syncular-v2/demo@workspace:apps/demo"],
 
     "@syncular-v2/server": ["@syncular-v2/server@workspace:packages/server"],
 
