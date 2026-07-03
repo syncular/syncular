@@ -1,0 +1,6 @@
+# SwiftPM build products and the locally-vendored native library. The dylib is
+# rebuilt by check.sh from rust/crates/ffi; it is never committed.
+.build/
+vendor/
+Package.resolved
+*.xcframework

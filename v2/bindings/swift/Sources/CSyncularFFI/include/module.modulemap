@@ -1,0 +1,8 @@
+// The C-ABI surface of the syncular-ffi native core, imported into Swift as
+// the `CSyncularFFI` module. The header is a verbatim copy of rust/ffi.h (kept
+// in sync by check.sh, which diffs the two and fails on drift). Linking against
+// the dylib/xcframework is configured on the `Syncular` target, not here.
+module CSyncularFFI {
+    header "syncular_ffi.h"
+    export *
+}

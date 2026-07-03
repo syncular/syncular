@@ -1,0 +1,6 @@
+# Gradle build products and the locally-vendored native library. The dylib/so
+# is rebuilt by check.sh from rust/crates/ffi; it is never committed.
+.gradle/
+build/
+vendor/
+!gradle/wrapper/gradle-wrapper.properties
