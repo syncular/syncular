@@ -182,6 +182,8 @@ fn decode_request_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
 fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
     let mut frames = Vec::new();
     let mut seen_header = false;
+    let mut seen_lease = false; // §7.3.2: at most one LEASE, before the body
+    let mut seen_body = false; // any non-RESP_HEADER/non-LEASE frame
     let mut past_results = false; // a SUB_START has been seen
     let mut sub_open = false;
     let mut sub_seen_commit = false;
@@ -205,6 +207,7 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                 frame_type: ty,
                 payload: payload.to_vec(),
             });
+            seen_body = true;
             continue;
         }
         if !seen_header {
@@ -221,6 +224,19 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
             ft::RESP_HEADER => {
                 return Err(DecodeError::invalid("duplicate RESP_HEADER frame"));
             }
+            ft::LEASE => {
+                // §7.3.2: at most one LEASE, immediately after RESP_HEADER.
+                if seen_lease {
+                    return Err(DecodeError::invalid("duplicate LEASE frame"));
+                }
+                if seen_body {
+                    return Err(DecodeError::invalid(
+                        "LEASE frame must immediately follow RESP_HEADER",
+                    ));
+                }
+                frames.push(decode_lease(payload)?);
+                seen_lease = true;
+            }
             ft::PUSH_RESULT => {
                 if past_results {
                     return Err(DecodeError::invalid(
@@ -228,6 +244,7 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                     ));
                 }
                 frames.push(decode_push_result(payload)?);
+                seen_body = true;
             }
             ft::SUB_START => {
                 if sub_open {
@@ -237,6 +254,7 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                 }
                 frames.push(decode_sub_start(payload)?);
                 past_results = true;
+                seen_body = true;
                 sub_open = true;
                 sub_seen_commit = false;
                 sub_seen_segment = false;
@@ -254,6 +272,7 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                 }
                 frames.push(decode_commit(payload)?);
                 sub_seen_commit = true;
+                seen_body = true;
             }
             ft::SEGMENT_REF | ft::SEGMENT_INLINE => {
                 if !sub_open {
@@ -277,6 +296,7 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                     });
                 }
                 sub_seen_segment = true;
+                seen_body = true;
             }
             ft::SUB_END => {
                 if !sub_open {
@@ -286,10 +306,12 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                 }
                 frames.push(decode_sub_end(payload)?);
                 sub_open = false;
+                seen_body = true;
             }
             ft::ERROR => {
                 frames.push(decode_error_frame(payload)?);
                 error_seen = true;
+                seen_body = true;
             }
             _ => unreachable!("classified as known response type"),
         }
@@ -468,6 +490,20 @@ fn decode_resp_header(payload: &[u8]) -> Result<Frame> {
         Ok(Frame::RespHeader {
             required_schema_version,
             latest_schema_version,
+        })
+    })
+}
+
+fn decode_lease(payload: &[u8]) -> Result<Frame> {
+    frame_payload(payload, "LEASE", |r| {
+        let lease_id = r.str("leaseId")?;
+        if lease_id.is_empty() {
+            return Err(DecodeError::invalid("LEASE.leaseId must be non-empty"));
+        }
+        let expires_at_ms = r.i64("expiresAtMs")?;
+        Ok(Frame::Lease {
+            lease_id,
+            expires_at_ms,
         })
     })
 }

@@ -146,6 +146,21 @@ export interface SchemaFloor {
   readonly latestSchemaVersion?: number;
 }
 
+/**
+ * §7.3.5: the client's view of its current auth lease — opaque state, the
+ * mirror of `schemaFloor`. `leaseId`/`expiresAtMs` come from the last
+ * `LEASE` frame; `errorCode` is set (and syncing stops on the lease) when
+ * the server rejects a round with a request-level lease code (§7.3.4).
+ * The lease is never cryptographically verified by the client (§7.3
+ * non-goal 1), and lease errors never purge local data (§7.3.4).
+ */
+export interface LeaseState {
+  readonly leaseId?: string;
+  readonly expiresAtMs?: number;
+  /** `sync.auth_lease_required` | `sync.auth_lease_revoked` when stopped. */
+  readonly errorCode?: string;
+}
+
 export interface SyncSummary {
   /** Commits sent in this round's push half. */
   readonly pushed: number;
@@ -285,6 +300,7 @@ export class SyncClient {
   #lease: LeaderLease | undefined;
   #clientId = '';
   #schemaFloor: SchemaFloor | undefined;
+  #leaseState: LeaseState | undefined;
   #conflicts: ConflictRecord[] = [];
   #rejections: RejectionRecord[] = [];
   #socket: RealtimeSocket | undefined;
@@ -316,6 +332,11 @@ export class SyncClient {
     this.#clientId = this.#config.clientId ?? persisted ?? crypto.randomUUID();
     if (persisted !== this.#clientId) {
       setMeta(this.#db, 'clientId', this.#clientId);
+    }
+    // §7.3.5: restore the persisted lease so leaseState survives restart.
+    const leaseJson = getMeta(this.#db, 'leaseState');
+    if (leaseJson !== undefined) {
+      this.#leaseState = JSON.parse(leaseJson) as LeaseState;
     }
     this.#started = true;
   }
@@ -451,6 +472,22 @@ export class SyncClient {
     return this.#schemaFloor;
   }
 
+  /**
+   * §7.3.5: the current auth-lease state (opaque). Undefined until a
+   * `LEASE` frame arrives. `errorCode` is set when a round was rejected
+   * with a request-level lease code — syncing on the lease has stopped.
+   */
+  get leaseState(): LeaseState | undefined {
+    return this.#leaseState;
+  }
+
+  /** §7.3.5: remaining lease validity in ms (`expiresAtMs − now`), or
+   * `undefined` if no lease is held. Negative once expired. */
+  leaseRemainingMs(now: number = this.#now()): number | undefined {
+    const expiresAtMs = this.#leaseState?.expiresAtMs;
+    return expiresAtMs === undefined ? undefined : expiresAtMs - now;
+  }
+
   /** True when syncing is stopped pending a client upgrade. */
   get stopped(): boolean {
     return this.#schemaFloor !== undefined;
@@ -583,6 +620,21 @@ export class SyncClient {
     return clientCommitId;
   }
 
+  // -- lease state (§7.3.5) ---------------------------------------------------
+
+  /** Merge and persist the lease state (opaque, §7.3.5). */
+  #setLeaseState(next: LeaseState): void {
+    this.#leaseState = next;
+    setMeta(this.#db, 'leaseState', JSON.stringify(next));
+  }
+
+  /** The request-level lease error codes (§7.3.4): stop-and-surface. */
+  #isLeaseErrorCode(code: string): boolean {
+    return (
+      code === 'sync.auth_lease_required' || code === 'sync.auth_lease_revoked'
+    );
+  }
+
   // -- sync -------------------------------------------------------------------
 
   /** One combined push+pull round (§1.5, §7.2). */
@@ -659,6 +711,20 @@ export class SyncClient {
         );
       }
       return await this.#processResponse(message, outbox, subs, 'pull');
+    } catch (error) {
+      // §7.3.5: a request-level lease code stops-and-surfaces — record it
+      // in leaseState (no local-data purge, §7.3.4) and re-throw. Not a
+      // silent retry: the app drives recovery to a live resolver. The
+      // error may arrive as a ClientSyncError or as a transport error
+      // carrying the server's `.code` (HTTP-JSON / loopback surface, §1.1).
+      const code = (error as { code?: unknown }).code;
+      if (typeof code === 'string' && this.#isLeaseErrorCode(code)) {
+        this.#setLeaseState({
+          ...(this.#leaseState ?? {}),
+          errorCode: code,
+        });
+      }
+      throw error;
     } finally {
       this.#syncing = false;
     }
@@ -906,6 +972,14 @@ export class SyncClient {
       for (const frame of message.frames.slice(1)) {
         switch (frame.type) {
           case 'RESP_HEADER':
+            break;
+          case 'LEASE':
+            // §7.3.5: persist the opaque lease and clear any prior lease
+            // error — a fresh lease means the outage/revocation is over.
+            this.#setLeaseState({
+              leaseId: frame.leaseId,
+              expiresAtMs: frame.expiresAtMs,
+            });
             break;
           case 'PUSH_RESULT':
             this.#handlePushResult(frame, commitsById, summary);

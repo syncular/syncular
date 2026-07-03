@@ -11,6 +11,7 @@ import type { WakeReason } from '@syncular-v2/core';
 import type { BlobRef, CachedBlob } from './blob';
 import type {
   ConflictRecord,
+  LeaseState,
   MutationInput,
   RejectionRecord,
   SchemaFloor,
@@ -175,6 +176,10 @@ export class SyncClientHandle {
 
   schemaFloor(): Promise<SchemaFloor | undefined> {
     return this.#call('schemaFloor', []);
+  }
+
+  leaseState(): Promise<LeaseState | undefined> {
+    return this.#call('leaseState', []);
   }
 
   syncNeeded(): Promise<boolean> {

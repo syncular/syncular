@@ -96,6 +96,13 @@ export interface RespHeaderFrame {
   latestSchemaVersion?: number;
 }
 
+/** §7.3.2: a server-issued auth lease delivered to the client (opaque). */
+export interface LeaseFrame {
+  type: 'LEASE';
+  leaseId: string;
+  expiresAtMs: number;
+}
+
 export type PushOperationResult =
   | { opIndex: number; status: 'applied' }
   | {
@@ -193,6 +200,7 @@ export interface ErrorFrame {
 
 export type ResponseFrame =
   | RespHeaderFrame
+  | LeaseFrame
   | PushResultFrame
   | SubStartFrame
   | CommitFrame
@@ -328,6 +336,13 @@ function decodeRespHeader(r: ByteReader): RespHeaderFrame {
     ...(requiredSchemaVersion !== undefined ? { requiredSchemaVersion } : {}),
     ...(latestSchemaVersion !== undefined ? { latestSchemaVersion } : {}),
   };
+}
+
+function decodeLease(r: ByteReader): LeaseFrame {
+  const leaseId = r.str();
+  if (leaseId.length === 0) invalid('LEASE.leaseId must be non-empty');
+  const expiresAtMs = r.i64();
+  return { type: 'LEASE', leaseId, expiresAtMs };
 }
 
 function decodePushResult(r: ByteReader): PushResultFrame {
@@ -560,6 +575,9 @@ function decodeResponseFrame(
     case FrameType.RESP_HEADER:
       frame = decodeRespHeader(r);
       break;
+    case FrameType.LEASE:
+      frame = decodeLease(r);
+      break;
     case FrameType.PUSH_RESULT:
       frame = decodePushResult(r);
       break;
@@ -636,6 +654,8 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
   }
   let inSubscription = false;
   let sawSubscription = false;
+  let sawLease = false;
+  let sawBody = false;
   let subscriptionHasCommits = false;
   let subscriptionHasSegments = false;
   let errorSeen = false;
@@ -645,13 +665,22 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
       case 'RESP_HEADER':
         invalid('duplicate RESP_HEADER frame');
         break;
+      case 'LEASE':
+        // §7.3.2: at most one LEASE, immediately after RESP_HEADER (before
+        // any PUSH_RESULT / subscription section / ERROR).
+        if (sawLease) invalid('duplicate LEASE frame');
+        if (sawBody) invalid('LEASE frame must immediately follow RESP_HEADER');
+        sawLease = true;
+        break;
       case 'PUSH_RESULT':
         if (sawSubscription) invalid('PUSH_RESULT frame after SUB_START');
+        sawBody = true;
         break;
       case 'SUB_START':
         if (inSubscription) invalid('nested SUB_START frame');
         inSubscription = true;
         sawSubscription = true;
+        sawBody = true;
         subscriptionHasCommits = false;
         subscriptionHasSegments = false;
         break;
@@ -680,8 +709,10 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
         break;
       case 'ERROR':
         errorSeen = true;
+        sawBody = true;
         break;
       case 'UNKNOWN':
+        sawBody = true;
         break;
     }
   }
@@ -768,6 +799,14 @@ function encodeFrame(frame: RequestFrame | ResponseFrame): {
       w.opt(frame.requiredSchemaVersion, (v) => w.i32(v));
       w.opt(frame.latestSchemaVersion, (v) => w.i32(v));
       return { frameType: FrameType.RESP_HEADER, payload: w.finish() };
+    }
+    case 'LEASE': {
+      if (frame.leaseId.length === 0) {
+        throw new Error('LEASE.leaseId must be non-empty');
+      }
+      w.str(frame.leaseId);
+      w.i64(frame.expiresAtMs);
+      return { frameType: FrameType.LEASE, payload: w.finish() };
     }
     case 'PUSH_RESULT': {
       if (frame.status === 'rejected' && frame.commitSeq !== undefined) {

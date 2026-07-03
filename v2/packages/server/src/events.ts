@@ -200,6 +200,26 @@ export interface ScopesResolveFailedEvent {
   readonly message: string;
 }
 
+/** §7.3.3: a lease was issued or refreshed (sliding window) on an
+ * authorized round and a `LEASE` frame emitted. */
+export interface LeaseIssuedEvent {
+  readonly type: 'lease.issued';
+  readonly atMs: number;
+  readonly partition: string;
+  readonly actorId: string;
+  readonly clientId: string;
+  readonly leaseId: string;
+  readonly expiresAtMs: number;
+}
+
+/** §7.3.4: a lease was revoked by the host (out-of-band control call). */
+export interface LeaseRevokedEvent {
+  readonly type: 'lease.revoked';
+  readonly atMs: number;
+  readonly partition: string;
+  readonly leaseId: string;
+}
+
 export type SyncularServerEvent =
   | RequestHandledEvent
   | PushAppliedEvent
@@ -214,7 +234,9 @@ export type SyncularServerEvent =
   | RealtimeDeltaEvent
   | RealtimeWakeEvent
   | PruneCompletedEvent
-  | ScopesResolveFailedEvent;
+  | ScopesResolveFailedEvent
+  | LeaseIssuedEvent
+  | LeaseRevokedEvent;
 
 /**
  * The seam. Optional on the server config — when absent, no event object

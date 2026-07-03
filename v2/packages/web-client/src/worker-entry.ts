@@ -308,6 +308,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     conflicts: () => requireClient().conflicts,
     rejections: () => requireClient().rejections,
     schemaFloor: () => requireClient().schemaFloor,
+    leaseState: () => requireClient().leaseState,
     syncNeeded: () => requireClient().syncNeeded,
     pendingCommits: () => requireClient().pendingCommits(),
     subscriptions: () => requireClient().subscriptions(),

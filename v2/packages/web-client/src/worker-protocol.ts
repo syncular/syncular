@@ -20,6 +20,7 @@ import type { WakeReason } from '@syncular-v2/core';
 import type { BlobRef, CachedBlob } from './blob';
 import type {
   ConflictRecord,
+  LeaseState,
   MutationInput,
   RejectionRecord,
   SchemaFloor,
@@ -110,6 +111,8 @@ export interface WorkerApi {
   conflicts(): readonly ConflictRecord[];
   rejections(): readonly RejectionRecord[];
   schemaFloor(): SchemaFloor | undefined;
+  /** §7.3.5: the opaque auth-lease state, or undefined. */
+  leaseState(): LeaseState | undefined;
   syncNeeded(): boolean;
   pendingCommits(): OutboxCommit[];
   subscriptions(): SubscriptionRecord[];

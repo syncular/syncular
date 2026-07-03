@@ -9,7 +9,7 @@
  */
 import type { ScopeMap } from '@syncular-v2/core';
 import type { SyncRequestContext } from './context';
-import { clockOf } from './context';
+import { clockOf, RESOLVER_OUTAGE } from './context';
 import { SyncError, syncError } from './errors';
 import { emitEvent } from './events';
 import { compileSchema } from './schema';
@@ -128,7 +128,10 @@ async function downloadSegment(
       partition: ctx.partition,
       actorId: ctx.actorId,
     });
-    resolved = { ok: true, allowed };
+    // §7.3.3: leases authorize sync rounds, never downloads — an outage
+    // signal here denies (re-authorization needs live scopes, §5.5).
+    resolved =
+      allowed === RESOLVER_OUTAGE ? { ok: false } : { ok: true, allowed };
   } catch (error) {
     const events = ctx.events;
     if (events !== undefined) {

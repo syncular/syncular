@@ -199,6 +199,17 @@ describe('error catalog (§10.2)', () => {
       retryable: false,
       recommendedAction: 'inspectServer',
     });
-    expect(Object.keys(ERROR_CATALOG)).toHaveLength(26);
+    // §7.3 auth leases added two request-level auth-required codes.
+    expect(ERROR_CATALOG['sync.auth_lease_required']).toMatchObject({
+      category: 'auth-required',
+      retryable: true,
+      recommendedAction: 'refreshAuth',
+    });
+    expect(ERROR_CATALOG['sync.auth_lease_revoked']).toMatchObject({
+      category: 'auth-required',
+      retryable: true,
+      recommendedAction: 'refreshAuth',
+    });
+    expect(Object.keys(ERROR_CATALOG)).toHaveLength(28);
   });
 });

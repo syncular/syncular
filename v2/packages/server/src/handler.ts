@@ -18,10 +18,11 @@ import {
   type ReqHeaderFrame,
   type RequestMessage,
   type ResponseFrame,
+  type ScopeMap,
   type SubscriptionFrame,
 } from '@syncular-v2/core';
 import type { SyncRequestContext } from './context';
-import { clockOf, limitsOf } from './context';
+import { clockOf, limitsOf, RESOLVER_OUTAGE } from './context';
 import { SyncError, syncError } from './errors';
 import {
   emitEvent,
@@ -33,6 +34,7 @@ import {
   encodeResponseFrame,
   RESPONSE_ENVELOPE_HEADER,
 } from './frame-bytes';
+import type { LeaseRecord } from './lease-store';
 import {
   ACCEPT_EXTERNAL_ROWS,
   ACCEPT_INLINE_ROWS,
@@ -54,32 +56,94 @@ interface RequestPlan {
   readonly subscriptions: readonly SubscriptionPlan[];
   readonly resolved: ResolvedScopes;
   readonly schemaFloor: boolean;
+  /**
+   * §7.3.3: the lease to issue/refresh and emit as a `LEASE` frame this
+   * round. Present only when leases are configured and the request
+   * resolved live scopes (never on an outage-served or floor request).
+   */
+  readonly leaseToEmit: LeaseRecord | undefined;
+}
+
+/** Outcome of resolution: the allowed scopes, plus the lease (if any) to
+ * issue this round (§7.3.3). Lease-error surfaces throw as SyncErrors. */
+interface ResolveOutcome {
+  readonly resolved: ResolvedScopes;
+  readonly leaseToEmit: LeaseRecord | undefined;
+}
+
+function validateResolvedKeys(allowed: ScopeMap, schema: CompiledSchema): void {
+  for (const key of Object.keys(allowed)) {
+    if (!schema.declaredVariables.has(key)) {
+      // §3.2 step 3: a resolver returning undeclared keys is a server
+      // bug — fail the request, do not guess.
+      throw syncError(
+        'sync.invalid_subscription',
+        `resolveScopes returned undeclared scope variable ${JSON.stringify(key)} (§3.2)`,
+      );
+    }
+  }
+}
+
+/**
+ * Authorize the request against the actor's stored lease (§7.3.3), used
+ * when the resolver signalled an outage. Throws the request-level lease
+ * codes; returns the leased allowed map on success. Never issues/refreshes
+ * (an outage cannot re-resolve).
+ */
+async function authorizeFromLease(
+  ctx: SyncRequestContext,
+  clientId: string,
+  schema: CompiledSchema,
+): Promise<ResolvedScopes> {
+  const leases = ctx.leases;
+  if (leases === undefined) {
+    // §7.3.3: outage signalled but the feature is off — no lease to fall
+    // to. The client needs a live authorization.
+    throw syncError(
+      'sync.auth_lease_required',
+      'live authorization is unavailable and auth leases are not configured (§7.3.3)',
+    );
+  }
+  const lease = await leases.store.get(ctx.partition, clientId);
+  if (lease === undefined || lease.actorId !== ctx.actorId) {
+    throw syncError(
+      'sync.auth_lease_required',
+      'no valid auth lease for this client during an authorization outage (§7.3.3)',
+    );
+  }
+  if (lease.revoked) {
+    throw syncError(
+      'sync.auth_lease_revoked',
+      `auth lease ${lease.leaseId} was revoked (§7.3.4)`,
+    );
+  }
+  if (clockOf(ctx)() >= lease.expiresAtMs) {
+    throw syncError(
+      'sync.auth_lease_required',
+      `auth lease ${lease.leaseId} is expired (§7.3.3)`,
+    );
+  }
+  validateResolvedKeys(lease.allowedScopes, schema);
+  return { ok: true, allowed: lease.allowedScopes };
 }
 
 async function resolveOnce(
   ctx: SyncRequestContext,
+  clientId: string,
   schema: CompiledSchema,
-): Promise<ResolvedScopes> {
+): Promise<ResolveOutcome> {
+  let allowed: ScopeMap | typeof RESOLVER_OUTAGE;
   try {
-    const allowed = await ctx.resolveScopes({
+    allowed = await ctx.resolveScopes({
       partition: ctx.partition,
       actorId: ctx.actorId,
+      clientId,
     });
-    for (const key of Object.keys(allowed)) {
-      if (!schema.declaredVariables.has(key)) {
-        // §3.2 step 3: a resolver returning undeclared keys is a server
-        // bug — fail the request, do not guess.
-        throw syncError(
-          'sync.invalid_subscription',
-          `resolveScopes returned undeclared scope variable ${JSON.stringify(key)} (§3.2)`,
-        );
-      }
-    }
-    return { ok: true, allowed };
   } catch (error) {
     if (error instanceof SyncError) throw error;
     // §3.2 rule 5 / §3.4 step 4: fail loud, never leak — subscriptions
-    // revoke and writes reject with sync.forbidden.
+    // revoke and writes reject with sync.forbidden. A throw is NOT an
+    // outage (§7.3.3): it never reaches the lease.
     const events = ctx.events;
     if (events !== undefined) {
       emitEvent(events, {
@@ -91,8 +155,31 @@ async function resolveOnce(
         message: error instanceof Error ? error.message : String(error),
       });
     }
-    return { ok: false };
+    return { resolved: { ok: false }, leaseToEmit: undefined };
   }
+
+  if (allowed === RESOLVER_OUTAGE) {
+    // §7.3.3: the host opted this request into lease authorization. No
+    // lease is issued/refreshed on an outage-served round.
+    const resolved = await authorizeFromLease(ctx, clientId, schema);
+    return { resolved, leaseToEmit: undefined };
+  }
+
+  validateResolvedKeys(allowed, schema);
+  // §7.3.3: a successful authorized round issues/refreshes the lease
+  // (sliding window) and emits a LEASE frame — only when configured.
+  let leaseToEmit: LeaseRecord | undefined;
+  if (ctx.leases !== undefined) {
+    leaseToEmit = await ctx.leases.store.issue(
+      ctx.partition,
+      clientId,
+      ctx.actorId,
+      allowed,
+      clockOf(ctx)(),
+      ctx.leases.ttlMs,
+    );
+  }
+  return { resolved: { ok: true, allowed }, leaseToEmit };
 }
 
 async function planRequest(
@@ -115,6 +202,7 @@ async function planRequest(
 
   if (header.schemaVersion !== schema.version) {
     // §2.4: no degraded encoding — answer with the schema floor (§1.6).
+    // No lease is issued on a floor round (§7.3.3).
     return {
       header,
       pushes,
@@ -122,6 +210,7 @@ async function planRequest(
       subscriptions: [],
       resolved: { ok: false },
       schemaFloor: true,
+      leaseToEmit: undefined,
     };
   }
 
@@ -194,7 +283,11 @@ async function planRequest(
     validated.push({ frame, table: frame.table });
   }
 
-  const resolved = await resolveOnce(ctx, schema);
+  const { resolved, leaseToEmit } = await resolveOnce(
+    ctx,
+    header.clientId,
+    schema,
+  );
 
   const subscriptions: SubscriptionPlan[] = validated.map(({ frame }) => {
     const table = schema.tables.get(frame.table);
@@ -206,7 +299,15 @@ async function planRequest(
     return { frame, table, status: 'revoked', effective: {} };
   });
 
-  return { header, pushes, pull, subscriptions, resolved, schemaFloor: false };
+  return {
+    header,
+    pushes,
+    pull,
+    subscriptions,
+    resolved,
+    schemaFloor: false,
+    leaseToEmit,
+  };
 }
 
 /** Mutable outcome box shared with the instrumented stream wrapper. */
@@ -282,6 +383,25 @@ async function* streamResponse(
     type: 'RESP_HEADER',
     latestSchemaVersion: schema.version,
   });
+  // §7.3.2: the LEASE frame rides immediately after RESP_HEADER.
+  if (plan.leaseToEmit !== undefined) {
+    yield encodeResponseFrame({
+      type: 'LEASE',
+      leaseId: plan.leaseToEmit.leaseId,
+      expiresAtMs: plan.leaseToEmit.expiresAtMs,
+    });
+    if (events !== undefined) {
+      emitEvent(events, {
+        type: 'lease.issued',
+        atMs: clockOf(ctx)(),
+        partition: ctx.partition,
+        actorId: ctx.actorId,
+        clientId: plan.header.clientId,
+        leaseId: plan.leaseToEmit.leaseId,
+        expiresAtMs: plan.leaseToEmit.expiresAtMs,
+      });
+    }
+  }
   try {
     // Push half (§6): one PUSH_RESULT per PUSH_COMMIT, in request order.
     for (const push of plan.pushes) {

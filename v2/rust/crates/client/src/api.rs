@@ -30,6 +30,20 @@ pub struct SchemaFloor {
     pub latest_schema_version: Option<i32>,
 }
 
+/// §7.3.5: the client's opaque auth-lease state — `leaseId`/`expiresAtMs`
+/// from the last `LEASE` frame, and `errorCode` once a round was rejected
+/// with a request-level lease code (stop-and-surface; no data purge).
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaseState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncReport {

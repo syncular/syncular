@@ -22,6 +22,19 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
     recommendedAction: 'refreshAuth',
     httpStatus: 401,
   },
+  // §7.3.3: outage without a valid lease. §7.3.4: revoked lease.
+  'sync.auth_lease_required': {
+    category: 'auth-required',
+    retryable: true,
+    recommendedAction: 'refreshAuth',
+    httpStatus: 401,
+  },
+  'sync.auth_lease_revoked': {
+    category: 'auth-required',
+    retryable: true,
+    recommendedAction: 'refreshAuth',
+    httpStatus: 401,
+  },
   'sync.forbidden': {
     category: 'forbidden',
     retryable: false,

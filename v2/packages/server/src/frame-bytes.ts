@@ -47,6 +47,9 @@ function wrapperFor(frame: ResponseFrame): {
   switch (frame.type) {
     case 'RESP_HEADER':
       return { frames: [frame], index: 0 };
+    case 'LEASE':
+      // §7.3.2: LEASE rides immediately after RESP_HEADER.
+      return { frames: [STUB_HEADER, frame], index: 1 };
     case 'PUSH_RESULT':
     case 'ERROR':
     case 'UNKNOWN':

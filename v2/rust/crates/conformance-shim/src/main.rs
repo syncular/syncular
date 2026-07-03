@@ -534,6 +534,10 @@ fn dispatch(
             let floor = need_client(client)?.schema_floor().cloned();
             Ok(json!({ "floor": floor }))
         }
+        "leaseState" => {
+            let lease = need_client(client)?.lease_state().cloned();
+            Ok(json!({ "lease": lease }))
+        }
         "connectRealtime" => {
             need_client(client)?
                 .connect_realtime(io)

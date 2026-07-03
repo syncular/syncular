@@ -16,6 +16,7 @@ export * from './errors';
 export * from './events';
 export * from './frame-bytes';
 export * from './handler';
+export * from './lease-store';
 // The `PgExecutor` seam + Postgres storage/fanout are driver-agnostic (zero
 // runtime deps). Concrete driver adapters (pglite for tests; Bun.sql /
 // node-postgres for production, documented in the README) live in separate

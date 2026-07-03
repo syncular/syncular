@@ -132,6 +132,14 @@ fn render_frame(frame: &Frame) -> Value {
                 entries.push(("latestSchemaVersion", Value::from(*v)));
             }
         }
+        Frame::Lease {
+            lease_id,
+            expires_at_ms,
+        } => {
+            entries.push(("type", Value::from("LEASE")));
+            entries.push(("leaseId", Value::from(lease_id.clone())));
+            entries.push(("expiresAtMs", Value::from(*expires_at_ms)));
+        }
         Frame::PushResult {
             client_commit_id,
             status,

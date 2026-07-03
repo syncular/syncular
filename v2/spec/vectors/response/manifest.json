@@ -73,6 +73,12 @@
       "bin": "commit-crdt-merge.bin",
       "json": "commit-crdt-merge.json",
       "covers": "A COMMIT upsert carrying a server-merged crdt column (§2.4 tag 8, §5.10.3): merged bytes ride the ordinary change payload, no CRDT-specific frame"
+    },
+    {
+      "name": "lease-issued",
+      "bin": "lease-issued.bin",
+      "json": "lease-issued.json",
+      "covers": "RESP_HEADER + LEASE (§7.3.2) + active subscription: pins the new 0x19 frame (leaseId, expiresAtMs) in its grammar position"
     }
   ],
   "invalid": [

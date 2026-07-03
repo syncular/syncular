@@ -18,9 +18,12 @@ import {
   handleBlobUpload,
   handleSegmentDownload,
   handleSyncRequest,
+  type LeaseConfig,
   MemoryBlobStore,
+  MemoryLeaseStore,
   MemorySegmentStore,
   pruneCommitLog,
+  RESOLVER_OUTAGE,
   type RealtimeHub,
   type SegmentUrlConfig,
   type ServerSchema,
@@ -98,9 +101,12 @@ class TsServerInstance implements ServerInstance {
     inlineSegmentMaxBytes: number;
   };
   #resolverFailing = false;
+  #resolverOutage = false;
   #failNextIdempotencyLookup = false;
   readonly #signedUrls: SegmentUrlConfig | undefined;
   #signedUrlTtlSeconds: number;
+  /** §7.3: the lease store + config, present iff `leases` was requested. */
+  readonly #leases: LeaseConfig | undefined;
 
   constructor(options: ServerCreateOptions) {
     this.#schema = options.schema;
@@ -132,6 +138,20 @@ class TsServerInstance implements ServerInstance {
             },
           }
         : undefined;
+    // §7.3: a memory lease store with a deterministic id factory so
+    // scenarios can assert stable leaseIds across refreshes.
+    let leaseCounter = 0;
+    const nextLeaseId = (): string => {
+      leaseCounter += 1;
+      return `lease_${leaseCounter}`;
+    };
+    this.#leases =
+      options.leases !== undefined
+        ? {
+            ttlMs: options.leases.ttlMs,
+            store: new MemoryLeaseStore({ leaseId: nextLeaseId }),
+          }
+        : undefined;
     this.#wrapped = this.#wrapStorage();
     this.#hub = createRealtimeHub({
       schema: toServerSchema(options.schema),
@@ -145,16 +165,20 @@ class TsServerInstance implements ServerInstance {
       ...(this.#signedUrls !== undefined
         ? { signedUrls: this.#signedUrls }
         : {}),
+      ...(this.#leases !== undefined ? { leases: this.#leases } : {}),
       ...(options.limits?.maxDeltaBytes !== undefined
         ? { maxDeltaBytes: options.limits.maxDeltaBytes }
         : {}),
     });
   }
 
-  #resolveScopes(actorId: string): ScopeMap {
+  #resolveScopes(actorId: string): ScopeMap | typeof RESOLVER_OUTAGE {
     if (this.#resolverFailing) {
       throw new Error('injected: resolveScopes failure');
     }
+    // §7.3.3: an injected outage opts the request into lease authorization
+    // (a signal, never a throw).
+    if (this.#resolverOutage) return RESOLVER_OUTAGE;
     // Unset actors hold nothing — subscriptions revoke, writes deny.
     return this.#allowed.get(actorId) ?? {};
   }
@@ -207,6 +231,7 @@ class TsServerInstance implements ServerInstance {
       ...(this.#signedUrls !== undefined
         ? { signedUrls: this.#signedUrls }
         : {}),
+      ...(this.#leases !== undefined ? { leases: this.#leases } : {}),
       realtime: this.#hub,
     };
   }
@@ -367,6 +392,17 @@ class TsServerInstance implements ServerInstance {
     this.#resolverFailing = failing;
   }
 
+  async setResolverOutage(outage: boolean): Promise<void> {
+    this.#resolverOutage = outage;
+  }
+
+  async revokeLease(leaseId: string): Promise<void> {
+    if (this.#leases === undefined) {
+      throw new Error('revokeLease requires a leases-enabled server');
+    }
+    await this.#leases.store.revoke(this.#partition, leaseId);
+  }
+
   async advanceClock(ms: number): Promise<void> {
     this.#now.ms += ms;
   }
@@ -436,7 +472,7 @@ class TsServerInstance implements ServerInstance {
 
 export const tsServerDriver: ServerDriver = {
   name: 'ts-server',
-  capabilities: ['idempotency-fault', 'signed-urls', 'blobs', 'crdt'],
+  capabilities: ['idempotency-fault', 'signed-urls', 'blobs', 'crdt', 'leases'],
   async create(options: ServerCreateOptions): Promise<ServerInstance> {
     return new TsServerInstance(options);
   },
