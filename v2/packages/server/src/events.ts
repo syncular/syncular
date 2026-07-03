@@ -119,6 +119,29 @@ export interface SegmentDownloadedEvent {
   readonly durationMs: number;
 }
 
+/** A blob upload accepted (§5.9.3, content address verified). */
+export interface BlobUploadedEvent {
+  readonly type: 'blob.uploaded';
+  readonly atMs: number;
+  readonly partition: string;
+  readonly actorId: string;
+  readonly blobId: string;
+  readonly bytes: number;
+}
+
+/** A blob download (§5.9.5), success or failure. */
+export interface BlobDownloadedEvent {
+  readonly type: 'blob.downloaded';
+  readonly atMs: number;
+  readonly partition: string;
+  readonly actorId: string;
+  readonly blobId: string;
+  readonly outcome: 'ok' | 'error';
+  readonly errorCode?: string;
+  readonly bytes?: number;
+  readonly durationMs: number;
+}
+
 interface RealtimeEventBase {
   readonly atMs: number;
   readonly partition: string;
@@ -173,7 +196,7 @@ export interface ScopesResolveFailedEvent {
   readonly atMs: number;
   readonly partition: string;
   readonly actorId: string;
-  readonly phase: 'request' | 'realtime' | 'segment-download';
+  readonly phase: 'request' | 'realtime' | 'segment-download' | 'blob-download';
   readonly message: string;
 }
 
@@ -184,6 +207,8 @@ export type SyncularServerEvent =
   | PushConflictedEvent
   | PullServedEvent
   | SegmentDownloadedEvent
+  | BlobUploadedEvent
+  | BlobDownloadedEvent
   | RealtimeOpenedEvent
   | RealtimeClosedEvent
   | RealtimeDeltaEvent

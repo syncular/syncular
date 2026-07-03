@@ -5,6 +5,7 @@
  * and `actorId` from host authentication (§1.1).
  */
 import type { ScopeMap } from '@syncular-v2/core';
+import type { BlobStore } from './blob-store';
 import type { SyncularServerEvents } from './events';
 import type { ServerSchema } from './schema';
 import type { SegmentStore } from './segment-store';
@@ -50,6 +51,14 @@ export interface SyncServerConfig {
   readonly schema: ServerSchema;
   readonly storage: ServerStorage;
   readonly segments: SegmentStore;
+  /**
+   * Blob store (§5.9). Absent ⇒ blobs unsupported: a table with a
+   * `blob_ref` column may still sync (the ref is just a string), but the
+   * push existence check (§6.6) and the `/blobs` endpoints require it.
+   */
+  readonly blobs?: BlobStore;
+  /** Max upload size for `/blobs` (§5.9.3 `blob.too_large`); default 64 MiB. */
+  readonly maxBlobBytes?: number;
   readonly resolveScopes: ResolveScopes;
   /** Epoch-ms clock; defaults to `Date.now`. */
   readonly clock?: () => number;

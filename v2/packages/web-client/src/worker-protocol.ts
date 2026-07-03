@@ -17,6 +17,7 @@
  * still forwarded to the handle for visibility.
  */
 import type { WakeReason } from '@syncular-v2/core';
+import type { BlobRef, CachedBlob } from './blob';
 import type {
   ConflictRecord,
   MutationInput,
@@ -66,6 +67,8 @@ export interface WorkerEndpoints {
   readonly syncUrl: string;
   /** Segment download base URL; omit when segments are not served. */
   readonly segmentsUrl?: string;
+  /** Blob upload/download base URL (§5.9); omit when blobs are unused. */
+  readonly blobsUrl?: string;
   /**
    * WebSocket URL for §8 realtime. The literal placeholder `{clientId}`
    * is substituted with the (possibly persisted) client id after start.
@@ -113,6 +116,12 @@ export interface WorkerApi {
   subscription(id: string): SubscriptionRecord | undefined;
   connectRealtime(): Promise<void>;
   disconnectRealtime(): void;
+  /** §5.9 blobs: stage bytes (returns the canonical ref) / resolve bytes. */
+  uploadBlob(
+    bytes: Uint8Array,
+    options?: { readonly mediaType?: string; readonly name?: string },
+  ): Promise<BlobRef>;
+  fetchBlob(blobIdOrRef: string): Promise<CachedBlob>;
   /** Sever/restore the transport + realtime (offline simulation, demos). */
   setOffline(offline: boolean): void;
   close(): Promise<void>;

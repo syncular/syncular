@@ -14,7 +14,7 @@ export interface ErrorCatalogEntry {
   readonly httpStatus: number;
 }
 
-/** The §10.2 wire catalog (21 codes), keyed by stable code. */
+/** The §10.2 wire catalog (21 sync.* + 4 blob.* codes), keyed by stable code. */
 export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
   'sync.auth_required': {
     category: 'auth-required',
@@ -141,6 +141,31 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
     retryable: true,
     recommendedAction: 'retryLater',
     httpStatus: 429,
+  },
+  // §5.9 blobs — the closed blob.* set (§10.2).
+  'blob.not_found': {
+    category: 'not-found',
+    retryable: false,
+    recommendedAction: 'fixRequest',
+    httpStatus: 404,
+  },
+  'blob.forbidden': {
+    category: 'forbidden',
+    retryable: false,
+    recommendedAction: 'checkPermissions',
+    httpStatus: 403,
+  },
+  'blob.hash_mismatch': {
+    category: 'invalid-request',
+    retryable: false,
+    recommendedAction: 'fixRequest',
+    httpStatus: 400,
+  },
+  'blob.too_large': {
+    category: 'invalid-request',
+    retryable: false,
+    recommendedAction: 'fixRequest',
+    httpStatus: 413,
   },
 };
 

@@ -272,6 +272,19 @@ class TsClientInstance implements ClientInstance {
     return this.#client.syncNeeded;
   }
 
+  async uploadBlob(
+    bytes: Uint8Array,
+    options?: { readonly mediaType?: string; readonly name?: string },
+  ): Promise<string> {
+    const ref = await this.#client.uploadBlob(bytes, options);
+    return this.#client.blobRefString(ref);
+  }
+
+  async fetchBlob(blobIdOrRef: string): Promise<{ $bytes: string }> {
+    const cached = await this.#client.fetchBlob(blobIdOrRef);
+    return { $bytes: bytesToHex(cached.bytes) };
+  }
+
   async close(): Promise<void> {
     await this.#client.close();
     this.#db.close();
@@ -296,6 +309,17 @@ export const tsClientDriver: ClientDriver = {
       }) => endpoints.downloadSegment(request),
       fetchSegmentUrl !== undefined ? { fetchUrl: fetchSegmentUrl } : {},
     );
+    // §5.9 blob transport: present iff the harness endpoints support blobs.
+    const uploadBlob = endpoints.uploadBlob?.bind(endpoints);
+    const downloadBlob = endpoints.downloadBlob?.bind(endpoints);
+    const blobs =
+      uploadBlob !== undefined && downloadBlob !== undefined
+        ? {
+            upload: (blobId: string, bytes: Uint8Array, mediaType?: string) =>
+              uploadBlob(blobId, bytes, mediaType),
+            download: (blobId: string) => downloadBlob(blobId),
+          }
+        : undefined;
     const client = new SyncClient({
       database: db,
       schema: toClientSchema(options.schema),
@@ -305,6 +329,7 @@ export const tsClientDriver: ClientDriver = {
       ...(nowMs !== undefined ? { now: () => nowMs } : {}),
       transport: (bytes) => endpoints.sync(bytes),
       segments,
+      ...(blobs !== undefined ? { blobs } : {}),
       realtime: async (handlers) => {
         const connection = await endpoints.connectRealtime({
           onText: (text) => handlers.onText(text),

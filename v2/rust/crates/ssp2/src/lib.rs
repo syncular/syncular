@@ -7,6 +7,7 @@
 //! written protocol contract is language-neutral. Conformance is pinned by
 //! the golden vectors in `v2/spec/vectors/`.
 
+pub mod blob_ref;
 pub mod decode;
 pub mod encode;
 pub mod error;

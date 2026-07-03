@@ -15,6 +15,7 @@ import {
   ClientSyncError,
   type ConflictRecord,
   createSyncClientHandle,
+  httpBlobTransport,
   httpSegmentDownloader,
   httpSyncTransport,
   type MutationInput,
@@ -55,6 +56,12 @@ interface PaneCore {
   pendingCount(): Promise<number>;
   conflicts(): Promise<readonly ConflictRecord[]>;
   setOffline(offline: boolean): Promise<void>;
+  /** §5.9: stage a blob → its canonical ref string; resolve a ref → bytes. */
+  uploadBlob(
+    bytes: Uint8Array,
+    options?: { readonly mediaType?: string; readonly name?: string },
+  ): Promise<string>;
+  fetchBlob(blobIdOrRef: string): Promise<Uint8Array>;
   /** Best-effort; connect-then-sync is the reference boot order — the
    * first sync round rides the socket and registers this connection's
    * subscriptions at round end (§8.7). */
@@ -74,6 +81,7 @@ async function makeWorkerCore(
     endpoints: {
       syncUrl: '/sync',
       segmentsUrl: '/segments',
+      blobsUrl: '/blobs',
       realtimeUrl: `${WS_PROTO}://${location.host}/realtime?clientId={clientId}`,
     },
     limits: { limitSnapshotRows: 5000, maxSnapshotPages: 20 },
@@ -110,6 +118,12 @@ async function makeWorkerCore(
       await handle.setOffline(offline);
       if (!offline) await connectRealtime();
     },
+    uploadBlob: async (bytes, options) => {
+      const ref = await handle.uploadBlob(bytes, options);
+      return JSON.stringify(ref);
+    },
+    fetchBlob: async (blobIdOrRef) =>
+      (await handle.fetchBlob(blobIdOrRef)).bytes,
     connectRealtime,
   };
 }
@@ -140,6 +154,7 @@ async function makeEphemeralCore(
       return baseTransport(bytes);
     },
     segments: httpSegmentDownloader('/segments'),
+    blobs: httpBlobTransport('/blobs'),
     realtime: webSocketRealtimeConnector(
       `${WS_PROTO}://${location.host}/realtime?clientId=${clientId}`,
     ),
@@ -179,6 +194,12 @@ async function makeEphemeralCore(
     query: (sql, params) => Promise.resolve(client.query(sql, params)),
     pendingCount: () => Promise.resolve(client.pendingCommits().length),
     conflicts: () => Promise.resolve(client.conflicts),
+    uploadBlob: async (bytes, options) => {
+      const ref = await client.uploadBlob(bytes, options);
+      return client.blobRefString(ref);
+    },
+    fetchBlob: async (blobIdOrRef) =>
+      (await client.fetchBlob(blobIdOrRef)).bytes,
     connectRealtime,
     setOffline: async (value) => {
       offline = value;
@@ -321,6 +342,7 @@ class Pane {
           done: false,
           position: position + 1,
           updated_at_ms: Date.now(),
+          attachment: null,
         } satisfies TodosRow,
       },
     ]);
@@ -337,6 +359,9 @@ class Pane {
       done: Boolean(row.done),
       position: row.position,
       updated_at_ms: Date.now(),
+      // Preserve the blob_ref across unrelated edits (§5.9): a full-row
+      // upsert that omitted it would clear the attachment.
+      attachment: row.attachment ?? null,
       ...patch,
     };
     await this.core.mutate([
@@ -353,6 +378,40 @@ class Pane {
   async deleteTodo(id: string): Promise<void> {
     await this.core.mutate([{ table: 'todos', op: 'delete', rowId: id }]);
     await this.afterMutation();
+  }
+
+  /**
+   * §5.9: attach a file to a todo. Stage the bytes (upload queued, B4),
+   * then upsert the row's `attachment` blob_ref — the upload flushes before
+   * the referencing push (§6.6), so the reference is always resolvable.
+   */
+  async attachFile(row: LocalTodo, file: File): Promise<void> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const ref = await this.core.uploadBlob(bytes, {
+      mediaType: file.type || 'application/octet-stream',
+      name: file.name,
+    });
+    await this.updateTodo(row, { attachment: ref });
+    this.setStatus(`attached ${file.name} (${bytes.length} bytes)`);
+  }
+
+  /** §5.9.5: resolve the attachment bytes (cache hit or download) + save. */
+  async downloadAttachment(row: LocalTodo): Promise<void> {
+    if (row.attachment === null || row.attachment === undefined) return;
+    const meta = JSON.parse(row.attachment) as {
+      mediaType?: string;
+      name?: string;
+    };
+    const bytes = await this.core.fetchBlob(row.attachment);
+    const blob = new Blob([bytes.slice().buffer as ArrayBuffer], {
+      type: meta.mediaType ?? 'application/octet-stream',
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = meta.name ?? 'attachment';
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
   async afterMutation(): Promise<void> {
@@ -470,6 +529,38 @@ class Pane {
     );
     titleCell.append(version);
 
+    // §5.9 attachment cell: attach a file, or download an existing blob.
+    const attachCell = document.createElement('td');
+    attachCell.className = 'attach';
+    if (row.attachment !== null && row.attachment !== undefined) {
+      let name = 'file';
+      try {
+        name = (JSON.parse(row.attachment) as { name?: string }).name ?? 'file';
+      } catch {
+        // keep the fallback label
+      }
+      const dl = el('button', undefined, `⬇ ${name}`);
+      dl.title = 'download attachment';
+      dl.addEventListener('click', () => {
+        void this.downloadAttachment(row);
+      });
+      attachCell.append(dl);
+    } else {
+      const label = document.createElement('label');
+      label.className = 'attach-label';
+      label.title = 'attach a file';
+      label.append('📎');
+      const fileInput = document.createElement('input');
+      fileInput.type = 'file';
+      fileInput.style.display = 'none';
+      fileInput.addEventListener('change', () => {
+        const file = fileInput.files?.[0];
+        if (file !== undefined) void this.attachFile(row, file);
+      });
+      label.append(fileInput);
+      attachCell.append(label);
+    }
+
     const deleteCell = document.createElement('td');
     const deleteBtn = el('button', undefined, '×');
     deleteBtn.title = 'delete';
@@ -478,7 +569,7 @@ class Pane {
     });
     deleteCell.append(deleteBtn);
 
-    tr.append(toggleCell, titleCell, deleteCell);
+    tr.append(toggleCell, titleCell, attachCell, deleteCell);
     return tr;
   }
 
@@ -544,6 +635,7 @@ async function simulateConflict(
         done: false,
         position: 999,
         updated_at_ms: Date.now(),
+        attachment: null,
       } satisfies TodosRow,
     },
   ]);

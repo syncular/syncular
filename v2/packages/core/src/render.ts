@@ -278,7 +278,11 @@ export function renderMessage(bytes: Uint8Array): JsonValue {
 function renderRowValue(column: RowColumn, value: RowValue): JsonValue {
   if (value === null) return null;
   if (value instanceof Uint8Array) return bytesToBase64(value);
-  if (column.type === 'json' && typeof value === 'string') {
+  if (
+    (column.type === 'json' || column.type === 'blob_ref') &&
+    typeof value === 'string'
+  ) {
+    // §11: json and blob_ref (tag 7) render as embedded parsed JSON.
     return parseJson(value);
   }
   return value;

@@ -9,6 +9,7 @@
  * import no SQLite.
  */
 export * from './apply';
+export * from './blob';
 export * from './client';
 export * from './content-type';
 export * from './database';

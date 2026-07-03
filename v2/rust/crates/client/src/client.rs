@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use ssp2::model::{Frame, MediaType, Message, MsgKind, Op, OpResult, PushStatus, SubStatus};
 use ssp2::primitives::RawJson;
-use ssp2::segment::{decode_rows_segment, Column, ColumnValue, Row, RowsSegment};
+use ssp2::segment::{decode_rows_segment, Column, ColumnType, ColumnValue, Row, RowsSegment};
 use ssp2::{decode_message, encode_message, parse_control, ControlMessage};
 
 use crate::api::{
@@ -135,6 +135,12 @@ fn visible_table(name: &str) -> String {
     quote_ident(name)
 }
 
+/// `"sha256:" + hex` of the bytes — the content address (§5.9.1).
+fn blob_id_for(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    format!("sha256:{}", bytes_to_hex(&digest))
+}
+
 fn cv_to_sql(value: &Option<ColumnValue>) -> SqlValue {
     match value {
         None => SqlValue::Null,
@@ -143,6 +149,7 @@ fn cv_to_sql(value: &Option<ColumnValue>) -> SqlValue {
         Some(ColumnValue::Float(f)) => SqlValue::Real(*f),
         Some(ColumnValue::Boolean(b)) => SqlValue::Integer(i64::from(*b)),
         Some(ColumnValue::Json(raw)) => SqlValue::Text(raw.0.clone()),
+        Some(ColumnValue::BlobRef(raw)) => SqlValue::Text(raw.0.clone()),
         Some(ColumnValue::Bytes(b)) => SqlValue::Blob(b.clone()),
     }
 }
@@ -188,6 +195,7 @@ fn sql_ref_to_column_value(
             match column.ty {
                 ColumnType::String => Ok(Some(ColumnValue::String(text.to_owned()))),
                 ColumnType::Json => Ok(Some(ColumnValue::Json(RawJson(text.to_owned())))),
+                ColumnType::BlobRef => Ok(Some(ColumnValue::BlobRef(RawJson(text.to_owned())))),
                 _ => mismatch(),
             }
         }
@@ -284,7 +292,29 @@ impl SyncClient {
                    tbl TEXT NOT NULL, state_json TEXT NOT NULL);",
             )
             .map_err(|e| e.to_string())?;
+        // §5.9.7 blob cache + pending-upload queue (created only when the
+        // schema declares blob_ref columns; harmless otherwise).
+        if self.schema_has_blobs() {
+            self.conn
+                .execute_batch(
+                    "CREATE TABLE _syncular_blobs (blob_id TEXT PRIMARY KEY,
+                       bytes BLOB NOT NULL, byte_length INTEGER NOT NULL,
+                       media_type TEXT, refcount INTEGER NOT NULL DEFAULT 0,
+                       created_at_ms INTEGER NOT NULL);
+                     CREATE TABLE _syncular_blob_uploads (blob_id TEXT PRIMARY KEY,
+                       media_type TEXT, created_at_ms INTEGER NOT NULL);",
+                )
+                .map_err(|e| e.to_string())?;
+        }
         Ok(())
+    }
+
+    /// True iff any synced table declares a `blob_ref` column (§5.9).
+    fn schema_has_blobs(&self) -> bool {
+        self.schema
+            .tables
+            .iter()
+            .any(|t| t.columns.iter().any(|c| c.ty == ColumnType::BlobRef))
     }
 
     // -- persistence write-through --------------------------------------------
@@ -599,6 +629,16 @@ impl SyncClient {
         // §8.4: the coalesced sync-needed signal clears when a pull round
         // BEGINS, so a wake-up landing mid-round survives it.
         self.sync_needed = false;
+        // §5.9.7 B4: upload pending blobs before pushing the referencing
+        // rows, so the server-side existence check (§6.6) passes.
+        if self.schema_has_blobs() {
+            if let Err(TransportError { code, message }) = self.flush_blob_uploads(transport) {
+                return SyncOutcome::Failed {
+                    error_code: code,
+                    message,
+                };
+            }
+        }
         let (message, meta) = self.build_request(transport.supports_url_fetch());
         let request_bytes = encode_message(&message);
         // §8.7: rounds ride the socket whenever it is connected (one
@@ -800,6 +840,9 @@ impl SyncClient {
         // §7.1: reconciliation is outbox replay on top — whenever server
         // data has been applied, including a round that aborted mid-way.
         self.rebuild_overlay();
+        // §5.9.7 B1: refcounts follow live rows after every apply (benign —
+        // zero-ref bodies are retained as LRU entries, not deleted here).
+        self.reconcile_blob_refcounts(false);
 
         if let Some((error_code, message)) = failure {
             return SyncOutcome::Failed {
@@ -955,6 +998,9 @@ impl SyncClient {
                         let sub_table = table;
                         self.persist_sub(&self.subs[sub_index].clone());
                         self.drop_doomed_outbox(&sub_table, &doomed_effective);
+                        // §5.9.7 B2: revocation deletes now-unauthorized blob
+                        // bodies (evicted ≠ revoked).
+                        self.reconcile_blob_refcounts(true);
                     }
                     Err(()) => {
                         // §3.3 fail closed: no local mapping — never clear by
@@ -1557,6 +1603,213 @@ impl SyncClient {
         }
     }
 
+    // -- blobs (§5.9) ----------------------------------------------------------------
+
+    /// §5.9.7: hash bytes into the content address, cache them, queue the
+    /// upload (flushed before the next push, B4). Returns the canonical
+    /// BlobRef JSON `{blobId, byteLength, mediaType?}` for a `blob_ref`
+    /// column value.
+    pub fn upload_blob(
+        &mut self,
+        bytes: &[u8],
+        media_type: Option<String>,
+        name: Option<String>,
+    ) -> Result<Value, String> {
+        let blob_id = blob_id_for(bytes);
+        let now = self.clock_now_ms();
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO _syncular_blobs(blob_id, bytes, byte_length, media_type, refcount, created_at_ms) VALUES (?,?,?,?,0,?)",
+                rusqlite::params![blob_id, bytes, bytes.len() as i64, media_type, now],
+            )
+            .map_err(|e| e.to_string())?;
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO _syncular_blob_uploads(blob_id, media_type, created_at_ms) VALUES (?,?,?)",
+                rusqlite::params![blob_id, media_type, now],
+            )
+            .map_err(|e| e.to_string())?;
+        let mut obj = Map::new();
+        obj.insert("blobId".to_owned(), Value::from(blob_id));
+        obj.insert("byteLength".to_owned(), Value::from(bytes.len() as i64));
+        if let Some(mt) = media_type {
+            obj.insert("mediaType".to_owned(), Value::from(mt));
+        }
+        if let Some(n) = name {
+            obj.insert("name".to_owned(), Value::from(n));
+        }
+        Ok(Value::Object(obj))
+    }
+
+    /// §5.9.7: resolve blob bytes — a content-addressed cache hit serves
+    /// with no fetch (B1); a miss downloads (§5.9.5), verifies the address,
+    /// caches, and returns `{blobId, byteLength, bytes:{$bytes:hex}}`.
+    pub fn fetch_blob(
+        &mut self,
+        transport: &mut dyn Transport,
+        blob_id_or_ref: &str,
+    ) -> Result<Value, (String, String)> {
+        let simple = |m: String| ("client.failed".to_owned(), m);
+        let blob_id = if blob_id_or_ref.starts_with("sha256:") {
+            blob_id_or_ref.to_owned()
+        } else {
+            let value: Value = serde_json::from_str(blob_id_or_ref)
+                .map_err(|_| simple("blob ref is not JSON".to_owned()))?;
+            value
+                .get("blobId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| simple("blob ref has no blobId".to_owned()))?
+                .to_owned()
+        };
+        if let Some(cached) = self.get_cached_blob(&blob_id).map_err(simple)? {
+            return Ok(cached);
+        }
+        // §5.9.5: propagate the server's blob.* code (blob.forbidden /
+        // blob.not_found) verbatim so the harness can assert on it.
+        let bytes = transport
+            .blob_download(&blob_id)
+            .map_err(|e| (e.code, e.message))?;
+        // §5.9.5 inherits §5.1: verify the content address, reject mismatch.
+        if blob_id_for(&bytes) != blob_id {
+            return Err(simple(format!(
+                "blob content address mismatch for {blob_id}"
+            )));
+        }
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO _syncular_blobs(blob_id, bytes, byte_length, media_type, refcount, created_at_ms) VALUES (?,?,?,NULL,0,?)",
+                rusqlite::params![blob_id, bytes, bytes.len() as i64, self.clock_now_ms()],
+            )
+            .map_err(|e| simple(e.to_string()))?;
+        self.get_cached_blob(&blob_id)
+            .map_err(simple)?
+            .ok_or_else(|| simple("blob cache write failed".to_owned()))
+    }
+
+    fn get_cached_blob(&self, blob_id: &str) -> Result<Option<Value>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT bytes, byte_length, media_type FROM _syncular_blobs WHERE blob_id = ?")
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query(rusqlite::params![blob_id])
+            .map_err(|e| e.to_string())?;
+        if let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let bytes: Vec<u8> = row.get(0).map_err(|e| e.to_string())?;
+            let byte_length: i64 = row.get(1).map_err(|e| e.to_string())?;
+            let media_type: Option<String> = row.get(2).map_err(|e| e.to_string())?;
+            let mut obj = Map::new();
+            obj.insert("blobId".to_owned(), Value::from(blob_id.to_owned()));
+            obj.insert("byteLength".to_owned(), Value::from(byte_length));
+            let mut bytes_obj = Map::new();
+            bytes_obj.insert("$bytes".to_owned(), Value::from(bytes_to_hex(&bytes)));
+            obj.insert("bytes".to_owned(), Value::Object(bytes_obj));
+            if let Some(mt) = media_type {
+                obj.insert("mediaType".to_owned(), Value::from(mt));
+            }
+            return Ok(Some(Value::Object(obj)));
+        }
+        Ok(None)
+    }
+
+    /// §5.9.7 B4: upload every queued blob before push.
+    fn flush_blob_uploads(&mut self, transport: &mut dyn Transport) -> Result<(), TransportError> {
+        let pending: Vec<(String, Option<String>)> = {
+            let mut stmt = self
+                .conn
+                .prepare(
+                    "SELECT blob_id, media_type FROM _syncular_blob_uploads ORDER BY created_at_ms",
+                )
+                .map_err(|e| TransportError::new("client.failed", e.to_string()))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })
+                .map_err(|e| TransportError::new("client.failed", e.to_string()))?;
+            rows.filter_map(Result::ok).collect()
+        };
+        for (blob_id, media_type) in pending {
+            let bytes: Option<Vec<u8>> = self
+                .conn
+                .query_row(
+                    "SELECT bytes FROM _syncular_blobs WHERE blob_id = ?",
+                    rusqlite::params![blob_id],
+                    |row| row.get(0),
+                )
+                .ok();
+            match bytes {
+                Some(bytes) => {
+                    transport.blob_upload(&blob_id, &bytes, media_type.as_deref())?;
+                    let _ = self.conn.execute(
+                        "DELETE FROM _syncular_blob_uploads WHERE blob_id = ?",
+                        rusqlite::params![blob_id],
+                    );
+                }
+                None => {
+                    let _ = self.conn.execute(
+                        "DELETE FROM _syncular_blob_uploads WHERE blob_id = ?",
+                        rusqlite::params![blob_id],
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// §5.9.7 B1/B2: recompute cache refcounts from live `blob_ref` columns
+    /// in the BASE tables; `delete_orphans` deletes zero-ref bodies not
+    /// pinned by a pending upload (the revocation side, B2).
+    fn reconcile_blob_refcounts(&mut self, delete_orphans: bool) {
+        if !self.schema_has_blobs() {
+            return;
+        }
+        let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        for table in self.schema.tables.clone() {
+            let blob_cols: Vec<String> = table
+                .columns
+                .iter()
+                .filter(|c| c.ty == ColumnType::BlobRef)
+                .map(|c| c.name.clone())
+                .collect();
+            for column in blob_cols {
+                let sql = format!(
+                    "SELECT {} FROM {} WHERE {} IS NOT NULL",
+                    quote_ident(&column),
+                    base_table(&table.name),
+                    quote_ident(&column)
+                );
+                let Ok(mut stmt) = self.conn.prepare(&sql) else {
+                    continue;
+                };
+                let Ok(rows) = stmt.query_map([], |row| row.get::<_, Option<String>>(0)) else {
+                    continue;
+                };
+                for raw in rows.flatten().flatten() {
+                    if let Ok(value) = serde_json::from_str::<Value>(&raw) {
+                        if let Some(id) = value.get("blobId").and_then(Value::as_str) {
+                            *counts.entry(id.to_owned()).or_insert(0) += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let _ = self
+            .conn
+            .execute("UPDATE _syncular_blobs SET refcount = 0", []);
+        for (blob_id, count) in &counts {
+            let _ = self.conn.execute(
+                "UPDATE _syncular_blobs SET refcount = ? WHERE blob_id = ?",
+                rusqlite::params![count, blob_id],
+            );
+        }
+        if delete_orphans {
+            let _ = self.conn.execute(
+                "DELETE FROM _syncular_blobs WHERE refcount = 0 AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_uploads)",
+                [],
+            );
+        }
+    }
+
     // -- local row storage ----------------------------------------------------------
 
     fn write_base_row(&self, table_name: &str, row: &Row, version: i64) -> Result<(), String> {
@@ -1782,6 +2035,7 @@ impl SyncClient {
         }
         if let Some(cursor) = applied_cursor {
             self.rebuild_overlay();
+            self.reconcile_blob_refcounts(false);
             // §8.2 ack point: the highest applied SUB_END.nextCursor.
             let ack = format!("{{\"type\":\"ack\",\"cursor\":{cursor}}}");
             let _ = transport.realtime_send(&ack);

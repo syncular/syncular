@@ -62,6 +62,29 @@ pub trait Transport {
             "this transport has no direct URL fetch (§5.4)",
         ))
     }
+    /// §5.9.3 blob upload: host-authenticated `PUT <mount>/blobs/{blobId}`.
+    /// The server verifies the content address. Default: unsupported.
+    fn blob_upload(
+        &mut self,
+        blob_id: &str,
+        bytes: &[u8],
+        media_type: Option<&str>,
+    ) -> Result<(), TransportError> {
+        let _ = (blob_id, bytes, media_type);
+        Err(TransportError::new(
+            "sync.invalid_request",
+            "this transport has no blob upload (§5.9)",
+        ))
+    }
+    /// §5.9.5 blob download: host-authenticated `GET <mount>/blobs/{blobId}`,
+    /// re-authorized server-side against referencing rows. Default: none.
+    fn blob_download(&mut self, blob_id: &str) -> Result<Vec<u8>, TransportError> {
+        let _ = blob_id;
+        Err(TransportError::new(
+            "blob.not_found",
+            "this transport has no blob download (§5.9)",
+        ))
+    }
     /// Realtime attach (§8.1). Inbound traffic is delivered by the host via
     /// `SyncClient::on_realtime_text` / `on_realtime_binary`.
     fn realtime_connect(&mut self) -> Result<(), TransportError>;

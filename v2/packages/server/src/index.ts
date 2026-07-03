@@ -7,12 +7,21 @@
  * transport-agnostic realtime session (§8), the direct segment download
  * handler (§5.5), and signed-URL token issuance/verification (§5.4).
  */
+export * from './blob-handlers';
+export * from './blob-store';
 export * from './content-encoding';
 export * from './context';
 export * from './errors';
 export * from './events';
 export * from './frame-bytes';
 export * from './handler';
+// The `PgExecutor` seam + Postgres storage/fanout are driver-agnostic (zero
+// runtime deps). Concrete driver adapters (pglite for tests; Bun.sql /
+// node-postgres for production, documented in the README) live in separate
+// entry points so the barrel never imports a driver.
+export * from './pg-executor';
+export * from './postgres-fanout';
+export * from './postgres-storage';
 export * from './prune';
 export * from './pull';
 export * from './push';

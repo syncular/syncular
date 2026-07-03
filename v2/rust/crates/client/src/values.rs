@@ -68,6 +68,11 @@ pub fn json_to_column_value(
             Some(s) => Ok(Some(ColumnValue::Json(RawJson(s.to_owned())))),
             None => fail("a raw JSON string"),
         },
+        // `blob_ref` (tag 7) also stays a raw string at the boundary (§5.9.1).
+        ColumnType::BlobRef => match value.as_str() {
+            Some(s) => Ok(Some(ColumnValue::BlobRef(RawJson(s.to_owned())))),
+            None => fail("a raw BlobRef JSON string"),
+        },
         ColumnType::Bytes => match value.get("$bytes").and_then(Value::as_str) {
             Some(hex) => Ok(Some(ColumnValue::Bytes(hex_to_bytes(hex)?))),
             None => fail("a {\"$bytes\": hex} object"),
@@ -86,6 +91,7 @@ pub fn column_value_to_json(value: &Option<ColumnValue>) -> Value {
         }
         Some(ColumnValue::Boolean(b)) => Value::from(*b),
         Some(ColumnValue::Json(raw)) => Value::from(raw.0.clone()),
+        Some(ColumnValue::BlobRef(raw)) => Value::from(raw.0.clone()),
         Some(ColumnValue::Bytes(bytes)) => {
             let mut map = Map::new();
             map.insert("$bytes".to_owned(), Value::from(bytes_to_hex(bytes)));
@@ -127,6 +133,7 @@ pub fn render_row_id(value: &Option<ColumnValue>) -> Result<String, String> {
         Some(ColumnValue::Float(f)) => Ok(f.to_string()),
         Some(ColumnValue::Boolean(b)) => Ok(b.to_string()),
         Some(ColumnValue::Json(raw)) => Ok(raw.0.clone()),
+        Some(ColumnValue::BlobRef(_)) => Err("blob_ref column cannot be a rowId".to_owned()),
         Some(ColumnValue::Bytes(_)) => Err("bytes column cannot be a rowId".to_owned()),
         None => Err("primary key value is missing".to_owned()),
     }

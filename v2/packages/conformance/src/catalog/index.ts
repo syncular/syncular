@@ -4,6 +4,7 @@
  * fine-grained permutations live in package-local tests, not here.
  */
 import type { Scenario } from '../scenario';
+import { blobScenarios } from './blobs';
 import { bootstrapScenarios } from './bootstrap';
 import { conflictScenarios } from './conflict';
 import { convergenceScenarios } from './convergence';
@@ -25,6 +26,7 @@ export const CATALOG: readonly Scenario[] = [
   ...bootstrapScenarios,
   ...sqliteImageScenarios,
   ...signedUrlScenarios,
+  ...blobScenarios,
   ...lifecycleScenarios,
   ...realtimeScenarios,
   ...wsRoundScenarios,

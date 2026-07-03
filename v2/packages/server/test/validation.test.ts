@@ -184,6 +184,15 @@ describe('error catalog (§10.2)', () => {
       category: 'scope-revoked',
       recommendedAction: 'checkPermissions',
     });
-    expect(Object.keys(ERROR_CATALOG)).toHaveLength(21);
+    // §5.9 blobs added the closed blob.* set of four codes.
+    expect(ERROR_CATALOG['blob.not_found']).toMatchObject({
+      category: 'not-found',
+      recommendedAction: 'fixRequest',
+    });
+    expect(ERROR_CATALOG['blob.forbidden']).toMatchObject({
+      category: 'forbidden',
+      recommendedAction: 'checkPermissions',
+    });
+    expect(Object.keys(ERROR_CATALOG)).toHaveLength(25);
   });
 });

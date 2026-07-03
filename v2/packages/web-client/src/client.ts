@@ -36,6 +36,22 @@ import {
   deleteScopedRows,
   upsertLocalRow,
 } from './apply';
+import {
+  type BlobRef,
+  type BlobTransport,
+  type CachedBlob,
+  clearPendingUpload,
+  computeBlobId,
+  ensureBlobSchema,
+  getCachedBlob,
+  listPendingUploads,
+  parseBlobRef,
+  putCachedBlob,
+  reconcileBlobRefcounts,
+  recordPendingUpload,
+  schemaHasBlobs,
+  serializeBlobRef,
+} from './blob';
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
 import { ClientSyncError } from './errors';
 import {
@@ -175,6 +191,8 @@ export interface SyncClientConfig {
   readonly schema: ClientSchema;
   readonly transport: SyncTransport;
   readonly segments?: SegmentDownloader;
+  /** Blob upload/download (§5.9). Required to use `uploadBlob`/`fetchBlob`. */
+  readonly blobs?: BlobTransport;
   readonly realtime?: RealtimeConnector;
   /** Stable per-device id (§1.5); defaults to a persisted random UUID. */
   readonly clientId?: string;
@@ -273,12 +291,14 @@ export class SyncClient {
   #pendingRound: PendingRound | undefined;
   #needsPull = false;
   #syncing = false;
+  readonly #hasBlobs: boolean;
 
   constructor(config: SyncClientConfig) {
     this.#config = config;
     this.#db = config.database;
     this.#schema = compileClientSchema(config.schema);
     this.#now = config.now ?? Date.now;
+    this.#hasBlobs = schemaHasBlobs(this.#schema);
   }
 
   // -- lifecycle ------------------------------------------------------------
@@ -291,6 +311,7 @@ export class SyncClient {
       this.#config.lockName ?? 'syncular-leader',
     );
     ensureLocalSchema(this.#db, this.#schema);
+    if (this.#hasBlobs) ensureBlobSchema(this.#db);
     const persisted = getMeta(this.#db, 'clientId');
     this.#clientId = this.#config.clientId ?? persisted ?? crypto.randomUUID();
     if (persisted !== this.#clientId) {
@@ -321,6 +342,100 @@ export class SyncClient {
 
   query(sql: string, params?: readonly SqlValue[]): SqlRow[] {
     return this.#db.query(sql, params);
+  }
+
+  // -- blobs (§5.9) ---------------------------------------------------------
+
+  /**
+   * Stage a blob for attachment (§5.9.7): hash the bytes into the content
+   * address, cache them locally, and queue the upload (flushed before the
+   * next push — B4). Returns the canonical `BlobRef` **string** to store in
+   * a `blob_ref` column of a mutation. The referencing row MUST be written
+   * (via `mutate`) after this call so upload-before-push holds (§5.9.3).
+   */
+  async uploadBlob(
+    bytes: Uint8Array,
+    options?: { readonly mediaType?: string; readonly name?: string },
+  ): Promise<BlobRef> {
+    if (this.#config.blobs === undefined) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        'uploadBlob requires a blob transport (SyncClientConfig.blobs, §5.9)',
+      );
+    }
+    const blobId = await computeBlobId(bytes);
+    this.#db.transaction(() => {
+      putCachedBlob(this.#db, blobId, bytes, this.#now(), options?.mediaType);
+      recordPendingUpload(this.#db, blobId, this.#now(), options?.mediaType);
+    });
+    return {
+      blobId,
+      byteLength: bytes.length,
+      ...(options?.mediaType !== undefined
+        ? { mediaType: options.mediaType }
+        : {}),
+      ...(options?.name !== undefined ? { name: options.name } : {}),
+    };
+  }
+
+  /** Serialize a BlobRef to the canonical string a `blob_ref` column holds. */
+  blobRefString(ref: BlobRef): string {
+    return serializeBlobRef(ref);
+  }
+
+  /**
+   * Resolve blob bytes for a `blobId` (§5.9.7): a content-addressed cache
+   * hit serves without a network fetch (B1); a miss downloads via the blob
+   * transport (§5.9.5), verifies the content address, caches, and returns.
+   * Accepts a raw `blob_ref` column string or a bare `blobId`.
+   */
+  async fetchBlob(blobIdOrRef: string): Promise<CachedBlob> {
+    const blobId = blobIdOrRef.startsWith('sha256:')
+      ? blobIdOrRef
+      : parseBlobRef(blobIdOrRef).blobId;
+    const cached = getCachedBlob(this.#db, blobId);
+    if (cached !== undefined) return cached;
+    if (this.#config.blobs === undefined) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        'fetchBlob requires a blob transport (SyncClientConfig.blobs, §5.9)',
+      );
+    }
+    const bytes = await this.#config.blobs.download(blobId);
+    const computed = await computeBlobId(bytes);
+    if (computed !== blobId) {
+      // §5.9.5 inherits §5.1: verify the content address, reject on mismatch.
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        `blob content address mismatch for ${blobId} (§5.9.5)`,
+      );
+    }
+    putCachedBlob(this.#db, blobId, bytes, this.#now());
+    const stored = getCachedBlob(this.#db, blobId);
+    if (stored === undefined) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        'blob cache write failed',
+      );
+    }
+    return stored;
+  }
+
+  /** Flush any queued blob uploads (§5.9.7 B4); safe to call standalone. */
+  async flushBlobUploads(): Promise<void> {
+    const transport = this.#config.blobs;
+    if (transport === undefined || !this.#hasBlobs) return;
+    for (const pending of listPendingUploads(this.#db)) {
+      const cached = getCachedBlob(this.#db, pending.blobId);
+      if (cached === undefined) {
+        // The bytes are gone (never happens for a well-behaved client);
+        // drop the upload so it does not wedge the queue.
+        clearPendingUpload(this.#db, pending.blobId);
+        continue;
+      }
+      await transport.upload(pending.blobId, cached.bytes, pending.mediaType);
+      clearPendingUpload(this.#db, pending.blobId);
+    }
   }
 
   get conflicts(): readonly ConflictRecord[] {
@@ -492,6 +607,11 @@ export class SyncClient {
     // survive it — the reference server keeps no replay buffer (§8.2).
     this.#needsPull = false;
     try {
+      // §5.9.7 B4: upload pending blobs BEFORE pushing rows that reference
+      // them, so the server-side existence check (§6.6) passes.
+      if (this.#hasBlobs && this.#config.blobs !== undefined) {
+        await this.flushBlobUploads();
+      }
       const outbox = listOutbox(this.#db);
       const subs = loadSubscriptions(this.#db).filter(
         (sub) => sub.status === 'active',
@@ -938,6 +1058,10 @@ export class SyncClient {
       // the still-pending commits on top of the freshly applied server
       // state (the simple reconciliation mandated for B3).
       this.#replayOutbox();
+      // §5.9.7 B1: after every apply/replay, refcounts follow the live rows.
+      // A benign apply retains zero-ref bodies (LRU default); the revocation
+      // purge below deletes orphaned bodies with deleteOrphans (B2).
+      this.#reconcileBlobs(false);
     }
 
     if (errorFrame !== undefined) throw errorFrame;
@@ -1219,6 +1343,9 @@ export class SyncClient {
           deleteScopedRows(this.#db, table, lastEffective);
         });
         dropOutboxCommitsInScope(this.#db, table, lastEffective);
+        // §5.9.7 B2: revocation deletes now-unauthorized blob bodies —
+        // reconcile with deleteOrphans (evicted ≠ revoked).
+        this.#reconcileBlobs(true);
       } catch (error) {
         if (
           error instanceof ClientSyncError &&
@@ -1281,6 +1408,16 @@ export class SyncClient {
         this.#applyOperationsLocally(commit.operations);
       }
     });
+  }
+
+  /**
+   * §5.9.7 B1/B2: recompute blob-cache refcounts from live `blob_ref`
+   * columns. No-op unless the schema has blob columns. `deleteOrphans`
+   * triggers the revocation-side body deletion (B2).
+   */
+  #reconcileBlobs(deleteOrphans: boolean): void {
+    if (!this.#hasBlobs) return;
+    reconcileBlobRefcounts(this.#db, this.#schema, { deleteOrphans });
   }
 
   // -- helpers -----------------------------------------------------------------

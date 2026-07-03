@@ -69,6 +69,13 @@ CREATE TABLE IF NOT EXISTS sync_clients(
   updated_at_ms INTEGER NOT NULL,
   PRIMARY KEY(partition, client_id)
 );
+CREATE TABLE IF NOT EXISTS sync_blob_refs(
+  partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL,
+  blob_id TEXT NOT NULL,
+  PRIMARY KEY(partition, tbl, row_id, blob_id)
+);
+CREATE INDEX IF NOT EXISTS sync_blob_refs_by_blob
+  ON sync_blob_refs(partition, blob_id);
 `;
 
 function toBase64(bytes: Uint8Array): string {
@@ -229,6 +236,28 @@ class SqliteTransaction implements StorageTransaction {
     db.query(
       'DELETE FROM sync_row_scopes WHERE partition=? AND tbl=? AND row_id=?',
     ).run(this.#partition, table, rowId);
+    // §5.9.4: a deleted row references no blobs.
+    db.query(
+      'DELETE FROM sync_blob_refs WHERE partition=? AND tbl=? AND row_id=?',
+    ).run(this.#partition, table, rowId);
+  }
+
+  async setBlobRefs(
+    table: string,
+    rowId: string,
+    blobIds: readonly string[],
+  ): Promise<void> {
+    this.#assertOpen();
+    const db = this.#storage.db;
+    // Replace the row's reference set atomically (§5.9.4).
+    db.query(
+      'DELETE FROM sync_blob_refs WHERE partition=? AND tbl=? AND row_id=?',
+    ).run(this.#partition, table, rowId);
+    for (const blobId of blobIds) {
+      db.query(
+        'INSERT OR IGNORE INTO sync_blob_refs(partition, tbl, row_id, blob_id) VALUES (?,?,?,?)',
+      ).run(this.#partition, table, rowId, blobId);
+    }
   }
 
   async appendCommit(commit: NewCommit): Promise<number> {
@@ -608,5 +637,52 @@ export class SqliteServerStorage implements ServerStorage {
       cursor: r.cursor,
       updatedAtMs: r.updated_at_ms,
     }));
+  }
+
+  async listRowsReferencingBlob(
+    partition: string,
+    blobId: string,
+  ): Promise<
+    {
+      readonly table: string;
+      readonly rowId: string;
+      readonly scopes: Record<string, string>;
+    }[]
+  > {
+    // Candidate rows via the by-blob index (§5.9.4/§5.9.5); each row's
+    // stored scopes come from sync_rows for the §3.4 authorization test.
+    const refs = this.db
+      .query<{ tbl: string; row_id: string }, [string, string]>(
+        'SELECT tbl, row_id FROM sync_blob_refs WHERE partition=? AND blob_id=?',
+      )
+      .all(partition, blobId);
+    const out: {
+      table: string;
+      rowId: string;
+      scopes: Record<string, string>;
+    }[] = [];
+    for (const ref of refs) {
+      const row = this.db
+        .query<{ scopes: string }, [string, string, string]>(
+          'SELECT scopes FROM sync_rows WHERE partition=? AND tbl=? AND row_id=?',
+        )
+        .get(partition, ref.tbl, ref.row_id);
+      if (row === null) continue;
+      out.push({
+        table: ref.tbl,
+        rowId: ref.row_id,
+        scopes: JSON.parse(row.scopes) as Record<string, string>,
+      });
+    }
+    return out;
+  }
+
+  async listReferencedBlobIds(partition: string): Promise<string[]> {
+    const rows = this.db
+      .query<{ blob_id: string }, [string]>(
+        'SELECT DISTINCT blob_id FROM sync_blob_refs WHERE partition=?',
+      )
+      .all(partition);
+    return rows.map((r) => r.blob_id);
   }
 }

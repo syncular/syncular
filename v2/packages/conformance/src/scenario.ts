@@ -259,6 +259,10 @@ export interface ClientHandle {
   readonly urlFetches: string[];
   /** Direct-endpoint downloads (§5.5), by segmentId, in order. */
   readonly directDownloads: string[];
+  /** Blob uploads (§5.9.3), by blobId, in order. */
+  readonly blobUploads: string[];
+  /** Blob downloads (§5.9.5), by blobId, in order — the cache-hit oracle. */
+  readonly blobDownloads: string[];
 }
 
 export interface NewClientOptions {
@@ -316,9 +320,41 @@ export class ScenarioContext {
     const realtime = new RealtimeObservations();
     const urlFetches: string[] = [];
     const directDownloads: string[] = [];
+    const blobUploads: string[] = [];
+    const blobDownloads: string[] = [];
     const server = this.server;
     const actorId = options.actorId;
     const clientId = options.clientId;
+    // §5.9: blob endpoints exist iff the server driver supports blobs. Their
+    // presence makes the client core blob-capable (upload/download available).
+    const serverUploadBlob = server.uploadBlob?.bind(server);
+    const serverDownloadBlob = server.downloadBlob?.bind(server);
+    const uploadBlob =
+      serverUploadBlob !== undefined
+        ? async (
+            blobId: string,
+            bytes: Uint8Array,
+            mediaType?: string,
+          ): Promise<void> => {
+            blobUploads.push(blobId);
+            const result = await serverUploadBlob(
+              actorId,
+              blobId,
+              bytes,
+              mediaType,
+            );
+            if (!result.ok) throw new EndpointError(result.error);
+          }
+        : undefined;
+    const downloadBlob =
+      serverDownloadBlob !== undefined
+        ? async (blobId: string): Promise<Uint8Array> => {
+            blobDownloads.push(blobId);
+            const result = await serverDownloadBlob(actorId, blobId);
+            if (!result.ok) throw new EndpointError(result.error);
+            return result.bytes;
+          }
+        : undefined;
     const fetchSegmentUrl =
       options.signedUrls === true
         ? async (url: string): Promise<Uint8Array> => {
@@ -350,6 +386,8 @@ export class ScenarioContext {
       ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
       endpoints: {
         ...(fetchSegmentUrl !== undefined ? { fetchSegmentUrl } : {}),
+        ...(uploadBlob !== undefined ? { uploadBlob } : {}),
+        ...(downloadBlob !== undefined ? { downloadBlob } : {}),
         sync: async (request) => {
           sentRequests.push(request);
           if (faults.dropNextRequests > 0) {
@@ -429,6 +467,8 @@ export class ScenarioContext {
       realtime,
       urlFetches,
       directDownloads,
+      blobUploads,
+      blobDownloads,
     };
     this.#clients.push(handle);
     return handle;
