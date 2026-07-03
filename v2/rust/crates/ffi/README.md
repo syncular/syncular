@@ -59,6 +59,34 @@ them. A native app has no such host loop — so this crate **owns** the network:
   subscribe, mutate, readRows, …) still run. This is the build the C smoke test
   and the pure-logic unit tests use — zero HTTP/WS/TLS compiled in.
 
+### Sync rounds over the socket (§8.7) — complete
+
+When the realtime socket is connected the core routes each combined push+pull
+round through `realtime_sync`, which runs the round **over the socket** in the
+one-loop shape (§8.7), not over `POST /sync`. The framing:
+
+- The request goes out as a `0x01`-tagged binary message (channel tag +
+  the whole SSP2 request envelope; a single chunk is legal since chunk
+  boundaries are arbitrary and the request is bounded — bulk rides segments
+  over HTTP, §5.7).
+- The reader thread demuxes inbound binary frames by channel tag: `0x01`
+  round chunks feed the in-flight round's `MessageStreamScanner`
+  (reassembled to the response's `END`, then handed back to the blocked
+  `realtime_sync`); `0x00` deltas are queued (tag stripped) to the inbound
+  lane the command path applies like a pull (§8.2), tolerating a stray
+  mid-round delta rather than failing. Bytes past `END` fail the round.
+- One round in flight per connection is enforced client-side; a mid-round
+  socket drop fails the round (never hangs). When no socket is connected
+  the round rides `POST /sync` — the same not-connected rule as the TS
+  client, not a fallback pair.
+
+The transport-agnostic tag demux + reassembly lives in
+`syncular_client::RealtimeRound` (unit-tested there and shared with the
+Tauri plugin); the WS send/read plumbing is here. Proven end-to-end by the
+`round_tests` module — a scripted in-test `tungstenite` server speaking §8.7
+bytes built with the `ssp2` codec (round round-trip, byte-chunked response
+reassembly, delta-during-round queuing, mid-round-drop failure).
+
 ### Dependency-policy justification
 
 The task's rule is "leanest maintained pair, and it never ships to JS users."

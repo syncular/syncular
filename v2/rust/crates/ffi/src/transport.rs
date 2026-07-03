@@ -224,16 +224,139 @@ mod native {
     use std::io::Read;
     use std::net::TcpStream;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Condvar, Mutex};
     use std::thread::JoinHandle;
+    use std::time::Duration;
 
     use tungstenite::stream::MaybeTlsStream;
     use tungstenite::{Message, WebSocket};
 
     use super::{Inbound, InboundBuffer};
-    use syncular_client::{SegmentRequest, Transport, TransportError};
+    use syncular_client::{RealtimeRound, RoundInbound, SegmentRequest, Transport, TransportError};
 
     type Ws = WebSocket<MaybeTlsStream<TcpStream>>;
+
+    /// How long a single response round waits before giving up (§8.7 rounds
+    /// are bounded — bulk rides segments over HTTP). Generous; a stuck socket
+    /// surfaces as a transport failure rather than hanging the caller forever.
+    const ROUND_TIMEOUT: Duration = Duration::from_secs(30);
+    /// The reader's per-iteration socket read timeout: bounds how long the
+    /// reader holds the socket lock across `ws.read()`, so `realtime_send`
+    /// (round request bytes + §8.2 acks) can interleave sends promptly.
+    const READ_TIMEOUT: Duration = Duration::from_millis(50);
+
+    /// The §8.7 round rendezvous shared between the reader thread (which
+    /// demuxes inbound `0x01` chunks into the round via [`RealtimeRound`]) and
+    /// `realtime_sync` (which begins the round, sends the request, and blocks
+    /// here for the reassembled response). The transport-agnostic framing
+    /// logic lives in [`RealtimeRound`] (the lean client crate, shared with
+    /// the Tauri plugin); this struct is just the thread rendezvous.
+    #[derive(Default)]
+    pub(super) struct RoundChannel {
+        state: Mutex<RoundState>,
+        ready: Condvar,
+    }
+
+    #[derive(Default)]
+    struct RoundState {
+        round: RealtimeRound,
+        /// The completed round outcome, taken by `realtime_sync` once set.
+        outcome: Option<Result<Vec<u8>, TransportError>>,
+    }
+
+    impl RoundChannel {
+        /// Begin a round: frame the request (`0x01` tag + envelope) for the
+        /// socket and mark it in flight. Errors if one is already in flight
+        /// (§8.7 one-in-flight, enforced client-side).
+        fn begin(&self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            let mut state = self.state.lock().expect("round lock");
+            state.outcome = None;
+            state.round.begin(request)
+        }
+
+        /// Route one inbound binary frame from the reader thread. Returns the
+        /// delta payload to enqueue on the inbound buffer, if any; a completed
+        /// or failed round is stored and the waiting `realtime_sync` woken.
+        fn route_binary(&self, frame: &[u8]) -> Option<Vec<u8>> {
+            let mut state = self.state.lock().expect("round lock");
+            match state.round.route_binary(frame) {
+                Ok(RoundInbound::Delta(body)) => Some(body),
+                Ok(RoundInbound::RoundProgress) | Ok(RoundInbound::Ignored) => None,
+                Ok(RoundInbound::RoundComplete(bytes)) => {
+                    state.outcome = Some(Ok(bytes));
+                    self.ready.notify_all();
+                    None
+                }
+                Err(error) => {
+                    state.outcome = Some(Err(error));
+                    self.ready.notify_all();
+                    None
+                }
+            }
+        }
+
+        /// Fail any in-flight round (socket dropped) and wake the waiter.
+        fn fail_in_flight(&self, error: TransportError) {
+            let mut state = self.state.lock().expect("round lock");
+            if state.round.in_flight() && state.outcome.is_none() {
+                state.round.abort();
+                state.outcome = Some(Err(error));
+                self.ready.notify_all();
+            }
+        }
+
+        /// Block until the round completes, fails, or `ROUND_TIMEOUT` elapses.
+        fn wait(&self) -> Result<Vec<u8>, TransportError> {
+            let mut state = self.state.lock().expect("round lock");
+            let deadline = std::time::Instant::now() + ROUND_TIMEOUT;
+            while state.outcome.is_none() {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    state.round.abort();
+                    return Err(TransportError::new(
+                        "sync.transport_failed",
+                        "realtime sync round timed out (§8.7)",
+                    ));
+                }
+                let (guard, _timeout) = self
+                    .ready
+                    .wait_timeout(state, deadline - now)
+                    .expect("round wait");
+                state = guard;
+            }
+            state.outcome.take().expect("outcome present")
+        }
+    }
+
+    fn http_err(op: &str, e: impl std::fmt::Display) -> TransportError {
+        TransportError::new("transport.failed", format!("{op}: {e}"))
+    }
+
+    /// A read error that is merely "no data within the timeout" — the reader
+    /// loops instead of tearing the socket down.
+    fn is_would_block(e: &tungstenite::Error) -> bool {
+        matches!(
+            e,
+            tungstenite::Error::Io(io) if matches!(
+                io.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            )
+        )
+    }
+
+    /// Apply the reader's per-iteration read timeout to the live stream so
+    /// `ws.read()` yields the socket lock periodically (see `READ_TIMEOUT`).
+    fn set_read_timeout(ws: &mut Ws, timeout: Option<Duration>) {
+        match ws.get_mut() {
+            MaybeTlsStream::Plain(s) => {
+                let _ = s.set_read_timeout(timeout);
+            }
+            MaybeTlsStream::Rustls(s) => {
+                let _ = s.get_ref().set_read_timeout(timeout);
+            }
+            _ => {}
+        }
+    }
 
     pub struct NativeTransport {
         base_url: String,
@@ -247,10 +370,8 @@ mod native {
         socket: Option<Arc<Mutex<Ws>>>,
         reader: Option<JoinHandle<()>>,
         reader_stop: Arc<AtomicBool>,
-    }
-
-    fn http_err(op: &str, e: impl std::fmt::Display) -> TransportError {
-        TransportError::new("transport.failed", format!("{op}: {e}"))
+        /// §8.7 round rendezvous, shared with the reader thread.
+        round: Arc<RoundChannel>,
     }
 
     fn derive_ws_url(base_url: &str) -> String {
@@ -292,6 +413,7 @@ mod native {
                 socket: None,
                 reader: None,
                 reader_stop: Arc::new(AtomicBool::new(false)),
+                round: Arc::new(RoundChannel::default()),
             })
         }
 
@@ -321,6 +443,12 @@ mod native {
 
         pub fn shutdown(&mut self) {
             self.reader_stop.store(true, Ordering::SeqCst);
+            // Wake any `realtime_sync` blocked on a round: the socket is going
+            // away, so the round can never complete (§8.7 mid-round drop).
+            self.round.fail_in_flight(TransportError::new(
+                "sync.transport_failed",
+                "realtime disconnected mid-round (§8.7)",
+            ));
             if let Some(socket) = &self.socket {
                 if let Ok(mut ws) = socket.lock() {
                     let _ = ws.close(None);
@@ -348,12 +476,35 @@ mod native {
         }
 
         fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
-            // §8.7 socket round: send the request as one binary round-stream
-            // (channel tag 0x01) and reassemble the response chunks to END.
-            // Not wired in this first native cut — the round rides HTTP, which
-            // is protocol-equivalent (the transport seam is bytes-in/out); the
-            // socket carries wake-ups + presence. Falls back to POST /sync.
-            self.post_octet("/sync", request)
+            // §8.7 socket round: send the request as a `0x01`-tagged chunk on
+            // the connected socket and block for the reassembled response
+            // stream (the reader thread demuxes `0x01` chunks to END, routing
+            // any `0x00` delta / text that interleaves to the inbound queue).
+            // When no socket is connected this is the client's "not connected"
+            // path — the caller (client core) only calls `realtime_sync` while
+            // `realtime_connected`, and connect established the socket; a
+            // missing socket here means the round rides HTTP instead (same
+            // rule as the TS client: `POST /sync` when the socket is absent).
+            let Some(socket) = self.socket.clone() else {
+                return self.post_octet("/sync", request);
+            };
+            let framed = self.round.begin(request)?;
+            // Send the whole request as one `0x01` chunk (boundaries are
+            // arbitrary, §8.7; the request is bounded — bulk rides segments).
+            let send = {
+                let mut ws = socket
+                    .lock()
+                    .map_err(|_| TransportError::new("transport.failed", "ws lock poisoned"))?;
+                ws.send(Message::Binary(framed))
+                    .map_err(|e| http_err("ws round send", &e))
+                    .and_then(|()| ws.flush().map_err(|e| http_err("ws round flush", &e)))
+            };
+            if let Err(e) = send {
+                // Fail the started round so `wait` returns the send error, not
+                // a timeout.
+                self.round.fail_in_flight(e);
+            }
+            self.round.wait()
         }
 
         fn download_segment(
@@ -412,25 +563,45 @@ mod native {
             if self.socket.is_some() {
                 return Ok(());
             }
-            let mut req = tungstenite::http::Request::builder()
-                .uri(&self.ws_url)
-                .method("GET");
-            for (k, v) in &self.headers {
-                req = req.header(k.as_str(), v.as_str());
+            // Build the client request VIA `IntoClientRequest` so tungstenite
+            // fills the mandatory handshake headers (Host / Connection /
+            // Upgrade / Sec-WebSocket-Version / Sec-WebSocket-Key); a
+            // hand-built `http::Request` is taken as-is and would omit them.
+            // Then layer the configured auth/actor headers on top.
+            use tungstenite::client::IntoClientRequest;
+            let mut request = self
+                .ws_url
+                .as_str()
+                .into_client_request()
+                .map_err(|e| TransportError::new("transport.failed", format!("ws url: {e}")))?;
+            {
+                let out = request.headers_mut();
+                for (k, v) in &self.headers {
+                    if let (Ok(name), Ok(value)) = (
+                        tungstenite::http::HeaderName::try_from(k.as_str()),
+                        tungstenite::http::HeaderValue::try_from(v.as_str()),
+                    ) {
+                        out.insert(name, value);
+                    }
+                }
             }
-            let request = req
-                .body(())
-                .map_err(|e| TransportError::new("transport.failed", e.to_string()))?;
-            let (ws, _resp) = tungstenite::connect(request)
+            let (mut ws, _resp) = tungstenite::connect(request)
                 .map_err(|e| TransportError::new("transport.failed", format!("ws connect: {e}")))?;
+            // Bound how long the reader holds the socket lock across `ws.read()`
+            // so `realtime_sync` / ack sends can interleave promptly (§8.7 sends
+            // and reads share one socket).
+            set_read_timeout(&mut ws, Some(READ_TIMEOUT));
             let socket = Arc::new(Mutex::new(ws));
             self.socket = Some(Arc::clone(&socket));
-            // Reader thread: push inbound frames into the shared buffer; the
-            // command path drains + acks them via realtime_send.
+            // Reader thread: demux inbound binary frames by §8.7 channel tag —
+            // `0x01` round chunks feed the in-flight round (reassembled to END,
+            // handed back to the blocked `realtime_sync`); `0x00` deltas + text
+            // control frames go to the inbound buffer the command path drains.
             self.reader_stop.store(false, Ordering::SeqCst);
             let inbound = Arc::clone(&self.inbound);
             let stop = Arc::clone(&self.reader_stop);
             let reader_socket = Arc::clone(&socket);
+            let round = Arc::clone(&self.round);
             self.reader = Some(std::thread::spawn(move || loop {
                 if stop.load(Ordering::SeqCst) {
                     break;
@@ -444,8 +615,26 @@ mod native {
                 };
                 match msg {
                     Ok(Message::Text(text)) => inbound.push(Inbound::Text(text)),
-                    Ok(Message::Binary(bytes)) => inbound.push(Inbound::Binary(bytes)),
-                    Ok(Message::Close(_)) | Err(_) => break,
+                    Ok(Message::Binary(bytes)) => {
+                        // §8.7 tag demux: round chunk → round channel; delta →
+                        // inbound (stripped of its tag, a bare SSP2 response
+                        // the client applies exactly like a pull, §8.2).
+                        if let Some(delta) = round.route_binary(&bytes) {
+                            inbound.push(Inbound::Binary(delta));
+                        }
+                    }
+                    // A read timeout is not a disconnect — loop and retry so a
+                    // quiet socket stays open (and sends can interleave).
+                    Err(e) if is_would_block(&e) => continue,
+                    Ok(Message::Close(_)) | Err(_) => {
+                        // The socket is gone: fail any in-flight round so a
+                        // blocked `realtime_sync` wakes (§8.7 mid-round drop).
+                        round.fail_in_flight(TransportError::new(
+                            "sync.transport_failed",
+                            "realtime disconnected mid-round (§8.7)",
+                        ));
+                        break;
+                    }
                     Ok(_) => {}
                 }
             }));

@@ -412,6 +412,14 @@ export interface ClientCreateOptions {
   readonly nowMs?: number;
 }
 
+/** §4.8 window base a scenario windows on: table + variable + fixed scopes. */
+export interface DriverWindowBase {
+  readonly table: string;
+  readonly variable: string;
+  readonly fixedScopes?: DriverScopeMap;
+  readonly params?: string;
+}
+
 export interface ClientInstance {
   subscribe(input: {
     readonly id: string;
@@ -420,6 +428,17 @@ export interface ClientInstance {
     readonly params?: string;
   }): Promise<void>;
   unsubscribe(id: string): Promise<void>;
+
+  /**
+   * §4.8 windowed subscriptions: set the live units (scope values) of a
+   * window base. Additive — a driver that predates windowing omits it, and
+   * scenarios requiring it skip on that driver.
+   */
+  setWindow?(base: DriverWindowBase, units: readonly string[]): Promise<void>;
+  /** §4.8 completeness oracle (I3): the windowed-in units for a base. */
+  windowState?(
+    base: DriverWindowBase,
+  ): Promise<{ readonly units: readonly string[] }>;
 
   /** Record one atomic local commit (§7.1); returns its clientCommitId. */
   mutate(mutations: readonly ClientMutation[]): Promise<string>;

@@ -36,6 +36,7 @@ import {
   applySqliteSegment,
   deleteLocalRow,
   deleteScopedRows,
+  evictScopedRows,
   upsertLocalRow,
 } from './apply';
 import {
@@ -107,6 +108,18 @@ import type {
   SegmentDownloader,
   SyncTransport,
 } from './transport';
+import {
+  deletePendingEviction,
+  deleteWindowUnit,
+  deriveSubId,
+  insertWindowUnit,
+  loadPendingEvictions,
+  loadWindowUnits,
+  savePendingEviction,
+  unitScopes,
+  type WindowBase,
+  windowBaseKey,
+} from './window';
 
 // ---------------------------------------------------------------------------
 // Public shapes
@@ -257,6 +270,24 @@ export interface SubscribeInput {
   readonly params?: string;
 }
 
+/**
+ * The live state of a window base (§4.8) — the completeness oracle (I3),
+ * as plain serializable data so it crosses the worker/follower boundary
+ * unchanged. `units` are the scope values currently windowed-in; a query
+ * touching only these is answerable in full locally. Use
+ * {@link windowComplete} for the per-value verdict a live query renders
+ * "this data may be partial" from.
+ */
+export interface WindowState {
+  /** Windowed-in units for this base, ordered by value. */
+  readonly units: readonly string[];
+}
+
+/** True iff `unit` is windowed-in for this snapshot (a registry hit, I3). */
+export function windowComplete(state: WindowState, unit: string): boolean {
+  return state.units.includes(unit);
+}
+
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
@@ -347,7 +378,7 @@ export class SyncClient {
   #needsPull = false;
   #syncing = false;
   readonly #hasBlobs: boolean;
-  /** §8.6 presence: scopeKey → (peerKey `actorId clientId` → peer). */
+  /** §8.6 presence: scopeKey → (peerKey `actorId clientId` → peer). */
   readonly #presence = new Map<string, Map<string, PresencePeer>>();
   /** TODO 3.1 / I1: the ONE apply-path invalidation listener set. */
   readonly #invalidation = new InvalidationEmitter();
@@ -782,6 +813,154 @@ export class SyncClient {
     deleteSubscription(this.#db, id);
   }
 
+  // -- windowed subscriptions (§4.8) ------------------------------------------
+
+  /**
+   * Set the live window units for a base (§4.8): a value-sharded family of
+   * subscriptions, one per unit. Computes the diff against the registry —
+   * added units get fresh subscriptions (image-lane bootstrap on the next
+   * sync); removed units are unsubscribed and evicted, fused in one local
+   * transaction (E1–E4). Idempotent: calling with the same units is a
+   * no-op. Re-entry (a unit removed then re-added) cancels any deferred
+   * eviction and fresh-bootstraps.
+   *
+   * The change takes effect on the next `sync()`/socket round — the pull's
+   * subscription list (now with the added unit, without the removed one)
+   * re-registers realtime at round end (§8.7). No socket cycle needed.
+   */
+  async setWindow(base: WindowBase, units: readonly string[]): Promise<void> {
+    this.#requireStarted();
+    const table = this.#table(base.table);
+    if (!table.scopeColumnByVariable.has(base.variable)) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        `setWindow: table ${JSON.stringify(base.table)} has no scope variable ${JSON.stringify(base.variable)} (§4.8)`,
+      );
+    }
+    const baseKey = windowBaseKey(base);
+    const wanted = new Set(units);
+    const live = loadWindowUnits(this.#db, baseKey);
+    const liveByUnit = new Map(live.map((u) => [u.unit, u.subId]));
+
+    // Widen: units wanted but not live → fresh subscription + registry row.
+    for (const unit of wanted) {
+      if (liveByUnit.has(unit)) continue;
+      const subId = await deriveSubId(base, unit);
+      this.#db.transaction(() => {
+        // Re-entry cancels any deferred eviction for this sub id.
+        deletePendingEviction(this.#db, subId);
+        insertWindowUnit(this.#db, baseKey, unit, subId);
+        saveSubscription(this.#db, {
+          id: subId,
+          table: base.table,
+          scopes: unitScopes(base, unit),
+          ...(base.params !== undefined ? { params: base.params } : {}),
+          cursor: -1,
+          status: 'active',
+        });
+      });
+    }
+
+    // Shrink: units live but not wanted → unsubscribe fused with eviction.
+    for (const { unit, subId } of live) {
+      if (wanted.has(unit)) continue;
+      this.#evictUnit(baseKey, base, unit, subId);
+    }
+  }
+
+  /**
+   * The completeness oracle (§4.8 I3): which units of a base are windowed-in
+   * locally, and a per-unit verdict a live query renders "may be partial"
+   * from. A query whose scope footprint includes an un-windowed unit is
+   * NOT answerable in full — the host widens or shows partial, never
+   * silently-complete.
+   */
+  windowState(base: WindowBase): WindowState {
+    this.#requireStarted();
+    const baseKey = windowBaseKey(base);
+    return { units: loadWindowUnits(this.#db, baseKey).map((u) => u.unit) };
+  }
+
+  /**
+   * §4.8 E1–E4: evict one departing unit, fused with its unsubscription in
+   * one transaction. Deletes the unit's rows EXCEPT those pinned by a
+   * pending outbox commit (E1); if any pin remains, records a deferred
+   * eviction retried on the next outbox drain. Discards the subscription's
+   * cursor/resume/effective-echo (E3) and its version state with the rows
+   * (E2). Emits the evicted table's invalidation keys (I1). Fail-closed:
+   * with no local scope-column mapping, surfaces a configuration error and
+   * evicts nothing (§4.8/§3.3).
+   */
+  #evictUnit(
+    baseKey: string,
+    base: WindowBase,
+    unit: string,
+    subId: string,
+  ): void {
+    const table = this.#table(base.table);
+    const sub = getSubscription(this.#db, subId);
+    // The rows a unit holds live under its LAST effective scopes if it ever
+    // synced; before first sync, the requested unit scopes are the match.
+    const effective = sub?.effectiveScopes ?? unitScopes(base, unit);
+    const pinned = this.#pinnedRowIds(base.table);
+    this.#applyBatch((batch) => {
+      this.#db.transaction(() => {
+        const deferred = evictScopedRows(this.#db, table, effective, pinned);
+        deleteWindowUnit(this.#db, baseKey, unit);
+        deleteSubscription(this.#db, subId);
+        if (deferred) {
+          savePendingEviction(this.#db, subId, base.table, effective);
+        } else {
+          deletePendingEviction(this.#db, subId);
+        }
+      });
+      // I1: eviction is a bulk delete — a query over the evicted unit re-runs.
+      batch.table(table.name);
+      batch.scopeMap(table, effective);
+    });
+  }
+
+  /**
+   * §4.8 E1: retry deferred evictions after the outbox drains. A pinned
+   * unit's rows are removed once no pending commit references them; a unit
+   * that re-entered the window in the meantime has no pending record left.
+   */
+  #drainPendingEvictions(): void {
+    const pending = loadPendingEvictions(this.#db);
+    if (pending.length === 0) return;
+    for (const entry of pending) {
+      const table = this.#schema.tables.get(entry.table);
+      if (table === undefined) {
+        deletePendingEviction(this.#db, entry.subId);
+        continue;
+      }
+      const pinned = this.#pinnedRowIds(entry.table);
+      this.#applyBatch((batch) => {
+        let deferred = false;
+        this.#db.transaction(() => {
+          deferred = evictScopedRows(this.#db, table, entry.effective, pinned);
+          if (!deferred) deletePendingEviction(this.#db, entry.subId);
+        });
+        batch.table(table.name);
+        batch.scopeMap(table, entry.effective);
+      });
+    }
+  }
+
+  /**
+   * §4.8 E1: primary keys of `table` referenced by any still-pending outbox
+   * commit — rows that MUST NOT be evicted until the commit drains.
+   */
+  #pinnedRowIds(table: string): Set<string> {
+    const pinned = new Set<string>();
+    for (const commit of listOutbox(this.#db)) {
+      for (const op of commit.operations) {
+        if (op.table === table) pinned.add(op.rowId);
+      }
+    }
+    return pinned;
+  }
+
   // -- local mutations --------------------------------------------------------
 
   /**
@@ -993,7 +1172,16 @@ export class SyncClient {
           'transport returned a non-response message',
         );
       }
-      return await this.#processResponse(message, outbox, subs, 'pull');
+      const summary = await this.#processResponse(
+        message,
+        outbox,
+        subs,
+        'pull',
+      );
+      // §4.8 E1: the push half may have drained commits that pinned rows of
+      // a shrunk window unit — retry any deferred evictions now.
+      this.#drainPendingEvictions();
+      return summary;
     } catch (error) {
       // §7.3.5: a request-level lease code stops-and-surfaces — record it
       // in leaseState (no local-data purge, §7.3.4) and re-throw. Not a

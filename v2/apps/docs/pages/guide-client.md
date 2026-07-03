@@ -145,9 +145,15 @@ for very large result sets, paginate with `LIMIT`/`OFFSET` in your SQL. See
 [bindings/tauri/README.md](../../bindings/tauri/README.md) for the architecture,
 the command/event surface, and the thread-safety model.
 
+## Windowed sync
+
+The client can hold a **partial local replica** — set the live scope values
+with `client.setWindow(...)` (or the `useWindow` hook), and syncular bootstraps
+what enters and evicts what leaves, with a completeness oracle so a query over
+un-held data is flagged partial rather than served as complete. Shipped in W1;
+see [Windowed sync](./concepts-windowing.md).
+
 ## Roadmap
 
-**Windowed sync / local eviction** is designed
-([DESIGN-eviction.md](../../DESIGN-eviction.md)) but not yet shipped. A typed
-Kysely query layer over the generated row types is a follow-up — reads are raw
-SQL today.
+A typed Kysely query layer over the generated row types is a follow-up — reads
+are raw SQL today.

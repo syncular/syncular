@@ -68,11 +68,29 @@ This block is assembly on a proven core — packages, not protocol.
       lifecycle) + `tsc`; the native shims' manual verification recipe is
       documented (an RN example app is explicitly OUT). NitroModules/JSI is the
       follow-up for latency; the C ABI is the stable substrate.
-- [ ] **Native transport §8.7 completion**: the native-transport feature's
-      first cut sends rounds over `POST /sync` (conformant) with the
-      socket carrying wake-ups/presence; finish round-over-socket framing
-      (tag 0x01 chunk streams) so native matches the web client's
-      one-loop shape.
+- [x] **Native transport §8.7 completion** (landed 2026-07-04): the
+      native-transport feature now runs rounds **over the socket** in the
+      one-loop shape (§8.7), not `POST /sync`. Request goes out `0x01`-tagged;
+      the reader thread demuxes by channel tag, reassembling the `0x01`
+      response stream to `END` via a new Rust `MessageStreamScanner`
+      (`ssp2`, mirroring the TS reference with the exhaustive split-point
+      tests) while queuing `0x00` deltas to the inbound lane. One round in
+      flight enforced client-side; mid-round drop fails the round; no socket
+      → `POST /sync` (the not-connected rule, not a fallback pair). The
+      transport-agnostic tag demux + reassembly is `syncular_client::
+      RealtimeRound`, shared by the FFI and Tauri native transports (which
+      stay byte-for-byte parallel). Proven by the FFI `round_tests` — a
+      scripted in-test `tungstenite` server speaking §8.7 bytes built with
+      the `ssp2` codec (round-trip, byte-chunked reassembly, delta-during-
+      round queuing, mid-round-drop). Also fixed a latent WS handshake bug in
+      both native `realtime_connect`s (hand-built request omitted the
+      mandatory upgrade headers). The env-gated native-transport *conformance
+      lane* was assessed and **declined** as contortions: the native
+      transport is encapsulated in the ffi crate (not the shim's deps), and
+      the harness's whole design inverts transport to the host — a native
+      lane needs a second driver mode + a real per-instance bun server, not a
+      small flag. The scripted Rust-local tests prove the §8.7 loop against
+      real WebSocket traffic directly instead.
 - [ ] **Native CRDT editing (yrs)**: optional — the server merges, so
       native apps already converge; yrs integration is only needed for
       local collaborative EDITING UX on native. Demand-gated within this
@@ -138,11 +156,22 @@ fresh image bootstrap, remove = unsubscribe fused with eviction); zero
 wire changes, zero server changes; sequenced AFTER the WS-native loop
 (done) as required.
 
-- [ ] **W1 implementation**: window registry in both clients, eviction
-      fused with unsubscribe (outbox-pinned rows excepted), re-entry via
-      the image lane, the six Appendix-B scenarios from the design doc,
-      the one-line §4.7/§8.1 SPEC edits it calls for, and the query-
-      completeness oracle wired into the react bindings (I3).
+- [x] **W1 implementation** (landed 2026-07-04): window registry in both
+      clients (`_syncular_windows` + a `_syncular_window_pending_evict`
+      deferred-eviction table), `setWindow(base, units)` / `windowState(base)`
+      on the TS `SyncClient` (mirrored on the worker handle + follower
+      forwarding, one interface) and the Rust core (+ `syncular-command`
+      router commands, so the shim/Tauri/RN bridges reach it unchanged),
+      eviction fused with unsubscribe (E1 outbox-pin defers, E2 version dies
+      with the row, drained on the next push), re-entry via the image lane,
+      Appendix B.18's six conformance scenarios (74/74 both pairings, fresh
+      shim), the SPEC edits §8 enumerates (§3.3 eviction note, §4.1
+      omission-as-unsubscribe, new §4.8, §8.1 timing note — the §4.7 phasing
+      resolution was already landed), the query-completeness oracle
+      (`windowState` + the `useWindow` React hook, I3), and a cheap bench
+      value-sharding proof (`{A,B}→{B,C}` re-downloads only C — asserted as a
+      correctness budget in `bench:ci`). Own-JS budget re-derived 66 → 72 KB
+      (the shipped differentiator, +6.1 KB raw / +1.65 KB gzip).
 - [ ] **W2 TTL sugar** (codegen creation-time bucket columns) — after W1
       proves out.
 

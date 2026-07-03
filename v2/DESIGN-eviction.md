@@ -1,11 +1,14 @@
 # DESIGN — Windowed sync / local eviction
 
-Status: **design doc only** (TODO §5 item 2). Nothing here is normative
-yet; §8 lists exactly which SPEC.md sections gain rules when the feature
-is implemented. Written early — post-parity feature, spec-shape now —
-because its semantics constrain blobs (TODO 2.1) and live-query
-invalidation (TODO 3.1); §7 enumerates those constraints so both features
-are built compatible.
+Status: **W1 landed 2026-07-04** (ROADMAP block 3). Stage W1 — window-scoped
+subscriptions, eviction-on-unsubscribe (E1–E4), image-lane re-entry, the
+window registry / completeness oracle — is implemented in both clients, the
+SPEC sections §8 names are now normative (§3.3 eviction note, §4.1
+omission-as-unsubscribe, new §4.8, §8.1 timing note, Appendix B.18's six
+scenarios), and the pairing is green (74/74 both cores). W2 (TTL sugar) and
+W3 (blob integration) remain staged (§6). The design below is unchanged from
+its authoring; it constrained blobs (TODO 2.1) and live-query invalidation
+(TODO 3.1, shipped) via §7 so both were built compatible.
 
 Problem, one line: a client should hold a **partial local replica** —
 the last 90 days, only hot projects — while the server keeps everything,

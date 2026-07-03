@@ -23,13 +23,13 @@ use ssp2::{
 
 use crate::api::{
     ClientLimits, ConflictRecord, LeaseState, Mutation, PresencePeer, RejectionRecord, RowState,
-    SchemaFloor, SubscriptionStateView, SyncOutcome, SyncReport,
+    SchemaFloor, SubscriptionStateView, SyncOutcome, SyncReport, WindowBase,
 };
 use crate::schema::{parse_schema_json, ClientSchema};
 use crate::transport::{SegmentRequest, Transport, TransportError};
 use crate::values::{
     bytes_to_hex, canonical_scope_json, column_value_to_json, decode_row_bytes, encode_row_json,
-    json_to_column_value, render_row_id_json, scope_map_to_json, sort_scope_map,
+    json_to_column_value, json_to_scope_map, render_row_id_json, scope_map_to_json, sort_scope_map,
 };
 
 /// §4.2 default: the rows baseline plus sqlite images (§5.3) — rusqlite
@@ -146,6 +146,39 @@ fn quote_ident(name: &str) -> String {
 
 fn base_table(name: &str) -> String {
     quote_ident(&format!("_syncular_base_{name}"))
+}
+
+/// §4.8: a stable, server-opaque key for a window base — table + variable +
+/// canonical fixed scopes. Two `set_window` calls with the same base
+/// address the same registry rows.
+/// §4.8 deferred eviction record: (sub id, table, effective scope map).
+type PendingEvict = (String, String, Vec<(String, Vec<String>)>);
+
+fn window_base_key(base: &WindowBase) -> String {
+    format!(
+        "{} {} {}",
+        base.table,
+        base.variable,
+        canonical_scope_json(&base.fixed_scopes)
+    )
+}
+
+/// §4.8: the full requested scope map for one unit (fixed scopes + unit).
+fn unit_scopes(base: &WindowBase, unit: &str) -> Vec<(String, Vec<String>)> {
+    let mut scopes = base.fixed_scopes.clone();
+    scopes.retain(|(k, _)| k != &base.variable);
+    scopes.push((base.variable.clone(), vec![unit.to_owned()]));
+    scopes
+}
+
+/// §4.1 guidance: `w:<table>:<sha256(canonical scope map)[0..16]>`. Ids are
+/// echoed not interpreted by the server, so the exact hash is client
+/// convention; SHA-256 matches the SPEC's worked example.
+fn derive_sub_id(base: &WindowBase, unit: &str) -> String {
+    let canonical = canonical_scope_json(&unit_scopes(base, unit));
+    let digest = Sha256::digest(canonical.as_bytes());
+    let hex = bytes_to_hex(&digest);
+    format!("w:{}:{}", base.table, &hex[..16])
 }
 
 fn visible_table(name: &str) -> String {
@@ -393,7 +426,13 @@ impl SyncClient {
                  CREATE TABLE IF NOT EXISTS _syncular_subscriptions (
                    id TEXT PRIMARY KEY, tbl TEXT NOT NULL, state_json TEXT NOT NULL);
                  CREATE TABLE IF NOT EXISTS _syncular_meta (
-                   key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+                   key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE IF NOT EXISTS _syncular_windows (
+                   base TEXT NOT NULL, unit TEXT NOT NULL, sub_id TEXT NOT NULL,
+                   PRIMARY KEY (base, unit));
+                 CREATE TABLE IF NOT EXISTS _syncular_window_pending_evict (
+                   sub_id TEXT PRIMARY KEY, tbl TEXT NOT NULL,
+                   effective_scopes TEXT NOT NULL);",
             )
             .map_err(|e| e.to_string())?;
         // §7.4.1: seed the persisted local schema-version marker on first
@@ -666,6 +705,286 @@ impl SyncClient {
             "DELETE FROM _syncular_subscriptions WHERE id = ?1",
             rusqlite::params![id],
         );
+    }
+
+    // -- windowed subscriptions (§4.8) ------------------------------------------
+
+    /// §4.8: set the live window units for a base — a value-sharded family
+    /// of subscriptions, one per unit. Added units get fresh subscriptions
+    /// (image-lane bootstrap on the next sync); removed units are
+    /// unsubscribed and evicted, fused in one local transaction (E1–E4).
+    /// Idempotent; re-entry cancels any deferred eviction.
+    pub fn set_window(&mut self, base: &WindowBase, units: &[String]) -> Result<(), String> {
+        let table = self
+            .schema
+            .table(&base.table)
+            .ok_or_else(|| format!("unknown table {:?}", base.table))?;
+        if table.scope_column(&base.variable).is_none() {
+            return Err(format!(
+                "setWindow: table {:?} has no scope variable {:?} (§4.8)",
+                base.table, base.variable
+            ));
+        }
+        let base_key = window_base_key(base);
+        let wanted: std::collections::HashSet<&String> = units.iter().collect();
+        let live = self.load_window_units(&base_key);
+
+        // Widen: units wanted but not live → fresh subscription + registry row.
+        for unit in units {
+            if live.iter().any(|(u, _)| u == unit) {
+                continue;
+            }
+            let sub_id = derive_sub_id(base, unit);
+            self.delete_pending_evict(&sub_id);
+            self.insert_window_unit(&base_key, unit, &sub_id);
+            self.subscribe(
+                sub_id,
+                base.table.clone(),
+                unit_scopes(base, unit),
+                base.params.clone(),
+            )?;
+        }
+
+        // Shrink: units live but not wanted → unsubscribe fused with eviction.
+        for (unit, sub_id) in live {
+            if wanted.contains(&unit) {
+                continue;
+            }
+            self.evict_unit(&base_key, base, &unit, &sub_id);
+        }
+        Ok(())
+    }
+
+    /// §4.8 completeness oracle (I3): the windowed-in units for a base.
+    pub fn window_state(&self, base: &WindowBase) -> Vec<String> {
+        self.load_window_units(&window_base_key(base))
+            .into_iter()
+            .map(|(unit, _)| unit)
+            .collect()
+    }
+
+    fn load_window_units(&self, base_key: &str) -> Vec<(String, String)> {
+        let mut stmt = match self
+            .conn
+            .prepare("SELECT unit, sub_id FROM _syncular_windows WHERE base = ?1 ORDER BY unit ASC")
+        {
+            Ok(stmt) => stmt,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map(rusqlite::params![base_key], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        });
+        match rows {
+            Ok(rows) => rows.filter_map(Result::ok).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn insert_window_unit(&self, base_key: &str, unit: &str, sub_id: &str) {
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO _syncular_windows(base, unit, sub_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params![base_key, unit, sub_id],
+        );
+    }
+
+    fn delete_window_unit(&self, base_key: &str, unit: &str) {
+        let _ = self.conn.execute(
+            "DELETE FROM _syncular_windows WHERE base = ?1 AND unit = ?2",
+            rusqlite::params![base_key, unit],
+        );
+    }
+
+    /// §4.8 E1–E4: evict one departing unit, fused with unsubscription.
+    /// Deletes the unit's rows except those pinned by a pending outbox
+    /// commit (E1); records a deferred eviction if any pin remains; discards
+    /// the subscription's cursor/resume/effective-echo (E3) and version
+    /// state with the rows (E2). Fail-closed: no local mapping ⇒ evict
+    /// nothing.
+    fn evict_unit(&mut self, base_key: &str, base: &WindowBase, unit: &str, sub_id: &str) {
+        let effective = self
+            .subs
+            .iter()
+            .find(|s| s.id == sub_id)
+            .and_then(|s| s.effective.clone())
+            .unwrap_or_else(|| unit_scopes(base, unit));
+        let pinned = self.pinned_row_ids(&base.table);
+        let deferred = self
+            .evict_scope_rows(&base.table, &effective, &pinned)
+            .unwrap_or(false);
+        self.delete_window_unit(base_key, unit);
+        self.unsubscribe(sub_id);
+        if deferred {
+            self.save_pending_evict(sub_id, &base.table, &effective);
+        } else {
+            self.delete_pending_evict(sub_id);
+        }
+        self.rebuild_overlay();
+    }
+
+    /// §4.8 E1: delete base rows matching effective scopes EXCEPT pinned
+    /// primary keys; returns `Ok(true)` iff a pinned row was left behind (so
+    /// the eviction must be deferred). `Err(())` = fail-closed (no mapping).
+    fn evict_scope_rows(
+        &mut self,
+        table_name: &str,
+        effective: &[(String, Vec<String>)],
+        pinned: &std::collections::HashSet<String>,
+    ) -> Result<bool, ()> {
+        if effective.is_empty() {
+            return Ok(false);
+        }
+        let table = self.schema.table(table_name).ok_or(())?.clone();
+        let mut clauses = Vec::new();
+        let mut params: Vec<SqlValue> = Vec::new();
+        for (variable, values) in effective {
+            let column = table.scope_column(variable).ok_or(())?;
+            let placeholders: Vec<String> = values
+                .iter()
+                .map(|v| {
+                    params.push(SqlValue::Text(v.clone()));
+                    "?".to_owned()
+                })
+                .collect();
+            clauses.push(format!(
+                "{} IN ({})",
+                quote_ident(column),
+                placeholders.join(", ")
+            ));
+        }
+        let mut sql = format!(
+            "DELETE FROM {} WHERE {}",
+            base_table(table_name),
+            clauses.join(" AND ")
+        );
+        if !pinned.is_empty() {
+            let pk = quote_ident(&table.primary_key);
+            let holes: Vec<String> = pinned
+                .iter()
+                .map(|id| {
+                    params.push(SqlValue::Text(id.clone()));
+                    "?".to_owned()
+                })
+                .collect();
+            sql.push_str(&format!(" AND {} NOT IN ({})", pk, holes.join(", ")));
+        }
+        self.conn
+            .execute(&sql, rusqlite::params_from_iter(params))
+            .map_err(|_| ())?;
+        if pinned.is_empty() {
+            return Ok(false);
+        }
+        // A pin defers the eviction only if a pinned row actually falls
+        // inside this unit's effective scopes — re-select the survivors.
+        let mut where_params: Vec<SqlValue> = Vec::new();
+        let mut where_clauses = Vec::new();
+        for (variable, values) in effective {
+            let column = table.scope_column(variable).ok_or(())?;
+            let placeholders: Vec<String> = values
+                .iter()
+                .map(|v| {
+                    where_params.push(SqlValue::Text(v.clone()));
+                    "?".to_owned()
+                })
+                .collect();
+            where_clauses.push(format!(
+                "{} IN ({})",
+                quote_ident(column),
+                placeholders.join(", ")
+            ));
+        }
+        let pk = quote_ident(&table.primary_key);
+        let select = format!(
+            "SELECT {} FROM {} WHERE {}",
+            pk,
+            base_table(table_name),
+            where_clauses.join(" AND ")
+        );
+        let mut stmt = self.conn.prepare(&select).map_err(|_| ())?;
+        let survivors: Vec<String> = stmt
+            .query_map(rusqlite::params_from_iter(where_params), |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|_| ())?
+            .filter_map(Result::ok)
+            .collect();
+        Ok(survivors.iter().any(|id| pinned.contains(id)))
+    }
+
+    /// §4.8 E1: retry deferred evictions after the outbox drains.
+    fn drain_pending_evictions(&mut self) {
+        let pending = self.load_pending_evictions();
+        for (sub_id, table_name, effective) in pending {
+            if self.schema.table(&table_name).is_none() {
+                self.delete_pending_evict(&sub_id);
+                continue;
+            }
+            let pinned = self.pinned_row_ids(&table_name);
+            let deferred = self
+                .evict_scope_rows(&table_name, &effective, &pinned)
+                .unwrap_or(false);
+            if !deferred {
+                self.delete_pending_evict(&sub_id);
+            }
+        }
+        self.rebuild_overlay();
+    }
+
+    /// §4.8 E1: primary keys of `table` referenced by a pending outbox
+    /// commit — rows that MUST NOT be evicted until the commit drains.
+    fn pinned_row_ids(&self, table: &str) -> std::collections::HashSet<String> {
+        let mut pinned = std::collections::HashSet::new();
+        for commit in &self.outbox {
+            for op in &commit.ops {
+                if op.table == table {
+                    pinned.insert(op.row_id.clone());
+                }
+            }
+        }
+        pinned
+    }
+
+    fn save_pending_evict(&self, sub_id: &str, table: &str, effective: &[(String, Vec<String>)]) {
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO _syncular_window_pending_evict(sub_id, tbl, effective_scopes)
+               VALUES (?1, ?2, ?3)",
+            rusqlite::params![sub_id, table, scope_map_to_json(effective).to_string()],
+        );
+    }
+
+    fn delete_pending_evict(&self, sub_id: &str) {
+        let _ = self.conn.execute(
+            "DELETE FROM _syncular_window_pending_evict WHERE sub_id = ?1",
+            rusqlite::params![sub_id],
+        );
+    }
+
+    fn load_pending_evictions(&self) -> Vec<PendingEvict> {
+        let mut stmt = match self
+            .conn
+            .prepare("SELECT sub_id, tbl, effective_scopes FROM _syncular_window_pending_evict")
+        {
+            Ok(stmt) => stmt,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        });
+        let mut out = Vec::new();
+        if let Ok(rows) = rows {
+            for entry in rows.filter_map(Result::ok) {
+                let (sub_id, table, json) = entry;
+                if let Ok(value) = serde_json::from_str::<Value>(&json) {
+                    if let Ok(effective) = json_to_scope_map(&value) {
+                        out.push((sub_id, table, effective));
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Record one atomic local commit (§7.1) and apply it optimistically.
@@ -1184,6 +1503,9 @@ impl SyncClient {
                 message,
             };
         }
+        // §4.8 E1: the push half may have drained commits that pinned rows of
+        // a shrunk window unit — retry any deferred evictions now.
+        self.drain_pending_evictions();
         self.ack_after_pull(transport);
         // §7.4.5: the reset is over once the first post-reset pull round
         // leaves no subscription mid-bootstrap — the tables are rebuilt.

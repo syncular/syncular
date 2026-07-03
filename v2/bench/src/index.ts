@@ -21,6 +21,7 @@ import {
   seedServerRows,
 } from './loopback';
 import { reportPgLane, runPgLane } from './pg-lane';
+import { reportWindowShard, runWindowShardLane } from './window-lane';
 
 // accept 0b0011 pins the rows lane (the client's default now advertises
 // sqlite images, §4.2) — the rows number stays comparable across runs.
@@ -94,22 +95,26 @@ const WORKLOAD = {
  *   100× allowance absorbs runner noise; breaching 20 ms in-process means
  *   a sleep/poll crept into the sync/realtime loop (for scale: v1's
  *   SOCKETED p95 was 22.8 ms — the loopback lane must beat that always).
- * - `ownJsRawCeilingBytes` 66 KB: syncular's own JS (core + codec) is
- *   62.98 KB raw today. Bundle bytes are deterministic — no runner noise —
- *   so this stays tight (~5% headroom: enough that a one-KB innocent
+ * - `ownJsRawCeilingBytes` 72 KB: syncular's own JS (core + codec) is
+ *   69.10 KB raw today. Bundle bytes are deterministic — no runner noise —
+ *   so this stays tight (~4% headroom: enough that a one-KB innocent
  *   change doesn't trip, small enough to catch real bloat), far under the
- *   217.7 KB v1 line the gate was scored against. RAISED from 60 KB
- *   (2026-07-03, TODO 3.1):
- *   the live-query invalidation choke point (`invalidation.ts` + the
- *   apply-path wiring in `client.ts` — the ONE seam DESIGN-eviction I1
- *   mandates from day one) added +1.84 KB raw (61.14 → 62.98 KB), but only
- *   +0.49 KB gzip (18.44 → 18.94 KB) — the wire cost is negligible; the raw
- *   growth is the accumulator class + per-apply-path key collection that
- *   minifies but does not compress away. 66 KB re-pins the raw line with
- *   working headroom above the seam. Note: `totalGzipCeilingBytes` is the shipped-size
- *   gate; own-JS raw is the anti-bloat tripwire, and the seam trips it by
- *   design intent, not accident. The stale "42.2 KB" prior note predated
- *   the whole parity ladder, which had already grown own JS to 59.7 KB.
+ *   217.7 KB v1 line the gate was scored against. RAISED from 66 KB
+ *   (2026-07-04, ROADMAP block 3 / DESIGN-eviction W1): windowed sync —
+ *   the `window.ts` registry + the `setWindow`/`windowState`/eviction/
+ *   pending-drain logic in `client.ts` and `evictScopedRows` in `apply.ts`
+ *   (the differentiator, SPEC §4.8) — added +6.12 KB raw (62.98 → 69.10 KB)
+ *   but only +1.65 KB gzip (18.94 → 20.59 KB): the wire cost is small; the
+ *   raw growth is the value-sharded window family logic (SQL builders,
+ *   diff, deterministic sub-id derivation) that minifies but does not
+ *   compress away. 72 KB re-pins the raw line with working headroom above
+ *   the shipped feature. This is legitimate growth (a shipped
+ *   differentiator), not bloat — re-derived per the standing rule. Earlier
+ *   raise, from 60 KB (2026-07-03, TODO 3.1): the live-query invalidation
+ *   choke point added +1.84 KB raw (61.14 → 62.98 KB) / +0.49 KB gzip.
+ *   Note: `totalGzipCeilingBytes` is the shipped-size
+ *   gate; own-JS raw is the anti-bloat tripwire, and the feature trips it by
+ *   design intent, not accident.
  * - `totalGzipCeilingBytes` 600 KB: total shipped payload (own JS +
  *   sqlite-wasm glue + sqlite3.wasm) is 474.2 KB gzip today. Also
  *   deterministic; ~25% headroom covers a vendor SQLite bump without
@@ -119,7 +124,7 @@ const BUDGETS = {
   bootstrapRowsPerSecFloor: 90_000,
   imageBootstrapRowsPerSecFloor: 300_000,
   propagationP95CeilingMs: 20,
-  ownJsRawCeilingBytes: 66 * 1024,
+  ownJsRawCeilingBytes: 72 * 1024,
   totalGzipCeilingBytes: 600 * 1024,
 } as const;
 
@@ -375,6 +380,7 @@ function report(
   image: BootstrapResult,
   prop: PropagationResult,
   bundle: BundleResult,
+  shard: import('./window-lane').WindowShardResult,
 ): string {
   const totalRaw = bundle.jsRaw + bundle.wasmRaw;
   const totalGzip = bundle.jsGzip + bundle.wasmGzip;
@@ -442,6 +448,28 @@ commit (B applies the binary delta to its local DB, then acks — §8.2).
 | Propagation p95 | ${fmtMs(prop.propP95)} | 22.8 ms p95 |
 | Write-ack p50 (A's push+pull round) | ${fmtMs(prop.ackP50)} | 11.2 ms |
 | Write-ack p95 | ${fmtMs(prop.ackP95)} | — |
+
+## b2. Windowed sync value-sharding (§4.8, W1)
+
+A window replace \`{A,B}→{B,C}\` must re-download **only C** — the
+intersection B is neither re-bootstrapped nor evicted. Measured on the
+rows-lane segment counter (${shard.perProjectRows} rows per project):
+
+| Step | Bootstrap rows applied |
+|---|---|
+| Initial window \`{A,B}\` | ${shard.initialApplied} (= 2 projects) |
+| Replace \`{A,B}→{B,C}\` | **${shard.replaceApplied}** (only C) |
+| Naive "re-download the whole window" | ${shard.naiveApplied} (A+B+C) |
+
+The replace applies exactly one project's worth of rows, not three — the
+value-sharded subscription family means the cost of a window change is
+proportional to the *delta*, not the window size. This is the
+differentiator claim, on a counter:
+${
+  shard.replaceApplied === shard.perProjectRows
+    ? 'PASS — B was not re-downloaded.'
+    : 'FAIL — the intersection was re-downloaded.'
+}
 
 ## c. Server memory (100k bootstrap)
 
@@ -554,6 +582,13 @@ async function main(): Promise<void> {
     `  js ${fmtKb(bundle.jsRaw)} (gzip ${fmtKb(bundle.jsGzip)}), wasm ${fmtKb(bundle.wasmRaw)}`,
   );
 
+  // §4.8 value-sharding proof (cheap): replace {A,B}→{B,C} re-downloads only
+  // C. Small workload — the point is the segment-counter invariant, not time.
+  console.log('bench: window value-sharding…');
+  const shard = await runWindowShardLane(CI_MODE ? 100 : 500);
+  console.log(reportWindowShard(shard));
+  const shardOk = shard.replaceApplied === shard.perProjectRows;
+
   // Env-gated Postgres lane (§4.1): the production database path. Never part
   // of CI budgets — it needs a real Postgres at SYNCULAR_PG_URL — so it runs
   // for information only and skips cleanly when unconfigured.
@@ -564,6 +599,14 @@ async function main(): Promise<void> {
   if (CI_MODE) {
     // Budgets gate; RESULTS.md stays the curated full-workload record.
     const checks = checkBudgets(big, image, prop, bundle);
+    // §4.8: the sharding invariant is a correctness budget — a replace that
+    // re-downloads more than the delta unit is a regression, not a slowdown.
+    checks.push({
+      name: 'window value-sharding (replace re-downloads only the delta)',
+      budget: `== ${shard.perProjectRows} rows (C only)`,
+      measured: `${shard.replaceApplied} rows`,
+      ok: shardOk,
+    });
     console.log('\nbudget checks:');
     for (const check of checks) {
       console.log(
@@ -581,7 +624,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const markdown = report(small, big, image, prop, bundle);
+  const markdown = report(small, big, image, prop, bundle, shard);
   const outPath = join(import.meta.dir, '..', 'RESULTS.md');
   await Bun.write(outPath, markdown);
   console.log(`\nwrote ${outPath}`);

@@ -6,6 +6,18 @@
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+/// §4.8 window base: one table, the scope variable whose values are the
+/// window units, any fixed scopes shared by every unit, and host-opaque
+/// `params` carried onto each unit's subscription.
+#[derive(Debug, Clone)]
+pub struct WindowBase {
+    pub table: String,
+    pub variable: String,
+    /// Scopes shared by every unit (other variables), if any.
+    pub fixed_scopes: Vec<(String, Vec<String>)>,
+    pub params: Option<String>,
+}
+
 /// One local mutation (§6.1 shapes, schema-agnostic local form per §0).
 #[derive(Debug, Clone)]
 pub enum Mutation {

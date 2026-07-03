@@ -741,6 +741,7 @@ name = "syncular-ffi"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "ssp2",
  "syncular-client",
  "syncular-command",
  "tungstenite",

@@ -388,3 +388,6 @@ pub extern "C" fn syncular_free_string(ptr: *mut c_char) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod round_tests;

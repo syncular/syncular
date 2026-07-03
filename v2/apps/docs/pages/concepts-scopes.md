@@ -69,9 +69,13 @@ Two rules do the heavy lifting:
   into another scope by pushing a changed `list_id`; scope migration is
   server-emitted only. This closes the cross-scope-write hole.
 
-## Roadmap
+## Windowed sync
 
-**Windowed sync / local eviction** — TTL-ing cold rows out of the local
-database while they stay server-side, scoped to windows of scope values — is
-designed ([DESIGN-eviction.md](../../DESIGN-eviction.md)) but not yet shipped.
-Today a subscription's effective scopes sync in full.
+A client does not have to hold *every* row it is authorized for. **Windowed
+sync** lets a client keep a **partial local replica** — the hot projects, the
+last few months — while the server keeps everything, with correct sync
+semantics throughout. See [Windowed sync](./concepts-windowing.md) for the
+full model; the short version is that a window is a **set of scope values**,
+and changing the window is a set difference on subscriptions: values that
+enter fresh-bootstrap, values that leave are evicted from the local database.
+Shipped in W1 ([SPEC §4.8](../../SPEC.md#48-windowed-subscriptions)).

@@ -32,5 +32,8 @@ export function handleShapeOf(client: SyncClient): SyncClientLike {
     presence: (scopeKey) => Promise.resolve(client.presence(scopeKey)),
     setPresence: (scopeKey, doc) =>
       Promise.resolve(client.setPresence(scopeKey, doc)),
+    // §4.8: setWindow is async on the handle; windowState round-trips.
+    setWindow: (base, units) => Promise.resolve(client.setWindow(base, units)),
+    windowState: (base) => Promise.resolve(client.windowState(base)),
   };
 }

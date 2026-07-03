@@ -19,7 +19,7 @@ use ssp2::{
     decode_message, encode_message, parse_control, render_message, render_rows_segment,
     ControlMessage,
 };
-use syncular_client::{ClientLimits, Mutation, SyncClient, Transport};
+use syncular_client::{ClientLimits, Mutation, SyncClient, Transport, WindowBase};
 
 // -- bytes <-> {"$bytes": hex} (the driver-protocol byte envelope) ----------
 
@@ -144,6 +144,35 @@ fn scopes_from_params(value: Option<&Value>) -> Result<Vec<(String, Vec<String>)
     }
 }
 
+/// §4.8: parse a window base descriptor `{ table, variable, fixedScopes?,
+/// params? }` from a command's `base` param.
+fn window_base_from_params(value: Option<&Value>) -> Result<WindowBase, String> {
+    let object = value
+        .and_then(Value::as_object)
+        .ok_or_else(|| "setWindow/windowState missing base object".to_owned())?;
+    let table = object
+        .get("table")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "window base missing table".to_owned())?
+        .to_owned();
+    let variable = object
+        .get("variable")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "window base missing variable".to_owned())?
+        .to_owned();
+    let fixed_scopes = scopes_from_params(object.get("fixedScopes"))?;
+    let params = object
+        .get("params")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    Ok(WindowBase {
+        table,
+        variable,
+        fixed_scopes,
+        params,
+    })
+}
+
 /// Dispatch one command against the client instance over `transport`.
 ///
 /// The `create` command installs a fresh `SyncClient` into `client` and
@@ -221,6 +250,27 @@ pub fn dispatch<T: Transport>(
                 .ok_or_else(|| client_err("unsubscribe missing id".to_owned()))?;
             need_client(client)?.unsubscribe(id);
             Ok(json!({}))
+        }
+        "setWindow" => {
+            let base = window_base_from_params(params.get("base")).map_err(client_err)?;
+            let units: Vec<String> = params
+                .get("units")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            need_client(client)?
+                .set_window(&base, &units)
+                .map_err(client_err)?;
+            Ok(json!({}))
+        }
+        "windowState" => {
+            let base = window_base_from_params(params.get("base")).map_err(client_err)?;
+            let units = need_client(client)?.window_state(&base);
+            Ok(json!({ "units": units }))
         }
         "mutate" => {
             let mutations = parse_mutations(params.get("mutations")).map_err(client_err)?;

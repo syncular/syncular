@@ -167,6 +167,64 @@ export function deleteScopedRows(
   );
 }
 
+/**
+ * §4.8 window eviction: delete rows matching a departing unit's effective
+ * scopes (same local-scope-column rule and fail-closed clause as
+ * {@link deleteScopedRows}) EXCEPT rows whose primary key is in
+ * `pinnedRowIds` (E1 — pinned by a still-pending outbox commit). Returns
+ * `true` iff any pinned row was left behind, so the caller knows to defer
+ * the rest of the eviction until the outbox drains. Also removes the
+ * evicted rows' `server_version` with them (E2 — no residual version
+ * cache), which is automatic since the version column is per-row.
+ */
+export function evictScopedRows(
+  db: ClientDatabase,
+  table: CompiledClientTable,
+  effective: ScopeMap,
+  pinnedRowIds: ReadonlySet<string>,
+): boolean {
+  const entries = Object.entries(effective);
+  if (entries.length === 0) return false;
+  const clauses: string[] = [];
+  const params: string[] = [];
+  for (const [variable, values] of entries) {
+    const column = table.scopeColumnByVariable.get(variable);
+    if (column === undefined) {
+      throw new ClientSyncError(
+        'sync.scope_revoked',
+        `table ${JSON.stringify(table.name)} has no local scope-column mapping for ${JSON.stringify(variable)} (§4.8/§3.3 fail-closed)`,
+      );
+    }
+    if (values.length === 0) return false;
+    clauses.push(
+      `${quoteIdent(column)} IN (${values.map(() => '?').join(', ')})`,
+    );
+    params.push(...values);
+  }
+  const pk = quoteIdent(table.primaryKey);
+  let pinnedClause = '';
+  if (pinnedRowIds.size > 0) {
+    const ids = [...pinnedRowIds];
+    pinnedClause = ` AND ${pk} NOT IN (${ids.map(() => '?').join(', ')})`;
+    params.push(...ids);
+  }
+  db.exec(
+    `DELETE FROM ${quoteIdent(table.name)} WHERE ${clauses.join(' AND ')}${pinnedClause}`,
+    params,
+  );
+  if (pinnedRowIds.size === 0) return false;
+  // A pin still matters only if a pinned row actually falls inside this
+  // unit's effective scopes; check by re-selecting the survivors.
+  const survivors = db.query(
+    `SELECT ${pk} AS pk FROM ${quoteIdent(table.name)} WHERE ${clauses.join(' AND ')}`,
+    params.slice(0, params.length - pinnedRowIds.size),
+  );
+  for (const row of survivors) {
+    if (pinnedRowIds.has(String(row.pk))) return true;
+  }
+  return false;
+}
+
 /** Descriptor fields a sqlite image is validated against (§5.3). */
 export interface SqliteSegmentDescriptor {
   readonly table: string;

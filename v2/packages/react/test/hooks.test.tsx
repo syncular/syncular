@@ -20,6 +20,7 @@ import {
   usePresence,
   useSyncQuery,
   useSyncStatus,
+  useWindow,
 } from '../src/index';
 import { FakeClient } from './fake-client';
 
@@ -233,3 +234,45 @@ function Bare(): ReactNode {
   useSyncQuery('SELECT 1');
   return null;
 }
+
+describe('useWindow (§4.8 completeness oracle, I3)', () => {
+  const base = { table: 'tasks', variable: 'project_id' } as const;
+
+  test('setWindow updates the live units and the isComplete verdict', async () => {
+    const client = new FakeClient();
+    const { result } = renderHook(() => useWindow(base), {
+      wrapper: wrapper(client),
+    });
+    await waitFor(() => expect(result.current.units).toEqual([]));
+    // No unit is complete until windowed in — the honest default.
+    expect(result.current.isComplete('p1')).toBe(false);
+
+    await act(async () => {
+      await result.current.setWindow(['p1', 'p2']);
+    });
+    await waitFor(() =>
+      expect([...result.current.units].sort()).toEqual(['p1', 'p2']),
+    );
+    expect(result.current.isComplete('p1')).toBe(true);
+    expect(result.current.isComplete('p2')).toBe(true);
+    // A window MISS is reported honestly — never silently complete.
+    expect(result.current.isComplete('p3')).toBe(false);
+  });
+
+  test('shrinking drops a unit from completeness', async () => {
+    const client = new FakeClient();
+    client.setWindow(base, ['p1', 'p2']);
+    const { result } = renderHook(() => useWindow(base), {
+      wrapper: wrapper(client),
+    });
+    await waitFor(() =>
+      expect([...result.current.units].sort()).toEqual(['p1', 'p2']),
+    );
+    await act(async () => {
+      await result.current.setWindow(['p2']);
+    });
+    await waitFor(() => expect(result.current.units).toEqual(['p2']));
+    expect(result.current.isComplete('p1')).toBe(false);
+    expect(result.current.isComplete('p2')).toBe(true);
+  });
+});

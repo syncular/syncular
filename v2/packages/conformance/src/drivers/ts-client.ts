@@ -30,6 +30,7 @@ import type {
   DriverRowValue,
   DriverSchema,
   DriverScopeMap,
+  DriverWindowBase,
 } from '../driver';
 import { bytesToHex, hexToBytes } from '../raw';
 
@@ -203,6 +204,36 @@ class TsClientInstance implements ClientInstance {
 
   async unsubscribe(id: string): Promise<void> {
     this.#client.unsubscribe(id);
+  }
+
+  async setWindow(
+    base: DriverWindowBase,
+    units: readonly string[],
+  ): Promise<void> {
+    await this.#client.setWindow(
+      {
+        table: base.table,
+        variable: base.variable,
+        ...(base.fixedScopes !== undefined
+          ? { fixedScopes: base.fixedScopes as ScopeMap }
+          : {}),
+        ...(base.params !== undefined ? { params: base.params } : {}),
+      },
+      units,
+    );
+  }
+
+  async windowState(
+    base: DriverWindowBase,
+  ): Promise<{ readonly units: readonly string[] }> {
+    return this.#client.windowState({
+      table: base.table,
+      variable: base.variable,
+      ...(base.fixedScopes !== undefined
+        ? { fixedScopes: base.fixedScopes as ScopeMap }
+        : {}),
+      ...(base.params !== undefined ? { params: base.params } : {}),
+    });
   }
 
   async mutate(mutations: readonly ClientMutation[]): Promise<string> {

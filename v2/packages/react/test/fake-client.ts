@@ -16,6 +16,8 @@ import type {
   RejectionRecord,
   SchemaFloor,
   SqlRow,
+  WindowBase,
+  WindowState,
 } from '@syncular-v2/web-client';
 import type { SyncClientLike } from '../src/client';
 
@@ -107,6 +109,22 @@ export class FakeClient implements SyncClientLike {
 
   setPresence(_scopeKey: string, _doc: Record<string, unknown> | null): void {
     // No-op: presence publish is not exercised by the hook tests.
+  }
+
+  #windowUnits = new Map<string, string[]>();
+
+  #windowKey(base: WindowBase): string {
+    return `${base.table} ${base.variable}`;
+  }
+
+  setWindow(base: WindowBase, units: readonly string[]): void {
+    this.#windowUnits.set(this.#windowKey(base), [...units]);
+    // A window change touches the base table — the useWindow hook re-reads.
+    this.emitInvalidate([base.table]);
+  }
+
+  windowState(base: WindowBase): WindowState {
+    return { units: this.#windowUnits.get(this.#windowKey(base)) ?? [] };
   }
 
   // These four are getters on the real SyncClient — as plain values here,

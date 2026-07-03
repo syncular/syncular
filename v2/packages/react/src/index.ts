@@ -27,3 +27,4 @@ export {
   useSyncQuery,
 } from './use-sync-query';
 export { type SyncStatus, useSyncStatus } from './use-sync-status';
+export { type UseWindowResult, useWindow } from './use-window';

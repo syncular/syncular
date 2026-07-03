@@ -22,5 +22,6 @@ export * from './outbox';
 export * from './schema';
 export * from './state';
 export * from './transport';
+export * from './window';
 export * from './worker-host';
 export * from './worker-protocol';

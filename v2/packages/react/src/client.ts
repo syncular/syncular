@@ -21,6 +21,8 @@ import type {
   SchemaFloor,
   SqlRow,
   SqlValue,
+  WindowBase,
+  WindowState,
 } from '@syncular-v2/web-client';
 
 /**
@@ -61,6 +63,10 @@ export interface SyncClientLike {
     scopeKey: string,
     doc: Record<string, unknown> | null,
   ): void | Promise<void>;
+  /** §4.8 windowed subscriptions: set the live units for a window base. */
+  setWindow(base: WindowBase, units: readonly string[]): void | Promise<void>;
+  /** §4.8 completeness oracle (I3): the windowed-in units for a base. */
+  windowState(base: WindowBase): WindowState | Promise<WindowState>;
 }
 
 /**
@@ -98,6 +104,8 @@ export interface NormalizedClient {
     scopeKey: string,
     doc: Record<string, unknown> | null,
   ): Promise<void>;
+  setWindow(base: WindowBase, units: readonly string[]): Promise<void>;
+  windowState(base: WindowBase): Promise<WindowState>;
 }
 
 export function normalizeClient(client: SyncClientLike): NormalizedClient {
@@ -116,5 +124,7 @@ export function normalizeClient(client: SyncClientLike): NormalizedClient {
     presence: (scopeKey) => Promise.resolve(client.presence(scopeKey)),
     setPresence: (scopeKey, doc) =>
       Promise.resolve(client.setPresence(scopeKey, doc)),
+    setWindow: (base, units) => Promise.resolve(client.setWindow(base, units)),
+    windowState: (base) => Promise.resolve(client.windowState(base)),
   };
 }

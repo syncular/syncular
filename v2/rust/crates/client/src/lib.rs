@@ -13,14 +13,21 @@
 
 pub mod api;
 pub mod client;
+pub mod realtime_round;
 pub mod schema;
 pub mod transport;
 pub mod values;
 
 pub use api::{
     ClientLimits, ConflictRecord, Mutation, PresencePeer, RejectionRecord, RowState, SchemaFloor,
-    SubscriptionStateView, SyncOutcome, SyncReport,
+    SubscriptionStateView, SyncOutcome, SyncReport, WindowBase,
 };
 pub use client::SyncClient;
 pub use schema::{compile_schema, parse_schema_json, ClientSchema};
 pub use transport::{SegmentRequest, Transport, TransportError};
+
+// Re-export the SSP2 stream scanner (§8.7 round-response reassembly) so the
+// native transports (FFI + Tauri plugin) reach it through their existing
+// `syncular-client` dependency, without each adding a direct `ssp2` path dep.
+pub use realtime_round::{RealtimeRound, RoundInbound, REALTIME_TAG_DELTA, REALTIME_TAG_ROUND};
+pub use ssp2::{MessageStreamScanner, ScannedMessage};

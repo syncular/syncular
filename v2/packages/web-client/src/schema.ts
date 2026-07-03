@@ -202,6 +202,20 @@ export function ensureLocalSchema(
       effective_scopes TEXT,
       status TEXT NOT NULL DEFAULT 'active',
       reason_code TEXT)`);
+    // §4.8 window registry: which units (scope values) of a window base are
+    // live locally — the completeness oracle (I3) and the shrink driver
+    // (a unit's omission from the next pull unregisters it, §4.1).
+    db.exec(`CREATE TABLE IF NOT EXISTS _syncular_windows(
+      base TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      sub_id TEXT NOT NULL,
+      PRIMARY KEY (base, unit))`);
+    // §4.8 E1: units that left the window but still had outbox-pinned rows.
+    // Retried when the outbox drains; cancelled if the unit re-enters.
+    db.exec(`CREATE TABLE IF NOT EXISTS _syncular_window_pending_evict(
+      sub_id TEXT PRIMARY KEY,
+      tbl TEXT NOT NULL,
+      effective_scopes TEXT NOT NULL)`);
   });
 }
 

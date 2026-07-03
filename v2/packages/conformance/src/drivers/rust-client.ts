@@ -38,6 +38,7 @@ import type {
   CodecDriver,
   CodecRoundtrip,
   DriverSchema,
+  DriverWindowBase,
   JsonValue,
 } from '../driver';
 import { bytesToHex, hexToBytes } from '../raw';
@@ -475,6 +476,25 @@ class RustClientInstance implements ClientInstance {
 
   async unsubscribe(id: string): Promise<void> {
     await this.#shim.call('unsubscribe', { id });
+  }
+
+  async setWindow(
+    base: DriverWindowBase,
+    units: readonly string[],
+  ): Promise<void> {
+    await this.#shim.call('setWindow', {
+      base: base as unknown as JsonValue,
+      units: units as unknown as JsonValue,
+    });
+  }
+
+  async windowState(
+    base: DriverWindowBase,
+  ): Promise<{ readonly units: readonly string[] }> {
+    const result = await this.#shim.call('windowState', {
+      base: base as unknown as JsonValue,
+    });
+    return result as unknown as { readonly units: readonly string[] };
   }
 
   async mutate(mutations: readonly ClientMutation[]): Promise<string> {
