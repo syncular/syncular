@@ -297,6 +297,12 @@ export class ScenarioContext {
   readonly pairing: Pairing;
   readonly server: ServerInstance;
   readonly schema: DriverSchema;
+  /**
+   * The schema the SERVER runs (may differ from `schema`, the client
+   * default). Seeds go in at this version so a scenario running a bumped
+   * server (§7.4) can still seed rows the server accepts.
+   */
+  readonly serverSchema: DriverSchema;
   readonly random: () => number;
   readonly #clients: ClientHandle[] = [];
 
@@ -305,10 +311,12 @@ export class ScenarioContext {
     server: ServerInstance,
     schema: DriverSchema,
     seed: number,
+    serverSchema: DriverSchema = schema,
   ) {
     this.pairing = pairing;
     this.server = server;
     this.schema = schema;
+    this.serverSchema = serverSchema;
     this.random = seededRandom(seed);
   }
 
@@ -476,6 +484,29 @@ export class ScenarioContext {
     return handle;
   }
 
+  /**
+   * §7.4.2 "app ships new code": recreate a client's core with a NEW
+   * generated schema on the SAME local database (the boot-time §7.4.1
+   * marker check then drives the wipe/re-bootstrap). The handle's fault
+   * controller, transport seam, and realtime observations are preserved —
+   * only the client core is swapped. Requires a client driver that
+   * implements `recreateWithSchema`.
+   */
+  async recreateClient(
+    handle: ClientHandle,
+    schema: DriverSchema,
+  ): Promise<void> {
+    if (handle.api.recreateWithSchema === undefined) {
+      throw new Error(
+        'this client driver does not support recreateWithSchema (§7.4.2)',
+      );
+    }
+    const next = await handle.api.recreateWithSchema(schema);
+    // The driver returns `this` with the core swapped; keep the same handle
+    // object (mutably rebind `api`) so scenarios hold one reference.
+    (handle as { api: ClientInstance }).api = next;
+  }
+
   /** Raw-bytes surface: hand-built reference-codec request → decoded
    * response, or the server's request-level error (§1.7). */
   async rawSync(
@@ -531,5 +562,8 @@ export async function createScenarioContext(
     // versions deliberately).
     FIXTURE_SCHEMA,
     seedFromName(scenario.name),
+    // Seeds go in at the server's actual schema version (§7.4 scenarios
+    // run a bumped server).
+    schema,
   );
 }

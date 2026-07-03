@@ -96,6 +96,21 @@ export function deleteSubscription(db: ClientDatabase, id: string): void {
   db.exec('DELETE FROM _syncular_subscriptions WHERE id = ?', [id]);
 }
 
+/**
+ * §7.4.3 reset: keep every subscription REGISTRATION (id, table,
+ * requested scopes, params — the app's declared intent) but discard all
+ * synced state (cursor → -1, no resume token, no effective-scope map,
+ * status → active), so the next round fresh-bootstraps exactly the
+ * subscriptions the app still wants. Caller owns the transaction.
+ */
+export function resetSubscriptionsForBump(db: ClientDatabase): void {
+  db.exec(
+    `UPDATE _syncular_subscriptions
+       SET cursor = -1, bootstrap_state = NULL, effective_scopes = NULL,
+           status = 'active', reason_code = NULL`,
+  );
+}
+
 export function getMeta(db: ClientDatabase, key: string): string | undefined {
   const row = db.query('SELECT value FROM _syncular_meta WHERE key = ?', [
     key,

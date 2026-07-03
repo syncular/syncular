@@ -66,6 +66,7 @@ import {
   encodeOutboxCommit,
   listOutbox,
   type OutboxCommit,
+  OutboxEncodeError,
   type OutboxOperation,
 } from './outbox';
 import {
@@ -73,8 +74,10 @@ import {
   type CompiledClientSchema,
   type CompiledClientTable,
   compileClientSchema,
+  dropAndRecreateSyncedTables,
   ensureLocalSchema,
   jsonToRowValue,
+  LOCAL_SCHEMA_VERSION_KEY,
   OPTIMISTIC_VERSION,
   quoteIdent,
   recordToRowValues,
@@ -86,6 +89,7 @@ import {
   getMeta,
   getSubscription,
   loadSubscriptions,
+  resetSubscriptionsForBump,
   type SubscriptionRecord,
   saveSubscription,
   setMeta,
@@ -218,6 +222,12 @@ export interface SyncClientConfig {
   /** §8: hello `requiresSync` or a wake-up — run a pull soon. */
   readonly onSyncNeeded?: (reason: 'hello' | WakeReason) => void;
   readonly onConflict?: (conflict: ConflictRecord) => void;
+  /**
+   * §7.4.5: the schema-bump `upgrading` state changed. `true` when a reset
+   * (wipe + re-bootstrap) began, `false` when the first post-reset
+   * bootstrap round reached idle — the app's cue to re-run live queries.
+   */
+  readonly onUpgrading?: (upgrading: boolean) => void;
 }
 
 export interface SubscribeInput {
@@ -235,6 +245,13 @@ export interface SubscribeInput {
 const ACCEPT_ROWS_BASELINE = 0b0011;
 const ACCEPT_SQLITE = 1 << 2;
 const ACCEPT_SIGNED_URLS = 1 << 3;
+
+/**
+ * §7.4.4 client-local code: a pending outbox commit cannot re-encode under
+ * the new generated schema after a bump (a referenced column is gone).
+ * Never a wire code (§10.3) — surfaced through the rejection channel.
+ */
+const OUTBOX_INCOMPATIBLE_CODE = 'sync.outbox_incompatible';
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest(
@@ -301,6 +318,8 @@ export class SyncClient {
   #clientId = '';
   #schemaFloor: SchemaFloor | undefined;
   #leaseState: LeaseState | undefined;
+  /** §7.4.5: true while a schema-bump reset + first bootstrap is in flight. */
+  #upgrading = false;
   #conflicts: ConflictRecord[] = [];
   #rejections: RejectionRecord[] = [];
   #socket: RealtimeSocket | undefined;
@@ -338,7 +357,56 @@ export class SyncClient {
     if (leaseJson !== undefined) {
       this.#leaseState = JSON.parse(leaseJson) as LeaseState;
     }
+    // §7.4.2 trigger 1: the persisted local schema version differs from the
+    // generated version this client ships — run the wipe/re-bootstrap reset
+    // before the first sync round. A fresh install (no marker) is treated as
+    // already at the generated version.
+    this.#detectAndResetSchema();
     this.#started = true;
+  }
+
+  /**
+   * §7.4.1/§7.4.2: compare the generated schema version to the persisted
+   * marker and run the §7.4.3 reset when they differ. Idempotent by the
+   * marker — a mid-reset crash re-runs the reset on the next boot.
+   */
+  #detectAndResetSchema(): void {
+    const markerJson = getMeta(this.#db, LOCAL_SCHEMA_VERSION_KEY);
+    if (markerJson === undefined) {
+      // Fresh install: the tables just created match the running code.
+      setMeta(this.#db, LOCAL_SCHEMA_VERSION_KEY, String(this.#schema.version));
+      return;
+    }
+    const marker = Number(markerJson);
+    if (marker === this.#schema.version) return;
+    this.#runSchemaReset();
+  }
+
+  /**
+   * §7.4.3 reset: whole-database local reset EXCEPT the outbox, clientId,
+   * and leaseState. Drops/recreates every synced table from the new schema,
+   * resets subscription sync-state (keeping registrations), clears any
+   * schema-floor stop state, rewrites the marker, and raises `upgrading`.
+   * The bump is idempotent by the marker (rewritten last).
+   */
+  #runSchemaReset(): void {
+    this.#setUpgrading(true);
+    this.#db.transaction(() => {
+      dropAndRecreateSyncedTables(this.#db, this.#schema);
+      resetSubscriptionsForBump(this.#db);
+      setMeta(this.#db, LOCAL_SCHEMA_VERSION_KEY, String(this.#schema.version));
+    });
+    // The stop state is over: this client now ships a servable schema. The
+    // outbox is re-applied optimistically over the (now empty) tables so
+    // pending offline writes stay visible across the bump (§7.4.5).
+    this.#schemaFloor = undefined;
+    this.#replayOutbox();
+  }
+
+  #setUpgrading(upgrading: boolean): void {
+    if (this.#upgrading === upgrading) return;
+    this.#upgrading = upgrading;
+    this.#config.onUpgrading?.(upgrading);
   }
 
   async close(): Promise<void> {
@@ -470,6 +538,16 @@ export class SyncClient {
   /** Non-undefined once the server declared a schema floor (§1.6). */
   get schemaFloor(): SchemaFloor | undefined {
     return this.#schemaFloor;
+  }
+
+  /**
+   * §7.4.5: true while a schema-bump reset + first re-bootstrap is in
+   * flight — the app's "upgrading…" cue. Clears when the first post-reset
+   * bootstrap round reaches idle (every subscription past its fresh
+   * bootstrap).
+   */
+  get upgrading(): boolean {
+    return this.#upgrading;
   }
 
   /**
@@ -635,6 +713,69 @@ export class SyncClient {
     );
   }
 
+  /**
+   * §7.4.4: encode every pending outbox commit with the current codec. A
+   * commit that cannot re-encode under the new schema (an
+   * `OutboxEncodeError` — a referenced column/table the bump removed) is
+   * dropped from the outbox and surfaced as a rejection (`sync.outbox_
+   * incompatible`); its purely-optimistic rows are undone (§7.2). Returns
+   * the encoded push frames index-aligned with the surviving `outbox`.
+   */
+  #encodeOutboxForPush(): {
+    pushFrames: RequestFrame[];
+    outbox: OutboxCommit[];
+  } {
+    const pending = listOutbox(this.#db);
+    const pushFrames: RequestFrame[] = [];
+    const outbox: OutboxCommit[] = [];
+    for (const commit of pending) {
+      try {
+        pushFrames.push(encodeOutboxCommit(this.#schema, commit));
+        outbox.push(commit);
+      } catch (error) {
+        if (error instanceof OutboxEncodeError) {
+          this.#dropIncompatibleCommit(commit, error.message);
+          continue;
+        }
+        throw error;
+      }
+    }
+    return { pushFrames, outbox };
+  }
+
+  /**
+   * §7.4.4: drop a commit that cannot re-encode after a bump, mirroring the
+   * §7.2 `rejected` surface — the commit leaves the outbox, its
+   * purely-optimistic rows are undone, and a rejection record is raised.
+   */
+  #dropIncompatibleCommit(commit: OutboxCommit, message: string): void {
+    this.#db.transaction(() => {
+      deleteOutboxCommit(this.#db, commit.clientCommitId);
+      for (const operation of commit.operations) {
+        if (operation.op !== 'upsert') continue;
+        const table = this.#schema.tables.get(operation.table);
+        if (table === undefined) continue;
+        const row = this.#db.query(
+          `SELECT ${quoteIdent(SYNC_VERSION_COLUMN)} AS v FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
+          [operation.rowId],
+        )[0];
+        if (row !== undefined && row.v === OPTIMISTIC_VERSION) {
+          deleteLocalRow(this.#db, table, operation.rowId);
+        }
+      }
+    });
+    this.#rejections.push({
+      clientCommitId: commit.clientCommitId,
+      opIndex: 0,
+      code: OUTBOX_INCOMPATIBLE_CODE,
+      message,
+      retryable: false,
+      ...(commit.operations[0] !== undefined
+        ? { operation: commit.operations[0] }
+        : {}),
+    });
+  }
+
   // -- sync -------------------------------------------------------------------
 
   /** One combined push+pull round (§1.5, §7.2). */
@@ -664,7 +805,12 @@ export class SyncClient {
       if (this.#hasBlobs && this.#config.blobs !== undefined) {
         await this.flushBlobUploads();
       }
-      const outbox = listOutbox(this.#db);
+      // §7.4.4: encode the outbox with the CURRENT codec; a commit that
+      // cannot express itself under the new schema (a dropped column/table)
+      // is removed from the push and surfaced as a rejection, never wedging
+      // the queue. `pushFrames` and `outbox` stay index-aligned for result
+      // mapping.
+      const { pushFrames, outbox } = this.#encodeOutboxForPush();
       const subs = loadSubscriptions(this.#db).filter(
         (sub) => sub.status === 'active',
       );
@@ -675,7 +821,7 @@ export class SyncClient {
           clientId: this.#clientId,
           schemaVersion: this.#schema.version,
         },
-        ...outbox.map((commit) => encodeOutboxCommit(this.#schema, commit)),
+        ...pushFrames,
         {
           type: 'PULL_HEADER',
           limitCommits: limits?.limitCommits ?? 0,
@@ -950,7 +1096,12 @@ export class SyncClient {
     }
     if (header.requiredSchemaVersion !== undefined) {
       // §1.6 schema floor: nothing else was processed — stop syncing and
-      // surface the upgrade requirement.
+      // surface the upgrade requirement. A live-round floor always stops:
+      // the generated schema does not match what the server serves (behind,
+      // or ahead of a lagging server), and no local reset changes the
+      // version this client sends. The §7.4.2 trigger-2 convergence runs
+      // when the APP updates (recreating the client with a new generated
+      // schema), which fires the boot-time §7.4.1 marker check instead.
       this.#schemaFloor = {
         requiredSchemaVersion: header.requiredSchemaVersion,
         ...(header.latestSchemaVersion !== undefined
@@ -1151,6 +1302,11 @@ export class SyncClient {
         (sub) => sub.status === 'active' && sub.bootstrapState !== undefined,
       )
       .map((sub) => sub.id);
+    // §7.4.5: the reset is over once the first post-reset pull round leaves
+    // no subscription mid-bootstrap — the tables are rebuilt and current.
+    if (this.#upgrading && mode === 'pull' && bootstrapping.length === 0) {
+      this.#setUpgrading(false);
+    }
     return { ...summary, bootstrapping };
   }
 

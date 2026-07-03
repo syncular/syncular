@@ -37,6 +37,12 @@ const ACCEPT_EXTERNAL_ROWS: u8 = 1 << 1;
 const ACCEPT_SQLITE: u8 = 1 << 2;
 const ACCEPT_SIGNED_URLS: u8 = 1 << 3;
 
+/// §7.4.1 persisted local schema-version marker (`_syncular_meta` key).
+const LOCAL_SCHEMA_VERSION_KEY: &str = "localSchemaVersion";
+/// §7.4.4 client-local code: a pending outbox commit cannot re-encode under
+/// the new schema after a bump. Never a wire code (§10.3).
+const OUTBOX_INCOMPATIBLE_CODE: &str = "sync.outbox_incompatible";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SubState {
     Active,
@@ -117,6 +123,8 @@ pub struct SyncClient {
     lease_state: Option<LeaseState>,
     /// §1.6: the schema-floor response stops syncing until an upgrade.
     stopped: bool,
+    /// §7.4.5: true while a schema-bump reset + first re-bootstrap is in flight.
+    upgrading: bool,
     /// §8.4 coalesced sync-needed signal.
     sync_needed: bool,
     realtime_connected: bool,
@@ -135,6 +143,19 @@ fn base_table(name: &str) -> String {
 
 fn visible_table(name: &str) -> String {
     quote_ident(name)
+}
+
+/// §7.4.3: is a `sqlite_master` table name a synced table (visible or base),
+/// i.e. NOT one of the durable bookkeeping tables the reset preserves?
+fn is_synced_table_name(name: &str) -> bool {
+    if name.starts_with("sqlite_") {
+        return false;
+    }
+    if name.starts_with("_syncular_base_") {
+        return true; // the base half of a synced table pair
+    }
+    // Bookkeeping: outbox, subscriptions, meta, blob cache/uploads.
+    !name.starts_with("_syncular_")
 }
 
 /// `"sha256:" + hex` of the bytes — the content address (§5.9.1).
@@ -253,6 +274,7 @@ impl SyncClient {
             schema_floor: None,
             lease_state: None,
             stopped: false,
+            upgrading: false,
             sync_needed: false,
             realtime_connected: false,
             now_ms: None,
@@ -277,28 +299,24 @@ impl SyncClient {
     }
 
     fn create_tables(&self) -> Result<(), String> {
-        for table in &self.schema.tables {
-            for full in [base_table(&table.name), visible_table(&table.name)] {
-                let mut cols: Vec<String> =
-                    table.columns.iter().map(|c| quote_ident(&c.name)).collect();
-                cols.push("\"_syncular_version\" INTEGER NOT NULL".to_owned());
-                let sql = format!(
-                    "CREATE TABLE {full} ({} , PRIMARY KEY ({}))",
-                    cols.join(", "),
-                    quote_ident(&table.primary_key)
-                );
-                self.conn.execute(&sql, []).map_err(|e| e.to_string())?;
-            }
-        }
-        // Durable client bookkeeping (outbox + subscription persistence).
+        self.create_synced_tables()?;
+        // Durable client bookkeeping (outbox + subscription + meta).
         self.conn
             .execute_batch(
-                "CREATE TABLE _syncular_outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                "CREATE TABLE IF NOT EXISTS _syncular_outbox (
+                   seq INTEGER PRIMARY KEY AUTOINCREMENT,
                    commit_id TEXT NOT NULL UNIQUE, ops_json TEXT NOT NULL);
-                 CREATE TABLE _syncular_subscriptions (id TEXT PRIMARY KEY,
-                   tbl TEXT NOT NULL, state_json TEXT NOT NULL);",
+                 CREATE TABLE IF NOT EXISTS _syncular_subscriptions (
+                   id TEXT PRIMARY KEY, tbl TEXT NOT NULL, state_json TEXT NOT NULL);
+                 CREATE TABLE IF NOT EXISTS _syncular_meta (
+                   key TEXT PRIMARY KEY, value TEXT NOT NULL);",
             )
             .map_err(|e| e.to_string())?;
+        // §7.4.1: seed the persisted local schema-version marker on first
+        // create (a fresh install is already at its generated version).
+        if self.get_meta(LOCAL_SCHEMA_VERSION_KEY).is_none() {
+            self.set_meta(LOCAL_SCHEMA_VERSION_KEY, &self.schema.version.to_string());
+        }
         // §5.9.7 blob cache + pending-upload queue (created only when the
         // schema declares blob_ref columns; harmless otherwise).
         if self.schema_has_blobs() {
@@ -322,6 +340,161 @@ impl SyncClient {
             .tables
             .iter()
             .any(|t| t.columns.iter().any(|c| c.ty == ColumnType::BlobRef))
+    }
+
+    // -- meta (§7.4.1 marker, bookkeeping) ------------------------------------
+
+    fn get_meta(&self, key: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT value FROM _syncular_meta WHERE key = ?1",
+                rusqlite::params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+    }
+
+    fn set_meta(&self, key: &str, value: &str) {
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO _syncular_meta (key, value) VALUES (?1, ?2)",
+            rusqlite::params![key, value],
+        );
+    }
+
+    /// §7.4.5: true while a schema-bump reset + first re-bootstrap runs.
+    pub fn upgrading(&self) -> bool {
+        self.upgrading
+    }
+
+    /// §7.4.2 "app ships new code": swap to a NEW generated schema while
+    /// keeping this client's local database (identity, outbox, tables). The
+    /// §7.4.1 marker check then fires the wipe/re-bootstrap flow when the
+    /// version changed. Mirrors the TS client's boot-time detection —
+    /// the Rust core has no persistent restart, so recreation IS the boot.
+    pub fn recreate_with_schema(&mut self, schema_json: &Value) -> Result<(), String> {
+        let new_schema = parse_schema_json(schema_json)?;
+        let marker: Option<i32> = self
+            .get_meta(LOCAL_SCHEMA_VERSION_KEY)
+            .and_then(|v| v.parse().ok());
+        self.schema = new_schema;
+        if marker == Some(self.schema.version) {
+            // No version change — nothing to reset.
+            return Ok(());
+        }
+        self.run_schema_reset()
+    }
+
+    /// §7.4.3 reset: whole-database local reset EXCEPT the outbox, clientId,
+    /// and leaseState. Drops/recreates every synced table from the new
+    /// schema, resets subscription sync-state (keeping registrations), clears
+    /// the schema-floor stop state, rewrites the marker, drops outbox commits
+    /// that cannot re-encode (§7.4.4), and replays the survivors on top.
+    fn run_schema_reset(&mut self) -> Result<(), String> {
+        self.upgrading = true;
+        // Drop every synced table (base + visible) that currently exists —
+        // discovered from sqlite_master so a bump that adds/removes tables is
+        // handled. Bookkeeping tables (`_syncular_outbox/_subscriptions/_meta`
+        // and the blob cache) are preserved; base tables are `_syncular_base_*`
+        // so they are matched explicitly, not by the bookkeeping filter.
+        let existing: Vec<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(Result::ok)
+                .filter(|name| is_synced_table_name(name))
+                .collect()
+        };
+        for name in existing {
+            let _ = self
+                .conn
+                .execute(&format!("DROP TABLE IF EXISTS {}", quote_ident(&name)), []);
+        }
+        // Recreate the synced tables from the NEW schema.
+        self.create_synced_tables()?;
+        // Reset every subscription's sync-state, keeping the registration.
+        for sub in &mut self.subs {
+            sub.cursor = -1;
+            sub.bootstrap_state = None;
+            sub.effective = None;
+            sub.state = SubState::Active;
+            sub.reason_code = None;
+            sub.synced_once = false;
+        }
+        let subs = self.subs.clone();
+        for sub in &subs {
+            self.persist_sub(sub);
+        }
+        // The stop state is over: this client now ships a servable schema.
+        self.stopped = false;
+        self.schema_floor = None;
+        // Rewrite the marker LAST so a crash mid-reset re-runs the reset.
+        self.set_meta(LOCAL_SCHEMA_VERSION_KEY, &self.schema.version.to_string());
+        // §7.4.4: drop outbox commits that cannot re-encode under the new
+        // schema (a referenced column/table the bump removed), surfacing each
+        // as a `sync.outbox_incompatible` rejection.
+        self.drop_incompatible_outbox();
+        // Re-apply the surviving outbox optimistically over the empty tables.
+        self.rebuild_overlay();
+        Ok(())
+    }
+
+    /// §7.4.4: a persisted upsert whose values reference a column the current
+    /// schema lacks (or a removed table) cannot be encoded. Drop the commit
+    /// and raise a client-local `sync.outbox_incompatible` rejection.
+    fn drop_incompatible_outbox(&mut self) {
+        let schema = &self.schema;
+        let mut incompatible: Vec<String> = Vec::new();
+        self.outbox.retain(|commit| {
+            let bad = commit.ops.iter().any(|op| {
+                if !op.upsert {
+                    return false;
+                }
+                match schema.table(&op.table) {
+                    None => true,
+                    Some(table) => op.values.as_ref().is_some_and(|values| {
+                        values
+                            .keys()
+                            .any(|key| !table.columns.iter().any(|c| &c.name == key))
+                    }),
+                }
+            });
+            if bad {
+                incompatible.push(commit.client_commit_id.clone());
+            }
+            !bad
+        });
+        for client_commit_id in incompatible {
+            self.persist_outbox_delete(&client_commit_id);
+            self.rejections.push(RejectionRecord {
+                client_commit_id,
+                op_index: 0,
+                code: OUTBOX_INCOMPATIBLE_CODE.to_owned(),
+                retryable: false,
+            });
+        }
+    }
+
+    /// §7.4.3: (re)create the base + visible table pair for every synced
+    /// table in the CURRENT schema (idempotent — `IF NOT EXISTS`).
+    fn create_synced_tables(&self) -> Result<(), String> {
+        for table in &self.schema.tables {
+            for full in [base_table(&table.name), visible_table(&table.name)] {
+                let mut cols: Vec<String> =
+                    table.columns.iter().map(|c| quote_ident(&c.name)).collect();
+                cols.push("\"_syncular_version\" INTEGER NOT NULL".to_owned());
+                let sql = format!(
+                    "CREATE TABLE IF NOT EXISTS {full} ({} , PRIMARY KEY ({}))",
+                    cols.join(", "),
+                    quote_ident(&table.primary_key)
+                );
+                self.conn.execute(&sql, []).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
     }
 
     // -- persistence write-through --------------------------------------------
@@ -889,6 +1062,11 @@ impl SyncClient {
             };
         }
         self.ack_after_pull(transport);
+        // §7.4.5: the reset is over once the first post-reset pull round
+        // leaves no subscription mid-bootstrap — the tables are rebuilt.
+        if self.upgrading && report.bootstrapping.is_empty() {
+            self.upgrading = false;
+        }
         SyncOutcome::Ok(report)
     }
 

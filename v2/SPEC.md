@@ -475,7 +475,7 @@ contrast, is cross-message state and stays a producer conformance rule.
 
 | Field | Type | Semantics |
 |---|---|---|
-| `requiredSchemaVersion` | `opt(i32)` | If present, the client's `schemaVersion` is no longer served; the client MUST stop syncing and surface an upgrade requirement (`sync.client_schema_unsupported` semantics). Unchanged from v1 |
+| `requiredSchemaVersion` | `opt(i32)` | If present, the client's `schemaVersion` is no longer served; the client MUST stop syncing and surface an upgrade requirement (`sync.client_schema_unsupported` semantics). The stop state is the trigger for the schema-bump flow once the app updates (§7.4.2). Unchanged from v1 |
 | `latestSchemaVersion` | `opt(i32)` | Informational: newest schema version the server knows. MUST NOT block syncing. Unchanged from v1 |
 
 **Schema-floor response.** When the request's `schemaVersion` is not
@@ -2088,7 +2088,8 @@ reference into the log).
 
 - Local writes are recorded as commits in a durable **outbox** with
   client-generated `clientCommitId`s (unique forever per client; UUIDs
-  recommended).
+  recommended). The outbox is schema-agnostic (§0): it survives a schema
+  bump and replays on top of the fresh re-bootstrap (§7.4).
 - The outbox is FIFO: commits are pushed strictly in creation order, and
   a client MUST NOT reorder or coalesce commits once a push containing
   them may have reached the server (the idempotency key pins their
@@ -2305,6 +2306,166 @@ last `LEASE` frame and exposes it as `leaseState` — the mirror of
 
 A client with no `LEASE` frame ever received has an empty `leaseState` —
 the feature is invisible until a lease-issuing server sends one.
+
+### 7.4 Schema-bump flow — wipe, re-bootstrap, replay
+
+**No client-side migration engine** (Direction decision 3, 2026-07-03).
+A client never transforms its local tables from schema `N` to schema
+`N+1`. When the schema version changes, it **wipes its local tables,
+re-bootstraps from the server at the new version, and replays the
+outbox on top** (§7.1). Bootstrap-from-segment (§5, the image lane
+especially, §5.3) makes a fresh bootstrap cheap enough that carrying a
+migration subsystem — a rarely-exercised second apply path — is not
+worth its cost, and every upgrade drills the bootstrap path instead.
+The server keeps N-version codec support for transition windows if it
+chooses (§9); the reference server serves exactly one version and
+answers the floor (§1.6) for any other, which is sufficient for both
+triggers below.
+
+#### 7.4.1 The persisted schema-version marker
+
+A client persists its **local schema version** — the `schemaVersion` of
+the generated artifacts that last wrote the local tables — in durable
+client state (the `_syncular_meta` bookkeeping row, alongside `clientId`
+and `leaseState`). It is written once when the local tables are first
+created and rewritten only at the end of a successful reset (§7.4.3).
+A client that has never persisted a marker is treated as already at its
+generated version (fresh install — the tables it just created match the
+running code; nothing to reset).
+
+#### 7.4.2 The two triggers, one flow
+
+The reset flow (§7.4.3) fires on either of two triggers; both mean "the
+local tables no longer match the schema this client can codec," and both
+converge on the identical wipe-re-bootstrap-replay:
+
+1. **Local generated-version change (on boot).** At `start()`, after
+   ensuring the local tables exist, the client compares its generated
+   schema version to the persisted marker (§7.4.1). If they differ (in
+   either direction — an upgrade `N → N+1` or a downgrade rollback
+   `N+1 → N`), it runs the reset **before its first sync round**. This
+   is the ordinary upgrade path: the app ships new code plus a new
+   generated schema `vN+1`; the client boots on top of `vN` local
+   tables, detects the change locally with no server involvement, and
+   resets. The next sync bootstraps at `vN+1` against a server that
+   already serves `vN+1`.
+
+2. **Server schema floor (`requiredSchemaVersion`, §1.6).** A running
+   client whose generated schema does not match the server receives the
+   schema-floor response and enters the `schemaFloor` stop state (§1.6) —
+   it processes nothing and surfaces the upgrade requirement. A
+   live-round floor **always stops**; it never resets on its own.
+   Resetting while still generating `vN` payloads would only bootstrap
+   into another floor (and if the client is *ahead* of a lagging server,
+   no local reset changes the version it sends). The reset for this
+   direction is deferred until the app updates — which recreates the
+   client with the matching generated schema, at which point trigger 1
+   fires on the next boot: the persisted marker still reads the old
+   version, the generated schema reads the new one, and the boot check
+   runs the reset. The floor and the boot trigger thus converge through
+   the app update, not through a floor-driven reset.
+
+Both triggers are local decisions keyed on versions the client already
+holds; neither adds a wire field. `requiredSchemaVersion` /
+`latestSchemaVersion` (§1.6) are unchanged.
+
+#### 7.4.3 The reset — scope and order
+
+The reset is a **whole-database local reset except three things**:
+the **outbox**, the **client identity** (`clientId`), and the **auth
+lease** (`leaseState`). Everything else is destroyed and rebuilt:
+
+- **Dropped and recreated:** every synced table, and all
+  subscription-derived state — cursors, bootstrap resume tokens
+  (`bootstrapState`), the persisted effective-scope map (§3.3), and the
+  `active`/`revoked`/`failed` status. The subscription *registrations*
+  themselves (id, table, requested scopes, params) are **kept** — they
+  are the app's declared intent, not synced data — but each is reset to
+  `cursor = -1`, no resume token, `status = active`, so the next round
+  is a fresh bootstrap of exactly the subscriptions the app still wants.
+  Blob-cache refcount state (§5.9.7), if present, is rebuilt from the
+  re-bootstrapped rows.
+- **Preserved:** the outbox (schema-agnostic by construction, §0 /
+  §7.1 — pending commits survive verbatim and replay on top, §7.4.4);
+  `clientId` (§1.5 — the device identity is not schema state, and
+  changing it would strand the server's idempotency cache); and
+  `leaseState` (§7.3.5 — the grant's validity window is independent of
+  the schema, distinct from §3.3 revocation which *does* purge).
+
+Whole-database-except-those-three is chosen over a per-table reset for
+correctness and simplicity: a schema bump MAY change table membership,
+foreign-key shape, or scope-column mapping table-wide, and a partial
+reset would have to reason about which tables a version delta touches —
+exactly the migration-engine reasoning Direction decision 3 rejects.
+The blunt reset is always correct and the bootstrap that follows is the
+same path every fresh client runs.
+
+**Order (all in one durable step where the storage allows):**
+
+1. Detect (the boot-time marker check, §7.4.2 trigger 1). Clear any
+   `schemaFloor` stop state carried over — the client now ships a schema
+   the server serves.
+2. Drop every synced local table and recreate it from the *new*
+   generated schema; clear each subscription's cursor / resume token /
+   effective-scope / status to the fresh-bootstrap defaults, keeping the
+   registration.
+3. Rewrite the persisted marker (§7.4.1) to the new generated version.
+4. Surface the `upgrading` state (§7.4.5) across steps 1–3; clear it
+   when the first post-reset bootstrap round completes.
+
+The outbox is never touched by the reset. If the process dies mid-reset,
+the marker still reads the old version, so the next boot re-runs the
+reset — it is idempotent by the marker.
+
+#### 7.4.4 Outbox replay after the bump — encode at send time
+
+The reset preserves the outbox; the client replays it on top of the
+fresh bootstrap exactly as §7.1/§7.2 already specify. The §0 rule pays
+off here: outbox commits are persisted in schema-agnostic local form and
+**encoded with the new generated codec at send time**, so a commit
+recorded under `vN` pushes under `vN+1` by re-encoding — the server
+never accepts a retired encoding.
+
+Re-encoding under the new schema can *fail* when a pending commit
+references a column the new schema no longer has (or newly requires and
+the commit lacks): the value has nowhere to go, and there is no
+migration to fill or drop it. This is not silent. The client MUST
+surface it as a **rejection-like local outcome** — the same surface as a
+server `rejected` (§7.2): the un-encodable commit leaves the outbox, its
+purely-optimistic rows are undone (§7.2), and a rejection record is
+raised carrying a client-local code `sync.outbox_incompatible`
+(schema-mismatch class; the commit cannot be expressed under the new
+schema and retrying it unmodified never succeeds). Later outbox commits
+that *do* encode continue to replay — one incompatible commit does not
+wedge the queue, matching the §7.2 rule that dependents are app policy.
+`sync.outbox_incompatible` is a **client-local** code (§10.3 — never a
+wire code; it is produced entirely client-side at encode time, like
+`transport.failed`), surfaced through the same rejection channel the app
+already watches.
+
+#### 7.4.5 What the app sees — the `upgrading` state
+
+The reset is observable so an app can show an "upgrading…" affordance
+and know when it is safe to render:
+
+- `upgrading` — true from the moment the reset begins (§7.4.3 step 1)
+  until the first post-reset bootstrap round completes (every
+  subscription past its fresh bootstrap, or the round reaching idle,
+  §4.5). It is the schema-bump mirror of `schemaFloor` / `leaseState`:
+  a small, queryable client state, not a wire concept.
+- A completion signal fires when `upgrading` clears — the app's cue to
+  re-run its live queries against the rebuilt tables. In the worker
+  transport (Direction decision 2) it rides the existing event channel
+  as an `upgrading` event `{ upgrading: boolean }`, so the UI thread
+  learns of the reset and its completion without polling.
+- While `upgrading` is true, local reads see the (possibly empty,
+  mid-bootstrap) rebuilt tables plus the optimistic outbox overlay
+  (§7.1) — pending offline writes stay visible across the bump, since
+  the outbox was preserved.
+
+The `upgrading` state is purely client-local; nothing about it crosses
+the wire. A server sees a post-reset client as an ordinary fresh
+bootstrapper at the new `schemaVersion`.
 
 ---
 
@@ -2707,9 +2868,10 @@ for `blob.not_found`, as a push operation-result `error` record.
 ### 10.3 Pruned and reserved codes
 
 Removed from the wire catalog (v1 had 63 codes): all client-local codes
-(`sync.offline`, `sync.transport_failed`, `storage.*`, `worker.*`,
-`runtime.*`) — client SDKs may keep such codes internally but they are
-not protocol; `sync.integrity_rejected`, `sync.websocket_not_configured`,
+(`sync.offline`, `sync.transport_failed`, `sync.outbox_incompatible`
+[§7.4.4 — a pending commit cannot re-encode under the new schema after a
+bump], `storage.*`, `worker.*`, `runtime.*`) — client SDKs may keep such
+codes internally but they are not protocol; `sync.integrity_rejected`, `sync.websocket_not_configured`,
 and `sync.unsupported_operation` (no v2 producer — the wire `op` byte
 admits only upsert/delete and v2 defines no per-table operation
 restriction; reserved if such a capability lands); `console.*`,

@@ -232,9 +232,35 @@ the old tree archived.
 - [ ] **Multi-tab followers**: leader election via Web Locks exists as a
       seam; build the follower path (BroadcastChannel proxy to the leader's
       worker) — one socket, one DB, N tabs.
-- [ ] **Schema-bump flow** (Direction decision 3): wipe-and-rebootstrap on
-      `requiredSchemaVersion`, outbox preserved and replayed; no client
-      migration engine. Needs a conformance scenario and a demo/docs story.
+- [x] **Schema-bump flow** (Direction decision 3): LANDED 2026-07-03 —
+      wipe-and-rebootstrap, outbox preserved and replayed; no client
+      migration engine. SPEC §7.4 pins the client contract: a persisted
+      **local schema-version marker** (`_syncular_meta`, §7.4.1); TWO
+      triggers converging on one flow (§7.4.2) — boot-time generated-version
+      change (marker ≠ generated schema) and the server `requiredSchemaVersion`
+      floor (§1.6), where the floor STOPS and the app-update recreate fires the
+      boot trigger (a live-round floor never resets — resetting while still
+      generating old payloads only re-floors). The reset (§7.4.3) is a
+      whole-database local reset EXCEPT outbox + clientId + leaseState:
+      drop/recreate every synced table from the new schema, reset subscription
+      sync-state keeping registrations, clear the floor stop state, rewrite the
+      marker LAST (crash-idempotent). Outbox replays on top, encode-at-send
+      under the new codec (§0); a commit referencing a dropped column can't
+      re-encode and surfaces as a rejection with client-local
+      `sync.outbox_incompatible` (§7.4.4, §10.3 — never a wire code) without
+      wedging the queue. An `upgrading` client state (§7.4.5, the schemaFloor/
+      leaseState mirror) + worker `upgrading` event signal the reset and its
+      completion. Both clients (TS `SyncClient.upgrading` + boot detection in
+      `start()`; Rust `recreate_with_schema` — the Rust core has no persistent
+      restart, so recreation IS the boot). Driver interface gained additive
+      `recreateWithSchema`/`upgrading` (+ `ScenarioContext.recreateClient`,
+      `serverSchema` so seeds land at the server version). Conformance
+      `schema-bump/*` (4 scenarios: local-bump wipe-rebootstrap-replay;
+      floor-triggered convergence; dropped-column `sync.outbox_incompatible`;
+      image-lane re-bootstrap — both pairings, 65×TS / 63×Rust). Docs
+      guide-schema gains the full upgrade story. No wire-vector changes (the
+      flow is entirely client-local; the marker and `upgrading` never cross the
+      wire).
 - [ ] **Native packaging of the Rust client**: the POC crate becomes the
       shipping native core — FFI surface, iOS/Android/JVM/desktop
       packaging, lifecycle handling. Reuse v1's packaging *knowledge*, not

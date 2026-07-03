@@ -14,6 +14,7 @@ import { leaseScenarios } from './leases';
 import { lifecycleScenarios } from './lifecycle';
 import { offlineScenarios } from './offline';
 import { realtimeScenarios } from './realtime';
+import { schemaBumpScenarios } from './schema-bump';
 import { scopeScenarios } from './scopes';
 import { signedUrlScenarios } from './signed-url';
 import { sqliteImageScenarios } from './sqlite-image';
@@ -32,6 +33,7 @@ export const CATALOG: readonly Scenario[] = [
   ...crdtScenarios,
   ...leaseScenarios,
   ...lifecycleScenarios,
+  ...schemaBumpScenarios,
   ...realtimeScenarios,
   ...wsRoundScenarios,
   ...errorScenarios,

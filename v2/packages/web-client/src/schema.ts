@@ -145,6 +145,24 @@ function sqlType(column: RowColumn): string {
   }
 }
 
+/** §7.4.1 persisted local schema-version marker (`_syncular_meta` key). */
+export const LOCAL_SCHEMA_VERSION_KEY = 'localSchemaVersion';
+
+function createSyncedTable(
+  db: ClientDatabase,
+  table: CompiledClientTable,
+): void {
+  const columns = table.columns.map((column) => {
+    const notNull = column.nullable ? '' : ' NOT NULL';
+    const pk = column.name === table.primaryKey ? ' PRIMARY KEY' : '';
+    return `${quoteIdent(column.name)} ${sqlType(column)}${notNull}${pk}`;
+  });
+  columns.push(`${quoteIdent(SYNC_VERSION_COLUMN)} INTEGER NOT NULL DEFAULT 0`);
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS ${quoteIdent(table.name)} (${columns.join(', ')})`,
+  );
+}
+
 /**
  * Create the synced tables plus client bookkeeping tables (outbox,
  * subscription state, meta). Idempotent.
@@ -155,17 +173,7 @@ export function ensureLocalSchema(
 ): void {
   db.transaction(() => {
     for (const table of schema.tables.values()) {
-      const columns = table.columns.map((column) => {
-        const notNull = column.nullable ? '' : ' NOT NULL';
-        const pk = column.name === table.primaryKey ? ' PRIMARY KEY' : '';
-        return `${quoteIdent(column.name)} ${sqlType(column)}${notNull}${pk}`;
-      });
-      columns.push(
-        `${quoteIdent(SYNC_VERSION_COLUMN)} INTEGER NOT NULL DEFAULT 0`,
-      );
-      db.exec(
-        `CREATE TABLE IF NOT EXISTS ${quoteIdent(table.name)} (${columns.join(', ')})`,
-      );
+      createSyncedTable(db, table);
     }
     db.exec(`CREATE TABLE IF NOT EXISTS _syncular_meta(
       key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
@@ -185,6 +193,34 @@ export function ensureLocalSchema(
       status TEXT NOT NULL DEFAULT 'active',
       reason_code TEXT)`);
   });
+}
+
+/** Bookkeeping tables the schema-bump reset (§7.4.3) MUST NOT drop. */
+const RESERVED_TABLE_PREFIX = '_syncular_';
+
+/**
+ * §7.4.3 reset: drop every synced local table (whatever the *previous*
+ * generated schema created — discovered from `sqlite_master`, since a
+ * bump may add/remove tables) and recreate the synced tables from the
+ * NEW schema. Bookkeeping tables (`_syncular_*`: outbox, meta,
+ * subscriptions, blob cache) are preserved. Caller owns the surrounding
+ * transaction and the subscription-state reset (state.ts).
+ */
+export function dropAndRecreateSyncedTables(
+  db: ClientDatabase,
+  schema: CompiledClientSchema,
+): void {
+  const existing = db.query(
+    `SELECT name FROM sqlite_master WHERE type = 'table'
+       AND name NOT LIKE '${RESERVED_TABLE_PREFIX}%'
+       AND name NOT LIKE 'sqlite_%'`,
+  );
+  for (const row of existing) {
+    db.exec(`DROP TABLE IF EXISTS ${quoteIdent(String(row.name))}`);
+  }
+  for (const table of schema.tables.values()) {
+    createSyncedTable(db, table);
+  }
 }
 
 // ---------------------------------------------------------------------------

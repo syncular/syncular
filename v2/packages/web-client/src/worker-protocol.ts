@@ -113,6 +113,8 @@ export interface WorkerApi {
   schemaFloor(): SchemaFloor | undefined;
   /** §7.3.5: the opaque auth-lease state, or undefined. */
   leaseState(): LeaseState | undefined;
+  /** §7.4.5: true while a schema-bump reset + first re-bootstrap runs. */
+  upgrading(): boolean;
   syncNeeded(): boolean;
   pendingCommits(): OutboxCommit[];
   subscriptions(): SubscriptionRecord[];
@@ -168,6 +170,11 @@ export type SyncWorkerEvent =
       readonly kind: 'synced';
       readonly summary?: SyncSummary;
       readonly error?: WorkerErrorShape;
+    }
+  | {
+      /** §7.4.5: the schema-bump `upgrading` state changed in the worker. */
+      readonly kind: 'upgrading';
+      readonly upgrading: boolean;
     };
 
 export type WorkerToMainMessage =

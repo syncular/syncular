@@ -70,6 +70,8 @@ export interface SyncClientHandleConfig {
     readonly summary?: SyncSummary;
     readonly error?: WorkerErrorShape;
   }) => void;
+  /** §7.4.5: schema-bump `upgrading` state changed (reset began/completed). */
+  readonly onUpgrading?: (upgrading: boolean) => void;
 }
 
 interface Pending {
@@ -182,6 +184,11 @@ export class SyncClientHandle {
     return this.#call('leaseState', []);
   }
 
+  /** §7.4.5: true while a schema-bump reset + first re-bootstrap runs. */
+  upgrading(): Promise<boolean> {
+    return this.#call('upgrading', []);
+  }
+
   syncNeeded(): Promise<boolean> {
     return this.#call('syncNeeded', []);
   }
@@ -280,6 +287,7 @@ export async function createSyncClientHandle(
     onSyncNeeded: config.onSyncNeeded,
     onConflict: config.onConflict,
     onSynced: config.onSynced,
+    onUpgrading: config.onUpgrading,
   };
 
   const ready = new Promise<void>((resolve, reject) => {
@@ -330,6 +338,8 @@ export async function createSyncClientHandle(
       events.onSyncNeeded?.(event.reason);
     } else if (event.kind === 'conflict') {
       events.onConflict?.(event.conflict);
+    } else if (event.kind === 'upgrading') {
+      events.onUpgrading?.(event.upgrading);
     } else {
       events.onSynced?.({
         ...(event.summary !== undefined ? { summary: event.summary } : {}),
