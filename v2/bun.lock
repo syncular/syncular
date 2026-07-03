@@ -49,6 +49,14 @@
         "@syncular-v2/typegen": "workspace:*",
       },
     },
+    "load": {
+      "name": "@syncular-v2/load",
+      "dependencies": {
+        "@syncular-v2/core": "workspace:*",
+        "@syncular-v2/server": "workspace:*",
+        "@syncular-v2/server-hono": "workspace:*",
+      },
+    },
     "packages/conformance": {
       "name": "@syncular-v2/conformance",
       "dependencies": {
@@ -158,6 +166,8 @@
     "@syncular-v2/docs": ["@syncular-v2/docs@workspace:apps/docs"],
 
     "@syncular-v2/example-quickstart": ["@syncular-v2/example-quickstart@workspace:examples/quickstart"],
+
+    "@syncular-v2/load": ["@syncular-v2/load@workspace:load"],
 
     "@syncular-v2/server": ["@syncular-v2/server@workspace:packages/server"],
 

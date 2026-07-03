@@ -1,0 +1,15 @@
+{
+  "name": "@syncular-v2/load",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "load": "bun run src/index.ts",
+    "load:smoke": "bun run src/index.ts --smoke-sweep",
+    "test": "bun test src"
+  },
+  "dependencies": {
+    "@syncular-v2/core": "workspace:*",
+    "@syncular-v2/server": "workspace:*",
+    "@syncular-v2/server-hono": "workspace:*"
+  }
+}
