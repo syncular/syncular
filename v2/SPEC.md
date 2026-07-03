@@ -45,8 +45,8 @@ absorbed by transport compression, §1.3).
 | `bytes` | `u32` byte length + raw bytes |
 | `opt(T)` | presence `u8` (`0x00` absent, `0x01` present; other values are a decode error) followed by `T` iff present. Used **only** where a field is semantically nullable — structural optionality is expressed by frame presence (§1.2), never by option bytes |
 | `list(T)` | `u32` count + count × `T` |
-| `map` | `u32` count + count × (`str` key, value). Keys MUST be unique; encoders MUST emit keys in ascending code-unit order (canonical encoding). A decoder MUST reject duplicate or out-of-order keys — non-canonical key order is a decode error, not a tolerated variant |
-| `json` | `str` containing a JSON document. Used only for host-opaque values (`params`, `details`, resume tokens). A decoder MUST validate that the string parses as a JSON document (a value that does not is a decode error) but MUST NOT act on or re-serialize the parsed value. Host-opaque means exactly that: a decoder MUST preserve the raw string byte-for-byte and a re-encoder MUST emit it unchanged — round-trip fidelity, never re-canonicalization |
+| `map` | `u32` count + count × (`str` key, value). Keys MUST be unique; encoders MUST emit keys in ascending code-unit order (canonical encoding). "Code unit" means **UTF-16 code units** — the order JavaScript string comparison yields; it diverges from UTF-8 byte order exactly when keys mix U+E000–U+FFFF characters with supplementary-plane characters, so implementations in byte-oriented languages MUST compare by UTF-16 code units, not encoded bytes. A decoder MUST reject duplicate or out-of-order keys — non-canonical key order is a decode error, not a tolerated variant |
+| `json` | `str` containing a JSON document. A JSON document is any RFC 8259 JSON value — top-level scalars (`true`, `7`, `"x"`, `null`) included, not just objects and arrays. Used only for host-opaque values (`params`, `details`, resume tokens). A decoder MUST validate that the string parses as a JSON document (a value that does not is a decode error) but MUST NOT act on or re-serialize the parsed value. Host-opaque means exactly that: a decoder MUST preserve the raw string byte-for-byte and a re-encoder MUST emit it unchanged — round-trip fidelity, never re-canonicalization |
 
 **Canonical encoding.** For every value there is exactly one valid byte
 sequence (map key ordering, minimal presence bytes, no padding). Golden
@@ -61,7 +61,12 @@ document (`msgKind`, `op`, `status`, `mediaType`, …) admits only the
 values listed in its field table; any other byte is a decode error (the
 `bool` rule above, generalized). Where a field table ties an `opt()`
 field's presence to another field's value (e.g. `row` present iff
-`op` = upsert), a violation is likewise a decode error.
+`op` = upsert), a violation is likewise a decode error. Wire version 1
+has exactly four such ties, all enforced by the envelope codec: push
+operation `payload` present iff `op` = upsert (§6.1); change
+`rowVersion` and `row` each present iff `op` = upsert (§4.5);
+`PUSH_RESULT.commitSeq` present iff `status` is `applied` or `cached`
+(§6.3); `urlExpiresAtMs` present iff `url` is (§5.4).
 
 Hashes are SHA-256 rendered as 64 lowercase hex characters unless stated
 otherwise. Timestamps are Unix epoch **milliseconds** as `i64`.
@@ -281,15 +286,26 @@ Rules:
 
 1. The frame sequence MUST end with an `END` frame (`frameType 0x00`,
    `frameLength 0`). A body that ends without `END` is **truncated** and
-   MUST be rejected; the abort rule of §1.4 rule 5 applies.
+   MUST be rejected; the abort rule of §1.4 rule 5 applies. An `END`
+   frame with a non-zero `frameLength` is a decode error, and bytes
+   after the `END` frame are a decode error (canonical encoding: one
+   byte sequence per message, mirroring the SSG2 end-marker rule of
+   §5.2).
 2. A reader MUST skip an unknown `frameType` by consuming `frameLength`
    bytes. This is the forward-compat rule (§9). Unknown frame types may
-   appear at any position between the header frame and `END`; the
+   appear at any position **strictly between** the header frame and
+   `END` — and only there: a message whose *first* frame is unknown is a
+   decode error (the header frame is always first, §1.5/§1.6), and no
+   frame of any type — unknown included — may follow `ERROR` (§1.6); the
    ordering constraints of rule 4 apply to known frame types only.
    "Unknown" means a `frameType` with no layout in this wire version for
    *either* message kind: a frame type registered for the other message
    kind (e.g. `SUB_START` in a request) is not unknown — it is a decode
-   error. Skipping means "do not interpret", never "drop": a decoder
+   error. Registry entries that are *reserved* without a message kind
+   (`0x17`, `0x18`, `0x20`–`0x2F`) have no layout in wire version 1 and
+   are therefore unknown — skippable, not errors — until a future
+   version assigns them one. Skipping means "do not interpret", never
+   "drop": a decoder
    whose output is re-encoded (golden-vector round-trips, proxies,
    tooling) MUST preserve skipped frames byte-for-byte in their original
    positions, so re-encoding reproduces the input exactly. Their debug
@@ -383,7 +399,10 @@ END
 ```
 
 A request with neither `PUSH_COMMIT` nor `PULL_HEADER` frames is invalid
-(`sync.invalid_request`).
+(`sync.invalid_request`). This is a frame-grammar rule, not request
+validation: the production above is read together with it, and the
+envelope codec rejects a no-content request as a **decode error** under
+§1.7.
 
 **`REQ_HEADER` payload:**
 
@@ -412,6 +431,11 @@ normative so clients can prioritize critical tables by ordering their
 subscription list (see §4.7 on bootstrap phases). `COMMIT` and segment
 frames MUST NOT both appear for the same subscription in one response
 (a subscription is either catching up on the log or bootstrapping).
+The no-mixing rule is part of the frame grammar: a message that carries
+both `COMMIT` and segment frames inside one subscription context is a
+**decode error** under §1.7 (in either order), like any other
+frame-grammar violation. Echoing subscriptions in request order, by
+contrast, is cross-message state and stays a producer conformance rule.
 
 **`RESP_HEADER` payload:**
 
@@ -457,8 +481,11 @@ independent codecs agree byte-for-byte on which messages are
 - **Decode errors** — detectable from one message alone, with no host,
   schema, or cross-frame state. Exactly these, and nothing more:
   envelope and framing violations (§1.2); frame-grammar violations
-  (§1.5, §1.6); primitive-encoding violations, enum bytes, and `opt()`
-  presence invariants (Conventions); and the following single-frame
+  (§1.5, §1.6 — including the prose constraints stated alongside the
+  productions: the no-content-request rule of §1.5 and the
+  COMMIT/segment no-mixing rule of §1.6); primitive-encoding
+  violations, enum bytes, and `opt()` presence invariants (Conventions
+  — the four ties enumerated there); and the following single-frame
   field-table constraints — `clientId` non-empty and
   `schemaVersion ≥ 1` (§1.5), `clientCommitId` non-empty and
   `operations ≥ 1` (§6.1, the latter as `sync.empty_commit`), change
@@ -1222,7 +1249,7 @@ Operation record:
 | `table` | `str` | |
 | `rowId` | `str` | |
 | `op` | `u8` | `1` = upsert, `2` = delete |
-| `baseVersion` | `opt(i64)` | Optimistic-concurrency token (§6.2); absent = last-write-wins |
+| `baseVersion` | `opt(i64)` | Optimistic-concurrency token (§6.2); absent = last-write-wins. Presence is deliberately **not** tied to `op`: a `delete` operation MAY carry a `baseVersion`, which the codec accepts and preserves and the server ignores (deletes perform no version check, §6.2) |
 | `payload` | `opt(bytes)` | Full row encoded with the generated row codec (§2.4) for the request's `schemaVersion` — binary both ways per the §0 decision. MUST be present for `upsert` and absent for `delete`; a violation is a decode error (`sync.invalid_request`). Bytes that fail row-codec decode are rejected by the server as **commit-level** request validation (§1.7): the enclosing commit is `rejected` with one `error` result record (`sync.invalid_request`, §6.3) — the envelope codec carries the payload as opaque `bytes` |
 
 Servers MUST enforce an operation-count cap per request, counted as the
@@ -1427,7 +1454,13 @@ Control messages are JSON text frames; deltas are binary frames
 containing a complete SSP2 **response** message (§1.6) — one envelope
 grammar for HTTP and socket (§0 decision). A binary frame is recognized
 by the SSP2 magic; a client MUST tolerate and ignore unknown JSON control
-events (forward compat mirror of the frame-skip rule).
+events (forward compat mirror of the frame-skip rule). "Unknown" is
+scoped to the **event name**: a JSON object whose `event` value is not
+defined by this section is tolerated, never a parse error. A *known*
+event whose `data` is missing or of the wrong shape is malformed — a
+parse error, not a tolerated variant. Direction is carried by the
+discriminator key: server→client events carry `event`; client→server
+control messages carry `type` (§8.2).
 
 Server → client on connect:
 
@@ -1458,6 +1491,9 @@ the socket for continuity.
   then deltas resume.
 - The client acknowledges applied deltas:
   `{"type":"ack","cursor":<highest contiguously applied commitSeq>}`.
+  The ack is the sole client→server control message and is recognized
+  by its `"type":"ack"` field (client→server messages carry `type`,
+  not `event` — §8.1).
   The server uses acks to trim its per-connection replay buffer (if it
   keeps one) and to update the client cursor record (§4.5) without an
   HTTP pull.
@@ -1501,6 +1537,12 @@ The single JSON data-plane event:
 
 Wake-ups are idempotent and coalescible; the client MUST treat any
 wake-up as "run a pull soon", never as data.
+
+The three reason strings are a **closed set**: a `sync` event whose
+`reason` is not one of them is malformed (a parse error under §8.1's
+known-event rule), not an unknown-event case. Forward compatibility for
+the realtime channel means new *event* names (tolerated per §8.1),
+never new reason strings on an existing event.
 
 ### 8.4 Reconnect and catch-up
 
@@ -1677,6 +1719,11 @@ tooling).
 9. Unknown frames preserved by the skip rule (§1.2 rule 2) render as
    `{"type":"UNKNOWN","frameType":<byte value as number>,
    "payload":"<base64>"}`.
+10. Non-finite `f64` values (NaN, ±Infinity) render as JSON `null` —
+    JSON has no representation for them, and this is what JavaScript's
+    JSON serialization produces. The wire bytes are unaffected (the
+    codec carries any IEEE-754 bit pattern); only the debug rendering
+    collapses them.
 
 ### 11.2 Canonical JSON (for digests)
 
