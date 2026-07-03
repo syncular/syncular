@@ -7,6 +7,8 @@ import { describe, expect, test } from 'bun:test';
 import {
   type MemoryBlobStore,
   RingBufferEvents,
+  S3SegmentStore,
+  type SegmentMetadata,
   SqliteBlobStore,
   type SqliteServerStorage,
   SyncularAdmin,
@@ -22,6 +24,7 @@ import {
   taskRow,
   upsert,
 } from './helpers';
+import { startS3Stub } from './s3-stub';
 
 function adminOf(
   t: TestContext,
@@ -231,6 +234,51 @@ describe('stats + event stream', () => {
     const blobStats = await admin.blobStats('part-1');
     expect(blobStats).toEqual({ count: 1, bytes: 64 });
     expect(await admin.blobStats('other')).toEqual({ count: 0, bytes: 0 });
+  });
+
+  test('S3 segment stats carry the approximate marker through the admin surface', async () => {
+    const clock = { ms: 1_750_000_000_000 };
+    const stub = startS3Stub({
+      bucket: 'segments',
+      region: 'auto',
+      accessKeyId: 'SYNCULARTESTAKID',
+      secretAccessKey: 'syncular-test-secret',
+      now: () => clock.ms,
+    });
+    try {
+      const s3 = new S3SegmentStore({
+        endpoint: stub.url,
+        region: 'auto',
+        bucket: 'segments',
+        accessKeyId: 'SYNCULARTESTAKID',
+        secretAccessKey: 'syncular-test-secret',
+        keyPrefix: 'admin-approx/',
+      });
+      const meta: SegmentMetadata = {
+        partition: 'p',
+        table: 'tasks',
+        schemaVersion: 1,
+        mediaType: 'rows',
+        scopeDigest: 'digest-a',
+        asOfCommitSeq: 7,
+        rowCount: 2,
+        rowCursor: null,
+        nextRowCursor: null,
+      };
+      await s3.put(meta, new Uint8Array([1, 2, 3]), clock.ms);
+      const t = makeContext();
+      const admin = new SyncularAdmin({
+        storage: t.storage,
+        segments: s3,
+        clock: () => t.now.ms,
+      });
+      const segStats = await admin.segmentStats();
+      expect(segStats).toMatchObject({ count: 1, approximate: true });
+      const combined = await admin.stats('p');
+      expect(combined.segments?.approximate).toBe(true);
+    } finally {
+      stub.stop();
+    }
   });
 
   test('events() returns the ring tail; empty when no ring wired', async () => {

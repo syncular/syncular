@@ -42,6 +42,11 @@ async function seededStorage(): Promise<{
       scopes: { project_id: project },
       payload: new Uint8Array([i & 0xff]),
     });
+    // Spread blob references across PROJECTS distinct blobIds so a single
+    // blobId is a small, index-worthy slice of sync_blob_refs.
+    await tx.setBlobRefs?.('tasks', `r${String(i).padStart(6, '0')}`, [
+      `sha256:${String(i % PROJECTS).padStart(64, '0')}`,
+    ]);
     await tx.appendCommit({
       clientId: 'c',
       clientCommitId: `k${i}`,
@@ -107,5 +112,20 @@ test('scanRows candidate scan is index-driven (no Seq Scan)', async () => {
   );
   expect(plan).toContain('Index');
   expect(plan).not.toContain('Seq Scan on sync_row_scopes');
+  await db.close();
+});
+
+test('listRowsReferencingBlob candidate scan is index-driven (no Seq Scan)', async () => {
+  const { db } = await seededStorage();
+  // The by-blob secondary index (partition, blob_id) drives the §5.9.5
+  // download-authorization candidate set; it must be an index range, not a
+  // scan of every reference in the partition.
+  const plan = await explain(
+    db,
+    `SELECT tbl, row_id FROM sync_blob_refs WHERE partition=$1 AND blob_id=$2`,
+    [PARTITION, `sha256:${String(3).padStart(64, '0')}`],
+  );
+  expect(plan).toContain('Index');
+  expect(plan).not.toContain('Seq Scan on sync_blob_refs');
   await db.close();
 });

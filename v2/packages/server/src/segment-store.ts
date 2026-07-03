@@ -54,6 +54,14 @@ export interface SegmentStoreStats {
   readonly bytes: number;
   readonly rowsSegments: number;
   readonly sqliteSegments: number;
+  /**
+   * ADDITIVE marker — present and `true` only on stores whose counters are
+   * approximate (the S3/R2 store's LIST-free pointer accumulator, which can
+   * drift under concurrent writers or after lifecycle GC). Absent on the
+   * exact in-process stores (memory/sqlite). The admin surface carries it
+   * through so the console can label the numbers honestly.
+   */
+  readonly approximate?: boolean;
 }
 
 export interface SegmentStore {

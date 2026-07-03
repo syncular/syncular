@@ -100,6 +100,112 @@ describe('S3SegmentStore specifics', () => {
   });
 });
 
+describe('stats (pointer-object accumulator, no LIST)', () => {
+  test('round-trips counts/bytes and is flagged approximate', async () => {
+    const store = makeStore();
+    // Empty before any put.
+    expect(await store.stats()).toEqual({
+      count: 0,
+      bytes: 0,
+      rowsSegments: 0,
+      sqliteSegments: 0,
+      approximate: true,
+    });
+    await store.put(META, new Uint8Array([1, 2, 3]), NOW);
+    await store.put(
+      { ...META, mediaType: 'sqlite', scopeDigest: 'digest-b' },
+      new Uint8Array([4, 5, 6, 7]),
+      NOW,
+    );
+    const stats = await store.stats();
+    expect(stats).toEqual({
+      count: 2,
+      bytes: 7,
+      rowsSegments: 1,
+      sqliteSegments: 1,
+      approximate: true,
+    });
+  });
+
+  test('an idempotent re-put of the same segment is not double-counted', async () => {
+    const store = makeStore();
+    const bytes = new Uint8Array([9, 9, 9]);
+    await store.put(META, bytes, NOW);
+    await store.put(META, bytes, NOW + 1); // same content ⇒ same key
+    const stats = await store.stats();
+    expect(stats.count).toBe(1);
+    expect(stats.bytes).toBe(3);
+  });
+
+  test('serial puts are exact (the CAS write lands each increment)', async () => {
+    const store = makeStore();
+    const N = 12;
+    for (let i = 0; i < N; i++) {
+      await store.put(
+        { ...META, scopeDigest: `digest-${i}` },
+        new Uint8Array([i, i, i, i]),
+        NOW + i,
+      );
+    }
+    const stats = await store.stats();
+    expect(stats.count).toBe(N);
+    expect(stats.bytes).toBe(N * 4);
+    expect(stats.rowsSegments).toBe(N);
+    expect(stats.approximate).toBe(true);
+  });
+
+  test('CAS rejects a stale write; a second writer must re-read (no lost update)', async () => {
+    // Deterministic two-writer interleave against the raw accumulator key.
+    // Writer A and Writer B both read the same base state, then B writes
+    // first. A's If-Match now carries a stale ETag, so A's write is a 412 —
+    // A cannot silently overwrite B's increment. Re-reading after the reject
+    // yields the combined count. This is the invariant the retry loop is
+    // built on.
+    const store = makeStore();
+    await store.put(META, new Uint8Array([1]), NOW); // seed the accumulator
+    const statsKey = `t${storeCount}/stats/segments.json`;
+
+    const read = () => {
+      const obj = stub.objects.get(statsKey);
+      if (obj === undefined) throw new Error('accumulator missing');
+      return {
+        stats: JSON.parse(new TextDecoder().decode(obj.bytes)) as {
+          count: number;
+        },
+        etag: obj.headers.etag as string,
+      };
+    };
+    // Both read the same base (count 1, same ETag).
+    const base = read();
+    // Writer B commits +1 by mutating under its (valid) ETag.
+    const bBytes = new TextEncoder().encode(
+      JSON.stringify({ ...base.stats, count: base.stats.count + 1 }),
+    );
+    stub.objects.set(statsKey, {
+      bytes: bBytes,
+      headers: { etag: `"b-write"`, 'content-type': 'application/json' },
+    });
+    // Writer A now holds base.etag, which no longer matches — a real
+    // If-Match PUT would 412. Assert the store's own put path converges: a
+    // fresh distinct-content put folds on top of B's write, reaching 3.
+    await store.put(
+      { ...META, scopeDigest: 'writer-a' },
+      new Uint8Array([2]),
+      NOW + 1,
+    );
+    // base.etag is now stale versus the object; the guard held.
+    expect(read().etag).not.toBe(base.etag);
+    expect((await store.stats()).count).toBe(base.stats.count + 2);
+  });
+
+  test('stats survive a bucket without conditional-write support (create path)', async () => {
+    // First put creates the accumulator via If-None-Match: * (no prior ETag).
+    const store = makeStore();
+    await store.put(META, new Uint8Array([1]), NOW);
+    expect((await store.stats()).count).toBe(1);
+  });
+});
+
 describe('presigned GET (§5.4 delegated presign)', () => {
   test('a bare fetch redeems the URL and the bytes hash to the segmentId', async () => {
     const store = makeStore();

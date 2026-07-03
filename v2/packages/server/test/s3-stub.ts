@@ -207,7 +207,34 @@ export function startS3Stub(config: S3StubConfig): S3Stub {
 
       switch (req.method) {
         case 'PUT': {
-          const headers: Record<string, string> = {};
+          // Conditional writes for optimistic-concurrency (ETag CAS): S3 and
+          // R2 honor `If-Match` (update only if the current ETag matches) and
+          // `If-None-Match: *` (create only if absent). A failed precondition
+          // is `412 PreconditionFailed`. The stats-accumulator CAS loop in
+          // `S3SegmentStore` relies on exactly this.
+          const existing = objects.get(key);
+          const ifMatch = req.headers.get('if-match');
+          const ifNoneMatch = req.headers.get('if-none-match');
+          const currentEtag =
+            existing === undefined
+              ? undefined
+              : (existing.headers.etag as string | undefined);
+          if (ifNoneMatch === '*' && existing !== undefined) {
+            return xmlError(
+              412,
+              'PreconditionFailed',
+              'object already exists (If-None-Match)',
+            );
+          }
+          if (ifMatch !== null && ifMatch !== currentEtag) {
+            return xmlError(
+              412,
+              'PreconditionFailed',
+              'etag mismatch (If-Match)',
+            );
+          }
+          const etag = `"${await sha256Hex(body)}"`;
+          const headers: Record<string, string> = { etag };
           for (const [name, value] of req.headers) {
             const lower = name.toLowerCase();
             if (lower === 'content-type' || lower.startsWith('x-amz-meta-')) {
@@ -215,10 +242,7 @@ export function startS3Stub(config: S3StubConfig): S3Stub {
             }
           }
           objects.set(key, { bytes: body, headers });
-          return new Response(null, {
-            status: 200,
-            headers: { etag: `"${await sha256Hex(body)}"` },
-          });
+          return new Response(null, { status: 200, headers: { etag } });
         }
         case 'GET':
         case 'HEAD': {
