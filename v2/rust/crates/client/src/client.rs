@@ -17,7 +17,7 @@ use ssp2::segment::{decode_rows_segment, Column, ColumnType, ColumnValue, Row, R
 use ssp2::{decode_message, encode_message, parse_control, ControlMessage};
 
 use crate::api::{
-    ClientLimits, ConflictRecord, Mutation, RejectionRecord, RowState, SchemaFloor,
+    ClientLimits, ConflictRecord, LeaseState, Mutation, RejectionRecord, RowState, SchemaFloor,
     SubscriptionStateView, SyncOutcome, SyncReport,
 };
 use crate::schema::{parse_schema_json, ClientSchema};
@@ -113,6 +113,8 @@ pub struct SyncClient {
     conflicts: Vec<ConflictRecord>,
     rejections: Vec<RejectionRecord>,
     schema_floor: Option<SchemaFloor>,
+    /// §7.3.5: the opaque auth-lease state (from LEASE frames + lease errors).
+    lease_state: Option<LeaseState>,
     /// §1.6: the schema-floor response stops syncing until an upgrade.
     stopped: bool,
     /// §8.4 coalesced sync-needed signal.
@@ -249,6 +251,7 @@ impl SyncClient {
             conflicts: Vec::new(),
             rejections: Vec::new(),
             schema_floor: None,
+            lease_state: None,
             stopped: false,
             sync_needed: false,
             realtime_connected: false,
@@ -484,6 +487,22 @@ impl SyncClient {
         self.schema_floor.as_ref()
     }
 
+    /// §7.3.5: the client's opaque auth-lease state, if any.
+    pub fn lease_state(&self) -> Option<&LeaseState> {
+        self.lease_state.as_ref()
+    }
+
+    /// §7.3.5: record a request-level lease error (stop-and-surface). Only
+    /// the two lease codes set it; other errors leave leaseState untouched.
+    fn record_lease_error(&mut self, code: &str) {
+        if code != "sync.auth_lease_required" && code != "sync.auth_lease_revoked" {
+            return;
+        }
+        let mut next = self.lease_state.clone().unwrap_or_default();
+        next.error_code = Some(code.to_owned());
+        self.lease_state = Some(next);
+    }
+
     pub fn sync_needed(&self) -> bool {
         self.sync_needed
     }
@@ -656,6 +675,9 @@ impl SyncClient {
         let response_bytes = match round {
             Ok(bytes) => bytes,
             Err(TransportError { code, message }) => {
+                // §7.3.5: a request-level lease code stops-and-surfaces —
+                // record it in leaseState (no local-data purge, §7.3.4).
+                self.record_lease_error(&code);
                 return SyncOutcome::Failed {
                     error_code: code,
                     message,
@@ -823,6 +845,18 @@ impl SyncClient {
                         failure = Some((code, message));
                         break;
                     }
+                }
+                Frame::Lease {
+                    lease_id,
+                    expires_at_ms,
+                } => {
+                    // §7.3.5: persist the opaque lease; a fresh lease clears
+                    // any prior lease error (the outage/revocation is over).
+                    self.lease_state = Some(LeaseState {
+                        lease_id: Some(lease_id),
+                        expires_at_ms: Some(expires_at_ms),
+                        error_code: None,
+                    });
                 }
                 Frame::Error { code, message, .. } => {
                     // §1.6: the whole request failed; already-completed

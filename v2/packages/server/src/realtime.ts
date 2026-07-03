@@ -26,7 +26,8 @@ import {
   type ScopeMap,
   type WakeReason,
 } from '@syncular-v2/core';
-import type { ResolveScopes, ServerLimits } from './context';
+import type { LeaseConfig, ResolveScopes, ServerLimits } from './context';
+import { RESOLVER_OUTAGE } from './context';
 import { SyncError, syncError } from './errors';
 import { emitEvent, type SyncularServerEvents } from './events';
 import { createSyncResponseStream } from './handler';
@@ -59,6 +60,9 @@ export interface RealtimeHubConfig {
   /** Request limits for socket rounds; defaults match the HTTP binding. */
   readonly limits?: Partial<ServerLimits>;
   readonly signedUrls?: SegmentUrlConfig;
+  /** §7.3 auth leases for socket sync rounds (§8.7) — same config the
+   * HTTP binding uses, so rounds over the socket are lease-aware too. */
+  readonly leases?: LeaseConfig;
 }
 
 export interface RealtimeConnectOptions {
@@ -497,8 +501,13 @@ export class RealtimeHub {
       const allowed = await this.#config.resolveScopes({
         partition,
         actorId,
+        clientId,
       });
-      resolved = { ok: true, allowed };
+      // §7.3.3: delta-fanout registration needs live scopes — an outage
+      // registers nothing (the client's next socket round, §8.7, is
+      // lease-aware and re-registers at round end, §8.1).
+      resolved =
+        allowed === RESOLVER_OUTAGE ? { ok: false } : { ok: true, allowed };
     } catch (error) {
       const events = this.#config.events;
       if (events !== undefined) {
@@ -563,6 +572,9 @@ export class RealtimeHub {
         : {}),
       ...(this.#config.signedUrls !== undefined
         ? { signedUrls: this.#config.signedUrls }
+        : {}),
+      ...(this.#config.leases !== undefined
+        ? { leases: this.#config.leases }
         : {}),
       ...(this.#config.events !== undefined
         ? { events: this.#config.events }

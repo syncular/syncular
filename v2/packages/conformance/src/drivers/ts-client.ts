@@ -261,6 +261,17 @@ class TsClientInstance implements ClientInstance {
     return this.#client.schemaFloor;
   }
 
+  async leaseState(): Promise<
+    | {
+        readonly leaseId?: string;
+        readonly expiresAtMs?: number;
+        readonly errorCode?: string;
+      }
+    | undefined
+  > {
+    return this.#client.leaseState;
+  }
+
   async connectRealtime(): Promise<void> {
     await this.#client.connectRealtime();
   }

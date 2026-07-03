@@ -34,6 +34,7 @@ pub mod frame_type {
     pub const SEGMENT_REF: u8 = 0x14;
     pub const SEGMENT_INLINE: u8 = 0x15;
     pub const SUB_END: u8 = 0x16;
+    pub const LEASE: u8 = 0x19;
     pub const ERROR: u8 = 0x1F;
 
     pub const REQUEST_TYPES: &[u8] = &[REQ_HEADER, PUSH_COMMIT, PULL_HEADER, SUBSCRIPTION];
@@ -45,6 +46,7 @@ pub mod frame_type {
         SEGMENT_REF,
         SEGMENT_INLINE,
         SUB_END,
+        LEASE,
         ERROR,
     ];
 }
@@ -184,6 +186,11 @@ pub enum Frame {
     RespHeader {
         required_schema_version: Option<i32>,
         latest_schema_version: Option<i32>,
+    },
+    /// §7.3.2: a server-issued auth lease delivered to the client (opaque).
+    Lease {
+        lease_id: String,
+        expires_at_ms: i64,
     },
     PushResult {
         client_commit_id: String,

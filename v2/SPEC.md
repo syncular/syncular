@@ -329,7 +329,7 @@ Rules:
    *either* message kind: a frame type registered for the other message
    kind (e.g. `SUB_START` in a request) is not unknown — it is a decode
    error. Registry entries that are *reserved* without a message kind
-   (`0x17`, `0x18`, `0x20`–`0x2F`) have no layout in wire version 1 and
+   (`0x17`, `0x18`, `0x1A`, `0x20`–`0x2F`) have no layout in wire version 1 and
    are therefore unknown — skippable, not errors — until a future
    version assigns them one. Preservation is the **only** source of
    unknown frames on the encode side: an encoder MUST NOT emit an
@@ -365,6 +365,8 @@ Frame type registry (wire version 1):
 | `0x16` | `SUB_END` | response | 4.4 |
 | `0x17` | *reserved* (commit-chain integrity) | — | §0 |
 | `0x18` | *reserved* (CRDT state vectors) | — | §0 |
+| `0x19` | `LEASE` | response | 7.3.2 |
+| `0x1A` | *reserved* (request-side lease assertion) | — | §7.3.2 |
 | `0x1F` | `ERROR` | response | 1.6 |
 | `0x20`–`0x2F` | *reserved* (realtime extensions, presence) | — | §8.6 |
 
@@ -446,6 +448,7 @@ envelope codec rejects a no-content request as a **decode error** under
 
 ```
 RESP_HEADER                     exactly once, first
+LEASE                           0 or 1 (§7.3.2), immediately after RESP_HEADER
 PUSH_RESULT × N                 one per PUSH_COMMIT, in request order
 per subscription, in request order:
   SUB_START
@@ -2131,19 +2134,177 @@ reference into the log).
   client gets its own changes back in the pull half, converging in one
   round-trip.
 
-### 7.3 Auth leases — reserved extension
+### 7.3 Auth leases
 
-Offline-write authorization leases (v1: ES256 JWS tokens,
-`syncular-auth-lease+jws`, with per-scope operation grants, clock-skew
-windows, and replay-time re-validation) are a **post-gate extension**
-(REVISE rule 3) and not part of core conformance. Reserved for it: the
-seven `sync.auth_lease_*` error codes (§10.3) and an `authLease` field
-slot in a future `PUSH_COMMIT` revision (new frame type per §9). The v1
-semantics — signature + expiry validation, schema-version binding, scope
-coverage check at replay, current-scope re-resolution (revocation beats
-the lease) — are the porting baseline when the extension lands. Until
-then: a server that requires lease provenance simply rejects offline
-replays with `sync.auth_required`.
+An **auth lease** is a server-issued, time-bounded grant recording the
+actor's resolved scopes at issuance. Its purpose is twofold: (a) the
+server MAY authorize a round's push and pull against the lease **during a
+host-authorization outage**, when the host opts in and its
+`resolveScopes` is unreachable; and (b) the client knows how long its
+offline work remains trustworthy — the lease's remaining validity is a
+UX surface (`leaseState`, below).
+
+This section specifies the lease **lifecycle** — issuance, refresh,
+expiry, revocation — as the parity rung. Three things are explicit
+non-goals here, noted so the skeleton stays a skeleton:
+
+- **Client-side cryptographic verification.** A lease is *server*-issued
+  and *server*-verified. Clients treat the lease as **opaque state**:
+  they persist it, surface its expiry, and echo its `leaseId` back, but
+  they never parse, validate, or trust its contents. (v1 shipped ES256
+  JWS tokens the client verified with a public key; v2 does not — the
+  server holds the lease store and is the only authority.)
+- **Cross-device lease transfer.** A lease is bound to
+  `(partition, clientId, actorId)`; it is not portable to another device
+  or client.
+- **Fine-grained per-scope TTLs and per-operation grants.** v1's lease
+  carried per-subscription `operations[]` grants and per-scope coverage
+  checks; the v2 lease carries the actor's whole resolved allowed-scope
+  map and one TTL. A future rung MAY narrow this; the skeleton does not.
+
+The lease is **not a fallback path** in the §0 no-fallback sense. When
+the host opts a request into lease authorization, the lease **is** the
+authorization for its validity window — there is no second wire path, no
+retry-with-different-credentials, no client-visible mode switch. The
+opt-in is a host/server decision made behind the `resolveScopes` seam
+(§7.3.3), invisible on the wire.
+
+#### 7.3.1 The lease record
+
+A lease is the tuple:
+
+| Field | Type | Semantics |
+|---|---|---|
+| `leaseId` | `str` | Server-chosen unique id, non-empty. The revocation handle (§7.3.4) and the client's echo key |
+| `actorId` | `str` | The actor the lease authorizes |
+| `allowedScopes` | `map` of `str` → `list(str)` | The actor's resolved allowed scopes at issuance (§3.2 step 3 shape; `'*'` means "any value"). This is what the server authorizes against during an outage |
+| `issuedAtMs` | `i64` | Server clock at issuance (epoch ms) |
+| `expiresAtMs` | `i64` | `issuedAtMs + ttlMs`; the lease is invalid at or after this instant |
+
+The record is **host-signed** at rest (an implementation concern of the
+lease store — the server verifies its own signature on read); the
+signature never appears on the wire, and clients never see it. A lease is
+**valid** at time `now` iff `now < expiresAtMs` and the lease has not been
+revoked (§7.3.4).
+
+#### 7.3.2 Wire carriage — the `LEASE` frame
+
+A lease is delivered to the client in a new response frame, `LEASE`
+(`frameType 0x19`), carried in the pull/round response after
+`RESP_HEADER` and before the first `PUSH_RESULT`/subscription section.
+Per §9 (new data = new frame type, never a field appended to an existing
+frame), the lease is **not** an added `RESP_HEADER` field; it is its own
+frame, so a feature-off client skips it by length (§1.2 rule 2) with zero
+awareness.
+
+**`LEASE` payload:**
+
+| Field | Type | Semantics |
+|---|---|---|
+| `leaseId` | `str` | §7.3.1, non-empty |
+| `expiresAtMs` | `i64` | §7.3.1 — the client's expiry-warning input |
+
+Only `leaseId` and `expiresAtMs` cross the wire: the client needs the id
+to echo (so the server can match its stored record) and the expiry to
+surface. `allowedScopes`, `issuedAtMs`, and the signature stay
+server-side (the client is not an authority — §7.3, non-goal 1). At most
+one `LEASE` frame per response; a second is a decode error.
+
+There is **no request-side lease frame in wire version 1.** The client
+does not present the lease on the wire; the server holds the lease store
+and consults it by `(partition, clientId)` when the host opts a request
+into lease authorization (§7.3.3). Reserved for a future rung that needs
+the client to *assert* a specific `leaseId` on the request: frame type
+`0x1A` (registered, no layout in wire version 1 — skippable per §1.2).
+
+#### 7.3.3 Issuance, refresh, and the enforcement seam
+
+Leases are a server feature behind a config: `leases` **absent ⇒ the
+feature is off** and no `LEASE` frame is ever emitted (zero-config
+discipline, the blob/segment-store pattern). When configured with a TTL:
+
+- **Issuance and refresh (sliding).** On a successful round whose
+  `resolveScopes` resolved (§3.2 step 3, `ok`), the server issues (or
+  refreshes) the actor's lease: it stores a record (§7.3.1) with
+  `allowedScopes` = the just-resolved allowed map, `issuedAtMs` = now,
+  `expiresAtMs` = now + `ttlMs`, keyed by `(partition, clientId)`, and
+  emits a `LEASE` frame. Refresh is sliding: every authorized round
+  extends the window and re-captures the current allowed scopes, so a
+  client that keeps syncing keeps a fresh lease. A round that does not
+  resolve scopes (schema floor §1.6, or a failed resolver §3.2 rule 5)
+  issues **no** lease and emits no frame. Issuance reuses the stable
+  `leaseId` for the `(partition, clientId)` pair across refreshes — a
+  refresh slides the same lease, it does not mint a new handle — so the
+  revocation handle (§7.3.4) stays stable.
+
+- **The enforcement seam.** `resolveScopes` stays the source of truth
+  whenever it is reachable — leases never override a live resolver. The
+  host opts a request into lease authorization by signalling, through the
+  resolver seam, that the live authority is **unavailable** (an outage)
+  rather than throwing: a thrown resolver still fails loud and revokes
+  (§3.2 rule 5, unchanged). On that signal the server loads the stored
+  lease for `(partition, clientId)` and, if the lease is **valid**
+  (§7.3.1) and its `actorId` matches, uses its `allowedScopes` as the
+  request's resolved allowed map — the request's pull filtering (§3.2)
+  and write authorization (§3.4) then run **exactly as if the resolver
+  had returned those scopes.** The lease is thus not a bypass: §3.4's
+  stored-row authorization, scope-column immutability, and fail-loud
+  denials all still apply against the leased allowed map. During
+  lease-authorized service the server does **not** refresh the lease (it
+  cannot re-resolve — that is the whole point of the outage); the window
+  ticks down toward `expiresAtMs`.
+
+- **No valid lease during an outage.** If the host signals the outage
+  but there is no stored lease, or the stored lease is expired, or its
+  `actorId` does not match, the request fails **request-level** with
+  `sync.auth_lease_required` (§10.2) — the "you need a lease and don't
+  have a live one" surface. A revoked lease fails with
+  `sync.auth_lease_revoked` (§7.3.4).
+
+#### 7.3.4 Revocation
+
+The host revokes a lease by `leaseId` through a server API
+(`revokeLease(partition, leaseId)` on the lease store). Revocation marks
+the stored record revoked; it is durable and survives refresh attempts
+(a refresh for a revoked `(partition, clientId)` mints a fresh id only
+after the host clears the revocation — a revoked handle never silently
+resurrects).
+
+Revocation is about **continued sync, not local data.** A revoked lease
+means: the next round that would be *lease-authorized* fails
+request-level with `sync.auth_lease_revoked` (§10.2, category
+`auth-required`, action `refreshAuth`). It does **not** by itself purge
+the client's local rows — that is the scope-revocation contract (§3.3),
+which fires per subscription via `SUB_START.status = revoked` when the
+live resolver narrows. The two are distinct: `sync.scope_revoked` is
+"this scope is no longer yours, purge it" (§3.3); `sync.auth_lease_revoked`
+is "your offline grant was pulled, you cannot sync on it anymore — get a
+live authorization." A client that hits `sync.auth_lease_revoked` stops
+syncing on the lease and surfaces the state (below); when the live
+resolver is reachable again, a normal authorized round re-issues a fresh
+lease and the client resumes — its local data was never touched. If the
+live resolver has *also* narrowed the actor's scopes, the ordinary §3.3
+purge runs on that recovered round, as always.
+
+#### 7.3.5 Client `leaseState`
+
+A client persists the current lease (`leaseId`, `expiresAtMs`) from the
+last `LEASE` frame and exposes it as `leaseState` — the mirror of
+`schemaFloor` (§1.6):
+
+- `leaseState.leaseId` / `leaseState.expiresAtMs`: the held lease, if any.
+- `leaseState.remainingMs(now)`: `expiresAtMs − now`, the expiry-warning
+  surface — an app shows "offline session expires in N minutes."
+- The lease error codes are **stop-and-surface, not silent retry.** On
+  `sync.auth_lease_required` or `sync.auth_lease_revoked` (request-level,
+  so the whole round fails), the client records the code in `leaseState`
+  and stops syncing on the lease; it does **not** auto-retry the same
+  round into a guaranteed failure (the schema-floor discipline). The app
+  drives recovery (reconnect to a live resolver). The client never purges
+  local data on these codes (§7.3.4).
+
+A client with no `LEASE` frame ever received has an empty `leaseState` —
+the feature is invisible until a lease-issuing server sends one.
 
 ---
 
@@ -2507,6 +2668,8 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | Code | Category | Retryable | Action | Produced when |
 |---|---|---|---|---|
 | `sync.auth_required` | auth-required | yes | refreshAuth | Host authentication absent/failed (HTTP 401; WS close) |
+| `sync.auth_lease_required` | auth-required | yes | refreshAuth | The host opted the request into lease authorization (a live-resolver outage) but no valid lease exists for `(partition, clientId)` — expired, actor-mismatched, or never issued (§7.3.3) — *new in v2*; request-level |
+| `sync.auth_lease_revoked` | auth-required | yes | refreshAuth | A lease-authorized round was attempted on a lease the host revoked by `leaseId` (§7.3.4) — *new in v2*; request-level. Distinct from `sync.scope_revoked` (§3.3): the grant was pulled, but no local data is purged |
 | `sync.forbidden` | forbidden | no | checkPermissions | Write-path scope denial (§3.4); segment scope-digest mismatch (§5.5); `resolveScopes` threw on a write |
 | `sync.invalid_request` | invalid-request | no | fixRequest | Malformed envelope/frame, bad content type, missing required fields |
 | `sync.invalid_client_id` | invalid-request | no | resetClientId | `clientId` bound to a different actor (§1.5) |
@@ -2553,8 +2716,29 @@ restriction; reserved if such a capability lands); `console.*`,
 `proxy.*` (post-gate features). The `blob.*` family is **no longer
 reserved**: it is specified as four codes in §10.2 (§5.9, the blobs
 rung); any future `blob.*` code stays within that family's semantics.
-**Reserved** (must not be reused for other meanings): the seven
-`sync.auth_lease_*` codes (§7.3).
+
+The `sync.auth_lease_*` family is **no longer reserved** either: the
+auth-lease rung (§7.3) landed. Of v1's seven codes, **two have a v2
+producer and are specified in §10.2** — `sync.auth_lease_required`
+(§7.3.3) and `sync.auth_lease_revoked` (§7.3.4). The other five are
+**pruned per the no-producer rule** (the §10 discipline: a code with no
+producer is not in the catalog): `sync.auth_lease_invalid` and
+`sync.auth_lease_scope_mismatch` (v1 verified a client-presented signed
+token and checked per-operation scope coverage; v2 leases are
+server-issued, server-held, and client-opaque — §7.3 non-goal 1 — so
+there is no client token to reject and no per-operation grant to
+mismatch); `sync.auth_lease_schema_mismatch` (v1 bound the lease to a
+`schemaVersion` checked at replay; v2 already enforces the schema floor
+via `requiredSchemaVersion`, §1.6 — a stale-schema round never reaches
+lease authorization, so the code has no distinct producer);
+`sync.auth_lease_missing` (folded into `sync.auth_lease_required` — the
+same "you need a lease and have none" surface, renamed to the action it
+implies); and `sync.auth_lease_business_rejected` (v1's business-rule
+plugin surface has no v2 analogue — a leased write that violates a rule
+rejects through the ordinary §3.4/§6 codes, not a lease-specific one).
+The five pruned names remain **reserved** (must not be reused for other
+meanings) should a future rung restore client-presented leases or
+per-scope grants.
 
 ---
 
@@ -2661,6 +2845,7 @@ byte-identical output):
 | 17 | `realtime/wake` + `realtime/hello` | JSON control vectors (`.json` only — no binary form) |
 | 18 | `segment/crdt-column` | SSG2 for a table with a `crdt` column (§2.4 tag 8): the crdt value rides the `bytes` machinery (opaque bytes, incl. NULL and empty), pinning the new tag without touching existing fixtures |
 | 19 | `response/commit-crdt-merge` | A `COMMIT` upsert whose row carries a merged `crdt` column (§5.10.3): the merged bytes ride the ordinary change payload, no CRDT-specific frame |
+| 20 | `response/lease-issued` | `RESP_HEADER` + `LEASE` (§7.3.2) + an active subscription section: pins the new `0x19` frame (`leaseId`, `expiresAtMs`) in its grammar position; existing fixtures untouched (the §9 new-tag-needs-pinning rule met by a new case) |
 | — | `request/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload |
 | — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`) |
 | — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1) |
@@ -2827,3 +3012,25 @@ not a prose test.
     **fixture Yjs update bytes generated by the TS side** and asserts the
     server-merged result equals the expected merged bytes — byte-level
     convergence with no Rust-side merge. Both pairings (TS×TS, Rust×TS).
+
+15. **Auth leases / offline authorization.** The lease lifecycle (§7.3),
+    feature enabled with a TTL. (a) Issued and refreshed on authorized
+    rounds: an authorized round delivers a `LEASE` frame the client holds
+    (`leaseId`, `expiresAtMs` = issuedAt + ttlMs); a later authorized
+    round slides the **same** `leaseId` and extends the window (§7.3.2,
+    §7.3.3, §7.3.5). (b) Outage-served then expired: with the live
+    resolver in an outage (§7.3.3, a signal not a throw), an offline write
+    applies under lease authorization; past the TTL the round fails
+    request-level with `sync.auth_lease_required`, the client records the
+    code in `leaseState` and stops-and-surfaces, no local data is purged
+    (§7.3.4), the write stays queued, and recovery to a live resolver
+    clears the error and drains the write (§7.3.5). (c) Revocation
+    invalidates continued sync, not local data: the host revokes the
+    lease, a leased round fails with `sync.auth_lease_revoked`, the synced
+    rows survive (distinct from the §3.3 scope-revocation purge), and
+    recovery mints a **fresh** lease id — the revoked handle never
+    resurrects (§7.3.4). (d) Feature-off emits nothing: a server with no
+    `leases` config never emits a `LEASE` frame and the client's
+    `leaseState` stays empty (zero-config discipline, §7.3.3). Both
+    pairings (TS×TS, Rust×TS); the Rust client treats the lease as opaque
+    state (§7.3 non-goal 1).

@@ -10,6 +10,7 @@ import { conflictScenarios } from './conflict';
 import { convergenceScenarios } from './convergence';
 import { crdtScenarios } from './crdt';
 import { errorScenarios } from './errors';
+import { leaseScenarios } from './leases';
 import { lifecycleScenarios } from './lifecycle';
 import { offlineScenarios } from './offline';
 import { realtimeScenarios } from './realtime';
@@ -29,6 +30,7 @@ export const CATALOG: readonly Scenario[] = [
   ...signedUrlScenarios,
   ...blobScenarios,
   ...crdtScenarios,
+  ...leaseScenarios,
   ...lifecycleScenarios,
   ...realtimeScenarios,
   ...wsRoundScenarios,

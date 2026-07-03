@@ -59,6 +59,8 @@ export interface ScenarioServerOptions {
   readonly nowMs?: number;
   /** §5.4 native-scheme signed-URL issuance for this scenario's server. */
   readonly signedUrls?: { readonly ttlSeconds?: number };
+  /** §7.3 auth leases for this scenario's server (absent ⇒ off). */
+  readonly leases?: { readonly ttlMs: number };
 }
 
 export interface Scenario {
@@ -516,6 +518,9 @@ export async function createScenarioContext(
       : {}),
     ...(scenario.server?.signedUrls !== undefined
       ? { signedUrls: scenario.server.signedUrls }
+      : {}),
+    ...(scenario.server?.leases !== undefined
+      ? { leases: scenario.server.leases }
       : {}),
   });
   return new ScenarioContext(

@@ -1,0 +1,31 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 1,
+  "msgKind": "response",
+  "frames": [
+    {
+      "type": "RESP_HEADER"
+    },
+    {
+      "type": "LEASE",
+      "leaseId": "lease_9f8e7d6c-5b4a-3210-fedc-ba9876543210",
+      "expiresAtMs": 1782994500000
+    },
+    {
+      "type": "SUB_START",
+      "id": "sub-notes",
+      "status": "active",
+      "reasonCode": "",
+      "effectiveScopes": {
+        "project": [
+          "p1"
+        ]
+      },
+      "bootstrap": false
+    },
+    {
+      "type": "SUB_END",
+      "nextCursor": 57
+    }
+  ]
+}

@@ -8,7 +8,7 @@
  */
 import { blobIdFor, isBlobId } from './blob-store';
 import type { SyncRequestContext } from './context';
-import { clockOf } from './context';
+import { clockOf, RESOLVER_OUTAGE } from './context';
 import { SyncError, syncError } from './errors';
 import { emitEvent } from './events';
 import { compileSchema } from './schema';
@@ -150,7 +150,9 @@ async function downloadBlob(
       partition: ctx.partition,
       actorId: ctx.actorId,
     });
-    resolved = { ok: true, allowed };
+    // §7.3.3: leases never authorize a blob download — an outage denies.
+    resolved =
+      allowed === RESOLVER_OUTAGE ? { ok: false } : { ok: true, allowed };
   } catch (error) {
     if (ctx.events !== undefined) {
       emitEvent(ctx.events, {

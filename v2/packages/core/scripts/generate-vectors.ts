@@ -588,6 +588,30 @@ const commitCrdtMerge: ResponseMessage = {
   ],
 };
 
+// §7.3.2: a LEASE frame immediately after RESP_HEADER, then an active
+// subscription section — pins the new 0x19 frame in its grammar position.
+const leaseIssued: ResponseMessage = {
+  wireVersion: 1,
+  msgKind: 'response',
+  frames: [
+    { type: 'RESP_HEADER' },
+    {
+      type: 'LEASE',
+      leaseId: 'lease_9f8e7d6c-5b4a-3210-fedc-ba9876543210',
+      expiresAtMs: FIXED_TIME_MS + 900_000,
+    },
+    {
+      type: 'SUB_START',
+      id: 'sub-notes',
+      status: 'active',
+      reasonCode: '',
+      effectiveScopes: EFFECTIVE_SCOPES,
+      bootstrap: false,
+    },
+    { type: 'SUB_END', nextCursor: 57 },
+  ],
+};
+
 // ---------------------------------------------------------------------------
 // Valid segment vector
 // ---------------------------------------------------------------------------
@@ -1150,6 +1174,13 @@ total += emitKind(
       render: renderMessage,
       covers:
         'A COMMIT upsert carrying a server-merged crdt column (§2.4 tag 8, §5.10.3): merged bytes ride the ordinary change payload, no CRDT-specific frame',
+    },
+    {
+      name: 'lease-issued',
+      bytes: encodeMessage(leaseIssued),
+      render: renderMessage,
+      covers:
+        'RESP_HEADER + LEASE (§7.3.2) + active subscription: pins the new 0x19 frame (leaseId, expiresAtMs) in its grammar position',
     },
   ],
   [],

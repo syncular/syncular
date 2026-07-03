@@ -113,6 +113,12 @@ export interface ServerSignedUrlOptions {
   readonly ttlSeconds?: number;
 }
 
+/** §7.3 auth-lease feature for the server under test. */
+export interface ServerLeaseOptions {
+  /** Lease TTL in ms — the sliding window width (§7.3.3). */
+  readonly ttlMs: number;
+}
+
 export interface ServerCreateOptions {
   readonly schema: DriverSchema;
   readonly partition: string;
@@ -120,6 +126,8 @@ export interface ServerCreateOptions {
   readonly nowMs: number;
   readonly limits?: ServerLimitsOptions;
   readonly signedUrls?: ServerSignedUrlOptions;
+  /** §7.3: enable auth leases with this TTL (absent ⇒ feature off). */
+  readonly leases?: ServerLeaseOptions;
 }
 
 export interface RetentionOptions {
@@ -165,7 +173,8 @@ export type ServerCapability =
   | 'idempotency-fault'
   | 'signed-urls'
   | 'blobs'
-  | 'crdt';
+  | 'crdt'
+  | 'leases';
 
 export interface ServerInstance {
   /**
@@ -221,6 +230,15 @@ export interface ServerInstance {
   setAllowedScopes(actorId: string, allowed: DriverScopeMap): Promise<void>;
   /** Make `resolveScopes` throw for every actor (fail-loud paths). */
   setResolverFailing(failing: boolean): Promise<void>;
+
+  /**
+   * `leases`: put the resolver into a live-authorization outage (§7.3.3) —
+   * `resolveScopes` returns the outage signal so the round authorizes
+   * against the stored lease. Distinct from `setResolverFailing` (a throw).
+   */
+  setResolverOutage?(outage: boolean): Promise<void>;
+  /** `leases`: revoke a lease by `leaseId` (§7.3.4). */
+  revokeLease?(leaseId: string): Promise<void>;
 
   advanceClock(ms: number): Promise<void>;
   nowMs(): Promise<number>;
@@ -421,6 +439,15 @@ export interface ClientInstance {
     | {
         readonly requiredSchemaVersion?: number;
         readonly latestSchemaVersion?: number;
+      }
+    | undefined
+  >;
+  /** §7.3.5: the client's opaque auth-lease state, or undefined. */
+  leaseState(): Promise<
+    | {
+        readonly leaseId?: string;
+        readonly expiresAtMs?: number;
+        readonly errorCode?: string;
       }
     | undefined
   >;

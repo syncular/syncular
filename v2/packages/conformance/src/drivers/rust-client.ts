@@ -568,6 +568,26 @@ class RustClientInstance implements ClientInstance {
     return result.floor as unknown as ClientSyncReport['schemaFloor'];
   }
 
+  async leaseState(): Promise<
+    | {
+        readonly leaseId?: string;
+        readonly expiresAtMs?: number;
+        readonly errorCode?: string;
+      }
+    | undefined
+  > {
+    const result = asObject(
+      await this.#shim.call('leaseState', {}),
+      'leaseState',
+    );
+    if (result.lease === null || result.lease === undefined) return undefined;
+    return result.lease as unknown as {
+      readonly leaseId?: string;
+      readonly expiresAtMs?: number;
+      readonly errorCode?: string;
+    };
+  }
+
   async connectRealtime(): Promise<void> {
     await this.#shim.call('connectRealtime', {});
   }

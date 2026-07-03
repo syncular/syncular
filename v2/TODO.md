@@ -147,9 +147,40 @@ the old tree archived.
       bytes). Demo: SKIPPED this rung (a collaborative note field would need
       worker-RPC + Y.Doc wiring across the OPFS worker boundary — not
       trivially cheap; deferred to avoid bloating the diff).
-- [ ] **Auth leases** (v1's `sync.auth_lease_*` family): spec the lease
-      lifecycle, reserve→specify the error codes (§10.3 already reserves
-      them), server enforcement + client refresh behavior.
+- [x] **Auth leases** (v1's `sync.auth_lease_*` family): LANDED 2026-07-03 —
+      the third parity-ladder rung, spec-first. SPEC §7.3 pins the lease
+      **lifecycle** (issuance/refresh/expiry/revocation) end to end. A lease
+      is a server-issued, host-signed, time-bounded grant recording the
+      actor's resolved scopes at issuance
+      (`{leaseId, actorId, allowedScopes, issuedAtMs, expiresAtMs}`) —
+      **opaque to the client** (non-goals: client crypto verification,
+      cross-device transfer, per-scope TTLs). Wire carriage: a NEW response
+      frame `LEASE` (0x19, immediately after RESP_HEADER; §9 new-data =
+      new-frame, never a RESP_HEADER field), carrying only
+      `leaseId`/`expiresAtMs` — a feature-off client skips it by length.
+      Enforcement seam: `resolveScopes` stays source-of-truth; the host opts
+      a request into lease authorization by returning a new `RESOLVER_OUTAGE`
+      sentinel (a signal, distinct from a throw which still fail-loud
+      revokes) — the server then authorizes the round against the stored
+      lease's `allowedScopes` for its validity window (the lease IS the
+      authorization, not a fallback path). Server: an optional `LeaseStore`
+      (memory + sqlite, the blob-store pattern) behind a `leases: {ttlMs}`
+      config (absent = off, zero cost); sliding refresh on every authorized
+      round (stable `leaseId`); `lease.issued`/`lease.revoked` events.
+      Codes: TWO kept with real producers — `sync.auth_lease_required`
+      (outage without a valid lease) and `sync.auth_lease_revoked` (revoked
+      handle); the OTHER FIVE of v1's seven PRUNED per the no-producer rule
+      (§10.3: `invalid`/`scope_mismatch` — no client token / no per-op
+      grants; `schema_mismatch` — the schema floor covers it; `missing` —
+      folded into `required`; `business_rejected` — no plugin surface),
+      staying reserved. Both clients persist the opaque lease and expose
+      `leaseState` (`leaseId`/`expiresAtMs`/`errorCode`, `leaseRemainingMs`)
+      — the schemaFloor mirror; lease codes are stop-and-surface, never a
+      silent retry, and NEVER purge local data (§7.3.4, distinct from §3.3).
+      One new golden vector (`response/lease-issued`); existing vectors
+      byte-identical. Conformance B.15 (4 scenarios: issued/refreshed;
+      outage-served-then-expired; revocation-invalidates-sync-not-data;
+      feature-off-emits-nothing — both pairings, 59×Rust / 61×TS).
 - [ ] **Presence + realtime hardening**: presence events (§8.6 reserved),
       reconnect storms, wake coalescing under fanout load, oversize-delta
       policies at scale.

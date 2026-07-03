@@ -102,6 +102,14 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
             w.opt(latest_schema_version, |w, v| w.i32(*v));
             ft::RESP_HEADER
         }
+        Frame::Lease {
+            lease_id,
+            expires_at_ms,
+        } => {
+            w.str(lease_id);
+            w.i64(*expires_at_ms);
+            ft::LEASE
+        }
         Frame::PushResult {
             client_commit_id,
             status,

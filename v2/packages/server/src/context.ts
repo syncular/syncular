@@ -8,6 +8,7 @@ import type { ScopeMap } from '@syncular-v2/core';
 import type { BlobStore } from './blob-store';
 import type { CrdtMergerRegistry } from './crdt-merger';
 import type { SyncularServerEvents } from './events';
+import type { LeaseStore } from './lease-store';
 import type { ServerSchema } from './schema';
 import type { SegmentStore } from './segment-store';
 import type { SegmentUrlConfig } from './signed-url';
@@ -19,17 +20,44 @@ export const SSP2_CONTENT_TYPE = 'application/vnd.syncular.sync.v2';
 export interface ResolveScopesArgs {
   readonly partition: string;
   readonly actorId: string;
+  /**
+   * The requesting client (§1.5). Present on sync rounds (the lease key,
+   * §7.3.3); absent on segment/blob downloads, which re-authorize by
+   * actor + scopes only (§5.5, §5.9.5) and never consult a lease.
+   */
+  readonly clientId?: string;
 }
+
+/**
+ * Sentinel a resolver returns to signal a **live-authorization outage**
+ * (§7.3.3): the live authority is unreachable, so the server SHOULD
+ * authorize this request against the actor's stored lease instead of
+ * throwing. Distinct from throwing (§3.2 rule 5, which still fails loud
+ * and revokes). Only meaningful when `leases` is configured; without a
+ * lease store an outage degrades to `sync.auth_lease_required`.
+ */
+export const RESOLVER_OUTAGE = Symbol.for('syncular.resolver_outage');
+export type ResolverOutage = typeof RESOLVER_OUTAGE;
 
 /**
  * Host callback: actor → allowed scopes (§3.2 step 3). Resolved at most
  * once per request and memoized (§3.4 step 1). `'*'` means "any value for
  * this variable". A throwing resolver revokes subscriptions and rejects
- * writes with `sync.forbidden` — fail loud, never leak.
+ * writes with `sync.forbidden` — fail loud, never leak. Returning
+ * `RESOLVER_OUTAGE` instead opts the request into lease authorization
+ * (§7.3.3) — a deliberate outage signal, not a failure.
  */
 export type ResolveScopes = (
   args: ResolveScopesArgs,
-) => ScopeMap | Promise<ScopeMap>;
+) => ScopeMap | ResolverOutage | Promise<ScopeMap | ResolverOutage>;
+
+/** §7.3: auth-lease feature config. Absent ⇒ leases off (zero cost). */
+export interface LeaseConfig {
+  /** Lease TTL in ms — the sliding window width (§7.3.3). */
+  readonly ttlMs: number;
+  /** The lease store (§7.3.1); host-owned, optional like blobs. */
+  readonly store: LeaseStore;
+}
 
 export interface ServerLimits {
   /** Operation cap per request (§6.1 `sync.too_many_operations`). */
@@ -68,6 +96,13 @@ export interface SyncServerConfig {
    */
   readonly crdtMergers?: CrdtMergerRegistry;
   readonly resolveScopes: ResolveScopes;
+  /**
+   * §7.3 auth leases. Absent ⇒ the feature is off: no `LEASE` frame is
+   * ever emitted and a `RESOLVER_OUTAGE` signal degrades to
+   * `sync.auth_lease_required`. Present ⇒ successful authorized rounds
+   * issue/refresh a lease and outages authorize against it.
+   */
+  readonly leases?: LeaseConfig;
   /** Epoch-ms clock; defaults to `Date.now`. */
   readonly clock?: () => number;
   readonly limits?: Partial<ServerLimits>;

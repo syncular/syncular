@@ -176,6 +176,12 @@ function renderFrame(frame: RequestFrame | ResponseFrame): JsonValue {
           ? { latestSchemaVersion: frame.latestSchemaVersion }
           : {}),
       };
+    case 'LEASE':
+      return {
+        type: 'LEASE',
+        leaseId: frame.leaseId,
+        expiresAtMs: frame.expiresAtMs,
+      };
     case 'PUSH_RESULT':
       return {
         type: 'PUSH_RESULT',
