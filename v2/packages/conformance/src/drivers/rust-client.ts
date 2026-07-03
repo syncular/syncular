@@ -264,15 +264,24 @@ class ShimProcess {
         ) {
           throw new Error('downloadSegment: malformed request');
         }
-        const url = params.url;
-        const urlExpiresAtMs = params.urlExpiresAtMs;
         const bytes = await endpoints.downloadSegment({
           segmentId,
           table,
           requestedScopesJson,
-          ...(typeof url === 'string' ? { url } : {}),
-          ...(typeof urlExpiresAtMs === 'number' ? { urlExpiresAtMs } : {}),
         });
+        return { bytes: bytesParam(bytes) };
+      }
+      case 'fetchUrl': {
+        // §5.4: the URL is the entire grant — nothing else crosses.
+        const url = params.url;
+        if (typeof url !== 'string') {
+          throw new Error('fetchUrl: missing url');
+        }
+        const fetchSegmentUrl = endpoints.fetchSegmentUrl;
+        if (fetchSegmentUrl === undefined) {
+          throw new Error('fetchUrl: endpoints have no URL host');
+        }
+        const bytes = await fetchSegmentUrl(url);
         return { bytes: bytesParam(bytes) };
       }
       case 'realtimeConnect': {
@@ -565,6 +574,10 @@ export const rustClientDriver: ClientDriver = {
       ...(options.limits !== undefined
         ? { limits: options.limits as unknown as JsonValue }
         : {}),
+      // §5.4: bit-3 capability of the harness endpoint set + the pinned
+      // client clock for the urlExpiresAtMs check.
+      signedUrls: options.endpoints.fetchSegmentUrl !== undefined,
+      ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
     });
     return new RustClientInstance(shim);
   },

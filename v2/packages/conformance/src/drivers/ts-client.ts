@@ -283,22 +283,28 @@ export const tsClientDriver: ClientDriver = {
   async create(options: ClientCreateOptions): Promise<ClientInstance> {
     const db = new BunClientDatabase();
     const endpoints = options.endpoints;
+    const nowMs = options.nowMs;
+    // §5.4 capability negotiation: the downloader exposes `fetchUrl` iff
+    // the harness endpoints have a URL host — that presence is what makes
+    // the client core advertise accept bit 3.
+    const fetchSegmentUrl = endpoints.fetchSegmentUrl?.bind(endpoints);
+    const segments = Object.assign(
+      (request: {
+        segmentId: string;
+        table: string;
+        requestedScopesJson: string;
+      }) => endpoints.downloadSegment(request),
+      fetchSegmentUrl !== undefined ? { fetchUrl: fetchSegmentUrl } : {},
+    );
     const client = new SyncClient({
       database: db,
       schema: toClientSchema(options.schema),
       clientId: options.clientId,
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
+      // §5.4 expiry checks run on the harness clock when pinned.
+      ...(nowMs !== undefined ? { now: () => nowMs } : {}),
       transport: (bytes) => endpoints.sync(bytes),
-      segments: (request) =>
-        endpoints.downloadSegment({
-          segmentId: request.segmentId,
-          table: request.table,
-          ...(request.url !== undefined ? { url: request.url } : {}),
-          ...(request.urlExpiresAtMs !== undefined
-            ? { urlExpiresAtMs: request.urlExpiresAtMs }
-            : {}),
-          requestedScopesJson: request.requestedScopesJson,
-        }),
+      segments,
       realtime: async (handlers) => {
         const connection = await endpoints.connectRealtime({
           onText: (text) => handlers.onText(text),

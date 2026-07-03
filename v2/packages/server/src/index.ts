@@ -7,6 +7,7 @@
  * transport-agnostic realtime session (§8), the direct segment download
  * handler (§5.5), and signed-URL token issuance/verification (§5.4).
  */
+export * from './content-encoding';
 export * from './context';
 export * from './errors';
 export * from './events';

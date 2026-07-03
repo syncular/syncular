@@ -174,17 +174,36 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     return client;
   }
 
+  function assertOnline(): void {
+    if (offline) {
+      throw new ClientSyncError(
+        'sync.transport_failed',
+        'the worker transport is offline (setOffline(true))',
+        true,
+      );
+    }
+  }
+
   function gateOffline<T>(inner: (request: T) => Promise<Uint8Array>) {
     return (request: T): Promise<Uint8Array> => {
-      if (offline) {
-        throw new ClientSyncError(
-          'sync.transport_failed',
-          'the worker transport is offline (setOffline(true))',
-          true,
-        );
-      }
+      assertOnline();
       return inner(request);
     };
+  }
+
+  /** Offline gate that preserves the §5.4 `fetchUrl` capability marker. */
+  function gateSegmentsOffline(inner: SegmentDownloader): SegmentDownloader {
+    const fetchUrl = inner.fetchUrl;
+    return Object.assign(gateOffline(inner), {
+      ...(fetchUrl !== undefined
+        ? {
+            fetchUrl: (url: string) => {
+              assertOnline();
+              return fetchUrl(url);
+            },
+          }
+        : {}),
+    });
   }
 
   async function init(config: WorkerInitConfig): Promise<WorkerInitResult> {
@@ -221,7 +240,9 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       database,
       schema: config.schema,
       transport,
-      ...(segments !== undefined ? { segments: gateOffline(segments) } : {}),
+      ...(segments !== undefined
+        ? { segments: gateSegmentsOffline(segments) }
+        : {}),
       realtime: (handlers) => {
         if (offline) {
           throw new ClientSyncError(

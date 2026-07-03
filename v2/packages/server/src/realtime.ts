@@ -38,7 +38,7 @@ import {
   type ResolvedScopes,
 } from './scopes';
 import type { SegmentStore } from './segment-store';
-import type { SignedUrlConfig } from './signed-url';
+import type { SegmentUrlConfig } from './signed-url';
 import type { ServerStorage, StoredCommit } from './storage';
 
 export interface RealtimeHubConfig {
@@ -58,7 +58,7 @@ export interface RealtimeHubConfig {
   readonly segments?: SegmentStore;
   /** Request limits for socket rounds; defaults match the HTTP binding. */
   readonly limits?: Partial<ServerLimits>;
-  readonly signedUrls?: SignedUrlConfig;
+  readonly signedUrls?: SegmentUrlConfig;
 }
 
 export interface RealtimeConnectOptions {

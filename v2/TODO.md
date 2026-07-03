@@ -67,9 +67,19 @@ the old tree archived.
       (4 scenarios, both pairings); demo syncs over the socket (zero
       POST /sync from the browser). No wire-vector changes (the tag is
       transport-binding framing, outside SSP2 messages).
-- [ ] **Signed-URL client path**: client advertises accept bit 3, fetches
-      segments from CDN/R2-style URLs; conformance scenario for the
-      issue→fetch→verify loop. (Server side already exists.)
+- [x] **Signed-URL client path**: LANDED 2026-07-03 — both clients
+      advertise accept bit 3 when their downloader/transport exposes a
+      direct URL fetch (TS: `SegmentDownloader.fetchUrl`; Rust:
+      `Transport::fetch_url` + `supports_url_fetch`, shim-bridged), and
+      §5.4 is pinned hard: a url-carrying descriptor MUST be fetched
+      from the URL with NO host credentials (the URL is the entire
+      grant), never fetched at/past `urlExpiresAtMs`, and any failure
+      (expiry/loss/tamper) invalidates the descriptor — recovery is
+      re-pull, never a fall-through to the direct endpoint. Conformance
+      B.12 (4 scenarios, both pairings) covers issue→fetch→verify on
+      both lanes, expiry, tamper/loss, and bit-3 gating on the native
+      HMAC path; delegated presign stays pinned by the packages/server
+      S3-stub tests (§5.4 equivalence — client-indistinguishable).
 - [x] **Perf budgets in CI**: LANDED 2026-07-03 — `bench:ci` mode with
       documented budgets (rows/sec floor 90k, propagation p95 ≤ 20 ms,
       own JS ≤ 60 KB raw, total ≤ 600 KB gzip) as a `bench-budgets` job
@@ -154,9 +164,17 @@ the old tree archived.
       §4.7-phasing vs §8.1-replace ambiguity (one-line edit, resolve in
       windowing's favor); §8.1 fixed registration covered by WS loop.
       Implementation itself stays post-parity.
-- [ ] Segment compression posture: zstd/CDN-encoding for segment bytes at
-      rest/transfer (ids hash uncompressed bytes — already spec'd; pick
-      the shipped default).
+- [x] Segment compression posture: DECIDED + LANDED 2026-07-03 — SPEC
+      §5.8. Direct endpoint compresses BOTH formats per Accept-Encoding
+      (zstd preferred, gzip fallback; hono adapter via the zero-dep
+      `encodeSegmentBody` helper) on measured data at 100k rows: rows
+      6.2×/8 ms zstd (7.7×/42 ms gzip), sqlite images 3.4×/14 ms zstd
+      (51 ms gzip), decompress ≤ 8 ms — the image lane keeps its
+      latency win. Signed-URL/S3 objects stay uncompressed at rest
+      (content address = stored bytes; edge compression is deployment,
+      MUST NOT double-compress); inline/WS segments ride §1.3 transport
+      compression unchanged. Ids still hash uncompressed bytes (§5.1);
+      clients rely on native fetch decoding — zero new client code.
 - [ ] E2EE: explicitly re-scope (v1 had it; decide where it lives in v2's
       ladder or whether it waits for demand).
 

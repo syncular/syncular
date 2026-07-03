@@ -86,6 +86,8 @@ struct HostIo {
     /// (the harness may issue the next driver call as soon as a seam
     /// observation resolves); replayed by the main loop in order.
     deferred: VecDeque<(Value, String, Value)>,
+    /// §5.4 capability of the harness endpoints (create `signedUrls`).
+    signed_urls: bool,
 }
 
 impl HostIo {
@@ -96,6 +98,7 @@ impl HostIo {
             next_id: 0,
             rt_queue: VecDeque::new(),
             deferred: VecDeque::new(),
+            signed_urls: false,
         }
     }
 
@@ -242,17 +245,23 @@ impl Transport for HostIo {
             Value::from(request.segment_id.clone()),
         );
         params.insert("table".to_owned(), Value::from(request.table.clone()));
-        if let Some(url) = &request.url {
-            params.insert("url".to_owned(), Value::from(url.clone()));
-        }
-        if let Some(exp) = request.url_expires_at_ms {
-            params.insert("urlExpiresAtMs".to_owned(), Value::from(exp));
-        }
         params.insert(
             "requestedScopesJson".to_owned(),
             Value::from(request.requested_scopes_json.clone()),
         );
         let result = self.call_host("downloadSegment", Value::Object(params))?;
+        value_bytes(result.get("bytes")).map_err(|m| TransportError::new("transport.failed", m))
+    }
+
+    fn supports_url_fetch(&self) -> bool {
+        // Announced by the harness at create time — the loopback endpoint
+        // set decides its own §5.4 capability (negotiation, not fallback).
+        self.signed_urls
+    }
+
+    fn fetch_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+        // The URL is the entire grant (§5.4): nothing but the URL crosses.
+        let result = self.call_host("fetchUrl", json!({ "url": url }))?;
         value_bytes(result.get("bytes")).map_err(|m| TransportError::new("transport.failed", m))
     }
 
@@ -387,7 +396,16 @@ fn dispatch(
                 .get("schema")
                 .ok_or_else(|| client_err("create missing schema".to_owned()))?;
             let limits = parse_limits(params.get("limits"));
-            let instance = SyncClient::new(client_id, schema, limits).map_err(client_err)?;
+            let mut instance = SyncClient::new(client_id, schema, limits).map_err(client_err)?;
+            // Harness clock pin (§5.4 expiry runs on the virtual clock).
+            if let Some(now_ms) = params.get("nowMs").and_then(Value::as_i64) {
+                instance.set_now_ms(now_ms);
+            }
+            // §5.4 capability of the harness endpoint set (accept bit 3).
+            io.signed_urls = params
+                .get("signedUrls")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             *client = Some(instance);
             Ok(json!({}))
         }

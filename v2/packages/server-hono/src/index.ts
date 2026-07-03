@@ -5,6 +5,7 @@
  * (realtime upgrades are runtime-specific and stay with the host).
  */
 import {
+  encodeSegmentBody,
   errorBody,
   handleSegmentDownload,
   handleSyncRequest,
@@ -76,11 +77,20 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
       if (c.req.header('if-none-match') === result.headers.ETag) {
         return c.body(null, 304, result.headers);
       }
-      return c.body(
-        result.bytes.slice().buffer as ArrayBuffer,
-        200,
-        result.headers,
+      // §5.8 shipped default: compress the body per Accept-Encoding
+      // (zstd preferred, gzip fallback, identity otherwise). Content
+      // addresses are over the uncompressed bytes (§5.1) — fetch
+      // decodes transparently on the client.
+      const encoded = encodeSegmentBody(
+        result.bytes,
+        c.req.header('accept-encoding'),
       );
+      return c.body(encoded.bytes.slice().buffer as ArrayBuffer, 200, {
+        ...result.headers,
+        ...(encoded.contentEncoding !== undefined
+          ? { 'Content-Encoding': encoded.contentEncoding }
+          : {}),
+      });
     } catch (error) {
       return errorResponse(error);
     }
