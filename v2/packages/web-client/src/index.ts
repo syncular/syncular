@@ -15,6 +15,7 @@ export * from './content-type';
 export * from './database';
 export * from './errors';
 export * from './http';
+export * from './invalidation';
 export * from './leader-lock';
 export * from './outbox';
 export * from './schema';
