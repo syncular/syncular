@@ -67,6 +67,125 @@ context). The demo server wires it behind `SYNCULAR_DEMO_EVENTS=1`.
 All events also carry `type`, `atMs`, and (where a request identity
 exists) `partition` / `actorId`.
 
+## Segment storage on S3 / R2 (`S3SegmentStore`)
+
+Three `SegmentStore` backends ship in-tree and pass one shared contract
+suite (`test/segment-store-contract.ts`): `MemorySegmentStore` (tests,
+single process), `SqliteSegmentStore` (single node), and
+`S3SegmentStore` — the production backend for any S3-compatible object
+store (AWS S3, Cloudflare R2, MinIO). It is dependency-free: SigV4 is
+hand-rolled over `fetch` (`sigv4.ts`, pinned by the published AWS test
+vectors).
+
+```ts
+import { S3SegmentStore, s3PresignedUrls } from '@syncular-v2/server';
+
+const segments = new S3SegmentStore({
+  endpoint: 'https://s3.eu-central-1.amazonaws.com', // origin only, no bucket
+  region: 'eu-central-1',
+  bucket: 'my-app-segments',
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+  keyPrefix: 'syncular/',       // optional namespace inside the bucket
+  ttlMs: 24 * 60 * 60 * 1000,   // §5.1 default
+});
+
+const config: SyncServerConfig = {
+  schema, storage, resolveScopes,
+  segments,
+  signedUrls: s3PresignedUrls(segments, { ttlSeconds: 900 }), // §5.4 delegated presign
+};
+```
+
+**Cloudflare R2 specifics.** The endpoint is your account's S3 API host
+and the region is always `auto`:
+
+```ts
+const segments = new S3SegmentStore({
+  endpoint: 'https://<account-id>.r2.cloudflarestorage.com',
+  region: 'auto',
+  bucket: 'my-app-segments',
+  accessKeyId: R2_ACCESS_KEY_ID,      // R2 API token pair
+  secretAccessKey: R2_SECRET_ACCESS_KEY,
+});
+```
+
+MinIO works the same way (`endpoint: 'http://127.0.0.1:9000'`, any
+region string). Requests are path-style (`{endpoint}/{bucket}/{key}`),
+which all three providers accept.
+
+**Key layout.** Deterministic, so every lookup is a GET/HEAD — never a
+LIST:
+
+- `{keyPrefix}seg/sha256/{hex}` — the segment bytes, verbatim (the
+  object body is exactly the content-addressed bytes, so presigned GETs
+  serve them directly and the client's §5.1 hash check passes). The
+  record metadata rides in object user metadata
+  (`x-amz-meta-syncular-record`, base64url JSON), so `get` is one GET.
+- `{keyPrefix}find/{sha256(reuse key)}.json` — the §5.3 whole-table
+  reuse pointer, written only for `rowCursor: null` segments; `find` is
+  one GET plus a HEAD to confirm the segment object still exists.
+
+**TTL and lifecycle.** Expiry is store-side and authoritative:
+`expiresAtMs` (`put` time + `ttlMs`, default 24 h) is recorded with the
+record; `get` returns expired records so the §5.5 endpoint can answer
+the precise, retryable `sync.segment_expired`, and `find` filters them
+itself. Bucket lifecycle expiration is *garbage collection only* — set
+it comfortably **above** `ttlMs` (e.g. 2 days for the 24 h default) and
+never below it. After lifecycle deletes an object, clients see
+`sync.not_found` instead of `sync.segment_expired`; both recover by
+re-pulling, but the former loses the "just re-pull, this is normal"
+signal, so keep the GC margin generous.
+
+### Native HMAC vs delegated presign (§5.4)
+
+`SyncServerConfig.signedUrls` accepts either scheme; the pull emits
+`SEGMENT_REF.url`/`urlExpiresAtMs` identically for both (issuance always
+happens inside the pull, immediately after scope resolution), and
+clients cannot tell them apart.
+
+- **Native HMAC (`SignedUrlConfig`)** — you serve the segment bytes
+  yourself (or from something that delegates auth to you, e.g. a CDN
+  worker calling `verifySegmentToken` at the edge). The `st` token binds
+  segment + scope digest + partition audience. Choose this when segments
+  live in `SqliteSegmentStore` or when you want claim-level binding at
+  your own edge.
+- **Delegated presign (`DelegatedPresignConfig`, via
+  `s3PresignedUrls(store)`)** — the object store enforces the grant; the
+  sync server never proxies segment bytes (zero egress through it — the
+  bootstrap-storm answer). The §5.4 equivalence rule holds by
+  construction: the signed object key embeds exactly one `segmentId`,
+  and the expiry obeys the same ≤ 15 min TTL guidance (default 900 s for
+  both schemes).
+
+Either way, keep the §5.5 direct-download endpoint mounted: it is the
+mandatory fallback for expired/failed URLs and for clients that never
+advertised accept bit 3.
+
+### CDN in front
+
+Segment URLs are safe to cache *by content*: the object key is the
+content address (`seg/sha256/{hex}`), the bytes are immutable for a
+given key, and the client verifies the hash after download (§5.1) — so
+a CDN can cache segment objects keyed on the path alone and can never
+serve wrong bytes, only stale-but-correct ones. Two rules:
+
+- **Strip the query from the cache key, never from the auth check.**
+  Presigned query parameters (or the native `st` token) differ per
+  client; the path is the content address. Configure the CDN to cache on
+  the path while still forwarding the query for origin authorization
+  (or validate at the edge: `verifySegmentToken` for native tokens).
+  Never cache the *authorization decision*.
+- **Align the CDN TTL with the store TTL.** Cache lifetime at or below
+  `ttlMs` keeps the CDN from serving objects the store already declared
+  expired (harmless — the client would still verify and apply — but it
+  masks the §5.1 cache-entry semantics and can hide lifecycle GC).
+  Content-addressing makes over-caching safe, not useful.
+
+The §5.5 endpoint responses stay `Cache-Control: private, max-age=0`
+— only segment-object URLs are CDN-cacheable, never the re-authorized
+download path.
+
 ## Horizon & pruning: operational guidance
 
 The commit log grows forever unless you prune it. `pruneCommitLog`

@@ -16,6 +16,7 @@ export * from './prune';
 export * from './pull';
 export * from './push';
 export * from './realtime';
+export * from './s3-segment-store';
 export * from './schema';
 export * from './scopes';
 export * from './segment-download';

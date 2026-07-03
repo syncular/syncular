@@ -1,11 +1,20 @@
 /**
- * Signed-URL segment delivery tokens (SPEC.md §5.4, native HMAC scheme).
+ * Signed-URL segment delivery (SPEC.md §5.4): the native HMAC token
+ * scheme, plus the delegated-presign alternative (S3/R2/GCS) behind one
+ * issuance seam.
  *
- * `st = base64url(payloadJson) + "." + base64url(HMAC-SHA256(key, payloadJson))`
- * with claims `{v, seg, sd, aud, exp}`; `exp` is unix seconds. Issuance
- * happens inside the pull immediately after scope resolution; verification
- * checks MAC, expiry (≤ 60 s skew), and `seg`/`sd`/`aud` equality. Actual
- * CDN serving is out of scope.
+ * Native: `st = base64url(payloadJson) + "." +
+ * base64url(HMAC-SHA256(key, payloadJson))` with claims
+ * `{v, seg, sd, aud, exp}`; `exp` is unix seconds. Issuance happens inside
+ * the pull immediately after scope resolution; verification checks MAC,
+ * expiry (≤ 60 s skew), and `seg`/`sd`/`aud` equality. Actual CDN serving
+ * is out of scope.
+ *
+ * Delegated presign: the provider mints the URL (§5.4 equivalence rule —
+ * the signed object key embeds the `segmentId`, the expiry obeys the same
+ * TTL guidance); `issueSegmentUrl` routes to whichever config the host
+ * supplied. Both paths issue only after scope resolution, so a URL is
+ * never minted for scopes the actor did not hold at that moment.
  */
 import { syncError } from './errors';
 
@@ -21,6 +30,72 @@ export interface SignedUrlConfig {
    * disclose the internal partition id.
    */
   readonly audience: (partition: string) => string;
+}
+
+/** What descriptor emission needs: the §5.4 `url`/`urlExpiresAtMs` pair. */
+export interface SegmentUrlIssue {
+  readonly url: string;
+  readonly urlExpiresAtMs: number;
+}
+
+export interface SegmentPresignArgs {
+  readonly segmentId: string;
+  readonly partition: string;
+  readonly scopeDigest: string;
+  readonly nowMs: number;
+  /** Resolved TTL (config value or the 900 s default) — already applied. */
+  readonly ttlSeconds: number;
+}
+
+/**
+ * Delegated presign (§5.4): the provider signs the URL. The callback MUST
+ * satisfy the equivalence rule — the signed object key embeds exactly one
+ * `segmentId`, and `urlExpiresAtMs` reflects the real provider expiry.
+ * `S3SegmentStore.presignSegmentGet` (via `s3PresignedUrls`) is the
+ * in-tree implementation.
+ */
+export interface DelegatedPresignConfig {
+  readonly presign: (
+    args: SegmentPresignArgs,
+  ) => SegmentUrlIssue | Promise<SegmentUrlIssue>;
+  /** URL TTL; SHOULD be ≤ 15 minutes (§5.4). Default 900. */
+  readonly ttlSeconds?: number;
+}
+
+/** Either §5.4 scheme; the pull emits descriptors identically for both. */
+export type SegmentUrlConfig = SignedUrlConfig | DelegatedPresignConfig;
+
+/**
+ * Issue the §5.4 `url`/`urlExpiresAtMs` pair for one segment descriptor,
+ * routing to the native HMAC token or the delegated presigner. Callers
+ * (the pull) invoke this only after scope resolution and only when the
+ * client advertised accept bit 3.
+ */
+export async function issueSegmentUrl(
+  config: SegmentUrlConfig,
+  args: {
+    readonly segmentId: string;
+    readonly partition: string;
+    readonly scopeDigest: string;
+    readonly nowMs: number;
+  },
+): Promise<SegmentUrlIssue> {
+  const ttlSeconds = config.ttlSeconds ?? 900;
+  if ('presign' in config) {
+    return config.presign({ ...args, ttlSeconds });
+  }
+  const exp = Math.floor(args.nowMs / 1000) + ttlSeconds;
+  const token = await signSegmentToken(config.key, {
+    v: 1,
+    seg: args.segmentId,
+    sd: args.scopeDigest,
+    aud: config.audience(args.partition),
+    exp,
+  });
+  return {
+    url: `${config.baseUrl}/${args.segmentId}?st=${token}`,
+    urlExpiresAtMs: exp * 1000,
+  };
 }
 
 export interface SegmentTokenClaims {
