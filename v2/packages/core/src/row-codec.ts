@@ -112,8 +112,22 @@ function writeValue(
 function readValue(reader: ByteReader, column: RowColumn): RowValue {
   switch (column.type) {
     case 'string':
-    case 'json':
       return reader.str();
+    case 'json': {
+      // Conventions `json` MUST, applied at row-codec decode (SPEC.md §2.4
+      // tag 5): the value must parse as a JSON document; the raw string is
+      // preserved verbatim for round-trip fidelity.
+      const raw = reader.str();
+      try {
+        JSON.parse(raw);
+      } catch {
+        throw new DecodeError(
+          'sync.invalid_request',
+          `json column ${column.name} does not parse as a JSON document`,
+        );
+      }
+      return raw;
+    }
     case 'integer':
       return reader.i64();
     case 'float':

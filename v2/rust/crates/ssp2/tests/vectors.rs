@@ -170,8 +170,18 @@ fn realtime_vectors() {
         );
     }
 
-    assert!(
-        cases(&manifest, "invalid").is_empty(),
-        "{kind}: unexpected invalid cases (harness has no realtime negative path)"
-    );
+    for case in &cases(&manifest, "invalid") {
+        let name = str_field(case, "name");
+        let expected_code = str_field(case, "error");
+        let value = read_json(kind, str_field(case, "json"));
+        match parse_control_value(&value) {
+            Ok(_) => panic!("{kind}/invalid/{name}: control parse unexpectedly succeeded"),
+            Err(e) => assert_eq!(
+                e.code.as_str(),
+                expected_code,
+                "{kind}/invalid/{name}: wrong error code (detail: {})",
+                e.detail
+            ),
+        }
+    }
 }

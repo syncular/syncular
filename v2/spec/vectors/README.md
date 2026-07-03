@@ -27,7 +27,12 @@ spec/vectors/
     manifest.json    per-kind: list of cases + expectations (incl. the
                      expected error code per invalid case)
     invalid/         negative cases; descriptive slug names (several
-                     share an error code), error declared in manifest
+                     share an error code), error declared in manifest.
+                     Binary kinds: .bin files that must fail decoding.
+                     realtime: .json files that must fail control-message
+                     parsing (malformed *known* events — unknown event
+                     names are tolerated per SPEC.md §8.1 and are never
+                     invalid cases)
 ```
 
 ## Requirements per case
@@ -39,7 +44,10 @@ spec/vectors/
    This includes unknown frame types: they are preserved, not dropped,
    by the skip rule (SPEC.md §1.2 rule 2).
 3. **Negative cases:** files under `<kind>/invalid/` must fail to decode
-   with the error named in `manifest.json`.
+   with the error named in `manifest.json`. For the realtime kind the
+   invalid file is JSON text that must be rejected by the control-message
+   parser with the named error (SPEC.md §8.1's known-event malformed-data
+   rule).
 
 ## Coverage
 
@@ -57,4 +65,6 @@ SPEC.md Appendix A. Summary of what it covers:
 - realtime: `wake` and `hello` JSON control vectors
 - invalid: truncated envelope (missing END), bad magic, unsupported
   wireVersion, non-zero flags, overlong frame length, bad bool byte,
-  null bit on non-nullable column, rows segment without end marker
+  null bit on non-nullable column, rows segment without end marker,
+  json column value that does not parse, wake with `requiresPull` not
+  the literal `true`, fractional realtime numeric field

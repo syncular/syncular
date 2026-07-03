@@ -6,6 +6,7 @@
 use serde_json::{Map, Value};
 
 use crate::error::{DecodeError, Result};
+use crate::primitives::I64_SAFE_MAX;
 
 /// §8.3 wake-up reason codes — the closed three-value set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,9 +69,19 @@ fn field<'a>(data: &'a Map<String, Value>, key: &str) -> Result<&'a Value> {
 }
 
 fn as_i64(data: &Map<String, Value>, key: &str) -> Result<i64> {
-    field(data, key)?
-        .as_i64()
-        .ok_or_else(|| DecodeError::invalid(format!("control field {key:?} is not an integer")))
+    // Realtime numeric fields are integers within the ±(2^53−1) i64 contract
+    // (SPEC.md §8.1); fractional or non-finite numbers are malformed.
+    let v = field(data, key)?.as_i64().ok_or_else(|| {
+        DecodeError::invalid(format!(
+            "control field {key:?} is not an integer within the i64 safe range"
+        ))
+    })?;
+    if !(-I64_SAFE_MAX..=I64_SAFE_MAX).contains(&v) {
+        return Err(DecodeError::invalid(format!(
+            "control field {key:?} = {v} outside the ±(2^53−1) safe-integer contract"
+        )));
+    }
+    Ok(v)
 }
 
 fn as_str(data: &Map<String, Value>, key: &str) -> Result<String> {
@@ -135,9 +146,16 @@ pub fn parse_control_value(value: &Value) -> Result<ControlMessage> {
             let reason = WakeReason::from_reason(&reason_raw).ok_or_else(|| {
                 DecodeError::invalid(format!("unknown wake-up reason {reason_raw:?}"))
             })?;
+            // §8.3: requiresPull MUST be the literal true; anything else is
+            // a malformed event.
+            if !as_bool(d, "requiresPull")? {
+                return Err(DecodeError::invalid(
+                    "sync.data.requiresPull must be the literal true",
+                ));
+            }
             Ok(ControlMessage::Wake {
                 cursor: as_i64(d, "cursor")?,
-                requires_pull: as_bool(d, "requiresPull")?,
+                requires_pull: true,
                 reason,
                 timestamp: as_i64(d, "timestamp")?,
             })

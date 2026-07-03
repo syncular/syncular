@@ -304,7 +304,11 @@ Rules:
    error. Registry entries that are *reserved* without a message kind
    (`0x17`, `0x18`, `0x20`–`0x2F`) have no layout in wire version 1 and
    are therefore unknown — skippable, not errors — until a future
-   version assigns them one. Skipping means "do not interpret", never
+   version assigns them one. Preservation is the **only** source of
+   unknown frames on the encode side: an encoder MUST NOT emit an
+   unknown frame under a `frameType` that is registered in its wire
+   version — a codec MUST refuse to encode one (an encoder error, not a
+   decode error). Skipping means "do not interpret", never
    "drop": a decoder
    whose output is re-encoded (golden-vector round-trips, proxies,
    tooling) MUST preserve skipped frames byte-for-byte in their original
@@ -597,7 +601,7 @@ Column types (shared by the row codec and rows segments; tags on the wire):
 | `2` | `integer` | `i64` |
 | `3` | `float` | `f64` |
 | `4` | `boolean` | `bool` |
-| `5` | `json` | `str` containing a JSON document (raw string preserved on round-trip, see Conventions) |
+| `5` | `json` | `str` containing a JSON document (raw string preserved on round-trip, see Conventions). The Conventions `json` MUST applies at **row-codec decode**: a value that does not parse as a JSON document is a decode error (`sync.invalid_request`, part of the "row-codec violations" of §5.2's closed list) — decode validates exactly what the §11 rendering would later parse, so the two can never disagree. The raw string is still preserved verbatim for re-encoding |
 | `6` | `bytes` | `bytes` |
 
 Unchanged from v1's binary-table-v1 tag assignment.
@@ -1404,8 +1408,13 @@ v1). The client contract:
   (created by local writes, never confirmed by any server-delivered row
   or segment) MUST be deleted — the §7.1 replay re-establishes any that
   later pending commits still write. Rows the commit merely overwrote
-  keep their stale-optimistic content until the pull half delivers the
-  server row — for a conflict, the record's `serverRow` (§6.3) lets the
+  SHOULD keep their stale-optimistic content until the pull half
+  delivers the server row; a client whose optimistic overlay is
+  **rebuilt from the last server-delivered base** (base plus replay of
+  still-pending commits, so the rejected commit's effect disappears
+  immediately) is equally conformant — both models converge identically
+  once the server row arrives, and the difference is unobservable to
+  the protocol. For a conflict, the record's `serverRow` (§6.3) lets the
   app resolve without waiting. A rejected `delete` leaves the row
   locally absent until the server re-delivers it (a later change or a
   re-bootstrap): surfacing the rejection is the client's job; restoring
@@ -1458,7 +1467,11 @@ events (forward compat mirror of the frame-skip rule). "Unknown" is
 scoped to the **event name**: a JSON object whose `event` value is not
 defined by this section is tolerated, never a parse error. A *known*
 event whose `data` is missing or of the wrong shape is malformed — a
-parse error, not a tolerated variant. Direction is carried by the
+parse error, not a tolerated variant. All numeric fields in control
+messages (`protocolVersion`, `cursor`, `latestCursor`, `timestamp`, the
+ack `cursor`, …) are **integers within the ±(2^53−1) `i64` contract**
+(Conventions); a fractional or non-finite number in a known event is
+malformed. Direction is carried by the
 discriminator key: server→client events carry `event`; client→server
 control messages carry `type` (§8.2).
 
@@ -1481,7 +1494,12 @@ the socket for continuity.
   `SUB_START` / `COMMIT`(s) / `SUB_END` with the advanced `nextCursor`.
 - Deltas MUST be cursor-contiguous per connection: a delta starting past
   the client's last delivered cursor is forbidden — the server sends a
-  wake-up (§8.3) instead when it cannot bridge the gap. A per-connection
+  wake-up (§8.3) instead when it cannot bridge the gap. The other
+  direction is harmless: a delta section whose `SUB_END.nextCursor` is
+  ≤ the subscription's local cursor is a duplicate and is idempotently
+  skipped (or re-applied — upserts and deletes are idempotent, §5.6);
+  it advances nothing and is **not** a drop, so it MUST NOT set the
+  sync-needed signal. A per-connection
   replay buffer is an OPTIONAL optimization; the reference server keeps
   **none**: a session that is behind at connect
   (`cursor < latestCursor`) or that dropped a delta (flow control,
@@ -1514,7 +1532,12 @@ the socket for continuity.
   active, non-bootstrapping subscriptions that have synced at least
   once — the contiguity-safe floor, and the ack that lifts the
   reference server's delta suppression after a catch-up pull. No such
-  subscription, no ack.
+  subscription, no ack. "Synced at least once" means the subscription
+  has processed its **first `SUB_END`** (§4.4) — the earliest point at
+  which a persisted cursor exists to ack. (Origin: stage-2 conformance —
+  a never-synced subscription has no cursor, and inventing `-1`/`0`
+  there would drag the ack floor below commits the connection already
+  observed.)
 - Flow control: the server bounds in-flight unacked deltas and per-window
   message counts (host-configured); when exceeded, or when a delta would
   exceed the host's max message size, it drops to a wake-up.
@@ -1544,6 +1567,11 @@ known-event rule), not an unknown-event case. Forward compatibility for
 the realtime channel means new *event* names (tolerated per §8.1),
 never new reason strings on an existing event.
 
+`requiresPull` MUST be the literal `true`; a `sync` event carrying
+anything else is malformed (a parse error). The field is redundancy,
+not signal — wake-ups always require a pull — and redundant fields are
+pinned, never interpreted.
+
 ### 8.4 Reconnect and catch-up
 
 - Client reconnect uses exponential backoff (suggested: initial 1 s, ×2,
@@ -1560,7 +1588,9 @@ never new reason strings on an existing event.
   **sync-needed signal**: set by `hello.requiresSync`, by every
   wake-up, and by every client-side delta drop (§8.2); cleared when a
   pull round *begins*, so a wake-up landing mid-round survives the
-  round and triggers another pull.
+  round and triggers another pull. Aggregate drive-to-idle helpers
+  (e.g. a conformance driver's `syncUntilIdle`) are part of the
+  driver/host contract, not the protocol.
 - **Catch-up prefers segments**: when a recovery pull arrives with a
   cursor far behind (server heuristic; suggested threshold: the gap
   exceeds `limitCommits` or a host-set row estimate), the server SHOULD
@@ -1780,7 +1810,8 @@ byte-identical output):
 | 17 | `realtime/wake` + `realtime/hello` | JSON control vectors (`.json` only — no binary form) |
 | — | `request/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload |
 | — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`) |
-| — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker |
+| — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5) |
+| — | `realtime/invalid/*` | Malformed known events (JSON-only): `requiresPull` not the literal `true` (§8.3), fractional numeric field (§8.1) |
 
 ---
 

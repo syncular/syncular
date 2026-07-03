@@ -30,7 +30,10 @@ interface ManifestCase {
 
 interface ManifestInvalid {
   name: string;
-  bin: string;
+  /** Binary kinds: bytes that must fail decoding. */
+  bin?: string;
+  /** Realtime: JSON text that must fail control-message parsing. */
+  json?: string;
   error: string;
   covers: string;
 }
@@ -83,7 +86,7 @@ for (const kind of ['request', 'response'] as const) {
     }
     for (const c of manifest.invalid) {
       it(`invalid/${c.name}: fails with ${c.error}`, () => {
-        const bin = loadBin(kind, c.bin);
+        const bin = loadBin(kind, c.bin ?? `invalid/${c.name}.bin`);
         expectNamedDecodeError(() => decodeMessage(bin), c.error);
       });
     }
@@ -105,7 +108,7 @@ describe('vectors/segment', () => {
   }
   for (const c of manifest.invalid) {
     it(`invalid/${c.name}: fails with ${c.error}`, () => {
-      const bin = loadBin('segment', c.bin);
+      const bin = loadBin('segment', c.bin ?? `invalid/${c.name}.bin`);
       expectNamedDecodeError(() => decodeRowsSegment(bin), c.error);
     });
   }
@@ -122,6 +125,15 @@ describe('vectors/realtime', () => {
       if (parsed.known) {
         expect(parsed.event).toEqual(JSON.parse(text));
       }
+    });
+  }
+  for (const c of manifest.invalid) {
+    it(`invalid/${c.name}: fails with ${c.error}`, () => {
+      const text = readFileSync(
+        join(vectorsDir, 'realtime', c.json ?? `invalid/${c.name}.json`),
+        'utf8',
+      );
+      expectNamedDecodeError(() => parseRealtimeServerEvent(text), c.error);
     });
   }
 });

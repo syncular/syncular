@@ -722,6 +722,60 @@ const invalidMissingEndMarker = rowsTwoBlocks.slice(
   rowsTwoBlocks.length - 4,
 );
 
+// Rows segment whose json column value does not parse as a JSON document
+// (§2.4 tag 5: the Conventions `json` MUST applies at row-codec decode).
+const invalidJsonColumn = (() => {
+  const w = new ByteWriter();
+  w.raw(utf8Encode('SSG2'));
+  w.u16(1);
+  w.u16(0);
+  w.str('notes');
+  w.i32(1);
+  w.u16(2);
+  w.str('id');
+  w.u8(1); // string
+  w.u8(0); // non-nullable
+  w.str('meta');
+  w.u8(5); // json
+  w.u8(1); // nullable
+  const row = new ByteWriter();
+  row.u8(0); // no nulls
+  row.str('n-1');
+  row.str('{not json'); // json column value that does not parse — violation
+  const rowBytes = row.finish();
+  w.u32(1);
+  w.u32(rowBytes.length);
+  w.raw(rowBytes);
+  w.u32(0);
+  return w.finish();
+})();
+
+// Realtime invalid cases (.json only — malformed *known* events; unknown
+// event names are tolerated per §8.1 and are not invalid cases).
+const invalidWakeRequiresPullFalse = {
+  event: 'sync',
+  data: {
+    cursor: 64,
+    requiresPull: false, // must be the literal true (§8.3) — violation
+    reason: 'catchup-required',
+    timestamp: FIXED_TIME_MS,
+  },
+};
+
+const invalidHelloFractionalCursor = {
+  event: 'hello',
+  data: {
+    protocolVersion: 1,
+    sessionId: 'sess-0001',
+    actorId: 'actor-1',
+    clientId: 'client-a',
+    cursor: 57.5, // realtime numbers are integers in the i64 safe range (§8.1)
+    latestCursor: 64,
+    requiresSync: true,
+    timestamp: FIXED_TIME_MS,
+  },
+};
+
 // ---------------------------------------------------------------------------
 // File emission
 // ---------------------------------------------------------------------------
@@ -746,6 +800,14 @@ interface InvalidCase {
   covers: string;
 }
 
+/** JSON-only invalid case (realtime): the text must fail control parsing. */
+interface JsonInvalidCase {
+  name: string;
+  value: unknown;
+  error: string;
+  covers: string;
+}
+
 function jsonText(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
@@ -755,11 +817,14 @@ function emitKind(
   cases: BinaryCase[],
   jsonCases: JsonCase[],
   invalid: InvalidCase[],
+  jsonInvalid: JsonInvalidCase[] = [],
 ): number {
   const kindDir = join(vectorsDir, kind);
   rmSync(kindDir, { recursive: true, force: true });
   mkdirSync(kindDir, { recursive: true });
-  if (invalid.length > 0) mkdirSync(join(kindDir, 'invalid'));
+  if (invalid.length > 0 || jsonInvalid.length > 0) {
+    mkdirSync(join(kindDir, 'invalid'));
+  }
 
   const manifestCases: Array<Record<string, string>> = [];
   for (const c of cases) {
@@ -780,7 +845,7 @@ function emitKind(
       covers: c.covers,
     });
   }
-  const manifestInvalid = invalid.map((c) => {
+  const manifestInvalid: Array<Record<string, string>> = invalid.map((c) => {
     writeFileSync(join(kindDir, 'invalid', `${c.name}.bin`), c.bytes);
     return {
       name: c.name,
@@ -789,6 +854,18 @@ function emitKind(
       covers: c.covers,
     };
   });
+  for (const c of jsonInvalid) {
+    writeFileSync(
+      join(kindDir, 'invalid', `${c.name}.json`),
+      jsonText(c.value),
+    );
+    manifestInvalid.push({
+      name: c.name,
+      json: `invalid/${c.name}.json`,
+      error: c.error,
+      covers: c.covers,
+    });
+  }
 
   writeFileSync(
     join(kindDir, 'manifest.json'),
@@ -996,6 +1073,13 @@ total += emitKind(
       covers:
         'Rows segment truncated before the mandatory rowCount = 0 end marker',
     },
+    {
+      name: 'json-column-not-json',
+      bytes: invalidJsonColumn,
+      error: 'sync.invalid_request',
+      covers:
+        'json column value that does not parse as a JSON document (SPEC.md §2.4 tag 5)',
+    },
   ],
 );
 
@@ -1015,6 +1099,22 @@ total += emitKind(
     },
   ],
   [],
+  [
+    {
+      name: 'wake-requires-pull-false',
+      value: invalidWakeRequiresPullFalse,
+      error: 'sync.invalid_request',
+      covers:
+        'sync event with requiresPull !== literal true is malformed (SPEC.md §8.3)',
+    },
+    {
+      name: 'hello-fractional-cursor',
+      value: invalidHelloFractionalCursor,
+      error: 'sync.invalid_request',
+      covers:
+        'Fractional numeric field in a known event is malformed — realtime numbers are integers within the i64 safe range (SPEC.md §8.1)',
+    },
+  ],
 );
 
 console.log(`generated ${total} vector cases under ${vectorsDir}`);
