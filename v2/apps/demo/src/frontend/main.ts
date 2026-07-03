@@ -38,6 +38,13 @@ import {
 const LIST_ID = 'demo';
 const SUBSCRIPTION_ID = 'todos';
 const EPHEMERAL = new URLSearchParams(location.search).has('ephemeral');
+/**
+ * TODO 3.2: `?multitab` makes each pane a multi-tab core — open the demo in
+ * two tabs and the first tab's pane is the leader, the second's is a
+ * follower proxying to it (one socket, one DB, N tabs). Off by default so
+ * the two panes stay two independent "devices".
+ */
+const MULTITAB = new URLSearchParams(location.search).has('multitab');
 const WS_PROTO = location.protocol === 'https:' ? 'wss' : 'ws';
 
 type LocalTodo = TodosRow & { _sync_version: number };
@@ -49,6 +56,9 @@ type LocalTodo = TodosRow & { _sync_version: number };
  */
 interface PaneCore {
   readonly backendLabel: string;
+  /** 'leader' | 'follower' in multi-tab mode; undefined otherwise. */
+  role?(): 'leader' | 'follower';
+  onRoleChange?(cb: (role: 'leader' | 'follower') => void): void;
   subscribe(input: SubscribeInput): Promise<void>;
   mutate(mutations: readonly MutationInput[]): Promise<string>;
   syncUntilIdle(): Promise<SyncSummary>;
@@ -89,14 +99,17 @@ async function makeWorkerCore(
     // worker; the page only re-renders when told (or on its poll tick).
     autoSync: true,
     lockName: `syncular-demo-${paneName.toLowerCase()}`,
+    // TODO 3.2: with ?multitab, a second tab's pane follows this one.
+    multiTab: MULTITAB,
+    onRoleChange: () => onDataMaybeChanged(),
     onSynced: () => onDataMaybeChanged(),
     onConflict: () => onDataMaybeChanged(),
   });
-  if (!handle.isLeader) {
+  if (!MULTITAB && !handle.isLeader) {
     throw new ClientSyncError(
       NOT_LEADER_CODE,
-      `another tab owns pane ${paneName}'s core — close it first ` +
-        '(multi-tab followers are TODO 3.2)',
+      `another tab owns pane ${paneName}'s core — close it first, ` +
+        'or open with ?multitab to follow it',
     );
   }
   const connectRealtime = async () => {
@@ -107,7 +120,11 @@ async function makeWorkerCore(
     }
   };
   return {
-    backendLabel: 'sqlite-wasm (OPFS, worker)',
+    backendLabel: MULTITAB
+      ? 'sqlite-wasm (OPFS, worker, multi-tab)'
+      : 'sqlite-wasm (OPFS, worker)',
+    role: () => handle.role,
+    onRoleChange: (cb) => handle.onRoleChange(cb),
     subscribe: (input) => handle.subscribe(input),
     mutate: (mutations) => handle.mutate(mutations),
     syncUntilIdle: () => handle.syncUntilIdle(),
@@ -242,6 +259,7 @@ class Pane {
 
   // DOM
   #badge!: HTMLElement;
+  #roleBadge?: HTMLElement;
   #statusLine!: HTMLElement;
   #tbody!: HTMLTableSectionElement;
   #pendingEl!: HTMLElement;
@@ -267,6 +285,8 @@ class Pane {
       this.setStatus(`core start failed — ${message}`);
       throw error;
     }
+    // TODO 3.2: reflect promotion (follower → leader) in the badge.
+    this.core.onRoleChange?.(() => this.render());
     await this.core.subscribe({
       id: SUBSCRIPTION_ID,
       table: 'todos',
@@ -458,6 +478,12 @@ class Pane {
     title.append(this.#badge);
     this.#pendingEl = el('span', 'badge', 'outbox 0');
     title.append(this.#pendingEl);
+    // TODO 3.2: show leader/follower when ?multitab is on (populated after
+    // the core starts, in init()).
+    if (MULTITAB) {
+      this.#roleBadge = el('span', 'badge', 'role …');
+      title.append(this.#roleBadge);
+    }
     this.#offlineBtn = el('button', undefined, 'Go offline');
     this.#offlineBtn.addEventListener('click', () => {
       void this.setOffline(!this.offline);
@@ -498,6 +524,11 @@ class Pane {
     this.#badge.className = `badge ${this.offline ? 'offline' : 'online'}`;
     this.#offlineBtn.textContent = this.offline ? 'Go online' : 'Go offline';
     this.#pendingEl.textContent = `outbox ${this.#pending} · ${this.core.backendLabel}`;
+    if (this.#roleBadge !== undefined) {
+      const role = this.core.role?.() ?? 'leader';
+      this.#roleBadge.textContent = role;
+      this.#roleBadge.className = `badge ${role === 'leader' ? 'online' : 'offline'}`;
+    }
     this.#statusLine.textContent = this.#status;
 
     this.#tbody.replaceChildren(
@@ -663,7 +694,9 @@ async function main(): Promise<void> {
   if (modeEl !== null) {
     modeEl.innerHTML = EPHEMERAL
       ? 'mode: <strong>ephemeral</strong> (in-memory, main thread — explicit) · <a href="/">persistent</a>'
-      : 'mode: <strong>persistent</strong> (OPFS, worker) · <a href="/?ephemeral">ephemeral</a>';
+      : MULTITAB
+        ? 'mode: <strong>persistent + multi-tab</strong> (OPFS, worker) — open a second tab to see a follower · <a href="/">single-tab</a>'
+        : 'mode: <strong>persistent</strong> (OPFS, worker) · <a href="/?ephemeral">ephemeral</a> · <a href="/?multitab">multi-tab</a>';
   }
   const paneA = new Pane('A', document.getElementById('pane-a') as HTMLElement);
   const paneB = new Pane('B', document.getElementById('pane-b') as HTMLElement);

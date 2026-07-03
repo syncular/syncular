@@ -17,6 +17,7 @@ export * from './errors';
 export * from './http';
 export * from './invalidation';
 export * from './leader-lock';
+export * from './multi-tab';
 export * from './outbox';
 export * from './schema';
 export * from './state';

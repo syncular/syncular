@@ -63,3 +63,26 @@ persists it to a file.
   producers/tooling and segment downloads stay on HTTP.
 - The demo intentionally has zero dependencies beyond the workspace
   packages; the frontend is vanilla DOM.
+
+## Multi-tab (TODO 3.2)
+
+The two panes simulate two **devices**: they use *distinct* lock names, so
+each pane is its own leader with its own core and DB. Multi-tab followers
+are about the SAME lock name across real browser **tabs** of one origin.
+
+To see leader + follower live, open the demo in two browser tabs with
+`?multitab` on both (this flips `createSyncClientHandle({ multiTab: true })`
+and uses one shared lock name per pane across tabs). The first tab's pane
+becomes the leader (spawns the worker, owns the OPFS DB, holds the socket);
+the second tab's pane becomes a follower proxying to it over a
+BroadcastChannel — the badge shows `leader` / `follower`. Close the leader
+tab and the follower promotes (badge flips to `leader`) and keeps syncing.
+
+**Browser verification to run (orchestrator follow-up):** open two tabs on
+`?multitab`, confirm one badge reads `leader` and the other `follower`;
+mutate in the follower and confirm it converges (one socket in the network
+panel, on the leader tab only); close the leader tab and confirm the
+follower's badge flips to `leader` and edits still sync. Cross-tab Web
+Locks + BroadcastChannel are browser-only (bun has no `navigator.locks`),
+so this path is covered in-process by `web-client/test/multi-tab.test.ts`
+and needs a real-browser pass here.
