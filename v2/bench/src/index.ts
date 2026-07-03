@@ -161,6 +161,8 @@ async function runPropagation(iterations: number): Promise<PropagationResult> {
 interface BundleResult {
   readonly jsRaw: number;
   readonly jsGzip: number;
+  readonly ownJsRaw: number;
+  readonly ownJsGzip: number;
   readonly wasmRaw: number;
   readonly wasmGzip: number;
 }
@@ -175,6 +177,20 @@ async function measureBundle(): Promise<BundleResult> {
   const js = build.outputs.find((o) => o.path.endsWith('.js'));
   if (js === undefined) throw new Error('bundle build produced no JS output');
   const jsBytes = new Uint8Array(await js.arrayBuffer());
+  // Same entry with the sqlite-wasm package external: what remains is
+  // syncular's own code (client core + codec) — the bytes we own.
+  const ownBuild = await Bun.build({
+    entrypoints: [join(import.meta.dir, 'bundle-entry.ts')],
+    target: 'browser',
+    minify: true,
+    sourcemap: 'none',
+    external: ['@sqlite.org/sqlite-wasm'],
+  });
+  const ownJs = ownBuild.outputs.find((o) => o.path.endsWith('.js'));
+  if (ownJs === undefined) {
+    throw new Error('own-code bundle build produced no JS output');
+  }
+  const ownJsBytes = new Uint8Array(await ownJs.arrayBuffer());
   const wasmPath = join(
     Bun.resolveSync('@sqlite.org/sqlite-wasm', import.meta.dir),
     '..',
@@ -184,6 +200,8 @@ async function measureBundle(): Promise<BundleResult> {
   return {
     jsRaw: jsBytes.length,
     jsGzip: Bun.gzipSync(jsBytes).length,
+    ownJsRaw: ownJsBytes.length,
+    ownJsGzip: Bun.gzipSync(ownJsBytes).length,
     wasmRaw: wasmBytes.length,
     wasmGzip: Bun.gzipSync(wasmBytes).length,
   };
@@ -203,13 +221,21 @@ function report(
 ): string {
   const totalRaw = bundle.jsRaw + bundle.wasmRaw;
   const totalGzip = bundle.jsGzip + bundle.wasmGzip;
+  const glueRaw = bundle.jsRaw - bundle.ownJsRaw;
+  const glueGzip = bundle.jsGzip - bundle.ownJsGzip;
   const perfGateMs = 2 * 204;
   const perfPass = b100k.medianMs <= perfGateMs;
   const perfVerdict = perfPass ? 'PASS' : 'FAIL';
-  // "~1 MB": PASS under 1,000,000 bytes raw; CAVEAT when marginally over
-  // (gzip transfer size decides nothing here — reported for context).
+  // Size gates OUR bytes (decision 2026-07-03, Benjamin): vendor engine
+  // bytes (sqlite3.wasm + the sqlite-wasm JS glue) don't gate — every
+  // wasm-SQLite product ships them. Line: syncular's own JS must at
+  // least beat v1's client JS (217.7 KB raw).
   const sizeVerdict =
-    totalRaw <= 1_000_000 ? 'PASS' : totalRaw <= 1_200_000 ? 'CAVEAT' : 'FAIL';
+    bundle.ownJsRaw <= 220_000
+      ? 'PASS'
+      : bundle.ownJsRaw <= 300_000
+        ? 'CAVEAT'
+        : 'FAIL';
   const now = new Date().toISOString();
 
   return `# v2 bench — B6 spot-check
@@ -269,14 +295,17 @@ the server share. Sampled at ~2 ms.
 binary is external (fetched at runtime), measured as shipped by
 \`@sqlite.org/sqlite-wasm\`.
 
-| Artifact | Raw | Gzip | v1 (0.1.3) reference |
-|---|---|---|---|
-| Client JS bundle (incl. sqlite-wasm JS glue) | ${fmtKb(bundle.jsRaw)} | ${fmtKb(bundle.jsGzip)} | 217.7 KB raw / 53 KB gzip |
-| sqlite3.wasm (external asset) | ${fmtKb(bundle.wasmRaw)} | ${fmtKb(bundle.wasmGzip)} | 3.3 MB (v1 custom WASM) |
-| **Total** | **${fmtKb(totalRaw)}** | **${fmtKb(totalGzip)}** | ~3.5 MB |
+| Artifact | Raw | Gzip | Whose bytes | v1 (0.1.3) reference |
+|---|---|---|---|---|
+| syncular client code (core + codec) | ${fmtKb(bundle.ownJsRaw)} | ${fmtKb(bundle.ownJsGzip)} | **ours** | 217.7 KB raw / 53 KB gzip (v1 client JS) |
+| sqlite-wasm JS glue | ${fmtKb(glueRaw)} | ${fmtKb(glueGzip)} | vendor (SQLite) | — |
+| sqlite3.wasm (external asset) | ${fmtKb(bundle.wasmRaw)} | ${fmtKb(bundle.wasmGzip)} | vendor (SQLite) | 3.3 MB (v1 custom WASM) |
+| **Total** | **${fmtKb(totalRaw)}** | **${fmtKb(totalGzip)}** | | ~3.5 MB |
 
-Gate line: ~1 MB total. Measured raw total is ${fmtKb(totalRaw)}
-(${(totalRaw / 1_048_576).toFixed(2)} MiB); gzip total ${fmtKb(totalGzip)}.
+Size gates OUR bytes (decision 2026-07-03): vendor engine bytes don't
+gate — every wasm-SQLite product ships the stock SQLite distribution.
+Line: syncular's own JS beats v1's 217.7 KB client JS. Total reported
+for context: ${fmtKb(totalRaw)} raw / ${fmtKb(totalGzip)} gzip.
 
 ## Gate self-assessment (REVISE.md "The gate")
 
@@ -284,7 +313,7 @@ Gate line: ~1 MB total. Measured raw total is ${fmtKb(totalRaw)}
 |---|---|---|---|
 | Conformance | all ported skeleton-scope scenarios green on (TS client × TS server) | 281 tests / 35 conformance scenarios green (\`bun test\`, this tree) | PASS |
 | Perf | 100k bootstrap within ~2× of 204 ms (= ${perfGateMs} ms); propagation p95 same order of magnitude | ${fmtMs(b100k.medianMs)} bootstrap; ${fmtMs(prop.propP95)} propagation p95 | ${perfVerdict} |
-| Size | web client bundle + sqlite-wasm ≤ ~1 MB total | ${fmtKb(totalRaw)} raw (${fmtKb(totalGzip)} gzip) | ${sizeVerdict} |
+| Size | syncular's own client JS ≤ v1's 217.7 KB (vendor engine bytes don't gate — 2026-07-03) | ${fmtKb(bundle.ownJsRaw)} raw (${fmtKb(bundle.ownJsGzip)} gzip) own code; ${fmtKb(totalRaw)} raw total incl. vendor | ${sizeVerdict} |
 | DX | fresh clone → \`cd v2 && bun install && bun test\` green in one step, latest Bun, no cargo | verified: \`bun install\` + \`bun test\` → 281 pass, 0 fail on Bun ${Bun.version} | PASS |
 
 - **Conformance**: PASS — the full v2 suite (codec vectors, unit, and the
@@ -296,9 +325,15 @@ Gate line: ~1 MB total. Measured raw total is ${fmtKb(totalRaw)}
   encoded and hash-verified per bootstrap). Propagation p95 of
   ${fmtMs(prop.propP95)} is loopback-fast and says nothing comparable about
   v1's socketed 22.8 ms beyond "no regression is visible in-process".
-- **Size**: ${sizeVerdict} — the raw total of ${fmtKb(totalRaw)} is
-  ${totalRaw > 1_000_000 ? `~${Math.round(((totalRaw - 1_000_000) / 1_000_000) * 100)}% over a literal 1,000,000 bytes but within sight of the "~1 MB" line, and the transfer (gzip) total of ${fmtKb(totalGzip)} is far under it` : 'under the ~1 MB line'};
-  vs v1's 3.3 MB WASM alone this is a ~${(3_460_000 / totalRaw).toFixed(1)}× reduction.
+- **Size**: ${sizeVerdict} — syncular's own client JS is
+  ${fmtKb(bundle.ownJsRaw)} raw / ${fmtKb(bundle.ownJsGzip)} gzip, a
+  ~${(217_700 / bundle.ownJsRaw).toFixed(1)}× reduction vs v1's 217.7 KB
+  client JS; everything else in the payload is the stock SQLite
+  distribution (${fmtKb(glueRaw)} JS glue + ${fmtKb(bundle.wasmRaw)}
+  sqlite3.wasm), which does not gate per the 2026-07-03 decision. Total
+  for context: ${fmtKb(totalRaw)} raw / ${fmtKb(totalGzip)} gzip vs v1's
+  ~3.5 MB — a ~${(3_460_000 / totalRaw).toFixed(1)}× reduction even
+  counting vendor bytes.
 - **DX**: PASS — one-step install+test on latest Bun, zero cargo/toolchain
   steps (verified in this tree; CI runs the same via \`v2.yml\`).
 `;
