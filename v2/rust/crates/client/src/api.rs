@@ -136,6 +136,7 @@ pub struct ClientLimits {
     pub limit_commits: Option<i32>,
     pub limit_snapshot_rows: Option<i32>,
     pub max_snapshot_pages: Option<i32>,
-    /// §4.2 accept bitmask; the baseline default is `0b0011`.
+    /// §4.2 accept bitmask; this client defaults to `0b0111` (rows
+    /// baseline + sqlite images, §5.3 — rusqlite can always import).
     pub accept: Option<u8>,
 }

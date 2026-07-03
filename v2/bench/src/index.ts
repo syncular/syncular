@@ -21,9 +21,18 @@ import {
   seedServerRows,
 } from './loopback';
 
+// accept 0b0011 pins the rows lane (the client's default now advertises
+// sqlite images, §4.2) — the rows number stays comparable across runs.
 const BOOTSTRAP_LIMITS = {
   limitSnapshotRows: 50_000,
   maxSnapshotPages: 50,
+  accept: 0b0011,
+};
+
+// The §5.3 sqlite-image lane: default page size (1000) keeps the table
+// image-eligible at every measured row count; bit 2 advertises support.
+const IMAGE_LIMITS = {
+  accept: 0b0111,
 };
 
 // -- CI mode & workloads ----------------------------------------------------
@@ -71,6 +80,15 @@ const WORKLOAD = {
  *   shared CI runners, yet still catches an apply-path regression toward
  *   v1's TS-client rate (~125k rows/s locally ⇒ well under 90k/s on a CI
  *   runner). Rows/sec normalizes across the reduced CI row count.
+ * - `imageBootstrapRowsPerSecFloor` 300,000/s: the §5.3 sqlite-image
+ *   lane (warm/storm case — stored image reused per scopes+pin) runs at
+ *   ~3.2M rows/s locally at 100k (31.5 ms). The floor sits ~10× below
+ *   that — extra headroom because the CI workload (25k rows) makes the
+ *   per-run fixed costs a larger share — and still catches the lane
+ *   silently degrading to row-by-row application (the rows lane's
+ *   ~275k/s local rate lands well under 300k/s on a shared runner).
+ *   Asserted on the warm median: the §5.3 reuse rule is part of what
+ *   the budget pins.
  * - `propagationP95CeilingMs` 20 ms: local in-process p95 is 0.2 ms. A
  *   100× allowance absorbs runner noise; breaching 20 ms in-process means
  *   a sleep/poll crept into the sync/realtime loop (for scale: v1's
@@ -86,6 +104,7 @@ const WORKLOAD = {
  */
 const BUDGETS = {
   bootstrapRowsPerSecFloor: 90_000,
+  imageBootstrapRowsPerSecFloor: 300_000,
   propagationP95CeilingMs: 20,
   ownJsRawCeilingBytes: 60 * 1024,
   totalGzipCeilingBytes: 600 * 1024,
@@ -98,17 +117,25 @@ interface BootstrapResult {
   readonly allMs: readonly number[];
   readonly rowsPerSec: number;
   readonly peakRssDeltaBytes: number;
+  /**
+   * The discarded warm-up run's wall time. On the image lane this is the
+   * cold number: it includes building + storing the image server-side;
+   * later runs hit the §5.3 reuse rule (the bootstrap-storm case).
+   */
+  readonly coldMs: number;
 }
 
 async function runBootstrap(
   rows: number,
   runs: number,
   sampleRss: boolean,
+  limits: Record<string, number> = BOOTSTRAP_LIMITS,
 ): Promise<BootstrapResult> {
   const server = createBenchServer();
   await seedServerRows(server, rows);
 
   const timings: number[] = [];
+  let coldMs = 0;
   let peakRssDelta = 0;
   for (let run = 0; run < runs + 1; run++) {
     const rssBefore = process.memoryUsage().rss;
@@ -120,9 +147,7 @@ async function runBootstrap(
       : undefined;
 
     const t0 = performance.now();
-    const handle = await createBenchClient(server, {
-      limits: BOOTSTRAP_LIMITS,
-    });
+    const handle = await createBenchClient(server, { limits });
     await handle.client.syncUntilIdle();
     const elapsed = performance.now() - t0;
 
@@ -135,7 +160,10 @@ async function runBootstrap(
       throw new Error(`bootstrap incomplete: ${String(count)} of ${rows}`);
     }
     await handle.close();
-    if (run === 0) continue; // discard the warm-up run
+    if (run === 0) {
+      coldMs = elapsed; // warm-up: excluded from stats, kept as the cold number
+      continue;
+    }
     timings.push(elapsed);
     peakRssDelta = Math.max(peakRssDelta, rssPeak - rssBefore);
   }
@@ -148,6 +176,7 @@ async function runBootstrap(
     allMs: timings,
     rowsPerSec: Math.round(rows / (med / 1000)),
     peakRssDeltaBytes: peakRssDelta,
+    coldMs,
   };
 }
 
@@ -282,6 +311,7 @@ interface BudgetCheck {
 
 function checkBudgets(
   big: BootstrapResult,
+  image: BootstrapResult,
   prop: PropagationResult,
   bundle: BundleResult,
 ): BudgetCheck[] {
@@ -292,6 +322,12 @@ function checkBudgets(
       budget: `>= ${BUDGETS.bootstrapRowsPerSecFloor.toLocaleString('en-US')}/s`,
       measured: `${big.rowsPerSec.toLocaleString('en-US')}/s`,
       ok: big.rowsPerSec >= BUDGETS.bootstrapRowsPerSecFloor,
+    },
+    {
+      name: `image-lane bootstrap rows/sec (${image.rows.toLocaleString('en-US')} rows, warm)`,
+      budget: `>= ${BUDGETS.imageBootstrapRowsPerSecFloor.toLocaleString('en-US')}/s`,
+      measured: `${image.rowsPerSec.toLocaleString('en-US')}/s`,
+      ok: image.rowsPerSec >= BUDGETS.imageBootstrapRowsPerSecFloor,
     },
     {
       name: 'propagation p95 (in-process loopback)',
@@ -323,6 +359,7 @@ function fmtMb(bytes: number): string {
 function report(
   b1k: BootstrapResult,
   b100k: BootstrapResult,
+  image: BootstrapResult,
   prop: PropagationResult,
   bundle: BundleResult,
 ): string {
@@ -366,12 +403,20 @@ apples-to-apples; no cherry-picking of lanes is intended.
 
 | Case | v2 measured (median) | Rows/sec | Runs | v1 (0.1.3) reference |
 |---|---|---|---|---|
-| 1k rows | ${fmtMs(b1k.medianMs)} | ${b1k.rowsPerSec.toLocaleString('en-US')} | ${b1k.runs} | — |
-| 100k rows | ${fmtMs(b100k.medianMs)} | ${b100k.rowsPerSec.toLocaleString('en-US')} | ${b100k.runs} | 204 ms (artifact lane) / 801 ms (TS client median) / 227 ms (Rust client median) |
+| 1k rows (rows lane) | ${fmtMs(b1k.medianMs)} | ${b1k.rowsPerSec.toLocaleString('en-US')} | ${b1k.runs} | — |
+| 100k rows (rows lane) | ${fmtMs(b100k.medianMs)} | ${b100k.rowsPerSec.toLocaleString('en-US')} | ${b100k.runs} | 204 ms (artifact lane) / 801 ms (TS client median) / 227 ms (Rust client median) |
+| 100k rows (**sqlite image**, §5.3) | ${fmtMs(image.medianMs)} | ${image.rowsPerSec.toLocaleString('en-US')} | ${image.runs} | 204 ms (artifact lane — the direct ancestor) |
+
+The image lane's median is the warm/storm case: the server reuses the
+stored image per (scopes, pin) — §5.3's build-once rule — so every
+client after the first downloads and imports at file-copy speed. The
+cold first bootstrap, which also builds and stores the image
+server-side, took ${fmtMs(image.coldMs)}.
 
 All runs (ms), after one discarded warm-up:
-- 1k: ${b1k.allMs.map((v) => v.toFixed(1)).join(', ')}
-- 100k: ${b100k.allMs.map((v) => v.toFixed(1)).join(', ')}
+- 1k rows lane: ${b1k.allMs.map((v) => v.toFixed(1)).join(', ')}
+- 100k rows lane: ${b100k.allMs.map((v) => v.toFixed(1)).join(', ')}
+- 100k image lane: ${image.allMs.map((v) => v.toFixed(1)).join(', ')} (cold ${image.coldMs.toFixed(1)})
 
 ## b. Online propagation (RealtimeHub, 2 clients, ${prop.iterations} iterations)
 
@@ -418,18 +463,23 @@ for context: ${fmtKb(totalRaw)} raw / ${fmtKb(totalGzip)} gzip.
 
 | Criterion | Gate line | Measured | Verdict |
 |---|---|---|---|
-| Conformance | all ported skeleton-scope scenarios green on (TS client × TS server) | 281 tests / 35 conformance scenarios green (\`bun test\`, this tree) | PASS |
-| Perf | 100k bootstrap within ~2× of 204 ms (= ${perfGateMs} ms); propagation p95 same order of magnitude | ${fmtMs(b100k.medianMs)} bootstrap; ${fmtMs(prop.propP95)} propagation p95 | ${perfVerdict} |
+| Conformance | all ported skeleton-scope scenarios green on (TS client × TS server) | 336 tests / 39 conformance scenarios green (\`bun test\`, this tree) | PASS |
+| Perf | 100k bootstrap within ~2× of 204 ms (= ${perfGateMs} ms); propagation p95 same order of magnitude | ${fmtMs(b100k.medianMs)} rows lane / ${fmtMs(image.medianMs)} image lane; ${fmtMs(prop.propP95)} propagation p95 | ${perfVerdict} |
 | Size | syncular's own client JS ≤ v1's 217.7 KB (vendor engine bytes don't gate — 2026-07-03) | ${fmtKb(bundle.ownJsRaw)} raw (${fmtKb(bundle.ownJsGzip)} gzip) own code; ${fmtKb(totalRaw)} raw total incl. vendor | ${sizeVerdict} |
-| DX | fresh clone → \`cd v2 && bun install && bun test\` green in one step, latest Bun, no cargo | verified: \`bun install\` + \`bun test\` → 281 pass, 0 fail on Bun ${Bun.version} | PASS |
+| DX | fresh clone → \`cd v2 && bun install && bun test\` green in one step, latest Bun, no cargo | verified: \`bun install\` + \`bun test\` → 336 pass, 0 fail on Bun ${Bun.version} | PASS |
 
 - **Conformance**: PASS — the full v2 suite (codec vectors, unit, and the
-  35-scenario conformance catalog on the TS×TS pairing) is green.
-- **Perf**: ${perfVerdict} — ${fmtMs(b100k.medianMs)} is ${perfPass ? 'under' : 'over'}
-  the ${perfGateMs} ms line, with the lane caveat cutting both ways: this
-  lane omits the network/HTTP costs the 204 ms artifact-lane number
-  included, but also uses no precomputed artifact (segments are scanned,
-  encoded and hash-verified per bootstrap). Propagation p95 of
+  39-scenario conformance catalog on the TS×TS pairing) is green.
+- **Perf**: ${perfVerdict} — ${fmtMs(b100k.medianMs)} (rows lane) is
+  ${perfPass ? 'under' : 'over'} the ${perfGateMs} ms line, with the lane
+  caveat cutting both ways: this lane omits the network/HTTP costs the
+  204 ms artifact-lane number included, but the rows lane also uses no
+  precomputed artifact (segments are scanned, encoded and hash-verified
+  per bootstrap). The **sqlite-image lane** (§5.3, the artifact lane's
+  direct v2 successor) does use a precomputed image and lands at
+  ${fmtMs(image.medianMs)} warm / ${fmtMs(image.coldMs)} cold at 100k —
+  ${(204 / Math.max(image.medianMs, 0.001)).toFixed(1)}× the v1 artifact
+  lane's 204 ms on this in-process lane. Propagation p95 of
   ${fmtMs(prop.propP95)} is loopback-fast and says nothing comparable about
   v1's socketed 22.8 ms beyond "no regression is visible in-process".
 - **Size**: ${sizeVerdict} — syncular's own client JS is
@@ -468,6 +518,18 @@ async function main(): Promise<void> {
   console.log(
     `  median ${fmtMs(big.medianMs)} (${big.rowsPerSec.toLocaleString('en-US')} rows/s)`,
   );
+  console.log(
+    `bench: bootstrap ${WORKLOAD.bigRows.toLocaleString('en-US')} rows via sqlite image…`,
+  );
+  const image = await runBootstrap(
+    WORKLOAD.bigRows,
+    WORKLOAD.bigRuns,
+    false,
+    IMAGE_LIMITS,
+  );
+  console.log(
+    `  median ${fmtMs(image.medianMs)} (${image.rowsPerSec.toLocaleString('en-US')} rows/s), cold ${fmtMs(image.coldMs)} incl. server-side build`,
+  );
   console.log('bench: propagation…');
   const prop = await runPropagation(WORKLOAD.propIterations);
   console.log(
@@ -481,7 +543,7 @@ async function main(): Promise<void> {
 
   if (CI_MODE) {
     // Budgets gate; RESULTS.md stays the curated full-workload record.
-    const checks = checkBudgets(big, prop, bundle);
+    const checks = checkBudgets(big, image, prop, bundle);
     console.log('\nbudget checks:');
     for (const check of checks) {
       console.log(
@@ -499,7 +561,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const markdown = report(small, big, prop, bundle);
+  const markdown = report(small, big, image, prop, bundle);
   const outPath = join(import.meta.dir, '..', 'RESULTS.md');
   await Bun.write(outPath, markdown);
   console.log(`\nwrote ${outPath}`);

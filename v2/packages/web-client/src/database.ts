@@ -19,7 +19,22 @@ export interface ClientDatabase {
    * rolls back only the inner scope.
    */
   transaction<T>(fn: () => T): T;
+  /**
+   * Optional sqlite-image capability (SPEC §5.3): expose `bytes` as an
+   * attached read-only database schema named `alias` for the duration of
+   * `fn`, then detach. Presence of this method is what makes the client
+   * advertise `accept` bit 2 (§4.2). MUST be called outside any open
+   * transaction (SQLite cannot ATTACH inside one); `fn` may open its own.
+   */
+  withSqliteImage?<T>(bytes: Uint8Array, alias: string, fn: () => T): T;
   close(): void;
+}
+
+/** Attach-schema aliases are code-chosen, never user input — enforce it. */
+export function assertImageAlias(alias: string): void {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(alias)) {
+    throw new Error(`invalid sqlite-image alias ${JSON.stringify(alias)}`);
+  }
 }
 
 /**

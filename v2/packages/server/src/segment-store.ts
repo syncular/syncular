@@ -30,6 +30,20 @@ export interface SegmentRecord extends SegmentMetadata {
   readonly expiresAtMs: number;
 }
 
+/**
+ * The §5.3 reuse key: sqlite images are not byte-deterministic, so
+ * cross-client dedup is a metadata lookup, not hash convergence — one
+ * stored image per (partition, table, schemaVersion, scope digest, pin).
+ */
+export interface SegmentFindKey {
+  readonly partition: string;
+  readonly table: string;
+  readonly schemaVersion: number;
+  readonly mediaType: 'rows' | 'sqlite';
+  readonly scopeDigest: string;
+  readonly asOfCommitSeq: number;
+}
+
 export interface SegmentStore {
   put(
     metadata: SegmentMetadata,
@@ -40,6 +54,12 @@ export interface SegmentStore {
   get(
     segmentId: string,
   ): Promise<{ record: SegmentRecord; bytes: Uint8Array } | undefined>;
+  /**
+   * Unexpired record for the §5.3 reuse key (whole-table segments only:
+   * `rowCursor` null), or undefined. Servers MUST reuse instead of
+   * rebuilding sqlite images while one exists (§5.3).
+   */
+  find(key: SegmentFindKey, nowMs: number): Promise<SegmentRecord | undefined>;
 }
 
 export async function segmentIdFor(bytes: Uint8Array): Promise<string> {
@@ -75,6 +95,27 @@ export class MemorySegmentStore implements SegmentStore {
     segmentId: string,
   ): Promise<{ record: SegmentRecord; bytes: Uint8Array } | undefined> {
     return this.#entries.get(segmentId);
+  }
+
+  async find(
+    key: SegmentFindKey,
+    nowMs: number,
+  ): Promise<SegmentRecord | undefined> {
+    for (const { record } of this.#entries.values()) {
+      if (
+        record.partition === key.partition &&
+        record.table === key.table &&
+        record.schemaVersion === key.schemaVersion &&
+        record.mediaType === key.mediaType &&
+        record.scopeDigest === key.scopeDigest &&
+        record.asOfCommitSeq === key.asOfCommitSeq &&
+        record.rowCursor === null &&
+        record.expiresAtMs > nowMs
+      ) {
+        return record;
+      }
+    }
+    return undefined;
   }
 }
 
@@ -183,6 +224,57 @@ export class SqliteSegmentStore implements SegmentStore {
         expiresAtMs: row.expires_at_ms,
       },
       bytes: new Uint8Array(row.bytes),
+    };
+  }
+
+  async find(
+    key: SegmentFindKey,
+    nowMs: number,
+  ): Promise<SegmentRecord | undefined> {
+    const row = this.db
+      .query<
+        {
+          segment_id: string;
+          row_count: number;
+          next_row_cursor: string | null;
+          byte_length: number;
+          created_at_ms: number;
+          expires_at_ms: number;
+        },
+        [string, string, number, string, string, number, number]
+      >(
+        `SELECT segment_id, row_count, next_row_cursor, byte_length,
+                created_at_ms, expires_at_ms
+         FROM sync_segments
+         WHERE partition=? AND tbl=? AND schema_version=? AND media_type=?
+           AND scope_digest=? AND as_of_commit_seq=? AND row_cursor IS NULL
+           AND expires_at_ms > ?
+         LIMIT 1`,
+      )
+      .get(
+        key.partition,
+        key.table,
+        key.schemaVersion,
+        key.mediaType,
+        key.scopeDigest,
+        key.asOfCommitSeq,
+        nowMs,
+      );
+    if (row === null) return undefined;
+    return {
+      segmentId: row.segment_id,
+      partition: key.partition,
+      table: key.table,
+      schemaVersion: key.schemaVersion,
+      mediaType: key.mediaType,
+      scopeDigest: key.scopeDigest,
+      asOfCommitSeq: key.asOfCommitSeq,
+      rowCount: row.row_count,
+      rowCursor: null,
+      nextRowCursor: row.next_row_cursor,
+      byteLength: row.byte_length,
+      createdAtMs: row.created_at_ms,
+      expiresAtMs: row.expires_at_ms,
     };
   }
 }

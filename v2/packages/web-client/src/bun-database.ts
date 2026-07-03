@@ -4,7 +4,11 @@
  * browser entry never touches `bun:sqlite`.
  */
 import { Database } from 'bun:sqlite';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
+  assertImageAlias,
   type ClientDatabase,
   runTransaction,
   type SqlRow,
@@ -38,6 +42,27 @@ export class BunClientDatabase implements ClientDatabase {
 
   transaction<T>(fn: () => T): T {
     return runTransaction(this.#tx, (sql) => this.db.run(sql), fn);
+  }
+
+  /**
+   * §5.3 image import: bun:sqlite attaches files, not buffers, so the
+   * image lands in a private temp file for the duration of the ATTACH.
+   */
+  withSqliteImage<T>(bytes: Uint8Array, alias: string, fn: () => T): T {
+    assertImageAlias(alias);
+    const dir = mkdtempSync(join(tmpdir(), 'syncular-image-'));
+    const path = join(dir, 'segment.db');
+    try {
+      writeFileSync(path, bytes);
+      this.db.run(`ATTACH DATABASE ? AS ${alias}`, [path]);
+      try {
+        return fn();
+      } finally {
+        this.db.run(`DETACH DATABASE ${alias}`);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 
   close(): void {

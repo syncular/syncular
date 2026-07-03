@@ -152,7 +152,9 @@ describe('external segments (SEGMENT_REF)', () => {
     await seedTasks(server, 5);
     const b = await makeClient(server, {
       clientId: 'client-b',
-      limits: { limitSnapshotRows: 2, maxSnapshotPages: 2 },
+      // accept pins the rows lane: this test exercises §5.2 paging (the
+      // sqlite lane is whole-table and would swallow the second page).
+      limits: { limitSnapshotRows: 2, maxSnapshotPages: 2, accept: 0b0011 },
     });
     b.client.subscribe({
       id: 's1',
@@ -178,7 +180,8 @@ describe('bootstrap resume (§4.7)', () => {
     const pin = await server.storage.getMaxCommitSeq(PARTITION);
     const b = await makeClient(server, {
       clientId: 'client-b',
-      limits: { limitSnapshotRows: 2, maxSnapshotPages: 1 },
+      // accept 0b0011 pins the rows lane — this test is about §4.7 paging.
+      limits: { limitSnapshotRows: 2, maxSnapshotPages: 1, accept: 0b0011 },
     });
     b.client.subscribe({
       id: 's1',
@@ -224,7 +227,8 @@ describe('bootstrap resume (§4.7)', () => {
     await seedTasks(server, 5);
     const b = await makeClient(server, {
       clientId: 'client-b',
-      limits: { limitSnapshotRows: 2, maxSnapshotPages: 1 },
+      // accept 0b0011 pins the rows lane — resume needs a paged bootstrap.
+      limits: { limitSnapshotRows: 2, maxSnapshotPages: 1, accept: 0b0011 },
     });
     b.client.subscribe({
       id: 's1',

@@ -75,7 +75,13 @@ export const bootstrapScenarios: readonly Scenario[] = [
         ctx,
         ['t1', 't2', 't3', 't4', 't5'].map((id) => task(id, 'p1', `row ${id}`)),
       );
-      const limits = { limitSnapshotRows: 2, maxSnapshotPages: 1 };
+      // accept 0b0011 pins the rows lane: this scenario is about §4.7
+      // paging + resume, which the whole-table sqlite lane (§5.3) skips.
+      const limits = {
+        limitSnapshotRows: 2,
+        maxSnapshotPages: 1,
+        accept: 0b0011,
+      };
 
       // Control: an uninterrupted paged bootstrap.
       const control = await ctx.newClient({

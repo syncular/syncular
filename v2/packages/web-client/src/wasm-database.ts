@@ -10,6 +10,7 @@
  */
 import sqlite3InitModule from '@sqlite.org/sqlite-wasm';
 import {
+  assertImageAlias,
   type ClientDatabase,
   runTransaction,
   type SqlRow,
@@ -19,6 +20,8 @@ import { ClientSyncError } from './errors';
 
 /** Structural view of the sqlite3 oo1 surface this binding uses. */
 interface Oo1Database {
+  /** Native db handle, used by `sqlite3_deserialize` (§5.3 image import). */
+  readonly pointer?: number;
   exec(options: {
     sql: string;
     bind?: readonly unknown[];
@@ -32,6 +35,21 @@ interface Sqlite3Static {
   oo1: {
     DB: new (filename: string, flags?: string) => Oo1Database;
     OpfsDb?: new (filename: string, flags?: string) => Oo1Database;
+  };
+  capi: {
+    SQLITE_DESERIALIZE_FREEONCLOSE: number;
+    SQLITE_DESERIALIZE_READONLY: number;
+    sqlite3_deserialize(
+      db: number,
+      schema: string,
+      data: number,
+      dataLength: number,
+      bufferLength: number,
+      flags: number,
+    ): number;
+  };
+  wasm: {
+    allocFromTypedArray(bytes: Uint8Array): number;
   };
 }
 
@@ -51,10 +69,12 @@ function coerceParams(params: readonly SqlValue[]): unknown[] {
 
 class WasmClientDatabase implements ClientDatabase {
   readonly #db: Oo1Database;
+  readonly #sqlite3: Sqlite3Static;
   #tx = { depth: 0 };
 
-  constructor(db: Oo1Database) {
+  constructor(db: Oo1Database, sqlite3: Sqlite3Static) {
     this.#db = db;
+    this.#sqlite3 = sqlite3;
   }
 
   exec(sql: string, params: readonly SqlValue[] = []): void {
@@ -81,6 +101,47 @@ class WasmClientDatabase implements ClientDatabase {
     return runTransaction(this.#tx, (sql) => this.exec(sql), fn);
   }
 
+  /**
+   * §5.3 image import at near-file-copy speed: attach an empty in-memory
+   * schema, then `sqlite3_deserialize` the image bytes into it (the
+   * documented sqlite-wasm import path — no OPFS round-trip, no SQL-level
+   * row shuttling before the single INSERT…SELECT the caller runs).
+   */
+  withSqliteImage<T>(bytes: Uint8Array, alias: string, fn: () => T): T {
+    assertImageAlias(alias);
+    const pointer = this.#db.pointer;
+    if (pointer === undefined) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        'sqlite-wasm database exposes no native handle for image import',
+      );
+    }
+    const { capi, wasm } = this.#sqlite3;
+    this.exec(`ATTACH ':memory:' AS ${alias}`);
+    try {
+      const data = wasm.allocFromTypedArray(bytes);
+      const rc = capi.sqlite3_deserialize(
+        pointer,
+        alias,
+        data,
+        bytes.length,
+        bytes.length,
+        // FREEONCLOSE: sqlite owns the allocation; READONLY: images are
+        // immutable inputs (§5.1).
+        capi.SQLITE_DESERIALIZE_FREEONCLOSE | capi.SQLITE_DESERIALIZE_READONLY,
+      );
+      if (rc !== 0) {
+        throw new ClientSyncError(
+          'sync.invalid_request',
+          `sqlite3_deserialize failed with code ${rc} (§5.3)`,
+        );
+      }
+      return fn();
+    } finally {
+      this.exec(`DETACH ${alias}`);
+    }
+  }
+
   close(): void {
     this.#db.close();
   }
@@ -103,7 +164,10 @@ export async function openWasmDatabase(
     printErr: () => {},
   })) as Sqlite3Static;
   if (sqlite3.oo1.OpfsDb !== undefined) {
-    return new WasmClientDatabase(new sqlite3.oo1.OpfsDb(filename, 'c'));
+    return new WasmClientDatabase(
+      new sqlite3.oo1.OpfsDb(filename, 'c'),
+      sqlite3,
+    );
   }
   if (options?.requirePersistence === true) {
     throw new ClientSyncError(
@@ -111,5 +175,5 @@ export async function openWasmDatabase(
       'OPFS is unavailable in this context and requirePersistence is set',
     );
   }
-  return new WasmClientDatabase(new sqlite3.oo1.DB(':memory:', 'c'));
+  return new WasmClientDatabase(new sqlite3.oo1.DB(':memory:', 'c'), sqlite3);
 }
