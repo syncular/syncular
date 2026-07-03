@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>syncular v2 — demo-react (hooks)</title>
+  <style>
+    :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
+    body { margin: 0; padding: 1.25rem; max-width: 640px; }
+    header { display: flex; align-items: baseline; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    header h1 { font-size: 1.15rem; margin: 0; }
+    header .hint { opacity: 0.7; font-size: 0.85rem; }
+    .badge { font-size: 0.72rem; padding: 0.1rem 0.5rem; border-radius: 999px; border: 1px solid currentColor; opacity: 0.85; }
+    .badge.ok { color: #16a34a; }
+    .badge.warn { color: #d97706; }
+    .toolbar { display: flex; gap: 0.75rem; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; }
+    .toolbar label { font-size: 0.85rem; opacity: 0.8; }
+    select, input, button { font: inherit; }
+    select { padding: 0.3rem 0.4rem; }
+    form.add { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+    form.add input { flex: 1; padding: 0.4rem 0.5rem; }
+    ul.todos { list-style: none; padding: 0; margin: 0; }
+    ul.todos li { display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.25rem; border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
+    ul.todos li.done .title { text-decoration: line-through; opacity: 0.55; }
+    li .title { flex: 1; }
+    li .ver { font-size: 0.7rem; opacity: 0.5; }
+    button.del { cursor: pointer; }
+    .partial { color: #d97706; font-size: 0.8rem; margin-top: 0.5rem; }
+    .empty { opacity: 0.6; font-size: 0.9rem; padding: 0.5rem 0; }
+    footer { margin-top: 1.25rem; font-size: 0.78rem; opacity: 0.65; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

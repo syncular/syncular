@@ -112,6 +112,13 @@ export interface DocsUpdate {
   body_doc?: Uint8Array | null;
 }
 
+/** Kysely `Database` interface (table → Row); the generic for
+ *  @syncular-v2/kysely's SyncularDialect. */
+export interface Database {
+  tasks: TasksRow;
+  docs: DocsRow;
+}
+
 export interface ProjectTasksParams {
   projectId: string;
 }

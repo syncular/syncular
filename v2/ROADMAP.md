@@ -177,16 +177,41 @@ wire changes, zero server changes; sequenced AFTER the WS-native loop
 
 ## 4. DX polish
 
-- [ ] **Kysely typed local queries**: `useSyncQuery`/client query API are
-      string-agnostic by design — add a typed layer generated from the
-      schema IR (typegen emits table types already; a kysely dialect over
-      ClientDatabase). No API break.
+- [x] **Kysely typed local queries** (landed 2026-07-04): `@syncular-v2/
+      kysely` — a Kysely `SyncularDialect` (reusing Kysely's SQLite compiler/
+      adapter/introspector) whose driver runs SELECTs over a host's
+      `query(sql, params)` surface, so it works on ALL hosts (direct/worker/
+      follower/Tauri/RN), not just the direct client — it never touches
+      `ClientDatabase`. READ-ONLY by contract: the driver rejects any
+      non-SELECT (and transactions) loudly, pointing at `mutate()` (writes
+      MUST go through the outbox, §7.1). Its OWN package (not a web-client
+      subpath), so Kysely never enters the core bundle — bundle-entry reaches
+      nothing here; own-JS stays 69.10 KB (72 KB ceiling untouched). Typegen
+      emits a `Database` interface (table→Row map) additively — all embedded
+      generated files regenerated (fixture, demo, quickstart, both create-app
+      templates; --check byte-exact). React: `@syncular-v2/react/typed`'s
+      `useTypedQuery(qb => …)` compiles the builder, extracts `{tables}` from
+      the compiled AST (exact invalidation, no text heuristic), and reuses
+      `useSyncQuery`'s machinery — behind a subpath with kysely as OPTIONAL
+      peers so plain `useSyncQuery` apps never pull Kysely. Also: the worker
+      host now schedules an autoSync round after `mutate`/`setWindow` so local
+      writes and window widenings push/bootstrap promptly under `autoSync`
+      (the host loop owns rounds, §8.4).
 - [ ] **Per-rowid invalidation refinement**: today's granularity is
       table + scope-key (honest to the wire); a table→rowid dependency
       option for hot single-row views was left room for in the design.
       Demand-gated.
-- [ ] **demo-react**: a hooks-based example app (also the scaffolder's
-      third template candidate).
+- [x] **demo-react** (landed 2026-07-04 — `apps/demo-react`, port 8788): a
+      single-pane hooks todo app on the SAME server as `apps/demo`,
+      dogfooding `SyncProvider` + `useTypedQuery` (Kysely-typed) +
+      `useMutation` + `useSyncStatus` + `useWindow` (a three-list filter
+      dropdown driving `setWindow` — W1 windowing visible: switching lists
+      bootstraps the new list and evicts the old). Worker + OPFS core, React
+      via workspace deps, Bun.build serving (the demo pattern). Smoke test
+      boots the server and asserts the React frontend builds (`/app.js`/
+      `/worker.js`, `POST /sync` answers). Noted as create-app's third
+      template candidate (not built). Verified live in-browser: typed reads,
+      window switch, optimistic write + outbox drain all confirmed.
 
 ## 5. Release (gates with Benjamin)
 

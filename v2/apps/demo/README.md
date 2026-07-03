@@ -63,6 +63,11 @@ persists it to a file.
   producers/tooling and segment downloads stay on HTTP.
 - The demo intentionally has zero dependencies beyond the workspace
   packages; the frontend is vanilla DOM.
+- **Hooks variant**: [`apps/demo-react`](../demo-react) is the same server
+  with a **React** frontend built on `@syncular-v2/react` — `SyncProvider` +
+  `useTypedQuery` (Kysely-typed, read-only) + `useMutation` + `useSyncStatus`
+  + a `useWindow` list-filter dropdown that dogfoods W1 windowing. Run it with
+  `bun run --cwd apps/demo-react dev` (port 8788).
 
 ## Multi-tab (TODO 3.2)
 

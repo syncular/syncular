@@ -123,6 +123,34 @@ useSyncQuery(buildDynamicSql(), params, { tables: ['tasks', 'projects'] });
 | `scopeKeys` | Narrow re-runs to specific `prefix:value` keys. A dependency-table event still re-runs if it carries **no** scope keys (see above). |
 | `enabled`   | Skip running while `false` (e.g. inputs not ready).                                                                                 |
 
+## `useTypedQuery(build, deps?, options?)` — the typed twin
+
+Behind the `@syncular-v2/react/typed` subpath (needs the `@syncular-v2/kysely`
++ `kysely` peers). You write a [Kysely](https://kysely.dev) builder typed by
+your generated `Database` interface; the hook compiles it, runs it live, and
+extracts the `{tables}` dependency set from the compiled query's **AST** — so
+invalidation is *exact*, never a text heuristic. It reuses `useSyncQuery`'s
+machinery verbatim.
+
+```tsx
+import { useTypedQuery } from '@syncular-v2/react/typed';
+import type { Database, TodosRow } from './syncular.generated';
+
+function TodoList({ listId }: { listId: string }) {
+  const { rows } = useTypedQuery<Database, Pick<TodosRow, 'id' | 'title'>>(
+    (db) =>
+      db.selectFrom('todos').select(['id', 'title']).where('list_id', '=', listId),
+    [listId], // re-key the builder like a useEffect dep array
+  );
+  return <ul>{rows.map((r) => <li key={r.id}>{r.title}</li>)}</ul>;
+}
+```
+
+Read-only, like the dialect: a write builder throws — use `useMutation` for
+writes (they must go through the outbox, SPEC §7.1). Works on every host the
+other hooks do (direct, worker, follower, Tauri, RN) — it drives the same
+normalized `query` surface.
+
 ## Other hooks
 
 - **`useSyncStatus()`** → `{ outbox, upgrading, leaseState, schemaFloor,

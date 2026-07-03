@@ -101,6 +101,44 @@ either a `SyncClient` or the worker handle; the other hooks are `useMutation`,
 carried keys) is documented in the
 [react package](../../packages/react/README.md).
 
+## Typed reads (Kysely)
+
+Local SQL is the query API by design. `@syncular-v2/kysely` is its **typed
+read layer**: a [Kysely](https://kysely.dev) dialect typed by the `Database`
+interface `@syncular-v2/typegen` emits from your schema.
+
+```ts
+import { Kysely } from 'kysely';
+import { SyncularDialect } from '@syncular-v2/kysely';
+import type { Database } from './syncular.generated';
+
+const db = new Kysely<Database>({ dialect: new SyncularDialect({ client }) });
+const rows = await db
+  .selectFrom('todos')
+  .selectAll()
+  .where('list_id', '=', 'demo')
+  .execute(); // fully typed, no `any`
+```
+
+Two rules make it honest:
+
+- **Reads only.** A Kysely INSERT/UPDATE/DELETE would write the local mirror
+  directly and bypass the sync outbox ([SPEC §7.1](../../SPEC.md)). The dialect
+  rejects any non-SELECT (and any transaction) loudly — do writes with
+  `client.mutate()`, always.
+- **Every host.** The dialect drives a host's `query(sql, params)` method — the
+  one surface every host exposes: the direct `SyncClient`, the worker handle,
+  the multi-tab follower, and the Tauri / React Native bridges. It never
+  touches a `ClientDatabase`, so the handle hosts (which expose only `query`)
+  are first-class. It ships as its own package, so Kysely never enters the
+  client-core bundle.
+
+In React, `@syncular-v2/react/typed`'s `useTypedQuery(db => db.selectFrom(…))`
+compiles a builder and re-runs it live, extracting the `{tables}` dependency
+set from the compiled query's AST — exact invalidation with no SQL-text
+heuristic. See the [react package](../../packages/react/README.md) and the
+[hooks demo](../../apps/demo-react/README.md).
+
 ## Multi-tab
 
 `createSyncClientHandle({ multiTab: true })` gives N tabs one core: the tab
@@ -153,7 +191,3 @@ what enters and evicts what leaves, with a completeness oracle so a query over
 un-held data is flagged partial rather than served as complete. Shipped in W1;
 see [Windowed sync](./concepts-windowing.md).
 
-## Roadmap
-
-A typed Kysely query layer over the generated row types is a follow-up — reads
-are raw SQL today.

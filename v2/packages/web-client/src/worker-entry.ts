@@ -308,9 +308,25 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
   const api: WorkerApi = {
     subscribe: (input) => requireClient().subscribe(input),
     unsubscribe: (id) => requireClient().unsubscribe(id),
-    setWindow: (base, units) => requireClient().setWindow(base, units),
+    setWindow: async (base, units) => {
+      await requireClient().setWindow(base, units);
+      // A window change adds/removes value-sharded subscriptions; a widened
+      // unit needs a bootstrap pull to become visible. In autoSync mode the
+      // host loop owns rounds, so schedule one now — otherwise the new unit
+      // waits for an unrelated server wake-up (§8.4). A no-op change still
+      // schedules a harmless idempotent round.
+      scheduleAutoSync();
+    },
     windowState: (base) => requireClient().windowState(base),
-    mutate: (mutations) => requireClient().mutate(mutations),
+    mutate: (mutations) => {
+      const id = requireClient().mutate(mutations);
+      // In autoSync mode the host loop owns rounds (§8.4): a local write must
+      // push without the app orchestrating sync. Schedule a round (deferred
+      // via setTimeout, so this mutate's own transaction has committed first)
+      // so the outbox drains promptly.
+      scheduleAutoSync();
+      return id;
+    },
     sync: () => {
       const running = requireClient();
       return serializedSync(() => running.sync());

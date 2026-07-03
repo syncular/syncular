@@ -44,6 +44,13 @@ describe('golden fixtures', () => {
     expect(checkOutputs(generate(FIXTURE))).toEqual([]);
   });
 
+  test('emits a Kysely Database interface mapping every table to its Row', () => {
+    const module = generate(FIXTURE).module;
+    expect(module).toContain('export interface Database {');
+    expect(module).toContain('  tasks: TasksRow;');
+    expect(module).toContain('  docs: DocsRow;');
+  });
+
   test('IR shape: versioned, extension slots present, no TS types', () => {
     const ir = JSON.parse(generate(FIXTURE).irJson);
     expect(ir.irVersion).toBe(1);

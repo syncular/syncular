@@ -19,6 +19,14 @@ bunx create-syncular-v2 my-app --template web
 | `minimal` | Server + a terminal two-client convergence demo (no browser) — migrations + manifest + `generate` wiring. Copy-evolved from `examples/quickstart`. The smallest honest starting point. |
 | `web` | Hono server + WebSocket realtime + a single-pane browser todo app whose whole client core runs in a Web Worker on OPFS. Derived from `apps/demo`, slimmed to one pane (no conflict simulator, no blob attachments) — the minimal browser app a real user starts from. |
 
+> **Third-template candidate: `react`.** [`apps/demo-react`](../../apps/demo-react)
+> is the ready-made source for a hooks-based template — `@syncular-v2/react`
+> (`SyncProvider` + `useTypedQuery` + `useMutation` + `useSyncStatus` +
+> `useWindow`) over the same worker + OPFS core, with the Kysely-typed read
+> layer wired. Slim it the way `web` slims `apps/demo` (drop the three-list
+> seed to one, keep one hook of each kind) and add it here when a React
+> template is wanted. Not built yet — noted so the shape is on record.
+
 Each template ships its own `README.md` (run steps, what to edit first),
 `.gitignore` (as `gitignore` — see below), a working `tsconfig.json`, and a
 smoke test.

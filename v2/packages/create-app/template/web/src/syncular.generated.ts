@@ -54,6 +54,12 @@ export interface TodosUpdate {
   updated_at_ms?: number;
 }
 
+/** Kysely `Database` interface (table → Row); the generic for
+ *  @syncular-v2/kysely's SyncularDialect. */
+export interface Database {
+  todos: TodosRow;
+}
+
 export interface TodoListParams {
   listId: string;
 }
