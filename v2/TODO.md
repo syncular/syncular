@@ -237,8 +237,29 @@ the old tree archived.
 - [ ] **Docs site**: v2 docs from the spec outward (the spec is the
       reference; docs are the guide). Quickstart ≤ 5 minutes to two synced
       clients.
-- [ ] **Scaffolding**: `create-syncular-app` equivalent for v2; typegen CLI
-      polish (`syncular-v2 generate` → final naming).
+- [x] **Scaffolding**: LANDED 2026-07-03 — `@syncular-v2/create-app` (bin
+      `create-syncular-v2`): `bun create syncular-v2 my-app` / `bunx
+      create-syncular-v2 my-app`, prompts/flags for project name + template.
+      TWO templates as real directories with dumb `__PROJECT_NAME__`
+      substitution: `minimal` (server + terminal two-client convergence demo,
+      copy-evolved from examples/quickstart) and `web` (Hono + WS + single-pane
+      OPFS-worker browser todo app, slimmed from apps/demo — no conflict
+      simulator, no blobs). Each template ships its own README, `.gitignore`
+      (as `gitignore`; renamed on scaffold), `tsconfig.json`, and a smoke test.
+      The templates THEMSELVES are tested in the v2 sweep (scaffold→
+      generate --check→typecheck→app smoke, offline via a workspace-linked
+      node_modules; full `bun install` tier behind SYNCULAR_TEMPLATE_INSTALL=1).
+      All naming lives in one constants module (`src/constants.ts`) — TODO 6.3
+      rename is mechanical. Local-vs-published deps: templates carry
+      `workspace:*`, kept for `--local`/in-tree, else rewritten to
+      PUBLISHED_DEPENDENCY_RANGE (still `workspace:*` today — packages
+      unpublished, CLI warns loudly; one constant to flip on publish, TODO 6.3).
+      Typegen CLI polish: `syncular-v2 init` (starter manifest+migration into an
+      existing project), helpful missing-manifest/-migrations errors pointing at
+      the docs + `init`, and `--watch` (Bun recursive fs.watch, debounced, skips
+      its own output writes). Generate CONTRACT + README freshness rules intact.
+      Docs: quickstart leads with `bun create …` (manual path kept as the
+      explainer), landing page gains a scaffolder DX bullet.
 - [ ] **Package identity + release pipeline**: naming/versioning for the
       v2 packages (@syncular/* 0.2? clean break?), changesets + trusted
       publishing wired for the v2 set, the binaryen/parse-check lessons

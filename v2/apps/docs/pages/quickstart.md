@@ -1,23 +1,38 @@
 # Quickstart
 
 Two independent client cores syncing through one server — in a terminal, no
-browser, in about five minutes. Every snippet below is extracted from the
-runnable [`examples/quickstart`](../../examples/quickstart) directory, which
-also ships a smoke test that runs this exact path in CI so it cannot rot.
+browser, in about five minutes.
 
-## 1. Copy the example
+## 1. Scaffold
+
+```sh
+bun create syncular-v2 my-app --template minimal
+cd my-app
+bun install
+```
+
+That is the fastest path: the scaffolder writes exactly the project this page
+walks through — a schema, a ~30-line server, and a two-client script — plus a
+README and a smoke test. (Prefer a browser app? `--template web` scaffolds a
+Hono server + a single-pane todo UI on the worker + OPFS client instead.)
+
+> The rest of this page is the **"what it did" explainer**: every snippet is
+> extracted from the runnable [`examples/quickstart`](../../examples/quickstart)
+> directory (the same shape the scaffolder emits), which also ships a smoke test
+> that runs this exact path in CI so it cannot rot. If you scaffolded above, you
+> already have these files — read on to understand them, or skip to
+> [step 3](#3-generate-the-typed-schema) to run it.
+
+To copy the example by hand instead of scaffolding:
 
 ```sh
 cp -r v2/examples/quickstart my-app && cd my-app
 ```
 
-It contains a schema, a server, and a two-client script. We will walk through
-each. (If you are reading this inside the repo, you can also just run the
-example in place — `cd v2/examples/quickstart`.)
-
 ## 2. Describe the schema
 
-Two files drive everything. The migration declares the table shape:
+Two files drive everything (the scaffolder wrote both). The migration declares
+the table shape:
 
 ```sql
 -- migrations/0001_initial/up.sql

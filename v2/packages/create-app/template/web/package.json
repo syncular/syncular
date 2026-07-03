@@ -1,0 +1,22 @@
+{
+  "name": "__PROJECT_NAME__",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/server.ts",
+    "generate": "syncular-v2 generate --manifest-dir .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
+    "@syncular-v2/core": "workspace:*",
+    "@syncular-v2/server": "workspace:*",
+    "@syncular-v2/server-hono": "workspace:*",
+    "@syncular-v2/web-client": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncular-v2/typegen": "workspace:*",
+    "@types/bun": "latest",
+    "typescript": "^5.9.0"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "__PROJECT_NAME__",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "syncular-v2 generate --manifest-dir .",
+    "server": "bun run src/server.ts",
+    "clients": "bun run src/clients.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@syncular-v2/core": "workspace:*",
+    "@syncular-v2/server": "workspace:*",
+    "@syncular-v2/server-hono": "workspace:*",
+    "@syncular-v2/web-client": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncular-v2/typegen": "workspace:*",
+    "@types/bun": "latest",
+    "typescript": "^5.9.0"
+  }
+}

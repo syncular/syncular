@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>__PROJECT_NAME__</title>
+  <style>
+    :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
+    body { margin: 0; padding: 2rem; max-width: 32rem; margin-inline: auto; }
+    header { display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    header h1 { font-size: 1.2rem; margin: 0; }
+    .badge { font-size: 0.7rem; padding: 0.1rem 0.45rem; border-radius: 999px; border: 1px solid currentColor; opacity: 0.7; }
+    #status { font-size: 0.8rem; opacity: 0.7; min-height: 1.1em; margin: 0 0 1rem; }
+    form { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+    form input { flex: 1; padding: 0.4rem 0.6rem; }
+    ul { list-style: none; margin: 0; padding: 0; }
+    li { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0; border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
+    li .title { flex: 1; }
+    li.done .title { text-decoration: line-through; opacity: 0.55; }
+    button { cursor: pointer; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>__PROJECT_NAME__</h1>
+    <span id="outbox" class="badge">outbox 0</span>
+    <button id="offline-btn">Go offline</button>
+  </header>
+  <p id="status">starting…</p>
+  <form id="add-form">
+    <input id="add-input" placeholder="Add a todo…" autocomplete="off" />
+    <button type="submit">Add</button>
+  </form>
+  <ul id="todos"></ul>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
