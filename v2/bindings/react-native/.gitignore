@@ -1,0 +1,7 @@
+# Build artifacts — the native core is produced by build-native.sh and dropped
+# in per-platform; never committed.
+ios/Syncular.xcframework/
+android/src/main/jniLibs/
+android/build/
+android/.gradle/
+node_modules/

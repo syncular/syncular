@@ -36,17 +36,38 @@ This block is assembly on a proven core — packages, not protocol.
       worker/follower). Caveat to document: every useSyncQuery run is one
       IPC round trip — fine at Tauri IPC latency; pagination guidance for huge
       result sets is a docs note.
-- [ ] **Swift + Kotlin wrappers**: idiomatic thin wrappers over the FFI
-      command surface (it was designed for them — JSON commands, opaque
-      handle, poll_event). Packaging: xcframework (needs full Xcode; the
-      build script already detects/skips) and AAR/jniLibs via cargo-ndk;
-      lifecycle handling (background/foreground sync, connectivity) lives
-      in the wrappers, not the core. Reuse v1's packaging KNOWLEDGE, never
-      its code.
-- [ ] **React Native**: JSI/TurboModule (NitroModules candidate) over the
-      FFI, surfacing the SAME `SyncClientLike` JS interface so
-      `@syncular-v2/react` works unchanged in RN (decided: RN uses the
-      NATIVE core — Hermes has no OPFS/sqlite-wasm).
+- [x] **Swift + Kotlin wrappers** (landed 2026-07-04 — `bindings/swift`
+      (SwiftPM `SyncularClient`) and `bindings/kotlin` (Kotlin/JVM
+      `SyncularClient` via **FFM**, `java.lang.foreign`, JDK 21+ — zero JNI C
+      glue; JNA documented as the JDK<21 fallback)): idiomatic thin wrappers
+      over the FFI command surface — `command` + typed conveniences
+      (mutate/subscribe/sync/query/readRows/presence/…) + a background
+      `poll_event` loop delivering events (Swift → main-queue closure/delegate,
+      Kotlin → listener). Lifecycle owned in the wrappers: `pause()`/`resume()`
+      (stop-poll + disconnectRealtime / reconnect + restart) and a
+      close-joins-the-poll-thread guarantee. Packaging: local dev via linker
+      paths to the built dylib; release via `Syncular.xcframework` (Xcode) /
+      AAR+jniLibs via cargo-ndk — all detected+skipped by build-native.sh.
+      Each gets its own isolated `check.sh` running an OFFLINE HERMETIC smoke
+      (no server: mutate → readRows shows the optimistic row; `sync()` reports
+      `transport.unavailable` on the lean core). Swift runs green on this mac
+      (10/10, Swift Testing on CLT); Kotlin compiles+tests in CI on Ubuntu
+      (JDK 21) — its check.sh detect-and-skips a JDK-less mac. Reused v1's
+      packaging KNOWLEDGE only, never its code.
+- [x] **React Native** (landed 2026-07-04 — `@syncular-v2/react-native` under
+      `bindings/react-native`): a TurboModule over the FFI, surfacing the SAME
+      `SyncClientLike` JS interface so `@syncular-v2/react` works unchanged in
+      RN (RN uses the NATIVE core — Hermes has no OPFS/sqlite-wasm). Ships the
+      package correctly structured: `createNativeSyncClient()` (SyncClientLike
+      over a NativeModule, `{$bytes:hex}` + command JSON, mirroring the Tauri
+      bridge), the codegen-ready `.ts` TurboModule spec, iOS (ObjC++ shim over
+      the C ABI + RCTEventEmitter) + Android (Kotlin FFM shim, zero JNI C glue +
+      DeviceEventManager) native sources, and podspec/build.gradle. Honest
+      scoping: verified via JS-bridge tests with an injected NativeModule double
+      (11/11 bun: SyncClientLike parity vs `normalizeClient`, bytes, events,
+      lifecycle) + `tsc`; the native shims' manual verification recipe is
+      documented (an RN example app is explicitly OUT). NitroModules/JSI is the
+      follow-up for latency; the C ABI is the stable substrate.
 - [ ] **Native transport §8.7 completion**: the native-transport feature's
       first cut sends rounds over `POST /sync` (conformant) with the
       socket carrying wake-ups/presence; finish round-over-socket framing
@@ -56,10 +77,17 @@ This block is assembly on a proven core — packages, not protocol.
       native apps already converge; yrs integration is only needed for
       local collaborative EDITING UX on native. Demand-gated within this
       block.
-- [ ] **Conformance for bindings**: the existing stdio shim locks the
-      core; add a thin pairing lane per binding only where the binding
-      adds logic (the Tauri bridge and RN module are protocol-thin — a
-      smoke per platform beats a full catalog run; decide per binding).
+- [x] **Conformance for bindings** (decided + landed 2026-07-04; doctrine in
+      `bindings/README.md`): the stdio shim locks the CORE (the shared
+      `syncular-command` router, 68/68), and every binding consumes that SAME
+      router — so wrappers are protocol-thin and re-running the catalog per
+      wrapper would test the router N more times and marshaling zero more.
+      The thin bar: each wrapper ships an OFFLINE HERMETIC smoke against the
+      REAL native core (Swift `swift test`, Kotlin `gradle test`) + a parity
+      proof where it feeds JS hooks (RN + Tauri bridges accepted by the React
+      `normalizeClient`, driving every `SyncClientLike` member — a drift breaks
+      the suite). Anything that grows logic beyond marshaling graduates to its
+      own pairing lane; today none does.
 
 ## 2. Deployment completion
 

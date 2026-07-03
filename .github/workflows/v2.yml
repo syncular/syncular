@@ -187,3 +187,85 @@ jobs:
       - name: Example compiles
         if: steps.changed.outputs.run == 'true'
         run: cargo build -p syncular-tauri-example
+
+  # The Swift / Kotlin / React Native FFI bindings live under v2/bindings/*, each
+  # its own isolated build (never joins the main gates). This job runs the CHEAP
+  # lanes on Ubuntu: Kotlin/FFM (JDK 21 — compiles + runs the offline hermetic
+  # gradle test against the real native core) and the RN JS bridge (bun test +
+  # tsc, an injected NativeModule double — no device). The Swift lane needs an
+  # expensive macOS runner and is a documented LOCAL gate (bindings/swift/check.sh),
+  # so it is intentionally NOT run in CI — the tauri-job precedent's honest scoping.
+  swift-kotlin-bindings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: v2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      # Path gate: only do real work when the FFI-binding trees (or this
+      # workflow) changed. The Swift/Kotlin wrappers depend on the shared FFI
+      # crate, so a change under rust/crates/ffi also triggers the lanes.
+      - name: Did the FFI bindings change?
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            base="${{ github.event.before }}"
+          else
+            base="${{ github.event.pull_request.base.sha }}"
+          fi
+          if git diff --name-only "$base" HEAD 2>/dev/null \
+              | grep -qE '^v2/bindings/(swift|kotlin|react-native)/|^v2/rust/crates/ffi/|^v2/rust/crates/command/|^v2/rust/ffi\.h$|^\.github/workflows/v2\.yml$'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No FFI bindings changes; skipping."
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.changed.outputs.run == 'true'
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.changed.outputs.run == 'true'
+        with:
+          workspaces: v2/rust -> target
+
+      - uses: actions/setup-java@v4
+        if: steps.changed.outputs.run == 'true'
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.changed.outputs.run == 'true'
+        with:
+          bun-version: latest
+
+      - name: Install dependencies (RN workspace links)
+        if: steps.changed.outputs.run == 'true'
+        run: bun install --frozen-lockfile
+
+      # Kotlin/JVM (FFM) — check.sh builds the lean dylib, vendors it, and runs
+      # the offline hermetic gradle test against the real native core. Gradle is
+      # provisioned by the setup-gradle action's wrapper-less invocation.
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.changed.outputs.run == 'true'
+
+      - name: Kotlin bindings gate
+        if: steps.changed.outputs.run == 'true'
+        working-directory: v2/bindings/kotlin
+        run: ./check.sh
+
+      # React Native JS bridge — bun test (injected NativeModule double) + tsc.
+      - name: React Native bindings gate
+        if: steps.changed.outputs.run == 'true'
+        working-directory: v2/bindings/react-native
+        run: ./check.sh
+
+      # Swift is a documented LOCAL gate (needs a macOS runner); note it here.
+      - name: Swift lane (local-only note)
+        if: steps.changed.outputs.run == 'true'
+        run: echo "Swift bindings gate runs locally via v2/bindings/swift/check.sh (macOS runner is out of scope for CI)."

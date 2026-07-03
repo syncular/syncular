@@ -1,0 +1,67 @@
+// The syncular React Native module — Android build.
+//
+// A thin Kotlin shim over the syncular-ffi C ABI via FFM (java.lang.foreign),
+// with NO JNI C glue. The native `.so`s (arm64-v8a + x86_64) are produced by
+// `rust/scripts/build-native.sh android` (cargo-ndk) and must be placed under
+// `src/main/jniLibs/<abi>/libsyncular.so` (or supplied by the consuming app).
+// They are build artifacts — not committed here.
+//
+// This file compiles JVM-neutral Kotlin against the React Native Android libs;
+// the app's Gradle applies the Android Gradle Plugin. Autolinking discovers the
+// module via the npm package.
+
+buildscript {
+  repositories {
+    google()
+    mavenCentral()
+  }
+  dependencies {
+    classpath "com.android.tools.build:gradle:8.2.0"
+    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24"
+  }
+}
+
+apply plugin: "com.android.library"
+apply plugin: "org.jetbrains.kotlin.android"
+
+android {
+  namespace "com.syncular"
+  compileSdk 34
+
+  defaultConfig {
+    // FFM (java.lang.foreign) needs a recent runtime; gate the minSdk high
+    // enough. On older Android, use the JNI/JNA fallback (README/kotlin binding).
+    minSdk 26
+    targetSdk 34
+    // The jniLibs directory carries libsyncular.so per ABI (from cargo-ndk).
+    ndk {
+      abiFilters "arm64-v8a", "x86_64"
+    }
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_21
+    targetCompatibility JavaVersion.VERSION_21
+  }
+
+  kotlinOptions {
+    jvmTarget = "21"
+  }
+
+  sourceSets {
+    main {
+      // libsyncular.so lands here from build-native.sh android.
+      jniLibs.srcDirs = ["src/main/jniLibs"]
+    }
+  }
+}
+
+repositories {
+  google()
+  mavenCentral()
+}
+
+dependencies {
+  implementation "com.facebook.react:react-android"
+  implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"
+}

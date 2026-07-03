@@ -2,10 +2,17 @@
   "name": "syncular-v2",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "apps/*", "examples/*", "bench", "load"],
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "examples/*",
+    "bench",
+    "load",
+    "bindings/react-native"
+  ],
   "scripts": {
     "check": "bun run typecheck && bun run lint && bun run test",
-    "test": "bun test --path-ignore-patterns '**/create-app/template/**' --path-ignore-patterns '**/load/**'",
+    "test": "bun test --path-ignore-patterns '**/create-app/template/**' --path-ignore-patterns '**/load/**' --path-ignore-patterns '**/bindings/**'",
     "bench": "bun run --cwd bench bench",
     "bench:ci": "bun run --cwd bench bench:ci",
     "load": "bun run --cwd load load",
