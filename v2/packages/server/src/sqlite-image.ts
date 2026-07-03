@@ -60,8 +60,21 @@ export interface SqliteImageInput {
   readonly rows: readonly StoredRow[];
 }
 
+/**
+ * The §5.3 image-builder capability, injected through
+ * `SyncServerConfig.sqliteImageBuilder` (TODO §4.2). Building an image needs
+ * a real SQLite engine (`bun:sqlite` here), which is not available on every
+ * runtime — Cloudflare Workers has none. So the core takes the builder as an
+ * optional capability rather than importing `bun:sqlite` on the pull path:
+ * a Bun/Node host passes `buildSqliteImage`; a Workers host omits it and the
+ * pull serves the rows lane (§5.3 clients advertise sqlite as an *accept*,
+ * never a requirement — the host chooses the served format from what it can
+ * produce; this is a support floor, not a fallback).
+ */
+export type SqliteImageBuilder = (input: SqliteImageInput) => Uint8Array;
+
 /** Build the §5.3 image bytes for a whole-table snapshot. */
-export function buildSqliteImage(input: SqliteImageInput): Uint8Array {
+export const buildSqliteImage: SqliteImageBuilder = (input) => {
   const { table, rows } = input;
   const primaryKey = table.columns[table.primaryKeyIndex]?.name;
   const db = new Database(':memory:');
@@ -108,4 +121,4 @@ export function buildSqliteImage(input: SqliteImageInput): Uint8Array {
   } finally {
     db.close();
   }
-}
+};

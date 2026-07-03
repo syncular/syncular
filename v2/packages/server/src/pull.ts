@@ -19,8 +19,28 @@ import type { CompiledSchema, CompiledTable } from './schema';
 import { scopeDigest } from './scopes';
 import type { SegmentRecord } from './segment-store';
 import { issueSegmentUrl } from './signed-url';
-import { buildSqliteImage } from './sqlite-image';
+import type { SqliteImageBuilder } from './sqlite-image';
 import type { StoredCommit, StoredRow } from './storage';
+
+/**
+ * Resolve the §5.3 image builder: the host-injected one if present, else the
+ * in-tree `buildSqliteImage` on a Bun runtime (dynamic import so `bun:sqlite`
+ * is never a static dep of the neutral core), else `undefined` (rows lane).
+ * Memoized so the dynamic import happens at most once per process.
+ */
+let cachedDefaultBuilder: SqliteImageBuilder | null | undefined;
+async function resolveImageBuilder(
+  ctx: SyncRequestContext,
+): Promise<SqliteImageBuilder | undefined> {
+  if (ctx.sqliteImageBuilder !== undefined) return ctx.sqliteImageBuilder;
+  if (cachedDefaultBuilder === undefined) {
+    const hasBun = (globalThis as { Bun?: unknown }).Bun !== undefined;
+    cachedDefaultBuilder = hasBun
+      ? (await import('./sqlite-image')).buildSqliteImage
+      : null;
+  }
+  return cachedDefaultBuilder ?? undefined;
+}
 
 /** §4.2 accept bitmask. */
 export const ACCEPT_INLINE_ROWS = 1 << 0;
@@ -229,6 +249,15 @@ async function* sqliteImageSegment(
     limit: limits.limitSnapshotRows + 1,
   });
   if (probe.length <= limits.limitSnapshotRows) return false;
+  // §5.3: building an image needs a SQLite engine. The host injects the
+  // builder through `sqliteImageBuilder`; when omitted we default to the
+  // in-tree `buildSqliteImage` ONLY on a Bun runtime, reached by a *dynamic*
+  // import so `bun:sqlite` is never a static dependency of the pull path
+  // (TODO §4.2 neutrality — enforced by test/runtime-neutrality.test.ts). On
+  // Workers/edge (no `Bun`) this yields the rows lane for a bit-2 client — a
+  // support floor, not a fallback (§5.3: sqlite is an *accept*, not a demand).
+  const buildImage = await resolveImageBuilder(ctx);
+  if (buildImage === undefined) return false;
   const rows: StoredRow[] = [];
   let afterRowId: string | null = null;
   for (;;) {
@@ -243,7 +272,7 @@ async function* sqliteImageSegment(
     if (scanned.length < 50_000 || last === undefined) break;
     afterRowId = last.rowId;
   }
-  const bytes = buildSqliteImage({
+  const bytes = buildImage({
     table: plan.table,
     schemaVersion: schema.version,
     asOfCommitSeq: asOf,

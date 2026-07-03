@@ -12,6 +12,7 @@ import type { LeaseStore } from './lease-store';
 import type { ServerSchema } from './schema';
 import type { SegmentStore } from './segment-store';
 import type { SegmentUrlConfig } from './signed-url';
+import type { SqliteImageBuilder } from './sqlite-image';
 import type { ServerStorage, StoredCommit } from './storage';
 
 /** SSP2 body content type (§1.1). */
@@ -108,6 +109,13 @@ export interface SyncServerConfig {
   readonly limits?: Partial<ServerLimits>;
   /** §5.4 signed-URL delivery: native HMAC tokens or delegated presign. */
   readonly signedUrls?: SegmentUrlConfig;
+  /**
+   * §5.3 sqlite-image builder (TODO §4.2), injected so the pull path never
+   * statically imports `bun:sqlite`. Absent ⇒ the sqlite-image lane is off
+   * (bit-2 clients are served the rows lane) — the Workers/edge posture. A
+   * Bun/Node host wires `buildSqliteImage` from `@syncular-v2/server`.
+   */
+  readonly sqliteImageBuilder?: SqliteImageBuilder;
   readonly realtime?: RealtimeNotifier;
   /**
    * Optional structured-events sink (ops seam). Absent ⇒ zero cost: no

@@ -8,6 +8,59 @@ pruning (§4.6), and signed-URL token issuance (§5.4). `SPEC.md` is
 normative for everything on the wire; this README covers the **host
 surface** — in particular the ops seam and the pruning runbook.
 
+## Deployment matrix (runtime adapters, TODO §4.2)
+
+The server core is **runtime-neutral TypeScript** — `handleSyncRequest` and
+the realtime session speak only Web `Request`/`Response`/`fetch`/Web-Crypto,
+no Bun- or Node-only builtin (enforced by a static import-graph scan,
+`test/runtime-neutrality.test.ts`). Adapters wire that core to a runtime.
+The supported set, and what deliberately does **not** get an adapter:
+
+| Runtime | Adapter | Transport | Storage | Status |
+| --- | --- | --- | --- | --- |
+| **Bun / Node** | `@syncular-v2/server-hono` | HTTP (`POST /sync`, segments, blobs) **+ WS realtime** (§8, host-driven upgrade) | any: `SqliteServerStorage`, `PostgresServerStorage`, memory | **Supported now** — the reference deployment; runs the full conformance catalog on both bindings. |
+| **Cloudflare Workers** | `@syncular-v2/server-workers` | HTTP binding via Hono (Workers-native) | `D1ServerStorage` (D1); R2-as-S3 for segments/blobs (§5.4 delegated presign) | **Supported now (HTTP)** — this rung. Realtime is a **designed-but-deferred** Durable Object follow-up (below). |
+| Raw Deno / edge-misc | — | — | — | **Not adapted** (policy below). |
+
+**The policy for "not adapted".** Untested ≠ unsupported forever. The core
+is runtime-neutral TS, so Deno/edge would very likely run it — but an adapter
+is only *supported* where the conformance catalog can run against it. We ship
+adapters for the runtimes where we run conformance (Bun/Node fully; Workers
+HTTP via the fetch-handler round-trip tests), and we do not claim runtimes we
+do not test. Deno is a plausible future adapter the day someone runs the
+catalog on it; until then it is neutral-core-friendly, not supported.
+
+**Workers realtime — the DO follow-up (designed, deferred).** SPEC §1.1's two
+bindings are two framings of one handler; an **HTTP-only deployment is fully
+conformant** (clients that cannot open the socket sync over `POST /sync`,
+identical semantics — a smaller complete deployment, not a degraded one). The
+realtime binding on Workers is a **Durable Object**: one DO class hosting the
+`RealtimeHub` per partition-shard (the DO id derived from the partition, so a
+partition's sockets and its commit fan-out are co-located and single-threaded
+— also the natural per-partition write serialization point the D1 storage
+wants); WebSocket **hibernation** so idle sockets don't bill wall time (the
+existing `RealtimeSession` is the per-connection state machine, driven from
+the hibernation callbacks); storage via the same **D1** binding so realtime
+rounds and `POST /sync` rounds share one commit log and one segment store;
+commit fan-out (§8.2) runs in-DO (no LISTEN/NOTIFY needed — writes and sockets
+are co-located). The session/hub/storage pieces already exist and are
+runtime-neutral, so the follow-up is mechanical: add the DO class, its
+`wrangler.toml` binding + migration, and the `/realtime` upgrade route. Full
+shape in `@syncular-v2/server-workers/README.md`.
+
+**Relay does not return (decision).** v1 shipped a *relay* — a bridge that let
+a self-hosted server forward realtime to a managed realtime service, because
+v1's realtime was a separate socketed subsystem the self-hosted core couldn't
+serve on its own. v2 has no such gap: realtime is the **second binding of the
+same handler** (§8.7, Direction decision 1 — the WS-native loop), so any host
+that runs the core serves realtime directly; multi-instance fanout is covered
+by **LISTEN/NOTIFY** on Postgres (below), and the Workers case is covered by
+the **DO design** (writes and sockets co-located per partition). Every job the
+relay did is now done by a binding of the core or by in-database fanout —
+reintroducing a relay would add a hop, a second protocol surface, and a
+managed dependency for zero capability the core lacks. So it is retired, not
+ported.
+
 ## Structured events (the ops seam)
 
 One optional interface, `SyncularServerEvents`, carries every

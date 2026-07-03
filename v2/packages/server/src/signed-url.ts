@@ -109,17 +109,22 @@ export interface SegmentTokenClaims {
 
 const encoder = new TextEncoder();
 
+// Runtime-neutral base64url (no `Buffer` — Workers/Deno/browser safe; TODO
+// §4.2): `btoa`/`atob` operate on binary strings, present in every runtime.
 function base64url(bytes: Uint8Array): string {
-  return Buffer.from(bytes)
-    .toString('base64')
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary)
     .replaceAll('+', '-')
     .replaceAll('/', '_')
     .replace(/=+$/, '');
 }
 
 function fromBase64url(text: string): Uint8Array {
-  const padded = text.replaceAll('-', '+').replaceAll('_', '/');
-  return new Uint8Array(Buffer.from(padded, 'base64'));
+  const binary = atob(text.replaceAll('-', '+').replaceAll('_', '/'));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
 
 async function hmac(

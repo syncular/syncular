@@ -42,7 +42,7 @@ import {
   EMPTY_PAYLOAD_SHA256,
   presignUrl,
   type SigV4Credentials,
-  sha256HexSync,
+  sha256Hex,
   signRequest,
 } from './sigv4';
 
@@ -71,6 +71,27 @@ export interface S3SegmentStoreConfig {
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const SEGMENT_ID_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const RECORD_META_HEADER = 'x-amz-meta-syncular-record';
+
+// Runtime-neutral base64url (TODO §4.2): `Buffer` is not present on
+// Cloudflare Workers without `nodejs_compat`, so the object-metadata record
+// header is (de)coded with `btoa`/`atob`, available in every runtime.
+function utf8ToBase64url(text: string): string {
+  let binary = '';
+  for (const byte of new TextEncoder().encode(text)) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary)
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replace(/=+$/, '');
+}
+
+function base64urlToUtf8(value: string): string {
+  const binary = atob(value.replaceAll('-', '+').replaceAll('_', '/'));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
 
 function recordToJson(record: SegmentRecord): string {
   return JSON.stringify(record);
@@ -159,7 +180,7 @@ export class S3SegmentStore implements SegmentStore {
     return `${this.#prefix}seg/${segmentId.replace(':', '/')}`;
   }
 
-  #findKeyFor(key: SegmentFindKey): string {
+  async #findKeyFor(key: SegmentFindKey): Promise<string> {
     const canonical = JSON.stringify([
       key.partition,
       key.table,
@@ -168,7 +189,7 @@ export class S3SegmentStore implements SegmentStore {
       key.scopeDigest,
       key.asOfCommitSeq,
     ]);
-    return `${this.#prefix}find/${sha256HexSync(canonical)}.json`;
+    return `${this.#prefix}find/${await sha256Hex(canonical)}.json`;
   }
 
   #urlFor(key: string): URL {
@@ -186,14 +207,14 @@ export class S3SegmentStore implements SegmentStore {
   ): Promise<Response | undefined> {
     const url = this.#urlFor(key);
     const body = options?.body;
-    const headers = signRequest({
+    const headers = await signRequest({
       method,
       url,
       region: this.#config.region,
       credentials: this.#credentials,
       nowMs: Date.now(),
       payloadHash:
-        body === undefined ? EMPTY_PAYLOAD_SHA256 : sha256HexSync(body),
+        body === undefined ? EMPTY_PAYLOAD_SHA256 : await sha256Hex(body),
       ...(options?.headers !== undefined ? { headers: options.headers } : {}),
     });
     const response = await fetch(url, {
@@ -232,17 +253,19 @@ export class S3SegmentStore implements SegmentStore {
       body: bytes,
       headers: {
         'content-type': 'application/octet-stream',
-        [RECORD_META_HEADER]: Buffer.from(recordJson, 'utf8').toString(
-          'base64url',
-        ),
+        [RECORD_META_HEADER]: utf8ToBase64url(recordJson),
       },
     });
     await response?.arrayBuffer();
     if (metadata.rowCursor === null) {
-      const pointer = await this.#request('PUT', this.#findKeyFor(metadata), {
-        body: new TextEncoder().encode(recordJson),
-        headers: { 'content-type': 'application/json' },
-      });
+      const pointer = await this.#request(
+        'PUT',
+        await this.#findKeyFor(metadata),
+        {
+          body: new TextEncoder().encode(recordJson),
+          headers: { 'content-type': 'application/json' },
+        },
+      );
       await pointer?.arrayBuffer();
     }
     return record;
@@ -261,10 +284,7 @@ export class S3SegmentStore implements SegmentStore {
         `S3SegmentStore: object for ${segmentId} lacks ${RECORD_META_HEADER}`,
       );
     }
-    const record = parseRecordJson(
-      Buffer.from(meta, 'base64url').toString('utf8'),
-      segmentId,
-    );
+    const record = parseRecordJson(base64urlToUtf8(meta), segmentId);
     return { record, bytes };
   }
 
@@ -272,7 +292,7 @@ export class S3SegmentStore implements SegmentStore {
     key: SegmentFindKey,
     nowMs: number,
   ): Promise<SegmentRecord | undefined> {
-    const response = await this.#request('GET', this.#findKeyFor(key));
+    const response = await this.#request('GET', await this.#findKeyFor(key));
     if (response === undefined) return undefined;
     const record = parseRecordJson(await response.text(), 'reuse pointer');
     if (
@@ -304,16 +324,16 @@ export class S3SegmentStore implements SegmentStore {
    * (`X-Amz-Date + X-Amz-Expires`). TTL SHOULD be ≤ 15 minutes (§5.4);
    * default 900 s.
    */
-  presignSegmentGet(
+  async presignSegmentGet(
     segmentId: string,
     options?: { readonly ttlSeconds?: number; readonly nowMs?: number },
-  ): SegmentUrlIssue {
+  ): Promise<SegmentUrlIssue> {
     if (!SEGMENT_ID_PATTERN.test(segmentId)) {
       throw new Error(`S3SegmentStore: malformed segmentId ${segmentId}`);
     }
     const ttlSeconds = options?.ttlSeconds ?? 900;
     const nowMs = options?.nowMs ?? Date.now();
-    const url = presignUrl({
+    const url = await presignUrl({
       url: this.#urlFor(this.objectKeyFor(segmentId)),
       region: this.#config.region,
       credentials: this.#credentials,

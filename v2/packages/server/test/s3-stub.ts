@@ -8,7 +8,7 @@
  */
 import {
   canonicalRequest,
-  sha256HexSync,
+  sha256Hex,
   sigV4Signature,
   stringToSign,
   UNSIGNED_PAYLOAD,
@@ -57,12 +57,12 @@ function parseAmzDate(amzDate: string): number | undefined {
 }
 
 /** Verify either auth scheme; returns an error Response or undefined (ok). */
-function authorize(
+async function authorize(
   req: Request,
   url: URL,
   bodyHash: string,
   config: S3StubConfig,
-): Response | undefined {
+): Promise<Response | undefined> {
   const scopeSuffix = `/${config.region}/s3/aws4_request`;
 
   const authHeader = req.headers.get('authorization');
@@ -107,12 +107,16 @@ function authorize(
       headers,
       payloadHash,
     });
-    const expected = sigV4Signature({
+    const expected = await sigV4Signature({
       secretAccessKey: config.secretAccessKey,
       dateStamp,
       region: config.region,
       service: 's3',
-      stringToSign: stringToSign(amzDate, `${dateStamp}${scopeSuffix}`, text),
+      stringToSign: await stringToSign(
+        amzDate,
+        `${dateStamp}${scopeSuffix}`,
+        text,
+      ),
     });
     if (signature !== expected) {
       return xmlError(403, 'SignatureDoesNotMatch', 'signature mismatch');
@@ -164,12 +168,16 @@ function authorize(
       headers,
       payloadHash: UNSIGNED_PAYLOAD,
     });
-    const expected = sigV4Signature({
+    const expected = await sigV4Signature({
       secretAccessKey: config.secretAccessKey,
       dateStamp,
       region: config.region,
       service: 's3',
-      stringToSign: stringToSign(amzDate, `${dateStamp}${scopeSuffix}`, text),
+      stringToSign: await stringToSign(
+        amzDate,
+        `${dateStamp}${scopeSuffix}`,
+        text,
+      ),
     });
     if (signature !== expected) {
       return xmlError(403, 'SignatureDoesNotMatch', 'signature mismatch');
@@ -188,7 +196,7 @@ export function startS3Stub(config: S3StubConfig): S3Stub {
     async fetch(req) {
       const url = new URL(req.url);
       const body = new Uint8Array(await req.arrayBuffer());
-      const denial = authorize(req, url, sha256HexSync(body), config);
+      const denial = await authorize(req, url, await sha256Hex(body), config);
       if (denial !== undefined) return denial;
 
       const bucketPrefix = `/${config.bucket}/`;
@@ -209,7 +217,7 @@ export function startS3Stub(config: S3StubConfig): S3Stub {
           objects.set(key, { bytes: body, headers });
           return new Response(null, {
             status: 200,
-            headers: { etag: `"${sha256HexSync(body)}"` },
+            headers: { etag: `"${await sha256Hex(body)}"` },
           });
         }
         case 'GET':

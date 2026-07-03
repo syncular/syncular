@@ -105,10 +105,13 @@ describe('presigned GET (§5.4 delegated presign)', () => {
     const store = makeStore();
     const bytes = new Uint8Array([11, 22, 33, 44, 55, 66]);
     const record = await store.put(META, bytes, clock.ms);
-    const { url, urlExpiresAtMs } = store.presignSegmentGet(record.segmentId, {
-      ttlSeconds: 600,
-      nowMs: clock.ms,
-    });
+    const { url, urlExpiresAtMs } = await store.presignSegmentGet(
+      record.segmentId,
+      {
+        ttlSeconds: 600,
+        nowMs: clock.ms,
+      },
+    );
     expect(urlExpiresAtMs).toBe((Math.floor(clock.ms / 1000) + 600) * 1000);
     // §5.4 equivalence: the signed object key embeds the segmentId.
     expect(new URL(url).pathname).toContain(record.segmentId.replace(':', '/'));
@@ -123,7 +126,7 @@ describe('presigned GET (§5.4 delegated presign)', () => {
   test('expiry is enforced by the provider clock', async () => {
     const store = makeStore();
     const record = await store.put(META, new Uint8Array([1, 2, 3]), clock.ms);
-    const { url } = store.presignSegmentGet(record.segmentId, {
+    const { url } = await store.presignSegmentGet(record.segmentId, {
       ttlSeconds: 600,
       nowMs: clock.ms,
     });
@@ -146,11 +149,13 @@ describe('presigned GET (§5.4 delegated presign)', () => {
       new Uint8Array([2]),
       clock.ms,
     );
-    const { url } = store.presignSegmentGet(a.segmentId, { nowMs: clock.ms });
+    const { url } = await store.presignSegmentGet(a.segmentId, {
+      nowMs: clock.ms,
+    });
 
     const swappedKey = new URL(url);
     swappedKey.pathname = new URL(
-      store.presignSegmentGet(b.segmentId, { nowMs: clock.ms }).url,
+      (await store.presignSegmentGet(b.segmentId, { nowMs: clock.ms })).url,
     ).pathname;
     expect((await fetch(swappedKey)).status).toBe(403);
 

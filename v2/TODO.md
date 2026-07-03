@@ -316,10 +316,56 @@ the old tree archived.
       no scan-before-LIMIT), LISTEN/NOTIFY multi-instance fanout as the
       primitive, and a dedicated bench lane the day it lands (v1's
       production wound was exactly here).
-- [ ] **Runtime adapters**: keep the core runtime-neutral; decide the
-      supported set beyond Hono/Bun (Cloudflare Workers + D1/DO is the
-      likely ask) and what explicitly does NOT get an adapter. Relay:
-      decide if it returns at all.
+- [x] **Runtime adapters**: LANDED 2026-07-03 — the deployment matrix is
+      pinned in packages/server/README.md. **Supported now**: Bun/Node via
+      `@syncular-v2/server-hono` (HTTP + WS realtime, all storages);
+      **Cloudflare Workers** via the new `@syncular-v2/server-workers`
+      (`createWorkersFetchHandler` reusing the Workers-native hono routing —
+      HTTP binding only) over the new `D1ServerStorage` (D1) + R2-as-S3
+      segments/blobs. Workers **realtime is a designed-but-deferred Durable
+      Object follow-up** (one DO per partition-shard hosting the RealtimeHub,
+      WS hibernation, storage via D1, in-DO fan-out — the session/hub/storage
+      pieces already exist and are runtime-neutral, so it's mechanical; shape
+      sketched in both READMEs). **Explicitly NOT adapted**: raw Deno/edge-misc
+      — policy: the core is runtime-neutral TS, adapters are shipped only where
+      the conformance catalog runs (Bun/Node fully; Workers HTTP via the
+      fetch-handler round-trips). **Relay does NOT return** (rationale in the
+      README): v1's relay bridged self-hosted servers to managed realtime
+      because v1 realtime was a separate subsystem; v2 realtime is the second
+      binding of the same handler (§8.7), multi-instance is LISTEN/NOTIFY, and
+      Workers is the DO design — every relay job is covered by a core binding or
+      in-DB fanout. **Runtime-neutrality fixes** (core): SigV4 + all hashing
+      moved to Web Crypto (was `node:crypto`, now async — the presign seam
+      already accepted a Promise); base64/base64url moved to `btoa`/`atob`
+      (was `Buffer`) in `signed-url`/`s3-segment-store`/the shared dialect; the
+      sqlite-image builder is injected via `SyncServerConfig.sqliteImageBuilder`
+      (Bun default via dynamic import so `bun:sqlite` is never a static dep of
+      the pull path; Workers omits it → rows lane, a §5.3 support floor); the
+      four Bun-only SQLite stores (`SqliteServerStorage`/`SqliteSegmentStore`/
+      `SqliteBlobStore`/`SqliteLeaseStore`) split into their own modules so the
+      neutral `segment-store`/`blob-store`/`lease-store` carry only interfaces +
+      Memory stores. Enforced by `test/runtime-neutrality.test.ts` — a static
+      import-graph scan from the neutral entries asserting no `bun:`/`node:`
+      import and no `Bun.`/`Buffer` global in the reachable core.
+      **`D1ServerStorage`**: executor-seam storage over the D1
+      `prepare/bind/all/batch` API, sharing the SQLite DDL + value codecs with
+      `SqliteServerStorage` via a new `sqlite-dialect.ts` (the sync/async split
+      makes sharing *execution* ugly, so the two classes are a clean parallel
+      implementation against the storage contract, sharing only the SQL text +
+      codecs — decided + justified in the dialect header). D1 has no interactive
+      transaction: reads autocommit, writes buffer + flush as one atomic
+      `db.batch()` at commit (§6.4), with a read-your-own-writes overlay.
+      Hermetic tests: a bun:sqlite-backed **D1 double** (documented fidelity
+      limits: sync-under-the-hood, no replica lag, BLOB→ArrayBuffer normalized,
+      no EXPLAIN lane) runs the full shared storage contract (45/45).
+      **`packages/server-workers`**: the Workers entry + a `wrangler.toml`
+      example + README; tests invoke the fetch handler directly with `Request`
+      objects over the D1 double + memory stores — full push/pull/segment/blob
+      round-trips through the Workers entry, bytes built with the reference
+      codec (loopback over fetch), 5/5. Conformance ts-server-on-D1 driver
+      variant SKIPPED (stretch): the driver's `SqliteServerStorage`/raw-SQL
+      coupling would need conformance edits (out of territory); the
+      fetch-handler round-trips are the bar. Gates green (below).
 - [ ] **Segment store backends**: S3/R2 for production segment storage +
       the CDN delivery story end-to-end.
 - [x] **Ops posture**: LANDED 2026-07-03 — events seam + pruning guidance

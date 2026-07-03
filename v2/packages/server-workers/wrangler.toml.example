@@ -1,0 +1,42 @@
+# Example wrangler config for a Syncular v2 Workers deployment (TODO §4.2).
+# Copy to `wrangler.toml` in your Worker project and fill in the ids.
+#
+# This deploys the HTTP binding only (POST /sync, GET /segments/:id,
+# PUT/GET /blobs/:id). Realtime (§8) is the Durable Object follow-up — see
+# packages/server-workers/README.md "Workers realtime — the DO follow-up".
+
+name = "syncular-sync"
+main = "src/worker.ts"
+compatibility_date = "2024-09-23"
+
+# --- D1: the server storage (D1ServerStorage) ------------------------------
+# Create with: wrangler d1 create syncular
+# Then apply the schema (see README): wrangler d1 migrations apply syncular
+[[d1_databases]]
+binding = "DB"                       # env.DB -> D1ServerStorage
+database_name = "syncular"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+# --- R2: durable segment + blob bytes (optional) ---------------------------
+# R2 speaks the S3 API, so segments/blobs use S3SegmentStore + s3PresignedUrls
+# (§5.4 delegated presign). The bucket binding is available as env.BUCKET if
+# you prefer the native R2 binding for a custom store; the reference wiring
+# uses the S3-compatible endpoint + an R2 access key (secrets below).
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "syncular-segments"
+
+# --- Secrets (set with `wrangler secret put NAME`) -------------------------
+# R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY  -> S3SegmentStore
+# SYNC_HMAC_KEY                                          -> native signed URLs (§5.4)
+# plus whatever your authenticate() needs (JWT secret, etc.)
+
+# --- Realtime (the DO follow-up; NOT wired by this rung) --------------------
+# When the Durable Object realtime host lands, add:
+# [[durable_objects.bindings]]
+# name = "REALTIME"
+# class_name = "SyncularRealtimeDO"
+#
+# [[migrations]]
+# tag = "v1"
+# new_classes = ["SyncularRealtimeDO"]

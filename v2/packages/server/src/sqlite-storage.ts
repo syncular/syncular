@@ -7,9 +7,18 @@
  * match against the stored scope map — never a log scan.
  */
 import { Database } from 'bun:sqlite';
-import type { PushOperationResult } from '@syncular-v2/core';
 import { syncError } from './errors';
 import { matchesEffective } from './scopes';
+import {
+  deserializePushResult,
+  placeholders,
+  SQLITE_DDL,
+  type SqliteChangeRecord,
+  type SqliteRowRecord,
+  serializePushResult,
+  toStoredChange,
+  toStoredRow,
+} from './sqlite-dialect';
 import type {
   ClientCursorInfo,
   ClientRecord,
@@ -23,188 +32,10 @@ import type {
   ScopeCommitActivity,
   ServerStorage,
   StorageTransaction,
-  StoredChange,
   StoredCommit,
   StoredPushResult,
   StoredRow,
 } from './storage';
-
-const DDL = `
-CREATE TABLE IF NOT EXISTS sync_partitions(
-  partition TEXT PRIMARY KEY,
-  max_commit_seq INTEGER NOT NULL DEFAULT 0,
-  horizon_seq INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS sync_rows(
-  partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL,
-  server_version INTEGER NOT NULL, scopes TEXT NOT NULL, payload BLOB NOT NULL,
-  PRIMARY KEY(partition, tbl, row_id)
-);
-CREATE TABLE IF NOT EXISTS sync_row_scopes(
-  partition TEXT NOT NULL, tbl TEXT NOT NULL,
-  var TEXT NOT NULL, value TEXT NOT NULL, row_id TEXT NOT NULL,
-  PRIMARY KEY(partition, tbl, var, value, row_id)
-);
-CREATE TABLE IF NOT EXISTS sync_commits(
-  partition TEXT NOT NULL, commit_seq INTEGER NOT NULL,
-  client_id TEXT NOT NULL, client_commit_id TEXT NOT NULL,
-  actor_id TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
-  PRIMARY KEY(partition, commit_seq)
-);
-CREATE TABLE IF NOT EXISTS sync_changes(
-  partition TEXT NOT NULL, commit_seq INTEGER NOT NULL, idx INTEGER NOT NULL,
-  tbl TEXT NOT NULL, row_id TEXT NOT NULL, op INTEGER NOT NULL,
-  row_version INTEGER, scopes TEXT NOT NULL, payload BLOB,
-  PRIMARY KEY(partition, commit_seq, idx)
-);
-CREATE TABLE IF NOT EXISTS sync_change_scopes(
-  partition TEXT NOT NULL, tbl TEXT NOT NULL,
-  var TEXT NOT NULL, value TEXT NOT NULL, commit_seq INTEGER NOT NULL,
-  PRIMARY KEY(partition, tbl, var, value, commit_seq)
-);
-CREATE TABLE IF NOT EXISTS sync_push_results(
-  partition TEXT NOT NULL, client_id TEXT NOT NULL,
-  client_commit_id TEXT NOT NULL, result TEXT NOT NULL,
-  PRIMARY KEY(partition, client_id, client_commit_id)
-);
-CREATE TABLE IF NOT EXISTS sync_clients(
-  partition TEXT NOT NULL, client_id TEXT NOT NULL, actor_id TEXT NOT NULL,
-  cursor INTEGER NOT NULL, subscriptions TEXT NOT NULL,
-  updated_at_ms INTEGER NOT NULL,
-  PRIMARY KEY(partition, client_id)
-);
-CREATE TABLE IF NOT EXISTS sync_blob_refs(
-  partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL,
-  blob_id TEXT NOT NULL,
-  PRIMARY KEY(partition, tbl, row_id, blob_id)
-);
-CREATE INDEX IF NOT EXISTS sync_blob_refs_by_blob
-  ON sync_blob_refs(partition, blob_id);
-`;
-
-function toBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString('base64');
-}
-
-function fromBase64(text: string): Uint8Array {
-  return new Uint8Array(Buffer.from(text, 'base64'));
-}
-
-interface SerializedResult {
-  opIndex: number;
-  status: string;
-  code?: string;
-  message?: string;
-  serverVersion?: number;
-  serverRow?: string;
-  retryable?: boolean;
-}
-
-function serializePushResult(result: StoredPushResult): string {
-  return JSON.stringify({
-    status: result.status,
-    ...(result.commitSeq !== undefined ? { commitSeq: result.commitSeq } : {}),
-    results: result.results.map((record) => {
-      if (record.status === 'conflict') {
-        return {
-          opIndex: record.opIndex,
-          status: record.status,
-          code: record.code,
-          message: record.message,
-          serverVersion: record.serverVersion,
-          serverRow: toBase64(record.serverRow),
-        };
-      }
-      if (record.status === 'error') {
-        return {
-          opIndex: record.opIndex,
-          status: record.status,
-          code: record.code,
-          message: record.message,
-          retryable: record.retryable,
-        };
-      }
-      return { opIndex: record.opIndex, status: record.status };
-    }),
-  });
-}
-
-function deserializePushResult(text: string): StoredPushResult {
-  const parsed = JSON.parse(text) as {
-    status: 'applied' | 'rejected';
-    commitSeq?: number;
-    results: SerializedResult[];
-  };
-  const results: PushOperationResult[] = parsed.results.map((record) => {
-    if (record.status === 'conflict') {
-      return {
-        opIndex: record.opIndex,
-        status: 'conflict',
-        code: record.code ?? '',
-        message: record.message ?? '',
-        serverVersion: record.serverVersion ?? 0,
-        serverRow: fromBase64(record.serverRow ?? ''),
-      };
-    }
-    if (record.status === 'error') {
-      return {
-        opIndex: record.opIndex,
-        status: 'error',
-        code: record.code ?? '',
-        message: record.message ?? '',
-        retryable: record.retryable ?? false,
-      };
-    }
-    return { opIndex: record.opIndex, status: 'applied' };
-  });
-  return {
-    status: parsed.status,
-    ...(parsed.commitSeq !== undefined ? { commitSeq: parsed.commitSeq } : {}),
-    results,
-  };
-}
-
-interface RowRecord {
-  row_id: string;
-  server_version: number;
-  scopes: string;
-  payload: Uint8Array;
-}
-
-interface ChangeRecord {
-  tbl: string;
-  row_id: string;
-  op: number;
-  row_version: number | null;
-  scopes: string;
-  payload: Uint8Array | null;
-}
-
-function toStoredRow(record: RowRecord): StoredRow {
-  return {
-    rowId: record.row_id,
-    serverVersion: record.server_version,
-    scopes: JSON.parse(record.scopes) as Record<string, string>,
-    payload: new Uint8Array(record.payload),
-  };
-}
-
-function toStoredChange(record: ChangeRecord): StoredChange {
-  return {
-    table: record.tbl,
-    rowId: record.row_id,
-    op: record.op === 1 ? 'upsert' : 'delete',
-    ...(record.row_version !== null ? { rowVersion: record.row_version } : {}),
-    scopes: JSON.parse(record.scopes) as Record<string, string>,
-    ...(record.payload !== null
-      ? { payload: new Uint8Array(record.payload) }
-      : {}),
-  };
-}
-
-function placeholders(count: number): string {
-  return new Array(count).fill('?').join(',');
-}
 
 class SqliteTransaction implements StorageTransaction {
   #storage: SqliteServerStorage;
@@ -349,7 +180,7 @@ export class SqliteServerStorage implements ServerStorage {
 
   constructor(db: Database | string = ':memory:') {
     this.db = typeof db === 'string' ? new Database(db) : db;
-    this.db.exec(DDL);
+    this.db.exec(SQLITE_DDL);
   }
 
   async begin(partition: string): Promise<StorageTransaction> {
@@ -444,7 +275,7 @@ export class SqliteServerStorage implements ServerStorage {
     rowId: string,
   ): Promise<StoredRow | undefined> {
     const record = this.db
-      .query<RowRecord, [string, string, string]>(
+      .query<SqliteRowRecord, [string, string, string]>(
         'SELECT row_id, server_version, scopes, payload FROM sync_rows WHERE partition=? AND tbl=? AND row_id=?',
       )
       .get(partition, table, rowId);
@@ -514,7 +345,7 @@ export class SqliteServerStorage implements ServerStorage {
           .get(partition, candidate.commit_seq);
         if (meta === null) continue;
         const changeRecords = this.db
-          .query<ChangeRecord, [string, number, string]>(
+          .query<SqliteChangeRecord, [string, number, string]>(
             'SELECT tbl, row_id, op, row_version, scopes, payload FROM sync_changes WHERE partition=? AND commit_seq=? AND tbl=? ORDER BY idx',
           )
           .all(partition, candidate.commit_seq, query.table);

@@ -37,8 +37,8 @@ describe('SigV4 primitives', () => {
 });
 
 describe('SigV4 golden vectors (AWS docs, examplebucket)', () => {
-  test('header-authenticated GET signs to the published signature', () => {
-    const headers = signRequest({
+  test('header-authenticated GET signs to the published signature', async () => {
+    const headers = await signRequest({
       method: 'GET',
       url: new URL('https://examplebucket.s3.amazonaws.com/test.txt'),
       region: 'us-east-1',
@@ -56,8 +56,8 @@ describe('SigV4 golden vectors (AWS docs, examplebucket)', () => {
     expect(headers['x-amz-content-sha256']).toBe(EMPTY_PAYLOAD_SHA256);
   });
 
-  test('presigned GET signs to the published signature', () => {
-    const url = presignUrl({
+  test('presigned GET signs to the published signature', async () => {
+    const url = await presignUrl({
       url: new URL('https://examplebucket.s3.amazonaws.com/test.txt'),
       region: 'us-east-1',
       credentials: AWS_EXAMPLE_CREDENTIALS,

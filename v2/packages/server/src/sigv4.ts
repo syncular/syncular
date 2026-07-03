@@ -4,11 +4,17 @@
  * per the dependency-light doctrine (REVISE): SigV4 is small and
  * well-specified, so no SDK.
  *
+ * Runtime-neutral (TODO §4.2): the crypto primitives are Web Crypto
+ * (`crypto.subtle`), not `node:crypto`, so this module runs unchanged on
+ * Cloudflare Workers / Deno / browsers as well as Bun/Node. `crypto.subtle`
+ * is async, so signing is async throughout; the `S3SegmentStore` consumers
+ * are already async, and the `DelegatedPresignConfig.presign` seam already
+ * accepts a `Promise<SegmentUrlIssue>`.
+ *
  * Pinned by the published AWS SigV4 example vectors in
  * `test/sigv4.test.ts`; the hermetic S3 stub re-derives every signature
  * from the incoming request, so an asymmetric signing bug fails tests.
  */
-import { createHash, createHmac } from 'node:crypto';
 
 export interface SigV4Credentials {
   readonly accessKeyId: string;
@@ -24,12 +30,45 @@ export const EMPTY_PAYLOAD_SHA256 =
 /** The presigned-URL payload sentinel (S3 presigns never hash the body). */
 export const UNSIGNED_PAYLOAD = 'UNSIGNED-PAYLOAD';
 
-export function sha256HexSync(data: Uint8Array | string): string {
-  return createHash('sha256').update(data).digest('hex');
+const textEncoder = new TextEncoder();
+
+function toBytes(data: Uint8Array | string): Uint8Array {
+  return typeof data === 'string' ? textEncoder.encode(data) : data;
 }
 
-function hmacSha256(key: Uint8Array | string, data: string): Buffer {
-  return createHmac('sha256', key).update(data).digest();
+function toHex(bytes: Uint8Array): string {
+  let out = '';
+  for (const b of bytes) out += b.toString(16).padStart(2, '0');
+  return out;
+}
+
+/** Web Crypto wants an `ArrayBuffer`; slice() gives an owned, exact-length one. */
+function bufferOf(bytes: Uint8Array): ArrayBuffer {
+  return bytes.slice().buffer as ArrayBuffer;
+}
+
+export async function sha256Hex(data: Uint8Array | string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', bufferOf(toBytes(data)));
+  return toHex(new Uint8Array(digest));
+}
+
+async function hmacSha256(
+  key: Uint8Array | string,
+  data: string,
+): Promise<Uint8Array> {
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    bufferOf(toBytes(key)),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const mac = await crypto.subtle.sign(
+    'HMAC',
+    cryptoKey,
+    bufferOf(toBytes(data)),
+  );
+  return new Uint8Array(mac);
 }
 
 /**
@@ -101,26 +140,26 @@ export function canonicalRequest(args: CanonicalRequestArgs): {
   return { text, signedHeaders };
 }
 
-export function stringToSign(
+export async function stringToSign(
   amzDate: string,
   scope: string,
   canonicalRequestText: string,
-): string {
-  return `AWS4-HMAC-SHA256\n${amzDate}\n${scope}\n${sha256HexSync(canonicalRequestText)}`;
+): Promise<string> {
+  return `AWS4-HMAC-SHA256\n${amzDate}\n${scope}\n${await sha256Hex(canonicalRequestText)}`;
 }
 
-export function sigV4Signature(args: {
+export async function sigV4Signature(args: {
   readonly secretAccessKey: string;
   readonly dateStamp: string;
   readonly region: string;
   readonly service: string;
   readonly stringToSign: string;
-}): string {
-  const kDate = hmacSha256(`AWS4${args.secretAccessKey}`, args.dateStamp);
-  const kRegion = hmacSha256(kDate, args.region);
-  const kService = hmacSha256(kRegion, args.service);
-  const kSigning = hmacSha256(kService, 'aws4_request');
-  return createHmac('sha256', kSigning).update(args.stringToSign).digest('hex');
+}): Promise<string> {
+  const kDate = await hmacSha256(`AWS4${args.secretAccessKey}`, args.dateStamp);
+  const kRegion = await hmacSha256(kDate, args.region);
+  const kService = await hmacSha256(kRegion, args.service);
+  const kSigning = await hmacSha256(kService, 'aws4_request');
+  return toHex(await hmacSha256(kSigning, args.stringToSign));
 }
 
 export interface SignRequestArgs {
@@ -144,7 +183,9 @@ export interface SignRequestArgs {
  * and `authorization`. `host` is signed but not returned — fetch derives
  * it from the URL.
  */
-export function signRequest(args: SignRequestArgs): Record<string, string> {
+export async function signRequest(
+  args: SignRequestArgs,
+): Promise<Record<string, string>> {
   const service = args.service ?? 's3';
   const { amzDate, dateStamp } = amzTimestamps(args.nowMs);
   const added: Record<string, string> = {
@@ -162,12 +203,12 @@ export function signRequest(args: SignRequestArgs): Record<string, string> {
     payloadHash: args.payloadHash,
   });
   const scope = `${dateStamp}/${args.region}/${service}/aws4_request`;
-  const signature = sigV4Signature({
+  const signature = await sigV4Signature({
     secretAccessKey: args.credentials.secretAccessKey,
     dateStamp,
     region: args.region,
     service,
-    stringToSign: stringToSign(amzDate, scope, text),
+    stringToSign: await stringToSign(amzDate, scope, text),
   });
   return {
     ...args.headers,
@@ -190,7 +231,7 @@ export interface PresignArgs {
 }
 
 /** Query-authenticated (presigned) URL; only the `host` header is signed. */
-export function presignUrl(args: PresignArgs): URL {
+export async function presignUrl(args: PresignArgs): Promise<URL> {
   const service = args.service ?? 's3';
   const method = args.method ?? 'GET';
   const { amzDate, dateStamp } = amzTimestamps(args.nowMs);
@@ -214,12 +255,12 @@ export function presignUrl(args: PresignArgs): URL {
     headers: { host: url.host },
     payloadHash: UNSIGNED_PAYLOAD,
   });
-  const signature = sigV4Signature({
+  const signature = await sigV4Signature({
     secretAccessKey: args.credentials.secretAccessKey,
     dateStamp,
     region: args.region,
     service,
-    stringToSign: stringToSign(amzDate, scope, text),
+    stringToSign: await stringToSign(amzDate, scope, text),
   });
   url.searchParams.set('X-Amz-Signature', signature);
   return url;
