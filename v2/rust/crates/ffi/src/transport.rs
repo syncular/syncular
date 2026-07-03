@@ -1,0 +1,476 @@
+//! The transport the FFI core OWNS.
+//!
+//! Two shapes behind one `HostTransport`:
+//!
+//! - `Null` (the dependency-lean default build): every network op fails loudly
+//!   with `transport.unavailable`. Client-local commands (create, subscribe,
+//!   mutate, readRows, conflicts, …) still run — enough for the C smoke test
+//!   and pure-logic tests, with zero HTTP/WS dependency compiled in.
+//! - `Native` (the `native-transport` feature): a real HTTP + WS client the
+//!   core drives itself, because a native app has no host loop to invert
+//!   transport into (unlike the conformance shim). `ureq` for blocking HTTP,
+//!   `tungstenite` for the WS socket; a reader thread buffers inbound frames.
+//!
+//! Inbound realtime frames land in a shared queue the FFI drains after each
+//! command via [`HostTransport::take_inbound`].
+
+use std::sync::{Arc, Mutex};
+
+use syncular_client::{SegmentRequest, Transport, TransportError};
+
+use crate::EventQueue;
+
+/// One inbound realtime frame buffered for the client's `on_realtime_*`.
+pub enum Inbound {
+    Text(String),
+    Binary(Vec<u8>),
+}
+
+/// The shared inbound buffer the WS reader thread fills and the command path
+/// drains. Separate from the event queue: raw frames go here, derived events
+/// go to the `EventQueue`.
+#[derive(Default)]
+pub struct InboundBuffer {
+    frames: Mutex<Vec<Inbound>>,
+}
+
+impl InboundBuffer {
+    pub fn push(&self, frame: Inbound) {
+        self.frames.lock().expect("inbound lock").push(frame);
+    }
+    fn take(&self) -> Vec<Inbound> {
+        std::mem::take(&mut *self.frames.lock().expect("inbound lock"))
+    }
+}
+
+pub enum HostTransport {
+    /// No network: client-local commands only (dependency-lean default).
+    Null {
+        signed_urls: bool,
+        inbound: Arc<InboundBuffer>,
+    },
+    #[cfg(feature = "native-transport")]
+    Native(native::NativeTransport),
+}
+
+impl HostTransport {
+    /// Build the transport from the `new` config. `{}` (or no `baseUrl`) →
+    /// `Null`; a `baseUrl` under the `native-transport` feature → `Native`.
+    pub(crate) fn from_config(
+        config: &serde_json::Value,
+        queue: Arc<EventQueue>,
+    ) -> Result<Self, String> {
+        let _ = &queue;
+        #[cfg(feature = "native-transport")]
+        {
+            if let Some(base_url) = config.get("baseUrl").and_then(|v| v.as_str()) {
+                return Ok(HostTransport::Native(native::NativeTransport::new(
+                    base_url, config,
+                )?));
+            }
+        }
+        #[cfg(not(feature = "native-transport"))]
+        {
+            if config.get("baseUrl").is_some() {
+                return Err(
+                    "this build has no native transport (rebuild with --features native-transport)"
+                        .to_owned(),
+                );
+            }
+        }
+        Ok(HostTransport::Null {
+            signed_urls: false,
+            inbound: Arc::new(InboundBuffer::default()),
+        })
+    }
+
+    pub(crate) fn set_signed_urls(&mut self, value: bool) {
+        match self {
+            HostTransport::Null { signed_urls, .. } => *signed_urls = value,
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.signed_urls = value,
+        }
+    }
+
+    /// Drain the inbound realtime frames buffered since the last call.
+    pub(crate) fn take_inbound(&mut self) -> Vec<Inbound> {
+        match self {
+            HostTransport::Null { inbound, .. } => inbound.take(),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.inbound.take(),
+        }
+    }
+
+    /// Release the socket/reader thread. Idempotent.
+    pub(crate) fn shutdown(&mut self) {
+        match self {
+            HostTransport::Null { .. } => {}
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.shutdown(),
+        }
+    }
+}
+
+fn unavailable(op: &str) -> TransportError {
+    TransportError::new(
+        "transport.unavailable",
+        format!("{op} needs the native transport (build with --features native-transport)"),
+    )
+}
+
+// Without the native transport the `Null` arm ignores every request payload;
+// the params are only consumed by the feature-gated `Native` arm.
+#[cfg_attr(not(feature = "native-transport"), allow(unused_variables))]
+impl Transport for HostTransport {
+    fn sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+        match self {
+            HostTransport::Null { .. } => Err(unavailable("sync")),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.sync(request),
+        }
+    }
+
+    fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+        match self {
+            HostTransport::Null { .. } => Err(unavailable("realtimeSync")),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.realtime_sync(request),
+        }
+    }
+
+    fn download_segment(&mut self, request: &SegmentRequest) -> Result<Vec<u8>, TransportError> {
+        match self {
+            HostTransport::Null { .. } => Err(unavailable("downloadSegment")),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.download_segment(request),
+        }
+    }
+
+    fn supports_url_fetch(&self) -> bool {
+        match self {
+            HostTransport::Null { signed_urls, .. } => *signed_urls,
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.signed_urls,
+        }
+    }
+
+    fn fetch_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+        match self {
+            HostTransport::Null { .. } => Err(unavailable("fetchUrl")),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.fetch_url(url),
+        }
+    }
+
+    fn blob_upload(
+        &mut self,
+        blob_id: &str,
+        bytes: &[u8],
+        media_type: Option<&str>,
+    ) -> Result<(), TransportError> {
+        match self {
+            HostTransport::Null { .. } => Err(unavailable("blobUpload")),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.blob_upload(blob_id, bytes, media_type),
+        }
+    }
+
+    fn blob_download(&mut self, blob_id: &str) -> Result<Vec<u8>, TransportError> {
+        match self {
+            HostTransport::Null { .. } => Err(unavailable("blobDownload")),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.blob_download(blob_id),
+        }
+    }
+
+    fn realtime_connect(&mut self) -> Result<(), TransportError> {
+        match self {
+            HostTransport::Null { .. } => Err(unavailable("realtimeConnect")),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.realtime_connect(),
+        }
+    }
+
+    fn realtime_send(&mut self, text: &str) -> Result<(), TransportError> {
+        match self {
+            HostTransport::Null { .. } => Err(unavailable("realtimeSend")),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.realtime_send(text),
+        }
+    }
+
+    fn realtime_close(&mut self) -> Result<(), TransportError> {
+        match self {
+            HostTransport::Null { .. } => Ok(()),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.realtime_close(),
+        }
+    }
+}
+
+#[cfg(feature = "native-transport")]
+mod native {
+    //! The real native HTTP + WS transport. HTTP via `ureq` (blocking, no
+    //! async runtime — matches the client's synchronous API); WS via
+    //! `tungstenite`, with a reader thread pushing inbound frames into the
+    //! shared `InboundBuffer`.
+    //!
+    //! Wire contract mirrors the reference HTTP+WS bindings (§1.1, §8.7):
+    //! `POST {baseUrl}/sync` (application/octet-stream, `X-Syncular-Scopes`
+    //! not needed here — the native app authenticates via configured headers),
+    //! `GET {baseUrl}/segments/{id}`, `PUT/GET {baseUrl}/blobs/{id}`, and the
+    //! realtime socket at `{wsUrl}` (ws(s):// derived from baseUrl).
+
+    use std::io::Read;
+    use std::net::TcpStream;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::thread::JoinHandle;
+
+    use tungstenite::stream::MaybeTlsStream;
+    use tungstenite::{Message, WebSocket};
+
+    use super::{Inbound, InboundBuffer};
+    use syncular_client::{SegmentRequest, Transport, TransportError};
+
+    type Ws = WebSocket<MaybeTlsStream<TcpStream>>;
+
+    pub struct NativeTransport {
+        base_url: String,
+        ws_url: String,
+        /// Extra request headers (auth, actor/project ids) as (name, value).
+        headers: Vec<(String, String)>,
+        agent: ureq::Agent,
+        pub signed_urls: bool,
+        pub inbound: Arc<InboundBuffer>,
+        /// The live socket, shared with the reader thread for sends.
+        socket: Option<Arc<Mutex<Ws>>>,
+        reader: Option<JoinHandle<()>>,
+        reader_stop: Arc<AtomicBool>,
+    }
+
+    fn http_err(op: &str, e: impl std::fmt::Display) -> TransportError {
+        TransportError::new("transport.failed", format!("{op}: {e}"))
+    }
+
+    fn derive_ws_url(base_url: &str) -> String {
+        // {scheme}://host/path → ws(s)://host/path/realtime — the reference
+        // realtime endpoint sits alongside /sync under the mount (§8.7).
+        let ws = if let Some(rest) = base_url.strip_prefix("https://") {
+            format!("wss://{rest}")
+        } else if let Some(rest) = base_url.strip_prefix("http://") {
+            format!("ws://{rest}")
+        } else {
+            base_url.to_owned()
+        };
+        let trimmed = ws.trim_end_matches('/');
+        format!("{trimmed}/realtime")
+    }
+
+    impl NativeTransport {
+        pub fn new(base_url: &str, config: &serde_json::Value) -> Result<Self, String> {
+            let mut headers = Vec::new();
+            if let Some(map) = config.get("headers").and_then(|v| v.as_object()) {
+                for (k, v) in map {
+                    if let Some(s) = v.as_str() {
+                        headers.push((k.clone(), s.to_owned()));
+                    }
+                }
+            }
+            let ws_url = config
+                .get("wsUrl")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| derive_ws_url(base_url));
+            Ok(NativeTransport {
+                base_url: base_url.trim_end_matches('/').to_owned(),
+                ws_url,
+                headers,
+                agent: ureq::AgentBuilder::new().build(),
+                signed_urls: false,
+                inbound: Arc::new(InboundBuffer::default()),
+                socket: None,
+                reader: None,
+                reader_stop: Arc::new(AtomicBool::new(false)),
+            })
+        }
+
+        fn post_octet(&self, path: &str, body: &[u8]) -> Result<Vec<u8>, TransportError> {
+            let url = format!("{}{}", self.base_url, path);
+            let mut req = self
+                .agent
+                .post(&url)
+                .set("content-type", "application/octet-stream");
+            for (k, v) in &self.headers {
+                req = req.set(k, v);
+            }
+            let resp = req.send_bytes(body).map_err(|e| http_err("POST", e))?;
+            read_body(resp)
+        }
+
+        fn get_bytes(&self, url: &str, with_headers: bool) -> Result<Vec<u8>, TransportError> {
+            let mut req = self.agent.get(url);
+            if with_headers {
+                for (k, v) in &self.headers {
+                    req = req.set(k, v);
+                }
+            }
+            let resp = req.call().map_err(|e| http_err("GET", e))?;
+            read_body(resp)
+        }
+
+        pub fn shutdown(&mut self) {
+            self.reader_stop.store(true, Ordering::SeqCst);
+            if let Some(socket) = &self.socket {
+                if let Ok(mut ws) = socket.lock() {
+                    let _ = ws.close(None);
+                    let _ = ws.flush();
+                }
+            }
+            if let Some(handle) = self.reader.take() {
+                let _ = handle.join();
+            }
+            self.socket = None;
+        }
+    }
+
+    fn read_body(resp: ureq::Response) -> Result<Vec<u8>, TransportError> {
+        let mut buf = Vec::new();
+        resp.into_reader()
+            .read_to_end(&mut buf)
+            .map_err(|e| http_err("read", e))?;
+        Ok(buf)
+    }
+
+    impl Transport for NativeTransport {
+        fn sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.post_octet("/sync", request)
+        }
+
+        fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            // §8.7 socket round: send the request as one binary round-stream
+            // (channel tag 0x01) and reassemble the response chunks to END.
+            // Not wired in this first native cut — the round rides HTTP, which
+            // is protocol-equivalent (the transport seam is bytes-in/out); the
+            // socket carries wake-ups + presence. Falls back to POST /sync.
+            self.post_octet("/sync", request)
+        }
+
+        fn download_segment(
+            &mut self,
+            request: &SegmentRequest,
+        ) -> Result<Vec<u8>, TransportError> {
+            let id = request
+                .segment_id
+                .strip_prefix("sha256:")
+                .unwrap_or(&request.segment_id);
+            let url = format!("{}/segments/{}", self.base_url, id);
+            self.get_bytes(&url, true)
+        }
+
+        fn supports_url_fetch(&self) -> bool {
+            self.signed_urls
+        }
+
+        fn fetch_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+            // §5.4: the URL is the entire grant — no host credentials attached.
+            self.get_bytes(url, false)
+        }
+
+        fn blob_upload(
+            &mut self,
+            blob_id: &str,
+            bytes: &[u8],
+            media_type: Option<&str>,
+        ) -> Result<(), TransportError> {
+            let id = blob_id.strip_prefix("sha256:").unwrap_or(blob_id);
+            let url = format!("{}/blobs/{}", self.base_url, id);
+            let mut req = self.agent.put(&url).set(
+                "content-type",
+                media_type.unwrap_or("application/octet-stream"),
+            );
+            for (k, v) in &self.headers {
+                req = req.set(k, v);
+            }
+            req.send_bytes(bytes).map_err(|e| http_err("PUT blob", e))?;
+            Ok(())
+        }
+
+        fn blob_download(&mut self, blob_id: &str) -> Result<Vec<u8>, TransportError> {
+            let id = blob_id.strip_prefix("sha256:").unwrap_or(blob_id);
+            let url = format!("{}/blobs/{}", self.base_url, id);
+            self.get_bytes(&url, true).map_err(|mut e| {
+                // Preserve a blob.* semantics hint (§5.9.5) for the caller.
+                if e.code == "transport.failed" {
+                    e = TransportError::new("blob.not_found", e.message);
+                }
+                e
+            })
+        }
+
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            if self.socket.is_some() {
+                return Ok(());
+            }
+            let mut req = tungstenite::http::Request::builder()
+                .uri(&self.ws_url)
+                .method("GET");
+            for (k, v) in &self.headers {
+                req = req.header(k.as_str(), v.as_str());
+            }
+            let request = req
+                .body(())
+                .map_err(|e| TransportError::new("transport.failed", e.to_string()))?;
+            let (ws, _resp) = tungstenite::connect(request)
+                .map_err(|e| TransportError::new("transport.failed", format!("ws connect: {e}")))?;
+            let socket = Arc::new(Mutex::new(ws));
+            self.socket = Some(Arc::clone(&socket));
+            // Reader thread: push inbound frames into the shared buffer; the
+            // command path drains + acks them via realtime_send.
+            self.reader_stop.store(false, Ordering::SeqCst);
+            let inbound = Arc::clone(&self.inbound);
+            let stop = Arc::clone(&self.reader_stop);
+            let reader_socket = Arc::clone(&socket);
+            self.reader = Some(std::thread::spawn(move || loop {
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                let msg = {
+                    let mut ws = match reader_socket.lock() {
+                        Ok(ws) => ws,
+                        Err(_) => break,
+                    };
+                    ws.read()
+                };
+                match msg {
+                    Ok(Message::Text(text)) => inbound.push(Inbound::Text(text)),
+                    Ok(Message::Binary(bytes)) => inbound.push(Inbound::Binary(bytes)),
+                    Ok(Message::Close(_)) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }));
+            Ok(())
+        }
+
+        fn realtime_send(&mut self, text: &str) -> Result<(), TransportError> {
+            let Some(socket) = &self.socket else {
+                return Err(TransportError::new(
+                    "transport.failed",
+                    "realtime not connected",
+                ));
+            };
+            let mut ws = socket
+                .lock()
+                .map_err(|_| TransportError::new("transport.failed", "ws lock poisoned"))?;
+            ws.send(Message::Text(text.to_owned()))
+                .map_err(|e| http_err("ws send", e))?;
+            ws.flush().map_err(|e| http_err("ws flush", e))?;
+            Ok(())
+        }
+
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            self.shutdown();
+            Ok(())
+        }
+    }
+}

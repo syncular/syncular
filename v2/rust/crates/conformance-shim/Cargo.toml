@@ -11,6 +11,6 @@ name = "conformance-shim"
 path = "src/main.rs"
 
 [dependencies]
-ssp2 = { path = "../ssp2" }
 syncular-client = { path = "../client" }
+syncular-command = { path = "../command" }
 serde_json = "1"

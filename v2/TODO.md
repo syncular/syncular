@@ -300,9 +300,48 @@ the old tree archived.
       follow-up (raw SQL is the query API today; the hooks are query-string
       agnostic). demo-react SKIPPED (not cheap — a real browser app needs
       server + bundler wiring; the hooks + README carry the example).
-- [ ] **Multi-tab followers**: leader election via Web Locks exists as a
-      seam; build the follower path (BroadcastChannel proxy to the leader's
-      worker) — one socket, one DB, N tabs.
+- [x] **Multi-tab followers**: LANDED 2026-07-03 — REVISE B3's promise
+      delivered. `createSyncClientHandle({ multiTab: true })` makes a tab that
+      LOSES the Web Locks election a FOLLOWER instead of a dead not-leader
+      handle: it opens a `BroadcastChannel` to the leader and proxies the whole
+      logical API over a `req`/`res` protocol, while the leader fans its worker
+      events (invalidate / presence / conflict / sync-needed / synced /
+      upgrading) out to all followers — one sync loop, one WebSocket, one OPFS
+      DB, N tabs. The lock IS the exactly-one-core invariant (a worker is never
+      spawned without holding it, unchanged leader path). A leader `epoch`
+      (generation token) stamps every message: leaders ignore stale-epoch
+      requests, followers discard stale-epoch `res`/`event` — a late reply from
+      a dead leader can never be mistaken for a live one. On leader close its
+      lock releases; a follower already blocked on `acquire` wins, PROMOTES in
+      place (spawns the worker over the SAME OPFS db — server is the source, no
+      replay beyond the outbox the core holds — re-announces on `epoch+1`,
+      flips `role` → `'leader'`, fires `onRoleChange`); remaining followers
+      rebind. Calls during the handover gap queue with a deadline and flush to
+      the new leader; past it they fail loudly with `client.follower_timeout`
+      (never a silent hang; a bounded queue rejects rather than growing).
+      Presence semantics: all tabs share the leader's one connection, so a
+      device is exactly ONE presence peer — `(actorId, leaderClientId)`;
+      follower `setPresence` forwards to the leader's single publisher (honest
+      one-peer-per-device model, documented). `SyncClientHandle` grows `role`
+      / `onRoleChange`; the same handle object survives promotion so React
+      `SyncProvider` keeps a stable ref, and `normalizeClient` needs NO change
+      (a follower satisfies the identical async interface). New `multi-tab.ts`
+      (protocol + `LeaderBridge` + `FollowerLink`, root export); `worker-host`
+      refactored to a role-switchable handle over a shared worker-core spawner.
+      Tests: 6 (bun, `multi-tab.test.ts`) — follower full-API parity against a
+      real leader+worker+server, event fanout to two followers, leader close →
+      promotion → ex-follower converges + a late tab follows the new leader,
+      stale-epoch discard, call-timeout failure mode, single-tab regression
+      (multiTab off = unchanged `client.not_leader`) — the in-process lock +
+      real bun `BroadcastChannel` are exactly the two-tabs-one-process shape.
+      Demo: `?multitab` (leader/follower badge, promotion visible). No wire/
+      SPEC/server/Rust changes (this is entirely client-local platform surface).
+      Gates: `bun run check` (636 pass), `bench:ci` all budgets green (own JS
+      raw 65.4/66.0 KB — the follower code rides the root export with the worker
+      handle; +3.75 KB raw, fits the seam headroom the 66 KB re-pin left). Rust
+      untouched. Real cross-tab (Web Locks + BroadcastChannel are browser-only;
+      bun has no `navigator.locks`) is an orchestrator browser-verification
+      follow-up per the demo README.
 - [x] **Schema-bump flow** (Direction decision 3): LANDED 2026-07-03 —
       wipe-and-rebootstrap, outbox preserved and replayed; no client
       migration engine. SPEC §7.4 pins the client contract: a persisted
@@ -332,14 +371,62 @@ the old tree archived.
       guide-schema gains the full upgrade story. No wire-vector changes (the
       flow is entirely client-local; the marker and `upgrading` never cross the
       wire).
-- [ ] **Native packaging of the Rust client**: the POC crate becomes the
-      shipping native core — FFI surface, iOS/Android/JVM/desktop
-      packaging, lifecycle handling. Reuse v1's packaging *knowledge*, not
-      its code. Conformance via the existing driver shim (or a WIT/component
-      shim if the subprocess model gets in the way — Wasmtime option noted
-      2026-07-03).
-- [ ] **Tauri / React Native**: bindings over the native core; decide
-      whether RN uses the native core or the TS core per platform reality.
+- [x] **Native packaging of the Rust client**: LANDED 2026-07-03 — the POC
+      crate is now a shippable native core with a C ABI. A new
+      `syncular-command` crate factors the shim's JSON command router into ONE
+      transport-agnostic module consumed by BOTH the stdio conformance shim
+      AND the new `syncular-ffi` crate — so the FFI core inherits the
+      conformance-locked command surface (the shim is what tests it; rebuilt +
+      pairing re-run 68/68 after the refactor). `syncular-ffi` builds as
+      cdylib + staticlib (lib name `syncular`) exposing exactly five
+      `#[no_mangle]` functions — `syncular_client_new(config_json) -> handle`,
+      `syncular_client_command(handle, command_json) -> {result|error}` (the
+      full command set: create/subscribe/mutate/sync/syncUntilIdle/readRows/
+      blobs/conflicts/subscriptionState/schemaFloor/leaseState/setPresence/
+      presence/connectRealtime/recreateWithSchema/…), `syncular_client_poll_event
+      (handle, timeout_ms) -> event|null` (a lean blocking event queue derived
+      from the callback-free core's observable state: sync-needed/conflict/
+      rejection/presence/schema-floor/lease), `syncular_client_close`,
+      `syncular_free_string`; bytes ride as `{"$bytes":hex}`, JSI/TurboModule-
+      friendly. **Transport is OWNED natively** (a native app can't invert
+      transport to a host like the shim does): a `native-transport` feature
+      adds a real HTTP (ureq) + WS (tungstenite) transport — the leanest
+      maintained sync/blocking pair, no async runtime, behind the feature so
+      the shim/conformance build stays transport-inverted and dependency-lean
+      (measured macOS arm64 release stripped: 2.5 MB lean → 4.6 MB native).
+      Hand-written `rust/ffi.h` (dependency-free), a `header_matches_symbols`
+      test asserting the header ⇄ exported-symbol set via `nm`. Packaging:
+      `rust/scripts/build-native.sh` — apple (macOS arm64 dylib + iOS device/
+      sim → `Syncular.xcframework`, gated on the iOS SDKs being locatable),
+      android (arm64-v8a + x86_64 .so via cargo-ndk, detect+skip), desktop host
+      cdylib, linux/windows cross libs; each target builds only if its
+      toolchain exists (detect + skip + summary table with sizes). Reuses v1's
+      packaging KNOWLEDGE (apple xcframework / android jniLibs / JVM libs), NOT
+      its boltffi/UniFFI machinery — v2 is a hand-written C ABI. On THIS machine
+      (macOS arm64, CLT only): desktop + mac dylib built (5.2 MB w/ transport),
+      iOS slices skipped (full-Xcode SDKs absent), android/cross skipped
+      (no toolchains) — all reported cleanly. C smoke (`rust/ffi-smoke/main.c`
+      + `run.sh`): links the dylib, runs new→create→subscribe→mutate→readRows→
+      subscriptionState→poll_event→close, PASSED. Gates: `cargo fmt --check` +
+      `cargo clippy --all-targets -D warnings` (both feature sets) + `cargo
+      test` (10 FFI/client tests) green; `bun run check` untouched (636 pass,
+      Rust-only round); fresh shim + Rust pairing 68/68.
+- [x] **Tauri / React Native** (§3.5 DECISION): DECIDED 2026-07-03, written
+      into `rust/crates/ffi/README.md`. **Tauri = the client crate DIRECTLY,
+      no FFI** — a Tauri app is a Rust host, so it depends on `syncular-client`
+      in-process and owns transport like the FFI's native lane; a thin
+      `tauri-plugin-syncular` crate is a post-done nicety, not a blocker (the
+      command-JSON shape already maps onto `invoke`). **React Native = the FFI
+      surface via a JSI/TurboModule, over the NATIVE core, NOT the TS core** —
+      Hermes lacks OPFS/sqlite-wasm that the TS persistent path needs, so the
+      honest RN path is this crate's native core (rusqlite on device, HTTP+WS
+      owned in Rust) bridged by a thin TurboModule (the surface is already
+      JSON-command-shaped: `command_json` in, `{result|error}` out, bytes as
+      `{"$bytes":hex}`, `poll_event` → RN event emitter); a NitroModules/JSI
+      zero-copy wrapper is the follow-up. **Kotlin/Swift idiomatic wrappers are
+      post-done** — the command surface was designed for them. The bindings
+      themselves (a real Tauri app / an RN TurboModule package) stay follow-ups;
+      this round pins the decision + ships the C ABI they build on.
 
 ## 4. Server breadth
 
