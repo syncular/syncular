@@ -28,3 +28,7 @@ export {
 } from './use-sync-query';
 export { type SyncStatus, useSyncStatus } from './use-sync-status';
 export { type UseWindowResult, useWindow } from './use-window';
+// NOTE: `useTypedQuery` is intentionally NOT re-exported here — it needs the
+// `@syncular-v2/kysely` + `kysely` peers. It lives behind the `./typed`
+// subpath so apps using only `useSyncQuery` never pull Kysely into their
+// bundle. Import it as `@syncular-v2/react/typed`.

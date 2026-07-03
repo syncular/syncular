@@ -1,0 +1,19 @@
+{
+  "name": "@syncular-v2/kysely",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "peerDependencies": {
+    "kysely": ">=0.27.0"
+  },
+  "dependencies": {
+    "@syncular-v2/web-client": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncular-v2/core": "workspace:*",
+    "@syncular-v2/server": "workspace:*",
+    "kysely": "^0.29.2"
+  }
+}
