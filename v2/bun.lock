@@ -11,6 +11,14 @@
         "typescript": "^5.9.0",
       },
     },
+    "packages/conformance": {
+      "name": "@syncular-v2/conformance",
+      "dependencies": {
+        "@syncular-v2/core": "workspace:*",
+        "@syncular-v2/server": "workspace:*",
+        "@syncular-v2/web-client": "workspace:*",
+      },
+    },
     "packages/core": {
       "name": "@syncular-v2/core",
     },
@@ -71,6 +79,8 @@
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.2", "", { "os": "win32", "cpu": "x64" }, "sha512-4InchVpdVmdkkkgjQqKpgvyu+VPnoF/7RPSw5YATgEVpt2j72wcCAeV5TwaE9ZGJUZWZn7v2CwSAj6CrMJEx8A=="],
 
     "@sqlite.org/sqlite-wasm": ["@sqlite.org/sqlite-wasm@3.53.0-build1", "", {}, "sha512-PfWPWN2n+/37doa8oh2/oUXk4OOsRYZsxc1W1sDXIGb/Pu5Yrb+f2eyYpgQMGITVX7HVgxhs9P18Rc6I97ym/g=="],
+
+    "@syncular-v2/conformance": ["@syncular-v2/conformance@workspace:packages/conformance"],
 
     "@syncular-v2/core": ["@syncular-v2/core@workspace:packages/core"],
 

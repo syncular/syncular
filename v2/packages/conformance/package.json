@@ -1,0 +1,13 @@
+{
+  "name": "@syncular-v2/conformance",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@syncular-v2/core": "workspace:*",
+    "@syncular-v2/server": "workspace:*",
+    "@syncular-v2/web-client": "workspace:*"
+  }
+}

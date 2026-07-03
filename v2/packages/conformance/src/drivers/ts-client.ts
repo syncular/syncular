@@ -1,0 +1,323 @@
+/**
+ * Reference ClientDriver: the TypeScript web client
+ * (`@syncular-v2/web-client`) on the `bun:sqlite` backend, wired to
+ * whatever transport endpoints the harness supplies. All driver inputs
+ * and outputs stay JSON-able + bytes; row values convert at this edge.
+ */
+import type { RowValue, ScopeMap } from '@syncular-v2/core';
+import {
+  type ClientSchema,
+  ClientSyncError,
+  type MutationInput,
+  SYNC_VERSION_COLUMN,
+  SyncClient,
+  type SyncSummary,
+} from '@syncular-v2/web-client';
+import { BunClientDatabase } from '@syncular-v2/web-client/bun';
+import type {
+  ClientConflict,
+  ClientCreateOptions,
+  ClientDriver,
+  ClientInstance,
+  ClientMutation,
+  ClientRejection,
+  ClientRowState,
+  ClientSubscriptionState,
+  ClientSyncResult,
+  DriverColumn,
+  DriverRow,
+  DriverRowValue,
+  DriverSchema,
+  DriverScopeMap,
+} from '../driver';
+import { bytesToHex, hexToBytes } from '../raw';
+
+function toClientSchema(schema: DriverSchema): ClientSchema {
+  return {
+    version: schema.version,
+    tables: schema.tables.map((table) => ({
+      name: table.name,
+      columns: table.columns,
+      primaryKey: table.primaryKey,
+      scopes: table.scopes.map((scope) =>
+        scope.column !== undefined
+          ? { pattern: scope.pattern, column: scope.column }
+          : scope.pattern,
+      ),
+    })),
+  };
+}
+
+function toRowValue(value: DriverRowValue | undefined): RowValue {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'object') return hexToBytes(value.$bytes);
+  return value;
+}
+
+function toDriverValue(value: RowValue): DriverRowValue {
+  if (value instanceof Uint8Array) return { $bytes: bytesToHex(value) };
+  return value;
+}
+
+/** Normalize a raw SQLite value by its schema column type. */
+function normalizeSqlValue(
+  column: DriverColumn,
+  value: unknown,
+): DriverRowValue {
+  if (value === null || value === undefined) return null;
+  if (column.type === 'boolean') return value !== 0 && value !== false;
+  if (column.type === 'bytes') {
+    return { $bytes: bytesToHex(value as Uint8Array) };
+  }
+  if (typeof value === 'bigint') return Number(value);
+  return value as DriverRowValue;
+}
+
+function errorCodeOf(error: unknown): { code: string; message: string } {
+  if (error instanceof Error) {
+    const code = (error as { code?: unknown }).code;
+    return {
+      code: typeof code === 'string' ? code : 'transport.failed',
+      message: error.message,
+    };
+  }
+  return { code: 'transport.failed', message: String(error) };
+}
+
+function toReport(summary: SyncSummary): ClientSyncResult {
+  return {
+    ok: true,
+    report: {
+      pushed: summary.pushed,
+      applied: summary.applied,
+      rejected: summary.rejected,
+      retryable: summary.retryable,
+      conflicts: summary.conflicts.length,
+      commitsApplied: summary.commitsApplied,
+      segmentRowsApplied: summary.segmentRowsApplied,
+      bootstrapping: summary.bootstrapping,
+      resets: summary.resets,
+      revoked: summary.revoked,
+      failed: summary.failed,
+      ...(summary.schemaFloor !== undefined
+        ? { schemaFloor: summary.schemaFloor }
+        : {}),
+    },
+  };
+}
+
+class TsClientInstance implements ClientInstance {
+  readonly #client: SyncClient;
+  readonly #db: BunClientDatabase;
+  readonly #schema: DriverSchema;
+
+  constructor(client: SyncClient, db: BunClientDatabase, schema: DriverSchema) {
+    this.#client = client;
+    this.#db = db;
+    this.#schema = schema;
+  }
+
+  async subscribe(input: {
+    readonly id: string;
+    readonly table: string;
+    readonly scopes: DriverScopeMap;
+    readonly params?: string;
+  }): Promise<void> {
+    this.#client.subscribe({
+      id: input.id,
+      table: input.table,
+      scopes: input.scopes as ScopeMap,
+      ...(input.params !== undefined ? { params: input.params } : {}),
+    });
+  }
+
+  async unsubscribe(id: string): Promise<void> {
+    this.#client.unsubscribe(id);
+  }
+
+  async mutate(mutations: readonly ClientMutation[]): Promise<string> {
+    const inputs: MutationInput[] = mutations.map((mutation) => {
+      if (mutation.op === 'delete') {
+        return {
+          table: mutation.table,
+          op: 'delete',
+          rowId: mutation.rowId,
+          ...(mutation.baseVersion !== undefined
+            ? { baseVersion: mutation.baseVersion }
+            : {}),
+        };
+      }
+      const values: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(mutation.values)) {
+        values[key] = toRowValue(value);
+      }
+      return {
+        table: mutation.table,
+        op: 'upsert',
+        values,
+        ...(mutation.baseVersion !== undefined
+          ? { baseVersion: mutation.baseVersion }
+          : {}),
+      };
+    });
+    return this.#client.mutate(inputs);
+  }
+
+  async sync(): Promise<ClientSyncResult> {
+    try {
+      return toReport(await this.#client.sync());
+    } catch (error) {
+      const { code, message } = errorCodeOf(error);
+      return { ok: false, errorCode: code, message };
+    }
+  }
+
+  async syncUntilIdle(maxRounds?: number): Promise<ClientSyncResult> {
+    try {
+      return toReport(await this.#client.syncUntilIdle(maxRounds));
+    } catch (error) {
+      const { code, message } = errorCodeOf(error);
+      return { ok: false, errorCode: code, message };
+    }
+  }
+
+  async readRows(table: string): Promise<ClientRowState[]> {
+    const schemaTable = this.#schema.tables.find((t) => t.name === table);
+    if (schemaTable === undefined) throw new Error(`unknown table ${table}`);
+    const rows = this.#client.query(
+      `SELECT * FROM "${table}" ORDER BY "${schemaTable.primaryKey}" ASC`,
+    );
+    return rows.map((row) => {
+      const values: Record<string, DriverRowValue> = {};
+      for (const column of schemaTable.columns) {
+        values[column.name] = normalizeSqlValue(column, row[column.name]);
+      }
+      const rowId = row[schemaTable.primaryKey];
+      return {
+        rowId: String(rowId),
+        version: Number(row[SYNC_VERSION_COLUMN] ?? 0),
+        values: values as DriverRow,
+      };
+    });
+  }
+
+  async conflicts(): Promise<ClientConflict[]> {
+    return this.#client.conflicts.map((conflict) => {
+      const serverRow: Record<string, DriverRowValue> = {};
+      for (const [key, value] of Object.entries(conflict.serverRow)) {
+        serverRow[key] = toDriverValue(value);
+      }
+      return {
+        clientCommitId: conflict.clientCommitId,
+        opIndex: conflict.opIndex,
+        table: conflict.table,
+        rowId: conflict.rowId,
+        code: conflict.code,
+        serverVersion: conflict.serverVersion,
+        serverRow: serverRow as DriverRow,
+      };
+    });
+  }
+
+  async rejections(): Promise<ClientRejection[]> {
+    return this.#client.rejections.map((rejection) => ({
+      clientCommitId: rejection.clientCommitId,
+      opIndex: rejection.opIndex,
+      code: rejection.code,
+      retryable: rejection.retryable,
+    }));
+  }
+
+  async pendingCommitIds(): Promise<string[]> {
+    return this.#client.pendingCommits().map((c) => c.clientCommitId);
+  }
+
+  async subscriptionState(
+    id: string,
+  ): Promise<ClientSubscriptionState | undefined> {
+    const sub = this.#client.subscription(id);
+    if (sub === undefined) return undefined;
+    return {
+      id: sub.id,
+      table: sub.table,
+      status: sub.status,
+      cursor: sub.cursor,
+      hasResumeToken: sub.bootstrapState !== undefined,
+      ...(sub.effectiveScopes !== undefined
+        ? { effectiveScopes: sub.effectiveScopes }
+        : {}),
+      ...(sub.reasonCode !== undefined ? { reasonCode: sub.reasonCode } : {}),
+    };
+  }
+
+  async schemaFloor(): Promise<
+    | {
+        readonly requiredSchemaVersion?: number;
+        readonly latestSchemaVersion?: number;
+      }
+    | undefined
+  > {
+    return this.#client.schemaFloor;
+  }
+
+  async connectRealtime(): Promise<void> {
+    await this.#client.connectRealtime();
+  }
+
+  async disconnectRealtime(): Promise<void> {
+    this.#client.disconnectRealtime();
+  }
+
+  async syncNeeded(): Promise<boolean> {
+    return this.#client.syncNeeded;
+  }
+
+  async close(): Promise<void> {
+    await this.#client.close();
+    this.#db.close();
+  }
+}
+
+export const tsClientDriver: ClientDriver = {
+  name: 'ts-web-client(bun:sqlite)',
+  async create(options: ClientCreateOptions): Promise<ClientInstance> {
+    const db = new BunClientDatabase();
+    const endpoints = options.endpoints;
+    const client = new SyncClient({
+      database: db,
+      schema: toClientSchema(options.schema),
+      clientId: options.clientId,
+      ...(options.limits !== undefined ? { limits: options.limits } : {}),
+      transport: (bytes) => endpoints.sync(bytes),
+      segments: (request) =>
+        endpoints.downloadSegment({
+          segmentId: request.segmentId,
+          table: request.table,
+          ...(request.url !== undefined ? { url: request.url } : {}),
+          ...(request.urlExpiresAtMs !== undefined
+            ? { urlExpiresAtMs: request.urlExpiresAtMs }
+            : {}),
+          requestedScopesJson: request.requestedScopesJson,
+        }),
+      realtime: async (handlers) => {
+        const connection = await endpoints.connectRealtime({
+          onText: (text) => handlers.onText(text),
+          onBinary: (bytes) => handlers.onBinary(bytes),
+        });
+        return {
+          send: (text) => connection.send(text),
+          close: () => {
+            connection.close();
+            handlers.onClose?.();
+          },
+        };
+      },
+    });
+    await client.start();
+    return new TsClientInstance(client, db, options.schema);
+  },
+};
+
+// Re-exported so scenario assertions can name the client-side error type
+// without importing the web client directly.
+export { ClientSyncError };
