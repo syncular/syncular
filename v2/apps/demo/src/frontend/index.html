@@ -4,9 +4,6 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>syncular v2 — two-pane demo</title>
-  <script type="importmap">
-    { "imports": { "@sqlite.org/sqlite-wasm": "/vendor/sqlite-wasm/index.mjs" } }
-  </script>
   <style>
     :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
     body { margin: 0; padding: 1rem; }
@@ -38,7 +35,8 @@
 <body>
   <header>
     <h1>syncular v2 — two-pane convergence demo</h1>
-    <span class="hint">two independent SyncClients (sqlite-wasm) syncing through one server</span>
+    <span class="hint">two independent client cores syncing through one server</span>
+    <span id="mode-hint" class="hint"></span>
     <button id="conflict-btn" disabled>Simulate conflict</button>
     <span id="global-status" class="hint"></span>
   </header>

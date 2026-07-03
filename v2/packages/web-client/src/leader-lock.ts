@@ -11,12 +11,20 @@ export interface LeaderLease {
 export interface LeaderLock {
   /** Resolves when this instance holds leadership for `name`. */
   acquire(name: string): Promise<LeaderLease>;
+  /**
+   * Resolves immediately: the lease when leadership was free, `undefined`
+   * when another owner holds it. The worker handle uses this so a second
+   * tab gets a clear not-leader state instead of blocking forever
+   * (followers are post-gate, TODO 3.2).
+   */
+  tryAcquire?(name: string): Promise<LeaderLease | undefined>;
 }
 
 /** Single-owner environments (tests, dedicated workers): always leader. */
 export function singleOwnerLock(): LeaderLock {
   return {
     acquire: () => Promise.resolve({ release: () => {} }),
+    tryAcquire: () => Promise.resolve({ release: () => {} }),
   };
 }
 
@@ -40,6 +48,21 @@ export function webLocksLeaderLock(locks?: LockManager): LeaderLock {
               }),
           )
           .catch((error: unknown) => rejectAcquire(error));
+      }),
+    tryAcquire: (name) =>
+      new Promise<LeaderLease | undefined>((resolveTry, rejectTry) => {
+        manager
+          .request(name, { mode: 'exclusive', ifAvailable: true }, (lock) => {
+            // `ifAvailable` grants `null` instead of waiting (Web Locks).
+            if (lock === null) {
+              resolveTry(undefined);
+              return undefined;
+            }
+            return new Promise<void>((resolveHold) => {
+              resolveTry({ release: () => resolveHold() });
+            });
+          })
+          .catch((error: unknown) => rejectTry(error));
       }),
   };
 }

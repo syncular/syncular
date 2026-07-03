@@ -1,8 +1,12 @@
 # syncular v2 — two-pane convergence demo (B6)
 
-Two independent `SyncClient`s from `@syncular-v2/web-client` — each on its
-own sqlite-wasm database — syncing a todo list through the B2 server
-(server-hono adapter, bun:sqlite storage) in one Bun process.
+Two independent client cores from `@syncular-v2/web-client` — each a Web
+Worker running the WHOLE core (SyncClient + transports + sqlite-wasm on
+persistent OPFS via `opfs-sahpool`, Direction decision 2) — syncing a
+todo list through the B2 server (server-hono adapter, bun:sqlite storage)
+in one Bun process. The page drives each core through the
+`SyncClientHandle` RPC. Add `?ephemeral` for the explicit in-memory
+main-thread mode (labeled; nothing survives a reload).
 
 ## Run
 
@@ -17,7 +21,10 @@ One process serves everything on one port:
 
 - `POST /sync`, `GET /segments/:id` — the server-hono adapter
 - `GET /realtime` — WebSocket wired to the server's `RealtimeHub`
-- `/`, `/app.js` — the frontend (built with `Bun.build` at startup)
+- `/`, `/app.js`, `/worker.js` — the frontend + the sync-worker bundle
+  (both built with `Bun.build` at startup; the sqlite-wasm bare specifier
+  is rewritten to the vendor path because module workers never see the
+  page's import map)
 - `/vendor/sqlite-wasm/*` — the `@sqlite.org/sqlite-wasm` package files
 
 Server storage is in-memory by default; `SYNCULAR_DEMO_DB=path bun run dev`
@@ -40,10 +47,15 @@ persists it to a file.
   `migrations/0001_initial/up.sql` → `bun run generate` →
   `src/syncular.generated.ts` (committed). Both server and clients import
   it.
-- **sqlite-wasm backend**: the page is served with COOP/COEP headers, but
-  sqlite-wasm's OPFS VFS refuses the main thread regardless (it needs
-  `Atomics.wait()`, a worker-only API), so `openWasmDatabase` uses its
-  documented in-memory fallback. The pane badge shows the backend actually
-  in use. Persistent OPFS arrives with worker mode (post-gate B3 surface).
+- **sqlite-wasm backend**: each pane's worker opens a persistent database
+  (`demo-a` / `demo-b`) on the `opfs-sahpool` VFS — no COOP/COEP needed
+  (the headers are still served, but sahpool runs on
+  `FileSystemSyncAccessHandle`, not SharedArrayBuffer). The pane badge
+  shows the mode in use. With the default in-memory SERVER storage, a
+  server restart forgets commits that the panes' persistent databases
+  still hold — use `SYNCULAR_DEMO_DB` for a symmetric persistence story.
+- **Realtime attaches after the first sync**: the hub session binds to the
+  client record a sync round creates (§8.1 fixed registration), so panes
+  connect the socket after their initial pull.
 - The demo intentionally has zero dependencies beyond the workspace
   packages; the frontend is vanilla DOM.

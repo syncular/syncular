@@ -3,7 +3,10 @@
  * (SPEC.md is normative; REVISE.md B3 is the architectural mandate).
  *
  * Browser-safe root: database backends live behind subpath exports
- * (`./bun` for bun:sqlite tests, `./wasm` for sqlite-wasm + OPFS).
+ * (`./bun` for bun:sqlite tests, `./wasm` for sqlite-wasm + OPFS); the
+ * worker-side bootstrap lives behind `./worker`. The main-thread handle
+ * (`worker-host`) and the RPC protocol types are root exports — they
+ * import no SQLite.
  */
 export * from './apply';
 export * from './client';
@@ -16,3 +19,5 @@ export * from './outbox';
 export * from './schema';
 export * from './state';
 export * from './transport';
+export * from './worker-host';
+export * from './worker-protocol';

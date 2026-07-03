@@ -1,20 +1,30 @@
 /**
  * B6 demo frontend: two side-by-side panes, EACH with its own independent
- * SyncClient from @syncular-v2/web-client on the sqlite-wasm backend.
- * Plain TypeScript + vanilla DOM — no framework.
+ * client core syncing through one server. Plain TypeScript + vanilla DOM.
+ *
+ * Default mode (Direction decision 2): each pane's WHOLE core runs in a
+ * Web Worker on a persistent opfs-sahpool database (`demo-a` / `demo-b`),
+ * driven through the `SyncClientHandle` RPC. Add `?ephemeral` for the
+ * explicit in-memory main-thread mode (nothing survives a reload).
  *
  * Per pane: add/toggle/delete todos, an offline toggle that severs the
  * transport (outbox accumulates, drains with idempotent retry on
  * reconnect), a pending-commit counter, and surfaced §6.3 conflicts.
  */
 import {
-  type ClientDatabase,
   ClientSyncError,
   type ConflictRecord,
+  createSyncClientHandle,
   httpSegmentDownloader,
   httpSyncTransport,
+  type MutationInput,
+  NOT_LEADER_CODE,
+  type SqlRow,
+  type SqlValue,
+  type SubscribeInput,
   SYNC_VERSION_COLUMN,
   SyncClient,
+  type SyncSummary,
   webSocketRealtimeConnector,
 } from '@syncular-v2/web-client';
 import { openWasmDatabase } from '@syncular-v2/web-client/wasm';
@@ -26,8 +36,161 @@ import {
 
 const LIST_ID = 'demo';
 const SUBSCRIPTION_ID = 'todos';
+const EPHEMERAL = new URLSearchParams(location.search).has('ephemeral');
+const WS_PROTO = location.protocol === 'https:' ? 'wss' : 'ws';
 
 type LocalTodo = TodosRow & { _sync_version: number };
+
+/**
+ * The pane's view of a client core: the handle's async surface. The
+ * worker handle implements it directly; the ephemeral main-thread
+ * SyncClient is adapted below so both modes drive the same pane code.
+ */
+interface PaneCore {
+  readonly backendLabel: string;
+  subscribe(input: SubscribeInput): Promise<void>;
+  mutate(mutations: readonly MutationInput[]): Promise<string>;
+  syncUntilIdle(): Promise<SyncSummary>;
+  query(sql: string, params?: readonly SqlValue[]): Promise<SqlRow[]>;
+  pendingCount(): Promise<number>;
+  conflicts(): Promise<readonly ConflictRecord[]>;
+  setOffline(offline: boolean): Promise<void>;
+  /** Best-effort; call AFTER the first sync so the hub session attaches
+   * to an existing client record (§8.1 fixed registration). */
+  connectRealtime(): Promise<void>;
+}
+
+// -- worker mode (the default): whole core behind the RPC handle -------------
+
+async function makeWorkerCore(
+  paneName: string,
+  onDataMaybeChanged: () => void,
+): Promise<PaneCore> {
+  const handle = await createSyncClientHandle({
+    worker: () => new Worker('/worker.js', { type: 'module' }),
+    schema,
+    database: { mode: 'persistent', name: `demo-${paneName.toLowerCase()}` },
+    endpoints: {
+      syncUrl: '/sync',
+      segmentsUrl: '/segments',
+      realtimeUrl: `${WS_PROTO}://${location.host}/realtime?clientId={clientId}`,
+    },
+    limits: { limitSnapshotRows: 5000, maxSnapshotPages: 20 },
+    // §8.4 host loop: wake-ups coalesce into sync rounds INSIDE the
+    // worker; the page only re-renders when told (or on its poll tick).
+    autoSync: true,
+    lockName: `syncular-demo-${paneName.toLowerCase()}`,
+    onSynced: () => onDataMaybeChanged(),
+    onConflict: () => onDataMaybeChanged(),
+  });
+  if (!handle.isLeader) {
+    throw new ClientSyncError(
+      NOT_LEADER_CODE,
+      `another tab owns pane ${paneName}'s core — close it first ` +
+        '(multi-tab followers are TODO 3.2)',
+    );
+  }
+  const connectRealtime = async () => {
+    try {
+      await handle.connectRealtime();
+    } catch {
+      // HTTP sync still works without the socket.
+    }
+  };
+  return {
+    backendLabel: 'sqlite-wasm (OPFS, worker)',
+    subscribe: (input) => handle.subscribe(input),
+    mutate: (mutations) => handle.mutate(mutations),
+    syncUntilIdle: () => handle.syncUntilIdle(),
+    query: (sql, params) => handle.query(sql, params),
+    pendingCount: async () => (await handle.pendingCommits()).length,
+    conflicts: () => handle.conflicts(),
+    setOffline: async (offline) => {
+      await handle.setOffline(offline);
+      if (!offline) await connectRealtime();
+    },
+    connectRealtime,
+  };
+}
+
+// -- ephemeral mode (?ephemeral): explicit in-memory, main thread ------------
+
+async function makeEphemeralCore(
+  paneName: string,
+  onDataMaybeChanged: () => void,
+): Promise<PaneCore> {
+  const database = await openWasmDatabase();
+  const clientId = crypto.randomUUID();
+  let offline = false;
+  let syncScheduled = false;
+  const baseTransport = httpSyncTransport('/sync');
+  const client = new SyncClient({
+    database,
+    schema,
+    clientId,
+    transport: async (bytes) => {
+      if (offline) {
+        throw new ClientSyncError(
+          'sync.transport_failed',
+          `pane ${paneName} is offline`,
+          true,
+        );
+      }
+      return baseTransport(bytes);
+    },
+    segments: httpSegmentDownloader('/segments'),
+    realtime: webSocketRealtimeConnector(
+      `${WS_PROTO}://${location.host}/realtime?clientId=${clientId}`,
+    ),
+    limits: { limitSnapshotRows: 5000, maxSnapshotPages: 20 },
+    onSyncNeeded: () => scheduleSync(),
+    onConflict: () => onDataMaybeChanged(),
+  });
+
+  function scheduleSync(): void {
+    if (syncScheduled || offline) return;
+    syncScheduled = true;
+    window.setTimeout(() => {
+      syncScheduled = false;
+      void client
+        .syncUntilIdle()
+        .catch(() => {})
+        .then(() => onDataMaybeChanged());
+    }, 50);
+  }
+
+  await client.start();
+  const connectRealtime = async () => {
+    try {
+      await client.connectRealtime();
+    } catch {
+      // HTTP sync still works without the socket.
+    }
+  };
+  return {
+    backendLabel: 'sqlite-wasm (in-memory, ephemeral)',
+    subscribe: (input) => {
+      client.subscribe(input);
+      return Promise.resolve();
+    },
+    mutate: (mutations) => Promise.resolve(client.mutate(mutations)),
+    syncUntilIdle: () => client.syncUntilIdle(),
+    query: (sql, params) => Promise.resolve(client.query(sql, params)),
+    pendingCount: () => Promise.resolve(client.pendingCommits().length),
+    conflicts: () => Promise.resolve(client.conflicts),
+    connectRealtime,
+    setOffline: async (value) => {
+      offline = value;
+      if (offline) {
+        client.disconnectRealtime();
+      } else {
+        await connectRealtime();
+      }
+    },
+  };
+}
+
+// -- pane ---------------------------------------------------------------------
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -43,14 +206,17 @@ function el<K extends keyof HTMLElementTagNameMap>(
 class Pane {
   readonly name: string;
   readonly root: HTMLElement;
-  readonly clientId = crypto.randomUUID();
-  client!: SyncClient;
+  core!: PaneCore;
   offline = false;
   #ready = false;
-  backendLabel = 'starting…';
   #status = '';
-  #syncTimer: number | undefined;
   #syncing = false;
+  #refreshQueued = false;
+
+  // last-fetched snapshot (RPC results are async; render stays sync)
+  #todos: LocalTodo[] = [];
+  #pending = 0;
+  #conflicts: readonly ConflictRecord[] = [];
 
   // DOM
   #badge!: HTMLElement;
@@ -67,68 +233,33 @@ class Pane {
 
   async init(): Promise<void> {
     this.#buildShell();
-    let database: ClientDatabase;
     try {
-      // OPFS persistence needs a worker context (Atomics.wait): on the
-      // main thread sqlite-wasm has no OpfsDb and this falls back to a
-      // transient in-memory database — the honest B6 default.
-      database = await openWasmDatabase({ filename: `demo-${this.name}.db` });
-      const list = database.query('PRAGMA database_list');
-      const file = String(list[0]?.file ?? '');
-      this.backendLabel =
-        file.length > 0 ? 'sqlite-wasm (OPFS)' : 'sqlite-wasm (in-memory)';
+      this.core = EPHEMERAL
+        ? await makeEphemeralCore(this.name, () => this.refreshSoon())
+        : await makeWorkerCore(this.name, () => this.refreshSoon());
     } catch (error) {
-      this.setStatus(`database open failed: ${String(error)}`);
+      const message =
+        error instanceof ClientSyncError
+          ? `${error.code}: ${error.message}`
+          : String(error);
+      this.setStatus(`core start failed — ${message}`);
       throw error;
     }
-
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const baseTransport = httpSyncTransport('/sync');
-    this.client = new SyncClient({
-      database,
-      schema,
-      clientId: this.clientId,
-      transport: async (bytes) => {
-        if (this.offline) {
-          throw new ClientSyncError(
-            'sync.transport_failed',
-            `pane ${this.name} is offline`,
-            true,
-          );
-        }
-        return baseTransport(bytes);
-      },
-      segments: httpSegmentDownloader('/segments'),
-      realtime: webSocketRealtimeConnector(
-        `${proto}://${location.host}/realtime?clientId=${this.clientId}`,
-      ),
-      limits: { limitSnapshotRows: 5000, maxSnapshotPages: 20 },
-      onSyncNeeded: () => this.scheduleSync(),
-      onConflict: () => this.render(),
-    });
-
-    await this.client.start();
-    this.client.subscribe({
+    await this.core.subscribe({
       id: SUBSCRIPTION_ID,
       table: 'todos',
       scopes: todoListSubscription.scopes({ listId: LIST_ID }),
     });
     this.#ready = true;
     await this.syncNow();
-    await this.#connectRealtime();
+    // AFTER the first sync: the hub attaches the realtime session to the
+    // client record that sync just created (§8.1 fixed registration).
+    await this.core.connectRealtime();
     this.setStatus('ready');
-    this.render();
-    // Realtime deltas apply asynchronously inside the client with no app
-    // callback — a light re-render loop keeps the table fresh.
-    setInterval(() => this.render(), 400);
-  }
-
-  async #connectRealtime(): Promise<void> {
-    try {
-      await this.client.connectRealtime();
-    } catch {
-      this.setStatus('realtime connect failed — HTTP sync still works');
-    }
+    await this.refresh();
+    // Realtime deltas apply inside the core with no per-row callback — a
+    // light refresh loop keeps the table fresh on top of onSynced events.
+    setInterval(() => this.refreshSoon(), 500);
   }
 
   setStatus(text: string): void {
@@ -136,19 +267,11 @@ class Pane {
     if (this.#statusLine !== undefined) this.#statusLine.textContent = text;
   }
 
-  scheduleSync(): void {
-    if (this.#syncTimer !== undefined) return;
-    this.#syncTimer = window.setTimeout(() => {
-      this.#syncTimer = undefined;
-      void this.syncNow();
-    }, 50);
-  }
-
   async syncNow(): Promise<void> {
     if (this.#syncing || this.offline) return;
     this.#syncing = true;
     try {
-      await this.client.syncUntilIdle();
+      await this.core.syncUntilIdle();
       this.setStatus('in sync');
     } catch (error) {
       const message =
@@ -158,44 +281,33 @@ class Pane {
       this.setStatus(`sync failed — ${message}`);
     } finally {
       this.#syncing = false;
-      this.render();
+      await this.refresh();
     }
   }
 
-  setOffline(offline: boolean): void {
+  async setOffline(offline: boolean): Promise<void> {
     if (!this.#ready || this.offline === offline) return;
     this.offline = offline;
+    await this.core.setOffline(offline);
     if (offline) {
-      this.client.disconnectRealtime();
       this.setStatus('offline — edits queue in the outbox');
     } else {
       this.setStatus('back online — draining outbox…');
-      void this.#connectRealtime();
-      this.scheduleSync();
+      void this.syncNow();
     }
-    this.render();
-  }
-
-  todos(): LocalTodo[] {
-    return this.client.query(
-      `SELECT *, "${SYNC_VERSION_COLUMN}" AS _sync_version
-       FROM todos ORDER BY position ASC, id ASC`,
-    ) as unknown as LocalTodo[];
+    await this.refresh();
   }
 
   todo(id: string): LocalTodo | undefined {
-    return (
-      this.client.query(
-        `SELECT *, "${SYNC_VERSION_COLUMN}" AS _sync_version FROM todos WHERE id = ?`,
-        [id],
-      ) as unknown as LocalTodo[]
-    )[0];
+    return this.#todos.find((row) => row.id === id);
   }
 
-  addTodo(title: string): void {
-    const rows = this.todos();
-    const position = rows.reduce((max, row) => Math.max(max, row.position), 0);
-    this.client.mutate([
+  async addTodo(title: string): Promise<void> {
+    const position = this.#todos.reduce(
+      (max, row) => Math.max(max, row.position),
+      0,
+    );
+    await this.core.mutate([
       {
         table: 'todos',
         op: 'upsert',
@@ -209,12 +321,12 @@ class Pane {
         } satisfies TodosRow,
       },
     ]);
-    this.afterMutation();
+    await this.afterMutation();
   }
 
   /** Full-row upsert (§6.1); baseVersion only when the server version is
    * known locally (bootstrap rows carry version 0 = unknown). */
-  updateTodo(row: LocalTodo, patch: Partial<TodosRow>): void {
+  async updateTodo(row: LocalTodo, patch: Partial<TodosRow>): Promise<void> {
     const values: TodosRow = {
       id: row.id,
       list_id: row.list_id,
@@ -224,7 +336,7 @@ class Pane {
       updated_at_ms: Date.now(),
       ...patch,
     };
-    this.client.mutate([
+    await this.core.mutate([
       {
         table: 'todos',
         op: 'upsert',
@@ -232,24 +344,50 @@ class Pane {
         ...(row._sync_version >= 1 ? { baseVersion: row._sync_version } : {}),
       },
     ]);
-    this.afterMutation();
+    await this.afterMutation();
   }
 
-  deleteTodo(id: string): void {
-    this.client.mutate([{ table: 'todos', op: 'delete', rowId: id }]);
-    this.afterMutation();
+  async deleteTodo(id: string): Promise<void> {
+    await this.core.mutate([{ table: 'todos', op: 'delete', rowId: id }]);
+    await this.afterMutation();
   }
 
-  afterMutation(): void {
-    this.render();
+  async afterMutation(): Promise<void> {
+    await this.refresh();
     if (this.offline) {
       this.setStatus('offline — edits queue in the outbox');
     } else {
-      this.scheduleSync();
+      void this.syncNow();
     }
   }
 
   // -- rendering --------------------------------------------------------------
+
+  refreshSoon(): void {
+    if (this.#refreshQueued) return;
+    this.#refreshQueued = true;
+    window.setTimeout(() => {
+      this.#refreshQueued = false;
+      void this.refresh();
+    }, 30);
+  }
+
+  /** Pull a fresh snapshot over the (possibly RPC) boundary, then render. */
+  async refresh(): Promise<void> {
+    if (!this.#ready) return;
+    const [todos, pending, conflicts] = await Promise.all([
+      this.core.query(
+        `SELECT *, "${SYNC_VERSION_COLUMN}" AS _sync_version
+         FROM todos ORDER BY position ASC, id ASC`,
+      ),
+      this.core.pendingCount(),
+      this.core.conflicts(),
+    ]);
+    this.#todos = todos as unknown as LocalTodo[];
+    this.#pending = pending;
+    this.#conflicts = conflicts;
+    this.render();
+  }
 
   #buildShell(): void {
     const title = el('h2');
@@ -259,9 +397,9 @@ class Pane {
     this.#pendingEl = el('span', 'badge', 'outbox 0');
     title.append(this.#pendingEl);
     this.#offlineBtn = el('button', undefined, 'Go offline');
-    this.#offlineBtn.addEventListener('click', () =>
-      this.setOffline(!this.offline),
-    );
+    this.#offlineBtn.addEventListener('click', () => {
+      void this.setOffline(!this.offline);
+    });
     title.append(this.#offlineBtn);
     this.root.append(title);
 
@@ -278,7 +416,7 @@ class Pane {
       const value = input.value.trim();
       if (value.length === 0) return;
       input.value = '';
-      this.addTodo(value);
+      void this.addTodo(value);
     });
     this.root.append(form);
 
@@ -297,12 +435,11 @@ class Pane {
     this.#badge.textContent = this.offline ? 'offline' : 'online';
     this.#badge.className = `badge ${this.offline ? 'offline' : 'online'}`;
     this.#offlineBtn.textContent = this.offline ? 'Go online' : 'Go offline';
-    const pending = this.client.pendingCommits().length;
-    this.#pendingEl.textContent = `outbox ${pending} · ${this.backendLabel}`;
+    this.#pendingEl.textContent = `outbox ${this.#pending} · ${this.core.backendLabel}`;
     this.#statusLine.textContent = this.#status;
 
     this.#tbody.replaceChildren(
-      ...this.todos().map((row) => this.#renderRow(row)),
+      ...this.#todos.map((row) => this.#renderRow(row)),
     );
     this.#renderConflicts();
   }
@@ -315,9 +452,9 @@ class Pane {
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.checked = Boolean(row.done);
-    checkbox.addEventListener('change', () =>
-      this.updateTodo(row, { done: !row.done }),
-    );
+    checkbox.addEventListener('change', () => {
+      void this.updateTodo(row, { done: !row.done });
+    });
     toggleCell.append(checkbox);
 
     const titleCell = document.createElement('td');
@@ -333,7 +470,9 @@ class Pane {
     const deleteCell = document.createElement('td');
     const deleteBtn = el('button', undefined, '×');
     deleteBtn.title = 'delete';
-    deleteBtn.addEventListener('click', () => this.deleteTodo(row.id));
+    deleteBtn.addEventListener('click', () => {
+      void this.deleteTodo(row.id);
+    });
     deleteCell.append(deleteBtn);
 
     tr.append(toggleCell, titleCell, deleteCell);
@@ -341,7 +480,7 @@ class Pane {
   }
 
   #renderConflicts(): void {
-    const conflicts = this.client.conflicts;
+    const conflicts = this.#conflicts;
     const children: HTMLElement[] = [];
     if (conflicts.length > 0) {
       children.push(
@@ -386,12 +525,12 @@ async function simulateConflict(
   status: HTMLElement,
 ): Promise<void> {
   status.textContent = 'setting up conflict…';
-  if (a.offline) a.setOffline(false);
-  if (b.offline) b.setOffline(false);
+  if (a.offline) await a.setOffline(false);
+  if (b.offline) await b.setOffline(false);
 
   // A fresh row through pane A so both panes know its server version.
   const id = crypto.randomUUID();
-  a.client.mutate([
+  await a.core.mutate([
     {
       table: 'todos',
       op: 'upsert',
@@ -414,9 +553,9 @@ async function simulateConflict(
     return;
   }
 
-  a.setOffline(true);
-  a.updateTodo(inA, { title: 'Edited OFFLINE in pane A' });
-  b.updateTodo(inB, { title: 'Edited ONLINE in pane B' });
+  await a.setOffline(true);
+  await a.updateTodo(inA, { title: 'Edited OFFLINE in pane A' });
+  await b.updateTodo(inB, { title: 'Edited ONLINE in pane B' });
   await b.syncNow();
   status.textContent =
     'pane A holds a conflicting offline edit — toggle pane A online to surface the conflict';
@@ -425,6 +564,12 @@ async function simulateConflict(
 // -- boot ------------------------------------------------------------------------
 
 async function main(): Promise<void> {
+  const modeEl = document.getElementById('mode-hint');
+  if (modeEl !== null) {
+    modeEl.innerHTML = EPHEMERAL
+      ? 'mode: <strong>ephemeral</strong> (in-memory, main thread — explicit) · <a href="/">persistent</a>'
+      : 'mode: <strong>persistent</strong> (OPFS, worker) · <a href="/?ephemeral">ephemeral</a>';
+  }
   const paneA = new Pane('A', document.getElementById('pane-a') as HTMLElement);
   const paneB = new Pane('B', document.getElementById('pane-b') as HTMLElement);
   const conflictBtn = document.getElementById(

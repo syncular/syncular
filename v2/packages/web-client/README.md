@@ -1,0 +1,86 @@
+# @syncular-v2/web-client
+
+The TypeScript client protocol core (SPEC.md §§3–8, client side) plus its
+browser platform bindings.
+
+## Browser modes — there are exactly two
+
+**Persistent worker mode is THE mode** (REVISE Direction decision 2,
+2026-07-03). The whole client core — `SyncClient`, the fetch/WebSocket
+transports, and SQLite on the `opfs-sahpool` VFS — runs inside a Web
+Worker. The UI thread talks to it through a thin postMessage RPC:
+
+```ts
+// worker.ts — the worker entry your bundler emits as its own script
+import { startSyncWorker } from '@syncular-v2/web-client/worker';
+startSyncWorker();
+```
+
+```ts
+// main thread
+import { createSyncClientHandle } from '@syncular-v2/web-client';
+
+const handle = await createSyncClientHandle({
+  worker: () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }),
+  schema,
+  database: { mode: 'persistent', name: 'app' }, // OPFS, survives reloads
+  endpoints: {
+    syncUrl: '/sync',
+    segmentsUrl: '/segments',
+    realtimeUrl: 'wss://example.com/realtime?clientId={clientId}',
+  },
+});
+if (!handle.isLeader) {
+  // Another tab owns the core for this origin. Followers are TODO 3.2;
+  // today this is a clear state, not a broken client.
+}
+await handle.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['l1'] } });
+await handle.syncUntilIdle();
+const rows = await handle.query('SELECT * FROM todos');
+```
+
+The handle exposes the same logical API as `SyncClient` (subscribe /
+mutate / sync / query / conflicts / …), every method a promise. It
+acquires the Web Locks leader lock *before* spawning the worker — one
+core per origin. Wake-ups are handled inside the worker (`autoSync`,
+SPEC §8.4: the sync-needed signal is host-driven and the worker IS the
+host); the main thread gets `onSyncNeeded` / `onConflict` / `onSynced`
+events for rendering.
+
+**Ephemeral in-memory mode is EXPLICIT.** `openWasmDatabase()` returns an
+in-memory sqlite-wasm database for tests, demos and SSR. Nothing
+persists, on purpose, and that is the only main-thread mode.
+
+## The support floor (no fallback ladder)
+
+- Persistence is **OPFS via `opfs-sahpool`, only**. No COOP/COEP headers
+  and no SharedArrayBuffer are required (sahpool is built on
+  `FileSystemSyncAccessHandle`, unlike the Atomics-based `opfs` VFS).
+- Browsers without OPFS (~pre-2023) are **unsupported**:
+  `openPersistentWasmDatabase` fails loud instead of degrading.
+- **Never IndexedDB.** There is no wa-sqlite/absurd-sql style fallback
+  and none is planned.
+- `openPersistentWasmDatabase` refuses to run on the main thread — not a
+  sahpool limitation, an enforcement of whole-core-in-a-worker.
+
+## RPC protocol (6 message types)
+
+`init`, `call`, `ready`, `result`, `error`, `event` — every API method
+multiplexes over `call` (typed end-to-end from the single `WorkerApi`
+shape in `worker-protocol.ts`); `event` carries `sync-needed`,
+`conflict` and `synced`. Query-result blobs transfer (not copy) when
+they own their buffer.
+
+## Package layout
+
+| Entry | Contents |
+|---|---|
+| `.` | protocol core, transports, handle + RPC protocol (browser-safe, no SQLite) |
+| `./worker` | `startSyncWorker` — worker-side bootstrap (pulls sqlite-wasm) |
+| `./wasm` | sqlite-wasm bindings: `openPersistentWasmDatabase`, `openWasmDatabase` |
+| `./bun` | bun:sqlite binding for tests |
+
+Tests drive the real worker entry in a bun `Worker` with bun:sqlite
+injected through the bootstrap's database-factory override
+(`test/worker-rpc.test.ts`); the OPFS path itself is browser-only and is
+exercised by `apps/demo`.

@@ -2,8 +2,14 @@
  * B6 demo backend: one Bun process serving
  * - POST /sync + GET /segments/:id via the B2 server-hono adapter,
  * - GET /realtime as a WebSocket wired to the server's RealtimeHub,
- * - the static frontend (built with Bun.build at startup) with COOP/COEP
- *   headers, and the sqlite-wasm package files under /vendor/sqlite-wasm/.
+ * - the static frontend: TWO bundles built with Bun.build at startup —
+ *   /app.js (the page) and /worker.js (the sync worker running the whole
+ *   client core on opfs-sahpool, Direction decision 2). Module workers do
+ *   not inherit the page's import map, so a build plugin rewrites the
+ *   sqlite-wasm bare specifier to /vendor/sqlite-wasm/index.mjs in both
+ *   bundles; the package files are served under /vendor/sqlite-wasm/.
+ *   COOP/COEP headers are still sent but are NOT required by sahpool
+ *   (it uses FileSystemSyncAccessHandle, not SharedArrayBuffer).
  *
  * Storage is bun:sqlite (in-memory by default; set SYNCULAR_DEMO_DB=path
  * for a file). The schema is the typegen-generated module (B5 dogfood).
@@ -120,18 +126,32 @@ async function seed(): Promise<void> {
 // -- frontend build + static assets ------------------------------------------
 
 const build = await Bun.build({
-  entrypoints: [join(import.meta.dir, 'frontend', 'main.ts')],
+  entrypoints: [
+    join(import.meta.dir, 'frontend', 'main.ts'),
+    join(import.meta.dir, 'frontend', 'worker.ts'),
+  ],
   target: 'browser',
-  // Resolved in the browser via the import map in index.html; the package
-  // files (JS glue + sqlite3.wasm) are served under /vendor/sqlite-wasm/.
-  external: ['@sqlite.org/sqlite-wasm'],
   sourcemap: 'inline',
+  external: ['@sqlite.org/sqlite-wasm'],
 });
-const appJsArtifact = build.outputs[0];
-if (appJsArtifact === undefined) {
-  throw new Error('frontend build produced no output');
+async function bundleText(basename: string): Promise<string> {
+  const artifact = build.outputs.find((output) =>
+    output.path.endsWith(`/${basename}`),
+  );
+  if (artifact === undefined) {
+    throw new Error(`frontend build produced no ${basename}`);
+  }
+  // Both bundles import sqlite-wasm from the served vendor path. An
+  // import map would only cover the page, never the module worker, so
+  // the external bare specifier is rewritten in the emitted JS instead.
+  const text = await artifact.text();
+  return text.replaceAll(
+    /(["'])@sqlite\.org\/sqlite-wasm\1/g,
+    '"/vendor/sqlite-wasm/index.mjs"',
+  );
 }
-const appJs = await appJsArtifact.text();
+const appJs = await bundleText('main.js');
+const workerJs = await bundleText('worker.js');
 const indexHtml = await Bun.file(
   join(import.meta.dir, 'frontend', 'index.html'),
 ).text();
@@ -190,6 +210,9 @@ const server = Bun.serve<SocketData, never>({
     }
     if (path === '/app.js') {
       return staticResponse(appJs, 'text/javascript; charset=utf-8');
+    }
+    if (path === '/worker.js') {
+      return staticResponse(workerJs, 'text/javascript; charset=utf-8');
     }
     if (path.startsWith('/vendor/sqlite-wasm/')) {
       const name = path.slice('/vendor/sqlite-wasm/'.length);

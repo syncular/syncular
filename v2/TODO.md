@@ -28,10 +28,23 @@ the old tree archived.
       both pairings); bench image lane + `imageBootstrapRowsPerSecFloor`
       CI budget. Wire shape unchanged — no vector regeneration (image
       bytes are deliberately not vector-pinned, §5.3).
-- [ ] **Worker + OPFS mode** (Direction decision 2): whole client core in a
-      worker on `opfs-sahpool`, thin RPC to the UI thread, in-memory as
-      explicit-ephemeral only. Persistence lands here; the demo drops its
-      in-memory badge.
+- [x] **Worker + OPFS mode**: LANDED 2026-07-03 — whole client core in a
+      worker on `opfs-sahpool` (Direction decision 2). `./worker` exports
+      `startSyncWorker` (constructs SyncClient + transports + database in
+      the worker; database-factory indirection for tests); the main
+      thread drives it through `SyncClientHandle` over a 6-message
+      postMessage RPC (`init`/`call`/`ready`/`result`/`error`/`event`,
+      typed from one shared `WorkerApi`). The handle takes the Web Locks
+      leader lock BEFORE spawning the worker; a second tab gets a clear
+      not-leader state (followers stay TODO 3.2). `openWasmDatabase()` is
+      now explicitly ephemeral (always `:memory:`);
+      `openPersistentWasmDatabase(name)` is worker-only, no COOP/COEP
+      needed, loud error without OPFS, never IndexedDB. §8.4 host loop
+      lives in the worker (`autoSync` + jitter). Bun tests run the real
+      worker entry in a bun Worker (bun:sqlite injected) against a real
+      HTTP+WS server; demo panes run persistent worker cores (`demo-a`/
+      `demo-b`, badge "sqlite-wasm (OPFS, worker)") with `?ephemeral` as
+      the labeled in-memory mode.
 - [ ] **WebSocket-native sync loop** (Direction decision 1): sync rounds
       over the socket, kill the separate HTTP round-trip from the client
       loop; `POST /sync` stays server-side for producers/tooling. Define
