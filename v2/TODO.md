@@ -32,8 +32,10 @@ the old tree archived.
 - [ ] **Signed-URL client path**: client advertises accept bit 3, fetches
       segments from CDN/R2-style URLs; conformance scenario for the
       issue→fetch→verify loop. (Server side already exists.)
-- [ ] **Perf budgets in CI**: bench bootstrap/apply-rate/bundle numbers
-      regress loudly in `v2.yml` (REVISE B3 promised this; not wired yet).
+- [x] **Perf budgets in CI**: LANDED 2026-07-03 — `bench:ci` mode with
+      documented budgets (rows/sec floor 90k, propagation p95 ≤ 20 ms,
+      own JS ≤ 60 KB raw, total ≤ 600 KB gzip) as a `bench-budgets` job
+      in `v2.yml`; RESULTS.md stays the curated local record.
 
 ## 2. Parity ladder (one at a time, spec'd before built)
 
@@ -129,7 +131,7 @@ the old tree archived.
 - [ ] **Kill/merge gate decision** (Benjamin) — data in `bench/RESULTS.md`;
       all four criteria PASS as of 2026-07-03.
 - [ ] **Push** the local commit stack (Benjamin's call, per standing rule).
-- [ ] **Rust pairing in CI**: add a cargo lane to `v2.yml` (or a separate
-      workflow) so (Rust client × TS server) conformance is CI-blocking,
-      not machine-local — the two-core drift risk (REVISE Risks) says this
-      is a merge precondition.
+- [x] **Rust pairing in CI**: LANDED 2026-07-03 — `rust-conformance` job
+      in `v2.yml` (fmt + clippy -D warnings + cargo test + shim build +
+      the full pairing under SYNCULAR_RUST_CONFORMANCE=1). CI-blocking
+      once pushed; default `bun run check` stays cargo-free.

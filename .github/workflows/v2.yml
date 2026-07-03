@@ -32,3 +32,73 @@ jobs:
 
       - name: Check (typecheck + lint + test)
         run: bun run check
+
+  # Perf budgets (REVISE B3: "perf budgets in CI from day one"). Reduced
+  # CI workloads; budgets and their derivations live in
+  # v2/bench/src/index.ts (BUDGETS). Fails loudly on breach; never
+  # rewrites bench/RESULTS.md (the curated gate record).
+  bench-budgets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: v2
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Bench budgets (CI mode)
+        run: bun run bench:ci
+
+  # The Rust pairing as a merge precondition (REVISE Risks: two-core
+  # drift): cargo hygiene + tests, then the SAME conformance catalog on
+  # (Rust client x TS server). Plain `bun run check` stays hermetic —
+  # cargo lives only in this job.
+  rust-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: v2
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: v2/rust -> target
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: cargo fmt
+        working-directory: v2/rust
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        working-directory: v2/rust
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        working-directory: v2/rust
+        run: cargo test
+
+      - name: Build conformance shim
+        working-directory: v2/rust
+        run: cargo build -p conformance-shim
+
+      - name: Conformance (Rust client x TS server)
+        run: SYNCULAR_RUST_CONFORMANCE=1 bun test packages/conformance/test/conformance-rust.test.ts
