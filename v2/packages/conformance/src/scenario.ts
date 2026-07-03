@@ -57,6 +57,8 @@ export interface ScenarioServerOptions {
   readonly schema?: DriverSchema;
   readonly limits?: ServerLimitsOptions;
   readonly nowMs?: number;
+  /** §5.4 native-scheme signed-URL issuance for this scenario's server. */
+  readonly signedUrls?: { readonly ttlSeconds?: number };
 }
 
 export interface Scenario {
@@ -253,6 +255,10 @@ export interface ClientHandle {
   readonly sentRequests: Uint8Array[];
   /** Seam-observed realtime traffic + readiness waits. */
   readonly realtime: RealtimeObservations;
+  /** Signed URLs fetched at the CDN hop, in order (§5.4). */
+  readonly urlFetches: string[];
+  /** Direct-endpoint downloads (§5.5), by segmentId, in order. */
+  readonly directDownloads: string[];
 }
 
 export interface NewClientOptions {
@@ -262,6 +268,15 @@ export interface NewClientOptions {
   readonly limits?: ClientLimitsOptions;
   /** Convenience: set the actor's allowed scopes before first use. */
   readonly allowed?: DriverScopeMap;
+  /**
+   * Give this client's endpoints a URL host (§5.4 bit-3 capability —
+   * negotiation, not fallback). Requires a `signed-urls` server created
+   * with `server.signedUrls`.
+   */
+  readonly signedUrls?: boolean;
+  /** Pin the client clock (epoch ms) — required by §5.4 expiry checks
+   * against the server's virtual clock. */
+  readonly nowMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -299,15 +314,42 @@ export class ScenarioContext {
     const faults = new TransportFaults(this.random);
     const sentRequests: Uint8Array[] = [];
     const realtime = new RealtimeObservations();
+    const urlFetches: string[] = [];
+    const directDownloads: string[] = [];
     const server = this.server;
     const actorId = options.actorId;
     const clientId = options.clientId;
+    const fetchSegmentUrl =
+      options.signedUrls === true
+        ? async (url: string): Promise<Uint8Array> => {
+            urlFetches.push(url);
+            if (faults.dropNextUrlFetches > 0) {
+              faults.dropNextUrlFetches -= 1;
+              throw new TransportFault('injected: url fetch lost');
+            }
+            const serve = server.fetchSegmentUrl?.bind(server);
+            if (serve === undefined) {
+              throw new Error(
+                'newClient({ signedUrls: true }) needs a signed-urls server',
+              );
+            }
+            const result = await serve(url);
+            if (!result.ok) throw new EndpointError(result.error);
+            if (faults.corruptNextUrlFetch) {
+              faults.corruptNextUrlFetch = false;
+              return faults.corrupt(result.bytes);
+            }
+            return result.bytes;
+          }
+        : undefined;
 
     const api = await this.pairing.client.create({
       clientId,
       schema: options.schema ?? this.schema,
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
+      ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
       endpoints: {
+        ...(fetchSegmentUrl !== undefined ? { fetchSegmentUrl } : {}),
         sync: async (request) => {
           sentRequests.push(request);
           if (faults.dropNextRequests > 0) {
@@ -332,6 +374,7 @@ export class ScenarioContext {
           return result.bytes;
         },
         downloadSegment: async (request) => {
+          directDownloads.push(request.segmentId);
           if (faults.dropNextSegmentRequests > 0) {
             faults.dropNextSegmentRequests -= 1;
             throw new TransportFault('injected: segment request lost');
@@ -384,6 +427,8 @@ export class ScenarioContext {
       faults,
       sentRequests,
       realtime,
+      urlFetches,
+      directDownloads,
     };
     this.#clients.push(handle);
     return handle;
@@ -428,6 +473,9 @@ export async function createScenarioContext(
     nowMs: scenario.server?.nowMs ?? DEFAULT_NOW_MS,
     ...(scenario.server?.limits !== undefined
       ? { limits: scenario.server.limits }
+      : {}),
+    ...(scenario.server?.signedUrls !== undefined
+      ? { signedUrls: scenario.server.signedUrls }
       : {}),
   });
   return new ScenarioContext(

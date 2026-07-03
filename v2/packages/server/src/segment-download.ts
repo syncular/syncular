@@ -159,7 +159,8 @@ async function downloadSegment(
       'Content-Type': 'application/octet-stream',
       ETag: `"${entry.record.segmentId}"`,
       'Cache-Control': 'private, max-age=0',
-      Vary: 'Authorization, X-Syncular-Scopes',
+      // Accept-Encoding: the body may be served compressed (§5.8).
+      Vary: 'Authorization, X-Syncular-Scopes, Accept-Encoding',
     },
   };
 }

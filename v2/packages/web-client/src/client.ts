@@ -201,6 +201,7 @@ export interface SubscribeInput {
 /** §4.2 accept bits the client cares about. */
 const ACCEPT_ROWS_BASELINE = 0b0011;
 const ACCEPT_SQLITE = 1 << 2;
+const ACCEPT_SIGNED_URLS = 1 << 3;
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest(
@@ -348,15 +349,22 @@ export class SyncClient {
   /**
    * §4.2 accept mask: the configured override, or the rows baseline plus
    * bit 2 when the backend can import sqlite images (§5.3) and a segment
-   * downloader exists (sqlite segments are never inline, §5.7).
+   * downloader exists (sqlite segments are never inline, §5.7), plus
+   * bit 3 when the downloader exposes a direct URL fetch (§5.4
+   * capability negotiation).
    */
   #acceptMask(): number {
     const configured = this.#config.limits?.accept;
     if (configured !== undefined) return configured;
+    const segments = this.#config.segments;
     const sqliteCapable =
-      typeof this.#db.withSqliteImage === 'function' &&
-      this.#config.segments !== undefined;
-    return ACCEPT_ROWS_BASELINE | (sqliteCapable ? ACCEPT_SQLITE : 0);
+      typeof this.#db.withSqliteImage === 'function' && segments !== undefined;
+    const urlCapable = typeof segments?.fetchUrl === 'function';
+    return (
+      ACCEPT_ROWS_BASELINE |
+      (sqliteCapable ? ACCEPT_SQLITE : 0) |
+      (urlCapable ? ACCEPT_SIGNED_URLS : 0)
+    );
   }
 
   subscriptions(): SubscriptionRecord[] {
@@ -1106,15 +1114,41 @@ export class SyncClient {
         'received SEGMENT_REF but no segment downloader is configured',
       );
     }
-    const bytes = await downloader({
-      segmentId: frame.segmentId,
-      table: frame.table,
-      ...(frame.url !== undefined ? { url: frame.url } : {}),
-      ...(frame.urlExpiresAtMs !== undefined
-        ? { urlExpiresAtMs: frame.urlExpiresAtMs }
-        : {}),
-      requestedScopesJson: canonicalScopeJson(sub.scopes),
-    });
+    let bytes: Uint8Array;
+    if (frame.url !== undefined) {
+      // §5.4: a url-carrying descriptor MUST be fetched from that URL —
+      // no fall-through to the direct endpoint; any failure invalidates
+      // the descriptor and re-pulling recovers (§1.4 rule 5 keeps the
+      // cursor/resume token unpersisted).
+      const fetchUrl = downloader.fetchUrl;
+      if (
+        fetchUrl === undefined ||
+        (this.#acceptMask() & ACCEPT_SIGNED_URLS) === 0
+      ) {
+        throw new ClientSyncError(
+          'sync.invalid_request',
+          'SEGMENT_REF carries a url but accept bit 3 was not advertised (§5.4)',
+        );
+      }
+      if (
+        frame.urlExpiresAtMs !== undefined &&
+        frame.urlExpiresAtMs <= this.#now()
+      ) {
+        // §5.4: MUST NOT start a fetch at/past expiry.
+        throw new ClientSyncError(
+          'sync.segment_expired',
+          `signed URL for segment ${frame.segmentId} expired before fetch — re-pull mints fresh descriptors (§5.4)`,
+          true,
+        );
+      }
+      bytes = await fetchUrl(frame.url);
+    } else {
+      bytes = await downloader({
+        segmentId: frame.segmentId,
+        table: frame.table,
+        requestedScopesJson: canonicalScopeJson(sub.scopes),
+      });
+    }
     // §5.1: verify the content address before applying; on mismatch the
     // segment is discarded and the cursor/resume token stay unpersisted,
     // so the next pull re-delivers.

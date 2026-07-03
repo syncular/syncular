@@ -57,29 +57,22 @@ export function httpSyncTransport(
 }
 
 /**
- * §5.4 download resolution order: a fresh signed URL first (zero
- * sync-server egress), then the direct endpoint with the
- * `X-Syncular-Scopes` re-authorization header (§5.5). A signed URL is
- * never retried after `urlExpiresAtMs`.
+ * §5.5 direct endpoint with the `X-Syncular-Scopes` re-authorization
+ * header, plus the §5.4 `fetchUrl` capability (advertises accept bit 3).
+ * `fetchUrl` sends NO headers at all — the signed URL is the entire
+ * grant, and host auth must never leak to CDN/object hosts (§5.4).
+ * Resolution (which path a descriptor takes, expiry, no fall-through)
+ * lives in the client core, not here.
  */
 export function httpSegmentDownloader(
   segmentsBaseUrl: string,
-  options?: HttpTransportOptions & { readonly now?: () => number },
+  options?: HttpTransportOptions,
 ): SegmentDownloader {
   const doFetch = options?.fetch ?? fetch;
-  const now = options?.now ?? Date.now;
-  return async (request) => {
-    if (
-      request.url !== undefined &&
-      (request.urlExpiresAtMs === undefined || request.urlExpiresAtMs > now())
-    ) {
-      try {
-        const response = await doFetch(request.url);
-        if (response.ok) return new Uint8Array(await response.arrayBuffer());
-      } catch {
-        // fall through to the direct endpoint (§5.4 MUST fall back)
-      }
-    }
+  const direct = async (request: {
+    readonly segmentId: string;
+    readonly requestedScopesJson: string;
+  }) => {
     const response = await doFetch(
       `${segmentsBaseUrl}/${encodeURIComponent(request.segmentId)}`,
       {
@@ -92,6 +85,19 @@ export function httpSegmentDownloader(
     if (!response.ok) await throwHttpError(response);
     return new Uint8Array(await response.arrayBuffer());
   };
+  const fetchUrl = async (url: string) => {
+    // Deliberately headerless: the URL is the bearer grant (§5.4).
+    const response = await doFetch(url);
+    if (!response.ok) {
+      throw new ClientSyncError(
+        'sync.transport_failed',
+        `signed-URL fetch failed with HTTP ${response.status} (§5.4: descriptor invalidated, re-pull to recover)`,
+        true,
+      );
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  };
+  return Object.assign(direct, { fetchUrl });
 }
 
 /** WebSocket realtime connector (§8.1): text = control, binary = deltas. */

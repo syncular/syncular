@@ -103,12 +103,19 @@ export interface ServerLimitsOptions {
   readonly segmentTtlMs?: number;
 }
 
+/** §5.4 signed-URL issuance (native HMAC scheme) for the server under
+ * test. The TTL is mutable at runtime via `setSignedUrlTtlSeconds`. */
+export interface ServerSignedUrlOptions {
+  readonly ttlSeconds?: number;
+}
+
 export interface ServerCreateOptions {
   readonly schema: DriverSchema;
   readonly partition: string;
   /** Virtual clock start, epoch ms. The clock only moves via advanceClock. */
   readonly nowMs: number;
   readonly limits?: ServerLimitsOptions;
+  readonly signedUrls?: ServerSignedUrlOptions;
 }
 
 export interface RetentionOptions {
@@ -150,7 +157,7 @@ export type RealtimeConnectResult =
   | { readonly ok: false; readonly error: DriverError };
 
 /** Optional server capabilities a scenario may require. */
-export type ServerCapability = 'idempotency-fault';
+export type ServerCapability = 'idempotency-fault' | 'signed-urls';
 
 export interface ServerInstance {
   /**
@@ -166,6 +173,17 @@ export interface ServerInstance {
     segmentId: string,
     scopesHeaderJson: string,
   ): Promise<BytesResult>;
+
+  /**
+   * `signed-urls`: the CDN/edge role for the §5.4 native scheme — serve
+   * a signed segment URL exactly as the URL host would (verify the `st`
+   * token against the stored segment, no actor identity involved).
+   */
+  fetchSegmentUrl?(url: string): Promise<BytesResult>;
+
+  /** `signed-urls`: change the issuance TTL for subsequently minted URLs
+   * (0 ⇒ URLs are born expired — the §5.4 no-fetch-past-expiry probe). */
+  setSignedUrlTtlSeconds?(ttlSeconds: number): Promise<void>;
 
   /** §8.1 realtime attach for (actorId, clientId). */
   connectRealtime(
@@ -224,15 +242,21 @@ export interface ClientEndpoints {
   /** One combined push+pull round trip. Rejects on transport faults and
    * on request-level server errors (§1.1 HTTP-JSON surface). */
   sync(request: Uint8Array): Promise<Uint8Array>;
-  /** Segment fetch (§5.4 resolution order is the client's concern). */
+  /** Direct-endpoint segment fetch (§5.5). The §5.4 resolution — which
+   * path a descriptor takes, expiry, no fall-through — is the client's. */
   downloadSegment(request: {
     readonly segmentId: string;
     readonly table: string;
-    readonly url?: string;
-    readonly urlExpiresAtMs?: number;
     /** Canonical JSON (§11.2) of the requested scope map (§5.5). */
     readonly requestedScopesJson: string;
   }): Promise<Uint8Array>;
+  /**
+   * Bare URL fetch (§5.4 signed-URL path) — the harness's CDN hop.
+   * Presence is the client's bit-3 capability (negotiation, §4.2):
+   * drivers advertise accept bit 3 iff this endpoint exists. Nothing but
+   * the URL crosses (the URL is the entire grant).
+   */
+  fetchSegmentUrl?(url: string): Promise<Uint8Array>;
   /** Realtime attach; the harness observes both directions. */
   connectRealtime(sink: RealtimeSink): Promise<RealtimeConnection>;
 }
@@ -325,6 +349,12 @@ export interface ClientCreateOptions {
   readonly schema: DriverSchema;
   readonly endpoints: ClientEndpoints;
   readonly limits?: ClientLimitsOptions;
+  /**
+   * Pin the client clock (epoch ms). Scenarios exercising the §5.4
+   * `urlExpiresAtMs` check set this to the server's virtual now — a
+   * wall-clock client would misjudge virtual-clock expiries.
+   */
+  readonly nowMs?: number;
 }
 
 export interface ClientInstance {

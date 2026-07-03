@@ -29,11 +29,13 @@ use crate::values::{
 
 /// §4.2 default: the rows baseline plus sqlite images (§5.3) — rusqlite
 /// can always import an image, so the premier path is advertised unless
-/// the host overrides `limits.accept`.
+/// the host overrides `limits.accept`. Bit 3 (signed URLs, §5.4) is
+/// added per transport capability at request-build time.
 const DEFAULT_ACCEPT: u8 = 0b0111;
 const ACCEPT_INLINE_ROWS: u8 = 1 << 0;
 const ACCEPT_EXTERNAL_ROWS: u8 = 1 << 1;
 const ACCEPT_SQLITE: u8 = 1 << 2;
+const ACCEPT_SIGNED_URLS: u8 = 1 << 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SubState {
@@ -116,6 +118,9 @@ pub struct SyncClient {
     /// §8.4 coalesced sync-needed signal.
     sync_needed: bool,
     realtime_connected: bool,
+    /// Client clock (epoch ms) for the §5.4 `urlExpiresAtMs` check; the
+    /// host may pin it (conformance runs on a virtual clock).
+    now_ms: Option<i64>,
 }
 
 fn quote_ident(name: &str) -> String {
@@ -235,9 +240,25 @@ impl SyncClient {
             stopped: false,
             sync_needed: false,
             realtime_connected: false,
+            now_ms: None,
         };
         client.create_tables()?;
         Ok(client)
+    }
+
+    /// Pin the client clock (epoch ms) — the §5.4 expiry check runs
+    /// against this instead of system time (conformance virtual clock).
+    pub fn set_now_ms(&mut self, now_ms: i64) {
+        self.now_ms = Some(now_ms);
+    }
+
+    fn clock_now_ms(&self) -> i64 {
+        self.now_ms.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0)
+        })
     }
 
     fn create_tables(&self) -> Result<(), String> {
@@ -485,7 +506,7 @@ impl SyncClient {
 
     // -- request building ---------------------------------------------------------
 
-    fn build_request(&self) -> (Message, RequestMeta) {
+    fn build_request(&self, url_capable: bool) -> (Message, RequestMeta) {
         let mut frames = vec![Frame::ReqHeader {
             client_id: self.client_id.clone(),
             schema_version: self.schema.version,
@@ -517,7 +538,13 @@ impl SyncClient {
             });
             pushed_ids.push(commit.client_commit_id.clone());
         }
-        let accept = self.limits.accept.unwrap_or(DEFAULT_ACCEPT);
+        // §4.2/§5.4: bit 3 is advertised iff the transport can fetch a
+        // bare URL — capability negotiation, decided per transport.
+        let accept = self.limits.accept.unwrap_or(if url_capable {
+            DEFAULT_ACCEPT | ACCEPT_SIGNED_URLS
+        } else {
+            DEFAULT_ACCEPT
+        });
         frames.push(Frame::PullHeader {
             limit_commits: self.limits.limit_commits.unwrap_or(0),
             limit_snapshot_rows: self.limits.limit_snapshot_rows.unwrap_or(0),
@@ -572,7 +599,7 @@ impl SyncClient {
         // §8.4: the coalesced sync-needed signal clears when a pull round
         // BEGINS, so a wake-up landing mid-round survives it.
         self.sync_needed = false;
-        let (message, meta) = self.build_request();
+        let (message, meta) = self.build_request(transport.supports_url_fetch());
         let request_bytes = encode_message(&message);
         // §8.7: rounds ride the socket whenever it is connected (one
         // loop, no fallback pair); the transport seam stays bytes-in /
@@ -1059,17 +1086,41 @@ impl SyncClient {
                             ),
                         ));
                     }
-                    let requested_scopes_json =
-                        canonical_scope_json(&self.subs[sub_index].requested);
-                    let bytes = transport
-                        .download_segment(&SegmentRequest {
-                            segment_id: segment_id.clone(),
-                            table,
-                            url,
-                            url_expires_at_ms,
-                            requested_scopes_json,
-                        })
-                        .map_err(|e| SectionError::Abort(e.code, e.message))?;
+                    let bytes = if let Some(url) = url {
+                        // §5.4: a url-carrying descriptor MUST be fetched
+                        // from that URL; failure invalidates the whole
+                        // descriptor (no fall-through to §5.5 — re-pull
+                        // recovers, §1.4 rule 5).
+                        if meta.accept & ACCEPT_SIGNED_URLS == 0 {
+                            return Err(SectionError::Abort(
+                                "sync.invalid_request".to_owned(),
+                                "SEGMENT_REF carries a url but accept bit 3 was not advertised (§5.4)"
+                                    .to_owned(),
+                            ));
+                        }
+                        // §5.4: MUST NOT start a fetch at/past expiry.
+                        if url_expires_at_ms.is_some_and(|exp| exp <= self.clock_now_ms()) {
+                            return Err(SectionError::Abort(
+                                "sync.segment_expired".to_owned(),
+                                format!(
+                                    "signed URL for segment {segment_id} expired before fetch — re-pull mints fresh descriptors (§5.4)"
+                                ),
+                            ));
+                        }
+                        transport
+                            .fetch_url(&url)
+                            .map_err(|e| SectionError::Abort(e.code, e.message))?
+                    } else {
+                        let requested_scopes_json =
+                            canonical_scope_json(&self.subs[sub_index].requested);
+                        transport
+                            .download_segment(&SegmentRequest {
+                                segment_id: segment_id.clone(),
+                                table,
+                                requested_scopes_json,
+                            })
+                            .map_err(|e| SectionError::Abort(e.code, e.message))?
+                    };
                     // §5.1: verify the content address before applying.
                     let digest = Sha256::digest(&bytes);
                     let expected = segment_id

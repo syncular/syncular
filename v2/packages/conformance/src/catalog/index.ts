@@ -12,6 +12,7 @@ import { lifecycleScenarios } from './lifecycle';
 import { offlineScenarios } from './offline';
 import { realtimeScenarios } from './realtime';
 import { scopeScenarios } from './scopes';
+import { signedUrlScenarios } from './signed-url';
 import { sqliteImageScenarios } from './sqlite-image';
 import { vectorScenarios } from './vectors';
 import { wsRoundScenarios } from './ws-rounds';
@@ -23,6 +24,7 @@ export const CATALOG: readonly Scenario[] = [
   ...scopeScenarios,
   ...bootstrapScenarios,
   ...sqliteImageScenarios,
+  ...signedUrlScenarios,
   ...lifecycleScenarios,
   ...realtimeScenarios,
   ...wsRoundScenarios,

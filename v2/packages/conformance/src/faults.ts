@@ -56,6 +56,10 @@ export class TransportFaults {
   dropNextSegmentRequests = 0;
   /** Truncate the next segment download at a seeded offset. */
   truncateNextSegmentDownload = false;
+  /** Fail the next N signed-URL fetches (the CDN hop, §5.4). */
+  dropNextUrlFetches = 0;
+  /** Corrupt the next signed-URL fetch's bytes (§5.1 tamper). */
+  corruptNextUrlFetch = false;
 
   readonly #random: () => number;
 
@@ -67,5 +71,13 @@ export class TransportFaults {
   truncate(bytes: Uint8Array): Uint8Array {
     const cut = 1 + Math.floor(this.#random() * (bytes.length - 1));
     return bytes.slice(0, cut);
+  }
+
+  /** Flip one seeded byte — same length, different content address. */
+  corrupt(bytes: Uint8Array): Uint8Array {
+    const out = bytes.slice();
+    const index = Math.floor(this.#random() * out.length);
+    out[index] = (out[index] ?? 0) ^ 0xff;
+    return out;
   }
 }

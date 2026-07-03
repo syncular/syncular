@@ -60,7 +60,7 @@ function makeApp(events?: SyncularServerEvents) {
   });
 }
 
-function requestBytes(): Uint8Array {
+function requestBytes(title = 'hello'): Uint8Array {
   return encodeMessage({
     wireVersion: PROTOCOL_WIRE_VERSION,
     msgKind: 'request',
@@ -74,7 +74,7 @@ function requestBytes(): Uint8Array {
             table: 'tasks',
             rowId: 't1',
             op: 'upsert',
-            payload: encodeRow(COLUMNS, ['t1', 'p1', 'hello']),
+            payload: encodeRow(COLUMNS, ['t1', 'p1', title]),
           },
         ],
       },
@@ -173,6 +173,59 @@ describe('hono adapter', () => {
       headers: { ...headers, 'if-none-match': `"${ref.segmentId}"` },
     });
     expect(cached.status).toBe(304);
+  });
+
+  test('GET /segments/:id negotiates Content-Encoding (§5.8)', async () => {
+    const app = makeApp();
+    // A title long enough that the rows segment clears the 1 KiB
+    // identity floor.
+    const syncResponse = await app.request('/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': SSP2_CONTENT_TYPE,
+        authorization: 'Bearer good',
+      },
+      body: requestBytes('x'.repeat(4096)).slice().buffer as ArrayBuffer,
+    });
+    const message = decodeMessage(
+      new Uint8Array(await syncResponse.arrayBuffer()),
+    );
+    const ref = message.frames.find((f) => f.type === 'SEGMENT_REF');
+    if (ref?.type !== 'SEGMENT_REF') throw new Error('expected SEGMENT_REF');
+    const headers = {
+      authorization: 'Bearer good',
+      'x-syncular-scopes': canonicalScopeJson({ project_id: ['p1'] }),
+    };
+
+    // zstd preferred when offered (§5.8).
+    const zstd = await app.request(`/segments/${ref.segmentId}`, {
+      headers: { ...headers, 'accept-encoding': 'zstd, gzip' },
+    });
+    expect(zstd.status).toBe(200);
+    expect(zstd.headers.get('content-encoding')).toBe('zstd');
+    expect(zstd.headers.get('vary')).toContain('Accept-Encoding');
+    const zstdBody = new Uint8Array(await zstd.arrayBuffer());
+    expect(zstdBody.length).toBeLessThan(ref.byteLength);
+    // The content address is over the UNCOMPRESSED bytes (§5.1/§5.8).
+    expect(Bun.zstdDecompressSync(zstdBody).length).toBe(ref.byteLength);
+
+    // gzip fallback.
+    const gzip = await app.request(`/segments/${ref.segmentId}`, {
+      headers: { ...headers, 'accept-encoding': 'gzip' },
+    });
+    expect(gzip.headers.get('content-encoding')).toBe('gzip');
+    expect(
+      Bun.gunzipSync(new Uint8Array(await gzip.arrayBuffer())).length,
+    ).toBe(ref.byteLength);
+
+    // Identity when nothing acceptable is offered (q=0 refusal counts).
+    const identity = await app.request(`/segments/${ref.segmentId}`, {
+      headers: { ...headers, 'accept-encoding': 'zstd;q=0, br' },
+    });
+    expect(identity.headers.get('content-encoding')).toBeNull();
+    expect(new Uint8Array(await identity.arrayBuffer()).length).toBe(
+      ref.byteLength,
+    );
   });
 
   test('a config events sink flows through the adapter untouched', async () => {

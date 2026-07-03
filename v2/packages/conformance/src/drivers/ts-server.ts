@@ -17,11 +17,13 @@ import {
   MemorySegmentStore,
   pruneCommitLog,
   type RealtimeHub,
+  type SegmentUrlConfig,
   type ServerSchema,
   type ServerStorage,
   SqliteServerStorage,
   SyncError,
   type SyncRequestContext,
+  verifySegmentToken,
 } from '@syncular-v2/server';
 import type {
   BytesResult,
@@ -71,6 +73,11 @@ function toDriverValue(value: RowValue): DriverRowValue {
   return value;
 }
 
+/** §5.4 native scheme fixtures — the harness plays both signer and CDN. */
+const SIGNED_URL_KEY = 'conformance-signing-key';
+const SIGNED_URL_BASE = 'https://cdn.conformance.test/segments';
+const audienceFor = (partition: string) => `aud:${partition}`;
+
 class TsServerInstance implements ServerInstance {
   readonly #schema: DriverSchema;
   readonly #partition: string;
@@ -86,6 +93,8 @@ class TsServerInstance implements ServerInstance {
   };
   #resolverFailing = false;
   #failNextIdempotencyLookup = false;
+  readonly #signedUrls: SegmentUrlConfig | undefined;
+  #signedUrlTtlSeconds: number;
 
   constructor(options: ServerCreateOptions) {
     this.#schema = options.schema;
@@ -102,6 +111,21 @@ class TsServerInstance implements ServerInstance {
         ? { ttlMs: options.limits.segmentTtlMs }
         : {},
     );
+    this.#signedUrlTtlSeconds = options.signedUrls?.ttlSeconds ?? 900;
+    // Native HMAC issuance (§5.4); ttlSeconds is a live getter so
+    // scenarios can flip the TTL between pulls (expiry probes).
+    const self = this;
+    this.#signedUrls =
+      options.signedUrls !== undefined
+        ? {
+            key: SIGNED_URL_KEY,
+            baseUrl: SIGNED_URL_BASE,
+            audience: audienceFor,
+            get ttlSeconds() {
+              return self.#signedUrlTtlSeconds;
+            },
+          }
+        : undefined;
     this.#wrapped = this.#wrapStorage();
     this.#hub = createRealtimeHub({
       schema: toServerSchema(options.schema),
@@ -112,6 +136,9 @@ class TsServerInstance implements ServerInstance {
       // and limits (one handler, two framings).
       segments: this.#segments,
       limits: this.#limits,
+      ...(this.#signedUrls !== undefined
+        ? { signedUrls: this.#signedUrls }
+        : {}),
       ...(options.limits?.maxDeltaBytes !== undefined
         ? { maxDeltaBytes: options.limits.maxDeltaBytes }
         : {}),
@@ -165,6 +192,9 @@ class TsServerInstance implements ServerInstance {
       resolveScopes: (args) => this.#resolveScopes(args.actorId),
       clock: () => this.#now.ms,
       limits: this.#limits,
+      ...(this.#signedUrls !== undefined
+        ? { signedUrls: this.#signedUrls }
+        : {}),
       realtime: this.#hub,
     };
   }
@@ -201,6 +231,52 @@ class TsServerInstance implements ServerInstance {
       }
       throw error;
     }
+  }
+
+  /**
+   * The §5.4 CDN role for the native scheme: serve a signed URL exactly
+   * as the URL host would — verify the `st` token against the stored
+   * segment (MAC, expiry with the native ≤ 60 s skew, seg/sd/aud
+   * claims), no actor identity, no scopes header. Content bytes are the
+   * stored (uncompressed, content-addressed) object.
+   */
+  async fetchSegmentUrl(url: string): Promise<BytesResult> {
+    try {
+      if (this.#signedUrls === undefined) {
+        throw new SyncError('sync.not_found', 'signed URLs not configured');
+      }
+      const parsed = new URL(url);
+      if (!url.startsWith(`${SIGNED_URL_BASE}/`)) {
+        throw new SyncError('sync.not_found', 'unknown URL host');
+      }
+      const segmentId = decodeURIComponent(
+        parsed.pathname.slice(parsed.pathname.lastIndexOf('/') + 1),
+      );
+      const token = parsed.searchParams.get('st');
+      if (token === null) {
+        throw new SyncError('sync.forbidden', 'missing st token');
+      }
+      const entry = await this.#segments.get(segmentId);
+      if (entry === undefined) {
+        throw new SyncError('sync.not_found', 'unknown segment (§5.5)');
+      }
+      await verifySegmentToken(SIGNED_URL_KEY, token, {
+        segmentId,
+        scopeDigest: entry.record.scopeDigest,
+        audience: audienceFor(this.#partition),
+        nowMs: this.#now.ms,
+      });
+      return { ok: true, bytes: entry.bytes };
+    } catch (error) {
+      if (error instanceof SyncError) {
+        return { ok: false, error: toDriverError(error) };
+      }
+      throw error;
+    }
+  }
+
+  async setSignedUrlTtlSeconds(ttlSeconds: number): Promise<void> {
+    this.#signedUrlTtlSeconds = ttlSeconds;
   }
 
   async connectRealtime(
@@ -315,7 +391,7 @@ class TsServerInstance implements ServerInstance {
 
 export const tsServerDriver: ServerDriver = {
   name: 'ts-server',
-  capabilities: ['idempotency-fault'],
+  capabilities: ['idempotency-fault', 'signed-urls'],
   async create(options: ServerCreateOptions): Promise<ServerInstance> {
     return new TsServerInstance(options);
   },

@@ -11,17 +11,22 @@ export type SyncTransport = (request: Uint8Array) => Promise<Uint8Array>;
 export interface SegmentFetchRequest {
   readonly segmentId: string;
   readonly table: string;
-  /** Short-lived signed URL from the descriptor, if issued (§5.4). */
-  readonly url?: string;
-  readonly urlExpiresAtMs?: number;
   /** Canonical JSON (§11.2) of the requested scope map (§5.5 header). */
   readonly requestedScopesJson: string;
 }
 
-/** Fetch segment bytes (signed URL preferred, direct endpoint fallback). */
-export type SegmentDownloader = (
-  request: SegmentFetchRequest,
-) => Promise<Uint8Array>;
+/**
+ * Fetch segment bytes from the direct endpoint (§5.5). `fetchUrl`, when
+ * present, is the §5.4 direct-URL capability: its presence makes the
+ * client advertise accept bit 3, and the client core then routes
+ * url-carrying descriptors through it — capability negotiation, never a
+ * fallback pair. A `fetchUrl` implementation MUST NOT attach host
+ * authentication (the URL is the entire grant, §5.4).
+ */
+export interface SegmentDownloader {
+  (request: SegmentFetchRequest): Promise<Uint8Array>;
+  readonly fetchUrl?: (url: string) => Promise<Uint8Array>;
+}
 
 export interface RealtimeHandlers {
   /** JSON control frame (§8.1): hello / sync / heartbeat / unknown. */

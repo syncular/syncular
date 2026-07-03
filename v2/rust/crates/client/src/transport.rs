@@ -19,14 +19,13 @@ impl TransportError {
     }
 }
 
-/// Segment fetch request (§5.4 resolution order is the client's concern;
-/// the harness endpoint receives the descriptor fields it needs).
+/// Direct-endpoint segment fetch (§5.5). Signed-URL descriptors never
+/// reach this call: the §5.4 resolution lives in the client core, which
+/// routes url-carrying descriptors through `fetch_url` instead.
 #[derive(Debug, Clone)]
 pub struct SegmentRequest {
     pub segment_id: String,
     pub table: String,
-    pub url: Option<String>,
-    pub url_expires_at_ms: Option<i64>,
     /// Canonical JSON (§11.2) of the requested scope map (§5.5).
     pub requested_scopes_json: String,
 }
@@ -44,8 +43,25 @@ pub trait Transport {
     /// subscriptions on the connection at round end, so no reconnect is
     /// needed after subscription changes.
     fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError>;
-    /// Segment download (§5.4/§5.5).
+    /// Segment download via the direct endpoint (§5.5).
     fn download_segment(&mut self, request: &SegmentRequest) -> Result<Vec<u8>, TransportError>;
+    /// §5.4 direct URL fetch capability: `true` makes the client
+    /// advertise accept bit 3 (capability negotiation, §4.2). Default:
+    /// not capable.
+    fn supports_url_fetch(&self) -> bool {
+        false
+    }
+    /// Plain GET of a signed URL (§5.4). The URL is the entire grant —
+    /// implementations MUST NOT attach sync-server authentication or the
+    /// `X-Syncular-Scopes` header. Only called when `supports_url_fetch`
+    /// returned `true`.
+    fn fetch_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+        let _ = url;
+        Err(TransportError::new(
+            "sync.invalid_request",
+            "this transport has no direct URL fetch (§5.4)",
+        ))
+    }
     /// Realtime attach (§8.1). Inbound traffic is delivered by the host via
     /// `SyncClient::on_realtime_text` / `on_realtime_binary`.
     fn realtime_connect(&mut self) -> Result<(), TransportError>;

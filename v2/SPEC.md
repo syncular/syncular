@@ -853,8 +853,9 @@ every rows segment is delivered as a `SEGMENT_REF`.
 capability sends `accept = 0b0011` (inline + external rows). The
 reference clients advertise bit 2 in addition (`0b0111`) whenever their
 database backend can import sqlite images (§5.3) and a segment
-downloader is configured — the premier path is the default wherever it
-is possible, per §0. The mask is also a client-side contract: a
+downloader is configured, and bit 3 in addition whenever that
+downloader exposes a direct URL fetch (§5.4) — the premier path is the
+default wherever it is possible, per §0. The mask is also a client-side contract: a
 client MUST reject a `SEGMENT_REF` whose `mediaType` it did not
 advertise (fail loud as `sync.invalid_request`, aborting per §1.4
 rule 5) rather than skip or guess — a server that ignores the mask is
@@ -1249,11 +1250,39 @@ download-side failures are §5.5's (`sync.not_found`,
 | `url` | `opt(str)` | Short-lived signed URL (see below); present only if the client advertised `accept` bit 3 |
 | `urlExpiresAtMs` | `opt(i64)` | MUST be present iff `url` is |
 
-Download resolution order: a client with a fresh `url` SHOULD fetch it
-directly (zero sync-server egress); on a missing/expired/failed `url` it
-MUST fall back to `GET <mount>/segments/{segmentId}` (§5.5). A client
-MUST NOT retry a signed URL after `urlExpiresAtMs`; it re-pulls or falls
-back instead.
+**Download resolution (capability negotiation, not fallback).** A
+client advertises `accept` bit 3 (§4.2) iff it can fetch a bare URL;
+the reference clients advertise it whenever their segment downloader
+exposes a direct URL fetch. Which path a segment travels is decided at
+issuance: a descriptor with a `url` MUST be fetched from that URL (zero
+sync-server egress); a descriptor without one is downloaded via the
+direct endpoint (§5.5) — the path for clients that did not advertise
+bit 3. Three MUSTs pin the url path:
+
+- **The URL is the entire grant.** The client MUST NOT attach host
+  authentication, `X-Syncular-Scopes`, or any other sync-server
+  credential to a signed-URL fetch — signed URLs point at CDN/object
+  hosts that must never see host auth.
+- **No fetch past expiry.** A client MUST NOT start a fetch at or after
+  `urlExpiresAtMs` (client clock; the ≤ 60 s verify skew in the native
+  scheme exists for clock error, not as a client allowance). An
+  already-expired descriptor is a failed descriptor (next rule), with
+  `sync.segment_expired` semantics (§10.2): re-pulling mints fresh
+  descriptors.
+- **Failure invalidates the descriptor.** A failed url fetch — expired
+  before fetch, transport error, non-success status, or a §5.1
+  content-address mismatch — invalidates the whole descriptor. The
+  client MUST NOT fall through to the direct endpoint (a second
+  delivery attempt under a different auth story is exactly the fallback
+  class v2 removes) and MUST abort the subscription per §1.4 rule 5;
+  recovery is the next pull, which re-authorizes and mints fresh
+  descriptors (§5.5 recovery contract).
+
+A `url` on a descriptor when the client did not advertise bit 3 is a
+broken server: reject as `sync.invalid_request`, aborting per §1.4
+rule 5 (the §4.2 mask contract, applied to delivery capability).
+Content-address verification (§5.1) applies to the transport-decoded
+bytes exactly as on the direct endpoint (§5.8).
 
 **Signed URL claims (native scheme).** When the host serves segments
 itself (or via a store that delegates auth to it), the URL carries a
@@ -1322,8 +1351,9 @@ for clients without signed-URL support.
   re-pulling mints fresh descriptors).
 - Response headers: `Content-Type: application/octet-stream`,
   `ETag: "<segmentId>"`, `Cache-Control: private, max-age=0`,
-  `Vary: Authorization, X-Syncular-Scopes`. `If-None-Match` with a
-  matching ETag returns 304. `Content-Encoding` per §1.3.
+  `Vary: Authorization, X-Syncular-Scopes, Accept-Encoding`.
+  `If-None-Match` with a matching ETag returns 304. `Content-Encoding`
+  per §1.3 and §5.8.
 
 ### 5.6 Segment application contract (client)
 
@@ -1370,6 +1400,46 @@ preserved for re-encoding like any other binary field). Servers
 SHOULD inline segments smaller than 256 KiB (uncompressed) to avoid a
 second round-trip for small tables; servers MUST NOT inline sqlite
 segments. Semantics are identical to a referenced rows segment.
+
+### 5.8 Compression
+
+Transport compression for segments is §1.3 applied to the §5 delivery
+paths; this section pins the shipped posture. The invariants first —
+each already normative elsewhere, restated because this is where they
+bite:
+
+- `segmentId` hashes **uncompressed** bytes (§5.1); nothing in this
+  section is visible to identity, golden vectors, or cache keys.
+- Clients MUST handle `Content-Encoding` transparently (native fetch
+  decompression, §0 — no decompression code in the client bundle) and
+  MUST verify the content address over the decoded bytes.
+- Servers MUST NOT double-compress: segment bytes are stored and
+  addressed uncompressed; compression is applied per response by the
+  serving hop, never baked into the stored object.
+
+Shipped defaults (reference server; decided 2026-07-03 on measured
+data — 100k-row bench table, Bun 1.3):
+
+- **Direct endpoint (§5.5): compress both formats**, negotiated from
+  the request's `Accept-Encoding` — `zstd` preferred, `gzip` fallback,
+  identity when the client offers neither. Measured: rows segments
+  (7.2 MB) compress 6.2× in 8 ms (zstd) / 7.7× in 42 ms (gzip); sqlite
+  images (7.8 MB) compress 3.4× in 14 ms (zstd) / 51 ms (gzip);
+  client-side decompression ≤ 8 ms either way. The transfer saving
+  dwarfs the CPU cost on any real network, and the latency-critical
+  image lane keeps its §5.3 win: 14 ms of zstd against a 3.4× smaller
+  multi-MB transfer. The 304 path is unaffected; `Vary` includes
+  `Accept-Encoding` (§5.5).
+- **Signed-URL path (§5.4): objects are stored and served
+  uncompressed.** The content address pins the stored bytes and
+  presigned GETs serve them verbatim (§5.4 equivalence rule); a host
+  MUST NOT store pre-compressed bytes under the segment id. Transfer
+  compression on this path is a deployment concern (CDN edge
+  compression), deliberately out of protocol scope.
+- **Inline segments and WS-delivered frames: no per-segment
+  compression.** They ride inside the SSP2 stream, whose transport
+  compression is §1.3's concern (§0: compression moves to the
+  transport — there is no compression field anywhere in SSP2).
 
 ---
 
@@ -2179,3 +2249,20 @@ not a prose test.
     the connection. (d) Interleaving: a commit landing during an
     in-flight round produces a text wake-up, never a mid-stream `0x00`
     message; deltas resume after the post-round ack (§8.2/§8.7).
+
+12. **Signed-URL delivery.** (a) Issue→fetch→verify: a bit-3 client
+    bootstraps through descriptor-carried URLs (native HMAC scheme) —
+    every external segment is fetched from the URL host with no
+    sync-server credentials attached, zero direct downloads, content
+    addresses verified, state converged (§5.4). (b) Expiry: a URL
+    already at `urlExpiresAtMs` is never fetched; the sync aborts with
+    `sync.segment_expired` semantics, nothing persists, and a re-pull
+    under a fresh TTL recovers (§5.4, §1.4 rule 5). (c) Tamper:
+    corrupted bytes from the URL host fail the §5.1 content address
+    with the named error and never fall through to the direct
+    endpoint; the re-pull converges. (d) Gating: without bit 3
+    descriptors carry no `url`/`urlExpiresAtMs`; with bit 3 they do
+    (raw surface, §4.2). Delegated presign (S3/R2) is pinned by
+    server-package tests against the S3 stub (§5.4 equivalence rule) —
+    behaviorally indistinguishable to the client, so the pairing
+    scenarios run the native scheme.
