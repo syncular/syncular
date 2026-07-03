@@ -22,6 +22,7 @@ import type {
 } from './client';
 import type { SqlRow, SqlValue } from './database';
 import { ClientSyncError } from './errors';
+import { InvalidationEmitter, type InvalidationListener } from './invalidation';
 import {
   type LeaderLease,
   type LeaderLock,
@@ -102,6 +103,8 @@ export class SyncClientHandle {
   readonly #lease: LeaderLease | undefined;
   readonly #pending: Map<number, Pending>;
   readonly #nextId: { value: number };
+  readonly #invalidation: InvalidationEmitter;
+  readonly #presence: Set<(scopeKey: string) => void>;
   #closed = false;
 
   /** @internal — use {@link createSyncClientHandle}. */
@@ -112,6 +115,8 @@ export class SyncClientHandle {
     lease?: LeaderLease;
     pending: Map<number, Pending>;
     nextId: { value: number };
+    invalidation: InvalidationEmitter;
+    presence: Set<(scopeKey: string) => void>;
   }) {
     this.isLeader = internals.isLeader;
     this.clientId = internals.clientId;
@@ -119,6 +124,31 @@ export class SyncClientHandle {
     this.#lease = internals.lease;
     this.#pending = internals.pending;
     this.#nextId = internals.nextId;
+    this.#invalidation = internals.invalidation;
+    this.#presence = internals.presence;
+  }
+
+  /**
+   * TODO 3.1 / I1: subscribe to fine-grained invalidation — the identical
+   * surface as `SyncClient.onInvalidate`, so React bindings target one
+   * interface across direct and worker-handle modes. Events are forwarded
+   * from the worker's choke point (one per apply batch). Returns an
+   * unsubscribe function; a not-leader handle never emits.
+   */
+  onInvalidate(listener: InvalidationListener): () => void {
+    return this.#invalidation.on(listener);
+  }
+
+  /**
+   * §8.6: subscribe to presence changes — the identical surface as
+   * `SyncClient.onPresence`, forwarded from the worker. Returns an
+   * unsubscribe function; a not-leader handle never emits.
+   */
+  onPresence(listener: (scopeKey: string) => void): () => void {
+    this.#presence.add(listener);
+    return () => {
+      this.#presence.delete(listener);
+    };
   }
 
   #call<M extends WorkerMethod>(
@@ -289,12 +319,16 @@ export async function createSyncClientHandle(
       : await lock.acquire(lockName);
   const pending = new Map<number, Pending>();
   const nextId = { value: 1 };
+  const invalidation = new InvalidationEmitter();
+  const presence = new Set<(scopeKey: string) => void>();
   if (lease === undefined) {
     return new SyncClientHandle({
       isLeader: false,
       clientId: '',
       pending,
       nextId,
+      invalidation,
+      presence,
     });
   }
 
@@ -359,6 +393,15 @@ export async function createSyncClientHandle(
       events.onUpgrading?.(event.upgrading);
     } else if (event.kind === 'presence') {
       events.onPresence?.(event.scopeKey);
+      for (const listener of presence) {
+        try {
+          listener(event.scopeKey);
+        } catch {
+          /* a UI listener must never break event dispatch */
+        }
+      }
+    } else if (event.kind === 'invalidate') {
+      invalidation.emit(event.event);
     } else {
       events.onSynced?.({
         ...(event.summary !== undefined ? { summary: event.summary } : {}),
@@ -403,6 +446,8 @@ export async function createSyncClientHandle(
       lease,
       pending,
       nextId,
+      invalidation,
+      presence,
     });
   } catch (error) {
     worker.terminate();

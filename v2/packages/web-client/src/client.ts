@@ -57,6 +57,11 @@ import {
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
 import { ClientSyncError } from './errors';
 import {
+  Invalidation,
+  InvalidationEmitter,
+  type InvalidationListener,
+} from './invalidation';
+import {
   type LeaderLease,
   type LeaderLock,
   singleOwnerLock,
@@ -344,6 +349,12 @@ export class SyncClient {
   readonly #hasBlobs: boolean;
   /** §8.6 presence: scopeKey → (peerKey `actorId clientId` → peer). */
   readonly #presence = new Map<string, Map<string, PresencePeer>>();
+  /** TODO 3.1 / I1: the ONE apply-path invalidation listener set. */
+  readonly #invalidation = new InvalidationEmitter();
+  /** §8.6: subscribable presence-change listeners (twin of onPresence). */
+  readonly #presenceListeners = new Set<(scopeKey: string) => void>();
+  /** The batch accumulator; non-undefined only inside `#applyBatch`. */
+  #batch: Invalidation | undefined;
 
   constructor(config: SyncClientConfig) {
     this.#config = config;
@@ -408,10 +419,18 @@ export class SyncClient {
    */
   #runSchemaReset(): void {
     this.#setUpgrading(true);
-    this.#db.transaction(() => {
-      dropAndRecreateSyncedTables(this.#db, this.#schema);
-      resetSubscriptionsForBump(this.#db);
-      setMeta(this.#db, LOCAL_SCHEMA_VERSION_KEY, String(this.#schema.version));
+    this.#applyBatch((batch) => {
+      this.#db.transaction(() => {
+        dropAndRecreateSyncedTables(this.#db, this.#schema);
+        resetSubscriptionsForBump(this.#db);
+        setMeta(
+          this.#db,
+          LOCAL_SCHEMA_VERSION_KEY,
+          String(this.#schema.version),
+        );
+      });
+      // Whole-DB reset: every synced table's rows changed (I1 eviction-shaped).
+      for (const table of this.#schema.tables.values()) batch.table(table.name);
     });
     // The stop state is over: this client now ships a servable schema. The
     // outbox is re-applied optimistically over the (now empty) tables so
@@ -448,6 +467,58 @@ export class SyncClient {
 
   query(sql: string, params?: readonly SqlValue[]): SqlRow[] {
     return this.#db.query(sql, params);
+  }
+
+  // -- live-query invalidation (TODO 3.1 / DESIGN-eviction I1–I4) -----------
+
+  /**
+   * Subscribe to fine-grained invalidation. The callback fires ONCE per
+   * apply batch (never per row, I1) with the `{tables, scopeKeys}` touched
+   * this batch (§3.1 vocabulary, I2). Returns an unsubscribe function.
+   *
+   * Every local mutation flows through the same choke point: `COMMIT`
+   * apply, segment apply, the optimistic overlay rebuild, the §3.3 purge,
+   * the §7.4.3 schema-bump reset, and local `mutate`. `tables` is the
+   * reliable floor; `scopeKeys` refines it wherever the source carried
+   * per-row scopes (COMMIT changes) or a scope map (segments/purge).
+   */
+  onInvalidate(listener: InvalidationListener): () => void {
+    return this.#invalidation.on(listener);
+  }
+
+  /**
+   * Run `fn` as one apply batch: install a fresh accumulator, collect every
+   * touched key, then emit exactly one coalesced event if anything changed.
+   * Re-entrant calls share the outer batch so a nested apply never
+   * double-emits (e.g. purge → blob reconcile → replay inside one round).
+   */
+  #applyBatch<T>(fn: (batch: Invalidation) => T): T {
+    if (this.#batch !== undefined) return fn(this.#batch);
+    const batch = new Invalidation();
+    this.#batch = batch;
+    try {
+      return fn(batch);
+    } finally {
+      this.#batch = undefined;
+      const event = batch.finish();
+      if (event !== undefined) this.#invalidation.emit(event);
+    }
+  }
+
+  /** Async twin of {@link #applyBatch} for the pull/delta apply round. */
+  async #applyBatchAsync<T>(
+    fn: (batch: Invalidation) => Promise<T>,
+  ): Promise<T> {
+    if (this.#batch !== undefined) return fn(this.#batch);
+    const batch = new Invalidation();
+    this.#batch = batch;
+    try {
+      return await fn(batch);
+    } finally {
+      this.#batch = undefined;
+      const event = batch.finish();
+      if (event !== undefined) this.#invalidation.emit(event);
+    }
   }
 
   // -- blobs (§5.9) ---------------------------------------------------------
@@ -609,6 +680,19 @@ export class SyncClient {
   }
 
   /**
+   * §8.6: subscribe to presence changes (join/update/leave on any held key).
+   * The subscribable twin of the `onPresence` config callback — React's
+   * `usePresence` targets this so many components can watch one client.
+   * Returns an unsubscribe function.
+   */
+  onPresence(listener: (scopeKey: string) => void): () => void {
+    this.#presenceListeners.add(listener);
+    return () => {
+      this.#presenceListeners.delete(listener);
+    };
+  }
+
+  /**
    * §8.6.2 publish (or clear, `doc: null`) this client's presence document
    * for `scopeKey`. Requires a live socket; the document is ephemeral and
    * lost on disconnect (the server emits leave). Authorization is the
@@ -742,9 +826,11 @@ export class SyncClient {
         values: json,
       };
     });
-    this.#db.transaction(() => {
-      appendOutboxCommit(this.#db, clientCommitId, operations, this.#now());
-      this.#applyOperationsLocally(operations);
+    this.#applyBatch((batch) => {
+      this.#db.transaction(() => {
+        appendOutboxCommit(this.#db, clientCommitId, operations, this.#now());
+        this.#applyOperationsLocally(operations, batch);
+      });
     });
     return clientCommitId;
   }
@@ -1128,6 +1214,13 @@ export class SyncClient {
       peers.set(peerKey, { actorId, clientId, doc });
     }
     this.#config.onPresence?.(scopeKey);
+    for (const listener of this.#presenceListeners) {
+      try {
+        listener(scopeKey);
+      } catch {
+        // A UI listener must never break presence application.
+      }
+    }
   }
 
   async #handleRealtimeBinary(bytes: Uint8Array): Promise<void> {
@@ -1211,115 +1304,55 @@ export class SyncClient {
     let errorFrame: ClientSyncError | undefined;
     let deltaCursor = -1;
 
-    try {
-      for (const frame of message.frames.slice(1)) {
-        switch (frame.type) {
-          case 'RESP_HEADER':
-            break;
-          case 'LEASE':
-            // §7.3.5: persist the opaque lease and clear any prior lease
-            // error — a fresh lease means the outage/revocation is over.
-            this.#setLeaseState({
-              leaseId: frame.leaseId,
-              expiresAtMs: frame.expiresAtMs,
-            });
-            break;
-          case 'PUSH_RESULT':
-            this.#handlePushResult(frame, commitsById, summary);
-            break;
-          case 'SUB_START': {
-            const sub = subsById.get(frame.id);
-            const fresh =
-              sub !== undefined &&
-              sub.cursor < 0 &&
-              sub.bootstrapState === undefined &&
-              frame.bootstrap;
-            const skip =
-              sub === undefined ||
-              (mode === 'delta' &&
-                (sub.status !== 'active' || sub.bootstrapState !== undefined));
-            section = { start: frame, sub, fresh, skip, cleared: false };
-            break;
-          }
-          case 'COMMIT':
-            if (section !== undefined && !section.skip) {
-              this.#applyCommit(frame, summary);
-            }
-            break;
-          case 'SEGMENT_INLINE': {
-            if (
-              section === undefined ||
-              section.skip ||
-              section.sub === undefined
-            ) {
+    // One apply batch per pull/delta round (I1): COMMIT + segment applies,
+    // the revocation purge, and the optimistic replay all coalesce into a
+    // single invalidation event emitted when this batch unwinds.
+    await this.#applyBatchAsync(async () => {
+      try {
+        for (const frame of message.frames.slice(1)) {
+          switch (frame.type) {
+            case 'RESP_HEADER':
+              break;
+            case 'LEASE':
+              // §7.3.5: persist the opaque lease and clear any prior lease
+              // error — a fresh lease means the outage/revocation is over.
+              this.#setLeaseState({
+                leaseId: frame.leaseId,
+                expiresAtMs: frame.expiresAtMs,
+              });
+              break;
+            case 'PUSH_RESULT':
+              this.#handlePushResult(frame, commitsById, summary);
+              break;
+            case 'SUB_START': {
+              const sub = subsById.get(frame.id);
+              const fresh =
+                sub !== undefined &&
+                sub.cursor < 0 &&
+                sub.bootstrapState === undefined &&
+                frame.bootstrap;
+              const skip =
+                sub === undefined ||
+                (mode === 'delta' &&
+                  (sub.status !== 'active' ||
+                    sub.bootstrapState !== undefined));
+              section = { start: frame, sub, fresh, skip, cleared: false };
               break;
             }
-            const segment = decodeRowsSegment(frame.payload);
-            this.#applySegmentOrFail(
-              section,
-              summary,
-              (table, clearFirst, effective) =>
-                applyRowsSegment(this.#db, this.#schema, table, segment, {
-                  clearFirst,
-                  effective,
-                }),
-              section.fresh && !section.cleared,
-            );
-            break;
-          }
-          case 'SEGMENT_REF': {
-            if (
-              section === undefined ||
-              section.skip ||
-              section.sub === undefined
-            ) {
-              break;
-            }
-            // §4.2: a descriptor whose mediaType was not advertised is a
-            // broken server — fail loud, never skip or guess.
-            if (
-              frame.mediaType === 'sqlite' &&
-              (this.#acceptMask() & ACCEPT_SQLITE) === 0
-            ) {
-              throw new ClientSyncError(
-                'sync.invalid_request',
-                'SEGMENT_REF mediaType sqlite was not advertised in accept (§4.2)',
-              );
-            }
-            const bytes = await this.#downloadSegment(frame, section.sub);
-            if (frame.mediaType === 'sqlite') {
-              // §5.3: images are whole-table — a paged descriptor is
-              // invalid, and the image is always its table's first page.
-              if (
-                frame.rowCursor !== undefined ||
-                frame.nextRowCursor !== undefined
-              ) {
-                throw new ClientSyncError(
-                  'sync.invalid_request',
-                  'sqlite segments are whole-table: rowCursor/nextRowCursor must be absent (§5.3)',
-                );
+            case 'COMMIT':
+              if (section !== undefined && !section.skip) {
+                this.#applyCommit(frame, summary);
               }
-              this.#applySegmentOrFail(
-                section,
-                summary,
-                (table, clearFirst, effective) =>
-                  applySqliteSegment(
-                    this.#db,
-                    this.#schema,
-                    table,
-                    bytes,
-                    {
-                      table: frame.table,
-                      rowCount: frame.rowCount,
-                      asOfCommitSeq: frame.asOfCommitSeq,
-                      scopeDigest: frame.scopeDigest,
-                    },
-                    { clearFirst, effective },
-                  ),
-                section.fresh && !section.cleared,
-              );
-            } else {
-              const segment = decodeRowsSegment(bytes);
+              break;
+            case 'SEGMENT_INLINE': {
+              if (
+                section === undefined ||
+                section.skip ||
+                section.sub === undefined
+              ) {
+                break;
+              }
+              const segment = decodeRowsSegment(frame.payload);
               this.#applySegmentOrFail(
                 section,
                 summary,
@@ -1328,58 +1361,124 @@ export class SyncClient {
                     clearFirst,
                     effective,
                   }),
-                section.fresh &&
-                  !section.cleared &&
-                  frame.rowCursor === undefined,
+                section.fresh && !section.cleared,
               );
+              break;
             }
-            break;
-          }
-          case 'SUB_END': {
-            if (
-              section !== undefined &&
-              !section.skip &&
-              section.sub !== undefined
-            ) {
-              const applied = this.#finishSection(
-                section.sub,
-                section.start,
-                frame.nextCursor,
-                frame.bootstrapState,
-                summary,
-              );
-              if (mode === 'delta' && applied) {
-                deltaCursor = Math.max(deltaCursor, frame.nextCursor);
+            case 'SEGMENT_REF': {
+              if (
+                section === undefined ||
+                section.skip ||
+                section.sub === undefined
+              ) {
+                break;
               }
+              // §4.2: a descriptor whose mediaType was not advertised is a
+              // broken server — fail loud, never skip or guess.
+              if (
+                frame.mediaType === 'sqlite' &&
+                (this.#acceptMask() & ACCEPT_SQLITE) === 0
+              ) {
+                throw new ClientSyncError(
+                  'sync.invalid_request',
+                  'SEGMENT_REF mediaType sqlite was not advertised in accept (§4.2)',
+                );
+              }
+              const bytes = await this.#downloadSegment(frame, section.sub);
+              if (frame.mediaType === 'sqlite') {
+                // §5.3: images are whole-table — a paged descriptor is
+                // invalid, and the image is always its table's first page.
+                if (
+                  frame.rowCursor !== undefined ||
+                  frame.nextRowCursor !== undefined
+                ) {
+                  throw new ClientSyncError(
+                    'sync.invalid_request',
+                    'sqlite segments are whole-table: rowCursor/nextRowCursor must be absent (§5.3)',
+                  );
+                }
+                this.#applySegmentOrFail(
+                  section,
+                  summary,
+                  (table, clearFirst, effective) =>
+                    applySqliteSegment(
+                      this.#db,
+                      this.#schema,
+                      table,
+                      bytes,
+                      {
+                        table: frame.table,
+                        rowCount: frame.rowCount,
+                        asOfCommitSeq: frame.asOfCommitSeq,
+                        scopeDigest: frame.scopeDigest,
+                      },
+                      { clearFirst, effective },
+                    ),
+                  section.fresh && !section.cleared,
+                );
+              } else {
+                const segment = decodeRowsSegment(bytes);
+                this.#applySegmentOrFail(
+                  section,
+                  summary,
+                  (table, clearFirst, effective) =>
+                    applyRowsSegment(this.#db, this.#schema, table, segment, {
+                      clearFirst,
+                      effective,
+                    }),
+                  section.fresh &&
+                    !section.cleared &&
+                    frame.rowCursor === undefined,
+                );
+              }
+              break;
             }
-            section = undefined;
-            break;
+            case 'SUB_END': {
+              if (
+                section !== undefined &&
+                !section.skip &&
+                section.sub !== undefined
+              ) {
+                const applied = this.#finishSection(
+                  section.sub,
+                  section.start,
+                  frame.nextCursor,
+                  frame.bootstrapState,
+                  summary,
+                );
+                if (mode === 'delta' && applied) {
+                  deltaCursor = Math.max(deltaCursor, frame.nextCursor);
+                }
+              }
+              section = undefined;
+              break;
+            }
+            case 'ERROR':
+              // §1.4 rule 5 / §1.6: the request failed; the open
+              // subscription's SUB_END values are never persisted.
+              errorFrame = new ClientSyncError(
+                frame.code,
+                frame.message,
+                frame.retryable,
+              );
+              section = undefined;
+              break;
+            case 'UNKNOWN':
+              break; // §1.2 rule 2: skipped, never interpreted
           }
-          case 'ERROR':
-            // §1.4 rule 5 / §1.6: the request failed; the open
-            // subscription's SUB_END values are never persisted.
-            errorFrame = new ClientSyncError(
-              frame.code,
-              frame.message,
-              frame.retryable,
-            );
-            section = undefined;
-            break;
-          case 'UNKNOWN':
-            break; // §1.2 rule 2: skipped, never interpreted
+          if (errorFrame !== undefined) break;
         }
-        if (errorFrame !== undefined) break;
+      } finally {
+        // §7.1: local reads see outbox state applied optimistically — replay
+        // the still-pending commits on top of the freshly applied server
+        // state (the simple reconciliation mandated for B3).
+        this.#replayOutbox();
+        // §5.9.7 B1: after every apply/replay, refcounts follow the live rows.
+        // A benign apply retains zero-ref bodies (LRU default); the revocation
+        // purge below deletes orphaned bodies with deleteOrphans (B2).
+        this.#reconcileBlobs(false);
       }
-    } finally {
-      // §7.1: local reads see outbox state applied optimistically — replay
-      // the still-pending commits on top of the freshly applied server
-      // state (the simple reconciliation mandated for B3).
-      this.#replayOutbox();
-      // §5.9.7 B1: after every apply/replay, refcounts follow the live rows.
-      // A benign apply retains zero-ref bodies (LRU default); the revocation
-      // purge below deletes orphaned bodies with deleteOrphans (B2).
-      this.#reconcileBlobs(false);
-    }
+    });
 
     if (errorFrame !== undefined) throw errorFrame;
 
@@ -1497,6 +1596,19 @@ export class SyncClient {
   #applyCommit(frame: CommitFrame, summary: MutableSummary): void {
     applyCommitFrame(this.#db, this.#schema, frame);
     summary.commitsApplied += 1;
+    // I1/I2: record touched tables and precise `prefix:value` scope keys —
+    // COMMIT changes carry per-row stored scopes (§4.5), the finest honest
+    // invalidation the wire provides.
+    const batch = this.#batch;
+    if (batch === undefined) return;
+    for (const change of frame.changes) {
+      const tableName = frame.tables[change.tableIndex];
+      if (tableName === undefined) continue;
+      const table = this.#schema.tables.get(tableName);
+      if (table === undefined) continue;
+      batch.table(tableName);
+      batch.changeScopes(table, change.scopes);
+    }
   }
 
   /**
@@ -1524,6 +1636,11 @@ export class SyncClient {
         section.start.effectiveScopes,
       );
       section.cleared = true;
+      // I1/I2: segments carry only a table + scopeDigest, never per-row
+      // scope keys — invalidate the table plus the subscription's effective
+      // scope keys (the coarsest honest key for bulk data).
+      this.#batch?.table(table.name);
+      this.#batch?.scopeMap(table, section.start.effectiveScopes);
     } catch (error) {
       if (
         error instanceof ClientSyncError &&
@@ -1664,6 +1781,10 @@ export class SyncClient {
         this.#db.transaction(() => {
           deleteScopedRows(this.#db, table, lastEffective);
         });
+        // I1: the §3.3 purge is a bulk delete — invalidate the table + the
+        // purged effective scope keys so live queries over them re-run.
+        this.#batch?.table(table.name);
+        this.#batch?.scopeMap(table, lastEffective);
         dropOutboxCommitsInScope(this.#db, table, lastEffective);
         // §5.9.7 B2: revocation deletes now-unauthorized blob bodies —
         // reconcile with deleteOrphans (evicted ≠ revoked).
@@ -1700,9 +1821,13 @@ export class SyncClient {
 
   // -- optimistic state ----------------------------------------------------------
 
-  #applyOperationsLocally(operations: readonly OutboxOperation[]): void {
+  #applyOperationsLocally(
+    operations: readonly OutboxOperation[],
+    batch?: Invalidation,
+  ): void {
     for (const op of operations) {
       const table = this.#table(op.table);
+      batch?.table(op.table);
       if (op.op === 'delete') {
         deleteLocalRow(this.#db, table, op.rowId);
         continue;
@@ -1711,6 +1836,17 @@ export class SyncClient {
         const value = op.values?.[column.name];
         return value === undefined ? null : jsonToRowValue(value);
       });
+      // Record the row's scope keys from its scope columns (I2 refinement).
+      if (batch !== undefined) {
+        for (const [variable, column] of table.scopeColumnByVariable) {
+          const idx = table.columnIndex.get(column);
+          const cell = idx === undefined ? undefined : values[idx];
+          const prefix = table.scopePrefixByVariable.get(variable);
+          if (prefix !== undefined && cell != null) {
+            batch.scopeKey(`${prefix}:${String(cell)}`);
+          }
+        }
+      }
       const existing = this.#db.query(
         `SELECT ${quoteIdent(SYNC_VERSION_COLUMN)} AS v FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
         [op.rowId],
@@ -1725,10 +1861,12 @@ export class SyncClient {
   #replayOutbox(): void {
     const pending = listOutbox(this.#db);
     if (pending.length === 0) return;
-    this.#db.transaction(() => {
-      for (const commit of pending) {
-        this.#applyOperationsLocally(commit.operations);
-      }
+    this.#applyBatch((batch) => {
+      this.#db.transaction(() => {
+        for (const commit of pending) {
+          this.#applyOperationsLocally(commit.operations, batch);
+        }
+      });
     });
   }
 

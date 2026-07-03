@@ -30,6 +30,7 @@ import type {
   SyncSummary,
 } from './client';
 import type { SqlRow, SqlValue } from './database';
+import type { InvalidationEvent } from './invalidation';
 import type { OutboxCommit } from './outbox';
 import type { ClientSchema } from './schema';
 import type { SubscriptionRecord } from './state';
@@ -185,6 +186,15 @@ export type SyncWorkerEvent =
       /** §8.6: presence on a scope key changed inside the worker. */
       readonly kind: 'presence';
       readonly scopeKey: string;
+    }
+  | {
+      /**
+       * TODO 3.1 / I1: one coalesced apply-batch invalidation. `Set`s
+       * structured-clone across the worker boundary, so the event crosses
+       * verbatim — the handle re-emits it to `onInvalidate` listeners.
+       */
+      readonly kind: 'invalidate';
+      readonly event: InvalidationEvent;
     };
 
 export type WorkerToMainMessage =

@@ -1,0 +1,26 @@
+{
+  "name": "@syncular-v2/react",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0"
+  },
+  "dependencies": {
+    "@syncular-v2/web-client": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test --preload ./test/setup.ts"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^15.11.0",
+    "@syncular-v2/core": "workspace:*",
+    "@syncular-v2/server": "workspace:*",
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^18.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

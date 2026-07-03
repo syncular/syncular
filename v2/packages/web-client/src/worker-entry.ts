@@ -284,6 +284,11 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
         post({ t: 'event', event: { kind: 'presence', scopeKey } });
       },
     });
+    // TODO 3.1 / I1: forward every coalesced apply-batch invalidation to the
+    // UI thread so `SyncClientHandle.onInvalidate` fires with worker parity.
+    started.onInvalidate((event) => {
+      if (!closed) post({ t: 'event', event: { kind: 'invalidate', event } });
+    });
     await started.start();
     realtimeConnector =
       overrides.createRealtime !== undefined

@@ -33,6 +33,12 @@ export interface CompiledClientTable {
   readonly columnIndex: ReadonlyMap<string, number>;
   /** Scope variable → local scope column (§3.3 purge mapping). */
   readonly scopeColumnByVariable: ReadonlyMap<string, string>;
+  /**
+   * Scope variable → the pattern's literal prefix (§3.1). A stored-scope
+   * value `v` for this variable has scope key `prefix:v` — the invalidation
+   * vocabulary (TODO 3.1 / DESIGN-eviction I2) and the delta-routing key.
+   */
+  readonly scopePrefixByVariable: ReadonlyMap<string, string>;
 }
 
 export interface CompiledClientSchema {
@@ -71,14 +77,16 @@ export function compileClientSchema(
       );
     }
     const scopeColumnByVariable = new Map<string, string>();
+    const scopePrefixByVariable = new Map<string, string>();
     for (const spec of table.scopes) {
       const pattern = typeof spec === 'string' ? spec : spec.pattern;
       const match = PATTERN_RE.exec(pattern);
-      if (match === null || match[2] === undefined) {
+      if (match === null || match[1] === undefined || match[2] === undefined) {
         throw new Error(
           `table ${table.name}: scope pattern ${JSON.stringify(pattern)} must be 'prefix:{variable}'`,
         );
       }
+      const prefix = match[1];
       const variable = match[2];
       const column = typeof spec === 'string' ? variable : spec.column;
       if (!columnIndex.has(column)) {
@@ -93,6 +101,7 @@ export function compileClientSchema(
         );
       }
       scopeColumnByVariable.set(variable, column);
+      scopePrefixByVariable.set(variable, prefix);
     }
     tables.set(table.name, {
       name: table.name,
@@ -101,6 +110,7 @@ export function compileClientSchema(
       primaryKeyIndex,
       columnIndex,
       scopeColumnByVariable,
+      scopePrefixByVariable,
     });
   }
   return { version: schema.version, tables };

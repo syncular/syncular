@@ -94,10 +94,22 @@ const WORKLOAD = {
  *   100× allowance absorbs runner noise; breaching 20 ms in-process means
  *   a sleep/poll crept into the sync/realtime loop (for scale: v1's
  *   SOCKETED p95 was 22.8 ms — the loopback lane must beat that always).
- * - `ownJsRawCeilingBytes` 60 KB: syncular's own JS (core + codec) is
- *   42.2 KB raw today. Bundle bytes are deterministic — no runner noise —
- *   so this stays TIGHT: ~40% headroom for legitimate feature growth,
- *   far under the 217.7 KB v1 line the gate was scored against.
+ * - `ownJsRawCeilingBytes` 66 KB: syncular's own JS (core + codec) is
+ *   62.98 KB raw today. Bundle bytes are deterministic — no runner noise —
+ *   so this stays tight (~5% headroom: enough that a one-KB innocent
+ *   change doesn't trip, small enough to catch real bloat), far under the
+ *   217.7 KB v1 line the gate was scored against. RAISED from 60 KB
+ *   (2026-07-03, TODO 3.1):
+ *   the live-query invalidation choke point (`invalidation.ts` + the
+ *   apply-path wiring in `client.ts` — the ONE seam DESIGN-eviction I1
+ *   mandates from day one) added +1.84 KB raw (61.14 → 62.98 KB), but only
+ *   +0.49 KB gzip (18.44 → 18.94 KB) — the wire cost is negligible; the raw
+ *   growth is the accumulator class + per-apply-path key collection that
+ *   minifies but does not compress away. 66 KB re-pins the raw line with
+ *   working headroom above the seam. Note: `totalGzipCeilingBytes` is the shipped-size
+ *   gate; own-JS raw is the anti-bloat tripwire, and the seam trips it by
+ *   design intent, not accident. The stale "42.2 KB" prior note predated
+ *   the whole parity ladder, which had already grown own JS to 59.7 KB.
  * - `totalGzipCeilingBytes` 600 KB: total shipped payload (own JS +
  *   sqlite-wasm glue + sqlite3.wasm) is 474.2 KB gzip today. Also
  *   deterministic; ~25% headroom covers a vendor SQLite bump without
@@ -107,7 +119,7 @@ const BUDGETS = {
   bootstrapRowsPerSecFloor: 90_000,
   imageBootstrapRowsPerSecFloor: 300_000,
   propagationP95CeilingMs: 20,
-  ownJsRawCeilingBytes: 60 * 1024,
+  ownJsRawCeilingBytes: 66 * 1024,
   totalGzipCeilingBytes: 600 * 1024,
 } as const;
 

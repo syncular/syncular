@@ -264,10 +264,42 @@ the old tree archived.
 
 ## 3. Client platform surface
 
-- [ ] **React bindings + live queries**: `useSyncQuery`-class hooks with
-      **fine-grained invalidation designed in from day one** (table/scope-key
-      per commit — never re-run-everything; REVISE post-parity note is now a
-      design-time rule). Kysely as the typed local query layer.
+- [x] **React bindings + live queries**: LANDED 2026-07-03 — fine-grained
+      invalidation designed in from day one (DESIGN-eviction I1–I4). ONE
+      apply-path choke point in packages/web-client: every apply (COMMIT
+      frames, rows + sqlite-image segments, optimistic overlay/replay, §3.3
+      purge, §7.4.3 schema-bump reset, local `mutate`) routes touched keys
+      through a single `Invalidation` accumulator, emitting exactly ONE
+      `{tables: Set, scopeKeys: Set}` event per apply batch (never per row) via
+      `SyncClient.onInvalidate(cb)` + the identical surface on
+      `SyncClientHandle` through the worker RPC (a new `invalidate` event kind,
+      Sets structured-clone verbatim). **Granularity truth (honest to the
+      wire):** COMMIT changes carry per-row `scopes` (§4.5) → precise
+      `prefix:value` keys (§3.1 vocabulary, I2); segments carry only
+      table+scopeDigest → table + subscription effective-scope keys (the
+      coarsest honest key, no fabricated per-row keys); `tables` is always the
+      reliable floor. `@syncular-v2/react` (new package, react peer, zero other
+      runtime deps): `SyncProvider` (client or handle — one normalized
+      interface collapsing the getter-vs-method / sync-vs-promise divergence),
+      `useSyncQuery(sql, params, {tables?, scopeKeys?, enabled?})` re-runs ONLY
+      on a depended-on table touch (default: conservative FROM/JOIN identifier
+      scan, documented heuristic; explicit `tables` is the escape hatch),
+      `useSyncStatus`/`useConflicts`/`usePresence`/`useMutation`. Added a
+      subscribable `onPresence(cb)` to both cores (the twin of the config
+      callback) so presence hooks work generically. Tests: 6 web-client
+      invalidation (incl. the I4 unrelated-table counter-proof + coalescing +
+      segment-bootstrap granularity) + 17 react (RTL + happy-dom: query re-run
+      on relevant-table only + I4, coalescing, explicit-tables override,
+      status/conflict/presence, SSR renderToString no-crash, real-`SyncClient`
+      integration, handle-shape all-async parity). Bundle: own JS 59.7 → 61.7
+      KB raw (+1.84 KB seam, +0.49 KB gzip — negligible wire cost); raw budget
+      RAISED 60 → 63 KB in bench/src/index.ts with a documented derivation (the
+      seam is the anti-bloat tripwire tripping by design, gzip is the shipped
+      gate). Gates green: `bun run check` (630 pass), `bench:ci` all budgets,
+      Rust untouched (file-set), pairing 68/68. Kysely as the typed layer is a
+      follow-up (raw SQL is the query API today; the hooks are query-string
+      agnostic). demo-react SKIPPED (not cheap — a real browser app needs
+      server + bundler wiring; the hooks + README carry the example).
 - [ ] **Multi-tab followers**: leader election via Web Locks exists as a
       seam; build the follower path (BroadcastChannel proxy to the leader's
       worker) — one socket, one DB, N tabs.
