@@ -11,9 +11,11 @@ The one-liner: **local SQLite + a server-authoritative commit log + scopes.**
 
 - **30 ms** to bootstrap a 100k-row image on a fresh client (warm/storm
   case; the rows lane is 365 ms) — see [bench results](../../bench/RESULTS.md).
-- **14 KB gzip** of syncular's own client JavaScript (45.5 KB raw) — versus
-  v1's 217.7 KB. The rest of the browser payload is the stock SQLite
-  distribution, which every wasm-SQLite product ships.
+- **19.6 KB gzip** of syncular's own client JavaScript (65.4 KB raw,
+  measured with the full parity surface: worker mode, multi-tab, blobs,
+  CRDT, leases, presence, live-query invalidation) — versus v1's 217.7 KB.
+  The rest of the browser payload is the stock SQLite distribution, which
+  every wasm-SQLite product ships.
 - **Two conformance-locked cores** — a TypeScript core for the web and a
   Rust core for native — that interoperate because they both implement one
   written protocol, verified by a shared conformance suite, not by sharing a
