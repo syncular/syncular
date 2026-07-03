@@ -1287,7 +1287,14 @@ time, so new URLs stop immediately on revocation).
 presigned URLs. Equivalence rule: the signed object key MUST embed the
 `segmentId` (so the grant is bound to exactly one immutable object) and
 the expiry MUST obey the same TTL guidance. Provider-presigned delivery
-is behaviorally indistinguishable to the client.
+is behaviorally indistinguishable to the client. The native token's
+`sd`/`aud` bindings are *intentionally* absent here: issuance happens
+inside the pull, immediately after scope resolution, so authorization
+is bound at issuance time and the object is immutable — the provider's
+signature replaces the claim checks, not the authorization. Providers
+enforce presign expiry with zero skew (the ≤ 60 s skew allowance above
+is native-token-only); this changes nothing for clients, which MUST
+NOT retry a URL past `urlExpiresAtMs` regardless of issuer.
 
 ### 5.5 Direct download endpoint and re-authorization
 
@@ -1305,6 +1312,11 @@ for clients without signed-URL support.
   "scopes query param lesson" as a MUST: a segment reference obtained
   earlier is not a bearer capability; only signed URLs are (deliberately,
   with short TTL).
+- A server MAY eventually *forget* an expired segment entirely (object
+  stores garbage-collect); from that point the segment is
+  indistinguishable from never-existing and `sync.not_found` applies —
+  the expired→forgotten transition is legal and clients MUST treat both
+  codes' recovery path identically (re-pull mints fresh descriptors).
 - Unknown segment ⇒ HTTP 404 `sync.not_found`; known-but-expired
   segment ⇒ HTTP 404 `sync.segment_expired` (§10.2 — the retryable one:
   re-pulling mints fresh descriptors).
