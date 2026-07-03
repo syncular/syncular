@@ -1,0 +1,129 @@
+# v2 ROADMAP — after feature-done
+
+Successor to REVISE.md (the v1→v2 rebuild plan, completed 2026-07-03) and
+TODO.md (the road to feature-done, completed the same day — every buildable
+item landed; see git history for the landing notes). The v2 skeleton plus
+the full parity ladder is built, conformance-locked across both cores, and
+benchmarked. This file plans what comes NEXT.
+
+Standing rules, unchanged: spec-first (behavior lands in SPEC.md with
+vectors or conformance scenarios before/with code), judgment calls get
+codified back into the spec, no fallback paths (one good path per concern,
+support floors not degradation ladders), and every landing keeps `bun run
+check`, `bench:ci`, cargo, and the Rust conformance pairing green. Vendor
+bytes don't gate size; syncular's own JS does (66 KB raw ceiling, re-derive
+on legitimate growth).
+
+## 1. Native bindings block (the one real parity gap)
+
+The Rust core, the C-ABI FFI (`syncular-ffi`), and the shared command
+router (`syncular-command`, conformance-locked via the shim) all exist.
+This block is assembly on a proven core — packages, not protocol.
+
+- [ ] **Tauri** (decided 2026-07-03): native syncular instance + React
+      bridge — NOT JS syncular in the webview (webview OPFS is
+      eviction-prone and inconsistent across WKWebView/webkitgtk; the Rust
+      core gives a real file DB and native perf). Shape:
+      `tauri-plugin-syncular` (Rust, consumes the client crate DIRECTLY —
+      no FFI — exposing the `syncular-command` router as Tauri commands +
+      invalidate/presence/sync-needed/conflict over Tauri events) plus
+      `@syncular-v2/tauri` (JS bridge implementing the same
+      `SyncClientLike` interface the react package already normalizes —
+      hooks work unchanged, the fourth host of one interface after direct/
+      worker/follower). Caveat to document: every useSyncQuery run is one
+      IPC round trip — fine at Tauri IPC latency; pagination guidance for huge
+      result sets is a docs note.
+- [ ] **Swift + Kotlin wrappers**: idiomatic thin wrappers over the FFI
+      command surface (it was designed for them — JSON commands, opaque
+      handle, poll_event). Packaging: xcframework (needs full Xcode; the
+      build script already detects/skips) and AAR/jniLibs via cargo-ndk;
+      lifecycle handling (background/foreground sync, connectivity) lives
+      in the wrappers, not the core. Reuse v1's packaging KNOWLEDGE, never
+      its code.
+- [ ] **React Native**: JSI/TurboModule (NitroModules candidate) over the
+      FFI, surfacing the SAME `SyncClientLike` JS interface so
+      `@syncular-v2/react` works unchanged in RN (decided: RN uses the
+      NATIVE core — Hermes has no OPFS/sqlite-wasm).
+- [ ] **Native transport §8.7 completion**: the native-transport feature's
+      first cut sends rounds over `POST /sync` (conformant) with the
+      socket carrying wake-ups/presence; finish round-over-socket framing
+      (tag 0x01 chunk streams) so native matches the web client's
+      one-loop shape.
+- [ ] **Native CRDT editing (yrs)**: optional — the server merges, so
+      native apps already converge; yrs integration is only needed for
+      local collaborative EDITING UX on native. Demand-gated within this
+      block.
+- [ ] **Conformance for bindings**: the existing stdio shim locks the
+      core; add a thin pairing lane per binding only where the binding
+      adds logic (the Tauri bridge and RN module are protocol-thin — a
+      smoke per platform beats a full catalog run; decide per binding).
+
+## 2. Deployment completion
+
+- [ ] **Durable Object realtime for Workers**: the designed-but-deferred
+      half of the deployment matrix (sketch in packages/server README —
+      one DO hosting the RealtimeHub per partition shard, WS hibernation
+      driving the existing RealtimeSession, in-DO fanout, D1 storage).
+      Lands with a real-Workers smoke (wrangler dev) and closes the last
+      "supported now (HTTP)" asterisk.
+- [ ] **Blobs on Postgres**: implement the optional blob storage methods
+      (`setBlobRefs`, `listRowsReferencingBlob`, `listReferencedBlobIds`)
+      on PostgresServerStorage + contract tests (sqlite parity exists).
+- [ ] **S3 segment/blob stats**: per-bucket counters for the admin surface
+      without LIST (probably a pointer-object accumulator or "stats are
+      approximate on S3" documented honestly).
+
+## 3. Windowed sync W1 (the differentiator)
+
+Design is DONE (`DESIGN-eviction.md`, 2026-07-03): windows = scope-value
+sets; window-scoped subscriptions (window change = sub-set diff, add =
+fresh image bootstrap, remove = unsubscribe fused with eviction); zero
+wire changes, zero server changes; sequenced AFTER the WS-native loop
+(done) as required.
+
+- [ ] **W1 implementation**: window registry in both clients, eviction
+      fused with unsubscribe (outbox-pinned rows excepted), re-entry via
+      the image lane, the six Appendix-B scenarios from the design doc,
+      the one-line §4.7/§8.1 SPEC edits it calls for, and the query-
+      completeness oracle wired into the react bindings (I3).
+- [ ] **W2 TTL sugar** (codegen creation-time bucket columns) — after W1
+      proves out.
+
+## 4. DX polish
+
+- [ ] **Kysely typed local queries**: `useSyncQuery`/client query API are
+      string-agnostic by design — add a typed layer generated from the
+      schema IR (typegen emits table types already; a kysely dialect over
+      ClientDatabase). No API break.
+- [ ] **Per-rowid invalidation refinement**: today's granularity is
+      table + scope-key (honest to the wire); a table→rowid dependency
+      option for hot single-row views was left room for in the design.
+      Demand-gated.
+- [ ] **demo-react**: a hooks-based example app (also the scaffolder's
+      third template candidate).
+
+## 5. Release (gates with Benjamin)
+
+- [ ] **6.3 Package naming** (Benjamin): pick final names; the rename is
+      mechanical (one constants module in create-app; workspace-wide
+      find/replace of @syncular-v2; publish ranges flip one constant).
+- [ ] **Publishing pipeline**: changesets + trusted publishing for the v2
+      package set, carrying the v1 lessons (binaryen/parse-check class
+      guards: any pipeline that builds artifacts parse-validates them;
+      post-publish install smokes with no platform skips).
+- [ ] **6.4 Sunset actions** (Benjamin): promote v2/ toward repo root,
+      archive old packages/ + rust/, execute the registry deprecations
+      (incl. the broken-WASM 0.1.x artifacts), publish the migration
+      guide (already written: docs/pages/migration.md).
+- [ ] **7.1 Gate decision + 7.2 push** (Benjamin): the kill/merge call on
+      the evidence in bench/RESULTS.md; the local commit stack ships when
+      pushed.
+
+## Ordering
+
+Block 1 (native bindings) and Block 2 (deployment completion) are
+parallel-friendly and independent. Block 3 (W1) should not start until
+its react-oracle dependency (I3) has a consumer story — practically:
+after Block 1's Tauri/RN bridges exist, since windowing's UX shows up in
+apps. Block 4 rides whenever. Block 5 is Benjamin-gated and can happen at
+any point — naming earlier is cheaper (fewer docs to re-grep).
