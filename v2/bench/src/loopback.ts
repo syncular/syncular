@@ -11,6 +11,7 @@ import {
   handleSyncRequest,
   MemorySegmentStore,
   type RealtimeHub,
+  type ServerStorage,
   SqliteServerStorage,
   type SyncRequestContext,
 } from '@syncular-v2/server';
@@ -33,14 +34,26 @@ import {
 } from './fixture';
 
 export interface BenchServer {
-  readonly storage: SqliteServerStorage;
+  readonly storage: ServerStorage;
   readonly hub: RealtimeHub;
   readonly ctx: SyncRequestContext;
-  close(): void;
+  close(): void | Promise<void>;
 }
 
-export function createBenchServer(): BenchServer {
-  const storage = new SqliteServerStorage();
+export interface BenchServerOptions {
+  /**
+   * Inject an alternative storage backend (the PG lane wires
+   * `PostgresServerStorage`). Defaults to a fresh in-memory bun:sqlite.
+   */
+  readonly storage?: ServerStorage;
+  /** Cleanup for an injected storage; the sqlite default closes its db. */
+  readonly close?: () => void | Promise<void>;
+}
+
+export function createBenchServer(options?: BenchServerOptions): BenchServer {
+  const sqlite =
+    options?.storage === undefined ? new SqliteServerStorage() : undefined;
+  const storage: ServerStorage = options?.storage ?? (sqlite as ServerStorage);
   const segments = new MemorySegmentStore();
   const resolveScopes = () => ({ project_id: ['*'] });
   const hub = createRealtimeHub({
@@ -60,7 +73,8 @@ export function createBenchServer(): BenchServer {
     resolveScopes,
     realtime: hub,
   };
-  return { storage, hub, ctx, close: () => storage.db.close() };
+  const close = options?.close ?? (() => sqlite?.db.close());
+  return { storage, hub, ctx, close };
 }
 
 /** Seed N deterministic rows straight into server storage (not timed). */
