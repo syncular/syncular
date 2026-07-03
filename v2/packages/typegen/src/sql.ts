@@ -17,7 +17,7 @@
 import { TypegenError } from './errors';
 import type { IrColumn, IrColumnType } from './ir';
 
-/** SQL type keyword → the six §2.4 column types. Case-insensitive. */
+/** SQL type keyword → the §2.4 column types. Case-insensitive. */
 const TYPE_MAP: Readonly<Record<string, IrColumnType>> = {
   TEXT: 'string',
   INTEGER: 'integer',
@@ -33,6 +33,11 @@ const TYPE_MAP: Readonly<Record<string, IrColumnType>> = {
   JSONB: 'json',
   BLOB: 'bytes',
   BYTEA: 'bytes',
+  // §5.9 tag 7: a stored-as-TEXT column carrying a canonical BlobRef
+  // document. The synthetic keyword designates the semantic type; the local
+  // column is TEXT-shaped like `json`.
+  BLOB_REF: 'blob_ref',
+  BLOBREF: 'blob_ref',
 };
 
 export interface ParsedTable {

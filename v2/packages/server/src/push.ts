@@ -19,8 +19,10 @@ import {
   type PushOperation,
   type PushOperationResult,
   type PushResultFrame,
+  parseBlobRef,
   type RowValue,
 } from '@syncular-v2/core';
+import type { BlobStore } from './blob-store';
 import type { SyncRequestContext } from './context';
 import { clockOf } from './context';
 import { SyncError } from './errors';
@@ -33,6 +35,23 @@ import type {
   StoredCommit,
   StoredPushResult,
 } from './storage';
+
+/**
+ * Extract the blobIds a decoded row references through its `blob_ref`
+ * columns (§5.9.4), skipping NULLs. Malformed BlobRefs already failed at
+ * row-codec decode (§5.9.1), so `parseBlobRef` here is total.
+ */
+function blobIdsInRow(
+  table: CompiledTable,
+  values: readonly RowValue[],
+): string[] {
+  const ids: string[] = [];
+  for (const index of table.blobRefColumnIndices) {
+    const value = values[index];
+    if (typeof value === 'string') ids.push(parseBlobRef(value).blobId);
+  }
+  return ids;
+}
 
 type OperationOutcome =
   | { readonly kind: 'applied'; readonly change: NewChange | undefined }
@@ -68,12 +87,18 @@ function conflictRecord(
   };
 }
 
+interface BlobApplyContext {
+  readonly store: BlobStore | undefined;
+  readonly partition: string;
+}
+
 async function applyOperation(
   tx: StorageTransaction,
   schema: CompiledSchema,
   resolved: ResolvedScopes,
   op: PushOperation,
   opIndex: number,
+  blobCtx: BlobApplyContext,
 ): Promise<OperationOutcome> {
   const table = schema.tables.get(op.table);
   if (table === undefined) {
@@ -186,6 +211,16 @@ async function applyOperation(
     }
     const newPayload = stripped ? encodeRow(table.columns, values) : payload;
     const newVersion = stored.serverVersion + 1;
+    // §6.6 / §5.9.6: verify referenced blobs exist before writing.
+    const blobCheck = await checkAndRecordBlobs(
+      tx,
+      table,
+      op.rowId,
+      values,
+      opIndex,
+      blobCtx,
+    );
+    if (blobCheck !== undefined) return blobCheck;
     const newRow = {
       rowId: op.rowId,
       serverVersion: newVersion,
@@ -243,6 +278,16 @@ async function applyOperation(
       'insert denied by scope authorization (§3.4)',
     );
   }
+  // §6.6 / §5.9.6: verify referenced blobs exist before writing.
+  const blobCheck = await checkAndRecordBlobs(
+    tx,
+    table,
+    op.rowId,
+    values,
+    opIndex,
+    blobCtx,
+  );
+  if (blobCheck !== undefined) return blobCheck;
   const newRow = {
     rowId: op.rowId,
     serverVersion: 1,
@@ -261,6 +306,48 @@ async function applyOperation(
       payload,
     },
   };
+}
+
+/**
+ * §5.9.6/§6.6: for a row's `blob_ref` columns, verify every referenced blob
+ * exists, then record the row's reference set in the index (§5.9.4). Returns
+ * a terminating `blob.not_found` outcome if any blob is absent (or the store
+ * is unconfigured while a ref exists), else `undefined` (proceed). No-op for
+ * tables with no `blob_ref` columns.
+ */
+async function checkAndRecordBlobs(
+  tx: StorageTransaction,
+  table: CompiledTable,
+  rowId: string,
+  values: readonly RowValue[],
+  opIndex: number,
+  blobCtx: BlobApplyContext,
+): Promise<OperationOutcome | undefined> {
+  if (table.blobRefColumnIndices.length === 0) return undefined;
+  const blobIds = blobIdsInRow(table, values);
+  if (blobIds.length > 0) {
+    if (blobCtx.store === undefined) {
+      return errorRecord(
+        opIndex,
+        'blob.not_found',
+        'row references a blob but the server has no blob store (§5.9.6)',
+      );
+    }
+    for (const blobId of blobIds) {
+      if (!(await blobCtx.store.has(blobCtx.partition, blobId))) {
+        return errorRecord(
+          opIndex,
+          'blob.not_found',
+          `push references blob ${blobId} which has not been uploaded (§5.9.6)`,
+        );
+      }
+    }
+  }
+  // Update the reference index for this row (empty set clears it, §5.9.4).
+  if (tx.setBlobRefs !== undefined) {
+    await tx.setBlobRefs(table.name, rowId, blobIds);
+  }
+  return undefined;
 }
 
 function missingScopeVariable(
@@ -344,6 +431,7 @@ export async function processPushCommit(
   }
 
   const createdAtMs = clockOf(ctx)();
+  const blobCtx: BlobApplyContext = { store: ctx.blobs, partition };
   const tx = await storage.begin(partition);
   try {
     const results: PushOperationResult[] = [];
@@ -352,7 +440,14 @@ export async function processPushCommit(
     for (let opIndex = 0; opIndex < frame.operations.length; opIndex++) {
       const op = frame.operations[opIndex];
       if (op === undefined) continue;
-      const outcome = await applyOperation(tx, schema, resolved, op, opIndex);
+      const outcome = await applyOperation(
+        tx,
+        schema,
+        resolved,
+        op,
+        opIndex,
+        blobCtx,
+      );
       if (outcome.kind === 'terminate') {
         terminated = outcome.record;
         break;

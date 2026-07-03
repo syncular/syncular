@@ -265,6 +265,27 @@ impl Transport for HostIo {
         value_bytes(result.get("bytes")).map_err(|m| TransportError::new("transport.failed", m))
     }
 
+    fn blob_upload(
+        &mut self,
+        blob_id: &str,
+        bytes: &[u8],
+        media_type: Option<&str>,
+    ) -> Result<(), TransportError> {
+        let mut params = Map::new();
+        params.insert("blobId".to_owned(), Value::from(blob_id.to_owned()));
+        params.insert("bytes".to_owned(), bytes_value(bytes));
+        if let Some(mt) = media_type {
+            params.insert("mediaType".to_owned(), Value::from(mt.to_owned()));
+        }
+        self.call_host("blobUpload", Value::Object(params))
+            .map(|_| ())
+    }
+
+    fn blob_download(&mut self, blob_id: &str) -> Result<Vec<u8>, TransportError> {
+        let result = self.call_host("blobDownload", json!({ "blobId": blob_id }))?;
+        value_bytes(result.get("bytes")).map_err(|m| TransportError::new("transport.failed", m))
+    }
+
     fn realtime_connect(&mut self) -> Result<(), TransportError> {
         self.call_host("realtimeConnect", json!({})).map(|_| ())
     }
@@ -462,6 +483,32 @@ fn dispatch(
                 .ok_or_else(|| client_err("readRows missing table".to_owned()))?;
             let rows = need_client(client)?.read_rows(table).map_err(client_err)?;
             Ok(json!({ "rows": rows }))
+        }
+        "uploadBlob" => {
+            let bytes = value_bytes(params.get("bytes")).map_err(client_err)?;
+            let media_type = params
+                .get("mediaType")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let name = params
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let reference = need_client(client)?
+                .upload_blob(&bytes, media_type, name)
+                .map_err(client_err)?;
+            Ok(json!({ "ref": reference }))
+        }
+        "fetchBlob" => {
+            let blob = params
+                .get("blob")
+                .and_then(Value::as_str)
+                .ok_or_else(|| client_err("fetchBlob missing blob".to_owned()))?
+                .to_owned();
+            // fetch_blob returns (code, message) so the server's blob.* code
+            // reaches the harness (§5.9.5 cross-scope probe).
+            let value = need_client(client)?.fetch_blob(io, &blob)?;
+            Ok(json!({ "blob": value }))
         }
         "conflicts" => {
             let conflicts = need_client(client)?.conflicts().to_vec();

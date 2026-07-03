@@ -4,6 +4,7 @@
  * fallback, and a WebSocket realtime connector. Core tests never use these
  * (the loopback doctrine); B6 exercises them in a real browser.
  */
+import type { BlobTransport } from './blob';
 import { SSP2_CONTENT_TYPE } from './content-type';
 import { ClientSyncError } from './errors';
 import type {
@@ -98,6 +99,43 @@ export function httpSegmentDownloader(
     return new Uint8Array(await response.arrayBuffer());
   };
   return Object.assign(direct, { fetchUrl });
+}
+
+/**
+ * §5.9.3/§5.9.5 blob transport: host-authenticated `PUT`/`GET
+ * <mount>/blobs/{blobId}`. Both carry normal host auth (the blob id is not
+ * a capability — the server re-authorizes downloads against referencing
+ * rows). Content-address verification is the client core's job (§5.9.7).
+ */
+export function httpBlobTransport(
+  blobsBaseUrl: string,
+  options?: HttpTransportOptions,
+): BlobTransport {
+  const doFetch = options?.fetch ?? fetch;
+  return {
+    upload: async (blobId, bytes, mediaType) => {
+      const response = await doFetch(
+        `${blobsBaseUrl}/${encodeURIComponent(blobId)}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': mediaType ?? 'application/octet-stream',
+            ...options?.headers,
+          },
+          body: bytes.slice().buffer as ArrayBuffer,
+        },
+      );
+      if (!response.ok) await throwHttpError(response);
+    },
+    download: async (blobId) => {
+      const response = await doFetch(
+        `${blobsBaseUrl}/${encodeURIComponent(blobId)}`,
+        { headers: { ...options?.headers } },
+      );
+      if (!response.ok) await throwHttpError(response);
+      return new Uint8Array(await response.arrayBuffer());
+    },
+  };
 }
 
 /** WebSocket realtime connector (§8.1): text = control, binary = deltas. */

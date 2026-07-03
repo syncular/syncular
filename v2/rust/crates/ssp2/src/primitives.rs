@@ -138,6 +138,14 @@ impl<'a> Reader<'a> {
         Ok(RawJson(s))
     }
 
+    /// `blob_ref` (§2.4 tag 7, §5.9.1): a `str` holding a canonical BlobRef
+    /// document; validated at decode, raw string preserved for round-trip.
+    pub fn blob_ref(&mut self, what: &str) -> Result<RawJson> {
+        let s = self.str(what)?;
+        crate::blob_ref::validate_blob_ref(&s)?;
+        Ok(RawJson(s))
+    }
+
     /// `map` of `str` → `list(str)`. Keys must be unique and in ascending
     /// code-unit order (canonical encoding); a violation is a decode error.
     pub fn scope_map(&mut self, what: &str) -> Result<Vec<(String, Vec<String>)>> {

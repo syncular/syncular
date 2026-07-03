@@ -2,7 +2,7 @@
  * Neutral schema IR (REVISE B5).
  *
  * The IR is a versioned, language-neutral JSON document: tables with the
- * six SPEC §2.4 column types (+ nullability + primary key), scope patterns
+ * SPEC §2.4 column types (+ nullability + primary key), scope patterns
  * (§3.1), the schema-version history (§1.5 gating), subscription templates,
  * and a reserved `extensions` slot (the WP-49 apply/read-model hooks home —
  * empty today, present in the schema so later emitters share one shape).
@@ -14,14 +14,16 @@ import { createHash } from 'node:crypto';
 
 export const IR_VERSION = 1;
 
-/** The six §2.4 column types (wire tags 1..6, in this order). */
+/** The §2.4 column types (wire tags 1..7, in this order; tag 7 = blob_ref,
+ * §5.9). */
 export type IrColumnType =
   | 'string'
   | 'integer'
   | 'float'
   | 'boolean'
   | 'json'
-  | 'bytes';
+  | 'bytes'
+  | 'blob_ref';
 
 export interface IrColumn {
   readonly name: string;

@@ -21,6 +21,9 @@ const TS_TYPE: Readonly<Record<IrColumnType, string>> = {
   boolean: 'boolean',
   json: 'string',
   bytes: 'Uint8Array',
+  // §5.9: a blob_ref value is the raw canonical BlobRef JSON string
+  // (like `json`); the client's blob API parses it into a BlobRef object.
+  blob_ref: 'string',
 };
 
 function pascalCase(name: string): string {

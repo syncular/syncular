@@ -243,12 +243,14 @@ Two smaller cuts, recorded here because they change request shapes:
 
 ### 1.1 Endpoints
 
-A server mounts three routes under a host-chosen prefix `<mount>`:
+A server mounts these routes under a host-chosen prefix `<mount>`:
 
 | Route | Method | Purpose |
 |---|---|---|
 | `<mount>/sync` | POST | Combined push+pull (§4, §6). Request and response bodies are SSP2 envelopes |
 | `<mount>/segments/{segmentId}` | GET | Bootstrap segment download, direct-serve fallback (§5.5) |
+| `<mount>/blobs/{blobId}` | PUT | Blob upload with server-side content-address verification (§5.9.3) |
+| `<mount>/blobs/{blobId}` | GET | Blob download with row-derived re-authorization (§5.9.5) |
 | `<mount>/realtime` | GET (WebSocket upgrade) | Realtime channel (§8) |
 
 Content type for SSP2 bodies is `application/vnd.syncular.sync.v2`. A
@@ -624,8 +626,12 @@ Column types (shared by the row codec and rows segments; tags on the wire):
 | `4` | `boolean` | `bool` |
 | `5` | `json` | `str` containing a JSON document (raw string preserved on round-trip, see Conventions). The Conventions `json` MUST applies at **row-codec decode**: a value that does not parse as a JSON document is a decode error (`sync.invalid_request`, part of the "row-codec violations" of §5.2's closed list) — decode validates exactly what the §11 rendering would later parse, so the two can never disagree. The raw string is still preserved verbatim for re-encoding |
 | `6` | `bytes` | `bytes` |
+| `7` | `blob_ref` | `str` containing a **canonical BlobRef JSON document** (§5.9.1). On the wire and in the codec a `blob_ref` is byte-for-byte a `str`, decoded and re-encoded exactly like `json` (tag 5): the value MUST parse as JSON **and** satisfy the BlobRef shape (§5.9.1) at row-codec decode, else a decode error (`sync.invalid_request`, in §5.2's closed list); the raw string is preserved verbatim for re-encoding. The distinct tag exists so schema, apply, and query surfaces recognize a column as a *reference to blob bytes* — but SSG2, `COMMIT` payloads, push payloads, and conflict `serverRow` carry it with zero codec cost because it rides the `json` machinery |
 
-Unchanged from v1's binary-table-v1 tag assignment.
+Tags 1–6 are unchanged from v1's binary-table-v1 tag assignment; tag 7
+(`blob_ref`) is new in v2 (§5.9, the blobs rung). Because it is codec-shaped
+identically to `json`, adding it required **no new codec branch and no
+golden-vector regeneration** — a `blob_ref` value is a legal `json` value.
 
 For every synced table, codegen (B5) emits from the schema IR, for both
 sides, a **row codec** for each supported `schemaVersion`:
@@ -1441,6 +1447,271 @@ data — 100k-row bench table, Bun 1.3):
   compression is §1.3's concern (§0: compression moves to the
   transport — there is no compression field anywhere in SSP2).
 
+### 5.9 Blobs — file attachments
+
+*New in v2 (TODO 2.1, the first parity-ladder rung).* Blobs are opaque
+byte payloads (images, documents, arbitrary files) too large or too binary
+to ride inline in rows. A row **references** a blob through a `blob_ref`
+column (§2.4 tag 7); the bytes live as **content-addressed objects** in the
+same store family segments use, uploaded before the referencing row is
+pushed and downloaded on demand — never in the pull stream. Blobs reuse the
+codec (rides `json`), the content-address discipline (§5.1), the store
+abstraction, and the signed-URL machinery (§5.4); the genuinely new
+surfaces are the reference index, the download authorization rule, and the
+client refcounted cache lifecycle.
+
+**Explicit non-goals this rung** (deferred until evidence demands):
+chunked/resumable upload, client-side encryption, blob versioning
+(content addressing makes bytes immutable — a "new version" is a new blob
+and a row update to the new ref), and inline-blob optimization (small
+blobs still round-trip as an upload + a `blob_ref`, never embedded in the
+row payload).
+
+#### 5.9.1 The `blob_ref` value — canonical BlobRef
+
+A `blob_ref` column value is a `str` carrying a **canonical BlobRef JSON
+document**. The shape is pinned (so the digest, the codec round-trip, and
+cross-implementation rendering all agree):
+
+```json
+{"blobId":"sha256:<64 lowercase hex>","byteLength":<int ≥ 0>,
+ "mediaType":"<string>","name":"<string>"}
+```
+
+- `blobId` (**required**): `"sha256:"` + lowercase-hex SHA-256 of the blob
+  bytes — the content address, identical in form to `segmentId` (§5.1).
+- `byteLength` (**required**): non-negative integer within the i64
+  safe-integer contract (§0), the blob's uncompressed size.
+- `mediaType` (**optional**): an advisory MIME type; the server never
+  parses or trusts it (content addressing is over bytes, not type).
+- `name` (**optional**): an advisory display filename.
+
+**Canonical key order is exactly `blobId`, `byteLength`, `mediaType`,
+`name`**, absent optional keys omitted; the JSON has no insignificant
+whitespace. A `blob_ref` value that parses as JSON but violates this shape
+(missing/malformed `blobId`, missing/negative/non-integer `byteLength`,
+non-string optional fields, unknown keys, or non-canonical key order) is a
+**row-codec decode error** (`sync.invalid_request`, in §5.2's closed
+list) — validated at the same decode point as the `json` tag-5 parse, so
+codec and rendering never disagree. The BlobRef is host-opaque beyond this
+shape check: the codec preserves the raw string byte-for-byte for
+re-encoding exactly as it does a `json` value.
+
+A `blob_ref` column is nullable like any other; NULL means "no
+attachment". Two rows MAY reference the same `blobId` (content dedup is
+the point). A `blob_ref` column is never a primary key (`rowId` rendering
+excludes it, the same rule as `bytes`).
+
+#### 5.9.2 The blob store and existence model
+
+Blob bytes are **content-addressed objects** keyed by `blobId`, held in
+the same store family as segments (a `BlobStore` sharing the S3/R2 backend
+and its presign machinery; the reference server ships an in-memory, a
+SQLite, and an S3-backed store, mirroring segments). Unlike segments,
+blobs are **durable**, not TTL cache entries: a blob referenced by a live
+row must remain downloadable indefinitely (§5.9.5 B3).
+
+Existence model for this rung (kept minimal and honest):
+
+- **Upload-before-reference.** A client uploads blob bytes (§5.9.3)
+  *before* pushing a row that references the `blobId`. The content address
+  is known client-side, so the upload needs no server round-trip to
+  discover the id.
+- **A push referencing an absent blob fails loud** (§5.9.6): the commit is
+  `rejected` with `blob.not_found`. This makes "referenced ⇒ present" an
+  enforced invariant, not a hope.
+- **Orphans are swept, not row-tied-deleted.** A blob uploaded but never
+  referenced (an abandoned upload) becomes an orphan. Row-tied deletion
+  ("delete the bytes when the last referencing row is deleted") is a hard
+  distributed-GC problem — refcounting across partitions, races with
+  in-flight uploads, replay — and is **deliberately out of scope this
+  rung**. Instead: a blob unreferenced by any live row for longer than a
+  host-configured grace period (default 24 h, comfortably longer than any
+  upload→push window) is eligible for a **host-scheduled sweep**
+  (`blobStore.sweepOrphans(olderThanMs)`), analogous to segment TTL
+  expiry. The sweep consults the reference index (§5.9.4): a blob with
+  zero index entries and an upload age past the grace period is deleted.
+  Deleting a still-referenced blob is a host bug; the sweep never does it.
+
+#### 5.9.3 Upload — `PUT <mount>/blobs/{blobId}`
+
+The fourth mounted route (§1.1). Request carries **normal host
+authentication** (the same `authenticate(request)` as `/sync`); the body
+is the raw blob bytes (`Content-Type: application/octet-stream`,
+`Content-Encoding` per §1.3 handled by the serving hop — the server hashes
+the *decoded* bytes).
+
+- The server **MUST verify the content address**: SHA-256 of the received
+  bytes, rendered `"sha256:"+hex`, MUST equal the `{blobId}` path
+  parameter. A mismatch is HTTP 400 `blob.hash_mismatch` (non-retryable —
+  the client computed the wrong id or corrupted the body). This is the
+  whole trust model: a client cannot poison a content address, because the
+  server recomputes it.
+- A blob that already exists (same `blobId`) is an **idempotent success**
+  (HTTP 200) — content addressing makes re-upload a no-op; the server MAY
+  skip re-storing identical bytes.
+- The server MAY enforce a **maximum blob size** (host-configured); an
+  over-limit body is HTTP 413 `blob.too_large` (non-retryable). Enforced
+  by declared `Content-Length` where present and again on the streamed
+  byte count.
+- On success the response is HTTP 200 with an empty body; the blob is now
+  present for reference by a subsequent push. Upload authorization is
+  **host authentication only** — uploading bytes is not a scope-bearing
+  act (the uploader already holds the bytes; content addressing means the
+  id discloses nothing). Read authorization is enforced at *download*
+  (§5.9.5), which is where a `blobId` could otherwise become a capability.
+
+**No presigned upload this rung.** A presigned PUT (client → object store
+directly) is a real optimization but adds a second auth story and a
+server-side confirmation step (the store must tell the sync server the
+object landed and verify its address out of band). Direct upload through
+the sync server is correct and simple; presigned upload is deferred, noted
+here so a later rung slots it in behind the same `blob.*` codes. (This
+mirrors §5.4's stance that presign is an equivalence, not a new contract.)
+
+#### 5.9.4 The reference index
+
+The server maintains a **blob reference index**: for each
+(partition, `blobId`), the set of (table, rowId) rows that currently
+reference it, derived from applied `blob_ref` column values. It is the
+exact analogue of the §3.1 scope index — maintained on the write path, in
+the same commit transaction as the row write (§6.4), never scanned for:
+
+- On an applied **upsert** whose row has a non-NULL `blob_ref` column, the
+  server inserts an index entry (partition, blobId, table, rowId). If the
+  upsert *changes* the column from one blob to another (or to NULL), the
+  old (rowId → old blobId) entry is removed in the same transaction.
+- On an applied **delete**, all index entries for that (table, rowId) are
+  removed.
+- The index feeds two consumers: the **download authorization rule**
+  (§5.9.5 — "is there a referencing row the actor may see?") and the
+  **orphan sweep** (§5.9.2 — "does any live row reference this blob?").
+
+This is additive to storage: it is the blob analogue of the mandated
+commit→scope inverted index (§3.1), and Postgres/SQLite implement it as
+one covering-indexed table.
+
+#### 5.9.5 Download — `GET <mount>/blobs/{blobId}` and authorization
+
+Blobs are fetched **on demand**, never delivered in the pull stream. The
+download path is the segment path's twin (§5.5): re-authorization on every
+request, native + presigned signed-URL issuance, no bearer-capability.
+
+**The authorization rule — a `blobId` is never a capability.** The server
+MUST verify the actor is authorized to see the blob, and authorization
+**derives from the referencing rows, not the blob id**:
+
+> The actor may download `blobId` iff **at least one row in the reference
+> index for (partition, blobId) is authorized for the actor** under the
+> write-path scope check (§3.4 steps 1–3): resolve the actor's allowed
+> scopes once (§3.2 step 3), and for each candidate referencing row, test
+> the row's stored scope values against the allowed values for every
+> declared scope variable of that row's table. The first row that passes
+> authorizes the download; if none pass (or the index is empty, or
+> `resolveScopes` threw), the download is **HTTP 403 `blob.forbidden`**
+> (never 404 — leaking existence-vs-authorization is the same class of
+> footgun §5.5 closes for segments).
+
+Rationale for reusing the §3.4 stored-row check rather than a segment-style
+scope digest: a blob is referenced by *rows across potentially several
+scopes*, not built for one effective-scope set, so there is no single
+digest to bind. The reference index makes the check a bounded indexed
+lookup (candidate rows for the blob) followed by the existing per-row scope
+test — the same machinery write authorization already runs. `'*'` in the
+actor's allowed values passes as everywhere else.
+
+- **Unknown blob** (no object stored) ⇒ HTTP 404 `blob.not_found`.
+- **Signed URLs.** When the client advertised a URL-fetch capability and
+  the host configured signed URLs, download MAY be served as a signed URL
+  exactly like §5.4: native HMAC token (payload
+  `{"v":1,"blob":"<blobId>","aud":"<partition token>","exp":<unix
+  seconds>}` — note it binds `blob` + `aud`, **not** a scope digest,
+  because authorization was resolved against the referencing rows at
+  issuance, immediately after the reference-index authorization check
+  above; the object is immutable, so an issued URL is a
+  short-TTL bearer grant to exactly those bytes) or delegated presign (the
+  signed object key embeds the `blobId`). All §5.4 client MUSTs apply
+  verbatim: the URL is the entire grant (no host auth attached), no fetch
+  past `urlExpiresAtMs`, failure invalidates and recovery is re-request —
+  never a fall-through. TTL SHOULD be ≤ 15 minutes; the revocation window
+  equals the TTL (a fresh download request re-authorizes every time).
+- Response headers on the direct path: `Content-Type` from the stored
+  `mediaType` if the host chose to persist it, else
+  `application/octet-stream`; `ETag: "<blobId>"`;
+  `Cache-Control: private, max-age=0`;
+  `Vary: Authorization, Accept-Encoding`. `If-None-Match` with a matching
+  ETag returns 304. Blobs are opaque bytes; the server MUST NOT
+  re-compress at rest (content address = stored bytes, §5.8 rule), though
+  the serving hop MAY apply transport compression (`Content-Encoding`)
+  over the wire like any other body.
+
+#### 5.9.6 Push-time existence check
+
+The point where "referenced ⇒ present" is enforced (§6.6 restates it in
+push terms). During push apply (§6.4), for every upsert operation whose
+row carries a non-NULL `blob_ref` value, **the server MUST verify the
+referenced `blobId` exists in the blob store before the commit is
+applied**. An absent blob rejects the operation with **`blob.not_found`**
+(non-retryable in the sense that *this* payload won't succeed until the
+blob is uploaded; the client's recovery is to upload the blob and re-push,
+which the outbox does automatically since the commit stays pending). The
+check runs inside the commit transaction, so a commit that references any
+absent blob is rolled back whole (§6.4). Delete operations carry no row
+payload and reference no blob — they skip the check.
+
+#### 5.9.7 Client cache lifecycle (constraints B1–B4)
+
+The client caches blob bytes locally, **content-addressed and refcounted
+by referencing rows** — the DESIGN-eviction.md B1–B4 constraints, now
+normative:
+
+- **B1 — Refcounted, content-addressed cache.** Cached blob bodies are
+  keyed by `blobId`; the refcount for a `blobId` is the number of local
+  rows whose `blob_ref` columns currently reference it. The cache does not
+  assume a body exists for a referencing row (it may be online-only, not
+  yet fetched) nor a referencing row for a body (a fetched body whose rows
+  were all deleted is zero-ref). A zero-ref body is **evictable** (LRU /
+  storage-pressure policy) — the shipped default is **retain until storage
+  pressure** (device-friendly re-entry UX; delete-on-zero-refs stays
+  policy-configurable). Reference counting is maintained through the one
+  apply-path choke point (§5.6 apply, §4.5 commit apply, §3.3 purge, §5.6
+  first-page clear): every mutation that adds, changes, or removes a
+  `blob_ref` value adjusts the refcount.
+- **B2 — Evicted ≠ revoked.** Two distinct transitions delete blob bytes
+  differently: **revocation** (§3.3 — authorization lost) MUST delete the
+  no-longer-authorized bodies whose only referencing rows are being purged
+  (the WP-25 v1 rule — losing the grant means losing the bytes); **window
+  eviction** (future §4.8; a voluntary retention trim) MAY retain a
+  zero-ref body as an LRU cache entry. This rung implements the revocation
+  side (purge drops refs and deletes now-zero-ref bodies that were
+  reachable *only* through purged rows); the eviction side is a no-op
+  until windowed sync lands, but the refcount discipline is built so it
+  slots in.
+- **B3 — BlobRefs are always resolvable.** A `blob_ref` value on any local
+  row is sufficient to fetch its bytes: the `blobId` in the value is the
+  whole download key, and download is re-authorized server-side against
+  live rows (§5.9.5). No download-necessary bookkeeping lives in
+  row-adjacent state that a purge or eviction deletes — re-entry
+  re-delivers the row's `blob_ref`, and that alone re-enables the fetch.
+- **B4 — Upload state keys off the outbox.** A pending blob upload is
+  tracked **on the outbox commit that will reference it**, not on row
+  presence. When a mutation attaches a blob, the client records the blob
+  bytes (or a handle to them) against the pending commit; the sync loop
+  uploads any not-yet-present blobs (§5.9.3) **before** pushing the
+  commit's `PUSH_COMMIT` frame, so the §5.9.6 server check passes. The
+  optimistic local row and its blob body are both pinned by the same
+  outbox pin (a pending commit references the row; E1 of the eviction
+  design) until the commit drains. A rejected commit (§6.3) drops its
+  outbox entry and releases its upload state; the uploaded bytes become an
+  orphan swept by §5.9.2.
+
+Client download resolution: a query/read that surfaces a `blob_ref` value
+gives the app the `blobId` + metadata; the app requests bytes through the
+client's blob API, which returns a cache hit if present (no network) or
+fetches via the blob transport (§5.9.5) and populates the cache. **A cache
+hit MUST avoid re-download** — the conformance harness asserts this with a
+download counter.
+
 ---
 
 ## 6. Push, conflicts, results
@@ -1576,6 +1847,24 @@ v1). The client contract:
 - Because the commit was rolled back atomically, sibling operations of
   the conflicted one are also unapplied; the client rebases the whole
   commit (see the conformance scenario in Appendix B).
+
+### 6.6 Blob existence check
+
+An upsert operation whose row carries a non-NULL `blob_ref` value
+(§2.4 tag 7, §5.9.1) triggers a **blob existence check** during apply
+(§5.9.6): the server MUST verify the referenced `blobId` is present in the
+blob store *before* the commit is applied. An absent blob rejects the
+operation with `blob.not_found` (a `rejected` commit result, §6.3),
+rolling the whole commit back per §6.4. The check runs alongside the
+§3.4 write-path scope check, on the same authorization row; it adds one
+existence lookup per referenced blob. A delete carries no payload and
+references no blob, so it never triggers the check. The client's recovery
+is automatic: the rejected commit stays in the outbox only if the client
+chooses to re-push after uploading the blob — but because upload precedes
+push (§5.9.7 B4), a well-behaved client never hits this rejection; it
+exists to make the "referenced ⇒ present" invariant enforced rather than
+assumed (a corrupt or out-of-order client cannot smuggle a dangling
+reference into the log).
 
 ---
 
@@ -2027,6 +2316,18 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.schema_mismatch` | schema-mismatch | no | regenerateClient | Generated client artifacts incompatible with the server (e.g., segment column-table mismatch, §5.2) |
 | `sync.client_schema_unsupported` | schema-mismatch | no | upgradeClient | `schemaVersion` below the server floor (accompanies `requiredSchemaVersion`) |
 | `sync.websocket_connection_limit` | rate-limited | yes | retryLater | Realtime connection cap (global or per client) |
+| `blob.not_found` | not-found | no | fixRequest | Blob download for an unknown blob (§5.9.5), or a push referencing an absent blob (§5.9.6, §6.6) — *new in v2* |
+| `blob.forbidden` | forbidden | no | checkPermissions | Blob download where no referencing row is authorized for the actor (§5.9.5) — *new in v2* |
+| `blob.hash_mismatch` | invalid-request | no | fixRequest | Uploaded bytes' content address ≠ the `{blobId}` path (§5.9.3) — *new in v2* |
+| `blob.too_large` | invalid-request | no | fixRequest | Uploaded blob exceeds the host size cap (§5.9.3) — *new in v2* |
+
+The `blob.*` codes form a closed set of four: two on the download path
+(`not_found`, `forbidden`), two on the upload path (`hash_mismatch`,
+`too_large`). `blob.not_found` doubles as the push-time
+reference-existence rejection (§6.6). No `blob.*` code is delivered as a
+`SUB_START` reason or a pull `ERROR` frame — blobs never ride the pull
+stream; they surface only on the dedicated `/blobs/{blobId}` routes and,
+for `blob.not_found`, as a push operation-result `error` record.
 
 ### 10.3 Pruned and reserved codes
 
@@ -2037,7 +2338,9 @@ not protocol; `sync.integrity_rejected`, `sync.websocket_not_configured`,
 and `sync.unsupported_operation` (no v2 producer — the wire `op` byte
 admits only upsert/delete and v2 defines no per-table operation
 restriction; reserved if such a capability lands); `console.*`,
-`proxy.*`, `blob.*` (post-gate features).
+`proxy.*` (post-gate features). The `blob.*` family is **no longer
+reserved**: it is specified as four codes in §10.2 (§5.9, the blobs
+rung); any future `blob.*` code stays within that family's semantics.
 **Reserved** (must not be reused for other meanings): the seven
 `sync.auth_lease_*` codes (§7.3).
 
@@ -2266,3 +2569,25 @@ not a prose test.
     server-package tests against the S3 stub (§5.4 equivalence rule) —
     behaviorally indistinguishable to the client, so the pairing
     scenarios run the native scheme.
+
+13. **Blobs / file attachments.** (a) Upload→reference→push→fetch: client
+    A uploads a blob (`PUT /blobs/{blobId}`, content address verified),
+    pushes a row whose `blob_ref` column references it, and client B —
+    subscribed to the same scope — pulls the row and fetches the blob
+    bytes on demand, converging on identical bytes; the blob never rides
+    the pull stream (§5.9.3, §5.9.5, §5.9.7). (b) Push referencing a
+    missing blob fails loud: a push whose row references a `blobId` never
+    uploaded is `rejected` with `blob.not_found`, the commit rolls back
+    whole, and no dangling reference enters the log (§5.9.6, §6.6). (c)
+    Unauthorized fetch denied — the cross-scope probe: client C, holding a
+    *different* scope, requests the same `blobId` (which C could learn
+    from a leaked ref) and is denied with `blob.forbidden` because no
+    row it may see references the blob; the blobId alone is never a
+    capability (§5.9.5 authorization rule). (d) Revocation purges cache
+    refs: when A's scope is revoked, the purge (§3.3) drops the blob-cache
+    references for the purged rows and deletes the now-unreferenced cached
+    body (evicted ≠ revoked, B2). (e) Cache hit avoids re-download: a
+    second read of the same blob on the same client serves from the
+    content-addressed cache without a network fetch — asserted via the
+    harness blob-download counter (B1, §5.9.7). Both pairings
+    (TS×TS, Rust×TS).

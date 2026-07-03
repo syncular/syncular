@@ -7,6 +7,8 @@
 import {
   encodeSegmentBody,
   errorBody,
+  handleBlobDownload,
+  handleBlobUpload,
   handleSegmentDownload,
   handleSyncRequest,
   SSP2_CONTENT_TYPE,
@@ -90,6 +92,52 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
         ...(encoded.contentEncoding !== undefined
           ? { 'Content-Encoding': encoded.contentEncoding }
           : {}),
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  });
+
+  // §5.9.3: blob upload with server-side content-address verification.
+  app.put('/blobs/:blobId', async (c) => {
+    const auth = await options.authenticate(c.req.raw);
+    if (auth === null)
+      return errorResponse(new SyncError('sync.auth_required'));
+    try {
+      const bytes = new Uint8Array(await c.req.arrayBuffer());
+      const contentType = c.req.header('content-type')?.split(';')[0]?.trim();
+      await handleBlobUpload(
+        { ...options.config, ...auth },
+        {
+          blobId: c.req.param('blobId'),
+          bytes,
+          ...(contentType !== undefined &&
+          contentType !== 'application/octet-stream'
+            ? { mediaType: contentType }
+            : {}),
+        },
+      );
+      return c.body(null, 200);
+    } catch (error) {
+      return errorResponse(error);
+    }
+  });
+
+  // §5.9.5: blob download, re-authorized against referencing rows.
+  app.get('/blobs/:blobId', async (c) => {
+    const auth = await options.authenticate(c.req.raw);
+    if (auth === null)
+      return errorResponse(new SyncError('sync.auth_required'));
+    try {
+      const result = await handleBlobDownload(
+        { ...options.config, ...auth },
+        c.req.param('blobId'),
+      );
+      if (c.req.header('if-none-match') === result.headers.ETag) {
+        return c.body(null, 304, result.headers);
+      }
+      return c.body(result.bytes.slice().buffer as ArrayBuffer, 200, {
+        ...result.headers,
       });
     } catch (error) {
       return errorResponse(error);

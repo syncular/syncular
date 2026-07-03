@@ -87,9 +87,34 @@ the old tree archived.
 
 ## 2. Parity ladder (one at a time, spec'd before built)
 
-- [ ] **Blobs / file attachments**: BlobRef-style columns, upload/download
-      through the segment-store abstraction, storage backends (filesystem +
-      S3/R2), scope-checked delivery, client cache + re-download.
+- [x] **Blobs / file attachments**: LANDED 2026-07-03 — the first
+      parity-ladder rung, spec-first. SPEC §5.9 pins it end to end: a new
+      `blob_ref` column type (§2.4 tag 7) carrying a canonical BlobRef JSON
+      doc (`blobId` = sha256 content address, `byteLength`, optional
+      `mediaType`/`name`) — codec-shaped identically to `json`, so SSG2 /
+      commits / push carry it with ZERO new codec branch and NO
+      vector regeneration. Blobs are durable content-addressed objects in a
+      `BlobStore` (memory + sqlite + the S3 backend reused from segments),
+      NOT in the pull stream. Upload `PUT <mount>/blobs/{blobId}` verifies
+      the content address (reject `blob.hash_mismatch`), download
+      `GET <mount>/blobs/{blobId}` re-authorizes on EVERY request against
+      the rows that reference the blob (§5.9.5 authz rule — a blobId is
+      never a capability; `blob.forbidden` when no referencing row is held),
+      backed by a commit→blob reference index (§5.9.4, additive to storage).
+      A push referencing an absent blob fails loud with `blob.not_found`
+      (§6.6). Client cache is content-addressed + refcounted by live rows
+      (DESIGN-eviction B1–B4): upload-before-push keyed off the outbox,
+      revocation deletes now-unauthorized bodies (evicted ≠ revoked), cache
+      hit avoids re-download. Four new `blob.*` codes (§10.2, no longer
+      reserved). Both clients (TS `uploadBlob`/`fetchBlob` on SyncClient +
+      worker RPC; Rust via a `Transport` blob extension + shim), typegen
+      (`BLOB_REF` → `blob_ref` through manifest→IR→emitter; irVersion NOT
+      bumped — additive enum value, structure unchanged). Conformance B.13
+      (4 scenarios: upload→reference→push→other-client-fetch + cache-hit;
+      push-missing-blob-fails-loud; cross-scope-fetch-denied;
+      revocation-purges-cache-refs — both pairings, 52×2). Demo: attach a
+      file to a todo (📎 per row, worker + ephemeral cores, `/blobs`
+      endpoints).
 - [ ] **CRDT fields**: opt-in per column (Yjs on TS; the Rust side consumes
       the same wire format). Wire format + merge semantics into SPEC with
       vectors; conformance scenarios for concurrent-edit convergence.

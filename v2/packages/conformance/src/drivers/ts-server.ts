@@ -11,9 +11,13 @@ import {
   type ScopeMap,
 } from '@syncular-v2/core';
 import {
+  type BlobStore,
   createRealtimeHub,
+  handleBlobDownload,
+  handleBlobUpload,
   handleSegmentDownload,
   handleSyncRequest,
+  MemoryBlobStore,
   MemorySegmentStore,
   pruneCommitLog,
   type RealtimeHub,
@@ -84,6 +88,7 @@ class TsServerInstance implements ServerInstance {
   readonly #storage: SqliteServerStorage;
   readonly #wrapped: ServerStorage;
   readonly #segments: MemorySegmentStore;
+  readonly #blobs: BlobStore = new MemoryBlobStore();
   readonly #hub: RealtimeHub;
   readonly #allowed = new Map<string, ScopeMap>();
   readonly #now: { ms: number };
@@ -179,6 +184,9 @@ class TsServerInstance implements ServerInstance {
       getClientRecord: (p, c) => storage.getClientRecord(p, c),
       putClientRecord: (p, r) => storage.putClientRecord(p, r),
       listClientCursors: (p) => storage.listClientCursors(p),
+      // §5.9.4 blob reference index reads.
+      listRowsReferencingBlob: (p, b) => storage.listRowsReferencingBlob(p, b),
+      listReferencedBlobIds: (p) => storage.listReferencedBlobIds(p),
     };
   }
 
@@ -189,6 +197,7 @@ class TsServerInstance implements ServerInstance {
       schema: toServerSchema(this.#schema),
       storage: this.#wrapped,
       segments: this.#segments,
+      blobs: this.#blobs,
       resolveScopes: (args) => this.#resolveScopes(args.actorId),
       clock: () => this.#now.ms,
       limits: this.#limits,
@@ -224,6 +233,39 @@ class TsServerInstance implements ServerInstance {
         segmentId,
         scopesHeader: scopesHeaderJson,
       });
+      return { ok: true, bytes: result.bytes };
+    } catch (error) {
+      if (error instanceof SyncError) {
+        return { ok: false, error: toDriverError(error) };
+      }
+      throw error;
+    }
+  }
+
+  async uploadBlob(
+    actorId: string,
+    blobId: string,
+    bytes: Uint8Array,
+    mediaType?: string,
+  ): Promise<{ ok: true } | { ok: false; error: DriverError }> {
+    try {
+      await handleBlobUpload(this.#ctx(actorId), {
+        blobId,
+        bytes,
+        ...(mediaType !== undefined ? { mediaType } : {}),
+      });
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof SyncError) {
+        return { ok: false, error: toDriverError(error) };
+      }
+      throw error;
+    }
+  }
+
+  async downloadBlob(actorId: string, blobId: string): Promise<BytesResult> {
+    try {
+      const result = await handleBlobDownload(this.#ctx(actorId), blobId);
       return { ok: true, bytes: result.bytes };
     } catch (error) {
       if (error instanceof SyncError) {
@@ -391,7 +433,7 @@ class TsServerInstance implements ServerInstance {
 
 export const tsServerDriver: ServerDriver = {
   name: 'ts-server',
-  capabilities: ['idempotency-fault', 'signed-urls'],
+  capabilities: ['idempotency-fault', 'signed-urls', 'blobs'],
   async create(options: ServerCreateOptions): Promise<ServerInstance> {
     return new TsServerInstance(options);
   },

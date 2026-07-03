@@ -7,6 +7,7 @@
  * Used for `COMMIT` change payloads, rows-segment row data, push operation
  * payloads, and conflict `serverRow` values.
  */
+import { parseBlobRef } from './blob-ref';
 import { ByteReader, ByteWriter } from './bytes';
 import { DecodeError } from './errors';
 
@@ -16,7 +17,8 @@ export type ColumnType =
   | 'float'
   | 'boolean'
   | 'json'
-  | 'bytes';
+  | 'bytes'
+  | 'blob_ref';
 
 export interface RowColumn {
   readonly name: string;
@@ -38,6 +40,7 @@ const TYPE_TO_TAG: Readonly<Record<ColumnType, number>> = {
   boolean: 4,
   json: 5,
   bytes: 6,
+  blob_ref: 7,
 };
 
 const TAG_TO_TYPE = new Map<number, ColumnType>(
@@ -67,6 +70,7 @@ function writeValue(
   switch (column.type) {
     case 'string':
     case 'json':
+    case 'blob_ref':
       if (typeof value !== 'string') {
         throw new Error(
           `column ${column.name} (${column.type}) requires a string value`,
@@ -126,6 +130,14 @@ function readValue(reader: ByteReader, column: RowColumn): RowValue {
           `json column ${column.name} does not parse as a JSON document`,
         );
       }
+      return raw;
+    }
+    case 'blob_ref': {
+      // §2.4 tag 7: the value is a canonical BlobRef JSON document
+      // (§5.9.1). Validated at decode, same class as tag-5 json; the raw
+      // string is preserved verbatim for re-encoding.
+      const raw = reader.str();
+      parseBlobRef(raw);
       return raw;
     }
     case 'integer':

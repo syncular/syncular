@@ -49,7 +49,8 @@ export type DriverColumnType =
   | 'float'
   | 'boolean'
   | 'json'
-  | 'bytes';
+  | 'bytes'
+  | 'blob_ref';
 
 export interface DriverColumn {
   readonly name: string;
@@ -157,7 +158,7 @@ export type RealtimeConnectResult =
   | { readonly ok: false; readonly error: DriverError };
 
 /** Optional server capabilities a scenario may require. */
-export type ServerCapability = 'idempotency-fault' | 'signed-urls';
+export type ServerCapability = 'idempotency-fault' | 'signed-urls' | 'blobs';
 
 export interface ServerInstance {
   /**
@@ -173,6 +174,21 @@ export interface ServerInstance {
     segmentId: string,
     scopesHeaderJson: string,
   ): Promise<BytesResult>;
+
+  /**
+   * `blobs`: §5.9.3 upload (host-authenticated, content address verified)
+   * and §5.9.5 download (re-authorized against referencing rows). Present
+   * only when the server driver advertises the `blobs` capability.
+   */
+  uploadBlob?(
+    actorId: string,
+    blobId: string,
+    bytes: Uint8Array,
+    mediaType?: string,
+  ): Promise<
+    { readonly ok: true } | { readonly ok: false; readonly error: DriverError }
+  >;
+  downloadBlob?(actorId: string, blobId: string): Promise<BytesResult>;
 
   /**
    * `signed-urls`: the CDN/edge role for the §5.4 native scheme — serve
@@ -257,6 +273,18 @@ export interface ClientEndpoints {
    * the URL crosses (the URL is the entire grant).
    */
   fetchSegmentUrl?(url: string): Promise<Uint8Array>;
+  /**
+   * §5.9 blob transport endpoints handed to the client. Presence means the
+   * client can upload/download blobs (the harness bridges to the server's
+   * `/blobs` routes and counts calls). Rejects on the server's `blob.*`
+   * errors (§5.9.3/§5.9.5).
+   */
+  uploadBlob?(
+    blobId: string,
+    bytes: Uint8Array,
+    mediaType?: string,
+  ): Promise<void>;
+  downloadBlob?(blobId: string): Promise<Uint8Array>;
   /** Realtime attach; the harness observes both directions. */
   connectRealtime(sink: RealtimeSink): Promise<RealtimeConnection>;
 }
@@ -389,6 +417,18 @@ export interface ClientInstance {
       }
     | undefined
   >;
+
+  /**
+   * §5.9 blob API. `uploadBlob` stages bytes and returns the canonical
+   * `blob_ref` string to store in a column (upload flushed before the next
+   * push, B4). `fetchBlob` resolves bytes (cache hit or download) as a
+   * `{ $bytes }` value. Present iff the client driver supports blobs.
+   */
+  uploadBlob?(
+    bytes: Uint8Array,
+    options?: { readonly mediaType?: string; readonly name?: string },
+  ): Promise<string>;
+  fetchBlob?(blobIdOrRef: string): Promise<{ readonly $bytes: string }>;
 
   connectRealtime(): Promise<void>;
   disconnectRealtime(): Promise<void>;

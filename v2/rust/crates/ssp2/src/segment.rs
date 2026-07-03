@@ -18,6 +18,9 @@ pub enum ColumnType {
     Boolean,
     Json,
     Bytes,
+    /// §2.4 tag 7 (§5.9): a canonical BlobRef JSON document, codec-shaped
+    /// identically to `json`.
+    BlobRef,
 }
 
 impl ColumnType {
@@ -29,6 +32,7 @@ impl ColumnType {
             4 => Some(ColumnType::Boolean),
             5 => Some(ColumnType::Json),
             6 => Some(ColumnType::Bytes),
+            7 => Some(ColumnType::BlobRef),
             _ => None,
         }
     }
@@ -41,6 +45,7 @@ impl ColumnType {
             ColumnType::Boolean => 4,
             ColumnType::Json => 5,
             ColumnType::Bytes => 6,
+            ColumnType::BlobRef => 7,
         }
     }
 
@@ -52,6 +57,7 @@ impl ColumnType {
             ColumnType::Boolean => "boolean",
             ColumnType::Json => "json",
             ColumnType::Bytes => "bytes",
+            ColumnType::BlobRef => "blob_ref",
         }
     }
 }
@@ -72,6 +78,8 @@ pub enum ColumnValue {
     Boolean(bool),
     Json(RawJson),
     Bytes(Vec<u8>),
+    /// §5.9.1: a canonical BlobRef document, held as a raw validated string.
+    BlobRef(RawJson),
 }
 
 /// One row: `columns.len()` slots, `None` = NULL.
@@ -127,6 +135,7 @@ pub fn decode_row(r: &mut Reader<'_>, columns: &[Column]) -> Result<Row> {
             ColumnType::Boolean => ColumnValue::Boolean(r.bool(&col.name)?),
             ColumnType::Json => ColumnValue::Json(r.json(&col.name)?),
             ColumnType::Bytes => ColumnValue::Bytes(r.bytes(&col.name)?),
+            ColumnType::BlobRef => ColumnValue::BlobRef(r.blob_ref(&col.name)?),
         };
         row.push(Some(value));
     }
@@ -151,6 +160,7 @@ pub fn encode_row(w: &mut Writer, columns: &[Column], row: &Row) {
             ColumnValue::Boolean(v) => w.bool(*v),
             ColumnValue::Json(j) => w.str(&j.0),
             ColumnValue::Bytes(b) => w.bytes(b),
+            ColumnValue::BlobRef(j) => w.str(&j.0),
         }
     }
 }

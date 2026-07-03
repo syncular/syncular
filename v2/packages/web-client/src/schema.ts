@@ -129,6 +129,7 @@ function sqlType(column: RowColumn): string {
   switch (column.type) {
     case 'string':
     case 'json':
+    case 'blob_ref':
       return 'TEXT';
     case 'integer':
       return 'INTEGER';
@@ -207,6 +208,7 @@ export function fromSqlValue(column: RowColumn, value: SqlValue): RowValue {
       return value as Uint8Array;
     case 'string':
     case 'json':
+    case 'blob_ref':
       return value as string;
   }
 }

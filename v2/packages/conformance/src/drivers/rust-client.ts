@@ -284,6 +284,33 @@ class ShimProcess {
         const bytes = await fetchSegmentUrl(url);
         return { bytes: bytesParam(bytes) };
       }
+      case 'blobUpload': {
+        const blobId = params.blobId;
+        if (typeof blobId !== 'string') {
+          throw new Error('blobUpload: missing blobId');
+        }
+        const bytes = bytesOf(params.bytes, 'blobUpload.bytes');
+        const mediaType =
+          typeof params.mediaType === 'string' ? params.mediaType : undefined;
+        const upload = endpoints.uploadBlob;
+        if (upload === undefined) {
+          throw new Error('blobUpload: endpoints have no blob upload');
+        }
+        await upload(blobId, bytes, mediaType);
+        return {};
+      }
+      case 'blobDownload': {
+        const blobId = params.blobId;
+        if (typeof blobId !== 'string') {
+          throw new Error('blobDownload: missing blobId');
+        }
+        const download = endpoints.downloadBlob;
+        if (download === undefined) {
+          throw new Error('blobDownload: endpoints have no blob download');
+        }
+        const bytes = await download(blobId);
+        return { bytes: bytesParam(bytes) };
+      }
       case 'realtimeConnect': {
         this.#connection = await endpoints.connectRealtime({
           onText: (text) => this.#notify('realtimeText', { text }),
@@ -555,6 +582,52 @@ class RustClientInstance implements ClientInstance {
       'syncNeeded',
     );
     return result.value === true;
+  }
+
+  async uploadBlob(
+    bytes: Uint8Array,
+    options?: { readonly mediaType?: string; readonly name?: string },
+  ): Promise<string> {
+    const result = asObject(
+      await this.#shim.call('uploadBlob', {
+        bytes: { $bytes: bytesToHex(bytes) },
+        ...(options?.mediaType !== undefined
+          ? { mediaType: options.mediaType }
+          : {}),
+        ...(options?.name !== undefined ? { name: options.name } : {}),
+      }),
+      'uploadBlob',
+    );
+    const ref = result.ref as Record<string, JsonValue> | undefined;
+    if (
+      ref === undefined ||
+      ref.blobId === undefined ||
+      ref.byteLength === undefined
+    ) {
+      throw new Error('uploadBlob: shim returned no ref');
+    }
+    // Canonical BlobRef string (§5.9.1 key order): blobId, byteLength,
+    // mediaType?, name?.
+    const obj: Record<string, JsonValue> = {
+      blobId: ref.blobId,
+      byteLength: ref.byteLength,
+    };
+    if (ref.mediaType !== undefined) obj.mediaType = ref.mediaType;
+    if (ref.name !== undefined) obj.name = ref.name;
+    return JSON.stringify(obj);
+  }
+
+  async fetchBlob(blobIdOrRef: string): Promise<{ $bytes: string }> {
+    const result = asObject(
+      await this.#shim.call('fetchBlob', { blob: blobIdOrRef }),
+      'fetchBlob',
+    );
+    const blob = result.blob as Record<string, JsonValue> | undefined;
+    const bytes = blob?.bytes as { $bytes?: string } | undefined;
+    if (bytes?.$bytes === undefined) {
+      throw new Error('fetchBlob: shim returned no bytes');
+    }
+    return { $bytes: bytes.$bytes };
   }
 
   async close(): Promise<void> {

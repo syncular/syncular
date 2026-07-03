@@ -6,6 +6,7 @@
  * (§1.5/§1.6), realtime control messages (§8), the §11 canonical JSON
  * debug rendering, and §11.2 canonical JSON for digests.
  */
+export * from './blob-ref';
 export * from './bytes';
 export * from './canonical-json';
 export * from './constants';

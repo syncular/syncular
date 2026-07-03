@@ -134,6 +134,18 @@ export interface StorageTransaction {
     clientCommitId: string,
     result: StoredPushResult,
   ): Promise<void>;
+  /**
+   * Blob reference index (§5.9.4) — ADDITIVE, optional. Set the blobIds a
+   * row currently references (empty = clear), replacing any prior entries
+   * for (table, rowId), inside the same commit transaction (§6.4). A
+   * storage backend that omits this does not support blobs; the push layer
+   * only calls it for tables with `blob_ref` columns.
+   */
+  setBlobRefs?(
+    table: string,
+    rowId: string,
+    blobIds: readonly string[],
+  ): Promise<void>;
   commit(): Promise<void>;
   rollback(): Promise<void>;
 }
@@ -191,4 +203,29 @@ export interface ServerStorage {
   putClientRecord(partition: string, record: ClientRecord): Promise<void>;
   /** Cursor records feeding the §4.6 retention watermark. */
   listClientCursors(partition: string): Promise<ClientCursorInfo[]>;
+
+  /**
+   * Blob reference index reads (§5.9.4) — ADDITIVE, optional (mirrors the
+   * optional `StorageTransaction.setBlobRefs`).
+   *
+   * `listRowsReferencingBlob`: the (table, rowId) rows that reference the
+   * blob — the download authorization candidate set (§5.9.5). Each result
+   * carries the row's stored scopes so the caller runs the §3.4 scope test
+   * without a second read.
+   *
+   * `listReferencedBlobIds`: every blobId a live row currently references —
+   * the orphan sweep's keep-set (§5.9.2).
+   */
+  listRowsReferencingBlob?(
+    partition: string,
+    blobId: string,
+  ): Promise<BlobReferencingRow[]>;
+  listReferencedBlobIds?(partition: string): Promise<string[]>;
+}
+
+/** A row referencing a blob, with the scopes needed to authorize download. */
+export interface BlobReferencingRow {
+  readonly table: string;
+  readonly rowId: string;
+  readonly scopes: Record<string, string>;
 }

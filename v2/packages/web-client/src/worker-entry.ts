@@ -17,6 +17,7 @@ import { SyncClient } from './client';
 import type { ClientDatabase } from './database';
 import { ClientSyncError } from './errors';
 import {
+  httpBlobTransport,
   httpSegmentDownloader,
   httpSyncTransport,
   webSocketRealtimeConnector,
@@ -231,6 +232,11 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
         : config.endpoints.segmentsUrl !== undefined
           ? httpSegmentDownloader(config.endpoints.segmentsUrl)
           : undefined;
+    // §5.9 blob transport: only when a blobs URL is configured.
+    const blobs =
+      config.endpoints.blobsUrl !== undefined
+        ? httpBlobTransport(config.endpoints.blobsUrl)
+        : undefined;
 
     // Realtime needs the (possibly persisted) clientId for the
     // `{clientId}` URL placeholder — start the client first, then attach
@@ -243,6 +249,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       ...(segments !== undefined
         ? { segments: gateSegmentsOffline(segments) }
         : {}),
+      ...(blobs !== undefined ? { blobs } : {}),
       realtime: (handlers) => {
         if (offline) {
           throw new ClientSyncError(
@@ -307,6 +314,8 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     subscription: (id) => requireClient().subscription(id),
     connectRealtime: () => requireClient().connectRealtime(),
     disconnectRealtime: () => requireClient().disconnectRealtime(),
+    uploadBlob: (bytes, options) => requireClient().uploadBlob(bytes, options),
+    fetchBlob: (blobIdOrRef) => requireClient().fetchBlob(blobIdOrRef),
     setOffline: (value) => {
       offline = value;
       if (offline) client?.disconnectRealtime();

@@ -43,6 +43,11 @@
           "name": "updated_at_ms",
           "type": "integer",
           "nullable": false
+        },
+        {
+          "name": "attachment",
+          "type": "blob_ref",
+          "nullable": true
         }
       ],
       "scopes": [

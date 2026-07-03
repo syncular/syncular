@@ -27,6 +27,7 @@ import {
   handleSyncRequest,
   MemorySegmentStore,
   type RealtimeSession,
+  SqliteBlobStore,
   SqliteServerStorage,
   type SyncServerConfig,
 } from '@syncular-v2/server';
@@ -43,6 +44,8 @@ const storage = new SqliteServerStorage(
   process.env.SYNCULAR_DEMO_DB ?? ':memory:',
 );
 const segments = new MemorySegmentStore();
+/** §5.9 blobs: durable content-addressed store sharing the demo DB. */
+const blobs = new SqliteBlobStore();
 /** Demo authorization: the single demo actor may see every list. */
 const resolveScopes = () => ({ list_id: ['*'] });
 
@@ -63,6 +66,7 @@ const config: SyncServerConfig = {
   schema,
   storage,
   segments,
+  blobs,
   resolveScopes,
   realtime: hub,
   ...(events !== undefined ? { events } : {}),
@@ -80,7 +84,7 @@ async function seed(): Promise<void> {
   const rows: TodosRow[] = [
     'Open this page in two panes',
     'Toggle a pane offline and keep editing',
-    'Bring it back online and watch the outbox drain',
+    'Attach a file to a todo — it uploads then syncs',
   ].map((title, index) => ({
     id: `seed-${index + 1}`,
     list_id: 'demo',
@@ -88,6 +92,7 @@ async function seed(): Promise<void> {
     done: false,
     position: index + 1,
     updated_at_ms: now,
+    attachment: null,
   }));
   const frames: RequestFrame[] = [
     { type: 'REQ_HEADER', clientId: 'seed', schemaVersion: schema.version },
@@ -105,6 +110,7 @@ async function seed(): Promise<void> {
           row.done,
           row.position,
           row.updated_at_ms,
+          row.attachment,
         ]),
       })),
     },
@@ -205,7 +211,11 @@ const server = Bun.serve<SocketData, never>({
       }
       return new Response('expected a websocket upgrade', { status: 400 });
     }
-    if (path === '/sync' || path.startsWith('/segments/')) {
+    if (
+      path === '/sync' ||
+      path.startsWith('/segments/') ||
+      path.startsWith('/blobs/')
+    ) {
       return hono.fetch(request);
     }
     if (path === '/' || path === '/index.html') {

@@ -42,6 +42,10 @@ export interface CompiledTable {
   readonly scopePatterns: readonly CompiledScopePattern[];
   readonly columnIndex: ReadonlyMap<string, number>;
   readonly declaredVariables: ReadonlySet<string>;
+  /** Column indices declared `blob_ref` (§2.4 tag 7, §5.9) — the columns
+   * whose non-NULL values reference blobs (existence check, reference
+   * index). */
+  readonly blobRefColumnIndices: readonly number[];
 }
 
 export interface CompiledSchema {
@@ -124,6 +128,10 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       variables.add(pattern.variable);
       declaredVariables.add(pattern.variable);
     }
+    const blobRefColumnIndices: number[] = [];
+    table.columns.forEach((column, index) => {
+      if (column.type === 'blob_ref') blobRefColumnIndices.push(index);
+    });
     tables.set(table.name, {
       name: table.name,
       columns: table.columns,
@@ -131,6 +139,7 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       scopePatterns,
       columnIndex,
       declaredVariables: variables,
+      blobRefColumnIndices,
     });
   }
   const compiled: CompiledSchema = {

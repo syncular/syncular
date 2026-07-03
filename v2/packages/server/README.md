@@ -251,3 +251,153 @@ same table+scope during a storm, your TTL is shorter than the storm.
 - `realtime.wake` with `reason: "delta-too-large"` — sustained
   occurrences mean commits routinely exceed `maxDeltaBytes` and clients
   are falling back to HTTP pulls; raise the limit or shrink commits.
+
+## Postgres storage (the production database path)
+
+`SqliteServerStorage` (bun:sqlite) is the dev-speed default. For
+production, `PostgresServerStorage` implements the same `ServerStorage`
+contract against Postgres, with the inverted scope index carried through
+as **covering indexes** so scope fanout is an index range scan, never a
+scan-before-LIMIT (REVISE B2 — this was v1's production wound). The
+schema (`POSTGRES_DDL`) and its index design live in
+`src/postgres-storage.ts`; `storage.migrate()` applies it idempotently.
+
+### The `PgExecutor` seam (zero runtime deps)
+
+The server library never imports a Postgres driver. `PostgresServerStorage`
+is written against the minimal `PgExecutor` interface (`query(text, params)`
+plus a `transaction(fn)` scope) — you wire your driver of choice:
+
+**Bun.sql** (built into bun):
+
+```ts
+import {
+  PostgresServerStorage,
+  type PgExecutor,
+  type PgQueryable,
+} from '@syncular-v2/server';
+
+function bunSqlExecutor(sql: import('bun').SQL): PgExecutor {
+  const over = (h: any): PgQueryable => ({
+    async query(text, params) {
+      const rows = await h.unsafe(text, params ? [...params] : []);
+      return { rows, rowCount: rows.length };
+    },
+  });
+  return {
+    query: over(sql).query,
+    transaction: (fn) => sql.begin((tx: any) => fn(over(tx))),
+    close: () => sql.end(),
+  };
+}
+
+const storage = new PostgresServerStorage(
+  bunSqlExecutor(new Bun.SQL(process.env.DATABASE_URL!)),
+);
+await storage.migrate();
+```
+
+**node-postgres** (`pg`) — adapt a `Pool`:
+
+```ts
+import { Pool, type PoolClient } from 'pg';
+import { PostgresServerStorage, type PgExecutor } from '@syncular-v2/server';
+
+function pgPoolExecutor(pool: Pool): PgExecutor {
+  const over = (c: Pool | PoolClient) => ({
+    query: (text: string, params?: readonly unknown[]) =>
+      c.query(text, params ? [...params] : []),
+  });
+  return {
+    query: over(pool).query,
+    async transaction(fn) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const result = await fn(over(client));
+        await client.query('COMMIT');
+        return result;
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    close: () => pool.end(),
+  };
+}
+```
+
+**Type-parser note.** `commit_seq`/`server_version` are `int8`. Drivers
+decode `int8` differently (node-postgres → `string`, Bun.sql → `bigint`,
+pglite → `number`); the storage layer coerces every sequence read through
+`Number(...)`, so no driver-specific type-parser config is required.
+`bytea` must decode to `Uint8Array`/`Buffer` (all three do).
+
+**Tests** wire `@electric-sql/pglite` (embedded WASM Postgres, a
+devDependency — hermetic, no docker) via `pgliteExecutor` from
+`@syncular-v2/server/pglite`. Both backends run the shared
+`ServerStorage` contract (`test/storage-contract.ts`), and
+`test/postgres-explain.test.ts` asserts via `EXPLAIN` that the fanout
+candidate scans are index-driven so the scan-before-LIMIT regression
+cannot silently return.
+
+### commitSeq allocation under concurrency
+
+Per-partition `commitSeq` is dense and gap-free (§2.1). `appendCommit`
+allocates it with `UPDATE sync_partitions SET max_commit_seq =
+max_commit_seq + 1 … RETURNING`, which takes a row-level write lock on the
+partition row for the transaction's duration — concurrent pushes to the
+same partition serialize on that row; cross-partition pushes never
+contend. A Postgres `SEQUENCE` is deliberately **not** used: it would leave
+gaps on rollback, which the §4.5 pull-window arithmetic does not tolerate.
+
+### Multi-instance fanout (LISTEN/NOTIFY)
+
+Behind a load balancer, a commit applied on instance A fans out to A's
+local realtime sessions in-memory, but a client whose socket lives on
+instance B never sees it. `PostgresFanout` bridges the gap: after a commit
+lands, the originating instance `NOTIFY`s `syncular_commit` with a
+`<partition>:<commitSeq>` payload; every instance runs a `listen()` loop
+that, on a notification, calls `hub.wake(partition, 'catchup-required')` —
+remote sessions then pull the delta from the shared Postgres storage they
+already read from (§8.3). NOTIFY payloads are capped (~8 KB) and are not an
+ordered delta channel, so we wake rather than re-broadcast bytes; only
+cross-instance delivery pays the re-pull. Single-instance deployments
+install no fanout at all.
+
+```ts
+import { PostgresFanout, type PgNotificationConnection } from '@syncular-v2/server';
+
+// node-postgres: a dedicated Client for LISTEN + the pool for NOTIFY.
+const conn: PgNotificationConnection = {
+  async listen(channel, handler) {
+    const client = await pool.connect(); // long-lived, NOT released
+    client.on('notification', (m) => m.payload && handler(m.payload));
+    await client.query(`LISTEN ${channel}`);
+  },
+  notify: (channel, payload) =>
+    pool.query('SELECT pg_notify($1, $2)', [channel, payload]).then(() => {}),
+};
+const fanout = new PostgresFanout(conn);
+await fanout.install(hub); // start the LISTEN loop
+// after a push commit lands:
+await fanout.notifyCommit(partition, commitSeq);
+```
+
+pglite is single-connection and cannot exercise cross-connection NOTIFY,
+so the fanout integration test is env-gated on `SYNCULAR_PG_URL` (it wires
+Bun.sql as a worked example) and skips cleanly; the payload encode/parse
+and wake wiring are unit-tested hermetically.
+
+### Bench lane
+
+`v2/bench` has an env-gated Postgres lane measuring 100k bootstrap +
+propagation on the production path. It runs only with `SYNCULAR_PG_URL`
+set and is **never** part of `bench:ci` budgets (those stay on the
+deterministic in-process sqlite loopback):
+
+```sh
+SYNCULAR_PG_URL=postgres://user:pass@localhost:5432/db bun run bench
+```

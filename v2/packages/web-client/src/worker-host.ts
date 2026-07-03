@@ -8,6 +8,7 @@
  * follower fanout is post-gate (TODO 3.2).
  */
 import type { WakeReason } from '@syncular-v2/core';
+import type { BlobRef, CachedBlob } from './blob';
 import type {
   ConflictRecord,
   MutationInput,
@@ -198,6 +199,17 @@ export class SyncClientHandle {
 
   disconnectRealtime(): Promise<void> {
     return this.#call('disconnectRealtime', []);
+  }
+
+  uploadBlob(
+    bytes: Uint8Array,
+    options?: { readonly mediaType?: string; readonly name?: string },
+  ): Promise<BlobRef> {
+    return this.#call('uploadBlob', [bytes, options]);
+  }
+
+  fetchBlob(blobIdOrRef: string): Promise<CachedBlob> {
+    return this.#call('fetchBlob', [blobIdOrRef]);
   }
 
   /** Sever/restore transport + realtime inside the worker (demos). */
