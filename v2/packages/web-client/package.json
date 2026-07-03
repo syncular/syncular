@@ -5,7 +5,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./bun": "./src/bun-database.ts",
-    "./wasm": "./src/wasm-database.ts"
+    "./wasm": "./src/wasm-database.ts",
+    "./worker": "./src/worker-entry.ts"
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
