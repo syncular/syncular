@@ -43,7 +43,14 @@ export function createBenchServer(): BenchServer {
   const storage = new SqliteServerStorage();
   const segments = new MemorySegmentStore();
   const resolveScopes = () => ({ project_id: ['*'] });
-  const hub = createRealtimeHub({ schema: SCHEMA, storage, resolveScopes });
+  const hub = createRealtimeHub({
+    schema: SCHEMA,
+    storage,
+    resolveScopes,
+    // §8.7: realtime-connected clients run their sync rounds over the
+    // socket seam, through the same segment store.
+    segments,
+  });
   const ctx: SyncRequestContext = {
     partition: PARTITION,
     actorId: ACTOR_ID,
@@ -146,6 +153,7 @@ export async function createBenchClient(
                 observeAck(text);
                 session.handleMessage(text);
               },
+              sendBytes: (bytes: Uint8Array) => session.handleBinary(bytes),
               close: () => session.close(),
             };
           },

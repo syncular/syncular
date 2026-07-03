@@ -127,15 +127,21 @@ export interface ServerRowState {
   readonly scopes: Readonly<Record<string, string>>;
 }
 
-/** The two socket directions, bytes/strings only (§8.1). */
+/** The two socket directions, bytes/strings only (§8.1/§8.7). Binary
+ * payloads are channel-tagged (§8.7): `0x00` = standalone delta message,
+ * `0x01` = sync-round byte-stream chunk. */
 export interface RealtimeSink {
   onText(text: string): void;
   onBinary(bytes: Uint8Array): void;
+  /** Server-initiated close (§8.7 protocol violations). */
+  onClose?(): void;
 }
 
 export interface RealtimeConnection {
   /** Client → server JSON control message (acks, §8.2). */
   send(text: string): void;
+  /** Client → server tagged binary message (round chunks, §8.7). */
+  sendBinary(bytes: Uint8Array): void;
   close(): void;
 }
 

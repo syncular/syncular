@@ -14,6 +14,7 @@ import { realtimeScenarios } from './realtime';
 import { scopeScenarios } from './scopes';
 import { sqliteImageScenarios } from './sqlite-image';
 import { vectorScenarios } from './vectors';
+import { wsRoundScenarios } from './ws-rounds';
 
 export const CATALOG: readonly Scenario[] = [
   ...convergenceScenarios,
@@ -24,6 +25,7 @@ export const CATALOG: readonly Scenario[] = [
   ...sqliteImageScenarios,
   ...lifecycleScenarios,
   ...realtimeScenarios,
+  ...wsRoundScenarios,
   ...errorScenarios,
   ...vectorScenarios,
 ];

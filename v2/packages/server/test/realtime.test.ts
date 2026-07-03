@@ -150,7 +150,11 @@ describe('delta delivery (§8.2)', () => {
       pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1', 'live'))]),
     ]);
     expect(wire.binaries).toHaveLength(1);
-    const delta = decodeMessage(wire.binaries[0] ?? new Uint8Array());
+    const raw = wire.binaries[0] ?? new Uint8Array();
+    // §8.7: standalone deltas carry channel tag 0x00 ahead of the SSP2
+    // response message.
+    expect(raw[0]).toBe(0x00);
+    const delta = decodeMessage(raw.subarray(1));
     expect(delta.msgKind).toBe('response');
     const start = delta.frames.find(
       (f): f is SubStartFrame => f.type === 'SUB_START',

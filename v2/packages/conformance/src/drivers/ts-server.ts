@@ -108,6 +108,10 @@ class TsServerInstance implements ServerInstance {
       storage: this.#wrapped,
       resolveScopes: (args) => this.#resolveScopes(args.actorId),
       clock: () => this.#now.ms,
+      // §8.7: socket sync rounds share the HTTP binding's segment store
+      // and limits (one handler, two framings).
+      segments: this.#segments,
+      limits: this.#limits,
       ...(options.limits?.maxDeltaBytes !== undefined
         ? { maxDeltaBytes: options.limits.maxDeltaBytes }
         : {}),
@@ -213,11 +217,13 @@ class TsServerInstance implements ServerInstance {
           if (typeof data === 'string') sink.onText(data);
           else sink.onBinary(data);
         },
+        closeSocket: () => sink.onClose?.(),
       });
       return {
         ok: true,
         connection: {
           send: (text) => session.handleMessage(text),
+          sendBinary: (bytes) => session.handleBinary(bytes),
           close: () => session.close(),
         },
       };

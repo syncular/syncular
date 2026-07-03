@@ -10,7 +10,13 @@
  * as explicit completion promises. No timers anywhere.
  */
 
-import type { RequestFrame, ResponseMessage } from '@syncular-v2/core';
+import {
+  MessageStreamScanner,
+  REALTIME_TAG_DELTA,
+  REALTIME_TAG_ROUND,
+  type RequestFrame,
+  type ResponseMessage,
+} from '@syncular-v2/core';
 import type {
   ClientInstance,
   ClientLimitsOptions,
@@ -81,16 +87,30 @@ interface Waiter {
 }
 
 /** Realtime traffic observed at the transport seam (server → client and
- * client → server), with promise-based readiness waits. */
+ * client → server), with promise-based readiness waits. Binary traffic
+ * is routed by §8.7 channel tag: `0x00` messages count as deltas,
+ * `0x01` chunks feed per-direction round scanners so socket sync rounds
+ * are observed as rounds, never miscounted as deltas. */
 export class RealtimeObservations {
   readonly hellos: Array<Record<string, unknown>> = [];
   readonly wakeReasons: string[] = [];
   deltasDelivered = 0;
   readonly ackCursors: number[] = [];
+  /** Completed §8.7 socket sync rounds (response END observed). */
+  roundsCompleted = 0;
+  /** True once the server closed the connection (§8.7 violations). */
+  closedByServer = false;
+  /** Any 0x00 delta message delivered while a round response stream
+   * was in flight — a §8.7 interleaving violation. */
+  deltaInterleavedDuringRound = false;
+
+  #responseScanner: MessageStreamScanner | undefined;
 
   readonly #ackWaiters: Waiter[] = [];
   readonly #wakeWaiters: Waiter[] = [];
   readonly #deltaWaiters: Waiter[] = [];
+  readonly #roundWaiters: Waiter[] = [];
+  readonly #closeWaiters: Array<() => void> = [];
 
   get maxAckCursor(): number {
     return this.ackCursors.length > 0 ? Math.max(...this.ackCursors) : -1;
@@ -122,6 +142,27 @@ export class RealtimeObservations {
     });
   }
 
+  /** Resolves once at least `count` socket rounds completed (§8.7). */
+  waitForRounds(count: number): Promise<void> {
+    if (this.roundsCompleted >= count) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.#roundWaiters.push({ threshold: count, resolve });
+    });
+  }
+
+  /** Resolves once the server closed the connection (§8.7). */
+  waitForClose(): Promise<void> {
+    if (this.closedByServer) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.#closeWaiters.push(resolve);
+    });
+  }
+
+  observeServerClose(): void {
+    this.closedByServer = true;
+    for (const resolve of this.#closeWaiters.splice(0)) resolve();
+  }
+
   observeServerText(text: string): void {
     let parsed: unknown;
     try {
@@ -145,6 +186,28 @@ export class RealtimeObservations {
   observeDelta(): void {
     this.deltasDelivered += 1;
     drain(this.#deltaWaiters, this.deltasDelivered);
+  }
+
+  /** Route one server→client binary message by its §8.7 channel tag. */
+  observeServerBinary(bytes: Uint8Array): void {
+    const tag = bytes[0];
+    if (tag === REALTIME_TAG_ROUND) {
+      this.#responseScanner ??= new MessageStreamScanner();
+      const done = this.#responseScanner.push(bytes.subarray(1));
+      if (done !== undefined) {
+        this.#responseScanner = undefined;
+        this.roundsCompleted += 1;
+        drain(this.#roundWaiters, this.roundsCompleted);
+      }
+      return;
+    }
+    if (tag === REALTIME_TAG_DELTA) {
+      if (this.#responseScanner !== undefined) {
+        // §8.7: the server MUST NOT interleave deltas mid-stream.
+        this.deltaInterleavedDuringRound = true;
+      }
+      this.observeDelta();
+    }
   }
 
   observeClientText(text: string): void {
@@ -292,8 +355,12 @@ export class ScenarioContext {
               sink.onText(text);
             },
             onBinary: (bytes) => {
-              realtime.observeDelta();
+              realtime.observeServerBinary(bytes);
               sink.onBinary(bytes);
+            },
+            onClose: () => {
+              realtime.observeServerClose();
+              sink.onClose?.();
             },
           });
           if (!result.ok) throw new EndpointError(result.error);
@@ -303,6 +370,7 @@ export class ScenarioContext {
               realtime.observeClientText(text);
               connection.send(text);
             },
+            sendBinary: (bytes: Uint8Array) => connection.sendBinary(bytes),
             close: () => connection.close(),
           };
         },

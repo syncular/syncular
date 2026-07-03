@@ -16,3 +16,4 @@ export * from './realtime';
 export * from './render';
 export * from './row-codec';
 export * from './segment';
+export * from './stream';

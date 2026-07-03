@@ -574,7 +574,15 @@ impl SyncClient {
         self.sync_needed = false;
         let (message, meta) = self.build_request();
         let request_bytes = encode_message(&message);
-        let response_bytes = match transport.sync(&request_bytes) {
+        // §8.7: rounds ride the socket whenever it is connected (one
+        // loop, no fallback pair); the transport seam stays bytes-in /
+        // bytes-out either way. Registration-at-round-end is server-side.
+        let round = if self.realtime_connected {
+            transport.realtime_sync(&request_bytes)
+        } else {
+            transport.sync(&request_bytes)
+        };
+        let response_bytes = match round {
             Ok(bytes) => bytes,
             Err(TransportError { code, message }) => {
                 return SyncOutcome::Failed {

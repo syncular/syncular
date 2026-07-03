@@ -17,6 +17,11 @@
  */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import {
+  MessageStreamScanner,
+  REALTIME_TAG_DELTA,
+  REALTIME_TAG_ROUND,
+} from '@syncular-v2/core';
 import type {
   ClientConflict,
   ClientCreateOptions,
@@ -133,6 +138,16 @@ class ShimProcess {
   readonly #endpoints: ClientEndpoints | undefined;
   #connection:
     | Awaited<ReturnType<ClientEndpoints['connectRealtime']>>
+    | undefined;
+  /** §8.7 socket round in flight on the shim's behalf: the host owns
+   * the WS-binding seam for the native core (tagging, chunk assembly),
+   * mirroring what a native app shell does at its socket layer. */
+  #round:
+    | {
+        readonly scanner: MessageStreamScanner;
+        readonly resolve: (bytes: Uint8Array) => void;
+        readonly reject: (error: Error) => void;
+      }
     | undefined;
   #nextId = 1;
   #buffer = '';
@@ -263,10 +278,17 @@ class ShimProcess {
       case 'realtimeConnect': {
         this.#connection = await endpoints.connectRealtime({
           onText: (text) => this.#notify('realtimeText', { text }),
-          onBinary: (bytes) =>
-            this.#notify('realtimeBinary', { bytes: bytesParam(bytes) }),
+          onBinary: (bytes) => this.#routeBinary(bytes),
+          onClose: () => this.#failRound('realtime socket closed (§8.7)'),
         });
         return {};
+      }
+      case 'realtimeSync': {
+        // §8.7 socket round for the native core: send the tagged
+        // request, assemble the tagged response stream to its END.
+        const request = bytesOf(params.request, 'realtimeSync.request');
+        const response = await this.#realtimeRound(request);
+        return { response: bytesParam(response) };
       }
       case 'realtimeSend': {
         const text = params.text;
@@ -279,11 +301,68 @@ class ShimProcess {
       case 'realtimeClose': {
         this.#connection?.close();
         this.#connection = undefined;
+        this.#failRound('realtime disconnected mid-round (§8.7)');
         return {};
       }
       default:
         throw new Error(`unknown shim request method ${method}`);
     }
+  }
+
+  /** §8.7 channel-tag routing: round chunks feed the in-flight round's
+   * assembler; standalone deltas flow shim-ward untagged (the native
+   * core consumes bare SSP2 messages behind its transport seam). */
+  #routeBinary(bytes: Uint8Array): void {
+    if (bytes.length === 0) return;
+    const tag = bytes[0];
+    const body = bytes.subarray(1);
+    if (tag === REALTIME_TAG_ROUND) {
+      const round = this.#round;
+      if (round === undefined) return;
+      let done: ReturnType<MessageStreamScanner['push']>;
+      try {
+        done = round.scanner.push(body);
+      } catch (error) {
+        this.#round = undefined;
+        round.reject(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      if (done === undefined) return;
+      this.#round = undefined;
+      if (done.excess > 0) {
+        round.reject(new Error('response bytes past END (§8.7)'));
+        return;
+      }
+      round.resolve(done.message.slice());
+      return;
+    }
+    if (tag === REALTIME_TAG_DELTA) {
+      this.#notify('realtimeBinary', { bytes: bytesParam(body) });
+    }
+    // Unknown tag: tolerated and ignored (§8.7 closed registry).
+  }
+
+  #realtimeRound(request: Uint8Array): Promise<Uint8Array> {
+    const connection = this.#connection;
+    if (connection === undefined) {
+      throw new Error('realtimeSync without a realtime connection');
+    }
+    return new Promise((resolve, reject) => {
+      this.#round = { scanner: new MessageStreamScanner(), resolve, reject };
+      const tagged = new Uint8Array(request.length + 1);
+      tagged[0] = REALTIME_TAG_ROUND;
+      tagged.set(request, 1);
+      connection.sendBinary(tagged);
+    });
+  }
+
+  #failRound(reason: string): void {
+    const round = this.#round;
+    if (round === undefined) return;
+    this.#round = undefined;
+    const error = new Error(reason);
+    (error as { code?: string }).code = 'sync.transport_failed';
+    round.reject(error);
   }
 
   #notify(method: string, params: Record<string, JsonValue>): void {

@@ -303,9 +303,11 @@ export const tsClientDriver: ClientDriver = {
         const connection = await endpoints.connectRealtime({
           onText: (text) => handlers.onText(text),
           onBinary: (bytes) => handlers.onBinary(bytes),
+          onClose: () => handlers.onClose?.(),
         });
         return {
           send: (text) => connection.send(text),
+          sendBytes: (bytes) => connection.sendBinary(bytes),
           close: () => {
             connection.close();
             handlers.onClose?.();

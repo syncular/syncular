@@ -150,6 +150,10 @@ export function makeServer(): TestServer {
     storage: wrapped,
     resolveScopes,
     clock: () => now.ms,
+    // §8.7: socket sync rounds ride the same segment store + limits as
+    // the HTTP binding (one handler, two framings).
+    segments,
+    limits,
   });
   const server: TestServer = {
     storage,
@@ -247,9 +251,11 @@ export async function makeClient(
           if (typeof data === 'string') handlers.onText(data);
           else handlers.onBinary(data);
         },
+        closeSocket: () => handlers.onClose?.(),
       });
       return {
         send: (text) => session.handleMessage(text),
+        sendBytes: (bytes) => session.handleBinary(bytes),
         close: () => session.close(),
       };
     },

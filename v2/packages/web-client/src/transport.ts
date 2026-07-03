@@ -26,7 +26,8 @@ export type SegmentDownloader = (
 export interface RealtimeHandlers {
   /** JSON control frame (§8.1): hello / sync / heartbeat / unknown. */
   onText(text: string): void;
-  /** Binary frame: a complete SSP2 response message (§8.1). */
+  /** Binary frame: channel tag byte + payload (§8.7) — a `0x00`-tagged
+   * standalone SSP2 response (delta) or a `0x01`-tagged round chunk. */
   onBinary(bytes: Uint8Array): void;
   onClose?(): void;
 }
@@ -34,6 +35,10 @@ export interface RealtimeHandlers {
 export interface RealtimeSocket {
   /** Send a JSON control message (acks, §8.2). */
   send(text: string): void;
+  /** Send one binary message (tagged round chunk, §8.7). The socket is
+   * the sync-round transport whenever it is connected — Direction
+   * decision 1: one loop, no fallback pair. */
+  sendBytes(bytes: Uint8Array): void;
   close(): void;
 }
 
