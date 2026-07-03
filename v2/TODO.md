@@ -321,8 +321,18 @@ the old tree archived.
       MUST NOT double-compress); inline/WS segments ride §1.3 transport
       compression unchanged. Ids still hash uncompressed bytes (§5.1);
       clients rely on native fetch decoding — zero new client code.
-- [ ] E2EE: explicitly re-scope (v1 had it; decide where it lives in v2's
-      ladder or whether it waits for demand).
+- [x] E2EE: RE-SCOPED 2026-07-03 — **waits for demand; not on the parity
+      ladder.** v1 shipped it with little usage evidence, and v2's design
+      keeps the door open without carrying the code: payloads are opaque
+      bytes through the codec, so client-side encryption can arrive later
+      as a column-level concern with zero wire changes. Constraints
+      recorded so nothing forecloses it: scope columns MUST stay
+      plaintext (server-side scope extraction, §3.1); `crdt` columns are
+      incompatible with E2EE as designed (the server merges, §5.10) —
+      E2EE'd collaborative text would need client-side merge, a
+      different architecture; blobs are trivially E2EE-able client-side
+      (opaque bytes, content address over ciphertext). Revisit when a
+      real deployment asks.
 
 ## 6. Product & release
 
