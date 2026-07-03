@@ -283,14 +283,40 @@ the old tree archived.
       decide if it returns at all.
 - [ ] **Segment store backends**: S3/R2 for production segment storage +
       the CDN delivery story end-to-end.
-- [ ] **Ops posture**: events seam + pruning guidance LANDED 2026-07-03 —
-      `SyncularServerEvents` on the server config (12 typed JSON-able
+- [x] **Ops posture**: LANDED 2026-07-03 — events seam + pruning guidance
+      (`SyncularServerEvents` on the server config, 12 typed JSON-able
       events across request/push/pull/segment/realtime/prune/resolver;
       fire-and-forget, zero-cost when unset, ctx-clock timing),
       `consoleJsonEvents()` reference sink, demo wiring behind
       `SYNCULAR_DEMO_EVENTS=1`, horizon/pruning runbook in
-      packages/server/README.md. Still open: load-test suite ported to
-      v2 lanes.
+      packages/server/README.md — AND the **load-test suite ported to v2
+      lanes** (`v2/load`, bun-only, zero new runtime deps; NOT in CI by
+      default). A bun-native harness spawns ONE real server process (hono
+      HTTP + WS on localhost, `bun:sqlite` default, `SYNCULAR_PG_URL` for
+      Postgres) and N lightweight protocol-level virtual clients — encoded
+      SSP2 rounds over the real wire via the reference codec, no full
+      SyncClient per VU (the k6-VU equivalent at ~100× less overhead).
+      Five scenarios port v1's k6 intent onto v2's stack: `push-pull`
+      (steady mixed load, ops/s), `bootstrap-storm` (THE scale scenario —
+      M clients bootstrap one seeded dataset at once; asserts §5.3 segment
+      built-once/reused-M **via the events seam**), `reconnect-storm`
+      (drop+reconnect over the §8.7 socket, catch-up timing),
+      `maintenance-churn` (pushes racing prune cycles), `mixed-soak` (all
+      interleaved, minutes-long, RSS watched). Each: config +
+      pass/fail thresholds (p95 latencies, zero-protocol-error budget, RSS
+      ceiling), machine-readable JSON + human summary line. Metrics with no
+      external stack: client-side round histograms, server-side counters
+      over `SyncularServerEvents` (durations, segment reuse, prune counts)
+      polled from an internal `/__load/metrics` endpoint, RSS sampling.
+      `bun run load <scenario>` + `--vus/--duration/--dataset`, `bun run
+      load:smoke` (~30s all-scenario sweep). `load/README.md` documents
+      scenarios/thresholds/derivations, the PG lane, and that this is
+      stability/scale verification — NOT a benchmark (`bench/` owns
+      comparative numbers). Kept OUT of the default `bun test` sweep (the
+      smoke sweep is ~30s, over the ~10s CI budget; root `test` path-ignores
+      `load/**`); only sub-second pure-logic unit tests run. Verified: all
+      five smoke profiles green + a bootstrap-storm full profile (50 VU /
+      100k) locally.
 
 ## 5. Protocol/spec debts (small, decide-and-pin)
 

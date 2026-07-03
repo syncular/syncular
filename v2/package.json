@@ -2,12 +2,14 @@
   "name": "syncular-v2",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "apps/*", "examples/*", "bench"],
+  "workspaces": ["packages/*", "apps/*", "examples/*", "bench", "load"],
   "scripts": {
     "check": "bun run typecheck && bun run lint && bun run test",
-    "test": "bun test --path-ignore-patterns '**/create-app/template/**'",
+    "test": "bun test --path-ignore-patterns '**/create-app/template/**' --path-ignore-patterns '**/load/**'",
     "bench": "bun run --cwd bench bench",
     "bench:ci": "bun run --cwd bench bench:ci",
+    "load": "bun run --cwd load load",
+    "load:smoke": "bun run --cwd load load:smoke",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "lint:fix": "biome check --fix ."
