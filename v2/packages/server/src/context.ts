@@ -8,7 +8,7 @@ import type { ScopeMap } from '@syncular-v2/core';
 import type { SyncularServerEvents } from './events';
 import type { ServerSchema } from './schema';
 import type { SegmentStore } from './segment-store';
-import type { SignedUrlConfig } from './signed-url';
+import type { SegmentUrlConfig } from './signed-url';
 import type { ServerStorage, StoredCommit } from './storage';
 
 /** SSP2 body content type (§1.1). */
@@ -54,7 +54,8 @@ export interface SyncServerConfig {
   /** Epoch-ms clock; defaults to `Date.now`. */
   readonly clock?: () => number;
   readonly limits?: Partial<ServerLimits>;
-  readonly signedUrls?: SignedUrlConfig;
+  /** §5.4 signed-URL delivery: native HMAC tokens or delegated presign. */
+  readonly signedUrls?: SegmentUrlConfig;
   readonly realtime?: RealtimeNotifier;
   /**
    * Optional structured-events sink (ops seam). Absent ⇒ zero cost: no

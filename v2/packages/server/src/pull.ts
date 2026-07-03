@@ -18,7 +18,7 @@ import type { PullSegmentSummary } from './events';
 import type { CompiledSchema, CompiledTable } from './schema';
 import { scopeDigest } from './scopes';
 import type { SegmentRecord } from './segment-store';
-import { signSegmentToken } from './signed-url';
+import { issueSegmentUrl } from './signed-url';
 import { buildSqliteImage } from './sqlite-image';
 import type { StoredCommit, StoredRow } from './storage';
 
@@ -144,18 +144,12 @@ async function signedUrlFields(
   now: number,
 ): Promise<{ url?: string; urlExpiresAtMs?: number }> {
   if ((limits.accept & ACCEPT_SIGNED_URLS) === 0 || !ctx.signedUrls) return {};
-  const exp = Math.floor(now / 1000) + (ctx.signedUrls.ttlSeconds ?? 900);
-  const token = await signSegmentToken(ctx.signedUrls.key, {
-    v: 1,
-    seg: segmentId,
-    sd: digest,
-    aud: ctx.signedUrls.audience(ctx.partition),
-    exp,
+  return issueSegmentUrl(ctx.signedUrls, {
+    segmentId,
+    partition: ctx.partition,
+    scopeDigest: digest,
+    nowMs: now,
   });
-  return {
-    url: `${ctx.signedUrls.baseUrl}/${segmentId}?st=${token}`,
-    urlExpiresAtMs: exp * 1000,
-  };
 }
 
 function segmentRefFrame(
