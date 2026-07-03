@@ -169,6 +169,9 @@ class TsServerInstance implements ServerInstance {
       ...(options.limits?.maxDeltaBytes !== undefined
         ? { maxDeltaBytes: options.limits.maxDeltaBytes }
         : {}),
+      ...(options.limits?.maxPresenceBytes !== undefined
+        ? { maxPresenceBytes: options.limits.maxPresenceBytes }
+        : {}),
     });
   }
 

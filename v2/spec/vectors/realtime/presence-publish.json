@@ -1,0 +1,10 @@
+{
+  "event": "presence",
+  "data": {
+    "scopeKey": "project:p1",
+    "doc": {
+      "cursor": 42,
+      "name": "Ada"
+    }
+  }
+}

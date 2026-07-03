@@ -50,10 +50,36 @@ export interface RealtimeHeartbeatEvent {
   data: { timestamp: number };
 }
 
+/** §8.6.2 presence fanout kind — a closed set of three. */
+export type PresenceKind = 'join' | 'update' | 'leave';
+
+const PRESENCE_KINDS: readonly PresenceKind[] = ['join', 'update', 'leave'];
+
+/**
+ * Server → client presence fanout (§8.6.2): a scope-mate's presence for a
+ * key the receiver holds changed. `doc` is the peer's document for
+ * `join`/`update` and `null` for `leave`. An `error` variant carries a
+ * client-runtime `presence.*` code back to the publisher (size cap /
+ * forbidden, §8.6.2); it never fans out to peers.
+ */
+export interface RealtimePresenceEvent {
+  event: 'presence';
+  data: {
+    scopeKey: string;
+    kind?: PresenceKind;
+    actorId?: string;
+    clientId?: string;
+    doc?: Record<string, unknown> | null;
+    error?: string;
+    timestamp?: number;
+  };
+}
+
 export type RealtimeServerEvent =
   | RealtimeHelloEvent
   | RealtimeSyncEvent
-  | RealtimeHeartbeatEvent;
+  | RealtimeHeartbeatEvent
+  | RealtimePresenceEvent;
 
 /** Client → server delta acknowledgement (§8.2). */
 export interface RealtimeAck {
@@ -61,9 +87,54 @@ export interface RealtimeAck {
   cursor: number;
 }
 
+/** Client → server presence publish/leave (§8.6.2). `doc: null` = leave. */
+export interface RealtimePresencePublish {
+  event: 'presence';
+  data: {
+    scopeKey: string;
+    doc: Record<string, unknown> | null;
+  };
+}
+
 export type ParsedRealtimeEvent =
   | { known: true; event: RealtimeServerEvent }
   | { known: false; eventName: string };
+
+/** Serialize a client→server presence publish/leave (§8.6.2). */
+export function encodePresencePublish(
+  scopeKey: string,
+  doc: Record<string, unknown> | null,
+): string {
+  return JSON.stringify({ event: 'presence', data: { scopeKey, doc } });
+}
+
+/** Serialize a server→client presence fanout event (§8.6.2). */
+export function encodePresenceFanout(
+  scopeKey: string,
+  kind: PresenceKind,
+  actorId: string,
+  clientId: string,
+  doc: Record<string, unknown> | null,
+  timestamp: number,
+): string {
+  return JSON.stringify({
+    event: 'presence',
+    data: { scopeKey, kind, actorId, clientId, doc, timestamp },
+  });
+}
+
+/** Serialize a server→client presence error directed at the publisher
+ * (§8.6.2 `presence.too_large` / `presence.forbidden`). */
+export function encodePresenceError(
+  scopeKey: string,
+  error: string,
+  timestamp: number,
+): string {
+  return JSON.stringify({
+    event: 'presence',
+    data: { scopeKey, error, timestamp },
+  });
+}
 
 function malformed(what: string): never {
   throw new DecodeError(
@@ -175,5 +246,95 @@ export function parseRealtimeServerEvent(text: string): ParsedRealtimeEvent {
       },
     };
   }
+  if (event === 'presence') {
+    // §8.6.2: validate the presence shape but carry `data` through
+    // verbatim so re-encoding is byte-identical (host-defined `doc`). A
+    // `presence` message is recognized in both directions: a fanout (has
+    // `kind`), a publisher-directed error (has `error`), or a client→server
+    // publish (neither — just `scopeKey`/`doc`, §8.6.2).
+    const data = requireObject(root.data, 'presence.data');
+    validatePresenceScopeKey(data.scopeKey);
+    if ('error' in data) {
+      // The publisher-directed error variant (`presence.too_large` /
+      // `presence.forbidden`, §8.6.2) — a string code, no `kind`/`doc`.
+      requireString(data.error, 'presence.data.error');
+    } else if ('kind' in data) {
+      validatePresenceKind(data.kind);
+      requireString(data.actorId, 'presence.data.actorId');
+      requireString(data.clientId, 'presence.data.clientId');
+      validatePresenceFanoutDoc(data.kind as PresenceKind, data.doc);
+    } else {
+      // Client→server publish/leave: scopeKey + doc (object or null).
+      if (data.doc !== null) requirePresenceDocObject(data.doc);
+    }
+    if (data.timestamp !== undefined) {
+      requireNumber(data.timestamp, 'presence.data.timestamp');
+    }
+    return {
+      known: true,
+      event: { event: 'presence', data: data as RealtimePresenceEvent['data'] },
+    };
+  }
   return { known: false, eventName: event };
+}
+
+function validatePresenceScopeKey(value: unknown): string {
+  const key = requireString(value, 'presence.data.scopeKey');
+  if (key.length === 0) malformed('presence.data.scopeKey must be non-empty');
+  return key;
+}
+
+function validatePresenceKind(value: unknown): void {
+  const kind = requireString(value, 'presence.data.kind');
+  if (!(PRESENCE_KINDS as readonly string[]).includes(kind)) {
+    malformed(`unknown presence kind ${JSON.stringify(kind)}`);
+  }
+}
+
+/** §8.6.2 `doc`-present-iff-not-`leave`: a leave carries null, a
+ * join/update carries an object. */
+function validatePresenceFanoutDoc(kind: PresenceKind, doc: unknown): void {
+  if (kind === 'leave') {
+    if (doc !== null && doc !== undefined) {
+      malformed('presence leave must carry doc: null');
+    }
+    return;
+  }
+  requirePresenceDocObject(doc);
+}
+
+function requirePresenceDocObject(value: unknown): void {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    malformed('presence.data.doc must be a JSON object');
+  }
+}
+
+/**
+ * Parse a client → server presence publish/leave (§8.6.2). Used by the
+ * server to validate inbound `presence` control messages. A malformed
+ * message (missing/empty `scopeKey`, or a `doc` that is neither an object
+ * nor `null`) throws a `DecodeError` — a known event with wrong-shape data
+ * is never a tolerated variant (§8.1).
+ */
+export function parseRealtimePresencePublish(
+  text: string,
+): RealtimePresencePublish {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    malformed('not valid JSON');
+  }
+  const root = requireObject(value, 'control message');
+  if (root.event !== 'presence') {
+    malformed('not a presence control message');
+  }
+  const data = requireObject(root.data, 'presence.data');
+  const scopeKey = validatePresenceScopeKey(data.scopeKey);
+  const doc = data.doc;
+  if (doc !== null) requirePresenceDocObject(doc);
+  return {
+    event: 'presence',
+    data: { scopeKey, doc: doc as Record<string, unknown> | null },
+  };
 }

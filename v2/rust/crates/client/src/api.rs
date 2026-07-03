@@ -44,6 +44,15 @@ pub struct LeaseState {
     pub error_code: Option<String>,
 }
 
+/// §8.6 a peer's ephemeral presence document on a scope key.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresencePeer {
+    pub actor_id: String,
+    pub client_id: String,
+    pub doc: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncReport {

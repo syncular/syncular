@@ -675,6 +675,27 @@ const realtimeWake = {
   },
 };
 
+// §8.6.2 presence: client→server publish and server→client join fanout.
+const realtimePresencePublish = {
+  event: 'presence',
+  data: {
+    scopeKey: 'project:p1',
+    doc: { cursor: 42, name: 'Ada' },
+  },
+};
+
+const realtimePresenceFanout = {
+  event: 'presence',
+  data: {
+    scopeKey: 'project:p1',
+    kind: 'join',
+    actorId: 'actor-1',
+    clientId: 'client-a',
+    doc: { cursor: 42, name: 'Ada' },
+    timestamp: FIXED_TIME_MS,
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Invalid cases — built from codec primitives or by deterministic mutation
 // of valid codec output (never hand-hexed).
@@ -906,6 +927,28 @@ const invalidHelloFractionalCursor = {
     latestCursor: 64,
     requiresSync: true,
     timestamp: FIXED_TIME_MS,
+  },
+};
+
+// §8.6.2: a presence fanout whose `kind` is outside the closed set.
+const invalidPresenceUnknownKind = {
+  event: 'presence',
+  data: {
+    scopeKey: 'project:p1',
+    kind: 'snapshot', // not one of join|update|leave (§8.6.2)
+    actorId: 'actor-1',
+    clientId: 'client-a',
+    doc: { cursor: 42 },
+    timestamp: FIXED_TIME_MS,
+  },
+};
+
+// §8.6.2: a client→server publish whose `doc` is neither an object nor null.
+const invalidPresenceScalarDoc = {
+  event: 'presence',
+  data: {
+    scopeKey: 'project:p1',
+    doc: 'online', // must be a JSON object or null (§8.6.2)
   },
 };
 
@@ -1257,6 +1300,17 @@ total += emitKind(
       value: realtimeWake,
       covers: 'Wake-up control message (SPEC.md §8.3)',
     },
+    {
+      name: 'presence-publish',
+      value: realtimePresencePublish,
+      covers: 'Client→server presence publish control message (SPEC.md §8.6.2)',
+    },
+    {
+      name: 'presence-fanout',
+      value: realtimePresenceFanout,
+      covers:
+        'Server→client presence join fanout control message (SPEC.md §8.6.2)',
+    },
   ],
   [],
   [
@@ -1273,6 +1327,20 @@ total += emitKind(
       error: 'sync.invalid_request',
       covers:
         'Fractional numeric field in a known event is malformed — realtime numbers are integers within the i64 safe range (SPEC.md §8.1)',
+    },
+    {
+      name: 'presence-unknown-kind',
+      value: invalidPresenceUnknownKind,
+      error: 'sync.invalid_request',
+      covers:
+        'Presence fanout with a kind outside the closed set join|update|leave is malformed (SPEC.md §8.6.2)',
+    },
+    {
+      name: 'presence-scalar-doc',
+      value: invalidPresenceScalarDoc,
+      error: 'sync.invalid_request',
+      covers:
+        'Client→server presence publish with a non-object non-null doc is malformed (SPEC.md §8.6.2)',
     },
   ],
 );

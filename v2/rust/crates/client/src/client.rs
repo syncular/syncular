@@ -7,6 +7,8 @@
 //! Built from `v2/SPEC.md` and the committed `ssp2` codec alone — no
 //! reference to the v1 Rust tree or the v2 TypeScript client.
 
+use std::collections::HashMap;
+
 use rusqlite::types::Value as SqlValue;
 use rusqlite::Connection;
 use serde_json::{Map, Value};
@@ -14,11 +16,14 @@ use sha2::{Digest, Sha256};
 use ssp2::model::{Frame, MediaType, Message, MsgKind, Op, OpResult, PushStatus, SubStatus};
 use ssp2::primitives::RawJson;
 use ssp2::segment::{decode_rows_segment, Column, ColumnType, ColumnValue, Row, RowsSegment};
-use ssp2::{decode_message, encode_message, parse_control, ControlMessage};
+use ssp2::{
+    decode_message, encode_message, encode_presence_publish, parse_control, ControlMessage,
+    PresenceKind,
+};
 
 use crate::api::{
-    ClientLimits, ConflictRecord, LeaseState, Mutation, RejectionRecord, RowState, SchemaFloor,
-    SubscriptionStateView, SyncOutcome, SyncReport,
+    ClientLimits, ConflictRecord, LeaseState, Mutation, PresencePeer, RejectionRecord, RowState,
+    SchemaFloor, SubscriptionStateView, SyncOutcome, SyncReport,
 };
 use crate::schema::{parse_schema_json, ClientSchema};
 use crate::transport::{SegmentRequest, Transport, TransportError};
@@ -128,6 +133,8 @@ pub struct SyncClient {
     /// §8.4 coalesced sync-needed signal.
     sync_needed: bool,
     realtime_connected: bool,
+    /// §8.6 presence: scopeKey → (`actorId clientId` peer key → peer).
+    presence: HashMap<String, HashMap<String, PresencePeer>>,
     /// Client clock (epoch ms) for the §5.4 `urlExpiresAtMs` check; the
     /// host may pin it (conformance runs on a virtual clock).
     now_ms: Option<i64>,
@@ -277,6 +284,7 @@ impl SyncClient {
             upgrading: false,
             sync_needed: false,
             realtime_connected: false,
+            presence: HashMap::new(),
             now_ms: None,
         };
         client.create_tables()?;
@@ -2139,6 +2147,80 @@ impl SyncClient {
     pub fn disconnect_realtime(&mut self, transport: &mut dyn Transport) {
         let _ = transport.realtime_close();
         self.realtime_connected = false;
+        self.presence.clear(); // §8.6.1: presence is per-connection
+    }
+
+    /// §8.6.2: publish (or clear, `doc: None`) this client's presence
+    /// document for `scope_key`. Requires a live socket; the document is
+    /// ephemeral (lost on disconnect). Authorization is the connection's
+    /// registration (§8.6.3) — an unheld key is rejected loudly by the
+    /// server with `presence.forbidden`.
+    pub fn set_presence(
+        &mut self,
+        transport: &mut dyn Transport,
+        scope_key: &str,
+        doc: Option<&Value>,
+    ) -> Result<(), String> {
+        if !self.realtime_connected {
+            return Err("setPresence requires a connected realtime socket (§8.6)".to_string());
+        }
+        let text = encode_presence_publish(scope_key, doc);
+        transport
+            .realtime_send(&text)
+            .map_err(|e| format!("{}: {}", e.code, e.message))
+    }
+
+    /// §8.6: the peers currently present on a scope key (ephemeral).
+    pub fn presence(&self, scope_key: &str) -> Vec<PresencePeer> {
+        self.presence
+            .get(scope_key)
+            .map(|peers| peers.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// §8.6 apply an inbound presence fanout to the local map.
+    fn apply_presence(
+        &mut self,
+        scope_key: String,
+        kind: Option<PresenceKind>,
+        actor_id: Option<String>,
+        client_id: Option<String>,
+        doc: Option<Value>,
+        error: Option<String>,
+    ) {
+        // The publisher-directed error variant is out-of-band; nothing to
+        // record in the peer map.
+        if error.is_some() {
+            return;
+        }
+        let (Some(kind), Some(actor_id), Some(client_id)) = (kind, actor_id, client_id) else {
+            return;
+        };
+        let peer_key = format!("{actor_id} {client_id}");
+        match kind {
+            PresenceKind::Leave => {
+                if let Some(peers) = self.presence.get_mut(&scope_key) {
+                    peers.remove(&peer_key);
+                    if peers.is_empty() {
+                        self.presence.remove(&scope_key);
+                    }
+                }
+            }
+            _ => {
+                let doc = match doc {
+                    Some(Value::Object(_)) => doc.unwrap(),
+                    _ => return,
+                };
+                self.presence.entry(scope_key).or_default().insert(
+                    peer_key,
+                    PresencePeer {
+                        actor_id,
+                        client_id,
+                        doc,
+                    },
+                );
+            }
+        }
     }
 
     /// Inbound JSON control message (§8.1). Unknown events are tolerated.
@@ -2149,6 +2231,17 @@ impl SyncClient {
                     // §8.1: pull before trusting the socket for continuity.
                     self.sync_needed = true;
                 }
+            }
+            Ok(ControlMessage::Presence {
+                scope_key,
+                kind,
+                actor_id,
+                client_id,
+                doc,
+                error,
+                ..
+            }) => {
+                self.apply_presence(scope_key, kind, actor_id, client_id, doc, error);
             }
             Ok(ControlMessage::Wake { .. }) => {
                 // §8.3: any wake-up means "run a pull soon", never data.

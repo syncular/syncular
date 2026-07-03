@@ -1,0 +1,14 @@
+{
+  "event": "presence",
+  "data": {
+    "scopeKey": "project:p1",
+    "kind": "join",
+    "actorId": "actor-1",
+    "clientId": "client-a",
+    "doc": {
+      "cursor": 42,
+      "name": "Ada"
+    },
+    "timestamp": 1782993600000
+  }
+}

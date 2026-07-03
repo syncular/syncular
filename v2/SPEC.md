@@ -2640,13 +2640,208 @@ Server sends `{"event":"heartbeat","data":{"timestamp":<ms>}}` on a host
 interval (suggested 30 s). A client that hears nothing (any frame counts)
 for 2× the interval SHOULD reconnect. No client→server ping is specified.
 
-### 8.6 Presence — reserved extension
+### 8.6 Presence
 
-Scope-keyed ephemeral presence (join/leave/update/snapshot keyed by
-(actor, client) per scope key, v1 semantics) is a post-gate extension.
-Reserved for it: the `presence` JSON event name in both directions and
-binary frame types `0x20`–`0x2F`. Core conformance ignores presence
-events (per the unknown-control-event rule, §8.1).
+Scope-keyed **ephemeral** presence: a connected client publishes a small
+host-shaped JSON document tagged to a scope key it holds, and every other
+connection registered on that scope key receives join/update/leave events.
+Presence is the realtime who's-online-and-doing-what surface (v1 semantics:
+ephemeral cursors/activity per scope, never the commit log).
+
+Presence rides the realtime channel as JSON control events under the
+reserved `presence` event name in **both** directions (§8.1's
+tolerate-unknown discipline: a feature-off peer ignores the whole event by
+its name, so presence ships with **no wire-version bump** — it is new
+*event names*, never new frames or reason strings). The binary frame types
+`0x20`–`0x2F` stay reserved for a possible future high-throughput binary
+presence encoding; wire version 1 carries presence as text only.
+
+#### 8.6.1 Model — the invariants
+
+- **Ephemeral.** A presence document lives only for the life of the
+  publishing connection. It is **never persisted**, **never written to the
+  commit log**, and **never delivered on a pull or delta** (§4/§8.2). It is
+  not part of any cursor, horizon, or segment. A server restart loses all
+  presence; a client learns the new truth by re-publishing and by the
+  snapshot it receives when it re-registers (§8.6.4).
+- **Scope-addressed.** Every presence document is tagged to exactly one
+  **scope key** — a `prefix:value` string (§3.1), the same addressing unit
+  the fanout index uses. A connection may hold presence on several scope
+  keys at once (one document per key); publishing to a different key does
+  not disturb the others.
+- **Lost on disconnect ⇒ leave.** When a publishing connection closes
+  (clean or not), the server MUST emit a `leave` for every scope key that
+  connection was present on, to the remaining registered peers. A dropped
+  socket and an explicit leave (§8.6.2, `doc: null`) are observationally
+  identical to peers.
+- **Identity is (actor, client).** A presence document is attributed to the
+  publishing connection's `(actorId, clientId)` pair — the **peer identity**
+  (§8.6.3). Two connections of the same actor (two devices, two tabs behind
+  distinct `clientId`s) are two distinct peers, each with its own document;
+  the same `clientId` reconnecting **replaces** its own prior document for
+  the key (last publish wins per `(scopeKey, actorId, clientId)`).
+
+#### 8.6.2 Wire
+
+**Client → server** (publish or leave):
+
+```json
+{"event":"presence","data":{"scopeKey":"project:p1","doc":{…}}}
+```
+
+```json
+{"event":"presence","data":{"scopeKey":"project:p1","doc":null}}
+```
+
+`doc` is a host-defined JSON **object** (or `null` to leave). `scopeKey` is
+a non-empty string. A `presence` client→server message whose `data` is
+missing, whose `scopeKey` is absent/empty/non-string, or whose `doc` is
+neither a JSON object nor `null` is **malformed** — a parse error under
+§8.1's known-event rule (a *known* event with wrong-shape `data` is never a
+tolerated variant). `doc` being any JSON value other than an object or
+`null` (a scalar, an array) is likewise malformed: the document shape is
+host-defined but its container is pinned to `object` so the identity fields
+the server injects (§8.6.3) cannot collide with a top-level scalar.
+
+**Server → client** (fanout — one peer's presence changed on a key the
+receiver holds):
+
+```json
+{"event":"presence","data":{"scopeKey":"project:p1","kind":"join"|"update"|"leave",
+ "actorId":"…","clientId":"…","doc":{…}|null,"timestamp":<ms>}}
+```
+
+- `kind` is a **closed set** of three: `join` (the peer's first document on
+  this key for the receiver's view), `update` (a subsequent document from an
+  already-present peer), `leave` (the peer cleared the key or disconnected).
+  A `presence` server→client event whose `kind` is not one of the three is
+  malformed (mirrors the §8.3 closed-reason rule).
+- `doc` is the peer's document for `join`/`update`, and `null` for `leave`.
+  The `doc`-present-iff-not-`leave` tie is pinned: a `leave` MUST carry
+  `doc: null`, and a `join`/`update` MUST carry a `doc` object.
+- `actorId`/`clientId` identify the peer (§8.6.3). `timestamp` is the
+  server clock (epoch ms) when the change was fanned out.
+
+**Snapshot on register (§8.6.4).** When a connection acquires a scope-key
+registration and other peers are already present there, the server delivers
+the current set as a burst of `join` events (one per already-present peer),
+so a newly-registered connection sees who is already there without waiting
+for the next change. There is no distinct `snapshot` kind: the snapshot IS
+a burst of `join`s (fewer shapes to specify and conformance-test).
+
+**Size cap → fail loud, in-band.** A host caps the serialized size of a
+published `doc` (default 16 KiB, host-tunable). An over-cap publish is
+**rejected loudly on the same channel** — the server answers the publisher
+(only) with:
+
+```json
+{"event":"presence","data":{"scopeKey":"…","error":"presence.too_large","timestamp":<ms>}}
+```
+
+and does **not** fan it out or change the publisher's stored document for
+the key (a rejected publish is a no-op on state, per the fail-loud doctrine:
+never a silent drop, never a silent truncation). `presence.*` are
+**client-runtime** codes, not §10 wire codes — presence is a realtime
+control surface, not a request/response with an `ERROR` frame — so they are
+carried in the `error` field of a server→client `presence` event, a known
+shape a feature-off peer still ignores by event name. The closed set is
+two: `presence.too_large` (over the size cap) and `presence.forbidden`
+(publish/subscribe to a key the connection does not hold — §8.6.3).
+
+#### 8.6.3 Authorization and identity
+
+Presence rides the **same registration** as delta fanout (§8.1/§8.7): the
+connection's registered effective scope keys ARE its presence grant — there
+is no separate presence grant, token, or resolver call.
+
+- **Publish authorization.** A client→server publish for `scopeKey` is
+  honored only if the connection is currently registered on that scope key
+  (the key appears in some registration's effective scopes, §3.2). A publish
+  to an unheld key is rejected loudly to the publisher with
+  `presence.forbidden` (the §8.6.2 error shape) and fans out nothing — a
+  connection can never inject presence into a scope it cannot see.
+- **Receive authorization (the privacy floor).** A peer's presence for
+  `scopeKey` is delivered to a connection only if that connection is itself
+  registered on `scopeKey`. Presence for a key is visible **exactly** to
+  the current scope-mates of that key and no one else — never to a
+  connection holding a different scope, never partition-wide. This is the
+  hard privacy boundary the cross-scope conformance probe pins (§8.6.5).
+- **Identity exposed.** The fanout exposes the peer's `(actorId, clientId)`
+  and its `doc`. It does NOT expose the peer's connection/session id, its
+  other scope keys, or any presence on keys the receiver does not hold. A
+  scope-mate already, by construction, may see that actor's rows on that
+  scope (§3.2), so revealing the actor on a shared key leaks no authority
+  boundary; `clientId` distinguishes that actor's devices/tabs, which
+  collaborative presence (two cursors from one user) requires.
+- **Registration change re-derives presence.** When a socket round replaces
+  a connection's registrations (§8.7) or a reconnect re-registers (§8.1),
+  the connection's presence grant follows: keys it no longer holds emit a
+  `leave` of its own published documents to the remaining peers **and** stop
+  delivering peers' presence to it; keys it newly holds deliver the snapshot
+  (§8.6.4). A revoked scope (§3.3) drops presence on that key exactly as a
+  disconnect would for that key alone. Presence never survives loss of the
+  scope that authorized it.
+
+#### 8.6.4 Server responsibilities
+
+- A hub-level **presence registry**, keyed per `(partition, scopeKey)` →
+  the set of currently-present connections and their documents. It is pure
+  in-memory ephemeral state alongside the session set; it MUST NOT touch
+  `ServerStorage`.
+- On publish (authorized, within cap): store/replace the connection's
+  document for the key and fan a `join` (first document from this connection
+  on this key) or `update` (replacement) to every **other** connection
+  registered on the key. A publisher does not receive its own fanout.
+- On leave (`doc: null`, or disconnect, or losing the key's registration):
+  remove the connection's document for the key and fan a `leave` to the
+  remaining registered connections.
+- On a connection acquiring a key's registration: deliver the snapshot
+  (§8.6.4 join-burst) of the already-present peers to that connection only.
+- **Rate cap (MAY-throttle, observable).** A host MAY bound the rate of
+  client→server presence publishes per connection (default: a MAY, off in
+  the reference server unless configured). When a publish exceeds the cap
+  the server MUST use the **latest-wins coalesce** behavior: it keeps the
+  connection's most recent in-window document as the pending state and
+  drops the intermediate ones, then fans out at most one `update` per window
+  carrying that latest document — never an error, never a stale document,
+  never silent total loss of the latest state. Observable behavior: peers
+  see the newest document at a bounded rate, and no publish is answered with
+  `presence.too_large` merely for arriving quickly (the size cap and the
+  rate cap are distinct surfaces). This keeps a chatty cursor-stream from
+  fanning out unboundedly without dropping the truth.
+- **Event seam.** Presence reuses the existing `realtime.*` ops discipline
+  with no new op types in the tight catalog: presence join/leave counts are
+  surfaced through the existing `realtime.opened`/`realtime.closed` events'
+  session accounting where relevant, and a presence publish is not itself an
+  ops event (it is ephemeral chatter, deliberately below the ops floor — the
+  catalog stays tight, §4-server ops posture).
+
+#### 8.6.5 Conformance
+
+Presence is exercised by driver-interface scenarios (Appendix B, presence
+group), both pairings:
+
+- **Two clients, same scope, full lifecycle.** A and B register the same
+  scope key over the socket; A publishes → B sees `join`; A republishes → B
+  sees `update`; A publishes `doc: null` → B sees `leave`; A publishes
+  again then **disconnects** → B sees `leave` (disconnect-implies-leave). A
+  late-joining C receives the snapshot join-burst of whoever is present.
+- **Cross-scope isolation (privacy probe).** A holds `project:p1`, D holds
+  only `project:p2`. A's publish on `p1` never reaches D; D's publish on
+  `p2` never reaches A; neither can publish onto the other's key
+  (`presence.forbidden`). No leakage to non-scope-mates on any lifecycle
+  event.
+- **Feature-off silence.** A peer that never publishes and ignores
+  `presence` events (the tolerate-unknown path, §8.1) is undisturbed:
+  presence traffic among others changes nothing observable for it, and its
+  own sync rounds/deltas are unaffected.
+- **Survives a sync round on the same socket.** A is present on a key,
+  interleaves a §8.7 sync round on the same connection (push + pull), and
+  its presence — and the presence it observes — survives the round intact
+  (presence state is independent of round state; the round's registration
+  replace re-derives the same grant, §8.6.3).
+
+### 8.7 Sync rounds over the socket
 
 ### 8.7 Sync rounds over the socket
 
@@ -3008,10 +3203,11 @@ byte-identical output):
 | 18 | `segment/crdt-column` | SSG2 for a table with a `crdt` column (§2.4 tag 8): the crdt value rides the `bytes` machinery (opaque bytes, incl. NULL and empty), pinning the new tag without touching existing fixtures |
 | 19 | `response/commit-crdt-merge` | A `COMMIT` upsert whose row carries a merged `crdt` column (§5.10.3): the merged bytes ride the ordinary change payload, no CRDT-specific frame |
 | 20 | `response/lease-issued` | `RESP_HEADER` + `LEASE` (§7.3.2) + an active subscription section: pins the new `0x19` frame (`leaseId`, `expiresAtMs`) in its grammar position; existing fixtures untouched (the §9 new-tag-needs-pinning rule met by a new case) |
+| 21 | `realtime/presence-publish` + `realtime/presence-fanout` | JSON control vectors (`.json` only — no binary form): a client→server publish (§8.6.2 `{scopeKey, doc}`) and a server→client `join` fanout (`{scopeKey, kind, actorId, clientId, doc, timestamp}`). Pins the new `presence` event shape in both directions; a feature-off peer ignores it by event name (§8.6), so no binary vector or wire-version bump |
 | — | `request/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload |
 | — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`) |
 | — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1) |
-| — | `realtime/invalid/*` | Malformed known events (JSON-only): `requiresPull` not the literal `true` (§8.3), fractional numeric field (§8.1) |
+| — | `realtime/invalid/*` | Malformed known events (JSON-only): `requiresPull` not the literal `true` (§8.3), fractional numeric field (§8.1), a `presence` fanout with an unknown `kind` (§8.6.2 closed set), a client→server `presence` with a non-object non-null `doc` (§8.6.2) |
 
 ---
 
@@ -3196,3 +3392,36 @@ not a prose test.
     `leaseState` stays empty (zero-config discipline, §7.3.3). Both
     pairings (TS×TS, Rust×TS); the Rust client treats the lease as opaque
     state (§7.3 non-goal 1).
+
+16. **Presence (§8.6).** Ephemeral scope-keyed presence over the socket.
+    (a) Two clients, same scope, full lifecycle: A and B register
+    `project:p1` over the socket; A publishes a document → B observes a
+    `join`; A republishes → B observes an `update`; A publishes `null` → B
+    observes a `leave`; A publishes again then **disconnects** → B observes
+    a `leave` (disconnect-implies-leave, §8.6.1); a late-joining C receives
+    the snapshot join-burst of whoever is present (§8.6.4). (b) Cross-scope
+    isolation — the privacy probe (§8.6.3): A holds `project:p1`, D holds
+    only `project:p2`; A's publish on `p1` never reaches D, D's publish on
+    `p2` never reaches A, and neither can publish onto the other's key
+    (`presence.forbidden`) — no leakage to non-scope-mates on any lifecycle
+    event. (c) Feature-off silence: a peer that never publishes and ignores
+    `presence` events (the §8.1 tolerate-unknown path) is undisturbed —
+    presence chatter among others changes nothing observable for it, and
+    its own deltas/rounds are unaffected. (d) Survives a socket sync round:
+    A is present on a key, interleaves a §8.7 round on the same connection
+    (push + pull), and both its published presence and the presence it
+    observes survive the round intact (presence state is independent of
+    round state; the round's registration replace re-derives the same
+    grant, §8.6.3). Both pairings (TS×TS, Rust×TS).
+
+17. **Reconnect storm (§8.4).** ~20 sessions on the same scope connect,
+    a burst of commits fans out, and all sessions churn (disconnect +
+    reconnect) while the log advances; the hub stays correct under the
+    fanout — every session ends registered exactly once (no leaked
+    sessions in the set), each reconnecting session gets `hello` with the
+    right `requiresSync`, behind sessions receive coalescible
+    `catchup-required` wake-ups rather than gap deltas (§8.2), and after a
+    recovery pull + ack every session converges to the server's rows. The
+    scenario is deterministic (seam-observed readiness, no timers) and
+    exercises the hub's per-connection accounting at N-session scale
+    without a load harness. Both pairings (TS×TS, Rust×TS).

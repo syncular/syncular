@@ -1,0 +1,13 @@
+{
+  "event": "presence",
+  "data": {
+    "scopeKey": "project:p1",
+    "kind": "snapshot",
+    "actorId": "actor-1",
+    "clientId": "client-a",
+    "doc": {
+      "cursor": 42
+    },
+    "timestamp": 1782993600000
+  }
+}

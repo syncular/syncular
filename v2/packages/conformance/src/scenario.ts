@@ -98,6 +98,8 @@ interface Waiter {
 export class RealtimeObservations {
   readonly hellos: Array<Record<string, unknown>> = [];
   readonly wakeReasons: string[] = [];
+  /** §8.6 server→client presence events observed at the seam, in order. */
+  readonly presenceEvents: Array<Record<string, unknown>> = [];
   deltasDelivered = 0;
   readonly ackCursors: number[] = [];
   /** Completed §8.7 socket sync rounds (response END observed). */
@@ -114,6 +116,8 @@ export class RealtimeObservations {
   readonly #wakeWaiters: Waiter[] = [];
   readonly #deltaWaiters: Waiter[] = [];
   readonly #roundWaiters: Waiter[] = [];
+  readonly #presenceWaiters: Waiter[] = [];
+  readonly #helloWaiters: Waiter[] = [];
   readonly #closeWaiters: Array<() => void> = [];
 
   get maxAckCursor(): number {
@@ -154,6 +158,24 @@ export class RealtimeObservations {
     });
   }
 
+  /** Resolves once at least `count` presence events arrived at the seam
+   * (§8.6) — the "presence delivered" readiness signal, no timers. */
+  waitForPresence(count: number): Promise<void> {
+    if (this.presenceEvents.length >= count) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.#presenceWaiters.push({ threshold: count, resolve });
+    });
+  }
+
+  /** Resolves once at least `count` `hello` handshakes arrived (§8.1) — the
+   * reconnect readiness signal across a churn. */
+  waitForHelloCount(count: number): Promise<void> {
+    if (this.hellos.length >= count) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.#helloWaiters.push({ threshold: count, resolve });
+    });
+  }
+
   /** Resolves once the server closed the connection (§8.7). */
   waitForClose(): Promise<void> {
     if (this.closedByServer) return Promise.resolve();
@@ -178,12 +200,16 @@ export class RealtimeObservations {
     const event = parsed as { event?: unknown; data?: unknown };
     if (event.event === 'hello' && typeof event.data === 'object') {
       this.hellos.push((event.data ?? {}) as Record<string, unknown>);
+      drain(this.#helloWaiters, this.hellos.length);
     } else if (event.event === 'sync' && typeof event.data === 'object') {
       const reason = (event.data as { reason?: unknown }).reason;
       if (typeof reason === 'string') {
         this.wakeReasons.push(reason);
         drain(this.#wakeWaiters, this.wakeReasons.length);
       }
+    } else if (event.event === 'presence' && typeof event.data === 'object') {
+      this.presenceEvents.push((event.data ?? {}) as Record<string, unknown>);
+      drain(this.#presenceWaiters, this.presenceEvents.length);
     }
   }
 

@@ -29,6 +29,7 @@ import type {
   ClientEndpoints,
   ClientInstance,
   ClientMutation,
+  ClientPresencePeer,
   ClientRejection,
   ClientRowState,
   ClientSubscriptionState,
@@ -603,6 +604,25 @@ class RustClientInstance implements ClientInstance {
       'syncNeeded',
     );
     return result.value === true;
+  }
+
+  async setPresence(
+    scopeKey: string,
+    doc: Record<string, unknown> | null,
+  ): Promise<void> {
+    await this.#shim.call('setPresence', {
+      scopeKey,
+      doc: (doc ?? null) as JsonValue,
+    });
+  }
+
+  async presence(scopeKey: string): Promise<readonly ClientPresencePeer[]> {
+    const result = asObject(
+      await this.#shim.call('presence', { scopeKey }),
+      'presence',
+    );
+    const peers = Array.isArray(result.peers) ? result.peers : [];
+    return peers as unknown as ClientPresencePeer[];
   }
 
   async upgrading(): Promise<boolean> {

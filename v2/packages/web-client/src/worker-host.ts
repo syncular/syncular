@@ -13,6 +13,7 @@ import type {
   ConflictRecord,
   LeaseState,
   MutationInput,
+  PresencePeer,
   RejectionRecord,
   SchemaFloor,
   SubscribeInput,
@@ -72,6 +73,8 @@ export interface SyncClientHandleConfig {
   }) => void;
   /** §7.4.5: schema-bump `upgrading` state changed (reset began/completed). */
   readonly onUpgrading?: (upgrading: boolean) => void;
+  /** §8.6: presence on a scope key changed. */
+  readonly onPresence?: (scopeKey: string) => void;
 }
 
 interface Pending {
@@ -213,6 +216,19 @@ export class SyncClientHandle {
     return this.#call('disconnectRealtime', []);
   }
 
+  /** §8.6: publish/clear a scope-keyed presence document. */
+  setPresence(
+    scopeKey: string,
+    doc: Record<string, unknown> | null,
+  ): Promise<void> {
+    return this.#call('setPresence', [scopeKey, doc]);
+  }
+
+  /** §8.6: the peers currently present on a scope key. */
+  presence(scopeKey: string): Promise<readonly PresencePeer[]> {
+    return this.#call('presence', [scopeKey]);
+  }
+
   uploadBlob(
     bytes: Uint8Array,
     options?: { readonly mediaType?: string; readonly name?: string },
@@ -288,6 +304,7 @@ export async function createSyncClientHandle(
     onConflict: config.onConflict,
     onSynced: config.onSynced,
     onUpgrading: config.onUpgrading,
+    onPresence: config.onPresence,
   };
 
   const ready = new Promise<void>((resolve, reject) => {
@@ -340,6 +357,8 @@ export async function createSyncClientHandle(
       events.onConflict?.(event.conflict);
     } else if (event.kind === 'upgrading') {
       events.onUpgrading?.(event.upgrading);
+    } else if (event.kind === 'presence') {
+      events.onPresence?.(event.scopeKey);
     } else {
       events.onSynced?.({
         ...(event.summary !== undefined ? { summary: event.summary } : {}),

@@ -105,6 +105,8 @@ export interface ServerLimitsOptions {
   readonly inlineSegmentMaxBytes?: number;
   readonly maxDeltaBytes?: number;
   readonly segmentTtlMs?: number;
+  /** §8.6.2 presence document size cap (bytes). */
+  readonly maxPresenceBytes?: number;
 }
 
 /** §5.4 signed-URL issuance (native HMAC scheme) for the server under
@@ -482,7 +484,22 @@ export interface ClientInstance {
   /** §8: a hello/wake-up asked for a pull that has not run yet. */
   syncNeeded(): Promise<boolean>;
 
+  /** §8.6: publish (or clear, `doc: null`) a scope-keyed presence document. */
+  setPresence?(
+    scopeKey: string,
+    doc: Record<string, unknown> | null,
+  ): Promise<void>;
+  /** §8.6: the peers currently present on a scope key. */
+  presence?(scopeKey: string): Promise<readonly ClientPresencePeer[]>;
+
   close(): Promise<void>;
+}
+
+/** §8.6 a peer present on a scope key, as the driver surfaces it. */
+export interface ClientPresencePeer {
+  readonly actorId: string;
+  readonly clientId: string;
+  readonly doc: Record<string, unknown>;
 }
 
 export interface ClientDriver {

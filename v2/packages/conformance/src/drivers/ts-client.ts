@@ -20,6 +20,7 @@ import type {
   ClientDriver,
   ClientInstance,
   ClientMutation,
+  ClientPresencePeer,
   ClientRejection,
   ClientRowState,
   ClientSubscriptionState,
@@ -371,6 +372,17 @@ class TsClientInstance implements ClientInstance {
 
   async syncNeeded(): Promise<boolean> {
     return this.#client.syncNeeded;
+  }
+
+  async setPresence(
+    scopeKey: string,
+    doc: Record<string, unknown> | null,
+  ): Promise<void> {
+    this.#client.setPresence(scopeKey, doc);
+  }
+
+  async presence(scopeKey: string): Promise<readonly ClientPresencePeer[]> {
+    return this.#client.presence(scopeKey);
   }
 
   async uploadBlob(
