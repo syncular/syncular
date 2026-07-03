@@ -15,8 +15,8 @@ READMEs.
 | [§4](../../SPEC.md#4-subscriptions-cursors-pull) | Subscriptions, cursors, pull, the pruning horizon, the bootstrap state machine |
 | §5 | Bootstrap segments, the download endpoint, signed URLs, sqlite images, blobs (§5.9) |
 | §6 | Push and commit application, conflicts, atomicity |
-| §7 | The client outbox |
-| §8 | Realtime: deltas, wake-ups, the WebSocket-native sync loop (§8.7) |
+| §7 | The client outbox, auth leases (§7.3), the schema-bump flow (§7.4) |
+| §8 | Realtime: deltas, wake-ups, presence (§8.6), the WebSocket-native sync loop (§8.7) |
 | §10 | The error catalog |
 | §11 | Canonical JSON debug rendering |
 
@@ -30,8 +30,12 @@ browser's find.)
 | `@syncular-v2/core` | Protocol codecs, shared types, vectors round-trip | in [SPEC.md](../../SPEC.md) |
 | `@syncular-v2/server` | `handleSyncRequest` + storage/auth/segment/blob interfaces, realtime hub, pruning, signed URLs | [README](../../packages/server/README.md) |
 | `@syncular-v2/server-hono` | Thin Hono adapter mounting the §1.1 routes | [source](../../packages/server-hono/src/index.ts) |
-| `@syncular-v2/web-client` | The TS client core on sqlite-wasm/OPFS, worker + transports | [source](../../packages/web-client) |
-| `@syncular-v2/typegen` | Migrations + manifest → schema IR → TS module | [README](../../packages/typegen/README.md) |
+| `@syncular-v2/server-workers` | Cloudflare Workers entry: fetch handler over D1 storage + R2 segments/blobs | [README](../../packages/server-workers/README.md) |
+| `@syncular-v2/web-client` | The TS client core on sqlite-wasm/OPFS, worker + transports, multi-tab | [README](../../packages/web-client/README.md) |
+| `@syncular-v2/react` | React bindings: `SyncProvider` + live queries over fine-grained invalidation | [README](../../packages/react/README.md) |
+| `@syncular-v2/crdt-yjs` | The Yjs `crdt`-column merger (server) + `YjsColumn` client helper | [source](../../packages/crdt-yjs/src/index.ts) |
+| `@syncular-v2/typegen` | Migrations + manifest → schema IR → TS module, `syncular-v2` CLI | [README](../../packages/typegen/README.md) |
+| `@syncular-v2/create-app` | Scaffolder: `bun create syncular-v2 my-app` (`minimal` / `web` templates) | [README](../../packages/create-app/README.md) |
 | `@syncular-v2/conformance` | Implementation-agnostic scenario runner + test doctrine | [README](../../packages/conformance/README.md) |
 
 ## Contracts
@@ -41,6 +45,10 @@ browser's find.)
 - **Horizon & pruning runbook** — [server README](../../packages/server/README.md#horizon--pruning-operational-guidance).
 - **S3/R2 + CDN + signed URLs** — [server README](../../packages/server/README.md#segment-storage-on-s3--r2-s3segmentstore).
 - **Postgres storage** — [server README](../../packages/server/README.md#postgres-storage-the-production-database-path).
+- **Runtime / deployment matrix (Bun/Node, Cloudflare Workers)** — [server README](../../packages/server/README.md#deployment-matrix-runtime-adapters-todo-42).
+- **Admin / console surface** — [server README](../../packages/server/README.md#admin--console-surface-syncularadmin).
+- **Load-test suite (scale & stability lanes)** — [load/README.md](../../load/README.md).
+- **Native core C ABI (Tauri / React Native paths)** — [FFI README](../../rust/crates/ffi/README.md).
 
 ## Design & roadmap docs
 

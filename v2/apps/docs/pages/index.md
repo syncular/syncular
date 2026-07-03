@@ -48,7 +48,8 @@ same conformance suite.
 - **[Scopes & authorization](/concepts-scopes/)** — the moat, and the one piece you write.
 - **[Server setup](/guide-server/)** and **[Web client](/guide-client/)** — wiring the real thing.
 - **[Protocol & conformance](/guide-conformance/)** — how the two cores stay in lockstep, and how a third joins.
+- **[Migrating from 0.1.x](/migration/)** — coming from v1: what stayed, what changed, and the honest data story.
 
 > Version-truth: this documents what is in the v2 tree today. Roadmap items
-> (windowed sync / local eviction, CRDT fields, React live-query bindings)
-> are called out as roadmap where they appear, never documented as shipped.
+> (windowed sync / local eviction) are called out as roadmap where they
+> appear, never documented as shipped.

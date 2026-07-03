@@ -596,10 +596,33 @@ the old tree archived.
       v2 packages (@syncular/* 0.2? clean break?), changesets + trusted
       publishing wired for the v2 set, the binaryen/parse-check lessons
       carried over into any pipeline that builds artifacts.
-- [ ] **Migration guide + old-tree sunset**: 0.1.x → v2 guide, v2 folders
-      promoted to mainline (v2/ → repo root), old packages/rust archived,
-      registry deprecations executed (including the broken-WASM 0.1.x
-      artifacts — still pending from the freeze).
+- [ ] **Migration guide + old-tree sunset** — split into the writable guide
+      (landed) and the sunset actions (Benjamin's):
+  - [x] **0.1.x → v2 migration guide**: LANDED 2026-07-03 —
+        `apps/docs/pages/migration.md` ("Migrating from 0.1.x", nav-registered
+        under Start). Structure: model-unchanged framing (scopes / commit log /
+        optimistic outbox / conflicts), the v1→v2 concept table (Rust-wasm
+        client → TS core on sqlite-wasm; SSP1 implicit → SSP2 written; dialects
+        → storage backends; HTTP loop → WS-native; client migrations →
+        wipe-and-rebootstrap; relay → retired; micro-packages → consolidated),
+        before/after snippets for schema/server/client (v1 names verified
+        against the old tree: `defineSyncularClient`/`createServerHandler`/
+        `createSyncServer`/`createSyncularAppDatabase`), React hook mapping,
+        blob/CRDT/lease/presence mappings, the HONEST data story (clean break;
+        server data = an export/import you write against your v1 DB, no
+        automated tool this rung; clients re-bootstrap by design; drain v1
+        outboxes before cutover), what's-not-in-v2 (E2EE demand-gated, RN/Tauri
+        binding packages are follow-ups on the shipped C ABI, storage-breadth
+        policy), and the `@syncular-v2/*` naming caveat (renames once,
+        mechanically, at the 6.3 decision). Same round: sibling docs pages
+        de-staled against the tree — React bindings, multi-tab, CRDT, presence,
+        admin console, Workers/D1, load suite, native FFI now documented as
+        shipped (guide-client, guide-conformance, guide-server, index,
+        reference, concepts-realtime); windowed sync stays roadmap.
+  - [ ] **Sunset actions** (Benjamin): v2 folders promoted to mainline (v2/ →
+        repo root), old packages/rust archived, registry deprecations executed
+        (including the broken-WASM 0.1.x artifacts — still pending from the
+        freeze).
 
 ## 7. Process gates
 

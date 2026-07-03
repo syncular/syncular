@@ -48,3 +48,22 @@ await client.syncUntilIdle();
 After that, deltas arrive on their own; when the client's `onSyncNeeded`
 fires (a wake-up), run another `sync()`. The [web client guide](/guide-client/)
 shows the full host loop, including jittered wake coalescing.
+
+## Presence
+
+The socket also carries **presence**: ephemeral, scope-keyed peer state
+(who's here, what they're doing) that is never persisted and never enters the
+commit log — lost on disconnect means "left"
+([SPEC §8.6](../../SPEC.md#86-presence)).
+
+```ts
+await client.setPresence('list:welcome', { editing: 'note-1' }); // join / update
+await client.setPresence('list:welcome', null);                  // leave
+const peers = await client.presence('list:welcome');             // [{ actorId, clientId, doc, … }]
+```
+
+Authorization rides the same registration as sync: you can publish to and
+receive from a scope key only if your connection holds it — publishing to an
+unheld key fails loudly (`presence.forbidden`), never silently. Peers are
+identified as `(actorId, clientId)`, visible only to scope-mates. In React,
+`usePresence(scopeKey)` keeps the peer list live.

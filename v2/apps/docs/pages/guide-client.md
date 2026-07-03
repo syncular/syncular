@@ -89,10 +89,33 @@ offline toggles, a pending-commit counter, surfaced conflicts, and file
 attachments — and the [web-client README](../../packages/web-client) is the
 API reference.
 
+## React bindings & live queries
+
+`@syncular-v2/react` ships live queries over **fine-grained invalidation**:
+every apply batch emits exactly one `{ tables, scopeKeys }` event, and
+`useSyncQuery(sql, params?)` re-runs only when a table it depends on is
+touched — never "re-run everything on any change". `SyncProvider` accepts
+either a `SyncClient` or the worker handle; the other hooks are `useMutation`,
+`useSyncStatus`, `useConflicts`, and `usePresence`. The granularity contract
+(tables are the reliable floor; scope-key narrowing only where the wire
+carried keys) is documented in the
+[react package](../../packages/react/README.md).
+
+## Multi-tab
+
+`createSyncClientHandle({ multiTab: true })` gives N tabs one core: the tab
+holding the Web Locks leader lock spawns the worker (one sync loop, one
+WebSocket, one OPFS database), and every other tab becomes a **follower**
+proxying the identical async API over BroadcastChannel, with the leader's
+events fanned out to all tabs. When the leader closes, a follower promotes in
+place over the same OPFS database — the handle object survives, `role` flips
+to `'leader'`, and `onRoleChange` fires, so a React provider keeps a stable
+ref. All tabs share the leader's one connection, so a device is exactly one
+presence peer.
+
 ## Roadmap
 
-**React bindings + live queries** (fine-grained invalidation by table/scope-key
-per commit) and **multi-tab followers** (one socket, one DB, N tabs over
-BroadcastChannel) are on the ladder, not yet shipped. Today you query the
-database directly and re-read on change; the leader lock exists as the seam the
-follower path will build on.
+**Windowed sync / local eviction** is designed
+([DESIGN-eviction.md](../../DESIGN-eviction.md)) but not yet shipped. A typed
+Kysely query layer over the generated row types is a follow-up — reads are raw
+SQL today.

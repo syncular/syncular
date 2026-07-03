@@ -62,9 +62,9 @@ shim. That is exactly how the clean-room Rust core was validated — written fro
 the spec alone, it passed every vector on first run and the full catalog
 against the TS server.
 
-## Roadmap
-
-**CRDT fields** (opt-in per-column convergent merge, Yjs on the TS side, the
-same wire format consumed by Rust) are in flight and not yet documented here —
-the wire format and merge semantics land in the spec with vectors and
-convergence scenarios as they ship.
+This is also how features land: **CRDT fields** shipped spec-first — the
+column type and merge semantics in
+[SPEC §5.10](../../SPEC.md#510-crdt-columns--opt-in-collaborative-state), two
+golden vectors, and convergence scenarios in the catalog run by both client
+cores (the Rust core round-trips the same bytes the TS core merges through
+`@syncular-v2/crdt-yjs`).
