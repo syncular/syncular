@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "syncular-tauri-example",
+  "version": "0.1.0",
+  "identifier": "com.syncular.tauri.example",
+  "build": {
+    "frontendDist": "../src/frontend"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "syncular tauri example",
+        "width": 900,
+        "height": 700
+      }
+    ],
+    "security": {
+      "csp": null,
+      "capabilities": ["syncular"]
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "icon": ["icons/icon.png"]
+  }
+}

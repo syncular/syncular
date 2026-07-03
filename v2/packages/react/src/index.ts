@@ -11,6 +11,10 @@ export type {
   NormalizedClient,
   SyncClientLike,
 } from './client';
+// `normalizeClient` is the runtime facade the hooks consume; exported so
+// alternate hosts (e.g. `@syncular-v2/tauri`) can assert shape-parity against
+// the exact normalizer the bindings use.
+export { normalizeClient } from './client';
 export { inferTables } from './infer-tables';
 export { SyncContext, SyncProvider, type SyncProviderProps } from './provider';
 export { useSyncClient } from './use-client';

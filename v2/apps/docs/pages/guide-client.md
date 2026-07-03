@@ -113,6 +113,38 @@ to `'leader'`, and `onRoleChange` fires, so a React provider keeps a stable
 ref. All tabs share the leader's one connection, so a device is exactly one
 presence peer.
 
+## Tauri (native desktop/mobile)
+
+For a [Tauri](https://tauri.app) app, syncular runs as a **native instance in
+the host process** — not JS in the webview. Webview OPFS is eviction-prone and
+inconsistent across WKWebView/webkitgtk; the Rust core gives a real on-disk
+SQLite database and native performance. `tauri-plugin-syncular` (Rust) runs the
+`syncular-client` core directly and exposes it to the webview as commands +
+events; `@syncular-v2/tauri` (JS) bridges that surface into the SAME
+`SyncClientLike` the React hooks consume — so every hook works unchanged.
+
+```rust
+// src-tauri: register the plugin with a persisted db path + server URL
+app.handle().plugin(tauri_plugin_syncular::init(SyncularConfig {
+    base_url: Some("https://your.server".into()),
+    db_path,          // under the app-data dir → survives restarts
+    auto_sync: true,  // §8.4 background host loop
+    ..Default::default()
+}))?;
+```
+
+```ts
+// webview: same hooks, native core behind them
+import { createTauriSyncClient } from '@syncular-v2/tauri';
+const client = await createTauriSyncClient({ clientId: 'device-1', schema });
+// <SyncProvider client={client}> … useSyncQuery / useMutation / usePresence
+```
+
+Every `useSyncQuery` run is one Tauri IPC round trip — fine for view queries;
+for very large result sets, paginate with `LIMIT`/`OFFSET` in your SQL. See
+[bindings/tauri/README.md](../../bindings/tauri/README.md) for the architecture,
+the command/event surface, and the thread-safety model.
+
 ## Roadmap
 
 **Windowed sync / local eviction** is designed

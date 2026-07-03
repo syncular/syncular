@@ -136,6 +136,21 @@
         "@syncular-v2/core": "workspace:*",
       },
     },
+    "packages/tauri": {
+      "name": "@syncular-v2/tauri",
+      "dependencies": {
+        "@syncular-v2/web-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncular-v2/react": "workspace:*",
+      },
+      "peerDependencies": {
+        "@tauri-apps/api": ">=2.0.0",
+      },
+      "optionalPeers": [
+        "@tauri-apps/api",
+      ],
+    },
     "packages/typegen": {
       "name": "@syncular-v2/typegen",
       "bin": {
@@ -213,6 +228,8 @@
     "@syncular-v2/server-hono": ["@syncular-v2/server-hono@workspace:packages/server-hono"],
 
     "@syncular-v2/server-workers": ["@syncular-v2/server-workers@workspace:packages/server-workers"],
+
+    "@syncular-v2/tauri": ["@syncular-v2/tauri@workspace:packages/tauri"],
 
     "@syncular-v2/typegen": ["@syncular-v2/typegen@workspace:packages/typegen"],
 

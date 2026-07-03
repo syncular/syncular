@@ -102,3 +102,88 @@ jobs:
 
       - name: Conformance (Rust client x TS server)
         run: SYNCULAR_RUST_CONFORMANCE=1 bun test packages/conformance/test/conformance-rust.test.ts
+
+  # The Tauri bindings live in their OWN cargo workspace (v2/bindings/tauri) so
+  # Tauri's heavy crate tree never bloats the main rust workspace's gate. This
+  # job runs only when that tree changes. Building the `tauri` crate on Linux
+  # needs the webkit2gtk/gtk system libraries (per the Tauri prerequisites), so
+  # we install them before cargo. fmt + clippy (both feature lanes) + test +
+  # the example compile is the bar — `cargo tauri dev` (opening a window) needs
+  # a human hand and is not run in CI.
+  tauri-bindings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: v2/bindings/tauri
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      # Path gate: this job is heavy (installs webkit + builds Tauri), so it
+      # only does real work when the tauri bindings tree (or this workflow)
+      # changed. Everything after the guard is skipped otherwise.
+      - name: Did the tauri bindings change?
+        id: changed
+        working-directory: .
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            base="${{ github.event.before }}"
+          else
+            base="${{ github.event.pull_request.base.sha }}"
+          fi
+          if git diff --name-only "$base" HEAD 2>/dev/null \
+              | grep -qE '^v2/bindings/tauri/|^\.github/workflows/v2\.yml$'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No tauri bindings changes; skipping the heavy steps."
+          fi
+
+      # Tauri v2 Linux prerequisites (https://v2.tauri.app/start/prerequisites/).
+      # webkit2gtk 4.1 + the wry/gtk stack are needed to COMPILE the `tauri`
+      # crate, not just to run a window.
+      - name: Install Tauri system dependencies
+        if: steps.changed.outputs.run == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            libsoup-3.0-dev \
+            build-essential \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.changed.outputs.run == 'true'
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.changed.outputs.run == 'true'
+        with:
+          workspaces: v2/bindings/tauri -> target
+
+      - name: cargo fmt
+        if: steps.changed.outputs.run == 'true'
+        run: cargo fmt --check
+
+      - name: cargo clippy (default features)
+        if: steps.changed.outputs.run == 'true'
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo clippy (native-transport)
+        if: steps.changed.outputs.run == 'true'
+        run: cargo clippy -p tauri-plugin-syncular --all-targets --features native-transport -- -D warnings
+
+      - name: cargo test
+        if: steps.changed.outputs.run == 'true'
+        run: cargo test
+
+      - name: Example compiles
+        if: steps.changed.outputs.run == 'true'
+        run: cargo build -p syncular-tauri-example

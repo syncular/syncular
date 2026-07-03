@@ -171,7 +171,15 @@ pub fn dispatch<T: Transport>(
                 .get("schema")
                 .ok_or_else(|| client_err("create missing schema".to_owned()))?;
             let limits = parse_limits(params.get("limits"));
-            let mut instance = SyncClient::new(client_id, schema, limits).map_err(client_err)?;
+            // §native: a `dbPath` installs a file-backed rusqlite connection so
+            // native hosts (Tauri plugin, FFI file variant) persist across
+            // restarts; absent it, the default in-memory core (the shim's mode).
+            let mut instance = match params.get("dbPath").and_then(Value::as_str) {
+                Some(path) => {
+                    SyncClient::open_path(client_id, schema, limits, path).map_err(client_err)?
+                }
+                None => SyncClient::new(client_id, schema, limits).map_err(client_err)?,
+            };
             // Harness clock pin (§5.4 expiry runs on the virtual clock).
             if let Some(now_ms) = params.get("nowMs").and_then(Value::as_i64) {
                 instance.set_now_ms(now_ms);
@@ -237,6 +245,22 @@ pub fn dispatch<T: Transport>(
                 .and_then(Value::as_str)
                 .ok_or_else(|| client_err("readRows missing table".to_owned()))?;
             let rows = need_client(client)?.read_rows(table).map_err(client_err)?;
+            Ok(json!({ "rows": rows }))
+        }
+        "query" => {
+            // The React `useSyncQuery` live-query fast path: arbitrary read-only
+            // SQL over the local visible tables/views. Params ride as the driver
+            // value forms (bytes as `{"$bytes": hex}`); rows come back the same.
+            let sql = params
+                .get("sql")
+                .and_then(Value::as_str)
+                .ok_or_else(|| client_err("query missing sql".to_owned()))?;
+            let bind = match params.get("params") {
+                Some(Value::Array(list)) => list.clone(),
+                None | Some(Value::Null) => Vec::new(),
+                Some(_) => return Err(client_err("query params must be a list".to_owned())),
+            };
+            let rows = need_client(client)?.query(sql, &bind).map_err(client_err)?;
             Ok(json!({ "rows": rows }))
         }
         "uploadBlob" => {

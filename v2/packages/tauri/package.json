@@ -1,0 +1,25 @@
+{
+  "name": "@syncular-v2/tauri",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "peerDependencies": {
+    "@tauri-apps/api": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@tauri-apps/api": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@syncular-v2/web-client": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@syncular-v2/react": "workspace:*"
+  }
+}

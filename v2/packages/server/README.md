@@ -19,7 +19,7 @@ The supported set, and what deliberately does **not** get an adapter:
 | Runtime | Adapter | Transport | Storage | Status |
 | --- | --- | --- | --- | --- |
 | **Bun / Node** | `@syncular-v2/server-hono` | HTTP (`POST /sync`, segments, blobs) **+ WS realtime** (§8, host-driven upgrade) | any: `SqliteServerStorage`, `PostgresServerStorage`, memory | **Supported now** — the reference deployment; runs the full conformance catalog on both bindings. |
-| **Cloudflare Workers** | `@syncular-v2/server-workers` | HTTP binding via Hono (Workers-native) | `D1ServerStorage` (D1); R2-as-S3 for segments/blobs (§5.4 delegated presign) | **Supported now (HTTP)** — this rung. Realtime is a **designed-but-deferred** Durable Object follow-up (below). |
+| **Cloudflare Workers** | `@syncular-v2/server-workers` | HTTP binding via Hono (Workers-native) **+ WS realtime** (§8, Durable Object host with hibernation) | `D1ServerStorage` (D1); R2-as-S3 for segments/blobs (§5.4 delegated presign) | **Supported now** — this rung. Realtime rides a **Durable Object** (`SyncularRealtimeDO`), opt-in; HTTP-only is also fully conformant (below). |
 | Raw Deno / edge-misc | — | — | — | **Not adapted** (policy below). |
 
 **The policy for "not adapted".** Untested ≠ unsupported forever. The core
@@ -30,23 +30,24 @@ HTTP via the fetch-handler round-trip tests), and we do not claim runtimes we
 do not test. Deno is a plausible future adapter the day someone runs the
 catalog on it; until then it is neutral-core-friendly, not supported.
 
-**Workers realtime — the DO follow-up (designed, deferred).** SPEC §1.1's two
-bindings are two framings of one handler; an **HTTP-only deployment is fully
-conformant** (clients that cannot open the socket sync over `POST /sync`,
-identical semantics — a smaller complete deployment, not a degraded one). The
-realtime binding on Workers is a **Durable Object**: one DO class hosting the
-`RealtimeHub` per partition-shard (the DO id derived from the partition, so a
-partition's sockets and its commit fan-out are co-located and single-threaded
-— also the natural per-partition write serialization point the D1 storage
-wants); WebSocket **hibernation** so idle sockets don't bill wall time (the
-existing `RealtimeSession` is the per-connection state machine, driven from
-the hibernation callbacks); storage via the same **D1** binding so realtime
-rounds and `POST /sync` rounds share one commit log and one segment store;
-commit fan-out (§8.2) runs in-DO (no LISTEN/NOTIFY needed — writes and sockets
-are co-located). The session/hub/storage pieces already exist and are
-runtime-neutral, so the follow-up is mechanical: add the DO class, its
-`wrangler.toml` binding + migration, and the `/realtime` upgrade route. Full
-shape in `@syncular-v2/server-workers/README.md`.
+**Workers realtime — the Durable Object.** SPEC §1.1's two bindings are two
+framings of one handler; an **HTTP-only deployment is fully conformant**
+(clients that cannot open the socket sync over `POST /sync`, identical
+semantics — a smaller complete deployment, not a degraded one), so realtime on
+Workers is opt-in. When enabled it rides a **Durable Object**
+(`SyncularRealtimeDO`): one DO per partition hosting the `RealtimeHub` (the DO
+id derived from the partition, so a partition's sockets and its commit fan-out
+are co-located and single-threaded — also the natural per-partition write
+serialization point the D1 storage wants); WebSocket **hibernation** so idle
+sockets don't bill wall time (the existing `RealtimeSession` is the
+per-connection state machine, driven from the hibernation callbacks and
+rehydrated from a minimal socket attachment + the D1 client record on wake);
+storage via the same **D1** binding so realtime rounds and `POST /sync` rounds
+share one commit log and one segment store; commit fan-out (§8.2) runs in-DO
+(no LISTEN/NOTIFY needed — writes and sockets are co-located), and an HTTP push
+landing in a plain isolate wakes the partition's DO (the in-platform
+LISTEN/NOTIFY analogue). Full shape, wiring, hibernation semantics, and the
+manual real-workerd smoke recipe in `@syncular-v2/server-workers/README.md`.
 
 **Relay does not return (decision).** v1 shipped a *relay* — a bridge that let
 a self-hosted server forward realtime to a managed realtime service, because

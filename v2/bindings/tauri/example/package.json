@@ -1,0 +1,12 @@
+{
+  "name": "@syncular-v2/tauri-example",
+  "private": true,
+  "type": "module",
+  "description": "Minimal Tauri app wiring tauri-plugin-syncular + @syncular-v2/tauri",
+  "dependencies": {
+    "@syncular-v2/tauri": "workspace:*"
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "^2.0.0"
+  }
+}

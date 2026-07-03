@@ -20,7 +20,10 @@ The Rust core, the C-ABI FFI (`syncular-ffi`), and the shared command
 router (`syncular-command`, conformance-locked via the shim) all exist.
 This block is assembly on a proven core — packages, not protocol.
 
-- [ ] **Tauri** (decided 2026-07-03): native syncular instance + React
+- [x] **Tauri** (decided 2026-07-03; landed 2026-07-04 —
+      `tauri-plugin-syncular` in v2/bindings/tauri/plugin, its own cargo
+      workspace, plus `@syncular-v2/tauri` in v2/packages/tauri; see
+      v2/bindings/tauri/README.md): native syncular instance + React
       bridge — NOT JS syncular in the webview (webview OPFS is
       eviction-prone and inconsistent across WKWebView/webkitgtk; the Rust
       core gives a real file DB and native perf). Shape:

@@ -261,14 +261,90 @@ fn sql_ref_to_json(column: &Column, value: rusqlite::types::ValueRef<'_>) -> Val
     }
 }
 
+/// Bind a driver JSON value form as a rusqlite parameter for [`SyncClient::query`].
+/// Objects are only accepted in the `{"$bytes": hex}` byte-envelope form.
+fn json_param_to_sql(value: &Value) -> Result<SqlValue, String> {
+    Ok(match value {
+        Value::Null => SqlValue::Null,
+        Value::Bool(b) => SqlValue::Integer(i64::from(*b)),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                SqlValue::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                SqlValue::Real(f)
+            } else {
+                return Err(format!("query param number {n} is out of range"));
+            }
+        }
+        Value::String(s) => SqlValue::Text(s.clone()),
+        Value::Object(_) => {
+            let hex = value
+                .get("$bytes")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "query object param must be a {\"$bytes\": hex} value".to_owned())?;
+            SqlValue::Blob(crate::values::hex_to_bytes(hex)?)
+        }
+        Value::Array(_) => return Err("query array params are not supported".to_owned()),
+    })
+}
+
+/// Map a rusqlite value with no schema column to consult (arbitrary query
+/// output): integers/reals/text pass through by stored affinity, blobs ride
+/// as `{"$bytes": hex}`. Distinct from [`sql_ref_to_json`], which uses the
+/// schema column type to recover booleans/floats/json.
+fn sql_ref_to_json_dynamic(value: rusqlite::types::ValueRef<'_>) -> Value {
+    use rusqlite::types::ValueRef;
+    match value {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(i) => Value::from(i),
+        ValueRef::Real(f) => serde_json::Number::from_f64(f).map_or(Value::Null, Value::Number),
+        ValueRef::Text(t) => Value::from(String::from_utf8_lossy(t).into_owned()),
+        ValueRef::Blob(b) => {
+            let mut map = Map::new();
+            map.insert("$bytes".to_owned(), Value::from(bytes_to_hex(b)));
+            Value::Object(map)
+        }
+    }
+}
+
 impl SyncClient {
     pub fn new(
         client_id: String,
         schema_json: &Value,
         limits: ClientLimits,
     ) -> Result<Self, String> {
-        let schema = parse_schema_json(schema_json)?;
         let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+        Self::with_connection(client_id, schema_json, limits, conn)
+    }
+
+    /// Build a client backed by an on-disk SQLite database at `path` — the
+    /// seam a native host (Tauri plugin, FFI file-DB variant) uses to persist
+    /// across process restarts. `create_tables` runs `IF NOT EXISTS`, so
+    /// re-opening the same file reuses the persisted rows. Keeps rusqlite out
+    /// of the command router's dependency set (the router only holds a path).
+    pub fn open_path(
+        client_id: String,
+        schema_json: &Value,
+        limits: ClientLimits,
+        path: &str,
+    ) -> Result<Self, String> {
+        let conn = Connection::open(path).map_err(|e| format!("open db {path:?}: {e}"))?;
+        Self::with_connection(client_id, schema_json, limits, conn)
+    }
+
+    /// Build a client over a caller-supplied rusqlite connection — the seam a
+    /// native host (Tauri plugin, FFI file-DB variant) uses to back the core
+    /// with an on-disk database (`Connection::open(path)`) rather than the
+    /// default `:memory:`. The connection MUST be fresh (no pre-existing
+    /// syncular tables); `create_tables` runs `IF NOT EXISTS`, so re-opening
+    /// the same file across process restarts reuses the persisted rows.
+    pub fn with_connection(
+        client_id: String,
+        schema_json: &Value,
+        limits: ClientLimits,
+        conn: Connection,
+    ) -> Result<Self, String> {
+        let schema = parse_schema_json(schema_json)?;
         let client = SyncClient {
             conn,
             schema,
@@ -734,6 +810,45 @@ impl SyncClient {
                 version,
                 values,
             });
+        }
+        Ok(out)
+    }
+
+    /// Run an arbitrary read-only SQL query against the local database and
+    /// return each row as a `column-name → JSON value` map. This is the seam
+    /// the React `useSyncQuery` live-query API needs (it takes app-authored
+    /// SQL over the visible tables/views, not a fixed table read like
+    /// [`read_rows`]).
+    ///
+    /// Bound `params` are the driver value forms: JSON strings/numbers/bools/
+    /// null bind directly; a `{"$bytes": hex}` object binds as a BLOB — the
+    /// same envelope the command surface uses everywhere else. Output BLOB
+    /// columns come back as `{"$bytes": hex}` to round-trip cleanly.
+    ///
+    /// The result column typing is dynamic (SQLite's stored affinity), because
+    /// arbitrary SQL can alias, join, and compute — there is no schema column
+    /// to consult per output cell, unlike [`read_rows`].
+    pub fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Map<String, Value>>, String> {
+        let bound: Vec<SqlValue> = params
+            .iter()
+            .map(json_param_to_sql)
+            .collect::<Result<_, _>>()?;
+        let mut stmt = self.conn.prepare(sql).map_err(|e| e.to_string())?;
+        let column_names: Vec<String> =
+            stmt.column_names().into_iter().map(str::to_owned).collect();
+        let bound_refs: Vec<&dyn rusqlite::ToSql> =
+            bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        let mut sql_rows = stmt
+            .query(bound_refs.as_slice())
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        while let Some(row) = sql_rows.next().map_err(|e| e.to_string())? {
+            let mut record = Map::new();
+            for (i, name) in column_names.iter().enumerate() {
+                let value = row.get_ref(i).map_err(|e| e.to_string())?;
+                record.insert(name.clone(), sql_ref_to_json_dynamic(value));
+            }
+            out.push(record);
         }
         Ok(out)
     }
