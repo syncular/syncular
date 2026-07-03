@@ -13,6 +13,7 @@ export * from './blob-store';
 export * from './content-encoding';
 export * from './context';
 export * from './crdt-merger';
+export * from './d1-storage';
 export * from './errors';
 export * from './events';
 export * from './events-ring';
@@ -36,6 +37,14 @@ export * from './scopes';
 export * from './segment-download';
 export * from './segment-store';
 export * from './signed-url';
+// Bun-specific storages (top-level `bun:sqlite`): re-exported for Bun/Node
+// hosts. Workers/edge builds tree-shake them (and their `bun:sqlite` import)
+// away — the runtime-neutral core closure is enforced by
+// `test/runtime-neutrality.test.ts`.
+export * from './sqlite-blob-store';
+export * from './sqlite-dialect';
 export * from './sqlite-image';
+export * from './sqlite-lease-store';
+export * from './sqlite-segment-store';
 export * from './sqlite-storage';
 export * from './storage';

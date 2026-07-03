@@ -7,10 +7,12 @@
  */
 import { PGlite } from '@electric-sql/pglite';
 import {
+  D1ServerStorage,
   PostgresServerStorage,
   SqliteServerStorage,
 } from '@syncular-v2/server';
 import { pgliteExecutor } from '@syncular-v2/server/pglite';
+import { D1DatabaseDouble } from './d1-double';
 import { runStorageContract } from './storage-contract';
 
 runStorageContract('sqlite', () => new SqliteServerStorage());
@@ -18,6 +20,15 @@ runStorageContract('sqlite', () => new SqliteServerStorage());
 runStorageContract('postgres/pglite', async () => {
   const db = await PGlite.create();
   const storage = new PostgresServerStorage(pgliteExecutor(db));
+  await storage.migrate();
+  return storage;
+});
+
+// D1 (Cloudflare Workers) against the local bun:sqlite-backed double
+// (test/d1-double.ts documents its fidelity limits). Same contract, so the
+// D1 path is held to the reference behavior key-for-key.
+runStorageContract('d1/double', async () => {
+  const storage = new D1ServerStorage(new D1DatabaseDouble());
   await storage.migrate();
   return storage;
 });
