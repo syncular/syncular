@@ -14,9 +14,12 @@ import {
   decodeRow,
   decodeRowsSegment,
   encodeMessage,
+  MessageStreamScanner,
   PROTOCOL_WIRE_VERSION,
   type PushResultFrame,
   parseRealtimeServerEvent,
+  REALTIME_TAG_DELTA,
+  REALTIME_TAG_ROUND,
   type RequestFrame,
   type ResponseMessage,
   type RowValue,
@@ -219,6 +222,13 @@ interface OpenSection {
   cleared: boolean;
 }
 
+/** §8.7 client side: one in-flight socket round's response assembly. */
+interface PendingRound {
+  readonly scanner: MessageStreamScanner;
+  readonly resolve: (bytes: Uint8Array) => void;
+  readonly reject: (error: ClientSyncError) => void;
+}
+
 interface MutableSummary {
   pushed: number;
   applied: string[];
@@ -259,6 +269,7 @@ export class SyncClient {
   #conflicts: ConflictRecord[] = [];
   #rejections: RejectionRecord[] = [];
   #socket: RealtimeSocket | undefined;
+  #pendingRound: PendingRound | undefined;
   #needsPull = false;
   #syncing = false;
 
@@ -290,6 +301,7 @@ export class SyncClient {
   async close(): Promise<void> {
     this.#socket?.close();
     this.#socket = undefined;
+    this.#abortPendingRound('client closed mid-round');
     await this.#lease?.release();
     this.#lease = undefined;
     this.#started = false;
@@ -510,7 +522,7 @@ export class SyncClient {
         msgKind: 'request',
         frames,
       });
-      const responseBytes = await this.#config.transport(requestBytes);
+      const responseBytes = await this.#roundTrip(requestBytes);
       const message = decodeMessage(responseBytes);
       if (message.msgKind !== 'response') {
         throw new ClientSyncError(
@@ -548,6 +560,49 @@ export class SyncClient {
     );
   }
 
+  /**
+   * One request/response round trip (§8.7): over the socket whenever it
+   * is connected (Direction decision 1 — the socket IS the sync-round
+   * transport, not a fallback pair), otherwise through the configured
+   * `SyncTransport` seam (loopback/conformance hosts, HTTP-only
+   * producers).
+   */
+  #roundTrip(request: Uint8Array): Promise<Uint8Array> {
+    const socket = this.#socket;
+    if (socket === undefined) return this.#config.transport(request);
+    return new Promise<Uint8Array>((resolve, reject) => {
+      // sync() already enforces one round in flight (§8.7).
+      this.#pendingRound = {
+        scanner: new MessageStreamScanner(),
+        resolve,
+        reject,
+      };
+      const tagged = new Uint8Array(request.length + 1);
+      tagged[0] = REALTIME_TAG_ROUND;
+      tagged.set(request, 1);
+      try {
+        socket.sendBytes(tagged);
+      } catch (error) {
+        this.#pendingRound = undefined;
+        reject(
+          new ClientSyncError(
+            'sync.transport_failed',
+            `socket round send failed: ${error instanceof Error ? error.message : String(error)}`,
+            true,
+          ),
+        );
+      }
+    });
+  }
+
+  /** Abort the in-flight socket round (socket closed or disconnected). */
+  #abortPendingRound(reason: string): void {
+    const round = this.#pendingRound;
+    if (round === undefined) return;
+    this.#pendingRound = undefined;
+    round.reject(new ClientSyncError('sync.transport_failed', reason, true));
+  }
+
   // -- realtime (§8 client side) ----------------------------------------------
 
   async connectRealtime(): Promise<void> {
@@ -561,11 +616,10 @@ export class SyncClient {
     }
     this.#socket = await connector({
       onText: (text) => this.#handleRealtimeText(text),
-      onBinary: (bytes) => {
-        void this.#handleRealtimeBinary(bytes);
-      },
+      onBinary: (bytes) => this.#routeRealtimeBinary(bytes),
       onClose: () => {
         this.#socket = undefined;
+        this.#abortPendingRound('realtime socket closed mid-round (§8.7)');
       },
     });
   }
@@ -573,6 +627,52 @@ export class SyncClient {
   disconnectRealtime(): void {
     this.#socket?.close();
     this.#socket = undefined;
+    this.#abortPendingRound('realtime socket disconnected mid-round (§8.7)');
+  }
+
+  /**
+   * §8.7 channel-tag routing (synchronous, so chunk order is preserved):
+   * `0x01` chunks feed the in-flight round's assembler; `0x00` messages
+   * are standalone deltas; unknown tags are ignored (forward compat).
+   */
+  #routeRealtimeBinary(bytes: Uint8Array): void {
+    if (bytes.length === 0) return;
+    const tag = bytes[0];
+    const body = bytes.subarray(1);
+    if (tag === REALTIME_TAG_ROUND) {
+      const round = this.#pendingRound;
+      if (round === undefined) return; // stale chunk after an abort
+      let done: ReturnType<MessageStreamScanner['push']>;
+      try {
+        done = round.scanner.push(body);
+      } catch (error) {
+        this.#pendingRound = undefined;
+        round.reject(
+          new ClientSyncError(
+            'sync.invalid_request',
+            `malformed round response stream (§8.7): ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+        return;
+      }
+      if (done === undefined) return;
+      this.#pendingRound = undefined;
+      if (done.excess > 0) {
+        round.reject(
+          new ClientSyncError(
+            'sync.invalid_request',
+            'response bytes past END of the round stream (§8.7)',
+          ),
+        );
+        return;
+      }
+      round.resolve(done.message.slice());
+      return;
+    }
+    if (tag === REALTIME_TAG_DELTA) {
+      void this.#handleRealtimeBinary(body);
+    }
+    // Unknown tag: tolerated and ignored (§8.7 closed registry).
   }
 
   #handleRealtimeText(text: string): void {

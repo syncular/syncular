@@ -410,11 +410,17 @@ Live-query invalidation (design-time rule from REVISE: invalidate by
    are legal only for never-synced subs (§4), or the phasing note gets
    softened to same-request ordering only. Either fix is a one-line SPEC
    edit; flagged rather than made here (design doc only).
+   **RESOLVED 2026-07-03** with the WS-native sync loop: SPEC §4.7 now
+   pins omission-as-unregistration + the complete-list client rule
+   (partial pulls legal only for never-synced subs) — windowing's favor.
 2. **§8.1 fixed-per-connection registration** makes newly widened window
    units delta-blind until reconnect. Not a correctness bug (the sync
    loop covers the gap) but a UX wart windowing amplifies; resolved by
    sequencing W1 after the WS-native sync loop (TODO §1) rather than by
    amending §8.1 for HTTP-registered sockets.
+   **RESOLVED 2026-07-03**: the WS-native loop landed (SPEC §8.7) —
+   a socket round replaces the connection's registrations at round end,
+   so window changes take effect on the very round that makes them.
 3. Nothing else: E1–E4 and window-scoped subscriptions were checked
    against §3.3 (purge), §4.5 (cursor + watermark), §4.6 (horizon),
    §4.7 (resume, fresh-vs-resumed first-page clear), §5.6 (clear +

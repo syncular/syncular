@@ -45,10 +45,28 @@ the old tree archived.
       HTTP+WS server; demo panes run persistent worker cores (`demo-a`/
       `demo-b`, badge "sqlite-wasm (OPFS, worker)") with `?ephemeral` as
       the labeled in-memory mode.
-- [ ] **WebSocket-native sync loop** (Direction decision 1): sync rounds
-      over the socket, kill the separate HTTP round-trip from the client
-      loop; `POST /sync` stays server-side for producers/tooling. Define
-      backpressure/max-in-flight for large pulls over WS in the SPEC.
+- [x] **WebSocket-native sync loop**: LANDED 2026-07-03 (Direction
+      decision 1) — SPEC §8.7: the realtime channel is a second full
+      transport binding of the sync handler. Binary WS messages carry a
+      1-byte channel tag (0x00 = standalone delta, 0x01 = round
+      byte-stream chunk — attribution is stateless, closing the
+      delta-vs-response race no interleave rule can); rounds are
+      self-delimiting SSP2 byte streams (chunk boundaries arbitrary, END
+      is the terminator), one round in flight per connection (pipelining
+      MAY drop the connection; reference server closes it), server send
+      buffering bounded (§1.4 anti-goal; bulk rides segments on HTTP),
+      and the round's subscription list REPLACES the connection's
+      registrations at round end — the connect-before-first-pull silent
+      no-fanout footgun is structurally dead (connect-then-sync is the
+      reference boot order). §4.7/§8.1 replace-ambiguity resolved in
+      windowing's favor (omission = unregistration; partial pulls legal
+      only for never-synced subs). RealtimeSession drives the SAME
+      createSyncResponseStream; TS + Rust clients ride the socket
+      whenever connected (transport seam unchanged for loopback/HTTP
+      hosts — hosts of the seam, not a fallback pair); conformance B.11
+      (4 scenarios, both pairings); demo syncs over the socket (zero
+      POST /sync from the browser). No wire-vector changes (the tag is
+      transport-binding framing, outside SSP2 messages).
 - [ ] **Signed-URL client path**: client advertises accept bit 3, fetches
       segments from CDN/R2-style URLs; conformance scenario for the
       issue→fetch→verify loop. (Server side already exists.)

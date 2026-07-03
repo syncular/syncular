@@ -54,8 +54,12 @@ persists it to a file.
   shows the mode in use. With the default in-memory SERVER storage, a
   server restart forgets commits that the panes' persistent databases
   still hold — use `SYNCULAR_DEMO_DB` for a symmetric persistence story.
-- **Realtime attaches after the first sync**: the hub session binds to the
-  client record a sync round creates (§8.1 fixed registration), so panes
-  connect the socket after their initial pull.
+- **Connect-then-sync boot order** (§8.7): panes connect the socket
+  first, then run their first sync round OVER it — the round registers
+  this connection's subscriptions at round end, so the old
+  "connect-before-first-pull ⇒ silent no-fanout" footgun (§8.1 fixed
+  registration) no longer exists. All sync rounds ride the WebSocket
+  once it is connected; `POST /sync` stays server-side for
+  producers/tooling and segment downloads stay on HTTP.
 - The demo intentionally has zero dependencies beyond the workspace
   packages; the frontend is vanilla DOM.

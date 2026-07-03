@@ -105,6 +105,9 @@ export function webSocketRealtimeConnector(
       socket.onopen = () => {
         resolve({
           send: (text) => socket.send(text),
+          sendBytes: (bytes) => {
+            socket.send(bytes.slice().buffer as ArrayBuffer);
+          },
           close: () => socket.close(),
         });
       };

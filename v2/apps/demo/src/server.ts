@@ -54,6 +54,9 @@ const hub = createRealtimeHub({
   schema,
   storage,
   resolveScopes,
+  // §8.7: the socket carries sync rounds through the same handler and
+  // segment store as POST /sync (Direction decision 1).
+  segments,
   ...(events !== undefined ? { events } : {}),
 });
 const config: SyncServerConfig = {
@@ -234,6 +237,7 @@ const server = Bun.serve<SocketData, never>({
           send: (data) => {
             ws.send(data);
           },
+          closeSocket: () => ws.close(1008, 'protocol violation (§8.7)'),
         })
         .then((session) => {
           ws.data.session = session;
@@ -241,7 +245,12 @@ const server = Bun.serve<SocketData, never>({
         .catch(() => ws.close(1011, 'realtime connect failed'));
     },
     message(ws, message) {
-      if (typeof message === 'string') ws.data.session?.handleMessage(message);
+      if (typeof message === 'string') {
+        ws.data.session?.handleMessage(message);
+      } else {
+        // §8.7: tagged binary — sync-round request chunks.
+        ws.data.session?.handleBinary(new Uint8Array(message));
+      }
     },
     close(ws) {
       ws.data.session?.close();

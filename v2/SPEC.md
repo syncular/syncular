@@ -181,6 +181,16 @@ concretely below and in the referenced sections.
       `resync-required` overlap) collapse into `delta-too-large`,
       `catchup-required`, `reset-required`.
 
+- [x] **WebSocket-native sync loop.** DECISION: **change** (Direction
+      decision 1, 2026-07-03). The realtime channel is a full transport
+      binding for sync rounds: request/response SSP2 messages travel over
+      the socket as tagged binary byte streams (§8.7), driven by the same
+      handler as `POST /sync` — one handler, two framings, zero semantic
+      divergence. Reference clients run every sync round on the socket
+      once it is connected; no polling mode exists. `POST /sync` remains
+      for push-only producers, debugging, and server-to-server
+      integration. Segments stay on HTTP (the CDN bulk path).
+
 - [x] **Canonical JSON debug rendering.** DECISION: **keep** (specified in
       §11). Non-contractual for the wire; contractual for golden vectors —
       so tooling that rots fails CI instead of rotting silently.
@@ -244,6 +254,17 @@ A server mounts three routes under a host-chosen prefix `<mount>`:
 Content type for SSP2 bodies is `application/vnd.syncular.sync.v2`. A
 server MUST reject a `<mount>/sync` request with any other content type
 with HTTP 415.
+
+**Two bindings, one handler.** `<mount>/sync` and the realtime channel
+are two framings of the same request/response semantics: the socket
+carries sync rounds as tagged binary byte streams (§8.7) with identical
+message grammar and validation — nothing in §§4–7 distinguishes the
+bindings. Reference clients sync exclusively over the socket once it is
+connected (Direction decision 1: one loop, no polling mode, no fallback
+pair); `POST /sync` remains fully conformant and is the binding for
+push-only producers, curl debugging, and server-to-server integration.
+Segment downloads are HTTP-only (§5.5) — the CDN bulk path, not a
+fallback.
 
 **Authentication is host-provided and out of protocol scope.** The host's
 `authenticate(request)` runs on every HTTP request and WebSocket upgrade;
@@ -1006,6 +1027,16 @@ subscriptions first (even in a separate request) before enqueueing the
 rest. DECISION (recorded): phases are client policy, not wire state —
 one less coupled enum, same capability.
 
+One constraint bounds the "separate request" latitude (resolving the
+ambiguity with §8.1's replace-semantics in windowing's favor, per
+DESIGN-eviction.md §9.1): a pull's subscription list replaces both the
+persisted registration list (§8.1) and — for socket rounds — the live
+connection's registrations (§8.7), so **omission is unregistration**.
+Steady-state pulls MUST therefore carry the client's complete current
+subscription list; phased partial pulls are legal only while the
+omitted subscriptions have never synced (nothing registered, nothing to
+unregister).
+
 ---
 
 ## 5. Bootstrap segments
@@ -1544,20 +1575,25 @@ client's known subscriptions and registers the connection against the
 matching scope keys.
 
 **Where "known subscriptions" come from:** the subscription list (ids,
-tables, requested scopes) of the client's most recent HTTP pull. Servers
+tables, requested scopes) of the client's most recent pull. Servers
 MUST persist that list per (partition, `clientId`) when processing a
 pull — alongside the cursor record of §4.5 — and load it at WebSocket
 upgrade (unchanged from v1 mechanics). A client that has never pulled
 has no registered subscriptions: it receives `hello` with
-`requiresSync: true` and no deltas until a pull registers them.
-Registrations are **fixed for the life of the connection**: a pull that
-changes the subscription list takes effect at the next connect, not
-mid-session.
+`requiresSync: true` and no deltas until a pull registers them — which,
+for a socket-syncing client, is its first sync round on this very
+connection (§8.7), so connect-then-sync is the reference boot order.
+Registrations are fixed for the life of the connection **under the HTTP
+binding alone**: a pull over `POST /sync` takes effect at the next
+connect, not mid-session. A sync round completed **on the connection
+itself** replaces them at round end (§8.7) — the reference client path.
 
-Control messages are JSON text frames; deltas are binary frames
-containing a complete SSP2 **response** message (§1.6) — one envelope
-grammar for HTTP and socket (§0 decision). A binary frame is recognized
-by the SSP2 magic; a client MUST tolerate and ignore unknown JSON control
+Control messages are JSON text frames. Binary WebSocket messages carry
+a one-byte **channel tag** followed by their payload (§8.7): tag `0x00`
+is a standalone, complete SSP2 **response** message (§1.6) — a delta —
+one envelope grammar for HTTP and socket (§0 decision); tag `0x01` is a
+chunk of an in-flight sync round's byte stream. A client MUST tolerate
+and ignore unknown JSON control
 events (forward compat mirror of the frame-skip rule). "Unknown" is
 scoped to the **event name**: a JSON object whose `event` value is not
 defined by this section is tolerated, never a parse error. A *known*
@@ -1578,14 +1614,14 @@ Server → client on connect:
  "latestCursor":<serverLatest>,"requiresSync":<bool>,"timestamp":<ms>}}
 ```
 
-`requiresSync: true` ⇒ the client MUST run an HTTP pull before trusting
-the socket for continuity.
+`requiresSync: true` ⇒ the client MUST run a sync round (a socket round
+per §8.7, or `POST /sync`) before trusting the socket for continuity.
 
 ### 8.2 Delta delivery and acks
 
 - After a commit, the server pushes to each registered connection whose
   effective scopes match any of the commit's stored scope keys a binary
-  delta: an SSP2 response containing, per affected subscription,
+  delta (`0x00`-tagged, §8.7): an SSP2 response containing, per affected subscription,
   `SUB_START` / `COMMIT`(s) / `SUB_END` with the advanced `nextCursor`.
 - Deltas MUST be cursor-contiguous per connection: a delta starting past
   the client's last delivered cursor is forbidden — the server sends a
@@ -1622,7 +1658,8 @@ the socket for continuity.
   never resends, and later deltas would otherwise apply over the gap
   silently.
 - **Ack points.** After applying a delta, the client acks the highest
-  applied `SUB_END.nextCursor` in it. After an HTTP pull while the
+  applied `SUB_END.nextCursor` in it. After a pull round — a socket
+  round (§8.7) or an HTTP pull — while the
   connection is live, the client acks the minimum cursor across its
   active, non-bootstrapping subscriptions that have synced at least
   once — the contiguity-safe floor, and the ack that lifts the
@@ -1649,9 +1686,9 @@ The single JSON data-plane event:
 
 | Reason | Meaning | Client action |
 |---|---|---|
-| `delta-too-large` | The delta exceeded message limits | HTTP pull |
-| `catchup-required` | Gap not bridgeable from the replay buffer (reconnect, drops, flow control) | HTTP pull |
-| `reset-required` | Server-declared discontinuity (schema rollover, horizon, forced resync) | HTTP pull; expect `reset`/`requiredSchemaVersion` there |
+| `delta-too-large` | The delta exceeded message limits | Sync round (pull) |
+| `catchup-required` | Gap not bridgeable from the replay buffer (reconnect, drops, flow control) | Sync round (pull) |
+| `reset-required` | Server-declared discontinuity (schema rollover, horizon, forced resync) | Sync round (pull); expect `reset`/`requiredSchemaVersion` there |
 
 Wake-ups are idempotent and coalescible; the client MUST treat any
 wake-up as "run a pull soon", never as data.
@@ -1706,6 +1743,125 @@ Scope-keyed ephemeral presence (join/leave/update/snapshot keyed by
 Reserved for it: the `presence` JSON event name in both directions and
 binary frame types `0x20`–`0x2F`. Core conformance ignores presence
 events (per the unknown-control-event rule, §8.1).
+
+### 8.7 Sync rounds over the socket
+
+The realtime channel is a **second, full transport binding** of the
+sync handler (§1.1): a connected client runs its combined push+pull
+rounds (§1.5/§1.6) over the socket instead of `POST /sync`. Semantics
+are identical by construction — one handler, two framings; nothing in
+§§4–7 distinguishes the bindings. The reference clients sync
+**exclusively** over the socket once it is connected (Direction
+decision 1: one loop, no polling mode); `POST /sync` remains fully
+conformant for any client that chooses it. Segment downloads stay on
+HTTP (§5.5) — the CDN bulk path — and that bounds socket traffic
+naturally: bootstrap bulk SHOULD ride segments (§5.7), so a round's
+response stays small even when the data it describes is not.
+
+**Channel tags.** Every binary WebSocket message on the channel is a
+one-byte **channel tag** followed by its payload:
+
+| Tag | Direction | Payload |
+|---|---|---|
+| `0x00` | server → client | One complete, standalone SSP2 response message — a delta (§8.2) |
+| `0x01` | both | One chunk of the in-flight sync round's byte stream (request client→server, response server→client) |
+
+Tags are a closed registry per wire version. A client MUST ignore a
+server→client binary message with an unknown tag (forward-compat
+mirror of §8.1's unknown-event rule); a server MAY close the
+connection on a client→server tag other than `0x01` (a broken client,
+surfaced loudly). Text messages are unaffected: JSON control traffic
+(§8.1–§8.3, §8.5) interleaves freely at message boundaries in both
+directions, mid-round included.
+
+Why a tag rather than bare no-interleave: a delta emitted just before
+the server sees a round's first byte can reach the client after it
+sent the request — no ordering rule prevents that race, and deltas and
+round responses are both SSP2 response messages, indistinguishable by
+content. One byte makes attribution stateless. The tag is
+transport-binding framing, not part of any SSP2 message — golden
+vectors are unaffected.
+
+**Round framing.** A round is:
+
+1. The client sends the complete SSP2 **request** message (§1.5) as
+   one or more `0x01` messages. Chunk boundaries are arbitrary and
+   carry no meaning; the concatenated payloads form the request byte
+   stream. The envelope grammar is self-delimiting (§1.2): the request
+   ends when its `END` frame is consumed. Bytes past `END` in the
+   stream are a pipelining violation (below).
+2. The server answers with the SSP2 **response** byte stream, produced
+   per §1.4 (no full-response buffering) and sent as one or more
+   `0x01` messages at arbitrary chunk boundaries — the reference
+   server sends one message per encoded frame. A streaming client
+   applies frames as they arrive (§1.4); reassembly is concatenation,
+   nothing more. The stream ends when the response's `END` frame is
+   consumed; the final chunk MUST end exactly at the `END` frame's
+   last byte.
+3. The round is **complete** at the response's `END`. The next `0x01`
+   message in either direction belongs to a new round.
+
+**Failures.** A request-level failure that the HTTP binding reports as
+JSON with an HTTP status (§1.1 — a decode error of the request
+message, or request-level validation per §1.7) is delivered on the
+socket as a minimal response stream: `RESP_HEADER`, `ERROR`, `END`.
+The client treats it exactly like an in-band `ERROR` (§1.6): the whole
+round failed with that error. A client→server byte stream whose 8-byte
+envelope header is not a valid SSP2 request header is
+connection-fatal: the server MUST close the socket (an unframed stream
+has no findable end). A round's `REQ_HEADER.clientId` MUST equal the
+connection's `clientId` (§8.1); a mismatch fails the round with
+`sync.invalid_client_id` — registration identity would otherwise be
+ambiguous.
+
+**One round in flight.** A connection carries at most one sync round
+at a time: the client MUST NOT begin a new request before the current
+response's `END` (no pipelining — coalescing wake-ups into the next
+round is already required by §8.4). A server receiving round bytes
+while a response stream is in flight MUST NOT process them and MAY
+drop the connection; the reference server closes it. HTTP rounds are
+not serialized against socket rounds by the server — but a client
+driving both bindings concurrently against one database is outside the
+reference design (one loop, §8.4).
+
+**Interleaving.** While a response stream is in flight, the server
+MUST NOT send `0x00` (delta) messages on that connection. A commit
+matching the connection's registrations during that window follows the
+§8.2 suppression path: the session answers with coalescible
+`catchup-required` wake-ups (text — free to interleave) until an ack
+covers the highest `commitSeq` the connection has observed. The
+client's post-round ack (§8.2 ack point — it applies to socket rounds
+exactly as to HTTP pulls) lifts the suppression when the round's pull
+half already covered the commit; otherwise the wake-up's next round
+does. Deltas resume with zero new machinery.
+
+**Backpressure.** Per-connection server send buffering MUST be
+bounded: when the socket cannot drain (implementation signal, e.g.
+`bufferedAmount` above a host threshold), the server pauses consuming
+the response stream instead of buffering it whole — §1.4's anti-goal
+applies to this binding too. Observable behavior: response delivery
+slows to the socket's pace; the stream is never truncated, reordered,
+or interleaved with other binary traffic. Mechanics (drain events,
+thresholds, chunk sizes) are host concerns. Together with the
+segments-for-bulk rule above, this bounds both memory and message
+sizes without a protocol-level flow-control scheme.
+
+**Registration at round end.** On completion of a socket round whose
+request carried a `PULL_HEADER`, the request's subscription list
+**replaces** the connection's registrations, effective scopes
+re-resolved, effective immediately for subsequent fanout. This is the
+socket-native form of §8.1's persistence rule: the same list the
+server persists per (partition, `clientId`) registers on the
+connection that ran the round, with no reconnect. A round that fails
+(request-level failure or in-band `ERROR`) or carries no `PULL_HEADER`
+leaves registrations unchanged — matching §4.5/§8.1 persistence, and
+the reference server implements it exactly that way: it reloads the
+persisted client record at round end, which only advances on success.
+Consequence: **connect-then-sync is the reference boot order**. A
+client that connects the socket before its first-ever pull starts with
+zero registrations (§8.1) and acquires them from its first socket
+round; the "connected but silently unregistered until the next
+reconnect" failure mode of an HTTP-pull-only client cannot occur.
 
 ---
 
@@ -1998,3 +2154,16 @@ not a prose test.
     paged rows segments (§4.2 negotiation). (e) Lane pinning: a
     bootstrap resumed mid-table stays on the rows lane even when the
     resuming pull advertises bit 2 (§5.3, §4.7).
+
+11. **Sync rounds over the socket.** (a) Equivalence: a client syncing
+    over the socket binding (§8.7) and a control client syncing over
+    the transport binding end state-identical — rows, versions,
+    cursors, outbox drained. (b) Registration at round end: a client
+    that connects realtime BEFORE its first-ever pull, subscribes, and
+    runs its first round over the socket receives subsequent deltas
+    with no reconnect (the §8.1 silent-no-fanout footgun is
+    structurally dead). (c) One round in flight: round bytes arriving
+    while a response stream is in flight are not processed and drop
+    the connection. (d) Interleaving: a commit landing during an
+    in-flight round produces a text wake-up, never a mid-stream `0x00`
+    message; deltas resume after the post-round ack (§8.2/§8.7).

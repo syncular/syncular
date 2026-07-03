@@ -228,6 +228,13 @@ impl Transport for HostIo {
         value_bytes(result.get("response")).map_err(|m| TransportError::new("transport.failed", m))
     }
 
+    fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+        // §8.7 socket round: the host bridge owns tagging and response
+        // assembly; the core sees assembled bytes, same as `sync`.
+        let result = self.call_host("realtimeSync", json!({ "request": bytes_value(request) }))?;
+        value_bytes(result.get("response")).map_err(|m| TransportError::new("transport.failed", m))
+    }
+
     fn download_segment(&mut self, request: &SegmentRequest) -> Result<Vec<u8>, TransportError> {
         let mut params = Map::new();
         params.insert(

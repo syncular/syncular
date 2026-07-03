@@ -55,8 +55,9 @@ interface PaneCore {
   pendingCount(): Promise<number>;
   conflicts(): Promise<readonly ConflictRecord[]>;
   setOffline(offline: boolean): Promise<void>;
-  /** Best-effort; call AFTER the first sync so the hub session attaches
-   * to an existing client record (§8.1 fixed registration). */
+  /** Best-effort; connect-then-sync is the reference boot order — the
+   * first sync round rides the socket and registers this connection's
+   * subscriptions at round end (§8.7). */
   connectRealtime(): Promise<void>;
 }
 
@@ -251,10 +252,12 @@ class Pane {
       scopes: todoListSubscription.scopes({ listId: LIST_ID }),
     });
     this.#ready = true;
-    await this.syncNow();
-    // AFTER the first sync: the hub attaches the realtime session to the
-    // client record that sync just created (§8.1 fixed registration).
+    // Connect-then-sync (§8.7 reference boot order): the first sync
+    // round rides the socket and registers this connection's
+    // subscriptions at round end — no reconnect, no silent-no-fanout
+    // window (the old §8.1 footgun is structurally dead).
     await this.core.connectRealtime();
+    await this.syncNow();
     this.setStatus('ready');
     await this.refresh();
     // Realtime deltas apply inside the core with no per-row callback — a

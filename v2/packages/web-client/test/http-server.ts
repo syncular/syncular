@@ -99,6 +99,7 @@ export function serveOverHttp(
             send: (data) => {
               ws.send(data);
             },
+            closeSocket: () => ws.close(1008, 'protocol violation (§8.7)'),
           })
           .then((session) => {
             ws.data.session = session;
@@ -108,6 +109,9 @@ export function serveOverHttp(
       message(ws, message) {
         if (typeof message === 'string') {
           ws.data.session?.handleMessage(message);
+        } else {
+          // §8.7: tagged binary — sync-round request chunks.
+          ws.data.session?.handleBinary(new Uint8Array(message));
         }
       },
       close(ws) {

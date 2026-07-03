@@ -2,24 +2,34 @@
  * Realtime channel (SPEC.md §8) — transport-agnostic.
  *
  * A `RealtimeSession` wraps a connected socket's send/receive callbacks:
- * the host feeds inbound text frames to `handleMessage` and wires
- * `session.close()` to socket close. Subscription registration comes from
- * the client's most recent HTTP pull (§8.1, loaded from the client
- * record); deltas are complete SSP2 response messages pushed as binary
- * (§8.2); the only JSON data-plane server event is the `sync` wake-up
- * (§8.3).
+ * the host feeds inbound text frames to `handleMessage`, binary frames to
+ * `handleBinary`, and wires `session.close()` to socket close. Initial
+ * subscription registration comes from the client's most recent pull
+ * (§8.1, loaded from the client record); a sync round completed on the
+ * connection replaces it at round end (§8.7). Deltas are complete SSP2
+ * response messages pushed as `0x00`-tagged binary (§8.2/§8.7); sync
+ * rounds ride the same socket as `0x01`-tagged byte-stream chunks driven
+ * through the SAME `createSyncResponseStream` as `POST /sync` (§8.7 —
+ * one handler, two framings); the only JSON data-plane server event is
+ * the `sync` wake-up (§8.3).
  */
 import {
   type CommitChange,
+  DecodeError,
+  decodeMessage,
   encodeMessage,
+  MessageStreamScanner,
   PROTOCOL_WIRE_VERSION,
+  REALTIME_TAG_DELTA,
+  REALTIME_TAG_ROUND,
   type ResponseFrame,
   type ScopeMap,
   type WakeReason,
 } from '@syncular-v2/core';
-import type { ResolveScopes } from './context';
-import { syncError } from './errors';
+import type { ResolveScopes, ServerLimits } from './context';
+import { SyncError, syncError } from './errors';
 import { emitEvent, type SyncularServerEvents } from './events';
+import { createSyncResponseStream } from './handler';
 import type { ServerSchema } from './schema';
 import { type CompiledSchema, compileSchema } from './schema';
 import {
@@ -27,6 +37,8 @@ import {
   matchesEffective,
   type ResolvedScopes,
 } from './scopes';
+import type { SegmentStore } from './segment-store';
+import type { SignedUrlConfig } from './signed-url';
 import type { ServerStorage, StoredCommit } from './storage';
 
 export interface RealtimeHubConfig {
@@ -38,14 +50,34 @@ export interface RealtimeHubConfig {
   readonly maxDeltaBytes?: number;
   /** Optional structured-events sink (`realtime.*` events). */
   readonly events?: SyncularServerEvents;
+  /**
+   * Segment store for sync rounds over the socket (§8.7). Without it a
+   * socket round fails loudly with an in-band ERROR — provide the same
+   * store the HTTP binding uses (one handler, two framings).
+   */
+  readonly segments?: SegmentStore;
+  /** Request limits for socket rounds; defaults match the HTTP binding. */
+  readonly limits?: Partial<ServerLimits>;
+  readonly signedUrls?: SignedUrlConfig;
 }
 
 export interface RealtimeConnectOptions {
   readonly partition: string;
   readonly actorId: string;
   readonly clientId: string;
-  /** Socket send: JSON control messages as text, deltas as bytes (§8.1). */
-  readonly send: (data: string | Uint8Array) => void;
+  /**
+   * Socket send: JSON control messages as text, tagged binary otherwise
+   * (§8.7). A host MAY return a promise that resolves when the socket
+   * has drained — the session awaits it between round-response chunks
+   * (§8.7 backpressure: bounded buffering, mechanics host-owned).
+   */
+  readonly send: (data: string | Uint8Array) => void | Promise<void>;
+  /**
+   * Close the underlying socket — invoked on §8.7 protocol violations
+   * (pipelined rounds, unframed streams). The host must still call
+   * `session.close()` from its socket-close handler as usual.
+   */
+  readonly closeSocket?: () => void;
 }
 
 interface Registration {
@@ -66,15 +98,22 @@ export class RealtimeSession {
   /** Suppress deltas until the client catches up via pull + ack (§8.2). */
   wakePending: boolean;
   lastKnownSeq: number;
-  readonly registrations: readonly Registration[];
+  /** Replaced at socket-round completion (§8.7); initial set from §8.1. */
+  registrations: readonly Registration[];
   /** Epoch-ms (hub clock) at registration, for `realtime.closed`. */
   readonly openedAtMs: number;
-  #send: (data: string | Uint8Array) => void;
+  #send: (data: string | Uint8Array) => void | Promise<void>;
+  #closeSocket: (() => void) | undefined;
   #hub: RealtimeHub;
   #clock: () => number;
   #maxDeltaBytes: number;
   #storage: ServerStorage;
   #events: SyncularServerEvents | undefined;
+  /** §8.7 round state: request assembly + one-round-in-flight. The
+   * token identifies the owning round so a finished round's cleanup
+   * never clobbers a follow-up round's in-flight marker. */
+  #requestScanner: MessageStreamScanner | undefined;
+  #activeRound: symbol | undefined;
 
   constructor(
     hub: RealtimeHub,
@@ -97,6 +136,7 @@ export class RealtimeSession {
     this.registrations = registrations;
     this.openedAtMs = clock();
     this.#send = options.send;
+    this.#closeSocket = options.closeSocket;
     this.#hub = hub;
     this.#clock = clock;
     this.#maxDeltaBytes = maxDeltaBytes;
@@ -127,6 +167,142 @@ export class RealtimeSession {
     void this.#persistCursor();
   }
 
+  /**
+   * Feed an inbound binary frame: a `0x01`-tagged chunk of the sync
+   * round's request byte stream (§8.7). Synchronous entry — assembly and
+   * violation detection happen inline so a pipelined chunk arriving
+   * while a response streams is caught deterministically; the round
+   * itself runs async once the request is complete.
+   */
+  handleBinary(bytes: Uint8Array): void {
+    if (bytes.length === 0) return;
+    if (bytes[0] !== REALTIME_TAG_ROUND) {
+      // §8.7: client→server tags other than 0x01 — a broken client.
+      this.#violation(`unexpected channel tag 0x${bytes[0]?.toString(16)}`);
+      return;
+    }
+    if (this.#activeRound !== undefined) {
+      // §8.7 one round in flight: MUST NOT process, drop the connection.
+      this.#violation('sync round begun while a response stream is in flight');
+      return;
+    }
+    const chunk = bytes.subarray(1);
+    this.#requestScanner ??= new MessageStreamScanner();
+    let done: ReturnType<MessageStreamScanner['push']>;
+    try {
+      done = this.#requestScanner.push(chunk);
+    } catch (error) {
+      // §8.7: an unframed stream has no findable end — connection-fatal.
+      this.#requestScanner = undefined;
+      this.#violation(
+        error instanceof DecodeError
+          ? error.message
+          : 'malformed request stream',
+      );
+      return;
+    }
+    if (done === undefined) return;
+    this.#requestScanner = undefined;
+    if (done.excess > 0) {
+      this.#violation('request bytes past END (pipelining, §8.7)');
+      return;
+    }
+    const token = Symbol('round');
+    this.#activeRound = token;
+    void this.#runRound(done.message.slice(), token);
+  }
+
+  /** Drive the shared handler and stream the response back (§8.7). */
+  async #runRound(requestBytes: Uint8Array, token: symbol): Promise<void> {
+    const finishRound = (): void => {
+      if (this.#activeRound === token) this.#activeRound = undefined;
+    };
+    try {
+      let stream: AsyncIterable<Uint8Array> | undefined;
+      try {
+        // §8.7: the round's clientId must match the connection's —
+        // registration identity would otherwise be ambiguous.
+        const decoded = decodeMessage(requestBytes);
+        const header = decoded.frames[0];
+        if (decoded.msgKind !== 'request' || header?.type !== 'REQ_HEADER') {
+          throw syncError('sync.invalid_request', 'expected a request message');
+        }
+        if (header.clientId !== this.clientId) {
+          throw syncError(
+            'sync.invalid_client_id',
+            'socket round clientId must match the connection (§8.7)',
+          );
+        }
+        stream = await createSyncResponseStream(
+          requestBytes,
+          this.#hub.requestContext(this),
+        );
+      } catch (error) {
+        // §8.7 failures: what HTTP reports as status+JSON becomes a
+        // minimal RESP_HEADER/ERROR/END response stream on the socket.
+        if (error instanceof DecodeError || error instanceof SyncError) {
+          const sync =
+            error instanceof SyncError
+              ? error
+              : syncError(error.code, error.message);
+          finishRound(); // END is in this one chunk
+          await this.#sendRoundChunk(errorResponseBytes(sync));
+          return;
+        }
+        throw error;
+      }
+      // Fetch-ahead so the round stops being "in flight" the moment the
+      // chunk carrying END is handed to send: the client may legally
+      // begin its next round as soon as END *arrives* (§8.7 rule 3), so
+      // in-flight must end with the send, not with generator cleanup.
+      const iterator = stream[Symbol.asyncIterator]();
+      let step = await iterator.next();
+      while (!step.done) {
+        const chunk = step.value;
+        step = await iterator.next();
+        if (step.done) finishRound();
+        await this.#sendRoundChunk(chunk);
+      }
+    } catch {
+      // A host failure mid-stream leaves the byte stream unfinishable —
+      // fail loud, drop the connection (§8.7 / §1.4 abort rule).
+      this.#violation('sync round failed mid-stream');
+    } finally {
+      finishRound();
+      // §8.7 registration at round end: reload the persisted list — it
+      // only advances on success, so failed rounds change nothing.
+      await this.#refreshRegistrations();
+    }
+  }
+
+  async #sendRoundChunk(chunk: Uint8Array): Promise<void> {
+    const tagged = new Uint8Array(chunk.length + 1);
+    tagged[0] = REALTIME_TAG_ROUND;
+    tagged.set(chunk, 1);
+    await this.#send(tagged);
+  }
+
+  async #refreshRegistrations(): Promise<void> {
+    try {
+      this.registrations = await this.#hub.loadRegistrations(
+        this.partition,
+        this.actorId,
+        this.clientId,
+      );
+    } catch {
+      // Fail closed: an unreadable record or resolver failure leaves the
+      // previous registrations in place; the next round repairs it.
+    }
+  }
+
+  /** §8.7 protocol violation: drop the connection, fail loud. The
+   * message is intentionally unsent — there is no error channel for an
+   * unframed stream; `realtime.closed` fires via `disconnect`. */
+  #violation(_message: string): void {
+    this.#closeSocket?.();
+    this.#hub.disconnect(this);
+  }
+
   async #persistCursor(): Promise<void> {
     try {
       const record = await this.#storage.getClientRecord(
@@ -144,8 +320,19 @@ export class RealtimeSession {
     }
   }
 
+  /** Fire-and-forget send for control text and deltas; a host send
+   * failure surfaces on the socket, not here. */
+  #sendSafe(data: string | Uint8Array): void {
+    try {
+      const result = this.#send(data);
+      if (result instanceof Promise) result.catch(() => {});
+    } catch {
+      // socket already gone; close handling is the host's job
+    }
+  }
+
   sendHeartbeat(): void {
-    this.#send(
+    this.#sendSafe(
       JSON.stringify({
         event: 'heartbeat',
         data: { timestamp: this.#clock() },
@@ -155,7 +342,7 @@ export class RealtimeSession {
 
   sendWake(reason: WakeReason): void {
     this.wakePending = true;
-    this.#send(
+    this.#sendSafe(
       JSON.stringify({
         event: 'sync',
         data: {
@@ -209,6 +396,13 @@ export class RealtimeSession {
       if (changes.length > 0) sections.push({ registration, changes });
     }
     if (sections.length === 0) return;
+    if (this.#activeRound !== undefined) {
+      // §8.7 interleaving: no 0x00 messages while a response stream is
+      // in flight — the §8.2 suppression path takes over (the client's
+      // post-round ack lifts it when the round covered this commit).
+      this.sendWake('catchup-required');
+      return;
+    }
     if (this.wakePending) {
       // §8.2: deltas must be cursor-contiguous; while the client is behind
       // we send (coalescible) wake-ups instead of a delta past its cursor.
@@ -244,7 +438,11 @@ export class RealtimeSession {
       this.sendWake('delta-too-large');
       return;
     }
-    this.#send(bytes);
+    // §8.7: standalone deltas carry channel tag 0x00.
+    const tagged = new Uint8Array(bytes.length + 1);
+    tagged[0] = REALTIME_TAG_DELTA;
+    tagged.set(bytes, 1);
+    this.#sendSafe(tagged);
     this.cursor = commit.commitSeq;
     const events = this.#events;
     if (events !== undefined) {
@@ -282,37 +480,34 @@ export class RealtimeHub {
   }
 
   /**
-   * Register a connected socket (§8.1): load the client's last pull's
-   * subscription list, resolve + intersect scopes, send `hello`.
+   * Resolve the client record's subscription list into per-connection
+   * registrations (§8.1 at upgrade; §8.7 at socket-round end).
    */
-  async connect(options: RealtimeConnectOptions): Promise<RealtimeSession> {
-    const { storage } = this.#config;
-    const clock = this.#config.clock ?? Date.now;
-    const record = await storage.getClientRecord(
-      options.partition,
-      options.clientId,
+  async loadRegistrations(
+    partition: string,
+    actorId: string,
+    clientId: string,
+  ): Promise<Registration[]> {
+    const record = await this.#config.storage.getClientRecord(
+      partition,
+      clientId,
     );
-    if (record !== undefined && record.actorId !== options.actorId) {
-      throw syncError(
-        'sync.invalid_client_id',
-        'clientId is bound to a different actor in this partition (§1.5)',
-      );
-    }
     let resolved: ResolvedScopes;
     try {
       const allowed = await this.#config.resolveScopes({
-        partition: options.partition,
-        actorId: options.actorId,
+        partition,
+        actorId,
       });
       resolved = { ok: true, allowed };
     } catch (error) {
       const events = this.#config.events;
       if (events !== undefined) {
+        const clock = this.#config.clock ?? Date.now;
         emitEvent(events, {
           type: 'scopes.resolve_failed',
           atMs: clock(),
-          partition: options.partition,
-          actorId: options.actorId,
+          partition,
+          actorId,
           phase: 'realtime',
           message: error instanceof Error ? error.message : String(error),
         });
@@ -335,6 +530,69 @@ export class RealtimeHub {
         effective: outcome.effective,
       });
     }
+    return registrations;
+  }
+
+  /**
+   * Build the per-round request context for a socket sync round (§8.7):
+   * the same shape the HTTP adapter builds, so the round drives the
+   * SAME handler with zero semantic divergence.
+   */
+  requestContext(session: RealtimeSession) {
+    const segments = this.#config.segments;
+    if (segments === undefined) {
+      // Fail loud (§8.7): a hub serving socket rounds needs the same
+      // segment store the HTTP binding uses — never a degraded round.
+      throw syncError(
+        'sync.invalid_request',
+        'socket sync rounds require a segment store on the realtime hub (§8.7)',
+      );
+    }
+    return {
+      partition: session.partition,
+      actorId: session.actorId,
+      schema: this.#config.schema,
+      storage: this.#config.storage,
+      segments,
+      resolveScopes: this.#config.resolveScopes,
+      ...(this.#config.clock !== undefined
+        ? { clock: this.#config.clock }
+        : {}),
+      ...(this.#config.limits !== undefined
+        ? { limits: this.#config.limits }
+        : {}),
+      ...(this.#config.signedUrls !== undefined
+        ? { signedUrls: this.#config.signedUrls }
+        : {}),
+      ...(this.#config.events !== undefined
+        ? { events: this.#config.events }
+        : {}),
+      realtime: this,
+    };
+  }
+
+  /**
+   * Register a connected socket (§8.1): load the client's last pull's
+   * subscription list, resolve + intersect scopes, send `hello`.
+   */
+  async connect(options: RealtimeConnectOptions): Promise<RealtimeSession> {
+    const { storage } = this.#config;
+    const clock = this.#config.clock ?? Date.now;
+    const record = await storage.getClientRecord(
+      options.partition,
+      options.clientId,
+    );
+    if (record !== undefined && record.actorId !== options.actorId) {
+      throw syncError(
+        'sync.invalid_client_id',
+        'clientId is bound to a different actor in this partition (§1.5)',
+      );
+    }
+    const registrations = await this.loadRegistrations(
+      options.partition,
+      options.actorId,
+      options.clientId,
+    );
     const latestSeq = await storage.getMaxCommitSeq(options.partition);
     const cursor = record?.cursor ?? -1;
     const session = new RealtimeSession(
@@ -349,7 +607,7 @@ export class RealtimeHub {
       this.#config.events,
     );
     this.#sessions.add(session);
-    options.send(
+    const helloResult = options.send(
       JSON.stringify({
         event: 'hello',
         data: {
@@ -364,6 +622,7 @@ export class RealtimeHub {
         },
       }),
     );
+    if (helloResult instanceof Promise) helloResult.catch(() => {});
     const events = this.#config.events;
     if (events !== undefined) {
       emitEvent(events, {
@@ -418,4 +677,26 @@ export class RealtimeHub {
 
 export function createRealtimeHub(config: RealtimeHubConfig): RealtimeHub {
   return new RealtimeHub(config);
+}
+
+/** §8.7 failures: the socket has no HTTP status surface, so a
+ * request-level failure becomes a minimal RESP_HEADER/ERROR/END
+ * response message delivered as the round's response stream. */
+function errorResponseBytes(error: SyncError): Uint8Array {
+  return encodeMessage({
+    wireVersion: PROTOCOL_WIRE_VERSION,
+    msgKind: 'response',
+    frames: [
+      { type: 'RESP_HEADER' },
+      {
+        type: 'ERROR',
+        code: error.code,
+        message: error.message,
+        category: error.category,
+        retryable: error.retryable,
+        recommendedAction: error.recommendedAction,
+        ...(error.details !== undefined ? { details: error.details } : {}),
+      },
+    ],
+  });
 }

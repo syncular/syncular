@@ -1,12 +1,20 @@
 /**
- * Realtime JSON control messages (SPEC.md §8).
+ * Realtime JSON control messages and channel tags (SPEC.md §8).
  *
- * Control messages are JSON text frames; binary frames carry complete SSP2
- * response messages and are handled by the message codec. Per §8.1 a client
- * MUST tolerate and ignore unknown JSON control events, so parsing returns
+ * Control messages are JSON text frames; binary frames carry a one-byte
+ * channel tag (§8.7) followed by either a complete SSP2 response message
+ * (deltas) or a chunk of an in-flight sync round's byte stream, handled
+ * by the message codec / stream scanner. Per §8.1 a client MUST tolerate
+ * and ignore unknown JSON control events, so parsing returns
  * `known: false` for unrecognized event names instead of failing.
  */
 import { DecodeError } from './errors';
+
+/** §8.7 channel tag: a standalone SSP2 response message — a delta. */
+export const REALTIME_TAG_DELTA = 0x00;
+/** §8.7 channel tag: one chunk of the in-flight sync round's byte
+ * stream (request client→server, response server→client). */
+export const REALTIME_TAG_ROUND = 0x01;
 
 export interface RealtimeHelloEvent {
   event: 'hello';
