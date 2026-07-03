@@ -1,0 +1,23 @@
+[package]
+name = "syncular-tauri-example"
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+description = "Minimal Tauri app proving tauri-plugin-syncular wiring compiles"
+
+[lib]
+name = "syncular_tauri_example_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-syncular = { path = "../../plugin", features = ["native-transport"] }
+serde_json = "1"
+
+[features]
+# Keeps parity with the tauri default-app template; nothing app-specific here.
+default = []

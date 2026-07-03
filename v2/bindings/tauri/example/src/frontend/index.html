@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>syncular tauri example</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 2rem;
+        max-width: 40rem;
+      }
+      #status {
+        color: #666;
+      }
+      li {
+        margin: 0.25rem 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>syncular · tauri</h1>
+    <p id="status">connecting to the native syncular instance…</p>
+    <form id="add">
+      <input id="title" placeholder="a new todo" autocomplete="off" />
+      <button type="submit">add</button>
+    </form>
+    <ul id="todos"></ul>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

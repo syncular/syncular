@@ -1,0 +1,4 @@
+# The plugin workspace's own cargo target (kept out of the main rust tree).
+/target
+# Tauri build-time generated ACL/schema artifacts for the example.
+/example/src-tauri/gen

@@ -1,0 +1,9 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = """
+Allows the webview to drive the native syncular client: the one command
+surface (syncular_command) and the live-query fast path (syncular_query).
+Grant this to the window(s) that host your syncular-backed UI.
+"""
+permissions = ["allow-syncular-command", "allow-syncular-query"]
