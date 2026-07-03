@@ -7,6 +7,7 @@
  * transport-agnostic realtime session (§8), the direct segment download
  * handler (§5.5), and signed-URL token issuance/verification (§5.4).
  */
+export * from './admin';
 export * from './blob-handlers';
 export * from './blob-store';
 export * from './content-encoding';
@@ -14,6 +15,7 @@ export * from './context';
 export * from './crdt-merger';
 export * from './errors';
 export * from './events';
+export * from './events-ring';
 export * from './frame-bytes';
 export * from './handler';
 export * from './lease-store';

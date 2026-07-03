@@ -67,6 +67,115 @@ context). The demo server wires it behind `SYNCULAR_DEMO_EVENTS=1`.
 All events also carry `type`, `atMs`, and (where a request identity
 exists) `partition` / `actorId`.
 
+## Admin / console surface (`SyncularAdmin`)
+
+The operator-facing read surface over the server core. It is a module in
+this package — **not** a separate UI package — and adds **zero** wire
+protocol: SPEC.md says nothing about it, because authorization for these
+reads is entirely the host's. It is the v2 answer to v1's full React
+console app: the same 80% operator value (who's connected, what's flowing,
+horizon health, the event tail) as a handful of read-only, partition-scoped,
+JSON-able queries.
+
+### The event ring (the "event stream")
+
+`RingBufferEvents` is a `SyncularServerEvents` sink that retains the last N
+events in memory (bounded — oldest dropped when full) with a
+`query({type?, sinceMs?, limit})`. It is the event stream without any
+infrastructure dependency. Compose it with any other sink so the console
+tail and your logs/metrics see the same emissions:
+
+```ts
+import {
+  RingBufferEvents, composeEvents, consoleJsonEvents, SyncularAdmin,
+} from '@syncular-v2/server';
+
+const ring = new RingBufferEvents({ capacity: 1000 });
+const config: SyncServerConfig = {
+  schema, storage, segments, resolveScopes,
+  events: composeEvents(ring, consoleJsonEvents()), // both see every event
+};
+const admin = SyncularAdmin.fromConfig(config, { ring });
+```
+
+### Query surface
+
+Every method is read-only and partition-scoped:
+
+| Method | Returns |
+| --- | --- |
+| `listClients(partition)` | Known clients: `clientId`, `actorId`, `cursor`, `updatedAtMs`, `subscriptions[]`, and an `active` flag (cursor touched within the §4.6 active window). |
+| `listCommits(partition, {afterSeq?, limit?, table?})` | Commit-log **metadata** (never payloads), newest first: `commitSeq`, `clientId`, `clientCommitId`, `actorId`, `createdAtMs`, `changeCount`, `tables[]`. |
+| `inspectRow(partition, table, rowId)` | `{exists, serverVersion?, scopes?}` — current row version + stored scopes, payload **not** decoded. |
+| `scopeActivity(partition, {variable, value}, {limit?})` | Recent commits touching one scope key, via the §3.1 change-scope index (never a log scan). |
+| `horizonStatus(partition)` | `{maxCommitSeq, horizonSeq, retainedCommits, activeCursorFloor, recommendedHorizonSeq, recommendation}` — the horizon a prune pass would reach now (§4.6) + a coarse `up-to-date` / `prune-recommended`. |
+| `segmentStats()` / `blobStats(partition)` / `stats(partition)` | Counts/bytes where the stores expose them (segments split rows/sqlite). `undefined` when a store omits `stats()`. |
+| `events({type?, sinceMs?, limit?})` | The ring tail, newest first. Empty when no ring is wired (`hasEventStream` reports which). |
+
+The query surface leans on **additive, optional** storage/store methods
+(`ServerStorage.listClientRecords` / `listCommitMetadata` / `scopeActivity` /
+`getRowScopes`; `SegmentStore.stats`; `BlobStore.stats`) — the established
+optional-method pattern. `SqliteServerStorage`, `PostgresServerStorage`,
+the memory/sqlite stores implement them; the shared `ServerStorage` contract
+suite exercises them on both backends. A backend that omits one makes the
+corresponding admin read fail loud (it never returns a silently-empty
+console). The `S3SegmentStore` omits `stats()` (a LIST would defeat its
+GET/HEAD-only design), so `segmentStats()` is `undefined` there — flagged
+as a follow-up if per-bucket counters are wanted.
+
+### HTTP routes + the single console page
+
+`@syncular-v2/server-hono` exports `createSyncularAdminRoutes(admin, opts)`,
+a mountable Hono sub-app. **The auth seam is required**: the factory throws
+if you omit the `authorize` guard — there is no default-open admin. Every
+endpoint (including the page) runs the guard first; a falsy result is a 401.
+
+```ts
+import { createSyncularAdminRoutes } from '@syncular-v2/server-hono';
+
+const routes = createSyncularAdminRoutes(admin, {
+  defaultPartition: 'main',
+  authorize: ({ request }) => isOperator(request), // YOUR check — mandatory
+});
+app.route('/admin', routes);
+```
+
+| Route | Mirrors |
+| --- | --- |
+| `GET /` | The console page (see below). |
+| `GET /clients` | `listClients` |
+| `GET /commits?afterSeq&limit&table` | `listCommits` |
+| `GET /rows/:table/:rowId` | `inspectRow` |
+| `GET /scope-activity?variable&value&limit` | `scopeActivity` |
+| `GET /horizon` | `horizonStatus` |
+| `GET /stats` | `stats` |
+| `GET /events?type&sinceMs&limit` | `events` (ring tail) |
+
+`?partition=` selects the partition (falls back to `defaultPartition`).
+
+`GET /` (or `/admin`) serves a **single static HTML page** — zero
+framework, no build step, no React. It fetches the sibling JSON endpoints
+(relative to its own mount path, so it works under any prefix and the same
+guard covers its XHRs), renders tables for horizon, store stats, clients,
+recent commits, and the event tail, with an auto-refresh toggle (2 s poll).
+This is the ~300-line answer to v1's console app: 5% of the code, the 80%
+operator value.
+
+**No SSE (yet).** `GET /events` is a polled ring query; the page's
+auto-refresh polls it. Server-Sent-Events streaming was deliberately
+skipped for this rung — the ring is pull-only, so SSE would need a
+push-notification path from the sink into open connections (extra
+machinery for marginal benefit at admin cadence). Polling is the right
+rung; SSE is a noted follow-up.
+
+The demo server (`apps/demo`) mounts the admin behind a dev guard:
+`SYNCULAR_DEMO_ADMIN=1` enables `/admin` (optionally token-gated with
+`SYNCULAR_DEMO_ADMIN_TOKEN`), so the console is inspectable live.
+
+> Docs-site coverage of the console is a follow-up: the docs app is owned
+> by a concurrent workstream this round (the schema-bump page), so this
+> README is the console's documentation home for now.
+
 ## Segment storage on S3 / R2 (`S3SegmentStore`)
 
 Three `SegmentStore` backends ship in-tree and pass one shared contract
