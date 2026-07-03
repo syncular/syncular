@@ -77,12 +77,30 @@ This block is assembly on a proven core — packages, not protocol.
       — disproportionate for one WS round when the double exercises the real
       logic (README "Real-workerd smoke"). Closes the last "supported now
       (HTTP)" asterisk in the deployment matrix.
-- [ ] **Blobs on Postgres**: implement the optional blob storage methods
-      (`setBlobRefs`, `listRowsReferencingBlob`, `listReferencedBlobIds`)
-      on PostgresServerStorage + contract tests (sqlite parity exists).
-- [ ] **S3 segment/blob stats**: per-bucket counters for the admin surface
-      without LIST (probably a pointer-object accumulator or "stats are
-      approximate on S3" documented honestly).
+- [x] **Blobs on Postgres** (landed 2026-07-04): the optional blob storage
+      methods (`setBlobRefs`, `listRowsReferencingBlob`,
+      `listReferencedBlobIds`) on PostgresServerStorage, plus the
+      `sync_blob_refs` table + `(partition, blob_id)` covering index in
+      `POSTGRES_DDL` (parity with the SQLite dialect; `migrate()` stays
+      idempotent, all `CREATE … IF NOT EXISTS`). The shared `ServerStorage`
+      contract's new blob section runs on pglite alongside sqlite/D1, and
+      `postgres-explain.test.ts` asserts the by-blob candidate scan is
+      index-driven (no `Seq Scan`). A Workers/PG deployment now supports
+      blobs end-to-end (push writes refs in-commit; the download handler
+      authorizes via the reference index).
+- [x] **S3 segment stats** (landed 2026-07-04): `S3SegmentStore.stats()`
+      via a LIST-free pointer-object accumulator (fixed key, read-modify-
+      write on `put`, ETag `If-Match`/`If-None-Match` CAS retry loop; a HEAD
+      dedups idempotent re-puts). Counters are honestly **approximate** —
+      surfaced as an additive `approximate: true` marker on
+      `SegmentStoreStats`/`BlobStoreStats` that flows through
+      `admin.segmentStats()`/`stats()`; the exact in-process stores omit it.
+      The s3-stub gained conditional-write (ETag) support. Blob bytes ride
+      the in-process stores (no S3 blob store class yet), so there is no S3
+      `blobStats()` path today — documented, and the accumulator pattern is
+      ready for it. Tests: stub round-trip, idempotent-re-put dedup,
+      deterministic CAS-reject (no-lost-update) simulation, admin marker
+      carry-through.
 
 ## 3. Windowed sync W1 (the differentiator)
 

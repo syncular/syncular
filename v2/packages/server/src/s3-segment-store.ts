@@ -35,6 +35,7 @@ import type {
   SegmentMetadata,
   SegmentRecord,
   SegmentStore,
+  SegmentStoreStats,
 } from './segment-store';
 import { segmentIdFor } from './segment-store';
 import type { DelegatedPresignConfig, SegmentUrlIssue } from './signed-url';
@@ -71,6 +72,45 @@ export interface S3SegmentStoreConfig {
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const SEGMENT_ID_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const RECORD_META_HEADER = 'x-amz-meta-syncular-record';
+
+/**
+ * Stats accumulator (§ "S3 stats" in the README). The store keeps a small
+ * counter object under a fixed key, updated read-modify-write on `put`. It
+ * exists because a LIST-free store (every lookup is a GET/HEAD) has no cheap
+ * way to count objects on demand — so `stats()` reads the accumulator instead
+ * of enumerating the bucket.
+ *
+ * The write is guarded by an ETag compare-and-swap (`If-Match`, or
+ * `If-None-Match: *` to create): the loop re-reads and retries on a `412`
+ * precondition failure, so concurrent writers do not silently clobber each
+ * other's increment. The counters are still APPROXIMATE — a crash between the
+ * segment PUT and the accumulator CAS, or a writer against a backend that
+ * ignores conditional headers, can drift them — so the admin surface labels
+ * S3 stats `approximate: true`. They are a health gauge, not an invoice.
+ */
+const STATS_KEY_SUFFIX = 'stats/segments.json';
+const STATS_CAS_ATTEMPTS = 16;
+
+interface StatsAccumulator {
+  count: number;
+  bytes: number;
+  rowsSegments: number;
+  sqliteSegments: number;
+}
+
+function emptyStats(): StatsAccumulator {
+  return { count: 0, bytes: 0, rowsSegments: 0, sqliteSegments: 0 };
+}
+
+function parseStatsJson(json: string): StatsAccumulator {
+  const parsed = JSON.parse(json) as Partial<StatsAccumulator>;
+  return {
+    count: Number(parsed.count ?? 0),
+    bytes: Number(parsed.bytes ?? 0),
+    rowsSegments: Number(parsed.rowsSegments ?? 0),
+    sqliteSegments: Number(parsed.sqliteSegments ?? 0),
+  };
+}
 
 // Runtime-neutral base64url (TODO §4.2): `Buffer` is not present on
 // Cloudflare Workers without `nodejs_compat`, so the object-metadata record
@@ -192,6 +232,10 @@ export class S3SegmentStore implements SegmentStore {
     return `${this.#prefix}find/${await sha256Hex(canonical)}.json`;
   }
 
+  #statsKey(): string {
+    return `${this.#prefix}${STATS_KEY_SUFFIX}`;
+  }
+
   #urlFor(key: string): URL {
     const endpoint = this.#config.endpoint.replace(/\/+$/, '');
     return new URL(`${endpoint}/${this.#config.bucket}/${key}`);
@@ -235,6 +279,82 @@ export class S3SegmentStore implements SegmentStore {
     return response;
   }
 
+  /** Read the stats accumulator + its ETag (for the CAS write), or none. */
+  async #readStats(): Promise<{
+    stats: StatsAccumulator;
+    etag: string | undefined;
+  }> {
+    const response = await this.#request('GET', this.#statsKey());
+    if (response === undefined) {
+      return { stats: emptyStats(), etag: undefined };
+    }
+    const etag = response.headers.get('etag') ?? undefined;
+    const stats = parseStatsJson(await response.text());
+    return { stats, etag };
+  }
+
+  /**
+   * Conditionally write the stats accumulator. `etag` present ⇒ `If-Match`
+   * (update the object we read); absent ⇒ `If-None-Match: *` (create only).
+   * Returns `false` on a `412` precondition failure so the caller retries.
+   */
+  async #writeStatsCas(
+    stats: StatsAccumulator,
+    etag: string | undefined,
+  ): Promise<boolean> {
+    const url = this.#urlFor(this.#statsKey());
+    const body = new TextEncoder().encode(JSON.stringify(stats));
+    const conditional: Record<string, string> =
+      etag === undefined ? { 'if-none-match': '*' } : { 'if-match': etag };
+    const headers = await signRequest({
+      method: 'PUT',
+      url,
+      region: this.#config.region,
+      credentials: this.#credentials,
+      nowMs: Date.now(),
+      payloadHash: await sha256Hex(body),
+      headers: { 'content-type': 'application/json', ...conditional },
+    });
+    const response = await fetch(url, {
+      method: 'PUT',
+      headers,
+      body: body as BodyInit,
+    });
+    if (response.status === 412) {
+      await response.arrayBuffer();
+      return false;
+    }
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 300);
+      throw new Error(
+        `S3SegmentStore: stats PUT failed with ${response.status}: ${detail}`,
+      );
+    }
+    await response.arrayBuffer();
+    return true;
+  }
+
+  /**
+   * Fold `delta` into the stats accumulator under an ETag compare-and-swap
+   * retry loop. Best-effort: exhausting the retry budget leaves the counters
+   * drifted (they are documented APPROXIMATE) rather than failing the `put`
+   * that already stored the bytes.
+   */
+  async #bumpStats(delta: StatsAccumulator): Promise<void> {
+    for (let attempt = 0; attempt < STATS_CAS_ATTEMPTS; attempt++) {
+      const { stats, etag } = await this.#readStats();
+      const next: StatsAccumulator = {
+        count: stats.count + delta.count,
+        bytes: stats.bytes + delta.bytes,
+        rowsSegments: stats.rowsSegments + delta.rowsSegments,
+        sqliteSegments: stats.sqliteSegments + delta.sqliteSegments,
+      };
+      if (await this.#writeStatsCas(next, etag)) return;
+    }
+    // Lost the CAS race `STATS_CAS_ATTEMPTS` times running — leave the
+    // counters as-is. `stats()` stays APPROXIMATE by contract.
+  }
+
   async put(
     metadata: SegmentMetadata,
     bytes: Uint8Array,
@@ -249,7 +369,13 @@ export class S3SegmentStore implements SegmentStore {
       expiresAtMs: nowMs + this.#ttlMs,
     };
     const recordJson = recordToJson(record);
-    const response = await this.#request('PUT', this.objectKeyFor(segmentId), {
+    // Detect an idempotent re-put (same content-address ⇒ same key) so the
+    // stats accumulator counts each distinct segment once, not once per PUT.
+    const objectKey = this.objectKeyFor(segmentId);
+    const preexisting = await this.#request('HEAD', objectKey);
+    await preexisting?.arrayBuffer();
+    const isNew = preexisting === undefined;
+    const response = await this.#request('PUT', objectKey, {
       body: bytes,
       headers: {
         'content-type': 'application/octet-stream',
@@ -257,6 +383,14 @@ export class S3SegmentStore implements SegmentStore {
       },
     });
     await response?.arrayBuffer();
+    if (isNew) {
+      await this.#bumpStats({
+        count: 1,
+        bytes: bytes.length,
+        rowsSegments: metadata.mediaType === 'rows' ? 1 : 0,
+        sqliteSegments: metadata.mediaType === 'sqlite' ? 1 : 0,
+      });
+    }
     if (metadata.rowCursor === null) {
       const pointer = await this.#request(
         'PUT',
@@ -315,6 +449,25 @@ export class S3SegmentStore implements SegmentStore {
     if (head === undefined) return undefined;
     await head.arrayBuffer();
     return record;
+  }
+
+  /**
+   * Store-wide counters from the pointer-object accumulator (never a LIST).
+   * Marked `approximate: true`: the counters are maintained by a best-effort
+   * ETag-CAS read-modify-write on `put`, so a crash between the segment PUT
+   * and the accumulator write, or lifecycle GC that deletes objects the
+   * accumulator still counts, can drift them. Exact within a single writer;
+   * a health gauge under concurrency. See the README "S3 stats".
+   */
+  async stats(): Promise<SegmentStoreStats> {
+    const { stats } = await this.#readStats();
+    return {
+      count: stats.count,
+      bytes: stats.bytes,
+      rowsSegments: stats.rowsSegments,
+      sqliteSegments: stats.sqliteSegments,
+      approximate: true,
+    };
   }
 
   /**

@@ -170,12 +170,14 @@ The query surface leans on **additive, optional** storage/store methods
 (`ServerStorage.listClientRecords` / `listCommitMetadata` / `scopeActivity` /
 `getRowScopes`; `SegmentStore.stats`; `BlobStore.stats`) — the established
 optional-method pattern. `SqliteServerStorage`, `PostgresServerStorage`,
-the memory/sqlite stores implement them; the shared `ServerStorage` contract
-suite exercises them on both backends. A backend that omits one makes the
-corresponding admin read fail loud (it never returns a silently-empty
-console). The `S3SegmentStore` omits `stats()` (a LIST would defeat its
-GET/HEAD-only design), so `segmentStats()` is `undefined` there — flagged
-as a follow-up if per-bucket counters are wanted.
+`D1ServerStorage`, and the memory/sqlite stores implement them; the shared
+`ServerStorage` contract suite exercises them on all backends. A backend that
+omits one makes the corresponding admin read fail loud (it never returns a
+silently-empty console). The `S3SegmentStore` **does** report `stats()` — from
+a LIST-free pointer-object accumulator (see "S3 stats" below) — but its
+counters are marked `approximate: true`, an additive field the admin surface
+carries through so the console can label them honestly. The exact in-process
+stores (memory/sqlite) omit the marker.
 
 ### HTTP routes + the single console page
 
@@ -300,6 +302,39 @@ never below it. After lifecycle deletes an object, clients see
 re-pulling, but the former loses the "just re-pull, this is normal"
 signal, so keep the GC margin generous.
 
+### S3 stats — a LIST-free, approximate accumulator
+
+`S3SegmentStore.stats()` reports store-wide `{count, bytes, rowsSegments,
+sqliteSegments}` for the admin console **without a bucket LIST** — a LIST
+would defeat the store's whole every-lookup-is-a-GET/HEAD design and cost
+real money at scale. Instead the store keeps a tiny counter object under a
+fixed key (`{keyPrefix}stats/segments.json`) and folds each new segment into
+it read-modify-write on `put`. A `HEAD` before the segment PUT detects an
+idempotent re-put (same content address ⇒ same key), so each distinct
+segment is counted once.
+
+The accumulator write is guarded by an **ETag compare-and-swap** — `If-Match`
+against the ETag we read (or `If-None-Match: *` to create) — and the store
+retries on a `412 PreconditionFailed`, so two writers folding concurrently do
+not silently clobber each other's increment. AWS S3 and Cloudflare R2 both
+honor these conditional headers.
+
+Even so, the counters are **approximate**, and `stats()` marks them
+`approximate: true` (an additive field the admin surface carries through, so
+`admin.segmentStats()` / `admin.stats()` expose it and the console labels the
+numbers honestly). They can drift: a crash between the segment PUT and the
+accumulator CAS, lifecycle GC deleting objects the accumulator still counts,
+or enough concurrent writers to exhaust the CAS retry budget. They are a
+health gauge, not an invoice — reconcile against a periodic inventory report
+if you need an exact number. The exact in-process stores (memory / sqlite)
+count on demand and omit the marker.
+
+> **Blobs on S3/R2.** File-attachment bytes (§5.9) currently ride
+> `MemoryBlobStore` / `SqliteBlobStore`, not a dedicated S3 blob store — so
+> there is no separate S3 `blobStats()` path today. When an S3-backed
+> `BlobStore` lands, the same accumulator pattern (and the `approximate`
+> marker already present on `BlobStoreStats`) applies unchanged.
+
 ### Native HMAC vs delegated presign (§5.4)
 
 `SyncServerConfig.signedUrls` accepts either scheme; the pull emits
@@ -423,7 +458,22 @@ contract against Postgres, with the inverted scope index carried through
 as **covering indexes** so scope fanout is an index range scan, never a
 scan-before-LIMIT (REVISE B2 — this was v1's production wound). The
 schema (`POSTGRES_DDL`) and its index design live in
-`src/postgres-storage.ts`; `storage.migrate()` applies it idempotently.
+`src/postgres-storage.ts`; `storage.migrate()` applies it idempotently
+(every DDL is `CREATE … IF NOT EXISTS`, run statement-by-statement, so
+`migrate()` is safe to call on every boot).
+
+**Blobs (§5.9.4) on Postgres.** `PostgresServerStorage` implements the
+optional blob-reference index — `setBlobRefs` (in the commit transaction)
+plus `listRowsReferencingBlob` / `listReferencedBlobIds` — at full parity
+with the SQLite and D1 storages. The `sync_blob_refs` table keys
+`(partition, tbl, row_id, blob_id)` and carries a secondary
+`(partition, blob_id)` index that drives the §5.9.5 download-authorization
+candidate set as an index range (asserted in `postgres-explain.test.ts`, same
+no-`Seq Scan` doctrine as the scope indexes). So a Bun/Node **or** Workers
+deployment on Postgres supports file attachments end-to-end: push writes the
+row's references atomically with the commit, and the blob-download handler
+authorizes via the reference index. The shared `ServerStorage` contract runs
+its blob section on pglite alongside sqlite and D1.
 
 ### The `PgExecutor` seam (zero runtime deps)
 

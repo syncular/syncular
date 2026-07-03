@@ -460,6 +460,123 @@ export function runStorageContract(
       expect(updated?.cursor).toBe(99);
     });
 
+    // --- Blob reference index (§5.9.4, optional methods) ---
+
+    test('setBlobRefs / listRowsReferencingBlob / listReferencedBlobIds round-trip', async () => {
+      const storage = await makeStorage();
+      if (
+        storage.listRowsReferencingBlob === undefined ||
+        storage.listReferencedBlobIds === undefined
+      ) {
+        // A backend may legitimately omit blob support; skip cleanly.
+        return;
+      }
+      // Two rows in different scopes reference a shared blob; a third
+      // references a distinct blob.
+      const tx = await storage.begin(PARTITION);
+      if (tx.setBlobRefs === undefined) {
+        await tx.rollback();
+        return;
+      }
+      await tx.upsertRow('docs', row('d1', { project_id: 'p1' }));
+      await tx.upsertRow('docs', row('d2', { project_id: 'p2' }));
+      await tx.upsertRow('docs', row('d3', { project_id: 'p1' }));
+      await tx.setBlobRefs('docs', 'd1', ['sha256:aa', 'sha256:bb']);
+      await tx.setBlobRefs('docs', 'd2', ['sha256:aa']);
+      await tx.setBlobRefs('docs', 'd3', ['sha256:cc']);
+      await tx.commit();
+
+      // listRowsReferencingBlob carries each row's stored scopes (§3.4).
+      const forAa = await storage.listRowsReferencingBlob(
+        PARTITION,
+        'sha256:aa',
+      );
+      expect(forAa.map((r) => `${r.table}/${r.rowId}`).sort()).toEqual([
+        'docs/d1',
+        'docs/d2',
+      ]);
+      const d2Ref = forAa.find((r) => r.rowId === 'd2');
+      expect(d2Ref?.scopes).toEqual({ project_id: 'p2' });
+
+      // The orphan-sweep keep-set is every referenced blobId (distinct).
+      expect((await storage.listReferencedBlobIds(PARTITION)).sort()).toEqual([
+        'sha256:aa',
+        'sha256:bb',
+        'sha256:cc',
+      ]);
+    });
+
+    test('setBlobRefs replaces the prior set for a row', async () => {
+      const storage = await makeStorage();
+      if (
+        storage.listRowsReferencingBlob === undefined ||
+        storage.listReferencedBlobIds === undefined
+      ) {
+        return;
+      }
+      const tx = await storage.begin(PARTITION);
+      if (tx.setBlobRefs === undefined) {
+        await tx.rollback();
+        return;
+      }
+      await tx.upsertRow('docs', row('d1', { project_id: 'p1' }));
+      await tx.setBlobRefs('docs', 'd1', ['sha256:aa', 'sha256:bb']);
+      await tx.commit();
+
+      const replace = await storage.begin(PARTITION);
+      await replace.setBlobRefs?.('docs', 'd1', ['sha256:cc']);
+      await replace.commit();
+
+      expect(
+        await storage.listRowsReferencingBlob!(PARTITION, 'sha256:aa'),
+      ).toEqual([]);
+      expect(
+        (await storage.listRowsReferencingBlob!(PARTITION, 'sha256:cc')).map(
+          (r) => r.rowId,
+        ),
+      ).toEqual(['d1']);
+      expect(await storage.listReferencedBlobIds!(PARTITION)).toEqual([
+        'sha256:cc',
+      ]);
+    });
+
+    test('setBlobRefs with empty array clears a row; deleting a row drops its refs', async () => {
+      const storage = await makeStorage();
+      if (
+        storage.listRowsReferencingBlob === undefined ||
+        storage.listReferencedBlobIds === undefined
+      ) {
+        return;
+      }
+      const tx = await storage.begin(PARTITION);
+      if (tx.setBlobRefs === undefined) {
+        await tx.rollback();
+        return;
+      }
+      await tx.upsertRow('docs', row('d1', { project_id: 'p1' }));
+      await tx.upsertRow('docs', row('d2', { project_id: 'p1' }));
+      await tx.setBlobRefs('docs', 'd1', ['sha256:aa']);
+      await tx.setBlobRefs('docs', 'd2', ['sha256:bb']);
+      await tx.commit();
+
+      // Clearing via empty set.
+      const clear = await storage.begin(PARTITION);
+      await clear.setBlobRefs?.('docs', 'd1', []);
+      await clear.commit();
+      expect(
+        await storage.listRowsReferencingBlob!(PARTITION, 'sha256:aa'),
+      ).toEqual([]);
+
+      // Deleting the row drops its refs (§5.9.4).
+      const del = await storage.begin(PARTITION);
+      await del.deleteRow('docs', 'd2');
+      await del.commit();
+      expect(
+        await storage.listRowsReferencingBlob!(PARTITION, 'sha256:bb'),
+      ).toEqual([]);
+      expect(await storage.listReferencedBlobIds!(PARTITION)).toEqual([]);
+    });
+
     // --- Admin/console read surface (TODO §2.5, optional methods) ---
 
     test('listClientRecords / listCommitMetadata / scopeActivity / getRowScopes', async () => {

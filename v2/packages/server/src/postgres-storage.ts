@@ -74,6 +74,16 @@ import type {
  *     for `scanRows`, ordered by `row_id`.
  * Both are the PRIMARY KEY, so they are the clustering/covering index for
  * their table. No secondary index is needed for the hot path.
+ *
+ * Blob reference index (§5.9.4) — parity with the SQLite dialect's
+ * `sync_blob_refs`:
+ *   - PRIMARY KEY `(partition, tbl, row_id, blob_id)` — the by-row prefix
+ *     lets `setBlobRefs` replace a row's set with a single ranged DELETE and
+ *     the delete path clear it by (partition, tbl, row_id);
+ *   - the secondary `sync_blob_refs_by_blob (partition, blob_id)` index
+ *     drives `listRowsReferencingBlob` (the download-authorization candidate
+ *     set, §5.9.5) as an index range, never a scan. `postgres-explain
+ *     .test.ts` asserts an `Index` node here too.
  */
 export const POSTGRES_DDL = `
 CREATE TABLE IF NOT EXISTS sync_partitions(
@@ -123,6 +133,13 @@ CREATE TABLE IF NOT EXISTS sync_clients(
   updated_at_ms BIGINT NOT NULL,
   PRIMARY KEY(partition, client_id)
 );
+CREATE TABLE IF NOT EXISTS sync_blob_refs(
+  partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL,
+  blob_id TEXT NOT NULL,
+  PRIMARY KEY(partition, tbl, row_id, blob_id)
+);
+CREATE INDEX IF NOT EXISTS sync_blob_refs_by_blob
+  ON sync_blob_refs(partition, blob_id);
 `;
 
 interface SerializedResult {
@@ -361,6 +378,31 @@ class PostgresTransaction implements StorageTransaction {
       'DELETE FROM sync_row_scopes WHERE partition=$1 AND tbl=$2 AND row_id=$3',
       [this.#partition, table, rowId],
     );
+    // §5.9.4: a deleted row references no blobs.
+    await this.#client.query(
+      'DELETE FROM sync_blob_refs WHERE partition=$1 AND tbl=$2 AND row_id=$3',
+      [this.#partition, table, rowId],
+    );
+  }
+
+  async setBlobRefs(
+    table: string,
+    rowId: string,
+    blobIds: readonly string[],
+  ): Promise<void> {
+    this.#assertOpen();
+    // Replace the row's reference set atomically inside the commit tx (§5.9.4).
+    await this.#client.query(
+      'DELETE FROM sync_blob_refs WHERE partition=$1 AND tbl=$2 AND row_id=$3',
+      [this.#partition, table, rowId],
+    );
+    for (const blobId of blobIds) {
+      await this.#client.query(
+        `INSERT INTO sync_blob_refs(partition, tbl, row_id, blob_id)
+         VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+        [this.#partition, table, rowId, blobId],
+      );
+    }
   }
 
   async appendCommit(commit: NewCommit): Promise<number> {
@@ -783,6 +825,54 @@ export class PostgresServerStorage implements ServerStorage {
       cursor: asNumber(r.cursor),
       updatedAtMs: asNumber(r.updated_at_ms),
     }));
+  }
+
+  async listRowsReferencingBlob(
+    partition: string,
+    blobId: string,
+  ): Promise<
+    {
+      readonly table: string;
+      readonly rowId: string;
+      readonly scopes: Record<string, string>;
+    }[]
+  > {
+    // Candidate rows via the by-blob index (§5.9.4/§5.9.5); each row's
+    // stored scopes come from sync_rows for the §3.4 authorization test.
+    const { rows: refs } = await this.#exec.query<{
+      tbl: string;
+      row_id: string;
+    }>(
+      'SELECT tbl, row_id FROM sync_blob_refs WHERE partition=$1 AND blob_id=$2',
+      [partition, blobId],
+    );
+    const out: {
+      table: string;
+      rowId: string;
+      scopes: Record<string, string>;
+    }[] = [];
+    for (const ref of refs) {
+      const { rows } = await this.#exec.query<{ scopes: unknown }>(
+        'SELECT scopes FROM sync_rows WHERE partition=$1 AND tbl=$2 AND row_id=$3',
+        [partition, ref.tbl, ref.row_id],
+      );
+      const row = rows[0];
+      if (row === undefined) continue;
+      out.push({
+        table: ref.tbl,
+        rowId: ref.row_id,
+        scopes: asJson<Record<string, string>>(row.scopes),
+      });
+    }
+    return out;
+  }
+
+  async listReferencedBlobIds(partition: string): Promise<string[]> {
+    const { rows } = await this.#exec.query<{ blob_id: string }>(
+      'SELECT DISTINCT blob_id FROM sync_blob_refs WHERE partition=$1',
+      [partition],
+    );
+    return rows.map((r) => r.blob_id);
   }
 
   // -- admin/console read surface (TODO §2.5) --------------------------------
