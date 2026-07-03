@@ -13,5 +13,18 @@
       "covers": "Wake-up control message (SPEC.md §8.3)"
     }
   ],
-  "invalid": []
+  "invalid": [
+    {
+      "name": "wake-requires-pull-false",
+      "json": "invalid/wake-requires-pull-false.json",
+      "error": "sync.invalid_request",
+      "covers": "sync event with requiresPull !== literal true is malformed (SPEC.md §8.3)"
+    },
+    {
+      "name": "hello-fractional-cursor",
+      "json": "invalid/hello-fractional-cursor.json",
+      "error": "sync.invalid_request",
+      "covers": "Fractional numeric field in a known event is malformed — realtime numbers are integers within the i64 safe range (SPEC.md §8.1)"
+    }
+  ]
 }

@@ -21,6 +21,12 @@
       "bin": "invalid/missing-end-marker.bin",
       "error": "sync.invalid_request",
       "covers": "Rows segment truncated before the mandatory rowCount = 0 end marker"
+    },
+    {
+      "name": "json-column-not-json",
+      "bin": "invalid/json-column-not-json.bin",
+      "error": "sync.invalid_request",
+      "covers": "json column value that does not parse as a JSON document (SPEC.md §2.4 tag 5)"
     }
   ]
 }

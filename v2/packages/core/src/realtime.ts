@@ -72,8 +72,10 @@ function requireObject(value: unknown, what: string): Record<string, unknown> {
 }
 
 function requireNumber(value: unknown, what: string): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    malformed(`${what} must be a number`);
+  // Realtime numeric fields are integers within the ±(2^53−1) i64 contract
+  // (SPEC.md §8.1); fractional or non-finite numbers are malformed.
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+    malformed(`${what} must be an integer within the i64 safe range`);
   }
   return value;
 }

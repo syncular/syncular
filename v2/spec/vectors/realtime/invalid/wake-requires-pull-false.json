@@ -1,0 +1,9 @@
+{
+  "event": "sync",
+  "data": {
+    "cursor": 64,
+    "requiresPull": false,
+    "reason": "catchup-required",
+    "timestamp": 1782993600000
+  }
+}

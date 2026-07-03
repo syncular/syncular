@@ -34,6 +34,12 @@ fn op_byte(op: Op) -> u8 {
     }
 }
 
+/// Every frame type with a defined layout in wire version 1 (§1.2 registry),
+/// `END` included.
+fn is_registered_frame_type(ty: u8) -> bool {
+    ty == ft::END || ft::REQUEST_TYPES.contains(&ty) || ft::RESPONSE_TYPES.contains(&ty)
+}
+
 fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
     let mut w = Writer::new();
     let ty = match frame {
@@ -250,6 +256,14 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
             frame_type,
             payload,
         } => {
+            // §1.2: an encoder MUST NOT emit an unknown frame under a
+            // frameType registered in this wire version. Preserved unknown
+            // frames come only from decoding, which never produces such a
+            // frame — hitting this is encoder misuse, not a decode error.
+            assert!(
+                !is_registered_frame_type(*frame_type),
+                "UNKNOWN frame type 0x{frame_type:02x} collides with a registered frame type"
+            );
             w.raw(payload);
             *frame_type
         }
