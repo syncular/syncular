@@ -184,9 +184,44 @@ the old tree archived.
 - [ ] **Presence + realtime hardening**: presence events (§8.6 reserved),
       reconnect storms, wake coalescing under fanout load, oversize-delta
       policies at scale.
-- [ ] **Console / event stream**: admin surface over the server core
-      (inspection of commits, scopes, clients, horizon). Decide how much of
-      v1's console UI survives vs a leaner event-stream + queries approach.
+- [x] **Console / event stream**: LANDED 2026-07-03 — the leaner
+      event-stream + queries approach won decisively (REVISE boring-ness +
+      dependency-light rule): v1's full React console app is NOT ported.
+      Adds ZERO wire protocol (SPEC.md untouched — this is host surface,
+      documented in packages/server/README.md). A `SyncularAdmin` module in
+      packages/server: a read-only, partition-scoped, JSON-able query surface
+      over `ServerStorage` + an in-memory event ring — `listClients`
+      (cursor/last-seen/subscriptions/active flag), `listCommits` (metadata,
+      no payloads, table filter, resumable), `inspectRow` (version + scopes,
+      payload not decoded), `scopeActivity` (recent commits per scope key via
+      the §3.1 index), `horizonStatus` (horizon + retention floor + prune
+      recommendation, §4.6 math), `segmentStats`/`blobStats`/`stats`. Backed
+      by ADDITIVE optional storage methods (`listClientRecords`/
+      `listCommitMetadata`/`scopeActivity`/`getRowScopes`) with BOTH Sqlite
+      AND Postgres implementations (trivial SQL reuse; the shared
+      `ServerStorage` contract exercises them on both backends) plus optional
+      `SegmentStore.stats`/`BlobStore.stats` (memory+sqlite; `S3SegmentStore`
+      omits `stats()` — a LIST would defeat its GET/HEAD-only design, flagged
+      follow-up). `RingBufferEvents` (bounded, `query({type?,sinceMs?,limit})`)
+      + `composeEvents(...sinks)` give the event stream with no infra
+      dependency; a missing admin storage method fails LOUD (never a
+      silently-empty console). HTTP: `createSyncularAdminRoutes(admin,{authorize})`
+      in server-hono — a mountable Hono sub-app with a REQUIRED auth seam
+      (the factory THROWS without a guard; no default-open admin, every
+      endpoint incl. the page 401s on a falsy guard). JSON endpoints mirror
+      the surface + `GET /admin/events` (ring query; SSE deliberately skipped
+      — the ring is pull-only, polling is the right rung, noted follow-up).
+      `GET /admin` serves a SINGLE static HTML page (zero framework, no build
+      step, ~300 lines: fetch the JSON, render tables, 2 s auto-refresh) —
+      the v2 answer to v1's console: 5% of the code, the 80% operator value.
+      Demo mounts it behind `SYNCULAR_DEMO_ADMIN=1` (optional token guard).
+      Tests: 26 (query surface via loopback) + 8 ring/compose + 14 admin
+      routes (mount refusal, 401, page smoke, every endpoint) + the storage
+      contract admin section on both backends. Gates: `bun run check`
+      typecheck + my-territory lint clean; `bench:ci` all budgets green
+      (admin unset in bench, zero regression); Rust pairing untouched (no
+      SPEC/wire/conformance/rust edits). Docs-site console section is a
+      flagged follow-up (apps/docs owned by the concurrent schema-bump round).
 
 ## 3. Client platform surface
 

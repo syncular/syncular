@@ -459,5 +459,94 @@ export function runStorageContract(
       const updated = await storage.getClientRecord(PARTITION, 'c1');
       expect(updated?.cursor).toBe(99);
     });
+
+    // --- Admin/console read surface (TODO §2.5, optional methods) ---
+
+    test('listClientRecords / listCommitMetadata / scopeActivity / getRowScopes', async () => {
+      const storage = await makeStorage();
+      if (
+        storage.listClientRecords === undefined ||
+        storage.listCommitMetadata === undefined ||
+        storage.scopeActivity === undefined ||
+        storage.getRowScopes === undefined
+      ) {
+        // A backend may legitimately omit the admin surface; skip cleanly.
+        return;
+      }
+      // Two commits (p1, then p2), plus a client record and a stored row.
+      for (const [i, project] of ['p1', 'p2'].entries()) {
+        const tx = await storage.begin(PARTITION);
+        await tx.appendCommit({
+          clientId: 'c1',
+          clientCommitId: `k${i}`,
+          actorId: 'a1',
+          createdAtMs: NOW + i,
+          changes: [
+            {
+              table: 'tasks',
+              rowId: `r${i}`,
+              op: 'upsert',
+              rowVersion: 1,
+              scopes: { project_id: project },
+              payload: bytes(i),
+            },
+          ],
+        });
+        await tx.upsertRow(
+          'tasks',
+          row(`r${i}`, { project_id: project }, 1, bytes(i)),
+        );
+        await tx.commit();
+      }
+      await storage.putClientRecord(PARTITION, {
+        clientId: 'c1',
+        actorId: 'a1',
+        cursor: 2,
+        updatedAtMs: NOW,
+        subscriptions: [
+          { id: 's1', table: 'tasks', scopes: { project_id: ['p1'] } },
+        ],
+      });
+
+      const clients = await storage.listClientRecords(PARTITION);
+      expect(clients).toHaveLength(1);
+      expect(clients[0]).toMatchObject({ clientId: 'c1', cursor: 2 });
+
+      const commits = await storage.listCommitMetadata(PARTITION, {
+        afterSeq: 0,
+        limit: 10,
+      });
+      // Newest first, metadata only, tables derived from the change index.
+      expect(commits.map((c) => c.commitSeq)).toEqual([2, 1]);
+      expect(commits[0]).toMatchObject({
+        clientId: 'c1',
+        changeCount: 1,
+        tables: ['tasks'],
+      });
+
+      const filtered = await storage.listCommitMetadata(PARTITION, {
+        afterSeq: 0,
+        limit: 10,
+        table: 'docs',
+      });
+      expect(filtered).toHaveLength(0);
+
+      const activity = await storage.scopeActivity(PARTITION, {
+        variable: 'project_id',
+        value: 'p1',
+        limit: 10,
+      });
+      expect(activity.map((a) => a.commitSeq)).toEqual([1]);
+      expect(activity[0]).toMatchObject({ table: 'tasks', changeCount: 1 });
+
+      const rowScopes = await storage.getRowScopes(PARTITION, 'tasks', 'r0');
+      expect(rowScopes).toEqual({
+        serverVersion: 1,
+        scopes: { project_id: 'p1' },
+      });
+      expect(
+        await storage.getRowScopes(PARTITION, 'tasks', 'missing'),
+      ).toBeUndefined();
+    });
   });
 }

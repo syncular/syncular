@@ -17,6 +17,8 @@ import {
 } from '@syncular-v2/server';
 import { Hono } from 'hono';
 
+export * from './admin';
+
 export interface SyncularHonoOptions {
   readonly config: SyncServerConfig;
   /** Host authentication (§1.1); `null` ⇒ 401 `sync.auth_required`. */

@@ -19,6 +19,7 @@
         "@syncular-v2/server": "workspace:*",
         "@syncular-v2/server-hono": "workspace:*",
         "@syncular-v2/web-client": "workspace:*",
+        "hono": "^4.11.0",
       },
       "devDependencies": {
         "@syncular-v2/typegen": "workspace:*",
@@ -68,6 +69,15 @@
       },
       "devDependencies": {
         "@syncular-v2/server": "workspace:*",
+      },
+    },
+    "packages/create-app": {
+      "name": "@syncular-v2/create-app",
+      "bin": {
+        "create-syncular-v2": "./src/cli.ts",
+      },
+      "devDependencies": {
+        "@syncular-v2/typegen": "workspace:*",
       },
     },
     "packages/server": {
@@ -140,6 +150,8 @@
     "@syncular-v2/core": ["@syncular-v2/core@workspace:packages/core"],
 
     "@syncular-v2/crdt-yjs": ["@syncular-v2/crdt-yjs@workspace:packages/crdt-yjs"],
+
+    "@syncular-v2/create-app": ["@syncular-v2/create-app@workspace:packages/create-app"],
 
     "@syncular-v2/demo": ["@syncular-v2/demo@workspace:apps/demo"],
 

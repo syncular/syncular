@@ -22,16 +22,24 @@ import {
   type RequestFrame,
 } from '@syncular-v2/core';
 import {
+  composeEvents,
   consoleJsonEvents,
   createRealtimeHub,
   handleSyncRequest,
   MemorySegmentStore,
   type RealtimeSession,
+  RingBufferEvents,
   SqliteBlobStore,
   SqliteServerStorage,
   type SyncServerConfig,
+  SyncularAdmin,
+  type SyncularServerEvents,
 } from '@syncular-v2/server';
-import { createSyncularHono } from '@syncular-v2/server-hono';
+import {
+  createSyncularAdminRoutes,
+  createSyncularHono,
+} from '@syncular-v2/server-hono';
+import { Hono } from 'hono';
 import { schema, type TodosRow } from './syncular.generated';
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -49,9 +57,16 @@ const blobs = new SqliteBlobStore();
 /** Demo authorization: the single demo actor may see every list. */
 const resolveScopes = () => ({ list_id: ['*'] });
 
-/** Optional ops events: SYNCULAR_DEMO_EVENTS=1 → one JSON line per event. */
-const events =
-  process.env.SYNCULAR_DEMO_EVENTS === '1' ? consoleJsonEvents() : undefined;
+/**
+ * Ops events. The in-memory ring always feeds the admin console (TODO §2.5);
+ * SYNCULAR_DEMO_EVENTS=1 additionally logs one JSON line per event. The two
+ * sinks compose so the console tail and the log see the same emissions.
+ */
+const ring = new RingBufferEvents({ capacity: 500 });
+const events: SyncularServerEvents =
+  process.env.SYNCULAR_DEMO_EVENTS === '1'
+    ? composeEvents(ring, consoleJsonEvents())
+    : ring;
 
 const hub = createRealtimeHub({
   schema,
@@ -60,7 +75,7 @@ const hub = createRealtimeHub({
   // §8.7: the socket carries sync rounds through the same handler and
   // segment store as POST /sync (Direction decision 1).
   segments,
-  ...(events !== undefined ? { events } : {}),
+  events,
 });
 const config: SyncServerConfig = {
   schema,
@@ -69,12 +84,43 @@ const config: SyncServerConfig = {
   blobs,
   resolveScopes,
   realtime: hub,
-  ...(events !== undefined ? { events } : {}),
+  events,
 };
 const hono = createSyncularHono({
   config,
   authenticate: async () => ({ actorId: ACTOR_ID, partition: PARTITION }),
 });
+
+/**
+ * Admin console (TODO §2.5), mounted behind a trivial dev guard: enabled
+ * only with SYNCULAR_DEMO_ADMIN=1 and, when SYNCULAR_DEMO_ADMIN_TOKEN is
+ * set, gated on a matching `?token=` / `Authorization: Bearer` — a stand-in
+ * for the real host guard (never default-open). Reachable at /admin.
+ */
+const adminEnabled = process.env.SYNCULAR_DEMO_ADMIN === '1';
+const adminToken = process.env.SYNCULAR_DEMO_ADMIN_TOKEN;
+const adminHono = adminEnabled
+  ? (() => {
+      const admin = SyncularAdmin.fromConfig(config, { ring });
+      const routes = createSyncularAdminRoutes(admin, {
+        defaultPartition: PARTITION,
+        authorize: ({ request }) => {
+          if (adminToken === undefined) return true; // dev default: open
+          const url = new URL(request.url);
+          const bearer = request.headers
+            .get('authorization')
+            ?.replace(/^Bearer\s+/i, '');
+          return (
+            url.searchParams.get('token') === adminToken ||
+            bearer === adminToken
+          );
+        },
+      });
+      const mount = new Hono();
+      mount.route('/admin', routes);
+      return mount;
+    })()
+  : undefined;
 
 /** Seed a few rows through the real push path (idempotent per process). */
 async function seed(): Promise<void> {
@@ -217,6 +263,9 @@ const server = Bun.serve<SocketData, never>({
       path.startsWith('/blobs/')
     ) {
       return hono.fetch(request);
+    }
+    if (adminHono !== undefined && path.startsWith('/admin')) {
+      return adminHono.fetch(request);
     }
     if (path === '/' || path === '/index.html') {
       return staticResponse(indexHtml, 'text/html; charset=utf-8');

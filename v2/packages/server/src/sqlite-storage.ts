@@ -14,9 +14,13 @@ import type {
   ClientCursorInfo,
   ClientRecord,
   ClientSubscription,
+  CommitMetadata,
+  CommitMetadataQuery,
   CommitWindowQuery,
   NewCommit,
   RowScanQuery,
+  ScopeActivityQuery,
+  ScopeCommitActivity,
   ServerStorage,
   StorageTransaction,
   StoredChange,
@@ -684,5 +688,152 @@ export class SqliteServerStorage implements ServerStorage {
       )
       .all(partition);
     return rows.map((r) => r.blob_id);
+  }
+
+  // -- admin/console read surface (TODO §2.5) --------------------------------
+
+  async listClientRecords(partition: string): Promise<ClientRecord[]> {
+    const records = this.db
+      .query<
+        {
+          client_id: string;
+          actor_id: string;
+          cursor: number;
+          subscriptions: string;
+          updated_at_ms: number;
+        },
+        [string]
+      >(
+        'SELECT client_id, actor_id, cursor, subscriptions, updated_at_ms FROM sync_clients WHERE partition=? ORDER BY updated_at_ms DESC',
+      )
+      .all(partition);
+    return records.map((record) => ({
+      clientId: record.client_id,
+      actorId: record.actor_id,
+      cursor: record.cursor,
+      updatedAtMs: record.updated_at_ms,
+      subscriptions: JSON.parse(record.subscriptions) as ClientSubscription[],
+    }));
+  }
+
+  async listCommitMetadata(
+    partition: string,
+    query: CommitMetadataQuery,
+  ): Promise<CommitMetadata[]> {
+    // Newest-first window, resumed by `afterSeq` (exclusive lower bound).
+    const rows = query.table
+      ? this.db
+          .query<
+            {
+              commit_seq: number;
+              client_id: string;
+              client_commit_id: string;
+              actor_id: string;
+              created_at_ms: number;
+            },
+            [string, number, string, number]
+          >(
+            `SELECT c.commit_seq, c.client_id, c.client_commit_id, c.actor_id, c.created_at_ms
+             FROM sync_commits c
+             WHERE c.partition=? AND c.commit_seq>?
+               AND EXISTS (SELECT 1 FROM sync_changes ch
+                 WHERE ch.partition=c.partition AND ch.commit_seq=c.commit_seq AND ch.tbl=?)
+             ORDER BY c.commit_seq DESC LIMIT ?`,
+          )
+          .all(partition, query.afterSeq, query.table, query.limit)
+      : this.db
+          .query<
+            {
+              commit_seq: number;
+              client_id: string;
+              client_commit_id: string;
+              actor_id: string;
+              created_at_ms: number;
+            },
+            [string, number, number]
+          >(
+            `SELECT commit_seq, client_id, client_commit_id, actor_id, created_at_ms
+             FROM sync_commits
+             WHERE partition=? AND commit_seq>?
+             ORDER BY commit_seq DESC LIMIT ?`,
+          )
+          .all(partition, query.afterSeq, query.limit);
+    return rows.map((row) => {
+      const changes = this.db
+        .query<{ tbl: string; n: number }, [string, number]>(
+          'SELECT tbl, count(*) AS n FROM sync_changes WHERE partition=? AND commit_seq=? GROUP BY tbl',
+        )
+        .all(partition, row.commit_seq);
+      return {
+        commitSeq: row.commit_seq,
+        clientId: row.client_id,
+        clientCommitId: row.client_commit_id,
+        actorId: row.actor_id,
+        createdAtMs: row.created_at_ms,
+        changeCount: changes.reduce((sum, c) => sum + c.n, 0),
+        tables: changes.map((c) => c.tbl),
+      };
+    });
+  }
+
+  async scopeActivity(
+    partition: string,
+    query: ScopeActivityQuery,
+  ): Promise<ScopeCommitActivity[]> {
+    // Candidate commits via the change-scope index (§3.1) — never a scan.
+    const rows = this.db
+      .query<
+        { commit_seq: number; tbl: string },
+        [string, string, string, number]
+      >(
+        `SELECT DISTINCT commit_seq, tbl FROM sync_change_scopes
+         WHERE partition=? AND var=? AND value=?
+         ORDER BY commit_seq DESC LIMIT ?`,
+      )
+      .all(partition, query.variable, query.value, query.limit);
+    const out: ScopeCommitActivity[] = [];
+    for (const row of rows) {
+      const meta = this.db
+        .query<{ actor_id: string; created_at_ms: number }, [string, number]>(
+          'SELECT actor_id, created_at_ms FROM sync_commits WHERE partition=? AND commit_seq=?',
+        )
+        .get(partition, row.commit_seq);
+      if (meta === null) continue;
+      const count = this.db
+        .query<{ n: number }, [string, number, string]>(
+          'SELECT count(*) AS n FROM sync_changes WHERE partition=? AND commit_seq=? AND tbl=?',
+        )
+        .get(partition, row.commit_seq, row.tbl);
+      out.push({
+        commitSeq: row.commit_seq,
+        table: row.tbl,
+        createdAtMs: meta.created_at_ms,
+        actorId: meta.actor_id,
+        changeCount: count?.n ?? 0,
+      });
+    }
+    return out;
+  }
+
+  async getRowScopes(
+    partition: string,
+    table: string,
+    rowId: string,
+  ): Promise<
+    { serverVersion: number; scopes: Record<string, string> } | undefined
+  > {
+    const record = this.db
+      .query<
+        { server_version: number; scopes: string },
+        [string, string, string]
+      >(
+        'SELECT server_version, scopes FROM sync_rows WHERE partition=? AND tbl=? AND row_id=?',
+      )
+      .get(partition, table, rowId);
+    if (record === null) return undefined;
+    return {
+      serverVersion: record.server_version,
+      scopes: JSON.parse(record.scopes) as Record<string, string>,
+    };
   }
 }

@@ -44,6 +44,19 @@ export interface SegmentFindKey {
   readonly asOfCommitSeq: number;
 }
 
+/**
+ * Coarse store-level counters for the admin/console read surface (TODO
+ * §2.5). Optional — a store that omits `stats()` simply cannot report them.
+ * All counts include expired-but-not-yet-evicted entries (the store's own
+ * bytes on disk), split by media type.
+ */
+export interface SegmentStoreStats {
+  readonly count: number;
+  readonly bytes: number;
+  readonly rowsSegments: number;
+  readonly sqliteSegments: number;
+}
+
 export interface SegmentStore {
   put(
     metadata: SegmentMetadata,
@@ -60,6 +73,8 @@ export interface SegmentStore {
    * rebuilding sqlite images while one exists (§5.3).
    */
   find(key: SegmentFindKey, nowMs: number): Promise<SegmentRecord | undefined>;
+  /** Admin/console counters (TODO §2.5) — ADDITIVE, optional. */
+  stats?(): Promise<SegmentStoreStats>;
 }
 
 export async function segmentIdFor(bytes: Uint8Array): Promise<string> {
@@ -116,6 +131,18 @@ export class MemorySegmentStore implements SegmentStore {
       }
     }
     return undefined;
+  }
+
+  async stats(): Promise<SegmentStoreStats> {
+    let bytes = 0;
+    let rowsSegments = 0;
+    let sqliteSegments = 0;
+    for (const { record } of this.#entries.values()) {
+      bytes += record.byteLength;
+      if (record.mediaType === 'sqlite') sqliteSegments += 1;
+      else rowsSegments += 1;
+    }
+    return { count: this.#entries.size, bytes, rowsSegments, sqliteSegments };
   }
 }
 
@@ -275,6 +302,31 @@ export class SqliteSegmentStore implements SegmentStore {
       byteLength: row.byte_length,
       createdAtMs: row.created_at_ms,
       expiresAtMs: row.expires_at_ms,
+    };
+  }
+
+  async stats(): Promise<SegmentStoreStats> {
+    const row = this.db
+      .query<
+        {
+          count: number;
+          bytes: number | null;
+          rows_segments: number;
+          sqlite_segments: number;
+        },
+        []
+      >(
+        `SELECT count(*) AS count, sum(byte_length) AS bytes,
+                sum(CASE WHEN media_type='sqlite' THEN 0 ELSE 1 END) AS rows_segments,
+                sum(CASE WHEN media_type='sqlite' THEN 1 ELSE 0 END) AS sqlite_segments
+         FROM sync_segments`,
+      )
+      .get();
+    return {
+      count: row?.count ?? 0,
+      bytes: row?.bytes ?? 0,
+      rowsSegments: row?.rows_segments ?? 0,
+      sqliteSegments: row?.sqlite_segments ?? 0,
     };
   }
 }

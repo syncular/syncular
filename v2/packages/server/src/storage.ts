@@ -119,6 +119,46 @@ export interface ClientCursorInfo {
 }
 
 /**
+ * Commit-log metadata (no change payloads) for the admin/console read
+ * surface. `changeCount` is the number of changes the commit carries;
+ * `tables` is the distinct set of tables it touched, cheap to derive from
+ * the change index.
+ */
+export interface CommitMetadata {
+  readonly commitSeq: number;
+  readonly clientId: string;
+  readonly clientCommitId: string;
+  readonly actorId: string;
+  readonly createdAtMs: number;
+  readonly changeCount: number;
+  readonly tables: readonly string[];
+}
+
+export interface CommitMetadataQuery {
+  /** Window `afterSeq < commitSeq`, oldest first. */
+  readonly afterSeq: number;
+  readonly limit: number;
+  /** Restrict to commits that touched this table (via the change index). */
+  readonly table?: string;
+}
+
+/** One recent commit touching a scope key, for the admin scope activity view. */
+export interface ScopeCommitActivity {
+  readonly commitSeq: number;
+  readonly table: string;
+  readonly createdAtMs: number;
+  readonly actorId: string;
+  readonly changeCount: number;
+}
+
+export interface ScopeActivityQuery {
+  /** The scope key as `variable + ':' + value` (§3.1) — e.g. `project:p1`. */
+  readonly variable: string;
+  readonly value: string;
+  readonly limit: number;
+}
+
+/**
  * One transaction per push commit (§6.4): all row writes, the appended
  * commit (with its scope-index entries), and the idempotency record either
  * land together or not at all.
@@ -221,6 +261,38 @@ export interface ServerStorage {
     blobId: string,
   ): Promise<BlobReferencingRow[]>;
   listReferencedBlobIds?(partition: string): Promise<string[]>;
+
+  /**
+   * Admin/console read surface (`SyncularAdmin`, TODO §2.5) — ADDITIVE,
+   * optional. All read-only, partition-scoped, and JSON-able. A backend
+   * that omits these simply cannot serve the console; the sync path never
+   * calls them.
+   *
+   * `listClientRecords`: every stored client record for the partition
+   * (cursor, last-seen, subscription list) — the "who's connected" view.
+   * `listCommitMetadata`: the commit log without payloads (metadata +
+   * touched tables), the newest-oriented window an operator inspects.
+   * `scopeActivity`: the recent commits touching one scope key, via the
+   * change scope index (never a log scan).
+   * `getRowScopes`: the (table, rowId) row's current server_version and
+   * stored scopes without decoding its payload — the row inspector.
+   */
+  listClientRecords?(partition: string): Promise<ClientRecord[]>;
+  listCommitMetadata?(
+    partition: string,
+    query: CommitMetadataQuery,
+  ): Promise<CommitMetadata[]>;
+  scopeActivity?(
+    partition: string,
+    query: ScopeActivityQuery,
+  ): Promise<ScopeCommitActivity[]>;
+  getRowScopes?(
+    partition: string,
+    table: string,
+    rowId: string,
+  ): Promise<
+    { serverVersion: number; scopes: Record<string, string> } | undefined
+  >;
 }
 
 /** A row referencing a blob, with the scopes needed to authorize download. */
