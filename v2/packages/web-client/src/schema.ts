@@ -112,9 +112,9 @@ export function compileClientSchema(
 
 /**
  * Hidden per-row column carrying the last known `server_version` (§2.2):
- * `-1` = local optimistic row never confirmed by the server, `0` = server
- * row of unknown version (bootstrap segments carry no versions), `≥ 1` =
- * version from a `COMMIT` change.
+ * `-1` = local optimistic row never confirmed by the server, `≥ 1` =
+ * version from a `COMMIT` change or a segment row record (§5.2/§5.6 —
+ * segment rows land with their real server version).
  */
 export const SYNC_VERSION_COLUMN = '_sync_version';
 

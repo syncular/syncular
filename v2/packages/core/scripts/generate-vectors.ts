@@ -325,7 +325,7 @@ const inlineSegment = encodeRowsSegment({
   table: 'notes',
   schemaVersion: 1,
   columns: NOTES_COLUMNS,
-  blocks: [[ROW_BOUNDARY]],
+  blocks: [[{ serverVersion: 5, values: ROW_BOUNDARY }]],
 });
 
 const sqliteSegmentId = `sha256:${sha256Hex('syncular-v2-vector:sqlite-segment')}`;
@@ -533,11 +533,19 @@ const schemaFloor: ResponseMessage = {
 // Valid segment vector
 // ---------------------------------------------------------------------------
 
+// Per-row serverVersion (§5.2): deterministic, varied, incl. the i64
+// safe-integer boundary.
 const rowsTwoBlocks = encodeRowsSegment({
   table: 'notes',
   schemaVersion: 1,
   columns: NOTES_COLUMNS,
-  blocks: [[ROW_FULL, ROW_EDGE], [ROW_BOUNDARY]],
+  blocks: [
+    [
+      { serverVersion: 7, values: ROW_FULL },
+      { serverVersion: 4, values: ROW_EDGE },
+    ],
+    [{ serverVersion: 9007199254740991, values: ROW_BOUNDARY }],
+  ],
 });
 
 // ---------------------------------------------------------------------------
@@ -706,6 +714,7 @@ const invalidNullBit = (() => {
   w.u8(1); // string
   w.u8(1); // nullable
   const row = new ByteWriter();
+  row.i64(2); // serverVersion (valid, ≥ 1)
   row.u8(0b01); // null bit on column 0 (id, non-nullable) — violation
   row.str('x'); // note value
   const rowBytes = row.finish();
@@ -739,9 +748,34 @@ const invalidJsonColumn = (() => {
   w.u8(5); // json
   w.u8(1); // nullable
   const row = new ByteWriter();
+  row.i64(2); // serverVersion (valid, ≥ 1)
   row.u8(0); // no nulls
   row.str('n-1');
   row.str('{not json'); // json column value that does not parse — violation
+  const rowBytes = row.finish();
+  w.u32(1);
+  w.u32(rowBytes.length);
+  w.raw(rowBytes);
+  w.u32(0);
+  return w.finish();
+})();
+
+// Rows segment whose row record carries serverVersion 0 (§5.2: MUST be ≥ 1).
+const invalidServerVersionZero = (() => {
+  const w = new ByteWriter();
+  w.raw(utf8Encode('SSG2'));
+  w.u16(1);
+  w.u16(0);
+  w.str('notes');
+  w.i32(1);
+  w.u16(1);
+  w.str('id');
+  w.u8(1); // string
+  w.u8(0); // non-nullable
+  const row = new ByteWriter();
+  row.i64(0); // serverVersion 0 — violation
+  row.u8(0); // no nulls
+  row.str('n-1');
   const rowBytes = row.finish();
   w.u32(1);
   w.u32(rowBytes.length);
@@ -1055,7 +1089,7 @@ total += emitKind(
       bytes: rowsTwoBlocks,
       render: renderRowsSegment,
       covers:
-        'SSG2 with two row blocks + end marker, all column types, nullable columns',
+        'SSG2 with two row blocks + end marker, all column types, nullable columns, varied per-row serverVersion incl. the i64 safe-integer boundary',
     },
   ],
   [],
@@ -1079,6 +1113,12 @@ total += emitKind(
       error: 'sync.invalid_request',
       covers:
         'json column value that does not parse as a JSON document (SPEC.md §2.4 tag 5)',
+    },
+    {
+      name: 'server-version-zero',
+      bytes: invalidServerVersionZero,
+      error: 'sync.invalid_request',
+      covers: 'Row record serverVersion 0 — must be ≥ 1 (SPEC.md §5.2)',
     },
   ],
 );

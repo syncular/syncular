@@ -296,14 +296,15 @@ export function renderRowsSegmentValue(segment: RowsSegment): JsonValue {
       nullable: column.nullable,
     })),
     blocks: segment.blocks.map((block) =>
-      block.map((row) =>
-        Object.fromEntries(
+      block.map((row) => ({
+        serverVersion: row.serverVersion,
+        values: Object.fromEntries(
           segment.columns.map((column, i) => [
             column.name,
-            renderRowValue(column, row[i] ?? null),
+            renderRowValue(column, row.values[i] ?? null),
           ]),
         ),
-      ),
+      })),
     ),
   };
 }

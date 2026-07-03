@@ -77,6 +77,13 @@ pub enum ColumnValue {
 /// One row: `columns.len()` slots, `None` = NULL.
 pub type Row = Vec<Option<ColumnValue>>;
 
+/// One §5.2 row record: the row's `server_version` (≥ 1) plus its values.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SegmentRow {
+    pub server_version: i64,
+    pub values: Row,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RowsSegment {
     pub table: String,
@@ -84,7 +91,7 @@ pub struct RowsSegment {
     pub columns: Vec<Column>,
     /// Row blocks in wire order; block boundaries are part of the canonical
     /// byte stream and are preserved for re-encoding.
-    pub blocks: Vec<Vec<Row>>,
+    pub blocks: Vec<Vec<SegmentRow>>,
 }
 
 /// Decode one row per the §2.4 row codec: null bitmap (LSB-first, byte i/8),
@@ -192,7 +199,7 @@ pub fn decode_rows_segment(bytes: &[u8]) -> Result<RowsSegment> {
         });
     }
 
-    let mut blocks: Vec<Vec<Row>> = Vec::new();
+    let mut blocks: Vec<Vec<SegmentRow>> = Vec::new();
     loop {
         let row_count = r.u32("block rowCount")? as usize;
         if row_count == 0 {
@@ -209,7 +216,17 @@ pub fn decode_rows_segment(bytes: &[u8]) -> Result<RowsSegment> {
         let mut rr = Reader::new(row_bytes);
         let mut rows = Vec::with_capacity(row_count.min(4096));
         for _ in 0..row_count {
-            rows.push(decode_row(&mut rr, &columns)?);
+            // §5.2: each row record leads with the row's server_version.
+            let server_version = rr.i64("row serverVersion")?;
+            if server_version < 1 {
+                return Err(DecodeError::invalid(format!(
+                    "row serverVersion must be >= 1, got {server_version}"
+                )));
+            }
+            rows.push(SegmentRow {
+                server_version,
+                values: decode_row(&mut rr, &columns)?,
+            });
         }
         if !rr.is_empty() {
             return Err(DecodeError::invalid(
@@ -243,7 +260,8 @@ pub fn encode_rows_segment(seg: &RowsSegment) -> Vec<u8> {
     for block in &seg.blocks {
         let mut bw = Writer::new();
         for row in block {
-            encode_row(&mut bw, &seg.columns, row);
+            bw.i64(row.server_version);
+            encode_row(&mut bw, &seg.columns, &row.values);
         }
         let row_bytes = bw.into_bytes();
         w.u32(block.len() as u32);

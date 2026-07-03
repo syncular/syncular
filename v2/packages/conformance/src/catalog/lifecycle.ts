@@ -67,15 +67,12 @@ export const lifecycleScenarios: readonly Scenario[] = [
       const first = await syncOk(a);
       check(first.resets.includes('tasks'), 'reset delivered (§4.6)');
       await syncIdle(a);
-      // Version comparison off: the re-bootstrap delivered rows via
-      // segments, which carry no server_version column (§5.2).
-      await expectConverged(
-        ctx,
-        'tasks',
-        [a],
-        { variable: 'project_id', values: ['p1'] },
-        false,
-      );
+      // Versions compare too: the re-bootstrap's segment row records
+      // carry the rows' server_version (§5.2/§5.6).
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
       checkEqual(
         (await a.api.readRows('tasks')).map((row) => row.rowId),
         ['t2', 't3'],

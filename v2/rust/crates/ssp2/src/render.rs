@@ -319,8 +319,9 @@ fn render_result(result: &OpResult) -> Value {
     }
 }
 
-/// Render a rows segment per §11.1 rule 8: rows as name→value objects, NULLs
-/// as JSON `null`, `bytes` as base64, `json` columns parsed.
+/// Render a rows segment per §11.1 rule 8: row records as
+/// `{"serverVersion":…,"values":{name→value}}`, NULLs as JSON `null`,
+/// `bytes` as base64, `json` columns parsed.
 pub fn render_rows_segment(seg: &RowsSegment) -> Value {
     let columns = seg
         .columns
@@ -341,11 +342,14 @@ pub fn render_rows_segment(seg: &RowsSegment) -> Value {
                 block
                     .iter()
                     .map(|row| {
-                        let mut map = Map::new();
-                        for (col, value) in seg.columns.iter().zip(row.iter()) {
-                            map.insert(col.name.clone(), render_column_value(value));
+                        let mut values = Map::new();
+                        for (col, value) in seg.columns.iter().zip(row.values.iter()) {
+                            values.insert(col.name.clone(), render_column_value(value));
                         }
-                        Value::Object(map)
+                        obj(vec![
+                            ("serverVersion", Value::from(row.server_version)),
+                            ("values", Value::Object(values)),
+                        ])
                     })
                     .collect(),
             )

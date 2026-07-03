@@ -61,10 +61,12 @@ SPEC.md Appendix A. Summary of what it covers:
   segments (ref + signed URL + inline), push applied/conflict/cached,
   subscription revoked, cursor reset (horizon), mid-stream ERROR frame,
   unknown-frame skip (forward compat), schema floor
-- segment: SSG2 with two row blocks + end marker, nullable columns
+- segment: SSG2 with two row blocks + end marker, nullable columns,
+  varied per-row `serverVersion` incl. the i64 safe-integer boundary
 - realtime: `wake` and `hello` JSON control vectors
 - invalid: truncated envelope (missing END), bad magic, unsupported
   wireVersion, non-zero flags, overlong frame length, bad bool byte,
   null bit on non-nullable column, rows segment without end marker,
-  json column value that does not parse, wake with `requiresPull` not
-  the literal `true`, fractional realtime numeric field
+  json column value that does not parse, row `serverVersion` 0,
+  wake with `requiresPull` not the literal `true`, fractional realtime
+  numeric field

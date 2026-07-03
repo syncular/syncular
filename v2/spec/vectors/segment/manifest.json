@@ -6,7 +6,7 @@
       "name": "rows-two-blocks",
       "bin": "rows-two-blocks.bin",
       "json": "rows-two-blocks.json",
-      "covers": "SSG2 with two row blocks + end marker, all column types, nullable columns"
+      "covers": "SSG2 with two row blocks + end marker, all column types, nullable columns, varied per-row serverVersion incl. the i64 safe-integer boundary"
     }
   ],
   "invalid": [
@@ -27,6 +27,12 @@
       "bin": "invalid/json-column-not-json.bin",
       "error": "sync.invalid_request",
       "covers": "json column value that does not parse as a JSON document (SPEC.md §2.4 tag 5)"
+    },
+    {
+      "name": "server-version-zero",
+      "bin": "invalid/server-version-zero.bin",
+      "error": "sync.invalid_request",
+      "covers": "Row record serverVersion 0 — must be ≥ 1 (SPEC.md §5.2)"
     }
   ]
 }

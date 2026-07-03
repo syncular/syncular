@@ -9,6 +9,7 @@ import {
   type RowsSegment,
   type RowValue,
   type ScopeMap,
+  type SegmentRow,
 } from '@syncular-v2/core';
 import type { ClientDatabase } from './database';
 import { ClientSyncError } from './errors';
@@ -169,9 +170,10 @@ export function deleteScopedRows(
 /**
  * Apply a decoded rows segment: each block in one local transaction
  * (§5.2/§1.4); `clearFirst` implements the §5.6 fresh-bootstrap first-page
- * delete inside the first block's transaction. Segment rows carry no
- * server versions (SSG2 has none), so `_sync_version` lands as 0 until an
- * incremental commit refreshes it.
+ * delete inside the first block's transaction. Each row record carries its
+ * `serverVersion` (§5.2), which lands in `_sync_version` exactly like a
+ * `COMMIT` change's `rowVersion` (§5.6) — bootstrapped rows seed §6.2
+ * `baseVersion` conflict detection immediately.
  */
 export function applyRowsSegment(
   db: ClientDatabase,
@@ -183,7 +185,7 @@ export function applyRowsSegment(
   validateSegmentColumns(schema, table, segment);
   let applied = 0;
   let first = true;
-  const blocks: readonly (readonly (readonly RowValue[])[])[] =
+  const blocks: readonly (readonly SegmentRow[])[] =
     segment.blocks.length > 0 ? segment.blocks : [[]];
   for (const block of blocks) {
     db.transaction(() => {
@@ -192,7 +194,7 @@ export function applyRowsSegment(
       }
       first = false;
       for (const row of block) {
-        upsertLocalRow(db, table, row, 0);
+        upsertLocalRow(db, table, row.values, row.serverVersion);
         applied += 1;
       }
     });

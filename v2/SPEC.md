@@ -1060,7 +1060,19 @@ Row blocks, repeated:
 |---|---|---|
 | `rowCount` | `u32` | `0` = end-of-segment marker (no further fields; nothing follows it) |
 | `byteLength` | `u32` | Byte length of `rows` |
-| `rows` | bytes | `rowCount` consecutive rows in row-codec encoding (§2.4: null bitmap + positional values) |
+| `rows` | bytes | `rowCount` consecutive **row records** (below) |
+
+Row record, `rowCount` per block:
+
+| Field | Type | Semantics |
+|---|---|---|
+| `serverVersion` | `i64` | The row's current `server_version` (§2.2) at `asOfCommitSeq`. MUST be ≥ 1 (a snapshot row has by definition been written at least once) |
+| row | bytes | The row in row-codec encoding (§2.4: null bitmap + positional values) |
+
+`serverVersion` leads the record so a streaming reader holds version and
+row together; it exists so segment-applied rows participate in §6.2
+`baseVersion` conflict detection identically to commit-delivered rows
+(§5.6) — a bootstrap alone fully seeds optimistic concurrency.
 
 Encoders SHOULD target blocks of ~1000 rows or ~256 KiB, whichever comes
 first. Blocks make the format streamable: a reader applies each block in
@@ -1072,7 +1084,8 @@ a segment that ends without it is truncated.
 **Error codes.** Structural decode failures of a rows segment — bad
 magic, unsupported `formatVersion`, non-zero flags, reserved column
 flag bits, an unknown column type tag, a block whose rows do not consume
-exactly `byteLength`, row-codec violations (§2.4), truncation, a missing
+exactly `byteLength`, a row `serverVersion` < 1, row-codec violations
+(§2.4), truncation, a missing
 end marker, or trailing bytes after it — are `sync.invalid_request`.
 `sync.schema_mismatch` is reserved for the column-table-vs-generated-
 schema comparison above, which only the receiver can perform: a
@@ -1083,8 +1096,11 @@ standalone segment decode (tooling, vectors) never produces it.
 The segment bytes are a complete, well-formed **SQLite database file**
 containing:
 
-- one table named as the target table, with the schema-IR columns, holding
-  exactly the snapshot rows; and
+- one table named as the target table, with the schema-IR columns **plus
+  a `_syncular_version INTEGER NOT NULL` column** holding each row's
+  `server_version` (§2.2, value ≥ 1) — the sqlite-image form of §5.2's
+  per-row `serverVersion`, so both segment formats seed §6.2 conflict
+  detection (§5.6) — holding exactly the snapshot rows; and
 - a metadata table `_syncular_segment` with a single row:
   `(format INTEGER = 1, "table" TEXT, schemaVersion INTEGER,
   asOfCommitSeq INTEGER, scopeDigest TEXT, rowCount INTEGER,
@@ -1214,13 +1230,14 @@ for clients without signed-URL support.
   transactionally per §1.4/§5.2; the resume token is persisted only at
   `SUB_END`, so a crash mid-segment resumes conservatively (re-applying a
   block is safe by upsert idempotency).
-- **Segment rows have no server version** (SSG2 carries none, §5.2; the
-  sqlite metadata table stores no per-row versions either, §5.3). A
-  client MUST NOT synthesize a `baseVersion` from a segment-applied
-  row; until a `COMMIT` change (§4.5) or a conflict record (§6.3)
-  supplies the row's `server_version`, optimistic-concurrency pushes
-  for it need an app-supplied version or fall back to last-write-wins
-  (§6.2).
+- **Segment rows carry their server version** (per-row `serverVersion`
+  in SSG2, §5.2; the `_syncular_version` column in sqlite images, §5.3).
+  A client MUST store it as the row's last-known `server_version`,
+  exactly as it stores a `COMMIT` change's `rowVersion` (§4.5):
+  segment-applied rows participate in §6.2 `baseVersion` conflict
+  detection identically to commit-delivered rows — a bootstrapped
+  client can push optimistic-concurrency writes immediately, with no
+  commit delivery in between.
 
 ### 5.7 `SEGMENT_INLINE` frame
 
@@ -1740,9 +1757,12 @@ tooling).
 7. `json`-typed fields are embedded as parsed JSON objects, not
    re-escaped strings.
 8. Rows segments render as `{"magic":"SSG2","formatVersion":1,
-   "table":…,"schemaVersion":…,"columns":[…],"blocks":[[…rows as
-   objects…]]}` with rows as name→value objects (names from the column
-   table; columns as `{"name":…,"type":…,"nullable":…}` with the type
+   "table":…,"schemaVersion":…,"columns":[…],"blocks":[[…row
+   records…]]}` with each row record as
+   `{"serverVersion":…,"values":{…name→value…}}` (`values` keyed by the
+   column-table names — nested so a column literally named
+   `serverVersion` cannot collide; columns as
+   `{"name":…,"type":…,"nullable":…}` with the type
    name, not the tag). NULL column values render as JSON `null`;
    `bytes` values are base64; `json`-typed column values render parsed
    (rule 7).
@@ -1806,11 +1826,11 @@ byte-identical output):
 | 13 | `response/error-mid-stream` | `RESP_HEADER` + `SUB_START` + `ERROR` + `END`: partially streamed failure (§1.4 abort rule) |
 | 14 | `response/unknown-frame-skip` | A reserved/unknown frame type between known frames — MUST decode with the frame skipped (§9) |
 | 15 | `response/schema-floor` | `requiredSchemaVersion` present |
-| 16 | `segment/rows-two-blocks` | SSG2 with two row blocks + end marker, all column types, nullable columns |
+| 16 | `segment/rows-two-blocks` | SSG2 with two row blocks + end marker, all column types, nullable columns, varied per-row `serverVersion` incl. the i64 safe-integer boundary |
 | 17 | `realtime/wake` + `realtime/hello` | JSON control vectors (`.json` only — no binary form) |
 | — | `request/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload |
 | — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`) |
-| — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5) |
+| — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1) |
 | — | `realtime/invalid/*` | Malformed known events (JSON-only): `requiresPull` not the literal `true` (§8.3), fractional numeric field (§8.1) |
 
 ---
@@ -1876,3 +1896,11 @@ not a prose test.
    re-bootstraps, and converges — while a second client whose cursor is
    at the horizon boundary (`cursor = horizonSeq`) still pulls
    incrementally (§4.6 boundary condition).
+
+9. **Bootstrap-seeded optimistic concurrency.** A fresh client
+   bootstraps a table via segments only; its local row versions equal
+   the server's. Without any commit delivery in between, a
+   `baseVersion`-carrying upsert using the segment-delivered version
+   applies cleanly, and a stale `baseVersion` yields
+   `sync.version_conflict` with the current `serverVersion`/`serverRow`
+   (§5.2, §5.6, §6.2).

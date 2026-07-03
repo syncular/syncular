@@ -48,44 +48,53 @@
   "blocks": [
     [
       {
-        "id": "n-2",
-        "title": null,
-        "body": "plain body",
-        "count": -7,
-        "score": 0.125,
-        "done": false,
-        "meta": {
-          "k": true
-        },
-        "blob": "AAEC/v8="
+        "serverVersion": 7,
+        "values": {
+          "id": "n-2",
+          "title": null,
+          "body": "plain body",
+          "count": -7,
+          "score": 0.125,
+          "done": false,
+          "meta": {
+            "k": true
+          },
+          "blob": "AAEC/v8="
+        }
       },
       {
-        "id": "n-1",
-        "title": "📝 déjà vu 𝄞",
-        "body": "",
-        "count": null,
-        "score": 3.5,
-        "done": true,
-        "meta": {
-          "tags": [
-            "a",
-            "b"
-          ],
-          "unicode": "𝔘"
-        },
-        "blob": null
+        "serverVersion": 4,
+        "values": {
+          "id": "n-1",
+          "title": "📝 déjà vu 𝄞",
+          "body": "",
+          "count": null,
+          "score": 3.5,
+          "done": true,
+          "meta": {
+            "tags": [
+              "a",
+              "b"
+            ],
+            "unicode": "𝔘"
+          },
+          "blob": null
+        }
       }
     ],
     [
       {
-        "id": "n-3",
-        "title": "ζ",
-        "body": "boundary",
-        "count": 9007199254740991,
-        "score": -1.5,
-        "done": true,
-        "meta": null,
-        "blob": ""
+        "serverVersion": 9007199254740991,
+        "values": {
+          "id": "n-3",
+          "title": "ζ",
+          "body": "boundary",
+          "count": 9007199254740991,
+          "score": -1.5,
+          "done": true,
+          "meta": null,
+          "blob": ""
+        }
       }
     ]
   ]

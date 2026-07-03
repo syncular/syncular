@@ -19,10 +19,10 @@ const SEGMENT: RowsSegment = {
   columns: COLUMNS,
   blocks: [
     [
-      ['a', 1, new Uint8Array([1, 2])],
-      ['b', null, null],
+      { serverVersion: 3, values: ['a', 1, new Uint8Array([1, 2])] },
+      { serverVersion: 1, values: ['b', null, null] },
     ],
-    [['c', -5, new Uint8Array(0)]],
+    [{ serverVersion: 9007199254740991, values: ['c', -5, new Uint8Array(0)] }],
   ],
 };
 
@@ -114,5 +114,26 @@ describe('SSG2 rows segments (SPEC.md §5.2)', () => {
       blocks: [[]],
     };
     expect(() => encodeRowsSegment(bad)).toThrow('at least one row');
+  });
+
+  it('refuses to encode a row serverVersion < 1', () => {
+    const bad: RowsSegment = {
+      table: 'notes',
+      schemaVersion: 1,
+      columns: COLUMNS,
+      blocks: [[{ serverVersion: 0, values: ['a', null, null] }]],
+    };
+    expect(() => encodeRowsSegment(bad)).toThrow('serverVersion');
+  });
+
+  it('rejects a decoded row serverVersion < 1', () => {
+    const encoded = encodeRowsSegment(SEGMENT);
+    // The second block is rowCount(4) + byteLength(4) + one row record:
+    // serverVersion i64 (8) + bitmap(1) + 'c'(4+1) + i64(8) + bytes(4+0);
+    // the end marker (4) follows it.
+    const secondBlockStart = encoded.length - 4 - (4 + 4 + 8 + 1 + 5 + 8 + 4);
+    const mutated = encoded.slice();
+    new DataView(mutated.buffer).setBigInt64(secondBlockStart + 8, 0n, true);
+    expectDecodeError(() => decodeRowsSegment(mutated));
   });
 });

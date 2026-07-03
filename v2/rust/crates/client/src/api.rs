@@ -109,8 +109,8 @@ pub struct RejectionRecord {
 #[serde(rename_all = "camelCase")]
 pub struct RowState {
     pub row_id: String,
-    /// Local synced version: `-1` = optimistic, `0` = segment-delivered
-    /// (SSG2 carries no `server_version`, §5.2), else the server version.
+    /// Local synced version: `-1` = optimistic, else the server version
+    /// (from a `COMMIT` change or a segment row record, §5.2/§5.6).
     pub version: i64,
     pub values: Map<String, Value>,
 }

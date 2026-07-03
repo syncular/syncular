@@ -79,13 +79,12 @@ export async function seedTasks(
 
 /**
  * Assert a client's local table mirrors the server's rows exactly —
- * same rowIds, same values, and (by default) same versions. `scopeFilter`
- * restricts the server side to the subset the client is entitled to see.
- *
- * `compareVersions: false` is for rows delivered via bootstrap segments:
- * the SSG2 wire format carries no `server_version` column (§5.2), so a
- * bootstrapped client cannot know row versions until commits re-deliver
- * them — values converge, local version knowledge legitimately does not.
+ * same rowIds, same values, and same versions. Versions are compared
+ * unconditionally: every delivery path carries the row's
+ * `server_version` — `COMMIT` changes (§4.5), conflict records (§6.3),
+ * and segment row records (§5.2/§5.6) — so a bootstrapped client's
+ * version knowledge MUST equal the server's. `scopeFilter` restricts
+ * the server side to the subset the client is entitled to see.
  */
 export async function expectConverged(
   ctx: ScenarioContext,
@@ -95,7 +94,6 @@ export async function expectConverged(
     readonly variable: string;
     readonly values: readonly string[];
   },
-  compareVersions = true,
 ): Promise<void> {
   const serverRows = (await ctx.server.readRows(table)).filter(
     (row) =>
@@ -104,13 +102,13 @@ export async function expectConverged(
   );
   const expected = serverRows.map((row) => ({
     rowId: row.rowId,
-    ...(compareVersions ? { version: row.version } : {}),
+    version: row.version,
     values: row.values,
   }));
   for (const client of clients) {
     const rows = (await client.api.readRows(table)).map((row) => ({
       rowId: row.rowId,
-      ...(compareVersions ? { version: row.version } : {}),
+      version: row.version,
       values: row.values,
     }));
     checkEqual(
