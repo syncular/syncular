@@ -60,12 +60,20 @@ This block is assembly on a proven core — packages, not protocol.
 
 ## 2. Deployment completion
 
-- [ ] **Durable Object realtime for Workers**: the designed-but-deferred
-      half of the deployment matrix (sketch in packages/server README —
-      one DO hosting the RealtimeHub per partition shard, WS hibernation
-      driving the existing RealtimeSession, in-DO fanout, D1 storage).
-      Lands with a real-Workers smoke (wrangler dev) and closes the last
-      "supported now (HTTP)" asterisk.
+- [x] **Durable Object realtime for Workers** (landed 2026-07-03):
+      `SyncularRealtimeHost`/`SyncularRealtimeDO` in server-workers — one DO
+      per partition hosting the RealtimeHub, WS hibernation driving the
+      existing RealtimeSession (rehydrated from a minimal socket attachment +
+      the D1 client record on wake), in-DO commit fan-out, D1 storage; the
+      `/realtime` upgrade route + the HTTP-push wake path (the in-platform
+      LISTEN/NOTIFY analogue). Hermetic tests drive the real session/hub/D1
+      code through the real DO class over a DO double (d1-double doctrine) +
+      the reference codec — the conformance bar for a deployment adapter.
+      Real-`wrangler dev` smoke is a documented manual recipe, not an
+      automated lane: `wrangler` bundles workerd/esbuild/miniflare (>100 MB)
+      — disproportionate for one WS round when the double exercises the real
+      logic (README "Real-workerd smoke"). Closes the last "supported now
+      (HTTP)" asterisk in the deployment matrix.
 - [ ] **Blobs on Postgres**: implement the optional blob storage methods
       (`setBlobRefs`, `listRowsReferencingBlob`, `listReferencedBlobIds`)
       on PostgresServerStorage + contract tests (sqlite parity exists).

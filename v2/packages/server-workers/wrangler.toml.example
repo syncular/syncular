@@ -1,9 +1,12 @@
 # Example wrangler config for a Syncular v2 Workers deployment (TODO §4.2).
 # Copy to `wrangler.toml` in your Worker project and fill in the ids.
 #
-# This deploys the HTTP binding only (POST /sync, GET /segments/:id,
-# PUT/GET /blobs/:id). Realtime (§8) is the Durable Object follow-up — see
-# packages/server-workers/README.md "Workers realtime — the DO follow-up".
+# This deploys BOTH bindings (SPEC §1.1): the HTTP handler (POST /sync,
+# GET /segments/:id, PUT/GET /blobs/:id) and realtime (§8) over a Durable
+# Object (GET /realtime). For an HTTP-only deployment, omit the
+# `[[durable_objects.bindings]]` + `[[migrations]]` blocks and drop the
+# `realtime` option from `createWorkersFetchHandler` — still fully conformant
+# (clients sync over POST /sync). See packages/server-workers/README.md.
 
 name = "syncular-sync"
 main = "src/worker.ts"
@@ -12,6 +15,10 @@ compatibility_date = "2024-09-23"
 # --- D1: the server storage (D1ServerStorage) ------------------------------
 # Create with: wrangler d1 create syncular
 # Then apply the schema (see README): wrangler d1 migrations apply syncular
+#
+# The DO holds the SAME D1 binding, so realtime rounds and POST /sync rounds
+# share one commit log and one segment store (no LISTEN/NOTIFY needed — the
+# partition's sockets and its writes are co-located in its DO).
 [[d1_databases]]
 binding = "DB"                       # env.DB -> D1ServerStorage
 database_name = "syncular"
@@ -31,12 +38,16 @@ bucket_name = "syncular-segments"
 # SYNC_HMAC_KEY                                          -> native signed URLs (§5.4)
 # plus whatever your authenticate() needs (JWT secret, etc.)
 
-# --- Realtime (the DO follow-up; NOT wired by this rung) --------------------
-# When the Durable Object realtime host lands, add:
-# [[durable_objects.bindings]]
-# name = "REALTIME"
-# class_name = "SyncularRealtimeDO"
-#
-# [[migrations]]
-# tag = "v1"
-# new_classes = ["SyncularRealtimeDO"]
+# --- Realtime (§8): the Durable Object host --------------------------------
+# One SyncularRealtimeDO instance per partition (idFromName(partition)) hosts
+# the RealtimeHub, WebSocket hibernation drives the existing RealtimeSession,
+# and commit fan-out runs in-DO. The DO binding is available as env.REALTIME.
+[[durable_objects.bindings]]
+name = "REALTIME"
+class_name = "SyncularRealtimeDO"
+
+# The DO class is stateless across deploys (no SQLite storage of its own — all
+# durable state lives in D1), so a plain new_classes migration is sufficient.
+[[migrations]]
+tag = "v1"
+new_classes = ["SyncularRealtimeDO"]
