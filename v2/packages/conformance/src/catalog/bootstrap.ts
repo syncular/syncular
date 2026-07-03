@@ -49,15 +49,12 @@ export const bootstrapScenarios: readonly Scenario[] = [
       const second = await syncOk(a);
       checkEqual(second.segmentRowsApplied, 0, 'no second bootstrap');
       checkEqual(second.commitsApplied, 1, 'incremental pull took over');
-      // Values converge; versions are only known for commit-delivered
-      // rows — SSG2 segments carry no server_version column (§5.2).
-      await expectConverged(
-        ctx,
-        'tasks',
-        [a],
-        { variable: 'project_id', values: ['p1'] },
-        false,
-      );
+      // Values AND versions converge: segment row records carry the
+      // rows' server_version (§5.2/§5.6).
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
       const t4 = (await a.api.readRows('tasks')).find(
         (row) => row.rowId === 't4',
       );
@@ -122,13 +119,10 @@ export const bootstrapScenarios: readonly Scenario[] = [
         controlRows,
         'no rows lost or duplicated versus the uninterrupted bootstrap (B.5)',
       );
-      await expectConverged(
-        ctx,
-        'tasks',
-        [a, control],
-        { variable: 'project_id', values: ['p1'] },
-        false,
-      );
+      await expectConverged(ctx, 'tasks', [a, control], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
     },
   },
 
@@ -157,13 +151,10 @@ export const bootstrapScenarios: readonly Scenario[] = [
 
       // The re-pull mints fresh descriptors and converges.
       await syncIdle(a);
-      await expectConverged(
-        ctx,
-        'tasks',
-        [a],
-        { variable: 'project_id', values: ['p1'] },
-        false,
-      );
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
     },
   },
 
@@ -199,6 +190,99 @@ export const bootstrapScenarios: readonly Scenario[] = [
       checkEqual((await a.api.readRows('tasks')).length, 0, 'no partial apply');
 
       // Re-pull idempotency repairs everything.
+      await syncIdle(a);
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
+
+  {
+    // B.9: segment row records carry server_version (§5.2), so a
+    // bootstrap alone seeds §6.2 optimistic concurrency — no commit
+    // delivery needed before a baseVersion-carrying push.
+    name: 'bootstrap/segment-versions-seed-base-version',
+    specRefs: ['§5.2', '§5.6', '§6.2', 'B.9'],
+    async run(ctx) {
+      // t1 reaches v2 pre-bootstrap; t2 stays at v1.
+      await seedTasks(ctx, [task('t1', 'p1', 'one'), task('t2', 'p1', 'two')]);
+      await seedTasks(ctx, [task('t1', 'p1', 'one-updated')]);
+
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: P1,
+      });
+      await a.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      const first = await syncOk(a);
+      checkEqual(first.segmentRowsApplied, 2, 'both rows arrived as segments');
+      checkEqual(
+        first.commitsApplied,
+        0,
+        'no COMMIT frames were delivered — versions come from segments only',
+      );
+      // §5.6: segment-applied rows carry the server's exact versions.
+      await expectConverged(ctx, 'tasks', [a], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+      const t1Local = (await a.api.readRows('tasks')).find(
+        (row) => row.rowId === 't1',
+      );
+      checkEqual(t1Local?.version, 2, 'segment delivered t1 at v2 (§5.2)');
+
+      // A baseVersion push seeded purely by the segment applies cleanly.
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('t1', 'p1', 'guarded-edit'),
+          baseVersion: t1Local?.version ?? -1,
+        },
+      ]);
+      const guarded = await syncOk(a);
+      checkEqual(guarded.rejected, [], 'the guarded push applied');
+      checkEqual(guarded.conflicts, 0, 'no conflict on a correct baseVersion');
+      const t1Server = (await ctx.server.readRows('tasks')).find(
+        (row) => row.rowId === 't1',
+      );
+      checkEqual(t1Server?.version, 3, 'server incremented v2 → v3 (§6.2)');
+      checkEqual(t1Server?.values.title, 'guarded-edit', 'the edit landed');
+
+      // A stale baseVersion on the other segment-bootstrapped row
+      // conflicts instead of silently overwriting.
+      const mStale = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('t2', 'p1', 'stale-edit'),
+          baseVersion: 7,
+        },
+      ]);
+      const stale = await syncOk(a);
+      checkEqual(stale.rejected, [mStale], 'the stale commit was rejected');
+      checkEqual(stale.conflicts, 1, 'exactly one conflict surfaced');
+      const conflict = (await a.api.conflicts())[0];
+      checkEqual(conflict?.code, 'sync.version_conflict', 'conflict code');
+      checkEqual(conflict?.rowId, 't2', 'conflict rowId');
+      checkEqual(
+        conflict?.serverVersion,
+        1,
+        'the conflict record names the real server version (§6.3)',
+      );
+
+      // §6.5 keep-local rebase: re-push with the conflict's serverVersion
+      // (the server never re-delivers the unchanged t2, so resolution —
+      // not another pull — is what converges the row, §7.2).
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('t2', 'p1', 'rebased-edit'),
+          baseVersion: conflict?.serverVersion ?? -1,
+        },
+      ]);
       await syncIdle(a);
       await expectConverged(ctx, 'tasks', [a], {
         variable: 'project_id',

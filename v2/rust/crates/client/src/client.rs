@@ -1084,7 +1084,8 @@ impl SyncClient {
 
     /// §5.6 segment application: validate against the generated schema,
     /// clear the grant on a fresh bootstrap's first page (fail closed
-    /// without a mapping), then replace-or-upsert with no server version.
+    /// without a mapping), then replace-or-upsert each row with its
+    /// segment-carried server version (§5.2).
     fn apply_segment(
         &mut self,
         sub_index: usize,
@@ -1127,8 +1128,9 @@ impl SyncClient {
         let mut applied = 0u32;
         for block in &segment.blocks {
             for row in block {
-                // Segment rows carry no server version (§5.6).
-                self.write_base_row(&table.name, row, 0)
+                // §5.6: the row record's serverVersion is the row's
+                // last-known server_version, same as a COMMIT rowVersion.
+                self.write_base_row(&table.name, &row.values, row.server_version)
                     .map_err(|m| SectionError::Abort("sync.invalid_request".to_owned(), m))?;
                 applied += 1;
             }

@@ -57,7 +57,9 @@ describe('fresh bootstrap (§4.7, §5.7)', () => {
       'meta',
     ]);
     const rows = segment.blocks.flat();
-    expect(rows.map((r) => r[0])).toEqual(['t1', 't2']); // p2 row excluded
+    expect(rows.map((r) => r.values[0])).toEqual(['t1', 't2']); // p2 row excluded
+    // §5.2: every row record carries the row's current server_version.
+    expect(rows.map((r) => r.serverVersion)).toEqual([1, 1]);
     expect(s.end.nextCursor).toBe(maxSeq);
     expect(s.end.bootstrapState).toBeUndefined(); // complete
   });
@@ -106,7 +108,7 @@ describe('paged, resumable, pinned bootstrap (§4.7)', () => {
     const seg1 = decodeRowsSegment(
       inlineSegments(s1.body)[0]?.payload ?? new Uint8Array(),
     );
-    expect(seg1.blocks.flat().map((r) => r[0])).toEqual(['t1', 't2']);
+    expect(seg1.blocks.flat().map((r) => r.values[0])).toEqual(['t1', 't2']);
     expect(s1.end.nextCursor).toBe(pinnedSeq);
     const token1 = s1.end.bootstrapState;
     if (token1 === undefined) throw new Error('expected bootstrapState');
@@ -133,7 +135,7 @@ describe('paged, resumable, pinned bootstrap (§4.7)', () => {
     // t6 is included in the scan (snapshot reads current rows) — but the
     // pin means the post-pin commit replays after completion; here page 2
     // continues at the recorded row cursor.
-    expect(seg2.blocks.flat().map((r) => r[0])).toEqual(['t3', 't4']);
+    expect(seg2.blocks.flat().map((r) => r.values[0])).toEqual(['t3', 't4']);
     expect(s2.end.nextCursor).toBe(pinnedSeq);
     const token2 = s2.end.bootstrapState;
     if (token2 === undefined) throw new Error('expected bootstrapState');
@@ -185,7 +187,7 @@ describe('paged, resumable, pinned bootstrap (§4.7)', () => {
       inlineSegments(s.body)[0]?.payload ?? new Uint8Array(),
     );
     // Restarted from the beginning of the table with a fresh pin.
-    expect(segment.blocks.flat().map((r) => r[0])).toEqual(['t1', 't2']);
+    expect(segment.blocks.flat().map((r) => r.values[0])).toEqual(['t1', 't2']);
     expect(s.end.nextCursor).toBe(3);
     const token = s.end.bootstrapState;
     if (token === undefined) throw new Error('expected bootstrapState');

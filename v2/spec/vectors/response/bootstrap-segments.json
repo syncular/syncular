@@ -33,10 +33,10 @@
     },
     {
       "type": "SEGMENT_REF",
-      "segmentId": "sha256:1e38a39946ee3ce90e135c038226b72c626d1fcf887b0f90683577df13a6bf2b",
+      "segmentId": "sha256:9409afdbdf9e5a15a282e6e993ef8c970537bb243a9d98a4c939c388b1058e66",
       "mediaType": "rows",
       "table": "notes",
-      "byteLength": 163,
+      "byteLength": 171,
       "rowCount": 1,
       "asOfCommitSeq": 100,
       "scopeDigest": "5a993aa4d503af6f5dc77acc12ad399ff2e9d933c393f4de6af5f6aef4fa2977",
@@ -44,7 +44,7 @@
     },
     {
       "type": "SEGMENT_INLINE",
-      "payload": "U1NHMgEAAAAFAAAAbm90ZXMBAAAACAACAAAAaWQBAAUAAAB0aXRsZQEBBAAAAGJvZHkBAAUAAABjb3VudAIBBQAAAHNjb3JlAwAEAAAAZG9uZQQABAAAAG1ldGEFAQQAAABibG9iBgEBAAAALwAAAEADAAAAbi0zAgAAAM62CAAAAGJvdW5kYXJ5////////HwAAAAAAAAD4vwEAAAAAAAAAAA=="
+      "payload": "U1NHMgEAAAAFAAAAbm90ZXMBAAAACAACAAAAaWQBAAUAAAB0aXRsZQEBBAAAAGJvZHkBAAUAAABjb3VudAIBBQAAAHNjb3JlAwAEAAAAZG9uZQQABAAAAG1ldGEFAQQAAABibG9iBgEBAAAANwAAAAUAAAAAAAAAQAMAAABuLTMCAAAAzrYIAAAAYm91bmRhcnn///////8fAAAAAAAAAPi/AQAAAAAAAAAA"
     },
     {
       "type": "SUB_END",

@@ -4,7 +4,9 @@
  * A standalone binary container: magic, format version, flags, a column
  * descriptor header (validation checksum, never inference), then
  * self-delimiting row blocks terminated by a mandatory `rowCount = 0` end
- * marker.
+ * marker. Each row record carries the row's current `server_version`
+ * (`serverVersion`, ≥ 1) ahead of the row-codec bytes, so segment-applied
+ * rows participate in §6.2 conflict detection (§5.6).
  */
 import { ByteReader, ByteWriter, utf8Encode } from './bytes';
 import { DecodeError } from './errors';
@@ -22,12 +24,19 @@ export const ROWS_SEGMENT_FORMAT_VERSION = 1;
 
 const MAGIC_BYTES = utf8Encode(ROWS_SEGMENT_MAGIC);
 
+/** One §5.2 row record: the row's `server_version` plus its values. */
+export interface SegmentRow {
+  /** The row's `server_version` at `asOfCommitSeq` (§2.2); always ≥ 1. */
+  readonly serverVersion: number;
+  readonly values: readonly RowValue[];
+}
+
 export interface RowsSegment {
   readonly table: string;
   readonly schemaVersion: number;
   readonly columns: readonly RowColumn[];
   /** Row blocks in wire order; each block is applied in one transaction. */
-  readonly blocks: readonly (readonly (readonly RowValue[])[])[];
+  readonly blocks: readonly (readonly SegmentRow[])[];
 }
 
 export function encodeRowsSegment(segment: RowsSegment): Uint8Array {
@@ -48,7 +57,15 @@ export function encodeRowsSegment(segment: RowsSegment): Uint8Array {
       throw new Error('a rows-segment block must contain at least one row');
     }
     const rowsWriter = new ByteWriter();
-    for (const row of block) writeRow(rowsWriter, segment.columns, row);
+    for (const row of block) {
+      if (row.serverVersion < 1) {
+        throw new Error(
+          `a rows-segment row serverVersion must be >= 1, got ${row.serverVersion}`,
+        );
+      }
+      rowsWriter.i64(row.serverVersion);
+      writeRow(rowsWriter, segment.columns, row.values);
+    }
     const rows = rowsWriter.finish();
     writer.u32(block.length);
     writer.u32(rows.length);
@@ -99,7 +116,7 @@ export function decodeRowsSegment(bytes: Uint8Array): RowsSegment {
     }
     columns.push({ name, type, nullable: columnFlags === 1 });
   }
-  const blocks: RowValue[][][] = [];
+  const blocks: SegmentRow[][] = [];
   for (;;) {
     if (reader.remaining < 4) {
       throw new DecodeError(
@@ -115,9 +132,16 @@ export function decodeRowsSegment(bytes: Uint8Array): RowsSegment {
     const byteLength = reader.u32();
     const rowBytes = reader.raw(byteLength);
     const blockReader = new ByteReader(rowBytes);
-    const block: RowValue[][] = [];
+    const block: SegmentRow[] = [];
     for (let i = 0; i < rowCount; i++) {
-      block.push(readRow(blockReader, columns));
+      const serverVersion = blockReader.i64();
+      if (serverVersion < 1) {
+        throw new DecodeError(
+          'sync.invalid_request',
+          `rows segment row serverVersion must be >= 1, got ${serverVersion}`,
+        );
+      }
+      block.push({ serverVersion, values: readRow(blockReader, columns) });
     }
     blockReader.expectFullyConsumed('rows block');
     blocks.push(block);

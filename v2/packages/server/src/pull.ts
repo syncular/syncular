@@ -8,8 +8,8 @@ import {
   encodeRowsSegment,
   type PullHeaderFrame,
   type ResponseFrame,
-  type RowValue,
   type ScopeMap,
+  type SegmentRow,
   type SubscriptionFrame,
 } from '@syncular-v2/core';
 import type { SyncRequestContext } from './context';
@@ -114,9 +114,9 @@ function commitFrame(table: string, commit: StoredCommit): ResponseFrame {
   };
 }
 
-function chunkRows(rows: RowValue[][], size: number): RowValue[][][] {
+function chunkRows(rows: SegmentRow[], size: number): SegmentRow[][] {
   if (rows.length === 0) return [];
-  const blocks: RowValue[][][] = [];
+  const blocks: SegmentRow[][] = [];
   for (let i = 0; i < rows.length; i += size) {
     blocks.push(rows.slice(i, i + size));
   }
@@ -148,9 +148,11 @@ async function* bootstrapSegments(
     });
     const pageRows = scanned.slice(0, limits.limitSnapshotRows);
     const hasMore = scanned.length > limits.limitSnapshotRows;
-    const decoded = pageRows.map((row: StoredRow) =>
-      decodeRow(plan.table.columns, row.payload),
-    );
+    // §5.2: every row record carries the row's current server_version.
+    const decoded = pageRows.map((row: StoredRow) => ({
+      serverVersion: row.serverVersion,
+      values: decodeRow(plan.table.columns, row.payload),
+    }));
     const bytes = encodeRowsSegment({
       table: plan.table.name,
       schemaVersion: schema.version,

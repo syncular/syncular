@@ -93,9 +93,12 @@ the old tree archived.
 
 ## 5. Protocol/spec debts (small, decide-and-pin)
 
-- [ ] SSG2 `server_version` column: keep the "no baseVersion from
-      segments" client rule, or add a version column. Decide once, add
-      vectors, both codecs. (Blocks item 1.1 cleanly.)
+- [x] SSG2 `server_version` column: DECIDED + LANDED 2026-07-03 — added.
+      Every SSG2 row record carries `serverVersion` (i64, ≥ 1) ahead of
+      the row bytes (SPEC §5.2); sqlite images carry `_syncular_version`
+      (§5.3); the §5.6 no-synthesis rule is replaced by full §6.2
+      participation. Vectors regenerated, both codecs, both clients,
+      conformance scenario B.9. (Unblocks item 1.1.)
 - [ ] Windowed sync / eviction: spec the cursor/purge semantics for
       partial local retention EARLY (post-parity differentiator, but its
       spec shape constrains blobs + invalidation design).
