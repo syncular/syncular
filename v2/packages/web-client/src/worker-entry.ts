@@ -279,6 +279,10 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
         // §7.4.5: surface the schema-bump reset + completion to the UI thread.
         post({ t: 'event', event: { kind: 'upgrading', upgrading } });
       },
+      onPresence: (scopeKey) => {
+        // §8.6: surface a presence change to the UI thread.
+        post({ t: 'event', event: { kind: 'presence', scopeKey } });
+      },
     });
     await started.start();
     realtimeConnector =
@@ -320,6 +324,8 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     subscription: (id) => requireClient().subscription(id),
     connectRealtime: () => requireClient().connectRealtime(),
     disconnectRealtime: () => requireClient().disconnectRealtime(),
+    setPresence: (scopeKey, doc) => requireClient().setPresence(scopeKey, doc),
+    presence: (scopeKey) => requireClient().presence(scopeKey),
     uploadBlob: (bytes, options) => requireClient().uploadBlob(bytes, options),
     fetchBlob: (blobIdOrRef) => requireClient().fetchBlob(blobIdOrRef),
     setOffline: (value) => {

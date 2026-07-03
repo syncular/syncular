@@ -18,7 +18,7 @@ pub mod transport;
 pub mod values;
 
 pub use api::{
-    ClientLimits, ConflictRecord, Mutation, RejectionRecord, RowState, SchemaFloor,
+    ClientLimits, ConflictRecord, Mutation, PresencePeer, RejectionRecord, RowState, SchemaFloor,
     SubscriptionStateView, SyncOutcome, SyncReport,
 };
 pub use client::SyncClient;

@@ -22,6 +22,7 @@ import type {
   ConflictRecord,
   LeaseState,
   MutationInput,
+  PresencePeer,
   RejectionRecord,
   SchemaFloor,
   SubscribeInput,
@@ -121,6 +122,10 @@ export interface WorkerApi {
   subscription(id: string): SubscriptionRecord | undefined;
   connectRealtime(): Promise<void>;
   disconnectRealtime(): void;
+  /** §8.6 presence: publish/clear a scope-keyed presence document. */
+  setPresence(scopeKey: string, doc: Record<string, unknown> | null): void;
+  /** §8.6 presence: the peers currently present on a scope key. */
+  presence(scopeKey: string): readonly PresencePeer[];
   /** §5.9 blobs: stage bytes (returns the canonical ref) / resolve bytes. */
   uploadBlob(
     bytes: Uint8Array,
@@ -175,6 +180,11 @@ export type SyncWorkerEvent =
       /** §7.4.5: the schema-bump `upgrading` state changed in the worker. */
       readonly kind: 'upgrading';
       readonly upgrading: boolean;
+    }
+  | {
+      /** §8.6: presence on a scope key changed inside the worker. */
+      readonly kind: 'presence';
+      readonly scopeKey: string;
     };
 
 export type WorkerToMainMessage =

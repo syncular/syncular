@@ -13,7 +13,9 @@ import { errorScenarios } from './errors';
 import { leaseScenarios } from './leases';
 import { lifecycleScenarios } from './lifecycle';
 import { offlineScenarios } from './offline';
+import { presenceScenarios } from './presence';
 import { realtimeScenarios } from './realtime';
+import { reconnectStormScenarios } from './reconnect-storm';
 import { schemaBumpScenarios } from './schema-bump';
 import { scopeScenarios } from './scopes';
 import { signedUrlScenarios } from './signed-url';
@@ -36,6 +38,8 @@ export const CATALOG: readonly Scenario[] = [
   ...schemaBumpScenarios,
   ...realtimeScenarios,
   ...wsRoundScenarios,
+  ...presenceScenarios,
+  ...reconnectStormScenarios,
   ...errorScenarios,
   ...vectorScenarios,
 ];

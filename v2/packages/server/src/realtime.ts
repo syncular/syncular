@@ -18,8 +18,12 @@ import {
   DecodeError,
   decodeMessage,
   encodeMessage,
+  encodePresenceError,
+  encodePresenceFanout,
   MessageStreamScanner,
   PROTOCOL_WIRE_VERSION,
+  type PresenceKind,
+  parseRealtimePresencePublish,
   REALTIME_TAG_DELTA,
   REALTIME_TAG_ROUND,
   type ResponseFrame,
@@ -63,6 +67,20 @@ export interface RealtimeHubConfig {
   /** §7.3 auth leases for socket sync rounds (§8.7) — same config the
    * HTTP binding uses, so rounds over the socket are lease-aware too. */
   readonly leases?: LeaseConfig;
+  /**
+   * §8.6 presence: cap on the serialized size (bytes) of a published
+   * presence document. An over-cap publish is rejected loudly to the
+   * publisher with `presence.too_large` and fans out nothing. Default 16 KiB.
+   */
+  readonly maxPresenceBytes?: number;
+  /**
+   * §8.6.4 presence rate cap: minimum ms between fanned-out publishes per
+   * connection per scope key. Absent ⇒ off (the reference default): every
+   * publish fans out immediately. When set, publishes exceeding the cap
+   * coalesce latest-wins into at most one `update` per window (never an
+   * error, never a stale or lost latest document).
+   */
+  readonly presenceMinIntervalMs?: number;
 }
 
 export interface RealtimeConnectOptions {
@@ -91,6 +109,123 @@ interface Registration {
 }
 
 const DEFAULT_MAX_DELTA_BYTES = 1024 * 1024;
+const DEFAULT_MAX_PRESENCE_BYTES = 16 * 1024;
+
+type PresenceDoc = Record<string, unknown>;
+
+/**
+ * §8.6 presence registry — pure in-memory ephemeral state, keyed per
+ * `(partition, scopeKey)` → the set of present sessions and their
+ * documents. It never touches `ServerStorage`; a server restart loses all
+ * presence (§8.6.1). Fanout is scoped to registered peers only — the
+ * privacy floor (§8.6.3).
+ */
+class PresenceRegistry {
+  /** partition → scopeKey → session → document. */
+  readonly #byKey = new Map<
+    string,
+    Map<string, Map<RealtimeSession, PresenceDoc>>
+  >();
+
+  #keyMap(
+    partition: string,
+    scopeKey: string,
+  ): Map<RealtimeSession, PresenceDoc> {
+    let byScope = this.#byKey.get(partition);
+    if (byScope === undefined) {
+      byScope = new Map();
+      this.#byKey.set(partition, byScope);
+    }
+    let sessions = byScope.get(scopeKey);
+    if (sessions === undefined) {
+      sessions = new Map();
+      byScope.set(scopeKey, sessions);
+    }
+    return sessions;
+  }
+
+  /** Current documents on a key, excluding one session (the snapshot,
+   * §8.6.4). */
+  snapshot(
+    partition: string,
+    scopeKey: string,
+    exclude: RealtimeSession,
+  ): Array<{ session: RealtimeSession; doc: PresenceDoc }> {
+    const sessions = this.#byKey.get(partition)?.get(scopeKey);
+    if (sessions === undefined) return [];
+    const out: Array<{ session: RealtimeSession; doc: PresenceDoc }> = [];
+    for (const [session, doc] of sessions) {
+      if (session !== exclude) out.push({ session, doc });
+    }
+    return out;
+  }
+
+  /** Store/replace a session's document for a key. Returns whether this is
+   * the session's FIRST document on the key (join) or a replacement
+   * (update). */
+  set(
+    partition: string,
+    scopeKey: string,
+    session: RealtimeSession,
+    doc: PresenceDoc,
+  ): 'join' | 'update' {
+    const sessions = this.#keyMap(partition, scopeKey);
+    const kind = sessions.has(session) ? 'update' : 'join';
+    sessions.set(session, doc);
+    return kind;
+  }
+
+  /** Remove a session's document for a key. Returns true if one existed. */
+  clear(
+    partition: string,
+    scopeKey: string,
+    session: RealtimeSession,
+  ): boolean {
+    const sessions = this.#byKey.get(partition)?.get(scopeKey);
+    if (sessions === undefined) return false;
+    const existed = sessions.delete(session);
+    if (sessions.size === 0) this.#byKey.get(partition)?.delete(scopeKey);
+    return existed;
+  }
+
+  /** Every key a session currently holds a document on (for leave-on-drop
+   * and registration-change re-derivation). */
+  keysOf(partition: string, session: RealtimeSession): string[] {
+    const byScope = this.#byKey.get(partition);
+    if (byScope === undefined) return [];
+    const keys: string[] = [];
+    for (const [scopeKey, sessions] of byScope) {
+      if (sessions.has(session)) keys.push(scopeKey);
+    }
+    return keys;
+  }
+
+  /** Sessions currently registered as peers on a key (for fanout). */
+  peers(partition: string, scopeKey: string): RealtimeSession[] {
+    const sessions = this.#byKey.get(partition)?.get(scopeKey);
+    return sessions === undefined ? [] : [...sessions.keys()];
+  }
+}
+
+/** The scope keys a set of registrations covers (§3.1: `prefix:value`). A
+ * registration's effective scopes are variable → values; a scope key is
+ * `prefix:value` for each declared value. */
+function registrationScopeKeys(
+  registrations: readonly Registration[],
+  schema: CompiledSchema,
+): Set<string> {
+  const keys = new Set<string>();
+  for (const registration of registrations) {
+    const table = schema.tables.get(registration.table);
+    if (table === undefined) continue;
+    for (const [variable, values] of Object.entries(registration.effective)) {
+      const pattern = table.scopePatterns.find((p) => p.variable === variable);
+      if (pattern === undefined) continue;
+      for (const value of values) keys.add(`${pattern.prefix}:${value}`);
+    }
+  }
+  return keys;
+}
 
 export class RealtimeSession {
   readonly sessionId: string;
@@ -118,6 +253,16 @@ export class RealtimeSession {
    * never clobbers a follow-up round's in-flight marker. */
   #requestScanner: MessageStreamScanner | undefined;
   #activeRound: symbol | undefined;
+  /** §8.6.4 rate cap: per-scope-key last-fanout time + a pending latest
+   * document coalesced while over the cap. */
+  #presenceRate = new Map<
+    string,
+    {
+      lastFanoutMs: number;
+      pending?: PresenceDoc;
+      timer?: ReturnType<typeof setTimeout>;
+    }
+  >();
 
   constructor(
     hub: RealtimeHub,
@@ -148,7 +293,8 @@ export class RealtimeSession {
     this.#events = events;
   }
 
-  /** Feed an inbound text frame (client → server control message, §8.2). */
+  /** Feed an inbound text frame (client → server control message, §8.2
+   * ack, §8.6.2 presence). */
   handleMessage(text: string): void {
     let parsed: unknown;
     try {
@@ -156,19 +302,181 @@ export class RealtimeSession {
     } catch {
       return; // tolerate unknown/garbled control messages
     }
-    if (
-      typeof parsed !== 'object' ||
-      parsed === null ||
-      (parsed as { type?: unknown }).type !== 'ack'
-    ) {
+    if (typeof parsed !== 'object' || parsed === null) return;
+    // §8.6.2: client→server presence carries `event: 'presence'` (server
+    // control messages carry `event`; the ack carries `type`, §8.1).
+    if ((parsed as { event?: unknown }).event === 'presence') {
+      this.#handlePresence(text);
       return;
     }
+    if ((parsed as { type?: unknown }).type !== 'ack') return;
     const cursor = (parsed as { cursor?: unknown }).cursor;
     if (typeof cursor !== 'number' || !Number.isSafeInteger(cursor)) return;
     this.cursor = Math.max(this.cursor, cursor);
     if (this.cursor >= this.lastKnownSeq) this.wakePending = false;
     // §8.2: acks update the client cursor record without an HTTP pull.
     void this.#persistCursor();
+  }
+
+  /** §8.6.2 inbound presence publish/leave from the client. */
+  #handlePresence(text: string): void {
+    let publish: ReturnType<typeof parseRealtimePresencePublish>;
+    try {
+      publish = parseRealtimePresencePublish(text);
+    } catch {
+      // A malformed known event is a parse error (§8.1) — a broken client;
+      // drop the connection loudly rather than silently ignore.
+      this.#violation('malformed presence control message (§8.6.2)');
+      return;
+    }
+    const { scopeKey, doc } = publish.data;
+    // §8.6.3 authorization: the publish key must be in the connection's
+    // registered effective scopes.
+    if (!this.#currentScopeKeys().has(scopeKey)) {
+      this.#sendSafe(
+        encodePresenceError(scopeKey, 'presence.forbidden', this.#clock()),
+      );
+      return;
+    }
+    if (doc === null) {
+      this.#leavePresence(scopeKey);
+      return;
+    }
+    // §8.6.2 size cap: fail loud to the publisher, fan out nothing.
+    const serialized = JSON.stringify(doc);
+    if (serialized.length > this.#hub.maxPresenceBytes) {
+      this.#sendSafe(
+        encodePresenceError(scopeKey, 'presence.too_large', this.#clock()),
+      );
+      return;
+    }
+    this.#publishPresence(scopeKey, doc);
+  }
+
+  /** §8.6.4: store + fan out a publish, honoring the rate cap (latest-wins
+   * coalesce). */
+  #publishPresence(scopeKey: string, doc: PresenceDoc): void {
+    const minInterval = this.#hub.presenceMinIntervalMs;
+    if (minInterval > 0) {
+      const now = this.#clock();
+      const rate = this.#presenceRate.get(scopeKey);
+      if (rate !== undefined && now - rate.lastFanoutMs < minInterval) {
+        // Over the cap: keep only the latest document, fan it out at the
+        // window edge (never an error, never a stale/lost latest, §8.6.4).
+        rate.pending = doc;
+        if (rate.timer === undefined) {
+          const delay = minInterval - (now - rate.lastFanoutMs);
+          rate.timer = setTimeout(() => {
+            delete rate.timer;
+            const pending = rate.pending;
+            delete rate.pending;
+            if (pending !== undefined) this.#fanoutPublish(scopeKey, pending);
+          }, delay);
+        }
+        return;
+      }
+    }
+    this.#fanoutPublish(scopeKey, doc);
+  }
+
+  #fanoutPublish(scopeKey: string, doc: PresenceDoc): void {
+    const kind = this.#hub.presence.set(this.partition, scopeKey, this, doc);
+    let rate = this.#presenceRate.get(scopeKey);
+    if (rate === undefined) {
+      rate = { lastFanoutMs: this.#clock() };
+      this.#presenceRate.set(scopeKey, rate);
+    } else {
+      rate.lastFanoutMs = this.#clock();
+    }
+    this.#hub.fanoutPresence(this, scopeKey, kind, doc);
+  }
+
+  /** §8.6.1/§8.6.3: clear this session's document for a key and fan a
+   * leave to the remaining peers. */
+  #leavePresence(scopeKey: string): void {
+    const existed = this.#hub.presence.clear(this.partition, scopeKey, this);
+    const rate = this.#presenceRate.get(scopeKey);
+    if (rate?.timer !== undefined) clearTimeout(rate.timer);
+    this.#presenceRate.delete(scopeKey);
+    if (existed) this.#hub.fanoutPresence(this, scopeKey, 'leave', null);
+  }
+
+  /** Deliver a fanout event to this session (called by the hub for peers,
+   * §8.6.3 receive authorization checked by the caller). */
+  receivePresence(
+    scopeKey: string,
+    kind: PresenceKind,
+    actorId: string,
+    clientId: string,
+    doc: PresenceDoc | null,
+  ): void {
+    this.#sendSafe(
+      encodePresenceFanout(
+        scopeKey,
+        kind,
+        actorId,
+        clientId,
+        doc,
+        this.#clock(),
+      ),
+    );
+  }
+
+  /** The scope keys this connection currently holds (§8.6.3). */
+  #currentScopeKeys(): Set<string> {
+    return this.#hub.scopeKeysOf(this.registrations);
+  }
+
+  /** §8.6.3: drop presence on keys the connection no longer holds and
+   * deliver the snapshot on keys it newly holds. Called after a
+   * registration change (§8.7 round end, §8.1 reconnect handled by
+   * connect's snapshot). */
+  reconcilePresence(previousKeys: ReadonlySet<string>): void {
+    const currentKeys = this.#currentScopeKeys();
+    // Keys lost: leave my own published docs; presence delivery stops
+    // naturally (peers no longer fan to me — I am not registered).
+    for (const key of previousKeys) {
+      if (!currentKeys.has(key)) this.#leavePresence(key);
+    }
+    // Keys gained: deliver the snapshot of already-present peers.
+    for (const key of currentKeys) {
+      if (!previousKeys.has(key)) this.#deliverSnapshot(key);
+    }
+  }
+
+  /** §8.6.4 snapshot: a burst of `join`s for peers already present on a
+   * key, delivered to this session only. */
+  #deliverSnapshot(scopeKey: string): void {
+    for (const peer of this.#hub.presence.snapshot(
+      this.partition,
+      scopeKey,
+      this,
+    )) {
+      this.receivePresence(
+        scopeKey,
+        'join',
+        peer.session.actorId,
+        peer.session.clientId,
+        peer.doc,
+      );
+    }
+  }
+
+  /** §8.6.1: on disconnect, leave every key this session was present on. */
+  dropAllPresence(): void {
+    for (const key of this.#hub.presence.keysOf(this.partition, this)) {
+      this.#leavePresence(key);
+    }
+    for (const rate of this.#presenceRate.values()) {
+      if (rate.timer !== undefined) clearTimeout(rate.timer);
+    }
+    this.#presenceRate.clear();
+  }
+
+  /** Snapshot delivery on connect (§8.6.4) — the newly-registered
+   * connection sees who is already present on each of its keys. */
+  deliverInitialPresence(): void {
+    for (const key of this.#currentScopeKeys()) this.#deliverSnapshot(key);
   }
 
   /**
@@ -287,6 +595,10 @@ export class RealtimeSession {
   }
 
   async #refreshRegistrations(): Promise<void> {
+    // §8.6.3: a registration change re-derives the presence grant — capture
+    // the keys before, reconcile after (leaves on lost keys, snapshots on
+    // gained keys).
+    const previousKeys = this.#currentScopeKeys();
     try {
       this.registrations = await this.#hub.loadRegistrations(
         this.partition,
@@ -296,7 +608,9 @@ export class RealtimeSession {
     } catch {
       // Fail closed: an unreadable record or resolver failure leaves the
       // previous registrations in place; the next round repairs it.
+      return;
     }
+    this.reconcilePresence(previousKeys);
   }
 
   /** §8.7 protocol violation: drop the connection, fail loud. The
@@ -473,6 +787,8 @@ export class RealtimeHub {
   readonly #config: RealtimeHubConfig;
   readonly #schema: CompiledSchema;
   readonly #sessions = new Set<RealtimeSession>();
+  /** §8.6 presence registry — ephemeral, in-memory, never persisted. */
+  readonly presence = new PresenceRegistry();
 
   constructor(config: RealtimeHubConfig) {
     this.#config = config;
@@ -481,6 +797,47 @@ export class RealtimeHub {
 
   get sessionCount(): number {
     return this.#sessions.size;
+  }
+
+  /** §8.6.2 published-document size cap (bytes). */
+  get maxPresenceBytes(): number {
+    return this.#config.maxPresenceBytes ?? DEFAULT_MAX_PRESENCE_BYTES;
+  }
+
+  /** §8.6.4 presence rate cap (ms); 0 = off (reference default). */
+  get presenceMinIntervalMs(): number {
+    return this.#config.presenceMinIntervalMs ?? 0;
+  }
+
+  /** §8.6.3: the scope keys a set of registrations covers. */
+  scopeKeysOf(registrations: readonly Registration[]): Set<string> {
+    return registrationScopeKeys(registrations, this.#schema);
+  }
+
+  /**
+   * §8.6.3 fanout: deliver a presence change to every OTHER session
+   * registered on the key (the privacy floor — only current scope-mates).
+   * The publisher does not receive its own fanout.
+   */
+  fanoutPresence(
+    origin: RealtimeSession,
+    scopeKey: string,
+    kind: PresenceKind,
+    doc: PresenceDoc | null,
+  ): void {
+    for (const session of this.#sessions) {
+      if (session === origin) continue;
+      if (session.partition !== origin.partition) continue;
+      // Receive authorization (§8.6.3): the receiver must itself hold the key.
+      if (!this.scopeKeysOf(session.registrations).has(scopeKey)) continue;
+      session.receivePresence(
+        scopeKey,
+        kind,
+        origin.actorId,
+        origin.clientId,
+        doc,
+      );
+    }
   }
 
   /**
@@ -635,6 +992,9 @@ export class RealtimeHub {
       }),
     );
     if (helloResult instanceof Promise) helloResult.catch(() => {});
+    // §8.6.4: the newly-registered connection sees who is already present
+    // on each key it holds (a burst of joins, after hello).
+    session.deliverInitialPresence();
     const events = this.#config.events;
     if (events !== undefined) {
       emitEvent(events, {
@@ -654,6 +1014,9 @@ export class RealtimeHub {
 
   disconnect(session: RealtimeSession): void {
     if (!this.#sessions.delete(session)) return;
+    // §8.6.1: lost on disconnect ⇒ leave emitted for every held key. Done
+    // AFTER removing from the set so the leaving session is not fanned to.
+    session.dropAllPresence();
     const events = this.#config.events;
     if (events !== undefined) {
       const clock = this.#config.clock ?? Date.now;

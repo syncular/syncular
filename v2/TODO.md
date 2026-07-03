@@ -181,9 +181,48 @@ the old tree archived.
       byte-identical. Conformance B.15 (4 scenarios: issued/refreshed;
       outage-served-then-expired; revocation-invalidates-sync-not-data;
       feature-off-emits-nothing — both pairings, 59×Rust / 61×TS).
-- [ ] **Presence + realtime hardening**: presence events (§8.6 reserved),
-      reconnect storms, wake coalescing under fanout load, oversize-delta
-      policies at scale.
+- [x] **Presence + realtime hardening**: LANDED 2026-07-03 — the last
+      parity-ladder rung, spec-first. SPEC §8.6 promoted from reserved-stub to
+      full normative text pinning presence end to end: **ephemeral,
+      scope-keyed** (a client publishes a small host-shaped JSON *object* to a
+      scope key it holds; never persisted, never in the log/pull/delta, lost on
+      disconnect ⇒ leave). **Wire**: the reserved `presence` JSON event in both
+      directions (§8.1 tolerate-unknown — a feature-off peer ignores it by event
+      name, so NO wire-version bump; binary `0x20`–`0x2F` stay reserved). C→S
+      `{scopeKey, doc|null}` (null = leave); S→C fanout `{scopeKey,
+      kind:join|update|leave, actorId, clientId, doc, timestamp}` — a closed
+      three-kind set, doc-present-iff-not-leave. **Identity = (actorId,
+      clientId)** exposed only to scope-mates. **Authz rides the same
+      registration** (§8.6.3): publish/receive require the key in the
+      connection's effective scopes — no separate grant; an unheld-key publish
+      is rejected loudly to the publisher with `presence.forbidden`, an over-cap
+      doc with `presence.too_large` (default 16 KiB), both carried in a
+      publisher-directed `presence` event's `error` field (client-runtime codes,
+      NOT §10 wire codes — fail loud in-band, never a silent drop). Snapshot on
+      register = a burst of joins (no distinct kind); a registration change
+      (§8.7 round end / reconnect / §3.3 revoke) re-derives the grant (leave lost
+      keys, snapshot gained keys). Server: a hub-level in-memory `PresenceRegistry`
+      (per partition+scopeKey → connection docs), fanout to scope-mates only,
+      leave-on-disconnect, an optional MAY-throttle latest-wins rate cap
+      (`presenceMinIntervalMs`, off by default — observable: newest doc at a
+      bounded rate, never stale/lost/errored); presence stays below the ops-event
+      floor (catalog untouched). Both clients: `setPresence(scopeKey, doc|null)`
+      + `presence(scopeKey)` peer list (TS `SyncClient` + `onPresence` callback +
+      worker RPC `presence` method/event across the OPFS boundary; Rust
+      `set_presence`/`presence` + `ControlMessage::Presence`/`PresenceKind` +
+      shim `setPresence`/`presence` commands). Two new golden vectors
+      (`realtime/presence-publish`, `realtime/presence-fanout`) + two invalid
+      (unknown kind, scalar doc); existing vectors byte-identical. Conformance
+      B.16 presence (4 scenarios: lifecycle incl. disconnect-implies-leave +
+      snapshot; cross-scope privacy probe + forbidden; feature-off silence;
+      survives-a-socket-round) and B.17 reconnect-storm (~20 sessions churn +
+      converge, deterministic, no timers, no load harness) — both pairings,
+      68×TS / 68×Rust. Part B hardening: §8.2/§8.3/§8.4 audited (wake coalescing,
+      cursor-contiguity, jittered reconnect, oversize-`delta-too-large` all
+      already pinned with a scenario); the small gaps closed were the presence
+      rate cap (spec'd MAY-throttle) and the N-session reconnect-storm scenario.
+      Gates: `bun run check` (583 pass), `bench:ci` all budgets green (own JS
+      59.7/60.0 KB), Rust fmt/clippy/test clean, fresh shim + Rust pairing 68/68.
 - [x] **Console / event stream**: LANDED 2026-07-03 — the leaner
       event-stream + queries approach won decisively (REVISE boring-ness +
       dependency-light rule): v1's full React console app is NOT ported.

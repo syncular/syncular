@@ -59,8 +59,49 @@ pub enum ControlMessage {
     Heartbeat { timestamp: i64 },
     /// §8.2 client ack — the sole client→server control message.
     Ack { cursor: i64 },
+    /// §8.6.2 presence fanout (server→client) or a publisher-directed error.
+    Presence {
+        scope_key: String,
+        /// `join` | `update` | `leave` for a fanout; `None` for an error.
+        kind: Option<PresenceKind>,
+        actor_id: Option<String>,
+        client_id: Option<String>,
+        /// The peer's document for join/update; `None`/null for leave.
+        doc: Option<Value>,
+        /// `presence.too_large` / `presence.forbidden` (§8.6.2), if this is
+        /// a publisher-directed error variant.
+        error: Option<String>,
+        timestamp: Option<i64>,
+    },
     /// Unknown JSON control event, tolerated and preserved (§8.1).
     Unknown(Value),
+}
+
+/// §8.6.2 presence fanout kind — a closed set of three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresenceKind {
+    Join,
+    Update,
+    Leave,
+}
+
+impl PresenceKind {
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "join" => Some(Self::Join),
+            "update" => Some(Self::Update),
+            "leave" => Some(Self::Leave),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Join => "join",
+            Self::Update => "update",
+            Self::Leave => "leave",
+        }
+    }
 }
 
 fn field<'a>(data: &'a Map<String, Value>, key: &str) -> Result<&'a Value> {
@@ -166,8 +207,107 @@ pub fn parse_control_value(value: &Value) -> Result<ControlMessage> {
                 timestamp: as_i64(d, "timestamp")?,
             })
         }
+        "presence" => {
+            let d = data("presence")?;
+            let scope_key = as_str(d, "scopeKey")?;
+            if scope_key.is_empty() {
+                return Err(DecodeError::invalid(
+                    "presence.data.scopeKey must be non-empty",
+                ));
+            }
+            let timestamp = if d.contains_key("timestamp") {
+                Some(as_i64(d, "timestamp")?)
+            } else {
+                None
+            };
+            if let Some(error) = d.get("error") {
+                // §8.6.2 publisher-directed error variant.
+                let error = error
+                    .as_str()
+                    .ok_or_else(|| DecodeError::invalid("presence.data.error must be a string"))?
+                    .to_owned();
+                return Ok(ControlMessage::Presence {
+                    scope_key,
+                    kind: None,
+                    actor_id: None,
+                    client_id: None,
+                    doc: None,
+                    error: Some(error),
+                    timestamp,
+                });
+            }
+            match d.get("kind") {
+                Some(kind_val) => {
+                    // §8.6.2 fanout.
+                    let kind_raw = kind_val.as_str().ok_or_else(|| {
+                        DecodeError::invalid("presence.data.kind must be a string")
+                    })?;
+                    let kind = PresenceKind::from_str(kind_raw).ok_or_else(|| {
+                        DecodeError::invalid(format!("unknown presence kind {kind_raw:?}"))
+                    })?;
+                    let actor_id = as_str(d, "actorId")?;
+                    let client_id = as_str(d, "clientId")?;
+                    let doc = d.get("doc").cloned();
+                    // §8.6.2 doc-present-iff-not-leave.
+                    match kind {
+                        PresenceKind::Leave => {
+                            if matches!(doc, Some(Value::Object(_))) {
+                                return Err(DecodeError::invalid(
+                                    "presence leave must carry doc: null",
+                                ));
+                            }
+                        }
+                        _ => {
+                            if !matches!(doc, Some(Value::Object(_))) {
+                                return Err(DecodeError::invalid(
+                                    "presence.data.doc must be a JSON object",
+                                ));
+                            }
+                        }
+                    }
+                    Ok(ControlMessage::Presence {
+                        scope_key,
+                        kind: Some(kind),
+                        actor_id: Some(actor_id),
+                        client_id: Some(client_id),
+                        doc,
+                        error: None,
+                        timestamp,
+                    })
+                }
+                None => {
+                    // Client→server publish/leave: scopeKey + doc (object or null).
+                    let doc = d.get("doc").cloned();
+                    if !matches!(doc, None | Some(Value::Null) | Some(Value::Object(_))) {
+                        return Err(DecodeError::invalid(
+                            "presence.data.doc must be a JSON object or null",
+                        ));
+                    }
+                    Ok(ControlMessage::Presence {
+                        scope_key,
+                        kind: None,
+                        actor_id: None,
+                        client_id: None,
+                        doc,
+                        error: None,
+                        timestamp,
+                    })
+                }
+            }
+        }
         _ => Ok(ControlMessage::Unknown(value.clone())),
     }
+}
+
+/// §8.6.2 serialize a client→server presence publish/leave.
+pub fn encode_presence_publish(scope_key: &str, doc: Option<&Value>) -> String {
+    let mut d = Map::new();
+    d.insert("scopeKey".to_string(), Value::from(scope_key));
+    d.insert("doc".to_string(), doc.cloned().unwrap_or(Value::Null));
+    let mut root = Map::new();
+    root.insert("event".to_string(), Value::from("presence"));
+    root.insert("data".to_string(), Value::Object(d));
+    Value::Object(root).to_string()
 }
 
 /// Render a control message back to its JSON form.
@@ -226,6 +366,42 @@ pub fn render_control(msg: &ControlMessage) -> Value {
             let mut root = Map::new();
             root.insert("type".to_string(), Value::from("ack"));
             root.insert("cursor".to_string(), Value::from(*cursor));
+            Value::Object(root)
+        }
+        ControlMessage::Presence {
+            scope_key,
+            kind,
+            actor_id,
+            client_id,
+            doc,
+            error,
+            timestamp,
+        } => {
+            // Field order matches the §8.6.2 wire shape so re-encoding a
+            // parsed fanout round-trips byte-for-byte with the vectors.
+            let mut d = Map::new();
+            d.insert("scopeKey".to_string(), Value::from(scope_key.clone()));
+            if let Some(error) = error {
+                d.insert("error".to_string(), Value::from(error.clone()));
+            } else if let Some(kind) = kind {
+                d.insert("kind".to_string(), Value::from(kind.as_str()));
+                if let Some(actor_id) = actor_id {
+                    d.insert("actorId".to_string(), Value::from(actor_id.clone()));
+                }
+                if let Some(client_id) = client_id {
+                    d.insert("clientId".to_string(), Value::from(client_id.clone()));
+                }
+                d.insert("doc".to_string(), doc.clone().unwrap_or(Value::Null));
+            } else {
+                // Client→server publish/leave.
+                d.insert("doc".to_string(), doc.clone().unwrap_or(Value::Null));
+            }
+            if let Some(timestamp) = timestamp {
+                d.insert("timestamp".to_string(), Value::from(*timestamp));
+            }
+            let mut root = Map::new();
+            root.insert("event".to_string(), Value::from("presence"));
+            root.insert("data".to_string(), Value::Object(d));
             Value::Object(root)
         }
         ControlMessage::Unknown(v) => v.clone(),

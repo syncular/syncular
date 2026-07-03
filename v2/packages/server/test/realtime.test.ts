@@ -7,6 +7,7 @@ import {
   type CommitFrame,
   decodeMessage,
   parseRealtimeServerEvent,
+  type ScopeMap,
   type SubStartFrame,
 } from '@syncular-v2/core';
 import { createRealtimeHub, type RealtimeHub } from '@syncular-v2/server';
@@ -305,5 +306,174 @@ describe('control plane (§8.3, §8.5)', () => {
     expect(beat.event.event).toBe('heartbeat');
     session.handleMessage('not json at all'); // must not throw
     session.handleMessage('{"type":"presence"}'); // unknown → ignored
+  });
+});
+
+describe('presence (§8.6)', () => {
+  // Presence identity is (actorId, clientId); the test context binds every
+  // client record to actor-1, so distinct clientIds are distinct peers.
+  async function presentClient(
+    t: TestContext,
+    hub: RealtimeHub,
+    clientId: string,
+    scopes: ScopeMap = { project_id: ['p1'] },
+  ) {
+    await sync(t, [pullHeader(), subFrame('s1', 'tasks', scopes, -1)], {
+      clientId,
+    });
+    const wire = makeWire();
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId,
+      send: wire.send,
+    });
+    return { wire, session };
+  }
+
+  function lastPresence(wire: Wire): Record<string, unknown> | undefined {
+    for (let i = wire.texts.length - 1; i >= 0; i--) {
+      const parsed = JSON.parse(wire.texts[i] ?? '{}') as {
+        event?: string;
+        data?: Record<string, unknown>;
+      };
+      if (parsed.event === 'presence') return parsed.data;
+    }
+    return undefined;
+  }
+
+  function presenceEvents(wire: Wire): Array<Record<string, unknown>> {
+    return wire.texts
+      .map(
+        (t) =>
+          JSON.parse(t) as { event?: string; data?: Record<string, unknown> },
+      )
+      .filter((m) => m.event === 'presence')
+      .map((m) => m.data ?? {});
+  }
+
+  test('publish → join → update → leave fans out to a scope-mate', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    const a = await presentClient(t, hub, 'client-a');
+    const b = await presentClient(t, hub, 'client-b');
+
+    a.session.handleMessage(
+      JSON.stringify({
+        event: 'presence',
+        data: { scopeKey: 'project:p1', doc: { cursor: 1 } },
+      }),
+    );
+    let seen = lastPresence(b.wire);
+    expect(seen?.kind).toBe('join');
+    expect(seen?.actorId).toBe('actor-1');
+    expect(seen?.clientId).toBe('client-a');
+    expect(seen?.doc).toEqual({ cursor: 1 });
+
+    a.session.handleMessage(
+      JSON.stringify({
+        event: 'presence',
+        data: { scopeKey: 'project:p1', doc: { cursor: 2 } },
+      }),
+    );
+    seen = lastPresence(b.wire);
+    expect(seen?.kind).toBe('update');
+    expect(seen?.doc).toEqual({ cursor: 2 });
+
+    a.session.handleMessage(
+      JSON.stringify({
+        event: 'presence',
+        data: { scopeKey: 'project:p1', doc: null },
+      }),
+    );
+    seen = lastPresence(b.wire);
+    expect(seen?.kind).toBe('leave');
+    expect(seen?.doc).toBe(null);
+    // A publisher never receives its own fanout.
+    expect(presenceEvents(a.wire)).toHaveLength(0);
+  });
+
+  test('disconnect implies leave to remaining peers (§8.6.1)', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    const a = await presentClient(t, hub, 'client-a');
+    const b = await presentClient(t, hub, 'client-b');
+    a.session.handleMessage(
+      JSON.stringify({
+        event: 'presence',
+        data: { scopeKey: 'project:p1', doc: { x: 1 } },
+      }),
+    );
+    expect(lastPresence(b.wire)?.kind).toBe('join');
+    a.session.close();
+    expect(lastPresence(b.wire)?.kind).toBe('leave');
+  });
+
+  test('a late joiner gets the snapshot join-burst (§8.6.4)', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+    const a = await presentClient(t, hub, 'client-a');
+    a.session.handleMessage(
+      JSON.stringify({
+        event: 'presence',
+        data: { scopeKey: 'project:p1', doc: { who: 'a' } },
+      }),
+    );
+    const c = await presentClient(t, hub, 'client-c');
+    const snapshot = presenceEvents(c.wire);
+    expect(snapshot).toHaveLength(1);
+    expect(snapshot[0]?.kind).toBe('join');
+    expect(snapshot[0]?.clientId).toBe('client-a');
+    expect(snapshot[0]?.doc).toEqual({ who: 'a' });
+  });
+
+  test('cross-scope isolation — no leakage to non-scope-mates (§8.6.3)', async () => {
+    const t = makeContext();
+    // The actor is allowed both scopes; the SUBSCRIPTIONS differ, so the
+    // registrations (and thus presence grants) are disjoint by key.
+    t.scopes.value = { project_id: ['p1', 'p2'] };
+    const hub = makeHub(t);
+    const a = await presentClient(t, hub, 'client-a');
+    // d holds a DIFFERENT scope key.
+    const d = await presentClient(t, hub, 'client-d', { project_id: ['p2'] });
+    const dWire = d.wire;
+    a.session.handleMessage(
+      JSON.stringify({
+        event: 'presence',
+        data: { scopeKey: 'project:p1', doc: { x: 1 } },
+      }),
+    );
+    expect(presenceEvents(dWire)).toHaveLength(0); // no leak to p2
+    // d cannot publish onto p1 (unheld key) → presence.forbidden to d.
+    d.session.handleMessage(
+      JSON.stringify({
+        event: 'presence',
+        data: { scopeKey: 'project:p1', doc: { evil: true } },
+      }),
+    );
+    expect(lastPresence(dWire)?.error).toBe('presence.forbidden');
+    expect(presenceEvents(a.wire)).toHaveLength(0); // a saw nothing from d
+  });
+
+  test('an over-cap document is rejected loudly to the publisher (§8.6.2)', async () => {
+    const t = makeContext();
+    const smallCapHub = createRealtimeHub({
+      schema: t.ctx.schema,
+      storage: t.ctx.storage,
+      resolveScopes: t.ctx.resolveScopes,
+      ...(t.ctx.clock !== undefined ? { clock: t.ctx.clock } : {}),
+      maxPresenceBytes: 16,
+    });
+    Object.assign(t.ctx, { realtime: smallCapHub });
+    const a = await presentClient(t, smallCapHub, 'client-a');
+    const b = await presentClient(t, smallCapHub, 'client-b');
+    a.session.handleMessage(
+      JSON.stringify({
+        event: 'presence',
+        data: { scopeKey: 'project:p1', doc: { big: 'x'.repeat(100) } },
+      }),
+    );
+    expect(lastPresence(a.wire)?.error).toBe('presence.too_large');
+    expect(presenceEvents(b.wire)).toHaveLength(0); // never fanned out
   });
 });

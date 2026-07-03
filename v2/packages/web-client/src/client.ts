@@ -14,8 +14,10 @@ import {
   decodeRow,
   decodeRowsSegment,
   encodeMessage,
+  encodePresencePublish,
   MessageStreamScanner,
   PROTOCOL_WIRE_VERSION,
+  type PresenceKind,
   type PushResultFrame,
   parseRealtimeServerEvent,
   REALTIME_TAG_DELTA,
@@ -228,6 +230,19 @@ export interface SyncClientConfig {
    * bootstrap round reached idle — the app's cue to re-run live queries.
    */
   readonly onUpgrading?: (upgrading: boolean) => void;
+  /**
+   * §8.6 presence: a scope-mate's presence on a key this client holds
+   * changed (join/update/leave). Fired after the local presence map is
+   * updated — the app's cue to re-render who's-online.
+   */
+  readonly onPresence?: (scopeKey: string) => void;
+}
+
+/** §8.6 a peer's ephemeral presence document on a scope key. */
+export interface PresencePeer {
+  readonly actorId: string;
+  readonly clientId: string;
+  readonly doc: Record<string, unknown>;
 }
 
 export interface SubscribeInput {
@@ -327,6 +342,8 @@ export class SyncClient {
   #needsPull = false;
   #syncing = false;
   readonly #hasBlobs: boolean;
+  /** §8.6 presence: scopeKey → (peerKey `actorId clientId` → peer). */
+  readonly #presence = new Map<string, Map<string, PresencePeer>>();
 
   constructor(config: SyncClientConfig) {
     this.#config = config;
@@ -574,6 +591,40 @@ export class SyncClient {
   /** §8: a hello/wake-up asked for a pull that has not run yet. */
   get syncNeeded(): boolean {
     return this.#needsPull;
+  }
+
+  /**
+   * §8.6 presence on a scope key: the current peers present there (a map
+   * of `actorId clientId` → peer). Empty for a key with no present peers.
+   * Ephemeral — reflects only what the socket has delivered.
+   */
+  presence(scopeKey: string): readonly PresencePeer[] {
+    const peers = this.#presence.get(scopeKey);
+    return peers === undefined ? [] : [...peers.values()];
+  }
+
+  /** Every scope key this client currently has presence state for. */
+  presenceKeys(): string[] {
+    return [...this.#presence.keys()];
+  }
+
+  /**
+   * §8.6.2 publish (or clear, `doc: null`) this client's presence document
+   * for `scopeKey`. Requires a live socket; the document is ephemeral and
+   * lost on disconnect (the server emits leave). Authorization is the
+   * connection's registration (§8.6.3) — an unheld key is rejected loudly
+   * by the server with `presence.forbidden`.
+   */
+  setPresence(scopeKey: string, doc: Record<string, unknown> | null): void {
+    this.#requireStarted();
+    const socket = this.#socket;
+    if (socket === undefined) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        'setPresence requires a connected realtime socket (§8.6)',
+      );
+    }
+    socket.send(encodePresencePublish(scopeKey, doc));
   }
 
   /**
@@ -959,6 +1010,7 @@ export class SyncClient {
       onBinary: (bytes) => this.#routeRealtimeBinary(bytes),
       onClose: () => {
         this.#socket = undefined;
+        this.#presence.clear(); // §8.6.1: presence is per-connection
         this.#abortPendingRound('realtime socket closed mid-round (§8.7)');
       },
     });
@@ -967,6 +1019,7 @@ export class SyncClient {
   disconnectRealtime(): void {
     this.#socket?.close();
     this.#socket = undefined;
+    this.#presence.clear(); // §8.6.1: presence is per-connection
     this.#abortPendingRound('realtime socket disconnected mid-round (§8.7)');
   }
 
@@ -1035,7 +1088,46 @@ export class SyncClient {
       // §8.3: any wake-up means "run a pull soon", never data.
       this.#needsPull = true;
       this.#config.onSyncNeeded?.(event.data.reason);
+      return;
     }
+    if (event.event === 'presence') {
+      this.#applyPresence(event.data);
+    }
+  }
+
+  /** §8.6 apply an inbound presence fanout to the local map. */
+  #applyPresence(data: {
+    scopeKey: string;
+    kind?: PresenceKind;
+    actorId?: string;
+    clientId?: string;
+    doc?: Record<string, unknown> | null;
+    error?: string;
+  }): void {
+    // The publisher-directed error variant (§8.6.2) surfaces via the
+    // sync-needed reason channel is inappropriate; it is an out-of-band
+    // presence rejection — record nothing to the peer map, just ignore
+    // here (setPresence callers observe it through the callback if wired).
+    if (data.error !== undefined || data.kind === undefined) return;
+    const { scopeKey, kind, actorId, clientId } = data;
+    if (actorId === undefined || clientId === undefined) return;
+    const peerKey = `${actorId} ${clientId}`;
+    let peers = this.#presence.get(scopeKey);
+    if (kind === 'leave') {
+      peers?.delete(peerKey);
+      if (peers !== undefined && peers.size === 0) {
+        this.#presence.delete(scopeKey);
+      }
+    } else {
+      const doc = data.doc;
+      if (doc === null || doc === undefined) return;
+      if (peers === undefined) {
+        peers = new Map();
+        this.#presence.set(scopeKey, peers);
+      }
+      peers.set(peerKey, { actorId, clientId, doc });
+    }
+    this.#config.onPresence?.(scopeKey);
   }
 
   async #handleRealtimeBinary(bytes: Uint8Array): Promise<void> {

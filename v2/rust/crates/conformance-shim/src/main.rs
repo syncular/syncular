@@ -569,6 +569,31 @@ fn dispatch(
             let value = need_client(client)?.sync_needed();
             Ok(json!({ "value": value }))
         }
+        "setPresence" => {
+            let scope_key = params
+                .get("scopeKey")
+                .and_then(Value::as_str)
+                .ok_or_else(|| client_err("setPresence missing scopeKey".to_owned()))?
+                .to_owned();
+            // §8.6.2: `doc` may be a JSON object or null (a leave).
+            let doc = params.get("doc");
+            let doc_ref = match doc {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(v),
+            };
+            need_client(client)?
+                .set_presence(io, &scope_key, doc_ref)
+                .map_err(client_err)?;
+            Ok(json!({}))
+        }
+        "presence" => {
+            let scope_key = params
+                .get("scopeKey")
+                .and_then(Value::as_str)
+                .ok_or_else(|| client_err("presence missing scopeKey".to_owned()))?;
+            let peers = need_client(client)?.presence(scope_key);
+            Ok(json!({ "peers": peers }))
+        }
 
         // -- CodecDriver surface (Appendix A) — no client instance needed --
         "messageRoundtrip" => {
@@ -603,6 +628,7 @@ fn dispatch(
                 Ok(ControlMessage::Hello { .. })
                     | Ok(ControlMessage::Wake { .. })
                     | Ok(ControlMessage::Heartbeat { .. })
+                    | Ok(ControlMessage::Presence { .. })
             );
             Ok(json!({ "value": known }))
         }

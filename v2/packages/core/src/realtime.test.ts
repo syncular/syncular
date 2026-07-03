@@ -55,9 +55,9 @@ describe('realtime control messages (SPEC.md §8)', () => {
 
   it('tolerates unknown control events (§8.1 forward compat)', () => {
     const parsed = parseRealtimeServerEvent(
-      JSON.stringify({ event: 'presence', data: { anything: true } }),
+      JSON.stringify({ event: 'typing-indicator', data: { anything: true } }),
     );
-    expect(parsed).toEqual({ known: false, eventName: 'presence' });
+    expect(parsed).toEqual({ known: false, eventName: 'typing-indicator' });
   });
 
   it('rejects malformed known events', () => {

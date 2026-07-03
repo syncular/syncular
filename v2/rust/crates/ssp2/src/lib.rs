@@ -22,6 +22,9 @@ pub use decode::decode_message;
 pub use encode::encode_message;
 pub use error::{DecodeError, ErrorCode};
 pub use model::{Frame, Message, MsgKind};
-pub use realtime::{parse_control, parse_control_value, render_control, ControlMessage};
+pub use realtime::{
+    encode_presence_publish, parse_control, parse_control_value, render_control, ControlMessage,
+    PresenceKind,
+};
 pub use render::{render_message, render_rows_segment};
 pub use segment::{decode_rows_segment, encode_rows_segment, RowsSegment, SegmentRow};
