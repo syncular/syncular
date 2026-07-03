@@ -378,5 +378,7 @@ fn render_column_value(value: &Option<ColumnValue>) -> Value {
         Some(ColumnValue::Bytes(b)) => Value::from(base64(b)),
         // §11: blob_ref (tag 7) renders as embedded parsed JSON, like json.
         Some(ColumnValue::BlobRef(j)) => j.parse(),
+        // §11: crdt (tag 8) renders as base64, like bytes.
+        Some(ColumnValue::Crdt(b)) => Value::from(base64(b)),
     }
 }

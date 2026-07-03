@@ -151,4 +151,33 @@ describe('row codec (SPEC.md §2.4)', () => {
     ];
     expect(roundTrip(negative)).toEqual(negative);
   });
+
+  it('encodes a crdt column (tag 8) byte-identically to a bytes column', () => {
+    // §2.4 tag 8, §5.10: a `crdt` value rides the `bytes` machinery. Its
+    // wire bytes are identical to a `bytes` column holding the same value —
+    // the tag differs only in the SSG2 column table, not the row payload.
+    const crdtCols: readonly RowColumn[] = [
+      { name: 'id', type: 'string', nullable: false },
+      { name: 'doc', type: 'crdt', nullable: true, crdtType: 'yjs-doc' },
+    ];
+    const bytesCols: readonly RowColumn[] = [
+      { name: 'id', type: 'string', nullable: false },
+      { name: 'doc', type: 'bytes', nullable: true },
+    ];
+    const update = new Uint8Array([1, 2, 3, 250, 0, 255]);
+    const crdtValues: RowValue[] = ['r-1', update];
+    expect(encodeRow(crdtCols, crdtValues)).toEqual(
+      encodeRow(bytesCols, crdtValues),
+    );
+    expect(decodeRow(crdtCols, encodeRow(crdtCols, crdtValues))).toEqual(
+      crdtValues,
+    );
+    // NULL crdt and empty (non-NULL) crdt both round-trip.
+    expect(decodeRow(crdtCols, encodeRow(crdtCols, ['r-1', null]))).toEqual([
+      'r-1',
+      null,
+    ]);
+    const empty: RowValue[] = ['r-1', new Uint8Array(0)];
+    expect(decodeRow(crdtCols, encodeRow(crdtCols, empty))).toEqual(empty);
+  });
 });

@@ -51,7 +51,7 @@ spec/vectors/
 
 ## Coverage
 
-The authoritative initial vector list (17 cases + invalid set) is
+The authoritative vector list (19 cases + invalid set) is
 SPEC.md Appendix A. Summary of what it covers:
 
 - requests: minimal pull, bootstrap pull (accept bits, resume token),
@@ -62,7 +62,10 @@ SPEC.md Appendix A. Summary of what it covers:
   subscription revoked, cursor reset (horizon), mid-stream ERROR frame,
   unknown-frame skip (forward compat), schema floor
 - segment: SSG2 with two row blocks + end marker, nullable columns,
-  varied per-row `serverVersion` incl. the i64 safe-integer boundary
+  varied per-row `serverVersion` incl. the i64 safe-integer boundary;
+  a `crdt` column (tag 8) riding the bytes machinery
+- response: a `COMMIT` upsert carrying a server-merged `crdt` column
+  (§5.10.3 — no CRDT-specific frame)
 - realtime: `wake` and `hello` JSON control vectors
 - invalid: truncated envelope (missing END), bad magic, unsupported
   wireVersion, non-zero flags, overlong frame length, bad bool byte,

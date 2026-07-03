@@ -25,6 +25,7 @@ import {
 import type { BlobStore } from './blob-store';
 import type { SyncRequestContext } from './context';
 import { clockOf } from './context';
+import type { CrdtMergerRegistry } from './crdt-merger';
 import { SyncError } from './errors';
 import type { CompiledSchema, CompiledTable } from './schema';
 import type { ResolvedScopes } from './scopes';
@@ -92,6 +93,56 @@ interface BlobApplyContext {
   readonly partition: string;
 }
 
+/**
+ * §5.10.3: merge the row's `crdt` columns in place. For each crdt column,
+ * replace the incoming value with `merge(stored, incoming)` (§5.10.2) —
+ * never the raw pushed bytes. `storedValues` is undefined on insert (the
+ * stored value is `null` — the empty document). Returns `true` iff any crdt
+ * column value changed (so the caller re-encodes), or a terminating
+ * `sync.crdt_merge_failed` outcome if a merger is missing or throws.
+ *
+ * A NULL incoming crdt value is a semantic clear, not a merge — it passes
+ * through untouched (the app is nulling the column, the same as any other
+ * type). Merging only runs for a non-NULL incoming crdt value.
+ */
+async function mergeCrdtColumns(
+  table: CompiledTable,
+  values: RowValue[],
+  storedValues: readonly RowValue[] | undefined,
+  opIndex: number,
+  mergers: CrdtMergerRegistry | undefined,
+): Promise<OperationOutcome | { readonly changed: boolean }> {
+  if (table.crdtColumns.length === 0) return { changed: false };
+  let changed = false;
+  for (const { index, crdtType } of table.crdtColumns) {
+    const incoming = values[index];
+    if (!(incoming instanceof Uint8Array)) continue; // NULL clear or absent
+    const merger = mergers?.[crdtType];
+    if (merger === undefined) {
+      return errorRecord(
+        opIndex,
+        'sync.crdt_merge_failed',
+        `no CRDT merger registered for crdtType ${JSON.stringify(crdtType)} (§5.10.2)`,
+      );
+    }
+    const storedRaw = storedValues?.[index];
+    const stored = storedRaw instanceof Uint8Array ? storedRaw : null;
+    let merged: Uint8Array;
+    try {
+      merged = await merger(stored, incoming);
+    } catch (error) {
+      return errorRecord(
+        opIndex,
+        'sync.crdt_merge_failed',
+        `CRDT merger for ${JSON.stringify(crdtType)} threw: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    values[index] = merged;
+    changed = true;
+  }
+  return { changed };
+}
+
 async function applyOperation(
   tx: StorageTransaction,
   schema: CompiledSchema,
@@ -99,6 +150,7 @@ async function applyOperation(
   op: PushOperation,
   opIndex: number,
   blobCtx: BlobApplyContext,
+  crdtMergers: CrdtMergerRegistry | undefined,
 ): Promise<OperationOutcome> {
   const table = schema.tables.get(op.table);
   if (table === undefined) {
@@ -201,15 +253,26 @@ async function applyOperation(
     // stored row's scope column values on both the baseVersion and
     // last-write-wins paths.
     const storedValues = decodeRow(table.columns, stored.payload);
-    let stripped = false;
+    let mutated = false;
     for (const pattern of table.scopePatterns) {
       const storedValue = storedValues[pattern.columnIndex] ?? null;
       if (values[pattern.columnIndex] !== storedValue) {
         values[pattern.columnIndex] = storedValue;
-        stripped = true;
+        mutated = true;
       }
     }
-    const newPayload = stripped ? encodeRow(table.columns, values) : payload;
+    // §5.10.3: crdt columns merge (stored ⊕ incoming) — never LWW, never
+    // baseVersion-conflict (they were excluded from the checks above).
+    const mergeOutcome = await mergeCrdtColumns(
+      table,
+      values,
+      storedValues,
+      opIndex,
+      crdtMergers,
+    );
+    if ('kind' in mergeOutcome) return mergeOutcome;
+    if (mergeOutcome.changed) mutated = true;
+    const newPayload = mutated ? encodeRow(table.columns, values) : payload;
     const newVersion = stored.serverVersion + 1;
     // §6.6 / §5.9.6: verify referenced blobs exist before writing.
     const blobCheck = await checkAndRecordBlobs(
@@ -278,6 +341,19 @@ async function applyOperation(
       'insert denied by scope authorization (§3.4)',
     );
   }
+  // §5.10.3: on insert a crdt column merges against the empty document
+  // (stored = null) — normalizes the initial state through the merger.
+  const insertMerge = await mergeCrdtColumns(
+    table,
+    values,
+    undefined,
+    opIndex,
+    crdtMergers,
+  );
+  if ('kind' in insertMerge) return insertMerge;
+  const insertPayload = insertMerge.changed
+    ? encodeRow(table.columns, values)
+    : payload;
   // §6.6 / §5.9.6: verify referenced blobs exist before writing.
   const blobCheck = await checkAndRecordBlobs(
     tx,
@@ -292,7 +368,7 @@ async function applyOperation(
     rowId: op.rowId,
     serverVersion: 1,
     scopes: extracted.scopes,
-    payload,
+    payload: insertPayload,
   };
   await tx.upsertRow(op.table, newRow);
   return {
@@ -303,7 +379,7 @@ async function applyOperation(
       op: 'upsert',
       rowVersion: 1,
       scopes: extracted.scopes,
-      payload,
+      payload: insertPayload,
     },
   };
 }
@@ -432,6 +508,7 @@ export async function processPushCommit(
 
   const createdAtMs = clockOf(ctx)();
   const blobCtx: BlobApplyContext = { store: ctx.blobs, partition };
+  const crdtMergers = ctx.crdtMergers;
   const tx = await storage.begin(partition);
   try {
     const results: PushOperationResult[] = [];
@@ -447,6 +524,7 @@ export async function processPushCommit(
         op,
         opIndex,
         blobCtx,
+        crdtMergers,
       );
       if (outcome.kind === 'terminate') {
         terminated = outcome.record;

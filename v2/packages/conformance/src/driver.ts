@@ -50,12 +50,15 @@ export type DriverColumnType =
   | 'boolean'
   | 'json'
   | 'bytes'
-  | 'blob_ref';
+  | 'blob_ref'
+  | 'crdt';
 
 export interface DriverColumn {
   readonly name: string;
   readonly type: DriverColumnType;
   readonly nullable: boolean;
+  /** §5.10.1: the merger name for a `crdt` column (default `yjs-doc`). */
+  readonly crdtType?: string;
 }
 
 /** `'prefix:{variable}'`; `column` defaults to the variable name (§3.1). */
@@ -158,7 +161,11 @@ export type RealtimeConnectResult =
   | { readonly ok: false; readonly error: DriverError };
 
 /** Optional server capabilities a scenario may require. */
-export type ServerCapability = 'idempotency-fault' | 'signed-urls' | 'blobs';
+export type ServerCapability =
+  | 'idempotency-fault'
+  | 'signed-urls'
+  | 'blobs'
+  | 'crdt';
 
 export interface ServerInstance {
   /**

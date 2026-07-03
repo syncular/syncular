@@ -46,6 +46,12 @@ export interface CompiledTable {
    * whose non-NULL values reference blobs (existence check, reference
    * index). */
   readonly blobRefColumnIndices: readonly number[];
+  /** `crdt` columns (§2.4 tag 8, §5.10) — index + the `crdtType` name that
+   * selects the merger. Empty when the table has no crdt columns. */
+  readonly crdtColumns: readonly {
+    readonly index: number;
+    readonly crdtType: string;
+  }[];
 }
 
 export interface CompiledSchema {
@@ -129,8 +135,19 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       declaredVariables.add(pattern.variable);
     }
     const blobRefColumnIndices: number[] = [];
+    const crdtColumns: { index: number; crdtType: string }[] = [];
     table.columns.forEach((column, index) => {
       if (column.type === 'blob_ref') blobRefColumnIndices.push(index);
+      if (column.type === 'crdt') {
+        // §5.10.1: a crdt column MUST name a crdtType (schema-compile-time
+        // requirement — a crdt column without one is a server bug).
+        if (column.crdtType === undefined || column.crdtType.length === 0) {
+          throw new Error(
+            `table ${table.name}: crdt column ${JSON.stringify(column.name)} must declare a crdtType (§5.10.1)`,
+          );
+        }
+        crdtColumns.push({ index, crdtType: column.crdtType });
+      }
     });
     tables.set(table.name, {
       name: table.name,
@@ -140,6 +157,7 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       columnIndex,
       declaredVariables: variables,
       blobRefColumnIndices,
+      crdtColumns,
     });
   }
   const compiled: CompiledSchema = {

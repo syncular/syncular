@@ -18,12 +18,20 @@ export type ColumnType =
   | 'boolean'
   | 'json'
   | 'bytes'
-  | 'blob_ref';
+  | 'blob_ref'
+  | 'crdt';
 
 export interface RowColumn {
   readonly name: string;
   readonly type: ColumnType;
   readonly nullable: boolean;
+  /**
+   * For a `crdt` column (§2.4 tag 8, §5.10.1): the named merger the server
+   * selects (this rung defines exactly `'yjs-doc'`). Schema-IR metadata
+   * ONLY — never on the wire (the SSG2 column table carries name/type/
+   * nullable, and `crdt` shares the `bytes` tag). Ignored for other types.
+   */
+  readonly crdtType?: string;
 }
 
 /**
@@ -41,6 +49,7 @@ const TYPE_TO_TAG: Readonly<Record<ColumnType, number>> = {
   json: 5,
   bytes: 6,
   blob_ref: 7,
+  crdt: 8,
 };
 
 const TAG_TO_TYPE = new Map<number, ColumnType>(
@@ -103,9 +112,13 @@ function writeValue(
       writer.bool(value);
       return;
     case 'bytes':
+    case 'crdt':
+      // §2.4 tag 8: a `crdt` value is byte-for-byte a `bytes` value —
+      // opaque CRDT bytes (§5.10), no structural validation. `crdtType`
+      // selects the server merger and never touches the codec.
       if (!(value instanceof Uint8Array)) {
         throw new Error(
-          `column ${column.name} (bytes) requires a Uint8Array value`,
+          `column ${column.name} (${column.type}) requires a Uint8Array value`,
         );
       }
       writer.bytes(value);
@@ -147,6 +160,8 @@ function readValue(reader: ByteReader, column: RowColumn): RowValue {
     case 'boolean':
       return reader.bool();
     case 'bytes':
+    case 'crdt':
+      // §2.4 tag 8: opaque bytes, decoded exactly like tag 6 (no parse).
       return reader.bytes();
   }
 }

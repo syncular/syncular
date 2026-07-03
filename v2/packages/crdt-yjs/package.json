@@ -1,0 +1,15 @@
+{
+  "name": "@syncular-v2/crdt-yjs",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@syncular-v2/core": "workspace:*",
+    "yjs": "^13.6.0"
+  },
+  "devDependencies": {
+    "@syncular-v2/server": "workspace:*"
+  }
+}

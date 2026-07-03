@@ -8,6 +8,7 @@ import { blobScenarios } from './blobs';
 import { bootstrapScenarios } from './bootstrap';
 import { conflictScenarios } from './conflict';
 import { convergenceScenarios } from './convergence';
+import { crdtScenarios } from './crdt';
 import { errorScenarios } from './errors';
 import { lifecycleScenarios } from './lifecycle';
 import { offlineScenarios } from './offline';
@@ -27,6 +28,7 @@ export const CATALOG: readonly Scenario[] = [
   ...sqliteImageScenarios,
   ...signedUrlScenarios,
   ...blobScenarios,
+  ...crdtScenarios,
   ...lifecycleScenarios,
   ...realtimeScenarios,
   ...wsRoundScenarios,

@@ -38,7 +38,14 @@ const TYPE_MAP: Readonly<Record<string, IrColumnType>> = {
   // column is TEXT-shaped like `json`.
   BLOB_REF: 'blob_ref',
   BLOBREF: 'blob_ref',
+  // §5.10 tag 8: a stored-as-BLOB column carrying opaque server-merged CRDT
+  // bytes. The synthetic keyword designates the semantic type; crdtType
+  // defaults to the one built-in merger (`yjs-doc`, §5.10.1).
+  CRDT: 'crdt',
 };
+
+/** Default `crdtType` for a bare `CRDT` keyword (§5.10.1). */
+const DEFAULT_CRDT_TYPE = 'yjs-doc';
 
 export interface ParsedTable {
   readonly name: string;
@@ -264,7 +271,12 @@ function parseColumnDef(cursor: Cursor, allowPrimaryKey: boolean): ColumnDef {
     }
   }
   if (primaryKey) nullable = false;
-  return { column: { name, type, nullable }, primaryKey };
+  // §5.10.1: a crdt column carries a crdtType (default `yjs-doc`).
+  const column: IrColumn =
+    type === 'crdt'
+      ? { name, type, nullable, crdtType: DEFAULT_CRDT_TYPE }
+      : { name, type, nullable };
+  return { column, primaryKey };
 }
 
 function parseCreateTable(

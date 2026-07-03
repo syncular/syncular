@@ -138,6 +138,9 @@ function sqlType(column: RowColumn): string {
     case 'boolean':
       return 'INTEGER';
     case 'bytes':
+    case 'crdt':
+      // §5.10: a crdt column stores its opaque bytes locally, exactly like
+      // a bytes column. The Y.Doc view is an app-level helper (§5.10.4).
       return 'BLOB';
   }
 }
@@ -205,6 +208,7 @@ export function fromSqlValue(column: RowColumn, value: SqlValue): RowValue {
     case 'float':
       return value as number;
     case 'bytes':
+    case 'crdt':
       return value as Uint8Array;
     case 'string':
     case 'json':

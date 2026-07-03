@@ -23,11 +23,12 @@ function quoteIdent(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
 
-/** §5.3 column type affinities (string/json TEXT, boolean INTEGER, …). */
+/** §5.3 column type affinities (string/json/blob_ref TEXT, boolean INTEGER, …). */
 function sqlType(column: RowColumn): string {
   switch (column.type) {
     case 'string':
     case 'json':
+    case 'blob_ref':
       return 'TEXT';
     case 'integer':
       return 'INTEGER';
@@ -36,6 +37,9 @@ function sqlType(column: RowColumn): string {
     case 'boolean':
       return 'INTEGER';
     case 'bytes':
+    case 'crdt':
+      // §5.10: a crdt column's opaque bytes ride the BLOB affinity, like
+      // bytes.
       return 'BLOB';
     default:
       throw new Error(`unsupported column type: ${String(column.type)}`);

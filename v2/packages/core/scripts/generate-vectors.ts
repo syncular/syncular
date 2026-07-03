@@ -87,6 +87,28 @@ const ROW_BOUNDARY: readonly RowValue[] = [
 const rowEdgeBytes = encodeRow(NOTES_COLUMNS, ROW_EDGE);
 const rowFullBytes = encodeRow(NOTES_COLUMNS, ROW_FULL);
 
+// CRDT column (§2.4 tag 8, §5.10). A dedicated fixture so the new tag is
+// byte-pinned WITHOUT touching NOTES_COLUMNS (existing vectors stay
+// byte-identical). `crdtType` is IR metadata, never on the wire.
+const DOCS_COLUMNS: readonly RowColumn[] = [
+  { name: 'id', type: 'string', nullable: false },
+  { name: 'title', type: 'string', nullable: false },
+  { name: 'doc', type: 'crdt', nullable: true, crdtType: 'yjs-doc' },
+];
+
+// A merged crdt value (opaque bytes — the codec never parses it), plus a
+// NULL crdt (empty document) and an empty (non-NULL) crdt to exercise the
+// bytes framing edges.
+const DOC_MERGED: readonly RowValue[] = [
+  'd-1',
+  'shared note',
+  new Uint8Array([0x01, 0x02, 0xfe, 0xff, 0x00, 0x2a]),
+];
+const DOC_EMPTY_CRDT: readonly RowValue[] = ['d-2', 'fresh', new Uint8Array(0)];
+const DOC_NULL_CRDT: readonly RowValue[] = ['d-3', 'no doc yet', null];
+
+const docMergedBytes = encodeRow(DOCS_COLUMNS, DOC_MERGED);
+
 const EFFECTIVE_SCOPES = { project: ['p1'] };
 const scopeDigest = createHash('sha256')
   .update(canonicalScopeJson(EFFECTIVE_SCOPES), 'utf8')
@@ -529,6 +551,43 @@ const schemaFloor: ResponseMessage = {
   ],
 };
 
+// §5.10.3: a server-merged crdt column rides an ordinary upsert change —
+// no CRDT-specific frame. The merged bytes are just the row's `crdt` column
+// (tag 8, bytes machinery) in the change payload.
+const commitCrdtMerge: ResponseMessage = {
+  wireVersion: 1,
+  msgKind: 'response',
+  frames: [
+    { type: 'RESP_HEADER' },
+    {
+      type: 'SUB_START',
+      id: 'sub-docs',
+      status: 'active',
+      reasonCode: '',
+      effectiveScopes: EFFECTIVE_SCOPES,
+      bootstrap: false,
+    },
+    {
+      type: 'COMMIT',
+      commitSeq: 71,
+      createdAtMs: FIXED_TIME_MS,
+      actorId: 'actor-1',
+      tables: ['docs'],
+      changes: [
+        {
+          tableIndex: 0,
+          rowId: 'd-1',
+          op: 'upsert',
+          rowVersion: 3,
+          scopes: { project: 'p1' },
+          row: docMergedBytes,
+        },
+      ],
+    },
+    { type: 'SUB_END', nextCursor: 71 },
+  ],
+};
+
 // ---------------------------------------------------------------------------
 // Valid segment vector
 // ---------------------------------------------------------------------------
@@ -545,6 +604,22 @@ const rowsTwoBlocks = encodeRowsSegment({
       { serverVersion: 4, values: ROW_EDGE },
     ],
     [{ serverVersion: 9007199254740991, values: ROW_BOUNDARY }],
+  ],
+});
+
+// §2.4 tag 8 / §5.10: an SSG2 segment for a table with a `crdt` column.
+// The column table carries the `crdt` type tag (8) + nullable; the crdt
+// values ride the `bytes` machinery (merged bytes, empty, and NULL).
+const crdtColumnSegment = encodeRowsSegment({
+  table: 'docs',
+  schemaVersion: 1,
+  columns: DOCS_COLUMNS,
+  blocks: [
+    [
+      { serverVersion: 3, values: DOC_MERGED },
+      { serverVersion: 1, values: DOC_EMPTY_CRDT },
+      { serverVersion: 1, values: DOC_NULL_CRDT },
+    ],
   ],
 });
 
@@ -1069,6 +1144,13 @@ total += emitKind(
       render: renderMessage,
       covers: 'requiredSchemaVersion present',
     },
+    {
+      name: 'commit-crdt-merge',
+      bytes: encodeMessage(commitCrdtMerge),
+      render: renderMessage,
+      covers:
+        'A COMMIT upsert carrying a server-merged crdt column (§2.4 tag 8, §5.10.3): merged bytes ride the ordinary change payload, no CRDT-specific frame',
+    },
   ],
   [],
   [
@@ -1090,6 +1172,13 @@ total += emitKind(
       render: renderRowsSegment,
       covers:
         'SSG2 with two row blocks + end marker, all column types, nullable columns, varied per-row serverVersion incl. the i64 safe-integer boundary',
+    },
+    {
+      name: 'crdt-column',
+      bytes: crdtColumnSegment,
+      render: renderRowsSegment,
+      covers:
+        'SSG2 for a table with a crdt column (§2.4 tag 8, §5.10): the crdt value rides the bytes machinery (merged bytes, empty, and NULL)',
     },
   ],
   [],

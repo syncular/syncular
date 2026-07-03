@@ -7,6 +7,12 @@
       "bin": "rows-two-blocks.bin",
       "json": "rows-two-blocks.json",
       "covers": "SSG2 with two row blocks + end marker, all column types, nullable columns, varied per-row serverVersion incl. the i64 safe-integer boundary"
+    },
+    {
+      "name": "crdt-column",
+      "bin": "crdt-column.bin",
+      "json": "crdt-column.json",
+      "covers": "SSG2 for a table with a crdt column (§2.4 tag 8, §5.10): the crdt value rides the bytes machinery (merged bytes, empty, and NULL)"
     }
   ],
   "invalid": [

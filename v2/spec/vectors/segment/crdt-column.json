@@ -1,0 +1,51 @@
+{
+  "magic": "SSG2",
+  "formatVersion": 1,
+  "table": "docs",
+  "schemaVersion": 1,
+  "columns": [
+    {
+      "name": "id",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "name": "title",
+      "type": "string",
+      "nullable": false
+    },
+    {
+      "name": "doc",
+      "type": "crdt",
+      "nullable": true
+    }
+  ],
+  "blocks": [
+    [
+      {
+        "serverVersion": 3,
+        "values": {
+          "id": "d-1",
+          "title": "shared note",
+          "doc": "AQL+/wAq"
+        }
+      },
+      {
+        "serverVersion": 1,
+        "values": {
+          "id": "d-2",
+          "title": "fresh",
+          "doc": ""
+        }
+      },
+      {
+        "serverVersion": 1,
+        "values": {
+          "id": "d-3",
+          "title": "no doc yet",
+          "doc": null
+        }
+      }
+    ]
+  ]
+}

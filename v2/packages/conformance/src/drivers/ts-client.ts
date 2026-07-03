@@ -66,7 +66,8 @@ function normalizeSqlValue(
 ): DriverRowValue {
   if (value === null || value === undefined) return null;
   if (column.type === 'boolean') return value !== 0 && value !== false;
-  if (column.type === 'bytes') {
+  if (column.type === 'bytes' || column.type === 'crdt') {
+    // §5.10: a crdt column is stored as BLOB and crosses the seam as $bytes.
     return { $bytes: bytesToHex(value as Uint8Array) };
   }
   if (typeof value === 'bigint') return Number(value);

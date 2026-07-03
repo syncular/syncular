@@ -14,8 +14,8 @@ import { createHash } from 'node:crypto';
 
 export const IR_VERSION = 1;
 
-/** The §2.4 column types (wire tags 1..7, in this order; tag 7 = blob_ref,
- * §5.9). */
+/** The §2.4 column types (wire tags 1..8, in this order; tag 7 = blob_ref,
+ * §5.9; tag 8 = crdt, §5.10). */
 export type IrColumnType =
   | 'string'
   | 'integer'
@@ -23,12 +23,16 @@ export type IrColumnType =
   | 'boolean'
   | 'json'
   | 'bytes'
-  | 'blob_ref';
+  | 'blob_ref'
+  | 'crdt';
 
 export interface IrColumn {
   readonly name: string;
   readonly type: IrColumnType;
   readonly nullable: boolean;
+  /** For a `crdt` column (§5.10.1): the merger name (default `yjs-doc`).
+   * Present only for `crdt`; serialized after `nullable` when set. */
+  readonly crdtType?: string;
 }
 
 /** One §3.1 scope pattern, fully resolved (no re-parsing downstream). */
@@ -120,6 +124,9 @@ export function serializeIr(ir: IrDocument): string {
         name: column.name,
         type: column.type,
         nullable: column.nullable,
+        // §5.10.1: crdtType is IR metadata (never on the wire); emitted only
+        // for crdt columns so non-crdt column diffs stay byte-identical.
+        ...(column.crdtType !== undefined ? { crdtType: column.crdtType } : {}),
       })),
       scopes: table.scopes.map((scope) => ({
         pattern: scope.pattern,
