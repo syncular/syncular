@@ -63,6 +63,23 @@ client. The §8.4 background host loop (wake-driven `syncUntilIdle` with jitter)
 runs ON that same owning thread, interleaved with mailbox requests, so the
 connection is never accessed concurrently.
 
+## Sync rounds over the socket (§8.7) — complete
+
+With `native-transport`, the plugin's `HostTransport` runs each combined
+push+pull round **over the connected realtime socket** in the one-loop shape
+(§8.7), matching the web client: the request goes out as a `0x01`-tagged
+binary chunk and the reader thread reassembles the `0x01` response stream to
+its `END`, routing any `0x00` delta or text control frame that interleaves to
+the inbound lane (tolerate-and-queue). One round in flight per connection is
+enforced client-side; a mid-round socket drop fails the round rather than
+hanging; with no socket the round rides `POST /sync` (the not-connected rule,
+not a fallback pair). The transport-agnostic tag demux + reassembly is shared
+with the FFI crate via `syncular_client::RealtimeRound` (unit-tested there and
+in `ssp2::MessageStreamScanner`); the WS plumbing in
+`plugin/src/transport.rs` is kept byte-for-byte parallel with
+`rust/crates/ffi/src/transport.rs`, whose `round_tests` prove the framing
+end-to-end against a scripted §8.7 WebSocket server.
+
 ## Setup
 
 `Cargo.toml`:

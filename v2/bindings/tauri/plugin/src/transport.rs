@@ -207,16 +207,118 @@ mod native {
     use std::io::Read;
     use std::net::TcpStream;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Condvar, Mutex};
     use std::thread::JoinHandle;
+    use std::time::Duration;
 
     use tungstenite::stream::MaybeTlsStream;
     use tungstenite::{Message, WebSocket};
 
     use super::{Inbound, InboundBuffer};
-    use syncular_client::{SegmentRequest, Transport, TransportError};
+    use syncular_client::{RealtimeRound, RoundInbound, SegmentRequest, Transport, TransportError};
 
     type Ws = WebSocket<MaybeTlsStream<TcpStream>>;
+
+    // §8.7 round-over-socket framing — kept byte-for-byte parallel with
+    // `rust/crates/ffi/src/transport.rs`'s `native` module (see that file for
+    // the full commentary). The transport-agnostic tag demux + reassembly
+    // lives in `syncular_client::RealtimeRound`, shared by both crates; only
+    // the WS send/read plumbing is mirrored here (the crates are in separate
+    // cargo workspaces and cannot share a private module).
+    const ROUND_TIMEOUT: Duration = Duration::from_secs(30);
+    const READ_TIMEOUT: Duration = Duration::from_millis(50);
+
+    /// The §8.7 round rendezvous shared between the reader thread and
+    /// `realtime_sync`. See the FFI crate's `RoundChannel` for details.
+    #[derive(Default)]
+    pub(super) struct RoundChannel {
+        state: Mutex<RoundState>,
+        ready: Condvar,
+    }
+
+    #[derive(Default)]
+    struct RoundState {
+        round: RealtimeRound,
+        outcome: Option<Result<Vec<u8>, TransportError>>,
+    }
+
+    impl RoundChannel {
+        fn begin(&self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            let mut state = self.state.lock().expect("round lock");
+            state.outcome = None;
+            state.round.begin(request)
+        }
+
+        fn route_binary(&self, frame: &[u8]) -> Option<Vec<u8>> {
+            let mut state = self.state.lock().expect("round lock");
+            match state.round.route_binary(frame) {
+                Ok(RoundInbound::Delta(body)) => Some(body),
+                Ok(RoundInbound::RoundProgress) | Ok(RoundInbound::Ignored) => None,
+                Ok(RoundInbound::RoundComplete(bytes)) => {
+                    state.outcome = Some(Ok(bytes));
+                    self.ready.notify_all();
+                    None
+                }
+                Err(error) => {
+                    state.outcome = Some(Err(error));
+                    self.ready.notify_all();
+                    None
+                }
+            }
+        }
+
+        fn fail_in_flight(&self, error: TransportError) {
+            let mut state = self.state.lock().expect("round lock");
+            if state.round.in_flight() && state.outcome.is_none() {
+                state.round.abort();
+                state.outcome = Some(Err(error));
+                self.ready.notify_all();
+            }
+        }
+
+        fn wait(&self) -> Result<Vec<u8>, TransportError> {
+            let mut state = self.state.lock().expect("round lock");
+            let deadline = std::time::Instant::now() + ROUND_TIMEOUT;
+            while state.outcome.is_none() {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    state.round.abort();
+                    return Err(TransportError::new(
+                        "sync.transport_failed",
+                        "realtime sync round timed out (§8.7)",
+                    ));
+                }
+                let (guard, _timeout) = self
+                    .ready
+                    .wait_timeout(state, deadline - now)
+                    .expect("round wait");
+                state = guard;
+            }
+            state.outcome.take().expect("outcome present")
+        }
+    }
+
+    fn is_would_block(e: &tungstenite::Error) -> bool {
+        matches!(
+            e,
+            tungstenite::Error::Io(io) if matches!(
+                io.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            )
+        )
+    }
+
+    fn set_read_timeout(ws: &mut Ws, timeout: Option<Duration>) {
+        match ws.get_mut() {
+            MaybeTlsStream::Plain(s) => {
+                let _ = s.set_read_timeout(timeout);
+            }
+            MaybeTlsStream::Rustls(s) => {
+                let _ = s.get_ref().set_read_timeout(timeout);
+            }
+            _ => {}
+        }
+    }
 
     pub struct NativeTransport {
         base_url: String,
@@ -228,6 +330,7 @@ mod native {
         socket: Option<Arc<Mutex<Ws>>>,
         reader: Option<JoinHandle<()>>,
         reader_stop: Arc<AtomicBool>,
+        round: Arc<RoundChannel>,
     }
 
     fn http_err(op: &str, e: impl std::fmt::Display) -> TransportError {
@@ -271,6 +374,7 @@ mod native {
                 socket: None,
                 reader: None,
                 reader_stop: Arc::new(AtomicBool::new(false)),
+                round: Arc::new(RoundChannel::default()),
             })
         }
 
@@ -300,6 +404,10 @@ mod native {
 
         pub fn shutdown(&mut self) {
             self.reader_stop.store(true, Ordering::SeqCst);
+            self.round.fail_in_flight(TransportError::new(
+                "sync.transport_failed",
+                "realtime disconnected mid-round (§8.7)",
+            ));
             if let Some(socket) = &self.socket {
                 if let Ok(mut ws) = socket.lock() {
                     let _ = ws.close(None);
@@ -327,10 +435,26 @@ mod native {
         }
 
         fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
-            // §8.7 round-over-socket framing is not yet wired in the native
-            // transport; the round rides POST /sync (protocol-equivalent — the
-            // seam is bytes-in/out) while the socket carries wake-ups+presence.
-            self.post_octet("/sync", request)
+            // §8.7 socket round: send the request as a `0x01`-tagged chunk on
+            // the connected socket, block for the reassembled response stream.
+            // No socket connected → the round rides HTTP (same rule as the TS
+            // client: `POST /sync` when the socket is absent).
+            let Some(socket) = self.socket.clone() else {
+                return self.post_octet("/sync", request);
+            };
+            let framed = self.round.begin(request)?;
+            let send = {
+                let mut ws = socket
+                    .lock()
+                    .map_err(|_| TransportError::new("transport.failed", "ws lock poisoned"))?;
+                ws.send(Message::Binary(framed))
+                    .map_err(|e| http_err("ws round send", &e))
+                    .and_then(|()| ws.flush().map_err(|e| http_err("ws round flush", &e)))
+            };
+            if let Err(e) = send {
+                self.round.fail_in_flight(e);
+            }
+            self.round.wait()
         }
 
         fn download_segment(
@@ -387,23 +511,36 @@ mod native {
             if self.socket.is_some() {
                 return Ok(());
             }
-            let mut req = tungstenite::http::Request::builder()
-                .uri(&self.ws_url)
-                .method("GET");
-            for (k, v) in &self.headers {
-                req = req.header(k.as_str(), v.as_str());
+            // Build via `IntoClientRequest` so tungstenite fills the mandatory
+            // WS handshake headers (a hand-built `http::Request` would omit
+            // them); then layer the configured auth/actor headers on top.
+            use tungstenite::client::IntoClientRequest;
+            let mut request = self
+                .ws_url
+                .as_str()
+                .into_client_request()
+                .map_err(|e| TransportError::new("transport.failed", format!("ws url: {e}")))?;
+            {
+                let out = request.headers_mut();
+                for (k, v) in &self.headers {
+                    if let (Ok(name), Ok(value)) = (
+                        tungstenite::http::HeaderName::try_from(k.as_str()),
+                        tungstenite::http::HeaderValue::try_from(v.as_str()),
+                    ) {
+                        out.insert(name, value);
+                    }
+                }
             }
-            let request = req
-                .body(())
-                .map_err(|e| TransportError::new("transport.failed", e.to_string()))?;
-            let (ws, _resp) = tungstenite::connect(request)
+            let (mut ws, _resp) = tungstenite::connect(request)
                 .map_err(|e| TransportError::new("transport.failed", format!("ws connect: {e}")))?;
+            set_read_timeout(&mut ws, Some(READ_TIMEOUT));
             let socket = Arc::new(Mutex::new(ws));
             self.socket = Some(Arc::clone(&socket));
             self.reader_stop.store(false, Ordering::SeqCst);
             let inbound = Arc::clone(&self.inbound);
             let stop = Arc::clone(&self.reader_stop);
             let reader_socket = Arc::clone(&socket);
+            let round = Arc::clone(&self.round);
             self.reader = Some(std::thread::spawn(move || loop {
                 if stop.load(Ordering::SeqCst) {
                     break;
@@ -417,8 +554,22 @@ mod native {
                 };
                 match msg {
                     Ok(Message::Text(text)) => inbound.push(Inbound::Text(text)),
-                    Ok(Message::Binary(bytes)) => inbound.push(Inbound::Binary(bytes)),
-                    Ok(Message::Close(_)) | Err(_) => break,
+                    Ok(Message::Binary(bytes)) => {
+                        // §8.7 tag demux: `0x01` round chunk → round channel;
+                        // `0x00` delta → inbound (tag stripped, a bare SSP2
+                        // response the client applies like a pull, §8.2).
+                        if let Some(delta) = round.route_binary(&bytes) {
+                            inbound.push(Inbound::Binary(delta));
+                        }
+                    }
+                    Err(e) if is_would_block(&e) => continue,
+                    Ok(Message::Close(_)) | Err(_) => {
+                        round.fail_in_flight(TransportError::new(
+                            "sync.transport_failed",
+                            "realtime disconnected mid-round (§8.7)",
+                        ));
+                        break;
+                    }
                     Ok(_) => {}
                 }
             }));

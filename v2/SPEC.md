@@ -791,6 +791,22 @@ than before) purges nothing: the purge contract fires only on
 stop receiving changes; they are cleaned up by the §5.6 first-page rule
 on the next fresh bootstrap, or by an eventual revocation.
 
+**Eviction is not purge.** A client MAY *voluntarily* delete local rows
+it still holds authorization for — the windowed-sync retention policy of
+§4.8. This is distinct from the revocation purge above along every axis:
+its trigger is the client's own window shrink, never a server signal;
+authorization is still held (the server is never told and tombstones
+nothing); and it is legal **only when fused with unsubscription** — a
+client MUST NOT delete rows of a subscription it keeps syncing, because
+the surviving cursor would then silently over-assert local possession
+(§4.5 C1). Eviction matches rows by the **same** local-scope-column rule
+as the purge (§5.6), **including its fail-closed clause**: with no local
+mapping for a scope key, a client MUST NOT clear by approximation. A
+narrowing echo on a *live* subscription still purges nothing; only the
+§4.8 unsubscribe-fused eviction removes rows a client remains
+authorized for. See §4.8 for the full contract (E1–E4, the outbox pin,
+version-state disposal, and re-entry).
+
 ### 3.4 Write-path authorization
 
 On every push operation (semantics unchanged from v1):
@@ -842,6 +858,26 @@ request — duplicates fail the request with `sync.invalid_subscription`),
 `table`, requested scopes, optional host-opaque `params` (passed to the
 host snapshot function), and a `cursor`. Subscription ids are echoed, not
 interpreted, by the server. Unchanged from v1.
+
+**Omission is unregistration.** A pull's subscription list replaces the
+persisted registration list (§8.1) and, for socket rounds, the live
+connection's registrations (§8.7). A subscription present in an earlier
+pull and absent from a later steady-state pull is therefore
+**unsubscribed**: it stops receiving deltas and its cursor record is
+forgotten on the next §4.5 watermark computation. This is v1's
+replace-semantics made explicit for windowing (§4.8), which subscribes
+and unsubscribes purely by including or omitting a unit's subscription.
+Steady-state pulls MUST carry the client's complete current subscription
+list; the one latitude — phased partial pulls that omit never-synced
+subscriptions — is stated in §4.7, and there is nothing to unregister in
+that case.
+
+**Sub-id derivation (non-normative guidance).** Because ids are opaque to
+the server, a windowed client MAY derive one deterministically per window
+unit so the same unit always maps to the same subscription — e.g.
+`w:<table>:<sha256(canonical scope map, §11.2)[0..16]>`. This is pure
+client convention; the server neither computes nor validates it. §4.8
+relies on it to turn a window change into a set difference on ids.
 
 ### 4.2 `PULL_HEADER` frame
 
@@ -1056,6 +1092,100 @@ Steady-state pulls MUST therefore carry the client's complete current
 subscription list; phased partial pulls are legal only while the
 omitted subscriptions have never synced (nothing registered, nothing to
 unregister).
+
+### 4.8 Windowed subscriptions
+
+A **window** is a partial local replica: a client holds rows for a
+chosen set of scope values (hot projects, recent time buckets) while the
+server keeps everything. Windowing adds **no wire frames, fields, codes,
+or server behavior** beyond §8.1 replace-semantics and the §4.5
+watermark — it is built entirely on §3 scopes and §4 subscriptions. This
+section specifies the client contract; the server text confined here
+confirms existing rules already suffice.
+
+**The model.** A window is a set of **scope values** for one scope
+variable of a table (the *window unit* = one scope value, or an
+app-chosen group of values treated atomically). The client SDK manages a
+*family* of subscriptions, one per live unit, with deterministic ids
+(§4.1 guidance). A window change is a **set difference on that family**,
+never a mutation of an existing subscription:
+
+- **Widen** (a unit enters): add its subscription with `cursor = -1`; it
+  fresh-bootstraps via the image lane (§5.3) / rows lane exactly like any
+  new subscription. Units already present are untouched — their cursors
+  stay honest. Because units are value-sharded, a widen re-downloads
+  **only** the entering unit; unchanged units are not re-bootstrapped.
+- **Shrink** (a unit leaves): stop including its subscription in pulls
+  (§4.1 omission-as-unregistration) and run **eviction** for it, fused
+  with the local unsubscription in one transaction (E3).
+- **Replace** `{A,B}→{B,C}` = shrink `A` + widen `C`; `B` is neither
+  re-bootstrapped nor evicted.
+
+**Eviction (E1–E4).** When a unit leaves the window, the client
+performs, as **one atomic local transaction** (E3):
+
+- delete the local rows matching the departing unit's effective scopes,
+  by the §5.6 local-scope-column rule **including its fail-closed
+  clause** (no local mapping ⇒ do not clear, surface a configuration
+  error), **except** rows pinned by E1;
+- discard that subscription's cursor, `bootstrapState`, and persisted
+  effective-scope echo, and remove it from the local registration list
+  (so it is omitted from the next pull, §4.1);
+- emit the deleted rows' invalidation keys through the client's single
+  apply-path choke point, exactly like a purge (a live query over evicted
+  rows MUST re-run).
+
+- **E1 — Outbox pin.** A row referenced by any still-pending outbox
+  commit MUST NOT be evicted. Its eviction is *deferred* and completes
+  when the pinning commit drains (`applied` / `cached` / dropped). The
+  pending commits themselves are untouched — the server authorizes
+  against stored rows (§3.4), so they push normally after other rows in
+  the unit are evicted. A deferred eviction is **cancelled** if the unit
+  re-enters the window before the pin drains.
+- **E2 — Version state dies with the row.** Eviction MUST delete the
+  row's stored `server_version` (§2.2) with the row — no residual version
+  cache. A `baseVersion` for an evicted-then-re-entered row comes
+  exclusively from its re-delivery (segment `serverVersion` §5.6, or a
+  `COMMIT` change's `rowVersion` §4.5). There is no legal way to hold a
+  `baseVersion` for a row you do not hold.
+- **E3 — Fusion with unsubscription** is the MUST (above): a client MUST
+  NOT keep syncing a subscription whose rows it partially evicted, and
+  MUST NOT keep a cursor for a unit it evicted (§4.5 C1 — the cursor
+  invariant is never weakened, only narrowed to match the replica).
+- **E4 — Local-only rows** (optimistic, never server-confirmed) are
+  covered by E1: they exist only because a pending commit wrote them, so
+  they are pinned until the commit drains, then evicted like any row.
+
+**Re-entry is bootstrap.** A unit that re-enters after eviction is a
+**fresh bootstrap** of its subscription (`cursor = -1`): pinned snapshot,
+image lane, §5.6 first-page clear (which sweeps any straggler whose E1
+pin drained after the eviction), segment `serverVersion` re-seeding
+optimistic concurrency. It is correct at any distance — a bootstrap
+snapshots current state (§4.7) regardless of how much log was pruned
+since eviction — so a client MUST NOT attempt to resume a
+previously-evicted unit from a parked cursor (that cursor's possession
+claim was falsified by the eviction; §4.5 C1). Re-entry needs no new
+protocol object.
+
+**The window registry.** The client persists which units are live per
+window base (table + variable + the fixed remainder of the scope map).
+The registry is authoritative for two things: (i) which subscriptions the
+next pull carries (so omission-as-unregistration, §4.1, drives shrink),
+and (ii) whether a local query is **answerable in full** — a query is
+complete iff every scope value its predicate touches is windowed-in;
+otherwise the result is partial and the client MUST be able to say so
+(never silently return partial data as complete). A client MAY expose
+this completeness verdict to the host; it MUST NOT represent a
+windowed-out result as complete.
+
+**Server confirmation (no new rules).** A newly widened unit's
+subscription is bootstrapping and not yet synced-once, so it is excluded
+from the §8.2 ack floor by the existing rule; a shrunk unit simply stops
+appearing in pulls and the §4.5 per-request cursor record forgets it on
+the next pull. A socket round's registration replace (§8.7) makes a
+window change take effect on the very round that carries it — no
+reconnect, no socket cycle. Nothing in §§4.5, 4.6, 8.1, 8.2, 8.7 is
+amended.
 
 ---
 
@@ -2491,6 +2621,11 @@ Registrations are fixed for the life of the connection **under the HTTP
 binding alone**: a pull over `POST /sync` takes effect at the next
 connect, not mid-session. A sync round completed **on the connection
 itself** replaces them at round end (§8.7) — the reference client path.
+This is what lets a **window change** (§4.8) take effect immediately: the
+socket round whose subscription list added a widened unit and dropped a
+shrunk one re-registers on that same round, so a widened unit begins
+receiving deltas and a shrunk one stops with no reconnect or socket
+cycle.
 
 Control messages are JSON text frames. Binary WebSocket messages carry
 a one-byte **channel tag** followed by their payload (§8.7): tag `0x00`
@@ -3425,3 +3560,40 @@ not a prose test.
     scenario is deterministic (seam-observed readiness, no timers) and
     exercises the hub's per-connection accounting at N-session scale
     without a load harness. Both pairings (TS×TS, Rust×TS).
+
+18. **Windowed sync (§4.8).** A client holds a partial replica keyed by
+    window units (scope values), the family managed through `setWindow`.
+    (a) **Widen bootstraps only the new unit**: a client windowed on
+    `{p1}` widens to `{p1, p2}`; the p2 subscription fresh-bootstraps
+    while p1's subscription and cursor are untouched — after sync, p2's
+    rows are present, p1's cursor is unchanged, and the widen applied
+    segment rows for p2 only (no re-download of p1, asserted on the
+    bootstrap-rows-applied counter). (b) **Shrink evicts exactly the
+    departed unit**: windowed on `{p1, p2}`, the client shrinks to
+    `{p2}`; p1's rows are deleted, p1's subscription/cursor/effective-echo
+    are discarded, p2's rows and every other unit are untouched, and the
+    eviction emits an invalidation for the evicted table (I1). A live
+    query over p1 re-runs and returns empty; the registry reports p1 as a
+    window miss (oracle truthfulness) while p2 stays complete. (c)
+    **Outbox pin defers eviction, drain completes it (E1/E4)**: with a
+    pending offline write to a p1 row, shrinking `{p1, p2}→{p2}` keeps
+    the pinned p1 row (and only it) local; after the write pushes and the
+    outbox drains, the deferred eviction completes and the row is gone —
+    while a still-pinned sibling p2 write is unaffected. (d)
+    **Re-entry is a fresh bootstrap with writable versions (E2)**:
+    evict p1, then re-enter `{p2}→{p1, p2}`; p1's subscription
+    fresh-bootstraps, its rows and `server_version`s equal the server's,
+    and an immediate `baseVersion`-carrying write on a re-entered row
+    using the segment-seeded version applies cleanly (no commit delivery
+    in between) — proving E2's "version from re-delivery only". (e)
+    **Value-sharded replace touches only the delta**: `{p1, p2}→{p2, p3}`
+    evicts p1, bootstraps p3, and leaves p2 entirely alone — p2's cursor
+    unchanged and zero segment rows re-applied for p2 (the sharding proof;
+    the naive "new window = re-download everything" cost is dissolved by
+    the unit grain). (f) **Re-entry across a pruned horizon converges**:
+    evict p1, advance and prune the server log past p1's old cursor, then
+    re-enter p1; the fresh bootstrap (snapshotting current state, §4.7)
+    converges with no dependence on the pruned log. Throughout, the server
+    is never told of any eviction and tombstones nothing (evicted ≠
+    revoked — no `revoked` status, no server-side purge). Both pairings
+    (TS×TS, Rust×TS).

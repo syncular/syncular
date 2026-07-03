@@ -32,6 +32,7 @@ import type {
   SubscribeInput,
   SyncClientLimits,
   SyncSummary,
+  WindowState,
 } from './client';
 import type { SqlRow, SqlValue } from './database';
 import { ClientSyncError } from './errors';
@@ -53,6 +54,7 @@ import {
 import type { OutboxCommit } from './outbox';
 import type { ClientSchema } from './schema';
 import type { SubscriptionRecord } from './state';
+import type { WindowBase } from './window';
 import {
   type MainToWorkerMessage,
   NOT_LEADER_CODE,
@@ -288,6 +290,14 @@ export class SyncClientHandle {
 
   unsubscribe(id: string): Promise<void> {
     return this.#call('unsubscribe', [id]);
+  }
+
+  setWindow(base: WindowBase, units: readonly string[]): Promise<void> {
+    return this.#call('setWindow', [base, units]);
+  }
+
+  windowState(base: WindowBase): Promise<WindowState> {
+    return this.#call('windowState', [base]);
   }
 
   mutate(mutations: readonly MutationInput[]): Promise<string> {

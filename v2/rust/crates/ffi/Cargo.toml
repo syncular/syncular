@@ -35,6 +35,14 @@ version = "0.24"
 optional = true
 features = ["rustls-tls-webpki-roots"]
 
+# The §8.7 round-over-socket tests spin a scripted in-test WS server
+# (tungstenite accept loop) and build responses with the ssp2 codec — the
+# loopback doctrine in Rust. The test module is cfg-gated on native-transport;
+# dev-deps are not feature-gated so they stay available for the build graph.
+[dev-dependencies]
+ssp2 = { path = "../ssp2" }
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+
 [features]
 default = []
 native-transport = ["dep:ureq", "dep:tungstenite"]

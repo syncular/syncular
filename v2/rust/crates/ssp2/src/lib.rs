@@ -16,6 +16,7 @@ pub mod primitives;
 pub mod realtime;
 pub mod render;
 pub mod segment;
+pub mod stream;
 pub mod util;
 
 pub use decode::decode_message;
@@ -28,3 +29,4 @@ pub use realtime::{
 };
 pub use render::{render_message, render_rows_segment};
 pub use segment::{decode_rows_segment, encode_rows_segment, RowsSegment, SegmentRow};
+pub use stream::{MessageStreamScanner, ScannedMessage};

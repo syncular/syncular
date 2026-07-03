@@ -28,12 +28,14 @@ import type {
   SubscribeInput,
   SyncClientLimits,
   SyncSummary,
+  WindowState,
 } from './client';
 import type { SqlRow, SqlValue } from './database';
 import type { InvalidationEvent } from './invalidation';
 import type { OutboxCommit } from './outbox';
 import type { ClientSchema } from './schema';
 import type { SubscriptionRecord } from './state';
+import type { WindowBase } from './window';
 
 // ---------------------------------------------------------------------------
 // Client-local error codes (never wire codes; §10 stays server-owned)
@@ -106,6 +108,10 @@ export interface WorkerInitResult {
 export interface WorkerApi {
   subscribe(input: SubscribeInput): void;
   unsubscribe(id: string): void;
+  /** §4.8 windowed subscriptions: set the live units for a window base. */
+  setWindow(base: WindowBase, units: readonly string[]): Promise<void>;
+  /** §4.8 completeness oracle (I3): the windowed-in units for a base. */
+  windowState(base: WindowBase): WindowState;
   mutate(mutations: readonly MutationInput[]): string;
   sync(): Promise<SyncSummary>;
   syncUntilIdle(maxRounds?: number): Promise<SyncSummary>;

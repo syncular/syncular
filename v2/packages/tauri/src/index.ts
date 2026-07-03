@@ -39,6 +39,8 @@ import type {
   SchemaFloor,
   SqlRow,
   SqlValue,
+  WindowBase,
+  WindowState,
 } from '@syncular-v2/web-client';
 
 /** A driver-protocol reply: `{result}` on success or `{error}` on failure. */
@@ -298,6 +300,20 @@ export class TauriSyncClient {
 
   async unsubscribe(id: string): Promise<void> {
     await this.#command('unsubscribe', { id });
+  }
+
+  async setWindow(base: WindowBase, units: readonly string[]): Promise<void> {
+    await this.#command('setWindow', {
+      base: base as unknown as Record<string, unknown>,
+      units: units as string[],
+    });
+  }
+
+  async windowState(base: WindowBase): Promise<WindowState> {
+    const result = (await this.#command('windowState', {
+      base: base as unknown as Record<string, unknown>,
+    })) as { units: string[] };
+    return { units: result.units };
   }
 
   async sync(): Promise<unknown> {

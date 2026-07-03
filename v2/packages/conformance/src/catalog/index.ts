@@ -21,6 +21,7 @@ import { scopeScenarios } from './scopes';
 import { signedUrlScenarios } from './signed-url';
 import { sqliteImageScenarios } from './sqlite-image';
 import { vectorScenarios } from './vectors';
+import { windowScenarios } from './window';
 import { wsRoundScenarios } from './ws-rounds';
 
 export const CATALOG: readonly Scenario[] = [
@@ -40,6 +41,7 @@ export const CATALOG: readonly Scenario[] = [
   ...wsRoundScenarios,
   ...presenceScenarios,
   ...reconnectStormScenarios,
+  ...windowScenarios,
   ...errorScenarios,
   ...vectorScenarios,
 ];

@@ -25,6 +25,7 @@ export const nav: readonly NavSection[] = [
       { slug: 'concepts-realtime', title: 'Realtime & the WS loop' },
       { slug: 'concepts-conflicts', title: 'Conflicts & optimistic writes' },
       { slug: 'concepts-blobs', title: 'Blobs' },
+      { slug: 'concepts-windowing', title: 'Windowed sync' },
     ],
   },
   {
