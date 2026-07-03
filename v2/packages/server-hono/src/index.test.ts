@@ -18,6 +18,8 @@ import {
   SqliteServerStorage,
   SSP2_CONTENT_TYPE,
   type SyncServerConfig,
+  type SyncularServerEvent,
+  type SyncularServerEvents,
 } from '@syncular-v2/server';
 import { createSyncularHono } from './index';
 
@@ -39,13 +41,14 @@ const SCHEMA: ServerSchema = {
   ],
 };
 
-function makeApp() {
+function makeApp(events?: SyncularServerEvents) {
   const config: SyncServerConfig = {
     schema: SCHEMA,
     storage: new SqliteServerStorage(),
     segments: new MemorySegmentStore(),
     resolveScopes: () => ({ project_id: ['p1'] }),
     limits: { inlineSegmentMaxBytes: 1 },
+    ...(events !== undefined ? { events } : {}),
   };
   return createSyncularHono({
     config,
@@ -170,5 +173,30 @@ describe('hono adapter', () => {
       headers: { ...headers, 'if-none-match': `"${ref.segmentId}"` },
     });
     expect(cached.status).toBe(304);
+  });
+
+  test('a config events sink flows through the adapter untouched', async () => {
+    const events: SyncularServerEvent[] = [];
+    const app = makeApp({
+      emit(event) {
+        events.push(event);
+      },
+    });
+    const response = await app.request('/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': SSP2_CONTENT_TYPE,
+        authorization: 'Bearer good',
+      },
+      body: requestBytes().slice().buffer as ArrayBuffer,
+    });
+    expect(response.status).toBe(200);
+    await response.arrayBuffer();
+    const types = events.map((e) => e.type);
+    expect(types).toContain('push.applied');
+    expect(types).toContain('pull.served');
+    expect(types).toContain('request.handled');
+    const handled = events.find((e) => e.type === 'request.handled');
+    expect(handled).toMatchObject({ outcome: 'ok', kind: 'sync' });
   });
 });

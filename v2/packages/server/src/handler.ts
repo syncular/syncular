@@ -14,6 +14,7 @@ import {
   decodeMessage,
   type PullHeaderFrame,
   type PushCommitFrame,
+  type PushResultFrame,
   type ReqHeaderFrame,
   type RequestMessage,
   type ResponseFrame,
@@ -23,6 +24,11 @@ import type { SyncRequestContext } from './context';
 import { clockOf, limitsOf } from './context';
 import { SyncError, syncError } from './errors';
 import {
+  emitEvent,
+  type PullSubscriptionSummary,
+  type SyncularServerEvents,
+} from './events';
+import {
   END_FRAME_BYTES,
   encodeResponseFrame,
   RESPONSE_ENVELOPE_HEADER,
@@ -31,6 +37,7 @@ import {
   ACCEPT_EXTERNAL_ROWS,
   ACCEPT_INLINE_ROWS,
   clampPullLimits,
+  type PullSectionTrace,
   type SubscriptionPlan,
   subscriptionSection,
 } from './pull';
@@ -73,6 +80,17 @@ async function resolveOnce(
     if (error instanceof SyncError) throw error;
     // §3.2 rule 5 / §3.4 step 4: fail loud, never leak — subscriptions
     // revoke and writes reject with sync.forbidden.
+    const events = ctx.events;
+    if (events !== undefined) {
+      emitEvent(events, {
+        type: 'scopes.resolve_failed',
+        atMs: clockOf(ctx)(),
+        partition: ctx.partition,
+        actorId: ctx.actorId,
+        phase: 'request',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
     return { ok: false };
   }
 }
@@ -191,13 +209,67 @@ async function planRequest(
   return { header, pushes, pull, subscriptions, resolved, schemaFloor: false };
 }
 
+/** Mutable outcome box shared with the instrumented stream wrapper. */
+interface RequestReport {
+  outcome: 'ok' | 'schema_floor' | 'error';
+  errorCode?: string;
+}
+
+function emitPushEvent(
+  events: SyncularServerEvents,
+  ctx: SyncRequestContext,
+  clientId: string,
+  push: PushCommitFrame,
+  frame: PushResultFrame,
+): void {
+  const base = {
+    atMs: clockOf(ctx)(),
+    partition: ctx.partition,
+    actorId: ctx.actorId,
+    clientId,
+    clientCommitId: push.clientCommitId,
+    operations: push.operations.length,
+  };
+  if (frame.status === 'applied' || frame.status === 'cached') {
+    emitEvent(events, {
+      type: 'push.applied',
+      ...base,
+      ...(frame.commitSeq !== undefined ? { commitSeq: frame.commitSeq } : {}),
+      replay: frame.status === 'cached',
+    });
+    return;
+  }
+  // Rejected (§6.3): exactly one terminating operation record.
+  const record = frame.results[0];
+  if (record?.status === 'conflict') {
+    emitEvent(events, {
+      type: 'push.conflicted',
+      ...base,
+      opIndex: record.opIndex,
+    });
+    return;
+  }
+  emitEvent(events, {
+    type: 'push.rejected',
+    ...base,
+    code:
+      record !== undefined && record.status === 'error'
+        ? record.code
+        : 'sync.invalid_request',
+    opIndex: record?.opIndex ?? 0,
+  });
+}
+
 async function* streamResponse(
   plan: RequestPlan,
   ctx: SyncRequestContext,
   schema: CompiledSchema,
+  report?: RequestReport,
 ): AsyncGenerator<Uint8Array> {
+  const events = ctx.events;
   yield RESPONSE_ENVELOPE_HEADER;
   if (plan.schemaFloor) {
+    if (report !== undefined) report.outcome = 'schema_floor';
     yield encodeResponseFrame({
       type: 'RESP_HEADER',
       requiredSchemaVersion: schema.version,
@@ -220,16 +292,23 @@ async function* streamResponse(
         plan.header.clientId,
         push,
       );
+      if (events !== undefined) {
+        emitPushEvent(events, ctx, plan.header.clientId, push, frame);
+      }
       yield encodeResponseFrame(frame);
     }
 
     // Pull half (§4): subscriptions echoed in request order.
     const cursors: number[] = [];
     if (plan.pull !== undefined) {
+      const summaries: PullSubscriptionSummary[] | undefined =
+        events !== undefined ? [] : undefined;
       const limits = clampPullLimits(plan.pull);
       const maxSeq = await ctx.storage.getMaxCommitSeq(ctx.partition);
       const horizonSeq = await ctx.storage.getHorizonSeq(ctx.partition);
       for (const subscription of plan.subscriptions) {
+        const trace: PullSectionTrace | undefined =
+          summaries !== undefined ? { segments: [] } : undefined;
         const section = subscriptionSection(
           ctx,
           schema,
@@ -237,13 +316,56 @@ async function* streamResponse(
           subscription,
           maxSeq,
           horizonSeq,
+          trace,
         );
+        let status: 'active' | 'revoked' | 'reset' = 'active';
+        let bootstrap = false;
+        let commits = 0;
+        let changes = 0;
         let step = await section.next();
         while (!step.done) {
-          yield encodeResponseFrame(step.value as ResponseFrame);
+          const frame = step.value as ResponseFrame;
+          if (summaries !== undefined) {
+            if (frame.type === 'SUB_START') {
+              status = frame.status;
+              bootstrap = frame.bootstrap;
+            } else if (frame.type === 'COMMIT') {
+              commits += 1;
+              changes += frame.changes.length;
+            }
+          }
+          yield encodeResponseFrame(frame);
           step = await section.next();
         }
         if (step.value.active) cursors.push(step.value.nextCursor);
+        if (summaries !== undefined && trace !== undefined) {
+          summaries.push({
+            id: subscription.frame.id,
+            table: subscription.frame.table,
+            status,
+            mode:
+              status !== 'active'
+                ? 'none'
+                : bootstrap
+                  ? 'bootstrap'
+                  : 'incremental',
+            fromCursor: subscription.frame.cursor,
+            nextCursor: step.value.nextCursor,
+            commits,
+            changes,
+            segments: trace.segments,
+          });
+        }
+      }
+      if (events !== undefined && summaries !== undefined) {
+        emitEvent(events, {
+          type: 'pull.served',
+          atMs: clockOf(ctx)(),
+          partition: ctx.partition,
+          actorId: ctx.actorId,
+          clientId: plan.header.clientId,
+          subscriptions: summaries,
+        });
       }
     }
 
@@ -272,6 +394,10 @@ async function* streamResponse(
     });
   } catch (error) {
     if (error instanceof SyncError) {
+      if (report !== undefined) {
+        report.outcome = 'error';
+        report.errorCode = error.code;
+      }
       // §1.6: in-band ERROR, then END, nothing else.
       yield encodeResponseFrame({
         type: 'ERROR',
@@ -299,6 +425,40 @@ export async function createSyncResponseStream(
   bytes: Uint8Array,
   ctx: SyncRequestContext,
 ): Promise<AsyncIterable<Uint8Array>> {
+  const events = ctx.events;
+  if (events === undefined) return createStreamCore(bytes, ctx, undefined);
+  // Instrumented path: measure with the ctx clock, count bytes at the
+  // seam, emit exactly one `request.handled` per request.
+  const clock = clockOf(ctx);
+  const startedAtMs = clock();
+  try {
+    return await createStreamCore(bytes, ctx, events, startedAtMs);
+  } catch (error) {
+    emitEvent(events, {
+      type: 'request.handled',
+      kind: 'sync',
+      atMs: clock(),
+      partition: ctx.partition,
+      actorId: ctx.actorId,
+      durationMs: clock() - startedAtMs,
+      bytesIn: bytes.length,
+      bytesOut: 0,
+      outcome: 'rejected',
+      errorCode: error instanceof SyncError ? error.code : 'internal',
+      pushCommits: 0,
+      pulled: false,
+      subscriptions: 0,
+    });
+    throw error;
+  }
+}
+
+async function createStreamCore(
+  bytes: Uint8Array,
+  ctx: SyncRequestContext,
+  events: SyncularServerEvents | undefined,
+  startedAtMs = 0,
+): Promise<AsyncIterable<Uint8Array>> {
   let request: RequestMessage;
   try {
     const message = decodeMessage(bytes);
@@ -314,7 +474,63 @@ export async function createSyncResponseStream(
   }
   const schema = compileSchema(ctx.schema);
   const plan = await planRequest(request, ctx, schema);
-  return streamResponse(plan, ctx, schema);
+  if (events === undefined) return streamResponse(plan, ctx, schema);
+  const report: RequestReport = { outcome: 'ok' };
+  return instrumentedStream(
+    streamResponse(plan, ctx, schema, report),
+    ctx,
+    events,
+    plan,
+    report,
+    bytes.length,
+    startedAtMs,
+  );
+}
+
+/** Counts response bytes and emits `request.handled` when the stream
+ * finishes — including a thrown host failure mid-stream (fail loud). */
+async function* instrumentedStream(
+  stream: AsyncGenerator<Uint8Array>,
+  ctx: SyncRequestContext,
+  events: SyncularServerEvents,
+  plan: RequestPlan,
+  report: RequestReport,
+  bytesIn: number,
+  startedAtMs: number,
+): AsyncGenerator<Uint8Array> {
+  const clock = clockOf(ctx);
+  let bytesOut = 0;
+  const emitHandled = (): void => {
+    emitEvent(events, {
+      type: 'request.handled',
+      kind: 'sync',
+      atMs: clock(),
+      partition: ctx.partition,
+      actorId: ctx.actorId,
+      durationMs: clock() - startedAtMs,
+      bytesIn,
+      bytesOut,
+      outcome: report.outcome,
+      ...(report.errorCode !== undefined
+        ? { errorCode: report.errorCode }
+        : {}),
+      pushCommits: plan.pushes.length,
+      pulled: plan.pull !== undefined,
+      subscriptions: plan.subscriptions.length,
+    });
+  };
+  try {
+    for await (const chunk of stream) {
+      bytesOut += chunk.length;
+      yield chunk;
+    }
+  } catch (error) {
+    report.outcome = 'error';
+    report.errorCode = error instanceof SyncError ? error.code : 'internal';
+    emitHandled();
+    throw error;
+  }
+  emitHandled();
 }
 
 /** Byte-concatenating wrapper over the streaming core (§1.4). */
