@@ -59,6 +59,17 @@ Full wiring, the type-parser note, `commitSeq` allocation, and the fanout
 bridge are in the
 [server README → Postgres storage](../../packages/server/README.md#postgres-storage-the-production-database-path).
 
+## Runtimes: Bun/Node and Cloudflare Workers
+
+The core is runtime-neutral TypeScript (enforced by a static import-graph
+test). Two adapters ship: `@syncular-v2/server-hono` for Bun/Node (HTTP + WS
+realtime, all storages), and `@syncular-v2/server-workers` for Cloudflare
+Workers — `createWorkersFetchHandler` over `D1ServerStorage` (D1) with R2 as
+the S3-compatible segment/blob store. Workers is HTTP-only today; realtime on
+Workers is a designed Durable Object follow-up. The full matrix and the
+policy (adapters only where the conformance catalog runs) are in the
+[server README → deployment matrix](../../packages/server/README.md#deployment-matrix-runtime-adapters-todo-42).
+
 ## Segments and CDN delivery
 
 Three `SegmentStore` backends ship in-tree and pass one shared contract suite:
@@ -96,3 +107,18 @@ any `scopes.resolve_failed`, reset-rate spikes) are in the
 [server README → ops seam](../../packages/server/README.md#structured-events-the-ops-seam)
 and
 [horizon & pruning](../../packages/server/README.md#horizon--pruning-operational-guidance).
+
+## The admin console
+
+`SyncularAdmin` is a read-only, partition-scoped query surface over server
+storage plus an in-memory event ring: clients and their cursors, commit
+metadata, per-row version/scopes, scope activity, horizon status, and
+segment/blob stats. `createSyncularAdminRoutes(admin, { authorize })` mounts
+the JSON endpoints and a single static `GET /admin` page (no framework, no
+build step) — and it **throws without an auth guard**; there is no
+default-open admin. This is the v2 answer to v1's console app: see the
+[server README → admin surface](../../packages/server/README.md#admin--console-surface-syncularadmin).
+
+For scale and stability verification there is also a bun-native load-test
+suite (`bun run load <scenario>` — bootstrap storms, reconnect storms,
+maintenance churn) documented in [load/README.md](../../load/README.md).

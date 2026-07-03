@@ -13,6 +13,7 @@ export const nav: readonly NavSection[] = [
     items: [
       { slug: '', title: 'Why syncular' },
       { slug: 'quickstart', title: 'Quickstart' },
+      { slug: 'migration', title: 'Migrating from 0.1.x' },
     ],
   },
   {
