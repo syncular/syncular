@@ -1,0 +1,16 @@
+[package]
+name = "conformance-shim"
+version = "0.1.0"
+edition = "2021"
+description = "Conformance ClientDriver shim: JSON-lines over stdio around the Rust client core (and the ssp2 codec)"
+license = "UNLICENSED"
+publish = false
+
+[[bin]]
+name = "conformance-shim"
+path = "src/main.rs"
+
+[dependencies]
+ssp2 = { path = "../ssp2" }
+syncular-client = { path = "../client" }
+serde_json = "1"
