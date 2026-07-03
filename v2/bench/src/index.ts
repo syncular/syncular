@@ -16,7 +16,6 @@
 import { join } from 'node:path';
 import { fmtKb, fmtMs, median, percentile, rowId, TABLE } from './fixture';
 import {
-  type BenchServer,
   createBenchClient,
   createBenchServer,
   seedServerRows,
@@ -26,6 +25,71 @@ const BOOTSTRAP_LIMITS = {
   limitSnapshotRows: 50_000,
   maxSnapshotPages: 50,
 };
+
+// -- CI mode & workloads ----------------------------------------------------
+//
+// `bun run bench` (local, default): full workloads, writes RESULTS.md —
+// the curated gate record. `--ci` (or SYNCULAR_BENCH_CI=1): reduced but
+// meaningful workloads sized to keep the job under ~3 minutes, asserts
+// BUDGETS and exits nonzero on breach, and never touches RESULTS.md.
+// Every count is env-overridable for one-off experiments.
+
+const CI_MODE =
+  process.env.SYNCULAR_BENCH_CI === '1' || process.argv.includes('--ci');
+
+function envCount(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.length === 0) return fallback;
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name}: expected a positive integer, got "${raw}"`);
+  }
+  return value;
+}
+
+const WORKLOAD = {
+  smallRows: envCount('SYNCULAR_BENCH_SMALL_ROWS', 1_000),
+  smallRuns: envCount('SYNCULAR_BENCH_SMALL_RUNS', CI_MODE ? 3 : 7),
+  bigRows: envCount(
+    'SYNCULAR_BENCH_BOOTSTRAP_ROWS',
+    CI_MODE ? 25_000 : 100_000,
+  ),
+  bigRuns: envCount('SYNCULAR_BENCH_BOOTSTRAP_RUNS', CI_MODE ? 3 : 5),
+  propIterations: envCount(
+    'SYNCULAR_BENCH_PROP_ITERATIONS',
+    CI_MODE ? 100 : 200,
+  ),
+} as const;
+
+/**
+ * CI perf budgets (asserted only in CI mode). Each is derived from the
+ * 2026-07-03 local baseline in RESULTS.md (Bun 1.3.14, darwin/arm64) —
+ * regenerate the baseline with a plain `bun run bench` before retuning.
+ *
+ * - `bootstrapRowsPerSecFloor` 90,000/s: the local 100k bootstrap runs at
+ *   ~274–278k rows/s. The floor sits ~3× below that to absorb slower
+ *   shared CI runners, yet still catches an apply-path regression toward
+ *   v1's TS-client rate (~125k rows/s locally ⇒ well under 90k/s on a CI
+ *   runner). Rows/sec normalizes across the reduced CI row count.
+ * - `propagationP95CeilingMs` 20 ms: local in-process p95 is 0.2 ms. A
+ *   100× allowance absorbs runner noise; breaching 20 ms in-process means
+ *   a sleep/poll crept into the sync/realtime loop (for scale: v1's
+ *   SOCKETED p95 was 22.8 ms — the loopback lane must beat that always).
+ * - `ownJsRawCeilingBytes` 60 KB: syncular's own JS (core + codec) is
+ *   42.2 KB raw today. Bundle bytes are deterministic — no runner noise —
+ *   so this stays TIGHT: ~40% headroom for legitimate feature growth,
+ *   far under the 217.7 KB v1 line the gate was scored against.
+ * - `totalGzipCeilingBytes` 600 KB: total shipped payload (own JS +
+ *   sqlite-wasm glue + sqlite3.wasm) is 474.2 KB gzip today. Also
+ *   deterministic; ~25% headroom covers a vendor SQLite bump without
+ *   letting the payload drift toward v1's ~3.5 MB.
+ */
+const BUDGETS = {
+  bootstrapRowsPerSecFloor: 90_000,
+  propagationP95CeilingMs: 20,
+  ownJsRawCeilingBytes: 60 * 1024,
+  totalGzipCeilingBytes: 600 * 1024,
+} as const;
 
 interface BootstrapResult {
   readonly rows: number;
@@ -207,6 +271,49 @@ async function measureBundle(): Promise<BundleResult> {
   };
 }
 
+// -- CI budget assertions ---------------------------------------------------
+
+interface BudgetCheck {
+  readonly name: string;
+  readonly budget: string;
+  readonly measured: string;
+  readonly ok: boolean;
+}
+
+function checkBudgets(
+  big: BootstrapResult,
+  prop: PropagationResult,
+  bundle: BundleResult,
+): BudgetCheck[] {
+  const totalGzip = bundle.jsGzip + bundle.wasmGzip;
+  return [
+    {
+      name: `bootstrap rows/sec (${big.rows.toLocaleString('en-US')} rows)`,
+      budget: `>= ${BUDGETS.bootstrapRowsPerSecFloor.toLocaleString('en-US')}/s`,
+      measured: `${big.rowsPerSec.toLocaleString('en-US')}/s`,
+      ok: big.rowsPerSec >= BUDGETS.bootstrapRowsPerSecFloor,
+    },
+    {
+      name: 'propagation p95 (in-process loopback)',
+      budget: `<= ${BUDGETS.propagationP95CeilingMs.toFixed(0)} ms`,
+      measured: fmtMs(prop.propP95),
+      ok: prop.propP95 <= BUDGETS.propagationP95CeilingMs,
+    },
+    {
+      name: 'own JS bundle, raw (core + codec)',
+      budget: `<= ${fmtKb(BUDGETS.ownJsRawCeilingBytes)}`,
+      measured: fmtKb(bundle.ownJsRaw),
+      ok: bundle.ownJsRaw <= BUDGETS.ownJsRawCeilingBytes,
+    },
+    {
+      name: 'total bundle, gzip (incl. vendor sqlite)',
+      budget: `<= ${fmtKb(BUDGETS.totalGzipCeilingBytes)}`,
+      measured: fmtKb(totalGzip),
+      ok: totalGzip <= BUDGETS.totalGzipCeilingBytes,
+    },
+  ];
+}
+
 // -- report ---------------------------------------------------------------------
 
 function fmtMb(bytes: number): string {
@@ -340,14 +447,29 @@ for context: ${fmtKb(totalRaw)} raw / ${fmtKb(totalGzip)} gzip.
 }
 
 async function main(): Promise<void> {
-  console.log('bench: bootstrap 1k…');
-  const b1k = await runBootstrap(1_000, 7, false);
-  console.log(`  median ${fmtMs(b1k.medianMs)}`);
-  console.log('bench: bootstrap 100k…');
-  const b100k = await runBootstrap(100_000, 5, true);
-  console.log(`  median ${fmtMs(b100k.medianMs)}`);
+  if (CI_MODE) {
+    console.log(
+      'bench: CI mode — reduced workloads, budget assertions, RESULTS.md untouched',
+    );
+  }
+  console.log(
+    `bench: bootstrap ${WORKLOAD.smallRows.toLocaleString('en-US')} rows…`,
+  );
+  const small = await runBootstrap(
+    WORKLOAD.smallRows,
+    WORKLOAD.smallRuns,
+    false,
+  );
+  console.log(`  median ${fmtMs(small.medianMs)}`);
+  console.log(
+    `bench: bootstrap ${WORKLOAD.bigRows.toLocaleString('en-US')} rows…`,
+  );
+  const big = await runBootstrap(WORKLOAD.bigRows, WORKLOAD.bigRuns, true);
+  console.log(
+    `  median ${fmtMs(big.medianMs)} (${big.rowsPerSec.toLocaleString('en-US')} rows/s)`,
+  );
   console.log('bench: propagation…');
-  const prop = await runPropagation(200);
+  const prop = await runPropagation(WORKLOAD.propIterations);
   console.log(
     `  p50 ${fmtMs(prop.propP50)} p95 ${fmtMs(prop.propP95)} ack p50 ${fmtMs(prop.ackP50)}`,
   );
@@ -357,7 +479,27 @@ async function main(): Promise<void> {
     `  js ${fmtKb(bundle.jsRaw)} (gzip ${fmtKb(bundle.jsGzip)}), wasm ${fmtKb(bundle.wasmRaw)}`,
   );
 
-  const markdown = report(b1k, b100k, prop, bundle);
+  if (CI_MODE) {
+    // Budgets gate; RESULTS.md stays the curated full-workload record.
+    const checks = checkBudgets(big, prop, bundle);
+    console.log('\nbudget checks:');
+    for (const check of checks) {
+      console.log(
+        `  ${check.ok ? 'PASS' : 'FAIL'}  ${check.name}: ${check.measured} (budget ${check.budget})`,
+      );
+    }
+    const breached = checks.filter((check) => !check.ok);
+    if (breached.length > 0) {
+      console.error(
+        `\n${breached.length} budget breach(es) — failing the job.`,
+      );
+      process.exit(1);
+    }
+    console.log('\nall budgets green.');
+    return;
+  }
+
+  const markdown = report(small, big, prop, bundle);
   const outPath = join(import.meta.dir, '..', 'RESULTS.md');
   await Bun.write(outPath, markdown);
   console.log(`\nwrote ${outPath}`);

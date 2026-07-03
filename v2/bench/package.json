@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "bench": "bun run src/index.ts"
+    "bench": "bun run src/index.ts",
+    "bench:ci": "bun run src/index.ts --ci"
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
