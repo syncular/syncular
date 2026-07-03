@@ -82,6 +82,14 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
     recommendedAction: 'inspectServer',
     httpStatus: 500,
   },
+  // §5.10.6: a crdt column was pushed with no merger registered for its
+  // crdtType, or the merger threw. A push operation-result error only.
+  'sync.crdt_merge_failed': {
+    category: 'internal',
+    retryable: false,
+    recommendedAction: 'inspectServer',
+    httpStatus: 500,
+  },
   'sync.idempotency_cache_miss': {
     category: 'internal',
     retryable: true,

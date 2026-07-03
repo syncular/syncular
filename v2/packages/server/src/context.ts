@@ -6,6 +6,7 @@
  */
 import type { ScopeMap } from '@syncular-v2/core';
 import type { BlobStore } from './blob-store';
+import type { CrdtMergerRegistry } from './crdt-merger';
 import type { SyncularServerEvents } from './events';
 import type { ServerSchema } from './schema';
 import type { SegmentStore } from './segment-store';
@@ -59,6 +60,13 @@ export interface SyncServerConfig {
   readonly blobs?: BlobStore;
   /** Max upload size for `/blobs` (§5.9.3 `blob.too_large`); default 64 MiB. */
   readonly maxBlobBytes?: number;
+  /**
+   * CRDT merger registry (§5.10.2), `crdtType` → merge fn. Absent ⇒ no
+   * column can CRDT-merge: a push touching a `crdt` column then fails
+   * `sync.crdt_merge_failed` (§5.10.6). Kept out of core — the reference
+   * `yjs-doc` merger ships in `@syncular-v2/crdt-yjs` (the blob-store rule).
+   */
+  readonly crdtMergers?: CrdtMergerRegistry;
   readonly resolveScopes: ResolveScopes;
   /** Epoch-ms clock; defaults to `Date.now`. */
   readonly clock?: () => number;

@@ -1,0 +1,47 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 1,
+  "msgKind": "response",
+  "frames": [
+    {
+      "type": "RESP_HEADER"
+    },
+    {
+      "type": "SUB_START",
+      "id": "sub-docs",
+      "status": "active",
+      "reasonCode": "",
+      "effectiveScopes": {
+        "project": [
+          "p1"
+        ]
+      },
+      "bootstrap": false
+    },
+    {
+      "type": "COMMIT",
+      "commitSeq": 71,
+      "createdAtMs": 1782993600000,
+      "actorId": "actor-1",
+      "tables": [
+        "docs"
+      ],
+      "changes": [
+        {
+          "tableIndex": 0,
+          "rowId": "d-1",
+          "op": "upsert",
+          "rowVersion": 3,
+          "scopes": {
+            "project": "p1"
+          },
+          "row": "AAMAAABkLTELAAAAc2hhcmVkIG5vdGUGAAAAAQL+/wAq"
+        }
+      ]
+    },
+    {
+      "type": "SUB_END",
+      "nextCursor": 71
+    }
+  ]
+}

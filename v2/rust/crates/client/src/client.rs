@@ -151,6 +151,8 @@ fn cv_to_sql(value: &Option<ColumnValue>) -> SqlValue {
         Some(ColumnValue::Json(raw)) => SqlValue::Text(raw.0.clone()),
         Some(ColumnValue::BlobRef(raw)) => SqlValue::Text(raw.0.clone()),
         Some(ColumnValue::Bytes(b)) => SqlValue::Blob(b.clone()),
+        // §5.10: crdt bytes store as BLOB, like bytes.
+        Some(ColumnValue::Crdt(b)) => SqlValue::Blob(b.clone()),
     }
 }
 
@@ -201,6 +203,8 @@ fn sql_ref_to_column_value(
         }
         ValueRef::Blob(b) => match column.ty {
             ColumnType::Bytes => Ok(Some(ColumnValue::Bytes(b.to_vec()))),
+            // §5.10: a crdt column stores its opaque bytes as BLOB, like bytes.
+            ColumnType::Crdt => Ok(Some(ColumnValue::Crdt(b.to_vec()))),
             _ => mismatch(),
         },
     }

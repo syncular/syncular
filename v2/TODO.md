@@ -115,9 +115,38 @@ the old tree archived.
       revocation-purges-cache-refs — both pairings, 52×2). Demo: attach a
       file to a todo (📎 per row, worker + ephemeral cores, `/blobs`
       endpoints).
-- [ ] **CRDT fields**: opt-in per column (Yjs on TS; the Rust side consumes
-      the same wire format). Wire format + merge semantics into SPEC with
-      vectors; conformance scenarios for concurrent-edit convergence.
+- [x] **CRDT fields**: LANDED 2026-07-03 — the second parity-ladder rung,
+      spec-first. SPEC §5.10 pins it end to end: a new `crdt` column type
+      (§2.4 tag 8) carrying opaque server-merged bytes, codec-shaped
+      identically to `bytes` (rides the `bytes` machinery — ZERO new codec
+      branch, existing vectors byte-identical). The hybrid-consistency pillar
+      is the pinned §6.2 interaction (§5.10.3): `crdt` columns are EXCLUDED
+      from `baseVersion` conflict detection and MERGE (stored ⊕ incoming) on
+      every clean apply; `baseVersion` still governs the row's non-crdt
+      columns and its single `server_version`. Crdt-only edits push
+      baseVersion-less (LWW mode) so they never conflict however stale;
+      a non-crdt conflict rolls back atomically (no half-merge) with the
+      merged crdt state surfaced in the conflict `serverRow`. Idempotent
+      replay is doubly safe (idempotency-key `cached` + merger idempotency).
+      Update-vs-state DECISION: clients push UPDATES, server merges
+      (smaller wire, thin/portable client) — §5.10.4. Merger pluggability
+      (§5.10.2): the server core takes a `CrdtMerger` registry
+      (crdtType → merge); core/server stay Yjs-free — the reference
+      `yjs-doc` merger + the `YjsColumn` client helper ship in a new
+      `@syncular-v2/crdt-yjs` package (Yjs enters the tree ONLY there).
+      Rust client round-trips crdt bytes byte-for-byte (merging is
+      server-side; native `yrs` integration noted as a follow-up, §5.10.5).
+      One new code `sync.crdt_merge_failed` (§10.2). Typegen: `CRDT` SQL
+      keyword → crdt column with `crdtType` `yjs-doc` through
+      manifest→IR→emitter (TS emits `Uint8Array`; irVersion NOT bumped —
+      additive). Two NEW golden vectors (`segment/crdt-column`,
+      `response/commit-crdt-merge`); existing vectors untouched. Conformance
+      B.14 (3 scenarios: concurrent-convergence-both-orders +
+      no-conflict-on-crdt; conflict-with-merged-crdt; offline-replay-
+      idempotent — both pairings, Rust pushes TS-generated fixture Yjs
+      bytes). Demo: SKIPPED this rung (a collaborative note field would need
+      worker-RPC + Y.Doc wiring across the OPFS worker boundary — not
+      trivially cheap; deferred to avoid bloating the diff).
 - [ ] **Auth leases** (v1's `sync.auth_lease_*` family): spec the lease
       lifecycle, reserve→specify the error codes (§10.3 already reserves
       them), server enforcement + client refresh behavior.

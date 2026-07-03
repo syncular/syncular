@@ -214,8 +214,12 @@ removed), both accreted in wire v10–v13:
       > returns at the parity ladder, the request-side `verifiedRoot`
       > companion will also need a new frame slot.
 
-- [x] **CRDT state-vector hints** (`crdtStateVectors`) — dropped; CRDT is
-      a named skeleton non-goal. Frame-level room is reserved (§9).
+- [x] **CRDT state-vector hints** (`crdtStateVectors`) — dropped; the
+      delta-request state-vector optimization stays out. CRDT **columns**
+      themselves landed as the §5.10 rung (tag 8, server-merged), but they
+      need no wire hint: a merged crdt column rides the ordinary upsert
+      change (§5.10.3), so frame `0x18` stays reserved for a future
+      state-vector hint, not for CRDT columns.
 
 Two smaller cuts, recorded here because they change request shapes:
 
@@ -627,11 +631,17 @@ Column types (shared by the row codec and rows segments; tags on the wire):
 | `5` | `json` | `str` containing a JSON document (raw string preserved on round-trip, see Conventions). The Conventions `json` MUST applies at **row-codec decode**: a value that does not parse as a JSON document is a decode error (`sync.invalid_request`, part of the "row-codec violations" of §5.2's closed list) — decode validates exactly what the §11 rendering would later parse, so the two can never disagree. The raw string is still preserved verbatim for re-encoding |
 | `6` | `bytes` | `bytes` |
 | `7` | `blob_ref` | `str` containing a **canonical BlobRef JSON document** (§5.9.1). On the wire and in the codec a `blob_ref` is byte-for-byte a `str`, decoded and re-encoded exactly like `json` (tag 5): the value MUST parse as JSON **and** satisfy the BlobRef shape (§5.9.1) at row-codec decode, else a decode error (`sync.invalid_request`, in §5.2's closed list); the raw string is preserved verbatim for re-encoding. The distinct tag exists so schema, apply, and query surfaces recognize a column as a *reference to blob bytes* — but SSG2, `COMMIT` payloads, push payloads, and conflict `serverRow` carry it with zero codec cost because it rides the `json` machinery |
+| `8` | `crdt` | `bytes` containing an **opaque CRDT update/state** (§5.10). On the wire and in the codec a `crdt` value is byte-for-byte a `bytes` (tag 6): a `u32` length prefix plus raw bytes, with **no structural validation at decode** — the bytes are host/merger-opaque (a Yjs update, a state vector, an RGA log; the codec neither parses nor trusts them). The distinct tag exists so schema, apply, and query surfaces recognize a column as *collaborative state the server merges rather than overwrites* (§5.10, §6.2 crdt interaction) — but SSG2, `COMMIT` payloads, push payloads, and conflict `serverRow` carry it with zero codec cost because it rides the `bytes` machinery. Beyond the tag, the schema IR marks a `crdt` column with a `crdtType` name (§5.10.1) that selects the server merger; `crdtType` is IR metadata, **never on the wire** (unlike `nullable`, which is), so it does not appear in the SSG2 column table |
 
 Tags 1–6 are unchanged from v1's binary-table-v1 tag assignment; tag 7
-(`blob_ref`) is new in v2 (§5.9, the blobs rung). Because it is codec-shaped
-identically to `json`, adding it required **no new codec branch and no
-golden-vector regeneration** — a `blob_ref` value is a legal `json` value.
+(`blob_ref`) is new in v2 (§5.9, the blobs rung) and tag 8 (`crdt`) is new
+in v2 (§5.10, the CRDT-fields rung). Both are codec-shaped identically to an
+existing type (`blob_ref` rides `json`, `crdt` rides `bytes`), so each
+added **no new codec branch**. A `crdt` column exercised by a fresh golden
+vector (`segment/crdt-column`, `response/commit-crdt-merge`) so the new tag
+is byte-pinned; existing vectors stay byte-identical (no `crdt` column was
+added to an existing fixture — the §9 rule that a new tag needs pinning is
+met by a *new* case, not by mutating old ones).
 
 For every synced table, codegen (B5) emits from the schema IR, for both
 sides, a **row codec** for each supported `schemaVersion`:
@@ -1712,6 +1722,204 @@ fetches via the blob transport (§5.9.5) and populates the cache. **A cache
 hit MUST avoid re-download** — the conformance harness asserts this with a
 download counter.
 
+### 5.10 CRDT columns — opt-in collaborative state
+
+*New in v2 (TODO 2.2, the second parity-ladder rung).* A `crdt` column
+(§2.4 tag 8) carries opaque CRDT bytes — a Yjs update, a state, an RGA log
+— that the **server merges** on push instead of last-write-wins overwriting
+or `baseVersion`-conflicting. This is the hybrid-consistency pillar (REVISE):
+a table mixes ordinary LWW/optimistic columns and CRDT columns freely, and
+each column type gets the consistency model it needs, on the same row and in
+the same commit. v1 shipped this as opt-in Yjs per column; v2 keeps the
+capability, makes the merge function **pluggable** (the core stays
+dependency-light and Rust-portable), and pins the exact §6.2 interaction.
+
+**Explicit non-goals this rung** (deferred until evidence demands): CRDT
+state-vector hints on the wire (dropped from the v2 core, §0; a delta-request
+optimization, not correctness), client-side merge (merging is server-side
+this rung — see §5.10.4), presence/awareness (a §8.6 reserved extension, not
+a column type), and more than one built-in `crdtType` (`yjs-doc` only;
+the registry is open for hosts to add others).
+
+#### 5.10.1 The schema-IR shape and `crdtType`
+
+A `crdt` column declares, beyond the tag, a **`crdtType`** name — a string
+selecting the server-side merger (this rung defines exactly one:
+`'yjs-doc'`). `crdtType` is schema-IR metadata: it is **never encoded on
+the wire** (the SSG2 column table carries only name/type-tag/nullable, and
+`crdt` shares the `bytes` tag), so it neither appears in golden vectors nor
+participates in the §5.2 column-table validation — a receiver validates a
+`crdt` column as a `bytes` column by tag, and the `crdtType` is a local
+concern of whichever side merges. A schema whose `crdt` column names an
+unknown `crdtType` is a **compile-time server bug** (rejected before
+serving), never a wire error.
+
+A `crdt` column is nullable like any other; NULL means "no CRDT state yet"
+(the empty document). A `crdt` column is never a primary key or a scope
+column (`rowId` and scope rendering exclude it, the same rule as `bytes`).
+
+#### 5.10.2 The merger registry (`CrdtMerger`) — pluggability
+
+The server core MUST NOT hard-depend on any CRDT library. Merging is a host
+capability supplied through the request context (§ server B2): a
+**`CrdtMerger` registry** mapping `crdtType` → a merge function
+
+> `merge(stored: bytes | null, incoming: bytes) → merged: bytes`
+
+where `stored` is the column's current value (`null` if the row is new or
+the column was NULL) and `incoming` is the pushed value. The result is the
+new column value written to storage and emitted in the change. A merger MUST
+be **commutative, associative, and idempotent** over the updates it consumes
+(the CRDT contract — this is what makes concurrent-order-independent
+convergence and idempotent replay hold); the reference `yjs-doc` merger
+satisfies this because Yjs updates are a CRDT.
+
+The registry is optional in the context. If a table has a `crdt` column but
+**no merger is registered for its `crdtType`**, a push touching that column
+fails the operation with the new code **`sync.crdt_merge_failed`**
+(category `internal`, non-retryable, action `inspectServer` — a server
+misconfiguration, fail loud) and rolls the commit back (§6.4). A merger that
+**throws** produces the same rejection. `sync.crdt_merge_failed` never rides
+the pull stream and is never a `SUB_START` reason — it surfaces only as a
+push operation-result `error` record (§6.3).
+
+The reference `yjs-doc` merger lives in a **separate package**
+(`@syncular-v2/crdt-yjs`), not in core or server — Yjs enters the dependency
+tree there and nowhere else. `packages/server` and `packages/core` stay
+Yjs-free; a host opts in by importing the merger and putting it in the
+registry, exactly as it opts into a blob store (§5.9.2). Placement rationale:
+the merger and the client Yjs helper (§5.10.4) are two faces of the same
+Yjs binding, so one small package owns both.
+
+#### 5.10.3 The §6.2 push interaction — the pinned merge semantics
+
+This is the heart of the rung. On a push **upsert** against a row (§6.4
+apply), after the §3.4 scope-column strip and the §6.2 `baseVersion`
+resolution, columns split by kind:
+
+1. **`baseVersion` governs only the non-crdt columns.** The comparison
+   `baseVersion == server_version` (§6.2) and the resulting
+   `sync.version_conflict` are computed **exactly as today** — `crdt`
+   columns are **excluded from the comparison**. The row's single
+   `server_version` still increments by 1 on every applied upsert (§2.2),
+   as the optimistic-concurrency token for the non-crdt columns.
+
+2. **On a clean apply** (`baseVersion` matches, or `baseVersion` absent =
+   last-write-wins, or an insert), each `crdt` column's stored value is
+   replaced by `merge(stored, incoming)` (§5.10.2) — **never** the raw
+   pushed bytes. Non-crdt columns write last-write-wins / optimistically as
+   today. The merge runs inside the commit transaction (§6.4), so it is part
+   of the atomic apply: a throwing/absent merger rejects the whole commit.
+
+3. **On a conflict** (`baseVersion` mismatch on the row's non-crdt state),
+   the operation is rejected `sync.version_conflict` and the commit rolls
+   back atomically (§6.4) — **no merge is applied**, preserving commit
+   atomicity (a half-applied commit is impossible, §6.4). The crdt edit is
+   not lost: the client rebases (§6.5) and re-pushes. The conflict record's
+   `serverRow` carries the **current** (already-merged, from prior clean
+   applies) crdt column state, so the rebasing client sees live collaborative
+   state without another round-trip.
+
+**The "crdt-only divergence merges cleanly" rule, pinned.** A client whose
+mutation touches **only** `crdt` columns MUST push it with **`baseVersion`
+absent** (last-write-wins mode). In LWW mode there is no `baseVersion`
+comparison, so the push never conflicts regardless of how far the row's
+`server_version` has advanced; its crdt columns merge (rule 2) and its
+non-crdt columns — which the mutation left at their last-known values — write
+last-write-wins. This is what makes concurrent collaborative editing
+conflict-free: two clients editing the same `crdt` column concurrently each
+push a baseVersion-less upsert, both merge, and the merger's commutativity
+makes the result independent of arrival order (Appendix B.14). A client that
+*also* changes a non-crdt column in the same mutation MAY carry a
+`baseVersion` to get optimistic concurrency on that column — and then a
+concurrent non-crdt conflict fires per rule 3, with the crdt state merged
+into the winner's row (rule 2 on the winning push) and surfaced in the
+loser's `serverRow`.
+
+Consequences, all normative:
+
+- A `crdt` column **never** produces `sync.version_conflict` on its own
+  account; conflicts are a non-crdt-column phenomenon.
+- CRDT merges do **not** create a distinct commit shape: the merged column
+  rides the ordinary upsert change (§4.5) with the row's incremented
+  `server_version`. Subscribers receive the merged bytes as a normal row
+  upsert — no CRDT-specific delta frame exists (§0: crdtStateVectors
+  dropped; frame `0x18` stays reserved).
+- **Idempotent replay is doubly safe.** A push replayed under the §2.3
+  idempotency key returns the persisted result `cached` and is **not
+  re-merged** (the merge already happened in the original apply). Even if a
+  buggy client bypassed idempotency and re-pushed identical crdt bytes, the
+  merger's idempotency (§5.10.2) makes the re-merge a no-op — Yjs updates
+  are idempotent by CRDT nature. Offline outbox replay (§7.2) therefore
+  converges regardless of how many times a crdt update is delivered
+  (Appendix B.14 offline scenario).
+
+#### 5.10.4 Client semantics — push updates, server merges
+
+**Decision (pinned): clients push CRDT updates; the server merges; clients
+apply the server-merged state on delivery.** The rejected alternative was
+"push the full merged document state as the column value." Justification:
+
+- **Update-push is smaller.** A keystroke is a few-byte Yjs update; the full
+  document can be kilobytes. Pushing updates keeps the outbox and the wire
+  proportional to the edit, not the document — the v1 choice, and the reason
+  CRDTs are attractive over LWW-on-a-blob.
+- **Server-side merge keeps the client thin and the core portable.** The
+  merge (the only place a CRDT library is *required*) lives server-side in
+  one pluggable function; the client only needs to *produce* updates and
+  *apply* merged state — which a Yjs `Y.Doc` does natively, and which a
+  native (Rust) app can defer entirely this rung (§5.10.5).
+- **Idempotency covers the replay hazard.** The one risk of update-push
+  over state-push is double-application of a replayed update; §5.10.3
+  pins it closed twice over (idempotency-key `cached` + merger idempotency).
+
+Mechanics for a Yjs client (reference TS path, `@syncular-v2/crdt-yjs`):
+
+- A `crdt` column is backed by a `Y.Doc` per (table, rowId, column). A local
+  edit mutates the doc and yields a Yjs **update** (the bytes since the last
+  push). The client writes those update bytes as the column value in a
+  baseVersion-less `mutate` (§5.10.3), applies them to the local doc
+  optimistically (§7.1), and pushes.
+- On delivery of the server-merged column value (a pull `COMMIT` upsert, a
+  segment row, or a conflict `serverRow`), the client applies the merged
+  bytes into the local `Y.Doc` — idempotent, so a value that already
+  incorporates the local edit is a no-op. The doc's text/map/array is the
+  app-visible collaborative value; the raw column bytes are the transport.
+- The stored column value is thus always "the latest server-merged bytes",
+  and the local doc is "server-merged ⊕ local-pending". This mirrors the
+  §7.1 outbox-replay-on-top model exactly, one layer down.
+
+The reference row-value surface keeps the column a plain `Uint8Array` in
+generated types (§ typegen); the `Y.Doc` accessor is a helper in the client
+package (`@syncular-v2/crdt-yjs`), **not** in generated code — codegen has no
+Yjs dependency, matching the core/server rule.
+
+#### 5.10.5 Native (Rust) clients
+
+The Rust client does **not** merge (merging is server-side, §5.10.3). It
+MUST round-trip `crdt` column bytes through push / pull / segments
+byte-for-byte — a `crdt` column is a `bytes` column to the codec, so this is
+free — and expose the bytes to the app. A native app integrating a CRDT
+library (the `yrs` crate is the Rust Yjs port) applies and produces updates
+in app code exactly as the TS client's helper does; wiring `yrs` into the
+Rust core is a **follow-up**, not this rung. What this rung pins for the
+native side is the **wire contract**: `crdt` = tag 8 = `bytes`, merged
+server-side, exposed as opaque bytes. The conformance pairing (Appendix
+B.14) proves this by having the Rust client push **fixture Yjs updates**
+(generated by the TS side) and asserting the server-merged result equals the
+expected merged bytes — byte-level convergence with no Rust-side merge.
+
+#### 5.10.6 Error codes
+
+One new code: **`sync.crdt_merge_failed`** (§10.2) — a `crdt` column was
+pushed but no merger is registered for its `crdtType`, or the registered
+merger threw (§5.10.2). Category `internal`, non-retryable, action
+`inspectServer`; delivered only as a push operation-result `error` record
+(§6.3), rolling the commit back (§6.4). No other new codes: a `crdt` column
+that fails `bytes` decode is `sync.invalid_request` like any bytes column,
+and there is no download/upload surface (CRDT state rides the row, never a
+separate object).
+
 ---
 
 ## 6. Push, conflicts, results
@@ -1744,7 +1952,10 @@ the client splits and retries.
 
 ### 6.2 Conflict detection
 
-Unchanged from v1:
+Unchanged from v1 (the crdt-column interaction of §5.10.3 layers on top —
+`crdt` columns are **excluded** from the `baseVersion` comparison and
+merge on every clean apply; everything below governs the row's non-crdt
+columns and its `server_version`):
 
 - `baseVersion` present, row exists: if row's `server_version ==
   baseVersion`, apply with `server_version = baseVersion + 1`; else
@@ -2306,6 +2517,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.version_conflict` | conflict | no | resolveConflict | `baseVersion` mismatch (§6.2) — appears as a conflict result, not a request error |
 | `sync.constraint_violation` | invalid-request | no | fixRequest | Server-side data constraint (unique/FK/not-null) rejected the write |
 | `sync.missing_scopes` | internal | no | inspectServer | Handler emitted a change without stored scopes (§3.1) |
+| `sync.crdt_merge_failed` | internal | no | inspectServer | A `crdt` column (§2.4 tag 8) was pushed but no merger is registered for its `crdtType`, or the merger threw (§5.10.2) — *new in v2*; a push operation-result `error` record only |
 | `sync.idempotency_cache_miss` | internal | yes | retryLater | Cached push result unreadable on replay (§6.3) |
 | `sync.too_many_operations` | invalid-request | no | splitBatch | Push exceeds the operation cap (§6.1) |
 | `sync.not_found` | not-found | no | forceResync | Unknown segment id (§5.5) or sync resource |
@@ -2447,6 +2659,8 @@ byte-identical output):
 | 15 | `response/schema-floor` | `requiredSchemaVersion` present |
 | 16 | `segment/rows-two-blocks` | SSG2 with two row blocks + end marker, all column types, nullable columns, varied per-row `serverVersion` incl. the i64 safe-integer boundary |
 | 17 | `realtime/wake` + `realtime/hello` | JSON control vectors (`.json` only — no binary form) |
+| 18 | `segment/crdt-column` | SSG2 for a table with a `crdt` column (§2.4 tag 8): the crdt value rides the `bytes` machinery (opaque bytes, incl. NULL and empty), pinning the new tag without touching existing fixtures |
+| 19 | `response/commit-crdt-merge` | A `COMMIT` upsert whose row carries a merged `crdt` column (§5.10.3): the merged bytes ride the ordinary change payload, no CRDT-specific frame |
 | — | `request/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload |
 | — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`) |
 | — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1) |
@@ -2591,3 +2805,25 @@ not a prose test.
     content-addressed cache without a network fetch — asserted via the
     harness blob-download counter (B1, §5.9.7). Both pairings
     (TS×TS, Rust×TS).
+
+14. **CRDT fields / collaborative convergence.** A `crdt` column (§2.4 tag
+    8) merged server-side (§5.10). (a) Concurrent-edit convergence, both
+    orders: clients A and B each apply a distinct Yjs update to the same
+    row's `crdt` column and push baseVersion-less (§5.10.3); after
+    quiescence both local databases hold the **same merged bytes**, and the
+    result is identical whichever push the server saw first (merger
+    commutativity, §5.10.2). (b) crdt merge does not bump conflicts: neither
+    baseVersion-less push produces a `sync.version_conflict` record — a crdt
+    column never conflicts on its own account (§5.10.3). (c) baseVersion
+    conflict on non-crdt columns still fires with the crdt column merged in
+    the winner: A and B edit both a non-crdt column (from the same
+    `baseVersion`) and the crdt column; the loser gets `rejected` /
+    `sync.version_conflict` whose `serverRow` carries the **merged** crdt
+    state, and after the loser rebases (§6.5) both converge. (d) Offline crdt
+    edits replay idempotently (§2.3, §5.10.3): A accumulates offline crdt
+    updates, reconnects, and replays FIFO — a dropped-ack retry delivers an
+    update twice, and convergence is unaffected (idempotency-key `cached` +
+    merger idempotency). Rust pairing (§5.10.5): the Rust client pushes
+    **fixture Yjs update bytes generated by the TS side** and asserts the
+    server-merged result equals the expected merged bytes — byte-level
+    convergence with no Rust-side merge. Both pairings (TS×TS, Rust×TS).

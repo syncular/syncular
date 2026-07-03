@@ -47,13 +47,24 @@ describe('golden fixtures', () => {
   test('IR shape: versioned, extension slots present, no TS types', () => {
     const ir = JSON.parse(generate(FIXTURE).irJson);
     expect(ir.irVersion).toBe(1);
-    expect(ir.schemaVersion).toBe(2);
+    expect(ir.schemaVersion).toBe(3);
     expect(ir.extensions).toEqual({});
     expect(ir.tables[0].extensions).toEqual({});
     expect(ir.schemaVersions).toEqual([
       { version: 1, migrations: ['0001_initial'] },
       { version: 2, migrations: ['0002_add_task_estimate'] },
+      { version: 3, migrations: ['0003_add_doc_crdt'] },
     ]);
+    // §5.10.1: the CRDT keyword became a crdt column carrying a crdtType.
+    const bodyDoc = ir.tables[1].columns.find(
+      (c: { name: string }) => c.name === 'body_doc',
+    );
+    expect(bodyDoc).toEqual({
+      name: 'body_doc',
+      type: 'crdt',
+      nullable: true,
+      crdtType: 'yjs-doc',
+    });
     // Scope patterns are pre-resolved for non-TS emitters.
     expect(ir.tables[1].scopes[1]).toEqual({
       pattern: 'project:{projectId}',

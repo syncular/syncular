@@ -24,6 +24,9 @@ const TS_TYPE: Readonly<Record<IrColumnType, string>> = {
   // §5.9: a blob_ref value is the raw canonical BlobRef JSON string
   // (like `json`); the client's blob API parses it into a BlobRef object.
   blob_ref: 'string',
+  // §5.10: a crdt value is opaque bytes (like `bytes`); the Y.Doc accessor
+  // is an app-level helper in @syncular-v2/crdt-yjs, not generated code.
+  crdt: 'Uint8Array',
 };
 
 function pascalCase(name: string): string {
@@ -55,8 +58,14 @@ function emitSchema(ir: IrDocument): string {
     lines.push(`      name: ${quote(table.name)},`);
     lines.push('      columns: [');
     for (const column of table.columns) {
+      // §5.10.1: emit crdtType on crdt columns so a generated server schema
+      // can select the merger; omitted (and thus unchanged) for others.
+      const crdtType =
+        column.crdtType !== undefined
+          ? `, crdtType: ${quote(column.crdtType)}`
+          : '';
       lines.push(
-        `        { name: ${quote(column.name)}, type: ${quote(column.type)}, nullable: ${column.nullable} },`,
+        `        { name: ${quote(column.name)}, type: ${quote(column.type)}, nullable: ${column.nullable}${crdtType} },`,
       );
     }
     lines.push('      ],');

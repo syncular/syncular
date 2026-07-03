@@ -52,6 +52,7 @@
       "name": "@syncular-v2/conformance",
       "dependencies": {
         "@syncular-v2/core": "workspace:*",
+        "@syncular-v2/crdt-yjs": "workspace:*",
         "@syncular-v2/server": "workspace:*",
         "@syncular-v2/web-client": "workspace:*",
       },

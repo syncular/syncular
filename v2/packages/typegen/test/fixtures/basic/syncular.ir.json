@@ -1,6 +1,6 @@
 {
   "irVersion": 1,
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "schemaVersions": [
     {
       "version": 1,
@@ -12,6 +12,12 @@
       "version": 2,
       "migrations": [
         "0002_add_task_estimate"
+      ]
+    },
+    {
+      "version": 3,
+      "migrations": [
+        "0003_add_doc_crdt"
       ]
     }
   ],
@@ -103,6 +109,12 @@
           "name": "attachment",
           "type": "bytes",
           "nullable": true
+        },
+        {
+          "name": "body_doc",
+          "type": "crdt",
+          "nullable": true,
+          "crdtType": "yjs-doc"
         }
       ],
       "scopes": [

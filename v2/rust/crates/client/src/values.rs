@@ -77,6 +77,11 @@ pub fn json_to_column_value(
             Some(hex) => Ok(Some(ColumnValue::Bytes(hex_to_bytes(hex)?))),
             None => fail("a {\"$bytes\": hex} object"),
         },
+        // §5.10: crdt bytes cross the boundary as {"$bytes": hex}, like bytes.
+        ColumnType::Crdt => match value.get("$bytes").and_then(Value::as_str) {
+            Some(hex) => Ok(Some(ColumnValue::Crdt(hex_to_bytes(hex)?))),
+            None => fail("a {\"$bytes\": hex} object"),
+        },
     }
 }
 
@@ -93,6 +98,11 @@ pub fn column_value_to_json(value: &Option<ColumnValue>) -> Value {
         Some(ColumnValue::Json(raw)) => Value::from(raw.0.clone()),
         Some(ColumnValue::BlobRef(raw)) => Value::from(raw.0.clone()),
         Some(ColumnValue::Bytes(bytes)) => {
+            let mut map = Map::new();
+            map.insert("$bytes".to_owned(), Value::from(bytes_to_hex(bytes)));
+            Value::Object(map)
+        }
+        Some(ColumnValue::Crdt(bytes)) => {
             let mut map = Map::new();
             map.insert("$bytes".to_owned(), Value::from(bytes_to_hex(bytes)));
             Value::Object(map)
@@ -135,6 +145,7 @@ pub fn render_row_id(value: &Option<ColumnValue>) -> Result<String, String> {
         Some(ColumnValue::Json(raw)) => Ok(raw.0.clone()),
         Some(ColumnValue::BlobRef(_)) => Err("blob_ref column cannot be a rowId".to_owned()),
         Some(ColumnValue::Bytes(_)) => Err("bytes column cannot be a rowId".to_owned()),
+        Some(ColumnValue::Crdt(_)) => Err("crdt column cannot be a rowId".to_owned()),
         None => Err("primary key value is missing".to_owned()),
     }
 }

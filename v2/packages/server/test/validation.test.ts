@@ -193,6 +193,12 @@ describe('error catalog (§10.2)', () => {
       category: 'forbidden',
       recommendedAction: 'checkPermissions',
     });
-    expect(Object.keys(ERROR_CATALOG)).toHaveLength(25);
+    // §5.10.6 CRDT fields added one internal code.
+    expect(ERROR_CATALOG['sync.crdt_merge_failed']).toMatchObject({
+      category: 'internal',
+      retryable: false,
+      recommendedAction: 'inspectServer',
+    });
+    expect(Object.keys(ERROR_CATALOG)).toHaveLength(26);
   });
 });

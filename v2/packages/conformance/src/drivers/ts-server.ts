@@ -10,6 +10,7 @@ import {
   type RowValue,
   type ScopeMap,
 } from '@syncular-v2/core';
+import { yjsCrdtMergers } from '@syncular-v2/crdt-yjs';
 import {
   type BlobStore,
   createRealtimeHub,
@@ -198,6 +199,8 @@ class TsServerInstance implements ServerInstance {
       storage: this.#wrapped,
       segments: this.#segments,
       blobs: this.#blobs,
+      // §5.10.2: the reference yjs-doc merger, kept out of core/server.
+      crdtMergers: yjsCrdtMergers,
       resolveScopes: (args) => this.#resolveScopes(args.actorId),
       clock: () => this.#now.ms,
       limits: this.#limits,
@@ -433,7 +436,7 @@ class TsServerInstance implements ServerInstance {
 
 export const tsServerDriver: ServerDriver = {
   name: 'ts-server',
-  capabilities: ['idempotency-fault', 'signed-urls', 'blobs'],
+  capabilities: ['idempotency-fault', 'signed-urls', 'blobs', 'crdt'],
   async create(options: ServerCreateOptions): Promise<ServerInstance> {
     return new TsServerInstance(options);
   },

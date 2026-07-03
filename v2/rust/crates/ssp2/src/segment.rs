@@ -21,6 +21,10 @@ pub enum ColumnType {
     /// §2.4 tag 7 (§5.9): a canonical BlobRef JSON document, codec-shaped
     /// identically to `json`.
     BlobRef,
+    /// §2.4 tag 8 (§5.10): opaque server-merged CRDT bytes, codec-shaped
+    /// identically to `bytes`. The Rust client round-trips the bytes; merging
+    /// is server-side (§5.10.5).
+    Crdt,
 }
 
 impl ColumnType {
@@ -33,6 +37,7 @@ impl ColumnType {
             5 => Some(ColumnType::Json),
             6 => Some(ColumnType::Bytes),
             7 => Some(ColumnType::BlobRef),
+            8 => Some(ColumnType::Crdt),
             _ => None,
         }
     }
@@ -46,6 +51,7 @@ impl ColumnType {
             ColumnType::Json => 5,
             ColumnType::Bytes => 6,
             ColumnType::BlobRef => 7,
+            ColumnType::Crdt => 8,
         }
     }
 
@@ -58,6 +64,7 @@ impl ColumnType {
             ColumnType::Json => "json",
             ColumnType::Bytes => "bytes",
             ColumnType::BlobRef => "blob_ref",
+            ColumnType::Crdt => "crdt",
         }
     }
 }
@@ -80,6 +87,9 @@ pub enum ColumnValue {
     Bytes(Vec<u8>),
     /// §5.9.1: a canonical BlobRef document, held as a raw validated string.
     BlobRef(RawJson),
+    /// §5.10: opaque CRDT bytes (server-merged; the Rust client only
+    /// round-trips them), codec-shaped identically to `bytes`.
+    Crdt(Vec<u8>),
 }
 
 /// One row: `columns.len()` slots, `None` = NULL.
@@ -136,6 +146,8 @@ pub fn decode_row(r: &mut Reader<'_>, columns: &[Column]) -> Result<Row> {
             ColumnType::Json => ColumnValue::Json(r.json(&col.name)?),
             ColumnType::Bytes => ColumnValue::Bytes(r.bytes(&col.name)?),
             ColumnType::BlobRef => ColumnValue::BlobRef(r.blob_ref(&col.name)?),
+            // §5.10 tag 8: opaque bytes, decoded exactly like tag 6.
+            ColumnType::Crdt => ColumnValue::Crdt(r.bytes(&col.name)?),
         };
         row.push(Some(value));
     }
@@ -161,6 +173,7 @@ pub fn encode_row(w: &mut Writer, columns: &[Column], row: &Row) {
             ColumnValue::Json(j) => w.str(&j.0),
             ColumnValue::Bytes(b) => w.bytes(b),
             ColumnValue::BlobRef(j) => w.str(&j.0),
+            ColumnValue::Crdt(b) => w.bytes(b),
         }
     }
 }

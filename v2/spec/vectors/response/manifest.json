@@ -67,6 +67,12 @@
       "bin": "schema-floor.bin",
       "json": "schema-floor.json",
       "covers": "requiredSchemaVersion present"
+    },
+    {
+      "name": "commit-crdt-merge",
+      "bin": "commit-crdt-merge.bin",
+      "json": "commit-crdt-merge.json",
+      "covers": "A COMMIT upsert carrying a server-merged crdt column (§2.4 tag 8, §5.10.3): merged bytes ride the ordinary change payload, no CRDT-specific frame"
     }
   ],
   "invalid": [

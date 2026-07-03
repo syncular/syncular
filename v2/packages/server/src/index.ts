@@ -11,6 +11,7 @@ export * from './blob-handlers';
 export * from './blob-store';
 export * from './content-encoding';
 export * from './context';
+export * from './crdt-merger';
 export * from './errors';
 export * from './events';
 export * from './frame-bytes';

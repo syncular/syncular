@@ -85,6 +85,7 @@ fn parse_column_type(name: &str) -> Result<ColumnType, String> {
         "json" => Ok(ColumnType::Json),
         "bytes" => Ok(ColumnType::Bytes),
         "blob_ref" => Ok(ColumnType::BlobRef),
+        "crdt" => Ok(ColumnType::Crdt),
         other => Err(format!("unknown column type {other:?}")),
     }
 }
