@@ -8,12 +8,26 @@ semantics (column types, scope patterns, schema-version gating) live in
 overrides it.
 
 ```sh
-syncular-v2 generate [--manifest-dir <dir>] [--check]
+syncular-v2 generate [--manifest-dir <dir>] [--check] [--watch]
+syncular-v2 init [--manifest-dir <dir>]
 ```
 
-Reads `<dir>/syncular.json` plus its migrations directory; writes the IR
-JSON and the generated TS module. `--check` regenerates in memory and
-exits 1 unless both files on disk match **byte-exactly**.
+`generate` reads `<dir>/syncular.json` plus its migrations directory and
+writes the IR JSON and the generated TS module. `--check` regenerates in
+memory and exits 1 unless both files on disk match **byte-exactly** (this is
+the freshness contract; it is unchanged). `--watch` regenerates on any change
+under the manifest dir (Bun's recursive `fs.watch`, debounced; it skips the
+write when outputs are already fresh so it never loops on its own output).
+`--check` and `--watch` are mutually exclusive.
+
+`init` scaffolds a starter `syncular.json` + `migrations/0001_initial/up.sql`
+into an existing project (the "add syncular to my app" path). It refuses to
+overwrite an existing manifest or first migration. New projects usually start
+from the scaffolder instead (`bun create syncular-v2 my-app`), which emits the
+same shape plus a server + client.
+
+When `generate` cannot find the manifest or migrations, the error points at the
+schema guide and suggests `syncular-v2 init`.
 
 ---
 

@@ -4,7 +4,8 @@
   "type": "module",
   "workspaces": ["packages/*", "apps/*", "examples/*", "bench"],
   "scripts": {
-    "check": "bun run typecheck && bun run lint && bun test",
+    "check": "bun run typecheck && bun run lint && bun run test",
+    "test": "bun test --path-ignore-patterns '**/create-app/template/**'",
     "bench": "bun run --cwd bench bench",
     "bench:ci": "bun run --cwd bench bench:ci",
     "typecheck": "tsc --noEmit",

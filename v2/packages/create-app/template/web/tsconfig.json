@@ -7,18 +7,10 @@
     "types": ["bun"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": [
-    "packages/**/*.ts",
-    "spec/**/*.ts",
-    "apps/**/*.ts",
-    "examples/**/*.ts",
-    "bench/**/*.ts"
-  ],
-  "exclude": ["node_modules", "packages/create-app/template"]
+  "include": ["src/**/*.ts"]
 }

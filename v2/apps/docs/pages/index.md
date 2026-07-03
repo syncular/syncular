@@ -40,6 +40,7 @@ same conformance suite.
 | Two cores, one protocol | The web core is small, debuggable TypeScript with no cargo; the Rust core ships native. Parity is a CI gate, not a hope. |
 | No fallback ladders | One sync loop over WebSocket, one persistent browser mode (OPFS), one bootstrap format preference. Unsupported means fail-loud, never a silent degraded path. |
 | Scopes run in *your* backend | `resolveScopes(actor)` lives next to your auth. Sync never becomes a second authorization system to keep in agreement. |
+| One command to a running app | `bun create syncular-v2 my-app` scaffolds a working server + client (terminal `minimal` or browser `web`) with the typed schema wired up — no cargo, no config archaeology. |
 
 ## Where to go next
 
