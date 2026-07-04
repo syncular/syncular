@@ -21,6 +21,22 @@ KOTLIN_DIR="$(pwd)"
 V2_DIR="$(cd ../.. && pwd)"
 RUST_DIR="${V2_DIR}/rust"
 
+# -- generated schema freshness (runs even without a JDK/Gradle) --------------
+# The example's Kotlin schema (example/src/main/kotlin/dev/syncular/example/
+# Syncular.generated.kt) is produced by `syncular-v2 generate` from
+# example/syncular.json + migrations/. Gate its freshness byte-exactly so a
+# hand-edit or a migration change without a regenerate fails loud. Requires bun
+# (the repo toolchain); this gate runs BEFORE the JDK detect-and-skip so schema
+# freshness is verified even on a JDK-less machine.
+if command -v bun >/dev/null 2>&1; then
+  echo "== generated schema is fresh (syncular-v2 generate --check) =="
+  ( cd "${V2_DIR}" && bun packages/typegen/src/cli.ts generate \
+      --manifest-dir bindings/kotlin/example --check )
+  echo "ok: example Syncular.generated.kt is fresh"
+else
+  echo "SKIP: no bun; cannot verify generated-schema freshness (repo toolchain)."
+fi
+
 # -- toolchain detection ------------------------------------------------------
 # NOTE: macOS ships a /usr/bin/java STUB that exists but has no runtime, so we
 # must actually RUN `java -version` (not just `command -v java`) to detect a

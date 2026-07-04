@@ -11,6 +11,9 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { emitModule } from './emit';
+import { emitDartModule } from './emit-dart';
+import { emitKotlinModule } from './emit-kotlin';
+import { emitSwiftModule } from './emit-swift';
 import { TypegenError } from './errors';
 import {
   canonicalizeExtensions,
@@ -261,6 +264,12 @@ export function loadMigrations(migrationsDir: string): MigrationInput[] {
   });
 }
 
+/** One generated artifact: an absolute output path and its exact bytes. */
+export interface GeneratedOutput {
+  readonly path: string;
+  readonly content: string;
+}
+
 export interface GenerateResult {
   readonly ir: IrDocument;
   /** Serialized IR document (the exact bytes of the `.ir.json` output). */
@@ -270,6 +279,9 @@ export interface GenerateResult {
   readonly module: string;
   readonly irPath: string;
   readonly modulePath: string;
+  /** Every artifact this manifest emits (IR + TS + any opt-in native), in a
+   * stable order — the single list `writeOutputs`/`checkOutputs` iterate. */
+  readonly outputs: readonly GeneratedOutput[];
 }
 
 /** Read `syncular.json` + migrations under `manifestDir`; build outputs. */
@@ -293,21 +305,37 @@ export function generate(manifestDir: string): GenerateResult {
   const irJson = serializeIr(ir);
   const hash = irHash(irJson);
   const module = emitModule(ir, hash);
-  return {
-    ir,
-    irJson,
-    hash,
-    module,
-    irPath: resolve(manifestDir, manifest.output.ir),
-    modulePath: resolve(manifestDir, manifest.output.module),
-  };
+  const irPath = resolve(manifestDir, manifest.output.ir);
+  const modulePath = resolve(manifestDir, manifest.output.module);
+  const outputs: GeneratedOutput[] = [
+    { path: irPath, content: irJson },
+    { path: modulePath, content: module },
+  ];
+  // Opt-in native emitters — each present only when the manifest requests it.
+  const { swift, kotlin, dart } = manifest.output;
+  if (swift !== undefined) {
+    outputs.push({
+      path: resolve(manifestDir, swift.path),
+      content: emitSwiftModule(ir, hash, swift.enumName),
+    });
+  }
+  if (kotlin !== undefined) {
+    outputs.push({
+      path: resolve(manifestDir, kotlin.path),
+      content: emitKotlinModule(ir, hash, kotlin.package, kotlin.objectName),
+    });
+  }
+  if (dart !== undefined) {
+    outputs.push({
+      path: resolve(manifestDir, dart.path),
+      content: emitDartModule(ir, hash),
+    });
+  }
+  return { ir, irJson, hash, module, irPath, modulePath, outputs };
 }
 
 export function writeOutputs(result: GenerateResult): void {
-  for (const [path, content] of [
-    [result.irPath, result.irJson],
-    [result.modulePath, result.module],
-  ] as const) {
+  for (const { path, content } of result.outputs) {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, content, 'utf8');
   }
@@ -316,13 +344,10 @@ export function writeOutputs(result: GenerateResult): void {
 /** Byte-exact freshness check; returns human-readable drift descriptions. */
 export function checkOutputs(result: GenerateResult): string[] {
   const drift: string[] = [];
-  for (const [path, expected] of [
-    [result.irPath, result.irJson],
-    [result.modulePath, result.module],
-  ] as const) {
+  for (const { path, content } of result.outputs) {
     if (!existsSync(path)) {
       drift.push(`${path}: missing — run generate`);
-    } else if (readFileSync(path, 'utf8') !== expected) {
+    } else if (readFileSync(path, 'utf8') !== content) {
       drift.push(`${path}: stale — run generate`);
     }
   }

@@ -64,9 +64,16 @@ describe('parseManifest', () => {
         }),
       /unknown key "typo"/,
     );
+    // `output.swift`/`kotlin`/`dart` are now recognized native-emitter keys;
+    // an unrelated typo in `output` is still rejected.
     expectFail(
-      () => manifest({ output: { swift: './x' } }),
-      /unknown key "swift"/,
+      () => manifest({ output: { typo: './x' } }),
+      /unknown key "typo"/,
+    );
+    // Native-emitter option objects still reject their own unknown keys.
+    expectFail(
+      () => manifest({ output: { kotlin: { path: './x', bogus: 1 } } }),
+      /output\.kotlin has unknown key "bogus"/,
     );
   });
 

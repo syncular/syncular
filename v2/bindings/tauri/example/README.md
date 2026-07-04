@@ -94,6 +94,7 @@ bundle is built **first** because `tauri::generate_context!` validates
 | ---------------------------- | ----------------------------------------------------------- |
 | `src/frontend/main.tsx`      | The React app (provider + the three hooks).                 |
 | `src/frontend/index.html`    | The HTML shell (loads `/app.js`).                           |
-| `src/frontend/syncular.generated.ts` | The `todos` schema (typegen-shaped, hand-written — the example ships no manifest). |
+| `src/frontend/syncular.generated.ts` | The `todos` schema + row types — REAL `syncular-v2 generate` output from [`syncular.json`](syncular.json) + [`migrations/`](migrations). `check.sh` gates it with `generate --check`. |
+| `syncular.json` / `migrations/` | The typegen manifest + migration that generate the schema above (mirrors `apps/demo-react`). |
 | `build-frontend.ts`          | `Bun.build` → `dist/app.js` + `index.html` (no Vite).       |
 | `src-tauri/`                 | The Tauri shell: registers `tauri-plugin-syncular`.         |

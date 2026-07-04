@@ -9,6 +9,11 @@
 // `done` column and the example is read-only, so we model completion in the
 // body rather than fork the schema — an honest fit, no hacks).
 //
+// The schema is NOT hand-built: `SyncularSchema.schema` and the typed `Notes`
+// row come from `Syncular.generated.swift`, produced by `syncular-v2 generate`
+// from this example's `syncular.json` + `migrations/` (check.sh gates its
+// freshness with `--check`).
+//
 // Everything below is plain wrapper calls: subscribe / mutate / query / sync.
 // No protocol logic lives here; the native core owns all of it.
 
@@ -33,27 +38,37 @@ public final class TodoStore {
     public init(clientId: String, baseUrl: String?, dbPath: String? = nil) throws {
         client = try SyncularClient(
             clientId: clientId,
-            schema: Self.schema,
+            schema: SyncularSchema.schema,
             config: SyncularConfig(
                 baseUrl: baseUrl,
                 dbPath: dbPath
             )
         )
         // Subscribe to the demo list so sync fills it and pushes our writes.
-        try client.subscribe(id: "todos", table: "notes", scopes: ["list_id": [demoListId]])
+        // The scope map comes from the generated subscription helper.
+        try client.subscribe(
+            id: "todos",
+            table: SyncularSchema.subscriptions.ListNotes.table,
+            scopes: SyncularSchema.subscriptions.ListNotes.scopes(listId: demoListId)
+        )
     }
 
-    /// All todos in the list, id-ordered (the live-query fast path).
+    /// All todos in the list, id-ordered (the live-query fast path). Rows decode
+    /// through the generated typed `Notes` struct.
     public func todos() throws -> [Todo] {
         try client.query(
-            "SELECT id, body FROM notes ORDER BY id"
-        ).map { row in
-            let body = row["body"]?.stringValue ?? ""
-            let done = body.hasPrefix("[x] ")
+            "SELECT id, list_id, body, updated_at_ms FROM notes ORDER BY id"
+        ).compactMap { row in
+            guard case let .object(fields) = row, let note = Notes(row: fields) else {
+                return nil
+            }
+            let done = note.body.hasPrefix("[x] ")
             // Strip the "[ ] "/"[x] " marker only when present, so foreign notes
             // (rows written without a marker) keep their body intact.
-            let title = (done || body.hasPrefix("[ ] ")) ? String(body.dropFirst(4)) : body
-            return Todo(id: row["id"]?.stringValue ?? "", title: title, done: done)
+            let title = (done || note.body.hasPrefix("[ ] "))
+                ? String(note.body.dropFirst(4))
+                : note.body
+            return Todo(id: note.id, title: title, done: done)
         }
     }
 
@@ -106,30 +121,5 @@ public final class TodoStore {
                 ]),
             ])
         ])
-    }
-
-    /// The SSP2 wire media type the server (§1.1) requires. See the workaround
-
-    /// The quickstart `notes` schema — matches examples/quickstart's generated
-    /// schema (id, list_id, body, updated_at_ms; scoped by list). The server
-    /// runs the same shape, so the two converge.
-    private static let schema: JSONValue = .object([
-        "version": .number(1),
-        "tables": .array([
-            .object([
-                "name": .string("notes"),
-                "primaryKey": .string("id"),
-                "scopes": .array([
-                    .object(["pattern": .string("list:{list_id}"), "column": .string("list_id")]),
-                ]),
-                "columns": .array([
-                    col("id"), col("list_id"), col("body"), col("updated_at_ms", type: "integer"),
-                ]),
-            ]),
-        ]),
-    ])
-
-    private static func col(_ name: String, type: String = "string") -> JSONValue {
-        .object(["name": .string(name), "type": .string(type), "nullable": .bool(false)])
     }
 }

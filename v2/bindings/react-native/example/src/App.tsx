@@ -34,7 +34,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import type { TodosRow } from './syncular.generated';
+import type { TodosInsert, TodosRow } from './syncular.generated';
 
 const LIST_ID = 'groceries';
 
@@ -80,7 +80,8 @@ function TodoList(): React.ReactElement {
           done: false,
           position,
           updated_at_ms: Date.now(),
-        } satisfies TodosRow,
+          // `attachment` (a nullable blob_ref) is omitted — TodosInsert allows it.
+        } satisfies TodosInsert,
       },
     ]);
   };

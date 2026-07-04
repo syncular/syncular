@@ -7,7 +7,11 @@
  *   "manifestVersion": 1,
  *   "migrations": "./migrations",
  *   "output": { "ir": "./syncular.ir.json",
- *               "module": "./syncular.generated.ts" },
+ *               "module": "./syncular.generated.ts",
+ *               "swift": "./Sources/App/Syncular.generated.swift",
+ *               "kotlin": { "path": "./Syncular.generated.kt",
+ *                           "package": "dev.example" },
+ *               "dart": "./lib/syncular.generated.dart" },
  *   "schemaVersions": [{ "version": 1, "through": "0001_initial" }],
  *   "tables": [{ "name": "tasks", "scopes": ["project:{project_id}"] }],
  *   "subscriptions": [{ "name": "projectTasks", "table": "tasks",
@@ -22,6 +26,15 @@
  *   final entry must cover the final migration.
  * - Subscription scope values are literals or whole-value `{param}`
  *   placeholders (partial templates are unsupported).
+ * - `output.ir` / `output.module` are the always-emitted TS defaults.
+ *   `output.swift` / `output.kotlin` / `output.dart` are OPT-IN native
+ *   emitters — a bare string is the output path; an object carries
+ *   language-appropriate options (Kotlin `package`/`objectName`, Swift
+ *   `enumName`; Dart takes `path` only). This is additive within the `output`
+ *   object (the same forward-extension shape `output.ir`/`output.module`
+ *   already use); no `manifestVersion` bump — new *recognized* keys, not
+ *   tolerated-unknown ones. Absent → that language is not generated (TS
+ *   stays the default).
  * - Unknown keys are hard errors everywhere (fail loud; growth happens by
  *   bumping `manifestVersion`), except inside `extensions`, the reserved
  *   WP-49 passthrough slot copied verbatim into the IR.
@@ -50,10 +63,40 @@ export interface ManifestSchemaVersion {
   readonly through: string;
 }
 
+/** Swift emitter output: a `.swift` path plus optional options. */
+export interface SwiftOutput {
+  readonly path: string;
+  /** The generated enum namespace (default `SyncularSchema`). */
+  readonly enumName: string;
+}
+
+/** Kotlin emitter output: a `.kt` path plus its package declaration. */
+export interface KotlinOutput {
+  readonly path: string;
+  /** The Kotlin package declaration (default `syncular.generated`). */
+  readonly package: string;
+  /** The generated top-level object name (default `SyncularSchema`). */
+  readonly objectName: string;
+}
+
+/** Dart emitter output: a `.dart` path plus optional options. */
+export interface DartOutput {
+  readonly path: string;
+}
+
+export interface ManifestOutput {
+  readonly ir: string;
+  readonly module: string;
+  /** Opt-in native emitters; undefined → that language is not generated. */
+  readonly swift?: SwiftOutput;
+  readonly kotlin?: KotlinOutput;
+  readonly dart?: DartOutput;
+}
+
 export interface Manifest {
   readonly manifestVersion: 1;
   readonly migrations: string;
-  readonly output: { readonly ir: string; readonly module: string };
+  readonly output: ManifestOutput;
   readonly schemaVersions: readonly ManifestSchemaVersion[];
   readonly tables: readonly ManifestTable[];
   readonly subscriptions: readonly ManifestSubscription[];
@@ -108,6 +151,58 @@ function parseScopeSpec(value: unknown, context: string): ManifestScopeSpec {
     pattern: asString(obj.pattern, `${context}.pattern`),
     column: asString(obj.column, `${context}.column`),
   };
+}
+
+/** Parse a native-emitter output spec: a bare path string, or an object with
+ * `path` + language options. Returns the resolved output or throws. */
+function parseSwiftOutput(value: unknown): SwiftOutput {
+  if (typeof value === 'string') {
+    return {
+      path: asString(value, 'output.swift'),
+      enumName: 'SyncularSchema',
+    };
+  }
+  const obj = asObject(value, 'output.swift');
+  rejectUnknownKeys(obj, ['path', 'enumName'], 'output.swift');
+  return {
+    path: asString(obj.path, 'output.swift.path'),
+    enumName:
+      obj.enumName === undefined
+        ? 'SyncularSchema'
+        : asString(obj.enumName, 'output.swift.enumName'),
+  };
+}
+
+function parseKotlinOutput(value: unknown): KotlinOutput {
+  if (typeof value === 'string') {
+    return {
+      path: asString(value, 'output.kotlin'),
+      package: 'syncular.generated',
+      objectName: 'SyncularSchema',
+    };
+  }
+  const obj = asObject(value, 'output.kotlin');
+  rejectUnknownKeys(obj, ['path', 'package', 'objectName'], 'output.kotlin');
+  return {
+    path: asString(obj.path, 'output.kotlin.path'),
+    package:
+      obj.package === undefined
+        ? 'syncular.generated'
+        : asString(obj.package, 'output.kotlin.package'),
+    objectName:
+      obj.objectName === undefined
+        ? 'SyncularSchema'
+        : asString(obj.objectName, 'output.kotlin.objectName'),
+  };
+}
+
+function parseDartOutput(value: unknown): DartOutput {
+  if (typeof value === 'string') {
+    return { path: asString(value, 'output.dart') };
+  }
+  const obj = asObject(value, 'output.dart');
+  rejectUnknownKeys(obj, ['path'], 'output.dart');
+  return { path: asString(obj.path, 'output.dart.path') };
 }
 
 function parseTable(value: unknown, index: number): ManifestTable {
@@ -208,14 +303,33 @@ export function parseManifest(raw: unknown): Manifest {
       : asString(obj.migrations, 'migrations');
   let ir = './syncular.ir.json';
   let module = './syncular.generated.ts';
+  let swift: SwiftOutput | undefined;
+  let kotlin: KotlinOutput | undefined;
+  let dart: DartOutput | undefined;
   if (obj.output !== undefined) {
     const output = asObject(obj.output, 'output');
-    rejectUnknownKeys(output, ['ir', 'module'], 'output');
+    rejectUnknownKeys(
+      output,
+      ['ir', 'module', 'swift', 'kotlin', 'dart'],
+      'output',
+    );
     if (output.ir !== undefined) ir = asString(output.ir, 'output.ir');
     if (output.module !== undefined) {
       module = asString(output.module, 'output.module');
     }
+    if (output.swift !== undefined) swift = parseSwiftOutput(output.swift);
+    if (output.kotlin !== undefined) kotlin = parseKotlinOutput(output.kotlin);
+    if (output.dart !== undefined) dart = parseDartOutput(output.dart);
   }
+  // Build `output` with only the keys that are set — `exactOptionalPropertyTypes`
+  // forbids explicit `undefined` on optional properties.
+  const outputSpec: ManifestOutput = {
+    ir,
+    module,
+    ...(swift !== undefined ? { swift } : {}),
+    ...(kotlin !== undefined ? { kotlin } : {}),
+    ...(dart !== undefined ? { dart } : {}),
+  };
   if (!Array.isArray(obj.schemaVersions) || obj.schemaVersions.length === 0) {
     fail('schemaVersions must be a non-empty array (§1.5 version history)');
   }
@@ -255,7 +369,7 @@ export function parseManifest(raw: unknown): Manifest {
   return {
     manifestVersion: 1,
     migrations,
-    output: { ir, module },
+    output: outputSpec,
     schemaVersions,
     tables,
     subscriptions,

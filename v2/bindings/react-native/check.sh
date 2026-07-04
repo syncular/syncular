@@ -19,6 +19,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# The example's schema (example/src/syncular.generated.ts) is REAL typegen
+# output from example/syncular.json + migrations/ (mirroring apps/demo-react).
+# Gate its freshness byte-exactly so a migration change without a regenerate
+# fails loud.
+echo "== generated schema is fresh (syncular-v2 generate --check) =="
+( cd ../.. && bun packages/typegen/src/cli.ts generate \
+    --manifest-dir bindings/react-native/example --check )
+echo "ok: example/src/syncular.generated.ts is fresh"
+
 echo "== bun test (JS bridge double + App integration render) =="
 bun test
 

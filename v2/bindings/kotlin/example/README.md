@@ -19,8 +19,18 @@ no schema fork).
 
 The whole syncular surface is [`TodoStore`](src/main/kotlin/dev/syncular/example/TodoStore.kt):
 the constructor builds a `SyncularClient` (schema + `baseUrl`) and `subscribe`s
-to the list; `todos()` is one `query`; `add`/`toggle` are `mutate`; `sync()` is
-`syncUntilIdle`. No protocol logic — the native core owns all of it.
+to the list; `todos()` is one `query` decoded through the generated typed
+`Notes` row; `add`/`toggle` are `mutate`; `sync()` is `syncUntilIdle`. No
+protocol logic — the native core owns all of it.
+
+The schema is **generated, not hand-built**:
+[`Syncular.generated.kt`](src/main/kotlin/dev/syncular/example/Syncular.generated.kt)
+(`SyncularSchema.schema` + the `Notes` data class + the `ListNotes` subscription
+helper) comes from [`syncular.json`](syncular.json) + [`migrations/`](migrations)
+via `syncular-v2 generate` (regenerate with `bun packages/typegen/src/cli.ts
+generate --manifest-dir bindings/kotlin/example` from the repo root).
+`check.sh` runs `generate --check` (a byte-exact freshness gate, bun-only, so it
+runs even without a JDK) before the JVM steps.
 
 ## Run it
 
