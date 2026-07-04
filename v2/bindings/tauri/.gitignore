@@ -2,3 +2,7 @@
 /target
 # Tauri build-time generated ACL/schema artifacts for the example.
 /example/src-tauri/gen
+# The React frontend bundle (produced by `bun run build-frontend`).
+/example/dist
+# Per-package deps linked by `bun install` (example is a workspace member).
+/example/node_modules

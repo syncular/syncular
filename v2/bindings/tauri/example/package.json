@@ -2,11 +2,20 @@
   "name": "@syncular-v2/tauri-example",
   "private": true,
   "type": "module",
-  "description": "Minimal Tauri app wiring tauri-plugin-syncular + @syncular-v2/tauri",
+  "description": "Minimal Tauri + React app wiring tauri-plugin-syncular + @syncular-v2/tauri + @syncular-v2/react",
+  "scripts": {
+    "build-frontend": "bun run build-frontend.ts",
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
-    "@syncular-v2/tauri": "workspace:*"
+    "@syncular-v2/react": "workspace:*",
+    "@syncular-v2/tauri": "workspace:*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@tauri-apps/api": "^2.0.0"
+    "@tauri-apps/api": "^2.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0"
   }
 }

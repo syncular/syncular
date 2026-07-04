@@ -107,6 +107,15 @@ name from the APK's `jniLibs`, so no `syncular.library.path` is needed — FFM's
 `System.loadLibrary("syncular")` path applies. (FFM on Android requires a recent
 runtime; on older Android, use the JNA fallback above.)
 
+## Example — the todo demo
+
+[`example/`](example) is a runnable terminal todo app over this wrapper (a Gradle
+`application` module), talking to the [quickstart](../../examples/quickstart)
+server. Its [`ci-smoke.sh`](example/ci-smoke.sh) is the full
+native-transport-to-real-server proof — the `swift-kotlin-bindings` CI job runs
+the example against a live server and has an independent client read the synced
+row back. See [`example/README.md`](example/README.md) for the run recipe.
+
 ## Tests & gate
 
 `./check.sh` (from anywhere):

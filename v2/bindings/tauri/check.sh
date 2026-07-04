@@ -5,10 +5,24 @@
 #
 # Mirrors the main rust-conformance job's hygiene: fmt + clippy (deny warnings)
 # + test. Builds the plugin with and without the native-transport feature so
-# both lanes stay green, and compiles the example app (the wiring proof).
+# both lanes stay green, and compiles the example app (the wiring proof) — whose
+# React frontend must be built FIRST, because `tauri::generate_context!`
+# validates `frontendDist` (../dist) at compile time (every cargo step that
+# touches the example crate needs the bundle present).
 set -euo pipefail
 
 cd "$(dirname "$0")"
+
+echo "== frontend deps (bun install, workspace root) =="
+# The example is a workspace member; install at the repo root so its deps
+# (react, @syncular-v2/react, @syncular-v2/tauri, @tauri-apps/api) are linked.
+( cd ../.. && bun install --frozen-lockfile )
+
+echo "== frontend bundle (bun) =="
+( cd example && bun run build-frontend )
+
+echo "== frontend typecheck (tsc) =="
+( cd example && bun run typecheck )
 
 echo "== cargo fmt --check =="
 cargo fmt --check

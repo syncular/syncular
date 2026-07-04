@@ -141,17 +141,24 @@ holds the whole database; the webview should pull windows of it, not the lot.
 
 ## The example (`example/`)
 
-A minimal Tauri app proving the wiring compiles: `example/src-tauri` registers
-the plugin (with `native-transport`) and points at a local dev server;
-`example/src/frontend` is a vanilla `createTauriSyncClient` + live-query demo
-(vanilla, not React, so the example needs no bundler toolchain — the React hooks
-are proven unchanged by `@syncular-v2/tauri`'s shape-parity test).
+A minimal Tauri app proving syncular works end to end: `example/src-tauri`
+registers the plugin (with `native-transport`) and points its native instance at
+a local dev server; `example/src/frontend` is a **React** todo list on
+`@syncular-v2/react` hooks (`useSyncQuery` + `useMutation` + `useSyncStatus`)
+over `createTauriSyncClient` — the exact hooks the browser demo uses, with the
+only Tauri-specific line being the client construction. See
+[`example/README.md`](example/README.md) for the full run recipe and the ~40
+lines of integration.
 
-Build it: `cargo build -p syncular-tauri-example` (from `bindings/tauri`).
-`cargo tauri dev` opens a window — that needs a human hand (a real display and,
-on Linux, webkit2gtk); a compile plus the mock-runtime tests are this rung's
-automated bar. The frontend uses `.ts` sources referenced as `.js`; wire your
-own bundler (Vite/tsc) if you run the window — the Rust side is complete.
+The frontend bundles with **`bun run build-frontend`** (a dependency-light
+`Bun.build` → `example/dist` — no Vite; React + the syncular packages come from
+the workspace). `tauri.conf.json` points `frontendDist` at `../dist` and runs
+the bundle as `beforeDevCommand`/`beforeBuildCommand`, so
+`bun run build-frontend && cargo tauri dev` opens the window. The window is a
+human step (a real display, and on Linux `webkit2gtk`); a `cargo build` plus the
+mock-runtime tests are this rung's automated bar. Because
+`tauri::generate_context!` validates `frontendDist` at compile time, the bundle
+must exist before any cargo step — `check.sh` builds it first.
 
 ## Tests & gates
 

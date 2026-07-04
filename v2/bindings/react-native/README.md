@@ -28,10 +28,11 @@ JSON-command-shaped: `command_json` in, `{result|error}` out, bytes as
 
 ## What ships here (honest scoping)
 
-A **full RN TurboModule** verified end-to-end needs an RN app harness + platform
-builds — disproportionate to stand up headless. So this package ships the
-**module, correctly structured for RN consumption**, with the JS bridge verified
-hermetically:
+A **full RN TurboModule** verified end-to-end on a device needs the platform
+build toolchains (Xcode / Android SDK+NDK) + the native artifact. So this
+package ships the **module, correctly structured for RN consumption**, with the
+JS bridge verified hermetically AND a runnable **[example todo app](example)**
+whose hooks↔module integration is proven headless:
 
 - **`src/index.ts`** — `createNativeSyncClient()` implementing `SyncClientLike`
   over a `NativeModule` interface (the `{$bytes:hex}` + command-JSON protocol,
@@ -47,8 +48,12 @@ hermetically:
   technique as [`bindings/kotlin`](../kotlin)), loading `libsyncular.so` from the
   APK's `jniLibs`.
 - **`syncular-react-native.podspec` + `android/build.gradle`** — RN packaging.
-
-An **RN example app is explicitly OUT** of scope for this rung.
+- **[`example/`](example)** — a bare-RN **todo app** over the hooks
+  (`<SyncProvider client={await createNativeSyncClient(…)}>` +
+  `useSyncQuery`/`useMutation`/`useSyncStatus`), the same clean interface as the
+  web demos. Its real `App.tsx` is rendered headless against a NativeModule
+  double as the hooks↔module integration proof (see the verification bar); the
+  device build is a documented one-time overlay (no Xcode/Android SDK here).
 
 ## Usage
 
@@ -76,21 +81,34 @@ pump + disconnect realtime — call from `AppState` `'background'`) and
 
 `./check.sh` runs the automated gate:
 
-- **`bun test`** — the JS bridge with an **injected NativeModule double** (the
-  `@syncular-v2/tauri` pattern): the `SyncClientLike` contract, method → command
-  mapping, the `query` fast path, `{$bytes:hex}` round-trip, event fanout to
-  `onInvalidate`/`onPresence`, lifecycle (pause/resume/close driving the native
-  pump), and a **parity test against the React `normalizeClient`** (so a drift in
-  `SyncClientLike` breaks this suite).
-- **`tsc --noEmit`** — the TypeScript (bridge + spec) compiles. A minimal
-  ambient `react-native` stub (`types/react-native.d.ts`) lets the spec
-  typecheck standalone; a consuming app's real RN types shadow it.
+- **`bun test`** — two layers, no device:
+  - *the JS bridge* with an **injected NativeModule double** (the
+    `@syncular-v2/tauri` pattern): the `SyncClientLike` contract, method →
+    command mapping, the `query` fast path, `{$bytes:hex}` round-trip, event
+    fanout to `onInvalidate`/`onPresence`, lifecycle (pause/resume/close driving
+    the native pump), and a **parity test against the React `normalizeClient`**
+    (so a drift in `SyncClientLike` breaks this suite);
+  - *the App integration render* (`test/app.test.tsx`): the example's **real
+    `App.tsx`** rendered with `@testing-library/react` against a **stateful**
+    NativeModule double — the list renders the rows the native `query` returns,
+    and Add drives `useMutation` → `command('mutate')` → an `invalidate` event →
+    `useSyncQuery` re-run → the new row appears. This proves the
+    `@syncular-v2/react` hooks drive the native client end-to-end. `react-native`
+    primitives are mocked to DOM tags by a bunfig preload (`test/setup-app.ts`) —
+    the one thing bun can't resolve off-device.
+- **`tsc --noEmit`** — the TypeScript (bridge + spec **+ the example `App.tsx`**)
+  compiles. An ambient `react-native` stub (`types/react-native.d.ts`) declares
+  the spec's + example's RN surface so both typecheck standalone; a consuming
+  app's real RN types shadow it.
 
 This package is **isolated from the main gates**: its tests are path-ignored from
 `bun run test`, and its `.ts` is not in the root `tsconfig` (so it never enters
 the main `typecheck`). It is registered in the root `workspaces` ONLY so
-`workspace:*` links `@syncular-v2/web-client` / `@syncular-v2/react` for the
-parity test.
+`workspace:*` links `@syncular-v2/web-client` / `@syncular-v2/react` (for the
+parity + integration tests). The **`example/` app is deliberately OUTSIDE the
+workspace** (RN apps pin exact react/react-native; `npm`, which RN tooling uses,
+also can't resolve `workspace:*`) — Metro reaches the workspace source packages
+via `watchFolders`.
 
 ### Verifying the native shims (manual recipe)
 
@@ -103,15 +121,42 @@ honest scoping applies. To verify manually:
 1. Build the native core: `rust/scripts/build-native.sh` →
    `Syncular.xcframework` (drop into `ios/`) and `libsyncular.so` per ABI (drop
    into `android/src/main/jniLibs/<abi>/`).
-2. Add the package to a bare RN app (`npx react-native init`); autolinking wires
-   the pod + gradle module.
+2. Add the package to a bare RN app; autolinking wires the pod + gradle module.
+   The **[`example/`](example) app is exactly this app** — its `example/README.md`
+   has the full per-platform run recipe (the one-time `ios/`+`android/` scaffold
+   overlay + the artifact drop).
 3. iOS: `cd ios && pod install`; build in Xcode. Android: `./gradlew
    :app:assembleDebug`.
-4. Run the app: `createNativeSyncClient` + a `useSyncQuery` view proves the
-   round trip end-to-end (mirrors the tauri README's `cargo tauri dev` note).
+4. Run the app: `createNativeSyncClient` + the `useSyncQuery` todo view proves
+   the round trip end-to-end (mirrors the tauri README's `cargo tauri dev` note).
 
 ## CI
 
-The RN gate runs on the standard Ubuntu runner (bun test + tsc — no native
-toolchain), as part of the `swift-kotlin-bindings` job in
-`.github/workflows/v2.yml` (path-gated on `v2/bindings/**`).
+The RN gate runs on the standard Ubuntu runner (bun bridge tests + the App
+integration render + tsc — **no native toolchain**), as part of the
+`swift-kotlin-bindings` job in `.github/workflows/v2.yml` (path-gated on
+`v2/bindings/**`). This lane now also proves the example App's hooks↔module
+integration, not just the bridge.
+
+A full **device-build lane** (Android `assembleDebug` on the `example/`) is a
+documented **follow-up**, deliberately not wired — it is the heaviest of all
+binding lanes and can't be validated on this dev machine (no Android SDK/NDK), so
+shipping it blind risks a flaky gate. The exact recipe it would run:
+
+```yaml
+# sketch — a separate job, path-gated, NOT yet enabled:
+- uses: actions/setup-java@v4         # JDK 17 (AGP)
+  with: { distribution: temurin, java-version: 17 }
+- uses: android-actions/setup-android@v3   # SDK + NDK
+- run: rustup target add aarch64-linux-android armv7-linux-androideabi \
+       x86_64-linux-android i686-linux-android
+- run: cargo install cargo-ndk
+- run: rust/scripts/build-native.sh --android   # cdylib → jniLibs/<abi>/
+- run: cd bindings/react-native/example && npm_config_workspace=false <install> \
+       && npx react-native init overlay … && ./android/gradlew assembleDebug
+```
+
+The blocker to enabling it as-is: the example consumes `workspace:*` source
+packages that `npm` (RN's package manager) can't resolve, so the lane needs
+either published packages or a `file:`-link install step first — resolved before
+this graduates from follow-up to a shipped lane.

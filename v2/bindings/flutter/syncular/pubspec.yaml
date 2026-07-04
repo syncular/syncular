@@ -1,0 +1,19 @@
+name: syncular
+description: >-
+  Idiomatic Dart/Flutter bindings over the syncular v2 native core (the C-ABI
+  syncular-ffi), via dart:ffi. Offline-first local sync client with a JSON
+  command surface, typed conveniences, an event Stream, and pause/resume/close.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  # dart:ffi helpers: Utf8 string marshaling + malloc. The only runtime
+  # dependency — the wrapper is otherwise pure dart:ffi + dart:convert.
+  ffi: ^2.1.0
+
+dev_dependencies:
+  test: ^1.24.0
+  lints: ^3.0.0

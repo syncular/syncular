@@ -78,4 +78,19 @@ case "$(uname -s)" in
   *)      LD_LIBRARY_PATH="${SWIFT_DIR}/vendor" swift test "${TEST_FLAGS[@]}" ;;
 esac
 
+# -- example: the todo demo (SwiftUI window + terminal) -----------------------
+# Build the example so it can't rot. It needs the NATIVE-TRANSPORT dylib (the
+# demo talks to a real server), so we build that variant and vendor it into
+# example/vendor (the wrapper's own tests above use the lean dylib). Build only
+# — running the SwiftUI window / the end-to-end sync is a documented manual
+# recipe (example/README.md), not a headless gate step.
+echo "== build example (native-transport dylib) =="
+( cd "${RUST_DIR}" && cargo build -p syncular-ffi --features native-transport )
+mkdir -p "${SWIFT_DIR}/example/vendor"
+cp "${LIB_SRC}" "${SWIFT_DIR}/example/vendor/${LIB}"
+echo "ok: vendored native-transport ${LIB} into example/vendor"
+
+echo "== swift build (example) =="
+( cd "${SWIFT_DIR}/example" && swift build )
+
 echo "OK: swift bindings gate is green"

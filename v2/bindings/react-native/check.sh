@@ -6,20 +6,25 @@
 # The verification bar (per ROADMAP block 1's honest RN scoping): the JS bridge
 # is exercised with an INJECTED NativeModule double — no device, no RN runtime —
 # proving the SyncClientLike contract, the {$bytes:hex} convention, event fanout,
-# lifecycle, and parity vs the React `normalizeClient`. The TypeScript compiles.
-# The iOS (.mm) / Android (.kt) native shims are compile-checked only where a
-# toolchain is cheaply available; otherwise their manual verification recipe is
-# documented in README.md (an RN example app is explicitly OUT of scope).
+# lifecycle, and parity vs the React `normalizeClient`. On top, the example
+# app's REAL App.tsx is rendered (@testing-library/react) against a stateful
+# NativeModule double, proving the @syncular-v2/react hooks drive the native
+# client end-to-end (list renders + mutate flows through) — the hooks↔module
+# integration proof, still no device (react-native primitives mocked to DOM tags
+# by the bunfig preload). The TypeScript — module, spec, AND the example App —
+# compiles. The iOS (.mm) / Android (.kt) native shims + the device build verify
+# at a consuming app's build; their manual recipe is documented (README.md +
+# example/README.md).
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
-echo "== bun test (JS bridge, injected NativeModule double) =="
+echo "== bun test (JS bridge double + App integration render) =="
 bun test
 
-echo "== tsc --noEmit (TypeScript compiles) =="
+echo "== tsc --noEmit (module + spec + example App compile) =="
 bunx tsc --noEmit
 
-echo "OK: react-native bindings gate is green (JS bridge + tsc)"
-echo "    note: iOS/Android native shims verify at a consuming app's build —"
-echo "    see README.md 'Verifying the native shims'."
+echo "OK: react-native bindings gate is green (bridge + App integration + tsc)"
+echo "    note: iOS/Android native shims + the device build verify at a"
+echo "    consuming app's build — see README.md + example/README.md."

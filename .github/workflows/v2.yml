@@ -259,7 +259,21 @@ jobs:
         working-directory: v2/bindings/kotlin
         run: ./check.sh
 
-      # React Native JS bridge — bun test (injected NativeModule double) + tsc.
+      # Kotlin todo example smoke — the FULL native-transport-to-real-server
+      # proof: build the native-transport dylib, start the quickstart server,
+      # run the terminal example (bindings/kotlin/example) with scripted stdin
+      # (add → sync), then have an independent quickstart web-client read the
+      # synced row back. This is the prize the wrapper's offline test can't
+      # give: a real Kotlin/FFM client syncing to a real server. (`bun install`
+      # above linked the quickstart workspace so its server + web-client run.)
+      - name: Kotlin todo example smoke
+        if: steps.changed.outputs.run == 'true'
+        working-directory: v2/bindings/kotlin/example
+        run: ./ci-smoke.sh
+
+      # React Native — bun test (bridge double + the example App rendered
+      # against a NativeModule double: hooks↔module integration) + tsc. No
+      # native toolchain; the device build is a documented follow-up.
       - name: React Native bindings gate
         if: steps.changed.outputs.run == 'true'
         working-directory: v2/bindings/react-native
@@ -269,3 +283,77 @@ jobs:
       - name: Swift lane (local-only note)
         if: steps.changed.outputs.run == 'true'
         run: echo "Swift bindings gate runs locally via v2/bindings/swift/check.sh (macOS runner is out of scope for CI)."
+
+  # The Flutter/Dart FFI binding (v2/bindings/flutter) — its own isolated build.
+  # This job runs on Ubuntu: cargo-build the real cdylib, provision Flutter (which
+  # bundles Dart), then `dart analyze` + `dart test` the binding against the REAL
+  # native core with SYNCULAR_LIBRARY_PATH at the built .so. That dart:ffi-boundary
+  # test IS the strong proof; the example APP build is a documented local
+  # `flutter run` (flutter build web is N/A for dart:ffi; flutter build linux
+  # needs GTK deps) — the same honest scoping as the tauri/RN jobs.
+  flutter-bindings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: v2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      # Path gate: only do real work when the Flutter binding tree (or the FFI
+      # crate it depends on, or this workflow) changed.
+      - name: Did the Flutter binding change?
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            base="${{ github.event.before }}"
+          else
+            base="${{ github.event.pull_request.base.sha }}"
+          fi
+          if git diff --name-only "$base" HEAD 2>/dev/null \
+              | grep -qE '^v2/bindings/flutter/|^v2/rust/crates/ffi/|^v2/rust/crates/command/|^v2/rust/ffi\.h$|^\.github/workflows/v2\.yml$'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No Flutter binding changes; skipping."
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.changed.outputs.run == 'true'
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.changed.outputs.run == 'true'
+        with:
+          workspaces: v2/rust -> target
+
+      - uses: subosito/flutter-action@v2
+        if: steps.changed.outputs.run == 'true'
+        with:
+          channel: stable
+
+      # Build the real lean cdylib and point the dart:ffi loader at it.
+      - name: Build libsyncular (lean cdylib)
+        if: steps.changed.outputs.run == 'true'
+        working-directory: v2/rust
+        run: cargo build -p syncular-ffi
+
+      - name: dart analyze + test (binding, against the real core)
+        if: steps.changed.outputs.run == 'true'
+        working-directory: v2/bindings/flutter/syncular
+        env:
+          SYNCULAR_LIBRARY_PATH: ${{ github.workspace }}/v2/rust/target/debug/libsyncular.so
+        run: |
+          dart pub get
+          dart analyze
+          dart test
+
+      # The example app shares the binding's lib; analyze it too (a build would
+      # need the GTK desktop toolchain / a device — a documented local step).
+      - name: dart analyze (example lib)
+        if: steps.changed.outputs.run == 'true'
+        working-directory: v2/bindings/flutter/example
+        run: |
+          flutter pub get
+          flutter analyze lib

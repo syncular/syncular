@@ -33,9 +33,12 @@ This block is assembly on a proven core — packages, not protocol.
       `@syncular-v2/tauri` (JS bridge implementing the same
       `SyncClientLike` interface the react package already normalizes —
       hooks work unchanged, the fourth host of one interface after direct/
-      worker/follower). Caveat to document: every useSyncQuery run is one
-      IPC round trip — fine at Tauri IPC latency; pagination guidance for huge
-      result sets is a docs note.
+      worker/follower). Example upgraded to React (2026-07-04 —
+      `example/src/frontend` is now a `@syncular-v2/react` hooks todo list over
+      `createTauriSyncClient`, bundled with a dependency-light `Bun.build`; the
+      only Tauri-specific line is the client construction). Caveat to document:
+      every useSyncQuery run is one IPC round trip — fine at Tauri IPC latency;
+      pagination guidance for huge result sets is a docs note.
 - [x] **Swift + Kotlin wrappers** (landed 2026-07-04 — `bindings/swift`
       (SwiftPM `SyncularClient`) and `bindings/kotlin` (Kotlin/JVM
       `SyncularClient` via **FFM**, `java.lang.foreign`, JDK 21+ — zero JNI C
@@ -53,7 +56,12 @@ This block is assembly on a proven core — packages, not protocol.
       `transport.unavailable` on the lean core). Swift runs green on this mac
       (10/10, Swift Testing on CLT); Kotlin compiles+tests in CI on Ubuntu
       (JDK 21) — its check.sh detect-and-skips a JDK-less mac. Reused v1's
-      packaging KNOWLEDGE only, never its code.
+      packaging KNOWLEDGE only, never its code. Todo demos added
+      (`bindings/{swift,kotlin}/example`): a Swift SwiftUI-window + terminal app
+      (window presents on CLT-only, no Xcode) and a Kotlin terminal app, each
+      driving the wrapper end-to-end against the quickstart server — proven by a
+      real native-transport sync with an independent client reading the row back
+      (Swift verified locally, Kotlin via a CI example smoke).
 - [x] **React Native** (landed 2026-07-04 — `@syncular-v2/react-native` under
       `bindings/react-native`): a TurboModule over the FFI, surfacing the SAME
       `SyncClientLike` JS interface so `@syncular-v2/react` works unchanged in
@@ -66,8 +74,13 @@ This block is assembly on a proven core — packages, not protocol.
       scoping: verified via JS-bridge tests with an injected NativeModule double
       (11/11 bun: SyncClientLike parity vs `normalizeClient`, bytes, events,
       lifecycle) + `tsc`; the native shims' manual verification recipe is
-      documented (an RN example app is explicitly OUT). NitroModules/JSI is the
-      follow-up for latency; the C ABI is the stable substrate.
+      documented. A bare-RN **example todo app** (`bindings/react-native/example`)
+      now lands the hooks over the native client — its real `App.tsx` is rendered
+      headless against a NativeModule double (2 more bun tests, 13/13 total) as
+      the hooks↔module integration proof, with the device build a documented
+      one-time overlay + an Android CI lane sketched as a follow-up.
+      NitroModules/JSI is the follow-up for latency; the C ABI is the stable
+      substrate.
 - [x] **Native transport §8.7 completion** (landed 2026-07-04): the
       native-transport feature now runs rounds **over the socket** in the
       one-loop shape (§8.7), not `POST /sync`. Request goes out `0x01`-tagged;
@@ -91,6 +104,37 @@ This block is assembly on a proven core — packages, not protocol.
       lane needs a second driver mode + a real per-instance bun server, not a
       small flag. The scripted Rust-local tests prove the §8.7 loop against
       real WebSocket traffic directly instead.
+- [x] **Flutter + Dart binding + todo demo** (landed 2026-07-04 —
+      `bindings/flutter/syncular` (Dart package) + `bindings/flutter/example`
+      (a ~150-line single-file Flutter todo app); see
+      `bindings/flutter/README.md`): the last platform with no binding. A
+      `dart:ffi` wrapper over the five C functions (hand-written FFI
+      typedefs from `rust/ffi.h` — no ffigen), a `SyncularClient` mirroring the
+      Swift/Kotlin surface exactly (command + the typed conveniences
+      mutate/subscribe/sync/syncUntilIdle/readRows/query/pendingCommitIds/
+      conflicts/presence/setPresence/setWindow/windowState/… + connect/
+      disconnectRealtime), a `poll_event` loop delivered to a broadcast
+      `Stream` (a `Timer.periodic` doing NON-BLOCKING `timeout_ms=0` polls on
+      the owning isolate — the honest simple choice for a callback-free FFI, no
+      background isolate, never races a command, `close()` cancels the timer
+      synchronously), and pause/resume/close. Dylib loading: `DynamicLibrary.
+      open` per-platform names + a `libraryPath`/`SYNCULAR_LIBRARY_PATH`
+      override (the Kotlin/Swift pattern). The example todo app lists via
+      `query`, adds/toggles via `mutate`, auto-syncs on the `sync-needed` event
+      + a manual sync button, connecting to the `apps/demo` server (8787).
+      Offline-first hermetic tests (`dart test`) mirror the Swift/Kotlin suite
+      (mutate → optimistic `version -1` row, query, outbox, `transport.
+      unavailable`, close idempotence, pause/resume). Its own `check.sh`
+      detect-and-skips a Dart-less machine (SKIPS locally on this mac — no
+      dart/flutter installed). CI lane (`flutter-bindings`, Ubuntu,
+      path-gated): `cargo build -p syncular-ffi` → `subosito/flutter-action` →
+      `dart analyze` + `dart test` with `SYNCULAR_LIBRARY_PATH` at the built
+      `.so` — the `dart:ffi` boundary against the REAL Rust core is the strong
+      proof; the app BUILD is a documented local `flutter run` (`flutter build
+      web` is N/A for `dart:ffi`; `flutter build linux` needs GTK deps — the
+      Tauri/RN honest-scoping precedent). Example platform scaffolds are
+      `flutter create`-generated and git-ignored; the app code is the
+      deliverable.
 - [ ] **Native CRDT editing (yrs)**: optional — the server merges, so
       native apps already converge; yrs integration is only needed for
       local collaborative EDITING UX on native. Demand-gated within this

@@ -27,7 +27,12 @@
     "@syncular-v2/web-client": "workspace:*"
   },
   "devDependencies": {
-    "@syncular-v2/react": "workspace:*"
+    "@happy-dom/global-registrator": "^15.11.0",
+    "@syncular-v2/react": "workspace:*",
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^18.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "codegenConfig": {
     "name": "SyncularSpec",

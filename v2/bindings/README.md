@@ -11,9 +11,10 @@ webkit tree, Swift, the JVM, RN codegen) out of the core's fast, hermetic gate.
 | [`tauri`](tauri) | Native syncular in the Tauri host + JS `SyncClientLike` bridge | the client crate DIRECTLY (no FFI) | cargo fmt/clippy/test + example build |
 | [`swift`](swift) | `SyncularClient` SwiftPM package | the C-ABI FFI (dylib / xcframework) | `swift test` (offline hermetic) |
 | [`kotlin`](kotlin) | `SyncularClient` Kotlin/JVM library | the C-ABI FFI via **FFM** (JDK 21+) | `gradle test` (offline hermetic) |
+| [`flutter`](flutter) | `SyncularClient` Dart package + Flutter todo example | the C-ABI FFI via `dart:ffi` | `dart analyze` + `dart test` (offline hermetic) |
 | [`react-native`](react-native) | `@syncular-v2/react-native` module | the C-ABI FFI via a TurboModule | `bun test` (bridge double) + `tsc` |
 
-The Swift/Kotlin/RN wrappers all speak the **one JSON command surface** the
+The Swift/Kotlin/Flutter/RN wrappers all speak the **one JSON command surface** the
 `syncular-command` crate defines (`{method, params}` in, `{result|error}` out,
 bytes as `{"$bytes":hex}`) — the exact surface the conformance shim locks and the
 FFI/Tauri already consume.
@@ -56,6 +57,8 @@ so the smoke + parity bar is the honest floor.
   path, `{error}` → `SyncularError`, the offline outbox, `transport.unavailable`
   on the lean core, the idle event poll, `close()` idempotence, `pause()`/`resume()`.
 - **Kotlin** — `bindings/kotlin/src/test` (kotlin-test): the same suite over FFM.
+- **Flutter/Dart** — `bindings/flutter/syncular/test` (`dart test`): the same
+  suite over `dart:ffi` against the real native core.
 - **React Native** — `bindings/react-native/test` (bun): the JS bridge over an
   injected NativeModule double + the `normalizeClient` parity test.
 - **Tauri** — its plugin's Rust tests (router round-trip, event derivation,
@@ -66,7 +69,8 @@ so the smoke + parity bar is the honest floor.
 Each binding: `cd bindings/<name> && ./check.sh`. The scripts **detect and skip**
 missing toolchains (never fail the run), mirroring `rust/scripts/build-native.sh`:
 Swift needs a Swift toolchain (Command-Line-Tools is enough for the mac slice);
-Kotlin needs JDK 21+ and Gradle; Tauri needs its cargo tree (+ webkit on Linux);
-RN needs only bun. CI runs the cheap lanes (Kotlin/FFM + RN on Ubuntu, Tauri
+Kotlin needs JDK 21+ and Gradle; Flutter/Dart needs a Dart SDK (bundled with
+Flutter, or standalone); Tauri needs its cargo tree (+ webkit on Linux); RN needs
+only bun. CI runs the cheap lanes (Kotlin/FFM + Flutter/Dart + RN on Ubuntu, Tauri
 path-gated); the Swift lane is a documented local gate (a macOS runner is
 expensive) — see each README's CI note and `.github/workflows/v2.yml`.
