@@ -1,0 +1,9 @@
+# Test config for the RN binding gate. The preload registers happy-dom and
+# mocks `react-native`'s primitive components to DOM tags BEFORE any test file
+# resolves its static `import … from 'react-native'` — necessary because the
+# binding declares `react-native` as a peer, so bun would otherwise resolve the
+# real package (Flow syntax bun can't parse) when the App integration test
+# imports <View>/<Text>/…. The mock only intercepts `react-native`; the bridge
+# unit test (which never imports it) is unaffected.
+[test]
+preload = ["./test/setup-app.ts"]

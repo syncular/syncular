@@ -1,0 +1,20 @@
+# Dart/Flutter build products, package config, and the locally-vendored native
+# library. The dylib/so is rebuilt by check.sh from rust/crates/ffi and is never
+# committed.
+.dart_tool/
+.packages
+pubspec.lock
+build/
+vendor/
+
+# The example's platform folders are generated on demand via `flutter create`
+# (see example/README.md) — the app code (lib/main.dart) is the deliverable,
+# the platform scaffolds are machine-generated and not tracked.
+example/android/
+example/ios/
+example/linux/
+example/macos/
+example/windows/
+example/web/
+example/.flutter-plugins
+example/.flutter-plugins-dependencies

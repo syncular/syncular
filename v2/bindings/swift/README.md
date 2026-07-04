@@ -111,6 +111,16 @@ harder freeze, that is an additive core command, coordinated through
 }
 ```
 
+## Example — the todo demo
+
+[`example/`](example) is a runnable todo app over this wrapper: a **SwiftUI
+macOS window** (`TodoUI`) and a **terminal** app (`todo`) sharing one ~30-line
+integration, talking to the [quickstart](../../examples/quickstart) server. The
+SwiftUI window compiles, links, and presents a real window on a
+Command-Line-Tools-only mac (no full Xcode). `check.sh` builds it; see
+[`example/README.md`](example/README.md) for the run recipe and the verified
+end-to-end sync transcript.
+
 ## Tests & gate
 
 `./check.sh` (from anywhere) runs the whole gate:

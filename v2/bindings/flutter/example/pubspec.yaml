@@ -1,0 +1,23 @@
+name: syncular_todo_example
+description: A minimal Flutter todo app proving the syncular Dart binding.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.10.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # The local binding under bindings/flutter/syncular.
+  syncular:
+    path: ../syncular
+  # Where the file-backed SQLite DB lives (getApplicationSupportDirectory).
+  path_provider: ^2.1.0
+
+dev_dependencies:
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true

@@ -25,8 +25,10 @@ pub fn run() {
                 })
                 .ok();
 
+            // Points at the apps/demo-react dev server (`bun run dev`, port
+            // 8788), whose `todos` schema this example's frontend mirrors.
             let config = SyncularConfig {
-                base_url: Some("http://localhost:8787".to_owned()),
+                base_url: Some("http://localhost:8788".to_owned()),
                 db_path,
                 // Real host-loop cadence with a little jitter (§8.4).
                 wake_jitter_ms: 250,

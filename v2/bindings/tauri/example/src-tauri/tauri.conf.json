@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.syncular.tauri.example",
   "build": {
-    "frontendDist": "../src/frontend"
+    "frontendDist": "../dist",
+    "beforeDevCommand": "bun run build-frontend",
+    "beforeBuildCommand": "bun run build-frontend"
   },
   "app": {
     "windows": [
