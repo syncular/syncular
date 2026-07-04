@@ -1,26 +1,7 @@
 #!/usr/bin/env bash
+# Pre-push gate: the root check (typecheck + lint + tests incl. the isolated
+# multi-tab lane). Cargo/bindings/bench gates run in CI (ci.yml).
 set -euo pipefail
-echo "[pre-push] Running checks..."
-
-pids=()
-bun run lint &
-pids+=($!)
-bun run tsgo &
-pids+=($!)
-bun run knip &
-pids+=($!)
-
-failed=0
-for pid in "${pids[@]}"; do
-  if ! wait "$pid"; then failed=1; fi
-done
-
-if [ "$failed" -ne 0 ]; then
-  echo "[pre-push] Checks failed. Push aborted."
-  exit 1
-fi
-
-echo "[pre-push] Static checks passed. Running test gate..."
-bun run test:push
-
+echo "[pre-push] bun run check..."
+bun run check
 echo "[pre-push] All checks passed."

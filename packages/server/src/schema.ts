@@ -1,312 +1,170 @@
 /**
- * @syncular/server - database schema types
+ * Server schema IR (SPEC.md §2.4, §3.1).
  *
- * Commit-log based sync tables:
- * - sync_commits: one row per committed push
- * - sync_changes: one row per emitted change, stamped with scopes
- * - sync_table_commits: commit routing index for fast pull
- * - sync_scope_commits: scope routing index for scoped incremental pull
+ * The server is configured with a schema IR: tables, columns with the six
+ * §2.4 column types, scope patterns per §3.1, and a schema version. Codegen
+ * (B5) will emit this shape later; tests hand-write it.
  */
+import type { RowColumn } from '@syncular-v2/core';
 
-import type { SyncOp } from '@syncular/core';
-import type { Generated } from 'kysely';
+/** `'prefix:{variable}'` shorthand (column name = variable) or explicit. */
+export type ScopePatternSpec = string | { pattern: string; column: string };
 
-/**
- * Commit log.
- */
-export interface SyncCommitsTable {
-  /** Monotonic commit sequence (server-assigned) */
-  commit_seq: Generated<number>;
-  /** Logical partition key (tenant / demo / workspace) */
-  partition_id: string;
-  /** Actor who produced the commit */
-  actor_id: string;
-  /** Client/device identifier */
-  client_id: string;
-  /** Client-provided commit idempotency key (unique per client) */
-  client_commit_id: string;
-  /** Creation timestamp */
-  created_at: Generated<string>;
-  /** Optional metadata */
-  meta: unknown | null;
-  /** Cached push response for idempotency */
-  result_json: unknown | null;
-  /** Number of emitted changes (denormalized for observability) */
-  change_count: Generated<number>;
-  /** Hex SHA-256 digest of the canonical persisted commit payload */
-  commit_digest: Generated<string | null>;
-  /** Hex SHA-256 root chaining this commit to the previous partition root */
-  commit_chain_root: Generated<string | null>;
-  /**
-   * Tables affected by this commit (for realtime notifications).
-   * Array of table names that had changes.
-   */
-  affected_tables: Generated<string[]>;
+export interface TableSchema {
+  readonly name: string;
+  /** Columns in schema-IR declaration order (the row-codec order, §2.4). */
+  readonly columns: readonly RowColumn[];
+  /** Primary-key column; its value renders as the change `rowId` (§2.2). */
+  readonly primaryKey: string;
+  /** Scope patterns (§3.1). Every synced table declares at least one. */
+  readonly scopes: readonly ScopePatternSpec[];
 }
 
-/**
- * Change log entries (filtered by scopes on pull).
- */
-export interface SyncChangesTable {
-  /** Monotonic change id */
-  change_id: Generated<number>;
-  /** Logical partition key (tenant / demo / workspace) */
-  partition_id: string;
-  /** Commit sequence this change belongs to */
-  commit_seq: number;
-  /** Table name being changed */
-  table: string;
-  /** Row primary key */
-  row_id: string;
-  /** Operation: 'upsert' or 'delete' */
-  op: SyncOp;
-  /** Row data as JSON (null for deletes) */
-  row_json: unknown | null;
-  /** Optional row version for optimistic concurrency */
-  row_version: number | null;
-  /**
-   * Scope values for routing/filtering (JSONB).
-   * Example: { "user_id": "U1", "project_id": "P1" }
-   */
-  scopes: unknown;
+export interface ServerSchema {
+  /** The generated schema version this server serves (§2.4, §9). */
+  readonly version: number;
+  /** Tables in handler-declared bootstrap order (§4.7). */
+  readonly tables: readonly TableSchema[];
 }
 
-/**
- * Per-client cursor tracking (for pruning + observability).
- */
-export interface SyncClientCursorsTable {
-  /** Logical partition key (tenant / demo / workspace) */
-  partition_id: string;
-  /** Client/device identifier */
-  client_id: string;
-  /** Actor currently associated with the client */
-  actor_id: string;
-  /** Last successfully pulled commit_seq */
-  cursor: number;
-  /**
-   * Effective scope values for the client's last pull (JSONB).
-   * This is the intersection of requested scopes and allowed scopes.
-   */
-  effective_scopes: unknown;
-  /**
-   * Last active realtime subscription snapshot for websocket binary packs.
-   *
-   * This duplicates the protocol-level subscription id/table/scope/cursor/root
-   * shape from the latest successful pull so a restarted realtime server can
-   * rebuild scoped binary notifications before the client performs another
-   * HTTP pull.
-   */
-  realtime_subscriptions: unknown | null;
-  /** Last update timestamp */
-  updated_at: Generated<string>;
+export interface CompiledScopePattern {
+  readonly variable: string;
+  /** Literal prefix; the scope key is `prefix + ':' + value` (§3.1). */
+  readonly prefix: string;
+  readonly column: string;
+  readonly columnIndex: number;
 }
 
-/**
- * Cached bootstrap snapshot chunks (encoded, for large read-only bootstraps).
- */
-export interface SyncSnapshotChunksTable {
-  /** Opaque chunk id */
-  chunk_id: string;
-  /** Logical partition key (tenant / demo / workspace) */
-  partition_id: string;
-  /** Effective scope key this chunk belongs to */
-  scope_key: string;
-  /** Scope identifier */
-  scope: string;
-  /** Snapshot as-of commit sequence */
-  as_of_commit_seq: number;
-  /** Snapshot row cursor key (empty string represents null) */
-  row_cursor: string;
-  /** Snapshot row limit used to produce this chunk */
-  row_limit: number;
-  /** Cursor after this chunk; null means no next row for this table */
-  next_row_cursor?: string | null;
-  /** 1 when this chunk reaches the end of the table snapshot */
-  is_last_page?: number;
-  /** Row encoding (e.g. 'binary-table-v1') */
-  encoding: string;
-  /** Compression algorithm (e.g. 'gzip') */
-  compression: string;
-  /** Hex-encoded sha256 of content */
-  sha256: string;
-  /** Byte length of content */
-  byte_length: number;
-  /** Reference to blob storage (new field for external storage) */
-  blob_hash: string;
-  /** Encoded chunk bytes (deprecated: use blob storage via blob_hash) */
-  body?: Uint8Array | null;
-  /** Created timestamp */
-  created_at: Generated<string>;
-  /** Expiration timestamp (server may delete after this) */
-  expires_at: string;
+export interface CompiledTable {
+  readonly name: string;
+  readonly columns: readonly RowColumn[];
+  readonly primaryKeyIndex: number;
+  readonly scopePatterns: readonly CompiledScopePattern[];
+  readonly columnIndex: ReadonlyMap<string, number>;
+  readonly declaredVariables: ReadonlySet<string>;
+  /** Column indices declared `blob_ref` (§2.4 tag 7, §5.9) — the columns
+   * whose non-NULL values reference blobs (existence check, reference
+   * index). */
+  readonly blobRefColumnIndices: readonly number[];
+  /** `crdt` columns (§2.4 tag 8, §5.10) — index + the `crdtType` name that
+   * selects the merger. Empty when the table has no crdt columns. */
+  readonly crdtColumns: readonly {
+    readonly index: number;
+    readonly crdtType: string;
+  }[];
 }
 
-/**
- * Cached scoped snapshot artifacts.
- *
- * Artifacts are larger immutable bootstrap payloads, such as scoped SQLite
- * snapshot files, addressed by a verified manifest and stored in object
- * storage via blob_hash.
- */
-export interface SyncSnapshotArtifactsTable {
-  /** Opaque artifact id */
-  artifact_id: string;
-  /** Logical partition key (tenant / demo / workspace) */
-  partition_id: string;
-  /** Effective scope key this artifact belongs to */
-  scope_key: string;
-  /** Stable subscription id this artifact serves */
-  subscription_id: string;
-  /** App table represented by the artifact */
-  table: string;
-  /** Artifact format (e.g. 'sqlite-snapshot-v1') */
-  artifact_kind: string;
-  /** App schema/cache semantic version */
-  schema_version: string;
-  /** Snapshot as-of commit sequence */
-  as_of_commit_seq: number;
-  /** Snapshot row cursor key (empty string represents null) */
-  row_cursor: string;
-  /** Snapshot row limit used to produce this artifact */
-  row_limit: number;
-  /** Number of rows included in the artifact */
-  row_count: number;
-  /** Cursor after this artifact; null means no next row for this table */
-  next_row_cursor?: string | null;
-  /** 1 when this artifact starts at the table's first page */
-  is_first_page: number;
-  /** 1 when this artifact reaches the end of the table snapshot */
-  is_last_page: number;
-  /** Artifact compression algorithm */
-  compression: string;
-  /** Hex-encoded sha256 of artifact body bytes */
-  sha256: string;
-  /** Byte length of artifact body bytes */
-  byte_length: number;
-  /** Hex digest of the scoped artifact manifest */
-  manifest_digest: string;
-  /** Normalized JSON feature set */
-  feature_set_json: string;
-  /** Canonical manifest JSON */
-  manifest_json: string;
-  /** Reference to blob storage */
-  blob_hash: string;
-  /** Created timestamp */
-  created_at: Generated<string>;
-  /** Expiration timestamp (server may delete after this) */
-  expires_at: string;
+export interface CompiledSchema {
+  readonly version: number;
+  readonly tables: ReadonlyMap<string, CompiledTable>;
+  /** Union of scope variables declared by any table (§3.2 resolver check). */
+  readonly declaredVariables: ReadonlySet<string>;
 }
 
-/**
- * Shared encrypted CRDT update log.
- *
- * One physical table stores updates for every encrypted CRDT field. The logical
- * stream is keyed by partition_id + stream_id, where stream_id is derived from
- * app_table + row_id + field_name.
- */
-export interface SyncCrdtUpdatesTable {
-  seq: Generated<number>;
-  partition_id: string;
-  stream_id: string;
-  app_table: string;
-  row_id: string;
-  field_name: string;
-  update_id: string;
-  actor_id: string | null;
-  client_id: string | null;
-  key_id: string;
-  ciphertext: string;
-  scopes: unknown;
-  created_at: Generated<string>;
+const PATTERN_RE = /^([^{}]+):\{([^{}:]+)\}$/;
+
+function compilePattern(
+  table: TableSchema,
+  spec: ScopePatternSpec,
+  columnIndex: ReadonlyMap<string, number>,
+): CompiledScopePattern {
+  const pattern = typeof spec === 'string' ? spec : spec.pattern;
+  const match = PATTERN_RE.exec(pattern);
+  if (match === null || match[1] === undefined || match[2] === undefined) {
+    throw new Error(
+      `table ${table.name}: scope pattern ${JSON.stringify(pattern)} must be 'prefix:{variable}' with exactly one variable`,
+    );
+  }
+  const prefix = match[1];
+  const variable = match[2];
+  const column = typeof spec === 'string' ? variable : spec.column;
+  const index = columnIndex.get(column);
+  if (index === undefined) {
+    throw new Error(
+      `table ${table.name}: scope pattern ${JSON.stringify(pattern)} names unknown column ${JSON.stringify(column)}`,
+    );
+  }
+  return { variable, prefix, column, columnIndex: index };
 }
 
-/**
- * Shared encrypted CRDT checkpoints.
- *
- * Checkpoints contain encrypted full Yjs/Yrs state snapshots and allow old
- * update-log rows to be garbage-collected after retention rules are satisfied.
- */
-export interface SyncCrdtCheckpointsTable {
-  seq: Generated<number>;
-  partition_id: string;
-  stream_id: string;
-  app_table: string;
-  row_id: string;
-  field_name: string;
-  checkpoint_id: string;
-  covers_seq: number;
-  actor_id: string | null;
-  client_id: string | null;
-  key_id: string;
-  ciphertext: string;
-  scopes: unknown;
-  created_at: Generated<string>;
-}
+const compiledCache = new WeakMap<ServerSchema, CompiledSchema>();
 
-/**
- * Index table: which commits affect which tables.
- *
- * Used to efficiently find commit_seq values for a table without scanning
- * the (much larger) change log.
- */
-export interface SyncTableCommitsTable {
-  /** Logical partition key (tenant / demo / workspace) */
-  partition_id: string;
-  table: string;
-  commit_seq: number;
-}
-
-/**
- * Index table: which commits affect which table/scope route keys.
- *
- * Used to avoid scanning table-level commits that cannot match a scoped
- * subscription. JSON scope filtering still validates exact multi-scope matches.
- */
-export interface SyncScopeCommitsTable {
-  /** Logical partition key (tenant / demo / workspace) */
-  partition_id: string;
-  table: string;
-  scope_key: string;
-  commit_seq: number;
-}
-
-/**
- * Database interface for sync infrastructure tables
- * Merge this with your app's database interface
- */
-export interface SyncCoreDb {
-  sync_commits: SyncCommitsTable;
-  sync_changes: SyncChangesTable;
-  sync_client_cursors: SyncClientCursorsTable;
-  sync_crdt_updates: SyncCrdtUpdatesTable;
-  sync_crdt_checkpoints: SyncCrdtCheckpointsTable;
-  sync_table_commits: SyncTableCommitsTable;
-  sync_scope_commits: SyncScopeCommitsTable;
-  sync_snapshot_chunks: SyncSnapshotChunksTable;
-  sync_snapshot_artifacts: SyncSnapshotArtifactsTable;
-}
-
-/**
- * Commit metadata row for pull responses
- */
-export interface SyncCommitRow {
-  commit_seq: number;
-  actor_id: string;
-  created_at: string;
-  result_json: unknown | null;
-  commit_digest: string | null;
-  commit_chain_root: string | null;
-}
-
-/**
- * Change row for pull responses
- */
-export interface SyncChangeRow {
-  commit_seq: number;
-  table: string;
-  row_id: string;
-  op: SyncOp;
-  row_json: unknown | null;
-  row_version: number | null;
-  scopes: unknown;
+export function compileSchema(schema: ServerSchema): CompiledSchema {
+  const cached = compiledCache.get(schema);
+  if (cached !== undefined) return cached;
+  const tables = new Map<string, CompiledTable>();
+  const declaredVariables = new Set<string>();
+  for (const table of schema.tables) {
+    if (tables.has(table.name)) {
+      throw new Error(`duplicate table ${JSON.stringify(table.name)}`);
+    }
+    const columnIndex = new Map<string, number>();
+    table.columns.forEach((column, index) => {
+      if (columnIndex.has(column.name)) {
+        throw new Error(
+          `table ${table.name}: duplicate column ${JSON.stringify(column.name)}`,
+        );
+      }
+      columnIndex.set(column.name, index);
+    });
+    const primaryKeyIndex = columnIndex.get(table.primaryKey);
+    if (primaryKeyIndex === undefined) {
+      throw new Error(
+        `table ${table.name}: primary key ${JSON.stringify(table.primaryKey)} is not a column`,
+      );
+    }
+    if (table.scopes.length === 0) {
+      throw new Error(
+        `table ${table.name}: every synced table declares at least one scope pattern (§3.1)`,
+      );
+    }
+    const scopePatterns = table.scopes.map((spec) =>
+      compilePattern(table, spec, columnIndex),
+    );
+    const variables = new Set<string>();
+    for (const pattern of scopePatterns) {
+      const existing = scopePatterns.find(
+        (p) => p.variable === pattern.variable && p.column !== pattern.column,
+      );
+      if (existing !== undefined) {
+        throw new Error(
+          `table ${table.name}: variable ${JSON.stringify(pattern.variable)} maps to two different columns (§3.1)`,
+        );
+      }
+      variables.add(pattern.variable);
+      declaredVariables.add(pattern.variable);
+    }
+    const blobRefColumnIndices: number[] = [];
+    const crdtColumns: { index: number; crdtType: string }[] = [];
+    table.columns.forEach((column, index) => {
+      if (column.type === 'blob_ref') blobRefColumnIndices.push(index);
+      if (column.type === 'crdt') {
+        // §5.10.1: a crdt column MUST name a crdtType (schema-compile-time
+        // requirement — a crdt column without one is a server bug).
+        if (column.crdtType === undefined || column.crdtType.length === 0) {
+          throw new Error(
+            `table ${table.name}: crdt column ${JSON.stringify(column.name)} must declare a crdtType (§5.10.1)`,
+          );
+        }
+        crdtColumns.push({ index, crdtType: column.crdtType });
+      }
+    });
+    tables.set(table.name, {
+      name: table.name,
+      columns: table.columns,
+      primaryKeyIndex,
+      scopePatterns,
+      columnIndex,
+      declaredVariables: variables,
+      blobRefColumnIndices,
+      crdtColumns,
+    });
+  }
+  const compiled: CompiledSchema = {
+    version: schema.version,
+    tables,
+    declaredVariables,
+  };
+  compiledCache.set(schema, compiled);
+  return compiled;
 }

@@ -1,9 +1,0 @@
-#[install]
-# minimumReleaseAge disabled for expo/One framework compatibility
-#hoist = false
-
-[test]
-# Coverage configuration (coverage enabled only via --coverage CLI flag in test:coverage script)
-coverageReporter = ["text", "lcov"]
-coverageDir = "coverage"
-coverageThreshold = { line = 50, function = 50 }

@@ -1,7 +1,0 @@
-ALTER TABLE tasks ADD COLUMN description TEXT NULL;
-
-CREATE TABLE IF NOT EXISTS local_preferences (
-  id TEXT PRIMARY KEY,
-  key TEXT NOT NULL,
-  value TEXT NOT NULL
-);

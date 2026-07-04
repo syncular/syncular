@@ -1,4 +1,25 @@
 {
-  "extends": "./config/tsconfig.bun.json",
-  "files": []
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["bun"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": [
+    "packages/**/*.ts",
+    "spec/**/*.ts",
+    "apps/**/*.ts",
+    "examples/**/*.ts",
+    "bench/**/*.ts",
+    "load/**/*.ts"
+  ],
+  "exclude": ["node_modules", "packages/create-app/template"]
 }

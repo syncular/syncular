@@ -1,8 +1,12 @@
-CREATE TABLE IF NOT EXISTS tasks (
+-- The B6 demo schema: one todo table, scoped by list.
+-- `attachment` is a §5.9 blob_ref column (tag 7) — a nullable reference to
+-- an uploaded file, resolved on demand via the /blobs endpoints.
+CREATE TABLE todos (
   id TEXT PRIMARY KEY,
+  list_id TEXT NOT NULL,
   title TEXT NOT NULL,
-  completed INTEGER NOT NULL DEFAULT 0,
-  user_id TEXT NOT NULL,
-  created_at BIGINT NOT NULL DEFAULT 0,
-  server_version BIGINT NOT NULL DEFAULT 0
-) WITHOUT ROWID;
+  done BOOLEAN NOT NULL,
+  position INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  attachment BLOB_REF
+);

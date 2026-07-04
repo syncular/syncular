@@ -1,74 +1,15 @@
 {
-  "name": "@syncular/typegen",
-  "version": "0.1.3",
-  "description": "TypeScript type generator for Syncular schemas",
-  "license": "Apache-2.0",
-  "author": "Benjamin Kniffler",
-  "homepage": "https://syncular.dev",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/syncular/syncular.git",
-    "directory": "packages/typegen"
-  },
-  "bugs": {
-    "url": "https://github.com/syncular/syncular/issues"
-  },
-  "keywords": [
-    "sync",
-    "offline-first",
-    "realtime",
-    "database",
-    "typescript",
-    "codegen",
-    "typescript"
-  ],
-  "private": false,
-  "publishConfig": {
-    "access": "public"
-  },
+  "name": "@syncular-v2/typegen",
+  "private": true,
   "type": "module",
   "bin": {
-    "syncular-typegen": "./src/cli.ts"
+    "syncular-v2": "./src/cli.ts"
   },
   "exports": {
-    ".": {
-      "bun": "./src/index.ts",
-      "import": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      }
-    }
-  },
-  "scripts": {
-    "test": "bun test --pass-with-no-tests",
-    "tsgo": "tsgo --noEmit",
-    "build": "tsgo",
-    "release": "syncular-publish"
-  },
-  "dependencies": {
-    "@electric-sql/pglite": "^0.3.15",
-    "@syncular/migrations": "workspace:*",
-    "better-sqlite3": "^12.8.0",
-    "kysely-bun-sqlite": "^0.4.0",
-    "kysely-pglite-dialect": "^1.2.0"
-  },
-  "peerDependencies": {
-    "kysely": "^0.28.0"
+    ".": "./src/index.ts"
   },
   "devDependencies": {
-    "@syncular/config": "workspace:*",
-    "@types/better-sqlite3": "^7.6.13",
-    "kysely": "*"
-  },
-  "files": [
-    "dist",
-    "src",
-    "!src/**/*.test.ts",
-    "!src/**/*.test.tsx",
-    "!src/**/__tests__/**",
-    "!dist/**/*.test.*",
-    "!dist/**/__tests__/**",
-    "!test/**",
-    "!tests/**"
-  ]
+    "@syncular-v2/core": "workspace:*",
+    "@syncular-v2/server": "workspace:*"
+  }
 }
