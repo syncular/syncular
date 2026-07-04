@@ -1,0 +1,183 @@
+/**
+ * TS named-query emitter: analyzed queries → a standalone
+ * `syncular.queries.ts` module. Per query `q` it emits:
+ *
+ * - `QRow` — the projection row interface (its OWN type per query — the
+ *   drift-kill: the row shape is exactly what the SELECT returns),
+ * - `QParams` — the typed params object (when the query has params),
+ * - `qTables` — the readonly table-dependency set (feeds useSyncQuery `{tables}`
+ *   for EXACT invalidation),
+ * - `q(client, params?): Promise<QRow[]>` — runs the query over the wrapper's
+ *   positional `query(sql, params[])` surface, reordering the named params
+ *   object into the positional array the wire expects.
+ *
+ * A tiny structural `QueryClient` interface (just `query(sql, params?)`) keeps
+ * the module import-free — it structurally accepts `SyncClientLike` /
+ * `SyncClient` / `SyncClientHandle` alike. Header carries the IR hash so
+ * `--check` gates freshness byte-exactly, like every other emitter.
+ */
+import type { IrColumnType } from './ir';
+import type { AnalyzedQuery } from './query';
+
+const TS_TYPE: Readonly<Record<IrColumnType, string>> = {
+  string: 'string',
+  integer: 'number',
+  float: 'number',
+  boolean: 'boolean',
+  json: 'string',
+  bytes: 'Uint8Array',
+  blob_ref: 'string',
+  crdt: 'Uint8Array',
+};
+
+function pascalCase(name: string): string {
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function quote(value: string): string {
+  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+}
+
+const IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+function propertyKey(name: string): string {
+  return IDENTIFIER_RE.test(name) ? name : quote(name);
+}
+
+/** A named-query param value is the SqlValue subset its type maps to. */
+const PARAM_TS_TYPE: Readonly<Record<IrColumnType, string>> = TS_TYPE;
+
+function emitQuery(query: AnalyzedQuery): string {
+  const Row = `${pascalCase(query.name)}Row`;
+  const Params = `${pascalCase(query.name)}Params`;
+  const lines: string[] = [];
+
+  // Row interface.
+  lines.push(
+    `/** One row of the ${quote(query.name)} query (its projection). */`,
+  );
+  lines.push(`export interface ${Row} {`);
+  for (const column of query.columns) {
+    lines.push(
+      `  ${propertyKey(column.name)}: ${TS_TYPE[column.type]}${column.nullable ? ' | null' : ''};`,
+    );
+  }
+  lines.push('}');
+  lines.push('');
+
+  // Params interface (only when there are params).
+  const hasParams = query.params.length > 0;
+  if (hasParams) {
+    lines.push(`/** Named parameters for ${quote(query.name)}. */`);
+    lines.push(`export interface ${Params} {`);
+    for (const param of query.params) {
+      lines.push(`  ${propertyKey(param.name)}: ${PARAM_TS_TYPE[param.type]};`);
+    }
+    lines.push('}');
+    lines.push('');
+  }
+
+  // Tables dependency set (for useSyncQuery {tables} / useNamedQuery).
+  lines.push(
+    `/** Tables ${quote(query.name)} reads — the exact useSyncQuery \`{tables}\` set. */`,
+  );
+  lines.push(
+    `export const ${query.name}Tables = [${query.tables.map(quote).join(', ')}] as const;`,
+  );
+  lines.push('');
+
+  // The runner. SQL is the positional form; params reorder into the array.
+  const paramArg = hasParams ? `params: ${Params}` : '';
+  const sqlConst = `${query.name}Sql`;
+  const positional = hasParams
+    ? `[${query.params.map((p) => `params.${propertyKey(p.name)}`).join(', ')}]`
+    : '[]';
+  lines.push(`const ${sqlConst} = ${quote(query.positionalSql)};`);
+  lines.push('');
+  lines.push(`/** Run the ${quote(query.name)} named query (SELECT-only). */`);
+  lines.push(
+    `export async function ${query.name}(client: QueryClient${hasParams ? `, ${paramArg}` : ''}): Promise<${Row}[]> {`,
+  );
+  if (hasParams) {
+    lines.push(
+      `  const rows = await client.query(${sqlConst}, ${positional});`,
+    );
+  } else {
+    lines.push(`  const rows = await client.query(${sqlConst});`);
+  }
+  lines.push(`  return rows as unknown as ${Row}[];`);
+  lines.push('}');
+  lines.push('');
+
+  // A descriptor for react's `useNamedQuery` — the SQL, the exact table
+  // dependency set, and a `bind(params)` → positional array. Typed by the
+  // query's own Row/Params so the hook stays fully typed.
+  lines.push(
+    `/** Descriptor for \`useNamedQuery(${query.name}Query${hasParams ? ', params' : ''})\` — sql + tables + row type. */`,
+  );
+  const paramsTypeArg = hasParams ? Params : 'undefined';
+  lines.push(
+    `export const ${query.name}Query: NamedQuery<${Row}, ${paramsTypeArg}> = {`,
+  );
+  lines.push(`  sql: ${sqlConst},`);
+  lines.push(`  tables: ${query.name}Tables,`);
+  if (hasParams) {
+    lines.push(`  bind: (params: ${Params}) => ${positional},`);
+  } else {
+    lines.push('  bind: () => [],');
+  }
+  lines.push('};');
+  return lines.join('\n');
+}
+
+export function emitQueriesModule(
+  queries: readonly AnalyzedQuery[],
+  hash: string,
+  irVersion: number,
+): string {
+  const parts: string[] = [];
+  parts.push(
+    [
+      '// Generated by @syncular-v2/typegen — DO NOT EDIT.',
+      `// irVersion: ${irVersion}`,
+      `// irHash: ${hash}`,
+    ].join('\n'),
+  );
+  parts.push(
+    [
+      "/** A bindable SQL param/row value (the wrapper's SqlValue subset). */",
+      'export type QueryValue =',
+      '  | string',
+      '  | number',
+      '  | bigint',
+      '  | boolean',
+      '  | Uint8Array',
+      '  | null;',
+      '',
+      "/** Minimal structural client surface — the wrapper's positional",
+      ' *  `query(sql, params?)`. `SyncClient`/`SyncClientHandle`/`SyncClientLike`',
+      ' *  all satisfy it, so this module imports nothing. */',
+      'export interface QueryClient {',
+      '  query(',
+      '    sql: string,',
+      '    params?: readonly QueryValue[],',
+      '  ): unknown[] | Promise<unknown[]>;',
+      '}',
+      '',
+      '/** A named-query descriptor — sql + its exact table dependency set + a',
+      ' *  `bind(params)` → positional args. Consumed by',
+      " *  `@syncular-v2/react`'s `useNamedQuery`. `Row` is the projection row",
+      ' *  type; `Params` is `undefined` for a param-less query. */',
+      'export interface NamedQuery<Row, Params = undefined> {',
+      '  readonly sql: string;',
+      '  readonly tables: readonly string[];',
+      '  readonly bind: (params: Params) => readonly QueryValue[];',
+      '  /** Phantom — carries the Row type for `useNamedQuery` inference. */',
+      '  readonly __row?: Row;',
+      '}',
+    ].join('\n'),
+  );
+  for (const query of queries) {
+    parts.push(emitQuery(query));
+  }
+  return `${parts.join('\n\n')}\n`;
+}

@@ -4,13 +4,22 @@
   "output": {
     "ir": "./syncular.ir.json",
     "module": "./syncular.generated.ts",
-    "swift": { "path": "./Syncular.generated.swift", "enumName": "BasicSchema" },
+    "queries": "./syncular.queries.ts",
+    "swift": {
+      "path": "./Syncular.generated.swift",
+      "enumName": "BasicSchema",
+      "queriesPath": "./Syncular.queries.swift"
+    },
     "kotlin": {
       "path": "./Syncular.generated.kt",
       "package": "dev.syncular.basic",
-      "objectName": "BasicSchema"
+      "objectName": "BasicSchema",
+      "queriesPath": "./Syncular.queries.kt"
     },
-    "dart": "./syncular.generated.dart"
+    "dart": {
+      "path": "./syncular.generated.dart",
+      "queriesPath": "./syncular.queries.dart"
+    }
   },
   "schemaVersions": [
     { "version": 1, "through": "0001_initial" },

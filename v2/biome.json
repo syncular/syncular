@@ -6,6 +6,7 @@
       "**/*.tsx",
       "!**/*.d.ts",
       "!**/*.generated.ts",
+      "!**/*.queries.ts",
       "!**/target"
     ]
   },

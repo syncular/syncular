@@ -7,7 +7,8 @@
     "kotlin": {
       "path": "./src/main/kotlin/dev/syncular/example/Syncular.generated.kt",
       "package": "dev.syncular.example",
-      "objectName": "SyncularSchema"
+      "objectName": "SyncularSchema",
+      "queriesPath": "./src/main/kotlin/dev/syncular/example/Syncular.queries.kt"
     }
   },
   "schemaVersions": [{ "version": 1, "through": "0001_initial" }],

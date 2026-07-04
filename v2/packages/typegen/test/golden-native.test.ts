@@ -50,15 +50,21 @@ describe('native emitter goldens', () => {
     });
   }
 
-  test('generate emits IR + TS + all three native outputs', () => {
+  test('generate emits IR + TS + all three native outputs (+ query files)', () => {
     const result = generate(FIXTURE);
     const names = result.outputs.map((o) => o.path.split('/').pop());
+    // Schema outputs in a stable order; each language's queries file follows
+    // its schema file when the manifest opts into named queries.
     expect(names).toEqual([
       'syncular.ir.json',
       'syncular.generated.ts',
+      'syncular.queries.ts',
       NATIVE_FILES.swift,
+      'Syncular.queries.swift',
       NATIVE_FILES.kotlin,
+      'Syncular.queries.kt',
       NATIVE_FILES.dart,
+      'syncular.queries.dart',
     ]);
   });
 

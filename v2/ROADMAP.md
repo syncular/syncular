@@ -261,21 +261,66 @@ wire changes, zero server changes; sequenced AFTER the WS-native loop
       host now schedules an autoSync round after `mutate`/`setWindow` so local
       writes and window widenings push/bootstrap promptly under `autoSync`
       (the host loop owns rounds, §8.4).
+- [x] **Named queries — the cross-platform type-safe query tier** (landed
+      2026-07-04): the sqlc/SQLDelight rung, decided with Benjamin as the
+      cross-platform type-safe query answer (over per-runtime ORMs that want to
+      own the connection, and over a custom cross-runtime DSL that would be a
+      per-language maintenance trap). A `.sql` file in `queries/` (one file =
+      one query, kebab→camel) transpiles into a typed function on every
+      platform — TS/Swift/Kotlin/Dart — killing query↔type drift by
+      construction. SELECT-only (the read tier; writes stay `mutate()`),
+      rejected loudly otherwise. Type-checked **by SQLite itself**: typegen
+      synthesizes the schema DDL from the IR, builds an in-memory bun:sqlite
+      DB, and `prepare()`s each query — SQLite validates every reference and
+      yields column decltypes. Plain column refs get the EXACT IR type +
+      nullability (resolved against the IR); computed expressions fall back to
+      a documented honest type (bun:sqlite exposes decltype + paramsCount but
+      no origin/param-names/NOT-NULL — the fidelity boundary is documented).
+      `:name` params: types inferred from column comparisons, or a
+      `-- param :name <type>` header override. Each query bakes in its exact
+      FROM/JOIN table set for invalidation. Emitted per-language into its OWN
+      file (`*.queries.*`) so schema-only consumers never churn; `--check`
+      byte-exact per language. React: `useNamedQuery(query, params)` reuses
+      `useSyncQuery`'s machinery with the query's exact `{tables}`. Kysely
+      stays the TS dynamic tier; raw `query()` stays the escape hatch —
+      the three-tier read story. Dogfooded: demo-react's list read + the
+      Swift/Kotlin example TodoStores converted to named queries (demo-react
+      keeps a `useTypedQuery` aggregate so the dynamic tier stays visible;
+      Swift gate green — generated queries compile in the example).
 - [ ] **Per-rowid invalidation refinement**: today's granularity is
       table + scope-key (honest to the wire); a table→rowid dependency
       option for hot single-row views was left room for in the design.
       Demand-gated.
-- [ ] **Stabilize timing-sensitive test flakes under load**: the react hook suite can
-      fail intermittently under heavy background load (~1-in-3 observed
-      with a dev server + agent fleet running; 10/10 green quiesced;
-      never captured with a clean failure log). Repro guidance: run
-      `bun run test` in a loop while a demo server runs. Candidate
-      fixes: wrap the async state updates the act() warnings point at,
-      or isolate the react suite with its own happy-dom instance. A second
-      offender observed 2026-07-04: multi-tab 'events fan out to two
-      followers' (once, under concurrent cargo builds; green on retry). Small,
-      but it gates CI trust — do it before the publishing pipeline makes
-      CI the merge authority.
+- [x] **Stabilize timing-sensitive test flakes under load** (landed 2026-07-04):
+      both offenders root-caused and fixed; 20/20 green under synthetic load
+      (16–20 CPU-starving procs on 10 cores, load avg 8–28).
+      - *React suite (test-race)*: `integration.test.tsx` + `parity.test.tsx`
+        fired `client.mutate(...)` OUTSIDE `act()`, so the invalidation →
+        re-query → `setState` chain it drives landed as floating microtasks
+        the assertion raced (that IS the act()-warning the suite emitted).
+        Fix: wrap the mutate/`syncUntilIdle` calls in `await act(async …)` so
+        React flushes those updates deterministically. The act() warnings are
+        gone. Sibling sweep: the three I4/presence negative-assertion
+        `setTimeout(r, 5)` "give a stray effect a tick to not fire" sleeps in
+        `hooks.test.tsx` were replaced with a deterministic `act`-microtask
+        flush (`flushEffects`) — no wall-clock ticks left in the react suite.
+      - *Multi-tab fanout (PRODUCTION-race, upgraded from flake to bug fix)*:
+        `bootFollower` handed back a follower handle whose `FollowerLink` had
+        not yet processed the leader's `announce` (epoch −1). `FollowerLink`
+        drops any `event` whose epoch ≠ its own with NO retry, so any
+        invalidation the leader fanned out in the hello→announce window was
+        silently lost — a real miss a just-opened multi-tab follower could hit,
+        not merely a test artifact (proven deterministically:
+        an epoch-3 event delivered to an unbound follower is dropped).
+        Fix: added `FollowerLink.waitUntilBound()` and made `bootFollower`
+        await it before resolving `createSyncClientHandle`, so a follower is
+        only handed back once it can receive fanned-out events. Regression
+        tests added: a follower is bound-on-return (an immediately-emitted
+        event reaches it) and a `waitUntilBound` unit (resolves on announce,
+        rejects on bind timeout).
+      - *Note (out of territory)*: `packages/typegen/test/golden-native.test.ts`
+        shows a separate ~5-fail golden flake under load — a different class,
+        left for the typegen agent.
 - [x] **demo-react** (landed 2026-07-04 — `apps/demo-react`, port 8788): a
       single-pane hooks todo app on the SAME server as `apps/demo`,
       dogfooding `SyncProvider` + `useTypedQuery` (Kysely-typed) +

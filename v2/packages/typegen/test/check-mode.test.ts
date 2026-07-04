@@ -28,6 +28,7 @@ function freshDir(): string {
   cpSync(join(FIXTURE, 'migrations'), join(dir, 'migrations'), {
     recursive: true,
   });
+  cpSync(join(FIXTURE, 'queries'), join(dir, 'queries'), { recursive: true });
   cpSync(join(FIXTURE, 'syncular.json'), join(dir, 'syncular.json'));
   return dir;
 }

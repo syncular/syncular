@@ -46,11 +46,12 @@ class TodoStore(clientId: String, baseUrl: String?) : AutoCloseable {
         )
     }
 
-    /** All todos in the list, id-ordered (the live-query fast path). Rows decode
-     *  through the generated typed [Notes] row. */
+    /** All todos in the list, id-ordered (the live-query fast path). This is a
+     *  NAMED query: the SQL lives in `queries/list-notes.sql`, and typegen emits
+     *  [SyncularSchemaQueries.listNotes] (typed `listId` param + the projection's
+     *  own [ListNotesRow]) — no SQL string here, no drift. */
     fun todos(): List<Todo> =
-        client.query("SELECT id, list_id, body, updated_at_ms FROM notes ORDER BY id")
-            .mapNotNull { row -> Notes.fromRow(row) }
+        SyncularSchemaQueries.listNotes(client, listId = DEMO_LIST_ID)
             .map { note ->
                 val done = note.body.startsWith("[x] ")
                 // Strip the marker only when present, so foreign notes stay intact.

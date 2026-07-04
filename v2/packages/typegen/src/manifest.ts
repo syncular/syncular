@@ -68,6 +68,8 @@ export interface SwiftOutput {
   readonly path: string;
   /** The generated enum namespace (default `SyncularSchema`). */
   readonly enumName: string;
+  /** Opt-in named-queries output path (a sibling `.swift` file). */
+  readonly queriesPath?: string;
 }
 
 /** Kotlin emitter output: a `.kt` path plus its package declaration. */
@@ -77,16 +79,23 @@ export interface KotlinOutput {
   readonly package: string;
   /** The generated top-level object name (default `SyncularSchema`). */
   readonly objectName: string;
+  /** Opt-in named-queries output path (a sibling `.kt` file). */
+  readonly queriesPath?: string;
 }
 
 /** Dart emitter output: a `.dart` path plus optional options. */
 export interface DartOutput {
   readonly path: string;
+  /** Opt-in named-queries output path (a sibling `.dart` file). */
+  readonly queriesPath?: string;
 }
 
 export interface ManifestOutput {
   readonly ir: string;
   readonly module: string;
+  /** Opt-in TS named-queries output path (a sibling `.ts` file). Undefined →
+   * named queries are not generated for TS. */
+  readonly queries?: string;
   /** Opt-in native emitters; undefined → that language is not generated. */
   readonly swift?: SwiftOutput;
   readonly kotlin?: KotlinOutput;
@@ -96,6 +105,9 @@ export interface ManifestOutput {
 export interface Manifest {
   readonly manifestVersion: 1;
   readonly migrations: string;
+  /** Directory of `.sql` named-query files (default `./queries`). Only read
+   * when at least one output requests a named-queries file. */
+  readonly queries: string;
   readonly output: ManifestOutput;
   readonly schemaVersions: readonly ManifestSchemaVersion[];
   readonly tables: readonly ManifestTable[];
@@ -163,13 +175,16 @@ function parseSwiftOutput(value: unknown): SwiftOutput {
     };
   }
   const obj = asObject(value, 'output.swift');
-  rejectUnknownKeys(obj, ['path', 'enumName'], 'output.swift');
+  rejectUnknownKeys(obj, ['path', 'enumName', 'queriesPath'], 'output.swift');
   return {
     path: asString(obj.path, 'output.swift.path'),
     enumName:
       obj.enumName === undefined
         ? 'SyncularSchema'
         : asString(obj.enumName, 'output.swift.enumName'),
+    ...(obj.queriesPath !== undefined
+      ? { queriesPath: asString(obj.queriesPath, 'output.swift.queriesPath') }
+      : {}),
   };
 }
 
@@ -182,7 +197,11 @@ function parseKotlinOutput(value: unknown): KotlinOutput {
     };
   }
   const obj = asObject(value, 'output.kotlin');
-  rejectUnknownKeys(obj, ['path', 'package', 'objectName'], 'output.kotlin');
+  rejectUnknownKeys(
+    obj,
+    ['path', 'package', 'objectName', 'queriesPath'],
+    'output.kotlin',
+  );
   return {
     path: asString(obj.path, 'output.kotlin.path'),
     package:
@@ -193,6 +212,9 @@ function parseKotlinOutput(value: unknown): KotlinOutput {
       obj.objectName === undefined
         ? 'SyncularSchema'
         : asString(obj.objectName, 'output.kotlin.objectName'),
+    ...(obj.queriesPath !== undefined
+      ? { queriesPath: asString(obj.queriesPath, 'output.kotlin.queriesPath') }
+      : {}),
   };
 }
 
@@ -201,8 +223,13 @@ function parseDartOutput(value: unknown): DartOutput {
     return { path: asString(value, 'output.dart') };
   }
   const obj = asObject(value, 'output.dart');
-  rejectUnknownKeys(obj, ['path'], 'output.dart');
-  return { path: asString(obj.path, 'output.dart.path') };
+  rejectUnknownKeys(obj, ['path', 'queriesPath'], 'output.dart');
+  return {
+    path: asString(obj.path, 'output.dart.path'),
+    ...(obj.queriesPath !== undefined
+      ? { queriesPath: asString(obj.queriesPath, 'output.dart.queriesPath') }
+      : {}),
+  };
 }
 
 function parseTable(value: unknown, index: number): ManifestTable {
@@ -284,6 +311,7 @@ export function parseManifest(raw: unknown): Manifest {
     [
       'manifestVersion',
       'migrations',
+      'queries',
       'output',
       'schemaVersions',
       'tables',
@@ -301,8 +329,11 @@ export function parseManifest(raw: unknown): Manifest {
     obj.migrations === undefined
       ? './migrations'
       : asString(obj.migrations, 'migrations');
+  const queries =
+    obj.queries === undefined ? './queries' : asString(obj.queries, 'queries');
   let ir = './syncular.ir.json';
   let module = './syncular.generated.ts';
+  let queriesOut: string | undefined;
   let swift: SwiftOutput | undefined;
   let kotlin: KotlinOutput | undefined;
   let dart: DartOutput | undefined;
@@ -310,12 +341,15 @@ export function parseManifest(raw: unknown): Manifest {
     const output = asObject(obj.output, 'output');
     rejectUnknownKeys(
       output,
-      ['ir', 'module', 'swift', 'kotlin', 'dart'],
+      ['ir', 'module', 'queries', 'swift', 'kotlin', 'dart'],
       'output',
     );
     if (output.ir !== undefined) ir = asString(output.ir, 'output.ir');
     if (output.module !== undefined) {
       module = asString(output.module, 'output.module');
+    }
+    if (output.queries !== undefined) {
+      queriesOut = asString(output.queries, 'output.queries');
     }
     if (output.swift !== undefined) swift = parseSwiftOutput(output.swift);
     if (output.kotlin !== undefined) kotlin = parseKotlinOutput(output.kotlin);
@@ -326,6 +360,7 @@ export function parseManifest(raw: unknown): Manifest {
   const outputSpec: ManifestOutput = {
     ir,
     module,
+    ...(queriesOut !== undefined ? { queries: queriesOut } : {}),
     ...(swift !== undefined ? { swift } : {}),
     ...(kotlin !== undefined ? { kotlin } : {}),
     ...(dart !== undefined ? { dart } : {}),
@@ -369,6 +404,7 @@ export function parseManifest(raw: unknown): Manifest {
   return {
     manifestVersion: 1,
     migrations,
+    queries,
     output: outputSpec,
     schemaVersions,
     tables,

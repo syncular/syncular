@@ -101,11 +101,62 @@ either a `SyncClient` or the worker handle; the other hooks are `useMutation`,
 carried keys) is documented in the
 [react package](../../packages/react/README.md).
 
+## Three read tiers
+
+Reads are local SQL by design, and syncular gives you three tiers over the
+same `query(sql, params)` surface — pick the one that fits, mix freely:
+
+1. **Named queries** (`.sql` → typed functions) — the type-safe default. You
+   write a `.sql` file; typegen transpiles it into a typed function on **every**
+   platform (TS/Swift/Kotlin/Dart), killing query↔type drift by construction.
+   Cross-platform and byte-exact.
+2. **Kysely** (TS only) — the dynamic tier, for reads whose shape is built at
+   runtime (dynamic filters, composed builders). Fully typed by the generated
+   `Database` interface.
+3. **Raw `query(sql, params)`** — the escape hatch. Always there; no typing,
+   no ceremony.
+
+Writes are never a read tier — they go through `client.mutate()` (the outbox,
+[SPEC §7.1](../../SPEC.md)), on every tier.
+
+## Named queries (typed `.sql`)
+
+Drop a `.sql` file in `queries/` next to your migrations (one file = one
+query) and typegen emits a typed function per platform. The query is
+type-checked **by SQLite itself** at generate time — a bad column reference is
+a build error — and the projection gets its own typed row.
+
+```sql
+-- queries/list-todos.sql
+-- :listId infers to the todos.list_id column's type (TEXT).
+SELECT id, title, done, position
+FROM todos
+WHERE list_id = :listId
+ORDER BY position, id
+```
+
+```ts
+import { listTodosQuery, type ListTodosRow } from './syncular.queries';
+import { useNamedQuery } from '@syncular-v2/react';
+
+const { rows } = useNamedQuery(listTodosQuery, { listId }); // ListTodosRow[]
+```
+
+The same `queries/list-todos.sql` also produces `SyncularSchemaQueries.listTodos(
+client:listId:)` in Swift, `.listTodos(client, listId)` in Kotlin, and
+`syncularListTodosQuery(client, listId:)` in Dart — one source, five typed
+call sites, no drift. Named params (`:name`) get their types **inferred** from
+comparisons against columns (or declared with a `-- param :name <type>` header
+when ambiguous), and each query bakes in its exact table-dependency set for
+`useNamedQuery`'s invalidation. Full contract (typing-fidelity table, the
+tables-set mechanism and its honesty boundary) in the
+[typegen README §6](../../packages/typegen/README.md).
+
 ## Typed reads (Kysely)
 
-Local SQL is the query API by design. `@syncular-v2/kysely` is its **typed
-read layer**: a [Kysely](https://kysely.dev) dialect typed by the `Database`
-interface `@syncular-v2/typegen` emits from your schema.
+Local SQL is the query API by design. `@syncular-v2/kysely` is the **dynamic
+typed read tier**: a [Kysely](https://kysely.dev) dialect typed by the
+`Database` interface `@syncular-v2/typegen` emits from your schema.
 
 ```ts
 import { Kysely } from 'kysely';

@@ -53,23 +53,21 @@ public final class TodoStore {
         )
     }
 
-    /// All todos in the list, id-ordered (the live-query fast path). Rows decode
-    /// through the generated typed `Notes` struct.
+    /// All todos in the list, id-ordered (the live-query fast path). This is a
+    /// NAMED query: the SQL lives in `queries/list-notes.sql`, and typegen emits
+    /// `SyncularSchemaQueries.listNotes` (typed `:listId` param + the
+    /// projection's own `ListNotesRow`) — no SQL string here, no drift.
     public func todos() throws -> [Todo] {
-        try client.query(
-            "SELECT id, list_id, body, updated_at_ms FROM notes ORDER BY id"
-        ).compactMap { row in
-            guard case let .object(fields) = row, let note = Notes(row: fields) else {
-                return nil
+        try SyncularSchemaQueries.listNotes(client: client, listId: demoListId)
+            .map { note in
+                let done = note.body.hasPrefix("[x] ")
+                // Strip the "[ ] "/"[x] " marker only when present, so foreign
+                // notes (rows written without a marker) keep their body intact.
+                let title = (done || note.body.hasPrefix("[ ] "))
+                    ? String(note.body.dropFirst(4))
+                    : note.body
+                return Todo(id: note.id, title: title, done: done)
             }
-            let done = note.body.hasPrefix("[x] ")
-            // Strip the "[ ] "/"[x] " marker only when present, so foreign notes
-            // (rows written without a marker) keep their body intact.
-            let title = (done || note.body.hasPrefix("[ ] "))
-                ? String(note.body.dropFirst(4))
-                : note.body
-            return Todo(id: note.id, title: title, done: done)
-        }
     }
 
     /// Add a todo (optimistic — visible immediately, queued for the next sync).

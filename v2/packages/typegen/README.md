@@ -67,11 +67,13 @@ schema guide and suggests `syncular-v2 init`.
 |---|---|---|
 | `manifestVersion` | yes | Must be `1`. Format growth happens by bumping this, not by tolerating unknown keys. |
 | `migrations` | no (default `./migrations`) | Directory of `NNNN_name/up.sql` migrations, relative to the manifest. |
+| `queries` | no (default `./queries`) | Directory of `.sql` named-query files (see §6). Only read when some output requests a queries file. |
 | `output.ir` | no (default `./syncular.ir.json`) | IR output path, relative to the manifest. |
 | `output.module` | no (default `./syncular.generated.ts`) | Generated TS module path, relative to the manifest. |
-| `output.swift` | no | Opt-in Swift emitter (see §5). A path string, or `{ "path", "enumName" }` (default `enumName` `SyncularSchema`). |
-| `output.kotlin` | no | Opt-in Kotlin emitter (see §5). A path string, or `{ "path", "package", "objectName" }` (defaults `syncular.generated` / `SyncularSchema`). |
-| `output.dart` | no | Opt-in Dart emitter (see §5). A path string, or `{ "path" }`. |
+| `output.queries` | no | Opt-in TS named-queries output path (see §6). A sibling `.ts` file. |
+| `output.swift` | no | Opt-in Swift emitter (see §5). A path string, or `{ "path", "enumName", "queriesPath" }` (default `enumName` `SyncularSchema`; `queriesPath` opts into §6 Swift named queries). |
+| `output.kotlin` | no | Opt-in Kotlin emitter (see §5). A path string, or `{ "path", "package", "objectName", "queriesPath" }` (defaults `syncular.generated` / `SyncularSchema`). |
+| `output.dart` | no | Opt-in Dart emitter (see §5). A path string, or `{ "path", "queriesPath" }`. |
 | `schemaVersions` | yes, non-empty | The §1.5 version history. See below. |
 | `tables` | yes, non-empty | Synced tables. **Array order is the handler-declared bootstrap order (§4.7)** and flows unchanged into the IR and `schema.tables`. |
 | `tables[].name` | yes | Must be created by a migration. |
@@ -288,3 +290,105 @@ typed `Bool`/`Boolean`/`bool`.
 Swift/Kotlin, `T?` in Dart) and `fromRow` tolerates its absence; a
 non-nullable column that is missing/mistyped makes `fromRow` return
 null/nil (fail-soft at the decode boundary, not a crash).
+
+## 6. Named queries (the `.sql` → typed-function tier)
+
+The **named-query** tier is syncular's cross-platform answer to sqlc /
+SQLDelight: you write a `.sql` file, and typegen transpiles it into a typed
+function on every platform — killing query↔type drift *by construction*. It is
+the type-safe **read** tier; Kysely stays the TS **dynamic** tier, and raw
+`query(sql, params)` stays the escape hatch.
+
+**File convention.** Named queries live in a `queries/` directory next to
+`migrations/` (override with the top-level `"queries"` manifest key). **One
+file = one query**; the filename is lowercase kebab-case and becomes the
+generated name in camelCase (`list-todos.sql` → `listTodos`). Each language's
+queries file is a **separate output** (`output.queries` for TS, and
+`queriesPath` on `output.swift`/`output.kotlin`/`output.dart`), so
+schema-only consumers never churn when a query changes. A queries output is
+opt-in per language; when none is requested the `queries/` dir is not even
+read.
+
+**SELECT-only.** Named queries are reads. Anything but a `SELECT` (and any
+`;`-separated multi-statement) is a **hard error at generate time**, pointing
+at `mutate()` — writes go through the outbox (SPEC §7.1).
+
+**Type-checking via SQLite itself** (the load-bearing trick). At generate time
+typegen synthesizes the schema's DDL from the IR (a `CREATE TABLE` per table,
+the reverse of the migration parser), builds an in-memory `bun:sqlite`
+database, and `prepare()`s each query. **SQLite is the correctness authority**:
+a bad table/column reference or a syntax error throws with SQLite's own
+message. The prepared statement then yields the result column names +
+`declaredTypes` (SQLite's `sqlite3_column_decltype`).
+
+**Typing fidelity** (what `bun:sqlite` actually exposes, and its honest
+boundary):
+
+| Result column | Type source | Nullability | Fidelity |
+|---|---|---|---|
+| **plain column ref** (`title`, `t.title`, `title AS x`) | resolved to the IR column (decltype confirms) — exact IR type, incl. `json`/`blob_ref`/`crdt` | the IR column's `NOT NULL` | **exact** |
+| **computed expression** (`count(*)`, `done + 1`, `:p AS l`) | decltype is null → documented fallback: aggregate/arithmetic → number, else string | always nullable (an expression's nullability is not knowable from decltype) | **fallback** |
+
+`bun:sqlite` exposes `columnNames`, `declaredTypes` (once executed once — we
+run the statement against the empty DB), and `paramsCount`. It does **not**
+expose column origin (table/column), param **names**, or `NOT NULL` flags — so
+typegen resolves plain refs against the IR itself (parse the SELECT list +
+FROM/JOIN, match `name`/`alias.name`) to attach exact nullability, and parses
+`:name` placeholders from the SQL text for param names. Want an exact type for
+a computed column? Alias it to a plain ref, or accept the honest fallback.
+
+**Parameters** use the `:name` convention. A param's type is **inferred** where
+it compares against a plain column ref — `WHERE list_id = :listId` (equality,
+`<`/`>`/`<=`/`>=`/`!=`/`LIKE`/`IS`) or `col IN (:a, :b)` — taking that column's
+IR type. Where inference is ambiguous (compared to an expression, used only in
+a projection, …) a header comment overrides:
+
+```sql
+-- param :sinceMs integer
+SELECT id, title FROM tasks WHERE estimated_at > :sinceMs + 0
+```
+
+Missing **both** inference and a comment is a generate-time error naming the
+param and the fix. A `-- param` comment for a param the query does not use is
+also an error. The inference is deliberately simple and honest.
+
+**Emitted SQL.** Wrappers take **positional** params (`query(sql, params[])`),
+so the emitted SQL rewrites `:name` → `?` (repeats included) and each runner
+reorders the named params object into the positional array. Comments are
+stripped and whitespace collapsed to a clean one-line string.
+
+**The tables dependency set** (for React's exact invalidation). Each query
+emits a `tables` set — the FROM/JOIN tables it reads, resolved against the IR
+and *validated by the same SQLite `prepare()`* (an unknown table would have
+thrown). This feeds `useSyncQuery`'s `{tables}` option so a named query
+re-runs exactly when a depended-on table invalidates. **Boundary**:
+`bun:sqlite` exposes no authorizer and no statement table-list, and EXPLAIN
+opcodes are fragile — so the set is derived by scanning every `FROM`/`JOIN`
+identifier and keeping those that name an IR table. This captures subquery /
+`WHERE EXISTS (…)` tables (they still appear under `FROM`/`JOIN`), and the
+prepare() still guarantees the SQL itself is correct.
+
+**Emitted shape, per language** (one query, five outputs — abbreviated):
+
+| | Output |
+|---|---|
+| TS | `listTodosRow` interface + `ListTodosParams` + `listTodosTables` + `async listTodos(client, params): Promise<ListTodosRow[]>` + a `listTodosQuery` descriptor for React |
+| Swift | `struct ListTodosRow` + `init?(row:)` and `<Enum>Queries.listTodos(client:listId:) throws -> [ListTodosRow]` + `listTodosTables` |
+| Kotlin | `data class ListTodosRow` + `fromRow` and `<Object>Queries.listTodos(client, listId): List<ListTodosRow>` + `listTodosTables` |
+| Dart | `class ListTodosRow` + `fromRow` and `syncularListTodosQuery(client, listId): List<ListTodosRow>` + `syncularListTodosQueryTables` |
+
+Each projection row is its **own** generated type per query (the drift-kill:
+the row shape is exactly what the SELECT returns). Native rows decode through
+the same `fromRow` mapping rules (0/1 booleans, `{"$bytes":"<hex>"}` bytes) as
+the schema structs. `--check` gates every queries file byte-exactly, like the
+schema files; each carries the DO-NOT-EDIT header + IR hash.
+
+**React helper.** `@syncular-v2/react` exports `useNamedQuery(query, params?)`,
+which takes the TS `NamedQuery` descriptor and reuses `useSyncQuery`'s
+invalidation machinery with the descriptor's exact `tables` set:
+
+```ts
+import { listTodosQuery } from './syncular.queries';
+const { rows } = useNamedQuery(listTodosQuery, { listId });
+//      ^ ListTodosRow[] — typed by the query's own projection
+```

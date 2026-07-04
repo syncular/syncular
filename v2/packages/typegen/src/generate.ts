@@ -2,6 +2,8 @@
  * Orchestration: manifest + migrations → IR → generated TS module, plus
  * the byte-exact `--check` freshness comparison.
  */
+
+import { Database } from 'bun:sqlite';
 import {
   existsSync,
   mkdirSync,
@@ -13,6 +15,10 @@ import { dirname, join, resolve } from 'node:path';
 import { emitModule } from './emit';
 import { emitDartModule } from './emit-dart';
 import { emitKotlinModule } from './emit-kotlin';
+import { emitQueriesModule } from './emit-queries';
+import { emitQueriesDartModule } from './emit-queries-dart';
+import { emitQueriesKotlinModule } from './emit-queries-kotlin';
+import { emitQueriesSwiftModule } from './emit-queries-swift';
 import { emitSwiftModule } from './emit-swift';
 import { TypegenError } from './errors';
 import {
@@ -33,6 +39,12 @@ import {
   type ManifestScopeSpec,
   parseManifest,
 } from './manifest';
+import {
+  type AnalyzedQuery,
+  analyzeQuery,
+  type QueryDb,
+  synthesizeDdl,
+} from './query';
 import { applyMigrationSql, type ParsedTable } from './sql';
 
 export interface MigrationInput {
@@ -264,6 +276,80 @@ export function loadMigrations(migrationsDir: string): MigrationInput[] {
   });
 }
 
+/** One `.sql` named-query file: filename + raw contents. */
+export interface QueryInput {
+  readonly file: string;
+  readonly sql: string;
+}
+
+/** Load `queries/*.sql`, ordered by filename (deterministic emission). */
+export function loadQueries(queriesDir: string): QueryInput[] {
+  if (!existsSync(queriesDir)) return [];
+  return readdirSync(queriesDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.sql'))
+    .map((entry) => entry.name)
+    .sort()
+    .map((file) => ({
+      file,
+      sql: readFileSync(join(queriesDir, file), 'utf8'),
+    }));
+}
+
+/** A {@link QueryDb} backed by an in-memory bun:sqlite built from the IR DDL.
+ * `analyze` prepares the statement (validating references) and reads its
+ * column names + declared types; it executes once against the empty DB so
+ * `declaredTypes` (decltype) is populated. */
+function makeQueryDb(ir: IrDocument): { db: QueryDb; close: () => void } {
+  const sqlite = new Database(':memory:');
+  sqlite.run(synthesizeDdl(ir));
+  const db: QueryDb = {
+    analyze(sql: string) {
+      const stmt = sqlite.prepare(sql);
+      try {
+        const columnNames = stmt.columnNames;
+        // Execute once against the empty DB to populate decltype; result is [].
+        (stmt as unknown as { all: () => unknown[] }).all();
+        const declaredTypes = (
+          stmt as unknown as { declaredTypes: (string | null)[] }
+        ).declaredTypes;
+        const paramsCount = (stmt as unknown as { paramsCount: number })
+          .paramsCount;
+        return { columnNames, declaredTypes, paramsCount };
+      } finally {
+        stmt.finalize();
+      }
+    },
+  };
+  return { db, close: () => sqlite.close() };
+}
+
+/** Analyze every query file against the IR (SELECT-only, typed, deps). */
+export function analyzeQueries(
+  ir: IrDocument,
+  queries: readonly QueryInput[],
+): AnalyzedQuery[] {
+  if (queries.length === 0) return [];
+  const { db, close } = makeQueryDb(ir);
+  try {
+    const analyzed = queries.map((q) => analyzeQuery(q.file, q.sql, ir, db));
+    // Names must be unique (two files mapping to the same camelCase name).
+    const seen = new Map<string, string>();
+    for (const q of analyzed) {
+      const prev = seen.get(q.name);
+      if (prev !== undefined) {
+        throw new TypegenError(
+          q.file,
+          `query name ${JSON.stringify(q.name)} collides with ${prev} — rename one file`,
+        );
+      }
+      seen.set(q.name, q.file);
+    }
+    return analyzed;
+  } finally {
+    close();
+  }
+}
+
 /** One generated artifact: an absolute output path and its exact bytes. */
 export interface GeneratedOutput {
   readonly path: string;
@@ -279,6 +365,8 @@ export interface GenerateResult {
   readonly module: string;
   readonly irPath: string;
   readonly modulePath: string;
+  /** Analyzed named queries (empty when no `queries/` files / no query output). */
+  readonly queries: readonly AnalyzedQuery[];
   /** Every artifact this manifest emits (IR + TS + any opt-in native), in a
    * stable order — the single list `writeOutputs`/`checkOutputs` iterate. */
   readonly outputs: readonly GeneratedOutput[];
@@ -312,26 +400,89 @@ export function generate(manifestDir: string): GenerateResult {
     { path: modulePath, content: module },
   ];
   // Opt-in native emitters — each present only when the manifest requests it.
-  const { swift, kotlin, dart } = manifest.output;
+  const { queries: tsQueriesPath, swift, kotlin, dart } = manifest.output;
+
+  // Named queries: analyzed once (SELECT-only, typed against the IR via
+  // SQLite), then emitted per-language into its OWN file so schema-only
+  // consumers never churn. Only analyzed when SOME query output is requested.
+  const wantsQueries =
+    tsQueriesPath !== undefined ||
+    swift?.queriesPath !== undefined ||
+    kotlin?.queriesPath !== undefined ||
+    dart?.queriesPath !== undefined;
+  const analyzedQueries = wantsQueries
+    ? analyzeQueries(ir, loadQueries(resolve(manifestDir, manifest.queries)))
+    : [];
+  if (wantsQueries && analyzedQueries.length === 0) {
+    throw new TypegenError(
+      resolve(manifestDir, manifest.queries),
+      `an output requests named queries but no .sql files were found in ${manifest.queries} — add a query file or drop the queries output`,
+    );
+  }
+
+  if (tsQueriesPath !== undefined) {
+    outputs.push({
+      path: resolve(manifestDir, tsQueriesPath),
+      content: emitQueriesModule(analyzedQueries, hash, ir.irVersion),
+    });
+  }
   if (swift !== undefined) {
     outputs.push({
       path: resolve(manifestDir, swift.path),
       content: emitSwiftModule(ir, hash, swift.enumName),
     });
+    if (swift.queriesPath !== undefined) {
+      outputs.push({
+        path: resolve(manifestDir, swift.queriesPath),
+        content: emitQueriesSwiftModule(
+          analyzedQueries,
+          hash,
+          ir.irVersion,
+          swift.enumName,
+        ),
+      });
+    }
   }
   if (kotlin !== undefined) {
     outputs.push({
       path: resolve(manifestDir, kotlin.path),
       content: emitKotlinModule(ir, hash, kotlin.package, kotlin.objectName),
     });
+    if (kotlin.queriesPath !== undefined) {
+      outputs.push({
+        path: resolve(manifestDir, kotlin.queriesPath),
+        content: emitQueriesKotlinModule(
+          analyzedQueries,
+          hash,
+          ir.irVersion,
+          kotlin.package,
+          kotlin.objectName,
+        ),
+      });
+    }
   }
   if (dart !== undefined) {
     outputs.push({
       path: resolve(manifestDir, dart.path),
       content: emitDartModule(ir, hash),
     });
+    if (dart.queriesPath !== undefined) {
+      outputs.push({
+        path: resolve(manifestDir, dart.queriesPath),
+        content: emitQueriesDartModule(analyzedQueries, hash, ir.irVersion),
+      });
+    }
   }
-  return { ir, irJson, hash, module, irPath, modulePath, outputs };
+  return {
+    ir,
+    irJson,
+    hash,
+    module,
+    irPath,
+    modulePath,
+    queries: analyzedQueries,
+    outputs,
+  };
 }
 
 export function writeOutputs(result: GenerateResult): void {

@@ -6,7 +6,8 @@
     "module": "./syncular.generated.ts",
     "swift": {
       "path": "./Sources/TodoKit/Syncular.generated.swift",
-      "enumName": "SyncularSchema"
+      "enumName": "SyncularSchema",
+      "queriesPath": "./Sources/TodoKit/Syncular.queries.swift"
     }
   },
   "schemaVersions": [{ "version": 1, "through": "0001_initial" }],
