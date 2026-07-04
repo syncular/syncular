@@ -245,13 +245,15 @@ wire changes, zero server changes; sequenced AFTER the WS-native loop
       table + scope-key (honest to the wire); a table→rowid dependency
       option for hot single-row views was left room for in the design.
       Demand-gated.
-- [ ] **Stabilize the react act() test flake**: the react hook suite can
+- [ ] **Stabilize timing-sensitive test flakes under load**: the react hook suite can
       fail intermittently under heavy background load (~1-in-3 observed
       with a dev server + agent fleet running; 10/10 green quiesced;
       never captured with a clean failure log). Repro guidance: run
       `bun run test` in a loop while a demo server runs. Candidate
       fixes: wrap the async state updates the act() warnings point at,
-      or isolate the react suite with its own happy-dom instance. Small,
+      or isolate the react suite with its own happy-dom instance. A second
+      offender observed 2026-07-04: multi-tab 'events fan out to two
+      followers' (once, under concurrent cargo builds; green on retry). Small,
       but it gates CI trust — do it before the publishing pipeline makes
       CI the merge authority.
 - [x] **demo-react** (landed 2026-07-04 — `apps/demo-react`, port 8788): a
