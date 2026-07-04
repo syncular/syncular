@@ -9,7 +9,7 @@
  */
 import './setup';
 import { afterEach, describe, expect, test } from 'bun:test';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { SyncProvider, useSyncQuery, useSyncStatus } from '../src/index';
 import { handleShapeOf } from './handle-shape';
@@ -44,9 +44,13 @@ describe('hooks against the handle (all-async) surface', () => {
     });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
-    client.mutate([
-      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'hi') },
-    ]);
+    // Wrap the mutate so the invalidation→re-query→setState it drives flushes
+    // inside act (the promise-path core resolves the re-query asynchronously).
+    await act(async () => {
+      client.mutate([
+        { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'hi') },
+      ]);
+    });
     await waitFor(() => expect(result.current.rows).toHaveLength(1));
   });
 
@@ -70,9 +74,11 @@ describe('hooks against the handle (all-async) surface', () => {
       table: 'tasks',
       scopes: { project_id: ['p1'] },
     });
-    client.mutate([
-      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
-    ]);
+    await act(async () => {
+      client.mutate([
+        { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
+      ]);
+    });
     await waitFor(() => expect(result.current.outbox).toBe(1));
   });
 });

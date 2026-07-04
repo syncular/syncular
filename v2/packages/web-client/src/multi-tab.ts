@@ -287,6 +287,8 @@ export class FollowerLink {
   readonly #inFlight = new Map<number, InFlight>();
   #queue: QueuedCall[] = [];
   #closed = false;
+  /** Resolvers waiting for the first `announce` to bind a leader. */
+  #bindWaiters: Array<() => void> = [];
 
   constructor(options: {
     channel: CrossTabChannel;
@@ -324,6 +326,53 @@ export class FollowerLink {
   /** Whether a leader is currently bound (an announce has been heard). */
   get bound(): boolean {
     return this.#epoch >= 0;
+  }
+
+  /**
+   * Resolve once the link is bound to a leader (the first `announce` arrived),
+   * or reject if `timeoutMs` elapses first. A caller awaits this before
+   * treating the follower as ready: until an announce is processed the link's
+   * epoch is -1, so any fanned-out `event` in that window is dropped (an
+   * unbound follower cannot match the leader's epoch). Awaiting binding closes
+   * that gap — a just-opened follower tab never misses an invalidation emitted
+   * between its `hello` and the leader's `announce`. Resolves synchronously
+   * when already bound.
+   */
+  waitUntilBound(timeoutMs = this.#callTimeoutMs): Promise<void> {
+    if (this.#epoch >= 0) return Promise.resolve();
+    if (this.#closed) {
+      return Promise.reject(
+        new ClientSyncError(WORKER_FAILED_CODE, 'the follower link is closed'),
+      );
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#dropBindWaiter(settle);
+        reject(
+          new ClientSyncError(
+            FOLLOWER_TIMEOUT_CODE,
+            'no leader announced within the follower bind timeout',
+          ),
+        );
+      }, timeoutMs);
+      const settle = (): void => {
+        clearTimeout(timer);
+        resolve();
+      };
+      this.#bindWaiters.push(settle);
+    });
+  }
+
+  #dropBindWaiter(waiter: () => void): void {
+    const index = this.#bindWaiters.indexOf(waiter);
+    if (index >= 0) this.#bindWaiters.splice(index, 1);
+  }
+
+  #resolveBindWaiters(): void {
+    if (this.#bindWaiters.length === 0) return;
+    const waiters = this.#bindWaiters;
+    this.#bindWaiters = [];
+    for (const settle of waiters) settle();
   }
 
   /** Forward one logical API call to the leader (queued if unbound). */
@@ -413,6 +462,7 @@ export class FollowerLink {
       this.#epoch = message.epoch;
       this.#leaderClientId = message.clientId;
       if (changed) this.#onLeaderChange(message.clientId);
+      this.#resolveBindWaiters();
       this.#flushQueue();
       return;
     }
@@ -492,6 +542,9 @@ export class FollowerLink {
       queued.reject(closedError);
     }
     this.#queue = [];
+    // Bind waiters carry their own timeout timers; resolving them here lets an
+    // awaiting boot path settle promptly instead of hanging until that timeout.
+    this.#resolveBindWaiters();
     this.#channel.close();
   }
 }

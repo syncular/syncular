@@ -6,7 +6,7 @@
  */
 import './setup';
 import { afterEach, describe, expect, test } from 'bun:test';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { SyncProvider, useSyncQuery } from '../src/index';
 import { makeClient, makeServer, taskValues } from './loopback';
@@ -41,10 +41,15 @@ describe('useSyncQuery against a real SyncClient', () => {
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(result.current.rows).toHaveLength(0);
 
-    // A real optimistic mutate flows through the choke point.
-    client.mutate([
-      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'hi') },
-    ]);
+    // A real optimistic mutate flows through the choke point. The mutate and
+    // the invalidation→re-query→setState chain it drives are wrapped in act so
+    // React flushes them deterministically instead of landing as floating
+    // microtasks the assertion races (the act()-warning class under load).
+    await act(async () => {
+      client.mutate([
+        { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'hi') },
+      ]);
+    });
     await waitFor(() => expect(result.current.rows).toHaveLength(1));
     expect((result.current.rows[0] as { title: string }).title).toBe('hi');
   });
@@ -72,7 +77,11 @@ describe('useSyncQuery against a real SyncClient', () => {
     ]);
     await a.sync();
     // B pulls; the pull's COMMIT apply fires invalidation → the hook re-runs.
-    await b.syncUntilIdle();
+    // Wrap in act so the invalidation-driven re-query's setState is flushed
+    // inside React's batching, not as a floating microtask post-assertion.
+    await act(async () => {
+      await b.syncUntilIdle();
+    });
     await waitFor(() => expect(result.current.rows).toHaveLength(1));
   });
 });

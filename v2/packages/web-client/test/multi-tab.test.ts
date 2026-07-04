@@ -219,6 +219,34 @@ test('events fan out from the leader to two followers', async () => {
   expect(inval2.some((n) => n >= 1)).toBe(true);
 });
 
+test('a follower is bound on return: an event emitted immediately reaches it', async () => {
+  // Regression for the binding-window race: before the fix, `make()` handed
+  // back a follower whose link had not yet processed the leader's `announce`
+  // (epoch -1). Any event the leader fanned out in that window was dropped
+  // (epoch mismatch) with no retry — a real multi-tab miss, not just a flake.
+  // `bootFollower` now awaits `waitUntilBound`, so the instant `make()`
+  // resolves the follower can receive fanned-out events.
+  const group = makeGroup();
+  const leader = await group.make({ clientId: 'mt-bind-lead' });
+  await leader.subscribe({
+    id: 's',
+    table: 'tasks',
+    scopes: { project_id: ['bp'] },
+  });
+
+  const follower = await group.make();
+  const seen: number[] = [];
+  follower.onInvalidate((e) => seen.push(e.tables.size));
+
+  // No waitFor-then-hope: the mutation's fan-out must land because the
+  // follower was already bound when `make()` returned.
+  await leader.mutate([
+    { table: 'tasks', op: 'upsert', values: taskValues('b1', 'bp', 'y') },
+  ]);
+  await waitFor(() => seen.length >= 1, 'follower invalidation after bind');
+  expect(seen.some((n) => n >= 1)).toBe(true);
+});
+
 test('leader close → follower promotes, keeps the DB, continues syncing', async () => {
   const group = makeGroup();
   const leader = await group.make({ clientId: 'mt-promo-lead' });
@@ -318,6 +346,48 @@ test('stale-epoch replies from a dead leader are discarded', async () => {
   });
   expect(await call).toBe('fresh');
   link.close();
+});
+
+test('waitUntilBound resolves on announce and rejects on bind timeout', async () => {
+  const { FollowerLink } = await import('../src/multi-tab');
+  let listener: ((e: { data: unknown }) => void) | undefined;
+  const channel = {
+    postMessage: noop,
+    addEventListener: (_t: 'message', l: (e: { data: unknown }) => void) => {
+      listener = l;
+    },
+    removeEventListener: noop,
+    close: noop,
+  };
+  const link = new FollowerLink({
+    // biome-ignore lint/suspicious/noExplicitAny: minimal channel stub
+    channel: channel as any,
+    fromId: 'f',
+    onEvent: noop,
+    onLeaderChange: noop,
+    callTimeoutMs: 40,
+  });
+  expect(link.bound).toBe(false);
+  const bound = link.waitUntilBound();
+  // An announce binds the link → the waiter resolves.
+  listener?.({ data: { t: 'announce', epoch: 1, clientId: 'c1' } });
+  await bound;
+  expect(link.bound).toBe(true);
+  // Already bound → resolves synchronously (no new announce needed).
+  await link.waitUntilBound();
+  link.close();
+
+  // A link that never hears an announce rejects loudly at the deadline.
+  const lonely = new FollowerLink({
+    // biome-ignore lint/suspicious/noExplicitAny: minimal channel stub
+    channel: { ...channel, addEventListener: noop } as any,
+    fromId: 'g',
+    onEvent: noop,
+    onLeaderChange: noop,
+    callTimeoutMs: 20,
+  });
+  await expectRejectsWithCode(lonely.waitUntilBound(), FOLLOWER_TIMEOUT_CODE);
+  lonely.close();
 });
 
 test('a follower call times out loudly when no leader answers', async () => {
