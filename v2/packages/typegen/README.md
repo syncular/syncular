@@ -299,19 +299,62 @@ function on every platform — killing query↔type drift *by construction*. It 
 the type-safe **read** tier; Kysely stays the TS **dynamic** tier, and raw
 `query(sql, params)` stays the escape hatch.
 
-**File convention.** Named queries live in a `queries/` directory next to
-`migrations/` (override with the top-level `"queries"` manifest key). **One
-file = one query**; the filename is lowercase kebab-case and becomes the
-generated name in camelCase (`list-todos.sql` → `listTodos`). Each language's
-queries file is a **separate output** (`output.queries` for TS, and
-`queriesPath` on `output.swift`/`output.kotlin`/`output.dart`), so
+**File & naming convention.** Named queries live in a `queries/` directory
+next to `migrations/` (override with the top-level `"queries"` manifest key).
+The directory is **walked recursively** — subfolders are pure organization.
+Each language's queries file is a **separate output** (`output.queries` for TS,
+and `queriesPath` on `output.swift`/`output.kotlin`/`output.dart`), so
 schema-only consumers never churn when a query changes. A queries output is
 opt-in per language; when none is requested the `queries/` dir is not even
 read.
 
-**SELECT-only.** Named queries are reads. Anything but a `SELECT` (and any
-`;`-separated multi-statement) is a **hard error at generate time**, pointing
-at `mutate()` — writes go through the outbox (SPEC §7.1).
+A query's **default name** is its path relative to the queries root — every
+folder segment plus the filename stem, joined and camelCased:
+
+| Path | Default name |
+|---|---|
+| `list-todos.sql` | `listTodos` (flat files are unchanged) |
+| `billing/invoices/list.sql` | `billingInvoicesList` |
+| `reporting/tasks-by-priority.sql` | `reportingTasksByPriority` |
+
+Every path segment **and** the filename stem must be lowercase kebab-case; a
+stray `List.sql` or `Billing/` is a **hard error** naming the offending
+segment. (Flat single-statement layouts keep exactly today's names, so
+existing consumers are unchanged.)
+
+**Name override.** A comment line `-- name: billingInvoicesList` in a
+statement's leading comment block overrides the **full** name verbatim (it must
+be a valid camelCase identifier — validated loudly). The override is
+deliberately the **marker form** (`-- name: ident`), *not* a bare
+`-- ident` one-word comment: a plain prose comment must **never** silently
+rename a query, so a stray `-- todos` above a statement is ignored and the
+path-derived name stands. Prose comments remain allowed anywhere (and are
+stripped from the emitted SQL).
+
+**One or many statements per file.** A file may hold multiple statements,
+split on **top-level `;`** (a small splitter that respects single-quoted
+strings, `--` line comments, and `/* … */` block comments; the SELECT-only
+subset has no `BEGIN/END` blocks, so top-level semicolons are unambiguous, and
+a trailing `;` on the last statement is optional). The rule:
+
+- a file with **one** statement may omit `-- name:` — it gets the path-derived
+  default;
+- a file with **multiple** statements requires `-- name:` on **every**
+  statement — a missing one is a generate-time error naming the file and the
+  statement's position/first line.
+
+`-- name:` and `-- param :x <type>` comments are **scoped to the statement they
+directly precede** (the leading comment block between the previous statement's
+`;` and this statement's first token), not file-header-scoped.
+
+**Global uniqueness.** After collection, a duplicate name anywhere in the
+manifest is a **hard error** listing **both** source locations (file + statement
+position, e.g. `dup.sql#1` / `dup.sql#2`). The filesystem no longer guarantees
+uniqueness once `-- name:` overrides exist, so this is checked explicitly.
+
+**SELECT-only.** Named queries are reads. Any statement that is not a `SELECT`
+is a **hard error at generate time**, pointing at `mutate()` — writes go
+through the outbox (SPEC §7.1).
 
 **Type-checking via SQLite itself** (the load-bearing trick). At generate time
 typegen synthesizes the schema's DDL from the IR (a `CREATE TABLE` per table,
@@ -341,7 +384,8 @@ a computed column? Alias it to a plain ref, or accept the honest fallback.
 it compares against a plain column ref — `WHERE list_id = :listId` (equality,
 `<`/`>`/`<=`/`>=`/`!=`/`LIKE`/`IS`) or `col IN (:a, :b)` — taking that column's
 IR type. Where inference is ambiguous (compared to an expression, used only in
-a projection, …) a header comment overrides:
+a projection, …) a per-statement `-- param` comment (in that statement's
+leading comment block) overrides:
 
 ```sql
 -- param :sinceMs integer

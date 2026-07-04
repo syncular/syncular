@@ -131,4 +131,43 @@ describe('named-query analysis fidelity', () => {
       'SELECT id, title, done, priority, estimate FROM tasks WHERE project_id = ? ORDER BY priority',
     );
   });
+
+  test('a nested-folder query gets a path-derived camelCase name', () => {
+    // reporting/tasks-by-priority.sql → reportingTasksByPriority.
+    const q = byName.get('reportingTasksByPriority');
+    expect(q).toBeDefined();
+    expect(q?.tables).toEqual(['tasks']);
+    expect(q?.params).toEqual([
+      { name: 'priority', type: 'integer', source: 'inferred' },
+    ]);
+  });
+
+  test('a multi-statement file yields one query per `-- name:` statement', () => {
+    // task-reports.sql holds reportOpenTasks + reportDocScores.
+    const open = byName.get('reportOpenTasks');
+    const scores = byName.get('reportDocScores');
+    expect(open).toBeDefined();
+    expect(scores).toBeDefined();
+    // Per-statement param scoping: :projectId inferred in the first statement…
+    expect(open?.params).toEqual([
+      { name: 'projectId', type: 'string', source: 'inferred' },
+    ]);
+    expect(open?.tables).toEqual(['tasks']);
+    // …:minScore's `-- param float` comment belongs to the SECOND statement.
+    expect(scores?.params).toEqual([
+      { name: 'minScore', type: 'float', source: 'comment' },
+    ]);
+    expect(scores?.tables).toEqual(['docs']);
+    // A path-derived `taskReports` name does NOT exist (overrides replace it).
+    expect(byName.get('taskReports')).toBeUndefined();
+  });
+
+  test('a single-statement file honors a `-- name:` override verbatim', () => {
+    // doc-lookup.sql → default docLookup, overridden to findDocByOrg.
+    expect(byName.get('findDocByOrg')).toBeDefined();
+    expect(byName.get('docLookup')).toBeUndefined();
+    expect(byName.get('findDocByOrg')?.params).toEqual([
+      { name: 'orgId', type: 'string', source: 'inferred' },
+    ]);
+  });
 });

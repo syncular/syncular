@@ -1,9 +1,16 @@
 /**
  * Named-query analysis (the sqlc/SQLDelight tier).
  *
- * A `queries/` dir next to migrations holds `.sql` files, ONE query per file.
- * The filename (kebab-case) becomes the query name (camelCase); SELECT-only —
- * writes stay `mutate()` (SPEC §7.1). Each query is type-checked BY SQLITE
+ * A `queries/` dir next to migrations is walked RECURSIVELY for `.sql` files;
+ * folders are pure organization. A statement's default name is its path
+ * relative to the queries root — segments + filename, joined and camelCased
+ * (`billing/invoices/list.sql` → `billingInvoicesList`; a flat `list-todos.sql`
+ * → `listTodos`, unchanged). A `-- name: ident` marker in a statement's leading
+ * comment block overrides the FULL name verbatim. A file may hold MULTIPLE
+ * statements (split on top-level `;`); a single-statement file may omit
+ * `-- name:` (path-derived), a multi-statement file requires it on EVERY
+ * statement. SELECT-only — writes stay `mutate()` (SPEC §7.1). Each query is
+ * type-checked BY SQLITE
  * ITSELF: we synthesize the schema's DDL from the IR (the reverse of the SQL
  * parser), build an in-memory `bun:sqlite` DB, and `prepare()` the query. That
  * validates syntax + every table/column reference for free, and yields the
@@ -98,9 +105,10 @@ export interface QueryColumn {
 }
 
 export interface AnalyzedQuery {
-  /** camelCase function name (from the kebab filename). */
+  /** camelCase function name (path-derived, or a `-- name:` override). */
   readonly name: string;
-  /** Source filename, e.g. `list-todos.sql`. */
+  /** Source location for errors, e.g. `billing/list.sql` (or `list.sql#2`
+   * for the 2nd statement of a multi-statement file). */
   readonly file: string;
   /** The SQL as written (named `:params`), trimmed. */
   readonly sql: string;
@@ -114,27 +122,215 @@ export interface AnalyzedQuery {
   readonly tables: readonly string[];
 }
 
-// -- filename → name ----------------------------------------------------------
+// -- path → name --------------------------------------------------------------
 
-const QUERY_FILE_RE = /^([a-z][a-z0-9]*(?:-[a-z0-9]+)*)\.sql$/;
+/** A single kebab-case path segment (folder) or filename stem. */
+const KEBAB_SEGMENT_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+/** A valid camelCase identifier — what a `-- name:` override must be. */
+const CAMEL_IDENT_RE = /^[a-z][A-Za-z0-9]*$/;
 
-/** `list-todos.sql` → `listTodos`. Rejects non-kebab filenames loudly. */
-export function queryNameFromFile(file: string): string {
-  const match = QUERY_FILE_RE.exec(file);
-  if (match === null || match[1] === undefined) {
+/** Split a kebab word list into a camelCase suffix (used per segment). */
+function kebabWords(segment: string): string[] {
+  return segment.split('-');
+}
+
+/**
+ * Path-relative default name. `billing/invoices/list.sql` → `billingInvoicesList`;
+ * a flat `list-todos.sql` → `listTodos` (unchanged). Every folder segment AND
+ * the filename stem must be lowercase kebab-case — rejects loudly, naming the
+ * offending segment, so a stray `List.sql` or `Billing/` fails at generate time.
+ */
+export function queryNameFromPath(relPath: string): string {
+  const norm = relPath.replace(/\\/g, '/');
+  if (!norm.endsWith('.sql')) {
     throw new TypegenError(
-      file,
-      `query filename must be lowercase kebab-case ending in .sql (e.g. list-todos.sql), got ${JSON.stringify(file)}`,
+      relPath,
+      `query file must end in .sql, got ${JSON.stringify(relPath)}`,
     );
   }
-  const parts = match[1].split('-');
+  const withoutExt = norm.slice(0, -'.sql'.length);
+  const segments = withoutExt.split('/').filter((s) => s.length > 0);
+  if (segments.length === 0) {
+    throw new TypegenError(
+      relPath,
+      `invalid query path ${JSON.stringify(relPath)}`,
+    );
+  }
+  const words: string[] = [];
+  for (const segment of segments) {
+    if (!KEBAB_SEGMENT_RE.test(segment)) {
+      throw new TypegenError(
+        relPath,
+        `path segment ${JSON.stringify(segment)} in ${JSON.stringify(norm)} must be lowercase kebab-case (e.g. billing/invoices/list-open.sql → billingInvoicesListOpen)`,
+      );
+    }
+    words.push(...kebabWords(segment));
+  }
+  const first = words[0] as string;
   return (
-    parts[0] +
-    parts
+    first +
+    words
       .slice(1)
-      .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
       .join('')
   );
+}
+
+/** Back-compat flat-file helper: `list-todos.sql` → `listTodos`. Rejects a
+ * path with folders (use {@link queryNameFromPath} for nested queries). */
+export function queryNameFromFile(file: string): string {
+  if (file.includes('/') || file.includes('\\')) {
+    throw new TypegenError(
+      file,
+      `queryNameFromFile takes a flat filename; got a path ${JSON.stringify(file)} — use queryNameFromPath`,
+    );
+  }
+  return queryNameFromPath(file);
+}
+
+/** Validate a `-- name:` override is a camelCase identifier (loud otherwise). */
+export function validateOverrideName(name: string, location: string): string {
+  if (!CAMEL_IDENT_RE.test(name)) {
+    throw new TypegenError(
+      location,
+      `-- name: ${JSON.stringify(name)} must be a camelCase identifier (start lowercase, letters/digits only, e.g. billingInvoicesList)`,
+    );
+  }
+  return name;
+}
+
+// -- statement splitting ------------------------------------------------------
+//
+// A file may hold multiple statements separated by top-level `;`. We split on
+// semicolons that are NOT inside a single-quoted string, a `--` line comment,
+// or a `/* */` block comment. The SELECT-only subset has no BEGIN/END blocks,
+// so top-level semicolons are unambiguous statement terminators. A trailing
+// semicolon on the last statement is optional (an empty tail is dropped).
+
+export interface SplitStatement {
+  /** The raw statement text (leading comment block + SQL), as written. */
+  readonly text: string;
+  /** 1-based line number of the statement's first character in the file. */
+  readonly startLine: number;
+}
+
+/** Split file content into statements on top-level `;` (string/comment-aware).
+ * Blank/comment-only tails are dropped; each statement keeps its own leading
+ * comment block (everything between the previous `;` and this SQL). */
+export function splitStatements(content: string): SplitStatement[] {
+  const parts: { text: string; startOffset: number }[] = [];
+  let i = 0;
+  let start = 0;
+  while (i < content.length) {
+    const ch = content[i] as string;
+    const next = content[i + 1];
+    if (ch === '-' && next === '-') {
+      const end = content.indexOf('\n', i);
+      i = end === -1 ? content.length : end;
+    } else if (ch === '/' && next === '*') {
+      const end = content.indexOf('*/', i + 2);
+      i = end === -1 ? content.length : end + 2;
+    } else if (ch === "'") {
+      let j = i + 1;
+      for (;;) {
+        if (j >= content.length) break;
+        if (content[j] === "'") {
+          if (content[j + 1] === "'") j += 2;
+          else {
+            j += 1;
+            break;
+          }
+        } else j += 1;
+      }
+      i = j;
+    } else if (ch === ';') {
+      parts.push({ text: content.slice(start, i), startOffset: start });
+      i += 1;
+      start = i;
+    } else {
+      i += 1;
+    }
+  }
+  if (start < content.length) {
+    parts.push({ text: content.slice(start), startOffset: start });
+  }
+  const out: SplitStatement[] = [];
+  for (const part of parts) {
+    // Drop parts whose SQL body (comments/whitespace stripped) is empty — a
+    // trailing `;` or a comment-only tail is not a statement.
+    if (stripCommentsAndStrings(part.text).trim().length === 0) continue;
+    // Report the line of the statement's first NON-blank character (skip the
+    // blank/whitespace run after the previous `;`), so the location points at
+    // real content, not the terminator's trailing newline.
+    const lead = part.text.length - part.text.replace(/^\s+/, '').length;
+    const before = content.slice(0, part.startOffset + lead);
+    const startLine = before.split('\n').length;
+    out.push({ text: part.text.replace(/^\s+/, ''), startLine });
+  }
+  return out;
+}
+
+/** The leading comment block of a statement: the run of blank + line/block
+ * comment lines before the first SQL token. `-- name:` / `-- param` markers are
+ * scoped HERE (to the statement they directly precede), not file-wide. Returns
+ * the `--` comment lines (block comments carry no markers we parse). */
+function leadingCommentBlock(statementText: string): string[] {
+  const lines: string[] = [];
+  let i = 0;
+  while (i < statementText.length) {
+    // Skip leading whitespace on the line.
+    while (
+      i < statementText.length &&
+      /[ \t\r]/.test(statementText[i] as string)
+    ) {
+      i += 1;
+    }
+    const ch = statementText[i];
+    const next = statementText[i + 1];
+    if (ch === '\n') {
+      i += 1;
+      continue;
+    }
+    if (ch === '-' && next === '-') {
+      const end = statementText.indexOf('\n', i);
+      const line = statementText.slice(i, end === -1 ? undefined : end);
+      lines.push(line);
+      i = end === -1 ? statementText.length : end + 1;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      const end = statementText.indexOf('*/', i + 2);
+      // Block comments carry no markers we parse; skip and keep scanning for
+      // more leading comments (but they don't contribute -- name:/-- param).
+      i = end === -1 ? statementText.length : end + 2;
+      continue;
+    }
+    break; // first SQL token — the comment block ends here
+  }
+  return lines;
+}
+
+const NAME_MARKER_RE = /^\s*--\s*name:\s*(\S+)\s*$/;
+
+/** The `-- name:` override in a statement's leading comment block, or null. */
+export function parseStatementName(
+  statementText: string,
+  location: string,
+): string | null {
+  const lines = leadingCommentBlock(statementText);
+  let found: string | null = null;
+  for (const line of lines) {
+    const m = NAME_MARKER_RE.exec(line);
+    if (m === null) continue;
+    if (found !== null) {
+      throw new TypegenError(
+        location,
+        `two \`-- name:\` markers on one statement (${JSON.stringify(found)} and ${JSON.stringify(m[1])}) — a statement is named once`,
+      );
+    }
+    found = validateOverrideName(m[1] as string, location);
+  }
+  return found;
 }
 
 // -- lightweight SQL scanning -------------------------------------------------
@@ -530,37 +726,35 @@ export function synthesizeDdl(ir: IrDocument): string {
   return lines.join('\n');
 }
 
-/** Analyze one query file's raw SQL against the IR + a prepared-DDL DB. */
-export function analyzeQuery(
-  file: string,
-  raw: string,
+/**
+ * Analyze ONE already-split statement against the IR + a prepared-DDL DB. The
+ * name is pre-resolved (path-derived or a `-- name:` override) by the caller;
+ * `statementText` is a single statement's leading comment block + SQL (no
+ * top-level `;`). This is the per-statement core; {@link analyzeQueryFile}
+ * splits a file and drives it.
+ */
+export function analyzeStatement(
+  name: string,
+  location: string,
+  statementText: string,
   ir: IrDocument,
   db: QueryDb,
 ): AnalyzedQuery {
-  const name = queryNameFromFile(file);
-  const commentParams = parseCommentParams(file, raw);
-  const sql = raw.trim();
+  const file = location;
+  const commentParams = parseCommentParams(file, statementText);
+  const sql = statementText.trim();
   if (sql.length === 0) {
     throw new TypegenError(file, 'query file is empty');
   }
 
   // SELECT-only (the read tier). Reject the first keyword loudly otherwise.
   const firstKeyword = /^\s*([A-Za-z]+)/.exec(
-    stripCommentsAndStrings(raw).trimStart(),
+    stripCommentsAndStrings(statementText).trimStart(),
   )?.[1];
   if (firstKeyword === undefined || firstKeyword.toUpperCase() !== 'SELECT') {
     throw new TypegenError(
       file,
       `named queries are SELECT-only (the read tier); found ${JSON.stringify(firstKeyword ?? '')}. Writes go through mutate() (SPEC §7.1).`,
-    );
-  }
-  // Reject `;`-separated multiple statements (prepare would silently take the
-  // first, hiding the rest).
-  const body = stripCommentsAndStrings(sql).replace(/;\s*$/, '');
-  if (body.includes(';')) {
-    throw new TypegenError(
-      file,
-      'a query file holds exactly one SELECT statement (found a `;` separating statements)',
     );
   }
 
@@ -654,4 +848,63 @@ export function analyzeQuery(
     columns,
     tables,
   };
+}
+
+/**
+ * Analyze a whole query FILE: split into statements, resolve each statement's
+ * name (path-derived default, or a `-- name:` override), enforce the
+ * multi-statement contract, and analyze each. `relPath` is the file's path
+ * relative to the queries root (drives the default name + error locations).
+ *
+ * Rules (agreed 2026-07-04):
+ * - A file with ONE statement may omit `-- name:` → the path-derived default.
+ * - A file with MULTIPLE statements requires `-- name:` on EVERY statement; a
+ *   missing one errors, naming the file + the statement's position/first line.
+ */
+export function analyzeQueryFile(
+  relPath: string,
+  content: string,
+  ir: IrDocument,
+  db: QueryDb,
+): AnalyzedQuery[] {
+  const statements = splitStatements(content);
+  if (statements.length === 0) {
+    throw new TypegenError(relPath, 'query file is empty');
+  }
+  const multi = statements.length > 1;
+  const defaultName = queryNameFromPath(relPath);
+  return statements.map((stmt, index) => {
+    const location = multi ? `${relPath}#${index + 1}` : relPath;
+    const override = parseStatementName(stmt.text, location);
+    if (multi && override === null) {
+      const firstLine =
+        stripCommentsAndStrings(stmt.text).trim().split('\n')[0]?.trim() ?? '';
+      throw new TypegenError(
+        location,
+        `${relPath} holds ${statements.length} statements, so each requires a \`-- name: <camelCase>\` marker; statement #${index + 1} (line ${stmt.startLine}: ${JSON.stringify(firstLine.slice(0, 60))}) has none`,
+      );
+    }
+    const name = override ?? defaultName;
+    return analyzeStatement(name, location, stmt.text, ir, db);
+  });
+}
+
+/** Back-compat single-statement analyzer: resolve the name from the file path
+ * (or a `-- name:` override) and analyze. Rejects a `;`-separated file loudly
+ * — use {@link analyzeQueryFile} for the multi-statement contract. */
+export function analyzeQuery(
+  file: string,
+  raw: string,
+  ir: IrDocument,
+  db: QueryDb,
+): AnalyzedQuery {
+  const statements = splitStatements(raw);
+  if (statements.length > 1) {
+    throw new TypegenError(
+      file,
+      'a query file holds exactly one SELECT statement here (found a `;` separating statements) — use analyzeQueryFile for multi-statement files',
+    );
+  }
+  const results = analyzeQueryFile(file, raw, ir, db);
+  return results[0] as AnalyzedQuery;
 }

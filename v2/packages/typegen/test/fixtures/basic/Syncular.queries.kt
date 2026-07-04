@@ -26,6 +26,20 @@ private fun queryBindBytes(value: ByteArray): JsonValue {
     return JsonValue.obj("\$bytes" to JsonValue.of(hex))
 }
 
+/** One row of the findDocByOrg query (its projection). */
+data class FindDocByOrgRow(
+    val id: String,
+    val body: String,
+) {
+    companion object {
+        fun fromRow(row: JsonValue): FindDocByOrgRow? {
+            val id = row["id"]?.string ?: return null
+            val body = row["body"]?.string ?: return null
+            return FindDocByOrgRow(id, body)
+        }
+    }
+}
+
 /** One row of the docWithBody query (its projection). */
 data class DocWithBodyRow(
     val docId: String,
@@ -76,6 +90,54 @@ data class ProjectDocCountRow(
     }
 }
 
+/** One row of the reportingTasksByPriority query (its projection). */
+data class ReportingTasksByPriorityRow(
+    val id: String,
+    val title: String,
+    val priority: Long?,
+) {
+    companion object {
+        fun fromRow(row: JsonValue): ReportingTasksByPriorityRow? {
+            val id = row["id"]?.string ?: return null
+            val title = row["title"]?.string ?: return null
+            val priority = row["priority"]?.number?.toLong()
+            return ReportingTasksByPriorityRow(id, title, priority)
+        }
+    }
+}
+
+/** One row of the reportOpenTasks query (its projection). */
+data class ReportOpenTasksRow(
+    val id: String,
+    val title: String,
+    val done: Boolean,
+) {
+    companion object {
+        fun fromRow(row: JsonValue): ReportOpenTasksRow? {
+            val id = row["id"]?.string ?: return null
+            val title = row["title"]?.string ?: return null
+            val done = queryRowBool(row["done"]) ?: return null
+            return ReportOpenTasksRow(id, title, done)
+        }
+    }
+}
+
+/** One row of the reportDocScores query (its projection). */
+data class ReportDocScoresRow(
+    val id: String,
+    val orgId: String,
+    val score: Double?,
+) {
+    companion object {
+        fun fromRow(row: JsonValue): ReportDocScoresRow? {
+            val id = row["id"]?.string ?: return null
+            val orgId = row["org_id"]?.string ?: return null
+            val score = row["score"]?.number
+            return ReportDocScoresRow(id, orgId, score)
+        }
+    }
+}
+
 /** One row of the taskTitles query (its projection). */
 data class TaskTitlesRow(
     val id: String,
@@ -120,6 +182,15 @@ data class TasksSinceRow(
 
 /** Typed named queries (the sqlc/SQLDelight tier). */
 object BasicSchemaQueries {
+        val findDocByOrgTables = listOf("docs")
+        private const val findDocByOrgSql = "SELECT id, body FROM docs WHERE org_id = ? ORDER BY id"
+
+        /** Run the findDocByOrg named query (SELECT-only). */
+        fun findDocByOrg(client: SyncularClient, orgId: String): List<FindDocByOrgRow> {
+            val params = listOf(JsonValue.of(orgId))
+            return client.query(findDocByOrgSql, params).mapNotNull { FindDocByOrgRow.fromRow(it) }
+        }
+
         val docWithBodyTables = listOf("docs", "tasks")
         private const val docWithBodySql = "SELECT d.id AS doc_id, d.body, t.title AS task_title FROM docs d JOIN tasks t ON t.project_id = d.project_id WHERE d.org_id = ?"
 
@@ -144,6 +215,33 @@ object BasicSchemaQueries {
         /** Run the projectDocCount named query (SELECT-only). */
         fun projectDocCount(client: SyncularClient): List<ProjectDocCountRow> {
             return client.query(projectDocCountSql).mapNotNull { ProjectDocCountRow.fromRow(it) }
+        }
+
+        val reportingTasksByPriorityTables = listOf("tasks")
+        private const val reportingTasksByPrioritySql = "SELECT id, title, priority FROM tasks WHERE priority = ? ORDER BY id"
+
+        /** Run the reportingTasksByPriority named query (SELECT-only). */
+        fun reportingTasksByPriority(client: SyncularClient, priority: Long): List<ReportingTasksByPriorityRow> {
+            val params = listOf(JsonValue.of(priority.toDouble()))
+            return client.query(reportingTasksByPrioritySql, params).mapNotNull { ReportingTasksByPriorityRow.fromRow(it) }
+        }
+
+        val reportOpenTasksTables = listOf("tasks")
+        private const val reportOpenTasksSql = "SELECT id, title, done FROM tasks WHERE project_id = ? AND done = 0 ORDER BY id"
+
+        /** Run the reportOpenTasks named query (SELECT-only). */
+        fun reportOpenTasks(client: SyncularClient, projectId: String): List<ReportOpenTasksRow> {
+            val params = listOf(JsonValue.of(projectId))
+            return client.query(reportOpenTasksSql, params).mapNotNull { ReportOpenTasksRow.fromRow(it) }
+        }
+
+        val reportDocScoresTables = listOf("docs")
+        private const val reportDocScoresSql = "SELECT id, org_id, score FROM docs WHERE score > ? * 1.0 ORDER BY id"
+
+        /** Run the reportDocScores named query (SELECT-only). */
+        fun reportDocScores(client: SyncularClient, minScore: Double): List<ReportDocScoresRow> {
+            val params = listOf(JsonValue.of(minScore))
+            return client.query(reportDocScoresSql, params).mapNotNull { ReportDocScoresRow.fromRow(it) }
         }
 
         val taskTitlesTables = listOf("tasks")

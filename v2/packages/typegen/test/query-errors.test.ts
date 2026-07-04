@@ -7,10 +7,13 @@
 import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
 import {
+  analyzeQueries,
   analyzeQuery,
+  analyzeQueryFile,
   type IrDocument,
   type QueryDb,
   queryNameFromFile,
+  queryNameFromPath,
   synthesizeDdl,
 } from '../src';
 
@@ -62,13 +65,37 @@ const db = makeDb();
 const analyze = (file: string, sql: string) => analyzeQuery(file, sql, IR, db);
 
 describe('query filename → name', () => {
-  test('kebab → camel', () => {
+  test('kebab → camel (flat, unchanged)', () => {
     expect(queryNameFromFile('list-todos.sql')).toBe('listTodos');
     expect(queryNameFromFile('todos.sql')).toBe('todos');
   });
   test('rejects non-kebab filenames', () => {
     expect(() => queryNameFromFile('ListTodos.sql')).toThrow(/kebab-case/);
     expect(() => queryNameFromFile('list_todos.sql')).toThrow(/kebab-case/);
+  });
+});
+
+describe('recursive path → name', () => {
+  test('nested folders join + camelCase (path-derived default)', () => {
+    expect(queryNameFromPath('billing/invoices/list.sql')).toBe(
+      'billingInvoicesList',
+    );
+    expect(queryNameFromPath('reporting/tasks-by-priority.sql')).toBe(
+      'reportingTasksByPriority',
+    );
+    // A flat file keeps today's name — back-compat with existing consumers.
+    expect(queryNameFromPath('list-todos.sql')).toBe('listTodos');
+  });
+  test('rejects a bad folder segment loudly (kebab per segment)', () => {
+    expect(() => queryNameFromPath('Billing/list.sql')).toThrow(
+      /path segment "Billing".*kebab-case/,
+    );
+    expect(() => queryNameFromPath('billing/List.sql')).toThrow(
+      /path segment "List".*kebab-case/,
+    );
+    expect(() => queryNameFromPath('billing/in_voices/list.sql')).toThrow(
+      /path segment "in_voices"/,
+    );
   });
 });
 
@@ -154,5 +181,115 @@ describe('column fidelity', () => {
   test('a boolean column decodes as boolean (exact)', () => {
     const q = analyze('q.sql', 'SELECT done FROM todos');
     expect(q.columns[0]).toMatchObject({ type: 'boolean', fidelity: 'exact' });
+  });
+});
+
+const analyzeFile = (file: string, sql: string) =>
+  analyzeQueryFile(file, sql, IR, db);
+
+describe('multi-statement files', () => {
+  test('a single-statement file may omit `-- name:` (path-derived)', () => {
+    const qs = analyzeFile('list-todos.sql', 'SELECT id FROM todos');
+    expect(qs).toHaveLength(1);
+    expect(qs[0]?.name).toBe('listTodos');
+  });
+
+  test('two statements each named → two queries, per-statement scope', () => {
+    const qs = analyzeFile(
+      'reports.sql',
+      [
+        '-- name: openTodos',
+        'SELECT id FROM todos WHERE done = 0;',
+        '-- name: todoByList',
+        'SELECT id FROM todos WHERE list_id = :listId',
+      ].join('\n'),
+    );
+    expect(qs.map((q) => q.name)).toEqual(['openTodos', 'todoByList']);
+    // The :listId param belongs to the SECOND statement only.
+    expect(qs[0]?.params).toEqual([]);
+    expect(qs[1]?.params).toEqual([
+      { name: 'listId', type: 'string', source: 'inferred' },
+    ]);
+  });
+
+  test('a multi-statement file with a missing `-- name:` errors loudly', () => {
+    expect(() =>
+      analyzeFile(
+        'reports.sql',
+        'SELECT id FROM todos;\n-- name: two\nSELECT title FROM todos',
+      ),
+    ).toThrow(/holds 2 statements.*requires a `-- name:.*` marker/);
+  });
+
+  test('the missing-name error names the file + statement position/line', () => {
+    expect(() =>
+      analyzeFile(
+        'reports.sql',
+        '-- name: one\nSELECT id FROM todos;\n\nSELECT title FROM todos',
+      ),
+    ).toThrow(/statement #2 \(line 4/);
+  });
+
+  test('a trailing `;` on the last statement is fine (single query)', () => {
+    const qs = analyzeFile('one.sql', 'SELECT id FROM todos;');
+    expect(qs).toHaveLength(1);
+    expect(qs[0]?.name).toBe('one');
+  });
+
+  test('a `;` inside a string literal does NOT split statements', () => {
+    const qs = analyzeFile('greet.sql', "SELECT id, 'a;b' AS sep FROM todos");
+    expect(qs).toHaveLength(1);
+  });
+});
+
+describe('`-- name:` override validation', () => {
+  test('a valid camelCase override renames a single-statement file', () => {
+    const qs = analyzeFile(
+      'doc-lookup.sql',
+      '-- name: findByList\nSELECT id FROM todos WHERE list_id = :listId',
+    );
+    expect(qs[0]?.name).toBe('findByList');
+  });
+  test('a non-camelCase override is rejected loudly', () => {
+    expect(() =>
+      analyzeFile('q.sql', '-- name: Find-By-List\nSELECT id FROM todos'),
+    ).toThrow(/must be a camelCase identifier/);
+    expect(() =>
+      analyzeFile('q.sql', '-- name: find_by_list\nSELECT id FROM todos'),
+    ).toThrow(/must be a camelCase identifier/);
+    expect(() =>
+      analyzeFile('q.sql', '-- name: 9lives\nSELECT id FROM todos'),
+    ).toThrow(/must be a camelCase identifier/);
+  });
+  test('a bare one-word prose comment does NOT rename (marker form only)', () => {
+    // `-- todos` is prose, not `-- name: todos` — path default wins.
+    const qs = analyzeFile('list-todos.sql', '-- todos\nSELECT id FROM todos');
+    expect(qs[0]?.name).toBe('listTodos');
+  });
+});
+
+describe('global uniqueness (across the whole manifest)', () => {
+  test('two files whose names collide error, naming BOTH locations', () => {
+    // A path default clashing with another file's `-- name:` override.
+    expect(() =>
+      analyzeQueries(IR, [
+        { file: 'list-todos.sql', sql: 'SELECT id FROM todos' },
+        {
+          file: 'other.sql',
+          sql: '-- name: listTodos\nSELECT id FROM todos',
+        },
+      ]),
+    ).toThrow(/duplicate query name "listTodos".*list-todos\.sql.*other\.sql/);
+  });
+
+  test('two statements in one file colliding on override names error', () => {
+    expect(() =>
+      analyzeQueries(IR, [
+        {
+          file: 'dup.sql',
+          sql: '-- name: same\nSELECT id FROM todos;\n-- name: same\nSELECT title FROM todos',
+        },
+      ]),
+    ).toThrow(/duplicate query name "same".*dup\.sql#1.*dup\.sql#2/);
   });
 });
