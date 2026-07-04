@@ -20,6 +20,10 @@ export { SyncContext, SyncProvider, type SyncProviderProps } from './provider';
 export { useSyncClient } from './use-client';
 export { type UseConflictsResult, useConflicts } from './use-conflicts';
 export { type UseMutationResult, useMutation } from './use-mutation';
+export {
+  type NamedQueryDescriptor,
+  useNamedQuery,
+} from './use-named-query';
 export { usePresence } from './use-presence';
 export {
   type UseSyncQueryOptions,

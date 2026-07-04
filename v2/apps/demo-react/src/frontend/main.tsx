@@ -16,6 +16,7 @@
 import {
   SyncProvider,
   useMutation,
+  useNamedQuery,
   useSyncStatus,
   useWindow,
 } from '@syncular-v2/react';
@@ -27,6 +28,7 @@ import {
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { type Database, schema, type TodosRow } from '../syncular.generated';
+import { type ListTodosRow, listTodosQuery } from '../syncular.queries';
 
 const LISTS = ['groceries', 'work', 'travel'] as const;
 type ListId = (typeof LISTS)[number];
@@ -63,17 +65,29 @@ function TodoApp() {
     void setWindow([list]);
   }, [list, setWindow]);
 
-  // The typed live read — re-runs exactly when `todos` invalidates.
-  const { rows, isLoading } = useTypedQuery<Database, TodosRow>(
+  // The live read — a NAMED query (typegen's sqlc-style tier): the SQL lives
+  // in `queries/list-todos.sql`, typegen emits `listTodosQuery` (typed row +
+  // exact `{tables}`), and `useNamedQuery` runs it live, re-running exactly
+  // when `todos` invalidates. This is the type-safe read tier.
+  const { rows, isLoading } = useNamedQuery(listTodosQuery, { listId: list });
+
+  // The dynamic tier still lives: a Kysely-typed aggregate for the header
+  // badge (done vs total), driven by `useTypedQuery` over the same client.
+  const { rows: summary } = useTypedQuery<
+    Database,
+    { total: number; done_count: number }
+  >(
     (db) =>
       db
         .selectFrom('todos')
-        .selectAll()
         .where('list_id', '=', list)
-        .orderBy('position')
-        .orderBy('id'),
+        .select((eb) => [
+          eb.fn.countAll<number>().as('total'),
+          eb.fn.sum<number>('done').as('done_count'),
+        ]),
     [list],
   );
+  const doneCount = summary[0]?.done_count ?? 0;
 
   const complete = isComplete(list);
 
@@ -97,7 +111,7 @@ function TodoApp() {
     ]);
   };
 
-  const toggle = (row: TodosRow) => {
+  const toggle = (row: ListTodosRow) => {
     void mutate([
       {
         table: 'todos',
@@ -119,7 +133,9 @@ function TodoApp() {
     <>
       <header>
         <h1>syncular v2 — demo-react</h1>
-        <span className="hint">hooks + Kysely-typed live queries</span>
+        <span className="hint">
+          named queries + Kysely — {doneCount}/{rows.length} done
+        </span>
         <StatusBadges />
       </header>
 
@@ -200,7 +216,9 @@ function TodoApp() {
         dropdown drives <code>useWindow.setWindow([list])</code> — switching
         lists bootstraps the new list and evicts the previous one (W1
         value-sharded windowing). Writes go through <code>useMutation</code>{' '}
-        (the outbox); reads are <code>useTypedQuery</code> (Kysely, read-only).
+        (the outbox); the list read is a <code>useNamedQuery</code> (typed{' '}
+        <code>.sql</code>, exact invalidation) and the done-count badge is a{' '}
+        <code>useTypedQuery</code> (Kysely dynamic tier) — both read-only.
       </footer>
     </>
   );

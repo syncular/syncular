@@ -13,9 +13,11 @@ import { MANIFEST_FILENAME } from './manifest';
 const STARTER_MANIFEST = `{
   "manifestVersion": 1,
   "migrations": "./migrations",
+  "queries": "./queries",
   "output": {
     "ir": "./syncular.ir.json",
-    "module": "./src/syncular.generated.ts"
+    "module": "./src/syncular.generated.ts",
+    "queries": "./src/syncular.queries.ts"
   },
   "schemaVersions": [{ "version": 1, "through": "0001_initial" }],
   "tables": [{ "name": "notes", "scopes": ["list:{list_id}"] }],
@@ -39,6 +41,17 @@ CREATE TABLE notes (
 );
 `;
 
+// A starter NAMED query (the typed .sql read tier). typegen type-checks it
+// against the schema via SQLite and emits a typed \`notesInList(client, listId)\`
+// + \`NotesInListRow\` into src/syncular.queries.ts. :listId infers to TEXT
+// (compared against notes.list_id).
+const STARTER_QUERY = `-- Every note in a list, id-ordered. Typed by SQLite against your schema.
+SELECT id, list_id, body, updated_at_ms
+FROM notes
+WHERE list_id = :listId
+ORDER BY id
+`;
+
 export interface InitResult {
   readonly written: readonly string[];
 }
@@ -60,6 +73,8 @@ export function initProject(dir: string): InitResult {
   const manifestPath = join(root, MANIFEST_FILENAME);
   const migrationDir = join(root, 'migrations', '0001_initial');
   const migrationPath = join(migrationDir, 'up.sql');
+  const queriesDir = join(root, 'queries');
+  const queryPath = join(queriesDir, 'notes-in-list.sql');
 
   if (existsSync(manifestPath)) {
     throw new InitError(
@@ -72,9 +87,14 @@ export function initProject(dir: string): InitResult {
       `${migrationPath} already exists — refusing to overwrite.`,
     );
   }
+  if (existsSync(queryPath)) {
+    throw new InitError(`${queryPath} already exists — refusing to overwrite.`);
+  }
 
   mkdirSync(migrationDir, { recursive: true });
+  mkdirSync(queriesDir, { recursive: true });
   writeFileSync(manifestPath, STARTER_MANIFEST, 'utf8');
   writeFileSync(migrationPath, STARTER_MIGRATION, 'utf8');
-  return { written: [manifestPath, migrationPath] };
+  writeFileSync(queryPath, STARTER_QUERY, 'utf8');
+  return { written: [manifestPath, migrationPath, queryPath] };
 }
