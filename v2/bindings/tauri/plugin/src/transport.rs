@@ -378,12 +378,14 @@ mod native {
             })
         }
 
-        fn post_octet(&self, path: &str, body: &[u8]) -> Result<Vec<u8>, TransportError> {
+        fn post_sync(&self, path: &str, body: &[u8]) -> Result<Vec<u8>, TransportError> {
             let url = format!("{}{}", self.base_url, path);
+            // SSP2 requests carry their own media type (SPEC 1.1); a stock
+            // server answers 415 to anything else.
             let mut req = self
                 .agent
                 .post(&url)
-                .set("content-type", "application/octet-stream");
+                .set("content-type", "application/vnd.syncular.sync.v2");
             for (k, v) in &self.headers {
                 req = req.set(k, v);
             }
@@ -431,7 +433,7 @@ mod native {
 
     impl Transport for NativeTransport {
         fn sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
-            self.post_octet("/sync", request)
+            self.post_sync("/sync", request)
         }
 
         fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
@@ -440,7 +442,7 @@ mod native {
             // No socket connected → the round rides HTTP (same rule as the TS
             // client: `POST /sync` when the socket is absent).
             let Some(socket) = self.socket.clone() else {
-                return self.post_octet("/sync", request);
+                return self.post_sync("/sync", request);
             };
             let framed = self.round.begin(request)?;
             let send = {
