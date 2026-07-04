@@ -30,6 +30,21 @@ function wrapper(client: FakeClient) {
   );
 }
 
+/**
+ * Deterministically drain React's effect/microtask queue inside `act` so a
+ * negative assertion ("a stray re-run must NOT happen") gives any pending
+ * effect the chance to commit before we assert it did not — without a
+ * wall-clock sleep, which under load could close the window before a real
+ * effect fires (a false pass) or race the assertion (a flake). Two chained
+ * microturns cover an effect scheduling a follow-up microtask.
+ */
+async function flushEffects(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 afterEach(() => {
   document.body.innerHTML = '';
 });
@@ -71,10 +86,8 @@ describe('useSyncQuery', () => {
 
     // A commit to `docs` — the tasks query must not re-run.
     act(() => client.emitInvalidate(['docs'], ['org:o1']));
-    // Give any stray effect a tick to (not) fire.
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 5));
-    });
+    // Give any stray effect the chance to (not) fire, deterministically.
+    await flushEffects();
     expect(client.queryCount).toBe(before);
   });
 
@@ -106,9 +119,7 @@ describe('useSyncQuery', () => {
     const before = client.queryCount;
 
     act(() => client.emitInvalidate(['tasks']));
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 5));
-    });
+    await flushEffects();
     expect(client.queryCount).toBe(before);
 
     act(() => client.emitInvalidate(['docs']));
@@ -210,9 +221,7 @@ describe('usePresence', () => {
     ]);
     // A change on p2 must not pull p1's list.
     act(() => client.emitPresence('project:p2'));
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 5));
-    });
+    await flushEffects();
     expect(result.current).toHaveLength(0);
   });
 });

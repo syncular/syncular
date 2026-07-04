@@ -783,5 +783,18 @@ async function bootFollower(
     roleListeners: parts.roleListeners,
   });
   handleRef.handle = handle;
+  // Do not hand back a follower until its link has bound to the leader (the
+  // hello→announce round trip completed). Before binding, epoch is -1 and any
+  // event the leader fans out is dropped, so a caller that subscribes and then
+  // relies on push invalidation would silently miss events emitted in the
+  // binding window — a real multi-tab race, not just a test flake. Binding is
+  // fast (the leader answers every hello with an announce); on the off chance
+  // it times out we still return the handle (queued calls flush and events
+  // resume on the next announce) rather than failing handle construction.
+  try {
+    await follower.waitUntilBound();
+  } catch {
+    /* bind timed out — return the (degraded but functional) handle anyway */
+  }
   return handle;
 }
