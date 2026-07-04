@@ -21,31 +21,42 @@ const val DEMO_LIST_ID = "welcome"
  * `done` column and the example is read-only, so completion is modeled in the
  * body — an honest fit, no schema fork).
  *
+ * The schema is NOT hand-built: `SyncularSchema.schema` and the typed `Notes`
+ * row come from `Syncular.generated.kt`, produced by `syncular-v2 generate`
+ * from this example's `syncular.json` + `migrations/` (check.sh gates its
+ * freshness with `--check`).
+ *
  * Everything below is plain wrapper calls: subscribe / mutate / query / sync.
  * No protocol logic lives here; the native core owns all of it.
  */
 class TodoStore(clientId: String, baseUrl: String?) : AutoCloseable {
     private val client: SyncularClient = SyncularClient.create(
         clientId = clientId,
-        schema = schema(),
+        schema = SyncularSchema.schema,
         config = SyncularConfig(
             baseUrl = baseUrl,
         ),
     )
 
     init {
-        client.subscribe(id = "todos", table = "notes", scopes = mapOf("list_id" to listOf(DEMO_LIST_ID)))
+        client.subscribe(
+            id = "todos",
+            table = SyncularSchema.Subscriptions.ListNotes.table,
+            scopes = SyncularSchema.Subscriptions.ListNotes.scopes(listId = DEMO_LIST_ID),
+        )
     }
 
-    /** All todos in the list, id-ordered (the live-query fast path). */
+    /** All todos in the list, id-ordered (the live-query fast path). Rows decode
+     *  through the generated typed [Notes] row. */
     fun todos(): List<Todo> =
-        client.query("SELECT id, body FROM notes ORDER BY id").map { row ->
-            val body = row["body"]?.string ?: ""
-            val done = body.startsWith("[x] ")
-            // Strip the marker only when present, so foreign notes stay intact.
-            val title = if (done || body.startsWith("[ ] ")) body.substring(4) else body
-            Todo(id = row["id"]?.string ?: "", title = title, done = done)
-        }
+        client.query("SELECT id, list_id, body, updated_at_ms FROM notes ORDER BY id")
+            .mapNotNull { row -> Notes.fromRow(row) }
+            .map { note ->
+                val done = note.body.startsWith("[x] ")
+                // Strip the marker only when present, so foreign notes stay intact.
+                val title = if (done || note.body.startsWith("[ ] ")) note.body.substring(4) else note.body
+                Todo(id = note.id, title = title, done = done)
+            }
 
     /** Add a todo (optimistic — visible immediately, queued for the next sync). */
     fun add(title: String): Todo {
@@ -84,41 +95,6 @@ class TodoStore(clientId: String, baseUrl: String?) : AutoCloseable {
                     ),
                 ),
             ),
-        )
-    }
-
-    companion object {
-        /** The quickstart `notes` schema — matches examples/quickstart's
-         *  generated schema (id, list_id, body, updated_at_ms; scoped by list). */
-        private fun schema(): JsonValue = JsonValue.obj(
-            "version" to JsonValue.of(1),
-            "tables" to JsonValue.arr(
-                listOf(
-                    JsonValue.obj(
-                        "name" to JsonValue.of("notes"),
-                        "primaryKey" to JsonValue.of("id"),
-                        "scopes" to JsonValue.arr(
-                            listOf(
-                                JsonValue.obj(
-                                    "pattern" to JsonValue.of("list:{list_id}"),
-                                    "column" to JsonValue.of("list_id"),
-                                ),
-                            ),
-                        ),
-                        "columns" to JsonValue.arr(
-                            listOf(
-                                col("id"), col("list_id"), col("body"), col("updated_at_ms", "integer"),
-                            ),
-                        ),
-                    ),
-                ),
-            ),
-        )
-
-        private fun col(name: String, type: String = "string"): JsonValue = JsonValue.obj(
-            "name" to JsonValue.of(name),
-            "type" to JsonValue.of(type),
-            "nullable" to JsonValue.of(false),
         )
     }
 }

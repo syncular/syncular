@@ -30,7 +30,8 @@ offline).
 | File | Role |
 |---|---|
 | `src/App.tsx` | The todo UI over the hooks (framework-agnostic below `<SyncProvider>`). |
-| `src/syncular.generated.ts` | The schema + row type (inlined stand-in for typegen output). |
+| `src/syncular.generated.ts` | The schema + row types — REAL `syncular-v2 generate` output from `syncular.json` + `migrations/` (mirrors `apps/demo-react`). `check.sh` gates it with `generate --check`. |
+| `syncular.json` / `migrations/` | The typegen manifest + migration that generate the schema above. |
 | `index.js` | RN entry: builds the native client, wires `AppState`, registers `<App>`. |
 | `app.json`, `babel.config.js`, `metro.config.js`, `package.json` | Bare-RN scaffold. |
 

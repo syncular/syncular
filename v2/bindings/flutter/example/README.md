@@ -7,6 +7,15 @@ hacks. The whole syncular surface it touches: `SyncularClient.create`
 (the live read), `syncUntilIdle` (the sync button + auto-sync on the event
 stream), `pendingCommitIds` (the unsynced badge), and `close`.
 
+The `todos` schema is **generated, not hand-built**:
+[`lib/syncular.generated.dart`](lib/syncular.generated.dart) (`syncularSchema` +
+the `Todos` class + the `SyncularTodoListSubscription` helper) comes from
+[`syncular.json`](syncular.json) + [`migrations/`](migrations) via `syncular-v2
+generate` (regenerate with `bun packages/typegen/src/cli.ts generate
+--manifest-dir bindings/flutter/example` from the repo root). `check.sh` runs
+`generate --check` (a byte-exact freshness gate, bun-only, so it runs even
+without a Dart SDK).
+
 ## Run it
 
 1. **Start the demo server** (from `v2/apps/demo`): `bun run server` — it serves

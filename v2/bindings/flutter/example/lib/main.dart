@@ -11,33 +11,13 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:syncular/syncular.dart';
 
+import 'syncular.generated.dart';
+
 /// The demo/quickstart server mount (apps/demo serves POST /sync on 8787).
 /// Android emulators reach the host loopback via 10.0.2.2.
 const _serverBase = String.fromEnvironment('SYNCULAR_SERVER',
     defaultValue: 'http://localhost:8787');
 const _listId = 'inbox';
-
-/// The generated todos schema (matches apps/demo/syncular.generated.ts).
-const _schema = <String, Object?>{
-  'version': 1,
-  'tables': [
-    {
-      'name': 'todos',
-      'primaryKey': 'id',
-      'columns': [
-        {'name': 'id', 'type': 'string', 'nullable': false},
-        {'name': 'list_id', 'type': 'string', 'nullable': false},
-        {'name': 'title', 'type': 'string', 'nullable': false},
-        {'name': 'done', 'type': 'boolean', 'nullable': false},
-        {'name': 'position', 'type': 'integer', 'nullable': false},
-        {'name': 'updated_at_ms', 'type': 'integer', 'nullable': false},
-      ],
-      'scopes': [
-        {'pattern': 'list:{list_id}', 'column': 'list_id'},
-      ],
-    },
-  ],
-};
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -47,10 +27,14 @@ Future<void> main() async {
       : _serverBase;
   final client = SyncularClient.create(
     clientId: 'flutter-demo',
-    schema: _schema,
+    schema: syncularSchema,
     config: SyncularConfig(baseUrl: base, dbPath: '${dir.path}/todos.db'),
   );
-  client.subscribe('todos', 'todos', scopes: {'list_id': [_listId]});
+  client.subscribe(
+    'todos',
+    SyncularTodoListSubscription.table,
+    scopes: SyncularTodoListSubscription.scopes(listId: _listId),
+  );
   runApp(TodoApp(client));
 }
 

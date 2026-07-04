@@ -4,6 +4,9 @@
  * lives in `src/cli.ts` (bin `syncular-v2`).
  */
 export * from './emit';
+export * from './emit-dart';
+export * from './emit-kotlin';
+export * from './emit-swift';
 export * from './errors';
 export * from './generate';
 export * from './ir';

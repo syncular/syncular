@@ -118,8 +118,9 @@ function runGenerateOnce(args: GenerateArgs): void {
     return;
   }
   writeOutputs(result);
-  console.log(`wrote ${result.irPath}`);
-  console.log(`wrote ${result.modulePath}`);
+  for (const output of result.outputs) {
+    console.log(`wrote ${output.path}`);
+  }
 }
 
 /** `--watch`: regenerate on any change under the manifest dir. Uses Bun's

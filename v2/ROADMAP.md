@@ -135,6 +135,26 @@ This block is assembly on a proven core — packages, not protocol.
       Tauri/RN honest-scoping precedent). Example platform scaffolds are
       `flutter create`-generated and git-ignored; the app code is the
       deliverable.
+- [x] **Native schema codegen: Swift/Kotlin/Dart emitters + all demos
+      generated with `--check` freshness** (landed 2026-07-04): `@syncular-v2/
+      typegen` gained three IR-driven emitters (`src/emit-{swift,kotlin,dart}.
+      ts`), opt-in per manifest via `output.{swift,kotlin,dart}` (path string or
+      an options object — Kotlin `package`/`objectName`, Swift `enumName`;
+      additive within `output`, no `manifestVersion` bump). Each file carries
+      the TS emitter's DO-NOT-EDIT + `irHash` header, is gated byte-exactly by
+      `generate --check`, and has a determinism golden in the typegen suite
+      (`test/golden-native.test.ts`, rides `bun run check`). Honest type mapping
+      (integer→Int/Long/int, bytes+crdt→[UInt8]/ByteArray/List<int>, blob_ref/
+      json→String; `fromRow` accepts SQLite 0/1 as booleans) documented in the
+      typegen README §5. Every demo now consumes REAL generation: Swift + Kotlin
+      speak a generated `notes` schema (`SyncularSchema.schema` + typed `Notes`
+      rows + subscription helpers replacing the hand-built literals), Flutter a
+      generated `todos` schema, and the Tauri + RN examples ship REAL typegen
+      output from their own manifests (mirroring `apps/demo-react`) in place of
+      the hand-written stand-ins. Each binding `check.sh` runs `generate
+      --check` as a freshness gate (bun-gated, so it runs even where the
+      platform toolchain is absent). No new CI jobs — the goldens ride the main
+      bun gate, the freshness gates ride the existing per-binding jobs.
 - [ ] **Native CRDT editing (yrs)**: optional — the server merges, so
       native apps already converge; yrs integration is only needed for
       local collaborative EDITING UX on native. Demand-gated within this

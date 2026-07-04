@@ -25,8 +25,22 @@ no schema fork).
 
 The whole syncular surface is [`TodoStore`](Sources/TodoKit/TodoStore.swift):
 `init` constructs a `SyncularClient` (schema + `baseUrl`) and `subscribe`s to the
-list; `todos()` is one `query`; `add`/`toggle` are `mutate`; `sync()` is
-`syncUntilIdle`. No protocol logic — the native core owns all of it.
+list; `todos()` is one `query` decoded through the generated typed `Notes` row;
+`add`/`toggle` are `mutate`; `sync()` is `syncUntilIdle`. No protocol logic —
+the native core owns all of it.
+
+The schema is **generated, not hand-built**:
+[`Sources/TodoKit/Syncular.generated.swift`](Sources/TodoKit/Syncular.generated.swift)
+(`SyncularSchema.schema` + the `Notes` struct + the `ListNotes` subscription
+helper) comes from [`syncular.json`](syncular.json) + [`migrations/`](migrations)
+via `syncular-v2 generate`. Regenerate after a schema change:
+
+```sh
+cd ../../.. && bun packages/typegen/src/cli.ts generate --manifest-dir bindings/swift/example
+```
+
+`check.sh` runs `generate --check` (a byte-exact freshness gate) before the
+build, so a stale generated file fails loud.
 
 ## Run it
 

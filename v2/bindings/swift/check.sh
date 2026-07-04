@@ -20,6 +20,21 @@ SWIFT_DIR="$(pwd)"
 V2_DIR="$(cd ../.. && pwd)"
 RUST_DIR="${V2_DIR}/rust"
 
+# -- generated schema freshness (runs even without a Swift toolchain) ---------
+# The example's Swift schema (Sources/TodoKit/Syncular.generated.swift) is
+# produced by `syncular-v2 generate` from example/syncular.json + migrations/.
+# Gate its freshness byte-exactly so a hand-edit or a migration change without a
+# regenerate fails loud. Requires bun (the repo toolchain); if bun is somehow
+# absent we skip THIS gate only (never a silent pass of the whole run).
+if command -v bun >/dev/null 2>&1; then
+  echo "== generated schema is fresh (syncular-v2 generate --check) =="
+  ( cd "${V2_DIR}" && bun packages/typegen/src/cli.ts generate \
+      --manifest-dir bindings/swift/example --check )
+  echo "ok: example/Sources/TodoKit/Syncular.generated.swift is fresh"
+else
+  echo "SKIP: no bun; cannot verify generated-schema freshness (repo toolchain)."
+fi
+
 if ! command -v swift >/dev/null 2>&1; then
   echo "SKIP: no swift toolchain; the Swift bindings gate needs Swift."
   exit 0

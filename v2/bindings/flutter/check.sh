@@ -22,6 +22,22 @@ SYNCULAR_PKG="${FLUTTER_DIR}/syncular"
 V2_DIR="$(cd ../.. && pwd)"
 RUST_DIR="${V2_DIR}/rust"
 
+# -- generated schema freshness (runs even without a Dart SDK) ----------------
+# The example's Dart schema (example/lib/syncular.generated.dart) is produced by
+# `syncular-v2 generate` from example/syncular.json + migrations/. Gate its
+# freshness byte-exactly so a hand-edit or a migration change without a
+# regenerate fails loud. Requires bun (the repo toolchain); this gate runs
+# BEFORE the Dart detect-and-skip so schema freshness is verified even on a
+# Dart-less machine.
+if command -v bun >/dev/null 2>&1; then
+  echo "== generated schema is fresh (syncular-v2 generate --check) =="
+  ( cd "${V2_DIR}" && bun packages/typegen/src/cli.ts generate \
+      --manifest-dir bindings/flutter/example --check )
+  echo "ok: example/lib/syncular.generated.dart is fresh"
+else
+  echo "SKIP: no bun; cannot verify generated-schema freshness (repo toolchain)."
+fi
+
 # -- toolchain detection ------------------------------------------------------
 # Prefer a standalone `dart`; fall back to Flutter's bundled dart. The binding
 # package + its tests are pure Dart (dart:ffi), so a standalone Dart SDK is
