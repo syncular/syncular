@@ -287,13 +287,40 @@ wire changes, zero server changes; sequenced AFTER the WS-native loop
       Swift/Kotlin example TodoStores converted to named queries (demo-react
       keeps a `useTypedQuery` aggregate so the dynamic tier stays visible;
       Swift gate green — generated queries compile in the example).
+- [ ] **Named-query layout redesign — scale to hundreds of queries** (DESIGNED
+      2026-07-04, awaiting Benjamin's confirm before build). The v1 layout above
+      is flat (one dir, one query per file, one giant generated file, flat global
+      names) and does NOT scale. New model DECIDED with Benjamin: **file-per-.sql
+      output** (each `.sql` → its own generated file); **namespace defaults from
+      the folder path, name from the filename**; **override both via a name
+      directive** — a comment whose whole body is a dotted identifier path
+      (`-- a.b.theFunction` → namespace `a.b`, name `theFunction`, ABSOLUTE
+      override); **multiple queries per file**, each opened by its name directive
+      (the directive doubles as the query delimiter). Namespace is a REAL
+      language construct (nested object/enum/package), not just an import path.
+      OPEN CONFIRMS before build: (1) directive grammar = "comment body is a
+      dotted ident path" — so a bare `-- list` is a directive, not prose (vs. a
+      marker prefix like `-- @ …`); (2) dotted directive replaces the folder
+      namespace (absolute) — confirmed intent, pending final ok; (3) output
+      location — co-located next to the `.sql` vs. a per-language mirrored output
+      root (orchestrator leans mirrored-root for the multi-target repos; demos
+      emit ≥4 languages from one manifest). Supersedes the flat model; demos
+      migrate. No wire/runtime impact — generate-time only.
 - [ ] **Per-rowid invalidation refinement**: today's granularity is
       table + scope-key (honest to the wire); a table→rowid dependency
       option for hot single-row views was left room for in the design.
       Demand-gated.
-- [x] **Stabilize timing-sensitive test flakes under load** (landed 2026-07-04):
-      both offenders root-caused and fixed; 20/20 green under synthetic load
-      (16–20 CPU-starving procs on 10 cores, load avg 8–28).
+- [ ] **Stabilize timing-sensitive test flakes under load** (PARTIAL 2026-07-04,
+      commit fe09e277 — NOT resolved): the agent fixed a real production bug and
+      the react act() warnings, but the full-suite flake PERSISTS (~1-in-6, on
+      EITHER multi-tab test; passes 10/10 in isolation). Root cause is a
+      cross-file interaction in bun's shared-process test run (process-global
+      BroadcastChannel + leader-lock state + event-loop pressure), NOT the logic
+      fixed below — the agent's "20/20 under load" measured CPU starvation, the
+      wrong trigger. REMAINING FIX (open): process-isolate the global-primitive
+      tests (multi-tab, maybe realtime) into their own bun run, or find the
+      specific cross-file global-state leak. Do before the publishing pipeline
+      makes CI the merge authority. What DID land:
       - *React suite (test-race)*: `integration.test.tsx` + `parity.test.tsx`
         fired `client.mutate(...)` OUTSIDE `act()`, so the invalidation →
         re-query → `setState` chain it drives landed as floating microtasks
