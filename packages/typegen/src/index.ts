@@ -1,16 +1,19 @@
 /**
- * @syncular/typegen - Generate TypeScript types from migrations
- *
- * Creates type definitions by:
- * 1. Applying migrations to an in-memory database (SQLite or PostgreSQL)
- * 2. Introspecting the resulting schema
- * 3. Generating TypeScript interfaces
+ * @syncular-v2/typegen — SQL migrations + syncular.json → neutral schema
+ * IR (JSON) → generated TS module (REVISE B5). Dependency-free; the CLI
+ * lives in `src/cli.ts` (bin `syncular-v2`).
  */
-
-export * from './app-contract';
-export * from './checksums';
+export * from './emit';
+export * from './emit-dart';
+export * from './emit-kotlin';
+export * from './emit-queries';
+export * from './emit-queries-dart';
+export * from './emit-queries-kotlin';
+export * from './emit-queries-swift';
+export * from './emit-swift';
+export * from './errors';
 export * from './generate';
-export * from './introspect';
-export * from './map-types';
-export * from './render';
-export * from './types';
+export * from './ir';
+export * from './manifest';
+export * from './query';
+export * from './sql';

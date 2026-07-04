@@ -1,22 +1,9 @@
 [workspace]
-members = [
-    "crates/syncular",
-    "crates/protocol",
-    "crates/runtime",
-    "crates/client",
-    "crates/codegen",
-    "crates/testkit",
-    "examples/todo-app",
-]
 resolver = "2"
-
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-panic = "abort"
-
-[patch.crates-io]
-# Keep FTS5 but trim optional SQLite extension/debug/introspection flags from
-# the browser WASM build. See docs/reference/BROWSER_WASM_SIZE_ANALYSIS.md.
-sqlite-wasm-rs = { path = "vendor/sqlite-wasm-rs-0.5.3-syncular" }
+members = [
+  "crates/ssp2",
+  "crates/client",
+  "crates/command",
+  "crates/conformance-shim",
+  "crates/ffi",
+]

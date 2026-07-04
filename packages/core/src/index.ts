@@ -1,46 +1,20 @@
 /**
- * @syncular/core - Shared types and utilities for sync infrastructure
+ * @syncular-v2/core — reference SSP2 codec (SPEC.md is normative).
  *
- * This package contains:
- * - Protocol types (commit-log + subscriptions)
- * - Pure conflict detection and merge utilities
- * - Logging utilities
- * - Data transformation hooks (optional)
- * - Blob types for media/binary handling
- * - Zod schemas for runtime validation and OpenAPI
+ * Dependency-free: primitives (Conventions), envelope + framing (§1),
+ * schema-IR row codec (§2.4), SSG2 rows segments (§5.2), message codecs
+ * (§1.5/§1.6), realtime control messages (§8), the §11 canonical JSON
+ * debug rendering, and §11.2 canonical JSON for digests.
  */
-
-// Blob transport/storage types and utilities (protocol types come from ./schemas)
-export * from './blobs';
-// Column-level codecs shared by typegen and runtime paths
-export * from './column-codecs';
-// Conflict detection utilities
-export * from './conflict';
-// Database utilities
-export * from './database';
-// Database dialect descriptors
-export * from './dialect';
-// Public error response envelopes
-export * from './error-responses';
-// Kysely plugin for applying column codecs in generic queries
-export * from './kysely-column-codecs';
-// Logging utilities
-export * from './logger';
-// Proxy protocol types
-export * from './proxy';
-// Schemas (Zod)
-export * from './schemas';
-// Scope types, patterns, and utilities
-export * from './scopes';
-// Snapshot chunk encoding helpers
-export * from './snapshot-chunks';
-// Sync response pack encoding helpers
-export * from './sync-packs';
-// Telemetry abstraction
-export * from './telemetry';
-// Data transformation hooks
-export * from './transforms';
-// Transport and conflict types (protocol types come from ./schemas)
-export * from './types';
-// Shared runtime utilities
-export * from './utils';
+export * from './blob-ref';
+export * from './bytes';
+export * from './canonical-json';
+export * from './constants';
+export * from './errors';
+export * from './frames';
+export * from './message';
+export * from './realtime';
+export * from './render';
+export * from './row-codec';
+export * from './segment';
+export * from './stream';

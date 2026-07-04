@@ -1,1076 +1,579 @@
+/**
+ * Push apply (SPEC.md §6) with §3.4 write-path authorization.
+ *
+ * Security-critical rules implemented here:
+ * - authorization runs against the STORED row when it exists, never the
+ *   pushed payload (§3.4 step 2);
+ * - declared scope columns are stripped from every update path (§3.4
+ *   rule 5) — updates keep the stored row's scope column values;
+ * - a lost `baseVersion = 0` insert race re-authorizes the winner's row
+ *   before disclosing it in a conflict record (§6.2).
+ *
+ * Per-commit atomicity (§6.4): one storage transaction per commit; the
+ * idempotency record persists in the same transaction as the writes.
+ */
 import {
-  captureSyncException,
-  countSyncMetric,
-  distributionSyncMetric,
-  type SyncChange,
-  type SyncPushRequest,
-  type SyncPushResponse,
-  startSyncSpan,
-} from '@syncular/core';
-import type { Insertable, Kysely, SelectQueryBuilder, SqlBool } from 'kysely';
-import { sql } from 'kysely';
-import { finalizeCommitIntegrity } from './commit-integrity';
-import {
-  coerceNumber,
-  parseJsonValue,
-  toDialectJsonValue,
-} from './dialect/helpers';
-import type { DbExecutor, ServerSyncDialect } from './dialect/types';
-import type { ServerHandlerCollection } from './handlers/collection';
-import type { SyncServerAuth } from './handlers/types';
-import {
-  createScopeCommitIndexEntries,
-  scopeKeysFromScopeValues,
-} from './helpers/scope-commit-index';
-import {
-  type SyncServerPushPlugin,
-  sortServerPushPlugins,
-} from './plugins/types';
-import type { SyncCoreDb } from './schema';
+  decodeRow,
+  encodeRow,
+  type PushCommitFrame,
+  type PushOperation,
+  type PushOperationResult,
+  type PushResultFrame,
+  parseBlobRef,
+  type RowValue,
+} from '@syncular-v2/core';
+import type { BlobStore } from './blob-store';
+import type { SyncRequestContext } from './context';
+import { clockOf } from './context';
+import type { CrdtMergerRegistry } from './crdt-merger';
+import { SyncError } from './errors';
+import type { CompiledSchema, CompiledTable } from './schema';
+import type { ResolvedScopes } from './scopes';
+import { authorizeWrite, renderScopeValue, storedScopesForRow } from './scopes';
+import type {
+  NewChange,
+  StorageTransaction,
+  StoredCommit,
+  StoredPushResult,
+} from './storage';
 
-// biome-ignore lint/complexity/noBannedTypes: Kysely uses `{}` as the initial "no selected columns yet" marker.
-type EmptySelection = {};
-type SyncMetadataTrx = Pick<
-  Kysely<SyncCoreDb>,
-  'selectFrom' | 'insertInto' | 'updateTable' | 'deleteFrom'
->;
-
-export interface PushCommitResult {
-  response: SyncPushResponse;
-  /**
-   * Distinct tables affected by this commit.
-   * Empty for rejected commits and for commits that emit no changes.
-   */
-  affectedTables: string[];
-  /**
-   * Scope keys derived from emitted changes (e.g. "org:abc", "team:xyz").
-   * Computed in-transaction so callers don't need an extra DB query.
-   * Empty for rejected/cached commits.
-   */
-  scopeKeys: string[];
-  /**
-   * Changes emitted by this commit. Available for WS data delivery.
-   * Empty for rejected/cached commits.
-   */
-  emittedChanges: SyncChange[];
-  /**
-   * Commit actor metadata for downstream notifications.
-   * Null when no commit row was persisted.
-   */
-  commitActorId: string | null;
-  /**
-   * Commit timestamp metadata for downstream notifications.
-   * Null when no commit row was persisted.
-   */
-  commitCreatedAt: string | null;
-}
-
-export interface PushCommitValidationContext<
-  DB extends SyncCoreDb = SyncCoreDb,
-  Auth extends SyncServerAuth = SyncServerAuth,
-> {
-  trx: DbExecutor<DB>;
-  dialect: ServerSyncDialect;
-  auth: Auth;
-  request: SyncPushRequest;
-  partitionId: string;
-  actorId: string;
-  commitSeq: number;
-}
-
-export type PushCommitValidator<
-  DB extends SyncCoreDb = SyncCoreDb,
-  Auth extends SyncServerAuth = SyncServerAuth,
-> = (
-  ctx: PushCommitValidationContext<DB, Auth>
-) =>
-  | Promise<SyncPushResponse['results'][number] | null>
-  | SyncPushResponse['results'][number]
-  | null;
-
-class RejectCommitError extends Error {
-  constructor(public readonly response: SyncPushResponse) {
-    super('REJECT_COMMIT');
-    this.name = 'RejectCommitError';
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function isSyncPushResponse(value: unknown): value is SyncPushResponse {
-  return (
-    isRecord(value) && value.ok === true && typeof value.status === 'string'
-  );
-}
-
-function assertOperationIdentityUnchanged(
-  pluginName: string,
-  before: SyncPushRequest['operations'][number],
-  after: SyncPushRequest['operations'][number]
-): void {
-  if (before.table !== after.table) {
-    throw new Error(
-      `Server push plugin "${pluginName}" cannot change op.table (${before.table} -> ${after.table})`
-    );
-  }
-  if (before.row_id !== after.row_id) {
-    throw new Error(
-      `Server push plugin "${pluginName}" cannot change op.row_id (${before.row_id} -> ${after.row_id})`
-    );
-  }
-  if (before.op !== after.op) {
-    throw new Error(
-      `Server push plugin "${pluginName}" cannot change op.op (${before.op} -> ${after.op})`
-    );
-  }
-}
-
-async function readCommitAffectedTables<DB extends SyncCoreDb>(
-  db: DbExecutor<DB>,
-  dialect: ServerSyncDialect,
-  commitSeq: number,
-  partitionId: string
-): Promise<string[]> {
-  try {
-    const commitsQ = db.selectFrom('sync_commits') as SelectQueryBuilder<
-      DB,
-      'sync_commits',
-      EmptySelection
-    >;
-
-    const row = await commitsQ
-      .selectAll()
-      .where(sql<SqlBool>`commit_seq = ${commitSeq}`)
-      .where(sql<SqlBool>`partition_id = ${partitionId}`)
-      .executeTakeFirst();
-
-    const raw = row?.affected_tables;
-    return dialect.dbToArray(raw);
-  } catch {
-    // ignore and fall back to scanning changes (best-effort)
-  }
-
-  // Fallback: read from changes using dialect-specific implementation
-  return dialect.readAffectedTablesFromChanges(db, commitSeq, { partitionId });
-}
-
-function scopeKeysFromEmitted(
-  emitted: Array<{ scopes: Record<string, string> }>
+/**
+ * Extract the blobIds a decoded row references through its `blob_ref`
+ * columns (§5.9.4), skipping NULLs. Malformed BlobRefs already failed at
+ * row-codec decode (§5.9.1), so `parseBlobRef` here is total.
+ */
+function blobIdsInRow(
+  table: CompiledTable,
+  values: readonly RowValue[],
 ): string[] {
-  const keys = new Set<string>();
-  for (const c of emitted) {
-    for (const scopeKey of scopeKeysFromScopeValues(c.scopes)) {
-      keys.add(scopeKey);
-    }
+  const ids: string[] = [];
+  for (const index of table.blobRefColumnIndices) {
+    const value = values[index];
+    if (typeof value === 'string') ids.push(parseBlobRef(value).blobId);
   }
-  return Array.from(keys);
+  return ids;
 }
 
-function recordPushMetrics(args: {
-  status: string;
-  durationMs: number;
-  operationCount: number;
-  emittedChangeCount: number;
-  affectedTableCount: number;
-}): void {
-  const {
-    status,
-    durationMs,
-    operationCount,
-    emittedChangeCount,
-    affectedTableCount,
-  } = args;
+type OperationOutcome =
+  | { readonly kind: 'applied'; readonly change: NewChange | undefined }
+  | { readonly kind: 'terminate'; readonly record: PushOperationResult };
 
-  countSyncMetric('sync.server.push.requests', 1, {
-    attributes: { status },
-  });
-  countSyncMetric('sync.server.push.operations', operationCount, {
-    attributes: { status },
-  });
-  distributionSyncMetric('sync.server.push.duration_ms', durationMs, {
-    unit: 'millisecond',
-    attributes: { status },
-  });
-  distributionSyncMetric(
-    'sync.server.push.emitted_changes',
-    emittedChangeCount,
-    {
-      attributes: { status },
-    }
-  );
-  distributionSyncMetric(
-    'sync.server.push.affected_tables',
-    affectedTableCount,
-    {
-      attributes: { status },
-    }
-  );
-}
-
-function createRejectedPushResult(
-  error: SyncPushResponse['results'][number]
-): PushCommitResult {
+function errorRecord(
+  opIndex: number,
+  code: string,
+  message: string,
+  retryable = false,
+): OperationOutcome {
   return {
-    response: {
-      ok: true,
-      status: 'rejected',
-      results: [error],
+    kind: 'terminate',
+    record: { opIndex, status: 'error', code, message, retryable },
+  };
+}
+
+function conflictRecord(
+  opIndex: number,
+  serverVersion: number,
+  serverRow: Uint8Array,
+): OperationOutcome {
+  return {
+    kind: 'terminate',
+    record: {
+      opIndex,
+      status: 'conflict',
+      code: 'sync.version_conflict',
+      message: 'row version does not match baseVersion (§6.2)',
+      serverVersion,
+      serverRow,
     },
-    affectedTables: [],
-    scopeKeys: [],
-    emittedChanges: [],
-    commitActorId: null,
-    commitCreatedAt: null,
   };
 }
 
-function createRejectedPushResponse(
-  error: SyncPushResponse['results'][number],
-  commitSeq?: number
-): SyncPushResponse {
-  return {
-    ok: true,
-    status: 'rejected',
-    ...(commitSeq !== undefined ? { commitSeq } : {}),
-    results: [error],
-  };
+interface BlobApplyContext {
+  readonly store: BlobStore | undefined;
+  readonly partition: string;
 }
 
-function validatePushRequest(
-  request: SyncPushRequest
-): SyncPushResponse['results'][number] | null {
-  if (!request.clientId || !request.clientCommitId) {
-    return {
-      opIndex: 0,
-      status: 'error',
-      error: 'Invalid push request',
-      code: 'sync.invalid_request',
-      retriable: false,
-    };
-  }
-
-  const ops = request.operations ?? [];
-  if (!Array.isArray(ops) || ops.length === 0) {
-    return {
-      opIndex: 0,
-      status: 'error',
-      error: 'Empty commit',
-      code: 'sync.empty_commit',
-      retriable: false,
-    };
-  }
-
-  return null;
-}
-
-function shouldUseSavepoints<
-  DB extends SyncCoreDb,
-  Auth extends SyncServerAuth,
->(args: {
-  dialect: ServerSyncDialect;
-  handlers: ServerHandlerCollection<DB, Auth>;
-  operations: SyncPushRequest['operations'];
-}): boolean {
-  if (!args.dialect.supportsSavepoints) {
-    return false;
-  }
-
-  if ((args.operations?.length ?? 0) !== 1) {
-    return true;
-  }
-
-  const singleOp = args.operations?.[0];
-  if (!singleOp) {
-    return true;
-  }
-
-  const singleOpHandler = args.handlers.byTable.get(singleOp.table);
-  if (!singleOpHandler) {
-    throw new Error(`Unknown table: ${singleOp.table}`);
-  }
-
-  return !singleOpHandler.canRejectSingleOperationWithoutSavepoint;
-}
-
-async function persistEmittedChanges<DB extends SyncCoreDb>(args: {
-  trx: DbExecutor<DB>;
-  dialect: ServerSyncDialect;
-  partitionId: string;
-  commitSeq: number;
-  emittedChanges: PushCommitResult['emittedChanges'];
-}): Promise<void> {
-  if (args.emittedChanges.length === 0) {
-    return;
-  }
-
-  const syncTrx = args.trx as Pick<Kysely<SyncCoreDb>, 'insertInto'>;
-  const changeRows: Array<Insertable<SyncCoreDb['sync_changes']>> =
-    args.emittedChanges.map((change) => ({
-      partition_id: args.partitionId,
-      commit_seq: args.commitSeq,
-      table: change.table,
-      row_id: change.row_id,
-      op: change.op,
-      row_json: toDialectJsonValue(args.dialect, change.row_json),
-      row_version: change.row_version,
-      scopes: args.dialect.scopesToDb(change.scopes),
-    }));
-
-  await syncTrx.insertInto('sync_changes').values(changeRows).execute();
-
-  const scopeEntries = createScopeCommitIndexEntries(args.emittedChanges);
-  if (scopeEntries.length > 0) {
-    await syncTrx
-      .insertInto('sync_scope_commits')
-      .values(
-        scopeEntries.map((entry) => ({
-          partition_id: args.partitionId,
-          table: entry.table,
-          scope_key: entry.scopeKey,
-          commit_seq: args.commitSeq,
-        }))
-      )
-      .onConflict((oc) =>
-        oc
-          .columns(['partition_id', 'table', 'scope_key', 'commit_seq'])
-          .doNothing()
-      )
-      .execute();
-  }
-}
-
-async function persistCommitOutcome<DB extends SyncCoreDb>(args: {
-  trx: DbExecutor<DB>;
-  dialect: ServerSyncDialect;
-  partitionId: string;
-  commitSeq: number;
-  response: SyncPushResponse;
-  affectedTables: string[];
-  emittedChangeCount: number;
-}): Promise<void> {
-  const syncTrx = args.trx as Pick<
-    Kysely<SyncCoreDb>,
-    'insertInto' | 'updateTable'
-  >;
-
-  await syncTrx
-    .updateTable('sync_commits')
-    .set({
-      result_json: toDialectJsonValue(args.dialect, args.response),
-      change_count: args.emittedChangeCount,
-      affected_tables: args.dialect.arrayToDb(args.affectedTables) as string[],
-    })
-    .where('commit_seq', '=', args.commitSeq)
-    .execute();
-
-  if (args.affectedTables.length > 0) {
-    await syncTrx
-      .insertInto('sync_table_commits')
-      .values(
-        args.affectedTables.map((table) => ({
-          partition_id: args.partitionId,
-          table,
-          commit_seq: args.commitSeq,
-        }))
-      )
-      .onConflict((oc) =>
-        oc.columns(['partition_id', 'table', 'commit_seq']).doNothing()
-      )
-      .execute();
-  }
-
-  await finalizeCommitIntegrity({
-    db: args.trx,
-    dialect: args.dialect,
-    partitionId: args.partitionId,
-    commitSeq: args.commitSeq,
-  });
-}
-
-async function loadExistingCommitResult<DB extends SyncCoreDb>(args: {
-  trx: DbExecutor<DB>;
-  syncTrx: SyncMetadataTrx;
-  dialect: ServerSyncDialect;
-  request: SyncPushRequest;
-  partitionId: string;
-}): Promise<PushCommitResult> {
-  let query = (
-    args.syncTrx.selectFrom('sync_commits') as SelectQueryBuilder<
-      SyncCoreDb,
-      'sync_commits',
-      EmptySelection
-    >
-  )
-    .selectAll()
-    .where('partition_id', '=', args.partitionId)
-    .where('client_id', '=', args.request.clientId)
-    .where('client_commit_id', '=', args.request.clientCommitId);
-
-  if (args.dialect.supportsForUpdate) {
-    query = query.forUpdate();
-  }
-
-  const existing = await query.executeTakeFirstOrThrow();
-  const parsedCached = parseJsonValue(existing.result_json);
-
-  if (!isSyncPushResponse(parsedCached)) {
-    return createRejectedPushResult({
-      opIndex: 0,
-      status: 'error',
-      error: 'Idempotency cache miss',
-      code: 'sync.idempotency_cache_miss',
-      retriable: true,
-    });
-  }
-
-  const base: SyncPushResponse = {
-    ...parsedCached,
-    commitSeq: Number(existing.commit_seq),
-  };
-
-  if (parsedCached.status === 'applied') {
-    const tablesFromDb = args.dialect.dbToArray(existing.affected_tables);
-    return {
-      response: { ...base, status: 'cached' },
-      affectedTables:
-        tablesFromDb.length > 0
-          ? tablesFromDb
-          : await readCommitAffectedTables(
-              args.trx,
-              args.dialect,
-              Number(existing.commit_seq),
-              args.partitionId
-            ),
-      scopeKeys: [],
-      emittedChanges: [],
-      commitActorId:
-        typeof existing.actor_id === 'string' ? existing.actor_id : null,
-      commitCreatedAt:
-        typeof existing.created_at === 'string' ? existing.created_at : null,
-    };
-  }
-
-  return {
-    response: base,
-    affectedTables: [],
-    scopeKeys: [],
-    emittedChanges: [],
-    commitActorId:
-      typeof existing.actor_id === 'string' ? existing.actor_id : null,
-    commitCreatedAt:
-      typeof existing.created_at === 'string' ? existing.created_at : null,
-  };
-}
-
-async function insertPendingCommit(args: {
-  syncTrx: SyncMetadataTrx;
-  dialect: ServerSyncDialect;
-  commitRow: Insertable<SyncCoreDb['sync_commits']>;
-}): Promise<number | null> {
-  if (args.dialect.supportsInsertReturning) {
-    const insertedCommit = await args.syncTrx
-      .insertInto('sync_commits')
-      .values(args.commitRow)
-      .onConflict((oc) =>
-        oc
-          .columns(['partition_id', 'client_id', 'client_commit_id'])
-          .doNothing()
-      )
-      .returning(['commit_seq'])
-      .executeTakeFirst();
-
-    if (!insertedCommit) {
-      return null;
-    }
-
-    return coerceNumber(insertedCommit.commit_seq) ?? 0;
-  }
-
-  const insertResult = await args.syncTrx
-    .insertInto('sync_commits')
-    .values(args.commitRow)
-    .onConflict((oc) =>
-      oc.columns(['partition_id', 'client_id', 'client_commit_id']).doNothing()
-    )
-    .executeTakeFirstOrThrow();
-
-  const insertedRows = Number(insertResult.numInsertedOrUpdatedRows ?? 0);
-  if (insertedRows === 0) {
-    return null;
-  }
-
-  return coerceNumber(insertResult.insertId) ?? 0;
-}
-
-async function applyCommitOperations<
-  DB extends SyncCoreDb,
-  Auth extends SyncServerAuth,
->(args: {
-  trx: DbExecutor<DB>;
-  handlers: ServerHandlerCollection<DB, Auth>;
-  pushPlugins: readonly SyncServerPushPlugin<DB, Auth>[];
-  auth: Auth;
-  request: SyncPushRequest;
-  actorId: string;
-  commitId: string;
-  commitSeq: number;
-}): Promise<{
-  results: SyncPushResponse['results'];
-  emittedChanges: PushCommitResult['emittedChanges'];
-  affectedTables: string[];
-}> {
-  const ops = args.request.operations ?? [];
-  const allEmitted: PushCommitResult['emittedChanges'] = [];
-  const results: SyncPushResponse['results'] = [];
-  const affectedTablesSet = new Set<string>();
-
-  for (let i = 0; i < ops.length; ) {
-    const op = ops[i]!;
-    const handler = args.handlers.byTable.get(op.table);
-    if (!handler) {
-      throw new Error(`Unknown table: ${op.table}`);
-    }
-
-    const operationCtx = {
-      db: args.trx,
-      trx: args.trx,
-      actorId: args.actorId,
-      auth: args.auth,
-      clientId: args.request.clientId,
-      commitId: args.commitId,
-      schemaVersion: args.request.schemaVersion,
-      authLease: args.request.authLease,
-    };
-
-    let transformedOp = op;
-    for (const plugin of args.pushPlugins) {
-      if (!plugin.beforeApplyOperation) continue;
-      const nextOp = await plugin.beforeApplyOperation({
-        ctx: operationCtx,
-        tableHandler: handler,
-        op: transformedOp,
-        opIndex: i,
-      });
-      assertOperationIdentityUnchanged(plugin.name, op, nextOp);
-      transformedOp = nextOp;
-    }
-
-    let appliedBatch:
-      | Awaited<ReturnType<typeof handler.applyOperation>>[]
-      | null = null;
-    let consumed = 1;
-
-    if (args.pushPlugins.length === 0 && handler.applyOperationBatch) {
-      const batchInput = [];
-      for (let j = i; j < ops.length; j++) {
-        const nextOp = ops[j]!;
-        if (nextOp.table !== op.table) break;
-        batchInput.push({ op: nextOp, opIndex: j });
-      }
-
-      if (batchInput.length > 1) {
-        appliedBatch = await handler.applyOperationBatch(
-          operationCtx,
-          batchInput
-        );
-        consumed = Math.max(1, appliedBatch.length);
-      }
-    }
-
-    if (!appliedBatch) {
-      let appliedSingle = await handler.applyOperation(
-        operationCtx,
-        transformedOp,
-        i
-      );
-
-      for (const plugin of args.pushPlugins) {
-        if (!plugin.afterApplyOperation) continue;
-        appliedSingle = await plugin.afterApplyOperation({
-          ctx: operationCtx,
-          tableHandler: handler,
-          op: transformedOp,
-          opIndex: i,
-          applied: appliedSingle,
-        });
-      }
-
-      appliedBatch = [appliedSingle];
-    }
-
-    if (appliedBatch.length === 0) {
-      throw new Error(
-        `Handler "${op.table}" returned no results from applyOperationBatch`
+/**
+ * §5.10.3: merge the row's `crdt` columns in place. For each crdt column,
+ * replace the incoming value with `merge(stored, incoming)` (§5.10.2) —
+ * never the raw pushed bytes. `storedValues` is undefined on insert (the
+ * stored value is `null` — the empty document). Returns `true` iff any crdt
+ * column value changed (so the caller re-encodes), or a terminating
+ * `sync.crdt_merge_failed` outcome if a merger is missing or throws.
+ *
+ * A NULL incoming crdt value is a semantic clear, not a merge — it passes
+ * through untouched (the app is nulling the column, the same as any other
+ * type). Merging only runs for a non-NULL incoming crdt value.
+ */
+async function mergeCrdtColumns(
+  table: CompiledTable,
+  values: RowValue[],
+  storedValues: readonly RowValue[] | undefined,
+  opIndex: number,
+  mergers: CrdtMergerRegistry | undefined,
+): Promise<OperationOutcome | { readonly changed: boolean }> {
+  if (table.crdtColumns.length === 0) return { changed: false };
+  let changed = false;
+  for (const { index, crdtType } of table.crdtColumns) {
+    const incoming = values[index];
+    if (!(incoming instanceof Uint8Array)) continue; // NULL clear or absent
+    const merger = mergers?.[crdtType];
+    if (merger === undefined) {
+      return errorRecord(
+        opIndex,
+        'sync.crdt_merge_failed',
+        `no CRDT merger registered for crdtType ${JSON.stringify(crdtType)} (§5.10.2)`,
       );
     }
-
-    for (const applied of appliedBatch) {
-      if (applied.result.status !== 'applied') {
-        results.push(applied.result);
-        throw new RejectCommitError(
-          createRejectedPushResponse(applied.result, args.commitSeq)
-        );
-      }
-
-      for (const change of applied.emittedChanges ?? []) {
-        const scopes = change?.scopes;
-        if (!scopes || typeof scopes !== 'object') {
-          const error: SyncPushResponse['results'][number] = {
-            opIndex: applied.result.opIndex,
-            status: 'error',
-            error: 'Missing scopes',
-            code: 'sync.missing_scopes',
-            retriable: false,
-          };
-          results.push(error);
-          throw new RejectCommitError(
-            createRejectedPushResponse(error, args.commitSeq)
-          );
-        }
-      }
-
-      results.push(applied.result);
-      allEmitted.push(...applied.emittedChanges);
-      for (const change of applied.emittedChanges) {
-        affectedTablesSet.add(change.table);
-      }
+    const storedRaw = storedValues?.[index];
+    const stored = storedRaw instanceof Uint8Array ? storedRaw : null;
+    let merged: Uint8Array;
+    try {
+      merged = await merger(stored, incoming);
+    } catch (error) {
+      return errorRecord(
+        opIndex,
+        'sync.crdt_merge_failed',
+        `CRDT merger for ${JSON.stringify(crdtType)} threw: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-
-    i += consumed;
+    values[index] = merged;
+    changed = true;
   }
-
-  return {
-    results,
-    emittedChanges: allEmitted,
-    affectedTables: Array.from(affectedTablesSet).sort(),
-  };
+  return { changed };
 }
 
-async function executePushCommitInExecutor<
-  DB extends SyncCoreDb,
-  Auth extends SyncServerAuth,
->(args: {
-  trx: DbExecutor<DB>;
-  dialect: ServerSyncDialect;
-  handlers: ServerHandlerCollection<DB, Auth>;
-  pushPlugins: readonly SyncServerPushPlugin<DB, Auth>[];
-  auth: Auth;
-  request: SyncPushRequest;
-  validateCommit?: PushCommitValidator<DB, Auth>;
-}): Promise<PushCommitResult> {
-  const { trx, dialect, handlers, request, pushPlugins } = args;
-  const actorId = args.auth.actorId;
-  const partitionId = args.auth.partitionId ?? 'default';
-  const ops = request.operations ?? [];
-  const syncTrx = trx as SyncMetadataTrx;
-
-  if (!dialect.supportsSavepoints) {
-    await syncTrx
-      .deleteFrom('sync_commits')
-      .where('partition_id', '=', partitionId)
-      .where('client_id', '=', request.clientId)
-      .where('client_commit_id', '=', request.clientCommitId)
-      .where('result_json', 'is', null)
-      .execute();
+async function applyOperation(
+  tx: StorageTransaction,
+  schema: CompiledSchema,
+  resolved: ResolvedScopes,
+  op: PushOperation,
+  opIndex: number,
+  blobCtx: BlobApplyContext,
+  crdtMergers: CrdtMergerRegistry | undefined,
+): Promise<OperationOutcome> {
+  const table = schema.tables.get(op.table);
+  if (table === undefined) {
+    return errorRecord(
+      opIndex,
+      'sync.unknown_table',
+      `table ${JSON.stringify(op.table)} is not handled by this server`,
+    );
   }
-
-  const commitCreatedAt = new Date().toISOString();
-  const commitRow: Insertable<SyncCoreDb['sync_commits']> = {
-    partition_id: partitionId,
-    actor_id: actorId,
-    client_id: request.clientId,
-    client_commit_id: request.clientCommitId,
-    created_at: commitCreatedAt,
-    meta: request.authLease
-      ? toDialectJsonValue(dialect, {
-          authLease: request.authLease,
-        })
-      : null,
-    result_json: null,
-  };
-  let commitSeq =
-    (await insertPendingCommit({
-      syncTrx,
-      dialect,
-      commitRow,
-    })) ?? 0;
-  if (commitSeq === 0) {
-    return loadExistingCommitResult({
-      trx,
-      syncTrx,
-      dialect,
-      request,
-      partitionId,
-    });
+  if (!resolved.ok) {
+    return errorRecord(
+      opIndex,
+      'sync.forbidden',
+      'scope resolution failed (§3.4 step 4)',
+    );
   }
+  const stored = await tx.getRow(op.table, op.rowId);
 
-  if (commitSeq <= 0) {
-    const insertedCommitRow = await (
-      syncTrx.selectFrom('sync_commits') as SelectQueryBuilder<
-        SyncCoreDb,
-        'sync_commits',
-        EmptySelection
-      >
-    )
-      .selectAll()
-      .where('partition_id', '=', partitionId)
-      .where('client_id', '=', request.clientId)
-      .where('client_commit_id', '=', request.clientCommitId)
-      .executeTakeFirstOrThrow();
-    commitSeq = Number(insertedCommitRow.commit_seq);
-  }
-
-  const commitId = `${request.clientId}:${request.clientCommitId}`;
-  const validationResult = await args.validateCommit?.({
-    trx,
-    dialect,
-    auth: args.auth,
-    request,
-    partitionId,
-    actorId,
-    commitSeq,
-  });
-  if (validationResult) {
-    const response = createRejectedPushResponse(validationResult, commitSeq);
-    await persistCommitOutcome({
-      trx,
-      dialect,
-      partitionId,
-      commitSeq,
-      response,
-      affectedTables: [],
-      emittedChangeCount: 0,
-    });
-
+  if (op.op === 'delete') {
+    if (stored === undefined) {
+      // Deleting an absent row is applied (idempotent, §6.2); no change.
+      return { kind: 'applied', change: undefined };
+    }
+    if (!authorizeWrite(table, stored.scopes, resolved)) {
+      return errorRecord(
+        opIndex,
+        'sync.forbidden',
+        'delete denied by scope authorization (§3.4)',
+      );
+    }
+    const missing = missingScopeVariable(table, stored.scopes);
+    if (missing !== undefined) {
+      return errorRecord(
+        opIndex,
+        'sync.missing_scopes',
+        `stored row lacks scope variable ${JSON.stringify(missing)} (§3.1)`,
+      );
+    }
+    await tx.deleteRow(op.table, op.rowId);
     return {
-      response,
-      affectedTables: [],
-      scopeKeys: [],
-      emittedChanges: [],
-      commitActorId: actorId,
-      commitCreatedAt,
+      kind: 'applied',
+      change: {
+        table: op.table,
+        rowId: op.rowId,
+        op: 'delete',
+        scopes: stored.scopes,
+      },
     };
   }
 
-  const savepointName = `sync_apply_${commitSeq}`;
-  const useSavepoints = shouldUseSavepoints({
-    dialect,
-    handlers,
-    operations: ops,
-  });
-  let savepointCreated = false;
-
+  // upsert — payload presence is enforced by the envelope codec (§6.1).
+  const payload = op.payload;
+  if (payload === undefined) {
+    return errorRecord(
+      opIndex,
+      'sync.invalid_request',
+      'upsert without payload',
+    );
+  }
+  let values: RowValue[];
   try {
-    if (useSavepoints) {
-      await sql.raw(`SAVEPOINT ${savepointName}`).execute(trx);
-      savepointCreated = true;
-    }
-
-    const applied = await applyCommitOperations({
-      trx,
-      handlers,
-      pushPlugins,
-      auth: args.auth,
-      request,
-      actorId,
-      commitId,
-      commitSeq,
-    });
-
-    const appliedResponse: SyncPushResponse = {
-      ok: true,
-      status: 'applied',
-      commitSeq,
-      results: applied.results,
-    };
-    await persistEmittedChanges({
-      trx,
-      dialect,
-      partitionId,
-      commitSeq,
-      emittedChanges: applied.emittedChanges,
-    });
-    await persistCommitOutcome({
-      trx,
-      dialect,
-      partitionId,
-      commitSeq,
-      response: appliedResponse,
-      affectedTables: applied.affectedTables,
-      emittedChangeCount: applied.emittedChanges.length,
-    });
-
-    if (useSavepoints) {
-      await sql.raw(`RELEASE SAVEPOINT ${savepointName}`).execute(trx);
-    }
-
-    return {
-      response: appliedResponse,
-      affectedTables: applied.affectedTables,
-      scopeKeys: scopeKeysFromEmitted(applied.emittedChanges),
-      emittedChanges: applied.emittedChanges,
-      commitActorId: actorId,
-      commitCreatedAt,
-    };
+    values = decodeRow(table.columns, payload);
   } catch (error) {
-    if (savepointCreated) {
-      try {
-        await sql.raw(`ROLLBACK TO SAVEPOINT ${savepointName}`).execute(trx);
-        await sql.raw(`RELEASE SAVEPOINT ${savepointName}`).execute(trx);
-      } catch (savepointError) {
-        console.error(
-          '[pushCommit] Savepoint rollback failed:',
-          savepointError
-        );
-        throw savepointError;
+    return errorRecord(
+      opIndex,
+      'sync.invalid_request',
+      `row payload failed row-codec decode (§1.7): ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const pkValue = renderScopeValue(values[table.primaryKeyIndex]);
+  if (pkValue !== op.rowId) {
+    return errorRecord(
+      opIndex,
+      'sync.invalid_request',
+      'payload primary key does not match rowId',
+    );
+  }
+
+  if (stored !== undefined) {
+    // §3.4 step 2: authorize against the STORED row, never the payload.
+    if (!authorizeWrite(table, stored.scopes, resolved)) {
+      return errorRecord(
+        opIndex,
+        'sync.forbidden',
+        'write denied by scope authorization (§3.4)',
+      );
+    }
+    if (op.baseVersion === 0) {
+      // Lost insert race (§6.2); the stored row was authorized above,
+      // so disclosure of the winner is permitted.
+      return conflictRecord(opIndex, stored.serverVersion, stored.payload);
+    }
+    if (
+      op.baseVersion !== undefined &&
+      op.baseVersion !== stored.serverVersion
+    ) {
+      return conflictRecord(opIndex, stored.serverVersion, stored.payload);
+    }
+    // §3.4 rule 5: scope columns are immutable on update — keep the
+    // stored row's scope column values on both the baseVersion and
+    // last-write-wins paths.
+    const storedValues = decodeRow(table.columns, stored.payload);
+    let mutated = false;
+    for (const pattern of table.scopePatterns) {
+      const storedValue = storedValues[pattern.columnIndex] ?? null;
+      if (values[pattern.columnIndex] !== storedValue) {
+        values[pattern.columnIndex] = storedValue;
+        mutated = true;
       }
     }
-
-    if (!(error instanceof RejectCommitError)) {
-      throw error;
-    }
-
-    await persistCommitOutcome({
-      trx,
-      dialect,
-      partitionId,
-      commitSeq,
-      response: error.response,
-      affectedTables: [],
-      emittedChangeCount: 0,
-    });
-
+    // §5.10.3: crdt columns merge (stored ⊕ incoming) — never LWW, never
+    // baseVersion-conflict (they were excluded from the checks above).
+    const mergeOutcome = await mergeCrdtColumns(
+      table,
+      values,
+      storedValues,
+      opIndex,
+      crdtMergers,
+    );
+    if ('kind' in mergeOutcome) return mergeOutcome;
+    if (mergeOutcome.changed) mutated = true;
+    const newPayload = mutated ? encodeRow(table.columns, values) : payload;
+    const newVersion = stored.serverVersion + 1;
+    // §6.6 / §5.9.6: verify referenced blobs exist before writing.
+    const blobCheck = await checkAndRecordBlobs(
+      tx,
+      table,
+      op.rowId,
+      values,
+      opIndex,
+      blobCtx,
+    );
+    if (blobCheck !== undefined) return blobCheck;
+    const newRow = {
+      rowId: op.rowId,
+      serverVersion: newVersion,
+      scopes: stored.scopes,
+      payload: newPayload,
+    };
+    await tx.upsertRow(op.table, newRow);
     return {
-      response: error.response,
-      affectedTables: [],
-      scopeKeys: [],
-      emittedChanges: [],
-      commitActorId: actorId,
-      commitCreatedAt,
+      kind: 'applied',
+      change: {
+        table: op.table,
+        rowId: op.rowId,
+        op: 'upsert',
+        rowVersion: newVersion,
+        scopes: stored.scopes,
+        payload: newPayload,
+      },
     };
   }
+
+  // Insert path: no stored row.
+  if (op.baseVersion !== undefined && op.baseVersion !== 0) {
+    // Authorize the payload first so absence is not disclosed to actors
+    // without the scope; then §6.2: baseVersion ≠ 0, row absent.
+    const extractedFirst = storedScopesForRow(table, values);
+    if (
+      'missing' in extractedFirst ||
+      !authorizeWrite(table, extractedFirst.scopes, resolved)
+    ) {
+      return errorRecord(
+        opIndex,
+        'sync.forbidden',
+        'write denied by scope authorization (§3.4)',
+      );
+    }
+    return errorRecord(
+      opIndex,
+      'sync.row_missing',
+      'upsert with baseVersion targets an absent row (§6.2)',
+    );
+  }
+  const extracted = storedScopesForRow(table, values);
+  if ('missing' in extracted) {
+    // §3.4 step 2: a missing or empty scope column value ⇒ deny.
+    return errorRecord(
+      opIndex,
+      'sync.forbidden',
+      `insert missing scope column value for ${JSON.stringify(extracted.missing)} (§3.4)`,
+    );
+  }
+  if (!authorizeWrite(table, extracted.scopes, resolved)) {
+    return errorRecord(
+      opIndex,
+      'sync.forbidden',
+      'insert denied by scope authorization (§3.4)',
+    );
+  }
+  // §5.10.3: on insert a crdt column merges against the empty document
+  // (stored = null) — normalizes the initial state through the merger.
+  const insertMerge = await mergeCrdtColumns(
+    table,
+    values,
+    undefined,
+    opIndex,
+    crdtMergers,
+  );
+  if ('kind' in insertMerge) return insertMerge;
+  const insertPayload = insertMerge.changed
+    ? encodeRow(table.columns, values)
+    : payload;
+  // §6.6 / §5.9.6: verify referenced blobs exist before writing.
+  const blobCheck = await checkAndRecordBlobs(
+    tx,
+    table,
+    op.rowId,
+    values,
+    opIndex,
+    blobCtx,
+  );
+  if (blobCheck !== undefined) return blobCheck;
+  const newRow = {
+    rowId: op.rowId,
+    serverVersion: 1,
+    scopes: extracted.scopes,
+    payload: insertPayload,
+  };
+  await tx.upsertRow(op.table, newRow);
+  return {
+    kind: 'applied',
+    change: {
+      table: op.table,
+      rowId: op.rowId,
+      op: 'upsert',
+      rowVersion: 1,
+      scopes: extracted.scopes,
+      payload: insertPayload,
+    },
+  };
 }
 
-export async function pushCommit<
-  DB extends SyncCoreDb,
-  Auth extends SyncServerAuth,
->(args: {
-  db: Kysely<DB>;
-  dialect: ServerSyncDialect;
-  handlers: ServerHandlerCollection<DB, Auth>;
-  plugins?: readonly SyncServerPushPlugin<DB, Auth>[];
-  auth: Auth;
-  request: SyncPushRequest;
-  validateCommit?: PushCommitValidator<DB, Auth>;
-  suppressTelemetry?: boolean;
-}): Promise<PushCommitResult> {
-  const { db, dialect, handlers, request } = args;
-  const pushPlugins = sortServerPushPlugins(args.plugins);
-  const requestedOps = Array.isArray(request.operations)
-    ? request.operations
-    : [];
-  const operationCount = requestedOps.length;
-  const startedAtMs = Date.now();
-  const suppressTelemetry = args.suppressTelemetry === true;
+/**
+ * §5.9.6/§6.6: for a row's `blob_ref` columns, verify every referenced blob
+ * exists, then record the row's reference set in the index (§5.9.4). Returns
+ * a terminating `blob.not_found` outcome if any blob is absent (or the store
+ * is unconfigured while a ref exists), else `undefined` (proceed). No-op for
+ * tables with no `blob_ref` columns.
+ */
+async function checkAndRecordBlobs(
+  tx: StorageTransaction,
+  table: CompiledTable,
+  rowId: string,
+  values: readonly RowValue[],
+  opIndex: number,
+  blobCtx: BlobApplyContext,
+): Promise<OperationOutcome | undefined> {
+  if (table.blobRefColumnIndices.length === 0) return undefined;
+  const blobIds = blobIdsInRow(table, values);
+  if (blobIds.length > 0) {
+    if (blobCtx.store === undefined) {
+      return errorRecord(
+        opIndex,
+        'blob.not_found',
+        'row references a blob but the server has no blob store (§5.9.6)',
+      );
+    }
+    for (const blobId of blobIds) {
+      if (!(await blobCtx.store.has(blobCtx.partition, blobId))) {
+        return errorRecord(
+          opIndex,
+          'blob.not_found',
+          `push references blob ${blobId} which has not been uploaded (§5.9.6)`,
+        );
+      }
+    }
+  }
+  // Update the reference index for this row (empty set clears it, §5.9.4).
+  if (tx.setBlobRefs !== undefined) {
+    await tx.setBlobRefs(table.name, rowId, blobIds);
+  }
+  return undefined;
+}
 
-  return startSyncSpan(
-    {
-      name: 'sync.server.push',
-      op: 'sync.push',
-      attributes: {
-        operation_count: operationCount,
-      },
-    },
-    async (span) => {
-      const finalizeResult = (result: PushCommitResult): PushCommitResult => {
-        const durationMs = Math.max(0, Date.now() - startedAtMs);
-        const status = result.response.status;
+function missingScopeVariable(
+  table: CompiledTable,
+  scopes: Record<string, string>,
+): string | undefined {
+  for (const pattern of table.scopePatterns) {
+    const value = scopes[pattern.variable];
+    if (value === undefined || value.length === 0) return pattern.variable;
+  }
+  return undefined;
+}
 
-        span.setAttribute('status', status);
-        span.setAttribute('duration_ms', durationMs);
-        span.setAttribute('emitted_change_count', result.emittedChanges.length);
-        span.setAttribute('affected_table_count', result.affectedTables.length);
-        span.setStatus('ok');
+function resultFrame(
+  clientCommitId: string,
+  stored: StoredPushResult,
+  replay: boolean,
+): PushResultFrame {
+  const status =
+    stored.status === 'applied' ? (replay ? 'cached' : 'applied') : 'rejected';
+  return {
+    type: 'PUSH_RESULT',
+    clientCommitId,
+    status,
+    ...(stored.status === 'applied' && stored.commitSeq !== undefined
+      ? { commitSeq: stored.commitSeq }
+      : {}),
+    results: [...stored.results],
+  };
+}
 
-        if (!suppressTelemetry) {
-          recordPushMetrics({
-            status,
-            durationMs,
-            operationCount,
-            emittedChangeCount: result.emittedChanges.length,
-            affectedTableCount: result.affectedTables.length,
-          });
-        }
+export interface AppliedCommitEvent {
+  readonly commit: StoredCommit;
+}
 
-        return result;
+/**
+ * Process one `PUSH_COMMIT` frame: idempotency replay (§2.3), sequential
+ * atomic apply (§6.4), realtime notification for applied commits.
+ */
+export async function processPushCommit(
+  ctx: SyncRequestContext,
+  schema: CompiledSchema,
+  resolved: ResolvedScopes,
+  clientId: string,
+  frame: PushCommitFrame,
+): Promise<PushResultFrame> {
+  const { storage, partition } = ctx;
+  let persisted: StoredPushResult | undefined;
+  try {
+    persisted = await storage.getPushResult(
+      partition,
+      clientId,
+      frame.clientCommitId,
+    );
+  } catch (error) {
+    if (
+      error instanceof SyncError &&
+      error.code === 'sync.idempotency_cache_miss'
+    ) {
+      // §6.3: answer the retryable cache-miss for this commit rather than
+      // re-applying. Not persisted — a retry may find a readable record.
+      return {
+        type: 'PUSH_RESULT',
+        clientCommitId: frame.clientCommitId,
+        status: 'rejected',
+        results: [
+          {
+            opIndex: 0,
+            status: 'error',
+            code: 'sync.idempotency_cache_miss',
+            message: error.message,
+            retryable: true,
+          },
+        ],
       };
+    }
+    throw error;
+  }
+  if (persisted !== undefined) {
+    return resultFrame(frame.clientCommitId, persisted, true);
+  }
 
+  const createdAtMs = clockOf(ctx)();
+  const blobCtx: BlobApplyContext = { store: ctx.blobs, partition };
+  const crdtMergers = ctx.crdtMergers;
+  const tx = await storage.begin(partition);
+  try {
+    const results: PushOperationResult[] = [];
+    const changes: NewChange[] = [];
+    let terminated: PushOperationResult | undefined;
+    for (let opIndex = 0; opIndex < frame.operations.length; opIndex++) {
+      const op = frame.operations[opIndex];
+      if (op === undefined) continue;
+      const outcome = await applyOperation(
+        tx,
+        schema,
+        resolved,
+        op,
+        opIndex,
+        blobCtx,
+        crdtMergers,
+      );
+      if (outcome.kind === 'terminate') {
+        terminated = outcome.record;
+        break;
+      }
+      results.push({ opIndex, status: 'applied' });
+      if (outcome.change !== undefined) changes.push(outcome.change);
+    }
+
+    if (terminated !== undefined) {
+      // §6.3 rejected: only the terminating operation's record; §6.4:
+      // every write of the commit rolls back.
+      await tx.rollback();
+      const stored: StoredPushResult = {
+        status: 'rejected',
+        results: [terminated],
+      };
+      const rejectionTx = await storage.begin(partition);
       try {
-        const validationError = validatePushRequest(request);
-        if (validationError) {
-          return finalizeResult(createRejectedPushResult(validationError));
-        }
-
-        return finalizeResult(
-          await dialect.executeInTransaction(db, async (trx) =>
-            executePushCommitInExecutor({
-              trx,
-              dialect,
-              handlers,
-              pushPlugins,
-              auth: args.auth,
-              request,
-              validateCommit: args.validateCommit,
-            })
-          )
-        );
+        await rejectionTx.putPushResult(clientId, frame.clientCommitId, stored);
+        await rejectionTx.commit();
       } catch (error) {
-        const durationMs = Math.max(0, Date.now() - startedAtMs);
-        span.setAttribute('status', 'error');
-        span.setAttribute('duration_ms', durationMs);
-        span.setStatus('error');
-
-        if (!suppressTelemetry) {
-          recordPushMetrics({
-            status: 'error',
-            durationMs,
-            operationCount,
-            emittedChangeCount: 0,
-            affectedTableCount: 0,
-          });
-          captureSyncException(error, {
-            event: 'sync.server.push',
-            operationCount,
-          });
-        }
+        await rejectionTx.rollback();
         throw error;
       }
+      return resultFrame(frame.clientCommitId, stored, false);
     }
-  );
-}
 
-export async function pushCommitBatch<
-  DB extends SyncCoreDb,
-  Auth extends SyncServerAuth,
->(args: {
-  db: Kysely<DB>;
-  dialect: ServerSyncDialect;
-  handlers: ServerHandlerCollection<DB, Auth>;
-  plugins?: readonly SyncServerPushPlugin<DB, Auth>[];
-  auth: Auth;
-  requests: SyncPushRequest[];
-  validateCommit?: PushCommitValidator<DB, Auth>;
-  suppressTelemetry?: boolean;
-}): Promise<PushCommitResult[]> {
-  const { db, dialect, handlers, requests } = args;
-  const pushPlugins = sortServerPushPlugins(args.plugins);
-  const startedAtMs = Date.now();
-  const suppressTelemetry = args.suppressTelemetry === true;
-  const totalOperationCount = requests.reduce((count, request) => {
-    const operations = Array.isArray(request.operations)
-      ? request.operations
-      : [];
-    return count + operations.length;
-  }, 0);
-
-  return startSyncSpan(
-    {
-      name: 'sync.server.push_batch',
-      op: 'sync.push.batch',
-      attributes: {
-        commit_count: requests.length,
-        operation_count: totalOperationCount,
-      },
-    },
-    async (span) => {
-      try {
-        const results = await dialect.executeInTransaction(db, async (trx) => {
-          const executed: PushCommitResult[] = [];
-          for (const request of requests) {
-            const validationError = validatePushRequest(request);
-            if (validationError) {
-              executed.push(createRejectedPushResult(validationError));
-              continue;
-            }
-
-            executed.push(
-              await executePushCommitInExecutor({
-                trx,
-                dialect,
-                handlers,
-                pushPlugins,
-                auth: args.auth,
-                request,
-                validateCommit: args.validateCommit,
-              })
-            );
-          }
-          return executed;
-        });
-
-        const durationMs = Math.max(0, Date.now() - startedAtMs);
-        const emittedChangeCount = results.reduce(
-          (count, result) => count + result.emittedChanges.length,
-          0
-        );
-        const affectedTableCount = results.reduce(
-          (count, result) => count + result.affectedTables.length,
-          0
-        );
-        const status = results.every(
-          (result) => result.response.status === 'cached'
-        )
-          ? 'cached'
-          : results.every(
-                (result) =>
-                  result.response.status === 'applied' ||
-                  result.response.status === 'cached'
-              )
-            ? 'applied'
-            : 'rejected';
-
-        span.setAttribute('status', status);
-        span.setAttribute('duration_ms', durationMs);
-        span.setAttribute('commit_count', results.length);
-        span.setAttribute('emitted_change_count', emittedChangeCount);
-        span.setAttribute('affected_table_count', affectedTableCount);
-        span.setStatus('ok');
-
-        if (!suppressTelemetry) {
-          recordPushMetrics({
-            status,
-            durationMs,
-            operationCount: totalOperationCount,
-            emittedChangeCount,
-            affectedTableCount,
-          });
-        }
-
-        return results;
-      } catch (error) {
-        const durationMs = Math.max(0, Date.now() - startedAtMs);
-        span.setAttribute('status', 'error');
-        span.setAttribute('duration_ms', durationMs);
-        span.setStatus('error');
-
-        if (!suppressTelemetry) {
-          recordPushMetrics({
-            status: 'error',
-            durationMs,
-            operationCount: totalOperationCount,
-            emittedChangeCount: 0,
-            affectedTableCount: 0,
-          });
-          captureSyncException(error, {
-            event: 'sync.server.push_batch',
-            commitCount: requests.length,
-            operationCount: totalOperationCount,
-          });
-        }
-        throw error;
-      }
+    const commitSeq = await tx.appendCommit({
+      clientId,
+      clientCommitId: frame.clientCommitId,
+      actorId: ctx.actorId,
+      createdAtMs,
+      changes,
+    });
+    const stored: StoredPushResult = { status: 'applied', commitSeq, results };
+    await tx.putPushResult(clientId, frame.clientCommitId, stored);
+    await tx.commit();
+    if (ctx.realtime !== undefined && changes.length > 0) {
+      await ctx.realtime.notifyCommit(partition, {
+        commitSeq,
+        createdAtMs,
+        actorId: ctx.actorId,
+        changes,
+      });
     }
-  );
+    return resultFrame(frame.clientCommitId, stored, false);
+  } catch (error) {
+    await tx.rollback();
+    throw error;
+  }
 }

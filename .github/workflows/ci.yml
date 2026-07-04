@@ -1,0 +1,355 @@
+name: V2
+
+on:
+  push:
+    branches: [main]
+    paths:
+  pull_request:
+    paths:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+
+      # v2 deliberately tracks the LATEST Bun — it has no WASM worker
+      # bridge, so the root repo's 1.3.9 pin does not apply here.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check (typecheck + lint + test)
+        run: bun run check
+
+  # Perf budgets (REVISE B3: "perf budgets in CI from day one"). Reduced
+  # CI workloads; budgets and their derivations live in
+  # bench/src/index.ts (BUDGETS). Fails loudly on breach; never
+  # rewrites bench/RESULTS.md (the curated gate record).
+  bench-budgets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Bench budgets (CI mode)
+        run: bun run bench:ci
+
+  # The Rust pairing as a merge precondition (REVISE Risks: two-core
+  # drift): cargo hygiene + tests, then the SAME conformance catalog on
+  # (Rust client x TS server). Plain `bun run check` stays hermetic —
+  # cargo lives only in this job.
+  rust-conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: cargo fmt
+        working-directory: rust
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        working-directory: rust
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        working-directory: rust
+        run: cargo test
+
+      - name: Build conformance shim
+        working-directory: rust
+        run: cargo build -p conformance-shim
+
+      - name: Conformance (Rust client x TS server)
+        run: SYNCULAR_RUST_CONFORMANCE=1 bun test packages/conformance/test/conformance-rust.test.ts
+
+  # The Tauri bindings live in their OWN cargo workspace (bindings/tauri) so
+  # Tauri's heavy crate tree never bloats the main rust workspace's gate. This
+  # job runs only when that tree changes. Building the `tauri` crate on Linux
+  # needs the webkit2gtk/gtk system libraries (per the Tauri prerequisites), so
+  # we install them before cargo. fmt + clippy (both feature lanes) + test +
+  # the example compile is the bar — `cargo tauri dev` (opening a window) needs
+  # a human hand and is not run in CI.
+  tauri-bindings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: bindings/tauri
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      # Path gate: this job is heavy (installs webkit + builds Tauri), so it
+      # only does real work when the tauri bindings tree (or this workflow)
+      # changed. Everything after the guard is skipped otherwise.
+      - name: Did the tauri bindings change?
+        id: changed
+        working-directory: .
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            base="${{ github.event.before }}"
+          else
+            base="${{ github.event.pull_request.base.sha }}"
+          fi
+          if git diff --name-only "$base" HEAD 2>/dev/null \
+              | grep -qE '^bindings/tauri/|^\.github/workflows/ci\.yml$'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No tauri bindings changes; skipping the heavy steps."
+          fi
+
+      # Tauri v2 Linux prerequisites (https://v2.tauri.app/start/prerequisites/).
+      # webkit2gtk 4.1 + the wry/gtk stack are needed to COMPILE the `tauri`
+      # crate, not just to run a window.
+      - name: Install Tauri system dependencies
+        if: steps.changed.outputs.run == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            libsoup-3.0-dev \
+            build-essential \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.changed.outputs.run == 'true'
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.changed.outputs.run == 'true'
+        with:
+          workspaces: bindings/tauri -> target
+
+      - name: cargo fmt
+        if: steps.changed.outputs.run == 'true'
+        run: cargo fmt --check
+
+      - name: cargo clippy (default features)
+        if: steps.changed.outputs.run == 'true'
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo clippy (native-transport)
+        if: steps.changed.outputs.run == 'true'
+        run: cargo clippy -p tauri-plugin-syncular --all-targets --features native-transport -- -D warnings
+
+      - name: cargo test
+        if: steps.changed.outputs.run == 'true'
+        run: cargo test
+
+      - name: Example compiles
+        if: steps.changed.outputs.run == 'true'
+        run: cargo build -p syncular-tauri-example
+
+  # The Swift / Kotlin / React Native FFI bindings live under bindings/*, each
+  # its own isolated build (never joins the main gates). This job runs the CHEAP
+  # lanes on Ubuntu: Kotlin/FFM (JDK 21 — compiles + runs the offline hermetic
+  # gradle test against the real native core) and the RN JS bridge (bun test +
+  # tsc, an injected NativeModule double — no device). The Swift lane needs an
+  # expensive macOS runner and is a documented LOCAL gate (bindings/swift/check.sh),
+  # so it is intentionally NOT run in CI — the tauri-job precedent's honest scoping.
+  swift-kotlin-bindings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      # Path gate: only do real work when the FFI-binding trees (or this
+      # workflow) changed. The Swift/Kotlin wrappers depend on the shared FFI
+      # crate, so a change under rust/crates/ffi also triggers the lanes.
+      - name: Did the FFI bindings change?
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            base="${{ github.event.before }}"
+          else
+            base="${{ github.event.pull_request.base.sha }}"
+          fi
+          if git diff --name-only "$base" HEAD 2>/dev/null \
+              | grep -qE '^bindings/(swift|kotlin|react-native)/|^rust/crates/ffi/|^rust/crates/command/|^rust/ffi\.h$|^\.github/workflows/ci\.yml$'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No FFI bindings changes; skipping."
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.changed.outputs.run == 'true'
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.changed.outputs.run == 'true'
+        with:
+          workspaces: rust -> target
+
+      - uses: actions/setup-java@v4
+        if: steps.changed.outputs.run == 'true'
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.changed.outputs.run == 'true'
+        with:
+          bun-version: latest
+
+      - name: Install dependencies (RN workspace links)
+        if: steps.changed.outputs.run == 'true'
+        run: bun install --frozen-lockfile
+
+      # Kotlin/JVM (FFM) — check.sh builds the lean dylib, vendors it, and runs
+      # the offline hermetic gradle test against the real native core. Gradle is
+      # provisioned by the setup-gradle action's wrapper-less invocation.
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.changed.outputs.run == 'true'
+
+      - name: Kotlin bindings gate
+        if: steps.changed.outputs.run == 'true'
+        working-directory: bindings/kotlin
+        run: ./check.sh
+
+      # Kotlin todo example smoke — the FULL native-transport-to-real-server
+      # proof: build the native-transport dylib, start the quickstart server,
+      # run the terminal example (bindings/kotlin/example) with scripted stdin
+      # (add → sync), then have an independent quickstart web-client read the
+      # synced row back. This is the prize the wrapper's offline test can't
+      # give: a real Kotlin/FFM client syncing to a real server. (`bun install`
+      # above linked the quickstart workspace so its server + web-client run.)
+      - name: Kotlin todo example smoke
+        if: steps.changed.outputs.run == 'true'
+        working-directory: bindings/kotlin/example
+        run: ./ci-smoke.sh
+
+      # React Native — bun test (bridge double + the example App rendered
+      # against a NativeModule double: hooks↔module integration) + tsc. No
+      # native toolchain; the device build is a documented follow-up.
+      - name: React Native bindings gate
+        if: steps.changed.outputs.run == 'true'
+        working-directory: bindings/react-native
+        run: ./check.sh
+
+      # Swift is a documented LOCAL gate (needs a macOS runner); note it here.
+      - name: Swift lane (local-only note)
+        if: steps.changed.outputs.run == 'true'
+        run: echo "Swift bindings gate runs locally via bindings/swift/check.sh (macOS runner is out of scope for CI)."
+
+  # The Flutter/Dart FFI binding (bindings/flutter) — its own isolated build.
+  # This job runs on Ubuntu: cargo-build the real cdylib, provision Flutter (which
+  # bundles Dart), then `dart analyze` + `dart test` the binding against the REAL
+  # native core with SYNCULAR_LIBRARY_PATH at the built .so. That dart:ffi-boundary
+  # test IS the strong proof; the example APP build is a documented local
+  # `flutter run` (flutter build web is N/A for dart:ffi; flutter build linux
+  # needs GTK deps) — the same honest scoping as the tauri/RN jobs.
+  flutter-bindings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      # Path gate: only do real work when the Flutter binding tree (or the FFI
+      # crate it depends on, or this workflow) changed.
+      - name: Did the Flutter binding change?
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            base="${{ github.event.before }}"
+          else
+            base="${{ github.event.pull_request.base.sha }}"
+          fi
+          if git diff --name-only "$base" HEAD 2>/dev/null \
+              | grep -qE '^bindings/flutter/|^rust/crates/ffi/|^rust/crates/command/|^rust/ffi\.h$|^\.github/workflows/ci\.yml$'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No Flutter binding changes; skipping."
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.changed.outputs.run == 'true'
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.changed.outputs.run == 'true'
+        with:
+          workspaces: rust -> target
+
+      - uses: subosito/flutter-action@v2
+        if: steps.changed.outputs.run == 'true'
+        with:
+          channel: stable
+
+      # Build the real lean cdylib and point the dart:ffi loader at it.
+      - name: Build libsyncular (lean cdylib)
+        if: steps.changed.outputs.run == 'true'
+        working-directory: rust
+        run: cargo build -p syncular-ffi
+
+      - name: dart analyze + test (binding, against the real core)
+        if: steps.changed.outputs.run == 'true'
+        working-directory: bindings/flutter/syncular
+        env:
+          SYNCULAR_LIBRARY_PATH: ${{ github.workspace }}/rust/target/debug/libsyncular.so
+        run: |
+          dart pub get
+          dart analyze
+          dart test
+
+      # The example app shares the binding's lib; analyze it too (a build would
+      # need the GTK desktop toolchain / a device — a documented local step).
+      - name: dart analyze (example lib)
+        if: steps.changed.outputs.run == 'true'
+        working-directory: bindings/flutter/example
+        run: |
+          flutter pub get
+          flutter analyze lib
