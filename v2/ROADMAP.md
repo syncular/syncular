@@ -287,25 +287,24 @@ wire changes, zero server changes; sequenced AFTER the WS-native loop
       Swift/Kotlin example TodoStores converted to named queries (demo-react
       keeps a `useTypedQuery` aggregate so the dynamic tier stays visible;
       Swift gate green — generated queries compile in the example).
-- [ ] **Named-query layout redesign — scale to hundreds of queries** (DESIGNED
-      2026-07-04, awaiting Benjamin's confirm before build). The v1 layout above
-      is flat (one dir, one query per file, one giant generated file, flat global
-      names) and does NOT scale. New model DECIDED with Benjamin: **file-per-.sql
-      output** (each `.sql` → its own generated file); **namespace defaults from
-      the folder path, name from the filename**; **override both via a name
-      directive** — a comment whose whole body is a dotted identifier path
-      (`-- a.b.theFunction` → namespace `a.b`, name `theFunction`, ABSOLUTE
-      override); **multiple queries per file**, each opened by its name directive
-      (the directive doubles as the query delimiter). Namespace is a REAL
-      language construct (nested object/enum/package), not just an import path.
-      OPEN CONFIRMS before build: (1) directive grammar = "comment body is a
-      dotted ident path" — so a bare `-- list` is a directive, not prose (vs. a
-      marker prefix like `-- @ …`); (2) dotted directive replaces the folder
-      namespace (absolute) — confirmed intent, pending final ok; (3) output
-      location — co-located next to the `.sql` vs. a per-language mirrored output
-      root (orchestrator leans mirrored-root for the multi-target repos; demos
-      emit ≥4 languages from one manifest). Supersedes the flat model; demos
-      migrate. No wire/runtime impact — generate-time only.
+- [x] **Named-query layout v2** (LANDED 2026-07-04, commit 1f53a6e8 —
+      supersedes the earlier mid-discussion sketch that stood here; the final
+      design agreed with Benjamin differs from that sketch). The shipped
+      model: folders under `queries/` recurse and are pure organization —
+      **a query's name is its camelCased path**
+      (`billing/invoices/list.sql` → `billingInvoicesList`), so no
+      namespacing machinery exists in any language, uniqueness is
+      filesystem-given, and names are decoupled from output layout forever
+      (output granularity can change later with zero API break — the reason
+      no single/per-folder/per-file mode option was added). A
+      `-- name: fullName` marker directly above a statement overrides
+      verbatim (deliberately the marker form — a bare one-word prose comment
+      must never silently rename a query); **multiple statements per file**
+      split on top-level `;`, every statement in a multi-statement file
+      requiring its own `-- name:` (loud error otherwise); `-- param`
+      comments scope per-statement; global name uniqueness enforced at
+      generate time with both source locations in the error. Zero churn in
+      pre-existing outputs (all 11 manifests stayed --check fresh).
 - [ ] **Per-rowid invalidation refinement**: today's granularity is
       table + scope-key (honest to the wire); a table→rowid dependency
       option for hot single-row views was left room for in the design.
