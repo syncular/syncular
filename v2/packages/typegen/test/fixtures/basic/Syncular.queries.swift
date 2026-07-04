@@ -13,6 +13,19 @@ enum SyncularSchemaQueryBind {
     }
 }
 
+/// One row of the findDocByOrg query (its projection).
+public struct FindDocByOrgRow: Sendable, Equatable {
+    public let id: String
+    public let body: String
+
+    public init?(row: [String: JSONValue]) {
+        guard let id = row["id"]?.stringValue else { return nil }
+        self.id = id
+        guard let body = row["body"]?.stringValue else { return nil }
+        self.body = body
+    }
+}
+
 /// One row of the docWithBody query (its projection).
 public struct DocWithBodyRow: Sendable, Equatable {
     public let docId: String
@@ -61,6 +74,52 @@ public struct ProjectDocCountRow: Sendable, Equatable {
     }
 }
 
+/// One row of the reportingTasksByPriority query (its projection).
+public struct ReportingTasksByPriorityRow: Sendable, Equatable {
+    public let id: String
+    public let title: String
+    public let priority: Int?
+
+    public init?(row: [String: JSONValue]) {
+        guard let id = row["id"]?.stringValue else { return nil }
+        self.id = id
+        guard let title = row["title"]?.stringValue else { return nil }
+        self.title = title
+        self.priority = row["priority"]?.numberValue.map(Int.init)
+    }
+}
+
+/// One row of the reportOpenTasks query (its projection).
+public struct ReportOpenTasksRow: Sendable, Equatable {
+    public let id: String
+    public let title: String
+    public let done: Bool
+
+    public init?(row: [String: JSONValue]) {
+        guard let id = row["id"]?.stringValue else { return nil }
+        self.id = id
+        guard let title = row["title"]?.stringValue else { return nil }
+        self.title = title
+        guard let done = SyncularSchemaRow.bool(row["done"]) else { return nil }
+        self.done = done
+    }
+}
+
+/// One row of the reportDocScores query (its projection).
+public struct ReportDocScoresRow: Sendable, Equatable {
+    public let id: String
+    public let orgId: String
+    public let score: Double?
+
+    public init?(row: [String: JSONValue]) {
+        guard let id = row["id"]?.stringValue else { return nil }
+        self.id = id
+        guard let orgId = row["org_id"]?.stringValue else { return nil }
+        self.orgId = orgId
+        self.score = row["score"]?.numberValue
+    }
+}
+
 /// One row of the taskTitles query (its projection).
 public struct TaskTitlesRow: Sendable, Equatable {
     public let id: String
@@ -102,6 +161,18 @@ public struct TasksSinceRow: Sendable, Equatable {
 
 /// Typed named queries (the sqlc/SQLDelight tier).
 public enum BasicSchemaQueries {
+    public static let findDocByOrgTables = ["docs"]
+    private static let findDocByOrgSql = "SELECT id, body FROM docs WHERE org_id = ? ORDER BY id"
+
+    /// Run the findDocByOrg named query (SELECT-only).
+    public static func findDocByOrg(client: SyncularClient, orgId: String) throws -> [FindDocByOrgRow] {
+        let params: [JSONValue] = [.string(orgId)]
+        return try client.query(findDocByOrgSql, params: params).compactMap { row in
+            guard case let .object(fields) = row else { return nil }
+            return FindDocByOrgRow(row: fields)
+        }
+    }
+
     public static let docWithBodyTables = ["docs", "tasks"]
     private static let docWithBodySql = "SELECT d.id AS doc_id, d.body, t.title AS task_title FROM docs d JOIN tasks t ON t.project_id = d.project_id WHERE d.org_id = ?"
 
@@ -134,6 +205,42 @@ public enum BasicSchemaQueries {
         return try client.query(projectDocCountSql).compactMap { row in
             guard case let .object(fields) = row else { return nil }
             return ProjectDocCountRow(row: fields)
+        }
+    }
+
+    public static let reportingTasksByPriorityTables = ["tasks"]
+    private static let reportingTasksByPrioritySql = "SELECT id, title, priority FROM tasks WHERE priority = ? ORDER BY id"
+
+    /// Run the reportingTasksByPriority named query (SELECT-only).
+    public static func reportingTasksByPriority(client: SyncularClient, priority: Int) throws -> [ReportingTasksByPriorityRow] {
+        let params: [JSONValue] = [.number(Double(priority))]
+        return try client.query(reportingTasksByPrioritySql, params: params).compactMap { row in
+            guard case let .object(fields) = row else { return nil }
+            return ReportingTasksByPriorityRow(row: fields)
+        }
+    }
+
+    public static let reportOpenTasksTables = ["tasks"]
+    private static let reportOpenTasksSql = "SELECT id, title, done FROM tasks WHERE project_id = ? AND done = 0 ORDER BY id"
+
+    /// Run the reportOpenTasks named query (SELECT-only).
+    public static func reportOpenTasks(client: SyncularClient, projectId: String) throws -> [ReportOpenTasksRow] {
+        let params: [JSONValue] = [.string(projectId)]
+        return try client.query(reportOpenTasksSql, params: params).compactMap { row in
+            guard case let .object(fields) = row else { return nil }
+            return ReportOpenTasksRow(row: fields)
+        }
+    }
+
+    public static let reportDocScoresTables = ["docs"]
+    private static let reportDocScoresSql = "SELECT id, org_id, score FROM docs WHERE score > ? * 1.0 ORDER BY id"
+
+    /// Run the reportDocScores named query (SELECT-only).
+    public static func reportDocScores(client: SyncularClient, minScore: Double) throws -> [ReportDocScoresRow] {
+        let params: [JSONValue] = [.number(Double(minScore))]
+        return try client.query(reportDocScoresSql, params: params).compactMap { row in
+            guard case let .object(fields) = row else { return nil }
+            return ReportDocScoresRow(row: fields)
         }
     }
 

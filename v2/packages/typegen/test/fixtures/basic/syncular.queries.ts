@@ -33,6 +33,35 @@ export interface NamedQuery<Row, Params = undefined> {
   readonly __row?: Row;
 }
 
+/** One row of the 'findDocByOrg' query (its projection). */
+export interface FindDocByOrgRow {
+  id: string;
+  body: string;
+}
+
+/** Named parameters for 'findDocByOrg'. */
+export interface FindDocByOrgParams {
+  orgId: string;
+}
+
+/** Tables 'findDocByOrg' reads — the exact useSyncQuery `{tables}` set. */
+export const findDocByOrgTables = ['docs'] as const;
+
+const findDocByOrgSql = 'SELECT id, body FROM docs WHERE org_id = ? ORDER BY id';
+
+/** Run the 'findDocByOrg' named query (SELECT-only). */
+export async function findDocByOrg(client: QueryClient, params: FindDocByOrgParams): Promise<FindDocByOrgRow[]> {
+  const rows = await client.query(findDocByOrgSql, [params.orgId]);
+  return rows as unknown as FindDocByOrgRow[];
+}
+
+/** Descriptor for `useNamedQuery(findDocByOrgQuery, params)` — sql + tables + row type. */
+export const findDocByOrgQuery: NamedQuery<FindDocByOrgRow, FindDocByOrgParams> = {
+  sql: findDocByOrgSql,
+  tables: findDocByOrgTables,
+  bind: (params: FindDocByOrgParams) => [params.orgId],
+};
+
 /** One row of the 'docWithBody' query (its projection). */
 export interface DocWithBodyRow {
   doc_id: string;
@@ -117,6 +146,96 @@ export const projectDocCountQuery: NamedQuery<ProjectDocCountRow, undefined> = {
   sql: projectDocCountSql,
   tables: projectDocCountTables,
   bind: () => [],
+};
+
+/** One row of the 'reportingTasksByPriority' query (its projection). */
+export interface ReportingTasksByPriorityRow {
+  id: string;
+  title: string;
+  priority: number | null;
+}
+
+/** Named parameters for 'reportingTasksByPriority'. */
+export interface ReportingTasksByPriorityParams {
+  priority: number;
+}
+
+/** Tables 'reportingTasksByPriority' reads — the exact useSyncQuery `{tables}` set. */
+export const reportingTasksByPriorityTables = ['tasks'] as const;
+
+const reportingTasksByPrioritySql = 'SELECT id, title, priority FROM tasks WHERE priority = ? ORDER BY id';
+
+/** Run the 'reportingTasksByPriority' named query (SELECT-only). */
+export async function reportingTasksByPriority(client: QueryClient, params: ReportingTasksByPriorityParams): Promise<ReportingTasksByPriorityRow[]> {
+  const rows = await client.query(reportingTasksByPrioritySql, [params.priority]);
+  return rows as unknown as ReportingTasksByPriorityRow[];
+}
+
+/** Descriptor for `useNamedQuery(reportingTasksByPriorityQuery, params)` — sql + tables + row type. */
+export const reportingTasksByPriorityQuery: NamedQuery<ReportingTasksByPriorityRow, ReportingTasksByPriorityParams> = {
+  sql: reportingTasksByPrioritySql,
+  tables: reportingTasksByPriorityTables,
+  bind: (params: ReportingTasksByPriorityParams) => [params.priority],
+};
+
+/** One row of the 'reportOpenTasks' query (its projection). */
+export interface ReportOpenTasksRow {
+  id: string;
+  title: string;
+  done: boolean;
+}
+
+/** Named parameters for 'reportOpenTasks'. */
+export interface ReportOpenTasksParams {
+  projectId: string;
+}
+
+/** Tables 'reportOpenTasks' reads — the exact useSyncQuery `{tables}` set. */
+export const reportOpenTasksTables = ['tasks'] as const;
+
+const reportOpenTasksSql = 'SELECT id, title, done FROM tasks WHERE project_id = ? AND done = 0 ORDER BY id';
+
+/** Run the 'reportOpenTasks' named query (SELECT-only). */
+export async function reportOpenTasks(client: QueryClient, params: ReportOpenTasksParams): Promise<ReportOpenTasksRow[]> {
+  const rows = await client.query(reportOpenTasksSql, [params.projectId]);
+  return rows as unknown as ReportOpenTasksRow[];
+}
+
+/** Descriptor for `useNamedQuery(reportOpenTasksQuery, params)` — sql + tables + row type. */
+export const reportOpenTasksQuery: NamedQuery<ReportOpenTasksRow, ReportOpenTasksParams> = {
+  sql: reportOpenTasksSql,
+  tables: reportOpenTasksTables,
+  bind: (params: ReportOpenTasksParams) => [params.projectId],
+};
+
+/** One row of the 'reportDocScores' query (its projection). */
+export interface ReportDocScoresRow {
+  id: string;
+  org_id: string;
+  score: number | null;
+}
+
+/** Named parameters for 'reportDocScores'. */
+export interface ReportDocScoresParams {
+  minScore: number;
+}
+
+/** Tables 'reportDocScores' reads — the exact useSyncQuery `{tables}` set. */
+export const reportDocScoresTables = ['docs'] as const;
+
+const reportDocScoresSql = 'SELECT id, org_id, score FROM docs WHERE score > ? * 1.0 ORDER BY id';
+
+/** Run the 'reportDocScores' named query (SELECT-only). */
+export async function reportDocScores(client: QueryClient, params: ReportDocScoresParams): Promise<ReportDocScoresRow[]> {
+  const rows = await client.query(reportDocScoresSql, [params.minScore]);
+  return rows as unknown as ReportDocScoresRow[];
+}
+
+/** Descriptor for `useNamedQuery(reportDocScoresQuery, params)` — sql + tables + row type. */
+export const reportDocScoresQuery: NamedQuery<ReportDocScoresRow, ReportDocScoresParams> = {
+  sql: reportDocScoresSql,
+  tables: reportDocScoresTables,
+  bind: (params: ReportDocScoresParams) => [params.minScore],
 };
 
 /** One row of the 'taskTitles' query (its projection). */

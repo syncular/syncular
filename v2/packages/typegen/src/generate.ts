@@ -11,7 +11,7 @@ import {
   readFileSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { emitModule } from './emit';
 import { emitDartModule } from './emit-dart';
 import { emitKotlinModule } from './emit-kotlin';
@@ -41,7 +41,7 @@ import {
 } from './manifest';
 import {
   type AnalyzedQuery,
-  analyzeQuery,
+  analyzeQueryFile,
   type QueryDb,
   synthesizeDdl,
 } from './query';
@@ -276,18 +276,35 @@ export function loadMigrations(migrationsDir: string): MigrationInput[] {
   });
 }
 
-/** One `.sql` named-query file: filename + raw contents. */
+/** One `.sql` named-query file: path (relative to the queries root, forward
+ * slashes) + raw contents. A file may hold multiple statements. */
 export interface QueryInput {
+  /** Path relative to the queries root, forward-slashed (e.g.
+   * `billing/invoices/list.sql`). Drives the path-derived default name. */
   readonly file: string;
   readonly sql: string;
 }
 
-/** Load `queries/*.sql`, ordered by filename (deterministic emission). */
+/** Recursively collect `*.sql` paths under `dir`, relative to `root`
+ * (forward-slashed), sorted for deterministic emission. */
+function collectSqlFiles(root: string, dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const abs = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...collectSqlFiles(root, abs));
+    } else if (entry.isFile() && entry.name.endsWith('.sql')) {
+      out.push(relative(root, abs).split(sep).join('/'));
+    }
+  }
+  return out;
+}
+
+/** Load `queries/**\/*.sql` recursively, ordered by relative path
+ * (deterministic emission). Folders are pure organization. */
 export function loadQueries(queriesDir: string): QueryInput[] {
   if (!existsSync(queriesDir)) return [];
-  return readdirSync(queriesDir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.sql'))
-    .map((entry) => entry.name)
+  return collectSqlFiles(queriesDir, queriesDir)
     .sort()
     .map((file) => ({
       file,
@@ -331,15 +348,20 @@ export function analyzeQueries(
   if (queries.length === 0) return [];
   const { db, close } = makeQueryDb(ir);
   try {
-    const analyzed = queries.map((q) => analyzeQuery(q.file, q.sql, ir, db));
-    // Names must be unique (two files mapping to the same camelCase name).
+    // Each file may hold multiple statements; flatten in path order (stable).
+    const analyzed = queries.flatMap((q) =>
+      analyzeQueryFile(q.file, q.sql, ir, db),
+    );
+    // Names must be unique across the whole manifest — the filesystem no longer
+    // guarantees uniqueness once `-- name:` overrides exist. Report BOTH source
+    // locations (file + statement position) on a collision.
     const seen = new Map<string, string>();
     for (const q of analyzed) {
       const prev = seen.get(q.name);
       if (prev !== undefined) {
         throw new TypegenError(
           q.file,
-          `query name ${JSON.stringify(q.name)} collides with ${prev} — rename one file`,
+          `duplicate query name ${JSON.stringify(q.name)} — defined at ${prev} and ${q.file}. Rename one (a file's path-derived default or its \`-- name:\` override).`,
         );
       }
       seen.set(q.name, q.file);

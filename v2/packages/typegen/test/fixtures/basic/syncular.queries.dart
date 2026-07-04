@@ -29,6 +29,22 @@ Map<String, Object?> _queryBindBytes(List<int> value) {
   return {r'$bytes': hex};
 }
 
+/// One row of the findDocByOrg query (its projection).
+class FindDocByOrgRow {
+  final String id;
+  final String body;
+
+  const FindDocByOrgRow({required this.id, required this.body});
+
+  static FindDocByOrgRow? fromRow(Map<String, Object?> row) {
+    final id = row['id'] as String?;
+    if (id == null) return null;
+    final body = row['body'] as String?;
+    if (body == null) return null;
+    return FindDocByOrgRow(id: id, body: body);
+  }
+}
+
 /// One row of the docWithBody query (its projection).
 class DocWithBodyRow {
   final String docId;
@@ -83,6 +99,59 @@ class ProjectDocCountRow {
   }
 }
 
+/// One row of the reportingTasksByPriority query (its projection).
+class ReportingTasksByPriorityRow {
+  final String id;
+  final String title;
+  final int? priority;
+
+  const ReportingTasksByPriorityRow({required this.id, required this.title, this.priority});
+
+  static ReportingTasksByPriorityRow? fromRow(Map<String, Object?> row) {
+    final id = row['id'] as String?;
+    if (id == null) return null;
+    final title = row['title'] as String?;
+    if (title == null) return null;
+    return ReportingTasksByPriorityRow(id: id, title: title, priority: (row['priority'] as num?)?.toInt());
+  }
+}
+
+/// One row of the reportOpenTasks query (its projection).
+class ReportOpenTasksRow {
+  final String id;
+  final String title;
+  final bool done;
+
+  const ReportOpenTasksRow({required this.id, required this.title, required this.done});
+
+  static ReportOpenTasksRow? fromRow(Map<String, Object?> row) {
+    final id = row['id'] as String?;
+    if (id == null) return null;
+    final title = row['title'] as String?;
+    if (title == null) return null;
+    final done = _queryRowBool(row['done']);
+    if (done == null) return null;
+    return ReportOpenTasksRow(id: id, title: title, done: done);
+  }
+}
+
+/// One row of the reportDocScores query (its projection).
+class ReportDocScoresRow {
+  final String id;
+  final String orgId;
+  final double? score;
+
+  const ReportDocScoresRow({required this.id, required this.orgId, this.score});
+
+  static ReportDocScoresRow? fromRow(Map<String, Object?> row) {
+    final id = row['id'] as String?;
+    if (id == null) return null;
+    final orgId = row['org_id'] as String?;
+    if (orgId == null) return null;
+    return ReportDocScoresRow(id: id, orgId: orgId, score: (row['score'] as num?)?.toDouble());
+  }
+}
+
 /// One row of the taskTitles query (its projection).
 class TaskTitlesRow {
   final String id;
@@ -131,6 +200,17 @@ class TasksSinceRow {
   }
 }
 
+/// Tables the findDocByOrg query reads (exact invalidation set).
+const List<String> syncularFindDocByOrgQueryTables = ['docs'];
+
+const String _findDocByOrgSql = 'SELECT id, body FROM docs WHERE org_id = ? ORDER BY id';
+
+/// Run the findDocByOrg named query (SELECT-only).
+List<FindDocByOrgRow> syncularFindDocByOrgQuery(SyncularClient client, {required String orgId}) {
+  final params = <Object?>[orgId];
+  return client.query(_findDocByOrgSql, params: params).map(FindDocByOrgRow.fromRow).whereType<FindDocByOrgRow>().toList();
+}
+
 /// Tables the docWithBody query reads (exact invalidation set).
 const List<String> syncularDocWithBodyQueryTables = ['docs', 'tasks'];
 
@@ -161,6 +241,39 @@ const String _projectDocCountSql = 'SELECT project_id, count(*) AS doc_count FRO
 /// Run the projectDocCount named query (SELECT-only).
 List<ProjectDocCountRow> syncularProjectDocCountQuery(SyncularClient client) {
   return client.query(_projectDocCountSql).map(ProjectDocCountRow.fromRow).whereType<ProjectDocCountRow>().toList();
+}
+
+/// Tables the reportingTasksByPriority query reads (exact invalidation set).
+const List<String> syncularReportingTasksByPriorityQueryTables = ['tasks'];
+
+const String _reportingTasksByPrioritySql = 'SELECT id, title, priority FROM tasks WHERE priority = ? ORDER BY id';
+
+/// Run the reportingTasksByPriority named query (SELECT-only).
+List<ReportingTasksByPriorityRow> syncularReportingTasksByPriorityQuery(SyncularClient client, {required int priority}) {
+  final params = <Object?>[priority];
+  return client.query(_reportingTasksByPrioritySql, params: params).map(ReportingTasksByPriorityRow.fromRow).whereType<ReportingTasksByPriorityRow>().toList();
+}
+
+/// Tables the reportOpenTasks query reads (exact invalidation set).
+const List<String> syncularReportOpenTasksQueryTables = ['tasks'];
+
+const String _reportOpenTasksSql = 'SELECT id, title, done FROM tasks WHERE project_id = ? AND done = 0 ORDER BY id';
+
+/// Run the reportOpenTasks named query (SELECT-only).
+List<ReportOpenTasksRow> syncularReportOpenTasksQuery(SyncularClient client, {required String projectId}) {
+  final params = <Object?>[projectId];
+  return client.query(_reportOpenTasksSql, params: params).map(ReportOpenTasksRow.fromRow).whereType<ReportOpenTasksRow>().toList();
+}
+
+/// Tables the reportDocScores query reads (exact invalidation set).
+const List<String> syncularReportDocScoresQueryTables = ['docs'];
+
+const String _reportDocScoresSql = 'SELECT id, org_id, score FROM docs WHERE score > ? * 1.0 ORDER BY id';
+
+/// Run the reportDocScores named query (SELECT-only).
+List<ReportDocScoresRow> syncularReportDocScoresQuery(SyncularClient client, {required double minScore}) {
+  final params = <Object?>[minScore];
+  return client.query(_reportDocScoresSql, params: params).map(ReportDocScoresRow.fromRow).whereType<ReportDocScoresRow>().toList();
 }
 
 /// Tables the taskTitles query reads (exact invalidation set).
