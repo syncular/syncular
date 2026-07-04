@@ -321,9 +321,14 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     mutate: (mutations) => {
       const id = requireClient().mutate(mutations);
       // In autoSync mode the host loop owns rounds (§8.4): a local write must
-      // push without the app orchestrating sync. Schedule a round (deferred
-      // via setTimeout, so this mutate's own transaction has committed first)
-      // so the outbox drains promptly.
+      // push without the app orchestrating sync, so schedule a jittered round
+      // to drain the outbox promptly. `mutate` is synchronous — its outbox
+      // write has committed before this line — and the round itself serializes
+      // on SyncClient's operation chain, so no ordering hack is needed here;
+      // the §8.4 jitter in `scheduleAutoSync` is the only deferral, and it
+      // coalesces bursts. (Historically this used setTimeout to dodge a
+      // nested-transaction flake; that race is fixed at the source now — the
+      // real cause was cross-operation interleaving, serialized in the core.)
       scheduleAutoSync();
       return id;
     },

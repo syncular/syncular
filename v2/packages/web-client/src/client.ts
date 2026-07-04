@@ -377,6 +377,14 @@ export class SyncClient {
   #pendingRound: PendingRound | undefined;
   #needsPull = false;
   #syncing = false;
+  /**
+   * True from the synchronous entry of `sync()` until its serialized round
+   * settles — the "one loop owns the database" guard that rejects a
+   * concurrent `sync()` before the op chain would queue it. Distinct from
+   * `#syncing`, which is true only while `#runSync`'s body actually runs
+   * (the fast-bail the delta path reads).
+   */
+  #syncOutstanding = false;
   readonly #hasBlobs: boolean;
   /** §8.6 presence: scopeKey → (peerKey `actorId clientId` → peer). */
   readonly #presence = new Map<string, Map<string, PresencePeer>>();
@@ -386,6 +394,21 @@ export class SyncClient {
   readonly #presenceListeners = new Set<(scopeKey: string) => void>();
   /** The batch accumulator; non-undefined only inside `#applyBatch`. */
   #batch: Invalidation | undefined;
+  /**
+   * Operation-serialization mutex (the core owns one loop). Every
+   * transaction-entering ASYNC operation — `sync`, the delta-apply body, and
+   * `setWindow` — runs to completion under this chain so no two interleave at
+   * an `await` point. This is the single guard that keeps the apply seam
+   * atomic: two `#processResponse` runs must never share the `#batch`
+   * accumulator or interleave their SQLite transactions (a delta arriving
+   * mid-`await this.#downloadSegment` of a pull, or a `setWindow` widen racing
+   * a delta). Synchronous ops (`mutate`, schema reset) never join the chain —
+   * single-threaded JS cannot interleave them, and because an async op holds
+   * no OPEN db transaction (and no installed `#batch`) across its awaits only
+   * while it is NOT actively running, a sync op can only land between chained
+   * sections, when the seam is quiescent.
+   */
+  #opChain: Promise<unknown> = Promise.resolve();
 
   constructor(config: SyncClientConfig) {
     this.#config = config;
@@ -534,6 +557,25 @@ export class SyncClient {
       const event = batch.finish();
       if (event !== undefined) this.#invalidation.emit(event);
     }
+  }
+
+  /**
+   * Run `fn` as the next link in the operation-serialization chain
+   * ({@link #opChain}): it starts only after every previously-serialized
+   * operation has fully settled, so transaction-entering async operations
+   * never interleave at an await point. Both chain branches settle to
+   * `undefined` so one operation's rejection never poisons the next
+   * (mirrors the worker host's `serializedSync`). NOT re-entrant: a
+   * serialized operation must not call another serialized operation, or it
+   * would deadlock waiting on itself.
+   */
+  #serialize<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.#opChain.then(fn, fn);
+    this.#opChain = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
   }
 
   /** Async twin of {@link #applyBatch} for the pull/delta apply round. */
@@ -837,35 +879,40 @@ export class SyncClient {
         `setWindow: table ${JSON.stringify(base.table)} has no scope variable ${JSON.stringify(base.variable)} (§4.8)`,
       );
     }
-    const baseKey = windowBaseKey(base);
-    const wanted = new Set(units);
-    const live = loadWindowUnits(this.#db, baseKey);
-    const liveByUnit = new Map(live.map((u) => [u.unit, u.subId]));
+    // Serialize the whole window edit: it spans an `await deriveSubId` between
+    // db transactions, so without the chain a delta apply (or a concurrent
+    // setWindow) could interleave its transactions and corrupt the registry.
+    await this.#serialize(async () => {
+      const baseKey = windowBaseKey(base);
+      const wanted = new Set(units);
+      const live = loadWindowUnits(this.#db, baseKey);
+      const liveByUnit = new Map(live.map((u) => [u.unit, u.subId]));
 
-    // Widen: units wanted but not live → fresh subscription + registry row.
-    for (const unit of wanted) {
-      if (liveByUnit.has(unit)) continue;
-      const subId = await deriveSubId(base, unit);
-      this.#db.transaction(() => {
-        // Re-entry cancels any deferred eviction for this sub id.
-        deletePendingEviction(this.#db, subId);
-        insertWindowUnit(this.#db, baseKey, unit, subId);
-        saveSubscription(this.#db, {
-          id: subId,
-          table: base.table,
-          scopes: unitScopes(base, unit),
-          ...(base.params !== undefined ? { params: base.params } : {}),
-          cursor: -1,
-          status: 'active',
+      // Widen: units wanted but not live → fresh subscription + registry row.
+      for (const unit of wanted) {
+        if (liveByUnit.has(unit)) continue;
+        const subId = await deriveSubId(base, unit);
+        this.#db.transaction(() => {
+          // Re-entry cancels any deferred eviction for this sub id.
+          deletePendingEviction(this.#db, subId);
+          insertWindowUnit(this.#db, baseKey, unit, subId);
+          saveSubscription(this.#db, {
+            id: subId,
+            table: base.table,
+            scopes: unitScopes(base, unit),
+            ...(base.params !== undefined ? { params: base.params } : {}),
+            cursor: -1,
+            status: 'active',
+          });
         });
-      });
-    }
+      }
 
-    // Shrink: units live but not wanted → unsubscribe fused with eviction.
-    for (const { unit, subId } of live) {
-      if (wanted.has(unit)) continue;
-      this.#evictUnit(baseKey, base, unit, subId);
-    }
+      // Shrink: units live but not wanted → unsubscribe fused with eviction.
+      for (const { unit, subId } of live) {
+        if (wanted.has(unit)) continue;
+        this.#evictUnit(baseKey, base, unit, subId);
+      }
+    });
   }
 
   /**
@@ -1094,15 +1141,32 @@ export class SyncClient {
 
   // -- sync -------------------------------------------------------------------
 
-  /** One combined push+pull round (§1.5, §7.2). */
-  async sync(): Promise<SyncSummary> {
+  /**
+   * One combined push+pull round (§1.5, §7.2). The core owns one loop: a
+   * concurrent `sync()` while one is already outstanding is rejected loudly
+   * (the app must coalesce its own wake-ups, §8.4) — this check is
+   * SYNCHRONOUS so the second caller sees the first still in flight before
+   * the op chain would otherwise queue it. The round then runs serialized on
+   * the operation chain so it never interleaves with a delta apply or a
+   * `setWindow` at an await point.
+   */
+  sync(): Promise<SyncSummary> {
     this.#requireStarted();
-    if (this.#syncing) {
-      throw new ClientSyncError(
-        'sync.invalid_request',
-        'sync() is already running — the core owns one loop (coalesce wake-ups)',
+    if (this.#syncOutstanding) {
+      return Promise.reject(
+        new ClientSyncError(
+          'sync.invalid_request',
+          'sync() is already running — the core owns one loop (coalesce wake-ups)',
+        ),
       );
     }
+    this.#syncOutstanding = true;
+    return this.#serialize(() => this.#runSync()).finally(() => {
+      this.#syncOutstanding = false;
+    });
+  }
+
+  async #runSync(): Promise<SyncSummary> {
     if (this.#schemaFloor !== undefined) {
       return {
         ...emptySummary(0),
@@ -1413,21 +1477,29 @@ export class SyncClient {
 
   async #handleRealtimeBinary(bytes: Uint8Array): Promise<void> {
     if (this.#syncing) {
-      // A pull is mid-flight; let it win and recover the gap itself —
-      // re-pulling is idempotent, interleaved application is not worth it.
+      // Fast path: a pull is mid-flight; let it win and recover the gap
+      // itself — re-pulling is idempotent, interleaved application is not
+      // worth it. (An optimization; the op chain below is the correctness
+      // mechanism — it also excludes a delta from racing a `setWindow` or a
+      // sync round that started between this check and the apply.)
       this.#needsPull = true;
       return;
     }
-    try {
-      const message = decodeMessage(bytes);
-      if (message.msgKind !== 'response') return;
-      // §8.2: deltas apply like pull responses; ack after apply.
-      await this.#processResponse(message, [], undefined, 'delta');
-    } catch {
-      // A delta that cannot be applied is recovered by a pull (§8.3).
-      this.#needsPull = true;
-      this.#config.onSyncNeeded?.('catchup-required');
-    }
+    // Serialize the apply on the operation chain: a delta must never
+    // interleave its transactions or share the `#batch` accumulator with a
+    // pull round or a `setWindow` at an await point (§8.2).
+    await this.#serialize(async () => {
+      try {
+        const message = decodeMessage(bytes);
+        if (message.msgKind !== 'response') return;
+        // §8.2: deltas apply like pull responses; ack after apply.
+        await this.#processResponse(message, [], undefined, 'delta');
+      } catch {
+        // A delta that cannot be applied is recovered by a pull (§8.3).
+        this.#needsPull = true;
+        this.#config.onSyncNeeded?.('catchup-required');
+      }
+    });
   }
 
   #sendAck(cursor: number): void {
