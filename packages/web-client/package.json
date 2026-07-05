@@ -2,9 +2,13 @@
   "name": "@syncular-v2/web-client",
   "private": true,
   "type": "module",
+  "scripts": {
+    "verify:node": "bun build ./test/node-database/verify-node.mjs --target=node --external better-sqlite3 --outfile=./.verify-node.built.mjs && node ./.verify-node.built.mjs"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./bun": "./src/bun-database.ts",
+    "./node": "./src/node-database.ts",
     "./wasm": "./src/wasm-database.ts",
     "./worker": "./src/worker-entry.ts"
   },
@@ -12,7 +16,17 @@
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
     "@syncular-v2/core": "workspace:*"
   },
+  "peerDependencies": {
+    "better-sqlite3": ">=11"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": {
+      "optional": true
+    }
+  },
   "devDependencies": {
-    "@syncular-v2/server": "workspace:*"
+    "@syncular-v2/server": "workspace:*",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.11.1"
   }
 }

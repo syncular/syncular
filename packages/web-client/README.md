@@ -120,6 +120,57 @@ losing tab is an `isLeader === false` handle whose calls reject with
 - `openPersistentWasmDatabase` refuses to run on the main thread — not a
   sahpool limitation, an enforcement of whole-core-in-a-worker.
 
+## Node / Electron-main backend (`./node`)
+
+Hosts that run outside a browser — an **Electron main process**, a plain
+**Node** service, a CLI — get a native SQLite backend through
+`openNodeDatabase`, a `ClientDatabase` over
+[better-sqlite3](https://github.com/WiseLibs/better-sqlite3):
+
+```ts
+import { openNodeDatabase } from '@syncular-v2/web-client/node';
+import { SyncClient } from '@syncular-v2/web-client';
+
+const database = openNodeDatabase('app.db'); // or ':memory:' (default)
+const client = new SyncClient({ database, schema, /* … */ });
+```
+
+It mirrors the bun:sqlite adapter exactly: synchronous `exec` / `query` /
+`transaction` (nested calls are savepoints — an inner failure rolls back only
+the inner scope), the same boolean→0/1 bind coercion, `null` round-trips, and
+BLOB columns handed back as plain `Uint8Array`s. The §5.3 `withSqliteImage`
+attach path is supported too, so a Node host can accept sqlite-image segments.
+
+**better-sqlite3 is an OPTIONAL peer dependency, not a hard one.** The package
+installs cleanly without it (browser-only apps never pay for a native build);
+`openNodeDatabase()` loads it lazily on first call and throws a clear,
+actionable error if the peer is missing. Add it in your app:
+
+```sh
+npm install better-sqlite3     # or: bun add better-sqlite3
+```
+
+**Verifying the Node adapter — and why not under bun.** bun **cannot** dlopen
+better-sqlite3 (`ERR_DLOPEN_FAILED`,
+[oven-sh/bun#4290](https://github.com/oven-sh/bun/issues/4290)); calling
+`openNodeDatabase()` under bun deliberately raises the same helpful error and
+points you at `./bun` instead. So the bun test suite
+(`test/node-database.test.ts`) proves what it can under bun — type/subpath
+conformance, the missing-peer error, and that the shared behavioral contract
+(`test/node-database/adapter-contract.ts`) passes on the reference bun:sqlite
+backend — while the better-sqlite3 adapter's real behavior is proven under
+**Node** against the actual native module by running that same contract:
+
+```sh
+cd packages/web-client
+bun run verify:node
+```
+
+That bundles the verifier with bun (transpile + resolve only — bun never
+executes the native module) and runs the plain-JS bundle under Node, which
+exercises `openNodeDatabase` against real better-sqlite3 and exits non-zero on
+any divergence from the contract.
+
 ## RPC protocol (6 message types)
 
 `init`, `call`, `ready`, `result`, `error`, `event` — every API method
@@ -136,6 +187,7 @@ they own their buffer.
 | `./worker` | `startSyncWorker` — worker-side bootstrap (pulls sqlite-wasm) |
 | `./wasm` | sqlite-wasm bindings: `openPersistentWasmDatabase`, `openWasmDatabase` |
 | `./bun` | bun:sqlite binding for tests |
+| `./node` | better-sqlite3 binding: `openNodeDatabase` (Electron-main / plain Node) |
 
 Tests drive the real worker entry in a bun `Worker` with bun:sqlite
 injected through the bootstrap's database-factory override

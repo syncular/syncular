@@ -1,0 +1,75 @@
+name: Docs
+
+# Builds apps/docs (the zero-dependency static site generator) and publishes
+# dist/ to GitHub Pages. Kept in its OWN workflow (not a job in ci.yml) because
+# it deploys — it needs the Pages `id-token`/`pages` permissions and the Pages
+# environment, which the gate workflow neither has nor should have.
+#
+# GitHub Pages is the zero-external-service default. Swapping to a custom domain
+# or Cloudflare Pages is a config change, not a rewrite: keep the `build` job and
+# replace the `deploy` job's action (and add the CNAME / CF token) — the built
+# dist/ is a plain static bundle either way. See apps/docs/README.md.
+
+on:
+  push:
+    branches: [main]
+    # Path gate: only rebuild+deploy when the docs site itself (its generator,
+    # pages, styles) or THIS workflow changed. Deliberately NOT gated on package
+    # READMEs — the docs pages are hand-authored markdown under apps/docs/pages,
+    # not generated from package READMEs, so a README edit does not change the
+    # published site.
+    paths:
+      - 'apps/docs/**'
+      - '.github/workflows/docs.yml'
+
+# One in-flight deploy at a time; a newer push supersedes an older run rather
+# than racing it to Pages. Don't cancel a run mid-deploy (avoid a half-published
+# site) — let it finish, then the next runs.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+# Least privilege for the Pages deploy: read the repo, write the Pages artifact,
+# mint the OIDC token deploy-pages exchanges.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # apps/docs targets the latest Bun, matching ci.yml's stance for v2.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # apps/docs has no runtime deps, but the workspace install links the
+      # `@syncular-v2/docs` package and provisions bun's toolchain consistently.
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build docs (static dist/)
+        working-directory: apps/docs
+        run: bun run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/docs/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
