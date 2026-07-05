@@ -13,6 +13,8 @@ dist/
 .tmp/
 .env
 **/*.log
+# bun-built bundle emitted by `web-client verify:node` (Node-run adapter proof)
+**/.verify-node.built.mjs
 CLAUDE.md
 WARP.md
 coverage/

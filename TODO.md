@@ -38,15 +38,30 @@ verification; push is Benjamin's alone).
       for business rules beyond scopes ("title ≤ 200 chars"), rejecting
       with a host-defined code; the IR `extensions` slot was reserved for
       exactly this. Spec-first (§6 gains the hook semantics).
-- [ ] **App-developer test kit**: an exported `@…/testing` package —
-      in-memory server, N clients, virtual clock, offline/fault toggles —
-      mostly re-exporting what the conformance harness already has.
-      A differentiator almost no local-first competitor offers.
-- [ ] **Node ClientDatabase**: better-sqlite3 adapter behind the existing
+- [x] **App-developer test kit**: `@syncular-v2/testing` — `createTestSync
+      ({schema})` → in-memory `@…/server` + N real `SyncClient`s on
+      bun:sqlite through the loopback seam (no HTTP), per-client
+      `goOffline()/goOnline()`, transport faults (the conformance
+      `TransportFaults` controller re-exported via a new additive
+      `@…/conformance/faults` subpath, never duplicated), a shared virtual
+      clock, `syncAll()`, and `dispose()`. React helper `syncWrapper` behind
+      `@…/testing/react` (react an optional peer). README doubles as docs.
+      App-facing (no driver/pairing machinery). A differentiator almost no
+      local-first competitor offers.
+- [x] **Node ClientDatabase**: better-sqlite3 adapter behind the existing
       `ClientDatabase` interface, so Electron-main and plain-Node hosts
-      have a SQLite backend.
-- [ ] **Docs site deploy**: the 15 pages build locally; nothing hosts
-      them. Needed by launch.
+      have a SQLite backend. `@…/web-client/node` → `openNodeDatabase`,
+      better-sqlite3 as an OPTIONAL peer (installs clean without it, errors
+      helpfully when missing). bun CANNOT dlopen better-sqlite3
+      (oven-sh/bun#4290) so real behavior is proven under Node
+      (`web-client verify:node`) against the SAME contract the bun test
+      runs on the reference bun:sqlite adapter.
+- [x] **Docs site deploy**: `.github/workflows/docs.yml` builds apps/docs
+      and publishes dist/ to GitHub Pages (upload-pages-artifact +
+      deploy-pages), push-to-main + `apps/docs/**` path-gated. One-time
+      Settings→Pages→"GitHub Actions" source setting documented in
+      apps/docs/README (NOT auto-enabled); custom-domain / CF-Pages swap
+      noted there too.
 
 ## 3. Demand-gated — build when the trigger fires
 
