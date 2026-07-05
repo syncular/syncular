@@ -7,13 +7,16 @@
  *   (I4 — the whole point of the typed layer over string inference);
  * - the `deps` array re-keys the builder (new filter value ⇒ new query).
  */
-import './setup';
+
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { SyncProvider } from '../src/index';
 import { useTypedQuery } from '../src/typed';
 import { FakeClient } from './fake-client';
+import { installHappyDom } from './setup';
+
+installHappyDom();
 
 interface Database {
   todos: { id: string; list_id: string; title: string };

@@ -7,13 +7,16 @@
  * end (the web-client worker-rpc test proves the real worker forwards these
  * same events).
  */
-import './setup';
+
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { SyncProvider, useSyncQuery, useSyncStatus } from '../src/index';
 import { handleShapeOf } from './handle-shape';
 import { makeClient, makeServer, taskValues } from './loopback';
+import { installHappyDom } from './setup';
+
+installHappyDom();
 
 const clients: Array<{ close: () => Promise<void> }> = [];
 

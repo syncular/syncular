@@ -4,12 +4,15 @@
  * proof that `useSyncQuery` re-runs on a relevant commit and NOT on an
  * unrelated one (I4) — the invalidation seam and the hook wired together.
  */
-import './setup';
+
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { SyncProvider, useSyncQuery } from '../src/index';
 import { makeClient, makeServer, taskValues } from './loopback';
+import { installHappyDom } from './setup';
+
+installHappyDom();
 
 const clients: Array<{ close: () => Promise<void> }> = [];
 

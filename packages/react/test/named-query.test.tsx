@@ -11,13 +11,16 @@
  * emits (`{ sql, tables, bind }`) — the emitter's byte-exact output is gated by
  * the typegen goldens; this file gates the hook behavior.
  */
-import './setup';
+
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import type { NamedQueryDescriptor } from '../src/index';
 import { SyncProvider, useNamedQuery } from '../src/index';
 import { FakeClient } from './fake-client';
+import { installHappyDom } from './setup';
+
+installHappyDom();
 
 interface TodoRow {
   id: string;
