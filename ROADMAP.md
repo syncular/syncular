@@ -525,10 +525,13 @@ INDEX in the migration subset. (S3 blob store + GC sweep **landed
 
 **Wave 2 queue (approved):**
 
-- [ ] **Server-side write-validation hooks**: per-table validate on push
-      (business rules beyond scopes — "title <= 200 chars"), rejecting
-      with a host-defined code; the IR extensions slot was reserved for
-      exactly this (the old WP-49 idea). M, high value.
+- [x] **Server-side write-validation hooks** (LANDED 2026-07-05): per-table
+      `validators` host callback, run after decode + §3.4 authz inside the
+      commit transaction; a throw rejects the commit atomically with a
+      host-defined code (§6.3) the client surfaces unchanged on both cores.
+      SPEC §6.7 pins it (order, merged-CRDT-value, reserved host-code
+      prefixes). Runtime hook only — the IR extensions slot stays the noted
+      home for future declarative metadata, no codegen this rung.
 - [ ] **App-developer test kit**: an exported testing package (in-memory
       server, N clients, virtual clock, offline/fault toggles) — mostly
       re-exporting what the conformance harness already has. S-M, a

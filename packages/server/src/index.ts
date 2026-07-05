@@ -49,3 +49,4 @@ export * from './sqlite-lease-store';
 export * from './sqlite-segment-store';
 export * from './sqlite-storage';
 export * from './storage';
+export * from './validate';

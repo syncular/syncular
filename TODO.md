@@ -34,10 +34,23 @@ verification; push is Benjamin's alone).
 
 ## 2. Wave 2 (approved, launches as wave 1 lands)
 
-- [ ] **Server-side write-validation hooks**: per-table validate on push
-      for business rules beyond scopes ("title ≤ 200 chars"), rejecting
-      with a host-defined code; the IR `extensions` slot was reserved for
-      exactly this. Spec-first (§6 gains the hook semantics).
+- [x] **Server-side write-validation hooks** (LANDED 2026-07-05): per-table
+      `validators` on the server config — a host callback run after decode +
+      §3.4 scope authz, INSIDE the commit transaction, per operation; a throw
+      rejects the whole commit atomically (§6.4) with a host-defined code the
+      client surfaces unchanged (§6.3), proven on both cores. SPEC §6.7 pins
+      the semantics: decode → scope authz → validation → write order; CRDT
+      columns see the MERGED value (§5.10.3), not the raw update; host codes
+      MUST NOT start with `sync.`/`blob.`/`presence.`/`client.` (checked at
+      `ValidationRejection` construction — a reserved prefix is a loud server
+      bug); a non-`ValidationRejection` throw maps to `sync.constraint_violation`;
+      feature off ⇒ zero cost. Reuses `push.rejected` (no new event). The IR
+      `extensions` slot stays the noted home for future declarative validation
+      metadata — runtime hook only this rung, no codegen wiring. Four
+      conformance scenarios (reject-rolls-back-atomically with the host code on
+      both cores, accept-applies-and-converges, off-is-unchanged,
+      sees-stored-row-on-update) + 11 server unit tests (incl. the load-bearing
+      merged-CRDT-value assertion). Gates green.
 - [x] **App-developer test kit**: `@syncular-v2/testing` — `createTestSync
       ({schema})` → in-memory `@…/server` + N real `SyncClient`s on
       bun:sqlite through the loopback seam (no HTTP), per-client

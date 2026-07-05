@@ -14,6 +14,7 @@ import type { SegmentStore } from './segment-store';
 import type { BlobPresignConfig, SegmentUrlConfig } from './signed-url';
 import type { SqliteImageBuilder } from './sqlite-image';
 import type { ServerStorage, StoredCommit } from './storage';
+import type { ValidatorRegistry } from './validate';
 
 /** SSP2 body content type (§1.1). */
 export const SSP2_CONTENT_TYPE = 'application/vnd.syncular.sync.v2';
@@ -96,6 +97,17 @@ export interface SyncServerConfig {
    * `yjs-doc` merger ships in `@syncular-v2/crdt-yjs` (the blob-store rule).
    */
   readonly crdtMergers?: CrdtMergerRegistry;
+  /**
+   * §6.7 per-table write-validation hooks (`table` → validator). Absent ⇒
+   * the feature is off: the push path pays only an `undefined` check and
+   * builds no validator context — zero cost. Present ⇒ each push operation
+   * on a listed table runs its validator after decode + §3.4 scope
+   * authorization, inside the commit transaction; a throw rejects the
+   * whole commit atomically (§6.4) with the host code (§6.3). Kept a host
+   * callback (like `resolveScopes`) — business rules live in the host
+   * process, never on the wire.
+   */
+  readonly validators?: ValidatorRegistry;
   readonly resolveScopes: ResolveScopes;
   /**
    * §7.3 auth leases. Absent ⇒ the feature is off: no `LEASE` frame is

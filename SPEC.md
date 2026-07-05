@@ -2210,6 +2210,100 @@ exists to make the "referenced ⇒ present" invariant enforced rather than
 assumed (a corrupt or out-of-order client cannot smuggle a dangling
 reference into the log).
 
+### 6.7 Write-validation hooks
+
+Scopes (§3.4) answer "may this actor write this row's scope?" — a
+coarse, structural grant. They cannot express a **business rule** on the
+row's contents: "title ≤ 200 chars", "amount ≥ 0", "status is one of a
+fixed set", "a closed invoice's total is immutable". §6.7 is the optional
+seam for exactly those rules.
+
+**Shape.** A host MAY configure a per-table **validator**: a callback
+keyed by table name. It is a **host callback, not wire protocol** — like
+`resolveScopes` (§3.2), business rules live in the host process and never
+appear on the wire or in any generated artifact. A server with no
+validators configured behaves exactly as one that predates this section;
+the feature is off by default and adds no per-operation cost when off.
+
+**When it runs.** For each push operation on a table that has a
+validator, the server runs the validator **after** two gates have already
+passed — (1) the row-codec decode (§6.1) and (2) the §3.4 scope
+authorization (steps 2–5, including the scope-column strip on update) —
+and **inside the commit transaction** (§6.4), immediately before the
+row's write. Running after §3.4 means a validator never sees a row the
+actor is not authorized to write; running inside the transaction means a
+rejection rolls back atomically like any other operation failure. The
+order is fixed: **decode → scope authorization → validation → write.**
+
+**What it sees.** The validator receives, per operation:
+
+- `op` — `upsert` or `delete`.
+- `table`, `rowId`.
+- `row` — the row **that will persist**, keyed by column name: for an
+  `upsert`, post-scope-strip and **post-CRDT-merge** (see below);
+  `undefined` for a `delete`.
+- `stored` — the currently-stored row keyed by column name, or `undefined`
+  when there is none (an insert). Present for an update or a delete, so a
+  validator can enforce transition rules ("a `closed` invoice cannot
+  reopen") and distinguish create from update.
+- ambient `actorId` (§1.1) and `partition`.
+
+**CRDT columns — the pinned choice.** For a `crdt` column (§5.10) the
+validator sees the **merged** value (`merge(stored, incoming)`, §5.10.3) —
+the state that will actually persist — **not** the raw pushed update. The
+merged state is what the store holds and what every other client will
+converge to, so it is the only honest thing to validate; validating the
+raw incoming update would let a rule pass on bytes that never become the
+row. A validator that needs to reason about a CRDT column's decoded
+content decodes the merged bytes itself (the server hands it the bytes).
+
+**A delete only validates an existing row.** Deleting an **absent** row is
+an idempotent no-op that emits no change and performs no scope check
+(§6.2); it likewise runs **no** validator — there is nothing to validate.
+Deleting an **existing** row runs the validator with `stored` set and
+`row` undefined, after the §3.4 delete authorization passes.
+
+**Rejection and the host code.** A validator **accepts** by returning (or
+resolving); it **rejects** by throwing (or rejecting its promise). A
+rejection terminates the operation and rolls the whole commit back (§6.4),
+exactly as a §6.6 `blob.not_found` or a §5.10 merge failure does — the
+commit's `PUSH_RESULT` is `rejected` with the single terminating `error`
+record (§6.3) carrying the **host-defined code** and message. The client
+surfaces that code in its rejection record unchanged (§6.3, §7.2); it is
+opaque to the client runtime, which applies the generic rejection
+handling (drop the commit from the outbox; the app decides whether to
+re-push a corrected write).
+
+**Host codes MUST be distinguishable from protocol codes.** A host
+validation code **MUST NOT** begin with any reserved protocol-family
+prefix: **`sync.`**, **`blob.`**, **`presence.`**, or **`client.`**. These
+namespace the protocol's own error families (§10.2 and the client-local
+codes of §10.3); reserving them guarantees a code appearing in a rejection
+record is unambiguously either a protocol code or a host code, never a
+collision. A host that throws a reserved-prefixed code is a **server
+bug**: the server rejects it loudly at the point the code is constructed,
+not silently at push time. A validator that throws something **other than
+a chosen host code** (an unexpected error, not a deliberate rejection)
+rejects the commit with `sync.constraint_violation` (§10.2) — the write
+did not happen, and the generic constraint code says so without leaking
+the thrown message as a machine code.
+
+**Events.** A validation rejection is an ordinary push rejection: it emits
+the existing `push.rejected` operational event (the §6.3 rejection seam)
+carrying the host code and `opIndex`. No validation-specific event exists —
+the rejection already flows through the one seam.
+
+**Non-goals.** A validator MUST NOT mutate the row (the server writes the
+row it validated; a mutation would desync the persisted bytes from the
+validated ones and from the client's optimistic copy). Cross-row or
+cross-table invariants that need to read other rows are the host's own
+concern via its storage — §6.7 scopes one operation's row, not a
+transaction-wide assertion engine. This is the deliberate small surface:
+the reserved IR `extensions` slot (the typegen document/table passthrough)
+is where a future rung MAY carry declarative validation metadata to
+generate a validator skeleton, but §6.7 ships the runtime hook only — no
+codegen wiring this rung.
+
 ---
 
 ## 7. Offline writes and replay
@@ -3169,7 +3263,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.unknown_table` | schema-mismatch | no | regenerateClient | Subscription (request-level) or push operation (commit-level, §1.7) names a table the server doesn't handle |
 | `sync.row_missing` | not-found | no | forceResync | Upsert with `baseVersion ≠ 0` targeting an absent row (§6.2) |
 | `sync.version_conflict` | conflict | no | resolveConflict | `baseVersion` mismatch (§6.2) — appears as a conflict result, not a request error |
-| `sync.constraint_violation` | invalid-request | no | fixRequest | Server-side data constraint (unique/FK/not-null) rejected the write |
+| `sync.constraint_violation` | invalid-request | no | fixRequest | Server-side data constraint (unique/FK/not-null) rejected the write; also a §6.7 write-validator that threw a non-host-code error (an unexpected throw, not a deliberate host rejection) |
 | `sync.missing_scopes` | internal | no | inspectServer | Handler emitted a change without stored scopes (§3.1) |
 | `sync.crdt_merge_failed` | internal | no | inspectServer | A `crdt` column (§2.4 tag 8) was pushed but no merger is registered for its `crdtType`, or the merger threw (§5.10.2) — *new in v2*; a push operation-result `error` record only |
 | `sync.idempotency_cache_miss` | internal | yes | retryLater | Cached push result unreadable on replay (§6.3) |
@@ -3231,6 +3325,20 @@ rejects through the ordinary §3.4/§6 codes, not a lease-specific one).
 The five pruned names remain **reserved** (must not be reused for other
 meanings) should a future rung restore client-presented leases or
 per-scope grants.
+
+**Host codes are outside this catalog by design.** A §6.7 write-validator
+rejects with a **host-defined** code that is deliberately *not* a catalog
+code — it is opaque to the client runtime, which applies generic rejection
+handling and never hardcodes its `category`/`retryable`/`recommendedAction`
+(those fields are catalog-fixed only for the codes in §10.2). A host code
+MUST NOT begin with the reserved protocol-family prefixes `sync.`,
+`blob.`, `presence.`, or `client.` (§6.7), so a code in a rejection record
+is always unambiguously either a protocol code (this catalog, its fixed
+metadata applies) or a host code (opaque, app-defined). This keeps the
+wire catalog closed while letting hosts mint their own business-rule
+codes — the same "protocol codes are closed, host codes are open" split
+that lets `message` be host-overridden (§10.1) without weakening the
+machine identifiers.
 
 ---
 
