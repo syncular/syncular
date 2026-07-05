@@ -10,7 +10,7 @@
  * Worker-handle mode parity is covered by `parity.test.tsx` — both cores
  * satisfy the same interface these hooks target.
  */
-import './setup';
+
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
@@ -23,6 +23,9 @@ import {
   useWindow,
 } from '../src/index';
 import { FakeClient } from './fake-client';
+import { installHappyDom } from './setup';
+
+installHappyDom();
 
 function wrapper(client: FakeClient) {
   return ({ children }: { children: ReactNode }) => (

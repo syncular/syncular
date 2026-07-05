@@ -10,12 +10,15 @@
  * The existing I4 counter-proof and coalescing tests in hooks.test.tsx still
  * pass unchanged — this file adds the churn-specific assertions.
  */
-import './setup';
+
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { memo, type ReactNode } from 'react';
 import { SyncProvider, useSyncQuery } from '../src/index';
 import { FakeClient } from './fake-client';
+import { installHappyDom } from './setup';
+
+installHappyDom();
 
 function wrapper(client: FakeClient) {
   return ({ children }: { children: ReactNode }) => (

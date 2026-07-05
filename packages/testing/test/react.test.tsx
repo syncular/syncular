@@ -3,13 +3,16 @@
  * client and the hook re-runs when the test drives a mutation through the
  * real choke point. Proves the documented mounting pattern end to end.
  */
-import './setup';
+
 import { afterEach, describe, expect, test } from 'bun:test';
 import { useSyncQuery } from '@syncular-v2/react';
 import type { ClientSchema } from '@syncular-v2/web-client';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { createTestSync, type TestSync } from '../src/index';
 import { syncWrapper } from '../src/react';
+import { installHappyDom } from './setup';
+
+installHappyDom();
 
 const SCHEMA: ClientSchema = {
   version: 1,
