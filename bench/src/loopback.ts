@@ -13,6 +13,7 @@ import {
 import { openBunDatabase } from '@syncular/client/bun';
 import { encodeRow } from '@syncular/core';
 import {
+  compileSchema,
   createRealtimeHub,
   handleSegmentDownload,
   handleSyncRequest,
@@ -84,6 +85,9 @@ export async function seedServerRows(
   count: number,
 ): Promise<void> {
   const rand = seededRandom(0xb6b6b6);
+  // Direct storage seeding (not through the handler): the relational row
+  // tables must exist first.
+  await server.storage.ensureSchema(compileSchema(SCHEMA));
   const tx = await server.storage.begin(PARTITION);
   for (let i = 0; i < count; i++) {
     const values = rowValues(i, rand);

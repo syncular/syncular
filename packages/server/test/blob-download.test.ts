@@ -5,9 +5,11 @@
  * blobId alone.
  */
 import { describe, expect, test } from 'bun:test';
+import { encodeRow } from '@syncular/core';
 import {
   type BlobStore,
   blobIdFor,
+  compileSchema,
   handleBlobDownload,
   handleBlobUploadGrant,
   MemoryBlobStore,
@@ -43,14 +45,16 @@ async function seedReferencedBlob(
   blobId: string,
   scopeValue: string,
 ): Promise<void> {
+  await storage.ensureSchema(compileSchema(SCHEMA));
   const tx = await storage.begin(PARTITION);
   if (tx.setBlobRefs === undefined) throw new Error('no setBlobRefs');
   // The reference index carries the row's stored scopes for the §3.4 check.
+  const columns = SCHEMA.tables[0]?.columns ?? [];
   await tx.upsertRow('tasks', {
     rowId: 'row-1',
     serverVersion: 1,
     scopes: { project_id: scopeValue },
-    payload: new Uint8Array(),
+    payload: encodeRow(columns, ['row-1', scopeValue, null]),
   });
   await tx.setBlobRefs('tasks', 'row-1', [blobId]);
   await tx.commit();

@@ -10,6 +10,17 @@ import type { RowColumn } from '@syncular/core';
 /** `'prefix:{variable}'` shorthand (column name = variable) or explicit. */
 export type ScopePatternSpec = string | { pattern: string; column: string };
 
+/**
+ * A user-declared index (the migration subset's CREATE INDEX). With
+ * relational server storage these apply server-side too (DESIGN
+ * "user indexes") — the same declaration the client materializes.
+ */
+export interface IndexSchema {
+  readonly name: string;
+  readonly columns: readonly string[];
+  readonly unique?: boolean;
+}
+
 export interface TableSchema {
   readonly name: string;
   /** Columns in schema-IR declaration order (the row-codec order, §2.4). */
@@ -18,6 +29,8 @@ export interface TableSchema {
   readonly primaryKey: string;
   /** Scope patterns (§3.1). Every synced table declares at least one. */
   readonly scopes: readonly ScopePatternSpec[];
+  /** User indexes (optional) — created on the server's relational tables. */
+  readonly indexes?: readonly IndexSchema[];
 }
 
 export interface ServerSchema {
@@ -40,6 +53,8 @@ export interface CompiledTable {
   readonly columns: readonly RowColumn[];
   readonly primaryKeyIndex: number;
   readonly scopePatterns: readonly CompiledScopePattern[];
+  /** User indexes (validated: unique names, existing columns). */
+  readonly indexes: readonly IndexSchema[];
   readonly columnIndex: ReadonlyMap<string, number>;
   readonly declaredVariables: ReadonlySet<string>;
   /** Column indices declared `blob_ref` (§2.4 tag 7, §5.9) — the columns
@@ -67,6 +82,30 @@ export interface CompiledSchema {
 }
 
 const PATTERN_RE = /^([^{}]+):\{([^{}:]+)\}$/;
+
+/**
+ * Identifier rules for relational server storage (DESIGN "current-row
+ * tables"): app tables live in the same namespace as the sync
+ * infrastructure tables (`sync_*`) and carry `_sync_*` meta columns, so
+ * both prefixes are reserved; identifiers over 63 bytes would be silently
+ * truncated by Postgres.
+ */
+function validateIdentifier(kind: string, name: string): void {
+  if (name.length === 0) {
+    throw new Error(`${kind} name must not be empty`);
+  }
+  const lower = name.toLowerCase();
+  if (lower.startsWith('sync_') || lower.startsWith('_sync')) {
+    throw new Error(
+      `${kind} name ${JSON.stringify(name)} uses a reserved prefix (sync_/_sync are the server storage namespace)`,
+    );
+  }
+  if (new TextEncoder().encode(name).length > 63) {
+    throw new Error(
+      `${kind} name ${JSON.stringify(name)} exceeds 63 bytes (Postgres identifier limit)`,
+    );
+  }
+}
 
 function compilePattern(
   table: TableSchema,
@@ -103,6 +142,7 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
     if (tables.has(table.name)) {
       throw new Error(`duplicate table ${JSON.stringify(table.name)}`);
     }
+    validateIdentifier('table', table.name);
     const columnIndex = new Map<string, number>();
     table.columns.forEach((column, index) => {
       if (columnIndex.has(column.name)) {
@@ -110,8 +150,27 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
           `table ${table.name}: duplicate column ${JSON.stringify(column.name)}`,
         );
       }
+      validateIdentifier(`table ${table.name}: column`, column.name);
       columnIndex.set(column.name, index);
     });
+    const indexes = table.indexes ?? [];
+    const indexNames = new Set<string>();
+    for (const index of indexes) {
+      validateIdentifier(`table ${table.name}: index`, index.name);
+      if (indexNames.has(index.name)) {
+        throw new Error(
+          `table ${table.name}: duplicate index ${JSON.stringify(index.name)}`,
+        );
+      }
+      indexNames.add(index.name);
+      for (const column of index.columns) {
+        if (!columnIndex.has(column)) {
+          throw new Error(
+            `table ${table.name}: index ${JSON.stringify(index.name)} names unknown column ${JSON.stringify(column)}`,
+          );
+        }
+      }
+    }
     const primaryKeyIndex = columnIndex.get(table.primaryKey);
     if (primaryKeyIndex === undefined) {
       throw new Error(
@@ -162,6 +221,7 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       columns: table.columns,
       primaryKeyIndex,
       scopePatterns,
+      indexes,
       columnIndex,
       declaredVariables: variables,
       blobRefColumnIndices,

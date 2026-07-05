@@ -38,11 +38,6 @@ CREATE TABLE IF NOT EXISTS sync_partitions(
   max_commit_seq INTEGER NOT NULL DEFAULT 0,
   horizon_seq INTEGER NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS sync_rows(
-  partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL,
-  server_version INTEGER NOT NULL, scopes TEXT NOT NULL, payload BLOB NOT NULL,
-  PRIMARY KEY(partition, tbl, row_id)
-);
 CREATE TABLE IF NOT EXISTS sync_row_scopes(
   partition TEXT NOT NULL, tbl TEXT NOT NULL,
   var TEXT NOT NULL, value TEXT NOT NULL, row_id TEXT NOT NULL,

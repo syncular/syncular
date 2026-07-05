@@ -51,11 +51,12 @@ export interface IrScope {
 
 /**
  * One local secondary index declared by a `CREATE [UNIQUE] INDEX` migration.
- * Indexes are a CLIENT-side (+ query-check DB) concern only: the server stores
- * rows in a generic `sync_rows` table with an opaque payload, so a user-column
- * index has no server-side table to attach to (the scope inverted-index already
- * covers server reads). `columns` preserves declared order (a compound index is
- * order-sensitive). Index order within a table is declaration order.
+ * Applied on BOTH sides: the client materializes it in its local SQLite, and
+ * the server creates it on the relational per-app row table
+ * (DESIGN-relational-server-storage.md "user indexes"; the sync read path
+ * itself still uses the scope inverted-index). `columns` preserves declared
+ * order (a compound index is order-sensitive). Index order within a table is
+ * declaration order.
  */
 export interface IrIndex {
   readonly name: string;

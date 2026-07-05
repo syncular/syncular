@@ -12,7 +12,14 @@
  * index-first fanout and dense per-partition commitSeq allocation.
  */
 import { describe, expect, test } from 'bun:test';
-import type { ClientRecord, ServerStorage, StoredRow } from '@syncular/server';
+import { encodeRow, type RowColumn } from '@syncular/core';
+import {
+  type ClientRecord,
+  compileSchema,
+  type ServerSchema,
+  type ServerStorage,
+  type StoredRow,
+} from '@syncular/server';
 
 const PARTITION = 'part-1';
 const NOW = 1_750_000_000_000;
@@ -21,22 +28,76 @@ function bytes(...values: number[]): Uint8Array {
   return new Uint8Array(values);
 }
 
-function row(
+/**
+ * The contract schema: storage persists rows RELATIONALLY (per-app tables,
+ * DESIGN-relational-server-storage.md), so every upserted payload must be
+ * valid row-codec bytes for its table.
+ */
+const TASKS_COLUMNS: readonly RowColumn[] = [
+  { name: 'id', type: 'string', nullable: false },
+  { name: 'project_id', type: 'string', nullable: false },
+  { name: 'data', type: 'bytes', nullable: true },
+];
+const DOCS_COLUMNS: readonly RowColumn[] = [
+  { name: 'id', type: 'string', nullable: false },
+  { name: 'org_id', type: 'string', nullable: false },
+  { name: 'project_id', type: 'string', nullable: false },
+];
+export const CONTRACT_SCHEMA: ServerSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'tasks',
+      columns: TASKS_COLUMNS,
+      primaryKey: 'id',
+      scopes: ['project:{project_id}'],
+    },
+    {
+      name: 'docs',
+      columns: DOCS_COLUMNS,
+      primaryKey: 'id',
+      scopes: ['org:{org_id}', 'project:{project_id}'],
+    },
+  ],
+};
+
+function taskRow(
   rowId: string,
-  scopes: Record<string, string>,
+  project: string,
   serverVersion = 1,
-  payload = bytes(1, 2, 3),
+  data: Uint8Array | null = bytes(1, 2, 3),
 ): StoredRow {
-  return { rowId, serverVersion, scopes, payload };
+  return {
+    rowId,
+    serverVersion,
+    scopes: { project_id: project },
+    payload: encodeRow(TASKS_COLUMNS, [rowId, project, data]),
+  };
+}
+
+function docRow(rowId: string, project: string, serverVersion = 1): StoredRow {
+  return {
+    rowId,
+    serverVersion,
+    scopes: { project_id: project },
+    payload: encodeRow(DOCS_COLUMNS, [rowId, 'o1', project]),
+  };
 }
 
 export function runStorageContract(
   name: string,
   makeStorage: () => ServerStorage | Promise<ServerStorage>,
 ): void {
+  // Relational row tables are created up front (the handler does this on
+  // first contact in production; the contract drives storage directly).
+  const make = async (): Promise<ServerStorage> => {
+    const storage = await makeStorage();
+    await storage.ensureSchema(compileSchema(CONTRACT_SCHEMA));
+    return storage;
+  };
   describe(`ServerStorage contract (${name})`, () => {
     test('appendCommit allocates a dense per-partition commitSeq', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       const seqs: number[] = [];
       for (let i = 0; i < 3; i++) {
         const tx = await storage.begin(PARTITION);
@@ -64,7 +125,7 @@ export function runStorageContract(
     });
 
     test('commitSeq is per-partition (independent counters)', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       const txA = await storage.begin('part-a');
       const a = await txA.appendCommit({
         clientId: 'c',
@@ -106,7 +167,7 @@ export function runStorageContract(
     });
 
     test('rollback discards writes and does not consume a commitSeq', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       const tx1 = await storage.begin(PARTITION);
       await tx1.appendCommit({
         clientId: 'c',
@@ -149,20 +210,20 @@ export function runStorageContract(
     });
 
     test('row upsert / getRow / delete round-trips through a transaction', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       const tx = await storage.begin(PARTITION);
-      await tx.upsertRow(
-        'tasks',
-        row('r1', { project_id: 'p1' }, 2, bytes(9, 8, 7)),
-      );
+      const r1 = taskRow('r1', 'p1', 2, bytes(9, 8, 7));
+      await tx.upsertRow('tasks', r1);
       const inTx = await tx.getRow('tasks', 'r1');
       expect(inTx?.serverVersion).toBe(2);
-      expect(inTx?.payload).toEqual(bytes(9, 8, 7));
+      // The relational store re-serves the payload byte-verbatim (DESIGN
+      // "_sync_payload is the wire source of truth").
+      expect(inTx?.payload).toEqual(r1.payload);
       expect(inTx?.scopes).toEqual({ project_id: 'p1' });
       await tx.commit();
 
       const stored = await storage.getRow(PARTITION, 'tasks', 'r1');
-      expect(stored?.payload).toEqual(bytes(9, 8, 7));
+      expect(stored?.payload).toEqual(r1.payload);
 
       const del = await storage.begin(PARTITION);
       await del.deleteRow('tasks', 'r1');
@@ -171,7 +232,7 @@ export function runStorageContract(
     });
 
     test('idempotency result persists and reads back', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       const tx = await storage.begin(PARTITION);
       await tx.putPushResult('c1', 'commit-1', {
         status: 'applied',
@@ -189,7 +250,7 @@ export function runStorageContract(
     });
 
     test('conflict push-result bytes round-trip', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       const tx = await storage.begin(PARTITION);
       await tx.putPushResult('c1', 'commit-2', {
         status: 'rejected',
@@ -217,7 +278,7 @@ export function runStorageContract(
     // --- Inverted scope index (§3.1) — the reason Postgres storage exists ---
 
     test('readCommitWindow selects by scope, oldest first, honoring limit', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       // Three commits: p1, p2, p1 again.
       for (const [i, project] of ['p1', 'p2', 'p1'].entries()) {
         const tx = await storage.begin(PARTITION);
@@ -259,7 +320,7 @@ export function runStorageContract(
     });
 
     test('readCommitWindow verifies the full multi-variable match', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       const tx = await storage.begin(PARTITION);
       await tx.appendCommit({
         clientId: 'c',
@@ -299,12 +360,12 @@ export function runStorageContract(
     });
 
     test('scanRows selects by scope ordered by rowId, resumable', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       const tx = await storage.begin(PARTITION);
-      await tx.upsertRow('tasks', row('r3', { project_id: 'p1' }, 1, bytes(3)));
-      await tx.upsertRow('tasks', row('r1', { project_id: 'p1' }, 1, bytes(1)));
-      await tx.upsertRow('tasks', row('r2', { project_id: 'p2' }, 1, bytes(2)));
-      await tx.upsertRow('tasks', row('r4', { project_id: 'p1' }, 1, bytes(4)));
+      await tx.upsertRow('tasks', taskRow('r3', 'p1', 1, bytes(3)));
+      await tx.upsertRow('tasks', taskRow('r1', 'p1', 1, bytes(1)));
+      await tx.upsertRow('tasks', taskRow('r2', 'p2', 1, bytes(2)));
+      await tx.upsertRow('tasks', taskRow('r4', 'p1', 1, bytes(4)));
       await tx.commit();
       const page1 = await storage.scanRows(PARTITION, {
         table: 'tasks',
@@ -323,9 +384,9 @@ export function runStorageContract(
     });
 
     test('deleting a row removes it from the scope scan', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       const tx = await storage.begin(PARTITION);
-      await tx.upsertRow('tasks', row('r1', { project_id: 'p1' }));
+      await tx.upsertRow('tasks', taskRow('r1', 'p1'));
       await tx.commit();
       const del = await storage.begin(PARTITION);
       await del.deleteRow('tasks', 'r1');
@@ -340,12 +401,12 @@ export function runStorageContract(
     });
 
     test('re-scoping a row moves it in the inverted index', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       const tx = await storage.begin(PARTITION);
-      await tx.upsertRow('tasks', row('r1', { project_id: 'p1' }));
+      await tx.upsertRow('tasks', taskRow('r1', 'p1'));
       await tx.commit();
       const move = await storage.begin(PARTITION);
-      await move.upsertRow('tasks', row('r1', { project_id: 'p2' }, 2));
+      await move.upsertRow('tasks', taskRow('r1', 'p2', 2));
       await move.commit();
       const p1 = await storage.scanRows(PARTITION, {
         table: 'tasks',
@@ -366,7 +427,7 @@ export function runStorageContract(
     // --- Horizon / pruning (§4.6) ---
 
     test('horizon set/get and pruneCommitsThrough', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       for (let i = 0; i < 5; i++) {
         const tx = await storage.begin(PARTITION);
         await tx.appendCommit({
@@ -404,7 +465,7 @@ export function runStorageContract(
     });
 
     test('getCommitSeqBefore returns the newest commit before a timestamp', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       for (let i = 0; i < 3; i++) {
         const tx = await storage.begin(PARTITION);
         await tx.appendCommit({
@@ -433,7 +494,7 @@ export function runStorageContract(
     // --- Client records (§4.5, §8.1) ---
 
     test('client record + cursors round-trip', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       const record: ClientRecord = {
         clientId: 'c1',
         actorId: 'a1',
@@ -459,7 +520,7 @@ export function runStorageContract(
     // --- Blob reference index (§5.9.4, optional methods) ---
 
     test('setBlobRefs / listRowsReferencingBlob / listReferencedBlobIds round-trip', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       if (
         storage.listRowsReferencingBlob === undefined ||
         storage.listReferencedBlobIds === undefined
@@ -474,9 +535,9 @@ export function runStorageContract(
         await tx.rollback();
         return;
       }
-      await tx.upsertRow('docs', row('d1', { project_id: 'p1' }));
-      await tx.upsertRow('docs', row('d2', { project_id: 'p2' }));
-      await tx.upsertRow('docs', row('d3', { project_id: 'p1' }));
+      await tx.upsertRow('docs', docRow('d1', 'p1'));
+      await tx.upsertRow('docs', docRow('d2', 'p2'));
+      await tx.upsertRow('docs', docRow('d3', 'p1'));
       await tx.setBlobRefs('docs', 'd1', ['sha256:aa', 'sha256:bb']);
       await tx.setBlobRefs('docs', 'd2', ['sha256:aa']);
       await tx.setBlobRefs('docs', 'd3', ['sha256:cc']);
@@ -503,7 +564,7 @@ export function runStorageContract(
     });
 
     test('setBlobRefs replaces the prior set for a row', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       if (
         storage.listRowsReferencingBlob === undefined ||
         storage.listReferencedBlobIds === undefined
@@ -515,7 +576,7 @@ export function runStorageContract(
         await tx.rollback();
         return;
       }
-      await tx.upsertRow('docs', row('d1', { project_id: 'p1' }));
+      await tx.upsertRow('docs', docRow('d1', 'p1'));
       await tx.setBlobRefs('docs', 'd1', ['sha256:aa', 'sha256:bb']);
       await tx.commit();
 
@@ -537,7 +598,7 @@ export function runStorageContract(
     });
 
     test('setBlobRefs with empty array clears a row; deleting a row drops its refs', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       if (
         storage.listRowsReferencingBlob === undefined ||
         storage.listReferencedBlobIds === undefined
@@ -549,8 +610,8 @@ export function runStorageContract(
         await tx.rollback();
         return;
       }
-      await tx.upsertRow('docs', row('d1', { project_id: 'p1' }));
-      await tx.upsertRow('docs', row('d2', { project_id: 'p1' }));
+      await tx.upsertRow('docs', docRow('d1', 'p1'));
+      await tx.upsertRow('docs', docRow('d2', 'p1'));
       await tx.setBlobRefs('docs', 'd1', ['sha256:aa']);
       await tx.setBlobRefs('docs', 'd2', ['sha256:bb']);
       await tx.commit();
@@ -576,7 +637,7 @@ export function runStorageContract(
     // --- Admin/console read surface (TODO §2.5, optional methods) ---
 
     test('listClientRecords / listCommitMetadata / scopeActivity / getRowScopes', async () => {
-      const storage = await makeStorage();
+      const storage = await make();
       if (
         storage.listClientRecords === undefined ||
         storage.listCommitMetadata === undefined ||
@@ -605,10 +666,7 @@ export function runStorageContract(
             },
           ],
         });
-        await tx.upsertRow(
-          'tasks',
-          row(`r${i}`, { project_id: project }, 1, bytes(i)),
-        );
+        await tx.upsertRow('tasks', taskRow(`r${i}`, project, 1, bytes(i)));
         await tx.commit();
       }
       await storage.putClientRecord(PARTITION, {

@@ -2,10 +2,9 @@
  * Local secondary indexes (the CREATE INDEX migration subset). The generated
  * client schema carries `indexes` per table; `ensureLocalSchema` must
  * materialize them as real SQLite indexes, and the §7.4.3 schema-bump reset
- * (drop-and-recreate) must recreate them. Server-side there is nothing to test:
- * the server stores rows in a generic `sync_rows` table with an opaque payload,
- * so user-column indexes are a client-only concern (the scope inverted-index
- * already covers server reads).
+ * (drop-and-recreate) must recreate them. The server-side counterpart —
+ * the same declared indexes created on the relational per-app row tables —
+ * is covered by packages/server/test/relational-rows.test.ts.
  */
 import { describe, expect, test } from 'bun:test';
 import {

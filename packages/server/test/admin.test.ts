@@ -35,6 +35,7 @@ function adminOf(
 ): SyncularAdmin {
   return new SyncularAdmin({
     storage: t.storage,
+    schema: t.ctx.schema,
     segments: t.segments,
     clock: () => t.now.ms,
     ...(extra?.ring !== undefined ? { ring: extra.ring } : {}),

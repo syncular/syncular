@@ -17,6 +17,7 @@
  * without touching the core. All methods are partition-local (§2.1).
  */
 import type { PushOperationResult, ScopeMap } from '@syncular/core';
+import type { CompiledSchema } from './schema';
 
 /** The current stored state of a synced row. */
 export interface StoredRow {
@@ -191,6 +192,18 @@ export interface StorageTransaction {
 }
 
 export interface ServerStorage {
+  /**
+   * Create/migrate the relational per-app row tables for `schema`
+   * (DESIGN-relational-server-storage.md). Idempotent and cheap when the
+   * stored schema version already matches (one marker read, memoized per
+   * instance); on first use it creates the tables, on a version bump it
+   * applies the migration subset (CREATE TABLE / ADD COLUMN / CREATE
+   * INDEX). The handler calls this before serving; hosts that drive
+   * storage directly (tests, admin tooling) call it once up front. Row
+   * operations for tables not covered by an `ensureSchema` call throw.
+   */
+  ensureSchema(schema: CompiledSchema): Promise<void>;
+
   begin(partition: string): Promise<StorageTransaction>;
 
   getMaxCommitSeq(partition: string): Promise<number>;

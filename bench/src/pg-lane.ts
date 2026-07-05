@@ -94,8 +94,17 @@ async function createPgServer(url: string): Promise<{
   });
   const reset = async () => {
     // Clear our partition's data so re-runs start clean.
+    // The relational row store: the app table is partitioned by
+    // _sync_partition (it may not exist yet on a fresh database).
+    // biome-ignore lint/suspicious/noExplicitAny: dynamic handle.
+    await (sql as any).unsafe(
+      `DO $$ BEGIN
+         IF to_regclass('tasks') IS NOT NULL THEN
+           DELETE FROM tasks WHERE _sync_partition = '${'${PARTITION}'}';
+         END IF;
+       END $$`,
+    );
     for (const table of [
-      'sync_rows',
       'sync_row_scopes',
       'sync_commits',
       'sync_changes',

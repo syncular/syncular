@@ -101,6 +101,7 @@ function wrapStorage(
   faults: ServerFaults,
 ): ServerStorage {
   return {
+    ensureSchema: (s) => storage.ensureSchema(s),
     begin: (p) => storage.begin(p),
     getMaxCommitSeq: (p) => storage.getMaxCommitSeq(p),
     getHorizonSeq: (p) => storage.getHorizonSeq(p),

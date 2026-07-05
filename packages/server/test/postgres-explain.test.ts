@@ -16,7 +16,12 @@
 
 import { expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
-import { PostgresServerStorage } from '@syncular/server';
+import { encodeRow, type RowColumn } from '@syncular/core';
+import {
+  compileSchema,
+  PostgresServerStorage,
+  type ServerSchema,
+} from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
 
 const PARTITION = 'part-1';
@@ -24,23 +29,40 @@ const NOW = 1_750_000_000_000;
 const PROJECTS = 20;
 const ROWS = 2_000;
 
+const COLUMNS: readonly RowColumn[] = [
+  { name: 'id', type: 'string', nullable: false },
+  { name: 'project_id', type: 'string', nullable: false },
+];
+const SCHEMA: ServerSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'tasks',
+      columns: COLUMNS,
+      primaryKey: 'id',
+      scopes: ['project:{project_id}'],
+    },
+  ],
+};
+
 async function seededStorage(): Promise<{
   storage: PostgresServerStorage;
   db: PGlite;
 }> {
   const db = await PGlite.create();
   const storage = new PostgresServerStorage(pgliteExecutor(db));
-  await storage.migrate();
+  await storage.ensureSchema(compileSchema(SCHEMA));
   // Spread rows/commits across PROJECTS scope values so a single value is a
   // small, index-worthy slice of the whole.
   for (let i = 0; i < ROWS; i++) {
     const project = `p${i % PROJECTS}`;
     const tx = await storage.begin(PARTITION);
+    const rowId = `r${String(i).padStart(6, '0')}`;
     await tx.upsertRow('tasks', {
-      rowId: `r${String(i).padStart(6, '0')}`,
+      rowId,
       serverVersion: 1,
       scopes: { project_id: project },
-      payload: new Uint8Array([i & 0xff]),
+      payload: encodeRow(COLUMNS, [rowId, project]),
     });
     // Spread blob references across PROJECTS distinct blobIds so a single
     // blobId is a small, index-worthy slice of sync_blob_refs.

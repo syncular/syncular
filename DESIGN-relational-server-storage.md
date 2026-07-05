@@ -1,9 +1,22 @@
 # DESIGN — relational server storage
 
+**Status: IMPLEMENTED 2026-07-06** — `packages/server/src/relational-rows.ts`
+(shared helper), wired into all three backends; `ServerStorage.ensureSchema`
+creates/migrates the per-app tables (the handler calls it on first contact).
+Verified: full repo suite, both conformance pairings, cargo, `bench:ci` all
+green; relational assertions live in
+`packages/server/test/relational-rows.test.ts`.
+
 Decided to plan with Benjamin 2026-07-05, after the offline-sync-bench
 integration surfaced that the v2 server persists synced rows as opaque
 payload blobs rather than real relational tables (a property v1 had and
 this rebuild dropped by default).
+
+Revised 2026-07-06 after critical review: the row payload is **retained**
+in the per-app tables (typed columns are a projection, not a
+re-materialization source), partition is part of the primary key, and the
+D1 number model / Postgres JSONB decisions are made explicit. Rationale
+inline; the superseded choices are recorded under "Rejected alternatives".
 
 ## Problem
 
@@ -24,6 +37,13 @@ uniform scope indexing, row bytes stored verbatim). That undercuts "sync
 lives inside your backend next to your data" — the data is there but not
 usable *as data* — and is why the CDC-model benchmark harness doesn't fit.
 
+**Scope caveat (E2EE):** for encrypted columns the server materializes
+ciphertext — a real column holding opaque bytes. The relational value
+proposition (live SQL, joins, analytics) applies to **plaintext columns
+only**. Apps that encrypt everything get correctly-shaped but unreadable
+tables; that is inherent to E2EE, not a defect of this design, but it
+bounds the motivation and the bench-harness expectations.
+
 ## Constraints from the existing system (what makes this tractable)
 
 1. **SPEC does not pin server storage layout.** The wire carries opaque
@@ -38,6 +58,10 @@ usable *as data* — and is why the CDC-model benchmark harness doesn't fit.
 3. **The storage interface is cleanly abstracted.** `ServerStorage` /
    `StorageTransaction` operate on `StoredRow { …, scopes, payload }`.
    Implementations swap internals without touching callers (push/pull).
+   Caveat: implementations are schema-*agnostic* today; this design makes
+   them schema-*aware* (the `CompiledSchema` is injected at construction
+   and refreshed on version bump) — the interface is unchanged, the
+   lifecycle is not.
 4. **The server already holds the full `CompiledSchema`** (columns,
    primaryKeyIndex, scopePatterns, blob/crdt/encrypted column indices) — it
    knows every table's shape.
@@ -45,31 +69,66 @@ usable *as data* — and is why the CDC-model benchmark harness doesn't fit.
    append-only history, not queried relationally.
 6. **Two dialects, three backends**: sqlite + d1 share `sqlite-dialect`;
    postgres is its own.
+7. **The migration subset is small**: CREATE TABLE / ADD COLUMN /
+   CREATE INDEX. Note: this subset exists **client-side only** today —
+   v2 has no server-side DDL-application machinery at all
+   (web-client/test/indexes.test.ts states this explicitly). P3 is
+   greenfield, bounded by the subset, not a revival of existing code.
 
 ## The design
 
-Replace the opaque **current-row** store (`sync_rows`) with **real
-per-app tables**; keep everything else. A `StoredRow` still crosses the
-interface with a `payload`, but the storage impl now persists it as typed
-columns and re-materializes the payload on read.
+Replace the generic **current-row** store (`sync_rows`) with **real
+per-app tables** that carry both the typed columns *and* the verbatim
+payload:
+
+- **Typed columns are the queryable projection** — what Benjamin's
+  requirement needs: `SELECT title FROM tasks`, joins, FK-shaped queries,
+  BI, the bench-admin endpoint.
+- **`_sync_payload` is the wire source of truth** — the serve path
+  (pull/bootstrap/segments) reads it verbatim, exactly as today. No
+  re-encode on the hot path, no codec-canonicality proofs, no
+  byte-identity risk, no conformance exposure.
+
+Round-trip identity (`encodeRow(decodeRow(payload)) === payload`) becomes a
+**test-time invariant** asserted continuously in the storage contract
+tests, not a runtime correctness requirement. If it holds across dialects
+for long enough, dropping `_sync_payload` is a cheap follow-up migration
+(see Non-goals) — it is not a fork in this design.
 
 ### Current-row tables
 
 - On schema load, compile the IR into per-table DDL (generalize the
-  sqlite-image builder): `CREATE TABLE <app_table>(<cols with affinities>,
-  _sync_server_version INTEGER NOT NULL, _sync_scopes <TEXT|JSONB>)`.
-  The primary key is the app PK. Scope columns are the app's real columns
-  already (§3.1 binds a scope variable to a column), so they need no
-  duplication — the `_sync_scopes` blob stays only as the resolved
-  stored-scope map the §3.4 authz path reads (or is recomputed from the
-  scope columns on read; decide in impl — keeping the map is cheaper).
+  sqlite-image builder):
+
+  ```sql
+  CREATE TABLE <app_table>(
+    _sync_partition       TEXT NOT NULL,
+    <app cols with affinities>,
+    _sync_server_version  INTEGER NOT NULL,
+    _sync_scopes          <TEXT|JSONB> NOT NULL,
+    _sync_payload         <BLOB|BYTEA> NOT NULL,
+    PRIMARY KEY (_sync_partition, <app pk>)
+  );
+  ```
+
+  **Partition is part of the primary key.** The current store keys
+  everything by `(partition, tbl, row_id)` and multiple partitions share
+  one database; per-app tables must preserve that or same-PK rows in two
+  partitions collide. (Single-partition deployments simply see a constant
+  column; server-side app queries add `WHERE _sync_partition = ?` or a
+  view per partition if ergonomics warrant it later.)
+- App table and column names are validated at schema compile: reject the
+  `sync_` / `_sync_` prefixes (namespace shared with `sync_commits`,
+  `sync_changes`, `sync_row_scopes`), reject identifiers over 63 bytes
+  (Postgres truncation), and always emit quoted identifiers (the
+  sqlite-image `quoteIdent` generalizes).
 - `upsertRow`: `decodeRow(columns, payload)` → typed values →
-  `INSERT … ON CONFLICT(pk) DO UPDATE`; write `_sync_server_version` and
-  the stored-scope map.
-- `getRow` / `scanRows` / `readCommitWindow`'s current-row reads: read
-  typed columns → **re-encode** to payload bytes (the wire shape callers
-  expect) via the existing row codec `encodeRow`. Scope filtering uses the
-  retained inverted index (below) or real indexed columns.
+  `INSERT … ON CONFLICT(_sync_partition, pk) DO UPDATE`, writing the typed
+  columns, `_sync_server_version`, `_sync_scopes`, and `_sync_payload` in
+  one statement.
+- `getRow` / `scanRows` / `readCommitWindow`'s current-row reads: `SELECT
+  _sync_payload, _sync_server_version, _sync_scopes …` — byte-verbatim,
+  same as today. Typed columns are never read on the sync serve path.
 
 ### Scope index
 
@@ -77,6 +136,11 @@ Keep the `sync_row_scopes` inverted index as the scope-filter mechanism
 (uniform, already tuned, covering). Scope columns being real columns is a
 bonus (server-side SQL can filter by them directly), but the pull scope
 filter continues to use the inverted index so its performance is unchanged.
+
+Scope data now exists in three places per row — the real app columns, the
+`_sync_scopes` stored map (what the §3.4 authz read consumes), and the
+inverted index. `upsertRow` writes all three in the same transaction; the
+storage contract test asserts their consistency.
 
 ### User indexes (bonus — closes a prior finding)
 
@@ -90,88 +154,173 @@ app's indexes for free.
 `sync_changes` keeps payload blobs. It is an append-only delta history, not
 queried relationally; relationalizing it is large work for little value.
 Benjamin's requirement (live SQL/FKs/analytics) is satisfied by the
-current-row tables. The pull/segment paths read current rows (now real) for
-bootstrap and `sync_changes` (opaque, re-served verbatim) for incremental
-deltas — both continue to hand the wire the same bytes.
+current-row tables. The pull/segment paths read current rows (payload
+verbatim) for bootstrap and `sync_changes` (opaque, re-served verbatim)
+for incremental deltas — both hand the wire the same bytes as today.
 
 ### Server-side schema migration (the genuinely new burden)
 
 The server must create tables on first use and `ALTER` on a schemaVersion
-bump (add column, add index — the migration subset already supports exactly
-these). This is what v1 had and v2 dropped. Bounded by the migration
-subset: CREATE TABLE / ADD COLUMN / CREATE INDEX only. The schema-floor
-response (§1.6) already gates unsupported client versions; server migration
-runs at schema load / version bump.
+bump (add column, add index — exactly the migration subset). This is
+**new code** (v2 has no server DDL machinery; see constraint 7), bounded
+by the subset: CREATE TABLE / ADD COLUMN / CREATE INDEX only. The
+schema-floor response (§1.6) already gates unsupported client versions;
+server migration runs at schema load / version bump.
 
-### Special columns
+On D1 (stateless Workers, per-request instantiation) a schema-version
+marker table gates the DDL check so cold starts don't re-run `CREATE TABLE
+IF NOT EXISTS` for every table on every request; sqlite/postgres do the
+same at process start.
 
-`json`/`blob_ref` → TEXT, `boolean` → INTEGER, `integer`/`float` → INTEGER/
-REAL, `bytes`/`crdt`/`encrypted` → BLOB affinity (crdt = merged bytes,
-encrypted = ciphertext — real columns holding opaque content, exactly as
-sqlite-image already does). No column type is un-storable relationally.
+Migration boundary and the payload: rows pushed under schemaVersion N keep
+their N-encoded `_sync_payload`; ADD COLUMN backfills the typed column
+with NULL/default. Because the serve path reads the payload verbatim and
+the schema floor forces clients to the current version before syncing,
+no re-encoding of old rows is required. The round-trip invariant test is
+scoped to same-schema-version rows (across a migration it is definitionally
+a different byte string).
 
-## Decisions (recommendations)
+### Column type mapping (per dialect)
 
-1. **Relational is THE storage, not a toggle** (no-fallback doctrine) —
-   strictly better for the product; the generic store is retired.
-2. **Commit log stays opaque** (above).
-3. **Scope filter keeps the inverted index** (unchanged perf) even though
+| IR type      | sqlite / d1 affinity | postgres  | note |
+|--------------|----------------------|-----------|------|
+| text         | TEXT                 | TEXT      |      |
+| integer      | INTEGER              | BIGINT    | D1 caveat below |
+| float        | REAL                 | DOUBLE PRECISION | |
+| boolean      | INTEGER              | BOOLEAN   |      |
+| json         | TEXT                 | **JSONB** | queryable on pg; safe because the wire never reads typed columns |
+| blob_ref     | TEXT                 | TEXT      |      |
+| bytes        | BLOB                 | BYTEA     |      |
+| crdt         | BLOB (merged bytes)  | BYTEA     | opaque content, real column |
+| encrypted    | BLOB (ciphertext)    | BYTEA     | opaque content, real column |
+
+`json → JSONB` on Postgres is deliberate: JSONB normalizes bytes (key
+order, whitespace), which would break re-encode identity — but the wire
+reads `_sync_payload`, so normalization in the projection is free, and it
+buys `->>`, containment operators, and GIN indexes (the analytics story).
+
+**D1 number model:** D1's JSON transport represents integers as JS doubles;
+i64 values beyond 2⁵³ lose precision in the typed column. Because
+`_sync_payload` is the wire source of truth, this is a *projection
+fidelity* limitation on D1, not data corruption — sync round-trips are
+exact regardless. Documented; if exact large-int projection on D1 ever
+matters, the column can be stored as TEXT behind the same IR type.
+
+**D1 bind-parameter limit (100/statement):** the per-column upsert binds
+~(columns + 4) parameters. Schema compile fails fast with a clear error
+for tables that exceed the limit (~95 app columns) rather than failing at
+runtime; chunked upsert is a follow-up if anyone hits it.
+
+## Decisions
+
+1. **Relational tables are THE storage, not a toggle** — `sync_rows` is
+   retired; there is no blob-vs-relational mode. (Unchanged.)
+2. **The verbatim payload is retained as `_sync_payload`** in the per-app
+   tables; typed columns are a projection, the payload serves the wire.
+   (Revised — was: re-encode from typed columns on read. See Rejected
+   alternatives.)
+3. **Partition is in the primary key** of every per-app table. (New —
+   the original DDL omitted it and broke multi-partition servers.)
+4. **Commit log stays opaque.** (Unchanged.)
+5. **Scope filter keeps the inverted index** (unchanged perf) even though
    scope columns are now real.
-4. **Re-encode on serve** is accepted (the row codec is fast; the
-   sqlite-image lane already pays decode). Measured against `bench:ci`;
-   re-derive a budget only if a real regression shows.
-5. **Stored-scope map retained** on the row (cheaper than recomputing from
-   columns for the §3.4 authz read).
+6. **Stored-scope map (`_sync_scopes`) retained** on the row (cheaper than
+   recomputing from columns for the §3.4 authz read); consistency with the
+   scope columns and inverted index is asserted by the contract tests.
+7. **`json → JSONB` on Postgres**; sqlite/d1 keep TEXT.
+
+### Rejected alternatives
+
+- **Re-encode-on-serve (the original design):** drop the payload, rebuild
+  wire bytes from typed columns on every read. Rejected because it turns
+  codec canonicality into a runtime correctness requirement on the hot
+  path, is *unsatisfiable* on D1 (i64→f64 through JSON breaks byte
+  identity), forbids JSONB on Postgres (normalization), and creates a
+  migration-boundary re-encode problem — all to save one BLOB column on
+  the smallest table in the system (current rows; the commit log dominates
+  storage). The ~2× current-row storage cost is the price of deleting the
+  design's three largest risks.
+- **Dual-write to a separate projection database/tables while keeping
+  `sync_rows`:** satisfies queryability but leaves two current-row tables
+  to keep consistent and keeps the "server data isn't real tables" smell.
+  The single-table projection+payload gets the same safety with one home
+  per row.
+- **Relationalizing `sync_changes`:** large work, no relational consumer.
 
 ## Phased implementation
 
 - **P1 — relational row store module (~1 day):** extract/generalize the
-  sqlite-image DDL+decode into a shared `relational-rows` helper: IR→DDL,
-  upsert (decode→columns), read (columns→encode→payload). Unit-tested in
-  isolation (round-trip a row through upsert→getRow == identity bytes).
+  sqlite-image DDL+decode into a shared `relational-rows` helper: IR→DDL
+  (per-dialect type map, identifier validation, `_sync_*` columns,
+  partition-qualified PK), upsert (decode→columns+payload), read
+  (payload verbatim). Unit tests: DDL golden per dialect; upsert→getRow
+  returns identical bytes; **round-trip invariant**
+  `encodeRow(decodeRow(p)) === p` asserted per column type (test-time
+  property, not a serving dependency).
 - **P2 — wire into the three backends (~1 day):** sqlite + d1 (shared
   dialect) and postgres current-row paths use the helper; retain the scope
   index and commit log. The `ServerStorage` interface and all callers
-  (push/pull/segments/admin queries) unchanged.
-- **P3 — server-side schema create/migrate (~0.5–1 day):** create tables at
-  schema load; ALTER on version bump; user indexes created server-side.
+  (push/pull/segments/admin queries) unchanged; storage construction now
+  takes the `CompiledSchema`. D1: bind-limit compile check.
+- **P3 — server-side schema create/migrate (~0.5–1 day, greenfield):**
+  create tables at schema load; ALTER on version bump; user indexes
+  created server-side; schema-version marker table gating DDL checks.
 - **P4 — tests & bench (~0.5 day):** storage contract stays green; new
   assertions that the server holds real queryable tables (`SELECT` app
-  columns; a foreign-key-shaped join works); re-encode-on-read byte
-  correctness; both conformance pairings green; `bench:ci` green (measure
-  the encode-on-serve delta). Then the offline-sync-bench integration
-  unblocks — syncular becomes layer-over-real-Postgres like the CDC
-  competitors.
+  columns; a foreign-key-shaped join works; JSONB operator works on pg);
+  scope-data consistency (columns vs `_sync_scopes` vs inverted index);
+  both conformance pairings green; `bench:ci` green (upsert now decodes +
+  binds per column — measure the push-side delta; the serve side is
+  byte-identical to today by construction). Then the offline-sync-bench
+  integration unblocks — syncular becomes layer-over-real-Postgres like
+  the CDC competitors.
 
-Total: ~2–4 agent-days, well-bounded because the expensive part
-(schema-aware column materialization) already exists.
+Total: ~2–4 agent-days. P1 shrank (no re-encode serving path to prove);
+P3 grew slightly (honest greenfield framing); net unchanged.
 
 ## Verification / done criteria
 
 - `bun run check`, `bench:ci`, cargo, both Rust conformance pairings green
-  throughout (this is storage-only; the wire is unchanged).
+  throughout (this is storage-only; the wire is unchanged — and with the
+  payload retained, the serve path is byte-identical *by construction*,
+  not by re-encode correctness).
 - A server integration test proves real relational structure: after a push,
   `SELECT title, completed FROM tasks WHERE project_id = ?` runs on the
-  server DB and returns typed rows; a join across two app tables works.
-- Re-encode-on-read is byte-identical to the pushed payload (golden).
+  server DB and returns typed rows; a join across two app tables works;
+  on Postgres a JSONB operator query works.
+- A multi-partition test: same app PK pushed in two partitions coexists.
+- The round-trip invariant holds in contract tests for every column type
+  on every dialect (flags codec drift early, keeps the drop-payload
+  follow-up alive).
 - The bench harness's `bench-admin` can read `/admin/tasks` from the
   syncular server's real tables (integration unblocked).
 
 ## Risks
 
-- **Encode-on-serve perf** — the pull/bootstrap-rows lane now re-encodes.
-  Mitigated: the sqlite-image lane (the premier bootstrap path) reads real
-  tables and builds the image directly, so it may even get *faster*; the
-  rows lane pays encode. Measure; the codec is not the bottleneck.
-- **Postgres type mapping** — `bytea`/`text`/`int8`/`bool`/`double`; the
-  d1/sqlite affinities differ. Per-dialect column mapping (the sqlite-image
-  builder handles sqlite; add the postgres map).
+- **Push-side decode+bind cost** — upsert now decodes the payload and
+  binds per column instead of one blob write. The codec is fast and push
+  is not the hot lane; measure in `bench:ci`. (The serve side carries
+  *zero* new cost — it reads the same bytes as today.)
+- **Storage growth** — current rows ~2× (payload + typed columns). Current
+  rows are the small table; the commit log dominates. Accepted.
+- **Projection drift** — typed columns and payload could theoretically
+  disagree (a bug in decode or a missed write path). Mitigated: both are
+  written in the same statement/transaction from the same source bytes,
+  and the contract tests assert agreement.
 - **Migration correctness under version bump** — bounded by the migration
   subset (CREATE TABLE / ADD COLUMN / CREATE INDEX); server migration
-  mirrors the client's DDL derivation.
+  mirrors the client's DDL derivation. Genuinely new code — the largest
+  unknown in the plan.
+- **D1 projection fidelity** — i64 > 2⁵³ imprecise in typed columns
+  (documented; sync unaffected); 100-param bind limit caps table width
+  (compile-time error).
 
 ## Non-goals
 
 - Relationalizing the commit-log history (`sync_changes` stays opaque).
 - Any wire/SPEC/client change (this is server storage only).
 - A configurable blob-vs-relational storage mode (relational is the store).
+- Dropping `_sync_payload`. Possible *future* follow-up on sqlite/postgres
+  once the round-trip invariant has soaked in CI (never on D1 — the number
+  model forbids byte-exact re-encode); not part of this work.
+- Encrypted-column queryability (ciphertext columns are opaque by design).

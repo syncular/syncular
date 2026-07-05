@@ -19,6 +19,7 @@ import { clockOf, type SyncServerConfig } from './context';
 import type { SyncularServerEvent } from './events';
 import type { RingBufferEvents, RingEventQuery } from './events-ring';
 import { DEFAULT_RETENTION, type RetentionPolicy } from './prune';
+import { compileSchema, type ServerSchema } from './schema';
 import type { SegmentStore, SegmentStoreStats } from './segment-store';
 import type {
   ClientRecord,
@@ -82,6 +83,12 @@ export interface AdminStats {
 
 export interface SyncularAdminOptions {
   readonly storage: ServerStorage;
+  /**
+   * The server schema. When present, row reads (`inspectRow`) ensure the
+   * relational row tables exist first — needed when the admin runs against
+   * a storage instance that has not served a sync request yet.
+   */
+  readonly schema?: ServerSchema;
   /** The event ring feeding the event tail. Absent ⇒ `events()` is empty. */
   readonly ring?: RingBufferEvents;
   readonly segments?: SegmentStore;
@@ -122,6 +129,7 @@ function toAdminClient(record: ClientRecord, active: boolean): AdminClient {
 /** The read-only console query surface. Construct one per host process. */
 export class SyncularAdmin {
   readonly #storage: ServerStorage;
+  readonly #schema?: ServerSchema;
   readonly #ring?: RingBufferEvents;
   readonly #segments?: SegmentStore;
   readonly #blobs?: BlobStore;
@@ -130,6 +138,7 @@ export class SyncularAdmin {
 
   constructor(options: SyncularAdminOptions) {
     this.#storage = options.storage;
+    if (options.schema !== undefined) this.#schema = options.schema;
     if (options.ring !== undefined) this.#ring = options.ring;
     if (options.segments !== undefined) this.#segments = options.segments;
     if (options.blobs !== undefined) this.#blobs = options.blobs;
@@ -148,6 +157,7 @@ export class SyncularAdmin {
   ): SyncularAdmin {
     return new SyncularAdmin({
       storage: config.storage,
+      schema: config.schema,
       segments: config.segments,
       ...(config.blobs !== undefined ? { blobs: config.blobs } : {}),
       ...(extra?.ring !== undefined ? { ring: extra.ring } : {}),
@@ -199,6 +209,9 @@ export class SyncularAdmin {
       this.#storage.getRowScopes?.bind(this.#storage),
       'storage',
     );
+    if (this.#schema !== undefined) {
+      await this.#storage.ensureSchema(compileSchema(this.#schema));
+    }
     const row = await read(partition, table, rowId);
     if (row === undefined) {
       return { table, rowId, exists: false };

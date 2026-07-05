@@ -8,6 +8,16 @@
  */
 import { Database } from 'bun:sqlite';
 import { syncError } from './errors';
+import {
+  deleteRowSql,
+  SCHEMA_META_DDL_SQLITE,
+  schemaDdl,
+  selectRowScopesSql,
+  selectRowSql,
+  upsertSql,
+  upsertValues,
+} from './relational-rows';
+import type { CompiledSchema, CompiledTable } from './schema';
 import { matchesEffective } from './scopes';
 import {
   deserializePushResult,
@@ -65,9 +75,10 @@ class SqliteTransaction implements StorageTransaction {
   async deleteRow(table: string, rowId: string): Promise<void> {
     this.#assertOpen();
     const db = this.#storage.db;
-    db.query(
-      'DELETE FROM sync_rows WHERE partition=? AND tbl=? AND row_id=?',
-    ).run(this.#partition, table, rowId);
+    db.query(deleteRowSql(this.#storage.table(table), 'sqlite')).run(
+      this.#partition,
+      rowId,
+    );
     db.query(
       'DELETE FROM sync_row_scopes WHERE partition=? AND tbl=? AND row_id=?',
     ).run(this.#partition, table, rowId);
@@ -177,10 +188,65 @@ class SqliteTransaction implements StorageTransaction {
 
 export class SqliteServerStorage implements ServerStorage {
   readonly db: Database;
+  /** Set by `ensureSchema`: app-table lookup for the relational row store. */
+  #tables: ReadonlyMap<string, CompiledTable> | undefined;
+  #schemaVersion: number | undefined;
 
   constructor(db: Database | string = ':memory:') {
     this.db = typeof db === 'string' ? new Database(db) : db;
     this.db.exec(SQLITE_DDL);
+  }
+
+  /** Resolve a table's compiled schema; row operations require `ensureSchema`. */
+  table(name: string): CompiledTable {
+    const table = this.#tables?.get(name);
+    if (table === undefined) {
+      throw new Error(
+        `unknown table ${JSON.stringify(name)} — ensureSchema(schema) must run before row operations`,
+      );
+    }
+    return table;
+  }
+
+  async ensureSchema(schema: CompiledSchema): Promise<void> {
+    // Memoized fast path: same instance, same schema version.
+    if (this.#schemaVersion === schema.version) return;
+    this.db.exec(SCHEMA_META_DDL_SQLITE);
+    const marker = this.db
+      .query<{ schema_version: number }, []>(
+        'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+      )
+      .get();
+    if (marker !== null && marker.schema_version > schema.version) {
+      throw new Error(
+        `stored schema version ${marker.schema_version} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
+      );
+    }
+    if (marker === null || marker.schema_version < schema.version) {
+      // Introspect existing app tables, then apply the migration subset
+      // (CREATE TABLE / ADD COLUMN / CREATE INDEX) to reach `schema`.
+      const existing = new Map<string, ReadonlySet<string>>();
+      for (const table of schema.tables.values()) {
+        const columns = this.db
+          .query<{ name: string }, []>(
+            `PRAGMA table_info("${table.name.replaceAll('"', '""')}")`,
+          )
+          .all();
+        if (columns.length > 0) {
+          existing.set(table.name, new Set(columns.map((c) => c.name)));
+        }
+      }
+      for (const statement of schemaDdl(schema, existing, 'sqlite')) {
+        this.db.exec(statement);
+      }
+      this.db
+        .query(
+          'INSERT INTO sync_schema_meta(id, schema_version) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version',
+        )
+        .run(schema.version);
+    }
+    this.#tables = schema.tables;
+    this.#schemaVersion = schema.version;
   }
 
   async begin(partition: string): Promise<StorageTransaction> {
@@ -189,17 +255,17 @@ export class SqliteServerStorage implements ServerStorage {
 
   /** Internal: write a row + refresh its scope-index entries. */
   writeRow(partition: string, table: string, row: StoredRow): void {
+    const compiled = this.table(table);
     this.db
-      .query(
-        'INSERT OR REPLACE INTO sync_rows(partition, tbl, row_id, server_version, scopes, payload) VALUES (?,?,?,?,?,?)',
-      )
+      .query(upsertSql(compiled, 'sqlite'))
       .run(
-        partition,
-        table,
-        row.rowId,
-        row.serverVersion,
-        JSON.stringify(row.scopes),
-        row.payload,
+        ...(upsertValues(compiled, partition, row, 'sqlite') as (
+          | string
+          | number
+          | boolean
+          | Uint8Array
+          | null
+        )[]),
       );
     this.db
       .query(
@@ -275,10 +341,10 @@ export class SqliteServerStorage implements ServerStorage {
     rowId: string,
   ): Promise<StoredRow | undefined> {
     const record = this.db
-      .query<SqliteRowRecord, [string, string, string]>(
-        'SELECT row_id, server_version, scopes, payload FROM sync_rows WHERE partition=? AND tbl=? AND row_id=?',
+      .query<SqliteRowRecord, [string, string]>(
+        selectRowSql(this.table(table), 'sqlite'),
       )
-      .get(partition, table, rowId);
+      .get(partition, rowId);
     return record === null ? undefined : toStoredRow(record);
   }
 
@@ -497,11 +563,13 @@ export class SqliteServerStorage implements ServerStorage {
       scopes: Record<string, string>;
     }[] = [];
     for (const ref of refs) {
+      const compiled = this.#tables?.get(ref.tbl);
+      if (compiled === undefined) continue; // table no longer in the schema
       const row = this.db
-        .query<{ scopes: string }, [string, string, string]>(
-          'SELECT scopes FROM sync_rows WHERE partition=? AND tbl=? AND row_id=?',
+        .query<{ scopes: string }, [string, string]>(
+          selectRowScopesSql(compiled, 'sqlite'),
         )
-        .get(partition, ref.tbl, ref.row_id);
+        .get(partition, ref.row_id);
       if (row === null) continue;
       out.push({
         table: ref.tbl,
@@ -654,13 +722,10 @@ export class SqliteServerStorage implements ServerStorage {
     { serverVersion: number; scopes: Record<string, string> } | undefined
   > {
     const record = this.db
-      .query<
-        { server_version: number; scopes: string },
-        [string, string, string]
-      >(
-        'SELECT server_version, scopes FROM sync_rows WHERE partition=? AND tbl=? AND row_id=?',
+      .query<{ server_version: number; scopes: string }, [string, string]>(
+        selectRowScopesSql(this.table(table), 'sqlite'),
       )
-      .get(partition, table, rowId);
+      .get(partition, rowId);
     if (record === null) return undefined;
     return {
       serverVersion: record.server_version,
