@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./faults": "./src/faults.ts"
   },
   "dependencies": {
     "@syncular-v2/core": "workspace:*",
