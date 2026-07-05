@@ -26,7 +26,7 @@ import {
   type PushResultFrame,
   parseBlobRef,
   type RowValue,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import type { BlobStore } from './blob-store';
 import type { SyncRequestContext } from './context';
 import { clockOf } from './context';

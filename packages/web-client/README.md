@@ -1,4 +1,4 @@
-# @syncular-v2/web-client
+# @syncular/client
 
 The TypeScript client protocol core (SPEC.md §§3–8, client side) plus its
 browser platform bindings.
@@ -12,13 +12,13 @@ Worker. The UI thread talks to it through a thin postMessage RPC:
 
 ```ts
 // worker.ts — the worker entry your bundler emits as its own script
-import { startSyncWorker } from '@syncular-v2/web-client/worker';
+import { startSyncWorker } from '@syncular/client/worker';
 startSyncWorker();
 ```
 
 ```ts
 // main thread
-import { createSyncClientHandle } from '@syncular-v2/web-client';
+import { createSyncClientHandle } from '@syncular/client';
 
 const handle = await createSyncClientHandle({
   worker: () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }),
@@ -128,8 +128,8 @@ Hosts that run outside a browser — an **Electron main process**, a plain
 [better-sqlite3](https://github.com/WiseLibs/better-sqlite3):
 
 ```ts
-import { openNodeDatabase } from '@syncular-v2/web-client/node';
-import { SyncClient } from '@syncular-v2/web-client';
+import { openNodeDatabase } from '@syncular/client/node';
+import { SyncClient } from '@syncular/client';
 
 const database = openNodeDatabase('app.db'); // or ':memory:' (default)
 const client = new SyncClient({ database, schema, /* … */ });

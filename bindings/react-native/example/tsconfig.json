@@ -13,8 +13,8 @@
     "noEmit": true,
     "types": ["react", "bun"],
     "paths": {
-      "@syncular-v2/react": ["../../../packages/react/src/index.ts"],
-      "@syncular-v2/react-native": ["../src/index.ts"]
+      "@syncular/react": ["../../../packages/react/src/index.ts"],
+      "@syncular/react-native": ["../src/index.ts"]
     }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "test/**/*.tsx"]

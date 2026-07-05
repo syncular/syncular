@@ -7,7 +7,7 @@ export function useSyncClient(): NormalizedClient {
   const client = useContext(SyncContext);
   if (client === undefined) {
     throw new Error(
-      '@syncular-v2/react: no client in context — wrap your tree in <SyncProvider client={…}>',
+      '@syncular/react: no client in context — wrap your tree in <SyncProvider client={…}>',
     );
   }
   return client;

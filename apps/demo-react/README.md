@@ -1,7 +1,7 @@
 # syncular v2 — demo-react (hooks example)
 
 The hooks-based counterpart to the vanilla two-pane [`apps/demo`](../demo).
-A single-pane todo app built entirely on `@syncular-v2/react`, running against
+A single-pane todo app built entirely on `@syncular/react`, running against
 the **same** server core (server-hono over bun:sqlite, a RealtimeHub
 WebSocket, segment + blob endpoints) with a React frontend instead of the
 vanilla-DOM one. The whole client core runs in a Web Worker on persistent
@@ -13,7 +13,7 @@ It dogfoods the full hook surface:
 | Hook                                   | What it drives here                                             |
 | -------------------------------------- | -------------------------------------------------------------- |
 | `SyncProvider`                         | Supplies the worker-mode `SyncClientHandle` to the tree.       |
-| `useTypedQuery` (`@syncular-v2/react/typed`) | The live todo list — **Kysely-typed** by the generated `Database`, read-only, exact table invalidation from the compiled query's AST. |
+| `useTypedQuery` (`@syncular/react/typed`) | The live todo list — **Kysely-typed** by the generated `Database`, read-only, exact table invalidation from the compiled query's AST. |
 | `useMutation`                          | Add / toggle / delete todos (writes go through the outbox).    |
 | `useSyncStatus`                        | The `outbox N` badge + upgrading / schema-floor state.         |
 | `useWindow`                            | The **list-filter dropdown** — picking a list calls `setWindow([list])`, which bootstraps that list and evicts the others (W1 value-sharded windowing, visible). `isComplete(list)` renders the completeness oracle. |
@@ -47,7 +47,7 @@ meaningful: each list is a separate scope value, windowed in one at a time.
 ## Notes
 
 - **Kysely-typed reads, `mutate` writes.** `useTypedQuery` is the typed READ
-  layer (`@syncular-v2/kysely` dialect over the handle's `query` surface).
+  layer (`@syncular/kysely` dialect over the handle's `query` surface).
   Writes stay on `useMutation` so they land in the outbox and sync (SPEC §7.1)
   — a Kysely write throws.
 - **Schema is typegen-generated** (B5 dogfood): `syncular.json` +

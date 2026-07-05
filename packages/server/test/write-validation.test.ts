@@ -5,7 +5,7 @@
  * protocol code. Driven through bytes, like the rest of the push suite.
  */
 import { describe, expect, test } from 'bun:test';
-import { decodeRow, encodeRow, type RowColumn } from '@syncular-v2/core';
+import { decodeRow, encodeRow, type RowColumn } from '@syncular/core';
 import {
   type CrdtMergerRegistry,
   RESERVED_VALIDATION_CODE_PREFIXES,
@@ -14,7 +14,7 @@ import {
   type SyncularServerEvents,
   ValidationRejection,
   type Validator,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import {
   makeContext,
   pushCommit,

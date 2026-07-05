@@ -20,15 +20,15 @@
  */
 
 import { afterEach, expect, test } from 'bun:test';
-import { handleSegmentDownload, handleSyncRequest } from '@syncular-v2/server';
 import type {
   SegmentFetchRequest,
   SqlRow,
   SqlValue,
   SyncClientConfig,
-} from '@syncular-v2/web-client';
-import { type ClientDatabase, SyncClient } from '@syncular-v2/web-client';
-import { BunClientDatabase } from '@syncular-v2/web-client/bun';
+} from '@syncular/client';
+import { type ClientDatabase, SyncClient } from '@syncular/client';
+import { BunClientDatabase } from '@syncular/client/bun';
+import { handleSegmentDownload, handleSyncRequest } from '@syncular/server';
 import {
   CLIENT_SCHEMA,
   makeServer,

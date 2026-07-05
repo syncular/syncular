@@ -14,8 +14,9 @@
  *     await sync.syncAll();           // both converge
  *     await sync.dispose();
  */
-import type { ResolveScopes } from '@syncular-v2/server';
-import type { ClientSchema, SyncClientConfig } from '@syncular-v2/web-client';
+
+import type { ClientSchema, SyncClientConfig } from '@syncular/client';
+import type { ResolveScopes } from '@syncular/server';
 import { buildTestClient, type TestClient } from './client';
 import { createVirtualClock, type VirtualClock } from './clock';
 import {

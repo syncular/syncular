@@ -2,7 +2,7 @@
   "name": "syncular-rn-example",
   "version": "0.0.0",
   "private": true,
-  "description": "The syncular v2 React Native todo — @syncular-v2/react hooks over the native core (createNativeSyncClient), the same clean interface as the web demos.",
+  "description": "The syncular v2 React Native todo — @syncular/react hooks over the native core (createNativeSyncClient), the same clean interface as the web demos.",
   "scripts": {
     "start": "react-native start",
     "ios": "react-native run-ios",
@@ -11,8 +11,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@syncular-v2/react": "workspace:*",
-    "@syncular-v2/react-native": "workspace:*",
+    "@syncular/react": "workspace:*",
+    "@syncular/react-native": "workspace:*",
     "react": "19.1.0",
     "react-native": "0.81.0"
   },

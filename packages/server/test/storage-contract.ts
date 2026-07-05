@@ -12,11 +12,7 @@
  * index-first fanout and dense per-partition commitSeq allocation.
  */
 import { describe, expect, test } from 'bun:test';
-import type {
-  ClientRecord,
-  ServerStorage,
-  StoredRow,
-} from '@syncular-v2/server';
+import type { ClientRecord, ServerStorage, StoredRow } from '@syncular/server';
 
 const PARTITION = 'part-1';
 const NOW = 1_750_000_000_000;

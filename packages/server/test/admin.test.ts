@@ -12,7 +12,7 @@ import {
   SqliteBlobStore,
   type SqliteServerStorage,
   SyncularAdmin,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import {
   makeContext,
   pullHeader,

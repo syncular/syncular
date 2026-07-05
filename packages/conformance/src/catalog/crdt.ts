@@ -4,14 +4,14 @@
  * conflicts, a non-crdt baseVersion conflict fires with the crdt merged into
  * the winner, and offline crdt edits replay idempotently.
  *
- * The CRDT bytes are real Yjs updates produced by `@syncular-v2/crdt-yjs`
+ * The CRDT bytes are real Yjs updates produced by `@syncular/crdt-yjs`
  * (the reference merger the ts-server driver registers). The scenario is
  * implementation-agnostic: it only ever hands `crdt` column values as bytes
  * across the driver seam and asserts byte-level convergence — the Rust
  * pairing pushes the SAME fixture bytes and reaches the same merged result
  * (§5.10.5), no Rust-side merge.
  */
-import { YjsColumn, yjsDocMerger } from '@syncular-v2/crdt-yjs';
+import { YjsColumn, yjsDocMerger } from '@syncular/crdt-yjs';
 import { check, checkEqual } from '../checks';
 import type { DriverRow, DriverRowValue, DriverSchema } from '../driver';
 import type { Scenario, ScenarioContext } from '../scenario';

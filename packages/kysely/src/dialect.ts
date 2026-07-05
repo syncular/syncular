@@ -6,7 +6,7 @@
  * exactly what a `ClientDatabase` runs — and supplies only the driver.
  *
  * Placement rationale: this lives in its OWN package, never a subpath of
- * `@syncular-v2/web-client`, so Kysely (a real dependency, not just types)
+ * `@syncular/client`, so Kysely (a real dependency, not just types)
  * stays entirely out of the client core's bundle. The core's bundle-entry
  * imports nothing from here, so the 72 KB own-JS budget is untouched by
  * construction.

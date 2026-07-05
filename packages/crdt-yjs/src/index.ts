@@ -1,10 +1,10 @@
 /**
- * @syncular-v2/crdt-yjs — the reference Yjs binding for CRDT columns
+ * @syncular/crdt-yjs — the reference Yjs binding for CRDT columns
  * (SPEC.md §5.10). Two faces of one Yjs integration:
  *
  * - the SERVER-side `yjsDocMerger` (§5.10.2): a `CrdtMerger` for `crdtType`
  *   `'yjs-doc'` — this is where Yjs is *required*, so it lives here, never in
- *   `@syncular-v2/core` or `@syncular-v2/server` (the blob-store rule,
+ *   `@syncular/core` or `@syncular/server` (the blob-store rule,
  *   §5.9.2);
  * - the CLIENT-side `YjsColumn` helper (§5.10.4): a thin `Y.Doc` wrapper an
  *   app uses to produce update bytes for a `crdt` column and to apply
@@ -14,7 +14,7 @@
  * Yjs enters the dependency tree exactly here.
  */
 
-import type { CrdtMerger, CrdtMergerRegistry } from '@syncular-v2/server';
+import type { CrdtMerger, CrdtMergerRegistry } from '@syncular/server';
 import * as Y from 'yjs';
 
 /** The one built-in `crdtType` this rung defines (§5.10.1). */

@@ -1,14 +1,14 @@
 {
-  "name": "@syncular-v2/create-app",
+  "name": "create-syncular-app",
   "private": true,
   "type": "module",
   "bin": {
-    "create-syncular-v2": "./src/cli.ts"
+    "create-syncular-app": "./src/cli.ts"
   },
   "exports": {
     ".": "./src/index.ts"
   },
   "devDependencies": {
-    "@syncular-v2/typegen": "workspace:*"
+    "@syncular/typegen": "workspace:*"
   }
 }

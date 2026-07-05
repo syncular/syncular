@@ -1,5 +1,5 @@
 {
-  "name": "@syncular-v2/tauri",
+  "name": "@syncular/tauri",
   "private": true,
   "type": "module",
   "exports": {
@@ -14,12 +14,12 @@
     }
   },
   "dependencies": {
-    "@syncular-v2/web-client": "workspace:*"
+    "@syncular/client": "workspace:*"
   },
   "scripts": {
     "test": "bun test"
   },
   "devDependencies": {
-    "@syncular-v2/react": "workspace:*"
+    "@syncular/react": "workspace:*"
   }
 }

@@ -20,7 +20,7 @@
  * With `multiTab` off (default), behavior is unchanged: the loser is an
  * `isLeader === false` handle whose calls reject with `client.not_leader`.
  */
-import type { WakeReason } from '@syncular-v2/core';
+import type { WakeReason } from '@syncular/core';
 import type { BlobRef, CachedBlob } from './blob';
 import type {
   ConflictRecord,

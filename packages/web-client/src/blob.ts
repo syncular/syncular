@@ -10,11 +10,7 @@
  * row value is the whole download key. Pending uploads are tracked in the
  * outbox-adjacent uploads table (B4) and flushed before push.
  */
-import {
-  type BlobRef,
-  parseBlobRef,
-  serializeBlobRef,
-} from '@syncular-v2/core';
+import { type BlobRef, parseBlobRef, serializeBlobRef } from '@syncular/core';
 import type { ClientDatabase } from './database';
 import type { CompiledClientSchema } from './schema';
 import { quoteIdent } from './schema';

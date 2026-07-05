@@ -3,7 +3,7 @@
  * (SPEC.md §3.2, §3.3, §4.5) — driven through bytes.
  */
 import { describe, expect, test } from 'bun:test';
-import { type CommitFrame, decodeRow } from '@syncular-v2/core';
+import { type CommitFrame, decodeRow } from '@syncular/core';
 import {
   docRow,
   makeContext,

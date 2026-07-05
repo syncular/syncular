@@ -3,8 +3,8 @@
  * (SPEC.md §6) plus §3.4 write-path authorization — driven through bytes.
  */
 import { describe, expect, test } from 'bun:test';
-import { decodeRow } from '@syncular-v2/core';
-import { handleSyncRequest } from '@syncular-v2/server';
+import { decodeRow } from '@syncular/core';
+import { handleSyncRequest } from '@syncular/server';
 import {
   del,
   expectSyncError,

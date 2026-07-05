@@ -4,7 +4,7 @@
  * The server core NEVER depends on a CRDT library. A `crdt` column (§2.4
  * tag 8) is merged server-side on push (§5.10.3) by a host-supplied
  * `CrdtMerger`, selected per column by its schema-IR `crdtType` (§5.10.1).
- * The reference `yjs-doc` merger lives in `@syncular-v2/crdt-yjs`, keeping
+ * The reference `yjs-doc` merger lives in `@syncular/crdt-yjs`, keeping
  * Yjs out of core/server (the blob-store placement rule, §5.9.2, applied to
  * CRDT).
  */

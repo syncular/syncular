@@ -1,4 +1,4 @@
-# @syncular-v2/docs
+# @syncular/docs
 
 The documentation site — a deliberately boring static generator (migration record
 thesis): ~zero dependencies, no framework, no client-side JS. Markdown pages in

@@ -16,8 +16,8 @@
 
 import { expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
-import { PostgresServerStorage } from '@syncular-v2/server';
-import { pgliteExecutor } from '@syncular-v2/server/pglite';
+import { PostgresServerStorage } from '@syncular/server';
+import { pgliteExecutor } from '@syncular/server/pglite';
 
 const PARTITION = 'part-1';
 const NOW = 1_750_000_000_000;

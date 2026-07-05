@@ -9,8 +9,8 @@ import {
   MemorySegmentStore,
   SqliteServerStorage,
   type SyncServerConfig,
-} from '@syncular-v2/server';
-import { createSyncularHono } from '@syncular-v2/server-hono';
+} from '@syncular/server';
+import { createSyncularHono } from '@syncular/server-hono';
 import { makeClient } from './make-client';
 import { schema } from './syncular.generated';
 

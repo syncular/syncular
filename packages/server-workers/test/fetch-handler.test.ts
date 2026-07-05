@@ -18,7 +18,7 @@ import {
   type PushResultFrame,
   type RequestFrame,
   type RowColumn,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import {
   type BlobStore,
   blobIdFor,
@@ -28,7 +28,7 @@ import {
   type ServerSchema,
   SSP2_CONTENT_TYPE,
   type SyncServerConfig,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import { D1DatabaseDouble } from '../../server/test/d1-double';
 import { startS3Stub } from '../../server/test/s3-stub';
 import { createWorkersFetchHandler, D1ServerStorage } from '../src/index';

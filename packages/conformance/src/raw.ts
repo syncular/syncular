@@ -21,7 +21,7 @@ import {
   type ScopeMap,
   type SubEndFrame,
   type SubStartFrame,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import type {
   DriverRow,
   DriverRowValue,

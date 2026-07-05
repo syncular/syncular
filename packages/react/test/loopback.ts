@@ -5,7 +5,14 @@
  * React tests need. This proves the hooks work against the SHIPPED
  * `SyncClient` with REAL choke-point invalidation — not a fake.
  */
-import type { RowColumn, ScopeMap } from '@syncular-v2/core';
+
+import {
+  type ClientSchema,
+  type SegmentFetchRequest,
+  SyncClient,
+} from '@syncular/client';
+import { BunClientDatabase } from '@syncular/client/bun';
+import type { RowColumn, ScopeMap } from '@syncular/core';
 import {
   createRealtimeHub,
   handleSegmentDownload,
@@ -14,13 +21,7 @@ import {
   type ServerSchema,
   SqliteServerStorage,
   type SyncRequestContext,
-} from '@syncular-v2/server';
-import {
-  type ClientSchema,
-  type SegmentFetchRequest,
-  SyncClient,
-} from '@syncular-v2/web-client';
-import { BunClientDatabase } from '@syncular-v2/web-client/bun';
+} from '@syncular/server';
 
 const PARTITION = 'part-1';
 

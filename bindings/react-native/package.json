@@ -1,8 +1,8 @@
 {
-  "name": "@syncular-v2/react-native",
+  "name": "@syncular/react-native",
   "version": "0.0.0",
   "private": true,
-  "description": "React Native module for syncular v2 — the native Rust core (FFI) surfaced as the SyncClientLike interface, so @syncular-v2/react hooks work unchanged in RN.",
+  "description": "React Native module for syncular v2 — the native Rust core (FFI) surfaced as the SyncClientLike interface, so @syncular/react hooks work unchanged in RN.",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
@@ -24,11 +24,11 @@
     "react-native": "*"
   },
   "dependencies": {
-    "@syncular-v2/web-client": "workspace:*"
+    "@syncular/client": "workspace:*"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^15.11.0",
-    "@syncular-v2/react": "workspace:*",
+    "@syncular/react": "workspace:*",
     "@testing-library/react": "^16.1.0",
     "@types/react": "^18.3.0",
     "react": "^18.3.1",

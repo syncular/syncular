@@ -23,7 +23,7 @@ import type {
   SqlValue,
   WindowBase,
   WindowState,
-} from '@syncular-v2/web-client';
+} from '@syncular/client';
 
 /**
  * The structural union of `SyncClient` and `SyncClientHandle`. Members that

@@ -3,8 +3,8 @@
  * to the server, plus schema-floor signalling (§1.6) and clientId binding.
  */
 import { describe, expect, test } from 'bun:test';
-import type { RespHeaderFrame } from '@syncular-v2/core';
-import { ERROR_CATALOG, handleSyncRequest } from '@syncular-v2/server';
+import type { RespHeaderFrame } from '@syncular/core';
+import { ERROR_CATALOG, handleSyncRequest } from '@syncular/server';
 import {
   expectSyncError,
   makeContext,
@@ -129,7 +129,7 @@ describe('request validation (§1.7)', () => {
       pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
     ]);
     expect(message.msgKind).toBe('response');
-    const { encodeMessage } = await import('@syncular-v2/core');
+    const { encodeMessage } = await import('@syncular/core');
     const bytes = encodeMessage(message);
     await expectSyncError(
       handleSyncRequest(bytes, t.ctx),

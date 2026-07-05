@@ -1,6 +1,6 @@
 # syncular · react-native example
 
-The syncular v2 **React Native todo** — proof that `@syncular-v2/react` hooks
+The syncular v2 **React Native todo** — proof that `@syncular/react` hooks
 work **unchanged** over the native core. Same clean interface as the web demos
 (`apps/demo-react`); the only difference is the client host: instead of the
 worker/OPFS client, `<SyncProvider>` is fed a `createNativeSyncClient()` — a
@@ -8,7 +8,7 @@ worker/OPFS client, `<SyncProvider>` is fed a `createNativeSyncClient()` — a
 
 ```tsx
 // example/src/App.tsx — the whole interface, no hacks:
-import { SyncProvider, useMutation, useSyncQuery, useSyncStatus } from '@syncular-v2/react';
+import { SyncProvider, useMutation, useSyncQuery, useSyncStatus } from '@syncular/react';
 
 export function App({ client }: { client: SyncClientLike }) {
   return (
@@ -30,14 +30,14 @@ offline).
 | File | Role |
 |---|---|
 | `src/App.tsx` | The todo UI over the hooks (framework-agnostic below `<SyncProvider>`). |
-| `src/syncular.generated.ts` | The schema + row types — REAL `syncular-v2 generate` output from `syncular.json` + `migrations/` (mirrors `apps/demo-react`). `check.sh` gates it with `generate --check`. |
+| `src/syncular.generated.ts` | The schema + row types — REAL `syncular generate` output from `syncular.json` + `migrations/` (mirrors `apps/demo-react`). `check.sh` gates it with `generate --check`. |
 | `syncular.json` / `migrations/` | The typegen manifest + migration that generate the schema above. |
 | `index.js` | RN entry: builds the native client, wires `AppState`, registers `<App>`. |
 | `app.json`, `babel.config.js`, `metro.config.js`, `package.json` | Bare-RN scaffold. |
 
 The `metro.config.js` watches the v2 tree and forces a single `react` /
 `react-native` copy, so the two workspace source packages
-(`@syncular-v2/react`, `@syncular-v2/react-native`) resolve against the app's
+(`@syncular/react`, `@syncular/react-native`) resolve against the app's
 React — the example is deliberately **outside** the bun workspace (RN apps pin
 exact react/react-native; a hoisted workspace fights autolinking and Metro's
 single-React rule).
@@ -83,7 +83,7 @@ headless:
 
 - **`tsc --noEmit`** (via the module's `check.sh`, which includes
   `example/src/**`): `App.tsx` + the schema typecheck against the real
-  `@syncular-v2/react` hooks and the `SyncClientLike` surface — a drift breaks
+  `@syncular/react` hooks and the `SyncClientLike` surface — a drift breaks
   it. `react-native`'s primitives resolve through the module's ambient stub
   (`types/react-native.d.ts`).
 - **`bun test` — `test/app.test.tsx`**: the **real `App.tsx`** (this file, the

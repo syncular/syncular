@@ -11,7 +11,7 @@
  * re-exported (see `index.ts`) — the SAME vocabulary the reference pairing
  * arms, not a parallel one.
  */
-import { handleSegmentDownload, handleSyncRequest } from '@syncular-v2/server';
+
 import {
   type ClientSchema,
   type RealtimeConnector,
@@ -20,8 +20,9 @@ import {
   SyncClient,
   type SyncClientConfig,
   type SyncTransport,
-} from '@syncular-v2/web-client';
-import { BunClientDatabase } from '@syncular-v2/web-client/bun';
+} from '@syncular/client';
+import { BunClientDatabase } from '@syncular/client/bun';
+import { handleSegmentDownload, handleSyncRequest } from '@syncular/server';
 import type { VirtualClock } from './clock';
 import { seededRandom, TransportFault, TransportFaults } from './faults';
 import type { TestServer } from './server';

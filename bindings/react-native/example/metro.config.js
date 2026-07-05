@@ -4,7 +4,7 @@ const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config');
 // The example is intentionally OUTSIDE the bun workspace (RN apps pin exact
 // react / react-native versions; a hoisted workspace would fight autolinking
 // and Metro's single-react-copy rule). But it consumes two source packages —
-// `@syncular-v2/react` and `@syncular-v2/react-native` — that live in the v2
+// `@syncular/react` and `@syncular/react-native` — that live in the v2
 // tree. So we tell Metro to (a) watch the v2 root, so their .ts sources are in
 // the haste map, and (b) resolve `react` / `react-native` to THIS app's copy
 // only, so those source packages never pull a second React in.

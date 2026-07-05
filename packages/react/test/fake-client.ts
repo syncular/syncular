@@ -18,7 +18,7 @@ import type {
   SqlRow,
   WindowBase,
   WindowState,
-} from '@syncular-v2/web-client';
+} from '@syncular/client';
 import type { SyncClientLike } from '../src/client';
 
 export class FakeClient implements SyncClientLike {

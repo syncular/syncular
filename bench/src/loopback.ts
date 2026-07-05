@@ -4,7 +4,14 @@
  * conformance loopback (no sockets, no serialization beyond the wire
  * bytes themselves).
  */
-import { encodeRow } from '@syncular-v2/core';
+
+import {
+  type ClientSchema,
+  SyncClient,
+  type SyncClientLimits,
+} from '@syncular/client';
+import { openBunDatabase } from '@syncular/client/bun';
+import { encodeRow } from '@syncular/core';
 import {
   createRealtimeHub,
   handleSegmentDownload,
@@ -14,13 +21,7 @@ import {
   type ServerStorage,
   SqliteServerStorage,
   type SyncRequestContext,
-} from '@syncular-v2/server';
-import {
-  type ClientSchema,
-  SyncClient,
-  type SyncClientLimits,
-} from '@syncular-v2/web-client';
-import { openBunDatabase } from '@syncular-v2/web-client/bun';
+} from '@syncular/server';
 import {
   ACTOR_ID,
   COLUMNS,

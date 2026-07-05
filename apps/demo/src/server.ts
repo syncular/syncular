@@ -20,7 +20,7 @@ import {
   encodeRow,
   PROTOCOL_WIRE_VERSION,
   type RequestFrame,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import {
   composeEvents,
   consoleJsonEvents,
@@ -34,11 +34,11 @@ import {
   type SyncServerConfig,
   SyncularAdmin,
   type SyncularServerEvents,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import {
   createSyncularAdminRoutes,
   createSyncularHono,
-} from '@syncular-v2/server-hono';
+} from '@syncular/server-hono';
 import { Hono } from 'hono';
 import { schema, type TodosRow } from './syncular.generated';
 

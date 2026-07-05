@@ -7,7 +7,7 @@
  * what the live socket has delivered.
  */
 
-import type { PresencePeer } from '@syncular-v2/web-client';
+import type { PresencePeer } from '@syncular/client';
 import { useEffect, useState } from 'react';
 import { useSyncClient } from './use-client';
 

@@ -20,7 +20,7 @@ import {
   type ResponseFrame,
   type ScopeMap,
   type SubscriptionFrame,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import type { SyncRequestContext } from './context';
 import { clockOf, limitsOf, RESOLVER_OUTAGE } from './context';
 import { SyncError, syncError } from './errors';

@@ -1,6 +1,6 @@
 # Web client
 
-The client core (`@syncular-v2/web-client`) is plain library code:
+The client core (`@syncular/client`) is plain library code:
 storage behind a `ClientDatabase`, network behind transport seams, multi-tab
 ownership behind a leader lock. It runs on whatever thread you construct it on.
 Local SQL is the query API — you read your own tables directly.
@@ -14,7 +14,7 @@ SAHPool needs no COOP/COEP and no SharedArrayBuffer. The UI thread drives the
 worker through a thin RPC handle:
 
 ```ts
-import { createSyncClientHandle } from '@syncular-v2/web-client';
+import { createSyncClientHandle } from '@syncular/client';
 import { schema } from './syncular.generated';
 
 const handle = await createSyncClientHandle({
@@ -33,7 +33,7 @@ The worker bundle is one line — it boots the whole core:
 
 ```ts
 // worker.ts
-import { startSyncWorker } from '@syncular-v2/web-client/worker';
+import { startSyncWorker } from '@syncular/client/worker';
 startSyncWorker();
 ```
 
@@ -43,7 +43,7 @@ SSR. It runs the core on the main thread against `openWasmDatabase()` (always
 and fail loud — there is no IndexedDB fallback.
 
 > The [quickstart](/quickstart/) uses a third backend, `openBunDatabase()` from
-> `@syncular-v2/web-client/bun`, so the same core runs in a terminal with no
+> `@syncular/client/bun`, so the same core runs in a terminal with no
 > browser. Same `SyncClient`, different `ClientDatabase`.
 
 ## Transports
@@ -91,7 +91,7 @@ API reference.
 
 ## React bindings & live queries
 
-`@syncular-v2/react` ships live queries over **fine-grained invalidation**:
+`@syncular/react` ships live queries over **fine-grained invalidation**:
 every apply batch emits exactly one `{ tables, scopeKeys }` event, and
 `useSyncQuery(sql, params?)` re-runs only when a table it depends on is
 touched — never "re-run everything on any change". `SyncProvider` accepts
@@ -137,7 +137,7 @@ ORDER BY position, id
 
 ```ts
 import { listTodosQuery, type ListTodosRow } from './syncular.queries';
-import { useNamedQuery } from '@syncular-v2/react';
+import { useNamedQuery } from '@syncular/react';
 
 const { rows } = useNamedQuery(listTodosQuery, { listId }); // ListTodosRow[]
 ```
@@ -154,13 +154,13 @@ tables-set mechanism and its honesty boundary) in the
 
 ## Typed reads (Kysely)
 
-Local SQL is the query API by design. `@syncular-v2/kysely` is the **dynamic
+Local SQL is the query API by design. `@syncular/kysely` is the **dynamic
 typed read tier**: a [Kysely](https://kysely.dev) dialect typed by the
-`Database` interface `@syncular-v2/typegen` emits from your schema.
+`Database` interface `@syncular/typegen` emits from your schema.
 
 ```ts
 import { Kysely } from 'kysely';
-import { SyncularDialect } from '@syncular-v2/kysely';
+import { SyncularDialect } from '@syncular/kysely';
 import type { Database } from './syncular.generated';
 
 const db = new Kysely<Database>({ dialect: new SyncularDialect({ client }) });
@@ -184,7 +184,7 @@ Two rules make it honest:
   are first-class. It ships as its own package, so Kysely never enters the
   client-core bundle.
 
-In React, `@syncular-v2/react/typed`'s `useTypedQuery(db => db.selectFrom(…))`
+In React, `@syncular/react/typed`'s `useTypedQuery(db => db.selectFrom(…))`
 compiles a builder and re-runs it live, extracting the `{tables}` dependency
 set from the compiled query's AST — exact invalidation with no SQL-text
 heuristic. See the [react package](../../packages/react/README.md) and the
@@ -209,7 +209,7 @@ the host process** — not JS in the webview. Webview OPFS is eviction-prone and
 inconsistent across WKWebView/webkitgtk; the Rust core gives a real on-disk
 SQLite database and native performance. `tauri-plugin-syncular` (Rust) runs the
 `syncular-client` core directly and exposes it to the webview as commands +
-events; `@syncular-v2/tauri` (JS) bridges that surface into the SAME
+events; `@syncular/tauri` (JS) bridges that surface into the SAME
 `SyncClientLike` the React hooks consume — so every hook works unchanged.
 
 ```rust
@@ -224,7 +224,7 @@ app.handle().plugin(tauri_plugin_syncular::init(SyncularConfig {
 
 ```ts
 // webview: same hooks, native core behind them
-import { createTauriSyncClient } from '@syncular-v2/tauri';
+import { createTauriSyncClient } from '@syncular/tauri';
 const client = await createTauriSyncClient({ clientId: 'device-1', schema });
 // <SyncProvider client={client}> … useSyncQuery / useMutation / usePresence
 ```

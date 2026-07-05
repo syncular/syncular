@@ -5,13 +5,14 @@
  * Routes mirror the demo server: POST /sync, GET /segments/:id,
  * WS /realtime.
  */
+
+import { SSP2_CONTENT_TYPE } from '@syncular/client';
 import {
   handleSegmentDownload,
   handleSyncRequest,
   type RealtimeSession,
   SyncError,
-} from '@syncular-v2/server';
-import { SSP2_CONTENT_TYPE } from '@syncular-v2/web-client';
+} from '@syncular/server';
 import { PARTITION, type TestServer } from './helpers';
 
 export interface HttpTestServer {

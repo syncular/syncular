@@ -1,5 +1,5 @@
 /**
- * @syncular-v2/core — reference SSP2 codec (SPEC.md is normative).
+ * @syncular/core — reference SSP2 codec (SPEC.md is normative).
  *
  * Dependency-free: primitives (Conventions), envelope + framing (§1),
  * schema-IR row codec (§2.4), SSG2 rows segments (§5.2), message codecs

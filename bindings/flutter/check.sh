@@ -24,13 +24,13 @@ RUST_DIR="${V2_DIR}/rust"
 
 # -- generated schema freshness (runs even without a Dart SDK) ----------------
 # The example's Dart schema (example/lib/syncular.generated.dart) is produced by
-# `syncular-v2 generate` from example/syncular.json + migrations/. Gate its
+# `syncular generate` from example/syncular.json + migrations/. Gate its
 # freshness byte-exactly so a hand-edit or a migration change without a
 # regenerate fails loud. Requires bun (the repo toolchain); this gate runs
 # BEFORE the Dart detect-and-skip so schema freshness is verified even on a
 # Dart-less machine.
 if command -v bun >/dev/null 2>&1; then
-  echo "== generated schema is fresh (syncular-v2 generate --check) =="
+  echo "== generated schema is fresh (syncular generate --check) =="
   ( cd "${V2_DIR}" && bun packages/typegen/src/cli.ts generate \
       --manifest-dir bindings/flutter/example --check )
   echo "ok: example/lib/syncular.generated.dart is fresh"

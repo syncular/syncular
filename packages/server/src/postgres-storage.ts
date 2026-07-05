@@ -35,7 +35,7 @@
  * would leave gaps on rollback, which the pull-window arithmetic in §4.5
  * does not tolerate). Cross-partition pushes never contend.
  */
-import type { PushOperationResult } from '@syncular-v2/core';
+import type { PushOperationResult } from '@syncular/core';
 import { syncError } from './errors';
 import {
   asBytes,

@@ -9,8 +9,8 @@ import {
   parseRealtimeServerEvent,
   type ScopeMap,
   type SubStartFrame,
-} from '@syncular-v2/core';
-import { createRealtimeHub, type RealtimeHub } from '@syncular-v2/server';
+} from '@syncular/core';
+import { createRealtimeHub, type RealtimeHub } from '@syncular/server';
 import {
   makeContext,
   pullHeader,

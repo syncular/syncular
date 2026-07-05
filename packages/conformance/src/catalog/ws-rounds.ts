@@ -8,7 +8,7 @@
  * the transport seam (rounds completed, deltas, acks, server close).
  * Zero sleeps, zero polls.
  */
-import { REALTIME_TAG_ROUND } from '@syncular-v2/core';
+import { REALTIME_TAG_ROUND } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { task } from '../fixture';
 import { rawPullHeader, rawRequestBytes, rawSubscription } from '../raw';

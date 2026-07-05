@@ -1,5 +1,5 @@
 {
-  "name": "@syncular-v2/kysely",
+  "name": "@syncular/kysely",
   "private": true,
   "type": "module",
   "exports": {
@@ -9,11 +9,11 @@
     "kysely": ">=0.27.0"
   },
   "dependencies": {
-    "@syncular-v2/web-client": "workspace:*"
+    "@syncular/client": "workspace:*"
   },
   "devDependencies": {
-    "@syncular-v2/core": "workspace:*",
-    "@syncular-v2/server": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "@syncular/server": "workspace:*",
     "kysely": "^0.29.2"
   }
 }

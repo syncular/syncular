@@ -16,13 +16,13 @@ import {
   type PushResultFrame,
   type RequestFrame,
   type ResponseMessage,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import {
   handleSyncRequest,
   MemorySegmentStore,
   SqliteServerStorage,
   type SyncRequestContext,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import {
   projectTasksSubscription,
   schema,

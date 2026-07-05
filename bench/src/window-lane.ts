@@ -7,10 +7,11 @@
  * everything" cost would pay. This is what dissolves coarse-window cost by
  * choosing the unit grain (SPEC §4.8; the sharding win).
  */
-import { encodeRow } from '@syncular-v2/core';
-import { handleSegmentDownload, handleSyncRequest } from '@syncular-v2/server';
-import { SyncClient } from '@syncular-v2/web-client';
-import { openBunDatabase } from '@syncular-v2/web-client/bun';
+
+import { SyncClient } from '@syncular/client';
+import { openBunDatabase } from '@syncular/client/bun';
+import { encodeRow } from '@syncular/core';
+import { handleSegmentDownload, handleSyncRequest } from '@syncular/server';
 import { COLUMNS, PARTITION, rowId, TABLE } from './fixture';
 import { createBenchServer } from './loopback';
 

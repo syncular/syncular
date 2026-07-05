@@ -6,14 +6,14 @@
  * §5.4's "behaviorally indistinguishable to the client".
  */
 import { afterAll, describe, expect, test } from 'bun:test';
-import type { ResponseFrame, SegmentRefFrame } from '@syncular-v2/core';
+import type { ResponseFrame, SegmentRefFrame } from '@syncular/core';
 import {
   issueSegmentUrl,
   S3SegmentStore,
   type SegmentMetadata,
   s3PresignedUrls,
   segmentIdFor,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import {
   makeContext,
   pullHeader,

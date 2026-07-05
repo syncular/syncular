@@ -12,7 +12,7 @@ import {
   type SegmentMetadata,
   type SegmentStore,
   segmentIdFor,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 
 export const CONTRACT_NOW = 1_750_000_000_000;
 

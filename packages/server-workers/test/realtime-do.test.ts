@@ -8,7 +8,7 @@
  * fan-out; presence through the DO.
  *
  * No `workerd`, no HTTP server: request/response bytes are built and decoded
- * with the reference codec (`@syncular-v2/core`), the sockets are in-memory
+ * with the reference codec (`@syncular/core`), the sockets are in-memory
  * doubles, and the storage is the D1 double.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -24,13 +24,13 @@ import {
   type RequestFrame,
   type RowColumn,
   type SubStartFrame,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import {
   MemorySegmentStore,
   type ServerSchema,
   SSP2_CONTENT_TYPE,
   type SyncServerConfig,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import { D1DatabaseDouble } from '../../server/test/d1-double';
 import {
   createWorkersFetchHandler,

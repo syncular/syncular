@@ -10,7 +10,7 @@
  * never time-driven, which is the honest difference from `SegmentStore`.
  */
 import { describe, expect, test } from 'bun:test';
-import { type BlobStore, blobIdFor } from '@syncular-v2/server';
+import { type BlobStore, blobIdFor } from '@syncular/server';
 
 export const CONTRACT_NOW = 1_750_000_000_000;
 const PARTITION = 'p';

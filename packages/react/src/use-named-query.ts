@@ -18,7 +18,7 @@
  * (typegen emits its own `NamedQuery` type), so this hook depends only on the
  * descriptor's structural shape — no generated-file import coupling.
  */
-import type { SqlValue } from '@syncular-v2/web-client';
+import type { SqlValue } from '@syncular/client';
 import {
   type UseSyncQueryOptions,
   type UseSyncQueryResult,

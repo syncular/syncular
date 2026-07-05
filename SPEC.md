@@ -1917,7 +1917,7 @@ the pull stream and is never a `SUB_START` reason — it surfaces only as a
 push operation-result `error` record (§6.3).
 
 The reference `yjs-doc` merger lives in a **separate package**
-(`@syncular-v2/crdt-yjs`), not in core or server — Yjs enters the dependency
+(`@syncular/crdt-yjs`), not in core or server — Yjs enters the dependency
 tree there and nowhere else. `packages/server` and `packages/core` stay
 Yjs-free; a host opts in by importing the merger and putting it in the
 registry, exactly as it opts into a blob store (§5.9.2). Placement rationale:
@@ -2006,7 +2006,7 @@ apply the server-merged state on delivery.** The rejected alternative was
   over state-push is double-application of a replayed update; §5.10.3
   pins it closed twice over (idempotency-key `cached` + merger idempotency).
 
-Mechanics for a Yjs client (reference TS path, `@syncular-v2/crdt-yjs`):
+Mechanics for a Yjs client (reference TS path, `@syncular/crdt-yjs`):
 
 - A `crdt` column is backed by a `Y.Doc` per (table, rowId, column). A local
   edit mutates the doc and yields a Yjs **update** (the bytes since the last
@@ -2024,7 +2024,7 @@ Mechanics for a Yjs client (reference TS path, `@syncular-v2/crdt-yjs`):
 
 The reference row-value surface keeps the column a plain `Uint8Array` in
 generated types (§ typegen); the `Y.Doc` accessor is a helper in the client
-package (`@syncular-v2/crdt-yjs`), **not** in generated code — codegen has no
+package (`@syncular/crdt-yjs`), **not** in generated code — codegen has no
 Yjs dependency, matching the core/server rule.
 
 #### 5.10.5 Native (Rust) clients

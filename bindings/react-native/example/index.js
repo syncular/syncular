@@ -9,7 +9,7 @@
  * mounting the hook tree. Everything after that is the framework-agnostic
  * <App/> — identical to the web demos.
  */
-import { createNativeSyncClient } from '@syncular-v2/react-native';
+import { createNativeSyncClient } from '@syncular/react-native';
 import React, { useEffect, useState } from 'react';
 import { AppRegistry, AppState, Text, View } from 'react-native';
 import { name as appName } from './app.json';

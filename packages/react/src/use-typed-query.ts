@@ -15,12 +15,13 @@
  * It reuses {@link useSyncQuery}'s invalidation machinery verbatim — the only
  * additions are compilation and AST-based table extraction. Read-only, like
  * the dialect: a write builder throws at execution (SPEC §7.1 → use
- * `useMutation`). `@syncular-v2/kysely` and `kysely` are PEER dependencies of
+ * `useMutation`). `@syncular/kysely` and `kysely` are PEER dependencies of
  * this package (both are `optional`), so apps that only use `useSyncQuery`
  * never pull Kysely in.
  */
-import { createSyncularKysely, extractTables } from '@syncular-v2/kysely';
-import type { SqlRow, SqlValue } from '@syncular-v2/web-client';
+
+import type { SqlRow, SqlValue } from '@syncular/client';
+import { createSyncularKysely, extractTables } from '@syncular/kysely';
 import type { Compilable, CompiledQuery, Kysely } from 'kysely';
 import { useMemo } from 'react';
 import { useSyncClient } from './use-client';

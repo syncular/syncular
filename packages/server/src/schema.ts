@@ -5,7 +5,7 @@
  * §2.4 column types, scope patterns per §3.1, and a schema version. Codegen
  * (B5) will emit this shape later; tests hand-write it.
  */
-import type { RowColumn } from '@syncular-v2/core';
+import type { RowColumn } from '@syncular/core';
 
 /** `'prefix:{variable}'` shorthand (column name = variable) or explicit. */
 export type ScopePatternSpec = string | { pattern: string; column: string };

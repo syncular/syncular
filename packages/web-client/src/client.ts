@@ -29,7 +29,7 @@ import {
   type SegmentRefFrame,
   type SubStartFrame,
   type WakeReason,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import {
   applyCommitFrame,
   applyRowsSegment,

@@ -3,70 +3,70 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "syncular-v2",
+      "name": "syncular",
       "devDependencies": {
         "@biomejs/biome": "^2.4.10",
-        "@syncular-v2/typegen": "workspace:*",
+        "@syncular/typegen": "workspace:*",
         "@types/bun": "latest",
         "typescript": "^5.9.0",
       },
     },
     "apps/demo": {
-      "name": "@syncular-v2/demo",
+      "name": "@syncular/demo",
       "dependencies": {
         "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
-        "@syncular-v2/core": "workspace:*",
-        "@syncular-v2/server": "workspace:*",
-        "@syncular-v2/server-hono": "workspace:*",
-        "@syncular-v2/web-client": "workspace:*",
+        "@syncular/client": "workspace:*",
+        "@syncular/core": "workspace:*",
+        "@syncular/server": "workspace:*",
+        "@syncular/server-hono": "workspace:*",
         "hono": "^4.11.0",
       },
       "devDependencies": {
-        "@syncular-v2/typegen": "workspace:*",
+        "@syncular/typegen": "workspace:*",
       },
     },
     "apps/demo-react": {
-      "name": "@syncular-v2/demo-react",
+      "name": "@syncular/demo-react",
       "dependencies": {
         "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
-        "@syncular-v2/core": "workspace:*",
-        "@syncular-v2/kysely": "workspace:*",
-        "@syncular-v2/react": "workspace:*",
-        "@syncular-v2/server": "workspace:*",
-        "@syncular-v2/server-hono": "workspace:*",
-        "@syncular-v2/web-client": "workspace:*",
+        "@syncular/client": "workspace:*",
+        "@syncular/core": "workspace:*",
+        "@syncular/kysely": "workspace:*",
+        "@syncular/react": "workspace:*",
+        "@syncular/server": "workspace:*",
+        "@syncular/server-hono": "workspace:*",
         "hono": "^4.11.0",
         "kysely": "^0.29.2",
         "react": "^18.3.1",
         "react-dom": "^18.3.1",
       },
       "devDependencies": {
-        "@syncular-v2/typegen": "workspace:*",
+        "@syncular/typegen": "workspace:*",
         "@types/react": "^18.3.0",
         "@types/react-dom": "^18.3.0",
       },
     },
     "apps/docs": {
-      "name": "@syncular-v2/docs",
+      "name": "@syncular/docs",
     },
     "bench": {
       "name": "@syncular-bench",
       "dependencies": {
         "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
-        "@syncular-v2/core": "workspace:*",
-        "@syncular-v2/server": "workspace:*",
-        "@syncular-v2/web-client": "workspace:*",
+        "@syncular/client": "workspace:*",
+        "@syncular/core": "workspace:*",
+        "@syncular/server": "workspace:*",
       },
     },
     "bindings/react-native": {
-      "name": "@syncular-v2/react-native",
+      "name": "@syncular/react-native",
       "version": "0.0.0",
       "dependencies": {
-        "@syncular-v2/web-client": "workspace:*",
+        "@syncular/client": "workspace:*",
       },
       "devDependencies": {
         "@happy-dom/global-registrator": "^15.11.0",
-        "@syncular-v2/react": "workspace:*",
+        "@syncular/react": "workspace:*",
         "@testing-library/react": "^16.1.0",
         "@types/react": "^18.3.0",
         "react": "^18.3.1",
@@ -78,10 +78,10 @@
       },
     },
     "bindings/tauri/example": {
-      "name": "@syncular-v2/tauri-example",
+      "name": "@syncular/tauri-example",
       "dependencies": {
-        "@syncular-v2/react": "workspace:*",
-        "@syncular-v2/tauri": "workspace:*",
+        "@syncular/react": "workspace:*",
+        "@syncular/tauri": "workspace:*",
         "react": "^18.3.1",
         "react-dom": "^18.3.1",
       },
@@ -92,64 +92,64 @@
       },
     },
     "examples/quickstart": {
-      "name": "@syncular-v2/example-quickstart",
+      "name": "@syncular/example-quickstart",
       "dependencies": {
-        "@syncular-v2/core": "workspace:*",
-        "@syncular-v2/server": "workspace:*",
-        "@syncular-v2/server-hono": "workspace:*",
-        "@syncular-v2/web-client": "workspace:*",
+        "@syncular/client": "workspace:*",
+        "@syncular/core": "workspace:*",
+        "@syncular/server": "workspace:*",
+        "@syncular/server-hono": "workspace:*",
       },
       "devDependencies": {
-        "@syncular-v2/typegen": "workspace:*",
+        "@syncular/typegen": "workspace:*",
       },
     },
     "load": {
       "name": "@syncular-load",
       "dependencies": {
-        "@syncular-v2/core": "workspace:*",
-        "@syncular-v2/server": "workspace:*",
-        "@syncular-v2/server-hono": "workspace:*",
+        "@syncular/core": "workspace:*",
+        "@syncular/server": "workspace:*",
+        "@syncular/server-hono": "workspace:*",
       },
     },
     "packages/conformance": {
-      "name": "@syncular-v2/conformance",
+      "name": "@syncular/conformance",
       "dependencies": {
-        "@syncular-v2/core": "workspace:*",
-        "@syncular-v2/crdt-yjs": "workspace:*",
-        "@syncular-v2/server": "workspace:*",
-        "@syncular-v2/web-client": "workspace:*",
+        "@syncular/client": "workspace:*",
+        "@syncular/core": "workspace:*",
+        "@syncular/crdt-yjs": "workspace:*",
+        "@syncular/server": "workspace:*",
       },
     },
     "packages/core": {
-      "name": "@syncular-v2/core",
+      "name": "@syncular/core",
     },
     "packages/crdt-yjs": {
-      "name": "@syncular-v2/crdt-yjs",
+      "name": "@syncular/crdt-yjs",
       "dependencies": {
-        "@syncular-v2/core": "workspace:*",
+        "@syncular/core": "workspace:*",
         "yjs": "^13.6.0",
       },
       "devDependencies": {
-        "@syncular-v2/server": "workspace:*",
+        "@syncular/server": "workspace:*",
       },
     },
     "packages/create-app": {
-      "name": "@syncular-v2/create-app",
+      "name": "create-syncular-app",
       "bin": {
-        "create-syncular-v2": "./src/cli.ts",
+        "create-syncular-app": "./src/cli.ts",
       },
       "devDependencies": {
-        "@syncular-v2/typegen": "workspace:*",
+        "@syncular/typegen": "workspace:*",
       },
     },
     "packages/kysely": {
-      "name": "@syncular-v2/kysely",
+      "name": "@syncular/kysely",
       "dependencies": {
-        "@syncular-v2/web-client": "workspace:*",
+        "@syncular/client": "workspace:*",
       },
       "devDependencies": {
-        "@syncular-v2/core": "workspace:*",
-        "@syncular-v2/server": "workspace:*",
+        "@syncular/core": "workspace:*",
+        "@syncular/server": "workspace:*",
         "kysely": "^0.29.2",
       },
       "peerDependencies": {
@@ -157,15 +157,15 @@
       },
     },
     "packages/react": {
-      "name": "@syncular-v2/react",
+      "name": "@syncular/react",
       "dependencies": {
-        "@syncular-v2/web-client": "workspace:*",
+        "@syncular/client": "workspace:*",
       },
       "devDependencies": {
         "@happy-dom/global-registrator": "^15.11.0",
-        "@syncular-v2/core": "workspace:*",
-        "@syncular-v2/kysely": "workspace:*",
-        "@syncular-v2/server": "workspace:*",
+        "@syncular/core": "workspace:*",
+        "@syncular/kysely": "workspace:*",
+        "@syncular/server": "workspace:*",
         "@testing-library/react": "^16.1.0",
         "@types/react": "^18.3.0",
         "kysely": "^0.29.2",
@@ -173,52 +173,52 @@
         "react-dom": "^18.3.1",
       },
       "peerDependencies": {
-        "@syncular-v2/kysely": "workspace:*",
+        "@syncular/kysely": "workspace:*",
         "kysely": ">=0.27.0",
         "react": ">=18.0.0",
       },
       "optionalPeers": [
-        "@syncular-v2/kysely",
+        "@syncular/kysely",
         "kysely",
       ],
     },
     "packages/server": {
-      "name": "@syncular-v2/server",
+      "name": "@syncular/server",
       "dependencies": {
-        "@syncular-v2/core": "workspace:*",
+        "@syncular/core": "workspace:*",
       },
       "devDependencies": {
         "@electric-sql/pglite": "^0.5.4",
       },
     },
     "packages/server-hono": {
-      "name": "@syncular-v2/server-hono",
+      "name": "@syncular/server-hono",
       "dependencies": {
-        "@syncular-v2/server": "workspace:*",
+        "@syncular/server": "workspace:*",
         "hono": "^4.11.0",
       },
       "devDependencies": {
-        "@syncular-v2/core": "workspace:*",
+        "@syncular/core": "workspace:*",
       },
     },
     "packages/server-workers": {
-      "name": "@syncular-v2/server-workers",
+      "name": "@syncular/server-workers",
       "dependencies": {
-        "@syncular-v2/server": "workspace:*",
-        "@syncular-v2/server-hono": "workspace:*",
+        "@syncular/server": "workspace:*",
+        "@syncular/server-hono": "workspace:*",
         "hono": "^4.11.0",
       },
       "devDependencies": {
-        "@syncular-v2/core": "workspace:*",
+        "@syncular/core": "workspace:*",
       },
     },
     "packages/tauri": {
-      "name": "@syncular-v2/tauri",
+      "name": "@syncular/tauri",
       "dependencies": {
-        "@syncular-v2/web-client": "workspace:*",
+        "@syncular/client": "workspace:*",
       },
       "devDependencies": {
-        "@syncular-v2/react": "workspace:*",
+        "@syncular/react": "workspace:*",
       },
       "peerDependencies": {
         "@tauri-apps/api": ">=2.0.0",
@@ -228,16 +228,16 @@
       ],
     },
     "packages/testing": {
-      "name": "@syncular-v2/testing",
+      "name": "@syncular/testkit",
       "dependencies": {
-        "@syncular-v2/conformance": "workspace:*",
-        "@syncular-v2/server": "workspace:*",
-        "@syncular-v2/web-client": "workspace:*",
+        "@syncular/client": "workspace:*",
+        "@syncular/conformance": "workspace:*",
+        "@syncular/server": "workspace:*",
       },
       "devDependencies": {
         "@happy-dom/global-registrator": "^15.11.0",
-        "@syncular-v2/core": "workspace:*",
-        "@syncular-v2/react": "workspace:*",
+        "@syncular/core": "workspace:*",
+        "@syncular/react": "workspace:*",
         "@testing-library/react": "^16.1.0",
         "@types/react": "^18.3.0",
         "react": "^18.3.1",
@@ -251,23 +251,23 @@
       ],
     },
     "packages/typegen": {
-      "name": "@syncular-v2/typegen",
+      "name": "@syncular/typegen",
       "bin": {
-        "syncular-v2": "./src/cli.ts",
+        "syncular": "./src/cli.ts",
       },
       "devDependencies": {
-        "@syncular-v2/core": "workspace:*",
-        "@syncular-v2/server": "workspace:*",
+        "@syncular/core": "workspace:*",
+        "@syncular/server": "workspace:*",
       },
     },
     "packages/web-client": {
-      "name": "@syncular-v2/web-client",
+      "name": "@syncular/client",
       "dependencies": {
         "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
-        "@syncular-v2/core": "workspace:*",
+        "@syncular/core": "workspace:*",
       },
       "devDependencies": {
-        "@syncular-v2/server": "workspace:*",
+        "@syncular/server": "workspace:*",
         "@types/better-sqlite3": "^7.6.13",
         "better-sqlite3": "^12.11.1",
       },
@@ -382,43 +382,41 @@
 
     "@syncular-load": ["@syncular-load@workspace:load"],
 
-    "@syncular-v2/conformance": ["@syncular-v2/conformance@workspace:packages/conformance"],
+    "@syncular/client": ["@syncular/client@workspace:packages/web-client"],
 
-    "@syncular-v2/core": ["@syncular-v2/core@workspace:packages/core"],
+    "@syncular/conformance": ["@syncular/conformance@workspace:packages/conformance"],
 
-    "@syncular-v2/crdt-yjs": ["@syncular-v2/crdt-yjs@workspace:packages/crdt-yjs"],
+    "@syncular/core": ["@syncular/core@workspace:packages/core"],
 
-    "@syncular-v2/create-app": ["@syncular-v2/create-app@workspace:packages/create-app"],
+    "@syncular/crdt-yjs": ["@syncular/crdt-yjs@workspace:packages/crdt-yjs"],
 
-    "@syncular-v2/demo": ["@syncular-v2/demo@workspace:apps/demo"],
+    "@syncular/demo": ["@syncular/demo@workspace:apps/demo"],
 
-    "@syncular-v2/demo-react": ["@syncular-v2/demo-react@workspace:apps/demo-react"],
+    "@syncular/demo-react": ["@syncular/demo-react@workspace:apps/demo-react"],
 
-    "@syncular-v2/docs": ["@syncular-v2/docs@workspace:apps/docs"],
+    "@syncular/docs": ["@syncular/docs@workspace:apps/docs"],
 
-    "@syncular-v2/example-quickstart": ["@syncular-v2/example-quickstart@workspace:examples/quickstart"],
+    "@syncular/example-quickstart": ["@syncular/example-quickstart@workspace:examples/quickstart"],
 
-    "@syncular-v2/kysely": ["@syncular-v2/kysely@workspace:packages/kysely"],
+    "@syncular/kysely": ["@syncular/kysely@workspace:packages/kysely"],
 
-    "@syncular-v2/react": ["@syncular-v2/react@workspace:packages/react"],
+    "@syncular/react": ["@syncular/react@workspace:packages/react"],
 
-    "@syncular-v2/react-native": ["@syncular-v2/react-native@workspace:bindings/react-native"],
+    "@syncular/react-native": ["@syncular/react-native@workspace:bindings/react-native"],
 
-    "@syncular-v2/server": ["@syncular-v2/server@workspace:packages/server"],
+    "@syncular/server": ["@syncular/server@workspace:packages/server"],
 
-    "@syncular-v2/server-hono": ["@syncular-v2/server-hono@workspace:packages/server-hono"],
+    "@syncular/server-hono": ["@syncular/server-hono@workspace:packages/server-hono"],
 
-    "@syncular-v2/server-workers": ["@syncular-v2/server-workers@workspace:packages/server-workers"],
+    "@syncular/server-workers": ["@syncular/server-workers@workspace:packages/server-workers"],
 
-    "@syncular-v2/tauri": ["@syncular-v2/tauri@workspace:packages/tauri"],
+    "@syncular/tauri": ["@syncular/tauri@workspace:packages/tauri"],
 
-    "@syncular-v2/tauri-example": ["@syncular-v2/tauri-example@workspace:bindings/tauri/example"],
+    "@syncular/tauri-example": ["@syncular/tauri-example@workspace:bindings/tauri/example"],
 
-    "@syncular-v2/testing": ["@syncular-v2/testing@workspace:packages/testing"],
+    "@syncular/testkit": ["@syncular/testkit@workspace:packages/testing"],
 
-    "@syncular-v2/typegen": ["@syncular-v2/typegen@workspace:packages/typegen"],
-
-    "@syncular-v2/web-client": ["@syncular-v2/web-client@workspace:packages/web-client"],
+    "@syncular/typegen": ["@syncular/typegen@workspace:packages/typegen"],
 
     "@tauri-apps/api": ["@tauri-apps/api@2.11.1", "", {}, "sha512-M2FPuYND2m+wh5hfW9ZpSdxMPdEJovPBWwoHJmwUpysTYNHaOkVFN419m/K0LIgjb/7KU2vBgsUepJWugQCvAA=="],
 
@@ -472,7 +470,7 @@
 
     "base64-js": ["base64-js@1.5.1", "", {}, "sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA=="],
 
-    "baseline-browser-mapping": ["baseline-browser-mapping@2.10.41", "", { "bin": { "baseline-browser-mapping": "dist/cli.cjs" } }, "sha512-WwS7MHhqGHHlaVsqRZnhvCEMS0owDX+SxRlve7JkuH7My1Ara3ZriTmCQupPfYjxMZ8I/tgxtJYr2t7taHaH4A=="],
+    "baseline-browser-mapping": ["baseline-browser-mapping@2.10.42", "", { "bin": { "baseline-browser-mapping": "dist/cli.cjs" } }, "sha512-c/jurFrDLyui7o1J86yLkRu4LMsTYcBohveus7/I2Hzdn9KIP2bdJPTue/lR1KH46enoPbD77GKeSYNdyPoD3Q=="],
 
     "better-sqlite3": ["better-sqlite3@12.11.1", "", { "dependencies": { "bindings": "^1.5.0", "prebuild-install": "^7.1.1" } }, "sha512-dq9AtApgg5PGFtBzPFSBl3HZQjHok5gaQCM6zh2Yk0aSmDCs1CbnVI8/HgASQkNKsWFpseIO9beg5xxpYhbIfA=="],
 
@@ -518,6 +516,8 @@
 
     "convert-source-map": ["convert-source-map@2.0.0", "", {}, "sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg=="],
 
+    "create-syncular-app": ["create-syncular-app@workspace:packages/create-app"],
+
     "cross-spawn": ["cross-spawn@7.0.6", "", { "dependencies": { "path-key": "^3.1.0", "shebang-command": "^2.0.0", "which": "^2.0.1" } }, "sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA=="],
 
     "csstype": ["csstype@3.2.3", "", {}, "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ=="],
@@ -540,7 +540,7 @@
 
     "ee-first": ["ee-first@1.1.1", "", {}, "sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow=="],
 
-    "electron-to-chromium": ["electron-to-chromium@1.5.386", "", {}, "sha512-f9yJE+9dJy+B4QC1iTu+mVP/KWLZviG5u/qtRwdBF0zPt3etWa1HSY1lMuWw0Nt8/KpLCY6ok+XlKHOs6ZhxSA=="],
+    "electron-to-chromium": ["electron-to-chromium@1.5.387", "", {}, "sha512-TaxwufTFDufvPEoXdhwVrA3UdFWBeWGkYoJ1K8ldF1xe6gKfth6iRNS5lTQ5JPNOHdGQm8PT1QYKUqFLCiUefQ=="],
 
     "emoji-regex": ["emoji-regex@8.0.0", "", {}, "sha512-MSjYzcWNOA0ewAHpz0MxpYFvwg6yjy1NG3xteoqz644VCo/RPgnr1/GGt+ic3iJTzQ8Eu3TdM14SawnVUmGE6A=="],
 

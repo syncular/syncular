@@ -1,7 +1,7 @@
 /**
  * Extract every table name a compiled query reads, by walking the Kysely
  * operation-node tree for `TableNode`s. This is the AST equivalent of
- * `@syncular-v2/react`'s `inferTables` SQL-text scan — but exact, since it
+ * `@syncular/react`'s `inferTables` SQL-text scan — but exact, since it
  * reads the structured query rather than the string. It feeds the React
  * hook's `{tables}` invalidation set: a live query re-runs when any of these
  * tables is invalidated.

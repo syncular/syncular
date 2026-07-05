@@ -10,8 +10,8 @@ import {
   D1ServerStorage,
   PostgresServerStorage,
   SqliteServerStorage,
-} from '@syncular-v2/server';
-import { pgliteExecutor } from '@syncular-v2/server/pglite';
+} from '@syncular/server';
+import { pgliteExecutor } from '@syncular/server/pglite';
 import { D1DatabaseDouble } from './d1-double';
 import { runStorageContract } from './storage-contract';
 

@@ -3,7 +3,7 @@
  * (SPEC.md §4.6).
  */
 import { describe, expect, test } from 'bun:test';
-import { pruneCommitLog } from '@syncular-v2/server';
+import { pruneCommitLog } from '@syncular/server';
 import {
   makeContext,
   pullHeader,

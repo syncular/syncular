@@ -17,7 +17,7 @@ import {
   type SyncClientHandleConfig,
   WORKER_FAILED_CODE,
   type WorkerErrorShape,
-} from '@syncular-v2/web-client';
+} from '@syncular/client';
 import {
   CLIENT_SCHEMA,
   makeServer,

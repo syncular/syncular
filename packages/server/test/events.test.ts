@@ -13,7 +13,7 @@ import {
   type SyncularServerEvent,
   type SyncularServerEvents,
   syncError,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import {
   expectSyncError,
   makeContext,

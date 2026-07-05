@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /**
- * `create-syncular-v2 [project-name] [--template <minimal|web>] [--local]`
+ * `create-syncular-app [project-name] [--template <minimal|web>] [--local]`
  *
- * Runnable as `bun create syncular-v2 my-app` or `bunx create-syncular-v2
+ * Runnable as `bun create syncular-app my-app` or `bunx create-syncular-app
  * my-app`. Prompts for anything a flag did not supply. Scaffolds one of the
  * two templates (see `./scaffold`).
  */
@@ -39,7 +39,7 @@ options:
   -h, --help          show this help
 
 examples:
-  bun create syncular-v2 my-app
+  bun create syncular-app my-app
   bunx ${CREATE_BIN} my-app --template web
 `;
 }

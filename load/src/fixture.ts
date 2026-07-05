@@ -10,8 +10,8 @@
  * so N clients contend on distinct scope keys the way real tenants do,
  * while a shared "storm" project holds the big bootstrap dataset.
  */
-import type { RowColumn, RowValue } from '@syncular-v2/core';
-import type { ServerSchema } from '@syncular-v2/server';
+import type { RowColumn, RowValue } from '@syncular/core';
+import type { ServerSchema } from '@syncular/server';
 
 export const PARTITION = 'load';
 export const ACTOR_ID = 'load-actor';

@@ -13,7 +13,7 @@
  * - Timestamps and durations come from the ctx clock where one exists, so
  *   the conformance virtual-clock discipline stays intact.
  */
-import type { WakeReason } from '@syncular-v2/core';
+import type { WakeReason } from '@syncular/core';
 
 /** One `POST /sync` request, emitted once per request after the response
  * bytes are fully produced (or the request was rejected up front). */

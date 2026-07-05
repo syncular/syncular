@@ -7,7 +7,7 @@
  * `test/runtime-neutrality.test.ts`).
  */
 import { Database } from 'bun:sqlite';
-import type { ScopeMap } from '@syncular-v2/core';
+import type { ScopeMap } from '@syncular/core';
 import type { LeaseIdFactory, LeaseRecord, LeaseStore } from './lease-store';
 
 function defaultLeaseId(): string {

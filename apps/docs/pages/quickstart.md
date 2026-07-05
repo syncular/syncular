@@ -6,7 +6,7 @@ browser, in about five minutes.
 ## 1. Scaffold
 
 ```sh
-bun create syncular-v2 my-app --template minimal
+bun create syncular-app my-app --template minimal
 cd my-app
 bun install
 ```
@@ -72,7 +72,7 @@ authorized — `list:{list_id}` means "a note belongs to the list in its
 ## 3. Generate the typed schema
 
 ```sh
-bun run generate     # → syncular-v2 generate --manifest-dir .
+bun run generate     # → syncular generate --manifest-dir .
 ```
 
 This writes `src/syncular.generated.ts` — a zero-import module exporting a
@@ -93,8 +93,8 @@ import {
   MemorySegmentStore,
   SqliteServerStorage,
   type SyncServerConfig,
-} from '@syncular-v2/server';
-import { createSyncularHono } from '@syncular-v2/server-hono';
+} from '@syncular/server';
+import { createSyncularHono } from '@syncular/server-hono';
 import { schema } from './syncular.generated';
 
 const config: SyncServerConfig = {
@@ -133,12 +133,12 @@ identical to a web build.
 
 ```ts
 // src/make-client.ts
-import { openBunDatabase } from '@syncular-v2/web-client/bun';
+import { openBunDatabase } from '@syncular/client/bun';
 import {
   httpSegmentDownloader,
   httpSyncTransport,
   SyncClient,
-} from '@syncular-v2/web-client';
+} from '@syncular/client';
 import { schema } from './syncular.generated';
 
 export function makeClient(baseUrl: string, clientId: string): SyncClient {

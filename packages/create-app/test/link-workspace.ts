@@ -6,7 +6,7 @@
  * the workspace, so we link a `node_modules` into it by hand rather than
  * running a (network-dependent) `bun install`:
  *
- * - `@syncular-v2/<pkg>` → the real package directory in `packages/`
+ * - `@syncular/<pkg>` → the real package directory in `packages/`
  *   (a workspace link, exactly what `bun install` would materialize).
  * - external deps the templates use (`hono`, `@sqlite.org/sqlite-wasm`) →
  *   the already-installed copies under the workspace's `.bun/node_modules`
@@ -39,6 +39,17 @@ const EXTERNAL_DEPS = [
   'bun-types',
 ] as const;
 
+/**
+ * Package short-name → directory under `packages/` for the few packages whose
+ * npm name diverges from their on-disk directory. Directories were left
+ * un-renamed in the 2026-07-05 naming pass (churn without benefit), so
+ * `@syncular/client` still lives in `packages/web-client`.
+ */
+const PACKAGE_DIR_OVERRIDES: Record<string, string> = {
+  client: 'web-client',
+  testkit: 'testing',
+};
+
 function link(target: string, linkPath: string): void {
   const parent = join(linkPath, '..');
   mkdirSync(parent, { recursive: true });
@@ -55,9 +66,11 @@ export function linkWorkspaceInto(appDir: string): string {
   mkdirSync(nm, { recursive: true });
 
   for (const pkg of WORKSPACE_PACKAGES) {
-    // "@syncular-v2/server" → packages/server
+    // "@syncular/server" → packages/server. A few package names diverge from
+    // their directory (dirs were deliberately left un-renamed): map those.
     const shortName = pkg.slice(pkg.indexOf('/') + 1);
-    link(join(root, 'packages', shortName), join(nm, pkg));
+    const dir = PACKAGE_DIR_OVERRIDES[shortName] ?? shortName;
+    link(join(root, 'packages', dir), join(nm, pkg));
   }
 
   const hoist = join(root, 'node_modules', '.bun', 'node_modules');

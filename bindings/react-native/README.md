@@ -1,8 +1,8 @@
 # syncular · React Native module
 
-`@syncular-v2/react-native` — the syncular native Rust core (over the C-ABI FFI)
+`@syncular/react-native` — the syncular native Rust core (over the C-ABI FFI)
 surfaced to React Native as the **same `SyncClientLike` interface** the React
-package normalizes, so `@syncular-v2/react` hooks (`useSyncQuery`, `useMutation`,
+package normalizes, so `@syncular/react` hooks (`useSyncQuery`, `useMutation`,
 `usePresence`, …) work **unchanged** in an RN app. It is the fifth host of one
 interface, after direct / worker-leader / multi-tab follower / Tauri.
 
@@ -18,9 +18,9 @@ JSON-command-shaped: `command_json` in, `{result|error}` out, bytes as
 
 ```
 ┌── JS (Hermes) ─────────────┐         ┌── native (per platform) ───────────┐
-│ @syncular-v2/react hooks   │         │ TurboModule shim (ObjC++ / Kotlin)  │
+│ @syncular/react hooks   │         │ TurboModule shim (ObjC++ / Kotlin)  │
 │   │ SyncClientLike         │ Turbo-  │   syncular_client_command  ─┐       │
-│ @syncular-v2/react-native ─┼─Module─▶│   syncular_client_query     ├─ FFI  │
+│ @syncular/react-native ─┼─Module─▶│   syncular_client_query     ├─ FFI  │
 │   createNativeSyncClient   │◀────────┤   syncular_client_poll_event┘  core │
 └────────────────────────────┘ events  │   SyncClient (rusqlite FILE db)     │
                                         └─────────────────────────────────────┘
@@ -36,7 +36,7 @@ whose hooks↔module integration is proven headless:
 
 - **`src/index.ts`** — `createNativeSyncClient()` implementing `SyncClientLike`
   over a `NativeModule` interface (the `{$bytes:hex}` + command-JSON protocol,
-  mirroring `@syncular-v2/tauri`). Native module + event emitter are
+  mirroring `@syncular/tauri`). Native module + event emitter are
   **injectable**, so the bridge unit-tests with a double.
 - **`src/NativeSyncular.ts`** — the codegen-ready TurboModule spec (`.ts`), whose
   `codegenConfig` in `package.json` drives RN's codegen at the app's build.
@@ -58,8 +58,8 @@ whose hooks↔module integration is proven headless:
 ## Usage
 
 ```tsx
-import { createNativeSyncClient } from '@syncular-v2/react-native';
-import { SyncProvider } from '@syncular-v2/react';
+import { createNativeSyncClient } from '@syncular/react-native';
+import { SyncProvider } from '@syncular/react';
 import { schema } from './syncular.generated';
 
 const client = await createNativeSyncClient({
@@ -68,7 +68,7 @@ const client = await createNativeSyncClient({
   baseUrl: 'https://your.server/sync', // engages the native transport
 });
 
-// Every @syncular-v2/react hook works unchanged:
+// Every @syncular/react hook works unchanged:
 <SyncProvider client={client}>{/* … */}</SyncProvider>;
 ```
 
@@ -83,7 +83,7 @@ pump + disconnect realtime — call from `AppState` `'background'`) and
 
 - **`bun test`** — two layers, no device:
   - *the JS bridge* with an **injected NativeModule double** (the
-    `@syncular-v2/tauri` pattern): the `SyncClientLike` contract, method →
+    `@syncular/tauri` pattern): the `SyncClientLike` contract, method →
     command mapping, the `query` fast path, `{$bytes:hex}` round-trip, event
     fanout to `onInvalidate`/`onPresence`, lifecycle (pause/resume/close driving
     the native pump), and a **parity test against the React `normalizeClient`**
@@ -93,7 +93,7 @@ pump + disconnect realtime — call from `AppState` `'background'`) and
     NativeModule double — the list renders the rows the native `query` returns,
     and Add drives `useMutation` → `command('mutate')` → an `invalidate` event →
     `useSyncQuery` re-run → the new row appears. This proves the
-    `@syncular-v2/react` hooks drive the native client end-to-end. `react-native`
+    `@syncular/react` hooks drive the native client end-to-end. `react-native`
     primitives are mocked to DOM tags by a bunfig preload (`test/setup-app.ts`) —
     the one thing bun can't resolve off-device.
 - **`tsc --noEmit`** — the TypeScript (bridge + spec **+ the example `App.tsx`**)
@@ -104,7 +104,7 @@ pump + disconnect realtime — call from `AppState` `'background'`) and
 This package is **isolated from the main gates**: its tests are path-ignored from
 `bun run test`, and its `.ts` is not in the root `tsconfig` (so it never enters
 the main `typecheck`). It is registered in the root `workspaces` ONLY so
-`workspace:*` links `@syncular-v2/web-client` / `@syncular-v2/react` (for the
+`workspace:*` links `@syncular/client` / `@syncular/react` (for the
 parity + integration tests). The **`example/` app is deliberately OUTSIDE the
 workspace** (RN apps pin exact react/react-native; `npm`, which RN tooling uses,
 also can't resolve `workspace:*`) — Metro reaches the workspace source packages

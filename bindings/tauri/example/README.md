@@ -1,17 +1,17 @@
 # syncular · Tauri example (React)
 
 A minimal Tauri desktop app proving syncular v2 works end to end: a simple todo
-list built on **`@syncular-v2/react` hooks** over a **native syncular instance**
+list built on **`@syncular/react` hooks** over a **native syncular instance**
 running in the Tauri host process. The webview is a thin RPC client of that
 instance — the hooks are the SAME ones the browser demo (`apps/demo-react`)
 uses, unchanged.
 
 ```
 ┌── webview (this app) ──────┐        ┌── tauri host process ──────────────┐
-│ @syncular-v2/react hooks   │        │ tauri-plugin-syncular              │
+│ @syncular/react hooks   │        │ tauri-plugin-syncular              │
 │   useSyncQuery / useMutation│  IPC  │   SyncClient (rusqlite FILE db)    │
 │   / useSyncStatus          │◀──────▶│   HostTransport (HTTP + WS)        │
-│ @syncular-v2/tauri bridge  │ events │   §8.4 host loop (auto-sync)       │
+│ @syncular/tauri bridge  │ events │   §8.4 host loop (auto-sync)       │
 └────────────────────────────┘        └────────────────────────────────────┘
 ```
 
@@ -60,7 +60,7 @@ hooks:
 // The ONE Tauri line: the webview-side bridge to the native instance.
 const client = await createTauriSyncClient({ clientId: 'example-device', schema });
 
-// …then plain @syncular-v2/react — identical to the browser demo:
+// …then plain @syncular/react — identical to the browser demo:
 <SyncProvider client={client}>
   <TodoApp />           // useSyncQuery (live read) + useMutation (writes) + useSyncStatus
 </SyncProvider>
@@ -72,7 +72,7 @@ const client = await createTauriSyncClient({ clientId: 'example-device', schema 
   sync via the §8.4 host loop.
 - **`useSyncStatus`** — the `outbox N` badge + upgrading / schema-floor state.
 
-There is **zero custom IPC in app land** — the `@syncular-v2/tauri` bridge owns
+There is **zero custom IPC in app land** — the `@syncular/tauri` bridge owns
 all of it.
 
 ## Build (the automated proof)
@@ -94,7 +94,7 @@ bundle is built **first** because `tauri::generate_context!` validates
 | ---------------------------- | ----------------------------------------------------------- |
 | `src/frontend/main.tsx`      | The React app (provider + the three hooks).                 |
 | `src/frontend/index.html`    | The HTML shell (loads `/app.js`).                           |
-| `src/frontend/syncular.generated.ts` | The `todos` schema + row types — REAL `syncular-v2 generate` output from [`syncular.json`](syncular.json) + [`migrations/`](migrations). `check.sh` gates it with `generate --check`. |
+| `src/frontend/syncular.generated.ts` | The `todos` schema + row types — REAL `syncular generate` output from [`syncular.json`](syncular.json) + [`migrations/`](migrations). `check.sh` gates it with `generate --check`. |
 | `syncular.json` / `migrations/` | The typegen manifest + migration that generate the schema above (mirrors `apps/demo-react`). |
 | `build-frontend.ts`          | `Bun.build` → `dist/app.js` + `index.html` (no Vite).       |
 | `src-tauri/`                 | The Tauri shell: registers `tauri-plugin-syncular`.         |

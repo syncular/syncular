@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * The `syncular-v2` CLI. Subcommands:
+ * The `syncular` CLI. Subcommands:
  *
  *   generate [--manifest-dir <dir>] [--check] [--watch]
  *     Reads `syncular.json` + `migrations/` under the manifest dir and writes
@@ -23,9 +23,9 @@ import { MANIFEST_FILENAME } from './manifest';
 
 const DOCS_HINT =
   'See the schema guide: https://github.com/bkniffler/syncular (guide-schema), ' +
-  'or run `syncular-v2 init` to scaffold a starter manifest + migration.';
+  'or run `syncular init` to scaffold a starter manifest + migration.';
 
-const USAGE = `usage: syncular-v2 <command> [options]
+const USAGE = `usage: syncular <command> [options]
 
 commands:
   generate   build the IR + typed module from syncular.json + migrations/
@@ -167,7 +167,7 @@ export function runCli(argv: readonly string[]): void {
       const result = initProject(dir);
       for (const path of result.written) console.log(`wrote ${path}`);
       console.log(
-        '\nNext: `syncular-v2 generate` to build the typed schema, then wire ' +
+        '\nNext: `syncular generate` to build the typed schema, then wire ' +
           `${MANIFEST_FILENAME}'s "output.module" into your server + client.`,
       );
     } catch (error) {

@@ -9,7 +9,7 @@
  * here.
  */
 
-import type { MutationInput } from '@syncular-v2/web-client';
+import type { MutationInput } from '@syncular/client';
 import { useCallback, useState } from 'react';
 import { useSyncClient } from './use-client';
 

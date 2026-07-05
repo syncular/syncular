@@ -14,7 +14,7 @@ import {
   SSP2_CONTENT_TYPE,
   SyncError,
   type SyncServerConfig,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import { Hono } from 'hono';
 
 export * from './admin';

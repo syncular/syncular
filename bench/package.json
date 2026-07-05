@@ -8,8 +8,8 @@
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
-    "@syncular-v2/core": "workspace:*",
-    "@syncular-v2/server": "workspace:*",
-    "@syncular-v2/web-client": "workspace:*"
+    "@syncular/core": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/client": "workspace:*"
   }
 }

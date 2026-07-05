@@ -1,5 +1,5 @@
 {
-  "name": "syncular-v2",
+  "name": "syncular",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -28,7 +28,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
-    "@syncular-v2/typegen": "workspace:*",
+    "@syncular/typegen": "workspace:*",
     "@types/bun": "latest",
     "typescript": "^5.9.0"
   }

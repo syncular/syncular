@@ -20,7 +20,7 @@
     },
     {
       "type": "SEGMENT_REF",
-      "segmentId": "sha256:7ebe1972986c584e57208810792e0e97fd66cae3e8cd76e55062d6b22f47ad88",
+      "segmentId": "sha256:c24f8baa413f0d38cfa8babdb0c095b421eeaf47ce0d85050111958f57f6668c",
       "mediaType": "sqlite",
       "table": "notes",
       "byteLength": 8192,
@@ -28,7 +28,7 @@
       "asOfCommitSeq": 100,
       "scopeDigest": "5a993aa4d503af6f5dc77acc12ad399ff2e9d933c393f4de6af5f6aef4fa2977",
       "nextRowCursor": "n-0250",
-      "url": "https://segments.example.com/sha256:7ebe1972986c584e57208810792e0e97fd66cae3e8cd76e55062d6b22f47ad88?st=eyJ2IjoxLCJzZWciOiJzaGEyNTY6N2ViZTE5NzI5ODZjNTg0ZTU3MjA4ODEwNzkyZTBlOTdmZDY2Y2FlM2U4Y2Q3NmU1NTA2MmQ2YjIyZjQ3YWQ4OCIsInNkIjoiNWE5OTNhYTRkNTAzYWY2ZjVkYzc3YWNjMTJhZDM5OWZmMmU5ZDkzM2MzOTNmNGRlNmFmNWY2YWVmNGZhMjk3NyIsImF1ZCI6ImF1ZC03ZjNkOWMiLCJleHAiOjE3ODI5OTQ1MDB9.vejqTdOeSBvr_aQiLkDZxFj5MzorkcuYaufhhiYekFQ",
+      "url": "https://segments.example.com/sha256:c24f8baa413f0d38cfa8babdb0c095b421eeaf47ce0d85050111958f57f6668c?st=eyJ2IjoxLCJzZWciOiJzaGEyNTY6YzI0ZjhiYWE0MTNmMGQzOGNmYThiYWJkYjBjMDk1YjQyMWVlYWY0N2NlMGQ4NTA1MDExMTk1OGY1N2Y2NjY4YyIsInNkIjoiNWE5OTNhYTRkNTAzYWY2ZjVkYzc3YWNjMTJhZDM5OWZmMmU5ZDkzM2MzOTNmNGRlNmFmNWY2YWVmNGZhMjk3NyIsImF1ZCI6ImF1ZC03ZjNkOWMiLCJleHAiOjE3ODI5OTQ1MDB9.PAWqsnYXUAuC45x89EeBvu6NKW6RZyoYJ-BrUqZvKrs",
       "urlExpiresAtMs": 1782994500000
     },
     {

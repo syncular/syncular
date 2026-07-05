@@ -18,7 +18,7 @@ import {
   type PgExecutor,
   type PgQueryable,
   PostgresServerStorage,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import {
   fmtMs,
   PARTITION,

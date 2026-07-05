@@ -10,7 +10,7 @@
  * installs cleanly without it and this module errors helpfully only when a
  * host actually calls `openNodeDatabase()` without having installed the peer.
  * Not exported from the package root, so browser/bun entries never resolve
- * the native module. Subpath export: `@syncular-v2/web-client/node`.
+ * the native module. Subpath export: `@syncular/client/node`.
  *
  * bun CANNOT dlopen better-sqlite3 (ERR_DLOPEN_FAILED, oven-sh/bun#4290), so
  * this adapter is verified under real Node — see the README "Electron-main /
@@ -111,8 +111,8 @@ function openBetterSqlite(path: string): BetterSqliteDatabase {
         "openNodeDatabase() requires the 'better-sqlite3' native module, but " +
           'it failed to load. This most commonly means you are running under ' +
           'bun, which cannot dlopen better-sqlite3 (oven-sh/bun#4290) — use ' +
-          "the bun:sqlite backend ('@syncular-v2/web-client/bun') under bun, " +
-          "and reserve '@syncular-v2/web-client/node' for Node/Electron-main. " +
+          "the bun:sqlite backend ('@syncular/client/bun') under bun, " +
+          "and reserve '@syncular/client/node' for Node/Electron-main. " +
           `Underlying error: ${String(error)}`,
       );
     }
@@ -120,7 +120,7 @@ function openBetterSqlite(path: string): BetterSqliteDatabase {
       'openNodeDatabase() requires the optional peer dependency ' +
         "'better-sqlite3', which is not installed. Add it to your app " +
         '(`npm install better-sqlite3` / `bun add better-sqlite3`) — it is ' +
-        'kept optional so @syncular-v2/web-client installs without a native ' +
+        'kept optional so @syncular/client installs without a native ' +
         `build for browser-only hosts. Underlying error: ${String(error)}`,
     );
   }

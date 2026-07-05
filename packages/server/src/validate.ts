@@ -13,7 +13,7 @@
  * path pays only an `undefined` check per operation and builds no context
  * object — zero cost, the events-seam discipline.
  */
-import type { RowColumn, RowValue } from '@syncular-v2/core';
+import type { RowColumn, RowValue } from '@syncular/core';
 
 /**
  * §6.7 reserved code prefixes. A host validator code MUST NOT start with

@@ -21,7 +21,7 @@ import {
   MessageStreamScanner,
   REALTIME_TAG_DELTA,
   REALTIME_TAG_ROUND,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import type {
   ClientConflict,
   ClientCreateOptions,

@@ -33,7 +33,7 @@
  * (`postgres-fanout.integration.test.ts`) is env-gated on `SYNCULAR_PG_URL`
  * and skips cleanly; the payload encode/parse is unit-tested hermetically.
  */
-import type { WakeReason } from '@syncular-v2/core';
+import type { WakeReason } from '@syncular/core';
 
 /** The channel every syncular instance LISTENs on. */
 export const FANOUT_CHANNEL = 'syncular_commit';

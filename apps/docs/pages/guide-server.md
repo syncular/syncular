@@ -19,8 +19,8 @@ import {
   MemorySegmentStore,
   SqliteServerStorage,
   type SyncServerConfig,
-} from '@syncular-v2/server';
-import { createSyncularHono } from '@syncular-v2/server-hono';
+} from '@syncular/server';
+import { createSyncularHono } from '@syncular/server-hono';
 import { schema } from './syncular.generated';
 
 const config: SyncServerConfig = {
@@ -62,8 +62,8 @@ bridge are in the
 ## Runtimes: Bun/Node and Cloudflare Workers
 
 The core is runtime-neutral TypeScript (enforced by a static import-graph
-test). Two adapters ship: `@syncular-v2/server-hono` for Bun/Node (HTTP + WS
-realtime, all storages), and `@syncular-v2/server-workers` for Cloudflare
+test). Two adapters ship: `@syncular/server-hono` for Bun/Node (HTTP + WS
+realtime, all storages), and `@syncular/server-workers` for Cloudflare
 Workers — `createWorkersFetchHandler` over `D1ServerStorage` (D1) with R2 as
 the S3-compatible segment/blob store. Workers is HTTP-only today; realtime on
 Workers is a designed Durable Object follow-up. The full matrix and the
@@ -96,7 +96,7 @@ clock so tests stay deterministic. `consoleJsonEvents()` is a reference sink
 (one JSON line per event):
 
 ```ts
-import { consoleJsonEvents } from '@syncular-v2/server';
+import { consoleJsonEvents } from '@syncular/server';
 const config: SyncServerConfig = { /* … */, events: consoleJsonEvents() };
 ```
 

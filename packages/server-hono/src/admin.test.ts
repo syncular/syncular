@@ -10,7 +10,7 @@ import {
   encodeRow,
   PROTOCOL_WIRE_VERSION,
   type RowColumn,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import {
   MemorySegmentStore,
   RingBufferEvents,
@@ -19,7 +19,7 @@ import {
   SSP2_CONTENT_TYPE,
   type SyncServerConfig,
   SyncularAdmin,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import { Hono } from 'hono';
 import { createSyncularAdminRoutes } from './admin';
 import { createSyncularHono } from './index';

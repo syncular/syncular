@@ -15,7 +15,7 @@
  *   footprint includes a non-`isComplete` unit is a **window miss** — widen
  *   or show partial, never claim complete.
  */
-import type { WindowBase } from '@syncular-v2/web-client';
+import type { WindowBase } from '@syncular/client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSyncClient } from './use-client';
 

@@ -1,16 +1,16 @@
 {
-  "name": "@syncular-v2/server-workers",
+  "name": "@syncular/server-workers",
   "private": true,
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@syncular-v2/server": "workspace:*",
-    "@syncular-v2/server-hono": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/server-hono": "workspace:*",
     "hono": "^4.11.0"
   },
   "devDependencies": {
-    "@syncular-v2/core": "workspace:*"
+    "@syncular/core": "workspace:*"
   }
 }
