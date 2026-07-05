@@ -142,6 +142,19 @@ export interface BlobDownloadedEvent {
   readonly durationMs: number;
 }
 
+/** A §5.9.2 orphan-blob sweep pass finished (host-scheduled GC). */
+export interface BlobSweptEvent {
+  readonly type: 'blob.swept';
+  readonly atMs: number;
+  readonly partition: string;
+  /** Blobs deleted this pass (unreferenced and older than the grace period). */
+  readonly swept: number;
+  /** Size of the live keep-set consulted (§5.9.4 reference index). */
+  readonly referenced: number;
+  /** The grace period applied (ms) — the upload→push race protection. */
+  readonly graceMs: number;
+}
+
 interface RealtimeEventBase {
   readonly atMs: number;
   readonly partition: string;
@@ -229,6 +242,7 @@ export type SyncularServerEvent =
   | SegmentDownloadedEvent
   | BlobUploadedEvent
   | BlobDownloadedEvent
+  | BlobSweptEvent
   | RealtimeOpenedEvent
   | RealtimeClosedEvent
   | RealtimeDeltaEvent

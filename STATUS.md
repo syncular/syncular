@@ -33,7 +33,8 @@ demos, generation on all five language targets.
   Native, Swift, Kotlin, Flutter — each a todo app over one `SyncClientLike`
   interface (TS hosts) / one FFI command surface (native). See `DEMOS.md`.
 - **Server breadth**: SQLite, Postgres (EXPLAIN-guarded), D1/Workers +
-  Durable-Object realtime, S3/R2 segments + blobs-on-PG + LIST-free stats,
+  Durable-Object realtime, S3/R2 segments **and blobs** (durable, no-TTL;
+  reference-driven orphan GC via `sweepOrphanBlobs`) + LIST-free stats,
   ops events, admin console, load-test suite.
 - **Codegen on all five targets** (TS/Swift/Kotlin/Dart) — schema types +
   the named-query tier — with `--check` freshness gates.

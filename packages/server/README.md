@@ -111,6 +111,7 @@ context). The demo server wires it behind `SYNCULAR_DEMO_EVENTS=1`.
 | `push.conflicted` | A commit terminated by a version conflict (§6.2) | `clientId`, `clientCommitId`, `operations`, `opIndex` |
 | `pull.served` | Once per served pull half, after all sections streamed | `clientId`, `subscriptions[]`: `{id, table, status, mode` (`bootstrap` \| `incremental` \| `none`)`, fromCursor, nextCursor, commits, changes, segments[]}`; each segment: `{mediaType` (`rows` \| `sqlite`)`, delivery` (`inline` \| `ref`)`, origin` (`built` \| `reused`)`, bytes, rows}` |
 | `segment.downloaded` | Every direct segment download (§5.5), success or failure | `segmentId`, `outcome` (`ok` \| `error`), `errorCode?`, `mediaType?`, `bytes?`, `durationMs` |
+| `blob.swept` | Every `sweepOrphanBlobs` pass (§5.9.2 orphan GC) | `partition`, `swept` (deleted count), `referenced` (keep-set size), `graceMs` |
 | `realtime.opened` | A socket registered with the hub and got `hello` (§8.1) | `sessionId`, `clientId`, `registrations`, `cursor`, `latestSeq` |
 | `realtime.closed` | A session left the hub (once per session) | `sessionId`, `durationMs` |
 | `realtime.delta` | A delta message pushed over the socket (§8.2) | `sessionId`, `commitSeq`, `bytes`, `changes` |
@@ -329,11 +330,131 @@ health gauge, not an invoice — reconcile against a periodic inventory report
 if you need an exact number. The exact in-process stores (memory / sqlite)
 count on demand and omit the marker.
 
-> **Blobs on S3/R2.** File-attachment bytes (§5.9) currently ride
-> `MemoryBlobStore` / `SqliteBlobStore`, not a dedicated S3 blob store — so
-> there is no separate S3 `blobStats()` path today. When an S3-backed
-> `BlobStore` lands, the same accumulator pattern (and the `approximate`
-> marker already present on `BlobStoreStats`) applies unchanged.
+The blob store's `stats()` uses the same accumulator + `approximate: true`
+marker (see "Blob bytes on S3 / R2" below).
+
+## Blob bytes on S3 / R2 (`S3BlobStore`)
+
+File-attachment bytes (§5.9) get the same object-store backend as segments.
+`S3BlobStore` is the blob twin of `S3SegmentStore` — same hand-rolled SigV4,
+same content-addressed key layout, same LIST-free-on-the-hot-path stats
+accumulator — for AWS S3, Cloudflare R2, or MinIO. It closes the
+"attachments are SQLite-only" gap: a Workers/edge or horizontally-scaled
+deployment can now store blobs durably in an object store instead of the
+database.
+
+```ts
+import { S3BlobStore, s3PresignedBlobUrls } from '@syncular-v2/server';
+
+const blobs = new S3BlobStore({
+  endpoint: 'https://s3.us-east-1.amazonaws.com',
+  region: 'us-east-1',
+  bucket: 'my-attachments',
+  accessKeyId: AWS_ACCESS_KEY_ID,
+  secretAccessKey: AWS_SECRET_ACCESS_KEY,
+  keyPrefix: 'syncular/', // optional namespace inside the bucket
+});
+
+const config: SyncServerConfig = {
+  // …schema, storage, segments, resolveScopes…
+  blobs,
+  // Optional: serve blob downloads as provider-presigned URLs (§5.9.5).
+  blobSignedUrls: s3PresignedBlobUrls(blobs, { ttlSeconds: 900 }),
+};
+```
+
+**Cloudflare R2.** Identical to the segment store — point `endpoint` at
+`https://<account-id>.r2.cloudflarestorage.com`, `region: 'auto'`, and use an
+R2 API-token access-key pair. R2 honors the SigV4 header/query auth and the
+`ListObjectsV2` the sweep uses.
+
+**Key layout.** `{keyPrefix}blob/{partition}/sha256/{hex}` — content-addressed
+and **partition-scoped** (the same bytes uploaded under two partitions are two
+objects; a partition cannot read another's attachment by guessing a content
+address). The object body is the blob bytes **verbatim**, so a presigned GET
+serves exactly the content-addressed bytes and the client's §5.9.1 hash check
+passes. `byteLength` + optional `mediaType` + `createdAtMs` ride along as
+object user metadata (`x-amz-meta-syncular-blob` = base64url(JSON)), so `get`
+is a single GET.
+
+### Durability, not TTL — the difference from segments
+
+This is the honest interface difference from `S3SegmentStore`. **Segments are
+TTL cache entries; blobs are durable.** A blob referenced by a live row must
+stay downloadable **indefinitely** (§5.9.5 B3). So `S3BlobStore` writes **no
+`expiresAtMs`, has no `ttlMs` config, and maps to no S3 lifecycle-expiration
+rule.** Reclamation is **reference-driven, not time-driven**: the only thing
+that deletes a blob is the orphan sweep, and it deletes only blobs *no live
+row references*.
+
+> **Do NOT put an S3/R2 lifecycle-expiration rule on the `blob/` prefix.** It
+> would delete still-referenced attachments out from under live rows. This is
+> the exact opposite of the segment guidance (where lifecycle expiration above
+> `ttlMs` is *encouraged* as GC). Blobs are cleaned by the sweep below.
+
+### Orphan sweep (the GC runbook)
+
+Nothing reclaims blobs automatically — the host schedules the sweep, the blob
+analogue of `pruneCommitLog`. `sweepOrphanBlobs(storage, blobStore, partition,
+{ graceMs })` reads the live keep-set from the §5.9.4 reference index
+(`storage.listReferencedBlobIds`) and deletes every blob that is **both**
+unreferenced **and** older than the grace period. It emits one `blob.swept`
+ops event (`{ swept, referenced, graceMs }`) and returns the deleted ids.
+
+```ts
+import { sweepOrphanBlobs } from '@syncular-v2/server';
+
+// A periodic per-partition GC job (hourly to daily is sensible).
+const { swept } = await sweepOrphanBlobs(storage, blobs, partition, {
+  graceMs: 24 * 60 * 60 * 1000, // default; see the race note below
+  events,
+});
+```
+
+**The grace period is not optional cleverness — it is the correctness
+mechanism.** Uploads are *content-addressed and land before the referencing
+push* (§5.9.2 upload-before-reference): a client `PUT`s the bytes, then pushes
+the row. Between those two steps the blob is legitimately **unreferenced**. If
+the sweep ran with no grace it would delete that fresh upload before its push
+arrived. So the grace period must comfortably exceed any sane upload→push
+latency — the **default is 24 h**, deliberately far above any push window.
+Lower it only if you fully understand your clients' outbox latency; there is
+no upside to a tight grace and a real data-loss risk. The sweep compares
+against the blob's **upload time** (`createdAtMs` from object metadata), and an
+idempotent re-upload does **not** reset that clock.
+
+`sweepOrphanBlobs` **requires** `storage.listReferencedBlobIds` (the §5.9.4
+reference index — SQLite, D1, and Postgres all implement it). Against a
+storage without it, the helper throws rather than sweep with an empty keep-set
+(which would delete everything). The `S3BlobStore` sweep is the store's **only
+LISTing operation** — it pages `ListObjectsV2` over the partition's `blob/`
+prefix, an admin/GC path off the hot path; every point lookup is still a
+GET/HEAD.
+
+### Blob stats — the same approximate accumulator
+
+`S3BlobStore.stats()` reports store-wide `{count, bytes}` from a fixed counter
+object (`{keyPrefix}stats/blobs.json`) folded read-modify-write on `put` under
+the same ETag compare-and-swap as segments, and marks the result
+`approximate: true` (the marker already present on `BlobStoreStats`, carried
+through `admin.blobStats()`). A `HEAD` before the PUT detects an idempotent
+re-upload so distinct blobs count once; the sweep decrements on delete. Same
+caveats as segment stats — a health gauge, not an invoice. The in-process
+stores (memory / sqlite) count on demand and omit the marker.
+
+### Presigned blob downloads (§5.9.5)
+
+Setting `blobSignedUrls: s3PresignedBlobUrls(blobs)` makes the server issue a
+provider-presigned GET URL for a blob download — **but only after the
+row-derived authorization check passes** (`handleBlobDownload` resolves the
+actor's scopes and tests the referencing rows first; a `blobId` is never a
+bearer capability minted from the id alone). The signed object key embeds the
+`blobId`, TTL SHOULD be ≤ 15 min (default 900 s), and the URL is a short-lived
+grant to exactly those immutable bytes. The issued `url`/`urlExpiresAtMs` ride
+additively on `BlobDownloadResult` alongside the bytes; the mounted §5.9.5
+direct-download endpoint stays the default serving path. Client consumption of
+the presigned URL (following it instead of streaming bytes through the sync
+server) is a later rung — the server-side issuance ships now.
 
 ### Native HMAC vs delegated presign (§5.4)
 

@@ -188,6 +188,51 @@ async function authorize(
   return xmlError(403, 'AccessDenied', 'no authentication supplied');
 }
 
+function escapeXml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}
+
+/**
+ * Minimal `ListObjectsV2`: filter the object map by `prefix`, sort by key,
+ * page by `max-keys` (default 2 here so tests exercise continuation), and
+ * emit the `<Contents><Key>…</Key></Contents>` + `<NextContinuationToken>`
+ * XML the store's regex reader parses. The continuation token is just the
+ * next key (opaque to S3 clients — fine for a stub).
+ */
+function listObjectsV2(objects: Map<string, StoredObject>, url: URL): Response {
+  const prefix = url.searchParams.get('prefix') ?? '';
+  const maxKeys = Number(url.searchParams.get('max-keys') ?? '2');
+  const after = url.searchParams.get('continuation-token') ?? '';
+  const allKeys = [...objects.keys()]
+    .filter((k) => k.startsWith(prefix))
+    .sort();
+  const start = after === '' ? 0 : allKeys.findIndex((k) => k === after);
+  const from = start < 0 ? allKeys.length : start;
+  const page = allKeys.slice(from, from + maxKeys);
+  const rest = allKeys.slice(from + maxKeys);
+  const truncated = rest.length > 0;
+  const nextToken = truncated ? rest[0] : undefined;
+  const contents = page
+    .map((k) => `<Contents><Key>${escapeXml(k)}</Key></Contents>`)
+    .join('');
+  const body =
+    `<?xml version="1.0" encoding="UTF-8"?>` +
+    `<ListBucketResult>` +
+    `<IsTruncated>${truncated ? 'true' : 'false'}</IsTruncated>` +
+    contents +
+    (nextToken !== undefined
+      ? `<NextContinuationToken>${escapeXml(nextToken)}</NextContinuationToken>`
+      : '') +
+    `</ListBucketResult>`;
+  return new Response(body, {
+    status: 200,
+    headers: { 'content-type': 'application/xml' },
+  });
+}
+
 export function startS3Stub(config: S3StubConfig): S3Stub {
   const objects = new Map<string, StoredObject>();
   const server = Bun.serve({
@@ -198,6 +243,19 @@ export function startS3Stub(config: S3StubConfig): S3Stub {
       const body = new Uint8Array(await req.arrayBuffer());
       const denial = await authorize(req, url, await sha256Hex(body), config);
       if (denial !== undefined) return denial;
+
+      // ListObjectsV2: `GET /{bucket}?list-type=2&prefix=…` — a bucket-level
+      // GET, no object key. The S3 blob store's orphan sweep is the only
+      // caller. Paginates with `max-keys` + `continuation-token` so the
+      // multi-page path is exercised.
+      const bucketRoot = `/${config.bucket}`;
+      if (
+        req.method === 'GET' &&
+        url.searchParams.get('list-type') === '2' &&
+        (url.pathname === bucketRoot || url.pathname === `${bucketRoot}/`)
+      ) {
+        return listObjectsV2(objects, url);
+      }
 
       const bucketPrefix = `/${config.bucket}/`;
       if (!url.pathname.startsWith(bucketPrefix)) {

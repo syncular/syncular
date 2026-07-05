@@ -11,22 +11,22 @@ conformance pairing green. Do not commit or push without Benjamin's
 standing arrangements (local commits by the orchestrator after
 verification; push is Benjamin's alone).
 
-## 1. In flight (wave 1, launched 2026-07-05)
+## 1. Wave 1 — LANDED 2026-07-05 (ef6b9d2d churn, fc78c5d7 index, + S3 blobs)
 
-- [ ] **Live-query churn hardening** (replaces per-rowid invalidation):
+- [x] **Live-query churn hardening** (replaces per-rowid invalidation):
       result stability in the shared hook machinery (identical result →
       zero re-render; changed result → per-row identity reuse so memo'd
       rows skip), frame-coalesced re-query scheduling (N invalidations
       per frame → 1 re-run), scope-key skip wired through the existing
       `scopeKeys` option. Caps both render and query cost under constant
       sync churn.
-- [ ] **S3/R2 blob byte storage + orphan-GC sweep**: closes the
+- [x] **S3/R2 blob byte storage + orphan-GC sweep**: closes the
       "attachments are SQLite-only" deployment gap. `S3BlobStore` reusing
       the segment SigV4/presign/CAS machinery (blobs are DURABLE — no
       TTL; reference-driven lifecycle), presigned blob *download* behind
       the 5.9.5 row-derived authz, `sweepOrphanBlobs` helper + runbook
       (grace period covers the upload-before-reference window).
-- [ ] **CREATE INDEX in the migration subset**: apps can't declare
+- [x] **CREATE INDEX in the migration subset**: apps can't declare
       indexes for their own query load today — the most consequential
       untracked gap once data outgrows toy size. Parser + IR + local DDL
       on both cores (+ the named-query check DB); server-side per the

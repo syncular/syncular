@@ -36,7 +36,9 @@ deployment, not a degraded one — no fallback is implied.
 // src/worker.ts
 import {
   D1ServerStorage,
+  S3BlobStore,
   S3SegmentStore,
+  s3PresignedBlobUrls,
   s3PresignedUrls,
   type SyncServerConfig,
 } from '@syncular-v2/server';
@@ -52,19 +54,26 @@ interface Env {
 }
 
 function syncConfig(env: Env): SyncServerConfig {
-  const segments = new S3SegmentStore({
-    endpoint: `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-    region: 'auto',
-    bucket: 'syncular-segments',
+  const endpoint = `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+  const r2 = {
+    endpoint,
+    region: 'auto' as const,
     accessKeyId: env.R2_ACCESS_KEY_ID,
     secretAccessKey: env.R2_SECRET_ACCESS_KEY,
-  });
+  };
+  const segments = new S3SegmentStore({ ...r2, bucket: 'syncular-segments' });
+  // Durable attachment bytes (§5.9) in R2 — no TTL, no lifecycle rule; the
+  // host schedules `sweepOrphanBlobs` for GC (see the server README runbook).
+  const blobs = new S3BlobStore({ ...r2, bucket: 'syncular-blobs' });
   return {
     schema,
     storage: new D1ServerStorage(env.DB),
     segments,
+    blobs,
     // §5.4 delegated presign: R2 mints the segment URL directly.
     signedUrls: s3PresignedUrls(segments, { ttlSeconds: 900 }),
+    // §5.9.5 delegated presign for blob downloads (issued post-authz).
+    blobSignedUrls: s3PresignedBlobUrls(blobs, { ttlSeconds: 900 }),
     resolveScopes: (args) => resolveScopes(args, env),
     // No `sqliteImageBuilder`: Workers has no SQLite engine, so bit-2
     // clients are served the rows lane (§5.3 support floor). No `realtime`:

@@ -11,7 +11,7 @@ import type { SyncularServerEvents } from './events';
 import type { LeaseStore } from './lease-store';
 import type { ServerSchema } from './schema';
 import type { SegmentStore } from './segment-store';
-import type { SegmentUrlConfig } from './signed-url';
+import type { BlobPresignConfig, SegmentUrlConfig } from './signed-url';
 import type { SqliteImageBuilder } from './sqlite-image';
 import type { ServerStorage, StoredCommit } from './storage';
 
@@ -109,6 +109,15 @@ export interface SyncServerConfig {
   readonly limits?: Partial<ServerLimits>;
   /** §5.4 signed-URL delivery: native HMAC tokens or delegated presign. */
   readonly signedUrls?: SegmentUrlConfig;
+  /**
+   * §5.9.5 signed-URL delivery for BLOB downloads (delegated presign). When
+   * set, `handleBlobDownload` issues a provider-presigned URL AFTER the
+   * row-derived authorization check and returns it additively on
+   * `BlobDownloadResult` (`url`/`urlExpiresAtMs`) alongside the bytes — an
+   * adapter MAY redirect to it. Absent ⇒ blobs are always served inline
+   * (the shipped default; client URL-consumption is a later rung).
+   */
+  readonly blobSignedUrls?: BlobPresignConfig;
   /**
    * §5.3 sqlite-image builder (TODO §4.2), injected so the pull path never
    * statically imports `bun:sqlite`. Absent ⇒ the sqlite-image lane is off

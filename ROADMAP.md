@@ -212,6 +212,28 @@ This block is assembly on a proven core — packages, not protocol.
       ready for it. Tests: stub round-trip, idempotent-re-put dedup,
       deterministic CAS-reject (no-lost-update) simulation, admin marker
       carry-through.
+- [x] **S3 blob store + orphan GC** (landed 2026-07-05): `S3BlobStore` — the
+      blob twin of `S3SegmentStore` (same SigV4, content-addressed keys, same
+      approximate stats accumulator) — closing the "attachments are
+      SQLite-only" deployment gap. Keys are `{keyPrefix}blob/{partition}/
+      sha256/{hex}`, partition-scoped, bytes verbatim so presigned GETs serve
+      the content-addressed body. The honest interface difference from
+      segments is encoded: **blobs are durable — no `ttlMs`, no `expiresAtMs`,
+      no lifecycle-expiration mapping**; reclamation is reference-driven via
+      `sweepOrphanBlobs(storage, blobStore, partition, {graceMs})`, the
+      ready-made GC helper over `listReferencedBlobIds` (deletes only
+      unreferenced-AND-older-than-grace blobs; default 24 h grace protects the
+      upload-before-reference race; one `blob.swept` ops event). The sweep is
+      the store's only LIST (`ListObjectsV2`, paged, off the hot path).
+      Presigned blob **downloads** land too: `blobSignedUrls` +
+      `s3PresignedBlobUrls`, issued only after the §5.9.5 row-derived authz
+      check, returned additively on `BlobDownloadResult` — client consumption
+      (following the URL) stays a later rung; server issuance ships now.
+      Presigned **upload** stays gated (§5.9.3 — deferred by design). Tests:
+      shared `BlobStore` contract across memory/sqlite/S3, presigned GET
+      round-trip + expiry via the stub, sweep semantics (orphan deleted after
+      grace, referenced survives, fresh-unreferenced survives grace, multi-page
+      pagination), Workers fetch-handler blob round-trip on S3.
 
 ## 3. Windowed sync W1 (the differentiator)
 
@@ -497,8 +519,9 @@ wire changes, zero server changes; sequenced AFTER the WS-native loop
 **The live working checklist is `TODO.md` (repo root)** — this section
 keeps the strategy framing and the NON-GOALS (authoritative here).
 The full does-not-work / would-be-useful sweep. Wave 1 (in flight):
-live-query churn hardening (replacing per-rowid — see block 4), S3 blob
-store + GC sweep, CREATE INDEX in the migration subset.
+live-query churn hardening (replacing per-rowid — see block 4), CREATE
+INDEX in the migration subset. (S3 blob store + GC sweep **landed
+2026-07-05** — see block 2.)
 
 **Wave 2 queue (approved):**
 
