@@ -13,6 +13,7 @@ import { SyncError, syncError } from './errors';
 import { emitEvent } from './events';
 import { compileSchema } from './schema';
 import { authorizeWrite, type ResolvedScopes } from './scopes';
+import { issueBlobUrl } from './signed-url';
 
 const DEFAULT_MAX_BLOB_BYTES = 64 * 1024 * 1024;
 
@@ -26,6 +27,14 @@ export interface BlobUploadRequest {
 export interface BlobDownloadResult {
   readonly bytes: Uint8Array;
   readonly headers: Record<string, string>;
+  /**
+   * §5.9.5 delegated presign: a provider-signed URL for the bytes, issued
+   * only after the row-derived authorization check passed. Present only when
+   * the host configured `blobSignedUrls`. Additive — the `bytes` above remain
+   * the authoritative inline path; an adapter MAY redirect to `url` instead.
+   */
+  readonly url?: string;
+  readonly urlExpiresAtMs?: number;
 }
 
 /** `PUT <mount>/blobs/{blobId}` (§5.9.3). Host auth is the adapter's job. */
@@ -189,6 +198,18 @@ async function downloadBlob(
     );
   }
 
+  // §5.9.5 delegated presign: authorization has passed above, so a signed URL
+  // is now a short-TTL bearer grant to exactly these immutable bytes. Issue it
+  // additively — never before the check, never as a capability from the id.
+  let issued: { url: string; urlExpiresAtMs: number } | undefined;
+  if (ctx.blobSignedUrls !== undefined) {
+    issued = await issueBlobUrl(ctx.blobSignedUrls, {
+      partition: ctx.partition,
+      blobId,
+      nowMs: clockOf(ctx)(),
+    });
+  }
+
   return {
     bytes: entry.bytes,
     headers: {
@@ -197,5 +218,8 @@ async function downloadBlob(
       'Cache-Control': 'private, max-age=0',
       Vary: 'Authorization, Accept-Encoding',
     },
+    ...(issued !== undefined
+      ? { url: issued.url, urlExpiresAtMs: issued.urlExpiresAtMs }
+      : {}),
   };
 }

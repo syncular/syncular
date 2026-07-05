@@ -98,6 +98,49 @@ export async function issueSegmentUrl(
   };
 }
 
+/**
+ * Delegated presign for BLOB downloads (§5.9.5). The blob twin of
+ * `DelegatedPresignConfig`: the provider signs the URL and the signed object
+ * key embeds the `blobId`. Issuance happens ONLY after the §5.9.5
+ * row-derived authorization check (never before), so the URL is a short-TTL
+ * bearer grant to exactly those immutable bytes — the SPEC's "authorization
+ * was resolved against the referencing rows at issuance". Unlike segments,
+ * there is no native-HMAC blob token scheme wired this rung; presign is the
+ * shipped path (`S3BlobStore.presignBlobGet` via `s3PresignedBlobUrls`).
+ */
+export interface BlobPresignArgs {
+  readonly partition: string;
+  readonly blobId: string;
+  readonly nowMs: number;
+  /** Resolved TTL (config value or the 900 s default) — already applied. */
+  readonly ttlSeconds: number;
+}
+
+export interface BlobPresignConfig {
+  readonly presign: (
+    args: BlobPresignArgs,
+  ) => SegmentUrlIssue | Promise<SegmentUrlIssue>;
+  /** URL TTL; SHOULD be ≤ 15 minutes (§5.9.5). Default 900. */
+  readonly ttlSeconds?: number;
+}
+
+/**
+ * Issue the §5.9.5 `url`/`urlExpiresAtMs` pair for one blob download. The
+ * caller (blob-handlers `downloadBlob`) invokes this only after the
+ * row-derived authorization check passes.
+ */
+export async function issueBlobUrl(
+  config: BlobPresignConfig,
+  args: {
+    readonly partition: string;
+    readonly blobId: string;
+    readonly nowMs: number;
+  },
+): Promise<SegmentUrlIssue> {
+  const ttlSeconds = config.ttlSeconds ?? 900;
+  return config.presign({ ...args, ttlSeconds });
+}
+
 export interface SegmentTokenClaims {
   readonly v: 1;
   readonly seg: string;

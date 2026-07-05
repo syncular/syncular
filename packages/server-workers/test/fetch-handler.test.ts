@@ -9,7 +9,7 @@
  * This is the bar the TODP set: full push/pull/segment/blob round-trips
  * through the Workers entry, over the D1 double, with the reference codec.
  */
-import { beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import {
   decodeMessage,
   encodeMessage,
@@ -20,14 +20,17 @@ import {
   type RowColumn,
 } from '@syncular-v2/core';
 import {
+  type BlobStore,
   blobIdFor,
   MemoryBlobStore,
   MemorySegmentStore,
+  S3BlobStore,
   type ServerSchema,
   SSP2_CONTENT_TYPE,
   type SyncServerConfig,
 } from '@syncular-v2/server';
 import { D1DatabaseDouble } from '../../server/test/d1-double';
+import { startS3Stub } from '../../server/test/s3-stub';
 import { createWorkersFetchHandler, D1ServerStorage } from '../src/index';
 
 const PARTITION = 'part-1';
@@ -58,7 +61,9 @@ interface TestEnv {
   readonly config: SyncServerConfig;
 }
 
-async function makeHandler(): Promise<(request: Request) => Promise<Response>> {
+async function makeHandler(
+  makeBlobs: () => BlobStore = () => new MemoryBlobStore(),
+): Promise<(request: Request) => Promise<Response>> {
   const db = new D1DatabaseDouble();
   const storage = new D1ServerStorage(db);
   await storage.migrate();
@@ -66,7 +71,7 @@ async function makeHandler(): Promise<(request: Request) => Promise<Response>> {
     schema: SCHEMA,
     storage,
     segments: new MemorySegmentStore(),
-    blobs: new MemoryBlobStore(),
+    blobs: makeBlobs(),
     resolveScopes: () => ({ list_id: ['*'] }),
   };
   const handler = createWorkersFetchHandler<TestEnv>((env) => ({
@@ -291,5 +296,85 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
       (f): f is PushResultFrame => f.type === 'PUSH_RESULT',
     );
     expect(result?.status).toBe('rejected');
+  });
+});
+
+/**
+ * A Workers deployment configuring `S3BlobStore` (R2-as-S3): the same
+ * upload → reference → download round-trip, but the blob bytes live in the
+ * object store, proving the env wiring flows an S3 blob store through
+ * `SyncServerConfig.blobs` exactly like the memory store.
+ */
+describe('Workers fetch handler (D1 double + S3 blob store)', () => {
+  const stub = startS3Stub({
+    bucket: 'wk-blobs',
+    region: 'auto',
+    accessKeyId: 'SYNCULARTESTAKID',
+    secretAccessKey: 'syncular-test-secret',
+    now: () => Date.now(),
+  });
+  afterAll(() => stub.stop());
+
+  let storeCount = 0;
+  const makeS3Blobs = () => {
+    storeCount += 1;
+    return new S3BlobStore({
+      endpoint: stub.url,
+      region: 'auto',
+      bucket: 'wk-blobs',
+      accessKeyId: 'SYNCULARTESTAKID',
+      secretAccessKey: 'syncular-test-secret',
+      keyPrefix: `wk${storeCount}/`,
+    });
+  };
+
+  test('blob upload → reference → download round-trips over S3', async () => {
+    const fetch_ = await makeHandler(makeS3Blobs);
+    const blobBytes = new Uint8Array([9, 8, 7, 6, 5, 4, 3, 2, 1]);
+    const blobId = await blobIdFor(blobBytes);
+
+    const uploadResp = await fetch_(
+      new Request(`https://worker.example/blobs/${blobId}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/octet-stream' },
+        body: blobBytes.slice().buffer as ArrayBuffer,
+      }),
+    );
+    expect(uploadResp.status).toBe(200);
+
+    const pushMsg = await decodeSync(
+      await fetch_(
+        syncRequest([
+          {
+            type: 'PUSH_COMMIT',
+            clientCommitId: 'cs3',
+            operations: [
+              {
+                table: 'tasks',
+                rowId: 'ts3',
+                op: 'upsert',
+                payload: taskRow(
+                  'ts3',
+                  'L',
+                  'with-s3-blob',
+                  blobRef(blobId, blobBytes.length),
+                ),
+              },
+            ],
+          },
+        ]),
+      ),
+    );
+    expect(
+      pushMsg.frames.find((f): f is PushResultFrame => f.type === 'PUSH_RESULT')
+        ?.status,
+    ).toBe('applied');
+
+    const downloadResp = await fetch_(
+      new Request(`https://worker.example/blobs/${blobId}`),
+    );
+    expect(downloadResp.status).toBe(200);
+    const got = new Uint8Array(await downloadResp.arrayBuffer());
+    expect(got).toEqual(blobBytes);
   });
 });
