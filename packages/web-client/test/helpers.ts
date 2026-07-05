@@ -5,7 +5,16 @@
  * for the socket seam. No HTTP, no sockets. Fault injection happens at the
  * transport interface.
  */
-import type { RowColumn, ScopeMap } from '@syncular-v2/core';
+
+import {
+  type ClientSchema,
+  type SegmentFetchRequest,
+  SyncClient,
+  type SyncClientConfig,
+  type SyncClientLimits,
+} from '@syncular/client';
+import { BunClientDatabase } from '@syncular/client/bun';
+import type { RowColumn, ScopeMap } from '@syncular/core';
 import {
   createRealtimeHub,
   handleSegmentDownload,
@@ -17,15 +26,7 @@ import {
   SqliteServerStorage,
   SyncError,
   type SyncRequestContext,
-} from '@syncular-v2/server';
-import {
-  type ClientSchema,
-  type SegmentFetchRequest,
-  SyncClient,
-  type SyncClientConfig,
-  type SyncClientLimits,
-} from '@syncular-v2/web-client';
-import { BunClientDatabase } from '@syncular-v2/web-client/bun';
+} from '@syncular/server';
 
 export const PARTITION = 'part-1';
 

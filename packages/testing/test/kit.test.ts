@@ -1,11 +1,11 @@
 /**
  * The kit's own suite: proves the app-facing surface does what the README
- * promises. Every test drives the SHIPPED `SyncClient` + `@syncular-v2/server`
+ * promises. Every test drives the SHIPPED `SyncClient` + `@syncular/server`
  * core through the loopback — a green suite here means an app dev's tests
  * built on this kit are exercising real sync, not a mock.
  */
 import { describe, expect, test } from 'bun:test';
-import type { ClientSchema } from '@syncular-v2/web-client';
+import type { ClientSchema } from '@syncular/client';
 import { createTestSync, TransportFault } from '../src/index';
 
 /** A minimal one-table app schema: notes scoped by list. */

@@ -4,7 +4,7 @@
  * clock, and a segment store. Framework-free; adapters supply `partition`
  * and `actorId` from host authentication (§1.1).
  */
-import type { ScopeMap } from '@syncular-v2/core';
+import type { ScopeMap } from '@syncular/core';
 import type { BlobStore } from './blob-store';
 import type { CrdtMergerRegistry } from './crdt-merger';
 import type { SyncularServerEvents } from './events';
@@ -94,7 +94,7 @@ export interface SyncServerConfig {
    * CRDT merger registry (§5.10.2), `crdtType` → merge fn. Absent ⇒ no
    * column can CRDT-merge: a push touching a `crdt` column then fails
    * `sync.crdt_merge_failed` (§5.10.6). Kept out of core — the reference
-   * `yjs-doc` merger ships in `@syncular-v2/crdt-yjs` (the blob-store rule).
+   * `yjs-doc` merger ships in `@syncular/crdt-yjs` (the blob-store rule).
    */
   readonly crdtMergers?: CrdtMergerRegistry;
   /**
@@ -134,7 +134,7 @@ export interface SyncServerConfig {
    * §5.3 sqlite-image builder (TODO §4.2), injected so the pull path never
    * statically imports `bun:sqlite`. Absent ⇒ the sqlite-image lane is off
    * (bit-2 clients are served the rows lane) — the Workers/edge posture. A
-   * Bun/Node host wires `buildSqliteImage` from `@syncular-v2/server`.
+   * Bun/Node host wires `buildSqliteImage` from `@syncular/server`.
    */
   readonly sqliteImageBuilder?: SqliteImageBuilder;
   readonly realtime?: RealtimeNotifier;

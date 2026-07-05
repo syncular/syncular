@@ -1,26 +1,26 @@
 {
-  "name": "@syncular-v2/demo-react",
+  "name": "@syncular/demo-react",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "bun run src/server.ts",
-    "generate": "syncular-v2 generate --manifest-dir ."
+    "generate": "syncular generate --manifest-dir ."
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
-    "@syncular-v2/core": "workspace:*",
-    "@syncular-v2/kysely": "workspace:*",
-    "@syncular-v2/react": "workspace:*",
-    "@syncular-v2/server": "workspace:*",
-    "@syncular-v2/server-hono": "workspace:*",
-    "@syncular-v2/web-client": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "@syncular/kysely": "workspace:*",
+    "@syncular/react": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/server-hono": "workspace:*",
+    "@syncular/client": "workspace:*",
     "hono": "^4.11.0",
     "kysely": "^0.29.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@syncular-v2/typegen": "workspace:*",
+    "@syncular/typegen": "workspace:*",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0"
   }

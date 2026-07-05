@@ -16,7 +16,7 @@
  * Both classes run the identical `test/storage-contract.ts`, so the
  * behavior is held key-for-key regardless.
  */
-import type { PushOperationResult } from '@syncular-v2/core';
+import type { PushOperationResult } from '@syncular/core';
 import type { StoredChange, StoredPushResult, StoredRow } from './storage';
 
 /**

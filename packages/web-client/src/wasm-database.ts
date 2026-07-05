@@ -17,7 +17,7 @@
  * A thin binding over the sqlite3 `oo1` API: opening is async (wasm
  * init), everything after is synchronous like every other
  * `ClientDatabase`. Browser-only — exercised by the demo, never imported
- * by bun tests (subpath export `@syncular-v2/web-client/wasm`).
+ * by bun tests (subpath export `@syncular/client/wasm`).
  */
 import sqlite3InitModule from '@sqlite.org/sqlite-wasm';
 import {

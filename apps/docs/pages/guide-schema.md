@@ -38,14 +38,14 @@ migrated table must be listed; unknown manifest keys are hard errors.
 ## Generate
 
 ```sh
-syncular-v2 generate --manifest-dir .
+syncular generate --manifest-dir .
 ```
 
 This writes the IR JSON and the TS module. **Commit both.** The generated
 module carries the IR hash in its header, so freshness is verifiable:
 
 ```sh
-syncular-v2 generate --check     # exits non-zero unless on-disk files are byte-exact
+syncular generate --check     # exits non-zero unless on-disk files are byte-exact
 ```
 
 Wire `--check` into CI so a schema change without a regenerate fails loudly.

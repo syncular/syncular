@@ -1,5 +1,5 @@
 /**
- * @syncular-v2/web-client — the B3 TypeScript client protocol core
+ * @syncular/client — the B3 TypeScript client protocol core
  * (SPEC.md is normative; REVISE.md B3 is the architectural mandate).
  *
  * Browser-safe root: database backends live behind subpath exports

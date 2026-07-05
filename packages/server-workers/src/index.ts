@@ -1,5 +1,5 @@
 /**
- * `@syncular-v2/server-workers` — the Cloudflare Workers entry (TODO §4.2).
+ * `@syncular/server-workers` — the Cloudflare Workers entry (TODO §4.2).
  *
  * This is deliberately thin. `createSyncularHono` (server-hono) is already
  * Workers-native: it routes with Hono (which runs unmodified on `workerd`)
@@ -32,11 +32,11 @@ import {
   D1ServerStorage,
   type StoredCommit,
   type SyncServerConfig,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import {
   createSyncularHono,
   type SyncularHonoOptions,
-} from '@syncular-v2/server-hono';
+} from '@syncular/server-hono';
 import {
   REALTIME_DO_UPGRADE_PATH,
   REALTIME_DO_WAKE_PATH,
@@ -44,7 +44,7 @@ import {
   writeIdentityHeaders,
 } from './realtime-do';
 
-export { type D1Database, D1ServerStorage } from '@syncular-v2/server';
+export { type D1Database, D1ServerStorage } from '@syncular/server';
 export * from './realtime-do';
 
 /**

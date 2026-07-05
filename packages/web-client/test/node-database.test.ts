@@ -18,7 +18,7 @@
  */
 import { expect, test } from 'bun:test';
 // Subpath export resolves and is the same module.
-import { openNodeDatabase as openViaSubpath } from '@syncular-v2/web-client/node';
+import { openNodeDatabase as openViaSubpath } from '@syncular/client/node';
 import { openBunDatabase } from '../src/bun-database';
 import type { ClientDatabase } from '../src/database';
 // Importing the module must NOT throw (peer is loaded lazily at construction).

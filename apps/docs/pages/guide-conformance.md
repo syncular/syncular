@@ -28,7 +28,7 @@ The rules of the tree ([REVISE.md](../../REVISE.md)):
 
 ## The conformance runner
 
-`@syncular-v2/conformance` is an implementation-agnostic scenario catalog that
+`@syncular/conformance` is an implementation-agnostic scenario catalog that
 runs against any `(client, server)` pairing through a **driver interface**.
 `bun run check` runs the whole catalog on (TS client × TS server) plus the
 golden-vector stage; the Rust pairing runs the same catalog against the TS
@@ -67,4 +67,4 @@ column type and merge semantics in
 [SPEC §5.10](../../SPEC.md#510-crdt-columns--opt-in-collaborative-state), two
 golden vectors, and convergence scenarios in the catalog run by both client
 cores (the Rust core round-trips the same bytes the TS core merges through
-`@syncular-v2/crdt-yjs`).
+`@syncular/crdt-yjs`).

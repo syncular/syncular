@@ -15,14 +15,14 @@ cd "$(dirname "$0")"
 
 echo "== frontend deps (bun install, workspace root) =="
 # The example is a workspace member; install at the repo root so its deps
-# (react, @syncular-v2/react, @syncular-v2/tauri, @tauri-apps/api) are linked.
+# (react, @syncular/react, @syncular/tauri, @tauri-apps/api) are linked.
 ( cd ../.. && bun install --frozen-lockfile )
 
 # The example's frontend schema (src/frontend/syncular.generated.ts) is REAL
 # typegen output from example/syncular.json + migrations/ (mirroring
 # apps/demo-react). Gate its freshness byte-exactly so a migration change
 # without a regenerate fails loud.
-echo "== generated schema is fresh (syncular-v2 generate --check) =="
+echo "== generated schema is fresh (syncular generate --check) =="
 ( cd ../.. && bun packages/typegen/src/cli.ts generate \
     --manifest-dir bindings/tauri/example --check )
 echo "ok: example/src/frontend/syncular.generated.ts is fresh"

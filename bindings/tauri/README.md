@@ -12,7 +12,7 @@ Two pieces:
   core DIRECTLY (no FFI), with a real file DB and the native HTTP+WS transport.
   Exposes `syncular_command` / `syncular_query` commands and a `syncular://event`
   event stream.
-- **`../../packages/tauri`** — `@syncular-v2/tauri` (JS). `createTauriSyncClient()`
+- **`../../packages/tauri`** — `@syncular/tauri` (JS). `createTauriSyncClient()`
   returns a `SyncClientLike` over `@tauri-apps/api`'s `invoke` / `listen`.
 
 ## Architecture: why a native instance, not JS-in-the-webview
@@ -27,9 +27,9 @@ is Tauri IPC.
 
 ```
 ┌── webview ────────────────┐        ┌── tauri host process ──────────────┐
-│ @syncular-v2/react hooks  │        │ tauri-plugin-syncular              │
+│ @syncular/react hooks  │        │ tauri-plugin-syncular              │
 │   │ SyncClientLike        │  IPC   │   owning thread (mailbox)          │
-│ @syncular-v2/tauri  ──────┼───────▶│     SyncClient (rusqlite FILE db)  │
+│ @syncular/tauri  ──────┼───────▶│     SyncClient (rusqlite FILE db)  │
 │   invoke / listen         │◀───────┤     HostTransport (HTTP + WS)      │
 └───────────────────────────┘ events │     §8.4 host loop (auto-sync)     │
                                       └────────────────────────────────────┘
@@ -124,7 +124,7 @@ Grant the plugin's default permission in a capability
 Webview:
 
 ```ts
-import { createTauriSyncClient } from '@syncular-v2/tauri';
+import { createTauriSyncClient } from '@syncular/tauri';
 import { schema } from './syncular.generated';
 
 const client = await createTauriSyncClient({ clientId: 'device-1', schema });
@@ -144,7 +144,7 @@ holds the whole database; the webview should pull windows of it, not the lot.
 A minimal Tauri app proving syncular works end to end: `example/src-tauri`
 registers the plugin (with `native-transport`) and points its native instance at
 a local dev server; `example/src/frontend` is a **React** todo list on
-`@syncular-v2/react` hooks (`useSyncQuery` + `useMutation` + `useSyncStatus`)
+`@syncular/react` hooks (`useSyncQuery` + `useMutation` + `useSyncStatus`)
 over `createTauriSyncClient` — the exact hooks the browser demo uses, with the
 only Tauri-specific line being the client construction. See
 [`example/README.md`](example/README.md) for the full run recipe and the ~40
@@ -176,7 +176,7 @@ example build). CI runs it as the `tauri-bindings` job, gated on
   manifest (produced at the consuming app's build, not by `mock_context`), so
   command *behavior* is proven by the core tests and the shell wiring by the
   example.
-- **JS tests**: `@syncular-v2/tauri`'s bridge unit tests (injected
+- **JS tests**: `@syncular/tauri`'s bridge unit tests (injected
   invoke/listen doubles) assert the `SyncClientLike` contract, event fanout, and
   the bytes convention, plus a shape-parity test against the real React
   `normalizeClient`.

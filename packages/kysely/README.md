@@ -1,13 +1,13 @@
-# @syncular-v2/kysely — the typed read layer
+# @syncular/kysely — the typed read layer
 
 syncular's local query API is string SQL by design (`client.query(sql,
 params)`). This package is its **typed counterpart**: a [Kysely](https://kysely.dev)
 dialect that runs your queries against any syncular host, typed by the
-`Database` interface `@syncular-v2/typegen` emits from your schema.
+`Database` interface `@syncular/typegen` emits from your schema.
 
 ```ts
 import { Kysely } from 'kysely';
-import { SyncularDialect } from '@syncular-v2/kysely';
+import { SyncularDialect } from '@syncular/kysely';
 import type { Database } from './syncular.generated';
 
 const db = new Kysely<Database>({
@@ -40,22 +40,22 @@ client.mutate([{ table: 'todos', op: 'upsert', values: { … } }]);
 
 The dialect drives a host's `query(sql, params)` method — the one surface
 **every** host exposes: the direct `SyncClient` (sync `query`), the worker
-`SyncClientHandle` and multi-tab follower, and the `@syncular-v2/tauri` /
-`@syncular-v2/react-native` bridges (all async `query`). It never reaches for
+`SyncClientHandle` and multi-tab follower, and the `@syncular/tauri` /
+`@syncular/react-native` bridges (all async `query`). It never reaches for
 a `ClientDatabase`, so the handle hosts — which expose only `query`, not a
 database — are first-class. Every read is `await`ed, so sync and async
 `query` both work through one dialect.
 
 ## Not in the core bundle
 
-This is a **separate package**, never a subpath of `@syncular-v2/web-client`,
+This is a **separate package**, never a subpath of `@syncular/client`,
 so Kysely (a real dependency) never enters the client-core bundle. The core's
 size budget is untouched by construction — nothing the core ships imports
 from here.
 
 ## React
 
-`@syncular-v2/react`'s `useTypedQuery(qb => qb.selectFrom('todos')…)` compiles
+`@syncular/react`'s `useTypedQuery(qb => qb.selectFrom('todos')…)` compiles
 a query builder and re-runs it live, extracting its table dependencies from
 the compiled query's AST automatically (`extractTables`). See the React
 package README.

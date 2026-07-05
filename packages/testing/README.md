@@ -1,4 +1,4 @@
-# @syncular-v2/testing
+# @syncular/testkit
 
 The app-developer test kit. Stand up a whole Syncular backend and N real
 clients in memory, drive them from a `bun test` (or vitest/jest) file, and
@@ -6,13 +6,13 @@ assert what your app sees — convergence, offline queues, conflicts, live
 queries — with **no HTTP server, no browser, no mocks**.
 
 Everything here is the shipped core: the same `SyncClient`
-(`@syncular-v2/web-client`) and the same `@syncular-v2/server` protocol
+(`@syncular/client`) and the same `@syncular/server` protocol
 handler your production app runs, wired through an in-process loopback. A
 green test here is real sync behaviour, not a fake.
 
 > Designed for **app tests** — readable and minimal. If you are implementing
 > a Syncular client or server and need the driver/pairing machinery, that is
-> `@syncular-v2/conformance`, not this.
+> `@syncular/conformance`, not this.
 
 ## Install
 
@@ -22,19 +22,19 @@ Workspace-internal only:
 // package.json
 {
   "devDependencies": {
-    "@syncular-v2/testing": "workspace:*"
+    "@syncular/testkit": "workspace:*"
   }
 }
 ```
 
 Requires the Bun runtime (the in-memory client backend is `bun:sqlite`). The
-React helper (`@syncular-v2/testing/react`) needs `react` — an optional peer.
+React helper (`@syncular/testkit/react`) needs `react` — an optional peer.
 
 ## 60-second tour
 
 ```ts
 import { expect, test } from 'bun:test';
-import { createTestSync } from '@syncular-v2/testing';
+import { createTestSync } from '@syncular/testkit';
 import { schema } from '../src/syncular.generated'; // your generated schema
 
 test('two clients converge', async () => {
@@ -170,15 +170,15 @@ await a.sync();                     // the hub fans the commit to b as a delta
 
 ## React
 
-`@syncular-v2/react`'s `SyncProvider` already takes any `SyncClient`, so
+`@syncular/react`'s `SyncProvider` already takes any `SyncClient`, so
 mounting hooks against a test client is a one-liner. `syncWrapper` builds the
 `wrapper` prop `@testing-library/react` wants:
 
 ```tsx
 import { renderHook, act, waitFor } from '@testing-library/react';
-import { useSyncQuery } from '@syncular-v2/react';
-import { createTestSync } from '@syncular-v2/testing';
-import { syncWrapper } from '@syncular-v2/testing/react';
+import { useSyncQuery } from '@syncular/react';
+import { createTestSync } from '@syncular/testkit';
+import { syncWrapper } from '@syncular/testkit/react';
 
 const sync = await createTestSync({ schema });
 const client = await sync.client('a');
@@ -206,5 +206,5 @@ live-query behaviour.
   to test your Hono/Workers adapter or real fetch/WebSocket wiring, boot the
   server yourself (see `examples/quickstart`).
 - Not the conformance runner. No driver/pairing abstraction, no catalog —
-  those live in `@syncular-v2/conformance`.
+  those live in `@syncular/conformance`.
 - Not a `setTimeout` mock. See the clock note above.

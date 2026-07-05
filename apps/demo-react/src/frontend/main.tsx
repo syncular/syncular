@@ -13,18 +13,19 @@
  *   others (W1 value-sharded windowing, visible). `isComplete(list)` renders
  *   the completeness oracle honestly.
  */
+
+import {
+  createSyncClientHandle,
+  type SyncClientHandle,
+} from '@syncular/client';
 import {
   SyncProvider,
   useMutation,
   useNamedQuery,
   useSyncStatus,
   useWindow,
-} from '@syncular-v2/react';
-import { useTypedQuery } from '@syncular-v2/react/typed';
-import {
-  createSyncClientHandle,
-  type SyncClientHandle,
-} from '@syncular-v2/web-client';
+} from '@syncular/react';
+import { useTypedQuery } from '@syncular/react/typed';
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { type Database, schema, type TodosRow } from '../syncular.generated';

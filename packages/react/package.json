@@ -1,5 +1,5 @@
 {
-  "name": "@syncular-v2/react",
+  "name": "@syncular/react",
   "private": true,
   "type": "module",
   "exports": {
@@ -7,25 +7,25 @@
     "./typed": "./src/typed.ts"
   },
   "peerDependencies": {
-    "@syncular-v2/kysely": "workspace:*",
+    "@syncular/kysely": "workspace:*",
     "kysely": ">=0.27.0",
     "react": ">=18.0.0"
   },
   "peerDependenciesMeta": {
-    "@syncular-v2/kysely": { "optional": true },
+    "@syncular/kysely": { "optional": true },
     "kysely": { "optional": true }
   },
   "dependencies": {
-    "@syncular-v2/web-client": "workspace:*"
+    "@syncular/client": "workspace:*"
   },
   "scripts": {
     "test": "bun test --preload ./test/setup.ts"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^15.11.0",
-    "@syncular-v2/core": "workspace:*",
-    "@syncular-v2/kysely": "workspace:*",
-    "@syncular-v2/server": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "@syncular/kysely": "workspace:*",
+    "@syncular/server": "workspace:*",
     "@testing-library/react": "^16.1.0",
     "@types/react": "^18.3.0",
     "kysely": "^0.29.2",

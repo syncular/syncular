@@ -13,8 +13,8 @@ import {
   type SqlValue,
   SyncClient,
   type SyncClientConfig,
-} from '@syncular-v2/web-client';
-import { BunClientDatabase } from '@syncular-v2/web-client/bun';
+} from '@syncular/client';
+import { BunClientDatabase } from '@syncular/client/bun';
 import { Kysely } from 'kysely';
 import {
   assertReadOnly,

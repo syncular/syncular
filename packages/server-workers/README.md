@@ -1,11 +1,11 @@
-# @syncular-v2/server-workers
+# @syncular/server-workers
 
 The Cloudflare Workers entry for the Syncular v2 sync server (TODO §4.2). It
 wires the runtime-neutral server core to Workers bindings — **D1** for
 storage, **R2** for durable segment/blob bytes, secrets for signing and
 auth — behind a standard Workers module `fetch` handler.
 
-This package is deliberately thin. `@syncular-v2/server-hono`'s
+This package is deliberately thin. `@syncular/server-hono`'s
 `createSyncularHono` is already Workers-native (it routes with Hono, which
 runs unmodified on `workerd`, and speaks only Web `Request`/`Response`/
 `fetch`/Web-Crypto). So the Workers lane is not a second adapter — it is the
@@ -41,8 +41,8 @@ import {
   s3PresignedBlobUrls,
   s3PresignedUrls,
   type SyncServerConfig,
-} from '@syncular-v2/server';
-import { createWorkersFetchHandler } from '@syncular-v2/server-workers';
+} from '@syncular/server';
+import { createWorkersFetchHandler } from '@syncular/server-workers';
 import { schema } from './syncular.generated'; // typegen output
 
 interface Env {
@@ -100,7 +100,7 @@ See `wrangler.toml.example` for the binding config.
 
 `D1ServerStorage` does **not** apply its DDL on construction (a cold request
 must never race a schema apply). Apply it once with wrangler. Generate the
-migration SQL from `sqliteDdlStatements()` (exported from `@syncular-v2/server`)
+migration SQL from `sqliteDdlStatements()` (exported from `@syncular/server`)
 into a `migrations/` file, then:
 
 ```sh
@@ -213,9 +213,9 @@ import {
   D1ServerStorage,
   SyncularRealtimeHost,
   type RealtimeDOConfig,
-} from '@syncular-v2/server-workers';
+} from '@syncular/server-workers';
 import { DurableObject } from 'cloudflare:workers';
-import { MemorySegmentStore } from '@syncular-v2/server';
+import { MemorySegmentStore } from '@syncular/server';
 import { schema } from './syncular.generated';
 
 interface Env {

@@ -11,7 +11,7 @@ import {
   SqliteServerStorage,
   type SyncularServerEvent,
   sweepOrphanBlobs,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import { runBlobStoreContract } from './blob-store-contract';
 
 runBlobStoreContract('memory', () => new MemoryBlobStore());

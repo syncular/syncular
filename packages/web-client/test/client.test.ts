@@ -5,7 +5,7 @@
  * rejection handling (§6.3), and the schema-floor stop state (§1.6).
  */
 import { describe, expect, test } from 'bun:test';
-import { type ClientSchema, ClientSyncError } from '@syncular-v2/web-client';
+import { type ClientSchema, ClientSyncError } from '@syncular/client';
 import {
   CLIENT_SCHEMA,
   makeClient,

@@ -22,7 +22,7 @@
  * best-effort refinement present where the source carried it. A live query
  * that cannot express its scope footprint keys off `tables` alone.
  */
-import type { ScopeMap } from '@syncular-v2/core';
+import type { ScopeMap } from '@syncular/core';
 import type { CompiledClientTable } from './schema';
 
 /** One coalesced invalidation batch (I1). Empty batches are not emitted. */

@@ -1,6 +1,6 @@
 /**
  * Reference ServerDriver: the TypeScript server library
- * (`@syncular-v2/server`) behind the driver seam. Driven exclusively
+ * (`@syncular/server`) behind the driver seam. Driven exclusively
  * through bytes (`handleSyncRequest`), the §5.5 download handler, and the
  * realtime hub — the same entry points a framework adapter uses.
  */
@@ -9,8 +9,8 @@ import {
   type RowColumn,
   type RowValue,
   type ScopeMap,
-} from '@syncular-v2/core';
-import { yjsCrdtMergers } from '@syncular-v2/crdt-yjs';
+} from '@syncular/core';
+import { yjsCrdtMergers } from '@syncular/crdt-yjs';
 import {
   type BlobStore,
   createRealtimeHub,
@@ -35,7 +35,7 @@ import {
   type Validator,
   type ValidatorRegistry,
   verifySegmentToken,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import type {
   BytesResult,
   DriverError,

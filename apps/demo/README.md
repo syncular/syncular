@@ -1,6 +1,6 @@
 # syncular v2 — two-pane convergence demo (B6)
 
-Two independent client cores from `@syncular-v2/web-client` — each a Web
+Two independent client cores from `@syncular/client` — each a Web
 Worker running the WHOLE core (SyncClient + transports + sqlite-wasm on
 persistent OPFS via `opfs-sahpool`, Direction decision 2) — syncing a
 todo list through the B2 server (server-hono adapter, bun:sqlite storage)
@@ -64,7 +64,7 @@ persists it to a file.
 - The demo intentionally has zero dependencies beyond the workspace
   packages; the frontend is vanilla DOM.
 - **Hooks variant**: [`apps/demo-react`](../demo-react) is the same server
-  with a **React** frontend built on `@syncular-v2/react` — `SyncProvider` +
+  with a **React** frontend built on `@syncular/react` — `SyncProvider` +
   `useTypedQuery` (Kysely-typed, read-only) + `useMutation` + `useSyncStatus`
   + a `useWindow` list-filter dropdown that dogfoods W1 windowing. Run it with
   `bun run --cwd apps/demo-react dev` (port 8788).

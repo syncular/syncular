@@ -9,7 +9,7 @@
  * metadata lookup (`SegmentStore.find`), not from hash convergence.
  */
 import { Database } from 'bun:sqlite';
-import { decodeRow, type RowColumn, type RowValue } from '@syncular-v2/core';
+import { decodeRow, type RowColumn, type RowValue } from '@syncular/core';
 import type { CompiledTable } from './schema';
 import type { StoredRow } from './storage';
 

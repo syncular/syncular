@@ -4,7 +4,7 @@
  * batch (a push result lands through the same choke point) plus on mount.
  */
 
-import type { ConflictRecord, RejectionRecord } from '@syncular-v2/web-client';
+import type { ConflictRecord, RejectionRecord } from '@syncular/client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSyncClient } from './use-client';
 

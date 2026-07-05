@@ -11,7 +11,7 @@ import {
   type ScopeMap,
   type SegmentRow,
   type SubscriptionFrame,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import type { SyncRequestContext } from './context';
 import { clockOf, limitsOf } from './context';
 import type { PullSegmentSummary } from './events';

@@ -1,4 +1,4 @@
-# @syncular-v2/react
+# @syncular/react
 
 React bindings for the syncular v2 client, with **fine-grained live
 queries** designed in from day one (TODO 3.1 / `DESIGN-eviction.md` I1–I4).
@@ -19,7 +19,7 @@ React 18+ is a **peer dependency**. There are no other runtime dependencies.
 ## Quick start
 
 ```tsx
-import { SyncProvider, useSyncQuery, useMutation } from '@syncular-v2/react';
+import { SyncProvider, useSyncQuery, useMutation } from '@syncular/react';
 
 // `client` is a SyncClient or a SyncClientHandle you already started.
 function App({ client }) {
@@ -125,7 +125,7 @@ useSyncQuery(buildDynamicSql(), params, { tables: ['tasks', 'projects'] });
 
 ## `useTypedQuery(build, deps?, options?)` — the typed twin
 
-Behind the `@syncular-v2/react/typed` subpath (needs the `@syncular-v2/kysely`
+Behind the `@syncular/react/typed` subpath (needs the `@syncular/kysely`
 + `kysely` peers). You write a [Kysely](https://kysely.dev) builder typed by
 your generated `Database` interface; the hook compiles it, runs it live, and
 extracts the `{tables}` dependency set from the compiled query's **AST** — so
@@ -133,7 +133,7 @@ invalidation is *exact*, never a text heuristic. It reuses `useSyncQuery`'s
 machinery verbatim.
 
 ```tsx
-import { useTypedQuery } from '@syncular-v2/react/typed';
+import { useTypedQuery } from '@syncular/react/typed';
 import type { Database, TodosRow } from './syncular.generated';
 
 function TodoList({ listId }: { listId: string }) {

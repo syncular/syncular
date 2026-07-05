@@ -2,7 +2,7 @@
 //!
 //! A NATIVE syncular client (the Rust `syncular-client` core, consumed
 //! DIRECTLY — no FFI) runs in the Tauri host process and is exposed to the
-//! webview as Tauri commands + events. The JS bridge (`@syncular-v2/tauri`)
+//! webview as Tauri commands + events. The JS bridge (`@syncular/tauri`)
 //! implements the same `SyncClientLike` interface the React package
 //! normalizes, so the hooks work unchanged — the fourth host of one interface
 //! after direct / worker-leader / follower.

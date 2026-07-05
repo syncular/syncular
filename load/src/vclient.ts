@@ -1,7 +1,7 @@
 /**
  * A lightweight, protocol-level virtual client — the k6-VU equivalent, but
  * built on the reference SSP2 codec instead of a full SyncClient (load brief
- * §1). It encodes sync rounds with `@syncular-v2/core`, sends them over real
+ * §1). It encodes sync rounds with `@syncular/core`, sends them over real
  * HTTP (POST /sync) or a real WebSocket (§8.7 socket loop), decodes the
  * response, resolves segment refs against GET /segments/:id, and drains
  * bootstrap paging until complete. It keeps NO local SQLite: bootstrap
@@ -28,7 +28,7 @@ import {
   type ResponseMessage,
   type RowValue,
   type ScopeMap,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import { COLUMNS, SCHEMA, SSP2_CONTENT_TYPE, TABLE } from './wire';
 
 export class VClientError extends Error {

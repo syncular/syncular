@@ -33,7 +33,7 @@ The schema is **generated, not hand-built**:
 [`Sources/TodoKit/Syncular.generated.swift`](Sources/TodoKit/Syncular.generated.swift)
 (`SyncularSchema.schema` + the `Notes` struct + the `ListNotes` subscription
 helper) comes from [`syncular.json`](syncular.json) + [`migrations/`](migrations)
-via `syncular-v2 generate`. Regenerate after a schema change:
+via `syncular generate`. Regenerate after a schema change:
 
 ```sh
 cd ../../.. && bun packages/typegen/src/cli.ts generate --manifest-dir bindings/swift/example

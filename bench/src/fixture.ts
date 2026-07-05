@@ -2,8 +2,8 @@
  * Bench fixture: one realistic ~6-column table and a deterministic row
  * generator (fixed seed — timings vary, data never does).
  */
-import type { RowColumn, RowValue } from '@syncular-v2/core';
-import type { ServerSchema } from '@syncular-v2/server';
+import type { RowColumn, RowValue } from '@syncular/core';
+import type { ServerSchema } from '@syncular/server';
 
 export const PARTITION = 'bench';
 export const ACTOR_ID = 'bench-actor';

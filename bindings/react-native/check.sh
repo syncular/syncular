@@ -8,7 +8,7 @@
 # proving the SyncClientLike contract, the {$bytes:hex} convention, event fanout,
 # lifecycle, and parity vs the React `normalizeClient`. On top, the example
 # app's REAL App.tsx is rendered (@testing-library/react) against a stateful
-# NativeModule double, proving the @syncular-v2/react hooks drive the native
+# NativeModule double, proving the @syncular/react hooks drive the native
 # client end-to-end (list renders + mutate flows through) — the hooks↔module
 # integration proof, still no device (react-native primitives mocked to DOM tags
 # by the bunfig preload). The TypeScript — module, spec, AND the example App —
@@ -23,7 +23,7 @@ cd "$(dirname "$0")"
 # output from example/syncular.json + migrations/ (mirroring apps/demo-react).
 # Gate its freshness byte-exactly so a migration change without a regenerate
 # fails loud.
-echo "== generated schema is fresh (syncular-v2 generate --check) =="
+echo "== generated schema is fresh (syncular generate --check) =="
 ( cd ../.. && bun packages/typegen/src/cli.ts generate \
     --manifest-dir bindings/react-native/example --check )
 echo "ok: example/src/syncular.generated.ts is fresh"

@@ -1,5 +1,5 @@
 {
-  "name": "@syncular-v2/conformance",
+  "name": "@syncular/conformance",
   "private": true,
   "type": "module",
   "exports": {
@@ -7,9 +7,9 @@
     "./faults": "./src/faults.ts"
   },
   "dependencies": {
-    "@syncular-v2/core": "workspace:*",
-    "@syncular-v2/crdt-yjs": "workspace:*",
-    "@syncular-v2/server": "workspace:*",
-    "@syncular-v2/web-client": "workspace:*"
+    "@syncular/core": "workspace:*",
+    "@syncular/crdt-yjs": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/client": "workspace:*"
   }
 }

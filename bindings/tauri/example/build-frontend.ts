@@ -6,7 +6,7 @@
  * packages from the workspace into one `dist/app.js`. `index.html` is copied
  * verbatim (it references `/app.js`).
  *
- * `@tauri-apps/api` is bundled too, so the `@syncular-v2/tauri` bridge's
+ * `@tauri-apps/api` is bundled too, so the `@syncular/tauri` bridge's
  * dynamic import of `@tauri-apps/api/core` + `/event` resolves inside the
  * webview without relying on the ambient `window.__TAURI__` global.
  *

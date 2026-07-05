@@ -1,5 +1,5 @@
 /**
- * @syncular-v2/testing — the app-developer test kit (TODO §2).
+ * @syncular/testkit — the app-developer test kit (TODO §2).
  *
  * A small, documented surface over the shipped Syncular core: an in-memory
  * server, N real clients on bun:sqlite through an in-process loopback (no
@@ -7,7 +7,7 @@
  * conformance harness's transport-fault vocabulary. Designed for APP tests
  * (readable, minimal) — not conformance (no driver/pairing machinery).
  *
- * The React helper lives behind `@syncular-v2/testing/react` so the core
+ * The React helper lives behind `@syncular/testkit/react` so the core
  * pulls in no React. See README.md for paste-ready examples.
  */
 

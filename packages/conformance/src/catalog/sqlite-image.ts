@@ -9,7 +9,7 @@
  * server's §5.3 production is pinned no matter which client is paired.
  */
 import { Database } from 'bun:sqlite';
-import { canonicalScopeJson } from '@syncular-v2/core';
+import { canonicalScopeJson } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { task } from '../fixture';
 import { rawPullHeader, rawSubscription, responseSection } from '../raw';

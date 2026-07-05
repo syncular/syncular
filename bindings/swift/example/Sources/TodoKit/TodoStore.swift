@@ -10,7 +10,7 @@
 // body rather than fork the schema — an honest fit, no hacks).
 //
 // The schema is NOT hand-built: `SyncularSchema.schema` and the typed `Notes`
-// row come from `Syncular.generated.swift`, produced by `syncular-v2 generate`
+// row come from `Syncular.generated.swift`, produced by `syncular generate`
 // from this example's `syncular.json` + `migrations/` (check.sh gates its
 // freshness with `--check`).
 //

@@ -16,7 +16,7 @@ import {
   NOT_LEADER_CODE,
   type SyncClientHandle,
   type SyncClientHandleConfig,
-} from '@syncular-v2/web-client';
+} from '@syncular/client';
 import {
   CLIENT_SCHEMA,
   makeServer,

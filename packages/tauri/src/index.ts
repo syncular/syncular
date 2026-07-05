@@ -1,5 +1,5 @@
 /**
- * @syncular-v2/tauri — the JS bridge to the native syncular instance running
+ * @syncular/tauri — the JS bridge to the native syncular instance running
  * inside the Tauri process (see `tauri-plugin-syncular`).
  *
  * The Tauri host runs a REAL Rust syncular client (file DB + native HTTP+WS
@@ -27,7 +27,7 @@
 
 // -- Types the bridge speaks (structurally the web-client's) -----------------
 // Imported as types only, so the bridge has no runtime dependency on
-// @syncular-v2/web-client (the app already carries it via @syncular-v2/react).
+// @syncular/client (the app already carries it via @syncular/react).
 import type {
   ConflictRecord,
   InvalidationEvent,
@@ -41,7 +41,7 @@ import type {
   SqlValue,
   WindowBase,
   WindowState,
-} from '@syncular-v2/web-client';
+} from '@syncular/client';
 
 /** A driver-protocol reply: `{result}` on success or `{error}` on failure. */
 interface CommandReply {

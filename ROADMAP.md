@@ -22,7 +22,7 @@ This block is assembly on a proven core — packages, not protocol.
 
 - [x] **Tauri** (decided 2026-07-03; landed 2026-07-04 —
       `tauri-plugin-syncular` in bindings/tauri/plugin, its own cargo
-      workspace, plus `@syncular-v2/tauri` in packages/tauri; see
+      workspace, plus `@syncular/tauri` in packages/tauri; see
       bindings/tauri/README.md): native syncular instance + React
       bridge — NOT JS syncular in the webview (webview OPFS is
       eviction-prone and inconsistent across WKWebView/webkitgtk; the Rust
@@ -30,11 +30,11 @@ This block is assembly on a proven core — packages, not protocol.
       `tauri-plugin-syncular` (Rust, consumes the client crate DIRECTLY —
       no FFI — exposing the `syncular-command` router as Tauri commands +
       invalidate/presence/sync-needed/conflict over Tauri events) plus
-      `@syncular-v2/tauri` (JS bridge implementing the same
+      `@syncular/tauri` (JS bridge implementing the same
       `SyncClientLike` interface the react package already normalizes —
       hooks work unchanged, the fourth host of one interface after direct/
       worker/follower). Example upgraded to React (2026-07-04 —
-      `example/src/frontend` is now a `@syncular-v2/react` hooks todo list over
+      `example/src/frontend` is now a `@syncular/react` hooks todo list over
       `createTauriSyncClient`, bundled with a dependency-light `Bun.build`; the
       only Tauri-specific line is the client construction). Caveat to document:
       every useSyncQuery run is one IPC round trip — fine at Tauri IPC latency;
@@ -62,9 +62,9 @@ This block is assembly on a proven core — packages, not protocol.
       driving the wrapper end-to-end against the quickstart server — proven by a
       real native-transport sync with an independent client reading the row back
       (Swift verified locally, Kotlin via a CI example smoke).
-- [x] **React Native** (landed 2026-07-04 — `@syncular-v2/react-native` under
+- [x] **React Native** (landed 2026-07-04 — `@syncular/react-native` under
       `bindings/react-native`): a TurboModule over the FFI, surfacing the SAME
-      `SyncClientLike` JS interface so `@syncular-v2/react` works unchanged in
+      `SyncClientLike` JS interface so `@syncular/react` works unchanged in
       RN (RN uses the NATIVE core — Hermes has no OPFS/sqlite-wasm). Ships the
       package correctly structured: `createNativeSyncClient()` (SyncClientLike
       over a NativeModule, `{$bytes:hex}` + command JSON, mirroring the Tauri
@@ -137,7 +137,7 @@ This block is assembly on a proven core — packages, not protocol.
       `flutter create`-generated and git-ignored; the app code is the
       deliverable.
 - [x] **Native schema codegen: Swift/Kotlin/Dart emitters + all demos
-      generated with `--check` freshness** (landed 2026-07-04): `@syncular-v2/
+      generated with `--check` freshness** (landed 2026-07-04): `@syncular/
       typegen` gained three IR-driven emitters (`src/emit-{swift,kotlin,dart}.
       ts`), opt-in per manifest via `output.{swift,kotlin,dart}` (path string or
       an options object — Kotlin `package`/`objectName`, Swift `enumName`;
@@ -264,7 +264,7 @@ wire changes, zero server changes; sequenced AFTER the WS-native loop
 
 ## 4. DX polish
 
-- [x] **Kysely typed local queries** (landed 2026-07-04): `@syncular-v2/
+- [x] **Kysely typed local queries** (landed 2026-07-04): `@syncular/
       kysely` — a Kysely `SyncularDialect` (reusing Kysely's SQLite compiler/
       adapter/introspector) whose driver runs SELECTs over a host's
       `query(sql, params)` surface, so it works on ALL hosts (direct/worker/
@@ -276,7 +276,7 @@ wire changes, zero server changes; sequenced AFTER the WS-native loop
       nothing here; own-JS stays 69.10 KB (72 KB ceiling untouched). Typegen
       emits a `Database` interface (table→Row map) additively — all embedded
       generated files regenerated (fixture, demo, quickstart, both create-app
-      templates; --check byte-exact). React: `@syncular-v2/react/typed`'s
+      templates; --check byte-exact). React: `@syncular/react/typed`'s
       `useTypedQuery(qb => …)` compiles the builder, extracts `{tables}` from
       the compiled AST (exact invalidation, no text heuristic), and reuses
       `useSyncQuery`'s machinery — behind a subpath with kysely as OPTIONAL
@@ -496,9 +496,11 @@ wire changes, zero server changes; sequenced AFTER the WS-native loop
 
 ## 5. Release (gates with Benjamin)
 
-- [ ] **6.3 Package naming** (Benjamin): pick final names; the rename is
-      mechanical (one constants module in create-app; workspace-wide
-      find/replace of @syncular-v2; publish ranges flip one constant).
+- [x] **6.3 Package naming** (Benjamin, DONE 2026-07-05): every `-v2` name
+      killed. Final names are `@syncular/*` + unscoped `create-syncular-app`;
+      typegen bin `syncular`; workspace root `syncular`. Was mechanical (one
+      constants module in create-app + workspace-wide sed); lockfile and all
+      typegen outputs regenerated. Publish ranges still flip one constant.
 - [ ] **Publishing pipeline**: changesets + trusted publishing for the v2
       package set, carrying the v1 lessons (binaryen/parse-check class
       guards: any pipeline that builds artifacts parse-validates them;
@@ -585,4 +587,5 @@ parallel-friendly and independent. Block 3 (W1) should not start until
 its react-oracle dependency (I3) has a consumer story — practically:
 after Block 1's Tauri/RN bridges exist, since windowing's UX shows up in
 apps. Block 4 rides whenever. Block 5 is Benjamin-gated and can happen at
-any point — naming earlier is cheaper (fewer docs to re-grep).
+any point — naming is done (2026-07-05); the remainder (publish, gate,
+sunset) is what's left.

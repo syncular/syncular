@@ -4,7 +4,7 @@ A **bun-native, dependency-light** load suite for syncular v2. It spawns
 **one real server process** (Hono adapter, real HTTP + WebSocket on
 localhost, `bun:sqlite` storage by default) and drives **N lightweight,
 protocol-level virtual clients** — encoded SSP2 rounds over the real wire,
-built on the reference codec (`@syncular-v2/core`), not a full `SyncClient`
+built on the reference codec (`@syncular/core`), not a full `SyncClient`
 per VU. That is the k6-VU equivalent at roughly 100× less per-VU overhead.
 
 Zero new runtime dependencies (no k6, no Docker). Runnable by a human before

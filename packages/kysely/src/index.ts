@@ -1,8 +1,8 @@
 /**
- * @syncular-v2/kysely — the typed READ layer for syncular local queries.
+ * @syncular/kysely — the typed READ layer for syncular local queries.
  *
  * Kysely is string-agnostic syncular's typed counterpart: a
- * schema-generated `Database` interface (from `@syncular-v2/typegen`) plus a
+ * schema-generated `Database` interface (from `@syncular/typegen`) plus a
  * dialect that runs SELECTs against any syncular host through its
  * `query(sql, params)` surface. It is READ-ONLY by contract — writes stay on
  * `client.mutate()` for the outbox (SPEC §7.1). It ships as its own package
@@ -10,7 +10,7 @@
  *
  * ```ts
  * import { Kysely } from 'kysely';
- * import { SyncularDialect } from '@syncular-v2/kysely';
+ * import { SyncularDialect } from '@syncular/kysely';
  * import type { Database } from './syncular.generated'; // typegen `Database`
  *
  * const db = new Kysely<Database>({
@@ -20,7 +20,7 @@
  *   .where('list_id', '=', 'demo').execute();
  * ```
  *
- * For React, `@syncular-v2/react`'s `useTypedQuery` compiles a builder and
+ * For React, `@syncular/react`'s `useTypedQuery` compiles a builder and
  * extracts its table dependencies automatically (see {@link extractTables}).
  */
 export {

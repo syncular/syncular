@@ -16,7 +16,7 @@ import {
   encodeRow,
   PROTOCOL_WIRE_VERSION,
   type RequestFrame,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import {
   createRealtimeHub,
   handleSyncRequest,
@@ -25,8 +25,8 @@ import {
   SqliteBlobStore,
   SqliteServerStorage,
   type SyncServerConfig,
-} from '@syncular-v2/server';
-import { createSyncularHono } from '@syncular-v2/server-hono';
+} from '@syncular/server';
+import { createSyncularHono } from '@syncular/server-hono';
 import { schema, type TodosRow } from './syncular.generated';
 
 const PORT = Number(process.env.PORT ?? 8788);

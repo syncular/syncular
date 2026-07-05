@@ -27,8 +27,8 @@ import {
   SyncClient,
   type SyncSummary,
   webSocketRealtimeConnector,
-} from '@syncular-v2/web-client';
-import { openWasmDatabase } from '@syncular-v2/web-client/wasm';
+} from '@syncular/client';
+import { openWasmDatabase } from '@syncular/client/wasm';
 import {
   schema,
   type TodosRow,

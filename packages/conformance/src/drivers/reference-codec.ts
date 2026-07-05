@@ -1,5 +1,5 @@
 /**
- * Reference CodecDriver: `@syncular-v2/core` behind the codec seam for
+ * Reference CodecDriver: `@syncular/core` behind the codec seam for
  * the golden-vector stage (Appendix A). A second implementation (e.g. a
  * Rust codec behind a subprocess) implements the same three calls.
  */
@@ -12,7 +12,7 @@ import {
   parseRealtimeServerEvent,
   renderMessageValue,
   renderRowsSegmentValue,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import type { CodecDriver, CodecRoundtrip } from '../driver';
 
 function guard(fn: () => CodecRoundtrip): CodecRoundtrip {

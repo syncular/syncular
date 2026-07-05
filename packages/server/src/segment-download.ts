@@ -7,7 +7,7 @@
  * compares it with the segment's stored digest. Mismatch, revoked status,
  * or resolution failure ⇒ `sync.forbidden`.
  */
-import type { ScopeMap } from '@syncular-v2/core';
+import type { ScopeMap } from '@syncular/core';
 import type { SyncRequestContext } from './context';
 import { clockOf, RESOLVER_OUTAGE } from './context';
 import { SyncError, syncError } from './errors';

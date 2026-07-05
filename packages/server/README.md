@@ -1,4 +1,4 @@
-# @syncular-v2/server
+# @syncular/server
 
 Framework-free embeddable SSP2 protocol library. Core surface:
 `handleSyncRequest(bytes, ctx) → bytes` over host-provided storage /
@@ -18,8 +18,8 @@ The supported set, and what deliberately does **not** get an adapter:
 
 | Runtime | Adapter | Transport | Storage | Status |
 | --- | --- | --- | --- | --- |
-| **Bun / Node** | `@syncular-v2/server-hono` | HTTP (`POST /sync`, segments, blobs) **+ WS realtime** (§8, host-driven upgrade) | any: `SqliteServerStorage`, `PostgresServerStorage`, memory | **Supported now** — the reference deployment; runs the full conformance catalog on both bindings. |
-| **Cloudflare Workers** | `@syncular-v2/server-workers` | HTTP binding via Hono (Workers-native) **+ WS realtime** (§8, Durable Object host with hibernation) | `D1ServerStorage` (D1); R2-as-S3 for segments/blobs (§5.4 delegated presign) | **Supported now** — this rung. Realtime rides a **Durable Object** (`SyncularRealtimeDO`), opt-in; HTTP-only is also fully conformant (below). |
+| **Bun / Node** | `@syncular/server-hono` | HTTP (`POST /sync`, segments, blobs) **+ WS realtime** (§8, host-driven upgrade) | any: `SqliteServerStorage`, `PostgresServerStorage`, memory | **Supported now** — the reference deployment; runs the full conformance catalog on both bindings. |
+| **Cloudflare Workers** | `@syncular/server-workers` | HTTP binding via Hono (Workers-native) **+ WS realtime** (§8, Durable Object host with hibernation) | `D1ServerStorage` (D1); R2-as-S3 for segments/blobs (§5.4 delegated presign) | **Supported now** — this rung. Realtime rides a **Durable Object** (`SyncularRealtimeDO`), opt-in; HTTP-only is also fully conformant (below). |
 | Raw Deno / edge-misc | — | — | — | **Not adapted** (policy below). |
 
 **The policy for "not adapted".** Untested ≠ unsupported forever. The core
@@ -47,7 +47,7 @@ share one commit log and one segment store; commit fan-out (§8.2) runs in-DO
 (no LISTEN/NOTIFY needed — writes and sockets are co-located), and an HTTP push
 landing in a plain isolate wakes the partition's DO (the in-platform
 LISTEN/NOTIFY analogue). Full shape, wiring, hibernation semantics, and the
-manual real-workerd smoke recipe in `@syncular-v2/server-workers/README.md`.
+manual real-workerd smoke recipe in `@syncular/server-workers/README.md`.
 
 **Relay does not return (decision).** v1 shipped a *relay* — a bridge that let
 a self-hosted server forward realtime to a managed realtime service, because
@@ -68,7 +68,7 @@ One optional interface, `SyncularServerEvents`, carries every
 operator-relevant signal as a typed, JSON-able, stable-shaped event:
 
 ```ts
-import { consoleJsonEvents, type SyncServerConfig } from '@syncular-v2/server';
+import { consoleJsonEvents, type SyncServerConfig } from '@syncular/server';
 
 const config: SyncServerConfig = {
   schema, storage, segments, resolveScopes,
@@ -143,7 +143,7 @@ tail and your logs/metrics see the same emissions:
 ```ts
 import {
   RingBufferEvents, composeEvents, consoleJsonEvents, SyncularAdmin,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 
 const ring = new RingBufferEvents({ capacity: 1000 });
 const config: SyncServerConfig = {
@@ -182,13 +182,13 @@ stores (memory/sqlite) omit the marker.
 
 ### HTTP routes + the single console page
 
-`@syncular-v2/server-hono` exports `createSyncularAdminRoutes(admin, opts)`,
+`@syncular/server-hono` exports `createSyncularAdminRoutes(admin, opts)`,
 a mountable Hono sub-app. **The auth seam is required**: the factory throws
 if you omit the `authorize` guard — there is no default-open admin. Every
 endpoint (including the page) runs the guard first; a falsy result is a 401.
 
 ```ts
-import { createSyncularAdminRoutes } from '@syncular-v2/server-hono';
+import { createSyncularAdminRoutes } from '@syncular/server-hono';
 
 const routes = createSyncularAdminRoutes(admin, {
   defaultPartition: 'main',
@@ -244,7 +244,7 @@ hand-rolled over `fetch` (`sigv4.ts`, pinned by the published AWS test
 vectors).
 
 ```ts
-import { S3SegmentStore, s3PresignedUrls } from '@syncular-v2/server';
+import { S3SegmentStore, s3PresignedUrls } from '@syncular/server';
 
 const segments = new S3SegmentStore({
   endpoint: 'https://s3.eu-central-1.amazonaws.com', // origin only, no bucket
@@ -344,7 +344,7 @@ deployment can now store blobs durably in an object store instead of the
 database.
 
 ```ts
-import { S3BlobStore, s3PresignedBlobUrls } from '@syncular-v2/server';
+import { S3BlobStore, s3PresignedBlobUrls } from '@syncular/server';
 
 const blobs = new S3BlobStore({
   endpoint: 'https://s3.us-east-1.amazonaws.com',
@@ -402,7 +402,7 @@ unreferenced **and** older than the grace period. It emits one `blob.swept`
 ops event (`{ swept, referenced, graceMs }`) and returns the deleted ids.
 
 ```ts
-import { sweepOrphanBlobs } from '@syncular-v2/server';
+import { sweepOrphanBlobs } from '@syncular/server';
 
 // A periodic per-partition GC job (hourly to daily is sensible).
 const { swept } = await sweepOrphanBlobs(storage, blobs, partition, {
@@ -609,7 +609,7 @@ import {
   PostgresServerStorage,
   type PgExecutor,
   type PgQueryable,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 
 function bunSqlExecutor(sql: import('bun').SQL): PgExecutor {
   const over = (h: any): PgQueryable => ({
@@ -635,7 +635,7 @@ await storage.migrate();
 
 ```ts
 import { Pool, type PoolClient } from 'pg';
-import { PostgresServerStorage, type PgExecutor } from '@syncular-v2/server';
+import { PostgresServerStorage, type PgExecutor } from '@syncular/server';
 
 function pgPoolExecutor(pool: Pool): PgExecutor {
   const over = (c: Pool | PoolClient) => ({
@@ -671,7 +671,7 @@ pglite → `number`); the storage layer coerces every sequence read through
 
 **Tests** wire `@electric-sql/pglite` (embedded WASM Postgres, a
 devDependency — hermetic, no docker) via `pgliteExecutor` from
-`@syncular-v2/server/pglite`. Both backends run the shared
+`@syncular/server/pglite`. Both backends run the shared
 `ServerStorage` contract (`test/storage-contract.ts`), and
 `test/postgres-explain.test.ts` asserts via `EXPLAIN` that the fanout
 candidate scans are index-driven so the scan-before-LIMIT regression
@@ -702,7 +702,7 @@ cross-instance delivery pays the re-pull. Single-instance deployments
 install no fanout at all.
 
 ```ts
-import { PostgresFanout, type PgNotificationConnection } from '@syncular-v2/server';
+import { PostgresFanout, type PgNotificationConnection } from '@syncular/server';
 
 // node-postgres: a dedicated Client for LISTEN + the pool for NOTIFY.
 const conn: PgNotificationConnection = {

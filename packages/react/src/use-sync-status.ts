@@ -11,7 +11,7 @@
  * guessed value.
  */
 
-import type { LeaseState, SchemaFloor } from '@syncular-v2/web-client';
+import type { LeaseState, SchemaFloor } from '@syncular/client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSyncClient } from './use-client';
 

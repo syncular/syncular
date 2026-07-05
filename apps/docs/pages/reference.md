@@ -27,16 +27,16 @@ browser's find.)
 
 | Package | What it is | README |
 |---|---|---|
-| `@syncular-v2/core` | Protocol codecs, shared types, vectors round-trip | in [SPEC.md](../../SPEC.md) |
-| `@syncular-v2/server` | `handleSyncRequest` + storage/auth/segment/blob interfaces, realtime hub, pruning, signed URLs | [README](../../packages/server/README.md) |
-| `@syncular-v2/server-hono` | Thin Hono adapter mounting the §1.1 routes | [source](../../packages/server-hono/src/index.ts) |
-| `@syncular-v2/server-workers` | Cloudflare Workers entry: fetch handler over D1 storage + R2 segments/blobs | [README](../../packages/server-workers/README.md) |
-| `@syncular-v2/web-client` | The TS client core on sqlite-wasm/OPFS, worker + transports, multi-tab | [README](../../packages/web-client/README.md) |
-| `@syncular-v2/react` | React bindings: `SyncProvider` + live queries over fine-grained invalidation | [README](../../packages/react/README.md) |
-| `@syncular-v2/crdt-yjs` | The Yjs `crdt`-column merger (server) + `YjsColumn` client helper | [source](../../packages/crdt-yjs/src/index.ts) |
-| `@syncular-v2/typegen` | Migrations + manifest → schema IR → TS module, `syncular-v2` CLI | [README](../../packages/typegen/README.md) |
-| `@syncular-v2/create-app` | Scaffolder: `bun create syncular-v2 my-app` (`minimal` / `web` templates) | [README](../../packages/create-app/README.md) |
-| `@syncular-v2/conformance` | Implementation-agnostic scenario runner + test doctrine | [README](../../packages/conformance/README.md) |
+| `@syncular/core` | Protocol codecs, shared types, vectors round-trip | in [SPEC.md](../../SPEC.md) |
+| `@syncular/server` | `handleSyncRequest` + storage/auth/segment/blob interfaces, realtime hub, pruning, signed URLs | [README](../../packages/server/README.md) |
+| `@syncular/server-hono` | Thin Hono adapter mounting the §1.1 routes | [source](../../packages/server-hono/src/index.ts) |
+| `@syncular/server-workers` | Cloudflare Workers entry: fetch handler over D1 storage + R2 segments/blobs | [README](../../packages/server-workers/README.md) |
+| `@syncular/client` | The TS client core on sqlite-wasm/OPFS, worker + transports, multi-tab | [README](../../packages/web-client/README.md) |
+| `@syncular/react` | React bindings: `SyncProvider` + live queries over fine-grained invalidation | [README](../../packages/react/README.md) |
+| `@syncular/crdt-yjs` | The Yjs `crdt`-column merger (server) + `YjsColumn` client helper | [source](../../packages/crdt-yjs/src/index.ts) |
+| `@syncular/typegen` | Migrations + manifest → schema IR → TS module, `syncular` CLI | [README](../../packages/typegen/README.md) |
+| `create-syncular-app` | Scaffolder: `bun create syncular my-app` (`minimal` / `web` templates) | [README](../../packages/create-app/README.md) |
+| `@syncular/conformance` | Implementation-agnostic scenario runner + test doctrine | [README](../../packages/conformance/README.md) |
 
 ## Contracts
 

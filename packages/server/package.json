@@ -1,5 +1,5 @@
 {
-  "name": "@syncular-v2/server",
+  "name": "@syncular/server",
   "private": true,
   "type": "module",
   "exports": {
@@ -7,7 +7,7 @@
     "./pglite": "./src/pg-executor-pglite.ts"
   },
   "dependencies": {
-    "@syncular-v2/core": "workspace:*"
+    "@syncular/core": "workspace:*"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.4"

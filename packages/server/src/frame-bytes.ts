@@ -15,7 +15,7 @@ import {
   type ResponseFrame,
   type SubEndFrame,
   type SubStartFrame,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 
 const STUB_HEADER: RespHeaderFrame = { type: 'RESP_HEADER' };
 const STUB_SUB_START: SubStartFrame = {

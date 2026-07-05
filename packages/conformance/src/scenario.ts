@@ -16,7 +16,7 @@ import {
   REALTIME_TAG_ROUND,
   type RequestFrame,
   type ResponseMessage,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import type {
   ClientInstance,
   ClientLimitsOptions,

@@ -1,5 +1,5 @@
 {
-  "name": "@syncular-v2/testing",
+  "name": "@syncular/testkit",
   "private": true,
   "type": "module",
   "exports": {
@@ -10,9 +10,9 @@
     "test": "bun test --preload ./test/setup.ts"
   },
   "dependencies": {
-    "@syncular-v2/conformance": "workspace:*",
-    "@syncular-v2/server": "workspace:*",
-    "@syncular-v2/web-client": "workspace:*"
+    "@syncular/conformance": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/client": "workspace:*"
   },
   "peerDependencies": {
     "react": ">=18.0.0"
@@ -22,8 +22,8 @@
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^15.11.0",
-    "@syncular-v2/core": "workspace:*",
-    "@syncular-v2/react": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "@syncular/react": "workspace:*",
     "@testing-library/react": "^16.1.0",
     "@types/react": "^18.3.0",
     "react": "^18.3.1",

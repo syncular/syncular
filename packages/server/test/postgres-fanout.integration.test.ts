@@ -12,7 +12,7 @@
  *     bun test packages/server/test/postgres-fanout.integration.test.ts
  */
 import { afterAll, describe, expect, test } from 'bun:test';
-import type { WakeReason } from '@syncular-v2/core';
+import type { WakeReason } from '@syncular/core';
 import {
   FANOUT_CHANNEL,
   type FanoutWakeTarget,
@@ -21,7 +21,7 @@ import {
   type PgQueryable,
   PostgresFanout,
   PostgresServerStorage,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 
 const PG_URL = process.env.SYNCULAR_PG_URL;
 

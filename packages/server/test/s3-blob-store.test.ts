@@ -11,7 +11,7 @@ import {
   issueBlobUrl,
   S3BlobStore,
   s3PresignedBlobUrls,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import { runBlobStoreContract } from './blob-store-contract';
 import { startS3Stub } from './s3-stub';
 

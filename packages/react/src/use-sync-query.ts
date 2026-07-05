@@ -13,11 +13,7 @@
  * apply carries no per-row scope keys, so table-level is the safe default).
  */
 
-import type {
-  InvalidationEvent,
-  SqlRow,
-  SqlValue,
-} from '@syncular-v2/web-client';
+import type { InvalidationEvent, SqlRow, SqlValue } from '@syncular/client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { inferTables } from './infer-tables';
 import { FrameScheduler, type HashedRows, reconcileRows } from './query-churn';

@@ -1,13 +1,13 @@
-# @syncular-v2/create-app
+# create-syncular-app
 
-The `create-syncular-v2` scaffolder — the create-app experience for syncular v2.
+The `create-syncular-app` scaffolder — the create-app experience for syncular v2.
 
 ```sh
-bun create syncular-v2 my-app            # prompts for the template
-bunx create-syncular-v2 my-app --template web
+bun create syncular-app my-app            # prompts for the template
+bunx create-syncular-app my-app --template web
 ```
 
-> Naming (`@syncular-v2/*`, bin `create-syncular-v2`, CLI `syncular-v2`) is not
+> Naming (`@syncular/*`, bin `create-syncular-app`, CLI `syncular`) is not
 > final — package identity is TODO 6.3. Every user-visible name lives in
 > [`src/constants.ts`](./src/constants.ts) so a rename is mechanical: edit the
 > constants, regenerate the templates' generated files, done.
@@ -20,7 +20,7 @@ bunx create-syncular-v2 my-app --template web
 | `web` | Hono server + WebSocket realtime + a single-pane browser todo app whose whole client core runs in a Web Worker on OPFS. Derived from `apps/demo`, slimmed to one pane (no conflict simulator, no blob attachments) — the minimal browser app a real user starts from. |
 
 > **Third-template candidate: `react`.** [`apps/demo-react`](../../apps/demo-react)
-> is the ready-made source for a hooks-based template — `@syncular-v2/react`
+> is the ready-made source for a hooks-based template — `@syncular/react`
 > (`SyncProvider` + `useTypedQuery` + `useMutation` + `useSyncStatus` +
 > `useWindow`) over the same worker + OPFS core, with the Kysely-typed read
 > layer wired. Slim it the way `web` slims `apps/demo` (drop the three-list
@@ -34,7 +34,7 @@ smoke test.
 ## The local-vs-published dependency mechanism
 
 Template `package.json` files use `workspace:*` ranges for every
-`@syncular-v2/*` dependency. At scaffold time the scaffolder rewrites those
+`@syncular/*` dependency. At scaffold time the scaffolder rewrites those
 ranges:
 
 - **`--local`** (or the in-tree test path): keep `workspace:*` verbatim. These
@@ -63,10 +63,10 @@ scaffolder logic. For each template it:
 
 1. scaffolds into a temp dir (`--local`),
 2. asserts the tree shape + placeholder substitution + package.json rewrite,
-3. runs `syncular-v2 generate --check` — proving the committed
+3. runs `syncular generate --check` — proving the committed
    `syncular.generated.ts` is byte-fresh,
 4. links a `node_modules` into the temp dir **offline** (see
-   [`test/link-workspace.ts`](./test/link-workspace.ts): `@syncular-v2/*` →
+   [`test/link-workspace.ts`](./test/link-workspace.ts): `@syncular/*` →
    the real package dirs, external deps → the workspace `.bun` hoist store),
    typechecks the template's own files, and runs the app's own `bun test`
    smoke.

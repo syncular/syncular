@@ -1,5 +1,5 @@
 {
-  "name": "@syncular-v2/web-client",
+  "name": "@syncular/client",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
-    "@syncular-v2/core": "workspace:*"
+    "@syncular/core": "workspace:*"
   },
   "peerDependencies": {
     "better-sqlite3": ">=11"
@@ -25,7 +25,7 @@
     }
   },
   "devDependencies": {
-    "@syncular-v2/server": "workspace:*",
+    "@syncular/server": "workspace:*",
     "@types/better-sqlite3": "^7.6.13",
     "better-sqlite3": "^12.11.1"
   }

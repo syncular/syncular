@@ -1,10 +1,10 @@
 /**
  * Reference ClientDriver: the TypeScript web client
- * (`@syncular-v2/web-client`) on the `bun:sqlite` backend, wired to
+ * (`@syncular/client`) on the `bun:sqlite` backend, wired to
  * whatever transport endpoints the harness supplies. All driver inputs
  * and outputs stay JSON-able + bytes; row values convert at this edge.
  */
-import type { RowValue, ScopeMap } from '@syncular-v2/core';
+
 import {
   type ClientSchema,
   ClientSyncError,
@@ -12,8 +12,9 @@ import {
   SYNC_VERSION_COLUMN,
   SyncClient,
   type SyncSummary,
-} from '@syncular-v2/web-client';
-import { BunClientDatabase } from '@syncular-v2/web-client/bun';
+} from '@syncular/client';
+import { BunClientDatabase } from '@syncular/client/bun';
+import type { RowValue, ScopeMap } from '@syncular/core';
 import type {
   ClientConflict,
   ClientCreateOptions,

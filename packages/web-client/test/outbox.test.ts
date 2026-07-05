@@ -4,7 +4,6 @@
  * revoked-scope drop helper.
  */
 import { describe, expect, test } from 'bun:test';
-import { decodeRow, encodeRow } from '@syncular-v2/core';
 import {
   appendOutboxCommit,
   type ClientSchema,
@@ -17,8 +16,9 @@ import {
   jsonToRowValue,
   listOutbox,
   rowValueToJson,
-} from '@syncular-v2/web-client';
-import { BunClientDatabase } from '@syncular-v2/web-client/bun';
+} from '@syncular/client';
+import { BunClientDatabase } from '@syncular/client/bun';
+import { decodeRow, encodeRow } from '@syncular/core';
 import {
   CLIENT_SCHEMA,
   makeClient,

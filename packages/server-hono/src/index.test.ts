@@ -11,7 +11,7 @@ import {
   encodeRow,
   PROTOCOL_WIRE_VERSION,
   type RowColumn,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import {
   MemorySegmentStore,
   type ServerSchema,
@@ -20,7 +20,7 @@ import {
   type SyncServerConfig,
   type SyncularServerEvent,
   type SyncularServerEvents,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import { createSyncularHono } from './index';
 
 const COLUMNS: readonly RowColumn[] = [

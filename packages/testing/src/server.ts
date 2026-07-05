@@ -1,12 +1,14 @@
 /**
  * The in-memory test server: one `SqliteServerStorage` (`:memory:`), a
  * `MemorySegmentStore`, and a `RealtimeHub`, all sharing the test's virtual
- * clock. It is the SHIPPED `@syncular-v2/server` core — the kit adds no
+ * clock. It is the SHIPPED `@syncular/server` core — the kit adds no
  * server logic, it only wires the pieces an app would wire in production
  * (minus the HTTP adapter). Clients reach it through the loopback seam in
  * `client.ts`, calling `handleSyncRequest` / `handleSegmentDownload`
  * directly.
  */
+
+import { type ClientSchema, compileClientSchema } from '@syncular/client';
 import {
   createRealtimeHub,
   MemorySegmentStore,
@@ -15,11 +17,7 @@ import {
   type ServerSchema,
   SqliteServerStorage,
   type SyncRequestContext,
-} from '@syncular-v2/server';
-import {
-  type ClientSchema,
-  compileClientSchema,
-} from '@syncular-v2/web-client';
+} from '@syncular/server';
 import type { VirtualClock } from './clock';
 
 /** Default partition every actor lives in (apps override via options). */

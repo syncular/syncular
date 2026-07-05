@@ -5,8 +5,8 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
-import { useSyncQuery } from '@syncular-v2/react';
-import type { ClientSchema } from '@syncular-v2/web-client';
+import type { ClientSchema } from '@syncular/client';
+import { useSyncQuery } from '@syncular/react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { createTestSync, type TestSync } from '../src/index';
 import { syncWrapper } from '../src/react';

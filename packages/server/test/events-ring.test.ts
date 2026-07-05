@@ -8,7 +8,7 @@ import {
   RingBufferEvents,
   type SyncularServerEvent,
   type SyncularServerEvents,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 
 function pruneEvent(atMs: number, seq: number): SyncularServerEvent {
   return {

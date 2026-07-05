@@ -11,17 +11,17 @@
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import {
-  MemorySegmentStore,
-  SqliteServerStorage,
-  type SyncServerConfig,
-} from '@syncular-v2/server';
-import { createSyncularHono } from '@syncular-v2/server-hono';
-import {
   httpSegmentDownloader,
   httpSyncTransport,
   SyncClient,
-} from '@syncular-v2/web-client';
-import { openBunDatabase } from '@syncular-v2/web-client/bun';
+} from '@syncular/client';
+import { openBunDatabase } from '@syncular/client/bun';
+import {
+  MemorySegmentStore,
+  SqliteServerStorage,
+  type SyncServerConfig,
+} from '@syncular/server';
+import { createSyncularHono } from '@syncular/server-hono';
 import { schema, todoListSubscription } from './syncular.generated';
 
 let server: ReturnType<typeof Bun.serve>;

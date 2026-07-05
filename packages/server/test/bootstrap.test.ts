@@ -7,8 +7,8 @@ import {
   decodeRowsSegment,
   type SegmentInlineFrame,
   type SegmentRefFrame,
-} from '@syncular-v2/core';
-import { verifySegmentToken } from '@syncular-v2/server';
+} from '@syncular/core';
+import { verifySegmentToken } from '@syncular/server';
 import {
   makeContext,
   pullHeader,

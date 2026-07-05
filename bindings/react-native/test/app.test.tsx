@@ -3,7 +3,7 @@
  * (the same file that ships to the device) against an injected NativeModule
  * double, with NO device and NO Metro. This closes the loop the bridge unit
  * test (`bridge.test.ts`) leaves open — that one proves the SyncClientLike
- * marshaling; this one proves `@syncular-v2/react`'s hooks (`useSyncQuery` /
+ * marshaling; this one proves `@syncular/react`'s hooks (`useSyncQuery` /
  * `useMutation` / `useSyncStatus`) drive the native client through the JSX the
  * user actually wrote:
  *

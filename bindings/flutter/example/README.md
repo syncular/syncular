@@ -10,7 +10,7 @@ stream), `pendingCommitIds` (the unsynced badge), and `close`.
 The `todos` schema is **generated, not hand-built**:
 [`lib/syncular.generated.dart`](lib/syncular.generated.dart) (`syncularSchema` +
 the `Todos` class + the `SyncularTodoListSubscription` helper) comes from
-[`syncular.json`](syncular.json) + [`migrations/`](migrations) via `syncular-v2
+[`syncular.json`](syncular.json) + [`migrations/`](migrations) via `syncular
 generate` (regenerate with `bun packages/typegen/src/cli.ts generate
 --manifest-dir bindings/flutter/example` from the repo root). `check.sh` runs
 `generate --check` (a byte-exact freshness gate, bun-only, so it runs even

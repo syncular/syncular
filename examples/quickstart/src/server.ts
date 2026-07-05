@@ -2,7 +2,7 @@
  * Quickstart server — the whole sync backend in one Bun process.
  *
  * `createSyncularHono` mounts the §1.1 routes (POST /sync, GET /segments/:id,
- * PUT|GET /blobs/:id) over the framework-free `@syncular-v2/server` core.
+ * PUT|GET /blobs/:id) over the framework-free `@syncular/server` core.
  * Storage is bun:sqlite; the server manages its own `sync_*` tables — the
  * app migration (migrations/0001_initial) only feeds typegen the schema
  * SHAPE, it is never run here.
@@ -16,8 +16,8 @@ import {
   MemorySegmentStore,
   SqliteServerStorage,
   type SyncServerConfig,
-} from '@syncular-v2/server';
-import { createSyncularHono } from '@syncular-v2/server-hono';
+} from '@syncular/server';
+import { createSyncularHono } from '@syncular/server-hono';
 import { schema } from './syncular.generated';
 
 const config: SyncServerConfig = {

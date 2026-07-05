@@ -4,7 +4,7 @@
  * reuse `find`. The S3 backend runs the same contract in
  * `s3-segment-store.test.ts`.
  */
-import { MemorySegmentStore, SqliteSegmentStore } from '@syncular-v2/server';
+import { MemorySegmentStore, SqliteSegmentStore } from '@syncular/server';
 import { runSegmentStoreContract } from './segment-store-contract';
 
 runSegmentStoreContract('memory', () => new MemorySegmentStore());

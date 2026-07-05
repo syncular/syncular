@@ -1,19 +1,19 @@
 {
-  "name": "@syncular-v2/example-quickstart",
+  "name": "@syncular/example-quickstart",
   "private": true,
   "type": "module",
   "scripts": {
-    "generate": "syncular-v2 generate --manifest-dir .",
+    "generate": "syncular generate --manifest-dir .",
     "server": "bun run src/server.ts",
     "clients": "bun run src/clients.ts"
   },
   "dependencies": {
-    "@syncular-v2/core": "workspace:*",
-    "@syncular-v2/server": "workspace:*",
-    "@syncular-v2/server-hono": "workspace:*",
-    "@syncular-v2/web-client": "workspace:*"
+    "@syncular/core": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/server-hono": "workspace:*",
+    "@syncular/client": "workspace:*"
   },
   "devDependencies": {
-    "@syncular-v2/typegen": "workspace:*"
+    "@syncular/typegen": "workspace:*"
   }
 }

@@ -1,6 +1,6 @@
 /**
  * The syncular v2 React Native todo — the SAME clean interface as the web
- * demos (apps/demo-react), proving `@syncular-v2/react` hooks work UNCHANGED
+ * demos (apps/demo-react), proving `@syncular/react` hooks work UNCHANGED
  * over the native core:
  *
  *   createNativeSyncClient()  →  a SyncClientLike over the TurboModule (the
@@ -18,13 +18,13 @@
  * integration proof.
  */
 
-import type { SyncClientLike } from '@syncular-v2/react';
+import type { SyncClientLike } from '@syncular/react';
 import {
   SyncProvider,
   useMutation,
   useSyncQuery,
   useSyncStatus,
-} from '@syncular-v2/react';
+} from '@syncular/react';
 import { useState } from 'react';
 import {
   FlatList,

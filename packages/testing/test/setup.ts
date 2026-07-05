@@ -1,12 +1,12 @@
 /**
  * Test lifecycle helper: give a test file a happy-dom global environment so
  * the React helper test can mount hooks under bun's test runner (same posture
- * as `@syncular-v2/react`'s setup).
+ * as `@syncular/react`'s setup).
  *
  * CRITICAL — shared-process isolation. `bun run test` runs the whole monorepo
  * in ONE process. `GlobalRegistrator.register()` swaps process-global
  * `Headers`/`Response`/`fetch`/`window`, so if it is left registered it leaks
- * into unrelated packages — notably `@syncular-v2/web-client`'s `http.test.ts`,
+ * into unrelated packages — notably `@syncular/client`'s `http.test.ts`,
  * whose `new Headers(...)` iteration silently drops entries under happy-dom's
  * Headers, and its `worker-rpc.test.ts`. bun runs test files SEQUENTIALLY
  * (a file's `beforeAll` → tests → `afterAll` complete before the next file

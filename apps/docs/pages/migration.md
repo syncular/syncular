@@ -6,10 +6,14 @@ in-place upgrade — you stand up a v2 server, port your schema and init code
 with this guide, and clients re-bootstrap. What carries over unchanged is the
 part that matters: your mental model and your authorization logic.
 
-> **Package names**: the v2 packages are published-name placeholders
-> (`@syncular-v2/*`) until the final naming decision lands; when it does, the
-> rename is a single mechanical find-and-replace across your imports — nothing
-> else about this guide changes.
+> **Package names are final.** Everything ships under the `@syncular/*` scope
+> (plus the unscoped scaffolder `create-syncular-app`). The names in this guide
+> are the names you install — no further rename is coming. The v1-era npm names
+> `@syncular/core`, `@syncular/server`, `@syncular/client`, `@syncular/typegen`,
+> `@syncular/testkit`, and `create-syncular-app` are reused; the remaining
+> packages (`@syncular/react`, `@syncular/kysely`, `@syncular/crdt-yjs`,
+> `@syncular/server-hono`, `@syncular/server-workers`, `@syncular/tauri`,
+> `@syncular/react-native`) are new names reserved for this release.
 
 ## What stayed the same
 
@@ -33,16 +37,16 @@ The v1 semantics survive intact — port your mental model unchanged:
 
 | v1 concept | v2 concept |
 |---|---|
-| Rust-WASM client — `@syncular/client` hosted a Rust binary in a worker | TypeScript client core on sqlite-wasm + OPFS (`@syncular-v2/web-client`); the Rust core is a separate *native* client, kept in lockstep by a [conformance suite](/guide-conformance/) |
+| Rust-WASM client — `@syncular/client` hosted a Rust binary in a worker | TypeScript client core on sqlite-wasm + OPFS (`@syncular/client`); the Rust core is a separate *native* client, kept in lockstep by a [conformance suite](/guide-conformance/) |
 | SSP1, implicit — the protocol lived in code (wire v14) | SSP2, written — [SPEC.md](../../SPEC.md) + golden vectors are normative |
-| Dialect entry points — `@syncular/server/sqlite`, `/postgres`, `/pglite`, `/d1`, … | Storage backends in `@syncular-v2/server`: `SqliteServerStorage`, `PostgresServerStorage`, `D1ServerStorage` (Workers) |
+| Dialect entry points — `@syncular/server/sqlite`, `/postgres`, `/pglite`, `/d1`, … | Storage backends in `@syncular/server`: `SqliteServerStorage`, `PostgresServerStorage`, `D1ServerStorage` (Workers) |
 | HTTP push/pull loop + WS wake-ups | [WebSocket-native sync rounds](/concepts-realtime/) — one loop, over the socket ([SPEC §8.7](../../SPEC.md#87-sync-rounds-over-the-socket)) |
 | Snapshot chunks *and* snapshot artifacts (two systems) | One **bootstrap segment** concept, `rows` or `sqlite` media type ([Bootstrap & segments](/concepts-bootstrap/)) |
 | Client-side migrations (`@syncular/migrations`) | No client migration engine — [wipe-and-rebootstrap](/guide-schema/) with the outbox preserved ([SPEC §7.4](../../SPEC.md#74-schema-bump-flow--wipe-re-bootstrap-replay)) |
-| `syncular.app.ts` authoring + Rust codegen binary | SQL migrations + `syncular.json` manifest + `syncular-v2 generate` — pure TypeScript, no cargo ([Schema & typegen](/guide-schema/)) |
+| `syncular.app.ts` authoring + Rust codegen binary | SQL migrations + `syncular.json` manifest + `syncular generate` — pure TypeScript, no cargo ([Schema & typegen](/guide-schema/)) |
 | Relay (`@syncular/server/relay`) | Retired — realtime is a second binding of the same handler; multi-instance fanout is LISTEN/NOTIFY; Workers is a Durable Object design |
 | Per-package micro-surface (~23 packages) | Consolidated: `core`, `server`, `server-hono`, `server-workers`, `web-client`, `react`, `typegen`, `crdt-yjs`, `conformance`, `create-app` |
-| Full React console app (`@syncular/console`) | `SyncularAdmin` query surface + a single static admin page in `@syncular-v2/server-hono` |
+| Full React console app (`@syncular/console`) | `SyncularAdmin` query surface + a single static admin page in `@syncular/server-hono` |
 | `@syncular/testkit` mocks | The conformance catalog + loopback doctrine ([Protocol & conformance](/guide-conformance/)) |
 
 ## Step by step
@@ -90,8 +94,8 @@ toolchain anywhere:
 ```
 
 ```sh
-syncular-v2 init             # scaffold manifest + first migration
-syncular-v2 generate         # → src/syncular.generated.ts (commit it)
+syncular init             # scaffold manifest + first migration
+syncular generate         # → src/syncular.generated.ts (commit it)
 ```
 
 Notes for porting: the scope pattern syntax is unchanged
@@ -135,8 +139,8 @@ import {
   MemorySegmentStore,
   SqliteServerStorage,
   type SyncServerConfig,
-} from '@syncular-v2/server';
-import { createSyncularHono } from '@syncular-v2/server-hono';
+} from '@syncular/server';
+import { createSyncularHono } from '@syncular/server-hono';
 import { schema } from './syncular.generated';
 
 const config: SyncServerConfig = {
@@ -158,7 +162,7 @@ Bun.serve({ port: 8787, fetch: app.fetch });
 
 Dialect mapping: `@syncular/server/sqlite` → `SqliteServerStorage`;
 `/postgres` → `PostgresServerStorage` (bring your driver through the
-`PgExecutor` seam); `/d1` → `D1ServerStorage` via `@syncular-v2/server-workers`.
+`PgExecutor` seam); `/d1` → `D1ServerStorage` via `@syncular/server-workers`.
 The v1 `pglite`/`libsql`/`neon`/`better-sqlite3` dialects have no v2
 equivalent — the policy is adapters only where the conformance catalog runs.
 See [Server setup](/guide-server/).
@@ -185,7 +189,7 @@ handle; reads are plain SQL, writes are explicit change lists:
 
 ```ts
 // v2
-import { createSyncClientHandle } from '@syncular-v2/web-client';
+import { createSyncClientHandle } from '@syncular/client';
 import { schema } from './syncular.generated';
 
 const client = await createSyncClientHandle({
@@ -218,7 +222,7 @@ fail loud. See [Web client](/guide-client/).
 ### 4. React hooks
 
 v1 created a typed hook set per app (`createSyncularReact<DB>()`); v2 exports
-hooks directly from `@syncular-v2/react` — wrap your tree in `SyncProvider`
+hooks directly from `@syncular/react` — wrap your tree in `SyncProvider`
 and import:
 
 | v1 hook | v2 |
@@ -263,7 +267,7 @@ on the client:
 
 ```ts
 // server
-import { yjsCrdtMergers } from '@syncular-v2/crdt-yjs';
+import { yjsCrdtMergers } from '@syncular/crdt-yjs';
 const config: SyncServerConfig = { /* … */, crdtMergers: yjsCrdtMergers };
 ```
 
@@ -366,7 +370,7 @@ with the v1 database.
 ## Where to go next
 
 - [Quickstart](/quickstart/) — the v2 shape end to end in five minutes
-  (`bun create syncular-v2 my-app`).
+  (`bun create syncular-app my-app`).
 - [Server setup](/guide-server/) and [Web client](/guide-client/) — the full
   wiring this guide's snippets abridge.
 - [SPEC.md §0](../../SPEC.md#0-deliberate-simplifications-vs-wire-v14--decisions)

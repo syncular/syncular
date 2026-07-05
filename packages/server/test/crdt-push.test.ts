@@ -2,7 +2,7 @@
  * CRDT column push-merge semantics (SPEC.md §5.10.3). Driven through bytes,
  * with a tiny in-test merger (a commutative/associative/idempotent byte-set
  * union) so the server test stays CRDT-library-free — the merge CONTRACT is
- * what's under test, not Yjs (that lives in @syncular-v2/crdt-yjs).
+ * what's under test, not Yjs (that lives in @syncular/crdt-yjs).
  */
 import { beforeEach, describe, expect, test } from 'bun:test';
 import {
@@ -14,7 +14,7 @@ import {
   type PushResultFrame,
   type RequestFrame,
   type RowColumn,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import {
   type CrdtMergerRegistry,
   handleSyncRequest,
@@ -22,7 +22,7 @@ import {
   type ServerSchema,
   SqliteServerStorage,
   type SyncRequestContext,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 
 /** A note table: an ordinary `title` (LWW) + a `doc` crdt column. */
 const NOTE_COLUMNS: readonly RowColumn[] = [

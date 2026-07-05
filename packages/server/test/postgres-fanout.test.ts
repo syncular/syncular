@@ -6,7 +6,7 @@
  * `postgres-fanout.integration.test.ts` — pglite cannot exercise it.
  */
 import { expect, test } from 'bun:test';
-import type { WakeReason } from '@syncular-v2/core';
+import type { WakeReason } from '@syncular/core';
 import {
   encodeFanoutPayload,
   FANOUT_CHANNEL,
@@ -14,7 +14,7 @@ import {
   type PgNotificationConnection,
   PostgresFanout,
   parseFanoutPayload,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 
 test('payload round-trips partition + commitSeq', () => {
   const encoded = encodeFanoutPayload({ partition: 'part-1', commitSeq: 42 });

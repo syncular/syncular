@@ -4,7 +4,7 @@
  * scopes the §3.3 purge contract is keyed on — persisted per subscription
  * exactly for that purpose.
  */
-import type { ScopeMap } from '@syncular-v2/core';
+import type { ScopeMap } from '@syncular/core';
 import type { ClientDatabase } from './database';
 
 export type SubscriptionStatus = 'active' | 'revoked' | 'failed';

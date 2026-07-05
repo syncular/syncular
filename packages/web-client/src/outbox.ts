@@ -10,7 +10,7 @@ import {
   type PushCommitFrame,
   type PushOperation,
   type ScopeMap,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import type { ClientDatabase } from './database';
 import { ClientSyncError } from './errors';
 import {

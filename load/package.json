@@ -8,8 +8,8 @@
     "test": "bun test src"
   },
   "dependencies": {
-    "@syncular-v2/core": "workspace:*",
-    "@syncular-v2/server": "workspace:*",
-    "@syncular-v2/server-hono": "workspace:*"
+    "@syncular/core": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/server-hono": "workspace:*"
   }
 }

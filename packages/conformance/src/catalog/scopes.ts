@@ -3,7 +3,7 @@
  * re-authorization (SPEC.md §3, §5.5; Appendix B.4). Scopes are the
  * crown jewels — these scenarios pin fail-loud and fail-closed behavior.
  */
-import { canonicalScopeJson } from '@syncular-v2/core';
+import { canonicalScopeJson } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import type { DriverSchema } from '../driver';
 import { doc, FIXTURE_SCHEMA, task } from '../fixture';

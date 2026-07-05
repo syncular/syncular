@@ -51,7 +51,7 @@ verification; push is Benjamin's alone).
       both cores, accept-applies-and-converges, off-is-unchanged,
       sees-stored-row-on-update) + 11 server unit tests (incl. the load-bearing
       merged-CRDT-value assertion). Gates green.
-- [x] **App-developer test kit**: `@syncular-v2/testing` — `createTestSync
+- [x] **App-developer test kit**: `@syncular/testkit` — `createTestSync
       ({schema})` → in-memory `@…/server` + N real `SyncClient`s on
       bun:sqlite through the loopback seam (no HTTP), per-client
       `goOffline()/goOnline()`, transport faults (the conformance
@@ -116,11 +116,22 @@ verification; push is Benjamin's alone).
 
 ## 4. Benjamin-gated (decisions, not builds)
 
-- [ ] **Package naming** — `@syncular-v2/*` are placeholders; rename is
-      mechanical (one constants module + workspace-wide find/replace).
+- [x] **Package naming** — DONE (2026-07-05, Benjamin's call): every `-v2`
+      name killed. Final identity is `@syncular/*` + the unscoped scaffolder
+      `create-syncular-app`. The typegen CLI bin is `syncular`; the workspace
+      root is `syncular`. Directory names left as-is (churn without benefit).
+      Executed through the one constants module + a workspace-wide sed; the
+      lockfile and every typegen output were regenerated, not hand-edited.
 - [ ] **Publishing pipeline** — changesets + trusted publishing for the
       final names, carrying the v1 artifact-guard lessons (parse-validate
       everything a pipeline builds; no platform-skipped smokes).
+      **REUSED v1 npm names** (trusted publishing already exists — no reserve
+      needed): `@syncular/core`, `@syncular/server`, `@syncular/client`,
+      `@syncular/typegen`, `@syncular/testkit`, `create-syncular-app`.
+      **NEW names** (need a one-time reserve before first publish):
+      `@syncular/react`, `@syncular/kysely`, `@syncular/crdt-yjs`,
+      `@syncular/server-hono`, `@syncular/server-workers`, `@syncular/tauri`,
+      `@syncular/react-native`.
 - [ ] **Sunset remainder** — delete `v1/` from disk when ready; execute
       the registry deprecations (incl. the broken-WASM 0.1.x artifacts).
 - [ ] **Gate decision + push** — the evidence is in `bench/RESULTS.md`

@@ -11,8 +11,8 @@ import {
   httpSegmentDownloader,
   httpSyncTransport,
   SyncClient,
-} from '@syncular-v2/web-client';
-import { openBunDatabase } from '@syncular-v2/web-client/bun';
+} from '@syncular/client';
+import { openBunDatabase } from '@syncular/client/bun';
 import { schema } from './syncular.generated';
 
 export function makeClient(baseUrl: string, clientId: string): SyncClient {

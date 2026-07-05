@@ -7,7 +7,7 @@
  * substrate the React `useSyncQuery` re-run logic depends on.
  */
 import { describe, expect, test } from 'bun:test';
-import type { InvalidationEvent } from '@syncular-v2/web-client';
+import type { InvalidationEvent } from '@syncular/client';
 import {
   makeClient,
   makeServer,

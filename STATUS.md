@@ -10,8 +10,9 @@ v2 is **feature-complete and then some**. The full v1→v2 rebuild (REVISE.md),
 the road-to-feature-done (TODO.md), and most of the after-feature-done
 ROADMAP are landed and conformance-locked across both cores. Everything is
 committed locally on `main`; **nothing is pushed** (Benjamin's standing rule —
-57 commits ahead of `origin/main`). The kill/merge gate, package naming,
-sunset, and the push are Benjamin-gated and not yet done.
+57 commits ahead of `origin/main`). Package naming is settled (2026-07-05:
+every `-v2` name killed, final names are `@syncular/*` + `create-syncular-app`).
+The kill/merge gate, sunset, and the push remain Benjamin-gated and not yet done.
 
 Numbers: ~764 bun tests, 74 conformance scenarios on BOTH (TS client × TS
 server) and (Rust client × TS server), all bench budgets green, six platform
@@ -84,7 +85,8 @@ bench:ci + cargo + the Rust pairing green.
 - **Named-query layout redesign**: designed, awaiting Benjamin's 3 confirms.
 - **Demand-gated** (built on request): native CRDT editing (yrs), windowed
   sync W2 (TTL sugar), per-rowid invalidation refinement.
-- **Benjamin-gated release items**: package naming (6.3 — mechanical rename),
+- **Benjamin-gated release items**: package naming (6.3 — DONE 2026-07-05,
+  final names `@syncular/*` + `create-syncular-app`),
   publishing pipeline (with the v1 artifact-guard lessons), sunset actions
   (promotion done 2026-07-04; archive/registry deprecations remain), the kill/merge gate
   decision, and **the push** (57 commits local).

@@ -1,20 +1,20 @@
 {
-  "name": "@syncular-v2/demo",
+  "name": "@syncular/demo",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "bun run src/server.ts",
-    "generate": "syncular-v2 generate --manifest-dir ."
+    "generate": "syncular generate --manifest-dir ."
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
-    "@syncular-v2/core": "workspace:*",
-    "@syncular-v2/server": "workspace:*",
-    "@syncular-v2/server-hono": "workspace:*",
-    "@syncular-v2/web-client": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/server-hono": "workspace:*",
+    "@syncular/client": "workspace:*",
     "hono": "^4.11.0"
   },
   "devDependencies": {
-    "@syncular-v2/typegen": "workspace:*"
+    "@syncular/typegen": "workspace:*"
   }
 }

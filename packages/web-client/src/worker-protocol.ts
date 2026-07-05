@@ -16,7 +16,7 @@
  * so the UI thread never has to react to keep data flowing. Events are
  * still forwarded to the handle for visibility.
  */
-import type { WakeReason } from '@syncular-v2/core';
+import type { WakeReason } from '@syncular/core';
 import type { BlobRef, CachedBlob } from './blob';
 import type {
   ConflictRecord,

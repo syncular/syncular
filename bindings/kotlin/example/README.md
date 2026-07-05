@@ -27,7 +27,7 @@ The schema is **generated, not hand-built**:
 [`Syncular.generated.kt`](src/main/kotlin/dev/syncular/example/Syncular.generated.kt)
 (`SyncularSchema.schema` + the `Notes` data class + the `ListNotes` subscription
 helper) comes from [`syncular.json`](syncular.json) + [`migrations/`](migrations)
-via `syncular-v2 generate` (regenerate with `bun packages/typegen/src/cli.ts
+via `syncular generate` (regenerate with `bun packages/typegen/src/cli.ts
 generate --manifest-dir bindings/kotlin/example` from the repo root).
 `check.sh` runs `generate --check` (a byte-exact freshness gate, bun-only, so it
 runs even without a JDK) before the JVM steps.

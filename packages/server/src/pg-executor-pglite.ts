@@ -2,7 +2,7 @@
  * A `PgExecutor` over @electric-sql/pglite (embedded WASM Postgres).
  *
  * This is the **test/dev** driver — hermetic, no docker, runs under bun.
- * `@electric-sql/pglite` is a devDependency of `@syncular-v2/server`; this
+ * `@electric-sql/pglite` is a devDependency of `@syncular/server`; this
  * module is exported for tests and local experiments, not the production
  * path. Production wires Bun.sql or node-postgres against the same
  * `PgExecutor` interface (see the server README).

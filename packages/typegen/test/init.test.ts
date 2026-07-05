@@ -1,5 +1,5 @@
 /**
- * `syncular-v2 init` and the CLI polish: init scaffolds a starter that
+ * `syncular init` and the CLI polish: init scaffolds a starter that
  * generates cleanly, refuses to clobber, and generate errors point at the
  * docs when inputs are missing.
  */
@@ -30,7 +30,7 @@ function runCli(args: string[]) {
   };
 }
 
-describe('syncular-v2 init', () => {
+describe('syncular init', () => {
   test('scaffolds a manifest + migration that then generates', () => {
     const dir = freshDir();
     const init = runCli(['init', '--manifest-dir', dir]);
@@ -63,7 +63,7 @@ describe('generate error UX', () => {
     const run = runCli(['generate', '--manifest-dir', dir]);
     expect(run.exitCode).toBe(1);
     expect(run.stderr).toContain('manifest not found');
-    expect(run.stderr).toContain('syncular-v2 init');
+    expect(run.stderr).toContain('syncular init');
   });
 
   test('--check and --watch cannot combine', () => {
@@ -75,6 +75,6 @@ describe('generate error UX', () => {
   test('unknown command fails with usage', () => {
     const run = runCli(['bogus']);
     expect(run.exitCode).toBe(1);
-    expect(run.stderr).toContain('usage: syncular-v2');
+    expect(run.stderr).toContain('usage: syncular');
   });
 });

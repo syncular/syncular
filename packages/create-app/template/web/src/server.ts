@@ -20,8 +20,8 @@ import {
   type RealtimeSession,
   SqliteServerStorage,
   type SyncServerConfig,
-} from '@syncular-v2/server';
-import { createSyncularHono } from '@syncular-v2/server-hono';
+} from '@syncular/server';
+import { createSyncularHono } from '@syncular/server-hono';
 import { schema } from './syncular.generated';
 
 const PORT = Number(process.env.PORT ?? 8787);

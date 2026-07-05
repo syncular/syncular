@@ -1,12 +1,12 @@
 /**
- * @syncular-v2/react-native — the JS bridge to the native syncular core running
+ * @syncular/react-native — the JS bridge to the native syncular core running
  * over the FFI (the same C ABI Swift/Kotlin wrap). RN's Hermes runtime has no
  * OPFS / sqlite-wasm, so the persistent path is the NATIVE core (decided in
  * ROADMAP block 1) — `rusqlite` on the device filesystem, HTTP+WS owned in Rust.
  *
- * This module is the webview-equivalent of `@syncular-v2/tauri`: a thin JS proxy
+ * This module is the webview-equivalent of `@syncular/tauri`: a thin JS proxy
  * that implements the SAME `SyncClientLike` interface the React package
- * normalizes, so `@syncular-v2/react` hooks (`useSyncQuery`, `useMutation`,
+ * normalizes, so `@syncular/react` hooks (`useSyncQuery`, `useMutation`,
  * `usePresence`, …) work UNCHANGED in a React Native app. It is the fifth host
  * of one interface, after direct / worker-leader / multi-tab follower / Tauri.
  *
@@ -36,7 +36,7 @@ import type {
   SqlValue,
   WindowBase,
   WindowState,
-} from '@syncular-v2/web-client';
+} from '@syncular/client';
 
 /** A driver-protocol reply: `{result}` on success or `{error}` on failure. */
 interface CommandReply {

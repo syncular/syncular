@@ -1,7 +1,7 @@
 //! Minimal Tauri app wiring `tauri-plugin-syncular`. Proves the plugin
 //! registers, constructs a native syncular instance (with the native HTTP+WS
 //! transport under `native-transport`), and exposes the command + event surface
-//! to the webview — where `@syncular-v2/tauri` bridges it to the React hooks.
+//! to the webview — where `@syncular/tauri` bridges it to the React hooks.
 //!
 //! The db path defaults to a file under the OS app-data dir; the server base
 //! URL points at a local dev server. Both are placeholders an app overrides.

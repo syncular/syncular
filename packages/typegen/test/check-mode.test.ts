@@ -48,7 +48,7 @@ function runCli(args: string[]): CliRun {
   };
 }
 
-describe('syncular-v2 generate', () => {
+describe('syncular generate', () => {
   test('generate then --check round-trips through the real CLI', () => {
     const dir = freshDir();
     const generated = runCli(['generate', '--manifest-dir', dir]);

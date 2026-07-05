@@ -19,11 +19,8 @@ import {
   useMutation,
   useSyncQuery,
   useSyncStatus,
-} from '@syncular-v2/react';
-import {
-  createTauriSyncClient,
-  type TauriSyncClient,
-} from '@syncular-v2/tauri';
+} from '@syncular/react';
+import { createTauriSyncClient, type TauriSyncClient } from '@syncular/tauri';
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { schema, type TodosRow } from './syncular.generated';

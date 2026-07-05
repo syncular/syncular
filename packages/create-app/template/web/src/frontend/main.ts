@@ -16,7 +16,7 @@ import {
   createSyncClientHandle,
   NOT_LEADER_CODE,
   type SqlRow,
-} from '@syncular-v2/web-client';
+} from '@syncular/client';
 import { schema, todoListSubscription } from '../syncular.generated';
 
 const LIST_ID = 'welcome';

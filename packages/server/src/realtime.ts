@@ -29,7 +29,7 @@ import {
   type ResponseFrame,
   type ScopeMap,
   type WakeReason,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import type { LeaseConfig, ResolveScopes, ServerLimits } from './context';
 import { RESOLVER_OUTAGE } from './context';
 import { SyncError, syncError } from './errors';

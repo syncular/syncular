@@ -7,7 +7,7 @@ import {
   canonicalScopeJson,
   type RowValue,
   type ScopeMap,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import type { CompiledTable } from './schema';
 
 export type StoredScopes = Record<string, string>;

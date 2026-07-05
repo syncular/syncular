@@ -1,5 +1,5 @@
 {
-  "name": "@syncular-v2/core",
+  "name": "@syncular/core",
   "private": true,
   "type": "module",
   "exports": {

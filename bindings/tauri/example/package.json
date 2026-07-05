@@ -1,15 +1,15 @@
 {
-  "name": "@syncular-v2/tauri-example",
+  "name": "@syncular/tauri-example",
   "private": true,
   "type": "module",
-  "description": "Minimal Tauri + React app wiring tauri-plugin-syncular + @syncular-v2/tauri + @syncular-v2/react",
+  "description": "Minimal Tauri + React app wiring tauri-plugin-syncular + @syncular/tauri + @syncular/react",
   "scripts": {
     "build-frontend": "bun run build-frontend.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@syncular-v2/react": "workspace:*",
-    "@syncular-v2/tauri": "workspace:*",
+    "@syncular/react": "workspace:*",
+    "@syncular/tauri": "workspace:*",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

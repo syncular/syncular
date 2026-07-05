@@ -22,7 +22,7 @@ const val DEMO_LIST_ID = "welcome"
  * body — an honest fit, no schema fork).
  *
  * The schema is NOT hand-built: `SyncularSchema.schema` and the typed `Notes`
- * row come from `Syncular.generated.kt`, produced by `syncular-v2 generate`
+ * row come from `Syncular.generated.kt`, produced by `syncular generate`
  * from this example's `syncular.json` + `migrations/` (check.sh gates its
  * freshness with `--check`).
  *

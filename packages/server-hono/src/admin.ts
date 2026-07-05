@@ -15,7 +15,7 @@ import {
   type RingEventQuery,
   SyncError,
   type SyncularAdmin,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 import { Hono } from 'hono';
 import { ADMIN_CONSOLE_HTML } from './admin-page';
 

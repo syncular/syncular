@@ -31,7 +31,7 @@
  * while the sockets stay open.
  *
  * The per-connection state machine is the existing `RealtimeSession`
- * (`@syncular-v2/server`) — unchanged, driven from the hibernation callbacks:
+ * (`@syncular/server`) — unchanged, driven from the hibernation callbacks:
  * binary frames → `session.handleBinary` (§8.7 rounds + acks), text frames →
  * `session.handleMessage` (§8.2 acks, §8.6 presence), hub delta/wake sends →
  * `ws.send`.
@@ -77,7 +77,7 @@ import {
   type RealtimeHub,
   type RealtimeHubConfig,
   type RealtimeSession,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 
 // -- The Durable Object platform surface this class uses (structural) -------
 // Declared locally so the package takes no `@cloudflare/workers-types`

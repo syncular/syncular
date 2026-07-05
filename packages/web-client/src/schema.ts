@@ -4,7 +4,7 @@
  * DDL, the generated row codec, mutation helpers, and the §3.3 purge
  * mapping (scope variable → local column).
  */
-import type { RowColumn, RowValue } from '@syncular-v2/core';
+import type { RowColumn, RowValue } from '@syncular/core';
 import type { ClientDatabase, SqlValue } from './database';
 import { ClientSyncError } from './errors';
 

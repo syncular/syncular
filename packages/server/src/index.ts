@@ -1,5 +1,5 @@
 /**
- * @syncular-v2/server — framework-free embeddable SSP2 protocol library
+ * @syncular/server — framework-free embeddable SSP2 protocol library
  * (SPEC.md is normative; REVISE.md B2 is the architectural mandate).
  *
  * Core surface: `handleSyncRequest(bytes, ctx) → bytes` over host-provided

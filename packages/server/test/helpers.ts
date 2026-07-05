@@ -21,7 +21,7 @@ import {
   type SubEndFrame,
   type SubStartFrame,
   type SubscriptionFrame,
-} from '@syncular-v2/core';
+} from '@syncular/core';
 import {
   handleSyncRequest,
   MemorySegmentStore,
@@ -29,7 +29,7 @@ import {
   SqliteServerStorage,
   SyncError,
   type SyncRequestContext,
-} from '@syncular-v2/server';
+} from '@syncular/server';
 
 export const TASK_COLUMNS: readonly RowColumn[] = [
   { name: 'id', type: 'string', nullable: false },

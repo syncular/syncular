@@ -5,7 +5,7 @@
  * missing local scope-column mapping fails closed.
  */
 import { describe, expect, test } from 'bun:test';
-import type { ClientSchema } from '@syncular-v2/web-client';
+import type { ClientSchema } from '@syncular/client';
 import {
   DOC_COLUMNS,
   makeClient,

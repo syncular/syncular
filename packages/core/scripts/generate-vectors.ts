@@ -350,7 +350,7 @@ const inlineSegment = encodeRowsSegment({
   blocks: [[{ serverVersion: 5, values: ROW_BOUNDARY }]],
 });
 
-const sqliteSegmentId = `sha256:${sha256Hex('syncular-v2-vector:sqlite-segment')}`;
+const sqliteSegmentId = `sha256:${sha256Hex('syncular-vector:sqlite-segment')}`;
 const rowsSegmentId = `sha256:${sha256Hex(inlineSegment)}`;
 const sqliteUrl = signedUrl(sqliteSegmentId);
 

@@ -6,8 +6,8 @@ import {
   canonicalScopeJson,
   decodeRowsSegment,
   type SegmentRefFrame,
-} from '@syncular-v2/core';
-import { handleSegmentDownload } from '@syncular-v2/server';
+} from '@syncular/core';
+import { handleSegmentDownload } from '@syncular/server';
 import {
   makeContext,
   pullHeader,

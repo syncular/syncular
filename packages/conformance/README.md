@@ -1,4 +1,4 @@
-# @syncular-v2/conformance
+# @syncular/conformance
 
 Implementation-agnostic conformance runner for the SSP2 protocol
 ([`SPEC.md`](../../SPEC.md) is normative; REVISE.md B4 is the mandate).
@@ -62,9 +62,9 @@ src/
   raw.ts           reference-codec request builders (raw-bytes surface)
   checks.ts        framework-free assertions
   drivers/
-    ts-server.ts      reference ServerDriver (@syncular-v2/server)
-    ts-client.ts      reference ClientDriver (@syncular-v2/web-client, bun:sqlite)
-    reference-codec.ts reference CodecDriver (@syncular-v2/core)
+    ts-server.ts      reference ServerDriver (@syncular/server)
+    ts-client.ts      reference ClientDriver (@syncular/client, bun:sqlite)
+    reference-codec.ts reference CodecDriver (@syncular/core)
   catalog/         the scenario catalog, one file per area
 test/
   conformance.test.ts  bun-test wiring: one test per scenario
@@ -103,7 +103,7 @@ by serializing exactly these shapes over its pipe.
 Implement the interface(s) for your runtime and pair them:
 
 ```ts
-import { CATALOG, runCatalog, tsServerDriver, referenceCodecDriver } from '@syncular-v2/conformance';
+import { CATALOG, runCatalog, tsServerDriver, referenceCodecDriver } from '@syncular/conformance';
 
 const report = await runCatalog(CATALOG, {
   client: myRustClientDriver,   // e.g. subprocess shim around the Rust core

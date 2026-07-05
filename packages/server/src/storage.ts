@@ -16,7 +16,7 @@
  * The interface is async throughout so a Postgres implementation slots in
  * without touching the core. All methods are partition-local (§2.1).
  */
-import type { PushOperationResult, ScopeMap } from '@syncular-v2/core';
+import type { PushOperationResult, ScopeMap } from '@syncular/core';
 
 /** The current stored state of a synced row. */
 export interface StoredRow {

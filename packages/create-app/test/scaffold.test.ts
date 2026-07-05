@@ -53,15 +53,15 @@ function run(cmd: string[], cwd?: string): Run {
 describe('package-name derivation', () => {
   test('sanitizes the directory basename', () => {
     expect(packageNameFromDirectory('/tmp/My App!!')).toBe('my-app');
-    expect(packageNameFromDirectory('/tmp/  ')).toBe('syncular-v2-app');
+    expect(packageNameFromDirectory('/tmp/  ')).toBe('syncular-app');
   });
 });
 
 describe('package.json rewrite', () => {
   const src = JSON.stringify({
     name: '__PROJECT_NAME__',
-    dependencies: { '@syncular-v2/core': 'workspace:*', hono: '^4.0.0' },
-    devDependencies: { '@syncular-v2/typegen': 'workspace:*' },
+    dependencies: { '@syncular/core': 'workspace:*', hono: '^4.0.0' },
+    devDependencies: { '@syncular/typegen': 'workspace:*' },
   });
 
   test('local keeps workspace ranges, sets the name, leaves externals', () => {
@@ -69,9 +69,9 @@ describe('package.json rewrite', () => {
       rewriteTemplatePackageJson(src, { packageName: 'my-app', local: true }),
     );
     expect(out.name).toBe('my-app');
-    expect(out.dependencies['@syncular-v2/core']).toBe('workspace:*');
+    expect(out.dependencies['@syncular/core']).toBe('workspace:*');
     expect(out.dependencies.hono).toBe('^4.0.0');
-    expect(out.devDependencies['@syncular-v2/typegen']).toBe('workspace:*');
+    expect(out.devDependencies['@syncular/typegen']).toBe('workspace:*');
   });
 
   test('non-local rewrites workspace ranges to the published range', () => {
@@ -80,7 +80,7 @@ describe('package.json rewrite', () => {
     );
     // Published range is still workspace:* today (packages unpublished; TODO
     // 6.3) — asserting it round-trips through the rewrite path, not literal.
-    expect(typeof out.dependencies['@syncular-v2/core']).toBe('string');
+    expect(typeof out.dependencies['@syncular/core']).toBe('string');
   });
 });
 
@@ -101,7 +101,7 @@ for (const template of TEMPLATES) {
         readFileSync(join(target, 'package.json'), 'utf8'),
       );
       expect(pkg.name).toBe('my-app');
-      expect(pkg.dependencies['@syncular-v2/server']).toBe('workspace:*');
+      expect(pkg.dependencies['@syncular/server']).toBe('workspace:*');
       expect(readFileSync(join(target, 'README.md'), 'utf8')).not.toContain(
         '__PROJECT_NAME__',
       );

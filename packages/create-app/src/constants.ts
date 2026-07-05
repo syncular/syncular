@@ -6,14 +6,14 @@
  * package — grep for the literals below and you should only find them here.
  */
 
-/** The scoped npm namespace for the v2 packages, e.g. `@syncular-v2`. */
-export const PACKAGE_SCOPE = '@syncular-v2';
+/** The scoped npm namespace for the v2 packages, e.g. `@syncular`. */
+export const PACKAGE_SCOPE = '@syncular';
 
-/** The typegen CLI binary name (`syncular-v2 generate`, `syncular-v2 init`). */
-export const CLI_BIN = 'syncular-v2';
+/** The typegen CLI binary name (`syncular generate`, `syncular init`). */
+export const CLI_BIN = 'syncular';
 
-/** This package's own bin (`bun create syncular-v2 …` / `bunx create-syncular-v2 …`). */
-export const CREATE_BIN = 'create-syncular-v2';
+/** This package's own bin (`bun create syncular …` / `bunx create-syncular-app …`). */
+export const CREATE_BIN = 'create-syncular-app';
 
 /** Human-facing product name in prose. */
 export const PRODUCT_NAME = 'syncular';
@@ -28,7 +28,7 @@ export const WORKSPACE_PACKAGES = [
   `${PACKAGE_SCOPE}/core`,
   `${PACKAGE_SCOPE}/server`,
   `${PACKAGE_SCOPE}/server-hono`,
-  `${PACKAGE_SCOPE}/web-client`,
+  `${PACKAGE_SCOPE}/client`,
   `${PACKAGE_SCOPE}/typegen`,
 ] as const;
 

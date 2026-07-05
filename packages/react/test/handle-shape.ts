@@ -10,7 +10,7 @@
  * web-client's worker-rpc test, which proves the handle forwards these same
  * events.
  */
-import type { SqlValue, SyncClient } from '@syncular-v2/web-client';
+import type { SqlValue, SyncClient } from '@syncular/client';
 import type { SyncClientLike } from '../src/client';
 
 export function handleShapeOf(client: SyncClient): SyncClientLike {

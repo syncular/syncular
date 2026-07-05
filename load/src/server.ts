@@ -17,7 +17,7 @@
  * <port>` line to stdout when listening, and prunes on demand via a control
  * endpoint so the maintenance-churn scenario can race prune against pushes.
  */
-import { encodeRow } from '@syncular-v2/core';
+import { encodeRow } from '@syncular/core';
 import {
   composeEvents,
   consoleJsonEvents,
@@ -33,8 +33,8 @@ import {
   type SyncServerConfig,
   type SyncularServerEvent,
   type SyncularServerEvents,
-} from '@syncular-v2/server';
-import { createSyncularHono } from '@syncular-v2/server-hono';
+} from '@syncular/server';
+import { createSyncularHono } from '@syncular/server-hono';
 import {
   ACTOR_ID,
   COLUMNS,

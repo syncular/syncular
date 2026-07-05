@@ -1,6 +1,6 @@
 /**
  * The transport-fault controller, re-exported from the conformance harness
- * (`@syncular-v2/conformance/faults`) — NOT duplicated. The app test kit
+ * (`@syncular/conformance/faults`) — NOT duplicated. The app test kit
  * arms the SAME fault vocabulary the reference pairing does:
  *
  * - `dropNextRequests` / `dropNextResponses` — lose a request or its ack;
@@ -16,4 +16,4 @@ export {
   seedFromName,
   TransportFault,
   TransportFaults,
-} from '@syncular-v2/conformance/faults';
+} from '@syncular/conformance/faults';

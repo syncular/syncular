@@ -1,5 +1,5 @@
 /**
- * @syncular-v2/conformance — implementation-agnostic scenario runner
+ * @syncular/conformance — implementation-agnostic scenario runner
  * (REVISE B4; SPEC.md Appendix B). See README.md for the test doctrine
  * and how to plug a new implementation in via the driver interfaces.
  */

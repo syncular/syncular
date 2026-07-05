@@ -1,6 +1,6 @@
 /**
  * Wire constants the virtual client needs, kept separate from `fixture.ts`
- * so the client module depends only on `@syncular-v2/core` (not the server
+ * so the client module depends only on `@syncular/core` (not the server
  * package). SSP2_CONTENT_TYPE is duplicated from the server context (§1.1) —
  * a one-line protocol constant, not worth a server import for a load client.
  */

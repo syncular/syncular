@@ -1,5 +1,5 @@
 /**
- * `syncular-v2 init` — drop a starter `syncular.json` + `migrations/0001_initial`
+ * `syncular init` — drop a starter `syncular.json` + `migrations/0001_initial`
  * into an existing project (the "add syncular to my app" path). Writes nothing
  * that would clobber an existing manifest or migration; fails loud instead.
  *
@@ -79,7 +79,7 @@ export function initProject(dir: string): InitResult {
   if (existsSync(manifestPath)) {
     throw new InitError(
       `${manifestPath} already exists — refusing to overwrite. ` +
-        'Edit it directly, or run `syncular-v2 generate`.',
+        'Edit it directly, or run `syncular generate`.',
     );
   }
   if (existsSync(migrationPath)) {

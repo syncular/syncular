@@ -11,7 +11,7 @@
  * hermetic pattern the roadmap sets for the RN JS bridge.
  */
 import { describe, expect, test } from 'bun:test';
-import { normalizeClient, type SyncClientLike } from '@syncular-v2/react';
+import { normalizeClient, type SyncClientLike } from '@syncular/react';
 import {
   createNativeSyncClient,
   type SyncularEvent,

@@ -7,7 +7,7 @@
  * one interface).
  */
 import { describe, expect, test } from 'bun:test';
-import { normalizeClient, type SyncClientLike } from '@syncular-v2/react';
+import { normalizeClient, type SyncClientLike } from '@syncular/react';
 import { createTauriSyncClient, type TauriApi } from '../src/index';
 
 /** A recording invoke/listen double. Commands answer from a scripted table. */
