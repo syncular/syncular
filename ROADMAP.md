@@ -434,6 +434,8 @@ wire changes, zero server changes; sequenced AFTER the WS-native loop
 
 ## 6. Gap register (swept 2026-07-05, with Benjamin)
 
+**The live working checklist is `TODO.md` (repo root)** — this section
+keeps the strategy framing and the NON-GOALS (authoritative here).
 The full does-not-work / would-be-useful sweep. Wave 1 (in flight):
 live-query churn hardening (replacing per-rowid — see block 4), S3 blob
 store + GC sweep, CREATE INDEX in the migration subset.
