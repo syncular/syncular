@@ -31,6 +31,7 @@ export * from './prune';
 export * from './pull';
 export * from './push';
 export * from './realtime';
+export * from './relational-rows';
 export * from './s3-blob-store';
 export * from './s3-segment-store';
 export * from './schema';

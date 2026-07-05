@@ -593,6 +593,9 @@ async function createStreamCore(
     throw error;
   }
   const schema = compileSchema(ctx.schema);
+  // Relational row tables (server storage contract): create/
+  // migrate on first contact; memoized per storage instance thereafter.
+  await ctx.storage.ensureSchema(schema);
   const plan = await planRequest(request, ctx, schema);
   if (events === undefined) return streamResponse(plan, ctx, schema);
   const report: RequestReport = { outcome: 'ok' };

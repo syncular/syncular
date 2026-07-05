@@ -294,6 +294,7 @@ class TsServerInstance implements ServerInstance {
   #wrapStorage(): ServerStorage {
     const storage = this.#storage;
     return {
+      ensureSchema: (s) => storage.ensureSchema(s),
       begin: (p) => storage.begin(p),
       getMaxCommitSeq: (p) => storage.getMaxCommitSeq(p),
       getHorizonSeq: (p) => storage.getHorizonSeq(p),
@@ -688,12 +689,14 @@ class TsServerInstance implements ServerInstance {
           scopes: string;
           payload: Uint8Array;
         },
-        [string, string]
+        [string]
       >(
-        `SELECT row_id, server_version, scopes, payload FROM sync_rows
-         WHERE partition=? AND tbl=? ORDER BY row_id`,
+        `SELECT _sync_row_id AS row_id, _sync_server_version AS server_version,
+                _sync_scopes AS scopes, _sync_payload AS payload
+         FROM "${table.replaceAll('"', '""')}"
+         WHERE _sync_partition=? ORDER BY _sync_row_id`,
       )
-      .all(this.#partition, table);
+      .all(this.#partition);
     return rows.map((row) => {
       const values = decodeRow(columns, new Uint8Array(row.payload));
       const record: Record<string, DriverRowValue> = {};

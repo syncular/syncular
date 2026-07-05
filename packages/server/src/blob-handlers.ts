@@ -225,6 +225,9 @@ async function downloadBlob(
   }
 
   const schema = compileSchema(ctx.schema);
+  // A blob download can hit a fresh storage instance before any sync
+  // request has run (Workers): make sure the row tables exist first.
+  await ctx.storage.ensureSchema(schema);
   const rows = await listRows.call(ctx.storage, ctx.partition, blobId);
   let authorized = false;
   for (const row of rows) {

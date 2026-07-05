@@ -11,8 +11,12 @@
 import { SyncClient } from '@syncular/client';
 import { openBunDatabase } from '@syncular/client/bun';
 import { encodeRow } from '@syncular/core';
-import { handleSegmentDownload, handleSyncRequest } from '@syncular/server';
-import { COLUMNS, PARTITION, rowId, TABLE } from './fixture';
+import {
+  compileSchema,
+  handleSegmentDownload,
+  handleSyncRequest,
+} from '@syncular/server';
+import { COLUMNS, PARTITION, rowId, SCHEMA, TABLE } from './fixture';
 import { createBenchServer } from './loopback';
 
 const CLIENT_SCHEMA = {
@@ -34,6 +38,8 @@ async function seedProject(
   count: number,
   startIndex: number,
 ): Promise<void> {
+  // Direct storage seeding: the relational row tables must exist first.
+  await server.storage.ensureSchema(compileSchema(SCHEMA));
   const tx = await server.storage.begin(PARTITION);
   for (let i = 0; i < count; i++) {
     const index = startIndex + i;

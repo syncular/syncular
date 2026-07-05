@@ -19,6 +19,7 @@
  */
 import { encodeRow } from '@syncular/core';
 import {
+  compileSchema,
   composeEvents,
   consoleJsonEvents,
   createRealtimeHub,
@@ -224,8 +225,17 @@ async function buildStorage(): Promise<{
     const storage = new PostgresServerStorage(executor);
     await storage.migrate();
     // Start each PG run from a clean partition.
+    // The relational row store: the app table is partitioned by
+    // _sync_partition (it may not exist yet on a fresh database).
+    // biome-ignore lint/suspicious/noExplicitAny: dynamic handle.
+    await (sql as any).unsafe(
+      `DO $$ BEGIN
+         IF to_regclass('tasks') IS NOT NULL THEN
+           DELETE FROM tasks WHERE _sync_partition = '${'${PARTITION}'}';
+         END IF;
+       END $$`,
+    );
     for (const table of [
-      'sync_rows',
       'sync_row_scopes',
       'sync_commits',
       'sync_changes',
@@ -259,6 +269,8 @@ async function seedStormRows(
   count: number,
 ): Promise<void> {
   if (count <= 0) return;
+  // Direct storage seeding: the relational row tables must exist first.
+  await storage.ensureSchema(compileSchema(SCHEMA));
   const rand = seededRandom(0x10adb6);
   const BATCH = 5_000;
   for (let start = 0; start < count; start += BATCH) {

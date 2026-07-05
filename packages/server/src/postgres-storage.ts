@@ -43,6 +43,16 @@ import {
   type PgExecutor,
   type PgQueryable,
 } from './pg-executor';
+import {
+  deleteRowSql,
+  SCHEMA_META_DDL_POSTGRES,
+  schemaDdl,
+  selectRowScopesSql,
+  selectRowSql,
+  upsertSql,
+  upsertValues,
+} from './relational-rows';
+import type { CompiledSchema, CompiledTable } from './schema';
 import { matchesEffective } from './scopes';
 import type {
   ClientCursorInfo,
@@ -90,11 +100,6 @@ CREATE TABLE IF NOT EXISTS sync_partitions(
   partition TEXT PRIMARY KEY,
   max_commit_seq BIGINT NOT NULL DEFAULT 0,
   horizon_seq BIGINT NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS sync_rows(
-  partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL,
-  server_version BIGINT NOT NULL, scopes JSONB NOT NULL, payload BYTEA NOT NULL,
-  PRIMARY KEY(partition, tbl, row_id)
 );
 CREATE TABLE IF NOT EXISTS sync_row_scopes(
   partition TEXT NOT NULL, tbl TEXT NOT NULL,
@@ -287,13 +292,13 @@ function placeholders(start: number, count: number): string {
 /** Shared read/write query logic, parameterized by the queryable in scope. */
 async function getRowOn(
   q: PgQueryable,
+  compiled: CompiledTable,
   partition: string,
-  table: string,
   rowId: string,
 ): Promise<StoredRow | undefined> {
   const { rows } = await q.query<RowRecord>(
-    'SELECT row_id, server_version, scopes, payload FROM sync_rows WHERE partition=$1 AND tbl=$2 AND row_id=$3',
-    [partition, table, rowId],
+    selectRowSql(compiled, 'postgres'),
+    [partition, rowId],
   );
   const record = rows[0];
   return record === undefined ? undefined : toStoredRow(record);
@@ -301,35 +306,23 @@ async function getRowOn(
 
 async function writeRowOn(
   q: PgQueryable,
+  compiled: CompiledTable,
   partition: string,
-  table: string,
   row: StoredRow,
 ): Promise<void> {
   await q.query(
-    `INSERT INTO sync_rows(partition, tbl, row_id, server_version, scopes, payload)
-     VALUES ($1,$2,$3,$4,$5,$6)
-     ON CONFLICT (partition, tbl, row_id) DO UPDATE
-       SET server_version=EXCLUDED.server_version,
-           scopes=EXCLUDED.scopes,
-           payload=EXCLUDED.payload`,
-    [
-      partition,
-      table,
-      row.rowId,
-      row.serverVersion,
-      JSON.stringify(row.scopes),
-      row.payload,
-    ],
+    upsertSql(compiled, 'postgres'),
+    upsertValues(compiled, partition, row, 'postgres'),
   );
   await q.query(
     'DELETE FROM sync_row_scopes WHERE partition=$1 AND tbl=$2 AND row_id=$3',
-    [partition, table, row.rowId],
+    [partition, compiled.name, row.rowId],
   );
   for (const [variable, value] of Object.entries(row.scopes)) {
     await q.query(
       `INSERT INTO sync_row_scopes(partition, tbl, var, value, row_id)
        VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-      [partition, table, variable, value, row.rowId],
+      [partition, compiled.name, variable, value, row.rowId],
     );
   }
 }
@@ -337,6 +330,7 @@ async function writeRowOn(
 class PostgresTransaction implements StorageTransaction {
   #client: PgQueryable;
   #partition: string;
+  #resolveTable: (name: string) => CompiledTable;
   #open = true;
   /** Resolves/rejects the `transaction(fn)` wrapper (see `begin`). */
   #resolve: () => void;
@@ -345,11 +339,13 @@ class PostgresTransaction implements StorageTransaction {
   constructor(
     client: PgQueryable,
     partition: string,
+    resolveTable: (name: string) => CompiledTable,
     resolve: () => void,
     reject: (error: unknown) => void,
   ) {
     this.#client = client;
     this.#partition = partition;
+    this.#resolveTable = resolveTable;
     this.#resolve = resolve;
     this.#reject = reject;
   }
@@ -360,19 +356,29 @@ class PostgresTransaction implements StorageTransaction {
 
   getRow(table: string, rowId: string): Promise<StoredRow | undefined> {
     this.#assertOpen();
-    return getRowOn(this.#client, this.#partition, table, rowId);
+    return getRowOn(
+      this.#client,
+      this.#resolveTable(table),
+      this.#partition,
+      rowId,
+    );
   }
 
   async upsertRow(table: string, row: StoredRow): Promise<void> {
     this.#assertOpen();
-    await writeRowOn(this.#client, this.#partition, table, row);
+    await writeRowOn(
+      this.#client,
+      this.#resolveTable(table),
+      this.#partition,
+      row,
+    );
   }
 
   async deleteRow(table: string, rowId: string): Promise<void> {
     this.#assertOpen();
     await this.#client.query(
-      'DELETE FROM sync_rows WHERE partition=$1 AND tbl=$2 AND row_id=$3',
-      [this.#partition, table, rowId],
+      deleteRowSql(this.#resolveTable(table), 'postgres'),
+      [this.#partition, rowId],
     );
     await this.#client.query(
       'DELETE FROM sync_row_scopes WHERE partition=$1 AND tbl=$2 AND row_id=$3',
@@ -514,6 +520,9 @@ class RollbackSignal extends Error {
 
 export class PostgresServerStorage implements ServerStorage {
   readonly #exec: PgExecutor;
+  /** Set by `ensureSchema`: app-table lookup for the relational row store. */
+  #tables: ReadonlyMap<string, CompiledTable> | undefined;
+  #schemaVersion: number | undefined;
 
   constructor(exec: PgExecutor) {
     this.#exec = exec;
@@ -529,6 +538,64 @@ export class PostgresServerStorage implements ServerStorage {
     for (const statement of statements) {
       await this.#exec.query(statement);
     }
+  }
+
+  /** Resolve a table's compiled schema; row operations require `ensureSchema`. */
+  table(name: string): CompiledTable {
+    const table = this.#tables?.get(name);
+    if (table === undefined) {
+      throw new Error(
+        `unknown table ${JSON.stringify(name)} — ensureSchema(schema) must run before row operations`,
+      );
+    }
+    return table;
+  }
+
+  async ensureSchema(schema: CompiledSchema): Promise<void> {
+    // Memoized fast path: same instance, same schema version.
+    if (this.#schemaVersion === schema.version) return;
+    await this.migrate();
+    await this.#exec.query(SCHEMA_META_DDL_POSTGRES);
+    const marker = await this.#exec.query<{ schema_version: unknown }>(
+      'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+    );
+    const stored =
+      marker.rows[0] === undefined
+        ? undefined
+        : asNumber(marker.rows[0].schema_version);
+    if (stored !== undefined && stored > schema.version) {
+      throw new Error(
+        `stored schema version ${stored} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
+      );
+    }
+    if (stored === undefined || stored < schema.version) {
+      // Introspect existing app tables, then apply the migration subset
+      // (CREATE TABLE / ADD COLUMN / CREATE INDEX) inside one transaction
+      // (Postgres DDL is transactional — a failed bump leaves no half-state).
+      await this.#exec.transaction(async (client) => {
+        const existing = new Map<string, ReadonlySet<string>>();
+        for (const table of schema.tables.values()) {
+          const { rows } = await client.query<{ column_name: string }>(
+            `SELECT column_name FROM information_schema.columns
+             WHERE table_schema = current_schema() AND table_name = $1`,
+            [table.name],
+          );
+          if (rows.length > 0) {
+            existing.set(table.name, new Set(rows.map((r) => r.column_name)));
+          }
+        }
+        for (const statement of schemaDdl(schema, existing, 'postgres')) {
+          await client.query(statement);
+        }
+        await client.query(
+          `INSERT INTO sync_schema_meta(id, schema_version) VALUES (1, $1)
+           ON CONFLICT (id) DO UPDATE SET schema_version=EXCLUDED.schema_version`,
+          [schema.version],
+        );
+      });
+    }
+    this.#tables = schema.tables;
+    this.#schemaVersion = schema.version;
   }
 
   /**
@@ -555,6 +622,7 @@ export class PostgresServerStorage implements ServerStorage {
         const tx = new PostgresTransaction(
           client,
           partition,
+          (name) => this.table(name),
           resolveScope,
           rejectScope,
         );
@@ -628,7 +696,7 @@ export class PostgresServerStorage implements ServerStorage {
     table: string,
     rowId: string,
   ): Promise<StoredRow | undefined> {
-    return getRowOn(this.#exec, partition, table, rowId);
+    return getRowOn(this.#exec, this.table(table), partition, rowId);
   }
 
   async getPushResult(
@@ -750,8 +818,8 @@ export class PostgresServerStorage implements ServerStorage {
         afterRowId = candidate.row_id;
         const stored = await getRowOn(
           this.#exec,
+          this.table(query.table),
           partition,
-          query.table,
           candidate.row_id,
         );
         if (stored === undefined) continue;
@@ -852,9 +920,11 @@ export class PostgresServerStorage implements ServerStorage {
       scopes: Record<string, string>;
     }[] = [];
     for (const ref of refs) {
+      const compiled = this.#tables?.get(ref.tbl);
+      if (compiled === undefined) continue; // table no longer in the schema
       const { rows } = await this.#exec.query<{ scopes: unknown }>(
-        'SELECT scopes FROM sync_rows WHERE partition=$1 AND tbl=$2 AND row_id=$3',
-        [partition, ref.tbl, ref.row_id],
+        selectRowScopesSql(compiled, 'postgres'),
+        [partition, ref.row_id],
       );
       const row = rows[0];
       if (row === undefined) continue;
@@ -1003,10 +1073,7 @@ export class PostgresServerStorage implements ServerStorage {
     const { rows } = await this.#exec.query<{
       server_version: unknown;
       scopes: unknown;
-    }>(
-      'SELECT server_version, scopes FROM sync_rows WHERE partition=$1 AND tbl=$2 AND row_id=$3',
-      [partition, table, rowId],
-    );
+    }>(selectRowScopesSql(this.table(table), 'postgres'), [partition, rowId]);
     const row = rows[0];
     if (row === undefined) return undefined;
     return {
