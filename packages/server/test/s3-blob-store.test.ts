@@ -8,8 +8,10 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import {
   blobIdFor,
+  issueBlobUploadUrl,
   issueBlobUrl,
   S3BlobStore,
+  s3PresignedBlobUploads,
   s3PresignedBlobUrls,
 } from '@syncular/server';
 import { runBlobStoreContract } from './blob-store-contract';
@@ -204,5 +206,52 @@ describe('presigned GET (§5.9.5 delegated presign)', () => {
       nowMs: clock.ms,
     });
     expect((await fetch(url)).status).toBe(404);
+  });
+
+  test('presigned PUT places bytes at the content-addressed key; GET reads them back (§5.9.3)', async () => {
+    const store = makeStore();
+    const bytes = new Uint8Array([5, 4, 3, 2, 1, 0, 9]);
+    const blobId = await blobIdFor(bytes);
+    // Presign a single PUT (direct-to-storage), then upload the bytes to it —
+    // no host auth, the signed url is the entire grant (§5.9.3).
+    const { url: putUrl, urlExpiresAtMs } = await store.presignBlobPut(
+      PARTITION,
+      blobId,
+      { ttlSeconds: 600, nowMs: clock.ms },
+    );
+    expect(urlExpiresAtMs).toBe((Math.floor(clock.ms / 1000) + 600) * 1000);
+    // §5.9.3 equivalence: the signed object key embeds the blobId.
+    expect(new URL(putUrl).pathname).toContain(blobId.replace(':', '/'));
+    const put = await fetch(putUrl, { method: 'PUT', body: bytes });
+    expect(put.ok).toBe(true);
+
+    // The push existence check (§5.9.6) sees the object via `has`.
+    expect(await store.has(PARTITION, blobId)).toBe(true);
+    // A presigned GET reads back exactly the content-addressed bytes.
+    const { url: getUrl } = await store.presignBlobGet(PARTITION, blobId, {
+      nowMs: clock.ms,
+    });
+    const got = new Uint8Array(await (await fetch(getUrl)).arrayBuffer());
+    expect(got).toEqual(bytes);
+    expect(await blobIdFor(got)).toBe(blobId);
+  });
+
+  test('issueBlobUploadUrl routes a BlobUploadPresignConfig to the store (§5.9.3)', async () => {
+    const store = makeStore();
+    const bytes = new Uint8Array([1, 1, 2, 3, 5]);
+    const blobId = await blobIdFor(bytes);
+    const issue = await issueBlobUploadUrl(s3PresignedBlobUploads(store), {
+      partition: PARTITION,
+      blobId,
+      byteLength: bytes.length,
+      nowMs: clock.ms,
+    });
+    // Default 900 s, second floor — the §5.9.3 TTL shape.
+    expect(issue.urlExpiresAtMs).toBe(
+      (Math.floor(clock.ms / 1000) + 900) * 1000,
+    );
+    const put = await fetch(issue.url, { method: 'PUT', body: bytes });
+    expect(put.ok).toBe(true);
+    expect(await store.has(PARTITION, blobId)).toBe(true);
   });
 });

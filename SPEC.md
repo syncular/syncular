@@ -254,6 +254,7 @@ A server mounts these routes under a host-chosen prefix `<mount>`:
 | `<mount>/sync` | POST | Combined push+pull (§4, §6). Request and response bodies are SSP2 envelopes |
 | `<mount>/segments/{segmentId}` | GET | Bootstrap segment download, direct-serve fallback (§5.5) |
 | `<mount>/blobs/{blobId}` | PUT | Blob upload with server-side content-address verification (§5.9.3) |
+| `<mount>/blobs/{blobId}/upload-grant` | POST | Presigned-upload grant: mint a direct-to-storage PUT URL (§5.9.3) |
 | `<mount>/blobs/{blobId}` | GET | Blob download with row-derived re-authorization (§5.9.5) |
 | `<mount>/realtime` | GET (WebSocket upgrade) | Realtime channel (§8) |
 
@@ -1704,13 +1705,70 @@ the *decoded* bytes).
   id discloses nothing). Read authorization is enforced at *download*
   (§5.9.5), which is where a `blobId` could otherwise become a capability.
 
-**No presigned upload this rung.** A presigned PUT (client → object store
-directly) is a real optimization but adds a second auth story and a
-server-side confirmation step (the store must tell the sync server the
-object landed and verify its address out of band). Direct upload through
-the sync server is correct and simple; presigned upload is deferred, noted
-here so a later rung slots it in behind the same `blob.*` codes. (This
-mirrors §5.4's stance that presign is an equivalence, not a new contract.)
+**Presigned upload — direct-to-storage (`POST <mount>/blobs/{blobId}/upload-grant`).**
+A capability, not a fallback (the §5.4 doctrine): when the host configured
+a presigned-upload store the client MAY skip the server bandwidth path and
+`PUT` the bytes straight to the object store. The direct upload above
+(`PUT <mount>/blobs/{blobId}`) **remains the path** when no presign config
+exists — no server ever *requires* the grant flow, and a client that gets
+no grant simply streams through the server (§5.9.7 B4 flushes either way).
+
+The grant flow, three hops, no new trust model:
+
+1. **Ask.** `POST <mount>/blobs/{blobId}/upload-grant` under **normal host
+   authentication** (the same `authenticate(request)` as `/sync` and the
+   direct PUT), body `{"byteLength":<int ≥ 0>,"mediaType":"<string>"?}` —
+   the JSON envelope, not raw bytes. The `{blobId}` is the client-computed
+   content address (the client holds the bytes; content addressing means it
+   knows the id before any round-trip, §5.9.2).
+2. **Authorize + presign.** Upload authorization is **host authentication
+   only**, identical to the direct PUT — uploading bytes is not a
+   scope-bearing act, because the id discloses nothing and the content
+   address is verified at *reference* time, not upload time. *Any
+   authenticated actor may obtain a grant within the host size cap.* The
+   server enforces the §5.9.3 size cap **here, up front**, against the
+   declared `byteLength`: an over-cap request is HTTP 413 `blob.too_large`
+   before any URL is minted (the direct path's streamed-byte cap check is
+   gone from the object-store hop, so the cap MUST be applied at grant
+   issuance). If the blob already exists (idempotent §5.9.3), the server MAY
+   return no URL and a present marker — the client then skips the PUT. The
+   server presigns a **single** PUT (never a multipart or chunk protocol —
+   an explicit non-goal, this rung and the next; resumable upload, when it
+   comes, is provider multipart behind this same grant, never our own chunk
+   framing) whose signed object key embeds exactly the `{blobId}` and whose
+   expiry obeys the §5.4 TTL guidance (≤ 15 min). The presign SHOULD bind
+   `Content-Length` (S3 conditional) to the declared `byteLength` so the
+   object cannot exceed the granted size. Response:
+   `{"url":"<presigned PUT>","urlExpiresAtMs":<i64>}` (the JSON envelope;
+   `urlExpiresAtMs` present iff `url` is, the §5.4 pairing), or
+   `{"present":true}` for the idempotent-skip case.
+3. **PUT direct.** The client `PUT`s the raw bytes to `url` with **no host
+   authentication attached** — the presigned URL is the entire grant, the
+   §5.4 rule verbatim: a signed URL points at an object host that must never
+   see host auth. All §5.4 client URL MUSTs apply: no `PUT` at or past
+   `urlExpiresAtMs`; a failed `PUT` (expired, transport error, non-success
+   status) **invalidates the grant** — the client MUST NOT fall through to
+   the direct `PUT` endpoint under the grant's authority (a second delivery
+   under a different auth story is the fallback class v2 removes). Recovery
+   is a *fresh* grant request (which re-authorizes and re-presigns), or — a
+   client MAY, as a capability choice, stream the same bytes through the
+   direct `PUT <mount>/blobs/{blobId}` endpoint instead, because that is a
+   **different, host-authenticated capability**, not a fall-through of the
+   grant (the direct endpoint was always the client's other path, §5.9.7 B4).
+
+**The content address is still the whole trust model.** The object store
+does not recompute the SHA-256 (it is not the sync server); the presign
+merely places bytes at the content-addressed key. Integrity is enforced
+**at reference time**: the §5.9.6 push existence check verifies the
+`{blobId}` object *exists* (a HEAD/`has`), and the §5.9.1 download check on
+every consumer re-verifies the content address over the received bytes
+(§5.9.5 inherits §5.1). A client that PUTs bytes not matching `{blobId}`
+poisons only its own upload — the object lands at the wrong key or a
+`Content-Length`-conditioned PUT rejects it, and no honest reference ever
+resolves to it. So presigned upload adds **no new integrity surface**: the
+address check that made the direct PUT safe still runs, just at the two
+points that already run it (push existence, download verify). This mirrors
+§5.4's stance — presign is an equivalence, not a new contract.
 
 #### 5.9.4 The reference index
 
@@ -1764,20 +1822,56 @@ test — the same machinery write authorization already runs. `'*'` in the
 actor's allowed values passes as everywhere else.
 
 - **Unknown blob** (no object stored) ⇒ HTTP 404 `blob.not_found`.
-- **Signed URLs.** When the client advertised a URL-fetch capability and
-  the host configured signed URLs, download MAY be served as a signed URL
-  exactly like §5.4: native HMAC token (payload
+- **Signed URLs — always-issue (no capability negotiation).** When the host
+  configured signed URLs, download **is** served as a signed URL: after the
+  row-derived authorization above passes, the server returns
+  `{"url":"<presigned GET>","urlExpiresAtMs":<i64>}` and **does not stream
+  the bytes** (the whole point — the sync server exits the download egress
+  path). Native HMAC token (payload
   `{"v":1,"blob":"<blobId>","aud":"<partition token>","exp":<unix
   seconds>}` — note it binds `blob` + `aud`, **not** a scope digest,
   because authorization was resolved against the referencing rows at
   issuance, immediately after the reference-index authorization check
   above; the object is immutable, so an issued URL is a
   short-TTL bearer grant to exactly those bytes) or delegated presign (the
-  signed object key embeds the `blobId`). All §5.4 client MUSTs apply
-  verbatim: the URL is the entire grant (no host auth attached), no fetch
-  past `urlExpiresAtMs`, failure invalidates and recovery is re-request —
-  never a fall-through. TTL SHOULD be ≤ 15 minutes; the revocation window
-  equals the TTL (a fresh download request re-authorizes every time).
+  signed object key embeds the `blobId`). **Why always-issue, not accept-bit
+  negotiation** (the pinned decision): segments gate URL issuance on accept
+  bit 3 (§5.4) because a segment descriptor rides the *pull stream* to a
+  client that may be unable to fetch a bare URL — so the server must know at
+  descriptor-emission time whether to embed one. A blob download is a plain
+  request/response on `/blobs/{blobId}`: the response envelope carries the
+  URL, and a client that cannot consume it re-requests without any negotiated
+  bit. Always-issue is *harmless* because the authorized endpoint is the same
+  route — there is no descriptor stuck on a stream — and *simpler* because it
+  needs no accept-bit plumbing on a non-pull path. The reference clients
+  always consume the URL when present; a client that does not understand the
+  field re-requests and the host MAY serve inline for a request that signals
+  no URL capability, but that inline path is a host convenience, not a
+  protocol negotiation. All §5.4 client MUSTs apply verbatim: the URL is the
+  entire grant (no host auth attached), no fetch past `urlExpiresAtMs`,
+  failure invalidates and recovery is a fresh download request — never a
+  fall-through. TTL SHOULD be ≤ 15 minutes; the revocation window equals the
+  TTL (a fresh download request re-authorizes every time).
+
+**The recovery rule (mirrors §5.4, pinned).** A blob download URL is a
+descriptor with exactly one delivery attempt. A client that received
+`{url, urlExpiresAtMs}`:
+
+- MUST fetch the bytes from `url` with **no host authentication** attached
+  (§5.4: the URL points at a CDN/object host that must never see host auth).
+- MUST NOT start a fetch at or past `urlExpiresAtMs` (client clock).
+- MUST verify the §5.1 content address over the received bytes before
+  caching — a mismatch is a failed fetch, exactly as on the inline path.
+- On any failure (expired before fetch, transport error, non-success status,
+  or content-address mismatch) MUST NOT fall through to a second delivery of
+  the same download response. **Recovery is re-requesting the authorized
+  endpoint** (`GET <mount>/blobs/{blobId}`), which re-authorizes against live
+  rows (§5.9.5) and mints a *fresh* URL. Because a blob download is a single
+  request (not a bootstrap stream), a failed URL simply means the client
+  calls `fetchBlob` again — there is no cursor or resume token to leave
+  unpersisted; the cache stays a miss until a fetch succeeds. This is the
+  §5.4 rule 5 discipline reduced to its blob shape: failure ⇒ re-request,
+  never fall-through.
 - Response headers on the direct path: `Content-Type` from the stored
   `mediaType` if the host chose to persist it, else
   `application/octet-stream`; `ETag: "<blobId>"`;
@@ -1820,6 +1914,48 @@ normative:
   apply-path choke point (§5.6 apply, §4.5 commit apply, §3.3 purge, §5.6
   first-page clear): every mutation that adds, changes, or removes a
   `blob_ref` value adjusts the refcount.
+
+  **Where the bytes live — the pinned storage model.** Cached blob bodies
+  are stored as **BLOB columns in the client's own SQLite database**, in a
+  `_syncular_blobs` cache table alongside the synced rows and the refcounts.
+  Decision, justified against the alternatives: (a) *one storage system* —
+  the bytes are transactional with the refcount rows that pin them (a
+  refcount adjust and a body insert/delete commit atomically, so a crash
+  never strands a body against a stale count); (b) *survives restarts for
+  free* — the client DB already rides OPFS via the SQLite sahpool VFS in the
+  browser and a plain file under `rusqlite` on native, so no second
+  persistence surface (an OPFS blob directory, an IndexedDB store, a native
+  filesystem cache) and no second eviction policy to keep coherent; (c)
+  *SQLite handles multi-MB images fine* — a page-cached BLOB read is a
+  memory copy, well within the image-attachment envelope this rung targets.
+  The alternatives rejected: a separate OPFS/filesystem blob directory would
+  double the storage systems and break the transactional pin (the classic
+  "row says present, file is gone" skew); IndexedDB adds a third async store
+  the native core cannot mirror. **The "very large media" caveat**: SQLite
+  is not the store for gigabyte video — a single BLOB must fit the client's
+  memory and the SQLite row-size envelope. An app attaching very large media
+  SHOULD store it presigned-URL-only (fetch bytes through the §5.9.5 URL and
+  hand them straight to a media element, never through the byte cache) or
+  run the client in a no-body-cache mode (resolve `blob_ref` → download URL
+  on demand, cache nothing). The refcounted-BLOB cache is the default for
+  images and documents; the presigned-URL path is the escape hatch for media
+  that must not sit in the row store.
+
+  **Size cap + LRU eviction (the shipped trim).** The client MAY be given a
+  cache size cap (bytes). When the sum of cached body sizes exceeds the cap,
+  the client evicts **zero-ref, non-pinned bodies in least-recently-used
+  order** until the cache is back under the cap. Eviction NEVER touches a
+  body that is (i) currently referenced by a live row (refcount > 0 — a
+  referenced body stays resolvable without a re-download, the cache-hit
+  contract) or (ii) pinned by a pending upload (§5.9.7 B4 — its bytes are the
+  only copy until the push drains). An evicted referenced body is a
+  contradiction the eviction MUST NOT create; if every body over the cap is
+  referenced or pinned, the cache stays over the cap (correctness beats the
+  cap — the alternative is dropping bytes an app still needs). Evicting a
+  zero-ref body is always safe: B3 guarantees any surviving `blob_ref` value
+  re-enables the fetch, so eviction only costs a future re-download, never
+  correctness. "Recently used" is touched on both `putCachedBlob` (a fetch or
+  an upload stage) and a cache-hit read, so a hot image survives a trim.
 - **B2 — Evicted ≠ revoked.** Two distinct transitions delete blob bytes
   differently: **revocation** (§3.3 — authorization lost) MUST delete the
   no-longer-authorized bodies whose only referencing rows are being purged
@@ -3589,8 +3725,29 @@ not a prose test.
     body (evicted ≠ revoked, B2). (e) Cache hit avoids re-download: a
     second read of the same blob on the same client serves from the
     content-addressed cache without a network fetch — asserted via the
-    harness blob-download counter (B1, §5.9.7). Both pairings
-    (TS×TS, Rust×TS).
+    harness blob-download counter (B1, §5.9.7). (f) Presigned download
+    consumed: with the server configured for presigned blob URLs, a
+    consumer's `fetchBlob` receives `{url, urlExpiresAtMs}` and fetches the
+    bytes from the URL host with no sync-server credentials — the harness
+    counts a CDN hop, **zero** authorized-endpoint byte downloads, content
+    address verified (§5.9.5 always-issue). (g) Expiry → fresh-URL recovery:
+    a download URL already at `urlExpiresAtMs` is never fetched; the client
+    re-requests the authorized endpoint, which re-authorizes and mints a
+    fresh URL, and the second attempt converges — no fall-through (§5.9.5
+    recovery rule). (h) Presigned upload grant→PUT→reference→fetch: with the
+    server configured for presigned uploads, the uploader obtains a grant
+    (`POST /blobs/{blobId}/upload-grant`), PUTs the bytes direct to storage
+    with no host auth, pushes the referencing row (the §5.9.6 existence check
+    passes via HEAD), and another client fetches the bytes — the harness
+    counts a direct-storage PUT, not a server upload (§5.9.3 grant flow). (i)
+    Cache persistence across restart: a client uploads/fetches a blob, is
+    closed and reopened on the SAME local database, and `fetchBlob` serves
+    from cache with no network — the harness download counter proves the
+    body survived the restart (B1 storage model). (j) LRU eviction respects
+    refcounts/pins: with a small cache cap, staging bodies past the cap
+    evicts zero-ref bodies in LRU order while a still-referenced body and a
+    pending-upload-pinned body are retained (B1 cap + eviction). Both
+    pairings (TS×TS, Rust×TS).
 
 14. **CRDT fields / collaborative convergence.** A `crdt` column (§2.4 tag
     8) merged server-side (§5.10). (a) Concurrent-edit convergence, both

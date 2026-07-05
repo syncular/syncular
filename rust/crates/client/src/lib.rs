@@ -13,6 +13,10 @@
 
 pub mod api;
 pub mod client;
+/// §5.10.5 native CRDT helpers (the `crdt-yjs` feature) — the Rust face of the
+/// Yjs binding, mirroring `@syncular/crdt-yjs`. Off by default (dependency-lean).
+#[cfg(feature = "crdt-yjs")]
+pub mod crdt;
 pub mod realtime_round;
 pub mod schema;
 pub mod transport;
@@ -24,7 +28,7 @@ pub use api::{
 };
 pub use client::SyncClient;
 pub use schema::{compile_schema, parse_schema_json, ClientSchema};
-pub use transport::{SegmentRequest, Transport, TransportError};
+pub use transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 
 // Re-export the SSP2 stream scanner (§8.7 round-response reassembly) so the
 // native transports (FFI + Tauri plugin) reach it through their existing

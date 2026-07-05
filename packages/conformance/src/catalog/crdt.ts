@@ -196,6 +196,169 @@ export const crdtScenarios: readonly Scenario[] = [
   },
 
   {
+    // §5.10.5 cross-core proof: the CLIENT CORE authors the crdt edits via the
+    // native crdt commands (`crdtInsertText`/`crdtText`) rather than the
+    // scenario hand-building Yjs fixture bytes. On the Rust pairing the RUST
+    // core (yrs) authors and the TS server (yjs) merges; on the TS pairing the
+    // TS core (@syncular/crdt-yjs) authors — the SAME scenario both ways. Two
+    // clients edit concurrently, converge byte-identically, and each core
+    // materializes the same text from the merged bytes: byte-level convergence
+    // with the edits produced natively in whichever core is under test.
+    name: 'crdt/native-authored-convergence',
+    specRefs: ['§5.10.4', '§5.10.5', 'B.14'],
+    requires: ['crdt'] as const,
+    server: CRDT_SERVER,
+    async run(ctx: ScenarioContext) {
+      const a = await ctx.newClient({
+        actorId: 'a',
+        clientId: 'client-a',
+        schema: CRDT_SCHEMA,
+        allowed: P1,
+      });
+      const b = await ctx.newClient({
+        actorId: 'b',
+        clientId: 'client-b',
+        schema: CRDT_SCHEMA,
+        allowed: P1,
+      });
+      // Client driver must be able to author crdt edits natively (Rust core
+      // needs the crdt-yjs feature; TS core always can). Skip cleanly if not.
+      if (
+        a.api.crdtInsertText === undefined ||
+        a.api.crdtText === undefined ||
+        a.api.crdtDeleteText === undefined
+      ) {
+        return;
+      }
+      await a.api.subscribe({ id: 's', table: 'notes', scopes: P1 });
+      await b.api.subscribe({ id: 's', table: 'notes', scopes: P1 });
+      await syncIdle(a);
+      await syncIdle(b);
+
+      // A seeds the row (title LWW + a crdt-authored "hello") and converges.
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'notes',
+          values: noteRow('n1', 't', null),
+        },
+      ]);
+      await a.api.crdtInsertText({
+        table: 'notes',
+        rowId: 'n1',
+        column: 'doc',
+        index: 0,
+        value: 'hello',
+      });
+      await syncIdle(a);
+      await syncIdle(b);
+      checkEqual(
+        await a.api.crdtText({ table: 'notes', rowId: 'n1', column: 'doc' }),
+        'hello',
+        'A materializes the seeded crdt text natively',
+      );
+
+      // A appends " A" at the end; B (its own core) prepends "B " at 0 —
+      // concurrent baseVersion-less native crdt edits.
+      const aText = await a.api.crdtText({
+        table: 'notes',
+        rowId: 'n1',
+        column: 'doc',
+      });
+      await a.api.crdtInsertText({
+        table: 'notes',
+        rowId: 'n1',
+        column: 'doc',
+        index: aText.length,
+        value: ' A',
+      });
+      // B's driver may lack the methods only if it is a different core; both
+      // cores here implement them, so author on B too.
+      check(
+        b.api.crdtInsertText !== undefined,
+        'B client core can author crdt edits',
+      );
+      await b.api.crdtInsertText?.({
+        table: 'notes',
+        rowId: 'n1',
+        column: 'doc',
+        index: 0,
+        value: 'B ',
+      });
+
+      for (let i = 0; i < 4; i++) {
+        await syncIdle(a);
+        await syncIdle(b);
+      }
+
+      // No conflict (crdt never conflicts on its own account, §5.10.3).
+      checkEqual((await a.api.conflicts()).length, 0, 'A saw no conflict');
+      checkEqual((await b.api.conflicts()).length, 0, 'B saw no conflict');
+
+      // Byte-identical convergence on the merged crdt bytes.
+      const aFinal = await docBytesOf(a, 'n1');
+      const bFinal = await docBytesOf(b, 'n1');
+      checkEqual(
+        bytesValue(aFinal).$bytes,
+        bytesValue(bFinal).$bytes,
+        'both cores converged on identical merged crdt bytes',
+      );
+      // Each core materializes the same text natively from the merged bytes.
+      const aMaterialized = await a.api.crdtText({
+        table: 'notes',
+        rowId: 'n1',
+        column: 'doc',
+      });
+      const bMaterialized = await (b.api.crdtText?.({
+        table: 'notes',
+        rowId: 'n1',
+        column: 'doc',
+      }) ?? Promise.resolve(readText(bFinal)));
+      checkEqual(
+        aMaterialized,
+        bMaterialized,
+        'both cores materialize identical text',
+      );
+      check(
+        aMaterialized.includes('hello') &&
+          aMaterialized.includes('A') &&
+          aMaterialized.includes('B'),
+        `merged native-authored doc has all edits (got ${JSON.stringify(aMaterialized)})`,
+      );
+
+      // A native delete round-trips too: drop the leading "B ".
+      const idx = aMaterialized.indexOf('B ');
+      if (idx >= 0) {
+        await a.api.crdtDeleteText({
+          table: 'notes',
+          rowId: 'n1',
+          column: 'doc',
+          index: idx,
+          len: 2,
+        });
+        for (let i = 0; i < 3; i++) {
+          await syncIdle(a);
+          await syncIdle(b);
+        }
+        const afterDelete = await a.api.crdtText({
+          table: 'notes',
+          rowId: 'n1',
+          column: 'doc',
+        });
+        check(
+          !afterDelete.includes('B '),
+          `native crdt delete removed the range (got ${JSON.stringify(afterDelete)})`,
+        );
+        checkEqual(
+          bytesValue(await docBytesOf(a, 'n1')).$bytes,
+          bytesValue(await docBytesOf(b, 'n1')).$bytes,
+          'converged again after a native crdt delete',
+        );
+      }
+    },
+  },
+
+  {
     // B.14(c): A and B edit BOTH the LWW title (from the same baseVersion)
     // and the crdt doc. The loser gets version_conflict whose serverRow
     // carries the MERGED crdt state; after rebase both converge.

@@ -120,6 +120,54 @@ losing tab is an `isLeader === false` handle whose calls reject with
 - `openPersistentWasmDatabase` refuses to run on the main thread — not a
   sahpool limitation, an enforcement of whole-core-in-a-worker.
 
+## Blob attachments (§5.9) — the client storage model
+
+File attachments (`blob_ref` columns) ride the `uploadBlob` / `fetchBlob` API
+and are cached locally. **Blob bytes live as `BLOB` columns in the client's own
+SQLite database** (a `_syncular_blobs` cache table), not in a separate OPFS
+directory or IndexedDB store. This is the pinned decision (SPEC §5.9.7 B1):
+
+- **One storage system.** The bytes are transactional with the refcount rows
+  that pin them — a refcount adjust and a body insert/delete commit atomically,
+  so a crash never strands a body against a stale count.
+- **Survives restarts for free.** The client DB already rides OPFS via the
+  sahpool VFS in the browser (and a plain file under `rusqlite`/better-sqlite3
+  on native/Node), so there is no second persistence surface and no second
+  eviction policy to keep coherent. Close the app, reopen it: `fetchBlob` serves
+  the cached body with no network.
+- **SQLite handles multi-MB images fine.** A page-cached `BLOB` read is a memory
+  copy, well within the image/document envelope this targets.
+
+### Size cap + LRU eviction
+
+Pass `blobCacheMaxBytes` to cap the on-device cache. When the sum of cached body
+sizes exceeds the cap, the client evicts **zero-ref, non-pinned** bodies in
+least-recently-used order until back under the cap:
+
+```ts
+new SyncClient({ /* … */, blobCacheMaxBytes: 256 * 1024 * 1024 }); // 256 MiB
+```
+
+- A body **referenced by a live row** (refcount > 0) is **never** evicted — it
+  stays resolvable without a re-download.
+- A body **pinned by a pending upload** (not yet pushed) is never evicted — its
+  bytes are the only copy until the commit drains.
+- Evicting a zero-ref body only costs a future re-download, never correctness:
+  any surviving `blob_ref` value re-enables the fetch (§5.9.7 B3). If every
+  over-cap body is referenced or pinned, the cache stays over the cap
+  (correctness beats the cap). A cache-hit read touches "recently used", so a
+  hot image survives a trim. Absent `blobCacheMaxBytes` ⇒ retain until storage
+  pressure (the default).
+
+### Very large media — the escape hatch
+
+SQLite is **not** the store for gigabyte video: a single `BLOB` must fit the
+client's memory and the SQLite row-size envelope. For very large media, run the
+server with presigned downloads (`blobSignedUrls`) and hand the presigned URL
+straight to a media element instead of pulling bytes through the cache — the
+image-app default (refcounted `BLOB` cache) and the large-media path (presigned
+URL, no byte cache) coexist per attachment.
+
 ## Node / Electron-main backend (`./node`)
 
 Hosts that run outside a browser — an **Electron main process**, a plain

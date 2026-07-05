@@ -53,6 +53,12 @@ val hits   = client.query("SELECT * FROM todo WHERE done = ?", listOf(JsonValue.
 val outcome = client.sync()                    // needs native transport
 client.setPresence("project:p1", JsonValue.obj("cursor" to JsonValue.of(3)))
 
+// Native CRDT (needs the FFI `crdt-yjs` feature) — collaborative text on a
+// `crdt` column, byte-compatible with the web `@syncular/crdt-yjs` helper:
+val text = client.crdtText("notes", "n1", "doc")
+client.crdtInsertText("notes", "n1", "doc", 0, "Hi ")
+client.crdtDeleteText("notes", "n1", "doc", 0, 3)
+
 client.listener = SyncularEventListener { event ->
     when (event.type) {
         "sync-needed" -> scheduleSync()

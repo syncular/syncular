@@ -141,6 +141,52 @@ export async function issueBlobUrl(
   return config.presign({ ...args, ttlSeconds });
 }
 
+/**
+ * Delegated presign for BLOB UPLOADS (§5.9.3 direct-to-storage). The upload
+ * twin of `BlobPresignConfig`: the provider signs a single PUT whose object
+ * key embeds the `blobId`. Issuance happens ONLY after host authentication in
+ * the upload-grant handler (uploading is host-auth-only, not scope-bearing —
+ * §5.9.3). The `byteLength` rides through so a provider MAY bind
+ * `Content-Length` (S3 conditional) to the granted size. Never a multipart or
+ * chunk protocol — single PUT only, this rung and the next (§5.9.3 non-goal).
+ * `S3BlobStore.presignBlobPut` (via `s3PresignedBlobUploads`) is the in-tree
+ * implementation.
+ */
+export interface BlobUploadPresignArgs {
+  readonly partition: string;
+  readonly blobId: string;
+  readonly byteLength: number;
+  readonly nowMs: number;
+  /** Resolved TTL (config value or the 900 s default) — already applied. */
+  readonly ttlSeconds: number;
+}
+
+export interface BlobUploadPresignConfig {
+  readonly presign: (
+    args: BlobUploadPresignArgs,
+  ) => SegmentUrlIssue | Promise<SegmentUrlIssue>;
+  /** URL TTL; SHOULD be ≤ 15 minutes (§5.9.3). Default 900. */
+  readonly ttlSeconds?: number;
+}
+
+/**
+ * Issue the §5.9.3 `url`/`urlExpiresAtMs` pair for one presigned blob upload.
+ * The caller (blob-handlers `handleBlobUploadGrant`) invokes this only after
+ * host authentication and the size-cap check against the declared byteLength.
+ */
+export async function issueBlobUploadUrl(
+  config: BlobUploadPresignConfig,
+  args: {
+    readonly partition: string;
+    readonly blobId: string;
+    readonly byteLength: number;
+    readonly nowMs: number;
+  },
+): Promise<SegmentUrlIssue> {
+  const ttlSeconds = config.ttlSeconds ?? 900;
+  return config.presign({ ...args, ttlSeconds });
+}
+
 export interface SegmentTokenClaims {
   readonly v: 1;
   readonly seg: string;

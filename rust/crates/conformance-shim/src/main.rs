@@ -32,7 +32,9 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, StdinLock, Stdout, Write};
 
 use serde_json::{json, Map, Value};
-use syncular_client::{SegmentRequest, SyncClient, Transport, TransportError};
+use syncular_client::{
+    BlobDownload, BlobUploadGrant, SegmentRequest, SyncClient, Transport, TransportError,
+};
 use syncular_command::{bytes_value, dispatch, value_bytes, CreateEffects};
 
 enum Incoming {
@@ -261,9 +263,66 @@ impl Transport for HostIo {
             .map(|_| ())
     }
 
-    fn blob_download(&mut self, blob_id: &str) -> Result<Vec<u8>, TransportError> {
+    fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
         let result = self.call_host("blobDownload", json!({ "blobId": blob_id }))?;
+        // §5.9.5 always-issue: a `url` field means presigned delivery; else
+        // inline bytes.
+        if let Some(url) = result.get("url").and_then(Value::as_str) {
+            return Ok(BlobDownload::Url {
+                url: url.to_owned(),
+                url_expires_at_ms: result.get("urlExpiresAtMs").and_then(Value::as_i64),
+            });
+        }
+        value_bytes(result.get("bytes"))
+            .map(BlobDownload::Bytes)
+            .map_err(|m| TransportError::new("transport.failed", m))
+    }
+
+    fn fetch_blob_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+        // The URL is the entire grant (§5.9.5): nothing but the URL crosses.
+        let result = self.call_host("fetchBlobUrl", json!({ "url": url }))?;
         value_bytes(result.get("bytes")).map_err(|m| TransportError::new("transport.failed", m))
+    }
+
+    fn blob_upload_grant(
+        &mut self,
+        blob_id: &str,
+        byte_length: u64,
+        media_type: Option<&str>,
+    ) -> Result<BlobUploadGrant, TransportError> {
+        let mut params = Map::new();
+        params.insert("blobId".to_owned(), Value::from(blob_id.to_owned()));
+        params.insert("byteLength".to_owned(), Value::from(byte_length));
+        if let Some(mt) = media_type {
+            params.insert("mediaType".to_owned(), Value::from(mt.to_owned()));
+        }
+        let result = self.call_host("blobUploadGrant", Value::Object(params))?;
+        if let Some(url) = result.get("url").and_then(Value::as_str) {
+            return Ok(BlobUploadGrant::Url {
+                url: url.to_owned(),
+                url_expires_at_ms: result.get("urlExpiresAtMs").and_then(Value::as_i64),
+            });
+        }
+        if result.get("present").and_then(Value::as_bool) == Some(true) {
+            return Ok(BlobUploadGrant::Present);
+        }
+        Ok(BlobUploadGrant::None)
+    }
+
+    fn blob_put_url(
+        &mut self,
+        url: &str,
+        bytes: &[u8],
+        media_type: Option<&str>,
+    ) -> Result<(), TransportError> {
+        let mut params = Map::new();
+        params.insert("url".to_owned(), Value::from(url.to_owned()));
+        params.insert("bytes".to_owned(), bytes_value(bytes));
+        if let Some(mt) = media_type {
+            params.insert("mediaType".to_owned(), Value::from(mt.to_owned()));
+        }
+        self.call_host("blobPutUrl", Value::Object(params))
+            .map(|_| ())
     }
 
     fn realtime_connect(&mut self) -> Result<(), TransportError> {

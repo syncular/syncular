@@ -209,6 +209,95 @@ public final class SyncularClient {
         return id
     }
 
+    // MARK: - Native CRDT (SPEC.md §5.10.5; needs the plugin/FFI `crdt-yjs` feature)
+
+    /// Materialize the collaborative text of a `crdt` column — the app-visible
+    /// value decoded from the stored (server-merged) Yjs bytes. `name` selects
+    /// the shared text inside the doc (default `"text"`). An absent row / NULL
+    /// column is the empty document (empty string).
+    public func crdtText(
+        table: String,
+        rowId: String,
+        column: String,
+        name: String = "text"
+    ) throws -> String {
+        let result = try command(
+            method: "crdtText",
+            params: .object([
+                "table": .string(table), "rowId": .string(rowId),
+                "column": .string(column), "name": .string(name),
+            ])
+        )
+        guard case let .object(fields) = result, let text = fields["text"]?.stringValue else {
+            throw SyncularError(code: "client.failed", message: "crdtText returned no text")
+        }
+        return text
+    }
+
+    /// Insert `value` at UTF-16 offset `index` in a `crdt` column's text and
+    /// push the resulting Yjs update through the normal (baseVersion-less)
+    /// mutate path. Returns the enqueued `clientCommitId`.
+    @discardableResult
+    public func crdtInsertText(
+        table: String,
+        rowId: String,
+        column: String,
+        index: Int,
+        value: String,
+        name: String = "text"
+    ) throws -> String {
+        try crdtCommitId(method: "crdtInsertText", params: [
+            "table": .string(table), "rowId": .string(rowId),
+            "column": .string(column), "name": .string(name),
+            "index": .number(Double(index)), "value": .string(value),
+        ])
+    }
+
+    /// Delete `len` UTF-16 code units at offset `index` in a `crdt` column's
+    /// text and push the resulting update. Returns the `clientCommitId`.
+    @discardableResult
+    public func crdtDeleteText(
+        table: String,
+        rowId: String,
+        column: String,
+        index: Int,
+        len: Int,
+        name: String = "text"
+    ) throws -> String {
+        try crdtCommitId(method: "crdtDeleteText", params: [
+            "table": .string(table), "rowId": .string(rowId),
+            "column": .string(column), "name": .string(name),
+            "index": .number(Double(index)), "len": .number(Double(len)),
+        ])
+    }
+
+    /// Escape hatch: apply an arbitrary Yjs update (bytes the app produced with
+    /// its own model) onto a `crdt` column and push the resulting state.
+    @discardableResult
+    public func crdtApplyUpdate(
+        table: String,
+        rowId: String,
+        column: String,
+        update: [UInt8]
+    ) throws -> String {
+        var hex = ""
+        for b in update { hex += String(format: "%02x", b) }
+        return try crdtCommitId(method: "crdtApplyUpdate", params: [
+            "table": .string(table), "rowId": .string(rowId),
+            "column": .string(column),
+            "update": .object(["$bytes": .string(hex)]),
+        ])
+    }
+
+    private func crdtCommitId(method: String, params: [String: JSONValue]) throws -> String {
+        let result = try command(method: method, params: .object(params))
+        guard case let .object(fields) = result, let id = fields["clientCommitId"]?.stringValue
+        else {
+            throw SyncularError(code: "client.failed", message: "\(method) returned no clientCommitId")
+        }
+        return id
+    }
+
     /// Register a subscription (table + scope map). Local; sync fills it.
     public func subscribe(
         id: String,

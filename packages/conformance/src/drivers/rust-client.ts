@@ -311,8 +311,66 @@ class ShimProcess {
         if (download === undefined) {
           throw new Error('blobDownload: endpoints have no blob download');
         }
-        const bytes = await download(blobId);
+        // §5.9.5 always-issue: inline bytes OR a presigned url arm.
+        const result = await download(blobId);
+        if (result.kind === 'url') {
+          return {
+            url: result.url,
+            ...(result.urlExpiresAtMs !== undefined
+              ? { urlExpiresAtMs: result.urlExpiresAtMs }
+              : {}),
+          };
+        }
+        return { bytes: bytesParam(result.bytes) };
+      }
+      case 'fetchBlobUrl': {
+        const url = params.url;
+        if (typeof url !== 'string')
+          throw new Error('fetchBlobUrl: missing url');
+        const fetchUrl = endpoints.fetchBlobUrl;
+        if (fetchUrl === undefined) {
+          throw new Error('fetchBlobUrl: endpoints have no blob url fetch');
+        }
+        const bytes = await fetchUrl(url);
         return { bytes: bytesParam(bytes) };
+      }
+      case 'blobUploadGrant': {
+        const blobId = params.blobId;
+        if (typeof blobId !== 'string') {
+          throw new Error('blobUploadGrant: missing blobId');
+        }
+        const byteLength = Number(params.byteLength ?? 0);
+        const mediaType =
+          typeof params.mediaType === 'string' ? params.mediaType : undefined;
+        const grantFn = endpoints.uploadBlobGrant;
+        if (grantFn === undefined) {
+          // No grant capability on the harness ⇒ stream direct (§5.9.3).
+          return {};
+        }
+        const grant = await grantFn(blobId, byteLength, mediaType);
+        if (grant.kind === 'url') {
+          return {
+            url: grant.url,
+            ...(grant.urlExpiresAtMs !== undefined
+              ? { urlExpiresAtMs: grant.urlExpiresAtMs }
+              : {}),
+          };
+        }
+        if (grant.kind === 'present') return { present: true };
+        return {};
+      }
+      case 'blobPutUrl': {
+        const url = params.url;
+        if (typeof url !== 'string') throw new Error('blobPutUrl: missing url');
+        const bytes = bytesOf(params.bytes, 'blobPutUrl.bytes');
+        const mediaType =
+          typeof params.mediaType === 'string' ? params.mediaType : undefined;
+        const put = endpoints.putBlobUrl;
+        if (put === undefined) {
+          throw new Error('blobPutUrl: endpoints have no blob put url');
+        }
+        await put(url, bytes, mediaType);
+        return {};
       }
       case 'realtimeConnect': {
         this.#connection = await endpoints.connectRealtime({
@@ -710,6 +768,80 @@ class RustClientInstance implements ClientInstance {
       throw new Error('fetchBlob: shim returned no bytes');
     }
     return { $bytes: bytes.$bytes };
+  }
+
+  // §5.10.5 native CRDT: forward to the shim's crdt-yjs commands (the Rust
+  // core AUTHORS the edit with yrs and pushes the resulting update). Bytes
+  // ride the standard `{"$bytes": hex}` envelope.
+  async crdtText(input: {
+    readonly table: string;
+    readonly rowId: string;
+    readonly column: string;
+    readonly name?: string;
+  }): Promise<string> {
+    const result = asObject(
+      await this.#shim.call('crdtText', {
+        table: input.table,
+        rowId: input.rowId,
+        column: input.column,
+        ...(input.name !== undefined ? { name: input.name } : {}),
+      }),
+      'crdtText',
+    );
+    if (typeof result.text !== 'string') {
+      throw new Error('crdtText: shim returned no text');
+    }
+    return result.text;
+  }
+
+  async crdtInsertText(input: {
+    readonly table: string;
+    readonly rowId: string;
+    readonly column: string;
+    readonly name?: string;
+    readonly index: number;
+    readonly value: string;
+  }): Promise<void> {
+    await this.#shim.call('crdtInsertText', {
+      table: input.table,
+      rowId: input.rowId,
+      column: input.column,
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      index: input.index,
+      value: input.value,
+    });
+  }
+
+  async crdtDeleteText(input: {
+    readonly table: string;
+    readonly rowId: string;
+    readonly column: string;
+    readonly name?: string;
+    readonly index: number;
+    readonly len: number;
+  }): Promise<void> {
+    await this.#shim.call('crdtDeleteText', {
+      table: input.table,
+      rowId: input.rowId,
+      column: input.column,
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      index: input.index,
+      len: input.len,
+    });
+  }
+
+  async crdtApplyUpdate(input: {
+    readonly table: string;
+    readonly rowId: string;
+    readonly column: string;
+    readonly update: Uint8Array;
+  }): Promise<void> {
+    await this.#shim.call('crdtApplyUpdate', {
+      table: input.table,
+      rowId: input.rowId,
+      column: input.column,
+      update: bytesParam(input.update),
+    });
   }
 
   async close(): Promise<void> {

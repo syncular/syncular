@@ -138,6 +138,81 @@ class SyncularClient private constructor(
             ?: throw SyncularException("client.failed", "mutate returned no clientCommitId")
     }
 
+    // -- Native CRDT (SPEC.md §5.10.5; needs the FFI `crdt-yjs` feature) --------
+
+    /** Materialize a `crdt` column's collaborative text — decoded from the
+     *  stored (server-merged) Yjs bytes. `name` selects the shared text
+     *  (default `"text"`). Absent row / NULL column = empty document. */
+    @JvmOverloads
+    fun crdtText(table: String, rowId: String, column: String, name: String = "text"): String {
+        val result = command(
+            "crdtText",
+            JsonValue.obj(
+                "table" to JsonValue.of(table), "rowId" to JsonValue.of(rowId),
+                "column" to JsonValue.of(column), "name" to JsonValue.of(name),
+            ),
+        )
+        return result["text"]?.string
+            ?: throw SyncularException("client.failed", "crdtText returned no text")
+    }
+
+    /** Insert `value` at UTF-16 offset `index` in a `crdt` column's text and
+     *  push the resulting Yjs update (baseVersion-less). Returns the commit id. */
+    @JvmOverloads
+    fun crdtInsertText(
+        table: String,
+        rowId: String,
+        column: String,
+        index: Int,
+        value: String,
+        name: String = "text",
+    ): String = crdtCommitId(
+        "crdtInsertText",
+        JsonValue.obj(
+            "table" to JsonValue.of(table), "rowId" to JsonValue.of(rowId),
+            "column" to JsonValue.of(column), "name" to JsonValue.of(name),
+            "index" to JsonValue.of(index), "value" to JsonValue.of(value),
+        ),
+    )
+
+    /** Delete `len` UTF-16 code units at `index` in a `crdt` column's text. */
+    @JvmOverloads
+    fun crdtDeleteText(
+        table: String,
+        rowId: String,
+        column: String,
+        index: Int,
+        len: Int,
+        name: String = "text",
+    ): String = crdtCommitId(
+        "crdtDeleteText",
+        JsonValue.obj(
+            "table" to JsonValue.of(table), "rowId" to JsonValue.of(rowId),
+            "column" to JsonValue.of(column), "name" to JsonValue.of(name),
+            "index" to JsonValue.of(index), "len" to JsonValue.of(len),
+        ),
+    )
+
+    /** Escape hatch: apply an arbitrary Yjs update onto a `crdt` column. */
+    fun crdtApplyUpdate(table: String, rowId: String, column: String, update: ByteArray): String {
+        val hex = StringBuilder(update.size * 2)
+        for (b in update) hex.append("%02x".format(b.toInt() and 0xff))
+        return crdtCommitId(
+            "crdtApplyUpdate",
+            JsonValue.obj(
+                "table" to JsonValue.of(table), "rowId" to JsonValue.of(rowId),
+                "column" to JsonValue.of(column),
+                "update" to JsonValue.obj("\$bytes" to JsonValue.of(hex.toString())),
+            ),
+        )
+    }
+
+    private fun crdtCommitId(method: String, params: JsonValue): String {
+        val result = command(method, params)
+        return result["clientCommitId"]?.string
+            ?: throw SyncularException("client.failed", "$method returned no clientCommitId")
+    }
+
     /** Register a subscription (table + scope map). Local; sync fills it. */
     @JvmOverloads
     fun subscribe(

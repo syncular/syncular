@@ -12,10 +12,13 @@ import {
 } from '@syncular/core';
 import { yjsCrdtMergers } from '@syncular/crdt-yjs';
 import {
+  type BlobPresignConfig,
   type BlobStore,
+  type BlobUploadPresignConfig,
   createRealtimeHub,
   handleBlobDownload,
   handleBlobUpload,
+  handleBlobUploadGrant,
   handleSegmentDownload,
   handleSyncRequest,
   type LeaseConfig,
@@ -37,6 +40,8 @@ import {
   verifySegmentToken,
 } from '@syncular/server';
 import type {
+  BlobDownloadResult,
+  BlobUploadGrantResult,
   BytesResult,
   DriverError,
   DriverRow,
@@ -124,6 +129,47 @@ const SIGNED_URL_KEY = 'conformance-signing-key';
 const SIGNED_URL_BASE = 'https://cdn.conformance.test/segments';
 const audienceFor = (partition: string) => `aud:${partition}`;
 
+/**
+ * §5.9.3/§5.9.5 blob-presign fixtures — the harness plays object store + CDN.
+ * The presigned URL is `blob-cdn://<partition>/<blobId>?exp=<ms>&op=<get|put>`;
+ * `fetchBlobUrl`/`putBlobUrl` parse it and serve/store against the blob store,
+ * enforcing only the expiry (the token bound blob+aud at issuance, §5.9.5).
+ */
+const BLOB_CDN_BASE = 'blob-cdn://conformance';
+const BLOB_URL_TTL_SECONDS = 900;
+
+function mintBlobUrl(
+  partition: string,
+  blobId: string,
+  op: 'get' | 'put',
+  nowMs: number,
+  ttlSeconds: number,
+): { url: string; urlExpiresAtMs: number } {
+  const urlExpiresAtMs = (Math.floor(nowMs / 1000) + ttlSeconds) * 1000;
+  const url =
+    `${BLOB_CDN_BASE}/${encodeURIComponent(partition)}/${encodeURIComponent(blobId)}` +
+    `?op=${op}&exp=${urlExpiresAtMs}`;
+  return { url, urlExpiresAtMs };
+}
+
+function parseBlobUrl(
+  url: string,
+): { partition: string; blobId: string; op: string; exp: number } | undefined {
+  if (!url.startsWith(`${BLOB_CDN_BASE}/`)) return undefined;
+  const rest = url.slice(`${BLOB_CDN_BASE}/`.length);
+  const qIndex = rest.indexOf('?');
+  const path = qIndex >= 0 ? rest.slice(0, qIndex) : rest;
+  const query = new URLSearchParams(qIndex >= 0 ? rest.slice(qIndex + 1) : '');
+  const parts = path.split('/');
+  if (parts.length !== 2) return undefined;
+  return {
+    partition: decodeURIComponent(parts[0] ?? ''),
+    blobId: decodeURIComponent(parts[1] ?? ''),
+    op: query.get('op') ?? '',
+    exp: Number(query.get('exp') ?? 0),
+  };
+}
+
 class TsServerInstance implements ServerInstance {
   readonly #schema: DriverSchema;
   readonly #partition: string;
@@ -145,6 +191,10 @@ class TsServerInstance implements ServerInstance {
   #validators: ValidatorRegistry | undefined;
   readonly #signedUrls: SegmentUrlConfig | undefined;
   #signedUrlTtlSeconds: number;
+  /** §5.9.3/§5.9.5 blob-presign toggle (default off; scenarios flip it). */
+  #blobPresign = false;
+  readonly #blobDownloadPresign: BlobPresignConfig;
+  readonly #blobUploadPresign: BlobUploadPresignConfig;
   /** §7.3: the lease store + config, present iff `leases` was requested. */
   readonly #leases: LeaseConfig | undefined;
 
@@ -192,6 +242,20 @@ class TsServerInstance implements ServerInstance {
             store: new MemoryLeaseStore({ leaseId: nextLeaseId }),
           }
         : undefined;
+    // §5.9.5 always-issue / §5.9.3 grant: the harness plays object store + CDN.
+    // The configs mint `blob-cdn://` urls the download/grant handlers return;
+    // `fetchBlobUrl`/`putBlobUrl` serve/store against the blob store. Wired
+    // into #ctx only while #blobPresign is on (setBlobPresign flips it).
+    this.#blobDownloadPresign = {
+      ttlSeconds: BLOB_URL_TTL_SECONDS,
+      presign: ({ partition, blobId, ttlSeconds, nowMs }) =>
+        mintBlobUrl(partition, blobId, 'get', nowMs, ttlSeconds),
+    };
+    this.#blobUploadPresign = {
+      ttlSeconds: BLOB_URL_TTL_SECONDS,
+      presign: ({ partition, blobId, ttlSeconds, nowMs }) =>
+        mintBlobUrl(partition, blobId, 'put', nowMs, ttlSeconds),
+    };
     this.#wrapped = this.#wrapStorage();
     this.#hub = createRealtimeHub({
       schema: toServerSchema(options.schema),
@@ -274,6 +338,13 @@ class TsServerInstance implements ServerInstance {
       ...(this.#signedUrls !== undefined
         ? { signedUrls: this.#signedUrls }
         : {}),
+      // §5.9.5/§5.9.3 blob presign: active only while the toggle is on.
+      ...(this.#blobPresign
+        ? {
+            blobSignedUrls: this.#blobDownloadPresign,
+            blobUploadUrls: this.#blobUploadPresign,
+          }
+        : {}),
       ...(this.#leases !== undefined ? { leases: this.#leases } : {}),
       // §6.7: pass the installed validators (undefined ⇒ feature off).
       ...(this.#validators !== undefined
@@ -338,16 +409,132 @@ class TsServerInstance implements ServerInstance {
     }
   }
 
-  async downloadBlob(actorId: string, blobId: string): Promise<BytesResult> {
+  async downloadBlob(
+    actorId: string,
+    blobId: string,
+  ): Promise<BlobDownloadResult> {
     try {
       const result = await handleBlobDownload(this.#ctx(actorId), blobId);
-      return { ok: true, bytes: result.bytes };
+      if (result.url !== undefined) {
+        // §5.9.5 always-issue: the server exited the egress path.
+        return {
+          ok: true,
+          url: result.url,
+          ...(result.urlExpiresAtMs !== undefined
+            ? { urlExpiresAtMs: result.urlExpiresAtMs }
+            : {}),
+        };
+      }
+      return { ok: true, bytes: result.bytes ?? new Uint8Array(0) };
     } catch (error) {
       if (error instanceof SyncError) {
         return { ok: false, error: toDriverError(error) };
       }
       throw error;
     }
+  }
+
+  /**
+   * §5.9.5 CDN role: serve a presigned blob GET url exactly as the object host
+   * would — parse the `blob-cdn://` url, enforce only the expiry (the token
+   * bound blob+aud at issuance, §5.9.5), and return the stored bytes. No actor
+   * identity, no re-authorization (the url is the entire grant).
+   */
+  async fetchBlobUrl(url: string): Promise<BytesResult> {
+    try {
+      const parsed = parseBlobUrl(url);
+      if (parsed === undefined || parsed.op !== 'get') {
+        throw new SyncError('blob.not_found', 'unknown blob url host (§5.9.5)');
+      }
+      if (parsed.exp <= this.#now.ms) {
+        throw new SyncError('sync.forbidden', 'blob url expired (§5.9.5)');
+      }
+      const entry = await this.#blobs.get(parsed.partition, parsed.blobId);
+      if (entry === undefined) {
+        throw new SyncError('blob.not_found', 'unknown blob (§5.9.5)');
+      }
+      return { ok: true, bytes: entry.bytes };
+    } catch (error) {
+      if (error instanceof SyncError) {
+        return { ok: false, error: toDriverError(error) };
+      }
+      throw error;
+    }
+  }
+
+  /** §5.9.3 upload grant — host-auth'd + size-capped; mints a presigned PUT. */
+  async uploadBlobGrant(
+    actorId: string,
+    blobId: string,
+    byteLength: number,
+    mediaType?: string,
+  ): Promise<BlobUploadGrantResult> {
+    try {
+      const grant = await handleBlobUploadGrant(this.#ctx(actorId), {
+        blobId,
+        byteLength,
+        ...(mediaType !== undefined ? { mediaType } : {}),
+      });
+      if (grant.url !== undefined) {
+        return {
+          ok: true,
+          grant: {
+            kind: 'url',
+            url: grant.url,
+            ...(grant.urlExpiresAtMs !== undefined
+              ? { urlExpiresAtMs: grant.urlExpiresAtMs }
+              : {}),
+          },
+        };
+      }
+      if (grant.present === true) {
+        return { ok: true, grant: { kind: 'present' } };
+      }
+      return { ok: true, grant: { kind: 'none' } };
+    } catch (error) {
+      if (error instanceof SyncError) {
+        return { ok: false, error: toDriverError(error) };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * §5.9.3 object-store PUT role: accept bytes at a presigned PUT url exactly
+   * as the object host would — parse the url, enforce the expiry, and store
+   * into the blob store so a later §5.9.6 existence check + download resolve.
+   * No content-address recompute here (the store does not; integrity is the
+   * reference-time check, §5.9.3).
+   */
+  async putBlobUrl(
+    url: string,
+    bytes: Uint8Array,
+  ): Promise<{ ok: true } | { ok: false; error: DriverError }> {
+    try {
+      const parsed = parseBlobUrl(url);
+      if (parsed === undefined || parsed.op !== 'put') {
+        throw new SyncError('blob.not_found', 'unknown blob url host (§5.9.3)');
+      }
+      if (parsed.exp <= this.#now.ms) {
+        throw new SyncError('sync.forbidden', 'blob url expired (§5.9.3)');
+      }
+      await this.#blobs.put(
+        parsed.partition,
+        parsed.blobId,
+        bytes,
+        this.#now.ms,
+      );
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof SyncError) {
+        return { ok: false, error: toDriverError(error) };
+      }
+      throw error;
+    }
+  }
+
+  async setBlobPresign(enabled: boolean): Promise<void> {
+    this.#blobPresign = enabled;
   }
 
   /**
@@ -537,6 +724,7 @@ export const tsServerDriver: ServerDriver = {
     'idempotency-fault',
     'signed-urls',
     'blobs',
+    'blob-presign',
     'crdt',
     'leases',
     'validators',

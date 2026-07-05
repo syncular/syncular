@@ -48,6 +48,12 @@ conformance-locked: whatever the shim exercises, the plugin inherits.
 - **`syncular_query(sql, params)`** — the live-query fast path (arbitrary
   read-only SQL over the local tables). Routed through the router's `query`
   command so there is one implementation.
+- **Native CRDT** (SPEC.md §5.10.5; needs the plugin `crdt-yjs` feature) —
+  `crdtText` / `crdtInsertText` / `crdtDeleteText` / `crdtApplyUpdate` ride
+  `syncular_command`, and `@syncular/tauri` exposes typed methods for them.
+  Collaborative text on a `crdt` column, byte-compatible with the web
+  `@syncular/crdt-yjs` helper (a Tauri app and a browser edit the same doc).
+  The example enables the feature; a lean plugin build omits `yrs`.
 - **`syncular://event`** — the derived client-observable events, mirroring the
   FFI `poll_event` set: `invalidate` (live queries re-run), `presence`,
   `sync-needed`, `conflict`, `rejection`, `schema-floor`, `lease`. Bytes ride as

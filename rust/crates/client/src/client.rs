@@ -26,7 +26,7 @@ use crate::api::{
     SchemaFloor, SubscriptionStateView, SyncOutcome, SyncReport, WindowBase,
 };
 use crate::schema::{parse_schema_json, ClientSchema};
-use crate::transport::{SegmentRequest, Transport, TransportError};
+use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 use crate::values::{
     bytes_to_hex, canonical_scope_json, column_value_to_json, decode_row_bytes, encode_row_json,
     json_to_column_value, json_to_scope_map, render_row_id_json, scope_map_to_json, sort_scope_map,
@@ -441,18 +441,27 @@ impl SyncClient {
             self.set_meta(LOCAL_SCHEMA_VERSION_KEY, &self.schema.version.to_string());
         }
         // §5.9.7 blob cache + pending-upload queue (created only when the
-        // schema declares blob_ref columns; harmless otherwise).
+        // schema declares blob_ref columns; harmless otherwise). IF NOT EXISTS
+        // so a reopened on-disk DB reuses the persisted bodies across restarts
+        // (the §5.9.7 B1 storage model: bytes live as BLOBs in the client DB).
         if self.schema_has_blobs() {
             self.conn
                 .execute_batch(
-                    "CREATE TABLE _syncular_blobs (blob_id TEXT PRIMARY KEY,
+                    "CREATE TABLE IF NOT EXISTS _syncular_blobs (blob_id TEXT PRIMARY KEY,
                        bytes BLOB NOT NULL, byte_length INTEGER NOT NULL,
                        media_type TEXT, refcount INTEGER NOT NULL DEFAULT 0,
-                       created_at_ms INTEGER NOT NULL);
-                     CREATE TABLE _syncular_blob_uploads (blob_id TEXT PRIMARY KEY,
+                       created_at_ms INTEGER NOT NULL,
+                       last_used_ms INTEGER NOT NULL DEFAULT 0);
+                     CREATE TABLE IF NOT EXISTS _syncular_blob_uploads (blob_id TEXT PRIMARY KEY,
                        media_type TEXT, created_at_ms INTEGER NOT NULL);",
                 )
                 .map_err(|e| e.to_string())?;
+            // Migrate a cache created before the §5.9.7 B1 LRU column
+            // (additive; the duplicate-column error on an already-migrated DB
+            // is swallowed).
+            let _ = self.conn.execute_batch(
+                "ALTER TABLE _syncular_blobs ADD COLUMN last_used_ms INTEGER NOT NULL DEFAULT 0",
+            );
         }
         Ok(())
     }
@@ -1156,6 +1165,177 @@ impl SyncClient {
             });
         }
         Ok(out)
+    }
+
+    // -- §5.10.5 native CRDT (the `crdt-yjs` feature) --------------------------
+    //
+    // The Rust face of the §5.10.4 client model: a local crdt edit loads the
+    // current stored (server-merged ⊕ pending-overlay) column bytes, applies
+    // the op with `yrs`, re-encodes the whole doc state, and pushes it as a
+    // baseVersion-less upsert through the ordinary `mutate` path (§5.10.3
+    // "crdt-only divergence merges cleanly"). No local merge — merging is
+    // server-side; the overlay's last-write-wins re-materializes the edit
+    // immediately (optimistic apply, §7.1) and the server-merged bytes arrive
+    // on the next pull, idempotently. Byte-compatible with `@syncular/crdt-yjs`.
+
+    /// The current stored value of a `crdt` column for one row — the visible
+    /// (optimistic) bytes, or `None` when the row is absent or the column is
+    /// NULL (the empty document, §5.10.1). Errors if the column is not a
+    /// `crdt` column (guards the app against a typo'd column name).
+    #[cfg(feature = "crdt-yjs")]
+    fn crdt_column_bytes(
+        &self,
+        table: &str,
+        row_id: &str,
+        column: &str,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let schema_table = self
+            .schema
+            .table(table)
+            .ok_or_else(|| format!("unknown table {table:?}"))?;
+        let col = schema_table
+            .columns
+            .iter()
+            .find(|c| c.name == column)
+            .ok_or_else(|| format!("table {table:?} has no column {column:?}"))?;
+        if col.ty != ColumnType::Crdt {
+            return Err(format!("column {column:?} is not a crdt column (§5.10.1)"));
+        }
+        let sql = format!(
+            "SELECT {} FROM {} WHERE CAST({} AS TEXT) = ?1",
+            quote_ident(column),
+            visible_table(table),
+            quote_ident(&schema_table.primary_key)
+        );
+        let bytes: Option<Vec<u8>> = self
+            .conn
+            .query_row(&sql, rusqlite::params![row_id], |row| {
+                row.get::<_, Option<Vec<u8>>>(0)
+            })
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => "no such row".to_owned(),
+                other => other.to_string(),
+            })?;
+        Ok(bytes)
+    }
+
+    /// §5.10.4 materialize: the collaborative text of a `crdt` column, decoded
+    /// from the stored bytes with `yrs` — `YjsColumn.text(name).toString()`.
+    /// An absent row / NULL column is the empty document (empty string).
+    #[cfg(feature = "crdt-yjs")]
+    pub fn crdt_text(
+        &self,
+        table: &str,
+        row_id: &str,
+        column: &str,
+        name: &str,
+    ) -> Result<String, String> {
+        let bytes = self
+            .crdt_column_bytes(table, row_id, column)?
+            .unwrap_or_default();
+        crate::crdt::text(&bytes, name)
+    }
+
+    /// §5.10.4 push-an-update: apply a text insert to a `crdt` column and push
+    /// the resulting full-state update through the normal (baseVersion-less)
+    /// mutate path. Returns the enqueued `clientCommitId`.
+    #[cfg(feature = "crdt-yjs")]
+    pub fn crdt_insert_text(
+        &mut self,
+        table: &str,
+        row_id: &str,
+        column: &str,
+        name: &str,
+        index: u32,
+        value: &str,
+    ) -> Result<String, String> {
+        let current = self
+            .crdt_column_bytes(table, row_id, column)?
+            .unwrap_or_default();
+        let update = crate::crdt::insert_text(&current, name, index, value)?;
+        self.crdt_push_update(table, row_id, column, &update)
+    }
+
+    /// §5.10.4 push-an-update: apply a text delete to a `crdt` column and push
+    /// the resulting full-state update. Returns the enqueued `clientCommitId`.
+    #[cfg(feature = "crdt-yjs")]
+    pub fn crdt_delete_text(
+        &mut self,
+        table: &str,
+        row_id: &str,
+        column: &str,
+        name: &str,
+        index: u32,
+        len: u32,
+    ) -> Result<String, String> {
+        let current = self
+            .crdt_column_bytes(table, row_id, column)?
+            .unwrap_or_default();
+        let update = crate::crdt::delete_text(&current, name, index, len)?;
+        self.crdt_push_update(table, row_id, column, &update)
+    }
+
+    /// §5.10.4 generic escape hatch: apply an arbitrary Yjs update onto a
+    /// `crdt` column's current state and push the resulting full state. The
+    /// app authored the update with its own `yrs` model. Returns the enqueued
+    /// `clientCommitId`.
+    #[cfg(feature = "crdt-yjs")]
+    pub fn crdt_apply_update(
+        &mut self,
+        table: &str,
+        row_id: &str,
+        column: &str,
+        update: &[u8],
+    ) -> Result<String, String> {
+        let current = self
+            .crdt_column_bytes(table, row_id, column)?
+            .unwrap_or_default();
+        let next = crate::crdt::apply_update(&current, update)?;
+        self.crdt_push_update(table, row_id, column, &next)
+    }
+
+    /// Shared tail of the crdt edit methods: build the full-row upsert that
+    /// carries the new crdt bytes and enqueue it. The row's other columns are
+    /// preserved from the current visible row (so a crdt edit does not clobber
+    /// the LWW columns); a brand-new row is seeded with just the primary key +
+    /// crdt column. Pushed baseVersion-less (§5.10.3 crdt-only-divergence rule).
+    #[cfg(feature = "crdt-yjs")]
+    fn crdt_push_update(
+        &mut self,
+        table: &str,
+        row_id: &str,
+        column: &str,
+        crdt_bytes: &[u8],
+    ) -> Result<String, String> {
+        let schema_table = self
+            .schema
+            .table(table)
+            .ok_or_else(|| format!("unknown table {table:?}"))?
+            .clone();
+        // The current visible row's values (preserving LWW columns), or a
+        // fresh row keyed by row_id if it does not exist yet.
+        let mut values: Map<String, Value> = self
+            .read_rows(table)?
+            .into_iter()
+            .find(|r| r.row_id == row_id)
+            .map(|r| r.values)
+            .unwrap_or_else(|| {
+                let mut map = Map::new();
+                map.insert(
+                    schema_table.primary_key.clone(),
+                    Value::from(row_id.to_owned()),
+                );
+                map
+            });
+        // Replace the crdt column with the new bytes in the driver envelope.
+        let mut bytes_obj = Map::new();
+        bytes_obj.insert("$bytes".to_owned(), Value::from(bytes_to_hex(crdt_bytes)));
+        values.insert(column.to_owned(), Value::Object(bytes_obj));
+        self.mutate(vec![Mutation::Upsert {
+            table: table.to_owned(),
+            values,
+            base_version: None,
+        }])
     }
 
     /// Run an arbitrary read-only SQL query against the local database and
@@ -2305,8 +2485,9 @@ impl SyncClient {
         let now = self.clock_now_ms();
         self.conn
             .execute(
-                "INSERT OR IGNORE INTO _syncular_blobs(blob_id, bytes, byte_length, media_type, refcount, created_at_ms) VALUES (?,?,?,?,0,?)",
-                rusqlite::params![blob_id, bytes, bytes.len() as i64, media_type, now],
+                "INSERT INTO _syncular_blobs(blob_id, bytes, byte_length, media_type, refcount, created_at_ms, last_used_ms) VALUES (?,?,?,?,0,?,?)
+                 ON CONFLICT(blob_id) DO UPDATE SET last_used_ms = excluded.last_used_ms",
+                rusqlite::params![blob_id, bytes, bytes.len() as i64, media_type, now, now],
             )
             .map_err(|e| e.to_string())?;
         self.conn
@@ -2315,6 +2496,9 @@ impl SyncClient {
                 rusqlite::params![blob_id, media_type, now],
             )
             .map_err(|e| e.to_string())?;
+        // §5.9.7 B1: a staged upload is pinned (in _syncular_blob_uploads), so
+        // the trim never evicts it; other zero-ref bodies may be over the cap.
+        self.enforce_blob_cache_cap();
         let mut obj = Map::new();
         obj.insert("blobId".to_owned(), Value::from(blob_id));
         obj.insert("byteLength".to_owned(), Value::from(bytes.len() as i64));
@@ -2351,28 +2535,59 @@ impl SyncClient {
             return Ok(cached);
         }
         // §5.9.5: propagate the server's blob.* code (blob.forbidden /
-        // blob.not_found) verbatim so the harness can assert on it.
-        let bytes = transport
+        // blob.not_found) verbatim so the harness can assert on it. The
+        // authorized endpoint serves bytes inline OR (always-issue, presign
+        // configured) a signed url the client fetches directly — no host auth,
+        // no fall-through: failure => re-request (the caller's next fetch_blob).
+        let bytes = match transport
             .blob_download(&blob_id)
-            .map_err(|e| (e.code, e.message))?;
+            .map_err(|e| (e.code, e.message))?
+        {
+            BlobDownload::Bytes(bytes) => bytes,
+            BlobDownload::Url {
+                url,
+                url_expires_at_ms,
+            } => {
+                // §5.9.5: MUST NOT start a fetch at/past expiry.
+                if url_expires_at_ms.is_some_and(|exp| exp <= self.clock_now_ms()) {
+                    return Err((
+                        "sync.segment_expired".to_owned(),
+                        format!(
+                            "blob url for {blob_id} expired before fetch — re-request mints a fresh url (§5.9.5)"
+                        ),
+                    ));
+                }
+                transport
+                    .fetch_blob_url(&url)
+                    .map_err(|e| (e.code, e.message))?
+            }
+        };
         // §5.9.5 inherits §5.1: verify the content address, reject mismatch.
         if blob_id_for(&bytes) != blob_id {
             return Err(simple(format!(
                 "blob content address mismatch for {blob_id}"
             )));
         }
+        let now = self.clock_now_ms();
         self.conn
             .execute(
-                "INSERT OR IGNORE INTO _syncular_blobs(blob_id, bytes, byte_length, media_type, refcount, created_at_ms) VALUES (?,?,?,NULL,0,?)",
-                rusqlite::params![blob_id, bytes, bytes.len() as i64, self.clock_now_ms()],
+                "INSERT OR IGNORE INTO _syncular_blobs(blob_id, bytes, byte_length, media_type, refcount, created_at_ms, last_used_ms) VALUES (?,?,?,NULL,0,?,?)",
+                rusqlite::params![blob_id, bytes, bytes.len() as i64, now, now],
             )
             .map_err(|e| simple(e.to_string()))?;
+        self.enforce_blob_cache_cap();
         self.get_cached_blob(&blob_id)
             .map_err(simple)?
             .ok_or_else(|| simple("blob cache write failed".to_owned()))
     }
 
     fn get_cached_blob(&self, blob_id: &str) -> Result<Option<Value>, String> {
+        // §5.9.7 B1 LRU: a cache-hit read touches "recently used" so a hot
+        // image survives a cap trim.
+        let _ = self.conn.execute(
+            "UPDATE _syncular_blobs SET last_used_ms = ? WHERE blob_id = ?",
+            rusqlite::params![self.clock_now_ms(), blob_id],
+        );
         let mut stmt = self
             .conn
             .prepare("SELECT bytes, byte_length, media_type FROM _syncular_blobs WHERE blob_id = ?")
@@ -2423,23 +2638,98 @@ impl SyncClient {
                     |row| row.get(0),
                 )
                 .ok();
-            match bytes {
-                Some(bytes) => {
-                    transport.blob_upload(&blob_id, &bytes, media_type.as_deref())?;
-                    let _ = self.conn.execute(
-                        "DELETE FROM _syncular_blob_uploads WHERE blob_id = ?",
-                        rusqlite::params![blob_id],
-                    );
-                }
-                None => {
-                    let _ = self.conn.execute(
-                        "DELETE FROM _syncular_blob_uploads WHERE blob_id = ?",
-                        rusqlite::params![blob_id],
-                    );
-                }
+            if let Some(bytes) = bytes {
+                self.upload_one(transport, &blob_id, &bytes, media_type.as_deref())?;
             }
+            let _ = self.conn.execute(
+                "DELETE FROM _syncular_blob_uploads WHERE blob_id = ?",
+                rusqlite::params![blob_id],
+            );
         }
         Ok(())
+    }
+
+    /// §5.9.3: upload one blob, preferring the presigned direct-to-storage
+    /// grant when the transport supports it, else streaming through the direct
+    /// host-authenticated endpoint (capability, not fallback). A `Url` grant
+    /// PUTs direct with no host auth; on a grant PUT failure the client streams
+    /// through the direct endpoint — a *different, host-authenticated
+    /// capability*, not a fall-through of the grant's authority.
+    fn upload_one(
+        &self,
+        transport: &mut dyn Transport,
+        blob_id: &str,
+        bytes: &[u8],
+        media_type: Option<&str>,
+    ) -> Result<(), TransportError> {
+        match transport.blob_upload_grant(blob_id, bytes.len() as u64, media_type)? {
+            BlobUploadGrant::Present => return Ok(()), // idempotent §5.9.3
+            BlobUploadGrant::Url {
+                url,
+                url_expires_at_ms,
+            } => {
+                let live = url_expires_at_ms.is_none_or(|exp| exp > self.clock_now_ms());
+                if live && transport.blob_put_url(&url, bytes, media_type).is_ok() {
+                    return Ok(());
+                }
+                // Failed/expired grant PUT — stream through the direct endpoint.
+            }
+            BlobUploadGrant::None => {
+                // No presign store — stream through the direct endpoint.
+            }
+        }
+        transport.blob_upload(blob_id, bytes, media_type)
+    }
+
+    /// §5.9.7 B1 size cap + LRU eviction: when the sum of cached body sizes
+    /// exceeds `blob_cache_max_bytes`, evict zero-ref, non-pinned bodies in
+    /// least-recently-used order until back under the cap. NEVER evicts a
+    /// referenced body (refcount > 0) nor a pending-upload-pinned body — if all
+    /// over-cap bodies are referenced or pinned, the cache stays over the cap
+    /// (correctness beats the cap). B3 re-enables the fetch for any evicted
+    /// zero-ref body, so eviction only costs a future re-download. No-op if the
+    /// cap is unset.
+    fn enforce_blob_cache_cap(&self) {
+        let Some(max_bytes) = self.limits.blob_cache_max_bytes else {
+            return;
+        };
+        let mut total: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(SUM(byte_length), 0) FROM _syncular_blobs",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if total <= max_bytes {
+            return;
+        }
+        let candidates: Vec<(String, i64)> = {
+            let Ok(mut stmt) = self.conn.prepare(
+                "SELECT blob_id, byte_length FROM _syncular_blobs
+                 WHERE refcount = 0
+                   AND blob_id NOT IN (SELECT blob_id FROM _syncular_blob_uploads)
+                 ORDER BY last_used_ms ASC, created_at_ms ASC",
+            ) else {
+                return;
+            };
+            let Ok(rows) = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            }) else {
+                return;
+            };
+            rows.filter_map(Result::ok).collect()
+        };
+        for (blob_id, byte_length) in candidates {
+            if total <= max_bytes {
+                break;
+            }
+            let _ = self.conn.execute(
+                "DELETE FROM _syncular_blobs WHERE blob_id = ?",
+                rusqlite::params![blob_id],
+            );
+            total -= byte_length;
+        }
     }
 
     /// §5.9.7 B1/B2: recompute cache refcounts from live `blob_ref` columns

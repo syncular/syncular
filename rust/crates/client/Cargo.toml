@@ -13,3 +13,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
+
+# §5.10.5 native CRDT: the Rust Yjs port. Feature-gated so the
+# dependency-lean core (and the conformance/codec builds that never touch a
+# crdt column's contents) do not pay for it. yrs is Yjs-wire-compatible — an
+# update it produces merges byte-identically with a `@syncular/crdt-yjs`
+# update on the server (§5.10.2), which is what makes the cross-core pairing
+# converge. Only the app-facing materialize/edit helpers need it; round-trip
+# of opaque crdt bytes stays free (a crdt column is a bytes column, §2.4).
+[dependencies.yrs]
+version = "0.27"
+optional = true
+
+[features]
+default = []
+crdt-yjs = ["dep:yrs"]

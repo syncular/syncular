@@ -33,7 +33,7 @@ browser's find.)
 | `@syncular/server-workers` | Cloudflare Workers entry: fetch handler over D1 storage + R2 segments/blobs | [README](../../packages/server-workers/README.md) |
 | `@syncular/client` | The TS client core on sqlite-wasm/OPFS, worker + transports, multi-tab | [README](../../packages/web-client/README.md) |
 | `@syncular/react` | React bindings: `SyncProvider` + live queries over fine-grained invalidation | [README](../../packages/react/README.md) |
-| `@syncular/crdt-yjs` | The Yjs `crdt`-column merger (server) + `YjsColumn` client helper | [source](../../packages/crdt-yjs/src/index.ts) |
+| `@syncular/crdt-yjs` | The Yjs `crdt`-column merger (server) + `YjsColumn` client helper; native clients use `yrs` behind the `crdt-yjs` feature ([CRDT concept](concepts-crdt.md)) | [source](../../packages/crdt-yjs/src/index.ts) |
 | `@syncular/typegen` | Migrations + manifest → schema IR → TS module, `syncular` CLI | [README](../../packages/typegen/README.md) |
 | `create-syncular-app` | Scaffolder: `bun create syncular my-app` (`minimal` / `web` templates) | [README](../../packages/create-app/README.md) |
 | `@syncular/conformance` | Implementation-agnostic scenario runner + test doctrine | [README](../../packages/conformance/README.md) |

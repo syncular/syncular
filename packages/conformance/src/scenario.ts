@@ -287,10 +287,18 @@ export interface ClientHandle {
   readonly urlFetches: string[];
   /** Direct-endpoint downloads (§5.5), by segmentId, in order. */
   readonly directDownloads: string[];
-  /** Blob uploads (§5.9.3), by blobId, in order. */
+  /** Blob uploads (§5.9.3), by blobId, in order (direct host-authed PUTs). */
   readonly blobUploads: string[];
-  /** Blob downloads (§5.9.5), by blobId, in order — the cache-hit oracle. */
+  /**
+   * Blob download REQUESTS (§5.9.5) to the authorized endpoint, by blobId, in
+   * order — the cache-hit oracle. Counts the request regardless of whether the
+   * response was inline bytes or a presigned url.
+   */
   readonly blobDownloads: string[];
+  /** §5.9.5 presigned blob url fetches — the CDN hop, by url, in order. */
+  readonly blobUrlFetches: string[];
+  /** §5.9.3 presigned direct-to-storage PUTs — by url, in order. */
+  readonly blobDirectPuts: string[];
 }
 
 export interface NewClientOptions {
@@ -358,6 +366,8 @@ export class ScenarioContext {
     const directDownloads: string[] = [];
     const blobUploads: string[] = [];
     const blobDownloads: string[] = [];
+    const blobUrlFetches: string[] = [];
+    const blobDirectPuts: string[] = [];
     const server = this.server;
     const actorId = options.actorId;
     const clientId = options.clientId;
@@ -365,6 +375,9 @@ export class ScenarioContext {
     // presence makes the client core blob-capable (upload/download available).
     const serverUploadBlob = server.uploadBlob?.bind(server);
     const serverDownloadBlob = server.downloadBlob?.bind(server);
+    const serverFetchBlobUrl = server.fetchBlobUrl?.bind(server);
+    const serverUploadBlobGrant = server.uploadBlobGrant?.bind(server);
+    const serverPutBlobUrl = server.putBlobUrl?.bind(server);
     const uploadBlob =
       serverUploadBlob !== undefined
         ? async (
@@ -384,11 +397,81 @@ export class ScenarioContext {
         : undefined;
     const downloadBlob =
       serverDownloadBlob !== undefined
-        ? async (blobId: string): Promise<Uint8Array> => {
+        ? async (
+            blobId: string,
+          ): Promise<
+            | { kind: 'bytes'; bytes: Uint8Array }
+            | { kind: 'url'; url: string; urlExpiresAtMs?: number }
+          > => {
+            // Count the authorized-endpoint REQUEST (the cache-hit oracle),
+            // whether it returns inline bytes or a presigned url.
             blobDownloads.push(blobId);
             const result = await serverDownloadBlob(actorId, blobId);
             if (!result.ok) throw new EndpointError(result.error);
+            if ('url' in result) {
+              return {
+                kind: 'url',
+                url: result.url,
+                ...(result.urlExpiresAtMs !== undefined
+                  ? { urlExpiresAtMs: result.urlExpiresAtMs }
+                  : {}),
+              };
+            }
+            return { kind: 'bytes', bytes: result.bytes };
+          }
+        : undefined;
+    // §5.9.5 CDN hop: only when the server exposes the presign CDN role.
+    const fetchBlobUrl =
+      serverFetchBlobUrl !== undefined
+        ? async (url: string): Promise<Uint8Array> => {
+            blobUrlFetches.push(url);
+            // §5.9.5: the CDN hop shares the url-fetch fault knobs (loss +
+            // tamper) so scenarios can drive the recovery + tamper probes.
+            if (faults.dropNextUrlFetches > 0) {
+              faults.dropNextUrlFetches -= 1;
+              throw new TransportFault('injected: blob url fetch lost');
+            }
+            const result = await serverFetchBlobUrl(url);
+            if (!result.ok) throw new EndpointError(result.error);
+            if (faults.corruptNextUrlFetch) {
+              faults.corruptNextUrlFetch = false;
+              return faults.corrupt(result.bytes);
+            }
             return result.bytes;
+          }
+        : undefined;
+    const uploadBlobGrant =
+      serverUploadBlobGrant !== undefined
+        ? async (
+            blobId: string,
+            byteLength: number,
+            mediaType?: string,
+          ): Promise<
+            | { kind: 'url'; url: string; urlExpiresAtMs?: number }
+            | { kind: 'present' }
+            | { kind: 'none' }
+          > => {
+            const result = await serverUploadBlobGrant(
+              actorId,
+              blobId,
+              byteLength,
+              mediaType,
+            );
+            if (!result.ok) throw new EndpointError(result.error);
+            return result.grant;
+          }
+        : undefined;
+    // §5.9.3 direct-to-storage PUT hop.
+    const putBlobUrl =
+      serverPutBlobUrl !== undefined
+        ? async (
+            url: string,
+            bytes: Uint8Array,
+            _mediaType?: string,
+          ): Promise<void> => {
+            blobDirectPuts.push(url);
+            const result = await serverPutBlobUrl(url, bytes);
+            if (!result.ok) throw new EndpointError(result.error);
           }
         : undefined;
     const fetchSegmentUrl =
@@ -424,6 +507,9 @@ export class ScenarioContext {
         ...(fetchSegmentUrl !== undefined ? { fetchSegmentUrl } : {}),
         ...(uploadBlob !== undefined ? { uploadBlob } : {}),
         ...(downloadBlob !== undefined ? { downloadBlob } : {}),
+        ...(fetchBlobUrl !== undefined ? { fetchBlobUrl } : {}),
+        ...(uploadBlobGrant !== undefined ? { uploadBlobGrant } : {}),
+        ...(putBlobUrl !== undefined ? { putBlobUrl } : {}),
         sync: async (request) => {
           sentRequests.push(request);
           if (faults.dropNextRequests > 0) {
@@ -505,6 +591,8 @@ export class ScenarioContext {
       directDownloads,
       blobUploads,
       blobDownloads,
+      blobUrlFetches,
+      blobDirectPuts,
     };
     this.#clients.push(handle);
     return handle;

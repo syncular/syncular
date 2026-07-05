@@ -70,6 +70,12 @@ const client = await createNativeSyncClient({
 
 // Every @syncular/react hook works unchanged:
 <SyncProvider client={client}>{/* … */}</SyncProvider>;
+
+// Native CRDT (needs the FFI `crdt-yjs` feature) — collaborative text on a
+// `crdt` column, byte-compatible with the web `@syncular/crdt-yjs` helper:
+const text = await client.crdtText('notes', 'n1', 'doc');
+await client.crdtInsertText('notes', 'n1', 'doc', 0, 'Hi ');
+await client.crdtDeleteText('notes', 'n1', 'doc', 0, 3);
 ```
 
 Bytes cross as `{$bytes:hex}`; the JS layer parses/stringifies so the native

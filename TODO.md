@@ -78,17 +78,40 @@ verification; push is Benjamin's alone).
 
 ## 3. Demand-gated — build when the trigger fires
 
-- [ ] **yrs native CRDT** — *trigger: any native app renders or edits a
-      `crdt` column* (until then native cannot even display crdt text —
-      a silent functional hole, not polish). ~1 agent-day; yrs is
-      Yjs-wire-compatible, feature-gated, no wire changes.
+- [x] **yrs native CRDT** (LANDED 2026-07-05, Benjamin's order "make sure yjs
+      is working WITH NATIVE"): `yrs` behind the client crate's `crdt-yjs`
+      feature (dependency-lean default; on for FFI/Tauri examples). Four router
+      commands — `crdtText` (materialize), `crdtInsertText`/`crdtDeleteText`
+      (edit → full-state update → baseVersion-less mutate, the §5.10.4
+      push-update model), `crdtApplyUpdate` (escape hatch) — so shim, FFI, and
+      the Tauri plugin inherit them through the shared `dispatch`. Typed
+      conveniences on all five wrappers (Swift/Kotlin/Dart/Tauri-JS/RN-JS).
+      Cross-core proof: `crdt/native-authored-convergence` has the RUST core
+      (yrs) AUTHOR edits and the TS server merge them (and vice versa) —
+      byte-identical convergence both directions; both pairings green. yrs is
+      Yjs-wire-compatible, so no wire changes. Docs: `concepts-crdt.md` +
+      wrapper READMEs.
 - [ ] **W2 TTL sugar** (codegen creation-time bucket columns + window
       helpers) — *trigger: first real windowing app's feedback on bucket
       granularity*. W1 already does time-windowing manually.
-- [ ] **Presigned blob upload** (direct-to-storage; server exits the
-      upload bandwidth path) — *trigger: upload volume at scale*.
-      Resumable = provider multipart behind this flow (never our own
-      chunk protocol — non-goal).
+- [x] **Presigned blob upload** (direct-to-storage; server exits the
+      upload bandwidth path) — *trigger fired by Benjamin 2026-07-05; LANDED*.
+      `POST /blobs/{blobId}/upload-grant` (host-authed, size-capped up front)
+      mints a single presigned PUT (`S3BlobStore.presignBlobPut` +
+      `s3PresignedBlobUploads` / `blobUploadUrls` config); the client PUTs
+      direct-to-storage with no host auth, then pushes the referencing row (the
+      §5.9.6 existence check verifies via `has`). Capability, not fallback: no
+      presign config ⇒ the client streams through the direct `PUT` endpoint.
+      Single PUT only — resumable = provider multipart behind this same grant
+      (never our own chunk protocol — non-goal, held). Both cores +
+      conformance (grant→PUT→reference→fetch). SPEC §5.9.3 pins the grant flow,
+      the host-auth-only authz, and the reference-time integrity story.
+      **Also landed same round** (Benjamin's blob-story order): presigned
+      *download* consumption on both cores (client fetches the §5.9.5 url
+      directly, always-issue; failure⇒re-request recovery pinned in §5.9.5),
+      and the client-side blob storage model (SQLite `BLOB` bytes + configurable
+      `blobCacheMaxBytes` cap with LRU eviction of zero-ref/non-pinned bodies,
+      §5.9.7 B1). Gates green; both pairings 86/84.
 - [ ] **Named-query `-- returns` override** for computed-expression
       typing — *trigger: first user hits the nullable-affinity fallback
       in anger*.

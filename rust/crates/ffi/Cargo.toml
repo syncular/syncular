@@ -46,3 +46,8 @@ tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 [features]
 default = []
 native-transport = ["dep:ureq", "dep:tungstenite"]
+# §5.10.5 native CRDT commands. Off by default (lean-core builds skip yrs);
+# examples/demos that show collaborative text turn it on. Forwards to the
+# shared router's crdt-yjs feature — the FFI adds no code, the commands ride
+# the existing `dispatch` call.
+crdt-yjs = ["syncular-command/crdt-yjs"]

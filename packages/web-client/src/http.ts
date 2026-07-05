@@ -112,28 +112,107 @@ export function httpBlobTransport(
   options?: HttpTransportOptions,
 ): BlobTransport {
   const doFetch = options?.fetch ?? fetch;
+  const blobUrl = (blobId: string) =>
+    `${blobsBaseUrl}/${encodeURIComponent(blobId)}`;
   return {
     upload: async (blobId, bytes, mediaType) => {
-      const response = await doFetch(
-        `${blobsBaseUrl}/${encodeURIComponent(blobId)}`,
-        {
-          method: 'PUT',
-          headers: {
-            'Content-Type': mediaType ?? 'application/octet-stream',
-            ...options?.headers,
-          },
-          body: bytes.slice().buffer as ArrayBuffer,
+      const response = await doFetch(blobUrl(blobId), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': mediaType ?? 'application/octet-stream',
+          ...options?.headers,
         },
-      );
+        body: bytes.slice().buffer as ArrayBuffer,
+      });
       if (!response.ok) await throwHttpError(response);
     },
     download: async (blobId) => {
-      const response = await doFetch(
-        `${blobsBaseUrl}/${encodeURIComponent(blobId)}`,
-        { headers: { ...options?.headers } },
-      );
+      const response = await doFetch(blobUrl(blobId), {
+        headers: { ...options?.headers },
+      });
       if (!response.ok) await throwHttpError(response);
+      // §5.9.5 always-issue: a JSON body with `url` means presigned delivery;
+      // an octet-stream body is inline bytes.
+      const contentType = response.headers.get('content-type') ?? '';
+      if (contentType.includes('application/json')) {
+        const body = (await response.json()) as {
+          url?: string;
+          urlExpiresAtMs?: number;
+        };
+        if (typeof body.url === 'string') {
+          return {
+            kind: 'url',
+            url: body.url,
+            ...(typeof body.urlExpiresAtMs === 'number'
+              ? { urlExpiresAtMs: body.urlExpiresAtMs }
+              : {}),
+          };
+        }
+      }
+      return {
+        kind: 'bytes',
+        bytes: new Uint8Array(await response.arrayBuffer()),
+      };
+    },
+    // §5.9.5: bare GET of the signed URL — no host auth (the URL is the grant).
+    fetchUrl: async (url) => {
+      const response = await doFetch(url);
+      if (!response.ok) {
+        throw new ClientSyncError(
+          'sync.transport_failed',
+          `blob signed-URL fetch failed with HTTP ${response.status} (§5.9.5: re-request to recover)`,
+          true,
+        );
+      }
       return new Uint8Array(await response.arrayBuffer());
+    },
+    // §5.9.3: presigned-upload grant.
+    uploadGrant: async (blobId, byteLength, mediaType) => {
+      const response = await doFetch(`${blobUrl(blobId)}/upload-grant`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...options?.headers,
+        },
+        body: JSON.stringify({
+          byteLength,
+          ...(mediaType !== undefined ? { mediaType } : {}),
+        }),
+      });
+      if (!response.ok) await throwHttpError(response);
+      const body = (await response.json()) as {
+        url?: string;
+        urlExpiresAtMs?: number;
+        present?: boolean;
+      };
+      if (typeof body.url === 'string') {
+        return {
+          kind: 'url',
+          url: body.url,
+          ...(typeof body.urlExpiresAtMs === 'number'
+            ? { urlExpiresAtMs: body.urlExpiresAtMs }
+            : {}),
+        };
+      }
+      if (body.present === true) return { kind: 'present' };
+      return { kind: 'none' };
+    },
+    // §5.9.3: direct-to-storage PUT — no host auth (the URL is the grant).
+    uploadToUrl: async (url, bytes, mediaType) => {
+      const response = await doFetch(url, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': mediaType ?? 'application/octet-stream',
+        },
+        body: bytes.slice().buffer as ArrayBuffer,
+      });
+      if (!response.ok) {
+        throw new ClientSyncError(
+          'sync.transport_failed',
+          `blob presigned PUT failed with HTTP ${response.status} (§5.9.3: re-request a grant or stream direct)`,
+          true,
+        );
+      }
     },
   };
 }

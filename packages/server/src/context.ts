@@ -11,7 +11,11 @@ import type { SyncularServerEvents } from './events';
 import type { LeaseStore } from './lease-store';
 import type { ServerSchema } from './schema';
 import type { SegmentStore } from './segment-store';
-import type { BlobPresignConfig, SegmentUrlConfig } from './signed-url';
+import type {
+  BlobPresignConfig,
+  BlobUploadPresignConfig,
+  SegmentUrlConfig,
+} from './signed-url';
 import type { SqliteImageBuilder } from './sqlite-image';
 import type { ServerStorage, StoredCommit } from './storage';
 import type { ValidatorRegistry } from './validate';
@@ -122,14 +126,26 @@ export interface SyncServerConfig {
   /** §5.4 signed-URL delivery: native HMAC tokens or delegated presign. */
   readonly signedUrls?: SegmentUrlConfig;
   /**
-   * §5.9.5 signed-URL delivery for BLOB downloads (delegated presign). When
-   * set, `handleBlobDownload` issues a provider-presigned URL AFTER the
-   * row-derived authorization check and returns it additively on
-   * `BlobDownloadResult` (`url`/`urlExpiresAtMs`) alongside the bytes — an
-   * adapter MAY redirect to it. Absent ⇒ blobs are always served inline
-   * (the shipped default; client URL-consumption is a later rung).
+   * §5.9.5 signed-URL delivery for BLOB downloads (delegated presign,
+   * always-issue). When set, `handleBlobDownload` issues a provider-presigned
+   * GET URL AFTER the row-derived authorization check and returns
+   * `url`/`urlExpiresAtMs` on `BlobDownloadResult` WITHOUT loading the bytes
+   * (the sync server exits the download egress path). The reference client
+   * fetches the URL directly (§5.9.5 recovery rule: failure ⇒ re-request,
+   * never fall-through). Absent ⇒ blobs are served inline (the shipped
+   * default).
    */
   readonly blobSignedUrls?: BlobPresignConfig;
+  /**
+   * §5.9.3 presigned-upload (direct-to-storage) delivery. When set,
+   * `handleBlobUploadGrant` issues a single provider-presigned PUT URL AFTER
+   * host authentication + the size-cap check, and the client PUTs bytes
+   * straight to the object store (the sync server exits the upload egress
+   * path). Absent ⇒ the `/upload-grant` route reports no grant and clients
+   * stream through the direct `PUT /blobs/{blobId}` endpoint (§5.9.3 —
+   * capability, not fallback). Never a multipart/chunk protocol (single PUT).
+   */
+  readonly blobUploadUrls?: BlobUploadPresignConfig;
   /**
    * §5.3 sqlite-image builder (TODO §4.2), injected so the pull path never
    * statically imports `bun:sqlite`. Absent ⇒ the sqlite-image lane is off
