@@ -52,6 +52,92 @@ describe('supported subset', () => {
       'bytes',
     ]);
   });
+
+  test('CREATE INDEX — plain, IF NOT EXISTS, compound, and UNIQUE', () => {
+    const tables = parse(`
+      CREATE TABLE t (id TEXT PRIMARY KEY, a TEXT, b TEXT, c TEXT);
+      CREATE INDEX idx_a ON t (a);
+      CREATE INDEX IF NOT EXISTS idx_bc ON t (b, c);
+      CREATE UNIQUE INDEX idx_uniq_a ON t (a);
+    `);
+    expect(tables.get('t')?.indexes).toEqual([
+      { name: 'idx_a', columns: ['a'], unique: false },
+      { name: 'idx_bc', columns: ['b', 'c'], unique: false },
+      { name: 'idx_uniq_a', columns: ['a'], unique: true },
+    ]);
+  });
+
+  test('index columns may reference a column added by a later ALTER', () => {
+    const tables = parse(`
+      CREATE TABLE t (id TEXT PRIMARY KEY);
+      ALTER TABLE t ADD COLUMN a TEXT;
+      CREATE INDEX idx_a ON t (a);
+    `);
+    expect(tables.get('t')?.indexes).toEqual([
+      { name: 'idx_a', columns: ['a'], unique: false },
+    ]);
+  });
+
+  test('a table with no index has an empty indexes list', () => {
+    const tables = parse('CREATE TABLE t (id TEXT PRIMARY KEY)');
+    expect(tables.get('t')?.indexes).toEqual([]);
+  });
+});
+
+describe('CREATE INDEX subset — hard errors naming the construct', () => {
+  const base = 'CREATE TABLE t (id TEXT PRIMARY KEY, a TEXT, b TEXT); ';
+  test('index on an unknown table', () => {
+    expectError(
+      'CREATE INDEX idx ON nope (id)',
+      /CREATE INDEX idx: table nope does not exist/,
+    );
+  });
+  test('index on an unknown column', () => {
+    expectError(
+      `${base}CREATE INDEX idx ON t (nope)`,
+      /index idx: column "nope" does not exist on table t/,
+    );
+  });
+  test('duplicate index name across the schema', () => {
+    expectError(
+      `${base}CREATE INDEX idx ON t (a); CREATE INDEX idx ON t (b)`,
+      /index idx is created twice/,
+    );
+  });
+  test('duplicate column within one index', () => {
+    expectError(
+      `${base}CREATE INDEX idx ON t (a, a)`,
+      /index idx: column "a" appears twice/,
+    );
+  });
+  test('ASC/DESC index columns are rejected', () => {
+    expectError(
+      `${base}CREATE INDEX idx ON t (a DESC)`,
+      /index idx: ASC\/DESC index columns are unsupported/,
+    );
+    expectError(
+      `${base}CREATE INDEX idx ON t (a ASC)`,
+      /index idx: ASC\/DESC index columns are unsupported/,
+    );
+  });
+  test('expression index columns are rejected', () => {
+    expectError(
+      `${base}CREATE INDEX idx ON t (lower(a))`,
+      /index idx: expression index columns are unsupported|unexpected character/,
+    );
+  });
+  test('partial (WHERE) indexes are rejected', () => {
+    expectError(
+      `${base}CREATE INDEX idx ON t (a) WHERE a IS NOT NULL`,
+      /index idx: partial indexes \(WHERE …\) are unsupported/,
+    );
+  });
+  test('quoted index/table identifiers are rejected', () => {
+    expectError(
+      `${base}CREATE INDEX "idx" ON t (a)`,
+      /quoted identifiers are unsupported/,
+    );
+  });
 });
 
 function expectError(sql: string, pattern: RegExp): void {
@@ -69,8 +155,8 @@ describe('unsupported constructs are hard errors that name the construct', () =>
   test('other statements', () => {
     expectError('DROP TABLE t', /unsupported SQL statement.*"DROP"/);
     expectError(
-      'CREATE INDEX idx ON t (id)',
-      /expected TABLE after CREATE, found "INDEX"/,
+      'CREATE TRIGGER trg AFTER INSERT ON t BEGIN SELECT 1; END',
+      /unsupported CREATE statement.*found "TRIGGER"/,
     );
     expectError(
       "INSERT INTO t VALUES ('x')",

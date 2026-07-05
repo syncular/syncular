@@ -11,6 +11,13 @@ import { ClientSyncError } from './errors';
 /** `'prefix:{variable}'` shorthand (column name = variable) or explicit. */
 export type ScopePatternSpec = string | { pattern: string; column: string };
 
+/** One local secondary index (the CREATE INDEX migration subset). */
+export interface ClientIndexSpec {
+  readonly name: string;
+  readonly columns: readonly string[];
+  readonly unique: boolean;
+}
+
 export interface ClientTableSchema {
   readonly name: string;
   /** Columns in schema-IR declaration order (the row-codec order, §2.4). */
@@ -18,6 +25,9 @@ export interface ClientTableSchema {
   readonly primaryKey: string;
   /** Scope patterns (§3.1); the variable→column map feeds the §3.3 purge. */
   readonly scopes: readonly ScopePatternSpec[];
+  /** Local secondary indexes; absent in the generated schema when a table
+   * declares none (typegen omits the key for index-free tables). */
+  readonly indexes?: readonly ClientIndexSpec[];
 }
 
 export interface ClientSchema {
@@ -39,6 +49,9 @@ export interface CompiledClientTable {
    * vocabulary (TODO 3.1 / DESIGN-eviction I2) and the delta-routing key.
    */
   readonly scopePrefixByVariable: ReadonlyMap<string, string>;
+  /** Local secondary indexes to create on the mirror table (declaration
+   * order); empty when the table declares none. */
+  readonly indexes: readonly ClientIndexSpec[];
 }
 
 export interface CompiledClientSchema {
@@ -103,6 +116,16 @@ export function compileClientSchema(
       scopeColumnByVariable.set(variable, column);
       scopePrefixByVariable.set(variable, prefix);
     }
+    const indexes = table.indexes ?? [];
+    for (const index of indexes) {
+      for (const column of index.columns) {
+        if (!columnIndex.has(column)) {
+          throw new Error(
+            `table ${table.name}: index ${JSON.stringify(index.name)} names unknown column ${JSON.stringify(column)}`,
+          );
+        }
+      }
+    }
     tables.set(table.name, {
       name: table.name,
       columns: table.columns,
@@ -111,6 +134,7 @@ export function compileClientSchema(
       columnIndex,
       scopeColumnByVariable,
       scopePrefixByVariable,
+      indexes,
     });
   }
   return { version: schema.version, tables };
@@ -171,6 +195,17 @@ function createSyncedTable(
   db.exec(
     `CREATE TABLE IF NOT EXISTS ${quoteIdent(table.name)} (${columns.join(', ')})`,
   );
+  // Local secondary indexes (CREATE INDEX subset). Created here so both the
+  // initial ensureLocalSchema and the §7.4.3 drop-and-recreate reset path
+  // materialize them. IF NOT EXISTS keeps it idempotent; the DROP TABLE in the
+  // reset path already removed any stale index alongside its table.
+  for (const index of table.indexes) {
+    const unique = index.unique ? 'UNIQUE ' : '';
+    const cols = index.columns.map((c) => quoteIdent(c)).join(', ');
+    db.exec(
+      `CREATE ${unique}INDEX IF NOT EXISTS ${quoteIdent(index.name)} ON ${quoteIdent(table.name)} (${cols})`,
+    );
+  }
 }
 
 /**

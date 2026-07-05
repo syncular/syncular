@@ -74,6 +74,23 @@
           "column": "project_id"
         }
       ],
+      "indexes": [
+        {
+          "name": "idx_tasks_project",
+          "columns": [
+            "project_id"
+          ],
+          "unique": false
+        },
+        {
+          "name": "idx_tasks_project_title",
+          "columns": [
+            "project_id",
+            "title"
+          ],
+          "unique": true
+        }
+      ],
       "extensions": {}
     },
     {
