@@ -11,6 +11,11 @@
  *
  * Per-commit atomicity (§6.4): one storage transaction per commit; the
  * idempotency record persists in the same transaction as the writes.
+ *
+ * Optional per-table write validation (§6.7) runs after decode + the §3.4
+ * scope check, on the row that will persist (post scope-strip, post CRDT
+ * merge); a validator throw rejects the whole commit atomically with a
+ * host code.
  */
 import {
   decodeRow,
@@ -36,6 +41,8 @@ import type {
   StoredCommit,
   StoredPushResult,
 } from './storage';
+import type { ValidateOpKind, ValidatorRegistry } from './validate';
+import { toValidateRow, ValidationRejection } from './validate';
 
 /**
  * Extract the blobIds a decoded row references through its `blob_ref`
@@ -91,6 +98,61 @@ function conflictRecord(
 interface BlobApplyContext {
   readonly store: BlobStore | undefined;
   readonly partition: string;
+}
+
+/**
+ * §6.7: run the table's write-validation hook, if configured, on the row
+ * that WILL persist (post scope-strip, post CRDT-merge — the values the
+ * store receives). Returns a terminating outcome iff the validator rejects
+ * (its `ValidationRejection` code, or `sync.constraint_violation` for a
+ * non-`ValidationRejection` throw), else `undefined` (accept / no hook).
+ * A no-op for tables with no validator — the `undefined` short-circuit
+ * keeps the feature zero-cost when off.
+ */
+async function runValidator(
+  validators: ValidatorRegistry | undefined,
+  table: CompiledTable,
+  op: ValidateOpKind,
+  rowId: string,
+  values: readonly RowValue[] | undefined,
+  storedValues: readonly RowValue[] | undefined,
+  opIndex: number,
+  partition: string,
+  actorId: string,
+): Promise<OperationOutcome | undefined> {
+  const validator = validators?.[table.name];
+  if (validator === undefined) return undefined;
+  try {
+    await validator(
+      {
+        op,
+        table: table.name,
+        rowId,
+        row:
+          values !== undefined
+            ? toValidateRow(table.columns, values)
+            : undefined,
+        stored:
+          storedValues !== undefined
+            ? toValidateRow(table.columns, storedValues)
+            : undefined,
+      },
+      { actorId, partition },
+    );
+  } catch (error) {
+    if (error instanceof ValidationRejection) {
+      return errorRecord(opIndex, error.code, error.message);
+    }
+    // §6.7: a non-ValidationRejection throw is still a rejection, mapped to
+    // the generic server-side constraint code (§10.2) — the validator's
+    // failure never crashes the request or leaks its message as a code.
+    return errorRecord(
+      opIndex,
+      'sync.constraint_violation',
+      `write validator for table ${JSON.stringify(table.name)} threw: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return undefined;
 }
 
 /**
@@ -151,6 +213,9 @@ async function applyOperation(
   opIndex: number,
   blobCtx: BlobApplyContext,
   crdtMergers: CrdtMergerRegistry | undefined,
+  validators: ValidatorRegistry | undefined,
+  partition: string,
+  actorId: string,
 ): Promise<OperationOutcome> {
   const table = schema.tables.get(op.table);
   if (table === undefined) {
@@ -189,6 +254,21 @@ async function applyOperation(
         `stored row lacks scope variable ${JSON.stringify(missing)} (§3.1)`,
       );
     }
+    // §6.7: validate the delete against the stored row (row = undefined,
+    // stored = the row about to be removed). Only reached for an existing
+    // row — an absent-row delete is an idempotent no-op above.
+    const deleteReject = await runValidator(
+      validators,
+      table,
+      'delete',
+      op.rowId,
+      undefined,
+      decodeRow(table.columns, stored.payload),
+      opIndex,
+      partition,
+      actorId,
+    );
+    if (deleteReject !== undefined) return deleteReject;
     await tx.deleteRow(op.table, op.rowId);
     return {
       kind: 'applied',
@@ -284,6 +364,21 @@ async function applyOperation(
       blobCtx,
     );
     if (blobCheck !== undefined) return blobCheck;
+    // §6.7: validate the merged, scope-stripped row that will persist —
+    // for a crdt column the validator sees the MERGED value (§5.10.3), the
+    // state the store holds, not the raw pushed update.
+    const updateReject = await runValidator(
+      validators,
+      table,
+      'upsert',
+      op.rowId,
+      values,
+      storedValues,
+      opIndex,
+      partition,
+      actorId,
+    );
+    if (updateReject !== undefined) return updateReject;
     const newRow = {
       rowId: op.rowId,
       serverVersion: newVersion,
@@ -364,6 +459,21 @@ async function applyOperation(
     blobCtx,
   );
   if (blobCheck !== undefined) return blobCheck;
+  // §6.7: validate the insert row (stored = undefined, so a validator can
+  // distinguish create from update); crdt columns are already merged
+  // against the empty document.
+  const insertReject = await runValidator(
+    validators,
+    table,
+    'upsert',
+    op.rowId,
+    values,
+    undefined,
+    opIndex,
+    partition,
+    actorId,
+  );
+  if (insertReject !== undefined) return insertReject;
   const newRow = {
     rowId: op.rowId,
     serverVersion: 1,
@@ -509,6 +619,7 @@ export async function processPushCommit(
   const createdAtMs = clockOf(ctx)();
   const blobCtx: BlobApplyContext = { store: ctx.blobs, partition };
   const crdtMergers = ctx.crdtMergers;
+  const validators = ctx.validators;
   const tx = await storage.begin(partition);
   try {
     const results: PushOperationResult[] = [];
@@ -525,6 +636,9 @@ export async function processPushCommit(
         opIndex,
         blobCtx,
         crdtMergers,
+        validators,
+        partition,
+        ctx.actorId,
       );
       if (outcome.kind === 'terminate') {
         terminated = outcome.record;

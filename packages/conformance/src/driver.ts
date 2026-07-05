@@ -176,7 +176,44 @@ export type ServerCapability =
   | 'signed-urls'
   | 'blobs'
   | 'crdt'
-  | 'leases';
+  | 'leases'
+  | 'validators';
+
+/**
+ * §6.7 declarative write-validation rule (JSON-able so it crosses the
+ * driver seam). A server driver interprets these into real per-table
+ * validators. The rule kinds are the minimum the catalog exercises; a
+ * driver that advertises the `validators` capability MUST implement all of
+ * them (an unknown kind is a driver bug, thrown loudly).
+ */
+export type ValidatorRuleSpec =
+  | {
+      /** Reject when `column`'s string value exceeds `max` chars. */
+      readonly kind: 'maxLength';
+      readonly column: string;
+      readonly max: number;
+      /** The host code the rejection carries (§6.7; non-reserved prefix). */
+      readonly code: string;
+    }
+  | {
+      /**
+       * Reject an UPDATE (a stored row exists) that changes `column` while
+       * the STORED row's `guardColumn` equals `guardValue` — a transition
+       * rule that must read the stored row (the §6.7 stored-row proof).
+       */
+      readonly kind: 'immutableWhen';
+      readonly column: string;
+      readonly guardColumn: string;
+      readonly guardValue: DriverRowValue;
+      readonly code: string;
+    };
+
+/** §6.7: install (or replace) per-table validators for the server under
+ * test. One rule per table; an empty map clears all validators. */
+export interface ValidatorInstallSpec {
+  readonly table: string;
+  readonly rule: ValidatorRuleSpec;
+}
 
 export interface ServerInstance {
   /**
@@ -230,6 +267,13 @@ export interface ServerInstance {
 
   /** Set the actor's allowed scopes (§3.2 step 3). `'*'` = any value. */
   setAllowedScopes(actorId: string, allowed: DriverScopeMap): Promise<void>;
+
+  /**
+   * `validators`: install §6.7 per-table write-validation hooks for the
+   * server under test (replacing any previously installed). Present only
+   * when the server driver advertises the `validators` capability.
+   */
+  installValidators?(specs: readonly ValidatorInstallSpec[]): Promise<void>;
   /** Make `resolveScopes` throw for every actor (fail-loud paths). */
   setResolverFailing(failing: boolean): Promise<void>;
 

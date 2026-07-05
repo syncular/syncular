@@ -20,6 +20,7 @@ import { schemaBumpScenarios } from './schema-bump';
 import { scopeScenarios } from './scopes';
 import { signedUrlScenarios } from './signed-url';
 import { sqliteImageScenarios } from './sqlite-image';
+import { validatorScenarios } from './validators';
 import { vectorScenarios } from './vectors';
 import { windowScenarios } from './window';
 import { wsRoundScenarios } from './ws-rounds';
@@ -42,6 +43,7 @@ export const CATALOG: readonly Scenario[] = [
   ...presenceScenarios,
   ...reconnectStormScenarios,
   ...windowScenarios,
+  ...validatorScenarios,
   ...errorScenarios,
   ...vectorScenarios,
 ];

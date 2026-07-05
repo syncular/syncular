@@ -31,6 +31,9 @@ import {
   SqliteServerStorage,
   SyncError,
   type SyncRequestContext,
+  ValidationRejection,
+  type Validator,
+  type ValidatorRegistry,
   verifySegmentToken,
 } from '@syncular-v2/server';
 import type {
@@ -47,6 +50,7 @@ import type {
   ServerDriver,
   ServerInstance,
   ServerRowState,
+  ValidatorInstallSpec,
 } from '../driver';
 import { bytesToHex } from '../raw';
 
@@ -81,6 +85,40 @@ function toDriverValue(value: RowValue): DriverRowValue {
   return value;
 }
 
+/**
+ * §6.7: compile one declarative rule spec into a real `Validator`. The
+ * interpreter is the driver's translation of the JSON-able seam spec into
+ * the host callback the server library actually runs — the same shape a
+ * real app author would write by hand.
+ */
+function compileValidatorRule(spec: ValidatorInstallSpec): Validator {
+  const rule = spec.rule;
+  if (rule.kind === 'maxLength') {
+    return (op) => {
+      if (op.row === undefined) return; // deletes carry no row
+      const value = op.row[rule.column];
+      if (typeof value === 'string' && value.length > rule.max) {
+        throw new ValidationRejection(
+          rule.code,
+          `${rule.column} exceeds ${rule.max} chars (§6.7)`,
+        );
+      }
+    };
+  }
+  // immutableWhen: an UPDATE that changes `column` is rejected while the
+  // STORED row's `guardColumn` equals `guardValue` — reads op.stored.
+  return (op) => {
+    if (op.row === undefined || op.stored === undefined) return; // insert/delete
+    if (op.stored[rule.guardColumn] !== rule.guardValue) return;
+    if (op.row[rule.column] !== op.stored[rule.column]) {
+      throw new ValidationRejection(
+        rule.code,
+        `${rule.column} is immutable while ${rule.guardColumn}=${String(rule.guardValue)} (§6.7)`,
+      );
+    }
+  };
+}
+
 /** §5.4 native scheme fixtures — the harness plays both signer and CDN. */
 const SIGNED_URL_KEY = 'conformance-signing-key';
 const SIGNED_URL_BASE = 'https://cdn.conformance.test/segments';
@@ -103,6 +141,8 @@ class TsServerInstance implements ServerInstance {
   #resolverFailing = false;
   #resolverOutage = false;
   #failNextIdempotencyLookup = false;
+  /** §6.7: installed per-table write validators (absent ⇒ feature off). */
+  #validators: ValidatorRegistry | undefined;
   readonly #signedUrls: SegmentUrlConfig | undefined;
   #signedUrlTtlSeconds: number;
   /** §7.3: the lease store + config, present iff `leases` was requested. */
@@ -235,6 +275,10 @@ class TsServerInstance implements ServerInstance {
         ? { signedUrls: this.#signedUrls }
         : {}),
       ...(this.#leases !== undefined ? { leases: this.#leases } : {}),
+      // §6.7: pass the installed validators (undefined ⇒ feature off).
+      ...(this.#validators !== undefined
+        ? { validators: this.#validators }
+        : {}),
       realtime: this.#hub,
     };
   }
@@ -391,6 +435,20 @@ class TsServerInstance implements ServerInstance {
     this.#allowed.set(actorId, allowed as ScopeMap);
   }
 
+  async installValidators(
+    specs: readonly ValidatorInstallSpec[],
+  ): Promise<void> {
+    if (specs.length === 0) {
+      this.#validators = undefined;
+      return;
+    }
+    const registry: Record<string, Validator> = {};
+    for (const spec of specs) {
+      registry[spec.table] = compileValidatorRule(spec);
+    }
+    this.#validators = registry;
+  }
+
   async setResolverFailing(failing: boolean): Promise<void> {
     this.#resolverFailing = failing;
   }
@@ -475,7 +533,14 @@ class TsServerInstance implements ServerInstance {
 
 export const tsServerDriver: ServerDriver = {
   name: 'ts-server',
-  capabilities: ['idempotency-fault', 'signed-urls', 'blobs', 'crdt', 'leases'],
+  capabilities: [
+    'idempotency-fault',
+    'signed-urls',
+    'blobs',
+    'crdt',
+    'leases',
+    'validators',
+  ],
   async create(options: ServerCreateOptions): Promise<ServerInstance> {
     return new TsServerInstance(options);
   },
