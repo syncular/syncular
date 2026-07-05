@@ -637,6 +637,15 @@ Column types (shared by the row codec and rows segments; tags on the wire):
 | `7` | `blob_ref` | `str` containing a **canonical BlobRef JSON document** (§5.9.1). On the wire and in the codec a `blob_ref` is byte-for-byte a `str`, decoded and re-encoded exactly like `json` (tag 5): the value MUST parse as JSON **and** satisfy the BlobRef shape (§5.9.1) at row-codec decode, else a decode error (`sync.invalid_request`, in §5.2's closed list); the raw string is preserved verbatim for re-encoding. The distinct tag exists so schema, apply, and query surfaces recognize a column as a *reference to blob bytes* — but SSG2, `COMMIT` payloads, push payloads, and conflict `serverRow` carry it with zero codec cost because it rides the `json` machinery |
 | `8` | `crdt` | `bytes` containing an **opaque CRDT update/state** (§5.10). On the wire and in the codec a `crdt` value is byte-for-byte a `bytes` (tag 6): a `u32` length prefix plus raw bytes, with **no structural validation at decode** — the bytes are host/merger-opaque (a Yjs update, a state vector, an RGA log; the codec neither parses nor trusts them). The distinct tag exists so schema, apply, and query surfaces recognize a column as *collaborative state the server merges rather than overwrites* (§5.10, §6.2 crdt interaction) — but SSG2, `COMMIT` payloads, push payloads, and conflict `serverRow` carry it with zero codec cost because it rides the `bytes` machinery. Beyond the tag, the schema IR marks a `crdt` column with a `crdtType` name (§5.10.1) that selects the server merger; `crdtType` is IR metadata, **never on the wire** (unlike `nullable`, which is), so it does not appear in the SSG2 column table |
 
+**Encrypted columns (§5.11).** A column marked for client-side encryption
+carries `type = bytes` (tag 6) on the wire and in the codec — the ciphertext
+envelope (§5.11) rides the `bytes` machinery with zero new codec branch,
+exactly like `crdt`. The IR additionally records `encrypted: true` and
+`declaredType` (the pre-flip app type); both are **IR metadata, never on the
+wire** (like `crdtType`), so the SSG2 column table still carries only
+name/type/nullable and the golden vectors are untouched. The codec neither
+encrypts nor decrypts — that is the client apply/encode seam (§5.11).
+
 Tags 1–6 are unchanged from v1's binary-table-v1 tag assignment; tag 7
 (`blob_ref`) is new in v2 (§5.9, the blobs rung) and tag 8 (`crdt`) is new
 in v2 (§5.10, the CRDT-fields rung). Both are codec-shaped identically to an
@@ -2191,6 +2200,178 @@ separate object).
 
 ---
 
+### 5.11 Client-side encryption (E2EE) — opt-in per column
+
+Selected columns may be **encrypted end-to-end**: the client encrypts the
+value before it leaves the device and decrypts it after it arrives; the
+server stores and serves **ciphertext** and never holds a key. This is the
+one rung where a value's plaintext is invisible to the server, so its scope
+is deliberately narrow and its constraints are hard.
+
+**The architecture — encrypt at the wire boundary, plaintext locally.** The
+local SQLite mirror stays **plaintext** (local queries, named queries, and
+indexes keep working over real values). Encryption happens only at the
+wire boundary: a configured column is encrypted when the outbox **encodes a
+commit for send** (§6.1, §7.1) and decrypted when a `COMMIT` (§4.5) or a
+rows segment (§5.2) **applies** to the local mirror. The row codec (§2.4) is
+**unchanged** — it never encrypts. An encrypted column's **wire and stored
+type is `bytes` (tag 6)** regardless of its declared app type; the codec
+sees an ordinary `bytes` value carrying the ciphertext envelope below. Both
+cores implement encrypt-on-encode and decrypt-on-apply symmetric to each
+other; the golden vectors (§ Appendix A) are untouched because no wire tag
+or frame is added.
+
+**The schema IR marks the column.** A column's encryption is **app
+configuration**, not DDL — it is declared in the generated-client manifest
+(`syncular.json`, per-table `encryptedColumns`), not in a migration. The IR
+records it as two additive per-column fields (like `crdtType`, never on the
+wire): `encrypted: true` and `declaredType` (the pre-flip app type —
+`string`, `json`, `integer`, …). The IR's `type` is set to `bytes` (the
+wire type). Emitters keep typing the **app-side** value as `declaredType`;
+the codec and local storage carry the ciphertext/plaintext per that type.
+Columns without `encrypted` are byte-identical in the IR to before this
+rung.
+
+**Hard generate-time errors (fail loud, §typegen).** A generated client
+**MUST** reject at generate time:
+
+1. an **encrypted scope column** — scope values are extracted server-side
+   (§3.1) and MUST stay plaintext;
+2. an **encrypted `crdt` column** — the server merges `crdt` bytes
+   plaintext (§5.10.3), which is impossible over ciphertext;
+3. an **encrypted primary key** — the pk renders the `rowId` (§2.2), a
+   plaintext server-side identity;
+4. an `encryptedColumns` entry naming a column the table does not declare.
+
+**The ciphertext envelope — byte-exact, cross-core.** An encrypted column's
+`bytes` value is the following envelope. All fields are contiguous, no
+padding; the whole thing is the `bytes` payload the row codec length-prefixes
+(§2.4). A `NULL` value is **not** encrypted — it stays `NULL` (the null
+bitmap already hides it; encrypting NULL would leak nothing and cost a
+distinguishable envelope), so an encrypted column is exactly as nullable as
+declared.
+
+| Field | Bytes | Value |
+|---|---|---|
+| `version` | 1 | `0x01` (envelope version; any other byte is `client.decrypt_failed`) |
+| `keyIdLen` | 1 | `u8` length of `keyId` in UTF-8 bytes |
+| `keyId` | `keyIdLen` | UTF-8 key identifier (selects the key; see below) |
+| `nonce` | 12 | AES-GCM nonce (96-bit, the GCM standard) |
+| `ciphertext` | rest | AES-256-GCM ciphertext **with the 16-byte tag appended** (the standard "combined" GCM output) |
+
+- **Cipher:** AES-256-GCM. The key is 32 bytes. The GCM **additional
+  authenticated data (AAD)** is the empty string (no AAD): key scoping is by
+  `keyId`, and binding to table/row is an app choice via the key it selects,
+  not baked into the envelope.
+- **The GCM plaintext is the declared-type value serialized to canonical
+  bytes** by the value serializer below — *not* a re-run of the row codec.
+  This makes the envelope self-describing per `declaredType` (both cores
+  agree byte-for-byte), and it means a `string`/`json`/`integer` column
+  encrypts and decrypts to exactly its declared JS/Rust value.
+
+**Value serializer (declared type ⇄ plaintext bytes), byte-exact:**
+
+| `declaredType` | Plaintext bytes fed to GCM |
+|---|---|
+| `string` | UTF-8 bytes of the string |
+| `json` | UTF-8 bytes of the raw JSON document string (preserved verbatim, §2.4 tag 5) |
+| `blob_ref` | UTF-8 bytes of the canonical BlobRef string (§5.9.1) |
+| `integer` | 8 bytes, `i64` little-endian (the ±(2^53−1) contract, §Conventions) |
+| `float` | 8 bytes, `f64` IEEE-754 little-endian |
+| `boolean` | 1 byte, `0x00`/`0x01` |
+| `bytes` | the raw bytes verbatim |
+
+`crdt` is absent by rule 2 above. On decrypt, the plaintext bytes are parsed
+back per `declaredType` (a `json`/`blob_ref` value is re-validated exactly as
+the row codec would, §2.4); a parse failure is `client.decrypt_failed`.
+
+**Key selection — `keyId` and the `keyProvider`.** The client is configured
+with a **key provider**: `keyId → 32-byte key`, plus a **`keyIdFor(table,
+rowId) → keyId`** hook that names the key for a given write (default:
+**per-table**, `keyId = table`). On encode the client resolves `keyId` via
+`keyIdFor`, embeds it in the envelope, and encrypts with
+`keyProvider(keyId)`. On apply the client reads `keyId` **from the
+envelope** and decrypts with `keyProvider(keyId)` — so key rotation and
+per-scope keys work without a schema change: the envelope is
+self-describing. A `keyId` the provider does not know, or a wrong key
+(GCM tag mismatch), is `client.decrypt_failed`.
+
+**`client.decrypt_failed` (client-local, §10.3).** Decrypt failures —
+unknown envelope version, unknown `keyId`, GCM authentication failure,
+malformed envelope, or a post-decrypt value-parse failure — surface as the
+client-local code `client.decrypt_failed` (never on the wire; the `client.`
+family is client-only per §10.3). It is not retryable: a wrong or missing
+key does not fix itself. The client raises it at the apply seam
+(§4.5/§5.6); the app decides whether to skip the row, halt, or surface a
+re-key prompt.
+
+**Nonce discipline.** The 12-byte nonce **MUST** be from a cryptographically
+secure RNG on every production encrypt (never reused with the same key —
+GCM's one hard requirement). The nonce source is **injectable** so golden
+crypto vectors can pin a fixed nonce (Appendix A `crypto/*`); the fixed
+nonce is a test-only injection and **MUST NOT** be reachable from a
+production encode path.
+
+**Server consequences — honest about what the server sees.**
+
+- **sqlite-image ineligibility.** A rows segment (§5.2) decodes and applies
+  **per row**, so the client decrypts each encrypted value on apply. A
+  **sqlite image** (§5.3) is copied into the local mirror **wholesale**
+  (`INSERT … SELECT`) with no per-row codec pass, so its ciphertext would
+  land undecrypted in a plaintext-typed local column. Therefore **a table
+  with any encrypted column is excluded from sqlite-image eligibility**: the
+  server MUST serve it via the **rows lane** only (it never mints or offers a
+  `mediaType = sqlite` segment for such a table), regardless of the client's
+  accept bit 2. The server knows this from the schema IR (the table has an
+  encrypted column); it is a server-side eligibility rule, not a wire
+  negotiation.
+- **Write-validators see ciphertext (§6.7).** A §6.7 write-validator runs
+  server-side and receives the row that will persist; for an encrypted
+  column that value is the **ciphertext envelope** (`bytes`), which the
+  server cannot decrypt. A validator therefore MUST NOT assert on the
+  plaintext of an encrypted column — it can only see that a value is present
+  and well-formed as `bytes`. This is the honest cost of E2EE: business
+  rules over encrypted content live on the client, before the write.
+- **Scopes and CRDT are unaffected** because encrypted scope/crdt columns
+  are forbidden (the hard errors above): the server extracts scopes from
+  plaintext scope columns (§3.1) and merges plaintext `crdt` bytes
+  (§5.10.3) exactly as before.
+
+**Asymmetric ("async") encryption — key-sharing utilities, not wire
+protocol.** Sharing a table/scope key to another member is done with
+**X25519 sealed-box key wrapping**, provided as **utilities on both cores**
+(key generation, wrap, unwrap) — it is **not** part of the sync wire
+protocol. To wrap a 32-byte symmetric key `K` to a recipient X25519 public
+key `P`:
+
+1. generate an ephemeral X25519 keypair `(e, E)`;
+2. `shared = X25519(e, P)`;
+3. `wrapKey = HKDF-SHA256(ikm = shared, salt = "", info = "syncular/e2ee/x25519-wrap/v1", len = 32)`;
+4. `wrapped = AES-256-GCM(key = wrapKey, nonce = 12 random bytes, plaintext = K)` (tag appended);
+5. the wrap output is the envelope **`0x01 | E (32 bytes) | nonce (12) |
+   wrapped (K.len + 16)`** — a self-contained blob the recipient unwraps
+   with their private key by recomputing `shared = X25519(recipientPriv,
+   E)` and the same HKDF.
+
+Key **distribution** rides the app's own channel or a **synced table of
+wrapped keys** (the recommended pattern): a table whose rows are
+`(keyId, recipientPubId, wrappedKeyBytes)` — the `wrappedKeyBytes` column is
+an ordinary `bytes` column (it is already ciphertext; it does **not** need
+the §5.11 per-column encryption, and MUST NOT since it carries no plaintext
+the server could see anyway). A member with the matching private key
+unwraps to recover `K`, then feeds it to their `keyProvider`. The docs page
+gives the full recipe.
+
+**Conformance (§Appendix B, cross-core).** New scenarios prove both cores
+agree: an encrypted round-trip (TS writes / Rust reads via a shared fixture
+key and vice versa; a raw-driver assertion confirms the **server row holds a
+ciphertext envelope, not plaintext**), a wrong-key apply surfacing
+`client.decrypt_failed`, and committed crypto **test vectors** (fixed-nonce
+AES-GCM encrypt vectors and X25519 wrap/unwrap vectors under
+`spec/vectors/crypto/`) that both cores reproduce byte-for-byte.
+
+---
+
 ## 6. Push, conflicts, results
 
 ### 6.1 `PUSH_COMMIT` frame
@@ -3430,8 +3611,12 @@ for `blob.not_found`, as a push operation-result `error` record.
 Removed from the wire catalog (v1 had 63 codes): all client-local codes
 (`sync.offline`, `sync.transport_failed`, `sync.outbox_incompatible`
 [§7.4.4 — a pending commit cannot re-encode under the new schema after a
-bump], `storage.*`, `worker.*`, `runtime.*`) — client SDKs may keep such
-codes internally but they are not protocol; `sync.integrity_rejected`, `sync.websocket_not_configured`,
+bump], `client.decrypt_failed` [§5.11 — an encrypted column failed to
+decrypt on apply: unknown envelope version, unknown `keyId`, GCM
+authentication failure (wrong key), a malformed envelope, or a post-decrypt
+value-parse failure; category `crypto`, non-retryable, raised at the apply
+seam, never on the wire], `storage.*`, `worker.*`, `runtime.*`) — client
+SDKs may keep such codes internally but they are not protocol; `sync.integrity_rejected`, `sync.websocket_not_configured`,
 and `sync.unsupported_operation` (no v2 producer — the wire `op` byte
 admits only upsert/delete and v2 defines no per-table operation
 restriction; reserved if such a capability lands); `console.*`,
@@ -3583,6 +3768,8 @@ byte-identical output):
 | 19 | `response/commit-crdt-merge` | A `COMMIT` upsert whose row carries a merged `crdt` column (§5.10.3): the merged bytes ride the ordinary change payload, no CRDT-specific frame |
 | 20 | `response/lease-issued` | `RESP_HEADER` + `LEASE` (§7.3.2) + an active subscription section: pins the new `0x19` frame (`leaseId`, `expiresAtMs`) in its grammar position; existing fixtures untouched (the §9 new-tag-needs-pinning rule met by a new case) |
 | 21 | `realtime/presence-publish` + `realtime/presence-fanout` | JSON control vectors (`.json` only — no binary form): a client→server publish (§8.6.2 `{scopeKey, doc}`) and a server→client `join` fanout (`{scopeKey, kind, actorId, clientId, doc, timestamp}`). Pins the new `presence` event shape in both directions; a feature-off peer ignores it by event name (§8.6), so no binary vector or wire-version bump |
+| 22 | `crypto/aes-gcm-*` | §5.11 ciphertext envelope, byte-pinned per `declaredType` with a **fixed** key and nonce (test-only injection): one case per value type (`string`, `json`, `integer`, `float`, `boolean`, `bytes`) — plaintext value, key, nonce, and expected envelope bytes. Both cores reproduce the envelope byte-for-byte and round-trip decrypt. A separate `crypto/` kind (not a wire message; the envelope is a codec-level value, exercised directly, not inside an SSP2 frame) |
+| 23 | `crypto/x25519-wrap` | §5.11 X25519 sealed-box key wrap: a fixed recipient keypair, a fixed ephemeral secret and nonce, a fixed 32-byte symmetric key, and the expected wrap envelope; both cores wrap to the same bytes and unwrap back to the key. Proves the async-encryption utilities are cross-core byte-compatible |
 | — | `request/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload |
 | — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`) |
 | — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1) |

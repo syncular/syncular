@@ -33,6 +33,13 @@ export interface IrColumn {
   /** For a `crdt` column (§5.10.1): the merger name (default `yjs-doc`).
    * Present only for `crdt`; serialized after `nullable` when set. */
   readonly crdtType?: string;
+  /** §5.11: this column is encrypted end-to-end. When set, `type` is `bytes`
+   * (the wire type) and `declaredType` is the pre-flip app type. Both are IR
+   * metadata (never on the wire, like `crdtType`). Present only for encrypted
+   * columns, so non-encrypted columns stay byte-identical in the IR. */
+  readonly encrypted?: boolean;
+  /** §5.11: the app-side type of an encrypted column. Present iff `encrypted`. */
+  readonly declaredType?: IrColumnType;
 }
 
 /** One §3.1 scope pattern, fully resolved (no re-parsing downstream). */
@@ -144,6 +151,12 @@ export function serializeIr(ir: IrDocument): string {
         // §5.10.1: crdtType is IR metadata (never on the wire); emitted only
         // for crdt columns so non-crdt column diffs stay byte-identical.
         ...(column.crdtType !== undefined ? { crdtType: column.crdtType } : {}),
+        // §5.11: encrypted/declaredType are IR metadata (never on the wire);
+        // emitted only for encrypted columns so non-encrypted diffs stay
+        // byte-identical.
+        ...(column.encrypted === true
+          ? { encrypted: true, declaredType: column.declaredType }
+          : {}),
       })),
       scopes: table.scopes.map((scope) => ({
         pattern: scope.pattern,

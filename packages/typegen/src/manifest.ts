@@ -50,6 +50,14 @@ export interface ManifestTable {
   readonly name: string;
   readonly scopes: readonly ManifestScopeSpec[];
   readonly extensions: Readonly<Record<string, unknown>>;
+  /**
+   * §5.11: columns to encrypt end-to-end. App config (not DDL): the IR flips
+   * each named column's wire type to `bytes` and records `encrypted` +
+   * `declaredType`. Absent/empty for tables with no encryption (byte-identical
+   * IR to before this rung). Hard errors (encrypted scope/crdt/pk column, or
+   * an unknown column) are enforced at generate time.
+   */
+  readonly encryptedColumns: readonly string[];
 }
 
 export interface ManifestSubscription {
@@ -235,10 +243,32 @@ function parseDartOutput(value: unknown): DartOutput {
 function parseTable(value: unknown, index: number): ManifestTable {
   const context = `tables[${index}]`;
   const obj = asObject(value, context);
-  rejectUnknownKeys(obj, ['name', 'scopes', 'extensions'], context);
+  rejectUnknownKeys(
+    obj,
+    ['name', 'scopes', 'extensions', 'encryptedColumns'],
+    context,
+  );
   const name = asString(obj.name, `${context}.name`);
   if (!Array.isArray(obj.scopes) || obj.scopes.length === 0) {
     fail(`table ${name}: scopes must be a non-empty array (§3.1)`);
+  }
+  let encryptedColumns: string[] = [];
+  if (obj.encryptedColumns !== undefined) {
+    if (!Array.isArray(obj.encryptedColumns)) {
+      fail(`table ${name}: encryptedColumns must be an array of column names`);
+    }
+    encryptedColumns = obj.encryptedColumns.map((c, i) =>
+      asString(c, `table ${name} encryptedColumns[${i}]`),
+    );
+    const seen = new Set<string>();
+    for (const col of encryptedColumns) {
+      if (seen.has(col)) {
+        fail(
+          `table ${name}: duplicate encryptedColumns entry ${JSON.stringify(col)}`,
+        );
+      }
+      seen.add(col);
+    }
   }
   return {
     name,
@@ -246,6 +276,7 @@ function parseTable(value: unknown, index: number): ManifestTable {
       parseScopeSpec(spec, `table ${name} scopes[${i}]`),
     ),
     extensions: parseExtensions(obj.extensions, `table ${name}`),
+    encryptedColumns,
   };
 }
 

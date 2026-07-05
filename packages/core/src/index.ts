@@ -10,6 +10,7 @@ export * from './blob-ref';
 export * from './bytes';
 export * from './canonical-json';
 export * from './constants';
+export * from './crypto';
 export * from './errors';
 export * from './frames';
 export * from './message';

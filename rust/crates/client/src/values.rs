@@ -2,12 +2,34 @@
 //! convention) ↔ the §2.4 row-codec values ↔ SQLite storage, plus the §11.2
 //! canonical scope JSON (contractual across implementations).
 
+use std::collections::HashMap;
+
 use serde_json::{Map, Value};
 use ssp2::primitives::{RawJson, Reader, Writer};
 use ssp2::segment::{decode_row, encode_row, Column, ColumnType, ColumnValue, Row};
 use ssp2::util::utf16_lt;
 
 use crate::schema::TableSchema;
+
+/// §5.11 client-side encryption keys (`keyId → 32-byte key`) plus optional
+/// key selection. Empty ⇒ E2EE off. `key_id_for` defaults to per-table
+/// (`keyId = table`). Always present on the client; the crypto is compiled
+/// only under the `e2ee` feature.
+#[derive(Debug, Clone, Default)]
+pub struct EncryptionConfig {
+    pub keys: HashMap<String, Vec<u8>>,
+}
+
+impl EncryptionConfig {
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    /// §5.11 default key selection: per-table (`keyId = table`).
+    pub fn key_id_for(&self, table: &str, _row_id: &str) -> String {
+        table.to_owned()
+    }
+}
 
 pub fn bytes_to_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -111,28 +133,172 @@ pub fn column_value_to_json(value: &Option<ColumnValue>) -> Value {
 }
 
 /// Encode one full row (driver JSON values keyed by column name) with the
-/// generated row codec (§2.4, §6.1).
+/// generated row codec (§2.4, §6.1). §5.11: encrypted columns are encrypted
+/// here — the encode-at-send seam — before the codec serializes them as
+/// ciphertext-envelope `bytes` using `wire_columns`.
 pub fn encode_row_json(
     table: &TableSchema,
+    row_id: &str,
     values: &Map<String, Value>,
+    encryption: &EncryptionConfig,
 ) -> Result<Vec<u8>, String> {
+    // Build the row from the LOCAL (declared-type) columns.
     let mut row: Row = Vec::with_capacity(table.columns.len());
     for column in &table.columns {
         row.push(json_to_column_value(column, values.get(&column.name))?);
     }
+    if table.has_encrypted_columns() {
+        encrypt_row(table, row_id, &mut row, encryption)?;
+    }
+    // Serialize with the WIRE columns (encrypted columns are `bytes`).
     let mut w = Writer::new();
-    encode_row(&mut w, &table.columns, &row);
+    encode_row(&mut w, &table.wire_columns, &row);
     Ok(w.into_bytes())
 }
 
-/// Decode one row-codec payload; trailing bytes are a decode error.
-pub fn decode_row_bytes(table: &TableSchema, payload: &[u8]) -> Result<Row, String> {
+/// Decode one row-codec payload; trailing bytes are a decode error. §5.11:
+/// encrypted columns are decrypted here — the apply seam — back to their
+/// declared-type plaintext value for the local mirror.
+pub fn decode_row_bytes(
+    table: &TableSchema,
+    payload: &[u8],
+    encryption: &EncryptionConfig,
+) -> Result<Row, String> {
     let mut r = Reader::new(payload);
-    let row = decode_row(&mut r, &table.columns).map_err(|e| e.to_string())?;
+    // Decode with the WIRE columns (encrypted columns arrive as `bytes`).
+    let mut row = decode_row(&mut r, &table.wire_columns).map_err(|e| e.to_string())?;
     if !r.is_empty() {
         return Err("row payload has trailing bytes".to_owned());
     }
+    if table.has_encrypted_columns() {
+        decrypt_row(table, &mut row, encryption)?;
+    }
     Ok(row)
+}
+
+/// §5.11: decrypt the encrypted columns of an already-decoded segment row
+/// (rows segments decode via their own column table, so decryption is a
+/// post-decode pass over the positional values).
+pub fn decrypt_segment_row(
+    table: &TableSchema,
+    row: &mut Row,
+    encryption: &EncryptionConfig,
+) -> Result<(), String> {
+    decrypt_row(table, row, encryption)
+}
+
+// -- §5.11 encrypt/decrypt seam (feature-gated) ------------------------------
+
+#[cfg(feature = "e2ee")]
+fn encrypt_row(
+    table: &TableSchema,
+    row_id: &str,
+    row: &mut Row,
+    encryption: &EncryptionConfig,
+) -> Result<(), String> {
+    use rand_core::RngCore;
+    use ssp2::crypto::{encrypt_value, NONCE_LENGTH};
+    for enc in &table.encrypted_columns {
+        let Some(value) = row.get(enc.index).and_then(|v| v.as_ref()) else {
+            continue; // NULL stays NULL (§5.11)
+        };
+        let plain = column_value_to_plain(value)?;
+        let key_id = encryption.key_id_for(&table.name, row_id);
+        let key = encryption
+            .keys
+            .get(&key_id)
+            .ok_or_else(|| format!("client.decrypt_failed: no key for keyId {key_id:?}"))?;
+        let mut nonce = [0u8; NONCE_LENGTH];
+        rand_core::OsRng.fill_bytes(&mut nonce);
+        let envelope = encrypt_value(&plain, &key_id, key, nonce)?;
+        row[enc.index] = Some(ColumnValue::Bytes(envelope));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "e2ee")]
+fn decrypt_row(
+    table: &TableSchema,
+    row: &mut Row,
+    encryption: &EncryptionConfig,
+) -> Result<(), String> {
+    use ssp2::crypto::{decrypt_value, DeclaredType};
+    for enc in &table.encrypted_columns {
+        let Some(value) = row.get(enc.index).and_then(|v| v.as_ref()) else {
+            continue;
+        };
+        let ColumnValue::Bytes(envelope) = value else {
+            return Err(format!(
+                "client.decrypt_failed: encrypted column at index {} is not bytes",
+                enc.index
+            ));
+        };
+        let declared = DeclaredType::from_name(&enc.declared_type)
+            .ok_or_else(|| format!("unknown declaredType {:?}", enc.declared_type))?;
+        let keys = &encryption.keys;
+        let plain = decrypt_value(declared, envelope, |id| keys.get(id).cloned())
+            .map_err(|e| e.to_string())?;
+        row[enc.index] = Some(plain_to_column_value(plain));
+    }
+    Ok(())
+}
+
+/// Without the `e2ee` feature, a schema with encrypted columns is a
+/// misconfiguration — fail loud rather than ship plaintext.
+#[cfg(not(feature = "e2ee"))]
+fn encrypt_row(
+    table: &TableSchema,
+    _row_id: &str,
+    _row: &mut Row,
+    _encryption: &EncryptionConfig,
+) -> Result<(), String> {
+    Err(format!(
+        "table {:?} has encrypted columns but this build lacks the e2ee feature (§5.11)",
+        table.name
+    ))
+}
+
+#[cfg(not(feature = "e2ee"))]
+fn decrypt_row(
+    table: &TableSchema,
+    _row: &mut Row,
+    _encryption: &EncryptionConfig,
+) -> Result<(), String> {
+    Err(format!(
+        "table {:?} has encrypted columns but this build lacks the e2ee feature (§5.11)",
+        table.name
+    ))
+}
+
+#[cfg(feature = "e2ee")]
+fn column_value_to_plain(value: &ColumnValue) -> Result<ssp2::crypto::PlainValue, String> {
+    use ssp2::crypto::PlainValue;
+    Ok(match value {
+        ColumnValue::String(s) => PlainValue::String(s.clone()),
+        ColumnValue::Integer(i) => PlainValue::Integer(*i),
+        ColumnValue::Float(f) => PlainValue::Float(*f),
+        ColumnValue::Boolean(b) => PlainValue::Boolean(*b),
+        ColumnValue::Json(j) => PlainValue::Json(j.0.clone()),
+        ColumnValue::BlobRef(j) => PlainValue::BlobRef(j.0.clone()),
+        ColumnValue::Bytes(b) => PlainValue::Bytes(b.clone()),
+        ColumnValue::Crdt(_) => {
+            return Err("crdt columns cannot be encrypted (§5.11)".to_owned())
+        }
+    })
+}
+
+#[cfg(feature = "e2ee")]
+fn plain_to_column_value(value: ssp2::crypto::PlainValue) -> ColumnValue {
+    use ssp2::crypto::PlainValue;
+    match value {
+        PlainValue::String(s) => ColumnValue::String(s),
+        PlainValue::Integer(i) => ColumnValue::Integer(i),
+        PlainValue::Float(f) => ColumnValue::Float(f),
+        PlainValue::Boolean(b) => ColumnValue::Boolean(b),
+        PlainValue::Json(s) => ColumnValue::Json(RawJson(s)),
+        PlainValue::BlobRef(s) => ColumnValue::BlobRef(RawJson(s)),
+        PlainValue::Bytes(b) => ColumnValue::Bytes(b),
+    }
 }
 
 /// Render a primary-key value as the wire `rowId` string.

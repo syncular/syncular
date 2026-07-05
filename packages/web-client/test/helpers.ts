@@ -8,6 +8,7 @@
 
 import {
   type ClientSchema,
+  type EncryptionConfig,
   type SegmentFetchRequest,
   SyncClient,
   type SyncClientConfig,
@@ -125,7 +126,7 @@ function wrapStorage(
   };
 }
 
-export function makeServer(): TestServer {
+export function makeServer(schema: ServerSchema = SERVER_SCHEMA): TestServer {
   const storage = new SqliteServerStorage();
   const segments = new MemorySegmentStore();
   const allowed: Record<string, ScopeMap> = {};
@@ -147,7 +148,7 @@ export function makeServer(): TestServer {
   };
   const wrapped = wrapStorage(storage, faults);
   const hub = createRealtimeHub({
-    schema: SERVER_SCHEMA,
+    schema,
     storage: wrapped,
     resolveScopes,
     clock: () => now.ms,
@@ -168,7 +169,7 @@ export function makeServer(): TestServer {
     ctxFor: (actorId) => ({
       partition: PARTITION,
       actorId,
-      schema: SERVER_SCHEMA,
+      schema,
       storage: wrapped,
       segments,
       resolveScopes,
@@ -199,6 +200,7 @@ export interface MakeClientOptions {
   readonly actorId?: string;
   readonly schema?: ClientSchema;
   readonly limits?: SyncClientLimits;
+  readonly encryption?: EncryptionConfig;
 }
 
 export async function makeClient(
@@ -219,6 +221,9 @@ export async function makeClient(
     clientId: options.clientId,
     now: () => server.now.ms,
     ...(options.limits !== undefined ? { limits: options.limits } : {}),
+    ...(options.encryption !== undefined
+      ? { encryption: options.encryption }
+      : {}),
     transport: async (bytes) => {
       const response = await handleSyncRequest(bytes, server.ctxFor(actorId));
       if (faults.dropResponseOnce) {

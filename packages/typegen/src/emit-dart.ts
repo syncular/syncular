@@ -28,6 +28,15 @@ const DART_TYPE: Readonly<Record<IrColumnType, string>> = {
   crdt: 'List<int>',
 };
 
+/** §5.11: app-side Dart type — declaredType for an encrypted column. */
+function appDartType(column: IrTable['columns'][number]): string {
+  const type =
+    column.encrypted === true && column.declaredType !== undefined
+      ? column.declaredType
+      : column.type;
+  return DART_TYPE[type];
+}
+
 function pascalCase(name: string): string {
   return name
     .split(/[_-]+/)
@@ -64,6 +73,12 @@ function emitSchemaValue(ir: IrDocument, indent: string): string[] {
       ];
       if (column.crdtType !== undefined) {
         parts.push(`'crdtType': ${quote(column.crdtType)}`);
+      }
+      if (column.encrypted === true) {
+        parts.push("'encrypted': true");
+        parts.push(
+          `'declaredType': ${quote(column.declaredType ?? column.type)}`,
+        );
       }
       lines.push(`${i}        {${parts.join(', ')}},`);
     }
@@ -108,7 +123,7 @@ function emitClass(table: IrTable): string[] {
   lines.push(`/// One ${table.name} row (§2.4 column order).`);
   lines.push(`class ${type} {`);
   for (const column of table.columns) {
-    const dart = DART_TYPE[column.type];
+    const dart = appDartType(column);
     const opt = column.nullable ? '?' : '';
     lines.push(`  final ${dart}${opt} ${camelCase(column.name)};`);
   }

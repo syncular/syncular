@@ -138,6 +138,10 @@ pub struct SyncClient {
     /// Client clock (epoch ms) for the §5.4 `urlExpiresAtMs` check; the
     /// host may pin it (conformance runs on a virtual clock).
     now_ms: Option<i64>,
+    /// §5.11 client-side encryption keys (`keyId → key bytes`). Empty ⇒ E2EE
+    /// off. The encrypt/decrypt seam (`values.rs`) is compiled only under the
+    /// `e2ee` feature; without it, a schema with encrypted columns fails loud.
+    encryption: crate::values::EncryptionConfig,
 }
 
 fn quote_ident(name: &str) -> String {
@@ -395,6 +399,7 @@ impl SyncClient {
             realtime_connected: false,
             presence: HashMap::new(),
             now_ms: None,
+            encryption: crate::values::EncryptionConfig::default(),
         };
         client.create_tables()?;
         Ok(client)
@@ -404,6 +409,13 @@ impl SyncClient {
     /// against this instead of system time (conformance virtual clock).
     pub fn set_now_ms(&mut self, now_ms: i64) {
         self.now_ms = Some(now_ms);
+    }
+
+    /// §5.11: install the client-side encryption keys (`keyId → key bytes`).
+    /// The command router parses these from the `create` command's
+    /// `encryption` config (keys as `{$bytes: hex}`).
+    pub fn set_encryption(&mut self, encryption: crate::values::EncryptionConfig) {
+        self.encryption = encryption;
     }
 
     fn clock_now_ms(&self) -> i64 {
@@ -1038,9 +1050,10 @@ impl SyncClient {
                         .schema
                         .table(&table)
                         .ok_or_else(|| format!("unknown table {table:?}"))?;
-                    // Validate the payload encodes with the current codec.
-                    encode_row_json(schema_table, &values)?;
                     let row_id = render_row_id_json(values.get(&schema_table.primary_key))?;
+                    // Validate the payload encodes with the current codec
+                    // (and, §5.11, that the encrypt seam has its keys).
+                    encode_row_json(schema_table, &row_id, &values, &self.encryption)?;
                     ops.push(OutboxOp {
                         upsert: true,
                         table,
@@ -1393,8 +1406,9 @@ impl SyncClient {
                     let payload = op.values.as_ref().and_then(|values| {
                         let table = self.schema.table(&op.table)?;
                         // §0: outbox entries encode at send time with the
-                        // current codec (validated at mutate()).
-                        encode_row_json(table, values).ok()
+                        // current codec (validated at mutate()). §5.11:
+                        // encrypted columns are encrypted here.
+                        encode_row_json(table, &op.row_id, values, &self.encryption).ok()
                     });
                     ssp2::model::Operation {
                         table: op.table.clone(),
@@ -1765,7 +1779,11 @@ impl SyncClient {
                         let server_row_json = self
                             .schema
                             .table(&table)
-                            .and_then(|t| decode_row_bytes(t, server_row).ok().map(|row| (t, row)))
+                            .and_then(|t| {
+                                decode_row_bytes(t, server_row, &self.encryption)
+                                    .ok()
+                                    .map(|row| (t, row))
+                            })
                             .map(|(t, row)| {
                                 let mut map = Map::new();
                                 for (i, column) in t.columns.iter().enumerate() {
@@ -2113,10 +2131,12 @@ impl SyncClient {
                             "upsert change without row payload".to_owned(),
                         )
                     })?;
-                    let row = decode_row_bytes(table, payload)
+                    // §5.11: decrypt encrypted columns on apply.
+                    let row = decode_row_bytes(table, payload, &self.encryption)
                         .map_err(|m| ("sync.invalid_request".to_owned(), m))?;
                     let version = change.row_version.unwrap_or(0);
-                    self.write_base_row(&table.name.clone(), &row, version)
+                    let table_name = table.name.clone();
+                    self.write_base_row(&table_name, &row, version)
                         .map_err(|m| ("sync.invalid_request".to_owned(), m))?;
                 }
                 Op::Delete => {
@@ -2149,14 +2169,16 @@ impl SyncClient {
             )
         })?;
         // §5.2: the column table validates against the generated schema —
-        // order, names, types, nullability; mismatch is fatal.
+        // order, names, types, nullability; mismatch is fatal. §5.11: the
+        // server sends the WIRE types (bytes for an encrypted column), so
+        // validate against wire_columns.
         let matches = segment.table == table.name
             && segment.schema_version == self.schema.version
-            && segment.columns.len() == table.columns.len()
+            && segment.columns.len() == table.wire_columns.len()
             && segment
                 .columns
                 .iter()
-                .zip(table.columns.iter())
+                .zip(table.wire_columns.iter())
                 .all(|(a, b)| a.name == b.name && a.ty == b.ty && a.nullable == b.nullable);
         if !matches {
             return Err(SectionError::Abort(
@@ -2174,9 +2196,19 @@ impl SyncClient {
         let mut applied = 0u32;
         for block in &segment.blocks {
             for row in block {
+                // §5.11: a bootstrap segment carries ciphertext for encrypted
+                // columns; decrypt to plaintext before the local write.
+                let values = if table.has_encrypted_columns() {
+                    let mut values = row.values.clone();
+                    crate::values::decrypt_segment_row(&table, &mut values, &self.encryption)
+                        .map_err(|m| SectionError::Abort("client.decrypt_failed".to_owned(), m))?;
+                    values
+                } else {
+                    row.values.clone()
+                };
                 // §5.6: the row record's serverVersion is the row's
                 // last-known server_version, same as a COMMIT rowVersion.
-                self.write_base_row(&table.name, &row.values, row.server_version)
+                self.write_base_row(&table.name, &values, row.server_version)
                     .map_err(|m| SectionError::Abort("sync.invalid_request".to_owned(), m))?;
                 applied += 1;
             }

@@ -18,5 +18,7 @@ syncular-client = { path = "../client" }
 # identical convergence both directions. The shim is a proof binary (never
 # shipped), so the feature is on unconditionally: no special build flag for the
 # pairing, and the lean lane is still proven on the crate builds themselves.
-syncular-command = { path = "../command", features = ["crdt-yjs"] }
+# §5.11: e2ee is on too so the cross-core encryption conformance scenarios
+# exercise the Rust encrypt/decrypt seam against the TS core.
+syncular-command = { path = "../command", features = ["crdt-yjs", "e2ee"] }
 serde_json = "1"

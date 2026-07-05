@@ -32,6 +32,15 @@ const SWIFT_TYPE: Readonly<Record<IrColumnType, string>> = {
   crdt: '[UInt8]',
 };
 
+/** §5.11: app-side Swift type — declaredType for an encrypted column. */
+function appSwiftType(column: IrTable['columns'][number]): string {
+  const type =
+    column.encrypted === true && column.declaredType !== undefined
+      ? column.declaredType
+      : column.type;
+  return SWIFT_TYPE[type];
+}
+
 function pascalCase(name: string): string {
   return name
     .split(/[_-]+/)
@@ -69,6 +78,12 @@ function emitSchemaValue(ir: IrDocument, indent: string): string[] {
       ];
       if (column.crdtType !== undefined) {
         parts.push(`"crdtType": .string(${quote(column.crdtType)})`);
+      }
+      if (column.encrypted === true) {
+        parts.push('"encrypted": .bool(true)');
+        parts.push(
+          `"declaredType": .string(${quote(column.declaredType ?? column.type)})`,
+        );
       }
       lines.push(`${i}        .object([${parts.join(', ')}]),`);
     }
@@ -121,7 +136,7 @@ function emitStruct(table: IrTable): string[] {
   lines.push(`/// One ${table.name} row (§2.4 column order).`);
   lines.push(`public struct ${type}: Sendable, Equatable {`);
   for (const column of table.columns) {
-    const swift = SWIFT_TYPE[column.type];
+    const swift = appSwiftType(column);
     const opt = column.nullable ? '?' : '';
     lines.push(`    public let ${camelCase(column.name)}: ${swift}${opt}`);
   }
