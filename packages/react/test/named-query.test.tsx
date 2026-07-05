@@ -117,6 +117,34 @@ describe('useNamedQuery', () => {
     expect(client.queryCount).toBe(before + 1);
   });
 
+  test('scopeKeys option passes through: disjoint → no re-run, intersecting → re-run', async () => {
+    const client = new FakeClient();
+    client.setRows('todos', [{ id: 't1', title: 'a' }]);
+    const { result } = renderHook(
+      () =>
+        useNamedQuery(
+          listTodosQuery,
+          { listId: 'a' },
+          { scopeKeys: ['list:a'] },
+        ),
+      { wrapper: wrapper(client) },
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const before = client.queryCount;
+
+    // A todos event on a DIFFERENT scope key must not re-run.
+    act(() => client.emitInvalidate(['todos'], ['list:b']));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(client.queryCount).toBe(before);
+
+    // An intersecting scope key re-runs.
+    act(() => client.emitInvalidate(['todos'], ['list:a']));
+    await waitFor(() => expect(client.queryCount).toBe(before + 1));
+  });
+
   test('a JOIN descriptor depends on BOTH its tables', async () => {
     const client = new FakeClient();
     client.setRows('todos', [{ id: 't1', title: 'a' }]);

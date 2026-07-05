@@ -306,10 +306,70 @@ wire changes, zero server changes; sequenced AFTER the WS-native loop
       comments scope per-statement; global name uniqueness enforced at
       generate time with both source locations in the error. Zero churn in
       pre-existing outputs (all 11 manifests stayed --check fresh).
-- [ ] **Per-rowid invalidation refinement**: today's granularity is
-      table + scope-key (honest to the wire); a table→rowid dependency
-      option for hot single-row views was left room for in the design.
-      Demand-gated.
+- [x] **CREATE INDEX in the migration subset** (LANDED 2026-07-05): apps can
+      now declare local secondary indexes for their own query load —
+      `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table (col [, col…])`. The
+      parser accepts plain/compound/UNIQUE/IF-NOT-EXISTS; ASC/DESC, expression,
+      and partial (`WHERE`) index columns are hard errors (the IR models column
+      names only). The IR gains an additive per-table `indexes` field (no
+      `irVersion` bump; emitted only when non-empty, so all pre-index manifests
+      stayed `--check` fresh). Materialized as real SQLite indexes by the TS
+      web-client mirror, the Rust core's base/visible table pair, and typegen's
+      named-query type-check DB; recreated across the §7.4.3 schema-bump reset.
+      **Server-side is intentionally out of scope**: the server stores rows in a
+      generic `sync_rows` table with an opaque payload (no per-user-table SQL
+      columns exist there), so the scope inverted-index already covers server
+      reads and a user-column index has nothing to attach to.
+- [x] **Live-query churn hardening** (LANDED 2026-07-05): under constant
+      sync churn a naive live query re-renders and re-queries once per
+      invalidation event. The fix is three cheap levers on the shared hook
+      machinery (`packages/react/src/query-churn.ts` + `use-sync-query.ts`,
+      wired through `useNamedQuery`/`useTypedQuery` pass-through options), NOT
+      the per-rowid idea originally sketched here:
+      - **Result stability**. After a re-run, reconcile the fresh result
+        against the previous one (`reconcileRows`): whole-result deep-equal →
+        skip `setRows` entirely (zero re-render, proven by a render-count
+        probe; note this also required guarding the `isLoading`/`error` setters
+        — React does not reliably bail on a no-op `setState(sameValue)` when
+        other setters fire in the same batch). Changed → build the new array
+        but REUSE the previous row object at each index whose content is
+        unchanged, so `React.memo`'d row components keyed by row identity skip.
+        Row-identity mechanism (the honest key): the hook knows no primary key
+        — rows are plain JSON-able SQLite objects — so per-row content equality
+        IS the identity. Each row is hashed once with a key-sorted JSON
+        serialization and matched by index (a live query's ORDER BY makes index
+        the stable position). O(n) with one string hash per row; measured
+        ~0.2 ms for 1k narrow rows (bounded, well under a frame).
+      - **Frame-coalesced re-query scheduling** (`FrameScheduler`). A burst of
+        invalidation events between paints collapses to ONE re-run per query
+        (rAF when the host has it, microtask fallback for bun/worker — timer
+        -free, honoring the no-timers doctrine; a `flush()` gives tests a
+        deterministic drain, no sleeps). An event arriving DURING a re-run
+        marks dirty and re-runs exactly once after — never lost, never
+        concurrent.
+      - **Scope-key filtering**. When the hook has an explicit `scopeKeys`
+        option AND the event carries scope keys, a disjoint event is skipped;
+        a table-floor event (no scope keys, e.g. a segment/reset apply) ALWAYS
+        re-runs — under-running is forbidden (the honest granularity rule).
+      Tests: `packages/react/test/query-churn.test.ts` (reconcile/scheduler
+      units + the 1k-row cost measurement) and `churn.test.tsx` (the four
+      hook-level levers, act-hygienic); the I4 counter-proof and worker-handle
+      parity paths still pass unchanged.
+
+      *Why not per-rowid* (the ditched idea): a table→rowid dependency can
+      refine invalidation for a hot SINGLE-row view, but it structurally
+      cannot help a LIST query — any change to the table may enter or leave the
+      list's predicate (a new row matching the WHERE, an update crossing an
+      ORDER BY/LIMIT boundary), so the query must re-run regardless of which
+      rowid changed. Knowing *which rows a predicate now selects* without
+      re-running it is incremental view maintenance (IVM), a materialized
+      -view engine — the someday-if-ever answer, far heavier than these levers.
+      The churn levers cap render AND query cost for the common case (lists
+      under steady sync) at the hook layer, where per-rowid could not.
+      *Optional future refinement (typegen territory, OUT of scope this
+      round):* a generated named query could bake scope-key TEMPLATES where a
+      param binds a scope column, so the hook's `scopeKeys` derive from the
+      bound params automatically instead of being passed by hand.
 - [x] **Stabilize timing-sensitive test flakes under load** (LANDED 2026-07-04,
       building on fe09e277): the multi-tab flake's captured error — "cannot start
       a transaction within a transaction" (bun:sqlite) — was traced to TWO
