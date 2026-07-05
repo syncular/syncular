@@ -16,7 +16,7 @@
 
 use std::sync::Mutex;
 
-use syncular_client::{SegmentRequest, Transport, TransportError};
+use syncular_client::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 
 /// One inbound realtime frame buffered for the client's `on_realtime_*`.
 pub enum Inbound {
@@ -165,11 +165,32 @@ impl Transport for HostTransport {
         }
     }
 
-    fn blob_download(&mut self, blob_id: &str) -> Result<Vec<u8>, TransportError> {
+    fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
         match self {
             HostTransport::Null { .. } => Err(unavailable("blobDownload")),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.blob_download(blob_id),
+        }
+    }
+
+    fn fetch_blob_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+        match self {
+            HostTransport::Null { .. } => Err(unavailable("fetchBlobUrl")),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.fetch_blob_url(url),
+        }
+    }
+
+    fn blob_upload_grant(
+        &mut self,
+        blob_id: &str,
+        byte_length: u64,
+        media_type: Option<&str>,
+    ) -> Result<BlobUploadGrant, TransportError> {
+        match self {
+            HostTransport::Null { .. } => Ok(BlobUploadGrant::None),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.blob_upload_grant(blob_id, byte_length, media_type),
         }
     }
 
@@ -215,7 +236,9 @@ mod native {
     use tungstenite::{Message, WebSocket};
 
     use super::{Inbound, InboundBuffer};
-    use syncular_client::{RealtimeRound, RoundInbound, SegmentRequest, Transport, TransportError};
+    use syncular_client::{
+        BlobDownload, RealtimeRound, RoundInbound, SegmentRequest, Transport, TransportError,
+    };
 
     type Ws = WebSocket<MaybeTlsStream<TcpStream>>;
 
@@ -498,15 +521,45 @@ mod native {
             Ok(())
         }
 
-        fn blob_download(&mut self, blob_id: &str) -> Result<Vec<u8>, TransportError> {
+        fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
             let id = blob_id.strip_prefix("sha256:").unwrap_or(blob_id);
             let url = format!("{}/blobs/{}", self.base_url, id);
-            self.get_bytes(&url, true).map_err(|mut e| {
+            let mut req = self.agent.get(&url);
+            for (k, v) in &self.headers {
+                req = req.set(k, v);
+            }
+            let resp = req.call().map_err(|e| {
+                let e = http_err("GET blob", e);
                 if e.code == "transport.failed" {
-                    e = TransportError::new("blob.not_found", e.message);
+                    TransportError::new("blob.not_found", e.message)
+                } else {
+                    e
                 }
-                e
-            })
+            })?;
+            // 5.9.5 always-issue: a JSON body carries a presigned `url`; an
+            // octet-stream body is inline bytes. (Mirrors the FFI transport.)
+            let is_json = resp
+                .header("content-type")
+                .is_some_and(|ct| ct.contains("application/json"));
+            let body = read_body(resp)?;
+            if is_json {
+                if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) {
+                    if let Some(u) = parsed.get("url").and_then(|v| v.as_str()) {
+                        return Ok(BlobDownload::Url {
+                            url: u.to_owned(),
+                            url_expires_at_ms: parsed
+                                .get("urlExpiresAtMs")
+                                .and_then(|v| v.as_i64()),
+                        });
+                    }
+                }
+            }
+            Ok(BlobDownload::Bytes(body))
+        }
+
+        fn fetch_blob_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+            // 5.9.5: the URL is the entire grant — no host credentials.
+            self.get_bytes(url, false)
         }
 
         fn realtime_connect(&mut self) -> Result<(), TransportError> {

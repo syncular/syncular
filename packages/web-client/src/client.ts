@@ -45,6 +45,7 @@ import {
   type CachedBlob,
   clearPendingUpload,
   computeBlobId,
+  enforceBlobCacheCap,
   ensureBlobSchema,
   getCachedBlob,
   listPendingUploads,
@@ -232,6 +233,14 @@ export interface SyncClientConfig {
   readonly segments?: SegmentDownloader;
   /** Blob upload/download (§5.9). Required to use `uploadBlob`/`fetchBlob`. */
   readonly blobs?: BlobTransport;
+  /**
+   * §5.9.7 B1 blob-cache size cap (bytes). When the sum of cached body sizes
+   * exceeds this, zero-ref, non-pinned bodies are evicted LRU-first after each
+   * cache write (referenced/pinned bodies are never evicted — correctness
+   * beats the cap). Absent ⇒ retain until storage pressure (the shipped
+   * default; a referenced body always stays resolvable without a re-download).
+   */
+  readonly blobCacheMaxBytes?: number;
   readonly realtime?: RealtimeConnector;
   /** Stable per-device id (§1.5); defaults to a persisted random UUID. */
   readonly clientId?: string;
@@ -618,6 +627,10 @@ export class SyncClient {
       putCachedBlob(this.#db, blobId, bytes, this.#now(), options?.mediaType);
       recordPendingUpload(this.#db, blobId, this.#now(), options?.mediaType);
     });
+    // §5.9.7 B1: a staged upload is pinned (recordPendingUpload), so the cap
+    // trim below will never evict it — but a stage may push other zero-ref
+    // bodies over the cap, so run the trim.
+    this.#enforceBlobCacheCap();
     return {
       blobId,
       byteLength: bytes.length,
@@ -643,24 +656,55 @@ export class SyncClient {
     const blobId = blobIdOrRef.startsWith('sha256:')
       ? blobIdOrRef
       : parseBlobRef(blobIdOrRef).blobId;
-    const cached = getCachedBlob(this.#db, blobId);
+    const cached = getCachedBlob(this.#db, blobId, this.#now());
     if (cached !== undefined) return cached;
-    if (this.#config.blobs === undefined) {
+    const transport = this.#config.blobs;
+    if (transport === undefined) {
       throw new ClientSyncError(
         'sync.invalid_request',
         'fetchBlob requires a blob transport (SyncClientConfig.blobs, §5.9)',
       );
     }
-    const bytes = await this.#config.blobs.download(blobId);
+    // §5.9.5: the authorized endpoint serves bytes inline OR (always-issue,
+    // presign configured) a signed url the client fetches directly. On a url
+    // arm the client MUST NOT attach host auth and MUST NOT fall through:
+    // failure => re-request, the caller's next fetchBlob mints a fresh url.
+    const response = await transport.download(blobId);
+    let bytes: Uint8Array;
+    if (response.kind === 'url') {
+      if (transport.fetchUrl === undefined) {
+        throw new ClientSyncError(
+          'sync.invalid_request',
+          'blob download returned a url but the transport cannot fetch urls (§5.9.5)',
+        );
+      }
+      if (
+        response.urlExpiresAtMs !== undefined &&
+        response.urlExpiresAtMs <= this.#now()
+      ) {
+        // §5.9.5: MUST NOT start a fetch at/past expiry — re-request recovers.
+        throw new ClientSyncError(
+          'sync.segment_expired',
+          `blob url for ${blobId} expired before fetch — re-request mints a fresh url (§5.9.5)`,
+          true,
+        );
+      }
+      bytes = await transport.fetchUrl(response.url);
+    } else {
+      bytes = response.bytes;
+    }
     const computed = await computeBlobId(bytes);
     if (computed !== blobId) {
       // §5.9.5 inherits §5.1: verify the content address, reject on mismatch.
+      // On the url path this invalidates the fetch (no fall-through) — the
+      // next fetchBlob re-requests the authorized endpoint (§5.9.5 recovery).
       throw new ClientSyncError(
         'sync.invalid_request',
         `blob content address mismatch for ${blobId} (§5.9.5)`,
       );
     }
     putCachedBlob(this.#db, blobId, bytes, this.#now());
+    this.#enforceBlobCacheCap();
     const stored = getCachedBlob(this.#db, blobId);
     if (stored === undefined) {
       throw new ClientSyncError(
@@ -669,6 +713,13 @@ export class SyncClient {
       );
     }
     return stored;
+  }
+
+  /** §5.9.7 B1: trim the blob cache to the configured cap (no-op if unset). */
+  #enforceBlobCacheCap(): void {
+    const cap = this.#config.blobCacheMaxBytes;
+    if (cap === undefined) return;
+    enforceBlobCacheCap(this.#db, cap);
   }
 
   /** Flush any queued blob uploads (§5.9.7 B4); safe to call standalone. */
@@ -683,9 +734,57 @@ export class SyncClient {
         clearPendingUpload(this.#db, pending.blobId);
         continue;
       }
-      await transport.upload(pending.blobId, cached.bytes, pending.mediaType);
+      await this.#uploadOne(
+        transport,
+        pending.blobId,
+        cached.bytes,
+        pending.mediaType,
+      );
       clearPendingUpload(this.#db, pending.blobId);
     }
+  }
+
+  /**
+   * §5.9.3: upload one blob, preferring the presigned direct-to-storage grant
+   * when the transport supports it, else streaming through the direct endpoint
+   * (capability, not fallback). A `url` grant PUTs direct with no host auth; on
+   * a grant PUT failure the client streams through the direct endpoint — a
+   * *different, host-authenticated capability*, not a fall-through of the
+   * grant's authority (the direct endpoint was always the other path, B4).
+   */
+  async #uploadOne(
+    transport: BlobTransport,
+    blobId: string,
+    bytes: Uint8Array,
+    mediaType?: string,
+  ): Promise<void> {
+    if (
+      transport.uploadGrant !== undefined &&
+      transport.uploadToUrl !== undefined
+    ) {
+      const grant = await transport.uploadGrant(
+        blobId,
+        bytes.length,
+        mediaType,
+      );
+      if (grant.kind === 'present') return; // idempotent §5.9.3 — no PUT needed
+      if (grant.kind === 'url') {
+        if (
+          grant.urlExpiresAtMs === undefined ||
+          grant.urlExpiresAtMs > this.#now()
+        ) {
+          try {
+            await transport.uploadToUrl(grant.url, bytes, mediaType);
+            return;
+          } catch {
+            // Grant PUT failed — stream through the direct endpoint below.
+          }
+        }
+      }
+      // grant.kind === 'none' (no presign store) or a failed/expired grant:
+      // stream through the direct host-authenticated endpoint.
+    }
+    await transport.upload(blobId, bytes, mediaType);
   }
 
   get conflicts(): readonly ConflictRecord[] {

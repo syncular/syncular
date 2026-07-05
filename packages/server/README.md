@@ -344,7 +344,11 @@ deployment can now store blobs durably in an object store instead of the
 database.
 
 ```ts
-import { S3BlobStore, s3PresignedBlobUrls } from '@syncular/server';
+import {
+  S3BlobStore,
+  s3PresignedBlobUploads,
+  s3PresignedBlobUrls,
+} from '@syncular/server';
 
 const blobs = new S3BlobStore({
   endpoint: 'https://s3.us-east-1.amazonaws.com',
@@ -358,10 +362,53 @@ const blobs = new S3BlobStore({
 const config: SyncServerConfig = {
   // …schema, storage, segments, resolveScopes…
   blobs,
-  // Optional: serve blob downloads as provider-presigned URLs (§5.9.5).
+  // Presigned DOWNLOAD (always-issue): serve blob downloads as provider
+  // presigned GET URLs (§5.9.5). The client fetches bytes straight from the
+  // object store — the sync server exits the download egress path.
   blobSignedUrls: s3PresignedBlobUrls(blobs, { ttlSeconds: 900 }),
+  // Presigned UPLOAD (direct-to-storage): mint single presigned PUT URLs so
+  // clients upload straight to the object store, bypassing the server upload
+  // bandwidth path (§5.9.3). Optional — absent ⇒ clients stream through the
+  // direct `PUT /blobs/{blobId}` endpoint (a capability, never a fallback).
+  blobUploadUrls: s3PresignedBlobUploads(blobs, { ttlSeconds: 900 }),
 };
 ```
+
+### Presigned blobs, end to end (§5.9.3 / §5.9.5)
+
+Two independent presign switches let the sync server step out of the blob
+byte path in both directions:
+
+**Download — `blobSignedUrls` (always-issue).** After the §5.9.5 row-derived
+authorization check passes, `GET /blobs/{blobId}` returns
+`{ url, urlExpiresAtMs }` and **no bytes**; the client fetches the URL directly
+(no host auth — the URL is the entire grant) and re-verifies the content
+address. **Always-issue, not accept-bit negotiation** (the pinned decision,
+§5.9.5): unlike segments — where a descriptor rides the pull stream to a client
+that may be unable to fetch a bare URL, so issuance is gated on accept bit 3 —
+a blob download is a plain request/response, so the response simply carries the
+URL and a client that cannot consume it re-requests. Always-issue is *harmless*
+(the authorized endpoint is the same route; nothing is stuck on a stream) and
+*simpler* (no accept-bit plumbing on a non-pull path). Recovery mirrors §5.4:
+a failed or expired URL fetch **re-requests** the endpoint (which re-authorizes
+and mints a fresh URL) — never a fall-through.
+
+**Upload — `blobUploadUrls` (the grant flow).** `POST
+/blobs/{blobId}/upload-grant` (host-authenticated, body
+`{ byteLength, mediaType? }`) mints a single presigned PUT; the client PUTs
+bytes straight to the object store. **Upload authz is host-authentication only**
+(any authenticated actor may obtain a grant within the size cap) — uploading
+bytes is not a scope-bearing act, because the content address discloses nothing
+and integrity is enforced at *reference time* (the §5.9.6 push existence check
++ every download's content-address verify), never by a store-side hash
+recompute. The **size cap is enforced up front** against the declared
+`byteLength`, before any URL is minted (the object-store hop cannot re-check the
+streamed byte count). An already-present blob returns `{ present: true }` (skip
+the PUT, idempotent §5.9.3). A **single PUT only** — never a multipart or chunk
+protocol; resumable upload, when it lands, is provider multipart behind this
+same grant. Absent config ⇒ the client streams through the direct
+host-authenticated `PUT /blobs/{blobId}` endpoint — a capability choice, not a
+fallback (that endpoint was always the other path).
 
 **Cloudflare R2.** Identical to the segment store — point `endpoint` at
 `https://<account-id>.r2.cloudflarestorage.com`, `region: 'auto'`, and use an

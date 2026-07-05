@@ -47,3 +47,8 @@ tauri = { version = "2", features = ["test"] }
 # sync/segments/blobs/realtime.
 default = []
 native-transport = ["dep:ureq", "dep:tungstenite"]
+# §5.10.5 native CRDT commands (crdtText/crdtInsertText/crdtDeleteText/
+# crdtApplyUpdate). Off by default so a lean plugin build skips yrs; the
+# example enables it so the demo can show collaborative text. Forwards to the
+# shared router — the plugin adds no code (the commands ride `dispatch`).
+crdt-yjs = ["syncular-command/crdt-yjs"]

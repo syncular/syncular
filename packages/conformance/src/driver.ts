@@ -96,6 +96,34 @@ export type BytesResult =
   | { readonly ok: true; readonly bytes: Uint8Array }
   | { readonly ok: false; readonly error: DriverError };
 
+/**
+ * §5.9.5 blob download result at the driver seam: inline bytes, OR (presign
+ * configured, always-issue) a signed `url` the client fetches directly.
+ */
+export type BlobDownloadResult =
+  | { readonly ok: true; readonly bytes: Uint8Array }
+  | {
+      readonly ok: true;
+      readonly url: string;
+      readonly urlExpiresAtMs?: number;
+    }
+  | { readonly ok: false; readonly error: DriverError };
+
+/** §5.9.3 presigned-upload grant at the driver seam. */
+export type BlobUploadGrantResult =
+  | {
+      readonly ok: true;
+      readonly grant:
+        | {
+            readonly kind: 'url';
+            readonly url: string;
+            readonly urlExpiresAtMs?: number;
+          }
+        | { readonly kind: 'present' }
+        | { readonly kind: 'none' };
+    }
+  | { readonly ok: false; readonly error: DriverError };
+
 // ---------------------------------------------------------------------------
 // ServerDriver
 // ---------------------------------------------------------------------------
@@ -175,6 +203,7 @@ export type ServerCapability =
   | 'idempotency-fault'
   | 'signed-urls'
   | 'blobs'
+  | 'blob-presign'
   | 'crdt'
   | 'leases'
   | 'validators';
@@ -243,7 +272,39 @@ export interface ServerInstance {
   ): Promise<
     { readonly ok: true } | { readonly ok: false; readonly error: DriverError }
   >;
-  downloadBlob?(actorId: string, blobId: string): Promise<BytesResult>;
+  /**
+   * §5.9.5 download: bytes inline, OR (presign configured, always-issue) a
+   * signed `url` the client fetches directly.
+   */
+  downloadBlob?(actorId: string, blobId: string): Promise<BlobDownloadResult>;
+  /**
+   * `blob-presign`: the §5.9.5 CDN role — serve a presigned blob GET url
+   * exactly as the object host would (verify the token, no actor identity).
+   */
+  fetchBlobUrl?(url: string): Promise<BytesResult>;
+  /**
+   * `blob-presign`: §5.9.3 upload grant — mint a presigned PUT url (or a
+   * present marker), host-auth'd + size-capped up front.
+   */
+  uploadBlobGrant?(
+    actorId: string,
+    blobId: string,
+    byteLength: number,
+    mediaType?: string,
+  ): Promise<BlobUploadGrantResult>;
+  /**
+   * `blob-presign`: the §5.9.3 object-store PUT role — accept bytes at a
+   * presigned PUT url exactly as the object host would (verify the token, no
+   * actor identity), storing them so a later download resolves.
+   */
+  putBlobUrl?(
+    url: string,
+    bytes: Uint8Array,
+  ): Promise<
+    { readonly ok: true } | { readonly ok: false; readonly error: DriverError }
+  >;
+  /** `blob-presign`: toggle presigned blob download+upload at runtime. */
+  setBlobPresign?(enabled: boolean): Promise<void>;
 
   /**
    * `signed-urls`: the CDN/edge role for the §5.4 native scheme — serve
@@ -355,7 +416,50 @@ export interface ClientEndpoints {
     bytes: Uint8Array,
     mediaType?: string,
   ): Promise<void>;
-  downloadBlob?(blobId: string): Promise<Uint8Array>;
+  /**
+   * §5.9.5 download: bytes inline, OR a presigned `url` the client core
+   * fetches via `fetchBlobUrl` (always-issue). Mutually exclusive arms.
+   */
+  downloadBlob?(blobId: string): Promise<
+    | { readonly kind: 'bytes'; readonly bytes: Uint8Array }
+    | {
+        readonly kind: 'url';
+        readonly url: string;
+        readonly urlExpiresAtMs?: number;
+      }
+  >;
+  /**
+   * §5.9.5 presigned-download fetch — the harness CDN hop (counted). No host
+   * auth crosses (the url is the entire grant). Present iff the client can
+   * consume urls.
+   */
+  fetchBlobUrl?(url: string): Promise<Uint8Array>;
+  /**
+   * §5.9.3 presigned-upload grant — the harness mints (or declines) a PUT url.
+   * Present iff the client supports the grant flow.
+   */
+  uploadBlobGrant?(
+    blobId: string,
+    byteLength: number,
+    mediaType?: string,
+  ): Promise<
+    | {
+        readonly kind: 'url';
+        readonly url: string;
+        readonly urlExpiresAtMs?: number;
+      }
+    | { readonly kind: 'present' }
+    | { readonly kind: 'none' }
+  >;
+  /**
+   * §5.9.3 direct-to-storage PUT — the harness object-store hop (counted). No
+   * host auth crosses (the url is the entire grant).
+   */
+  putBlobUrl?(
+    url: string,
+    bytes: Uint8Array,
+    mediaType?: string,
+  ): Promise<void>;
   /** Realtime attach; the harness observes both directions. */
   connectRealtime(sink: RealtimeSink): Promise<RealtimeConnection>;
 }
@@ -441,6 +545,8 @@ export interface ClientLimitsOptions {
   readonly maxSnapshotPages?: number;
   /** §4.2 accept bitmask. */
   readonly accept?: number;
+  /** §5.9.7 B1 blob-cache size cap (bytes); LRU-evicts zero-ref bodies. */
+  readonly blobCacheMaxBytes?: number;
 }
 
 export interface ClientCreateOptions {
@@ -554,6 +660,46 @@ export interface ClientInstance {
   ): Promise<void>;
   /** §8.6: the peers currently present on a scope key. */
   presence?(scopeKey: string): Promise<readonly ClientPresencePeer[]>;
+
+  /**
+   * §5.10.4/§5.10.5 native CRDT convenience: a client that can AUTHOR crdt
+   * edits in its own core (the Rust core via its `crdt-yjs` commands, the TS
+   * core via `@syncular/crdt-yjs`'s `YjsColumn`). The edit loads the row's
+   * current merged `crdt` column bytes, applies the op, and pushes the full
+   * state baseVersion-less through `mutate`. Present iff the driver supports
+   * native crdt authoring — scenarios requiring it (`requires: ['crdt']` plus
+   * a `client.crdtText` presence check) skip on a driver that lacks it. The
+   * cross-core proof runs the SAME scenario against the Rust client core and
+   * the TS server, and vice versa, asserting byte-identical convergence.
+   */
+  crdtText?(input: {
+    readonly table: string;
+    readonly rowId: string;
+    readonly column: string;
+    readonly name?: string;
+  }): Promise<string>;
+  crdtInsertText?(input: {
+    readonly table: string;
+    readonly rowId: string;
+    readonly column: string;
+    readonly name?: string;
+    readonly index: number;
+    readonly value: string;
+  }): Promise<void>;
+  crdtDeleteText?(input: {
+    readonly table: string;
+    readonly rowId: string;
+    readonly column: string;
+    readonly name?: string;
+    readonly index: number;
+    readonly len: number;
+  }): Promise<void>;
+  crdtApplyUpdate?(input: {
+    readonly table: string;
+    readonly rowId: string;
+    readonly column: string;
+    readonly update: Uint8Array;
+  }): Promise<void>;
 
   close(): Promise<void>;
 }

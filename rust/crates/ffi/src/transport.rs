@@ -16,7 +16,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use syncular_client::{SegmentRequest, Transport, TransportError};
+use syncular_client::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 
 use crate::EventQueue;
 
@@ -175,11 +175,47 @@ impl Transport for HostTransport {
         }
     }
 
-    fn blob_download(&mut self, blob_id: &str) -> Result<Vec<u8>, TransportError> {
+    fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
         match self {
             HostTransport::Null { .. } => Err(unavailable("blobDownload")),
             #[cfg(feature = "native-transport")]
             HostTransport::Native(t) => t.blob_download(blob_id),
+        }
+    }
+
+    fn fetch_blob_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+        match self {
+            HostTransport::Null { .. } => Err(unavailable("fetchBlobUrl")),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.fetch_blob_url(url),
+        }
+    }
+
+    fn blob_upload_grant(
+        &mut self,
+        blob_id: &str,
+        byte_length: u64,
+        media_type: Option<&str>,
+    ) -> Result<BlobUploadGrant, TransportError> {
+        match self {
+            // No grant available ⇒ the client streams through the direct
+            // upload endpoint (§5.9.3 capability, not fallback).
+            HostTransport::Null { .. } => Ok(BlobUploadGrant::None),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.blob_upload_grant(blob_id, byte_length, media_type),
+        }
+    }
+
+    fn blob_put_url(
+        &mut self,
+        url: &str,
+        bytes: &[u8],
+        media_type: Option<&str>,
+    ) -> Result<(), TransportError> {
+        match self {
+            HostTransport::Null { .. } => Err(unavailable("blobPutUrl")),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.blob_put_url(url, bytes, media_type),
         }
     }
 
@@ -232,7 +268,10 @@ mod native {
     use tungstenite::{Message, WebSocket};
 
     use super::{Inbound, InboundBuffer};
-    use syncular_client::{RealtimeRound, RoundInbound, SegmentRequest, Transport, TransportError};
+    use syncular_client::{
+        BlobDownload, BlobUploadGrant, RealtimeRound, RoundInbound, SegmentRequest, Transport,
+        TransportError,
+    };
 
     type Ws = WebSocket<MaybeTlsStream<TcpStream>>;
 
@@ -549,16 +588,99 @@ mod native {
             Ok(())
         }
 
-        fn blob_download(&mut self, blob_id: &str) -> Result<Vec<u8>, TransportError> {
+        fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
             let id = blob_id.strip_prefix("sha256:").unwrap_or(blob_id);
             let url = format!("{}/blobs/{}", self.base_url, id);
-            self.get_bytes(&url, true).map_err(|mut e| {
+            let mut req = self.agent.get(&url);
+            for (k, v) in &self.headers {
+                req = req.set(k, v);
+            }
+            let resp = req.call().map_err(|e| {
+                let e = http_err("GET blob", e);
                 // Preserve a blob.* semantics hint (§5.9.5) for the caller.
                 if e.code == "transport.failed" {
-                    e = TransportError::new("blob.not_found", e.message);
+                    TransportError::new("blob.not_found", e.message)
+                } else {
+                    e
                 }
-                e
-            })
+            })?;
+            // §5.9.5 always-issue: a JSON body carries a presigned `url`; an
+            // octet-stream body is inline bytes.
+            let is_json = resp
+                .header("content-type")
+                .is_some_and(|ct| ct.contains("application/json"));
+            let body = read_body(resp)?;
+            if is_json {
+                if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) {
+                    if let Some(u) = parsed.get("url").and_then(|v| v.as_str()) {
+                        return Ok(BlobDownload::Url {
+                            url: u.to_owned(),
+                            url_expires_at_ms: parsed
+                                .get("urlExpiresAtMs")
+                                .and_then(|v| v.as_i64()),
+                        });
+                    }
+                }
+            }
+            Ok(BlobDownload::Bytes(body))
+        }
+
+        fn fetch_blob_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+            // §5.9.5: the URL is the entire grant — no host credentials.
+            self.get_bytes(url, false)
+        }
+
+        fn blob_upload_grant(
+            &mut self,
+            blob_id: &str,
+            byte_length: u64,
+            media_type: Option<&str>,
+        ) -> Result<BlobUploadGrant, TransportError> {
+            let id = blob_id.strip_prefix("sha256:").unwrap_or(blob_id);
+            let url = format!("{}/blobs/{}/upload-grant", self.base_url, id);
+            let mut req = self
+                .agent
+                .post(&url)
+                .set("content-type", "application/json");
+            for (k, v) in &self.headers {
+                req = req.set(k, v);
+            }
+            let body = serde_json::json!({
+                "byteLength": byte_length,
+                "mediaType": media_type,
+            });
+            let resp = req
+                .send_string(&body.to_string())
+                .map_err(|e| http_err("POST upload-grant", e))?;
+            let grant_body = read_body(resp)?;
+            let parsed: serde_json::Value = serde_json::from_slice(&grant_body)
+                .map_err(|e| TransportError::new("transport.failed", format!("read grant: {e}")))?;
+            if let Some(u) = parsed.get("url").and_then(|v| v.as_str()) {
+                return Ok(BlobUploadGrant::Url {
+                    url: u.to_owned(),
+                    url_expires_at_ms: parsed.get("urlExpiresAtMs").and_then(|v| v.as_i64()),
+                });
+            }
+            if parsed.get("present").and_then(|v| v.as_bool()) == Some(true) {
+                return Ok(BlobUploadGrant::Present);
+            }
+            Ok(BlobUploadGrant::None)
+        }
+
+        fn blob_put_url(
+            &mut self,
+            url: &str,
+            bytes: &[u8],
+            media_type: Option<&str>,
+        ) -> Result<(), TransportError> {
+            // §5.9.3: the presigned URL is the entire grant — no host auth.
+            let req = self.agent.put(url).set(
+                "content-type",
+                media_type.unwrap_or("application/octet-stream"),
+            );
+            req.send_bytes(bytes)
+                .map_err(|e| http_err("PUT blob url", e))?;
+            Ok(())
         }
 
         fn realtime_connect(&mut self) -> Result<(), TransportError> {

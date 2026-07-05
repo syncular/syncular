@@ -284,6 +284,83 @@ export class TauriSyncClient {
     return result.clientCommitId;
   }
 
+  // -- Native CRDT (SPEC.md §5.10.5; needs the plugin `crdt-yjs` feature) ------
+
+  /** Materialize a `crdt` column's collaborative text — decoded from the
+   * stored (server-merged) Yjs bytes. `name` selects the shared text
+   * (default `"text"`). An absent row / NULL column is the empty document. */
+  async crdtText(
+    table: string,
+    rowId: string,
+    column: string,
+    name = 'text',
+  ): Promise<string> {
+    const result = (await this.#command('crdtText', {
+      table,
+      rowId,
+      column,
+      name,
+    })) as { text: string };
+    return result.text;
+  }
+
+  /** Insert `value` at UTF-16 offset `index` in a `crdt` column's text and
+   * push the resulting Yjs update (baseVersion-less). Returns the commit id. */
+  async crdtInsertText(
+    table: string,
+    rowId: string,
+    column: string,
+    index: number,
+    value: string,
+    name = 'text',
+  ): Promise<string> {
+    const result = (await this.#command('crdtInsertText', {
+      table,
+      rowId,
+      column,
+      name,
+      index,
+      value,
+    })) as { clientCommitId: string };
+    return result.clientCommitId;
+  }
+
+  /** Delete `len` UTF-16 code units at `index` in a `crdt` column's text. */
+  async crdtDeleteText(
+    table: string,
+    rowId: string,
+    column: string,
+    index: number,
+    len: number,
+    name = 'text',
+  ): Promise<string> {
+    const result = (await this.#command('crdtDeleteText', {
+      table,
+      rowId,
+      column,
+      name,
+      index,
+      len,
+    })) as { clientCommitId: string };
+    return result.clientCommitId;
+  }
+
+  /** Escape hatch: apply an arbitrary Yjs update onto a `crdt` column. */
+  async crdtApplyUpdate(
+    table: string,
+    rowId: string,
+    column: string,
+    update: Uint8Array,
+  ): Promise<string> {
+    const result = (await this.#command('crdtApplyUpdate', {
+      table,
+      rowId,
+      column,
+      update: { $bytes: bytesToHex(update) },
+    })) as { clientCommitId: string };
+    return result.clientCommitId;
+  }
+
   async subscribe(input: {
     readonly id: string;
     readonly table: string;

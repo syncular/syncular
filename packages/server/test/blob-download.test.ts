@@ -9,6 +9,7 @@ import {
   type BlobStore,
   blobIdFor,
   handleBlobDownload,
+  handleBlobUploadGrant,
   MemoryBlobStore,
   S3BlobStore,
   type ServerSchema,
@@ -168,5 +169,93 @@ describe('handleBlobDownload delegated presign (§5.9.5 additive url)', () => {
       ),
     ).rejects.toThrow(/no referencing row/);
     expect(presignCalled).toBe(false);
+  });
+});
+
+describe('handleBlobUploadGrant (§5.9.3 presigned upload)', () => {
+  test('host-auth only (no scope check) mints a single PUT within the cap', async () => {
+    const storage = new SqliteServerStorage();
+    const blobs = new MemoryBlobStore();
+    const bytes = new Uint8Array([1, 2, 3]);
+    const blobId = await blobIdFor(bytes);
+    let presignCalls = 0;
+    const grant = await handleBlobUploadGrant(
+      baseCtx(storage, blobs, {
+        // No referencing row exists yet — grant authz is host-auth only.
+        blobUploadUrls: {
+          presign: ({ blobId: id, byteLength }) => {
+            presignCalls += 1;
+            return {
+              url: `presigned://put/${id}?len=${byteLength}`,
+              urlExpiresAtMs: NOW + 900_000,
+            };
+          },
+        },
+      }),
+      { blobId, byteLength: bytes.length },
+    );
+    expect(presignCalls).toBe(1);
+    expect(grant.url).toContain(blobId);
+    expect(grant.urlExpiresAtMs).toBe(NOW + 900_000);
+    expect(grant.present).toBeUndefined();
+  });
+
+  test('an already-present blob returns present:true and no url (idempotent)', async () => {
+    const storage = new SqliteServerStorage();
+    const blobs = new MemoryBlobStore();
+    const bytes = new Uint8Array([9, 9]);
+    const blobId = await blobIdFor(bytes);
+    await blobs.put(PARTITION, blobId, bytes, NOW);
+    let presignCalls = 0;
+    const grant = await handleBlobUploadGrant(
+      baseCtx(storage, blobs, {
+        blobUploadUrls: {
+          presign: () => {
+            presignCalls += 1;
+            return { url: 'x', urlExpiresAtMs: 0 };
+          },
+        },
+      }),
+      { blobId, byteLength: bytes.length },
+    );
+    expect(grant.present).toBe(true);
+    expect(grant.url).toBeUndefined();
+    expect(presignCalls).toBe(0);
+  });
+
+  test('no presigned-upload store ⇒ empty grant (client streams direct)', async () => {
+    const storage = new SqliteServerStorage();
+    const blobs = new MemoryBlobStore();
+    const bytes = new Uint8Array([4]);
+    const blobId = await blobIdFor(bytes);
+    const grant = await handleBlobUploadGrant(baseCtx(storage, blobs), {
+      blobId,
+      byteLength: bytes.length,
+    });
+    expect(grant.url).toBeUndefined();
+    expect(grant.present).toBeUndefined();
+  });
+
+  test('the size cap is enforced up front against the declared byteLength', async () => {
+    const storage = new SqliteServerStorage();
+    const blobs = new MemoryBlobStore();
+    const blobId = await blobIdFor(new Uint8Array([1]));
+    let presignCalls = 0;
+    await expect(
+      handleBlobUploadGrant(
+        baseCtx(storage, blobs, {
+          maxBlobBytes: 10,
+          blobUploadUrls: {
+            presign: () => {
+              presignCalls += 1;
+              return { url: 'x', urlExpiresAtMs: 0 };
+            },
+          },
+        }),
+        { blobId, byteLength: 11 },
+      ),
+    ).rejects.toThrow(/too_large|cap/);
+    // The cap rejects BEFORE any url is minted.
+    expect(presignCalls).toBe(0);
   });
 });

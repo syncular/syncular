@@ -174,4 +174,8 @@ pub struct ClientLimits {
     /// §4.2 accept bitmask; this client defaults to `0b0111` (rows
     /// baseline + sqlite images, §5.3 — rusqlite can always import).
     pub accept: Option<u8>,
+    /// §5.9.7 B1 blob-cache size cap (bytes). When set and the sum of cached
+    /// body sizes exceeds it, zero-ref, non-pinned bodies are evicted LRU-first
+    /// after each cache write. `None` ⇒ retain until storage pressure (default).
+    pub blob_cache_max_bytes: Option<i64>,
 }

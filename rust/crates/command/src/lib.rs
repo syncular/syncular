@@ -87,6 +87,7 @@ pub fn parse_limits(value: Option<&Value>) -> ClientLimits {
         .get("accept")
         .and_then(Value::as_u64)
         .map(|v| v as u8);
+    limits.blob_cache_max_bytes = object.get("blobCacheMaxBytes").and_then(Value::as_i64);
     limits
 }
 
@@ -171,6 +172,34 @@ fn window_base_from_params(value: Option<&Value>) -> Result<WindowBase, String> 
         fixed_scopes,
         params,
     })
+}
+
+/// §5.10.5: parse the common `(table, rowId, column, name)` target of a crdt
+/// command. `name` selects the shared type inside the doc (default `"text"`,
+/// matching the TS `YjsColumn.text()` default).
+#[cfg(feature = "crdt-yjs")]
+fn crdt_target(params: &Value) -> Result<(String, String, String, String), CommandError> {
+    let table = params
+        .get("table")
+        .and_then(Value::as_str)
+        .ok_or_else(|| client_err("crdt command missing table".to_owned()))?
+        .to_owned();
+    let row_id = params
+        .get("rowId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| client_err("crdt command missing rowId".to_owned()))?
+        .to_owned();
+    let column = params
+        .get("column")
+        .and_then(Value::as_str)
+        .ok_or_else(|| client_err("crdt command missing column".to_owned()))?
+        .to_owned();
+    let name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("text")
+        .to_owned();
+    Ok((table, row_id, column, name))
 }
 
 /// Dispatch one command against the client instance over `transport`.
@@ -313,6 +342,69 @@ pub fn dispatch<T: Transport>(
             let rows = need_client(client)?.query(sql, &bind).map_err(client_err)?;
             Ok(json!({ "rows": rows }))
         }
+        // -- §5.10.5 native CRDT (the `crdt-yjs` feature) -----------------------
+        // Thin forwards to the client core's yrs helpers. The command surface
+        // stays present-but-unavailable in a lean build: without the feature
+        // these fail loudly (`client.crdt_unavailable`) rather than being an
+        // unknown method, so a wrapper's typed method gives a clear error.
+        #[cfg(feature = "crdt-yjs")]
+        "crdtText" => {
+            let (table, row_id, column, name) = crdt_target(params)?;
+            let text = need_client(client)?
+                .crdt_text(&table, &row_id, &column, &name)
+                .map_err(client_err)?;
+            Ok(json!({ "text": text }))
+        }
+        #[cfg(feature = "crdt-yjs")]
+        "crdtInsertText" => {
+            let (table, row_id, column, name) = crdt_target(params)?;
+            let index = params
+                .get("index")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| client_err("crdtInsertText missing index".to_owned()))?
+                as u32;
+            let value = params
+                .get("value")
+                .and_then(Value::as_str)
+                .ok_or_else(|| client_err("crdtInsertText missing value".to_owned()))?;
+            let id = need_client(client)?
+                .crdt_insert_text(&table, &row_id, &column, &name, index, value)
+                .map_err(client_err)?;
+            Ok(json!({ "clientCommitId": id }))
+        }
+        #[cfg(feature = "crdt-yjs")]
+        "crdtDeleteText" => {
+            let (table, row_id, column, name) = crdt_target(params)?;
+            let index = params
+                .get("index")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| client_err("crdtDeleteText missing index".to_owned()))?
+                as u32;
+            let len = params
+                .get("len")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| client_err("crdtDeleteText missing len".to_owned()))?
+                as u32;
+            let id = need_client(client)?
+                .crdt_delete_text(&table, &row_id, &column, &name, index, len)
+                .map_err(client_err)?;
+            Ok(json!({ "clientCommitId": id }))
+        }
+        #[cfg(feature = "crdt-yjs")]
+        "crdtApplyUpdate" => {
+            let (table, row_id, column, _name) = crdt_target(params)?;
+            let update = value_bytes(params.get("update")).map_err(client_err)?;
+            let id = need_client(client)?
+                .crdt_apply_update(&table, &row_id, &column, &update)
+                .map_err(client_err)?;
+            Ok(json!({ "clientCommitId": id }))
+        }
+        #[cfg(not(feature = "crdt-yjs"))]
+        "crdtText" | "crdtInsertText" | "crdtDeleteText" | "crdtApplyUpdate" => Err((
+            "client.crdt_unavailable".to_owned(),
+            "native CRDT support requires the `crdt-yjs` feature (§5.10.5)".to_owned(),
+        )),
+
         "uploadBlob" => {
             let bytes = value_bytes(params.get("bytes")).map_err(client_err)?;
             let media_type = params

@@ -33,6 +33,12 @@ let outcome = try client.sync()                          // needs native transpo
 let peers  = try client.presence(scopeKey: "project:p1")
 try client.setPresence(scopeKey: "project:p1", doc: .object(["cursor": .number(3)]))
 
+// Native CRDT (needs the FFI `crdt-yjs` feature) — collaborative text on a
+// `crdt` column, byte-compatible with the web `@syncular/crdt-yjs` helper:
+let text = try client.crdtText(table: "notes", rowId: "n1", column: "doc")
+try client.crdtInsertText(table: "notes", rowId: "n1", column: "doc", index: 0, value: "Hi ")
+try client.crdtDeleteText(table: "notes", rowId: "n1", column: "doc", index: 0, len: 3)
+
 // Raw escape hatch for any method the conveniences don't cover:
 let result = try client.command(method: "leaseState", params: .object([:]))
 

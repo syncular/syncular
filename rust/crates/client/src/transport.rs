@@ -30,6 +30,29 @@ pub struct SegmentRequest {
     pub requested_scopes_json: String,
 }
 
+/// A §5.9.5 blob download result: inline bytes, or a presigned url the client
+/// fetches directly (always-issue). `url_expires_at_ms` is present iff `url`.
+#[derive(Debug, Clone)]
+pub enum BlobDownload {
+    Bytes(Vec<u8>),
+    Url {
+        url: String,
+        url_expires_at_ms: Option<i64>,
+    },
+}
+
+/// A §5.9.3 presigned-upload grant: a single PUT url, an already-present
+/// marker (skip the PUT), or none (stream through the direct endpoint).
+#[derive(Debug, Clone)]
+pub enum BlobUploadGrant {
+    Url {
+        url: String,
+        url_expires_at_ms: Option<i64>,
+    },
+    Present,
+    None,
+}
+
 pub trait Transport {
     /// One combined push+pull round trip (§1.5) over the request/response
     /// binding (`POST /sync`, loopback, …).
@@ -77,12 +100,51 @@ pub trait Transport {
         ))
     }
     /// §5.9.5 blob download: host-authenticated `GET <mount>/blobs/{blobId}`,
-    /// re-authorized server-side against referencing rows. Default: none.
-    fn blob_download(&mut self, blob_id: &str) -> Result<Vec<u8>, TransportError> {
+    /// re-authorized server-side against referencing rows. Returns inline
+    /// bytes OR (always-issue, presign configured) a signed url the client
+    /// fetches directly. Default: none.
+    fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
         let _ = blob_id;
         Err(TransportError::new(
             "blob.not_found",
             "this transport has no blob download (§5.9)",
+        ))
+    }
+    /// §5.9.5 presigned-download fetch: a bare GET of the signed url. MUST
+    /// attach NO host authentication — the url is the entire grant (§5.4).
+    /// Only called when `blob_download` returned a `Url` arm.
+    fn fetch_blob_url(&mut self, url: &str) -> Result<Vec<u8>, TransportError> {
+        let _ = url;
+        Err(TransportError::new(
+            "sync.invalid_request",
+            "this transport has no blob url fetch (§5.9.5)",
+        ))
+    }
+    /// §5.9.3 presigned-upload grant: `POST /blobs/{blobId}/upload-grant` with
+    /// the declared size. Absent (`None`) ⇒ the client always streams through
+    /// `blob_upload`. A `Url` grant is PUT via `blob_put_url`.
+    fn blob_upload_grant(
+        &mut self,
+        blob_id: &str,
+        byte_length: u64,
+        media_type: Option<&str>,
+    ) -> Result<BlobUploadGrant, TransportError> {
+        let _ = (blob_id, byte_length, media_type);
+        Ok(BlobUploadGrant::None)
+    }
+    /// §5.9.3 direct-to-storage PUT of the granted url. MUST attach NO host
+    /// authentication — the presigned url is the entire grant (§5.4). Only
+    /// called when `blob_upload_grant` returned a `Url` arm.
+    fn blob_put_url(
+        &mut self,
+        url: &str,
+        bytes: &[u8],
+        media_type: Option<&str>,
+    ) -> Result<(), TransportError> {
+        let _ = (url, bytes, media_type);
+        Err(TransportError::new(
+            "sync.invalid_request",
+            "this transport has no blob put url (§5.9.3)",
         ))
     }
     /// Realtime attach (§8.1). Inbound traffic is delivered by the host via

@@ -43,6 +43,12 @@ client.mutate([
 final rows = client.query(
   'SELECT id, title, done FROM todos WHERE list_id = ?', params: ['inbox']);
 
+// Native CRDT (needs the FFI `crdt-yjs` feature) — collaborative text on a
+// `crdt` column, byte-compatible with the web `@syncular/crdt-yjs` helper.
+final text = client.crdtText('notes', 'n1', 'doc');
+client.crdtInsertText('notes', 'n1', 'doc', 0, 'Hi ');
+client.crdtDeleteText('notes', 'n1', 'doc', 0, 3);
+
 // Drive sync; inspect the outcome (never throws out-of-band).
 client.syncUntilIdle();
 
@@ -60,7 +66,9 @@ Typed conveniences mirror the command surface exactly (same names as the
 Swift/Kotlin wrappers): `mutate` / `subscribe` / `unsubscribe` / `sync` /
 `syncUntilIdle` / `readRows` / `query` / `pendingCommitIds` / `syncNeeded` /
 `subscriptionState` / `conflicts` / `presence` / `setPresence` / `setWindow` /
-`windowState` / `connectRealtime` / `disconnectRealtime`. Anything not lifted is
+`windowState` / `connectRealtime` / `disconnectRealtime` / `crdtText` /
+`crdtInsertText` / `crdtDeleteText` / `crdtApplyUpdate` (native CRDT, §5.10.5).
+Anything not lifted is
 reachable via the raw `command(method, params)`.
 
 ### Event delivery — the honest simple choice

@@ -15,6 +15,7 @@ import {
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
 import type { RowValue, ScopeMap } from '@syncular/core';
+import { YjsColumn } from '@syncular/crdt-yjs';
 import type {
   ClientConflict,
   ClientCreateOptions,
@@ -134,19 +135,49 @@ async function constructClient(
   );
   const uploadBlob = endpoints.uploadBlob?.bind(endpoints);
   const downloadBlob = endpoints.downloadBlob?.bind(endpoints);
+  const fetchBlobUrl = endpoints.fetchBlobUrl?.bind(endpoints);
+  const uploadBlobGrant = endpoints.uploadBlobGrant?.bind(endpoints);
+  const putBlobUrl = endpoints.putBlobUrl?.bind(endpoints);
   const blobs =
     uploadBlob !== undefined && downloadBlob !== undefined
       ? {
           upload: (blobId: string, bytes: Uint8Array, mediaType?: string) =>
             uploadBlob(blobId, bytes, mediaType),
+          // §5.9.5: the endpoint returns the discriminated bytes/url arm.
           download: (blobId: string) => downloadBlob(blobId),
+          // §5.9.5/§5.9.3 presign seams — present iff the harness exposes them.
+          ...(fetchBlobUrl !== undefined
+            ? { fetchUrl: (url: string) => fetchBlobUrl(url) }
+            : {}),
+          ...(uploadBlobGrant !== undefined
+            ? {
+                uploadGrant: (
+                  blobId: string,
+                  byteLength: number,
+                  mediaType?: string,
+                ) => uploadBlobGrant(blobId, byteLength, mediaType),
+              }
+            : {}),
+          ...(putBlobUrl !== undefined
+            ? {
+                uploadToUrl: (
+                  url: string,
+                  bytes: Uint8Array,
+                  mediaType?: string,
+                ) => putBlobUrl(url, bytes, mediaType),
+              }
+            : {}),
         }
       : undefined;
+  // §5.9.7 B1: the blob-cache cap is a top-level config field, not a §4.2
+  // request limit — pull it out of the driver's limits bag.
+  const blobCacheMaxBytes = options.limits?.blobCacheMaxBytes;
   const client = new SyncClient({
     database: db,
     schema: toClientSchema(schema),
     clientId: options.clientId,
     ...(options.limits !== undefined ? { limits: options.limits } : {}),
+    ...(blobCacheMaxBytes !== undefined ? { blobCacheMaxBytes } : {}),
     ...(nowMs !== undefined ? { now: () => nowMs } : {}),
     transport: (bytes) => endpoints.sync(bytes),
     segments,
@@ -428,6 +459,105 @@ class TsClientInstance implements ClientInstance {
   async fetchBlob(blobIdOrRef: string): Promise<{ $bytes: string }> {
     const cached = await this.#client.fetchBlob(blobIdOrRef);
     return { $bytes: bytesToHex(cached.bytes) };
+  }
+
+  // §5.10.4 native CRDT: the TS core authors edits with `@syncular/crdt-yjs`'s
+  // `YjsColumn` — the exact helper the reference client model is built on. The
+  // edit loads the row's current merged crdt bytes, applies the op, and pushes
+  // the full state baseVersion-less (the §5.10.3 crdt-only-divergence rule),
+  // preserving the other columns. This mirrors the Rust driver's yrs path so
+  // one scenario runs identically on both cores (byte-identical convergence).
+
+  /** The current merged bytes of a `crdt` column, or `null` (empty document). */
+  async #crdtBytes(
+    table: string,
+    rowId: string,
+    column: string,
+  ): Promise<Uint8Array | null> {
+    const rows = await this.readRows(table);
+    const row = rows.find((r) => r.rowId === rowId);
+    const cell = row?.values[column];
+    if (cell === null || cell === undefined || typeof cell !== 'object') {
+      return null;
+    }
+    return hexToBytes(cell.$bytes);
+  }
+
+  /** Push a full-state crdt update baseVersion-less, preserving other cols. */
+  async #crdtPush(
+    table: string,
+    rowId: string,
+    column: string,
+    bytes: Uint8Array,
+  ): Promise<void> {
+    const schemaTable = this.#schema.tables.find((t) => t.name === table);
+    if (schemaTable === undefined) throw new Error(`unknown table ${table}`);
+    const rows = await this.readRows(table);
+    const existing = rows.find((r) => r.rowId === rowId)?.values;
+    const values: Record<string, DriverRowValue> = existing
+      ? { ...existing }
+      : { [schemaTable.primaryKey]: rowId };
+    values[column] = { $bytes: bytesToHex(bytes) };
+    await this.mutate([{ op: 'upsert', table, values: values as DriverRow }]);
+  }
+
+  async crdtText(input: {
+    readonly table: string;
+    readonly rowId: string;
+    readonly column: string;
+    readonly name?: string;
+  }): Promise<string> {
+    const bytes = await this.#crdtBytes(input.table, input.rowId, input.column);
+    const col = new YjsColumn(bytes);
+    const text = col.text(input.name).toString();
+    col.destroy();
+    return text;
+  }
+
+  async crdtInsertText(input: {
+    readonly table: string;
+    readonly rowId: string;
+    readonly column: string;
+    readonly name?: string;
+    readonly index: number;
+    readonly value: string;
+  }): Promise<void> {
+    const bytes = await this.#crdtBytes(input.table, input.rowId, input.column);
+    const col = new YjsColumn(bytes);
+    col.text(input.name).insert(input.index, input.value);
+    const next = col.columnBytes();
+    col.destroy();
+    await this.#crdtPush(input.table, input.rowId, input.column, next);
+  }
+
+  async crdtDeleteText(input: {
+    readonly table: string;
+    readonly rowId: string;
+    readonly column: string;
+    readonly name?: string;
+    readonly index: number;
+    readonly len: number;
+  }): Promise<void> {
+    const bytes = await this.#crdtBytes(input.table, input.rowId, input.column);
+    const col = new YjsColumn(bytes);
+    col.text(input.name).delete(input.index, input.len);
+    const next = col.columnBytes();
+    col.destroy();
+    await this.#crdtPush(input.table, input.rowId, input.column, next);
+  }
+
+  async crdtApplyUpdate(input: {
+    readonly table: string;
+    readonly rowId: string;
+    readonly column: string;
+    readonly update: Uint8Array;
+  }): Promise<void> {
+    const bytes = await this.#crdtBytes(input.table, input.rowId, input.column);
+    const col = new YjsColumn(bytes);
+    col.applyServerBytes(input.update);
+    const next = col.columnBytes();
+    col.destroy();
+    await this.#crdtPush(input.table, input.rowId, input.column, next);
   }
 
   async close(): Promise<void> {

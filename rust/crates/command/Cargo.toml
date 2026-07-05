@@ -10,3 +10,10 @@ publish = false
 ssp2 = { path = "../ssp2" }
 syncular-client = { path = "../client" }
 serde_json = "1"
+
+[features]
+default = []
+# §5.10.5 native CRDT commands (crdtText/crdtInsertText/crdtDeleteText/
+# crdtApplyUpdate) — forwarded to the client core's crdt-yjs helpers. Off by
+# default so lean builds (and the codec-only paths) skip yrs entirely.
+crdt-yjs = ["syncular-client/crdt-yjs"]

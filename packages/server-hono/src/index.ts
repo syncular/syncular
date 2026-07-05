@@ -9,6 +9,7 @@ import {
   errorBody,
   handleBlobDownload,
   handleBlobUpload,
+  handleBlobUploadGrant,
   handleSegmentDownload,
   handleSyncRequest,
   SSP2_CONTENT_TYPE,
@@ -125,7 +126,35 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
     }
   });
 
-  // §5.9.5: blob download, re-authorized against referencing rows.
+  // §5.9.3: presigned-upload grant — mint a direct-to-storage PUT URL.
+  app.post('/blobs/:blobId/upload-grant', async (c) => {
+    const auth = await options.authenticate(c.req.raw);
+    if (auth === null)
+      return errorResponse(new SyncError('sync.auth_required'));
+    try {
+      const body = (await c.req.json().catch(() => ({}))) as {
+        byteLength?: number;
+        mediaType?: string;
+      };
+      const grant = await handleBlobUploadGrant(
+        { ...options.config, ...auth },
+        {
+          blobId: c.req.param('blobId'),
+          byteLength: Number(body.byteLength ?? 0),
+          ...(typeof body.mediaType === 'string'
+            ? { mediaType: body.mediaType }
+            : {}),
+        },
+      );
+      return c.json(grant, 200);
+    } catch (error) {
+      return errorResponse(error);
+    }
+  });
+
+  // §5.9.5: blob download, re-authorized against referencing rows. When the
+  // host configured presigned URLs, the result carries `url` (no bytes) and
+  // the client fetches it directly (§5.9.5 always-issue).
   app.get('/blobs/:blobId', async (c) => {
     const auth = await options.authenticate(c.req.raw);
     if (auth === null)
@@ -135,10 +164,17 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
         { ...options.config, ...auth },
         c.req.param('blobId'),
       );
+      if (result.url !== undefined) {
+        return c.json(
+          { url: result.url, urlExpiresAtMs: result.urlExpiresAtMs },
+          200,
+        );
+      }
       if (c.req.header('if-none-match') === result.headers.ETag) {
         return c.body(null, 304, result.headers);
       }
-      return c.body(result.bytes.slice().buffer as ArrayBuffer, 200, {
+      const bytes = result.bytes ?? new Uint8Array(0);
+      return c.body(bytes.slice().buffer as ArrayBuffer, 200, {
         ...result.headers,
       });
     } catch (error) {

@@ -184,6 +184,87 @@ class SyncularClient {
     return id;
   }
 
+  // -- Native CRDT (SPEC.md §5.10.5; needs the FFI `crdt-yjs` feature) ---------
+
+  /// Materialize a `crdt` column's collaborative text — decoded from the stored
+  /// (server-merged) Yjs bytes. [name] selects the shared text (default
+  /// `'text'`). An absent row / NULL column is the empty document.
+  String crdtText(String table, String rowId, String column,
+      {String name = 'text'}) {
+    final result = command('crdtText', {
+      'table': table,
+      'rowId': rowId,
+      'column': column,
+      'name': name,
+    });
+    final text = result['text'];
+    if (text is! String) {
+      throw const SyncularError('client.failed', 'crdtText returned no text');
+    }
+    return text;
+  }
+
+  /// Insert [value] at UTF-16 offset [index] in a `crdt` column's text and push
+  /// the resulting Yjs update (baseVersion-less). Returns the commit id.
+  String crdtInsertText(
+    String table,
+    String rowId,
+    String column,
+    int index,
+    String value, {
+    String name = 'text',
+  }) =>
+      _crdtCommitId('crdtInsertText', {
+        'table': table,
+        'rowId': rowId,
+        'column': column,
+        'name': name,
+        'index': index,
+        'value': value,
+      });
+
+  /// Delete [len] UTF-16 code units at [index] in a `crdt` column's text.
+  String crdtDeleteText(
+    String table,
+    String rowId,
+    String column,
+    int index,
+    int len, {
+    String name = 'text',
+  }) =>
+      _crdtCommitId('crdtDeleteText', {
+        'table': table,
+        'rowId': rowId,
+        'column': column,
+        'name': name,
+        'index': index,
+        'len': len,
+      });
+
+  /// Escape hatch: apply an arbitrary Yjs [update] onto a `crdt` column.
+  String crdtApplyUpdate(
+      String table, String rowId, String column, List<int> update) {
+    final hex = StringBuffer();
+    for (final b in update) {
+      hex.write((b & 0xff).toRadixString(16).padLeft(2, '0'));
+    }
+    return _crdtCommitId('crdtApplyUpdate', {
+      'table': table,
+      'rowId': rowId,
+      'column': column,
+      'update': {r'$bytes': hex.toString()},
+    });
+  }
+
+  String _crdtCommitId(String method, Map<String, Object?> params) {
+    final result = command(method, params);
+    final id = result['clientCommitId'];
+    if (id is! String) {
+      throw SyncularError('client.failed', '$method returned no clientCommitId');
+    }
+    return id;
+  }
+
   /// Register a subscription (table + scope map). Local; sync fills it.
   void subscribe(
     String id,

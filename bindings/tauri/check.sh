@@ -42,6 +42,10 @@ cargo clippy --all-targets -- -D warnings
 echo "== cargo clippy (native-transport) =="
 cargo clippy -p tauri-plugin-syncular --all-targets --features native-transport -- -D warnings
 
+echo "== cargo clippy (crdt-yjs) =="
+# §5.10.5 native CRDT commands compile clean on their own feature lane too.
+cargo clippy -p tauri-plugin-syncular --all-targets --features crdt-yjs -- -D warnings
+
 echo "== cargo test =="
 cargo test
 
