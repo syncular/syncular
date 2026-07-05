@@ -12,6 +12,7 @@ import {
   type SegmentRow,
 } from '@syncular/core';
 import type { ClientDatabase } from './database';
+import type { EncryptionConfig } from './encryption';
 import { ClientSyncError } from './errors';
 import {
   type CompiledClientSchema,
@@ -54,40 +55,73 @@ export function deleteLocalRow(
  * Apply one `COMMIT` frame in one local transaction (§1.4 rule 4).
  * Upserts land with `_sync_version = rowVersion`; deletes remove the row.
  * Re-application is idempotent (§1.4 rule 5).
+ *
+ * §5.11: encrypted columns are decrypted here — the apply seam. Because
+ * WebCrypto is async and the local transaction is synchronous, every row is
+ * decoded AND decrypted first (outside the transaction), then the resolved
+ * plaintext rows are applied atomically. A decrypt failure
+ * (`client.decrypt_failed`) aborts before any local write, so the commit
+ * never half-applies.
  */
-export function applyCommitFrame(
+export async function applyCommitFrame(
   db: ClientDatabase,
   schema: CompiledClientSchema,
   frame: CommitFrame,
-): void {
+  encryption?: EncryptionConfig,
+): Promise<void> {
+  type Resolved =
+    | { op: 'delete'; table: CompiledClientTable; rowId: string }
+    | {
+        op: 'upsert';
+        table: CompiledClientTable;
+        values: readonly RowValue[];
+        rowVersion: number;
+      };
+  const resolved: Resolved[] = [];
+  for (const change of frame.changes) {
+    const tableName = frame.tables[change.tableIndex];
+    if (tableName === undefined) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        `COMMIT change tableIndex ${change.tableIndex} out of range`,
+      );
+    }
+    const table = schema.tables.get(tableName);
+    if (table === undefined) {
+      throw new ClientSyncError(
+        'sync.schema_mismatch',
+        `COMMIT delivers unknown local table ${JSON.stringify(tableName)}`,
+      );
+    }
+    if (change.op === 'delete') {
+      resolved.push({ op: 'delete', table, rowId: change.rowId });
+      continue;
+    }
+    if (change.row === undefined || change.rowVersion === undefined) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        'upsert change without row payload',
+      );
+    }
+    let values = decodeRow(table.columns, change.row);
+    if (encryption !== undefined && table.hasEncryptedColumns) {
+      const { decryptRowValues } = await import('./encryption');
+      values = await decryptRowValues(encryption, table, values);
+    }
+    resolved.push({
+      op: 'upsert',
+      table,
+      values,
+      rowVersion: change.rowVersion,
+    });
+  }
   db.transaction(() => {
-    for (const change of frame.changes) {
-      const tableName = frame.tables[change.tableIndex];
-      if (tableName === undefined) {
-        throw new ClientSyncError(
-          'sync.invalid_request',
-          `COMMIT change tableIndex ${change.tableIndex} out of range`,
-        );
-      }
-      const table = schema.tables.get(tableName);
-      if (table === undefined) {
-        throw new ClientSyncError(
-          'sync.schema_mismatch',
-          `COMMIT delivers unknown local table ${JSON.stringify(tableName)}`,
-        );
-      }
+    for (const change of resolved) {
       if (change.op === 'delete') {
-        deleteLocalRow(db, table, change.rowId);
-        continue;
+        deleteLocalRow(db, change.table, change.rowId);
+      } else {
+        upsertLocalRow(db, change.table, change.values, change.rowVersion);
       }
-      if (change.row === undefined || change.rowVersion === undefined) {
-        throw new ClientSyncError(
-          'sync.invalid_request',
-          'upsert change without row payload',
-        );
-      }
-      const values = decodeRow(table.columns, change.row);
-      upsertLocalRow(db, table, values, change.rowVersion);
     }
   });
 }
@@ -357,25 +391,41 @@ export function applySqliteSegment(
  * `COMMIT` change's `rowVersion` (§5.6) — bootstrapped rows seed §6.2
  * `baseVersion` conflict detection immediately.
  */
-export function applyRowsSegment(
+export async function applyRowsSegment(
   db: ClientDatabase,
   schema: CompiledClientSchema,
   table: CompiledClientTable,
   segment: RowsSegment,
   options: { readonly clearFirst: boolean; readonly effective: ScopeMap },
-): number {
+  encryption?: EncryptionConfig,
+): Promise<number> {
   validateSegmentColumns(schema, table, segment);
   let applied = 0;
   let first = true;
   const blocks: readonly (readonly SegmentRow[])[] =
     segment.blocks.length > 0 ? segment.blocks : [[]];
   for (const block of blocks) {
+    // §5.11: decrypt this block's rows before opening the sync transaction
+    // (WebCrypto is async; the SQLite transaction is not). Decrypt failure
+    // aborts before any write in this block.
+    const rows: { values: readonly RowValue[]; serverVersion: number }[] = [];
+    for (const row of block) {
+      const values =
+        encryption !== undefined && table.hasEncryptedColumns
+          ? await (async () => {
+              const { decryptRowValues } = await import('./encryption');
+              return decryptRowValues(encryption, table, row.values);
+            })()
+          : row.values;
+      rows.push({ values, serverVersion: row.serverVersion });
+    }
+    const clearThisBlock = first && options.clearFirst;
+    first = false;
     db.transaction(() => {
-      if (first && options.clearFirst) {
+      if (clearThisBlock) {
         deleteScopedRows(db, table, options.effective);
       }
-      first = false;
-      for (const row of block) {
+      for (const row of rows) {
         upsertLocalRow(db, table, row.values, row.serverVersion);
         applied += 1;
       }

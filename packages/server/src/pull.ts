@@ -327,7 +327,14 @@ async function* bootstrapSegments(
   // §5.3: the sqlite-image lane — whole-table, chosen only at the start
   // of a table (a mid-table resume stays on the rows lane, never
   // switching lanes), and only when the client advertised bit 2.
-  if ((limits.accept & ACCEPT_SQLITE) !== 0 && startRowCursor === null) {
+  // §5.11: a table with any encrypted column is image-INELIGIBLE — an image
+  // copies ciphertext wholesale with no per-row decrypt pass, so it MUST be
+  // served on the rows lane (which decrypts per row on the client).
+  if (
+    (limits.accept & ACCEPT_SQLITE) !== 0 &&
+    startRowCursor === null &&
+    plan.table.encryptedColumnIndices.length === 0
+  ) {
     const imaged = yield* sqliteImageSegment(
       ctx,
       schema,

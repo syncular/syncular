@@ -865,6 +865,10 @@ export const rustClientDriver: ClientDriver = {
       // client clock for the urlExpiresAtMs check.
       signedUrls: options.endpoints.fetchSegmentUrl !== undefined,
       ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
+      // §5.11: forward the encryption keys ({ keys: { keyId: {$bytes} } }).
+      ...(options.encryption !== undefined
+        ? { encryption: options.encryption as unknown as JsonValue }
+        : {}),
     });
     return new RustClientInstance(shim);
   },

@@ -32,6 +32,18 @@ export interface RowColumn {
    * nullable, and `crdt` shares the `bytes` tag). Ignored for other types.
    */
   readonly crdtType?: string;
+  /**
+   * §5.11: this column is encrypted end-to-end. When set, `type` is `bytes`
+   * (the wire/stored type — the ciphertext envelope rides the bytes machinery)
+   * and `declaredType` is the pre-flip app type. Both are schema-IR metadata,
+   * never on the wire (like `crdtType`). The row codec ignores these — it
+   * only ever sees a `bytes` value; encryption/decryption is the client
+   * encode/apply seam (§5.11).
+   */
+  readonly encrypted?: boolean;
+  /** §5.11: the app-side type of an encrypted column (its type before the
+   * wire flip to `bytes`). Present iff `encrypted` is set. */
+  readonly declaredType?: ColumnType;
 }
 
 /**

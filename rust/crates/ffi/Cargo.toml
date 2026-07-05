@@ -51,3 +51,7 @@ native-transport = ["dep:ureq", "dep:tungstenite"]
 # shared router's crdt-yjs feature — the FFI adds no code, the commands ride
 # the existing `dispatch` call.
 crdt-yjs = ["syncular-command/crdt-yjs"]
+# §5.11 client-side encryption. Off by default (lean builds skip the crypto
+# crates); a host that syncs encrypted columns turns it on. Forwards to the
+# shared router's e2ee feature — the FFI adds no code.
+e2ee = ["syncular-command/e2ee"]

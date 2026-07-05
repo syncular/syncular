@@ -95,11 +95,19 @@ const WORKLOAD = {
  *   100× allowance absorbs runner noise; breaching 20 ms in-process means
  *   a sleep/poll crept into the sync/realtime loop (for scale: v1's
  *   SOCKETED p95 was 22.8 ms — the loopback lane must beat that always).
- * - `ownJsRawCeilingBytes` 72 KB: syncular's own JS (core + codec) is
- *   69.10 KB raw today. Bundle bytes are deterministic — no runner noise —
- *   so this stays tight (~4% headroom: enough that a one-KB innocent
+ * - `ownJsRawCeilingBytes` 82 KB: syncular's own JS (core + codec) is
+ *   77.7 KB raw today. Bundle bytes are deterministic — no runner noise —
+ *   so this stays tight (~5% headroom: enough that a one-KB innocent
  *   change doesn't trip, small enough to catch real bloat), far under the
- *   217.7 KB v1 line the gate was scored against. RAISED from 66 KB
+ *   217.7 KB v1 line the gate was scored against. RAISED from 72 KB
+ *   (2026-07-05): client-side E2EE (SPEC §5.11) — the AEAD envelope +
+ *   value serializer in `@syncular/core` and the encrypt/decrypt seam in
+ *   `encryption.ts` — added ~+7 KB raw (this proxy inlines it, though
+ *   E2EE is opt-in behind `await import()` and code-splits OUT of any
+ *   real app that doesn't configure a keyProvider; the proxy counts it
+ *   on purpose as the conservative tripwire). Legitimate growth (a
+ *   shipped security feature), re-derived per the standing rule. RAISED
+ *   from 66 KB
  *   (2026-07-04, ROADMAP block 3 / DESIGN-eviction W1): windowed sync —
  *   the `window.ts` registry + the `setWindow`/`windowState`/eviction/
  *   pending-drain logic in `client.ts` and `evictScopedRows` in `apply.ts`
@@ -124,7 +132,7 @@ const BUDGETS = {
   bootstrapRowsPerSecFloor: 90_000,
   imageBootstrapRowsPerSecFloor: 300_000,
   propagationP95CeilingMs: 20,
-  ownJsRawCeilingBytes: 72 * 1024,
+  ownJsRawCeilingBytes: 82 * 1024,
   totalGzipCeilingBytes: 600 * 1024,
 } as const;
 
@@ -279,6 +287,11 @@ interface BundleResult {
 }
 
 async function measureBundle(): Promise<BundleResult> {
+  // Conservative single-chunk measurement (no splitting): everything the entry
+  // statically-or-dynamically reaches, inlined — the upper bound. Real apps'
+  // bundlers code-split opt-in features (E2EE crypto is behind `await import()`
+  // so it splits out in any real build); this proxy counts it anyway, on
+  // purpose, as the anti-bloat tripwire.
   const build = await Bun.build({
     entrypoints: [join(import.meta.dir, 'bundle-entry.ts')],
     target: 'browser',

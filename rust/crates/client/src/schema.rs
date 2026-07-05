@@ -31,6 +31,13 @@ pub struct ColumnIr {
     #[serde(rename = "type")]
     pub column_type: String,
     pub nullable: bool,
+    /// §5.11: this column is encrypted end-to-end. When set, `column_type` is
+    /// `bytes` (the wire type) and `declared_type` is the app type.
+    #[serde(default)]
+    pub encrypted: bool,
+    /// §5.11: the app-side type of an encrypted column (`declaredType` in JSON).
+    #[serde(default, rename = "declaredType")]
+    pub declared_type: Option<String>,
 }
 
 /// One local secondary index (the CREATE INDEX migration subset, §2.4).
@@ -63,16 +70,42 @@ pub struct ScopeVariable {
     pub column: String,
 }
 
+/// §5.11: one encrypted column — its positional index and its app-side
+/// declared type name (`string`, `integer`, …). The wire `Column.ty` is
+/// `bytes`; this carries the pre-flip type for the encrypt/decrypt seam.
+#[derive(Debug, Clone)]
+pub struct EncryptedColumn {
+    pub index: usize,
+    pub declared_type: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct TableSchema {
     pub name: String,
-    /// Columns in schema-IR declaration order (§2.4: positional codec).
+    /// LOCAL columns (declaration order). For an encrypted column (§5.11) the
+    /// `ty` is the DECLARED type — the local mirror stores plaintext, so
+    /// read-back and DDL use the real type. Identical to `wire_columns` when
+    /// the table has no encrypted columns.
     pub columns: Vec<Column>,
+    /// WIRE columns (§2.4 positional codec): identical to `columns` except an
+    /// encrypted column's `ty` is `bytes` (the ciphertext envelope rides the
+    /// bytes machinery). Used by `encode_row_json`/`decode_row_bytes` and the
+    /// §5.2 segment column-table validation.
+    pub wire_columns: Vec<Column>,
     pub primary_key: String,
     pub pk_index: usize,
     pub scope_variables: Vec<ScopeVariable>,
     /// Local secondary indexes, in declaration order (empty when none).
     pub indexes: Vec<IndexSchema>,
+    /// §5.11: encrypted columns (index + declared type). Empty ⇒ no E2EE.
+    pub encrypted_columns: Vec<EncryptedColumn>,
+}
+
+impl TableSchema {
+    /// §5.11: true when any column is encrypted (skip the seam entirely else).
+    pub fn has_encrypted_columns(&self) -> bool {
+        !self.encrypted_columns.is_empty()
+    }
 }
 
 impl TableSchema {
@@ -131,13 +164,43 @@ fn parse_pattern_variable(pattern: &str) -> Result<String, String> {
 pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
     let mut tables = Vec::with_capacity(ir.tables.len());
     for table in &ir.tables {
+        // wire_columns carry the on-the-wire type (bytes for encrypted); the
+        // local `columns` carry the declared type so the local mirror is
+        // plaintext (§5.11).
+        let mut wire_columns = Vec::with_capacity(table.columns.len());
         let mut columns = Vec::with_capacity(table.columns.len());
-        for column in &table.columns {
-            columns.push(Column {
+        let mut encrypted_columns = Vec::new();
+        for (index, column) in table.columns.iter().enumerate() {
+            let wire_ty = parse_column_type(&column.column_type)?;
+            wire_columns.push(Column {
                 name: column.name.clone(),
-                ty: parse_column_type(&column.column_type)?,
+                ty: wire_ty,
                 nullable: column.nullable,
             });
+            if column.encrypted {
+                let declared_name = column.declared_type.clone().ok_or_else(|| {
+                    format!(
+                        "table {:?}: encrypted column {:?} has no declaredType (§5.11)",
+                        table.name, column.name
+                    )
+                })?;
+                let declared_ty = parse_column_type(&declared_name)?;
+                columns.push(Column {
+                    name: column.name.clone(),
+                    ty: declared_ty,
+                    nullable: column.nullable,
+                });
+                encrypted_columns.push(EncryptedColumn {
+                    index,
+                    declared_type: declared_name,
+                });
+            } else {
+                columns.push(Column {
+                    name: column.name.clone(),
+                    ty: wire_ty,
+                    nullable: column.nullable,
+                });
+            }
         }
         let pk_index = columns
             .iter()
@@ -173,10 +236,12 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
         tables.push(TableSchema {
             name: table.name.clone(),
             columns,
+            wire_columns,
             primary_key: table.primary_key.clone(),
             pk_index,
             scope_variables,
             indexes,
+            encrypted_columns,
         });
     }
     Ok(ClientSchema {

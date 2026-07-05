@@ -52,6 +52,11 @@ export interface CompiledTable {
     readonly index: number;
     readonly crdtType: string;
   }[];
+  /** §5.11: column indices marked `encrypted`. The server never decrypts;
+   * this only excludes the table from sqlite-image eligibility (§5.3) — an
+   * image copies ciphertext wholesale with no per-row decrypt pass, so an
+   * encrypted table MUST be served via the rows lane. Empty ⇒ no restriction. */
+  readonly encryptedColumnIndices: readonly number[];
 }
 
 export interface CompiledSchema {
@@ -136,8 +141,11 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
     }
     const blobRefColumnIndices: number[] = [];
     const crdtColumns: { index: number; crdtType: string }[] = [];
+    const encryptedColumnIndices: number[] = [];
     table.columns.forEach((column, index) => {
       if (column.type === 'blob_ref') blobRefColumnIndices.push(index);
+      // §5.11: an encrypted column carries wire type `bytes` + `encrypted`.
+      if (column.encrypted === true) encryptedColumnIndices.push(index);
       if (column.type === 'crdt') {
         // §5.10.1: a crdt column MUST name a crdtType (schema-compile-time
         // requirement — a crdt column without one is a server bug).
@@ -158,6 +166,7 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       declaredVariables: variables,
       blobRefColumnIndices,
       crdtColumns,
+      encryptedColumnIndices,
     });
   }
   const compiled: CompiledSchema = {

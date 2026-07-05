@@ -1,0 +1,64 @@
+{
+  "description": "SPEC.md §5.11 cross-core crypto vectors. Fixed key/nonce (test-only injection). Both cores reproduce envelopeHex byte-for-byte and round-trip decrypt/unwrap.",
+  "keyHex": "0707070707070707070707070707070707070707070707070707070707070707",
+  "nonceHex": "000102030405060708090a0b",
+  "aesGcm": [
+    {
+      "name": "string",
+      "declaredType": "string",
+      "keyId": "k1",
+      "valueHex": "68656c6c6f20f09f9490",
+      "envelopeHex": "01026b31000102030405060708090a0b70e4851c722929d6e3221a5ac72c9a5e6bc0ec8d836996f3c13a"
+    },
+    {
+      "name": "json",
+      "declaredType": "json",
+      "keyId": "k1",
+      "valueHex": "7b2261223a312c2262223a5b747275652c6e756c6c5d7d",
+      "envelopeHex": "01026b31000102030405060708090a0b63a388522738f56b1590dfc7962a199fcd52c3e2743f0a62f1a17b95fdf4101fea17f246938731"
+    },
+    {
+      "name": "blob_ref",
+      "declaredType": "blob_ref",
+      "keyId": "k1",
+      "valueHex": "7b22616c676f223a22736861323536222c2268617368223a226162222c2273697a65223a337d",
+      "envelopeHex": "01026b31000102030405060708090a0b63a3881c7a66fb7355c18dfdd06d5ad8cd1edeef6b0a550b34af0198a2f51e6ca40a64d8a4b2a139297ead8be45ef1b14048a7e2fb40"
+    },
+    {
+      "name": "integer",
+      "declaredType": "integer",
+      "keyId": "k1",
+      "valueHex": "ffffffffffff1f00",
+      "envelopeHex": "01026b31000102030405060708090a0be77e168fe2f6c649961f77380d8e05c963109a95557516c0"
+    },
+    {
+      "name": "float",
+      "declaredType": "float",
+      "keyId": "k1",
+      "valueHex": "182d4454fb210940",
+      "envelopeHex": "01026b31000102030405060708090a0b00acad24e628d00953880db6cef345c2b433d20f9793356e"
+    },
+    {
+      "name": "boolean",
+      "declaredType": "boolean",
+      "keyId": "k1",
+      "valueHex": "01",
+      "envelopeHex": "01026b31000102030405060708090a0b19b32a372fe774f23edff79ab65dc33382"
+    },
+    {
+      "name": "bytes",
+      "declaredType": "bytes",
+      "keyId": "k1",
+      "valueHex": "deadbeef",
+      "envelopeHex": "01026b31000102030405060708090a0bc62c579f63b4c60e6167ad761e454def4eaf7f44"
+    }
+  ],
+  "x25519Wrap": {
+    "recipientPrivHex": "0303030303030303030303030303030303030303030303030303030303030303",
+    "recipientPubHex": "5dfedd3b6bd47f6fa28ee15d969d5bb0ea53774d488bdaf9df1c6e0124b3ef22",
+    "ephemeralPrivHex": "0505050505050505050505050505050505050505050505050505050505050505",
+    "nonceHex": "000102030405060708090a0b",
+    "symmetricKeyHex": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+    "envelopeHex": "0150a61409b1ddd0325e9b16b700e719e9772c07000b1bd7786e907c653d20495d000102030405060708090a0b4b62c5e3e218ff263c2869aefba661e1c6b1208bbcbb243ae6cfed3075e1190dc20eb988f4ad54ce1319125de016f88c"
+  }
+}

@@ -12,6 +12,7 @@ import {
   type ScopeMap,
 } from '@syncular/core';
 import type { ClientDatabase } from './database';
+import type { EncryptionConfig } from './encryption';
 import { ClientSyncError } from './errors';
 import {
   type CompiledClientSchema,
@@ -114,22 +115,28 @@ function orderedValues(
 
 /**
  * Encode one outbox commit as a `PUSH_COMMIT` frame with the current
- * schema's row codec (§6.1).
+ * schema's row codec (§6.1). When `encryption` is configured, encrypted
+ * columns (§5.11) are encrypted here — the encode-at-send seam — before the
+ * row codec serializes them as ciphertext-envelope `bytes`. Async because
+ * WebCrypto is async.
  */
-export function encodeOutboxCommit(
+export async function encodeOutboxCommit(
   schema: CompiledClientSchema,
   commit: OutboxCommit,
-): PushCommitFrame {
-  const operations: PushOperation[] = commit.operations.map((op) => {
+  encryption?: EncryptionConfig,
+): Promise<PushCommitFrame> {
+  const operations: PushOperation[] = [];
+  for (const op of commit.operations) {
     if (op.op === 'delete') {
-      return {
+      operations.push({
         table: op.table,
         rowId: op.rowId,
         op: 'delete',
         ...(op.baseVersion !== undefined
           ? { baseVersion: op.baseVersion }
           : {}),
-      };
+      });
+      continue;
     }
     const table = schema.tables.get(op.table);
     if (table === undefined) {
@@ -144,14 +151,20 @@ export function encodeOutboxCommit(
         `outbox upsert on ${op.table}/${op.rowId} has no values`,
       );
     }
-    return {
+    let values = orderedValues(table, op.values);
+    if (encryption !== undefined && table.hasEncryptedColumns) {
+      // Lazy: opt-in E2EE never enters an encryption-free app's bundle.
+      const { encryptRowValues } = await import('./encryption');
+      values = await encryptRowValues(encryption, table, op.rowId, values);
+    }
+    operations.push({
       table: op.table,
       rowId: op.rowId,
       op: 'upsert',
       ...(op.baseVersion !== undefined ? { baseVersion: op.baseVersion } : {}),
-      payload: encodeRow(table.columns, orderedValues(table, op.values)),
-    };
-  });
+      payload: encodeRow(table.columns, values),
+    });
+  }
   return {
     type: 'PUSH_COMMIT',
     clientCommitId: commit.clientCommitId,

@@ -57,6 +57,7 @@ import {
   serializeBlobRef,
 } from './blob';
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
+import type { EncryptionConfig } from './encryption';
 import { ClientSyncError } from './errors';
 import {
   Invalidation,
@@ -263,6 +264,14 @@ export interface SyncClientConfig {
    * updated — the app's cue to re-render who's-online.
    */
   readonly onPresence?: (scopeKey: string) => void;
+  /**
+   * §5.11 client-side encryption. Supplies the key material (`keyProvider`)
+   * and key selection (`keyIdFor`) for columns the generated schema marks
+   * `encrypted`. Absent ⇒ no columns are encrypted (a schema with encrypted
+   * columns then fails loud on the first encode/apply — a missing key is
+   * `client.decrypt_failed`, never silent plaintext).
+   */
+  readonly encryption?: EncryptionConfig;
 }
 
 /** §8.6 a peer's ephemeral presence document on a scope key. */
@@ -372,6 +381,8 @@ export class SyncClient {
   readonly #config: SyncClientConfig;
   readonly #db: ClientDatabase;
   readonly #schema: CompiledClientSchema;
+  /** §5.11 client-side encryption config; undefined ⇒ E2EE off. */
+  readonly #encryption: EncryptionConfig | undefined;
   readonly #now: () => number;
   #started = false;
   #lease: LeaderLease | undefined;
@@ -423,6 +434,7 @@ export class SyncClient {
     this.#config = config;
     this.#db = config.database;
     this.#schema = compileClientSchema(config.schema);
+    this.#encryption = config.encryption;
     this.#now = config.now ?? Date.now;
     this.#hasBlobs = schemaHasBlobs(this.#schema);
   }
@@ -1183,16 +1195,20 @@ export class SyncClient {
    * incompatible`); its purely-optimistic rows are undone (§7.2). Returns
    * the encoded push frames index-aligned with the surviving `outbox`.
    */
-  #encodeOutboxForPush(): {
+  async #encodeOutboxForPush(): Promise<{
     pushFrames: RequestFrame[];
     outbox: OutboxCommit[];
-  } {
+  }> {
     const pending = listOutbox(this.#db);
     const pushFrames: RequestFrame[] = [];
     const outbox: OutboxCommit[] = [];
     for (const commit of pending) {
       try {
-        pushFrames.push(encodeOutboxCommit(this.#schema, commit));
+        pushFrames.push(
+          // §5.11: encrypted columns are encrypted at this encode-at-send
+          // seam before the row codec serializes them.
+          await encodeOutboxCommit(this.#schema, commit, this.#encryption),
+        );
         outbox.push(commit);
       } catch (error) {
         if (error instanceof OutboxEncodeError) {
@@ -1289,7 +1305,7 @@ export class SyncClient {
       // is removed from the push and surfaced as a rejection, never wedging
       // the queue. `pushFrames` and `outbox` stay index-aligned for result
       // mapping.
-      const { pushFrames, outbox } = this.#encodeOutboxForPush();
+      const { pushFrames, outbox } = await this.#encodeOutboxForPush();
       const subs = loadSubscriptions(this.#db).filter(
         (sub) => sub.status === 'active',
       );
@@ -1700,7 +1716,7 @@ export class SyncClient {
             }
             case 'COMMIT':
               if (section !== undefined && !section.skip) {
-                this.#applyCommit(frame, summary);
+                await this.#applyCommit(frame, summary);
               }
               break;
             case 'SEGMENT_INLINE': {
@@ -1712,14 +1728,18 @@ export class SyncClient {
                 break;
               }
               const segment = decodeRowsSegment(frame.payload);
-              this.#applySegmentOrFail(
+              await this.#applySegmentOrFail(
                 section,
                 summary,
                 (table, clearFirst, effective) =>
-                  applyRowsSegment(this.#db, this.#schema, table, segment, {
-                    clearFirst,
-                    effective,
-                  }),
+                  applyRowsSegment(
+                    this.#db,
+                    this.#schema,
+                    table,
+                    segment,
+                    { clearFirst, effective },
+                    this.#encryption,
+                  ),
                 section.fresh && !section.cleared,
               );
               break;
@@ -1756,7 +1776,7 @@ export class SyncClient {
                     'sqlite segments are whole-table: rowCursor/nextRowCursor must be absent (§5.3)',
                   );
                 }
-                this.#applySegmentOrFail(
+                await this.#applySegmentOrFail(
                   section,
                   summary,
                   (table, clearFirst, effective) =>
@@ -1777,14 +1797,18 @@ export class SyncClient {
                 );
               } else {
                 const segment = decodeRowsSegment(bytes);
-                this.#applySegmentOrFail(
+                await this.#applySegmentOrFail(
                   section,
                   summary,
                   (table, clearFirst, effective) =>
-                    applyRowsSegment(this.#db, this.#schema, table, segment, {
-                      clearFirst,
-                      effective,
-                    }),
+                    applyRowsSegment(
+                      this.#db,
+                      this.#schema,
+                      table,
+                      segment,
+                      { clearFirst, effective },
+                      this.#encryption,
+                    ),
                   section.fresh &&
                     !section.cleared &&
                     frame.rowCursor === undefined,
@@ -1952,8 +1976,11 @@ export class SyncClient {
     return record;
   }
 
-  #applyCommit(frame: CommitFrame, summary: MutableSummary): void {
-    applyCommitFrame(this.#db, this.#schema, frame);
+  async #applyCommit(
+    frame: CommitFrame,
+    summary: MutableSummary,
+  ): Promise<void> {
+    await applyCommitFrame(this.#db, this.#schema, frame, this.#encryption);
     summary.commitsApplied += 1;
     // I1/I2: record touched tables and precise `prefix:value` scope keys —
     // COMMIT changes carry per-row stored scopes (§4.5), the finest honest
@@ -1975,21 +2002,21 @@ export class SyncClient {
    * (no local scope-column mapping) marks the subscription `failed` and
    * stops syncing the table without failing the whole request.
    */
-  #applySegmentOrFail(
+  async #applySegmentOrFail(
     section: OpenSection,
     summary: MutableSummary,
     apply: (
       table: CompiledClientTable,
       clearFirst: boolean,
       effective: ScopeMap,
-    ) => number,
+    ) => number | Promise<number>,
     clearFirst: boolean,
-  ): void {
+  ): Promise<void> {
     const sub = section.sub;
     if (sub === undefined) return;
     const table = this.#table(sub.table);
     try {
-      summary.segmentRowsApplied += apply(
+      summary.segmentRowsApplied += await apply(
         table,
         clearFirst,
         section.start.effectiveScopes,

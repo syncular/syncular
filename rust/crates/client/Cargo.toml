@@ -25,6 +25,14 @@ uuid = { version = "1", features = ["v4"] }
 version = "0.27"
 optional = true
 
+# §5.11 client-side encryption. rand_core supplies the production CSPRNG nonce
+# at the encode seam; the crypto/wrap primitives live in ssp2 behind e2ee.
+[dependencies.rand_core]
+version = "0.6"
+features = ["getrandom"]
+optional = true
+
 [features]
 default = []
 crdt-yjs = ["dep:yrs"]
+e2ee = ["ssp2/e2ee", "dep:rand_core"]

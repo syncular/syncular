@@ -59,6 +59,10 @@ export interface DriverColumn {
   readonly nullable: boolean;
   /** §5.10.1: the merger name for a `crdt` column (default `yjs-doc`). */
   readonly crdtType?: string;
+  /** §5.11: this column is encrypted; `type` is `bytes` and `declaredType`
+   * is the app-side type. */
+  readonly encrypted?: boolean;
+  readonly declaredType?: DriverColumnType;
 }
 
 /** `'prefix:{variable}'`; `column` defaults to the variable name (§3.1). */
@@ -549,6 +553,15 @@ export interface ClientLimitsOptions {
   readonly blobCacheMaxBytes?: number;
 }
 
+/**
+ * §5.11 client-side encryption config for a driver client. `keys` maps a
+ * key-id to its 32-byte key in the `{ $bytes: hex }` driver form. Both cores
+ * install these and encrypt/decrypt columns the schema marks `encrypted`.
+ */
+export interface DriverEncryptionConfig {
+  readonly keys: Readonly<Record<string, { readonly $bytes: string }>>;
+}
+
 export interface ClientCreateOptions {
   readonly clientId: string;
   readonly schema: DriverSchema;
@@ -560,6 +573,8 @@ export interface ClientCreateOptions {
    * wall-clock client would misjudge virtual-clock expiries.
    */
   readonly nowMs?: number;
+  /** §5.11 client-side encryption keys; absent ⇒ E2EE off. */
+  readonly encryption?: DriverEncryptionConfig;
 }
 
 /** §4.8 window base a scenario windows on: table + variable + fixed scopes. */

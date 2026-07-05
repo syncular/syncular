@@ -61,7 +61,7 @@ describe('schema-agnostic persistence (§0 outbox rule)', () => {
     expect(jsonToRowValue(json)).toEqual(bytes);
   });
 
-  test('a bytes column encodes at send time from the JSON form', () => {
+  test('a bytes column encodes at send time from the JSON form', async () => {
     const blobSchema: ClientSchema = {
       version: 1,
       tables: [
@@ -78,7 +78,7 @@ describe('schema-agnostic persistence (§0 outbox rule)', () => {
       ],
     };
     const schema = compileClientSchema(blobSchema);
-    const frame = encodeOutboxCommit(schema, {
+    const frame = await encodeOutboxCommit(schema, {
       seq: 1,
       clientCommitId: 'c1',
       createdAtMs: 0,
@@ -113,7 +113,7 @@ describe('encode-at-send (§6.1)', () => {
     ]);
     const [commit] = a.client.pendingCommits();
     if (commit === undefined) throw new Error('missing outbox commit');
-    const frame = encodeOutboxCommit(compiled, commit);
+    const frame = await encodeOutboxCommit(compiled, commit);
     expect(frame.clientCommitId).toBe(commit.clientCommitId);
     const op = frame.operations[0];
     expect(op?.baseVersion).toBe(3);
@@ -122,22 +122,22 @@ describe('encode-at-send (§6.1)', () => {
     );
   });
 
-  test('deletes carry no payload; upserts without values fail loud', () => {
-    const del = encodeOutboxCommit(compiled, {
+  test('deletes carry no payload; upserts without values fail loud', async () => {
+    const del = await encodeOutboxCommit(compiled, {
       seq: 1,
       clientCommitId: 'c1',
       createdAtMs: 0,
       operations: [{ table: 'tasks', rowId: 't1', op: 'delete' }],
     });
     expect(del.operations[0]?.payload).toBeUndefined();
-    expect(() =>
+    await expect(
       encodeOutboxCommit(compiled, {
         seq: 2,
         clientCommitId: 'c2',
         createdAtMs: 0,
         operations: [{ table: 'tasks', rowId: 't1', op: 'upsert' }],
       }),
-    ).toThrow(ClientSyncError);
+    ).rejects.toThrow(ClientSyncError);
   });
 
   test('outbox order is FIFO by creation (§7.1)', async () => {

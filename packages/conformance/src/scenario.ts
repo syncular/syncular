@@ -20,6 +20,7 @@ import {
 import type {
   ClientInstance,
   ClientLimitsOptions,
+  DriverEncryptionConfig,
   DriverError,
   DriverSchema,
   DriverScopeMap,
@@ -317,6 +318,8 @@ export interface NewClientOptions {
   /** Pin the client clock (epoch ms) — required by §5.4 expiry checks
    * against the server's virtual clock. */
   readonly nowMs?: number;
+  /** §5.11 client-side encryption keys; absent ⇒ E2EE off. */
+  readonly encryption?: DriverEncryptionConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +506,9 @@ export class ScenarioContext {
       schema: options.schema ?? this.schema,
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
       ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
+      ...(options.encryption !== undefined
+        ? { encryption: options.encryption }
+        : {}),
       endpoints: {
         ...(fetchSegmentUrl !== undefined ? { fetchSegmentUrl } : {}),
         ...(uploadBlob !== undefined ? { uploadBlob } : {}),

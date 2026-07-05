@@ -29,6 +29,18 @@ const TS_TYPE: Readonly<Record<IrColumnType, string>> = {
   crdt: 'Uint8Array',
 };
 
+/**
+ * §5.11: the app-side TS type of a column. An encrypted column's wire type is
+ * `bytes`, but the app sees its declared type (the local mirror is plaintext).
+ */
+function appTsType(column: IrTable['columns'][number]): string {
+  const type =
+    column.encrypted === true && column.declaredType !== undefined
+      ? column.declaredType
+      : column.type;
+  return TS_TYPE[type];
+}
+
 function pascalCase(name: string): string {
   return name
     .split(/[_-]+/)
@@ -64,8 +76,14 @@ function emitSchema(ir: IrDocument): string {
         column.crdtType !== undefined
           ? `, crdtType: ${quote(column.crdtType)}`
           : '';
+      // §5.11: emit encrypted/declaredType on encrypted columns so the client
+      // codec encrypts/decrypts them; omitted for others.
+      const encrypted =
+        column.encrypted === true
+          ? `, encrypted: true, declaredType: ${quote(column.declaredType ?? column.type)}`
+          : '';
       lines.push(
-        `        { name: ${quote(column.name)}, type: ${quote(column.type)}, nullable: ${column.nullable}${crdtType} },`,
+        `        { name: ${quote(column.name)}, type: ${quote(column.type)}, nullable: ${column.nullable}${crdtType}${encrypted} },`,
       );
     }
     lines.push('      ],');
@@ -102,7 +120,7 @@ function emitRowInterfaces(table: IrTable): string {
   lines.push(`/** One ${table.name} row (§2.4 column order). */`);
   lines.push(`export interface ${type}Row {`);
   for (const column of table.columns) {
-    const ts = TS_TYPE[column.type];
+    const ts = appTsType(column);
     lines.push(
       `  ${propertyKey(column.name)}: ${ts}${column.nullable ? ' | null' : ''};`,
     );
@@ -112,7 +130,7 @@ function emitRowInterfaces(table: IrTable): string {
   lines.push(`/** Insert shape: nullable columns may be omitted. */`);
   lines.push(`export interface ${type}Insert {`);
   for (const column of table.columns) {
-    const ts = TS_TYPE[column.type];
+    const ts = appTsType(column);
     lines.push(
       column.nullable
         ? `  ${propertyKey(column.name)}?: ${ts} | null;`
@@ -126,7 +144,7 @@ function emitRowInterfaces(table: IrTable): string {
   );
   lines.push(`export interface ${type}Update {`);
   for (const column of table.columns) {
-    const ts = TS_TYPE[column.type];
+    const ts = appTsType(column);
     if (column.name === table.primaryKey) {
       lines.push(`  ${propertyKey(column.name)}: ${ts};`);
     } else {

@@ -91,6 +91,29 @@ pub fn parse_limits(value: Option<&Value>) -> ClientLimits {
     limits
 }
 
+/// §5.11: parse the `encryption` config into the client's key map. Shape:
+/// `{ keys: { "<keyId>": {"$bytes": "<hex>"} } }`. Keys are 32 bytes.
+pub fn parse_encryption(
+    value: &Value,
+) -> Result<syncular_client::values::EncryptionConfig, String> {
+    let mut config = syncular_client::values::EncryptionConfig::default();
+    let Some(keys) = value.get("keys").and_then(Value::as_object) else {
+        return Ok(config);
+    };
+    for (key_id, key_val) in keys {
+        let bytes = value_bytes(Some(key_val))
+            .map_err(|e| format!("encryption key {key_id:?}: {e}"))?;
+        if bytes.len() != 32 {
+            return Err(format!(
+                "encryption key {key_id:?} must be 32 bytes, got {}",
+                bytes.len()
+            ));
+        }
+        config.keys.insert(key_id.clone(), bytes);
+    }
+    Ok(config)
+}
+
 pub fn parse_mutations(value: Option<&Value>) -> Result<Vec<Mutation>, String> {
     let list = value
         .and_then(Value::as_array)
@@ -248,6 +271,12 @@ pub fn dispatch<T: Transport>(
                 .get("signedUrls")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            // §5.11: install client-side encryption keys. Shape:
+            // { encryption: { keys: { "<keyId>": {"$bytes": "<hex>"} } } }.
+            if let Some(enc) = params.get("encryption") {
+                let config = parse_encryption(enc).map_err(client_err)?;
+                instance.set_encryption(config);
+            }
             *client = Some(instance);
             Ok(json!({}))
         }

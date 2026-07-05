@@ -17,3 +17,6 @@ default = []
 # crdtApplyUpdate) — forwarded to the client core's crdt-yjs helpers. Off by
 # default so lean builds (and the codec-only paths) skip yrs entirely.
 crdt-yjs = ["syncular-client/crdt-yjs"]
+# §5.11 client-side encryption — forwarded to the client core. Off by default
+# so lean builds skip the crypto crates; the conformance shim enables it.
+e2ee = ["syncular-client/e2ee"]

@@ -13,6 +13,7 @@ export * from './blob';
 export * from './client';
 export * from './content-type';
 export * from './database';
+export * from './encryption';
 export * from './errors';
 export * from './http';
 export * from './invalidation';

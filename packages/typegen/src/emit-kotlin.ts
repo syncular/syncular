@@ -27,6 +27,15 @@ const KOTLIN_TYPE: Readonly<Record<IrColumnType, string>> = {
   crdt: 'ByteArray',
 };
 
+/** §5.11: app-side Kotlin type — declaredType for an encrypted column. */
+function appKotlinType(column: IrTable['columns'][number]): string {
+  const type =
+    column.encrypted === true && column.declaredType !== undefined
+      ? column.declaredType
+      : column.type;
+  return KOTLIN_TYPE[type];
+}
+
 function pascalCase(name: string): string {
   return name
     .split(/[_-]+/)
@@ -65,6 +74,12 @@ function emitSchemaValue(ir: IrDocument, indent: string): string[] {
       ];
       if (column.crdtType !== undefined) {
         parts.push(`"crdtType" to JsonValue.of(${quote(column.crdtType)})`);
+      }
+      if (column.encrypted === true) {
+        parts.push('"encrypted" to JsonValue.of(true)');
+        parts.push(
+          `"declaredType" to JsonValue.of(${quote(column.declaredType ?? column.type)})`,
+        );
       }
       lines.push(`${i}        JsonValue.obj(${parts.join(', ')}),`);
     }
@@ -109,7 +124,7 @@ function emitDataClass(table: IrTable): string[] {
   lines.push(`/** One ${table.name} row (§2.4 column order). */`);
   lines.push(`data class ${type}(`);
   for (const column of table.columns) {
-    const kotlin = KOTLIN_TYPE[column.type];
+    const kotlin = appKotlinType(column);
     const opt = column.nullable ? '?' : '';
     lines.push(`    val ${camelCase(column.name)}: ${kotlin}${opt},`);
   }

@@ -8,6 +8,7 @@
 import {
   type ClientSchema,
   ClientSyncError,
+  type EncryptionConfig,
   type MutationInput,
   SYNC_VERSION_COLUMN,
   SyncClient,
@@ -28,6 +29,7 @@ import type {
   ClientSubscriptionState,
   ClientSyncResult,
   DriverColumn,
+  DriverEncryptionConfig,
   DriverRow,
   DriverRowValue,
   DriverSchema,
@@ -35,6 +37,18 @@ import type {
   DriverWindowBase,
 } from '../driver';
 import { bytesToHex, hexToBytes } from '../raw';
+
+/** §5.11: driver `{ keyId: {$bytes} }` → a client key provider. */
+function buildEncryption(
+  config: DriverEncryptionConfig | undefined,
+): EncryptionConfig | undefined {
+  if (config === undefined) return undefined;
+  const keys = new Map<string, Uint8Array>();
+  for (const [keyId, val] of Object.entries(config.keys)) {
+    keys.set(keyId, hexToBytes(val.$bytes));
+  }
+  return { keyProvider: (keyId) => keys.get(keyId) };
+}
 
 function toClientSchema(schema: DriverSchema): ClientSchema {
   return {
@@ -69,8 +83,14 @@ function normalizeSqlValue(
   value: unknown,
 ): DriverRowValue {
   if (value === null || value === undefined) return null;
-  if (column.type === 'boolean') return value !== 0 && value !== false;
-  if (column.type === 'bytes' || column.type === 'crdt') {
+  // §5.11: the local mirror stores an encrypted column as its DECLARED type
+  // (plaintext), not the wire `bytes` — normalize by declaredType.
+  const localType =
+    column.encrypted === true && column.declaredType !== undefined
+      ? column.declaredType
+      : column.type;
+  if (localType === 'boolean') return value !== 0 && value !== false;
+  if (localType === 'bytes' || localType === 'crdt') {
     // §5.10: a crdt column is stored as BLOB and crosses the seam as $bytes.
     return { $bytes: bytesToHex(value as Uint8Array) };
   }
@@ -172,6 +192,8 @@ async function constructClient(
   // §5.9.7 B1: the blob-cache cap is a top-level config field, not a §4.2
   // request limit — pull it out of the driver's limits bag.
   const blobCacheMaxBytes = options.limits?.blobCacheMaxBytes;
+  // §5.11: build a key provider from the driver's `{ $bytes: hex }` keys.
+  const encryption = buildEncryption(options.encryption);
   const client = new SyncClient({
     database: db,
     schema: toClientSchema(schema),
@@ -179,6 +201,7 @@ async function constructClient(
     ...(options.limits !== undefined ? { limits: options.limits } : {}),
     ...(blobCacheMaxBytes !== undefined ? { blobCacheMaxBytes } : {}),
     ...(nowMs !== undefined ? { now: () => nowMs } : {}),
+    ...(encryption !== undefined ? { encryption } : {}),
     transport: (bytes) => endpoints.sync(bytes),
     segments,
     ...(blobs !== undefined ? { blobs } : {}),

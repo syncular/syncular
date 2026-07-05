@@ -8,6 +8,10 @@
 //! the golden vectors in `spec/vectors/`.
 
 pub mod blob_ref;
+/// §5.11 client-side encryption primitives (envelope, value serializer,
+/// AES-256-GCM). Gated on the `e2ee` feature.
+#[cfg(feature = "e2ee")]
+pub mod crypto;
 pub mod decode;
 pub mod encode;
 pub mod error;
@@ -18,6 +22,10 @@ pub mod render;
 pub mod segment;
 pub mod stream;
 pub mod util;
+/// §5.11 X25519 sealed-box key wrapping (async-encryption utilities). Gated on
+/// the `e2ee` feature.
+#[cfg(feature = "e2ee")]
+pub mod wrap;
 
 pub use decode::decode_message;
 pub use encode::encode_message;

@@ -52,6 +52,9 @@ export interface CompiledClientTable {
   /** Local secondary indexes to create on the mirror table (declaration
    * order); empty when the table declares none. */
   readonly indexes: readonly ClientIndexSpec[];
+  /** §5.11: true when any column is `encrypted`. Drives the encrypt/decrypt
+   * seam (skipped entirely when false) and the local-plaintext DDL. */
+  readonly hasEncryptedColumns: boolean;
 }
 
 export interface CompiledClientSchema {
@@ -135,6 +138,7 @@ export function compileClientSchema(
       scopeColumnByVariable,
       scopePrefixByVariable,
       indexes,
+      hasEncryptedColumns: table.columns.some((c) => c.encrypted === true),
     });
   }
   return { version: schema.version, tables };
@@ -159,8 +163,20 @@ export function quoteIdent(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
 
+/**
+ * §5.11: the app-side type of a column for local (plaintext) storage. For an
+ * encrypted column this is `declaredType` — the local mirror stays plaintext,
+ * so it stores/reads the real value type, not the wire `bytes`.
+ */
+export function localColumnType(column: RowColumn): RowColumn['type'] {
+  if (column.encrypted && column.declaredType !== undefined) {
+    return column.declaredType;
+  }
+  return column.type;
+}
+
 function sqlType(column: RowColumn): string {
-  switch (column.type) {
+  switch (localColumnType(column)) {
     case 'string':
     case 'json':
     case 'blob_ref':
@@ -295,7 +311,7 @@ export function toSqlValue(value: RowValue): SqlValue {
 /** SQL cell → RowValue per the column's declared type. */
 export function fromSqlValue(column: RowColumn, value: SqlValue): RowValue {
   if (value === null) return null;
-  switch (column.type) {
+  switch (localColumnType(column)) {
     case 'boolean':
       return value !== 0 && value !== false;
     case 'integer':

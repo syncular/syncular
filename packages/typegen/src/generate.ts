@@ -24,6 +24,7 @@ import { TypegenError } from './errors';
 import {
   canonicalizeExtensions,
   IR_VERSION,
+  type IrColumn,
   type IrDocument,
   type IrScope,
   type IrScopeValue,
@@ -84,6 +85,7 @@ function buildTable(
     readonly name: string;
     readonly scopes: readonly ManifestScopeSpec[];
     readonly extensions: Readonly<Record<string, unknown>>;
+    readonly encryptedColumns: readonly string[];
   },
   parsed: ParsedTable,
 ): IrTable {
@@ -99,10 +101,15 @@ function buildTable(
       );
     }
   }
+  const columns = applyEncryption(
+    parsed,
+    scopes,
+    manifestTable.encryptedColumns,
+  );
   return {
     name: parsed.name,
     primaryKey: parsed.primaryKey,
-    columns: parsed.columns,
+    columns,
     scopes,
     // Indexes flow through from the migration parser (already validated:
     // columns exist, names unique per schema) in declaration order.
@@ -112,6 +119,60 @@ function buildTable(
       unknown
     >,
   };
+}
+
+/**
+ * §5.11: flip each `encryptedColumns` entry to wire type `bytes`, recording
+ * `encrypted` + `declaredType`. Enforces the hard generate-time errors:
+ * encrypted scope column, encrypted crdt column, encrypted primary key, and
+ * an unknown/already-bytes column.
+ */
+function applyEncryption(
+  parsed: ParsedTable,
+  scopes: readonly { readonly column: string }[],
+  encryptedColumns: readonly string[],
+): readonly IrColumn[] {
+  if (encryptedColumns.length === 0) return parsed.columns;
+  const encrypted = new Set(encryptedColumns);
+  const scopeColumns = new Set(scopes.map((s) => s.column));
+  for (const name of encrypted) {
+    const column = parsed.columns.find((c) => c.name === name);
+    if (column === undefined) {
+      throw new TypegenError(
+        MANIFEST_FILENAME,
+        `table ${parsed.name}: encryptedColumns names unknown column ${JSON.stringify(name)}`,
+      );
+    }
+    if (name === parsed.primaryKey) {
+      throw new TypegenError(
+        MANIFEST_FILENAME,
+        `table ${parsed.name}: primary key ${JSON.stringify(name)} cannot be encrypted — it renders the plaintext rowId (§2.2, §5.11)`,
+      );
+    }
+    if (scopeColumns.has(name)) {
+      throw new TypegenError(
+        MANIFEST_FILENAME,
+        `table ${parsed.name}: scope column ${JSON.stringify(name)} cannot be encrypted — scopes are extracted server-side and MUST stay plaintext (§3.1, §5.11)`,
+      );
+    }
+    if (column.type === 'crdt') {
+      throw new TypegenError(
+        MANIFEST_FILENAME,
+        `table ${parsed.name}: crdt column ${JSON.stringify(name)} cannot be encrypted — the server merges crdt bytes plaintext (§5.10.3, §5.11)`,
+      );
+    }
+  }
+  return parsed.columns.map((column): IrColumn => {
+    if (!encrypted.has(column.name)) return column;
+    // Flip wire type to bytes; keep the declared type for app-side emitters.
+    return {
+      name: column.name,
+      type: 'bytes',
+      nullable: column.nullable,
+      encrypted: true,
+      declaredType: column.type,
+    };
+  });
 }
 
 function buildSubscription(
