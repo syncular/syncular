@@ -605,7 +605,13 @@ impl SyncClient {
     /// table in the CURRENT schema (idempotent — `IF NOT EXISTS`).
     fn create_synced_tables(&self) -> Result<(), String> {
         for table in &self.schema.tables {
-            for full in [base_table(&table.name), visible_table(&table.name)] {
+            // The base half + the visible half form the synced-table pair. An
+            // index name is global in SQLite, so the base half's indexes are
+            // name-prefixed (`_syncular_base_<index>`) to stay distinct.
+            for (full, index_prefix) in [
+                (base_table(&table.name), "_syncular_base_"),
+                (visible_table(&table.name), ""),
+            ] {
                 let mut cols: Vec<String> =
                     table.columns.iter().map(|c| quote_ident(&c.name)).collect();
                 cols.push("\"_syncular_version\" INTEGER NOT NULL".to_owned());
@@ -615,6 +621,25 @@ impl SyncClient {
                     quote_ident(&table.primary_key)
                 );
                 self.conn.execute(&sql, []).map_err(|e| e.to_string())?;
+                // Local secondary indexes (CREATE INDEX subset). Created on
+                // both halves so mirror reads hit an index on either. Runs on
+                // both the initial create and the §7.4.3 reset recreate path.
+                for index in &table.indexes {
+                    let unique = if index.unique { "UNIQUE " } else { "" };
+                    let index_name = quote_ident(&format!("{index_prefix}{}", index.name));
+                    let cols_sql = index
+                        .columns
+                        .iter()
+                        .map(|c| quote_ident(c))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let index_sql = format!(
+                        "CREATE {unique}INDEX IF NOT EXISTS {index_name} ON {full} ({cols_sql})"
+                    );
+                    self.conn
+                        .execute(&index_sql, [])
+                        .map_err(|e| e.to_string())?;
+                }
             }
         }
         Ok(())

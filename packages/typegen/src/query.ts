@@ -722,6 +722,14 @@ export function synthesizeDdl(ir: IrDocument): string {
       return `  ${c.name} ${SQL_TYPE[c.type]}${pk}${notNull}`;
     });
     lines.push(`CREATE TABLE ${table.name} (\n${cols.join(',\n')}\n);`);
+    // Create the declared indexes too — harmless for prepare()/decltype, and
+    // keeps the type-check DB's shape honest with what the client materializes.
+    for (const index of table.indexes) {
+      const unique = index.unique ? 'UNIQUE ' : '';
+      lines.push(
+        `CREATE ${unique}INDEX ${index.name} ON ${table.name} (${index.columns.join(', ')});`,
+      );
+    }
   }
   return lines.join('\n');
 }

@@ -149,6 +149,11 @@ the six §2.4 names.
   §2.4 row-codec positional order**; emitters must never reorder it.
 - `scopes` entries are pre-resolved: `variable` and `column` are
   materialized so non-TS emitters never re-parse `pattern`.
+- `indexes` (additive, `irVersion` 1) is a per-table array of
+  `{ "name", "columns": [...], "unique" }` in declaration order — emitted
+  **only** when the table declares at least one index, so index-free tables
+  (every pre-index manifest) keep byte-identical IR + generated output. It is a
+  client-side/query-check concern; see §3's index note.
 - `subscriptions[].scopes` is sorted by `variable`; each value is
   `{ "kind": "literal", "value" }` or `{ "kind": "parameter", "name" }`.
 - **Determinism**: equal inputs produce byte-identical output — fixed key
@@ -175,6 +180,7 @@ duplicate ordinals are errors). The parser accepts exactly:
 
 - `CREATE TABLE [IF NOT EXISTS] name ( column-defs…, [PRIMARY KEY (col)] ) [WITHOUT ROWID]`
 - `ALTER TABLE name ADD [COLUMN] column-def`
+- `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table ( col [, col…] )`
 - column-def: `name TYPE [PRIMARY KEY] [NOT NULL] [NULL] [DEFAULT literal]`
 - `--` line comments and `/* … */` block comments
 
@@ -193,14 +199,32 @@ Nullability: `NOT NULL` (or being the primary key) → non-nullable;
 otherwise nullable. Exactly one single-column primary key per table,
 inline or table-level.
 
+**Indexes** (`CREATE [UNIQUE] INDEX`). A migration may declare local
+secondary indexes on an already-created table: `CREATE INDEX name ON table
+(col)`, a compound `… (a, b)` (order preserved), the `UNIQUE` variant, and
+`IF NOT EXISTS`. Each index becomes an `Ir​Table.indexes` entry
+(`{ name, columns, unique }`, declaration order) and is materialized as a real
+SQLite index by the **clients** (the TS web-client mirror + the Rust core's
+base/visible table pair) and by typegen's own named-query type-check DB. Index
+columns must exist on the table; index names must be unique across the schema;
+a column must not repeat within one index. **Indexes are client-side only**:
+the server stores rows in a generic `sync_rows` table with an opaque payload
+(no per-user-table SQL columns exist server-side), so a user-column index has
+nothing to attach to there — the scope inverted-index already covers server
+reads. The column list is bare column names: **ASC/DESC**, **expression**
+columns (`lower(a)`), and **partial** (`WHERE …`) indexes are hard errors (the
+IR models column names only, so accepting a direction/expression would silently
+drop it).
+
 **Hard errors** (each names the construct and source file): any other
-statement (`DROP`, `CREATE INDEX/TRIGGER/VIEW`, DML, `ALTER … RENAME`, …);
-unknown or parameterized types (`VARCHAR(36)`); quoted identifiers
+statement (`CREATE TRIGGER/VIEW`, `DROP`, DML, `ALTER … RENAME`, …); unknown
+or parameterized types (`VARCHAR(36)`); quoted identifiers
 (`"t"`, `` `t` ``, `[t]`); table constraints (`FOREIGN KEY`, `UNIQUE`,
 `CHECK`, `CONSTRAINT`); column constraints beyond the list above
 (`REFERENCES`, `CHECK`, `COLLATE`, …); `DEFAULT (expression)`; composite
 or missing primary keys; `PRIMARY KEY` on `ADD COLUMN`; duplicate
-tables/columns; trailing clauses (`STRICT`).
+tables/columns; ASC/DESC, expression, or partial (`WHERE`) index columns; a
+duplicate or unknown-column index; trailing clauses (`STRICT`).
 
 **`DEFAULT` literals are accepted and ignored**: typegen extracts the
 schema *shape*; executing migrations (where defaults matter) is the

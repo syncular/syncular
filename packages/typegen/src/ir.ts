@@ -42,12 +42,29 @@ export interface IrScope {
   readonly column: string;
 }
 
+/**
+ * One local secondary index declared by a `CREATE [UNIQUE] INDEX` migration.
+ * Indexes are a CLIENT-side (+ query-check DB) concern only: the server stores
+ * rows in a generic `sync_rows` table with an opaque payload, so a user-column
+ * index has no server-side table to attach to (the scope inverted-index already
+ * covers server reads). `columns` preserves declared order (a compound index is
+ * order-sensitive). Index order within a table is declaration order.
+ */
+export interface IrIndex {
+  readonly name: string;
+  readonly columns: readonly string[];
+  readonly unique: boolean;
+}
+
 export interface IrTable {
   readonly name: string;
   readonly primaryKey: string;
   /** Declaration order — this IS the §2.4 row-codec positional order. */
   readonly columns: readonly IrColumn[];
   readonly scopes: readonly IrScope[];
+  /** Local secondary indexes (§migration subset), in declaration order.
+   * Additive under irVersion 1: absent/empty for tables that declare none. */
+  readonly indexes: readonly IrIndex[];
   /** Reserved per-table hook slot (WP-49); empty object for now. */
   readonly extensions: Readonly<Record<string, unknown>>;
 }
@@ -133,6 +150,18 @@ export function serializeIr(ir: IrDocument): string {
         variable: scope.variable,
         column: scope.column,
       })),
+      // Indexes are additive under irVersion 1: emitted only when the table
+      // declares at least one, so index-free tables (every pre-index manifest)
+      // stay byte-identical and --check fresh. Declaration order preserved.
+      ...(table.indexes.length > 0
+        ? {
+            indexes: table.indexes.map((index) => ({
+              name: index.name,
+              columns: index.columns,
+              unique: index.unique,
+            })),
+          }
+        : {}),
       extensions: canonicalizeExtensions(table.extensions),
     })),
     subscriptions: ir.subscriptions.map((sub) => ({

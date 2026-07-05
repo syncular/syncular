@@ -6,16 +6,18 @@
  * - `CREATE TABLE [IF NOT EXISTS] name (columns…, [PRIMARY KEY (col)])
  *   [WITHOUT ROWID]`
  * - `ALTER TABLE name ADD [COLUMN] coldef`
+ * - `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table (col [, col…])`
  * - column defs: `name TYPE [PRIMARY KEY] [NOT NULL] [NULL]
  *   [DEFAULT literal]`
  * - `--` and C-style comments
  *
  * Anything else — other statements, table constraints, parameterized or
  * unknown types, DEFAULT expressions, quoted identifiers, composite
- * primary keys — is a hard error naming the unsupported construct.
+ * primary keys, ASC/DESC or expression index columns, partial (`WHERE`)
+ * indexes — is a hard error naming the unsupported construct.
  */
 import { TypegenError } from './errors';
-import type { IrColumn, IrColumnType } from './ir';
+import type { IrColumn, IrColumnType, IrIndex } from './ir';
 
 /** SQL type keyword → the §2.4 column types. Case-insensitive. */
 const TYPE_MAP: Readonly<Record<string, IrColumnType>> = {
@@ -51,6 +53,8 @@ export interface ParsedTable {
   readonly name: string;
   primaryKey: string;
   readonly columns: IrColumn[];
+  /** Local secondary indexes, in declaration order (CREATE INDEX subset). */
+  readonly indexes: IrIndex[];
 }
 
 interface Token {
@@ -279,12 +283,39 @@ function parseColumnDef(cursor: Cursor, allowPrimaryKey: boolean): ColumnDef {
   return { column, primaryKey };
 }
 
+/**
+ * Dispatch a `CREATE …` statement: `CREATE TABLE`, `CREATE INDEX`, or
+ * `CREATE UNIQUE INDEX`. Anything else is a hard error naming the construct.
+ */
+function parseCreate(
+  cursor: Cursor,
+  tables: Map<string, ParsedTable>,
+  source: string,
+): void {
+  if (cursor.eatWord('TABLE')) {
+    parseCreateTable(cursor, tables, source);
+    return;
+  }
+  if (cursor.eatWord('UNIQUE')) {
+    cursor.expectWord('INDEX', 'after CREATE UNIQUE');
+    parseCreateIndex(cursor, tables, true);
+    return;
+  }
+  if (cursor.eatWord('INDEX')) {
+    parseCreateIndex(cursor, tables, false);
+    return;
+  }
+  const token = cursor.peek();
+  cursor.fail(
+    `unsupported CREATE statement (only CREATE TABLE and CREATE [UNIQUE] INDEX), found ${JSON.stringify(token?.text ?? '')}`,
+  );
+}
+
 function parseCreateTable(
   cursor: Cursor,
   tables: Map<string, ParsedTable>,
   source: string,
 ): void {
-  cursor.expectWord('TABLE', 'after CREATE');
   if (cursor.eatWord('IF')) {
     cursor.expectWord('NOT', 'after IF');
     cursor.expectWord('EXISTS', 'after IF NOT');
@@ -362,7 +393,90 @@ function parseCreateTable(
   const finalColumns = columns.map((c) =>
     c.name === primaryKey ? { ...c, nullable: false } : c,
   );
-  tables.set(name, { name, primaryKey, columns: finalColumns });
+  tables.set(name, { name, primaryKey, columns: finalColumns, indexes: [] });
+}
+
+/**
+ * `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table (col [, col…])`.
+ * The `UNIQUE` keyword is already consumed by the dispatcher (it precedes
+ * `INDEX`), so `unique` is passed in. The subset keeps the column list to
+ * bare column names of the target table: ASC/DESC, expressions, and a `WHERE`
+ * (partial index) clause are hard errors naming the construct. Index names
+ * are unique per accumulated schema.
+ */
+function parseCreateIndex(
+  cursor: Cursor,
+  tables: Map<string, ParsedTable>,
+  unique: boolean,
+): void {
+  // `INDEX` already matched by the dispatcher.
+  if (cursor.eatWord('IF')) {
+    cursor.expectWord('NOT', 'after IF');
+    cursor.expectWord('EXISTS', 'after IF NOT');
+  }
+  const name = cursor.identifier('an index name');
+  for (const table of tables.values()) {
+    if (table.indexes.some((i) => i.name === name)) {
+      cursor.fail(`index ${name} is created twice`);
+    }
+  }
+  cursor.expectWord('ON', `after CREATE INDEX ${name}`);
+  const tableName = cursor.identifier('a table name');
+  const table = tables.get(tableName);
+  if (table === undefined) {
+    cursor.fail(
+      `CREATE INDEX ${name}: table ${tableName} does not exist at this point`,
+    );
+  }
+  cursor.expectPunct('(', `after CREATE INDEX ${name} ON ${tableName}`);
+  const columns: string[] = [];
+  for (;;) {
+    const col = cursor.identifier(`an index column for ${name}`);
+    // Reject ASC/DESC and any expression tail: the IR stores bare column names
+    // only, so accepting a direction would silently drop it. A following word
+    // (not "," or ")") is such an unsupported construct.
+    const after = cursor.peek();
+    if (
+      after !== undefined &&
+      !(after.kind === 'punct' && (after.text === ',' || after.text === ')'))
+    ) {
+      const dir = after.text.toUpperCase();
+      if (dir === 'ASC' || dir === 'DESC') {
+        cursor.fail(
+          `index ${name}: ASC/DESC index columns are unsupported (found ${JSON.stringify(after.text)} after ${JSON.stringify(col)})`,
+        );
+      }
+      cursor.fail(
+        `index ${name}: expression index columns are unsupported (found ${JSON.stringify(after.text)} after ${JSON.stringify(col)})`,
+      );
+    }
+    if (table.columns.every((c) => c.name !== col)) {
+      cursor.fail(
+        `index ${name}: column ${JSON.stringify(col)} does not exist on table ${tableName}`,
+      );
+    }
+    if (columns.includes(col)) {
+      cursor.fail(`index ${name}: column ${JSON.stringify(col)} appears twice`);
+    }
+    columns.push(col);
+    const sep = cursor.next();
+    if (sep.kind === 'punct' && sep.text === ',') continue;
+    if (sep.kind === 'punct' && sep.text === ')') break;
+    cursor.fail(
+      `index ${name}: expected "," or ")", found ${JSON.stringify(sep.text)}`,
+    );
+  }
+  // A trailing token here is a partial-index `WHERE`, `COLLATE`, etc.
+  const trailing = cursor.peek();
+  if (trailing !== undefined) {
+    if (trailing.kind === 'word' && trailing.text.toUpperCase() === 'WHERE') {
+      cursor.fail(`index ${name}: partial indexes (WHERE …) are unsupported`);
+    }
+    cursor.fail(
+      `index ${name}: unsupported trailing SQL ${JSON.stringify(trailing.text)}`,
+    );
+  }
+  table.indexes.push({ name, columns, unique });
 }
 
 function parseAlterTable(
@@ -406,13 +520,13 @@ export function applyMigrationSql(
     const head = cursor.next();
     const word = head.kind === 'word' ? head.text.toUpperCase() : '';
     if (word === 'CREATE') {
-      parseCreateTable(cursor, tables, source);
+      parseCreate(cursor, tables, source);
     } else if (word === 'ALTER') {
       parseAlterTable(cursor, tables);
     } else {
       throw new TypegenError(
         source,
-        `unsupported SQL statement starting with ${JSON.stringify(head.text)} (only CREATE TABLE and ALTER TABLE … ADD COLUMN)`,
+        `unsupported SQL statement starting with ${JSON.stringify(head.text)} (only CREATE TABLE, CREATE [UNIQUE] INDEX, and ALTER TABLE … ADD COLUMN)`,
       );
     }
   }

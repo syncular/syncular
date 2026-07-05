@@ -104,6 +104,9 @@ function buildTable(
     primaryKey: parsed.primaryKey,
     columns: parsed.columns,
     scopes,
+    // Indexes flow through from the migration parser (already validated:
+    // columns exist, names unique per schema) in declaration order.
+    indexes: parsed.indexes,
     extensions: canonicalizeExtensions(manifestTable.extensions) as Record<
       string,
       unknown

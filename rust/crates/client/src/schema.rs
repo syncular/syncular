@@ -19,6 +19,10 @@ pub struct TableIr {
     pub columns: Vec<ColumnIr>,
     pub primary_key: String,
     pub scopes: Vec<ScopePatternIr>,
+    /// Local secondary indexes; absent in the IR for index-free tables
+    /// (typegen omits the key), so default to empty on deserialize.
+    #[serde(default)]
+    pub indexes: Vec<IndexIr>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -27,6 +31,22 @@ pub struct ColumnIr {
     #[serde(rename = "type")]
     pub column_type: String,
     pub nullable: bool,
+}
+
+/// One local secondary index (the CREATE INDEX migration subset, §2.4).
+#[derive(Debug, Clone, Deserialize)]
+pub struct IndexIr {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub unique: bool,
+}
+
+/// One compiled local secondary index — created on the base + visible tables.
+#[derive(Debug, Clone)]
+pub struct IndexSchema {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub unique: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -51,6 +71,8 @@ pub struct TableSchema {
     pub primary_key: String,
     pub pk_index: usize,
     pub scope_variables: Vec<ScopeVariable>,
+    /// Local secondary indexes, in declaration order (empty when none).
+    pub indexes: Vec<IndexSchema>,
 }
 
 impl TableSchema {
@@ -132,12 +154,29 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
             let column = scope.column.clone().unwrap_or_else(|| variable.clone());
             scope_variables.push(ScopeVariable { variable, column });
         }
+        let mut indexes = Vec::with_capacity(table.indexes.len());
+        for index in &table.indexes {
+            for col in &index.columns {
+                if !columns.iter().any(|c| &c.name == col) {
+                    return Err(format!(
+                        "table {:?}: index {:?} names unknown column {col:?}",
+                        table.name, index.name
+                    ));
+                }
+            }
+            indexes.push(IndexSchema {
+                name: index.name.clone(),
+                columns: index.columns.clone(),
+                unique: index.unique,
+            });
+        }
         tables.push(TableSchema {
             name: table.name.clone(),
             columns,
             primary_key: table.primary_key.clone(),
             pk_index,
             scope_variables,
+            indexes,
         });
     }
     Ok(ClientSchema {

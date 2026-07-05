@@ -35,6 +35,7 @@ const IR: IrDocument = {
       scopes: [
         { pattern: 'list:{list_id}', variable: 'list_id', column: 'list_id' },
       ],
+      indexes: [],
       extensions: {},
     },
   ],
