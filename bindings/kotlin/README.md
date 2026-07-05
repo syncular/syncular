@@ -29,13 +29,8 @@ Why FFM over JNA:
   JDK 22+**. The build targets a JDK-21 toolchain with the preview flag; on 22+
   the flag is benign.
 
-**JNA fallback (documented, not shipped):** if you must run on JDK < 21, JNA is
-the mechanical fallback — declare the same five functions on a `Library`
-interface (`Pointer syncular_client_new(String)`, etc.) and marshal strings with
-JNA's automatic `String`↔`char*` conversion, freeing returned pointers via
-`syncular_free_string`. The surface (`SyncularClient`, conveniences, poll loop)
-is identical; only the `SyncularFfi` object swaps its downcall mechanism. We do
-not add JNA as a compile dependency because FFM is the target-JDK path.
+**No JDK<21 fallback** (no-fallbacks doctrine, 2026-07-05): JDK 21+ with
+FFM is the one supported path for this JVM wrapper.
 
 ## The surface
 
@@ -105,7 +100,8 @@ run); building a real AAR needs the Android Gradle Plugin + `cargo-ndk`, so it
 is a packaging step outside this pure-JVM gate. On Android the `.so` loads by
 name from the APK's `jniLibs`, so no `syncular.library.path` is needed — FFM's
 `System.loadLibrary("syncular")` path applies. (FFM on Android requires a recent
-runtime; on older Android, use the JNA fallback above.)
+runtime; older Android is served by the React Native module's native shims,
+not this JVM wrapper.)
 
 ## Example — the todo demo
 

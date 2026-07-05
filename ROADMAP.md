@@ -42,7 +42,7 @@ This block is assembly on a proven core — packages, not protocol.
 - [x] **Swift + Kotlin wrappers** (landed 2026-07-04 — `bindings/swift`
       (SwiftPM `SyncularClient`) and `bindings/kotlin` (Kotlin/JVM
       `SyncularClient` via **FFM**, `java.lang.foreign`, JDK 21+ — zero JNI C
-      glue; JNA documented as the JDK<21 fallback)): idiomatic thin wrappers
+      glue; JDK 21+ (FFM) is the one supported path — the JNA fallback note was dropped 2026-07-05 per the no-fallbacks doctrine)): idiomatic thin wrappers
       over the FFI command surface — `command` + typed conveniences
       (mutate/subscribe/sync/query/readRows/presence/…) + a background
       `poll_event` loop delivering events (Swift → main-queue closure/delegate,
@@ -79,8 +79,9 @@ This block is assembly on a proven core — packages, not protocol.
       headless against a NativeModule double (2 more bun tests, 13/13 total) as
       the hooks↔module integration proof, with the device build a documented
       one-time overlay + an Android CI lane sketched as a follow-up.
-      NitroModules/JSI is the follow-up for latency; the C ABI is the stable
-      substrate.
+      NitroModules/JSI: measure-first only (re-scoped 2026-07-05 — no
+      evidence the TurboModule JSON path is slow; revisit only if an RN app
+      profiles a real bottleneck). The C ABI is the stable substrate.
 - [x] **Native transport §8.7 completion** (landed 2026-07-04): the
       native-transport feature now runs rounds **over the socket** in the
       one-loop shape (§8.7), not `POST /sync`. Request goes out `0x01`-tagged;
@@ -429,6 +430,65 @@ wire changes, zero server changes; sequenced AFTER the WS-native loop
 - [ ] **7.1 Gate decision + 7.2 push** (Benjamin): the kill/merge call on
       the evidence in bench/RESULTS.md; the local commit stack ships when
       pushed.
+
+
+## 6. Gap register (swept 2026-07-05, with Benjamin)
+
+The full does-not-work / would-be-useful sweep. Wave 1 (in flight):
+live-query churn hardening (replacing per-rowid — see block 4), S3 blob
+store + GC sweep, CREATE INDEX in the migration subset.
+
+**Wave 2 queue (approved):**
+
+- [ ] **Server-side write-validation hooks**: per-table validate on push
+      (business rules beyond scopes — "title <= 200 chars"), rejecting
+      with a host-defined code; the IR extensions slot was reserved for
+      exactly this (the old WP-49 idea). M, high value.
+- [ ] **App-developer test kit**: an exported testing package (in-memory
+      server, N clients, virtual clock, offline/fault toggles) — mostly
+      re-exporting what the conformance harness already has. S-M, a
+      differentiator almost no local-first competitor offers.
+- [ ] **Node ClientDatabase**: better-sqlite3 adapter behind the existing
+      interface — Electron-main / plain-Node hosts have no SQLite backend
+      today. S.
+- [ ] **Docs site deploy**: 15 pages build; nothing hosts them. S,
+      needed by launch.
+
+**Smaller / demand-gated (build when triggered):**
+
+- [ ] Named-query `-- returns` override for computed-expression typing
+      (today: nullable-affinity fallback, documented). S.
+- [ ] Conflict-resolution sugar: `resolveConflict(keep: server|local|
+      merged)` codifying the rebase pattern the conformance tests do by
+      hand. S.
+- [ ] Reference observability sink (OTel-shaped example over the events
+      seam) + auth integration guides (Clerk/Auth.js worked examples —
+      docs only). S each, high adoption value.
+- [ ] Client devtools: a debug surface (local DB / outbox / rounds /
+      invalidation introspection) + docs page. M.
+- [ ] FTS5 local search: needs migration-subset support for virtual
+      tables — pairs with a future "migration subset v2". M, demand-gated.
+- [ ] Safari/Firefox support-floor verification (human hands, pre-launch)
+      and a scheduled `load:smoke` run (nightly candidate). S each.
+
+**Non-goals decided 2026-07-05 (do not resurrect without new evidence):**
+
+- **Per-rowid invalidation** — structurally cannot help list queries
+      (any table change may enter their predicate; that is IVM territory,
+      a someday-if-ever product of its own). Replaced by the churn ladder
+      in block 4.
+- **Composite primary keys** — single-column text PK is a design
+      constraint: row identity threads through idempotency (2.3), blob
+      refs (5.9), windowing (4.8), conflict records (6.3); synthetic IDs
+      are the local-first norm. The typegen hard error stays.
+- **Our own chunked/resumable upload protocol** — S3/R2 native multipart
+      IS the resumable protocol; when presigned upload lands, resume =
+      provider multipart behind the presign flow. Never build a chunk
+      spec. (Presigned upload itself stays gated on scale demand.)
+- **Undo/redo core helper** — undo after sync is app-domain (a new
+      inverse mutation with business meaning); ships as a docs recipe
+      over mutate() at the next docs pass, not core API.
+- **RN NitroModules/JSI** — measure-first (see block 1).
 
 ## Ordering
 
