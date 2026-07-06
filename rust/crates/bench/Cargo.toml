@@ -1,0 +1,19 @@
+[package]
+name = "syncular-bench"
+version = "0.1.0"
+edition = "2021"
+description = "Benchmark driver binary: the shared syncular-command router over the FFI crate's native HTTP+WS transport, spoken as JSON lines over stdio for the offline-sync-bench harness"
+license = "UNLICENSED"
+publish = false
+
+[[bin]]
+name = "syncular-bench"
+path = "src/main.rs"
+
+[dependencies]
+syncular-client = { path = "../client" }
+syncular-command = { path = "../command" }
+# The bench driver measures the SHIPPING native lane: the same HTTP+WS
+# transport the FFI core owns (ureq + tungstenite), reused rather than copied.
+syncular-ffi = { path = "../ffi", features = ["native-transport"] }
+serde_json = "1"

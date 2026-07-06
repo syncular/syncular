@@ -112,7 +112,18 @@ struct RequestMeta {
     /// token (§5.6 first-page detection: a *fresh* bootstrap).
     fresh: Vec<(String, bool)>,
     accept: u8,
+    /// §6.1 splitBatch: outbox commits held back from THIS request because
+    /// the running operation count reached the push cap — the next round
+    /// pushes them (`sync_needed` stays set while any remain).
+    deferred_commits: usize,
 }
+
+/// §6.1: the server caps total operations per request (reference default
+/// 500) and rejects the whole batch with `sync.too_many_operations`; the
+/// client "splits and retries". Splitting happens at build time: commits are
+/// included IN ORDER until the operation budget is spent, the rest wait for
+/// the next round.
+const PUSH_OPS_PER_REQUEST: usize = 500;
 
 pub struct SyncClient {
     conn: Connection,
@@ -1398,7 +1409,18 @@ impl SyncClient {
             schema_version: self.schema.version,
         }];
         let mut pushed_ids = Vec::new();
-        for commit in &self.outbox {
+        let mut ops_in_request = 0usize;
+        let mut deferred_commits = 0usize;
+        for (index, commit) in self.outbox.iter().enumerate() {
+            // §6.1 splitBatch: stop at the operation cap — commits apply in
+            // order, so everything from the first non-fitting commit on is
+            // deferred to the next round. A single over-cap commit still goes
+            // alone (commits are atomic and cannot be split).
+            if ops_in_request > 0 && ops_in_request + commit.ops.len() > PUSH_OPS_PER_REQUEST {
+                deferred_commits = self.outbox.len() - index;
+                break;
+            }
+            ops_in_request += commit.ops.len();
             let operations = commit
                 .ops
                 .iter()
@@ -1468,6 +1490,7 @@ impl SyncClient {
                 pushed_ids,
                 fresh,
                 accept,
+                deferred_commits,
             },
         )
     }
@@ -1535,7 +1558,13 @@ impl SyncClient {
                 message: "expected a response message".to_owned(),
             };
         }
-        self.process_response(transport, response, &meta)
+        let outcome = self.process_response(transport, response, &meta);
+        if meta.deferred_commits > 0 {
+            // §6.1 splitBatch: commits past the operation cap wait for the
+            // next round — keep the host's sync signal raised until then.
+            self.sync_needed = true;
+        }
+        outcome
     }
 
     pub fn sync_until_idle(
@@ -1573,11 +1602,14 @@ impl SyncClient {
                     }
                     // §4.5: pull again whenever the response contained
                     // commits or segments; resets re-bootstrap; a pending
-                    // resume token continues paging (§4.7).
+                    // resume token continues paging (§4.7); a raised
+                    // sync-needed signal covers §6.1 splitBatch remainders
+                    // (deferred outbox commits push on the next round).
                     let more = !report.bootstrapping.is_empty()
                         || report.commits_applied > 0
                         || report.segment_rows_applied > 0
-                        || !report.resets.is_empty();
+                        || !report.resets.is_empty()
+                        || self.sync_needed;
                     if !more {
                         break;
                     }
