@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>syncular — offline-first SQL sync</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        space:  '#05060a',
+        panel:  '#0b0d13',
+        panel2: '#0e1118',
+        line:   '#1c202b',
+        ink:    '#e8eaf0',
+        dim:    '#98a1b3',
+        faint:  '#5b6373',
+        disk:   '#ffb347',
+        ember:  '#ff8a1e',
+        rim:    '#c2410c',
+      },
+      fontFamily: {
+        display: ['Archivo', 'sans-serif'],
+        mono: ['"JetBrains Mono"', 'monospace'],
+      },
+    }
+  }
+}
+</script>
+<style>
+  html { background: #05060a; scroll-behavior: smooth; }
+  body { -webkit-font-smoothing: antialiased; }
+  .wide   { font-stretch: 118%; }
+  .xwide  { font-stretch: 125%; }
+  .narrow { font-stretch: 78%; }
+  .amber-rule {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,163,60,.65) 18%, rgba(255,163,60,.65) 82%, transparent);
+  }
+  .amber-rule-left {
+    height: 1px;
+    background: linear-gradient(90deg, rgba(255,163,60,.75), rgba(255,163,60,.12) 70%, transparent);
+  }
+  .readout-glow { text-shadow: 0 0 24px rgba(255,163,60,.25); }
+  .hero-fade {
+    background: linear-gradient(180deg, rgba(5,6,10,.72) 0%, rgba(5,6,10,0) 22%, rgba(5,6,10,0) 58%, rgba(5,6,10,.9) 88%, #05060a 100%);
+  }
+  ::selection { background: rgba(255,163,60,.28); }
+</style>
+</head>
+<body class="bg-space text-dim font-display">
+
+<!-- ══════════════ HERO ══════════════ -->
+<header class="relative h-[94vh] min-h-[560px] max-h-[1000px] w-full overflow-hidden">
+  <canvas id="gargantua" class="absolute inset-0 h-full w-full block" aria-label="Gravitationally lensed black hole with an orbiting accretion disk"></canvas>
+  <div class="hero-fade absolute inset-0 pointer-events-none"></div>
+
+  <!-- nav -->
+  <nav class="absolute top-0 inset-x-0 z-20">
+    <div class="mx-auto max-w-6xl px-6 py-5 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <circle cx="10" cy="10" r="4.5" fill="#05060a" stroke="#ffb347" stroke-width="1.2"/>
+          <ellipse cx="10" cy="10" rx="9" ry="2.6" stroke="#ffb347" stroke-width="1" opacity=".7"/>
+        </svg>
+        <span class="wide font-semibold tracking-[0.22em] text-ink text-sm">SYNCULAR</span>
+      </div>
+      <div class="hidden sm:flex items-center gap-7 font-mono text-[11px] tracking-wider text-dim">
+        <a href="#effects" class="hover:text-disk transition-colors">EFFECTS</a>
+        <a href="#telemetry" class="hover:text-disk transition-colors">TELEMETRY</a>
+        <a href="#manifest" class="hover:text-disk transition-colors">MANIFEST</a>
+        <a href="#" class="text-ink border border-line rounded px-3 py-1.5 hover:border-disk/60 hover:text-disk transition-colors">GITHUB ↗</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- title overlay -->
+  <div class="absolute inset-x-0 bottom-0 z-10 pb-14 sm:pb-20">
+    <div class="mx-auto max-w-6xl px-6">
+      <p class="font-mono text-[11px] tracking-[0.3em] text-disk/90 mb-4">OFFLINE-FIRST SQL SYNC · APACHE-2.0</p>
+      <h1 class="xwide font-black text-ink leading-[0.95] text-5xl sm:text-7xl lg:text-8xl">
+        EVERY WRITE FALLS<br>INTO ONE LOG.
+      </h1>
+      <p class="mt-5 max-w-xl text-[15px] leading-relaxed text-dim">
+        Local SQLite on every client. A server-authoritative commit log at the center.
+        Scope-based authorization at the horizon. All your data, drawn to a single point of truth.
+      </p>
+      <div class="mt-8 flex flex-wrap items-center gap-4">
+        <a href="#" class="wide inline-flex items-center gap-2 rounded bg-disk px-5 py-2.5 text-sm font-bold text-space hover:bg-ember transition-colors">QUICKSTART</a>
+        <a href="#" class="wide inline-flex items-center gap-2 rounded border border-line px-5 py-2.5 text-sm font-semibold text-ink hover:border-disk/60 hover:text-disk transition-colors">LIVE DEMOS</a>
+        <code class="font-mono text-[12px] text-faint bg-panel/70 border border-line rounded px-3 py-2.5 backdrop-blur-sm">
+          <span class="text-disk">$</span> bun create syncular-app my-app
+        </code>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ══════════════ TELEMETRY / READOUTS ══════════════ -->
+<section id="telemetry" class="relative border-t border-line bg-panel">
+  <div class="mx-auto max-w-6xl px-6 py-14">
+    <div class="flex items-baseline justify-between mb-8">
+      <h2 class="wide text-xs font-bold tracking-[0.28em] text-faint">INSTRUMENT READOUTS</h2>
+      <span class="font-mono text-[10px] text-faint hidden sm:block">MEASURED · NOT SIMULATED</span>
+    </div>
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-px bg-line border border-line">
+      <div class="bg-panel2 p-6">
+        <div class="font-mono text-[10px] tracking-widest text-faint mb-3">BOOTSTRAP · 100K ROWS</div>
+        <div class="readout-glow font-mono text-4xl sm:text-5xl font-bold text-ink">30<sup class="text-sm text-disk ml-1 font-medium">ms</sup></div>
+        <div class="amber-rule-left mt-4"></div>
+      </div>
+      <div class="bg-panel2 p-6">
+        <div class="font-mono text-[10px] tracking-widest text-faint mb-3">REALTIME PROPAGATION · P95</div>
+        <div class="readout-glow font-mono text-4xl sm:text-5xl font-bold text-ink">0.2<sup class="text-sm text-disk ml-1 font-medium">ms</sup></div>
+        <div class="amber-rule-left mt-4"></div>
+      </div>
+      <div class="bg-panel2 p-6">
+        <div class="font-mono text-[10px] tracking-widest text-faint mb-3">WEB CLIENT · GZIPPED</div>
+        <div class="readout-glow font-mono text-4xl sm:text-5xl font-bold text-ink">19.6<sup class="text-sm text-disk ml-1 font-medium">KB</sup></div>
+        <div class="amber-rule-left mt-4"></div>
+      </div>
+      <div class="bg-panel2 p-6">
+        <div class="font-mono text-[10px] tracking-widest text-faint mb-3">CONFORMANCE SCENARIOS</div>
+        <div class="readout-glow font-mono text-4xl sm:text-5xl font-bold text-ink">74<sup class="text-sm text-disk ml-1 font-medium">×2 cores</sup></div>
+        <div class="amber-rule-left mt-4"></div>
+      </div>
+    </div>
+    <p class="mt-6 font-mono text-[11px] text-faint">
+      Two conformance-locked cores — TypeScript (web) and Rust (native via C FFI) — verified against one written protocol. <span class="text-dim">Two cores. One physics.</span>
+    </p>
+  </div>
+</section>
+
+<!-- ══════════════ RELATIVISTIC EFFECTS ══════════════ -->
+<section id="effects" class="border-t border-line">
+  <div class="mx-auto max-w-6xl px-6 py-16 sm:py-20">
+    <div class="amber-rule mb-10"></div>
+    <p class="font-mono text-[11px] tracking-[0.3em] text-disk mb-3">OBSERVED PHENOMENA</p>
+    <h2 class="xwide text-3xl sm:text-4xl font-black text-ink mb-12">RELATIVISTIC EFFECTS</h2>
+
+    <div class="grid md:grid-cols-3 gap-px bg-line border border-line">
+      <!-- Time dilation -->
+      <div class="bg-panel p-7 flex flex-col">
+        <svg viewBox="0 0 200 110" class="w-full mb-6" fill="none" stroke-linecap="round" aria-hidden="true">
+          <circle cx="58" cy="55" r="34" stroke="#3a4152" stroke-width="1"/>
+          <circle cx="58" cy="55" r="24" stroke="#3a4152" stroke-width="1" stroke-dasharray="3 4"/>
+          <line x1="58" y1="55" x2="58" y2="37" stroke="#ffb347" stroke-width="1.4"/>
+          <line x1="58" y1="55" x2="72" y2="60" stroke="#ffb347" stroke-width="1.4" opacity=".6"/>
+          <path d="M104 55 h20 m6 0 h20 m6 0 h20" stroke="#3a4152" stroke-width="1"/>
+          <path d="M104 40 h8 m14 0 h8 m26 0 h8" stroke="#ffb347" stroke-width="1.2" opacity=".8"/>
+          <path d="M104 70 h34 m6 0 h34" stroke="#ffb347" stroke-width="1.2" opacity=".45"/>
+          <text x="104" y="92" fill="#5b6373" font-family="JetBrains Mono, monospace" font-size="8" letter-spacing="1">Δt · QUEUED OFFLINE</text>
+        </svg>
+        <h3 class="wide text-lg font-bold text-ink mb-1">Time dilation</h3>
+        <p class="font-mono text-[10px] tracking-widest text-disk mb-3">= OFFLINE OUTBOX</p>
+        <p class="text-sm leading-relaxed">
+          Drift out of contact and local time keeps running. Writes queue in the outbox,
+          ordered and intact, then replay against the log the moment you re-enter range.
+          No lost frames, no torn transactions.
+        </p>
+      </div>
+
+      <!-- Frame dragging -->
+      <div class="bg-panel p-7 flex flex-col">
+        <svg viewBox="0 0 200 110" class="w-full mb-6" fill="none" stroke-linecap="round" aria-hidden="true">
+          <circle cx="100" cy="55" r="10" fill="#05060a" stroke="#ffb347" stroke-width="1.4"/>
+          <path d="M100 20 a35 35 0 0 1 33 24" stroke="#ffb347" stroke-width="1.2" opacity=".85"/>
+          <path d="M100 90 a35 35 0 0 1 -33 -24" stroke="#ffb347" stroke-width="1.2" opacity=".85"/>
+          <path d="M100 8 a47 47 0 0 1 45 33" stroke="#3a4152" stroke-width="1"/>
+          <path d="M100 102 a47 47 0 0 1 -45 -33" stroke="#3a4152" stroke-width="1"/>
+          <path d="M136 42 l4 -6 m-4 6 l7 1" stroke="#ffb347" stroke-width="1.2"/>
+          <path d="M64 68 l-4 6 m4 -6 l-7 -1" stroke="#ffb347" stroke-width="1.2"/>
+          <text x="14" y="18" fill="#5b6373" font-family="JetBrains Mono, monospace" font-size="8" letter-spacing="1">ω · DELTAS IN ORBIT</text>
+        </svg>
+        <h3 class="wide text-lg font-bold text-ink mb-1">Frame dragging</h3>
+        <p class="font-mono text-[10px] tracking-widest text-disk mb-3">= REALTIME DELTAS</p>
+        <p class="text-sm leading-relaxed">
+          The log spins and spacetime moves with it. Committed changes propagate to every
+          subscribed client over WebSocket — deltas, not snapshots — at 0.2&nbsp;ms p95.
+          Windowed sync keeps each orbit light.
+        </p>
+      </div>
+
+      <!-- No escape -->
+      <div class="bg-panel p-7 flex flex-col">
+        <svg viewBox="0 0 200 110" class="w-full mb-6" fill="none" stroke-linecap="round" aria-hidden="true">
+          <circle cx="100" cy="55" r="18" fill="#05060a" stroke="#ffb347" stroke-width="1.4"/>
+          <circle cx="100" cy="55" r="27" stroke="#3a4152" stroke-width="1" stroke-dasharray="2 4"/>
+          <path d="M30 30 L74 46" stroke="#ffb347" stroke-width="1.2" opacity=".8"/>
+          <path d="M74 46 l-7 -1 m7 1 l-3 -6" stroke="#ffb347" stroke-width="1.2"/>
+          <path d="M28 80 L72 64" stroke="#ffb347" stroke-width="1.2" opacity=".8"/>
+          <path d="M72 64 l-7 1 m7 -1 l-3 6" stroke="#ffb347" stroke-width="1.2"/>
+          <path d="M170 26 L128 44" stroke="#c2410c" stroke-width="1.2"/>
+          <path d="M136 40 l8 8 m0 -8 l-8 8" stroke="#c2410c" stroke-width="1.4"/>
+          <text x="128" y="98" fill="#5b6373" font-family="JetBrains Mono, monospace" font-size="8" letter-spacing="1">REJECTED</text>
+        </svg>
+        <h3 class="wide text-lg font-bold text-ink mb-1">No escape</h3>
+        <p class="font-mono text-[10px] tracking-widest text-disk mb-3">= VALIDATION</p>
+        <p class="text-sm leading-relaxed">
+          Nothing crosses the event horizon unchecked. Scopes-as-code authorization validates
+          every commit server-side, in order. Conflicts are surfaced honestly — never
+          silently merged behind your back.
+        </p>
+      </div>
+    </div>
+
+    <!-- secondary capability strip -->
+    <div class="mt-8 flex flex-wrap gap-x-6 gap-y-2 font-mono text-[11px] text-faint">
+      <span><span class="text-disk">▪</span> CRDT columns</span>
+      <span><span class="text-disk">▪</span> blob sync</span>
+      <span><span class="text-disk">▪</span> optional E2EE</span>
+      <span><span class="text-disk">▪</span> windowed sync</span>
+      <span><span class="text-disk">▪</span> honest conflicts</span>
+      <span><span class="text-disk">▪</span> scopes-as-code</span>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ BOARDING MANIFEST ══════════════ -->
+<section id="manifest" class="border-t border-line bg-panel">
+  <div class="mx-auto max-w-6xl px-6 py-16 sm:py-20">
+    <p class="font-mono text-[11px] tracking-[0.3em] text-disk mb-3">CREW &amp; VESSELS</p>
+    <h2 class="xwide text-3xl sm:text-4xl font-black text-ink mb-3">BOARDING MANIFEST</h2>
+    <p class="max-w-xl text-sm leading-relaxed mb-10">
+      One written protocol. Every platform boards through one of two conformance-locked cores.
+    </p>
+
+    <div class="overflow-x-auto border border-line">
+      <table class="w-full min-w-[560px] font-mono text-[12px]">
+        <thead>
+          <tr class="text-left text-[10px] tracking-[0.2em] text-faint bg-panel2">
+            <th class="px-5 py-3 font-medium">SEAT</th>
+            <th class="px-5 py-3 font-medium">PLATFORM</th>
+            <th class="px-5 py-3 font-medium">CORE</th>
+            <th class="px-5 py-3 font-medium">BINDING</th>
+            <th class="px-5 py-3 font-medium text-right">STATUS</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-line text-dim">
+          <tr class="hover:bg-panel2/60 transition-colors"><td class="px-5 py-3 text-faint">01</td><td class="px-5 py-3 text-ink">Web</td><td class="px-5 py-3">TypeScript</td><td class="px-5 py-3">native</td><td class="px-5 py-3 text-right text-disk">CLEARED</td></tr>
+          <tr class="hover:bg-panel2/60 transition-colors"><td class="px-5 py-3 text-faint">02</td><td class="px-5 py-3 text-ink">React</td><td class="px-5 py-3">TypeScript</td><td class="px-5 py-3">hooks</td><td class="px-5 py-3 text-right text-disk">CLEARED</td></tr>
+          <tr class="hover:bg-panel2/60 transition-colors"><td class="px-5 py-3 text-faint">03</td><td class="px-5 py-3 text-ink">Swift · iOS/macOS</td><td class="px-5 py-3">Rust</td><td class="px-5 py-3">C FFI</td><td class="px-5 py-3 text-right text-disk">CLEARED</td></tr>
+          <tr class="hover:bg-panel2/60 transition-colors"><td class="px-5 py-3 text-faint">04</td><td class="px-5 py-3 text-ink">Kotlin · Android/JVM</td><td class="px-5 py-3">Rust</td><td class="px-5 py-3">C FFI</td><td class="px-5 py-3 text-right text-disk">CLEARED</td></tr>
+          <tr class="hover:bg-panel2/60 transition-colors"><td class="px-5 py-3 text-faint">05</td><td class="px-5 py-3 text-ink">Flutter</td><td class="px-5 py-3">Rust</td><td class="px-5 py-3">C FFI</td><td class="px-5 py-3 text-right text-disk">CLEARED</td></tr>
+          <tr class="hover:bg-panel2/60 transition-colors"><td class="px-5 py-3 text-faint">06</td><td class="px-5 py-3 text-ink">React Native</td><td class="px-5 py-3">Rust</td><td class="px-5 py-3">C FFI</td><td class="px-5 py-3 text-right text-disk">CLEARED</td></tr>
+          <tr class="hover:bg-panel2/60 transition-colors"><td class="px-5 py-3 text-faint">07</td><td class="px-5 py-3 text-ink">Tauri</td><td class="px-5 py-3">Rust</td><td class="px-5 py-3">C FFI</td><td class="px-5 py-3 text-right text-disk">CLEARED</td></tr>
+          <tr class="hover:bg-panel2/60 transition-colors"><td class="px-5 py-3 text-faint">08</td><td class="px-5 py-3 text-ink">Rust</td><td class="px-5 py-3">Rust</td><td class="px-5 py-3">native</td><td class="px-5 py-3 text-right text-disk">CLEARED</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- final CTA -->
+    <div class="mt-14 border border-line bg-panel2 p-8 sm:p-10 flex flex-col sm:flex-row sm:items-center gap-6 justify-between">
+      <div>
+        <h3 class="wide text-xl font-bold text-ink mb-1">Commits cross the horizon in order.</h3>
+        <p class="text-sm">Local SQLite everywhere. One log. Start in one command.</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-4 shrink-0">
+        <code class="font-mono text-[12px] text-dim bg-space border border-line rounded px-3 py-2.5"><span class="text-disk">$</span> bun create syncular-app my-app</code>
+        <a href="#" class="wide inline-flex rounded bg-disk px-5 py-2.5 text-sm font-bold text-space hover:bg-ember transition-colors">QUICKSTART</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ FOOTER ══════════════ -->
+<footer class="border-t border-line">
+  <div class="mx-auto max-w-6xl px-6 py-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
+    <div class="flex items-center gap-3">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <circle cx="10" cy="10" r="4.5" fill="#05060a" stroke="#ffb347" stroke-width="1.2"/>
+        <ellipse cx="10" cy="10" rx="9" ry="2.6" stroke="#ffb347" stroke-width="1" opacity=".7"/>
+      </svg>
+      <span class="font-mono text-[11px] text-faint">syncular · Apache-2.0 · two cores, one physics</span>
+    </div>
+    <div class="flex gap-6 font-mono text-[11px] tracking-wider text-dim">
+      <a href="#" class="hover:text-disk transition-colors">GITHUB</a>
+      <a href="#" class="hover:text-disk transition-colors">NPM</a>
+      <a href="#" class="hover:text-disk transition-colors">CRATES.IO</a>
+      <a href="#" class="hover:text-disk transition-colors">DOCS</a>
+    </div>
+  </div>
+</footer>
+
+<!-- ══════════════ GARGANTUA RENDERER ══════════════ -->
+<script>
+(function () {
+  const canvas = document.getElementById('gargantua');
+  const ctx = canvas.getContext('2d');
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const FLAT = 0.16;                 // disk flattening (edge-on tilt)
+  const N = 2800;                    // disk particles
+  let W, H, dpr, cx, cy, R, raf = null, last = 0;
+  const stars = [], parts = [];
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = canvas.clientWidth; H = canvas.clientHeight;
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cx = W / 2; cy = H * 0.46;
+    R = Math.min(W * 0.36, H * 0.36) * 0.42;   // shadow radius
+    stars.length = 0;
+    const ns = Math.floor(W * H / 3200);
+    for (let i = 0; i < ns; i++) stars.push({
+      x: Math.random() * W, y: Math.random() * H,
+      s: Math.random() * 1.2 + 0.2, a: Math.random() * 0.6 + 0.1,
+      tw: Math.random() * Math.PI * 2, ts: Math.random() * 1.5 + 0.3
+    });
+  }
+
+  for (let i = 0; i < N; i++) {
+    const t = Math.pow(Math.random(), 1.7);          // bias toward inner edge
+    const r = 1.35 + t * 3.1;                        // radius in units of R
+    parts.push({
+      r, th: Math.random() * Math.PI * 2,
+      t, mirror: Math.random() < 0.3,                // secondary (lower) image
+      hue: 46 - t * 30,                              // white-hot → orange-red
+      lit: 92 - t * 42,
+      sz: Math.random() * 0.9 + 0.4
+    });
+  }
+
+  // project a disk-plane point; lens far-side points onto the halo arcs
+  function project(p, th, out) {
+    const dx = p.r * R * Math.cos(th);
+    const dy = p.r * R * Math.sin(th) * FLAT;
+    if (Math.sin(th) < 0) {                          // far side, behind the hole
+      const Rl = R * (1.14 + p.t * 1.05);            // lensed image radius
+      if (Math.abs(dx) < Rl * 0.985) {               // bent over the shadow
+        out.x = cx + dx;
+        out.y = cy - Math.sqrt(Rl * Rl - dx * dx) * (p.mirror ? -0.42 : 1) - (p.mirror ? R * 0.06 : 0);
+        out.lensed = true;
+        return;
+      }
+    }
+    out.x = cx + dx; out.y = cy + dy; out.lensed = false;
+  }
+
+  const A = {}, B = {};
+  function draw(time) {
+    // deep space + vignette
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = '#030409';
+    ctx.fillRect(0, 0, W, H);
+
+    // starfield
+    for (const s of stars) {
+      const tw = reduced ? 1 : 0.65 + 0.35 * Math.sin(s.tw + time * 0.001 * s.ts);
+      ctx.globalAlpha = s.a * tw;
+      ctx.fillStyle = '#cdd6e6';
+      ctx.fillRect(s.x, s.y, s.s, s.s);
+    }
+    ctx.globalAlpha = 1;
+
+    // ── additive glow pass ──
+    ctx.globalCompositeOperation = 'lighter';
+
+    // ambient warm haze around the system
+    let g = ctx.createRadialGradient(cx, cy, R * 0.4, cx, cy, R * 5.2);
+    g.addColorStop(0, 'rgba(255,150,50,0.10)');
+    g.addColorStop(0.4, 'rgba(230,100,25,0.05)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(cx - R * 5.4, cy - R * 5.4, R * 10.8, R * 10.8);
+
+    // upper lensed arc (image of the far side of the disk)
+    g = ctx.createRadialGradient(cx, cy, R * 1.02, cx, cy, R * 2.5);
+    g.addColorStop(0, 'rgba(255,220,170,0.55)');
+    g.addColorStop(0.22, 'rgba(255,160,60,0.30)');
+    g.addColorStop(0.6, 'rgba(200,80,20,0.10)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.save();
+    ctx.beginPath(); ctx.rect(cx - R * 2.6, cy - R * 2.6, R * 5.2, R * 2.58); ctx.clip();
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx, cy, R * 2.5, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+
+    // lower lensed arc (secondary image, tighter + dimmer)
+    g = ctx.createRadialGradient(cx, cy, R * 1.0, cx, cy, R * 1.55);
+    g.addColorStop(0, 'rgba(255,200,140,0.34)');
+    g.addColorStop(0.5, 'rgba(230,110,30,0.12)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.save();
+    ctx.beginPath(); ctx.rect(cx - R * 1.7, cy + R * 0.02, R * 3.4, R * 1.6); ctx.clip();
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx, cy, R * 1.55, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+
+    // edge-on disk band (front sheet), hot inner edge
+    ctx.save();
+    ctx.translate(cx, cy); ctx.scale(1, FLAT);
+    g = ctx.createRadialGradient(0, 0, R * 1.15, 0, 0, R * 4.6);
+    g.addColorStop(0, 'rgba(255,235,200,0.50)');
+    g.addColorStop(0.12, 'rgba(255,170,70,0.34)');
+    g.addColorStop(0.45, 'rgba(220,95,25,0.14)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(0, 0, R * 4.6, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+
+    // orbiting particles with motion streaks (Keplerian: faster inside)
+    const dt = reduced ? 0 : 1;
+    for (const p of parts) {
+      const w = 0.028 * Math.pow(p.r, -1.5);         // angular velocity
+      if (dt) p.th -= w * dt * 60 / 60;
+      project(p, p.th, A);
+      project(p, p.th + w * 5, B);                   // trailing point → streak
+      // doppler beaming: approaching (left) side brighter
+      const beam = 1 + 0.75 * Math.max(0, (cx - A.x) / (R * 3.2));
+      const alpha = Math.min(1, (0.10 + 0.5 * (1 - p.t)) * beam) * (A.lensed && p.mirror ? 0.4 : 1);
+      ctx.strokeStyle = 'hsla(' + p.hue + ',95%,' + p.lit + '%,' + alpha.toFixed(3) + ')';
+      ctx.lineWidth = p.sz * (A.lensed ? 0.85 : 1);
+      const jump = Math.hypot(B.x - A.x, B.y - A.y);
+      ctx.beginPath();
+      ctx.moveTo(A.x, A.y);
+      if (jump < R * 0.5) ctx.lineTo(B.x, B.y); else ctx.lineTo(A.x + 0.6, A.y);
+      ctx.stroke();
+    }
+
+    // photon ring
+    g = ctx.createRadialGradient(cx, cy, R * 0.95, cx, cy, R * 1.16);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(0.45, 'rgba(255,225,180,0.55)');
+    g.addColorStop(0.62, 'rgba(255,160,70,0.28)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx, cy, R * 1.16, 0, Math.PI * 2); ctx.fill();
+
+    // ── the shadow ──
+    ctx.globalCompositeOperation = 'source-over';
+    g = ctx.createRadialGradient(cx, cy, R * 0.55, cx, cy, R * 1.01);
+    g.addColorStop(0, 'rgba(0,0,2,1)');
+    g.addColorStop(0.9, 'rgba(0,0,2,1)');
+    g.addColorStop(1, 'rgba(0,0,2,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx, cy, R * 1.01, 0, Math.PI * 2); ctx.fill();
+
+    // front disk sheet passes IN FRONT of the shadow (lower half only)
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.save();
+    ctx.beginPath(); ctx.rect(cx - R * 4.6, cy + R * FLAT * 0.1, R * 9.2, R * 4.6); ctx.clip();
+    ctx.translate(cx, cy); ctx.scale(1, FLAT);
+    g = ctx.createRadialGradient(0, 0, R * 1.05, 0, 0, R * 3.4);
+    g.addColorStop(0, 'rgba(255,240,215,0.6)');
+    g.addColorStop(0.2, 'rgba(255,165,65,0.30)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(0, 0, R * 3.4, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  function frame(t) {
+    draw(t);
+    raf = requestAnimationFrame(frame);
+  }
+
+  function start() { if (raf === null && !reduced) raf = requestAnimationFrame(frame); }
+  function stop() { if (raf !== null) { cancelAnimationFrame(raf); raf = null; } }
+
+  window.addEventListener('resize', () => { resize(); if (reduced) draw(0); });
+  document.addEventListener('visibilitychange', () => { document.hidden ? stop() : start(); });
+
+  resize();
+  if (reduced) { draw(0); } else { start(); }
+})();
+</script>
+</body>
+</html>

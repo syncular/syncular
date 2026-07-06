@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>syncular — offline-first SQL sync</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: { space: '#0b0d1a', violet2: '#8b7cf6', cyan2: '#4fd8f0', magenta2: '#e668c4' },
+        fontFamily: { display: ['"Space Grotesk"', 'sans-serif'], body: ['Inter', 'sans-serif'] },
+      },
+    },
+  };
+</script>
+<style>
+  html { scroll-behavior: smooth; }
+  body { background: #0b0d1a; font-family: Inter, sans-serif; }
+  /* ---- nebula blobs ---- */
+  .blob { position: absolute; border-radius: 9999px; filter: blur(90px); opacity: .55; will-change: transform; }
+  .blob-violet { background: radial-gradient(circle at 40% 40%, rgba(139,124,246,.55), transparent 70%); }
+  .blob-cyan   { background: radial-gradient(circle at 60% 50%, rgba(79,216,240,.4),  transparent 70%); }
+  .blob-magenta{ background: radial-gradient(circle at 50% 60%, rgba(230,104,196,.35), transparent 70%); }
+  @keyframes drift1 { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(70px,-50px) scale(1.15)} }
+  @keyframes drift2 { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(-80px,60px) scale(1.1)} }
+  @keyframes drift3 { 0%,100%{transform:translate(0,0) scale(1.05)} 50%{transform:translate(50px,70px) scale(.95)} }
+  /* ---- starfield: two parallax layers of box-shadow stars ---- */
+  .stars, .stars2 { position: absolute; width: 2px; height: 2px; border-radius: 50%; background: transparent; }
+  .stars { box-shadow: 12vw 8vh #fff, 25vw 32vh #cfd6ff, 41vw 12vh #fff, 58vw 41vh #9fb4ff, 73vw 6vh #fff, 88vw 27vh #cfd6ff, 6vw 55vh #fff, 19vw 78vh #9fb4ff, 33vw 62vh #fff, 49vw 88vh #cfd6ff, 66vw 71vh #fff, 81vw 92vh #9fb4ff, 94vw 58vh #fff, 3vw 21vh #cfd6ff, 47vw 4vh #fff, 91vw 44vh #fff, 15vw 94vh #cfd6ff, 62vw 16vh #fff; animation: twinkle 5s ease-in-out infinite; }
+  .stars2 { width: 1px; height: 1px; box-shadow: 8vw 18vh #aab6e8, 22vw 44vh #aab6e8, 37vw 26vh #8fa0dd, 52vw 9vh #aab6e8, 68vw 52vh #8fa0dd, 84vw 14vh #aab6e8, 11vw 68vh #8fa0dd, 29vw 85vh #aab6e8, 44vw 74vh #8fa0dd, 59vw 96vh #aab6e8, 76vw 81vh #8fa0dd, 92vw 66vh #aab6e8, 5vw 38vh #8fa0dd, 71vw 33vh #aab6e8, 97vw 87vh #8fa0dd, 39vw 49vh #aab6e8; animation: twinkle 7s ease-in-out infinite reverse; }
+  @keyframes twinkle { 0%,100%{opacity:.9} 50%{opacity:.45} }
+  /* ---- glass ---- */
+  .glass { background: rgba(255,255,255,.05); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,.1); box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 20px 50px -20px rgba(0,0,0,.6); }
+  .glass-hover { transition: transform .3s ease, border-color .3s ease, background .3s ease; }
+  .glass-hover:hover { transform: translateY(-4px); border-color: rgba(255,255,255,.22); background: rgba(255,255,255,.07); }
+  /* ---- text + CTA glow ---- */
+  .grad-text { background: linear-gradient(100deg, #a78bfa 0%, #8b7cf6 30%, #4fd8f0 75%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .cta { background: linear-gradient(100deg, #7c6cf0, #4fc3e8); box-shadow: 0 0 24px rgba(124,108,240,.5), 0 0 60px rgba(79,195,232,.25); transition: transform .25s ease, box-shadow .25s ease; }
+  .cta:hover { transform: translateY(-2px); box-shadow: 0 0 34px rgba(124,108,240,.7), 0 0 90px rgba(79,195,232,.4); }
+  /* ---- orbit diagram ---- */
+  .orbit-spin  { transform-origin: 300px 300px; animation: spin 46s linear infinite; }
+  .orbit-spin2 { transform-origin: 300px 300px; animation: spin 70s linear infinite reverse; }
+  .orbit-spin3 { transform-origin: 300px 300px; animation: spin 96s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .core-pulse { animation: corepulse 4s ease-in-out infinite; }
+  @keyframes corepulse { 0%,100%{opacity:.85} 50%{opacity:1} }
+  @media (prefers-reduced-motion: reduce) { .blob, .stars, .stars2, .orbit-spin, .orbit-spin2, .orbit-spin3, .core-pulse { animation: none !important; } }
+</style>
+</head>
+<body class="font-body text-slate-300 antialiased overflow-x-hidden">
+
+<!-- ======= background ======= -->
+<div class="fixed inset-0 -z-10 overflow-hidden" aria-hidden="true">
+  <div class="stars"></div><div class="stars2"></div>
+  <div class="blob blob-violet w-[55vw] h-[55vw] -top-[15vw] -left-[12vw]" style="animation: drift1 26s ease-in-out infinite"></div>
+  <div class="blob blob-cyan w-[45vw] h-[45vw] top-[8vh] -right-[14vw]" style="animation: drift2 32s ease-in-out infinite"></div>
+  <div class="blob blob-magenta w-[50vw] h-[50vw] top-[60vh] left-[20vw]" style="animation: drift3 38s ease-in-out infinite"></div>
+</div>
+
+<!-- ======= nav ======= -->
+<header class="sticky top-0 z-40 px-4 pt-4">
+  <nav class="glass mx-auto flex max-w-6xl items-center justify-between rounded-2xl px-5 py-3">
+    <a href="#" class="font-display text-lg font-bold text-white tracking-tight">syncular<span class="text-cyan2">.</span></a>
+    <div class="hidden md:flex items-center gap-8 text-sm text-slate-300">
+      <a href="#features" class="hover:text-white transition-colors">Features</a>
+      <a href="#numbers" class="hover:text-white transition-colors">Performance</a>
+      <a href="#orbit" class="hover:text-white transition-colors">Architecture</a>
+      <a href="#" class="hover:text-white transition-colors">Docs</a>
+    </div>
+    <a href="#" class="cta rounded-xl px-4 py-2 text-sm font-semibold text-white">Quickstart</a>
+  </nav>
+</header>
+
+<!-- ======= hero ======= -->
+<section class="relative mx-auto max-w-6xl px-4 pt-20 pb-24 md:pt-28">
+  <div class="grid items-center gap-12 lg:grid-cols-2">
+    <div class="min-w-0">
+      <div class="glass inline-flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-medium text-slate-200">
+        <span class="h-1.5 w-1.5 rounded-full bg-cyan2 shadow-[0_0_8px_#4fd8f0]"></span>
+        Two cores. One physics. Apache-2.0
+      </div>
+      <h1 class="font-display mt-6 text-4xl font-bold leading-[1.08] tracking-tight text-white md:text-6xl">
+        Every write falls into <span class="grad-text">one log.</span>
+      </h1>
+      <p class="mt-6 max-w-lg text-lg leading-relaxed text-slate-400">
+        Offline-first SQL sync. Local SQLite on every client, a server-authoritative commit log, scope-based authorization. All your data, drawn to a single point of truth.
+      </p>
+      <div class="mt-8 flex flex-wrap items-center gap-4">
+        <a href="#" class="cta rounded-xl px-6 py-3 font-semibold text-white">Quickstart</a>
+        <a href="#" class="glass glass-hover rounded-xl px-6 py-3 font-semibold text-white">Live demos</a>
+      </div>
+      <div class="glass mt-8 inline-flex items-center gap-3 rounded-xl px-4 py-2.5 font-mono text-sm text-slate-300">
+        <span class="text-violet2">$</span> bun create syncular-app my-app
+      </div>
+    </div>
+
+    <!-- code window -->
+    <div class="glass min-w-0 max-w-full overflow-hidden rounded-2xl p-1.5">
+      <div class="min-w-0 rounded-xl bg-[#0d1020]/80">
+        <div class="flex items-center gap-2 border-b border-white/10 px-4 py-3">
+          <span class="h-3 w-3 rounded-full bg-[#ff5f57]"></span>
+          <span class="h-3 w-3 rounded-full bg-[#febc2e]"></span>
+          <span class="h-3 w-3 rounded-full bg-[#28c840]"></span>
+          <span class="ml-3 font-mono text-xs text-slate-500">app.ts — synced</span>
+        </div>
+        <pre class="overflow-x-auto p-5 font-mono text-[13px] leading-7 text-slate-300"><code>client.<span class="text-cyan2">subscribe</span>({
+  id: <span class="text-emerald-300">'tasks'</span>, table: <span class="text-emerald-300">'tasks'</span>,
+  scopes: { project_id: [projectId] },
+});
+
+<span class="text-slate-500">// works offline — queued in the outbox</span>
+client.<span class="text-cyan2">mutate</span>([{
+  table: <span class="text-emerald-300">'tasks'</span>, op: <span class="text-emerald-300">'upsert'</span>,
+  values: { id, title: <span class="text-emerald-300">'Cross the event horizon'</span>, done: <span class="text-violet2">1</span> },
+}]);
+
+<span class="text-slate-500">// back in range: replays, validates, commits in order</span>
+<span class="text-magenta2">await</span> client.<span class="text-cyan2">syncUntilIdle</span>(); <span class="text-slate-500">// 0.2 ms p95 propagation</span></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======= numbers band ======= -->
+<section id="numbers" class="mx-auto max-w-6xl px-4 pb-24">
+  <div class="glass grid grid-cols-2 gap-y-8 rounded-[2rem] px-6 py-8 md:grid-cols-4 md:rounded-full md:px-12">
+    <div class="text-center">
+      <div class="font-display text-3xl font-bold text-white md:text-4xl">30 ms</div>
+      <div class="mt-1 text-sm text-slate-400">to bootstrap 100k rows</div>
+    </div>
+    <div class="text-center">
+      <div class="font-display text-3xl font-bold text-white md:text-4xl">0.2 ms</div>
+      <div class="mt-1 text-sm text-slate-400">p95 realtime propagation</div>
+    </div>
+    <div class="text-center">
+      <div class="font-display text-3xl font-bold text-white md:text-4xl">19.6 KB</div>
+      <div class="mt-1 text-sm text-slate-400">gzipped web client</div>
+    </div>
+    <div class="text-center">
+      <div class="font-display text-3xl font-bold text-white md:text-4xl">74 &times; 2</div>
+      <div class="mt-1 text-sm text-slate-400">conformance scenarios &times; cores</div>
+    </div>
+  </div>
+</section>
+
+<!-- ======= features ======= -->
+<section id="features" class="mx-auto max-w-6xl px-4 pb-24">
+  <h2 class="font-display text-3xl font-bold tracking-tight text-white md:text-4xl">Nothing escapes validation.</h2>
+  <p class="mt-3 max-w-2xl text-slate-400">The server is the gravity well. Clients orbit with their own local SQLite; the commit log keeps everything in order.</p>
+  <div class="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+
+    <div class="glass glass-hover rounded-2xl p-6">
+      <svg class="h-8 w-8 text-violet2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M12 3l7.5 3v5.25c0 4.5-3 8.25-7.5 9.75-4.5-1.5-7.5-5.25-7.5-9.75V6L12 3z"/></svg>
+      <h3 class="font-display mt-4 text-lg font-semibold text-white">Scopes as code</h3>
+      <p class="mt-2 text-sm leading-relaxed text-slate-400">Authorization is a written rule, not a hope. Every commit is checked against scopes before it lands in the log.</p>
+    </div>
+
+    <div class="glass glass-hover rounded-2xl p-6">
+      <svg class="h-8 w-8 text-cyan2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5v9a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 16.5v-9m16.5 0A2.25 2.25 0 0018 5.25H6A2.25 2.25 0 003.75 7.5m16.5 0v.243a2.25 2.25 0 01-1.07 1.916l-6 3.75a2.25 2.25 0 01-2.36 0l-6-3.75a2.25 2.25 0 01-1.07-1.916V7.5"/></svg>
+      <h3 class="font-display mt-4 text-lg font-semibold text-white">Offline outbox</h3>
+      <p class="mt-2 text-sm leading-relaxed text-slate-400">Drift out of contact and keep writing. The outbox replays your mutations, in order, when you re-enter range.</p>
+    </div>
+
+    <div class="glass glass-hover rounded-2xl p-6">
+      <svg class="h-8 w-8 text-magenta2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m0 3.75h.008v.008H12v-.008zM10.29 3.86L1.82 18a2.25 2.25 0 001.93 3.375h16.5A2.25 2.25 0 0022.18 18L13.71 3.86a2.25 2.25 0 00-3.42 0z"/></svg>
+      <h3 class="font-display mt-4 text-lg font-semibold text-white">Honest conflicts</h3>
+      <p class="mt-2 text-sm leading-relaxed text-slate-400">Conflicts are surfaced, never silently merged. You decide the resolution; the log records it.</p>
+    </div>
+
+    <div class="glass glass-hover rounded-2xl p-6">
+      <svg class="h-8 w-8 text-cyan2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"/></svg>
+      <h3 class="font-display mt-4 text-lg font-semibold text-white">Realtime over WebSocket</h3>
+      <p class="mt-2 text-sm leading-relaxed text-slate-400">Committed writes propagate to live subscribers at 0.2&nbsp;ms p95. No polling, no drift.</p>
+    </div>
+
+    <div class="glass glass-hover rounded-2xl p-6">
+      <svg class="h-8 w-8 text-violet2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/></svg>
+      <h3 class="font-display mt-4 text-lg font-semibold text-white">CRDT columns &amp; blobs</h3>
+      <p class="mt-2 text-sm leading-relaxed text-slate-400">Opt into CRDT semantics per column where merge is the right answer. Blobs sync alongside your rows.</p>
+    </div>
+
+    <div class="glass glass-hover rounded-2xl p-6">
+      <svg class="h-8 w-8 text-magenta2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg>
+      <h3 class="font-display mt-4 text-lg font-semibold text-white">Optional E2EE &amp; windowed sync</h3>
+      <p class="mt-2 text-sm leading-relaxed text-slate-400">Encrypt end-to-end when the data demands it. Window the sync so each device carries only what it needs.</p>
+    </div>
+
+  </div>
+</section>
+
+<!-- ======= orbit diagram ======= -->
+<section id="orbit" class="mx-auto max-w-6xl px-4 pb-24">
+  <div class="glass rounded-3xl p-8 md:p-14">
+    <div class="grid items-center gap-10 lg:grid-cols-2">
+      <div>
+        <h2 class="font-display text-3xl font-bold tracking-tight text-white md:text-4xl">Two cores. <span class="grad-text">One physics.</span></h2>
+        <p class="mt-4 leading-relaxed text-slate-400">One written protocol is the law. Two conformance-locked cores obey it — TypeScript for the web, Rust for native via C FFI — proven identical across 74 scenarios on both.</p>
+        <p class="mt-4 leading-relaxed text-slate-400">Every platform orbits the same commit log: commits cross the event horizon in order, and nothing escapes validation.</p>
+        <div class="mt-6 flex flex-wrap gap-2 text-xs font-medium">
+          <span class="glass rounded-full px-3 py-1.5">Web</span><span class="glass rounded-full px-3 py-1.5">React</span><span class="glass rounded-full px-3 py-1.5">Swift</span><span class="glass rounded-full px-3 py-1.5">Kotlin</span><span class="glass rounded-full px-3 py-1.5">Flutter</span><span class="glass rounded-full px-3 py-1.5">React Native</span><span class="glass rounded-full px-3 py-1.5">Tauri</span><span class="glass rounded-full px-3 py-1.5">Rust</span>
+        </div>
+      </div>
+      <svg viewBox="0 0 600 600" class="mx-auto w-full max-w-md" role="img" aria-label="Platforms orbiting the syncular commit log">
+        <defs>
+          <radialGradient id="core" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#ffffff"/><stop offset="35%" stop-color="#a78bfa"/><stop offset="100%" stop-color="#a78bfa" stop-opacity="0"/>
+          </radialGradient>
+          <filter id="glow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        </defs>
+        <ellipse cx="300" cy="300" rx="130" ry="130" fill="none" stroke="rgba(255,255,255,.14)" stroke-width="1"/>
+        <ellipse cx="300" cy="300" rx="195" ry="195" fill="none" stroke="rgba(255,255,255,.1)" stroke-width="1"/>
+        <ellipse cx="300" cy="300" rx="260" ry="260" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="1"/>
+        <circle cx="300" cy="300" r="90" fill="url(#core)" class="core-pulse"/>
+        <circle cx="300" cy="300" r="26" fill="#0b0d1a" stroke="rgba(255,255,255,.35)" stroke-width="1.5"/>
+        <text x="300" y="296" text-anchor="middle" fill="#e2e8f0" font-size="11" font-family="Space Grotesk, sans-serif" font-weight="600">commit</text>
+        <text x="300" y="310" text-anchor="middle" fill="#e2e8f0" font-size="11" font-family="Space Grotesk, sans-serif" font-weight="600">log</text>
+        <g class="orbit-spin">
+          <circle cx="430" cy="300" r="7" fill="#4fd8f0" filter="url(#glow)"/>
+          <circle cx="170" cy="300" r="6" fill="#8b7cf6" filter="url(#glow)"/>
+          <circle cx="300" cy="170" r="5" fill="#e668c4" filter="url(#glow)"/>
+        </g>
+        <g class="orbit-spin2">
+          <circle cx="495" cy="300" r="6" fill="#8b7cf6" filter="url(#glow)"/>
+          <circle cx="300" cy="495" r="7" fill="#4fd8f0" filter="url(#glow)"/>
+          <circle cx="162" cy="162" r="5" fill="#e668c4" filter="url(#glow)"/>
+        </g>
+        <g class="orbit-spin3">
+          <circle cx="560" cy="300" r="6" fill="#4fd8f0" filter="url(#glow)"/>
+          <circle cx="116" cy="116" r="5" fill="#8b7cf6" filter="url(#glow)"/>
+        </g>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- ======= CTA ======= -->
+<section class="mx-auto max-w-6xl px-4 pb-24">
+  <div class="glass rounded-3xl px-8 py-14 text-center md:py-20">
+    <h2 class="font-display mx-auto max-w-2xl text-3xl font-bold tracking-tight text-white md:text-5xl">All your data, drawn to a <span class="grad-text">single point of truth.</span></h2>
+    <p class="mx-auto mt-4 max-w-xl text-slate-400">Local SQLite, an authoritative log, and sync you can reason about. Start in one command.</p>
+    <div class="mt-8 flex flex-wrap items-center justify-center gap-4">
+      <a href="#" class="cta rounded-xl px-7 py-3.5 font-semibold text-white">Quickstart</a>
+      <a href="#" class="glass glass-hover rounded-xl px-7 py-3.5 font-semibold text-white">Live demos</a>
+    </div>
+    <div class="glass mx-auto mt-8 inline-flex items-center gap-3 rounded-xl px-4 py-2.5 font-mono text-sm text-slate-300"><span class="text-violet2">$</span> bun create syncular-app my-app</div>
+  </div>
+</section>
+
+<!-- ======= footer ======= -->
+<footer class="mx-auto max-w-6xl px-4 pb-10">
+  <div class="glass flex flex-col items-center justify-between gap-6 rounded-2xl px-6 py-6 md:flex-row">
+    <div class="font-display font-bold text-white">syncular<span class="text-cyan2">.</span> <span class="ml-2 text-xs font-normal text-slate-500">Apache-2.0</span></div>
+    <div class="flex flex-wrap items-center justify-center gap-6 text-sm text-slate-400">
+      <a href="#" class="hover:text-white transition-colors">GitHub</a>
+      <a href="#" class="hover:text-white transition-colors">npm</a>
+      <a href="#" class="hover:text-white transition-colors">crates.io</a>
+      <a href="#" class="hover:text-white transition-colors">Docs</a>
+    </div>
+    <div class="text-xs text-slate-500">Nothing escapes validation.</div>
+  </div>
+</footer>
+
+</body>
+</html>
