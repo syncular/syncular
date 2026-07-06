@@ -1,0 +1,51 @@
+---
+// The docs shell: teletype sidebar + article column. Styling lives in
+// public/style.css (shared with the landing page), not in scoped styles —
+// the markdown body needs the global classes anyway.
+import { nav } from '../nav';
+
+interface Props {
+  title: string;
+  active: string;
+}
+const { title, active } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title} — syncular</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <nav class="sidebar">
+      <a class="brand" href="/">syncular</a>
+      {
+        nav.map((section) => (
+          <div class="nav-section">
+            <h4>{section.title}</h4>
+            <ul>
+              {section.items.map((item) => (
+                <li>
+                  <a
+                    href={`/${item.slug}/`}
+                    class={item.slug === active ? 'active' : undefined}
+                  >
+                    {item.title}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))
+      }
+    </nav>
+    <main>
+      <article>
+        <slot />
+      </article>
+    </main>
+  </body>
+</html>

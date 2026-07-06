@@ -1,25 +1,25 @@
 # @syncular/docs
 
-The documentation site — a deliberately boring static generator: ~zero
-dependencies, no framework. Markdown pages in `pages/` plus a `nav.ts`
-manifest render to static HTML with a sidebar; the landing page is a
-templated exception (`landing.ts`). Syntax highlighting happens at build time
-(`highlight.ts` — a small zero-dep tokenizer), so the published site ships no
-highlighter JavaScript. The only client-side script on the whole site is the
-landing hero's ASCII black-hole simulation, inline in `landing.ts` — it is
-the design language, not a framework.
+The documentation site — an **Astro** static site. Markdown pages in
+`src/content/` plus the `src/nav.ts` manifest render through
+`src/pages/[slug].astro` into the teletype layout; the landing page is
+`src/pages/index.astro`. Syntax highlighting is Shiki at build time
+(`css-variables` theme, colored by the palette in `public/style.css`), so the
+published site ships no highlighter JavaScript. The only client-side script on
+the whole site is the landing hero's ASCII black-hole simulation, inline in
+`index.astro` — it is the design language, not a framework.
 
 ## Local build / dev
 
 ```sh
-bun run build     # writes dist/
-bun run dev       # rebuild-on-request server at http://localhost:3100
+bun run build     # astro build + scripts/rebase.mjs → dist/
+bun run dev       # astro dev at http://localhost:3100
 ```
 
-`dist/` is a plain static bundle: `index.html` + one directory per page +
-`style.css` + self-hosted `fonts/` (IBM Plex Mono woff2 — no CDN at runtime).
-Nothing about it is host-specific. Internal links are root-absolute and get
-rewritten to `DOCS_BASE` at build time (the Pages workflow sets
+`dist/` is a plain static bundle: one directory per page, `style.css`, and
+self-hosted `fonts/` (IBM Plex Mono woff2 — no CDN at runtime). Nothing about
+it is host-specific. Internal links are authored root-absolute and rewritten
+to `DOCS_BASE` by the post-build rebase step (the Pages workflow sets
 `DOCS_BASE=/syncular/`; a custom domain uses the default `/`).
 
 ## Deploy — GitHub Pages

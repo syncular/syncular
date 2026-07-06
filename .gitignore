@@ -20,3 +20,6 @@ WARP.md
 coverage/
 target/
 **/*.af~lock~
+
+# astro build cache
+apps/docs/.astro/

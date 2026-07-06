@@ -3,7 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "bun run build.ts",
-    "dev": "bun run build.ts --serve"
+    "build": "astro build && node scripts/rebase.mjs",
+    "dev": "astro dev"
+  },
+  "dependencies": {
+    "astro": "^7.0.6"
   }
 }
