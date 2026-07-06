@@ -1,6 +1,6 @@
 {
   "name": "@syncular/kysely",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Kysely query-builder integration for the Syncular client",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
