@@ -10,10 +10,18 @@ import { Database } from 'bun:sqlite';
 import { syncError } from './errors';
 import {
   deleteRowSql,
+  layoutsOf,
+  migratePayload,
+  parseLayouts,
+  rewritePlan,
+  rewriteRowSql,
+  rewriteValues,
   SCHEMA_META_DDL_SQLITE,
+  type StoredColumnLayout,
   schemaDdl,
   selectRowScopesSql,
   selectRowSql,
+  selectRowsForRewriteSql,
   upsertSql,
   upsertValues,
 } from './relational-rows';
@@ -213,8 +221,8 @@ export class SqliteServerStorage implements ServerStorage {
     if (this.#schemaVersion === schema.version) return;
     this.db.exec(SCHEMA_META_DDL_SQLITE);
     const marker = this.db
-      .query<{ schema_version: number }, []>(
-        'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+      .query<{ schema_version: number; layouts: string }, []>(
+        'SELECT schema_version, layouts FROM sync_schema_meta WHERE id=1',
       )
       .get();
     if (marker !== null && marker.schema_version > schema.version) {
@@ -224,7 +232,11 @@ export class SqliteServerStorage implements ServerStorage {
     }
     if (marker === null || marker.schema_version < schema.version) {
       // Introspect existing app tables, then apply the migration subset
-      // (CREATE TABLE / ADD COLUMN / CREATE INDEX) to reach `schema`.
+      // (CREATE TABLE / ADD COLUMN / CREATE INDEX) to reach `schema`, then
+      // rewrite stored rows (payload re-encode for layout changes, and/or
+      // projection backfill for flipped-on materialization). One
+      // transaction: a failed bump leaves no half-state.
+      const layouts = parseLayouts(marker?.layouts);
       const existing = new Map<string, ReadonlySet<string>>();
       for (const table of schema.tables.values()) {
         const columns = this.db
@@ -236,17 +248,75 @@ export class SqliteServerStorage implements ServerStorage {
           existing.set(table.name, new Set(columns.map((c) => c.name)));
         }
       }
-      for (const statement of schemaDdl(schema, existing, 'sqlite')) {
-        this.db.exec(statement);
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        for (const statement of schemaDdl(schema, existing, 'sqlite')) {
+          this.db.exec(statement);
+        }
+        for (const table of schema.tables.values()) {
+          const oldLayout = layouts[table.name];
+          const plan = rewritePlan(table, oldLayout, existing.get(table.name));
+          if (!plan.migrate && !plan.backfill) continue;
+          this.#rewriteRows(table, plan.migrate ? oldLayout : undefined);
+        }
+        this.db
+          .query(
+            'INSERT INTO sync_schema_meta(id, schema_version, layouts) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, layouts=excluded.layouts',
+          )
+          .run(schema.version, layoutsOf(schema));
+        this.db.exec('COMMIT');
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
       }
-      this.db
-        .query(
-          'INSERT INTO sync_schema_meta(id, schema_version) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version',
-        )
-        .run(schema.version);
     }
     this.#tables = schema.tables;
     this.#schemaVersion = schema.version;
+  }
+
+  /**
+   * Migration rewrite (DESIGN "optional materialization"): keyset-paged walk
+   * of a row table; when `oldLayout` is given every payload re-encodes under
+   * the current columns, and the projection (when materialized) refreshes
+   * from the payload either way.
+   */
+  #rewriteRows(
+    table: CompiledTable,
+    oldLayout: readonly StoredColumnLayout[] | undefined,
+  ): void {
+    const select = selectRowsForRewriteSql(table, 'sqlite');
+    const update = this.db.query(rewriteRowSql(table, 'sqlite'));
+    const BATCH = 500;
+    let afterPartition = '';
+    let afterRowId = '';
+    for (;;) {
+      const rows = this.db
+        .query<
+          { partition: string; row_id: string; payload: Uint8Array },
+          [string, string, number]
+        >(select)
+        .all(afterPartition, afterRowId, BATCH);
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        const payload =
+          oldLayout !== undefined
+            ? migratePayload(oldLayout, table, row.payload)
+            : row.payload;
+        update.run(
+          ...(rewriteValues(
+            table,
+            row.partition,
+            row.row_id,
+            payload,
+            'sqlite',
+          ) as (string | number | boolean | Uint8Array | null)[]),
+        );
+      }
+      const last = rows[rows.length - 1];
+      if (last === undefined || rows.length < BATCH) break;
+      afterPartition = last.partition;
+      afterRowId = last.row_id;
+    }
   }
 
   async begin(partition: string): Promise<StorageTransaction> {

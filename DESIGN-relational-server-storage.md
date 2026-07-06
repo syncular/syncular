@@ -172,13 +172,23 @@ marker table gates the DDL check so cold starts don't re-run `CREATE TABLE
 IF NOT EXISTS` for every table on every request; sqlite/postgres do the
 same at process start.
 
-Migration boundary and the payload: rows pushed under schemaVersion N keep
-their N-encoded `_sync_payload`; ADD COLUMN backfills the typed column
-with NULL/default. Because the serve path reads the payload verbatim and
-the schema floor forces clients to the current version before syncing,
-no re-encoding of old rows is required. The round-trip invariant test is
-scoped to same-schema-version rows (across a migration it is definitionally
-a different byte string).
+Migration boundary and the payload (**corrected during implementation**):
+the row codec is STRICT — the null bitmap is sized by the decoder's column
+count and decode asserts full consumption — so an N-encoded payload does
+NOT decode under the N+1 column list. The write path (§3.4 scope-strip,
+CRDT merge, conflict `serverRow`) and the bootstrap serve path both decode
+stored payloads under the CURRENT schema, so a version bump MUST migrate
+stored payloads: decode under the OLD column layout, append trailing NULLs
+for added columns, re-encode under the new list. To decode old bytes the
+server persists each table's column layout (name/type/nullable) in
+`sync_schema_meta.layouts` at every applied version; the bump walks each
+changed table keyset-paged and rewrites payload + projection in the
+migration transaction. Append-only is enforced (old layout must be an
+exact prefix; added columns must be nullable) — anything else fails loud.
+The original design's claim that "no re-encoding of old rows is required"
+was wrong. (Old `sync_changes` entries stay old-encoded: the §7.4.3 client
+schema-bump reset forces a re-bootstrap, so pre-bump deltas are never
+served to post-bump clients.)
 
 ### Column type mapping (per dialect)
 
@@ -211,10 +221,32 @@ matters, the column can be stored as TEXT behind the same IR type.
 for tables that exceed the limit (~95 app columns) rather than failing at
 runtime; chunked upsert is a follow-up if anyone hits it.
 
+### Optional materialization (added 2026-07-06, per Benjamin)
+
+Materialization is **per-table optional**: `TableSchema.materialize?:
+boolean`. This is NOT a blob-vs-relational mode — the storage layout
+(per-app table, five `_sync_*` meta columns), scope index, and serve path
+are identical either way; the flag only controls whether the app's typed
+columns exist as a projection and whether upsert pays the decode.
+
+- **Default `true`**, except tables whose every non-PK, non-scope column
+  is encrypted (§5.11): their projection would be pure ciphertext, so
+  fully-E2EE tables default to `false`. Explicit values always win.
+- `materialize: false` skips `decodeRow` on the push path (a five-column
+  meta write — the old blob-store cost), skips user indexes, and is the
+  escape hatch for D1's 100-bind-parameter cap on wide tables.
+- **Flipping requires a schemaVersion bump** (the marker gates DDL).
+  Flipping ON backfills the projection from stored payloads in the same
+  keyset-paged rewrite the payload migration uses; flipping OFF simply
+  stops writing the columns (they remain, stale, until dropped manually —
+  DROP COLUMN is outside the migration subset).
+
 ## Decisions
 
 1. **Relational tables are THE storage, not a toggle** — `sync_rows` is
-   retired; there is no blob-vs-relational mode. (Unchanged.)
+   retired; there is no blob-vs-relational mode. The per-table
+   `materialize` flag (above) toggles the projection columns only, never
+   the storage layout. (Amended 2026-07-06.)
 2. **The verbatim payload is retained as `_sync_payload`** in the per-app
    tables; typed columns are a projection, the payload serves the wire.
    (Revised — was: re-encode from typed columns on read. See Rejected

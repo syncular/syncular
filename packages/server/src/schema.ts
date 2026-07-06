@@ -31,6 +31,21 @@ export interface TableSchema {
   readonly scopes: readonly ScopePatternSpec[];
   /** User indexes (optional) — created on the server's relational tables. */
   readonly indexes?: readonly IndexSchema[];
+  /**
+   * Server-side column materialization (DESIGN-relational-server-storage.md
+   * "optional materialization"). When `true` (the usual default) the server's
+   * row table carries the app's typed columns as a queryable projection;
+   * when `false` it carries only the `_sync_*` meta columns — same storage
+   * layout, same serve path, no decode on the push path, but no server-side
+   * SQL over the app's columns (and user indexes are skipped).
+   *
+   * Unset defaults to `true`, EXCEPT for tables whose every non-PK,
+   * non-scope column is encrypted (§5.11): their projection would be
+   * columns of ciphertext, so they default to `false`. Explicit values
+   * always win. Changing the value later requires a schemaVersion bump
+   * (flipping on backfills the projection from stored payloads).
+   */
+  readonly materialize?: boolean;
 }
 
 export interface ServerSchema {
@@ -55,6 +70,8 @@ export interface CompiledTable {
   readonly scopePatterns: readonly CompiledScopePattern[];
   /** User indexes (validated: unique names, existing columns). */
   readonly indexes: readonly IndexSchema[];
+  /** Resolved materialization (see `TableSchema.materialize`). */
+  readonly materialize: boolean;
   readonly columnIndex: ReadonlyMap<string, number>;
   readonly declaredVariables: ReadonlySet<string>;
   /** Column indices declared `blob_ref` (§2.4 tag 7, §5.9) — the columns
@@ -216,12 +233,29 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
         crdtColumns.push({ index, crdtType: column.crdtType });
       }
     });
+    // Materialization default: explicit wins; otherwise on, unless every
+    // non-PK, non-scope column is encrypted — a fully-E2EE table's
+    // projection would be pure ciphertext, so it defaults off.
+    const scopeColumnIndices = new Set(
+      scopePatterns.map((pattern) => pattern.columnIndex),
+    );
+    const projectable = table.columns.filter(
+      (column, index) =>
+        index !== primaryKeyIndex && !scopeColumnIndices.has(index),
+    );
+    const fullyEncrypted =
+      encryptedColumnIndices.length > 0 &&
+      projectable.length > 0 &&
+      projectable.every((column) => column.encrypted === true);
+    const materialize = table.materialize ?? !fullyEncrypted;
+
     tables.set(table.name, {
       name: table.name,
       columns: table.columns,
       primaryKeyIndex,
       scopePatterns,
       indexes,
+      materialize,
       columnIndex,
       declaredVariables: variables,
       blobRefColumnIndices,

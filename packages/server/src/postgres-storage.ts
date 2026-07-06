@@ -45,10 +45,18 @@ import {
 } from './pg-executor';
 import {
   deleteRowSql,
+  layoutsOf,
+  migratePayload,
+  parseLayouts,
+  rewritePlan,
+  rewriteRowSql,
+  rewriteValues,
   SCHEMA_META_DDL_POSTGRES,
+  type StoredColumnLayout,
   schemaDdl,
   selectRowScopesSql,
   selectRowSql,
+  selectRowsForRewriteSql,
   upsertSql,
   upsertValues,
 } from './relational-rows';
@@ -287,6 +295,47 @@ function placeholders(start: number, count: number): string {
   const out: string[] = [];
   for (let i = 0; i < count; i++) out.push(`$${start + i}`);
   return out.join(',');
+}
+
+/**
+ * Migration rewrite (DESIGN "optional materialization"): keyset-paged walk
+ * of a row table inside the migration transaction; when `oldLayout` is
+ * given every payload re-encodes under the current columns, and the
+ * projection (when materialized) refreshes from the payload either way.
+ */
+async function rewriteRowsOn(
+  q: PgQueryable,
+  table: CompiledTable,
+  oldLayout: readonly StoredColumnLayout[] | undefined,
+): Promise<void> {
+  const select = selectRowsForRewriteSql(table, 'postgres');
+  const update = rewriteRowSql(table, 'postgres');
+  const BATCH = 500;
+  let afterPartition = '';
+  let afterRowId = '';
+  for (;;) {
+    const { rows } = await q.query<{
+      partition: string;
+      row_id: string;
+      payload: unknown;
+    }>(select, [afterPartition, afterRowId, BATCH]);
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      const bytes = asBytes(row.payload);
+      const payload =
+        oldLayout !== undefined
+          ? migratePayload(oldLayout, table, bytes)
+          : bytes;
+      await q.query(
+        update,
+        rewriteValues(table, row.partition, row.row_id, payload, 'postgres'),
+      );
+    }
+    const last = rows[rows.length - 1];
+    if (last === undefined || rows.length < BATCH) break;
+    afterPartition = last.partition;
+    afterRowId = last.row_id;
+  }
 }
 
 /** Shared read/write query logic, parameterized by the queryable in scope. */
@@ -556,9 +605,10 @@ export class PostgresServerStorage implements ServerStorage {
     if (this.#schemaVersion === schema.version) return;
     await this.migrate();
     await this.#exec.query(SCHEMA_META_DDL_POSTGRES);
-    const marker = await this.#exec.query<{ schema_version: unknown }>(
-      'SELECT schema_version FROM sync_schema_meta WHERE id=1',
-    );
+    const marker = await this.#exec.query<{
+      schema_version: unknown;
+      layouts: unknown;
+    }>('SELECT schema_version, layouts FROM sync_schema_meta WHERE id=1');
     const stored =
       marker.rows[0] === undefined
         ? undefined
@@ -569,9 +619,17 @@ export class PostgresServerStorage implements ServerStorage {
       );
     }
     if (stored === undefined || stored < schema.version) {
-      // Introspect existing app tables, then apply the migration subset
-      // (CREATE TABLE / ADD COLUMN / CREATE INDEX) inside one transaction
-      // (Postgres DDL is transactional — a failed bump leaves no half-state).
+      // Introspect existing app tables, apply the migration subset
+      // (CREATE TABLE / ADD COLUMN / CREATE INDEX), then rewrite stored
+      // rows (payload re-encode for layout changes and/or projection
+      // backfill for flipped-on materialization) — all inside one
+      // transaction (Postgres DDL is transactional — a failed bump leaves
+      // no half-state).
+      const layouts = parseLayouts(
+        typeof marker.rows[0]?.layouts === 'string'
+          ? marker.rows[0].layouts
+          : undefined,
+      );
       await this.#exec.transaction(async (client) => {
         const existing = new Map<string, ReadonlySet<string>>();
         for (const table of schema.tables.values()) {
@@ -587,10 +645,21 @@ export class PostgresServerStorage implements ServerStorage {
         for (const statement of schemaDdl(schema, existing, 'postgres')) {
           await client.query(statement);
         }
+        for (const table of schema.tables.values()) {
+          const oldLayout = layouts[table.name];
+          const plan = rewritePlan(table, oldLayout, existing.get(table.name));
+          if (!plan.migrate && !plan.backfill) continue;
+          await rewriteRowsOn(
+            client,
+            table,
+            plan.migrate ? oldLayout : undefined,
+          );
+        }
         await client.query(
-          `INSERT INTO sync_schema_meta(id, schema_version) VALUES (1, $1)
-           ON CONFLICT (id) DO UPDATE SET schema_version=EXCLUDED.schema_version`,
-          [schema.version],
+          `INSERT INTO sync_schema_meta(id, schema_version, layouts) VALUES (1, $1, $2)
+           ON CONFLICT (id) DO UPDATE
+             SET schema_version=EXCLUDED.schema_version, layouts=EXCLUDED.layouts`,
+          [schema.version, layoutsOf(schema)],
         );
       });
     }

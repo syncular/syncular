@@ -43,7 +43,12 @@
  *   the row codec — not the DB — is the type authority. Fresh CREATEs carry
  *   NOT NULL per the schema.
  */
-import { decodeRow, type RowColumn, type RowValue } from '@syncular/core';
+import {
+  decodeRow,
+  encodeRow,
+  type RowColumn,
+  type RowValue,
+} from '@syncular/core';
 import type { CompiledSchema, CompiledTable } from './schema';
 import type { StoredRow } from './storage';
 
@@ -106,13 +111,14 @@ export function columnSqlType(
 
 /**
  * The full column list of a relational row table, in INSERT order:
- * partition, row id, app columns (schema order), version, scopes, payload.
+ * partition, row id, app columns (schema order; only when the table is
+ * materialized), version, scopes, payload.
  */
 export function tableColumnNames(table: CompiledTable): string[] {
   return [
     SYNC_PARTITION_COLUMN,
     SYNC_ROW_ID_COLUMN,
-    ...table.columns.map((column) => column.name),
+    ...(table.materialize ? table.columns.map((column) => column.name) : []),
     SYNC_VERSION_COLUMN,
     SYNC_SCOPES_COLUMN,
     SYNC_PAYLOAD_COLUMN,
@@ -130,10 +136,12 @@ export function createTableDdl(
   const defs = [
     `${quoteIdent(SYNC_PARTITION_COLUMN)} TEXT NOT NULL`,
     `${quoteIdent(SYNC_ROW_ID_COLUMN)} TEXT NOT NULL`,
-    ...table.columns.map((column) => {
-      const notNull = column.nullable ? '' : ' NOT NULL';
-      return `${quoteIdent(column.name)} ${columnSqlType(column, dialect)}${notNull}`;
-    }),
+    ...(table.materialize
+      ? table.columns.map((column) => {
+          const notNull = column.nullable ? '' : ' NOT NULL';
+          return `${quoteIdent(column.name)} ${columnSqlType(column, dialect)}${notNull}`;
+        })
+      : []),
     `${quoteIdent(SYNC_VERSION_COLUMN)} ${versionType} NOT NULL`,
     `${quoteIdent(SYNC_SCOPES_COLUMN)} ${scopesType} NOT NULL`,
     `${quoteIdent(SYNC_PAYLOAD_COLUMN)} ${payloadType} NOT NULL`,
@@ -151,6 +159,7 @@ export function addColumnDdl(
   existingColumns: ReadonlySet<string>,
   dialect: RelationalDialect,
 ): string[] {
+  if (!table.materialize) return [];
   const out: string[] = [];
   for (const column of table.columns) {
     if (existingColumns.has(column.name)) continue;
@@ -168,6 +177,8 @@ export function addColumnDdl(
  * as it is client-side).
  */
 export function createIndexDdl(table: CompiledTable): string[] {
+  // User indexes name app columns — nothing to index without the projection.
+  if (!table.materialize) return [];
   return table.indexes.map((index) => {
     const unique = index.unique ? 'UNIQUE ' : '';
     const columns = index.columns
@@ -216,13 +227,19 @@ export function upsertValues(
   row: StoredRow,
   dialect: RelationalDialect,
 ): unknown[] {
-  const values = decodeRow(table.columns, row.payload);
+  // A non-materialized table skips the decode entirely — the upsert is a
+  // five-column meta write (the old blob-store cost).
+  const projection = table.materialize
+    ? decodeRow(table.columns, row.payload)
+    : undefined;
   return [
     partition,
     row.rowId,
-    ...table.columns.map((column, index) =>
-      toSqlValue(column, values[index] ?? null, dialect),
-    ),
+    ...(projection !== undefined
+      ? table.columns.map((column, index) =>
+          toSqlValue(column, projection[index] ?? null, dialect),
+        )
+      : []),
     row.serverVersion,
     JSON.stringify(row.scopes),
     row.payload,
@@ -292,16 +309,210 @@ export function deleteRowSql(
  * schema migration"): `ensureSchema` compares the stored version and skips
  * all introspection/DDL when it matches — one cheap read per storage
  * instance (relevant for D1's per-request instantiation).
+ *
+ * `layouts` persists each table's column layout (name/type/nullable, the
+ * exact inputs the row codec's byte layout depends on) as of the LAST
+ * applied schema version. The codec is strict — a payload only decodes
+ * under the column list it was encoded with — so a version bump MUST
+ * re-encode stored payloads (append trailing NULLs for added columns);
+ * decoding the old bytes requires the old layout, and this column is where
+ * it lives.
  */
 export const SCHEMA_META_DDL_SQLITE = `CREATE TABLE IF NOT EXISTS sync_schema_meta(
   id INTEGER PRIMARY KEY CHECK (id = 1),
-  schema_version INTEGER NOT NULL
+  schema_version INTEGER NOT NULL,
+  layouts TEXT NOT NULL DEFAULT '{}'
 )`;
 
 export const SCHEMA_META_DDL_POSTGRES = `CREATE TABLE IF NOT EXISTS sync_schema_meta(
   id INTEGER PRIMARY KEY CHECK (id = 1),
-  schema_version BIGINT NOT NULL
+  schema_version BIGINT NOT NULL,
+  layouts TEXT NOT NULL DEFAULT '{}'
 )`;
+
+// -- column layouts + payload migration (version bumps) ----------------------
+
+/** The codec-relevant subset of a column, persisted per applied version. */
+export interface StoredColumnLayout {
+  readonly name: string;
+  readonly type: RowColumn['type'];
+  readonly nullable: boolean;
+}
+
+export type StoredLayouts = Record<string, readonly StoredColumnLayout[]>;
+
+/** The layouts JSON persisted alongside the schema version marker. */
+export function layoutsOf(schema: CompiledSchema): string {
+  const out: Record<string, StoredColumnLayout[]> = {};
+  for (const table of schema.tables.values()) {
+    out[table.name] = table.columns.map((column) => ({
+      name: column.name,
+      type: column.type,
+      nullable: column.nullable,
+    }));
+  }
+  return JSON.stringify(out);
+}
+
+export function parseLayouts(json: string | null | undefined): StoredLayouts {
+  if (json === null || json === undefined || json.length === 0) return {};
+  return JSON.parse(json) as StoredLayouts;
+}
+
+/**
+ * Enforce the migration subset on a table's column list: the old layout
+ * must be an exact prefix (same name, type, nullability) of the new one,
+ * and appended columns must be nullable (there is no default to backfill).
+ * Returns `true` iff columns were appended.
+ */
+export function assertAppendOnlyMigration(
+  tableName: string,
+  oldLayout: readonly StoredColumnLayout[],
+  table: CompiledTable,
+): boolean {
+  if (oldLayout.length > table.columns.length) {
+    throw new Error(
+      `table ${JSON.stringify(tableName)}: the schema removed columns — only CREATE TABLE / ADD COLUMN / CREATE INDEX migrations are supported`,
+    );
+  }
+  for (let i = 0; i < oldLayout.length; i++) {
+    const before = oldLayout[i];
+    const after = table.columns[i];
+    if (
+      before === undefined ||
+      after === undefined ||
+      before.name !== after.name ||
+      before.type !== after.type ||
+      before.nullable !== after.nullable
+    ) {
+      throw new Error(
+        `table ${JSON.stringify(tableName)}: column ${i} changed (${JSON.stringify(before)} → ${JSON.stringify({ name: after?.name, type: after?.type, nullable: after?.nullable })}) — only appending nullable columns is supported`,
+      );
+    }
+  }
+  for (let i = oldLayout.length; i < table.columns.length; i++) {
+    const added = table.columns[i];
+    if (added !== undefined && !added.nullable) {
+      throw new Error(
+        `table ${JSON.stringify(tableName)}: added column ${JSON.stringify(added.name)} must be nullable — existing rows have no value to backfill`,
+      );
+    }
+  }
+  return oldLayout.length < table.columns.length;
+}
+
+/**
+ * Re-encode an old-layout payload under the current columns: decode with
+ * the layout it was written under, append NULLs for the added columns,
+ * encode with the current column list. The write path (§3.4 scope-strip,
+ * CRDT merge, conflict serverRow) and the bootstrap serve path both decode
+ * stored payloads under the CURRENT schema, so this migration is a
+ * correctness requirement of the version bump, not an optimization.
+ */
+export function migratePayload(
+  oldLayout: readonly StoredColumnLayout[],
+  table: CompiledTable,
+  payload: Uint8Array,
+): Uint8Array {
+  const values = decodeRow(oldLayout as readonly RowColumn[], payload);
+  while (values.length < table.columns.length) values.push(null);
+  return encodeRow(table.columns, values);
+}
+
+/**
+ * Keyset-paged scan of a row table for the migration rewrite.
+ * Params: [afterPartition, afterRowId, limit].
+ */
+export function selectRowsForRewriteSql(
+  table: CompiledTable,
+  dialect: RelationalDialect,
+): string {
+  const p = dialect === 'sqlite' ? ['?', '?', '?'] : ['$1', '$2', '$3'];
+  return `SELECT ${quoteIdent(SYNC_PARTITION_COLUMN)} AS partition, ${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, ${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload
+     FROM ${quoteIdent(table.name)}
+     WHERE (${quoteIdent(SYNC_PARTITION_COLUMN)}, ${quoteIdent(SYNC_ROW_ID_COLUMN)}) > (${p[0]}, ${p[1]})
+     ORDER BY ${quoteIdent(SYNC_PARTITION_COLUMN)}, ${quoteIdent(SYNC_ROW_ID_COLUMN)}
+     LIMIT ${p[2]}`;
+}
+
+/**
+ * Rewrite one row during a migration: refresh the projection columns (when
+ * materialized) and the payload. Bind with `rewriteValues`.
+ */
+export function rewriteRowSql(
+  table: CompiledTable,
+  dialect: RelationalDialect,
+): string {
+  const sets: string[] = [];
+  let i = 1;
+  if (table.materialize) {
+    for (const column of table.columns) {
+      sets.push(
+        `${quoteIdent(column.name)}=${dialect === 'sqlite' ? '?' : `$${i}`}`,
+      );
+      i++;
+    }
+  }
+  sets.push(
+    `${quoteIdent(SYNC_PAYLOAD_COLUMN)}=${dialect === 'sqlite' ? '?' : `$${i}`}`,
+  );
+  i++;
+  const wherePartition = dialect === 'sqlite' ? '?' : `$${i}`;
+  const whereRowId = dialect === 'sqlite' ? '?' : `$${i + 1}`;
+  return `UPDATE ${quoteIdent(table.name)} SET ${sets.join(', ')} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=${wherePartition} AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}=${whereRowId}`;
+}
+
+/** Bind values for `rewriteRowSql` from the (already migrated) payload. */
+export function rewriteValues(
+  table: CompiledTable,
+  partition: string,
+  rowId: string,
+  payload: Uint8Array,
+  dialect: RelationalDialect,
+): unknown[] {
+  const out: unknown[] = [];
+  if (table.materialize) {
+    const values = decodeRow(table.columns, payload);
+    for (let i = 0; i < table.columns.length; i++) {
+      const column = table.columns[i];
+      if (column === undefined) continue;
+      out.push(toSqlValue(column, values[i] ?? null, dialect));
+    }
+  }
+  out.push(payload, partition, rowId);
+  return out;
+}
+
+/**
+ * What the migration rewrite phase must do for one table, derived from the
+ * persisted layouts + the physical columns present before this run.
+ *
+ * - `migrate`: the layout gained columns — every stored payload re-encodes
+ *   under the new column list (correctness; see `migratePayload`).
+ * - `backfill`: the table just gained physical projection columns whose
+ *   values exist in stored payloads (materialization flipped on) — the
+ *   projection refreshes from the payload, no re-encode.
+ */
+export function rewritePlan(
+  table: CompiledTable,
+  oldLayout: readonly StoredColumnLayout[] | undefined,
+  physicalColumnsBefore: ReadonlySet<string> | undefined,
+): { migrate: boolean; backfill: boolean } {
+  if (oldLayout === undefined || physicalColumnsBefore === undefined) {
+    // Fresh table (or a pre-layout database, which cannot be reasoned
+    // about): nothing stored to rewrite.
+    return { migrate: false, backfill: false };
+  }
+  const migrate = assertAppendOnlyMigration(table.name, oldLayout, table);
+  const backfill =
+    table.materialize &&
+    table.columns.some(
+      (column, index) =>
+        index < oldLayout.length && // value exists in old payloads
+        !physicalColumnsBefore.has(column.name), // column was just added
+    );
+  return { migrate, backfill };
+}
 
 /**
  * Every DDL statement to bring a database from `existingColumnsByTable`
