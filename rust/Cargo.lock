@@ -1041,6 +1041,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "syncular-bench"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "syncular-client",
+ "syncular-command",
+ "syncular-ffi",
+]
+
+[[package]]
 name = "syncular-client"
 version = "0.1.0"
 dependencies = [

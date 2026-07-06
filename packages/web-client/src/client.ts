@@ -213,6 +213,10 @@ export interface SyncSummary {
   readonly failed: readonly string[];
   /** Present when the server declared a schema floor — syncing stopped. */
   readonly schemaFloor?: SchemaFloor;
+  /** §6.1 splitBatch: outbox commits held back from THIS request because
+   * including them would exceed the per-request operation cap. They remain
+   * queued; sync-needed stays raised and `syncUntilIdle` keeps going. */
+  readonly deferredCommits?: number;
 }
 
 export interface SyncClientLimits {
@@ -321,6 +325,11 @@ const ACCEPT_SIGNED_URLS = 1 << 3;
  * Never a wire code (§10.3) — surfaced through the rejection channel.
  */
 const OUTBOX_INCOMPATIBLE_CODE = 'sync.outbox_incompatible';
+
+/** §6.1 per-request operation cap (matches the server's shipped default —
+ * `sync.too_many_operations` above it). The push half sends whole commits in
+ * commit order up to this cap and defers the rest to the next round. */
+const MAX_OPS_PER_REQUEST = 500;
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest(
@@ -1198,11 +1207,25 @@ export class SyncClient {
   async #encodeOutboxForPush(): Promise<{
     pushFrames: RequestFrame[];
     outbox: OutboxCommit[];
+    deferred: number;
   }> {
     const pending = listOutbox(this.#db);
     const pushFrames: RequestFrame[] = [];
     const outbox: OutboxCommit[] = [];
+    let deferred = 0;
+    let ops = 0;
     for (const commit of pending) {
+      // §6.1 splitBatch: whole commits in commit order, stopping before the
+      // per-request operation cap. A first commit that alone exceeds the cap
+      // is sent alone — the server rejects it loudly rather than the queue
+      // wedging silently. Deferred commits stay queued for the next round.
+      if (
+        outbox.length > 0 &&
+        ops + commit.operations.length > MAX_OPS_PER_REQUEST
+      ) {
+        deferred += 1;
+        continue;
+      }
       try {
         pushFrames.push(
           // §5.11: encrypted columns are encrypted at this encode-at-send
@@ -1210,6 +1233,7 @@ export class SyncClient {
           await encodeOutboxCommit(this.#schema, commit, this.#encryption),
         );
         outbox.push(commit);
+        ops += commit.operations.length;
       } catch (error) {
         if (error instanceof OutboxEncodeError) {
           this.#dropIncompatibleCommit(commit, error.message);
@@ -1218,7 +1242,7 @@ export class SyncClient {
         throw error;
       }
     }
-    return { pushFrames, outbox };
+    return { pushFrames, outbox, deferred };
   }
 
   /**
@@ -1305,7 +1329,8 @@ export class SyncClient {
       // is removed from the push and surfaced as a rejection, never wedging
       // the queue. `pushFrames` and `outbox` stay index-aligned for result
       // mapping.
-      const { pushFrames, outbox } = await this.#encodeOutboxForPush();
+      const { pushFrames, outbox, deferred } =
+        await this.#encodeOutboxForPush();
       const subs = loadSubscriptions(this.#db).filter(
         (sub) => sub.status === 'active',
       );
@@ -1360,6 +1385,12 @@ export class SyncClient {
       // §4.8 E1: the push half may have drained commits that pinned rows of
       // a shrunk window unit — retry any deferred evictions now.
       this.#drainPendingEvictions();
+      if (deferred > 0) {
+        // §6.1 splitBatch remainder: more queued commits than this request
+        // could carry — keep the sync-needed signal raised for the host.
+        this.#needsPull = true;
+        return { ...summary, deferredCommits: deferred };
+      }
       return summary;
     } catch (error) {
       // §7.3.5: a request-level lease code stops-and-surfaces — record it
@@ -1393,7 +1424,8 @@ export class SyncClient {
         last.commitsApplied === 0 &&
         last.segmentRowsApplied === 0 &&
         last.bootstrapping.length === 0 &&
-        last.resets.length === 0
+        last.resets.length === 0 &&
+        (last.deferredCommits ?? 0) === 0
       ) {
         return last;
       }

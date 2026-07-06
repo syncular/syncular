@@ -61,6 +61,12 @@ impl HostTransport {
         queue: Arc<EventQueue>,
     ) -> Result<Self, String> {
         let _ = &queue;
+        Self::new_from_config(config)
+    }
+
+    /// [`Self::from_config`] for hosts outside this crate (the bench driver)
+    /// that own their inbound-frame drain and need no FFI event queue.
+    pub fn new_from_config(config: &serde_json::Value) -> Result<Self, String> {
         #[cfg(feature = "native-transport")]
         {
             if let Some(base_url) = config.get("baseUrl").and_then(|v| v.as_str()) {
@@ -84,7 +90,7 @@ impl HostTransport {
         })
     }
 
-    pub(crate) fn set_signed_urls(&mut self, value: bool) {
+    pub fn set_signed_urls(&mut self, value: bool) {
         match self {
             HostTransport::Null { signed_urls, .. } => *signed_urls = value,
             #[cfg(feature = "native-transport")]
@@ -93,7 +99,7 @@ impl HostTransport {
     }
 
     /// Drain the inbound realtime frames buffered since the last call.
-    pub(crate) fn take_inbound(&mut self) -> Vec<Inbound> {
+    pub fn take_inbound(&mut self) -> Vec<Inbound> {
         match self {
             HostTransport::Null { inbound, .. } => inbound.take(),
             #[cfg(feature = "native-transport")]
@@ -102,7 +108,7 @@ impl HostTransport {
     }
 
     /// Release the socket/reader thread. Idempotent.
-    pub(crate) fn shutdown(&mut self) {
+    pub fn shutdown(&mut self) {
         match self {
             HostTransport::Null { .. } => {}
             #[cfg(feature = "native-transport")]
@@ -281,8 +287,17 @@ mod native {
     const ROUND_TIMEOUT: Duration = Duration::from_secs(30);
     /// The reader's per-iteration socket read timeout: bounds how long the
     /// reader holds the socket lock across `ws.read()`, so `realtime_send`
-    /// (round request bytes + §8.2 acks) can interleave sends promptly.
-    const READ_TIMEOUT: Duration = Duration::from_millis(50);
+    /// (round request bytes + §8.2 acks) can interleave sends promptly. A
+    /// pending send waits out at most one read window, so this is the
+    /// worst-case send latency — keep it small (the wakeup churn on a quiet
+    /// socket is a few hundred cheap syscalls per second).
+    const READ_TIMEOUT: Duration = Duration::from_millis(5);
+    /// How long the reader parks OUTSIDE the socket lock after an empty read
+    /// window. Load-bearing for fairness, not just politeness: without it the
+    /// reader re-acquires the (unfair) mutex faster than a parked sender can
+    /// wake, and sends starve for seconds on a quiet socket (observed on
+    /// macOS: 30-150s per §8.7 round).
+    const READ_YIELD: Duration = Duration::from_micros(500);
 
     /// The §8.7 round rendezvous shared between the reader thread (which
     /// demuxes inbound `0x01` chunks into the round via [`RealtimeRound`]) and
@@ -552,12 +567,22 @@ mod native {
             &mut self,
             request: &SegmentRequest,
         ) -> Result<Vec<u8>, TransportError> {
-            let id = request
-                .segment_id
-                .strip_prefix("sha256:")
-                .unwrap_or(&request.segment_id);
-            let url = format!("{}/segments/{}", self.base_url, id);
-            self.get_bytes(&url, true)
+            // The FULL content address (`sha256:<hex>`) is the path param —
+            // the reference server keys its segment store by it (§5.1) and
+            // answers `sync.not_found` to a bare hex id. The requested-scopes
+            // header carries what the pull round granted; the server
+            // re-authorizes the download against it (§5.5) and answers
+            // `sync.forbidden` when it is missing.
+            let url = format!("{}/segments/{}", self.base_url, request.segment_id);
+            let mut req = self
+                .agent
+                .get(&url)
+                .set("x-syncular-scopes", &request.requested_scopes_json);
+            for (k, v) in &self.headers {
+                req = req.set(k, v);
+            }
+            let resp = req.call().map_err(|e| http_err("GET segment", e))?;
+            read_body(resp)
         }
 
         fn supports_url_fetch(&self) -> bool {
@@ -575,8 +600,9 @@ mod native {
             bytes: &[u8],
             media_type: Option<&str>,
         ) -> Result<(), TransportError> {
-            let id = blob_id.strip_prefix("sha256:").unwrap_or(blob_id);
-            let url = format!("{}/blobs/{}", self.base_url, id);
+            // Full `sha256:<hex>` id in the path — the reference server's
+            // isBlobId check rejects a bare hex id (§5.9.1).
+            let url = format!("{}/blobs/{}", self.base_url, blob_id);
             let mut req = self.agent.put(&url).set(
                 "content-type",
                 media_type.unwrap_or("application/octet-stream"),
@@ -589,8 +615,9 @@ mod native {
         }
 
         fn blob_download(&mut self, blob_id: &str) -> Result<BlobDownload, TransportError> {
-            let id = blob_id.strip_prefix("sha256:").unwrap_or(blob_id);
-            let url = format!("{}/blobs/{}", self.base_url, id);
+            // Full `sha256:<hex>` id in the path — the reference server's
+            // isBlobId check rejects a bare hex id (§5.9.1).
+            let url = format!("{}/blobs/{}", self.base_url, blob_id);
             let mut req = self.agent.get(&url);
             for (k, v) in &self.headers {
                 req = req.set(k, v);
@@ -636,8 +663,7 @@ mod native {
             byte_length: u64,
             media_type: Option<&str>,
         ) -> Result<BlobUploadGrant, TransportError> {
-            let id = blob_id.strip_prefix("sha256:").unwrap_or(blob_id);
-            let url = format!("{}/blobs/{}/upload-grant", self.base_url, id);
+            let url = format!("{}/blobs/{}/upload-grant", self.base_url, blob_id);
             let mut req = self
                 .agent
                 .post(&url)
@@ -748,8 +774,13 @@ mod native {
                         }
                     }
                     // A read timeout is not a disconnect — loop and retry so a
-                    // quiet socket stays open (and sends can interleave).
-                    Err(e) if is_would_block(&e) => continue,
+                    // quiet socket stays open. The yield sleep runs OUTSIDE
+                    // the socket lock so pending sends can interleave (see
+                    // `READ_YIELD` — senders starve without it).
+                    Err(e) if is_would_block(&e) => {
+                        std::thread::sleep(READ_YIELD);
+                        continue;
+                    }
                     Ok(Message::Close(_)) | Err(_) => {
                         // The socket is gone: fail any in-flight round so a
                         // blocked `realtime_sync` wakes (§8.7 mid-round drop).
