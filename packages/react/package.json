@@ -1,6 +1,6 @@
 {
   "name": "@syncular/react",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "React hooks for Syncular offline-first sync",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
