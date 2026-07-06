@@ -3,6 +3,7 @@
     "target": "ES2023",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "customConditions": ["bun"],
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": ["bun"],
     "strict": true,
