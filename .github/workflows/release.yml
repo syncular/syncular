@@ -1,0 +1,93 @@
+# Trusted-publishing release: npm (OIDC provenance) + crates.io (OIDC).
+#
+# Prerequisites (one-time, web UI, AFTER the first local publish — both
+# registries only attach trusted publishers to EXISTING packages/crates):
+#   - npmjs.com: each @syncular/* package + create-syncular-app →
+#     Settings → Trusted publisher → GitHub Actions →
+#     owner `syncular`, repo `syncular`, workflow `release.yml`.
+#   - crates.io: syncular-ssp2, syncular-client, syncular-command,
+#     syncular-ffi, syncular → Settings → Trusted Publishing →
+#     GitHub repo `syncular/syncular`, workflow `release.yml`.
+#
+# No registry tokens are stored anywhere; both jobs authenticate via the
+# GitHub OIDC token (`id-token: write`).
+#
+# Trigger: push a version tag (`v0.2.0`). Versions in package.json /
+# Cargo.toml must already match the tag — the jobs verify and fail loudly
+# rather than publish a mismatch.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      # npm CLI >= 11.5 performs OIDC trusted publishing natively.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install -g npm@latest
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run build:packages
+      - name: verify tag matches package versions
+        if: github.ref_type == 'tag'
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          V=$(bun -e "console.log((await Bun.file('packages/core/package.json').json()).version)")
+          [ "$TAG" = "$V" ] || { echo "tag $TAG != package version $V"; exit 1; }
+      - name: publish (dependency order)
+        run: |
+          set -euo pipefail
+          # bun pm pack materializes workspace:* deps in the tarball
+          # manifest; npm publish provides OIDC + provenance.
+          for dir in core crypto kysely crdt-yjs server server-hono \
+                     server-workers web-client react typegen tauri \
+                     testing create-app; do
+            echo "── publishing packages/$dir"
+            (cd "packages/$dir" \
+              && bun pm pack --quiet \
+              && npm publish ./*.tgz --provenance --access public \
+              && rm -f ./*.tgz)
+          done
+
+  crates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: verify tag matches crate versions
+        if: github.ref_type == 'tag'
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          V=$(grep -m1 '^version' rust/crates/ssp2/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          [ "$TAG" = "$V" ] || { echo "tag $TAG != crate version $V"; exit 1; }
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - name: publish (dependency order)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          cd rust
+          # cargo waits for each publish to reach the index before the
+          # dependent crate publishes.
+          cargo publish -p syncular-ssp2
+          cargo publish -p syncular-client
+          cargo publish -p syncular-command
+          cargo publish -p syncular-ffi
+          cargo publish -p syncular

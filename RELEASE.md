@@ -132,3 +132,23 @@ crate yanked per-version with `cargo yank`, at Benjamin's discretion. The v1
   is browser-safe (SQLite backends live behind `./bun` `./node` `./wasm`).
 - `packages/*/dist` is git-ignored (build artifact) — rebuild with
   `bun run build:packages` before publishing; do not commit it.
+
+## After the first local publish: trusted publishing (one-time setup)
+
+Both registries only attach trusted publishers to EXISTING packages/crates
+— hence the local first publish above, then:
+
+1. **npmjs.com** — for each of the 13 published packages: package page →
+   Settings → *Trusted publisher* → GitHub Actions → owner `syncular`,
+   repository `syncular`, workflow `release.yml` (no environment). Once
+   set, revoke any legacy automation tokens.
+2. **crates.io** — for each of `syncular-ssp2`, `syncular-client`,
+   `syncular-command`, `syncular-ffi`, `syncular`: crate page → Settings →
+   *Trusted Publishing* → add GitHub `syncular/syncular`, workflow
+   `release.yml`.
+3. From then on a release is: bump versions (packages + crates in
+   lockstep), commit, tag `v<version>`, push the tag —
+   `.github/workflows/release.yml` runs the check suite, builds dists, and
+   publishes both registries in dependency order via OIDC (npm with
+   `--provenance`; crates via `rust-lang/crates-io-auth-action`). No
+   tokens are stored in CI.
