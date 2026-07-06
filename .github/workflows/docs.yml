@@ -1,15 +1,17 @@
 name: Docs
 
-# Builds apps/docs (Astro) and publishes dist/ to Cloudflare Pages
-# (project: syncular-docs → https://syncular-docs.pages.dev). Kept in its OWN
-# workflow (not a job in ci.yml) because it deploys and needs the
-# CLOUDFLARE_API_TOKEN secret, which the gate workflow should not have.
+# Builds apps/docs (Astro) and deploys it as a Workers static-assets site
+# (worker: syncular-docs) served at the apex syncular.dev via a zone route.
+# Kept in its OWN workflow (not a job in ci.yml) because it deploys and needs
+# the CLOUDFLARE_API_TOKEN secret, which the gate workflow should not have.
 #
 # One-time repo setup (by hand): create a Cloudflare API token with the
-# "Cloudflare Pages — Edit" template scoped to the Syncular account, then
+# "Edit Cloudflare Workers" template scoped to the Syncular account (it grants
+# Workers Scripts:Edit + Workers Routes:Edit + Account/Zone read), then
 #   gh secret set CLOUDFLARE_API_TOKEN
-# The account id below is not a secret. A custom domain is a Pages dashboard
-# setting (Custom domains → add), no workflow change needed.
+# The account id below is not a secret. The apex route + DNS record already
+# exist (set up out-of-band); deploys only update the worker + its assets and
+# never touch DNS.
 
 on:
   push:
@@ -45,15 +47,16 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # DOCS_BASE stays unset: Cloudflare Pages serves at the domain root,
+      # DOCS_BASE stays unset: the site is served at the apex domain root,
       # so authored root-absolute links are already correct.
       - name: Build docs (static dist/)
         working-directory: apps/docs
         run: bun run build
 
-      - name: Deploy to Cloudflare Pages
+      - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: 336bfd20ccb2f56e24ac0afeca6b4837
-          command: pages deploy apps/docs/dist --project-name=syncular-docs --branch=main
+          workingDirectory: apps/docs
+          command: deploy

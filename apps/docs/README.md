@@ -22,35 +22,44 @@ it is host-specific. Internal links are authored root-absolute and rewritten
 to `DOCS_BASE` by the post-build rebase step (the Pages workflow sets
 `DOCS_BASE=/syncular/`; a custom domain uses the default `/`).
 
-## Deploy — Cloudflare Pages
+## Deploy — Cloudflare Workers (static assets)
 
-`.github/workflows/docs.yml` builds this package and publishes `dist/` to
-**Cloudflare Pages** (project `syncular-docs`, Syncular account) on every push
-to `main` that touches `apps/docs/**` or the workflow itself. Production URL:
-https://syncular-docs.pages.dev — Pages serves at the domain root, so
-`DOCS_BASE` stays unset.
+The site is a **Workers static-assets** deployment (worker `syncular-docs`,
+Syncular account), served at the apex **https://syncular.dev** via a zone
+route (`syncular.dev/*`) over the apex's existing proxied DNS record.
+`wrangler.jsonc` holds the config; `.github/workflows/docs.yml` builds and
+deploys on every push to `main` that touches `apps/docs/**` or the workflow.
+The domain serves at root, so `DOCS_BASE` stays unset.
+
+Why Workers and not Pages: the deploy identity (a wrangler API token) manages
+the worker + its route but not DNS, and Pages needs a manually-created apex
+DNS record. A worker zone route reuses the record that already exists, so
+deploys never touch DNS.
 
 ### One-time repo setting (must be done once, by hand)
 
 The workflow authenticates with a Cloudflare API token:
 
 1. Cloudflare dash → My Profile → API Tokens → Create Token → template
-   **"Cloudflare Pages — Edit"**, scoped to the **Syncular** account.
+   **"Edit Cloudflare Workers"**, scoped to the **Syncular** account (grants
+   Workers Scripts:Edit + Workers Routes:Edit + Account/Zone read).
 2. `gh secret set CLOUDFLARE_API_TOKEN` (paste the token at the prompt).
 
 Until the secret exists, the deploy step fails with an auth error; the build
 step still proves the site compiles.
 
-### Custom domain
+### The apex route + DNS (set up out-of-band, deploys don't touch it)
 
-Add it in the Pages dashboard (syncular-docs → Custom domains). No workflow or
-generator change needed — links are root-absolute and the domain serves at
-root. (`DOCS_BASE` + `scripts/rebase.mjs` remain for any future subpath host.)
+`syncular.dev` has a proxied DNS record and a worker route `syncular.dev/*` →
+`syncular-docs`. `wrangler deploy` reconciles the route from `wrangler.jsonc`
+but never creates/edits DNS. To move to a clean worker **custom domain**
+instead (auto-managed DNS), delete the apex A/AAAA record and re-add the
+hostname as a custom domain — that step needs DNS:Edit (dashboard or a
+DNS-scoped token), which the deploy token intentionally lacks.
 
 ### Manual deploy (locally authed wrangler)
 
 ```sh
 bun run build
-CLOUDFLARE_ACCOUNT_ID=336bfd20ccb2f56e24ac0afeca6b4837 \
-  bunx wrangler pages deploy dist --project-name syncular-docs --branch main
+CLOUDFLARE_ACCOUNT_ID=336bfd20ccb2f56e24ac0afeca6b4837 bunx wrangler deploy
 ```

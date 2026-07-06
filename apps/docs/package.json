@@ -4,9 +4,13 @@
   "type": "module",
   "scripts": {
     "build": "astro build && node scripts/rebase.mjs",
-    "dev": "astro dev"
+    "dev": "astro dev",
+    "deploy": "astro build && node scripts/rebase.mjs && wrangler deploy"
   },
   "dependencies": {
     "astro": "^7.0.6"
+  },
+  "devDependencies": {
+    "wrangler": "^4.105.0"
   }
 }
