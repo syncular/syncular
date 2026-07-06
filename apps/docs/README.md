@@ -1,18 +1,26 @@
 # @syncular/docs
 
-The documentation site — a deliberately boring static generator (REVISE.md
-thesis): ~zero dependencies, no framework, no client-side JS. Markdown pages in
-`pages/` plus a `nav.ts` manifest render to static HTML with a sidebar.
+The documentation site — a deliberately boring static generator: ~zero
+dependencies, no framework. Markdown pages in `pages/` plus a `nav.ts`
+manifest render to static HTML with a sidebar; the landing page is a
+templated exception (`landing.ts`). Syntax highlighting happens at build time
+(`highlight.ts` — a small zero-dep tokenizer), so the published site ships no
+highlighter JavaScript. The only client-side script on the whole site is the
+landing hero's ASCII black-hole simulation, inline in `landing.ts` — it is
+the design language, not a framework.
 
 ## Local build / dev
 
 ```sh
-bun run build     # writes dist/ (15 pages today)
+bun run build     # writes dist/
 bun run dev       # rebuild-on-request server at http://localhost:3100
 ```
 
-`dist/` is a plain static bundle: `index.html` + one directory per page + a
-single `style.css`. Nothing about it is host-specific.
+`dist/` is a plain static bundle: `index.html` + one directory per page +
+`style.css` + self-hosted `fonts/` (IBM Plex Mono woff2 — no CDN at runtime).
+Nothing about it is host-specific. Internal links are root-absolute and get
+rewritten to `DOCS_BASE` at build time (the Pages workflow sets
+`DOCS_BASE=/syncular/`; a custom domain uses the default `/`).
 
 ## Deploy — GitHub Pages
 

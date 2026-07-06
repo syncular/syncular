@@ -1,7 +1,9 @@
 /**
- * The docs generator — deliberately boring (REVISE.md thesis): ~zero
- * dependencies, no framework, no client-side JS. Markdown pages + one
- * manifest → static HTML with a sidebar. `bun run build.ts` writes `dist/`;
+ * The docs generator — deliberately boring: ~zero dependencies, no framework.
+ * Markdown pages + one manifest → static HTML with a sidebar; the landing
+ * page is a templated exception (landing.ts, which also carries the site's
+ * only client-side script — the ASCII hero). Syntax highlighting is baked at
+ * build time (highlight.ts). `bun run build.ts` writes `dist/`;
  * `bun run build.ts --serve` rebuilds and serves on :3100.
  *
  * The markdown subset is exactly what the pages use: headings, paragraphs,
@@ -103,6 +105,15 @@ async function build(): Promise<Page[]> {
   // The landing page lives at `/` and has its own full-width template.
   await Bun.write(join(DIST, 'index.html'), rebase(renderLanding()));
   await Bun.write(join(DIST, 'style.css'), Bun.file(join(ROOT, 'style.css')));
+  // Self-hosted fonts (no CDN at runtime) — referenced relatively from the
+  // stylesheet so they resolve under any DOCS_BASE.
+  await mkdir(join(DIST, 'fonts'), { recursive: true });
+  for (const font of readdirSync(join(ROOT, 'fonts'))) {
+    await Bun.write(
+      join(DIST, 'fonts', font),
+      Bun.file(join(ROOT, 'fonts', font)),
+    );
+  }
   return pages;
 }
 

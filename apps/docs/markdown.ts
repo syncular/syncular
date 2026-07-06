@@ -3,9 +3,10 @@
  * pages use — no dependency, no client-side JS (REVISE.md boring-ness).
  * Supported: ATX headings, paragraphs, unordered/ordered lists, GitHub
  * tables, fenced code (```), blockquotes, horizontal rules, and inline
- * `code`, **bold**, and [links](url). Code blocks render as plain <pre>
- * (no client-side highlighter — an acceptable rung).
+ * `code`, **bold**, and [links](url). Code blocks are syntax-highlighted at
+ * build time (highlight.ts) — the site still ships no client-side JS for it.
  */
+import { highlight } from './highlight';
 
 function escapeHtml(text: string): string {
   return text
@@ -80,8 +81,9 @@ export function render(markdown: string): string {
   while (i < lines.length) {
     const line = lines[i] ?? '';
 
-    // Fenced code.
+    // Fenced code — highlighted at build time (see highlight.ts).
     if (line.startsWith('```')) {
+      const lang = line.slice(3).trim();
       const code: string[] = [];
       i++;
       while (i < lines.length && !(lines[i] ?? '').startsWith('```')) {
@@ -89,7 +91,7 @@ export function render(markdown: string): string {
         i++;
       }
       i++; // closing fence
-      out.push(`<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`);
+      out.push(`<pre><code>${highlight(code.join('\n'), lang)}</code></pre>`);
       continue;
     }
 
