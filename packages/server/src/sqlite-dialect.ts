@@ -16,8 +16,14 @@
  * Both classes run the identical `test/storage-contract.ts`, so the
  * behavior is held key-for-key regardless.
  */
-import type { PushOperationResult } from '@syncular/core';
-import type { StoredChange, StoredPushResult, StoredRow } from './storage';
+import type { PushOperationResult, ScopeMap } from '@syncular/core';
+import { matchesEffective } from './scopes';
+import type {
+  StoredChange,
+  StoredCommit,
+  StoredPushResult,
+  StoredRow,
+} from './storage';
 
 /**
  * Schema DDL — one statement per `;`-delimited chunk. `bun:sqlite` applies
@@ -232,4 +238,100 @@ export function toStoredChange(record: SqliteChangeRecord): StoredChange {
       ? { payload: asUint8Array(record.payload) }
       : {}),
   };
+}
+
+/**
+ * One result row of `commitWindowPageSql` (candidate LEFT JOIN commit meta
+ * LEFT JOIN changes): meta/change columns are NULL when the joined row
+ * vanished (see the builder's LEFT JOIN contract). `payload` is a BLOB —
+ * `bun:sqlite` hands back `Uint8Array`, D1 `ArrayBuffer`; `toStoredChange`
+ * normalizes via `asUint8Array`.
+ */
+export interface SqliteCommitWindowRecord {
+  commit_seq: number;
+  actor_id: string | null;
+  created_at_ms: number | null;
+  tbl: string | null;
+  row_id: string | null;
+  op: number | null;
+  row_version: number | null;
+  scopes: string | null;
+  payload: Uint8Array | null;
+}
+
+/**
+ * Fold one `commitWindowPageSql` page into commits, preserving the exact
+ * semantics of the old per-candidate loop:
+ *
+ *   - rows arrive ordered (commit_seq, idx); consecutive rows with the same
+ *     `commit_seq` are one candidate commit;
+ *   - every candidate advances the cursor (`lastSeq`) — including vanished
+ *     commits (NULL meta) and commits whose changes all fail the exact
+ *     multi-variable scope verification (`matchesEffective`);
+ *   - a commit is emitted only with its matching changes, in `idx` order;
+ *   - stops after the commit that accumulates at least `remaining` matching
+ *     changes (never splitting a commit).
+ *
+ * `candidateCount` counts the processed candidates so the caller can detect
+ * a short page (window exhausted) exactly as it did with the old candidate
+ * query.
+ */
+export function collectCommitWindowPage(
+  records: readonly SqliteCommitWindowRecord[],
+  scopeFilter: ScopeMap,
+  remaining: number,
+): {
+  commits: StoredCommit[];
+  delivered: number;
+  lastSeq: number;
+  candidateCount: number;
+} {
+  const commits: StoredCommit[] = [];
+  let delivered = 0;
+  let lastSeq = 0;
+  let candidateCount = 0;
+  let i = 0;
+  while (i < records.length) {
+    const head = records[i];
+    if (head === undefined) break;
+    const seq = head.commit_seq;
+    candidateCount += 1;
+    lastSeq = seq;
+    const changes: StoredChange[] = [];
+    for (; i < records.length; i++) {
+      const record = records[i];
+      if (record === undefined || record.commit_seq !== seq) break;
+      // NULL tbl: a candidate with no change rows for the table (LEFT JOIN
+      // contract) — it still advanced the cursor above.
+      if (
+        record.tbl === null ||
+        record.row_id === null ||
+        record.op === null ||
+        record.scopes === null
+      ) {
+        continue;
+      }
+      const change = toStoredChange({
+        tbl: record.tbl,
+        row_id: record.row_id,
+        op: record.op,
+        row_version: record.row_version,
+        scopes: record.scopes,
+        payload: record.payload,
+      });
+      if (matchesEffective(change.scopes, scopeFilter)) changes.push(change);
+    }
+    // NULL meta: the commit vanished — cursor advanced, nothing emitted.
+    if (head.actor_id === null || head.created_at_ms === null) continue;
+    if (changes.length === 0) continue;
+    commits.push({
+      commitSeq: seq,
+      createdAtMs: head.created_at_ms,
+      actorId: head.actor_id,
+      changes,
+    });
+    delivered += changes.length;
+    if (delivered >= remaining) break;
+  }
+  return { commits, delivered, lastSeq, candidateCount };
 }
