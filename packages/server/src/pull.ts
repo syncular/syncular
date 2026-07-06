@@ -258,8 +258,12 @@ async function* sqliteImageSegment(
   // support floor, not a fallback (§5.3: sqlite is an *accept*, not a demand).
   const buildImage = await resolveImageBuilder(ctx);
   if (buildImage === undefined) return false;
-  const rows: StoredRow[] = [];
-  let afterRowId: string | null = null;
+  // The probe rows are the snapshot's first page — keep them and scan on
+  // from the probe's cursor instead of re-reading the whole prefix (the
+  // scan is keyset-ordered by rowId, so the concatenation is exactly the
+  // rows a single full scan would return).
+  const rows: StoredRow[] = [...probe];
+  let afterRowId: string | null = probe[probe.length - 1]?.rowId ?? null;
   for (;;) {
     const scanned: StoredRow[] = await storage.scanRows(partition, {
       table: plan.table.name,

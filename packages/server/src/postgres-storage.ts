@@ -53,6 +53,7 @@ import {
   rewriteValues,
   SCHEMA_META_DDL_POSTGRES,
   type StoredColumnLayout,
+  scanRowPageSql,
   schemaDdl,
   selectRowScopesSql,
   selectRowSql,
@@ -865,38 +866,39 @@ export class PostgresServerStorage implements ServerStorage {
     if (firstVariable === undefined) return [];
     const firstValues = query.scopeFilter[firstVariable] ?? [];
     if (firstValues.length === 0) return [];
+    // Candidates via the inverted index (ordered + LIMITed at the covering
+    // PK) LEFT JOINed to the row table — one round trip per page, never one
+    // per row (see `scanRowPageSql`). Exact multi-variable verification
+    // against the stored scope map happens below.
+    const sql = scanRowPageSql(
+      this.table(query.table),
+      firstValues.length,
+      'postgres',
+    );
     const rows: StoredRow[] = [];
     let afterRowId = query.afterRowId ?? '';
     const batchSize = Math.max(64, query.limit);
     while (rows.length < query.limit) {
-      const params: unknown[] = [partition, query.table, firstVariable];
-      const valuePlaceholders = placeholders(4, firstValues.length);
-      params.push(...firstValues);
-      const afterParam = params.length + 1;
-      const limitParam = params.length + 2;
-      params.push(afterRowId, batchSize);
-      const { rows: candidates } = await this.#exec.query<{ row_id: string }>(
-        `SELECT DISTINCT row_id FROM sync_row_scopes
-         WHERE partition=$1 AND tbl=$2 AND var=$3 AND value IN (${valuePlaceholders})
-           AND row_id>$${afterParam}
-         ORDER BY row_id LIMIT $${limitParam}`,
-        params,
-      );
-      if (candidates.length === 0) break;
-      for (const candidate of candidates) {
-        afterRowId = candidate.row_id;
-        const stored = await getRowOn(
-          this.#exec,
-          this.table(query.table),
-          partition,
-          candidate.row_id,
-        );
-        if (stored === undefined) continue;
+      const { rows: records } = await this.#exec.query<RowRecord>(sql, [
+        partition,
+        query.table,
+        firstVariable,
+        ...firstValues,
+        afterRowId,
+        batchSize,
+      ]);
+      if (records.length === 0) break;
+      for (const record of records) {
+        afterRowId = record.row_id;
+        // NULL payload: an index candidate whose row vanished — it still
+        // advances the keyset cursor (LEFT JOIN contract) but yields no row.
+        if (record.payload === null || record.payload === undefined) continue;
+        const stored = toStoredRow(record);
         if (!matchesEffective(stored.scopes, query.scopeFilter)) continue;
         rows.push(stored);
         if (rows.length >= query.limit) break;
       }
-      if (candidates.length < batchSize) break;
+      if (records.length < batchSize) break;
     }
     return rows;
   }

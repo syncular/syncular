@@ -18,6 +18,7 @@ import {
   rewriteValues,
   SCHEMA_META_DDL_SQLITE,
   type StoredColumnLayout,
+  scanRowPageSql,
   schemaDdl,
   selectRowScopesSql,
   selectRowSql,
@@ -511,17 +512,23 @@ export class SqliteServerStorage implements ServerStorage {
     if (firstVariable === undefined) return [];
     const firstValues = query.scopeFilter[firstVariable] ?? [];
     if (firstValues.length === 0) return [];
+    // Candidates via the inverted index LEFT JOINed to the row table — one
+    // statement per page, never one per row (see `scanRowPageSql`). Exact
+    // multi-variable verification against the stored scope map below.
+    const sql = scanRowPageSql(
+      this.table(query.table),
+      firstValues.length,
+      'sqlite',
+    );
     const rows: StoredRow[] = [];
     let afterRowId = query.afterRowId ?? '';
     const batchSize = Math.max(64, query.limit);
     while (rows.length < query.limit) {
-      const candidates = this.db
-        .query<{ row_id: string }, (string | number)[]>(
-          `SELECT DISTINCT row_id FROM sync_row_scopes
-           WHERE partition=? AND tbl=? AND var=? AND value IN (${placeholders(firstValues.length)})
-             AND row_id>?
-           ORDER BY row_id LIMIT ?`,
-        )
+      const records = this.db
+        .query<
+          SqliteRowRecord & { payload: Uint8Array | null },
+          (string | number)[]
+        >(sql)
         .all(
           partition,
           query.table,
@@ -529,21 +536,20 @@ export class SqliteServerStorage implements ServerStorage {
           ...firstValues,
           afterRowId,
           batchSize,
-        );
-      if (candidates.length === 0) break;
-      for (const candidate of candidates) {
-        afterRowId = candidate.row_id;
-        const stored = await this.getRow(
           partition,
-          query.table,
-          candidate.row_id,
         );
-        if (stored === undefined) continue;
+      if (records.length === 0) break;
+      for (const record of records) {
+        afterRowId = record.row_id;
+        // NULL payload: an index candidate whose row vanished — it still
+        // advances the keyset cursor (LEFT JOIN contract) but yields no row.
+        if (record.payload === null) continue;
+        const stored = toStoredRow(record);
         if (!matchesEffective(stored.scopes, query.scopeFilter)) continue;
         rows.push(stored);
         if (rows.length >= query.limit) break;
       }
-      if (candidates.length < batchSize) break;
+      if (records.length < batchSize) break;
     }
     return rows;
   }
