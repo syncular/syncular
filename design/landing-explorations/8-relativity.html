@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en" class="scroll-smooth">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>syncular — All your data, drawn to a single point of truth</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@100;200;300;400;500&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: { ink: '#050507', ember: '#f2a250' },
+      fontFamily: { sans: ['Inter','system-ui','sans-serif'], mono: ['"JetBrains Mono"','monospace'] },
+      letterSpacing: { tightest: '-0.045em' },
+    }
+  }
+}
+</script>
+<style>
+  html { background:#050507; }
+  ::selection { background:rgba(242,162,80,.25); }
+  /* Static fallback: layered CSS black hole (reduced-motion / no-WebGL) */
+  #bh-fallback { display:none;
+    background:
+      radial-gradient(1.5px 1.5px at 12% 22%, rgba(255,255,255,.9), transparent 60%),
+      radial-gradient(1px 1px at 78% 14%, rgba(200,215,255,.8), transparent 60%),
+      radial-gradient(1.5px 1.5px at 64% 78%, rgba(255,230,200,.7), transparent 60%),
+      radial-gradient(1px 1px at 30% 64%, rgba(255,255,255,.6), transparent 60%),
+      radial-gradient(1px 1px at 88% 52%, rgba(255,255,255,.7), transparent 60%),
+      radial-gradient(1.5px 1.5px at 44% 10%, rgba(190,205,255,.8), transparent 60%),
+      radial-gradient(ellipse 62% 13% at 50% 50%, rgba(255,170,80,.5), rgba(255,110,30,.22) 55%, transparent 75%),
+      radial-gradient(circle at 50% 50%, #000 0 11.5%, rgba(255,190,120,.85) 12.2%, rgba(255,140,50,.28) 15%, transparent 26%),
+      radial-gradient(circle at 50% 46%, rgba(30,28,48,.7), transparent 62%),
+      #030305;
+  }
+  .hairline { border-top:1px solid rgba(255,255,255,.09); }
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
+</head>
+<body class="bg-ink text-white font-sans antialiased">
+
+<!-- ===== HERO ===== -->
+<section class="relative h-screen min-h-[640px] w-full overflow-hidden">
+  <canvas id="bh" class="absolute inset-0 h-full w-full"></canvas>
+  <div id="bh-fallback" class="absolute inset-0"></div>
+  <div class="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-b from-transparent to-ink"></div>
+
+  <!-- nav -->
+  <nav class="absolute inset-x-0 top-0 z-20 flex items-center justify-between px-6 py-6 md:px-12">
+    <a href="#" class="flex items-center gap-2.5 text-sm font-normal tracking-[0.22em] uppercase">
+      <span class="inline-block h-2 w-2 rounded-full bg-ember shadow-[0_0_12px_2px_rgba(242,162,80,.7)]"></span>
+      syncular
+    </a>
+    <div class="flex items-center gap-7 text-[13px] font-light text-white/60">
+      <a href="#" class="hover:text-white transition-colors">Docs</a>
+      <a href="#" class="hover:text-white transition-colors">GitHub</a>
+    </div>
+  </nav>
+
+  <!-- hero copy (radial scrim keeps it legible over the bright disk band) -->
+  <div class="relative z-10 flex h-full flex-col items-center justify-center px-6 text-center"
+       style="background: radial-gradient(ellipse 46% 38% at 50% 52%, rgba(5,5,7,.62), rgba(5,5,7,.30) 60%, transparent 78%)">
+    <h1 class="max-w-4xl text-4xl font-extralight leading-[1.08] tracking-tightest sm:text-6xl md:text-7xl">
+      All your data, drawn to a<br class="hidden sm:block"> single point of truth.
+    </h1>
+    <p class="mt-6 max-w-xl text-[15px] font-light leading-relaxed text-white/60 md:text-base">
+      Offline-first SQL sync. Local SQLite on every client, one
+      server-authoritative commit log, scope-based authorization.
+      Nothing escapes validation.
+    </p>
+    <div class="mt-10 flex flex-col items-center gap-4 sm:flex-row">
+      <a href="#install" class="rounded-full border border-white/25 bg-white/[0.06] px-8 py-3 text-sm font-normal backdrop-blur-md transition hover:border-white/50 hover:bg-white/10">Quickstart</a>
+      <a href="#" class="rounded-full border border-white/[0.14] bg-white/[0.02] px-8 py-3 text-sm font-light text-white/70 backdrop-blur-md transition hover:border-white/40 hover:text-white">Live demos</a>
+    </div>
+  </div>
+
+  <div class="absolute bottom-8 left-1/2 z-10 -translate-x-1/2 text-[11px] font-light tracking-[0.3em] uppercase text-white/30">Scroll</div>
+</section>
+
+<!-- ===== PULL QUOTE ===== -->
+<section class="mx-auto max-w-5xl px-6 py-32 md:py-44">
+  <p class="text-[11px] font-normal uppercase tracking-[0.3em] text-white/30">The protocol</p>
+  <h2 class="mt-6 text-5xl font-thin leading-[1.05] tracking-tightest md:text-8xl">
+    Two cores.<br><span class="text-white/40">One physics.</span>
+  </h2>
+  <p class="mt-10 max-w-2xl text-base font-light leading-relaxed text-white/60 md:text-lg">
+    One written protocol is the law. Two conformance-locked cores obey it —
+    TypeScript for the web, Rust for native via C FFI — verified against
+    74 shared scenarios so every platform experiences the same universe:
+    Web, React, Swift, Kotlin, Flutter, React Native, Tauri, Rust.
+  </p>
+</section>
+
+<!-- ===== FEATURES ===== -->
+<section class="mx-auto max-w-6xl px-6 pb-32 md:pb-44">
+  <div class="grid grid-cols-1 gap-x-10 gap-y-14 md:grid-cols-3">
+    <div class="hairline pt-7">
+      <h3 class="text-lg font-light">Scopes as code</h3>
+      <p class="mt-3 text-sm font-light leading-relaxed text-white/50">Authorization is a function you write once. The server validates every commit against it before anything crosses the horizon.</p>
+    </div>
+    <div class="hairline pt-7">
+      <h3 class="text-lg font-light">Offline outbox</h3>
+      <p class="mt-3 text-sm font-light leading-relaxed text-white/50">Drift out of contact and keep writing. Local commits queue in the outbox and replay, in order, when you re-enter range.</p>
+    </div>
+    <div class="hairline pt-7">
+      <h3 class="text-lg font-light">Honest conflicts</h3>
+      <p class="mt-3 text-sm font-light leading-relaxed text-white/50">Divergent histories surface as conflicts you resolve deliberately — never silently merged behind your back.</p>
+    </div>
+    <div class="hairline pt-7">
+      <h3 class="text-lg font-light">Realtime by default</h3>
+      <p class="mt-3 text-sm font-light leading-relaxed text-white/50">Committed writes propagate to every subscribed client over WebSocket, straight off the accretion of the commit log.</p>
+    </div>
+    <div class="hairline pt-7">
+      <h3 class="text-lg font-light">CRDT columns</h3>
+      <p class="mt-3 text-sm font-light leading-relaxed text-white/50">Opt individual columns into merge semantics when last-write-wins isn't the answer. Everything else stays plain SQL.</p>
+    </div>
+    <div class="hairline pt-7">
+      <h3 class="text-lg font-light">Blobs, E2EE, windows</h3>
+      <p class="mt-3 text-sm font-light leading-relaxed text-white/50">Binary sync, optional end-to-end encryption, and windowed sync so clients pull only the slice of spacetime they need.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===== NUMBERS ===== -->
+<section class="mx-auto max-w-6xl px-6 pb-32 md:pb-44">
+  <div class="hairline grid grid-cols-2 gap-y-16 pt-16 md:grid-cols-4">
+    <div>
+      <div class="text-6xl font-thin tracking-tightest md:text-7xl">30<span class="text-2xl font-extralight text-white/40 md:text-3xl">ms</span></div>
+      <p class="mt-4 text-[11px] font-normal uppercase tracking-[0.25em] text-white/35">Bootstrap 100k rows</p>
+    </div>
+    <div>
+      <div class="text-6xl font-thin tracking-tightest md:text-7xl">0.2<span class="text-2xl font-extralight text-white/40 md:text-3xl">ms</span></div>
+      <p class="mt-4 text-[11px] font-normal uppercase tracking-[0.25em] text-white/35">p95 realtime propagation</p>
+    </div>
+    <div>
+      <div class="text-6xl font-thin tracking-tightest md:text-7xl">19.6<span class="text-2xl font-extralight text-white/40 md:text-3xl">KB</span></div>
+      <p class="mt-4 text-[11px] font-normal uppercase tracking-[0.25em] text-white/35">Gzipped web client</p>
+    </div>
+    <div>
+      <div class="text-6xl font-thin tracking-tightest md:text-7xl">74<span class="text-2xl font-extralight text-white/40 md:text-3xl">×2</span></div>
+      <p class="mt-4 text-[11px] font-normal uppercase tracking-[0.25em] text-white/35">Conformance scenarios × cores</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===== CTA ===== -->
+<section id="install" class="mx-auto max-w-3xl px-6 pb-32 text-center md:pb-44">
+  <h2 class="text-4xl font-extralight tracking-tightest md:text-6xl">Cross the horizon.</h2>
+  <p class="mt-5 text-sm font-light text-white/50 md:text-base">Every write falls into one log. Start yours in a minute.</p>
+  <div class="mx-auto mt-10 flex max-w-md items-center justify-center gap-3 rounded-full border border-white/[0.12] bg-white/[0.03] px-7 py-4 font-mono text-sm text-white/80">
+    <span class="select-none text-ember">$</span> bun create syncular-app my-app
+  </div>
+  <div class="mt-8 flex items-center justify-center gap-8 text-sm font-light">
+    <a href="#" class="text-ember hover:text-white transition-colors">Quickstart →</a>
+    <a href="#" class="text-ember hover:text-white transition-colors">Live demos →</a>
+  </div>
+</section>
+
+<!-- ===== FOOTER ===== -->
+<footer class="hairline mx-auto flex max-w-6xl flex-col items-center justify-between gap-6 px-6 py-10 text-[13px] font-light text-white/40 md:flex-row">
+  <div class="flex items-center gap-2.5">
+    <span class="inline-block h-1.5 w-1.5 rounded-full bg-ember/80"></span>
+    <span class="tracking-[0.2em] uppercase text-white/60">syncular</span>
+    <span class="ml-2">Apache-2.0</span>
+  </div>
+  <div class="flex items-center gap-6">
+    <a href="#" class="hover:text-ember transition-colors">GitHub</a>
+    <a href="#" class="hover:text-ember transition-colors">npm</a>
+    <a href="#" class="hover:text-ember transition-colors">crates.io</a>
+    <a href="#" class="hover:text-ember transition-colors">Docs</a>
+  </div>
+</footer>
+
+<!-- ===== BLACK HOLE (three.js) ===== -->
+<script type="module">
+const canvas = document.getElementById('bh');
+const showFallback = () => { canvas.style.display = 'none'; document.getElementById('bh-fallback').style.display = 'block'; };
+// The shader hero IS the design under evaluation, so it runs whenever WebGL
+// exists — under prefers-reduced-motion the camera drift is stilled instead
+// of swapping to the flat CSS fallback.
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+try {
+  const THREE = await import('three');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+  const frag = /* glsl */`
+    precision highp float;
+    uniform float uTime; uniform vec2 uRes; uniform vec2 uMouse;
+    float hash13(vec3 p){ p = fract(p*0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x+p.y)*p.z); }
+    float vnoise(vec2 p){
+      vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
+      return mix(mix(hash13(vec3(i,7.0)),            hash13(vec3(i+vec2(1.,0.),7.0)), f.x),
+                 mix(hash13(vec3(i+vec2(0.,1.),7.0)), hash13(vec3(i+1.,7.0)),          f.x), f.y);
+    }
+    vec3 starField(vec3 rd){
+      vec3 col = vec3(0.0);
+      for (float s = 0.0; s < 2.0; s++){
+        float scale = 34.0 + s*40.0;
+        vec3 id = floor(rd*scale);
+        float h = hash13(id + s*17.0);
+        if (h > 0.88){
+          vec3 f = fract(rd*scale) - 0.5;
+          vec3 off = (vec3(hash13(id+1.3), hash13(id+2.6), hash13(id+3.9)) - 0.5) * 0.7;
+          float m = smoothstep(0.22, 0.0, length(f - off));
+          float tw = 0.6 + 0.4*sin(uTime*(0.5+h*2.0) + h*50.0);
+          vec3 tint = mix(vec3(0.62,0.74,1.0), vec3(1.0,0.86,0.68), hash13(id+9.7));
+          col += m*m*tw*tint * smoothstep(0.88,1.0,h) * 2.0;
+        }
+      }
+      return col;
+    }
+    vec3 disk(vec3 p, vec3 rd){
+      float r = length(p.xz);
+      float phase = atan(p.z, p.x) + uTime*5.0*pow(r,-1.5);
+      vec2 sw = vec2(cos(phase), sin(phase));
+      float n = 0.62*vnoise(sw*(2.0+r*0.9)) + 0.38*vnoise(sw*(5.0+r*1.7)+3.1);
+      float body = smoothstep(2.25, 3.05, r) * smoothstep(7.6, 4.4, r);
+      float heat = pow(smoothstep(7.2, 2.4, r), 1.4);
+      vec3 c = mix(vec3(0.85,0.20,0.03), vec3(1.0,0.58,0.18), heat);
+      c = mix(c, vec3(1.65,1.5,1.32), heat*heat*0.9);
+      vec3 vel = normalize(vec3(-p.z, 0.0, p.x));
+      float g = 1.0 / (1.0 - 0.5*dot(vel, -rd));     // doppler beaming, approaching side brightens
+      return c * body * (0.35 + 0.85*n*n) * pow(g, 3.0) * 1.15;
+    }
+    void main(){
+      vec2 uv = (2.0*gl_FragCoord.xy - uRes)/uRes.y;
+      float az = uTime*0.04 + uMouse.x*0.30;
+      float el = 0.17 + uMouse.y*0.10;
+      vec3 ro = 13.0 * vec3(sin(az)*cos(el), sin(el), -cos(az)*cos(el));
+      vec3 fwd = normalize(-ro);
+      vec3 rt  = normalize(cross(fwd, vec3(0.,1.,0.)));
+      vec3 up  = cross(rt, fwd);
+      vec3 rd  = normalize(uv.x*rt + uv.y*up + 1.75*fwd);
+      vec3 p = ro, v = rd;
+      vec3 L = cross(p, v);
+      float h2 = dot(L, L);                          // conserved angular momentum^2
+      vec3 col = vec3(0.0);
+      float glow = 0.0;
+      bool captured = false;
+      for (int i = 0; i < 180; i++){
+        float r2 = dot(p,p), r = sqrt(r2);
+        if (r < 1.0){ captured = true; break; }      // event horizon
+        if (r > 26.0 && dot(p,v) > 0.0) break;       // escaped
+        glow += exp(-(r-1.5)*(r-1.5)*6.0)*0.006;     // photon-sphere glow
+        float dt = clamp(r*0.06, 0.045, 0.40);
+        v += -1.5 * h2 * p / pow(r2, 2.5) * dt;      // geodesic bend
+        vec3 np = p + v*dt;
+        if (p.y*np.y < 0.0){                         // equatorial-plane crossing
+          vec3 hit = mix(p, np, p.y/(p.y-np.y));
+          float hr = length(hit.xz);
+          if (hr > 2.25 && hr < 7.6) col += disk(hit, normalize(v));
+        }
+        p = np;
+      }
+      if (!captured){
+        vec3 bd = normalize(v);
+        col += starField(bd);
+        col += vec3(0.016,0.022,0.05) * (0.7 - 0.45*bd.y);  // faint nebula haze
+      }
+      // Captured rays spiral at the photon sphere and would flood the shadow
+      // with accumulated glow — attenuate them so the shadow stays black and
+      // only near-miss rays draw the photon ring.
+      col += vec3(1.0,0.60,0.28)*glow*(captured ? 0.10 : 1.0);
+      col = 1.0 - exp(-col*1.55);
+      col = pow(col, vec3(0.4545));
+      col *= 1.0 - 0.32*dot(uv*0.52, uv*0.52);
+      gl_FragColor = vec4(col, 1.0);
+    }`;
+  const uniforms = {
+    uTime:  { value: 0 },
+    uRes:   { value: new THREE.Vector2() },
+    uMouse: { value: new THREE.Vector2() },
+  };
+  const scene = new THREE.Scene();
+  const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
+    uniforms, fragmentShader: frag,
+    vertexShader: 'void main(){ gl_Position = vec4(position, 1.0); }',
+  })));
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  const resize = () => {
+    renderer.setPixelRatio(dpr);
+    renderer.setSize(window.innerWidth, window.innerHeight, false);
+    uniforms.uRes.value.set(window.innerWidth*dpr, window.innerHeight*dpr);
+  };
+  addEventListener('resize', resize); resize();
+  let mx = 0, my = 0;
+  addEventListener('pointermove', e => {
+    mx = (e.clientX/innerWidth - 0.5) * 2;
+    my = (e.clientY/innerHeight - 0.5) * -2;
+  });
+  const clock = new THREE.Clock();
+  const draw = () => {
+    uniforms.uTime.value = reduced ? 12.0 : clock.getElapsedTime();
+    uniforms.uMouse.value.x += (mx - uniforms.uMouse.value.x)*0.04;
+    uniforms.uMouse.value.y += (my - uniforms.uMouse.value.y)*0.04;
+    renderer.render(scene, cam);
+  };
+  renderer.setAnimationLoop(draw);
+  // Embedded/preview webviews report the page hidden and never fire the
+  // animation loop — a low-rate timer keeps the hero rendered there.
+  setInterval(() => { if (document.hidden) draw(); }, 250);
+} catch (e) { console.warn('WebGL unavailable, using static fallback', e); showFallback(); }
+</script>
+</body>
+</html>
