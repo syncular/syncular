@@ -2,18 +2,18 @@
 
 Once connected, a client has exactly **one** sync loop, and it runs over a
 WebSocket. There is no polling mode and no degraded fallback loop — a
-[direction decision](../../REVISE.md#direction-decisions-2026-07-03-confirmed-by-benjamin):
+[direction decision](https://github.com/syncular/syncular/blob/main/ROADMAP.md):
 one good path per concern.
 
-Normative detail: [SPEC.md §8](../../SPEC.md#8-realtime).
+Normative detail: [SPEC.md §8](https://github.com/syncular/syncular/blob/main/SPEC.md#8-realtime).
 
 ## Two bindings, one handler
 
 `POST /sync` and the realtime socket are two **framings of the same
 request/response semantics**. The socket carries sync rounds as tagged binary
 byte streams driven by the same handler as the HTTP endpoint — nothing in the
-protocol distinguishes the two ([SPEC §8.7](../../SPEC.md#87-websocket-native-sync-loop),
-[§1.1](../../SPEC.md#11-endpoints)).
+protocol distinguishes the two ([SPEC §8.7](https://github.com/syncular/syncular/blob/main/SPEC.md#87-websocket-native-sync-loop),
+[§1.1](https://github.com/syncular/syncular/blob/main/SPEC.md#11-endpoints)).
 
 - **Reference clients sync exclusively over the socket** once connected.
 - `POST /sync` stays fully conformant, for push-only producers, curl
@@ -28,8 +28,8 @@ as a **delta** — an ordinary sync response over the socket — and the client
 applies it and acks. There is exactly one delta kind and one JSON **wake-up**
 kind (three reason codes: `catchup-required`, `delta-too-large`,
 `reset-required`) that means "run a pull soon," never carries data
-([SPEC §8.2/§8.3](../../SPEC.md#8-realtime)). Propagation on the in-process
-bench is **0.2 ms p95** ([bench results](../../bench/RESULTS.md)).
+([SPEC §8.2/§8.3](https://github.com/syncular/syncular/blob/main/SPEC.md#8-realtime)). Propagation on the in-process
+bench is **0.2 ms p95** ([bench results](/benchmarks/)).
 
 ## Connect-then-sync
 
@@ -54,7 +54,7 @@ shows the full host loop, including jittered wake coalescing.
 The socket also carries **presence**: ephemeral, scope-keyed peer state
 (who's here, what they're doing) that is never persisted and never enters the
 commit log — lost on disconnect means "left"
-([SPEC §8.6](../../SPEC.md#86-presence)).
+([SPEC §8.6](https://github.com/syncular/syncular/blob/main/SPEC.md#86-presence)).
 
 ```ts
 await client.setPresence('list:welcome', { editing: 'note-1' }); // join / update

@@ -8,13 +8,13 @@ post-parity differentiator: the competitors either tombstone cold rows
 forever, re-download the world on any change, or serve queries from a replica
 they can't prove complete.
 
-Normative detail: [SPEC.md §4.8](../../SPEC.md#48-windowed-subscriptions).
+Normative detail: [SPEC.md §4.8](https://github.com/syncular/syncular/blob/main/SPEC.md#48-windowed-subscriptions).
 The design record is
-[DESIGN-eviction.md](../../DESIGN-eviction.md) (W1 landed 2026-07-04).
+[DESIGN-eviction.md](https://github.com/syncular/syncular/blob/main/DESIGN-eviction.md) (W1 landed 2026-07-04).
 
 ## A window is a set of scope values
 
-You already scope your tables ([Scopes](./concepts-scopes.md)). A **window**
+You already scope your tables ([Scopes](/concepts-scopes/)). A **window**
 reuses that machinery: it is the set of scope **values** a client currently
 holds locally. Subscribe to `project:{A,B}` now, `{B,C}` later; or to time
 buckets `bucket:{2026-05, 2026-06, 2026-07}` and slide them. The **window
@@ -32,7 +32,7 @@ A window change is never a mutation of a subscription; it is a set difference
 on a **family** of subscriptions, one per live unit:
 
 - **Widen** `{A,B} → {A,B,C}`: `C` gets a fresh subscription and
-  [bootstraps](./concepts-bootstrap.md) via the image lane. `A` and `B` are
+  [bootstraps](/concepts-bootstrap/) via the image lane. `A` and `B` are
   untouched — their cursors stay honest.
 - **Shrink** `{A,B,C} → {B,C}`: `A`'s subscription is dropped and its rows are
   **evicted** from the local database, fused into one atomic step with the
@@ -54,7 +54,7 @@ Eviction is a **voluntary** local delete — your retention policy, not the
 server's authorization decision. The server is never told and tombstones
 nothing; the rows still live server-side, and re-entering the window
 re-delivers them. This is distinct from a
-[scope revocation](./concepts-scopes.md) purge, which is forced by lost
+[scope revocation](/concepts-scopes/) purge, which is forced by lost
 authorization. A few rules make it correct:
 
 - **Outbox pin**: a row with a pending offline write is *not* evicted until

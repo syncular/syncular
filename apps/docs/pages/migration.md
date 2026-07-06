@@ -1,6 +1,6 @@
 # Migrating from 0.1.x
 
-v2 is a **clean break**: a new wire protocol ([SSP2](../../SPEC.md)), a new
+v2 is a **clean break**: a new wire protocol ([SSP2](https://github.com/syncular/syncular/blob/main/SPEC.md)), a new
 server storage schema, and a consolidated package set. There is no
 in-place upgrade — you stand up a v2 server, port your schema and init code
 with this guide, and clients re-bootstrap. What carries over unchanged is the
@@ -38,16 +38,16 @@ The v1 semantics survive intact — port your mental model unchanged:
 | v1 concept | v2 concept |
 |---|---|
 | Rust-WASM client — `@syncular/client` hosted a Rust binary in a worker | TypeScript client core on sqlite-wasm + OPFS (`@syncular/client`); the Rust core is a separate *native* client, kept in lockstep by a [conformance suite](/guide-conformance/) |
-| SSP1, implicit — the protocol lived in code (wire v14) | SSP2, written — [SPEC.md](../../SPEC.md) + golden vectors are normative |
+| SSP1, implicit — the protocol lived in code (wire v14) | SSP2, written — [SPEC.md](https://github.com/syncular/syncular/blob/main/SPEC.md) + golden vectors are normative |
 | Dialect entry points — `@syncular/server/sqlite`, `/postgres`, `/pglite`, `/d1`, … | Storage backends in `@syncular/server`: `SqliteServerStorage`, `PostgresServerStorage`, `D1ServerStorage` (Workers) |
-| HTTP push/pull loop + WS wake-ups | [WebSocket-native sync rounds](/concepts-realtime/) — one loop, over the socket ([SPEC §8.7](../../SPEC.md#87-sync-rounds-over-the-socket)) |
+| HTTP push/pull loop + WS wake-ups | [WebSocket-native sync rounds](/concepts-realtime/) — one loop, over the socket ([SPEC §8.7](https://github.com/syncular/syncular/blob/main/SPEC.md#87-sync-rounds-over-the-socket)) |
 | Snapshot chunks *and* snapshot artifacts (two systems) | One **bootstrap segment** concept, `rows` or `sqlite` media type ([Bootstrap & segments](/concepts-bootstrap/)) |
-| Client-side migrations (`@syncular/migrations`) | No client migration engine — [wipe-and-rebootstrap](/guide-schema/) with the outbox preserved ([SPEC §7.4](../../SPEC.md#74-schema-bump-flow--wipe-re-bootstrap-replay)) |
+| Client-side migrations (`@syncular/migrations`) | No client migration engine — [wipe-and-rebootstrap](/guide-schema/) with the outbox preserved ([SPEC §7.4](https://github.com/syncular/syncular/blob/main/SPEC.md#74-schema-bump-flow--wipe-re-bootstrap-replay)) |
 | `syncular.app.ts` authoring + Rust codegen binary | SQL migrations + `syncular.json` manifest + `syncular generate` — pure TypeScript, no cargo ([Schema & typegen](/guide-schema/)) |
 | Relay (`@syncular/server/relay`) | Retired — realtime is a second binding of the same handler; multi-instance fanout is LISTEN/NOTIFY; Workers is a Durable Object design |
-| Per-package micro-surface (~23 packages) | Consolidated: `core`, `server`, `server-hono`, `server-workers`, `web-client`, `react`, `typegen`, `crdt-yjs`, `conformance`, `create-app` |
+| Per-package micro-surface (~23 packages) | Consolidated set — see the [package map](/reference/): `core`, `server`, `server-hono`, `server-workers`, `client`, `react`, `kysely`, `crypto`, `crdt-yjs`, `typegen`, `tauri`, `testkit`, `create-syncular-app` |
 | Full React console app (`@syncular/console`) | `SyncularAdmin` query surface + a single static admin page in `@syncular/server-hono` |
-| `@syncular/testkit` mocks | The conformance catalog + loopback doctrine ([Protocol & conformance](/guide-conformance/)) |
+| `@syncular/testkit` mocks | `@syncular/testkit` reborn without mocks — an in-memory loopback of the real server + real clients for app tests; protocol work uses the conformance catalog ([Protocol & conformance](/guide-conformance/)) |
 
 ## Step by step
 
@@ -102,7 +102,7 @@ Notes for porting: the scope pattern syntax is unchanged
 (`user:{user_id}`); the explicit `server_version` column is gone — versioning
 is protocol-level now; there are no `blobColumns` — declare a `BLOB_REF`
 column type in the migration instead ([Blobs](/concepts-blobs/)). The full
-manifest contract is the [typegen README](../../packages/typegen/README.md).
+manifest contract is the [typegen README](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md).
 
 ### 2. Server
 
@@ -209,8 +209,10 @@ await client.mutate([
 ]);
 ```
 
-Porting notes: Kysely reads become raw SQL (a typed Kysely layer is a noted
-follow-up); `mutations.tasks.insert(...)` becomes
+Porting notes: Kysely reads move to `@syncular/kysely` — a Kysely dialect
+over the client, typed by the generated `Database` interface, **reads only**
+(raw SQL via `client.query` remains the base layer);
+`mutations.tasks.insert(...)` becomes
 `mutate([{ table, op: 'upsert', values }])` (the wire is full-row upserts);
 `live(query, { onChange })` becomes either the React `useSyncQuery` hook
 (below) or `client.onInvalidate` — one `{ tables, scopeKeys }` event per apply
@@ -238,7 +240,7 @@ and import:
 | `useBlob` / `useBlobUploadQueue` | no hook — `client.uploadBlob` / `client.fetchBlob` directly |
 | `useRowsChanged` | `client.onInvalidate` (or just depend on `useSyncQuery`) |
 
-The [react README](../../packages/react/src/index.ts) documents the
+The [react source](https://github.com/syncular/syncular/blob/main/packages/react/src/index.ts) documents the
 invalidation granularity contract (`tables` is the reliable floor; scope-key
 narrowing only where the wire carried keys).
 
@@ -256,7 +258,7 @@ const bytesBack = await client.fetchBlob(row.attachment);
 
 Same model (content-addressed, refcounted cache, download re-authorized per
 request), tighter surface. See [Blobs](/concepts-blobs/) and
-[SPEC §5.9](../../SPEC.md#59-blobs--file-attachments).
+[SPEC §5.9](https://github.com/syncular/syncular/blob/main/SPEC.md#59-blobs--file-attachments).
 
 ### 6. CRDT fields
 
@@ -274,9 +276,10 @@ const config: SyncServerConfig = { /* … */, crdtMergers: yjsCrdtMergers };
 Semantics moved server-side: clients push Yjs *updates*, the **server
 merges**, and `crdt` columns are excluded from `baseVersion` conflict
 detection — concurrent edits converge instead of conflicting
-([SPEC §5.10](../../SPEC.md#510-crdt-columns--opt-in-collaborative-state)).
-v1's `encrypted-crdt` has no v2 equivalent (see
-[what's not in v2](#whats-not-in-v2)).
+([SPEC §5.10](https://github.com/syncular/syncular/blob/main/SPEC.md#510-crdt-columns--opt-in-collaborative-state)).
+v1's `encrypted-crdt` has no v2 equivalent: v2 [E2EE](/concepts-encryption/)
+is per-column, and a server-merged `crdt` column cannot be an encrypted
+column (the server cannot merge bytes it cannot read).
 
 ### 7. Auth leases
 
@@ -292,8 +295,8 @@ outage — and there is no separate leased-write path: clients keep calling
 `mutate`, and expose only a read-only `leaseState`. Two codes survive
 (`sync.auth_lease_required`, `sync.auth_lease_revoked`); the other five are
 pruned with rationale in
-[SPEC §10.3](../../SPEC.md#103-pruned-and-reserved-codes). Details:
-[SPEC §7.3](../../SPEC.md#73-auth-leases).
+[SPEC §10.3](https://github.com/syncular/syncular/blob/main/SPEC.md#103-pruned-and-reserved-codes). Details:
+[SPEC §7.3](https://github.com/syncular/syncular/blob/main/SPEC.md#73-auth-leases).
 
 ### 8. Presence
 
@@ -308,7 +311,7 @@ client.onPresence((scopeKey) => rerender(scopeKey));
 ```
 
 Same model — ephemeral, scope-keyed, lost on disconnect; publishing requires
-holding the scope key ([SPEC §8.6](../../SPEC.md#86-presence)).
+holding the scope key ([SPEC §8.6](https://github.com/syncular/syncular/blob/main/SPEC.md#86-presence)).
 
 ## Data migration — the honest story
 
@@ -340,22 +343,20 @@ with the v1 database.
 
 ## What's not in v2
 
-- **E2EE.** v1 shipped encrypted CRDT support; v2 deliberately waits for
-  demand. The design keeps the door open (payloads are opaque bytes; blob
-  encryption would be client-side over the content address), with two hard
-  constraints on any future rung: scope columns must stay plaintext (the
-  server extracts scopes), and server-merged `crdt` columns are incompatible
-  with E2EE as designed.
+Three gaps this guide once listed have since **shipped**: E2EE
+([per-column client-side encryption](/concepts-encryption/), with
+`@syncular/crypto` for the key primitives), the binding packages
+(`@syncular/tauri` + the `tauri-plugin-syncular` Rust plugin on npm;
+`@syncular/react-native` in the repo at
+[bindings/react-native](https://github.com/syncular/syncular/tree/main/bindings/react-native),
+with npm publication a follow-up), and the typed query builder
+(`@syncular/kysely` reads plus generated named queries). What genuinely
+remains out:
+
 - **The relay.** Retired, not pending: v2 realtime is a second binding of the
   same sync handler, multi-instance fanout is LISTEN/NOTIFY, and the Workers
   path is a Durable Object design — each relay job is covered by a core
   mechanism.
-- **React Native / Tauri packages.** The paths are decided and the C-ABI
-  native core they build on ships (see the
-  [FFI README](../../rust/crates/ffi/README.md)): Tauri hosts the Rust client
-  crate directly; React Native bridges the FFI surface over the native core
-  (Hermes has no OPFS/sqlite-wasm). The drop-in binding packages that v1's
-  `client-react-native`/`client-tauri` provided are follow-ups.
 - **The full React console.** Replaced by the leaner `SyncularAdmin` query
   surface + one static admin page ([Server setup](/guide-server/)).
 - **Storage breadth.** No `pglite`/`libsql`/`neon`/`better-sqlite3` dialects;
@@ -364,8 +365,9 @@ with the v1 database.
 - **IndexedDB fallback, HTTP polling loop, service-worker transport.** All
   retired under the one-good-path rule: OPFS or fail-loud, sync over the
   socket, no degraded modes.
-- **Typed query builder.** Reads are raw SQL today; a Kysely-typed layer over
-  the generated row types is a noted follow-up.
+- **Node ClientDatabase.** The TS client's persistent backend is browser
+  OPFS; a better-sqlite3 adapter for plain-Node / Electron-main hosts is
+  roadmap.
 
 ## Where to go next
 
@@ -373,6 +375,6 @@ with the v1 database.
   (`bun create syncular-app my-app`).
 - [Server setup](/guide-server/) and [Web client](/guide-client/) — the full
   wiring this guide's snippets abridge.
-- [SPEC.md §0](../../SPEC.md#0-deliberate-simplifications-vs-wire-v14--decisions)
+- [SPEC.md §0](https://github.com/syncular/syncular/blob/main/SPEC.md#0-deliberate-simplifications-vs-wire-v14--decisions)
   — every v1→v2 protocol simplification, with the reasoning, decision by
   decision.

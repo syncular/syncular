@@ -6,7 +6,7 @@ module exports the `schema` object both server and client use, plus per-table
 row types — with **zero imports**, so using it adds no dependency edge.
 
 The authoritative contract for the manifest, the IR, and the SQL subset is the
-[typegen README](../../packages/typegen/README.md); this is the workflow.
+[typegen README](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md); this is the workflow.
 
 ## The two inputs
 
@@ -67,7 +67,7 @@ For a subscription `notesInList`, a `notesInListSubscription` with a
 
 When your schema changes, you bump `schemaVersions` in the manifest and
 regenerate. The v2 model is **no client-side migration engine**
-([direction decision 3](../../REVISE.md#direction-decisions-2026-07-03-confirmed-by-benjamin),
+([direction decision 3](https://github.com/syncular/syncular/blob/main/ROADMAP.md),
 SPEC §7.4): a client never transforms its local tables from one version to the
 next. On a version change it **keeps the outbox, wipes its local tables,
 re-bootstraps at the new version, and replays the outbox on top**. Bootstrap

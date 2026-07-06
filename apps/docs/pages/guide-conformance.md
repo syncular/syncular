@@ -2,20 +2,20 @@
 
 Syncular's two cores — TypeScript for the web, Rust for native — interoperate
 because they both implement one **written protocol**, not because they share a
-binary. The protocol is [`SPEC.md`](../../SPEC.md); parity is proven by a
+binary. The protocol is [`SPEC.md`](https://github.com/syncular/syncular/blob/main/SPEC.md); parity is proven by a
 shared **conformance suite**. This page explains what the spec is and how a
 third implementation plugs in.
 
 ## SPEC.md is the constitution
 
-[`SPEC.md`](../../SPEC.md) is normative. It fully specifies the wire format
+[`SPEC.md`](https://github.com/syncular/syncular/blob/main/SPEC.md) is normative. It fully specifies the wire format
 (the SSP2 envelope, frames, the row codec, segments) and the semantics (the
 commit/cursor model, scope intersection and revocation, bootstrap phases,
 conflict detection, realtime). Everything needed to interoperate is in that
 document plus the **golden vectors** in `spec/vectors/` — an implementer needs
 no access to any existing source tree.
 
-The rules of the tree ([REVISE.md](../../REVISE.md)):
+The rules of the tree ([ROADMAP.md](https://github.com/syncular/syncular/blob/main/ROADMAP.md)):
 
 - **Spec-first.** Behavior lands in the spec, with vectors or conformance
   scenarios, before or with the code. The spec is never reverse-engineered
@@ -32,7 +32,7 @@ The rules of the tree ([REVISE.md](../../REVISE.md)):
 runs against any `(client, server)` pairing through a **driver interface**.
 `bun run check` runs the whole catalog on (TS client × TS server) plus the
 golden-vector stage; the Rust pairing runs the same catalog against the TS
-server. The [conformance README](../../packages/conformance/README.md) is both
+server. The [conformance README](https://github.com/syncular/syncular/blob/main/packages/conformance/README.md) is both
 the runner reference and the **test doctrine** for the tree:
 
 - **Loopback by default** — scenarios drive the server through its byte-level
@@ -49,7 +49,7 @@ the runner reference and the **test doctrine** for the tree:
 
 A new client or server implements a **driver** — the seam the runner already
 uses for the TS and Rust cores. The reference `ts-server` driver
-([source](../../packages/conformance/src/drivers/ts-server.ts)) shows the
+([source](https://github.com/syncular/syncular/blob/main/packages/conformance/src/drivers/ts-server.ts)) shows the
 surface: `handleSyncRequest(bytes)`, the segment-download handler, the realtime
 hub connect, plus test hooks (set allowed scopes, advance the virtual clock,
 inject faults). A driver declares its `capabilities` (e.g. `signed-urls`,
@@ -64,7 +64,7 @@ against the TS server.
 
 This is also how features land: **CRDT fields** shipped spec-first — the
 column type and merge semantics in
-[SPEC §5.10](../../SPEC.md#510-crdt-columns--opt-in-collaborative-state), two
+[SPEC §5.10](https://github.com/syncular/syncular/blob/main/SPEC.md#510-crdt-columns--opt-in-collaborative-state), two
 golden vectors, and convergence scenarios in the catalog run by both client
 cores (the Rust core round-trips the same bytes the TS core merges through
 `@syncular/crdt-yjs`).

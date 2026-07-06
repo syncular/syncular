@@ -1,6 +1,7 @@
 /**
  * The sidebar manifest — the page tree, in order. Each `slug` maps to
- * `pages/<slug>.md` (or `pages/index.md` for the empty slug).
+ * `pages/<slug>.md`. The root `/` is the landing page (landing.ts), which is
+ * not in the sidebar; the sidebar brand links back to it.
  */
 export interface NavSection {
   readonly title: string;
@@ -11,9 +12,23 @@ export const nav: readonly NavSection[] = [
   {
     title: 'Start',
     items: [
-      { slug: '', title: 'Why syncular' },
+      { slug: 'what-is', title: 'What is syncular' },
       { slug: 'quickstart', title: 'Quickstart' },
-      { slug: 'migration', title: 'Migrating from 0.1.x' },
+      { slug: 'demos', title: 'Live demos' },
+    ],
+  },
+  {
+    title: 'Platforms',
+    items: [
+      { slug: 'platform-web', title: 'Web (browser)' },
+      { slug: 'platform-react', title: 'React' },
+      { slug: 'platform-swift', title: 'Swift (iOS & macOS)' },
+      { slug: 'platform-kotlin', title: 'Kotlin (Android & JVM)' },
+      { slug: 'platform-flutter', title: 'Flutter & Dart' },
+      { slug: 'platform-react-native', title: 'React Native' },
+      { slug: 'platform-tauri', title: 'Tauri' },
+      { slug: 'platform-rust', title: 'Rust' },
+      { slug: 'platform-ffi', title: 'Embedding via C FFI' },
     ],
   },
   {
@@ -31,16 +46,30 @@ export const nav: readonly NavSection[] = [
     ],
   },
   {
-    title: 'Guides',
+    title: 'Server',
     items: [
       { slug: 'guide-server', title: 'Server setup' },
-      { slug: 'guide-client', title: 'Web client' },
+      { slug: 'server-storage', title: 'Storage backends' },
+      { slug: 'server-workers', title: 'Cloudflare Workers' },
+      { slug: 'server-operations', title: 'Operations' },
+    ],
+  },
+  {
+    title: 'Tooling',
+    items: [
       { slug: 'guide-schema', title: 'Schema & typegen' },
-      { slug: 'guide-conformance', title: 'Protocol & conformance' },
+      { slug: 'tooling-queries', title: 'Named queries' },
+      { slug: 'tooling-kysely', title: 'Typed reads (Kysely)' },
+      { slug: 'tooling-testing', title: 'Testing your app' },
     ],
   },
   {
     title: 'Reference',
-    items: [{ slug: 'reference', title: 'Spec & package map' }],
+    items: [
+      { slug: 'reference', title: 'Spec & package map' },
+      { slug: 'guide-conformance', title: 'Protocol & conformance' },
+      { slug: 'benchmarks', title: 'Benchmarks' },
+      { slug: 'migration', title: 'Migrating from 0.1.x' },
+    ],
   },
 ];

@@ -55,6 +55,11 @@ jobs:
 
       - name: Build docs (static dist/)
         working-directory: apps/docs
+        # GitHub Pages serves project sites under /<repo>/ — the generator
+        # rewrites all root-absolute hrefs to this base. Remove (or set to /)
+        # when the site moves to a custom domain.
+        env:
+          DOCS_BASE: /syncular/
         run: bun run build
 
       - name: Upload Pages artifact

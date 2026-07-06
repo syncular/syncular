@@ -17,7 +17,7 @@ README and a smoke test. (Prefer a browser app? `--template web` scaffolds a
 Hono server + a single-pane todo UI on the worker + OPFS client instead.)
 
 > The rest of this page is the **"what it did" explainer**: every snippet is
-> extracted from the runnable [`examples/quickstart`](../../examples/quickstart)
+> extracted from the runnable [`examples/quickstart`](https://github.com/syncular/syncular/tree/main/examples/quickstart)
 > directory (the same shape the scaffolder emits), which also ships a smoke test
 > that runs this exact path in CI so it cannot rot. If you scaffolded above, you
 > already have these files — read on to understand them, or skip to
@@ -211,10 +211,13 @@ converges on A's write — filtered to the scope B is authorized for.
 
 ## Where to go from here
 
-- **[Web client](/guide-client/)** — the real browser build (worker + OPFS),
-  realtime, and offline replay.
-- **[The demo app](../../apps/demo)** — two live panes with offline toggles,
-  conflict surfacing, and file attachments.
+- **[Web (browser)](/platform-web/)** — the real browser build (worker + OPFS),
+  realtime, and offline replay — or jump straight to your platform:
+  [Swift](/platform-swift/), [Kotlin](/platform-kotlin/),
+  [Flutter](/platform-flutter/), [React Native](/platform-react-native/),
+  [Tauri](/platform-tauri/), [Rust](/platform-rust/).
+- **[Live demos](/demos/)** — two live panes with offline toggles, conflict
+  surfacing, and file attachments.
 - **[Conflicts & optimistic writes](/concepts-conflicts/)** — what happens
   when two clients edit the same row.
 - **[Server setup](/guide-server/)** — Postgres, S3/R2 segments, ops events,

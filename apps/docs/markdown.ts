@@ -14,25 +14,29 @@ function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;');
 }
 
-/** Inline: code spans first (so their contents are not further parsed). */
+/**
+ * Inline: code spans are lifted into placeholders first (so their contents
+ * are never further parsed), then bold/emphasis/links run on the remainder —
+ * which lets a link label or bold span contain a code span — and finally the
+ * rendered code substitutes back in.
+ */
 function inline(text: string): string {
-  const parts: string[] = [];
-  const codeSplit = text.split(/(`[^`]+`)/g);
-  for (const part of codeSplit) {
-    if (part.startsWith('`') && part.endsWith('`') && part.length > 1) {
-      parts.push(`<code>${escapeHtml(part.slice(1, -1))}</code>`);
-      continue;
-    }
-    let html = escapeHtml(part);
-    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, '$1<em>$2</em>');
-    html = html.replace(
-      /\[([^\]]+)\]\(([^)]+)\)/g,
-      (_all, label: string, href: string) => `<a href="${href}">${label}</a>`,
-    );
-    parts.push(html);
-  }
-  return parts.join('');
+  const codes: string[] = [];
+  let html = text.replace(/`([^`]+)`/g, (_all, code: string) => {
+    codes.push(`<code>${escapeHtml(code)}</code>`);
+    return `\uE000${codes.length - 1}\uE000`;
+  });
+  html = escapeHtml(html);
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, '$1<em>$2</em>');
+  html = html.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    (_all, label: string, href: string) => `<a href="${href}">${label}</a>`,
+  );
+  return html.replace(
+    /\uE000(\d+)\uE000/g,
+    (_all, i: string) => codes[Number(i)] ?? '',
+  );
 }
 
 function slugify(text: string): string {
