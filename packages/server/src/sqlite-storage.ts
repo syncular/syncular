@@ -9,6 +9,7 @@
 import { Database } from 'bun:sqlite';
 import { syncError } from './errors';
 import {
+  commitWindowPageSql,
   deleteRowSql,
   layoutsOf,
   migratePayload,
@@ -29,13 +30,12 @@ import {
 import type { CompiledSchema, CompiledTable } from './schema';
 import { matchesEffective } from './scopes';
 import {
+  collectCommitWindowPage,
   deserializePushResult,
-  placeholders,
   SQLITE_DDL,
-  type SqliteChangeRecord,
+  type SqliteCommitWindowRecord,
   type SqliteRowRecord,
   serializePushResult,
-  toStoredChange,
   toStoredRow,
 } from './sqlite-dialect';
 import type {
@@ -449,20 +449,18 @@ export class SqliteServerStorage implements ServerStorage {
     if (firstVariable === undefined) return [];
     const firstValues = query.scopeFilter[firstVariable] ?? [];
     if (firstValues.length === 0) return [];
+    // Candidates via the inverted index (one variable) LEFT JOINed to the
+    // commit meta + the table's changes — one statement per page, never two
+    // per candidate (see `commitWindowPageSql`). Exact multi-variable
+    // verification against the stored scope map in `collectCommitWindowPage`.
+    const sql = commitWindowPageSql(firstValues.length, 'sqlite');
     const commits: StoredCommit[] = [];
     let deliveredChanges = 0;
     let afterSeq = query.afterSeq;
     const batchSize = Math.max(64, query.limitChanges);
     while (deliveredChanges < query.limitChanges) {
-      // Candidate selection via the inverted index (one variable), exact
-      // multi-variable verification against the stored scope map below.
-      const candidates = this.db
-        .query<{ commit_seq: number }, (string | number)[]>(
-          `SELECT DISTINCT commit_seq FROM sync_change_scopes
-           WHERE partition=? AND tbl=? AND var=? AND value IN (${placeholders(firstValues.length)})
-             AND commit_seq>? AND commit_seq<=?
-           ORDER BY commit_seq LIMIT ?`,
-        )
+      const records = this.db
+        .query<SqliteCommitWindowRecord, (string | number)[]>(sql)
         .all(
           partition,
           query.table,
@@ -471,37 +469,20 @@ export class SqliteServerStorage implements ServerStorage {
           afterSeq,
           query.throughSeq,
           batchSize,
+          partition,
+          partition,
+          query.table,
         );
-      if (candidates.length === 0) break;
-      for (const candidate of candidates) {
-        afterSeq = candidate.commit_seq;
-        const meta = this.db
-          .query<{ actor_id: string; created_at_ms: number }, [string, number]>(
-            'SELECT actor_id, created_at_ms FROM sync_commits WHERE partition=? AND commit_seq=?',
-          )
-          .get(partition, candidate.commit_seq);
-        if (meta === null) continue;
-        const changeRecords = this.db
-          .query<SqliteChangeRecord, [string, number, string]>(
-            'SELECT tbl, row_id, op, row_version, scopes, payload FROM sync_changes WHERE partition=? AND commit_seq=? AND tbl=? ORDER BY idx',
-          )
-          .all(partition, candidate.commit_seq, query.table);
-        const changes = changeRecords
-          .map(toStoredChange)
-          .filter((change) =>
-            matchesEffective(change.scopes, query.scopeFilter),
-          );
-        if (changes.length === 0) continue;
-        commits.push({
-          commitSeq: candidate.commit_seq,
-          createdAtMs: meta.created_at_ms,
-          actorId: meta.actor_id,
-          changes,
-        });
-        deliveredChanges += changes.length;
-        if (deliveredChanges >= query.limitChanges) break;
-      }
-      if (candidates.length < batchSize) break;
+      if (records.length === 0) break;
+      const page = collectCommitWindowPage(
+        records,
+        query.scopeFilter,
+        query.limitChanges - deliveredChanges,
+      );
+      commits.push(...page.commits);
+      deliveredChanges += page.delivered;
+      afterSeq = page.lastSeq;
+      if (page.candidateCount < batchSize) break;
     }
     return commits;
   }

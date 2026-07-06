@@ -44,6 +44,7 @@ import {
   type PgQueryable,
 } from './pg-executor';
 import {
+  commitWindowPageSql,
   deleteRowSql,
   layoutsOf,
   migratePayload,
@@ -267,6 +268,23 @@ interface ChangeRecord {
   payload: unknown;
 }
 
+/**
+ * One result row of `commitWindowPageSql` (candidate LEFT JOIN commit meta
+ * LEFT JOIN changes): meta/change columns are NULL when the joined row
+ * vanished (LEFT JOIN contract).
+ */
+interface CommitWindowRecord {
+  commit_seq: unknown;
+  actor_id: string | null;
+  created_at_ms: unknown;
+  tbl: string | null;
+  row_id: string | null;
+  op: unknown;
+  row_version: unknown;
+  scopes: unknown;
+  payload: unknown;
+}
+
 function toStoredRow(record: RowRecord): StoredRow {
   return {
     rowId: record.row_id,
@@ -289,13 +307,6 @@ function toStoredChange(record: ChangeRecord): StoredChange {
       ? { payload: asBytes(record.payload) }
       : {}),
   };
-}
-
-/** Positional placeholders `$start … $(start+count-1)`. */
-function placeholders(start: number, count: number): string {
-  const out: string[] = [];
-  for (let i = 0; i < count; i++) out.push(`$${start + i}`);
-  return out.join(',');
 }
 
 /**
@@ -798,64 +809,78 @@ export class PostgresServerStorage implements ServerStorage {
     if (firstVariable === undefined) return [];
     const firstValues = query.scopeFilter[firstVariable] ?? [];
     if (firstValues.length === 0) return [];
+    // Candidates via the inverted index (one variable): the (partition, tbl,
+    // var, value, commit_seq) PK makes the candidate subquery an index range
+    // scan returning commit_seq already ascending (see postgres-explain
+    // .test.ts), LEFT JOINed to the commit meta + the table's changes — one
+    // round trip per page, never two per candidate (see
+    // `commitWindowPageSql`). Exact multi-variable verification against the
+    // stored scope map happens below.
+    const sql = commitWindowPageSql(firstValues.length, 'postgres');
     const commits: StoredCommit[] = [];
     let deliveredChanges = 0;
     let afterSeq = query.afterSeq;
     const batchSize = Math.max(64, query.limitChanges);
     while (deliveredChanges < query.limitChanges) {
-      // Candidate selection via the inverted index (one variable): the
-      // (partition, tbl, var, value, commit_seq) PK makes this an index range
-      // scan returning commit_seq already ascending (see postgres-explain
-      // .test.ts). Exact multi-variable verification happens below.
-      const params: unknown[] = [partition, query.table, firstVariable];
-      const valuePlaceholders = placeholders(4, firstValues.length);
-      params.push(...firstValues);
-      const afterParam = params.length + 1;
-      const throughParam = params.length + 2;
-      const limitParam = params.length + 3;
-      params.push(afterSeq, query.throughSeq, batchSize);
-      const { rows: candidates } = await this.#exec.query<{
-        commit_seq: unknown;
-      }>(
-        `SELECT DISTINCT commit_seq FROM sync_change_scopes
-         WHERE partition=$1 AND tbl=$2 AND var=$3 AND value IN (${valuePlaceholders})
-           AND commit_seq>$${afterParam} AND commit_seq<=$${throughParam}
-         ORDER BY commit_seq LIMIT $${limitParam}`,
-        params,
+      const { rows: records } = await this.#exec.query<CommitWindowRecord>(
+        sql,
+        [
+          partition,
+          query.table,
+          firstVariable,
+          ...firstValues,
+          afterSeq,
+          query.throughSeq,
+          batchSize,
+        ],
       );
-      if (candidates.length === 0) break;
-      for (const candidate of candidates) {
-        const commitSeq = asNumber(candidate.commit_seq);
+      if (records.length === 0) break;
+      // Fold the page: rows arrive ordered (commit_seq, idx); consecutive
+      // rows with the same commit_seq are one candidate. Every candidate
+      // advances the cursor — including vanished commits (NULL meta, LEFT
+      // JOIN contract) and commits whose changes all fail the exact
+      // multi-variable match.
+      let candidateCount = 0;
+      let i = 0;
+      while (i < records.length) {
+        const head = records[i];
+        if (head === undefined) break;
+        const commitSeq = asNumber(head.commit_seq);
+        candidateCount += 1;
         afterSeq = commitSeq;
-        const { rows: metaRows } = await this.#exec.query<{
-          actor_id: string;
-          created_at_ms: unknown;
-        }>(
-          'SELECT actor_id, created_at_ms FROM sync_commits WHERE partition=$1 AND commit_seq=$2',
-          [partition, commitSeq],
-        );
-        const meta = metaRows[0];
-        if (meta === undefined) continue;
-        const { rows: changeRecords } = await this.#exec.query<ChangeRecord>(
-          'SELECT tbl, row_id, op, row_version, scopes, payload FROM sync_changes WHERE partition=$1 AND commit_seq=$2 AND tbl=$3 ORDER BY idx',
-          [partition, commitSeq, query.table],
-        );
-        const changes = changeRecords
-          .map(toStoredChange)
-          .filter((change) =>
-            matchesEffective(change.scopes, query.scopeFilter),
-          );
+        const changes: StoredChange[] = [];
+        for (; i < records.length; i++) {
+          const record = records[i];
+          if (record === undefined || asNumber(record.commit_seq) !== commitSeq)
+            break;
+          // NULL tbl: a candidate with no change rows for the table.
+          if (record.tbl === null || record.row_id === null) continue;
+          const change = toStoredChange({
+            tbl: record.tbl,
+            row_id: record.row_id,
+            op: record.op,
+            row_version: record.row_version,
+            scopes: record.scopes,
+            payload: record.payload,
+          });
+          if (matchesEffective(change.scopes, query.scopeFilter)) {
+            changes.push(change);
+          }
+        }
+        // NULL meta: the commit vanished — cursor advanced, nothing emitted.
+        if (head.actor_id === null) continue;
         if (changes.length === 0) continue;
         commits.push({
           commitSeq,
-          createdAtMs: asNumber(meta.created_at_ms),
-          actorId: meta.actor_id,
+          createdAtMs: asNumber(head.created_at_ms),
+          actorId: head.actor_id,
           changes,
         });
         deliveredChanges += changes.length;
         if (deliveredChanges >= query.limitChanges) break;
       }
-      if (candidates.length < batchSize) break;
+      if (deliveredChanges >= query.limitChanges) break;
+      if (candidateCount < batchSize) break;
     }
     return commits;
   }

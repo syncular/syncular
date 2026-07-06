@@ -18,6 +18,7 @@ import { expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
 import { encodeRow, type RowColumn } from '@syncular/core';
 import {
+  commitWindowPageSql,
   compileSchema,
   PostgresServerStorage,
   type ServerSchema,
@@ -108,18 +109,25 @@ async function explain(
   return result.rows.map((r) => r['QUERY PLAN']).join('\n');
 }
 
-test('readCommitWindow candidate scan is index-driven (no Seq Scan)', async () => {
+test('readCommitWindow page scan is index-driven (no Seq Scan)', async () => {
   const { db } = await seededStorage();
-  const plan = await explain(
-    db,
-    `SELECT DISTINCT commit_seq FROM sync_change_scopes
-     WHERE partition=$1 AND tbl=$2 AND var=$3 AND value IN ($4)
-       AND commit_seq>$5 AND commit_seq<=$6
-     ORDER BY commit_seq LIMIT $7`,
-    [PARTITION, 'tasks', 'project_id', 'p3', 0, ROWS, 64],
-  );
+  // The real page query (candidate subquery + commit-meta + changes LEFT
+  // JOINs): the candidate side must stay an index range on the
+  // sync_change_scopes PK, and both join sides must hit their (partition,
+  // commit_seq[, …]) indexes — never a scan of the log.
+  const plan = await explain(db, commitWindowPageSql(1, 'postgres'), [
+    PARTITION,
+    'tasks',
+    'project_id',
+    'p3',
+    0,
+    ROWS,
+    64,
+  ]);
   expect(plan).toContain('Index');
   expect(plan).not.toContain('Seq Scan on sync_change_scopes');
+  expect(plan).not.toContain('Seq Scan on sync_commits');
+  expect(plan).not.toContain('Seq Scan on sync_changes');
   await db.close();
 });
 
