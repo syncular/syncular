@@ -286,6 +286,47 @@ export function selectRowSql(
   return `SELECT ${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, ${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, ${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, ${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=${p[0]} AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}=${p[1]}`;
 }
 
+/**
+ * One-round-trip page scan for `scanRows`: candidates from the inverted
+ * scope index (ordered + LIMITed at the covering `sync_row_scopes` PK —
+ * exactly the old candidate query, so the index-first posture is unchanged)
+ * LEFT JOINed to the row table, so a whole page arrives in ONE statement
+ * instead of one lookup per candidate. That per-candidate lookup was the
+ * cold-bootstrap hot path: a 100k-row snapshot on Postgres paid ~100k
+ * network round-trips (~10 s at 0.1 ms each) before this join.
+ *
+ * LEFT JOIN (not INNER): a candidate whose row vanished (index entry
+ * without a row) must still reach the caller — its `row_id` advances the
+ * keyset cursor — so it comes back with NULL payload rather than
+ * disappearing from the page.
+ *
+ * Bind order:
+ *   - postgres: [partition, tbl, var, ...values, afterRowId, limit]
+ *     (the join reuses `$1` for the partition);
+ *   - sqlite:   [partition, tbl, var, ...values, afterRowId, limit,
+ *     partition] (positional `?` — the partition binds again for the join).
+ */
+export function scanRowPageSql(
+  table: CompiledTable,
+  valueCount: number,
+  dialect: RelationalDialect,
+): string {
+  const p = (n: number) => (dialect === 'sqlite' ? '?' : `$${n}`);
+  const values: string[] = [];
+  for (let i = 0; i < valueCount; i++) values.push(p(4 + i));
+  const after = p(4 + valueCount);
+  const limit = p(5 + valueCount);
+  const joinPartition = dialect === 'sqlite' ? '?' : '$1';
+  return `SELECT c.row_id AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload
+     FROM (SELECT DISTINCT row_id FROM sync_row_scopes
+       WHERE partition=${p(1)} AND tbl=${p(2)} AND var=${p(3)} AND value IN (${values.join(',')})
+         AND row_id>${after}
+       ORDER BY row_id LIMIT ${limit}) c
+     LEFT JOIN ${quoteIdent(table.name)} r
+       ON r.${quoteIdent(SYNC_PARTITION_COLUMN)}=${joinPartition} AND r.${quoteIdent(SYNC_ROW_ID_COLUMN)}=c.row_id
+     ORDER BY c.row_id`;
+}
+
 /** SELECT a row's version + scope map (admin/blob authz). Params: [partition, rowId]. */
 export function selectRowScopesSql(
   table: CompiledTable,

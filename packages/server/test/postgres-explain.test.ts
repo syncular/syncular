@@ -21,6 +21,7 @@ import {
   compileSchema,
   PostgresServerStorage,
   type ServerSchema,
+  scanRowPageSql,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
 
@@ -122,18 +123,24 @@ test('readCommitWindow candidate scan is index-driven (no Seq Scan)', async () =
   await db.close();
 });
 
-test('scanRows candidate scan is index-driven (no Seq Scan)', async () => {
+test('scanRows page scan is index-driven (no Seq Scan)', async () => {
   const { db } = await seededStorage();
-  const plan = await explain(
-    db,
-    `SELECT DISTINCT row_id FROM sync_row_scopes
-     WHERE partition=$1 AND tbl=$2 AND var=$3 AND value IN ($4)
-       AND row_id>$5
-     ORDER BY row_id LIMIT $6`,
-    [PARTITION, 'tasks', 'project_id', 'p3', '', 64],
-  );
+  // The real page query (candidate subquery + row-table LEFT JOIN): the
+  // candidate side must stay an index range on the sync_row_scopes PK, and
+  // the join side must hit the row table's (partition, row_id) PK.
+  const table = compileSchema(SCHEMA).tables.get('tasks');
+  if (table === undefined) throw new Error('tasks not compiled');
+  const plan = await explain(db, scanRowPageSql(table, 1, 'postgres'), [
+    PARTITION,
+    'tasks',
+    'project_id',
+    'p3',
+    '',
+    64,
+  ]);
   expect(plan).toContain('Index');
   expect(plan).not.toContain('Seq Scan on sync_row_scopes');
+  expect(plan).not.toContain('Seq Scan on tasks');
   await db.close();
 });
 
