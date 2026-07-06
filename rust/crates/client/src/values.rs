@@ -281,9 +281,7 @@ fn column_value_to_plain(value: &ColumnValue) -> Result<ssp2::crypto::PlainValue
         ColumnValue::Json(j) => PlainValue::Json(j.0.clone()),
         ColumnValue::BlobRef(j) => PlainValue::BlobRef(j.0.clone()),
         ColumnValue::Bytes(b) => PlainValue::Bytes(b.clone()),
-        ColumnValue::Crdt(_) => {
-            return Err("crdt columns cannot be encrypted (§5.11)".to_owned())
-        }
+        ColumnValue::Crdt(_) => return Err("crdt columns cannot be encrypted (§5.11)".to_owned()),
     })
 }
 
