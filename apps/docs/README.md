@@ -22,37 +22,35 @@ it is host-specific. Internal links are authored root-absolute and rewritten
 to `DOCS_BASE` by the post-build rebase step (the Pages workflow sets
 `DOCS_BASE=/syncular/`; a custom domain uses the default `/`).
 
-## Deploy — GitHub Pages
+## Deploy — Cloudflare Pages
 
 `.github/workflows/docs.yml` builds this package and publishes `dist/` to
-**GitHub Pages** on every push to `main` that touches `apps/docs/**` (or the
-workflow itself). It uses `actions/upload-pages-artifact` + `actions/deploy-pages`
-— the zero-external-service default, nothing to provision beyond the repo.
+**Cloudflare Pages** (project `syncular-docs`, Syncular account) on every push
+to `main` that touches `apps/docs/**` or the workflow itself. Production URL:
+https://syncular-docs.pages.dev — Pages serves at the domain root, so
+`DOCS_BASE` stays unset.
 
 ### One-time repo setting (must be done once, by hand)
 
-The workflow deploys via **GitHub Actions**, which requires the Pages source to
-be set to Actions. This is a repository setting, not something a workflow can (or
-should) flip for you:
+The workflow authenticates with a Cloudflare API token:
 
-> **Settings → Pages → Build and deployment → Source → "GitHub Actions"**
+1. Cloudflare dash → My Profile → API Tokens → Create Token → template
+   **"Cloudflare Pages — Edit"**, scoped to the **Syncular** account.
+2. `gh secret set CLOUDFLARE_API_TOKEN` (paste the token at the prompt).
 
-Until that is set, the `deploy` job fails with a "Pages not enabled / not
-configured for Actions" error — the build still succeeds, so the artifact is
-produced, but nothing publishes. Set it once and every subsequent push deploys.
+Until the secret exists, the deploy step fails with an auth error; the build
+step still proves the site compiles.
 
-This repo setting is intentionally NOT assumed or enabled by any code here.
+### Custom domain
 
-### Swapping the host (custom domain / Cloudflare Pages)
+Add it in the Pages dashboard (syncular-docs → Custom domains). No workflow or
+generator change needed — links are root-absolute and the domain serves at
+root. (`DOCS_BASE` + `scripts/rebase.mjs` remain for any future subpath host.)
 
-The generator and the workflow's `build` job are host-agnostic; only the
-`deploy` job is Pages-specific. To move:
+### Manual deploy (locally authed wrangler)
 
-- **Custom domain on GitHub Pages** — add a `CNAME` file to `dist/` (e.g. emit
-  it from `build.ts`, or add a copy step) and set the domain under Settings →
-  Pages. No workflow change beyond that.
-- **Cloudflare Pages (or any other static host)** — keep the `build` job, drop
-  the `upload-pages-artifact`/`deploy-pages` steps and the Pages
-  `permissions`/`environment`, and add that host's publish step (e.g.
-  `cloudflare/wrangler-action` with a `CLOUDFLARE_API_TOKEN` secret pointing at
-  `apps/docs/dist`). The built `dist/` is the same static bundle either way.
+```sh
+bun run build
+CLOUDFLARE_ACCOUNT_ID=336bfd20ccb2f56e24ac0afeca6b4837 \
+  bunx wrangler pages deploy dist --project-name syncular-docs --branch main
+```
