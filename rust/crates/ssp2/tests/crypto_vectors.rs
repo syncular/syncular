@@ -17,7 +17,10 @@ fn hex(b: &[u8]) -> String {
 }
 
 fn load() -> Value {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../spec/vectors/crypto/vectors.json");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../spec/vectors/crypto/vectors.json"
+    );
     let text = std::fs::read_to_string(path).expect("read crypto vectors");
     serde_json::from_str(&text).expect("parse crypto vectors")
 }
@@ -29,9 +32,7 @@ fn value_from(declared: DeclaredType, value_bytes: &[u8]) -> PlainValue {
         DeclaredType::String => {
             PlainValue::String(String::from_utf8(value_bytes.to_vec()).unwrap())
         }
-        DeclaredType::Json => {
-            PlainValue::Json(String::from_utf8(value_bytes.to_vec()).unwrap())
-        }
+        DeclaredType::Json => PlainValue::Json(String::from_utf8(value_bytes.to_vec()).unwrap()),
         DeclaredType::BlobRef => {
             PlainValue::BlobRef(String::from_utf8(value_bytes.to_vec()).unwrap())
         }
@@ -58,8 +59,7 @@ fn aes_gcm_vectors_match_byte_for_byte() {
     let mut nonce = [0u8; 12];
     nonce.copy_from_slice(&nonce_bytes);
     for case in doc["aesGcm"].as_array().unwrap() {
-        let declared =
-            DeclaredType::from_name(case["declaredType"].as_str().unwrap()).unwrap();
+        let declared = DeclaredType::from_name(case["declaredType"].as_str().unwrap()).unwrap();
         let value_bytes = hex_to_bytes(case["valueHex"].as_str().unwrap());
         let value = value_from(declared, &value_bytes);
         let key_id = case["keyId"].as_str().unwrap();

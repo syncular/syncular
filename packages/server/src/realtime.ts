@@ -30,7 +30,12 @@ import {
   type ScopeMap,
   type WakeReason,
 } from '@syncular/core';
-import type { LeaseConfig, ResolveScopes, ServerLimits } from './context';
+import type {
+  LeaseConfig,
+  ResolveScopes,
+  ServerLimits,
+  SyncRequestContext,
+} from './context';
 import { RESOLVER_OUTAGE } from './context';
 import { SyncError, syncError } from './errors';
 import { emitEvent, type SyncularServerEvents } from './events';
@@ -904,7 +909,7 @@ export class RealtimeHub {
    * the same shape the HTTP adapter builds, so the round drives the
    * SAME handler with zero semantic divergence.
    */
-  requestContext(session: RealtimeSession) {
+  requestContext(session: RealtimeSession): SyncRequestContext {
     const segments = this.#config.segments;
     if (segments === undefined) {
       // Fail loud (§8.7): a hub serving socket rounds needs the same

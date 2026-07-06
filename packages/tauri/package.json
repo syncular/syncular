@@ -1,9 +1,54 @@
 {
   "name": "@syncular/tauri",
-  "private": true,
+  "version": "0.2.0",
+  "description": "Tauri integration for the Syncular client",
+  "license": "Apache-2.0",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/tauri"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript"
+  ],
   "type": "module",
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "bun": "./src/index.ts",
+      "browser": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!dist/**/*.test.js",
+    "!dist/**/*.test.d.ts"
+  ],
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@syncular/client": "workspace:*"
   },
   "peerDependencies": {
     "@tauri-apps/api": ">=2.0.0"
@@ -12,12 +57,6 @@
     "@tauri-apps/api": {
       "optional": true
     }
-  },
-  "dependencies": {
-    "@syncular/client": "workspace:*"
-  },
-  "scripts": {
-    "test": "bun test"
   },
   "devDependencies": {
     "@syncular/react": "workspace:*"

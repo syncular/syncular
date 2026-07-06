@@ -1,5 +1,6 @@
 {
   "name": "@syncular/conformance",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "exports": {
@@ -10,6 +11,7 @@
     "@syncular/core": "workspace:*",
     "@syncular/crdt-yjs": "workspace:*",
     "@syncular/server": "workspace:*",
-    "@syncular/client": "workspace:*"
+    "@syncular/client": "workspace:*",
+    "@syncular/testkit": "workspace:*"
   }
 }

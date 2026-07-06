@@ -1,10 +1,62 @@
 {
   "name": "@syncular/react",
-  "private": true,
+  "version": "0.2.0",
+  "description": "React hooks for Syncular offline-first sync",
+  "license": "Apache-2.0",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/react"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript"
+  ],
   "type": "module",
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
-    ".": "./src/index.ts",
-    "./typed": "./src/typed.ts"
+    ".": {
+      "bun": "./src/index.ts",
+      "browser": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./typed": {
+      "bun": "./src/typed.ts",
+      "browser": "./src/typed.ts",
+      "import": {
+        "types": "./dist/typed.d.ts",
+        "default": "./dist/typed.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!dist/**/*.test.js",
+    "!dist/**/*.test.d.ts"
+  ],
+  "scripts": {
+    "test": "bun test --preload ./test/setup.ts"
+  },
+  "dependencies": {
+    "@syncular/client": "workspace:*"
   },
   "peerDependencies": {
     "@syncular/kysely": "workspace:*",
@@ -12,14 +64,12 @@
     "react": ">=18.0.0"
   },
   "peerDependenciesMeta": {
-    "@syncular/kysely": { "optional": true },
-    "kysely": { "optional": true }
-  },
-  "dependencies": {
-    "@syncular/client": "workspace:*"
-  },
-  "scripts": {
-    "test": "bun test --preload ./test/setup.ts"
+    "@syncular/kysely": {
+      "optional": true
+    },
+    "kysely": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^15.11.0",

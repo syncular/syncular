@@ -1,0 +1,23 @@
+{
+  "//": "Shared emit config for publishable packages. Each package's tsconfig.build.json extends this, sets rootDir/outDir/include. Root tsconfig.json stays noEmit for typecheck; this one emits dist/ (ESM .js + .d.ts).",
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["bun"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "declarationMap": false,
+    "sourceMap": false,
+    "noEmit": false,
+    "emitDeclarationOnly": false,
+    "outDir": "./dist",
+    "rootDir": "./src"
+  }
+}

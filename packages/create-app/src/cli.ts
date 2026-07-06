@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * `create-syncular-app [project-name] [--template <minimal|web>] [--local]`
  *

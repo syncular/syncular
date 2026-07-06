@@ -24,7 +24,11 @@
     "load:smoke": "bun run --cwd load load:smoke",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "lint:fix": "biome check --fix ."
+    "lint:fix": "biome check --fix .",
+    "build:packages": "bun run clean:packages && for p in core crypto server server-hono server-workers crdt-yjs web-client kysely react typegen tauri testing create-app; do echo \"building @ packages/$p\" && tsc -p packages/$p/tsconfig.build.json || exit 1; done && bun run fix:esm && bun run build:bins",
+    "fix:esm": "node scripts/fix-esm-extensions.mjs packages/core/dist packages/crypto/dist packages/server/dist packages/server-hono/dist packages/server-workers/dist packages/crdt-yjs/dist packages/web-client/dist packages/kysely/dist packages/react/dist packages/typegen/dist packages/tauri/dist packages/testing/dist packages/create-app/dist",
+    "clean:packages": "rm -rf packages/*/dist packages/*/tsconfig.build.tsbuildinfo",
+    "build:bins": "chmod +x packages/typegen/dist/cli.js packages/create-app/dist/cli.js 2>/dev/null || true"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",

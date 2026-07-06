@@ -1006,18 +1006,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
-name = "ssp2"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "hkdf",
- "rand_core",
- "serde_json",
- "sha2",
- "x25519-dalek",
-]
-
-[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1041,6 +1029,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "syncular"
+version = "0.2.0"
+
+[[package]]
 name = "syncular-bench"
 version = "0.1.0"
 dependencies = [
@@ -1052,37 +1044,49 @@ dependencies = [
 
 [[package]]
 name = "syncular-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rand_core",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
- "ssp2",
+ "syncular-ssp2",
  "uuid",
  "yrs",
 ]
 
 [[package]]
 name = "syncular-command"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
- "ssp2",
  "syncular-client",
+ "syncular-ssp2",
 ]
 
 [[package]]
 name = "syncular-ffi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
- "ssp2",
  "syncular-client",
  "syncular-command",
+ "syncular-ssp2",
  "tungstenite",
  "ureq",
+]
+
+[[package]]
+name = "syncular-ssp2"
+version = "0.2.0"
+dependencies = [
+ "aes-gcm",
+ "hkdf",
+ "rand_core",
+ "serde_json",
+ "sha2",
+ "x25519-dalek",
 ]
 
 [[package]]
