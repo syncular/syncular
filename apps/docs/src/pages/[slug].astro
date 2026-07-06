@@ -1,0 +1,31 @@
+---
+// Every markdown file in src/content/ becomes /<filename>/ — the same URLs
+// the previous generator produced. The page's first `# Heading` is the
+// <title>; the heading itself stays in the rendered body.
+import type { MarkdownInstance } from 'astro';
+import Docs from '../layouts/Docs.astro';
+
+export async function getStaticPaths() {
+  const mods = import.meta.glob<MarkdownInstance<Record<string, never>>>(
+    '../content/*.md',
+    { eager: true },
+  );
+  return Object.entries(mods).map(([path, mod]) => ({
+    params: { slug: path.split('/').pop()?.replace(/\.md$/, '') ?? '' },
+    props: { mod },
+  }));
+}
+
+interface Props {
+  mod: MarkdownInstance<Record<string, never>>;
+}
+const { mod } = Astro.props;
+const { slug } = Astro.params;
+const title =
+  mod.getHeadings().find((h) => h.depth === 1)?.text ?? 'syncular';
+const Content = mod.Content;
+---
+
+<Docs title={title} active={slug ?? ''}>
+  <Content />
+</Docs>

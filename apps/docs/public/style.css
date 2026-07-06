@@ -70,14 +70,21 @@ pre, code, kbd { font-family: inherit; }
   .blink { animation: none; }
 }
 
-/* ---------- Syntax tokens (emitted at build time) ---------- */
-.tok-c { color: var(--tok-c); font-style: italic; }
-.tok-k { color: var(--tok-k); }
-.tok-s { color: var(--tok-s); }
-.tok-n { color: var(--tok-n); }
-.tok-t { color: var(--tok-t); }
-.tok-f { color: var(--ink); font-weight: 500; }
-.tok-key { color: var(--tok-t); }
+/* ---------- Syntax tokens (Shiki css-variables theme, baked at build) ---------- */
+:root {
+  --astro-code-color-text: var(--ink);
+  --astro-code-color-background: var(--panel);
+  --astro-code-token-comment: var(--tok-c);
+  --astro-code-token-keyword: var(--tok-k);
+  --astro-code-token-string: var(--tok-s);
+  --astro-code-token-string-expression: var(--tok-s);
+  --astro-code-token-constant: var(--tok-n);
+  --astro-code-token-parameter: var(--ink);
+  --astro-code-token-function: var(--tok-t);
+  --astro-code-token-punctuation: var(--dim);
+  --astro-code-token-link: var(--amber);
+}
+.astro-code .line span[style*="comment"] { font-style: italic; }
 
 /* ---------- Sidebar (docs pages) ---------- */
 .sidebar {
@@ -220,7 +227,11 @@ blockquote {
 }
 blockquote p { margin: 0.2rem 0; }
 
-.table-scroll { overflow-x: auto; margin: 1.2rem 0; }
+article table {
+  display: block;
+  overflow-x: auto;
+  margin: 1.2rem 0;
+}
 table {
   border-collapse: collapse;
   width: 100%;
