@@ -7,9 +7,10 @@
 //! Built from `SPEC.md` and the committed `ssp2` codec alone — no
 //! reference to the v1 Rust tree or the v2 TypeScript client.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use rusqlite::types::Value as SqlValue;
+use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
 use rusqlite::Connection;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -153,6 +154,16 @@ pub struct SyncClient {
     /// off. The encrypt/decrypt seam (`values.rs`) is compiled only under the
     /// `e2ee` feature; without it, a schema with encrypted columns fails loud.
     encryption: crate::values::EncryptionConfig,
+    /// Per-table `INSERT OR REPLACE` SQL, built once per (full table name) —
+    /// the row write path runs per row during bootstrap (§5.6), so the SQL
+    /// string (and, via `prepare_cached`, its compiled statement) is reused
+    /// instead of being rebuilt and re-prepared per row. Cleared on a §7.4.3
+    /// schema reset (the column lists may have changed).
+    insert_sql: RefCell<HashMap<String, String>>,
+    /// §7.1 rebuild gate: true whenever the base tables or the outbox have
+    /// diverged from the visible overlay since the last rebuild. Lets a
+    /// no-op sync round skip the full base→visible copy.
+    overlay_dirty: Cell<bool>,
 }
 
 fn quote_ident(name: &str) -> String {
@@ -219,29 +230,46 @@ fn blob_id_for(bytes: &[u8]) -> String {
     format!("sha256:{}", bytes_to_hex(&digest))
 }
 
-fn cv_to_sql(value: &Option<ColumnValue>) -> SqlValue {
-    match value {
-        None => SqlValue::Null,
-        Some(ColumnValue::String(s)) => SqlValue::Text(s.clone()),
-        Some(ColumnValue::Integer(i)) => SqlValue::Integer(*i),
-        Some(ColumnValue::Float(f)) => SqlValue::Real(*f),
-        Some(ColumnValue::Boolean(b)) => SqlValue::Integer(i64::from(*b)),
-        Some(ColumnValue::Json(raw)) => SqlValue::Text(raw.0.clone()),
-        Some(ColumnValue::BlobRef(raw)) => SqlValue::Text(raw.0.clone()),
-        Some(ColumnValue::Bytes(b)) => SqlValue::Blob(b.clone()),
-        // §5.10: crdt bytes store as BLOB, like bytes.
-        Some(ColumnValue::Crdt(b)) => SqlValue::Blob(b.clone()),
+/// One [`SyncClient::write_row`] bind parameter, borrowing the row-codec
+/// value it wraps — strings/JSON/bytes bind as borrowed TEXT/BLOB (no copy
+/// per row on the §5.6 bootstrap path), scalars bind owned.
+enum RowParam<'a> {
+    Cell(&'a Option<ColumnValue>),
+    Version(i64),
+}
+
+impl rusqlite::ToSql for RowParam<'_> {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(match self {
+            RowParam::Version(v) => ToSqlOutput::Owned(SqlValue::Integer(*v)),
+            RowParam::Cell(cell) => match cell {
+                None => ToSqlOutput::Owned(SqlValue::Null),
+                Some(ColumnValue::String(s)) => ToSqlOutput::Borrowed(ValueRef::Text(s.as_bytes())),
+                Some(ColumnValue::Integer(i)) => ToSqlOutput::Owned(SqlValue::Integer(*i)),
+                Some(ColumnValue::Float(f)) => ToSqlOutput::Owned(SqlValue::Real(*f)),
+                Some(ColumnValue::Boolean(b)) => {
+                    ToSqlOutput::Owned(SqlValue::Integer(i64::from(*b)))
+                }
+                Some(ColumnValue::Json(raw)) | Some(ColumnValue::BlobRef(raw)) => {
+                    ToSqlOutput::Borrowed(ValueRef::Text(raw.0.as_bytes()))
+                }
+                // §5.10: crdt bytes store as BLOB, like bytes.
+                Some(ColumnValue::Bytes(b)) | Some(ColumnValue::Crdt(b)) => {
+                    ToSqlOutput::Borrowed(ValueRef::Blob(b))
+                }
+            },
+        })
     }
 }
 
-/// §5.3 image cell → row-codec value, strict per the declared column type
+/// §5.3 image cell → bind parameter, strict per the declared column type
 /// (`boolean` from INTEGER 0/1, `json` from its raw TEXT, NULL only when
-/// nullable). Mismatches are image-producer violations.
-fn sql_ref_to_column_value(
-    column: &Column,
-    value: rusqlite::types::ValueRef<'_>,
-) -> Result<Option<ColumnValue>, String> {
-    use rusqlite::types::ValueRef;
+/// nullable). Mismatches are image-producer violations. Returns the cell
+/// borrowed when the stored representation already matches what the row
+/// codec would write, or the normalized scalar (boolean → 0/1, float from
+/// INTEGER → REAL) otherwise — the local write is byte-identical to the
+/// old convert-then-insert path without allocating per cell.
+fn image_cell_param<'a>(column: &Column, value: ValueRef<'a>) -> Result<ToSqlOutput<'a>, String> {
     use ssp2::segment::ColumnType;
     let mismatch = || {
         Err(format!(
@@ -257,32 +285,31 @@ fn sql_ref_to_column_value(
                     column.name
                 ));
             }
-            Ok(None)
+            Ok(ToSqlOutput::Owned(SqlValue::Null))
         }
         ValueRef::Integer(i) => match column.ty {
-            ColumnType::Integer => Ok(Some(ColumnValue::Integer(i))),
-            ColumnType::Boolean => Ok(Some(ColumnValue::Boolean(i != 0))),
-            ColumnType::Float => Ok(Some(ColumnValue::Float(i as f64))),
+            ColumnType::Integer => Ok(ToSqlOutput::Borrowed(value)),
+            ColumnType::Boolean => Ok(ToSqlOutput::Owned(SqlValue::Integer(i64::from(i != 0)))),
+            ColumnType::Float => Ok(ToSqlOutput::Owned(SqlValue::Real(i as f64))),
             _ => mismatch(),
         },
-        ValueRef::Real(f) => match column.ty {
-            ColumnType::Float => Ok(Some(ColumnValue::Float(f))),
+        ValueRef::Real(_) => match column.ty {
+            ColumnType::Float => Ok(ToSqlOutput::Borrowed(value)),
             _ => mismatch(),
         },
         ValueRef::Text(t) => {
-            let text = std::str::from_utf8(t)
+            std::str::from_utf8(t)
                 .map_err(|_| format!("image column {:?} is not UTF-8", column.name))?;
             match column.ty {
-                ColumnType::String => Ok(Some(ColumnValue::String(text.to_owned()))),
-                ColumnType::Json => Ok(Some(ColumnValue::Json(RawJson(text.to_owned())))),
-                ColumnType::BlobRef => Ok(Some(ColumnValue::BlobRef(RawJson(text.to_owned())))),
+                ColumnType::String | ColumnType::Json | ColumnType::BlobRef => {
+                    Ok(ToSqlOutput::Borrowed(value))
+                }
                 _ => mismatch(),
             }
         }
-        ValueRef::Blob(b) => match column.ty {
-            ColumnType::Bytes => Ok(Some(ColumnValue::Bytes(b.to_vec()))),
+        ValueRef::Blob(_) => match column.ty {
             // §5.10: a crdt column stores its opaque bytes as BLOB, like bytes.
-            ColumnType::Crdt => Ok(Some(ColumnValue::Crdt(b.to_vec()))),
+            ColumnType::Bytes | ColumnType::Crdt => Ok(ToSqlOutput::Borrowed(value)),
             _ => mismatch(),
         },
     }
@@ -411,7 +438,15 @@ impl SyncClient {
             presence: HashMap::new(),
             now_ms: None,
             encryption: crate::values::EncryptionConfig::default(),
+            insert_sql: RefCell::new(HashMap::new()),
+            overlay_dirty: Cell::new(false),
         };
+        // The row write path leans on the prepared-statement cache (two
+        // insert statements per synced table, plus the bookkeeping
+        // statements); size it so a multi-table schema never thrashes.
+        client
+            .conn
+            .set_prepared_statement_cache_capacity(64.max(client.schema.tables.len() * 4));
         client.create_tables()?;
         Ok(client)
     }
@@ -546,6 +581,9 @@ impl SyncClient {
     /// that cannot re-encode (§7.4.4), and replays the survivors on top.
     fn run_schema_reset(&mut self) -> Result<(), String> {
         self.upgrading = true;
+        // The per-table insert SQL is derived from the OLD column lists.
+        self.insert_sql.borrow_mut().clear();
+        self.overlay_dirty.set(true);
         // Drop every synced table (base + visible) that currently exists —
         // discovered from sqlite_master so a bump that adds/removes tables is
         // handled. Bookkeeping tables (`_syncular_outbox/_subscriptions/_meta`
@@ -924,6 +962,7 @@ impl SyncClient {
                 .collect();
             sql.push_str(&format!(" AND {} NOT IN ({})", pk, holes.join(", ")));
         }
+        self.overlay_dirty.set(true);
         self.conn
             .execute(&sql, rusqlite::params_from_iter(params))
             .map_err(|_| ())?;
@@ -967,9 +1006,14 @@ impl SyncClient {
         Ok(survivors.iter().any(|id| pinned.contains(id)))
     }
 
-    /// §4.8 E1: retry deferred evictions after the outbox drains.
+    /// §4.8 E1: retry deferred evictions after the outbox drains. No
+    /// pending records (the common case) means nothing to retry — and no
+    /// overlay rebuild.
     fn drain_pending_evictions(&mut self) {
         let pending = self.load_pending_evictions();
+        if pending.is_empty() {
+            return;
+        }
         for (sub_id, table_name, effective) in pending {
             if self.schema.table(&table_name).is_none() {
                 self.delete_pending_evict(&sub_id);
@@ -983,7 +1027,7 @@ impl SyncClient {
                 self.delete_pending_evict(&sub_id);
             }
         }
-        self.rebuild_overlay();
+        self.rebuild_overlay_if_dirty();
     }
 
     /// §4.8 E1: primary keys of `table` referenced by a pending outbox
@@ -1098,6 +1142,7 @@ impl SyncClient {
         self.persist_outbox_insert(&commit);
         let id = commit.client_commit_id.clone();
         self.outbox.push(commit);
+        self.overlay_dirty.set(true);
         self.rebuild_overlay();
         Ok(id)
     }
@@ -1743,10 +1788,14 @@ impl SyncClient {
 
         // §7.1: reconciliation is outbox replay on top — whenever server
         // data has been applied, including a round that aborted mid-way.
-        self.rebuild_overlay();
-        // §5.9.7 B1: refcounts follow live rows after every apply (benign —
-        // zero-ref bodies are retained as LRU entries, not deleted here).
-        self.reconcile_blob_refcounts(false);
+        // Both the rebuild and the refcount pass derive from base + outbox
+        // state, so a round that changed neither skips them.
+        if self.overlay_dirty.get() {
+            self.rebuild_overlay();
+            // §5.9.7 B1: refcounts follow live rows after every apply (benign
+            // — zero-ref bodies are retained as LRU entries, not deleted here).
+            self.reconcile_blob_refcounts(false);
+        }
 
         if let Some((error_code, message)) = failure {
             return SyncOutcome::Failed {
@@ -1782,6 +1831,9 @@ impl SyncClient {
         else {
             return;
         };
+        // Every non-retryable outcome below removes the commit from the
+        // outbox, so the optimistic overlay must be rebuilt.
+        self.overlay_dirty.set(true);
         match status {
             PushStatus::Applied | PushStatus::Cached => {
                 // §7.2: a lost ack replays as `cached` — proceed as if the
@@ -2229,18 +2281,22 @@ impl SyncClient {
         for block in &segment.blocks {
             for row in block {
                 // §5.11: a bootstrap segment carries ciphertext for encrypted
-                // columns; decrypt to plaintext before the local write.
+                // columns; decrypt to plaintext before the local write. A
+                // plaintext table writes the decoded row directly (no per-row
+                // clone on the hot bootstrap path).
+                let decrypted;
                 let values = if table.has_encrypted_columns() {
                     let mut values = row.values.clone();
                     crate::values::decrypt_segment_row(&table, &mut values, &self.encryption)
                         .map_err(|m| SectionError::Abort("client.decrypt_failed".to_owned(), m))?;
-                    values
+                    decrypted = values;
+                    &decrypted
                 } else {
-                    row.values.clone()
+                    &row.values
                 };
                 // §5.6: the row record's serverVersion is the row's
                 // last-known server_version, same as a COMMIT rowVersion.
-                self.write_base_row(&table.name, &values, row.server_version)
+                self.write_base_row(&table.name, values, row.server_version)
                     .map_err(|m| SectionError::Abort("sync.invalid_request".to_owned(), m))?;
                 applied += 1;
             }
@@ -2407,40 +2463,92 @@ impl SyncClient {
             self.purge_scope_rows(&table.name, effective)
                 .map_err(|()| SectionError::FailClosed)?;
         }
-        let column_list: Vec<String> = names.iter().map(|n| quote_ident(n)).collect();
-        let mut stmt = img
-            .prepare(&format!(
-                "SELECT {} FROM {}",
-                column_list.join(", "),
-                quote_ident(&table.name)
-            ))
-            .map_err(|_| invalid("image data table unreadable".to_owned()))?;
-        let mut rows = stmt
-            .query([])
-            .map_err(|_| invalid("image data table unreadable".to_owned()))?;
-        let mut applied = 0u32;
-        while let Some(row) = rows
-            .next()
-            .map_err(|_| invalid("image row unreadable".to_owned()))?
-        {
-            let mut values: Row = Vec::with_capacity(table.columns.len());
-            for (i, column) in table.columns.iter().enumerate() {
-                let cell = row
-                    .get_ref(i)
+        // One cached INSERT statement on our side, one SELECT cursor on the
+        // image side; every cell is validated against the declared column
+        // type and bound BORROWED (no per-cell allocation, no per-row
+        // statement re-preparation) — the Rust analogue of the TS client's
+        // single `INSERT OR REPLACE … SELECT` bulk copy.
+        self.overlay_dirty.set(true);
+        // A fresh whole-table load pays secondary-index maintenance per row;
+        // dropping the base half's NON-unique indexes for the load and
+        // recreating them after replaces that with one bulk sort per index.
+        // Unique indexes stay in place — `INSERT OR REPLACE` clobbers
+        // through them, so they are semantics, not just speed. The DDL rides
+        // the open section savepoint (§1.4): an abort rolls the drop back.
+        let bulk_indexes: Vec<&crate::schema::IndexSchema> = if first_fresh_page {
+            table.indexes.iter().filter(|i| !i.unique).collect()
+        } else {
+            Vec::new()
+        };
+        for index in &bulk_indexes {
+            let index_name = quote_ident(&format!("_syncular_base_{}", index.name));
+            self.conn
+                .execute(&format!("DROP INDEX IF EXISTS {index_name}"), [])
+                .map_err(|e| invalid(e.to_string()))?;
+        }
+        let insert = self.insert_row_sql(&base_table(&table.name), table);
+        let applied = {
+            let mut ins = self
+                .conn
+                .prepare_cached(&insert)
+                .map_err(|e| invalid(e.to_string()))?;
+            let column_list: Vec<String> = names.iter().map(|n| quote_ident(n)).collect();
+            let mut stmt = img
+                .prepare(&format!(
+                    "SELECT {} FROM {}",
+                    column_list.join(", "),
+                    quote_ident(&table.name)
+                ))
+                .map_err(|_| invalid("image data table unreadable".to_owned()))?;
+            let mut rows = stmt
+                .query([])
+                .map_err(|_| invalid("image data table unreadable".to_owned()))?;
+            let version_index = table.columns.len();
+            let mut applied = 0u32;
+            while let Some(row) = rows
+                .next()
+                .map_err(|_| invalid("image row unreadable".to_owned()))?
+            {
+                for (i, column) in table.columns.iter().enumerate() {
+                    let cell = row
+                        .get_ref(i)
+                        .map_err(|_| invalid("image row unreadable".to_owned()))?;
+                    let param = image_cell_param(column, cell).map_err(&invalid)?;
+                    ins.raw_bind_parameter(i + 1, param)
+                        .map_err(|e| invalid(e.to_string()))?;
+                }
+                let version: i64 = row
+                    .get(version_index)
                     .map_err(|_| invalid("image row unreadable".to_owned()))?;
-                values.push(sql_ref_to_column_value(column, cell).map_err(&invalid)?);
+                if version < 1 {
+                    return Err(invalid(format!(
+                        "row _syncular_version must be >= 1, got {version}"
+                    )));
+                }
+                ins.raw_bind_parameter(version_index + 1, version)
+                    .map_err(|e| invalid(e.to_string()))?;
+                ins.raw_execute().map_err(|e| invalid(e.to_string()))?;
+                applied += 1;
             }
-            let version: i64 = row
-                .get(table.columns.len())
-                .map_err(|_| invalid("image row unreadable".to_owned()))?;
-            if version < 1 {
-                return Err(invalid(format!(
-                    "row _syncular_version must be >= 1, got {version}"
-                )));
-            }
-            self.write_base_row(&table.name, &values, version)
-                .map_err(|m| SectionError::Abort("sync.invalid_request".to_owned(), m))?;
-            applied += 1;
+            applied
+        };
+        for index in &bulk_indexes {
+            let index_name = quote_ident(&format!("_syncular_base_{}", index.name));
+            let cols_sql = index
+                .columns
+                .iter()
+                .map(|c| quote_ident(c))
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.conn
+                .execute(
+                    &format!(
+                        "CREATE INDEX IF NOT EXISTS {index_name} ON {} ({cols_sql})",
+                        base_table(&table.name)
+                    ),
+                    [],
+                )
+                .map_err(|e| invalid(e.to_string()))?;
         }
         if i64::from(applied) != row_count {
             return Err(invalid(format!(
@@ -2485,6 +2593,7 @@ impl SyncClient {
             base_table(table_name),
             clauses.join(" AND ")
         );
+        self.overlay_dirty.set(true);
         self.conn
             .execute(&sql, rusqlite::params_from_iter(params))
             .map_err(|_| ())?;
@@ -2528,6 +2637,7 @@ impl SyncClient {
             .map(|c| c.client_commit_id.clone())
             .collect();
         for id in doomed {
+            self.overlay_dirty.set(true);
             self.outbox.retain(|c| c.client_commit_id != id);
             self.persist_outbox_delete(&id);
         }
@@ -2852,7 +2962,28 @@ impl SyncClient {
 
     // -- local row storage ----------------------------------------------------------
 
+    /// The cached per-table `INSERT OR REPLACE` SQL for `full_table` (see
+    /// the `insert_sql` field: built once, reused per row).
+    fn insert_row_sql(&self, full_table: &str, table: &crate::schema::TableSchema) -> String {
+        if let Some(sql) = self.insert_sql.borrow().get(full_table) {
+            return sql.clone();
+        }
+        let mut columns: Vec<String> = table.columns.iter().map(|c| quote_ident(&c.name)).collect();
+        columns.push(quote_ident("_syncular_version"));
+        let placeholders: Vec<&str> = columns.iter().map(|_| "?").collect();
+        let sql = format!(
+            "INSERT OR REPLACE INTO {full_table} ({}) VALUES ({})",
+            columns.join(", "),
+            placeholders.join(", ")
+        );
+        self.insert_sql
+            .borrow_mut()
+            .insert(full_table.to_owned(), sql.clone());
+        sql
+    }
+
     fn write_base_row(&self, table_name: &str, row: &Row, version: i64) -> Result<(), String> {
+        self.overlay_dirty.set(true);
         self.write_row(&base_table(table_name), table_name, row, version)
     }
 
@@ -2867,18 +2998,13 @@ impl SyncClient {
             .schema
             .table(table_name)
             .ok_or_else(|| format!("unknown table {table_name:?}"))?;
-        let mut columns: Vec<String> = table.columns.iter().map(|c| quote_ident(&c.name)).collect();
-        columns.push(quote_ident("_syncular_version"));
-        let placeholders: Vec<String> = (0..columns.len()).map(|_| "?".to_owned()).collect();
-        let mut params: Vec<SqlValue> = row.iter().map(cv_to_sql).collect();
-        params.push(SqlValue::Integer(version));
-        let sql = format!(
-            "INSERT OR REPLACE INTO {full_table} ({}) VALUES ({})",
-            columns.join(", "),
-            placeholders.join(", ")
-        );
-        self.conn
-            .execute(&sql, rusqlite::params_from_iter(params))
+        let sql = self.insert_row_sql(full_table, table);
+        let mut stmt = self.conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
+        let params = row
+            .iter()
+            .map(RowParam::Cell)
+            .chain(std::iter::once(RowParam::Version(version)));
+        stmt.execute(rusqlite::params_from_iter(params))
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -2888,15 +3014,24 @@ impl SyncClient {
             .schema
             .table(table_name)
             .ok_or_else(|| format!("unknown table {table_name:?}"))?;
+        self.overlay_dirty.set(true);
         let sql = format!(
             "DELETE FROM {} WHERE CAST({} AS TEXT) = ?1",
             base_table(table_name),
             quote_ident(&table.primary_key)
         );
-        self.conn
-            .execute(&sql, rusqlite::params![row_id])
+        let mut stmt = self.conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
+        stmt.execute(rusqlite::params![row_id])
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// [`Self::rebuild_overlay`], skipped when neither the base tables nor
+    /// the outbox changed since the last rebuild (the no-op sync round).
+    fn rebuild_overlay_if_dirty(&mut self) {
+        if self.overlay_dirty.get() {
+            self.rebuild_overlay();
+        }
     }
 
     /// §7.1: local reads see outbox state applied optimistically — rebuild
@@ -2944,6 +3079,7 @@ impl SyncClient {
             }
         }
         self.exec("RELEASE syncular_overlay");
+        self.overlay_dirty.set(false);
     }
 
     fn exec(&self, sql: &str) {
