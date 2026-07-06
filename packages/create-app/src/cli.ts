@@ -149,14 +149,6 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     console.log(
       `[${CREATE_BIN}] scaffolded ${result.packageName} (template: ${template}) into ${displayDir}`,
     );
-    if (!result.local) {
-      console.warn(
-        `[${CREATE_BIN}] note: the ${PRODUCT_NAME} v2 packages are not published yet, so\n` +
-          `  the app's dependencies are still workspace:* ranges. Run inside this repo\n` +
-          `  (or pass --local) until publishing lands (TODO 6.3). Use \`${CLI_BIN} generate\`\n` +
-          '  to (re)generate the typed schema.',
-      );
-    }
     console.log(nextSteps(displayDir, template));
     return 0;
   } catch (error) {

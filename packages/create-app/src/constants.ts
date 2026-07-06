@@ -1,3 +1,5 @@
+import { createRequire } from 'node:module';
+
 /**
  * The ONE place naming lives (TODO 6.3 is a product decision — final package
  * identity is not settled). Every user-visible name the scaffolder emits comes
@@ -36,15 +38,14 @@ export const WORKSPACE_PACKAGES = [
  * The dependency range written into a scaffolded app's package.json when NOT
  * scaffolding for in-tree testing (see {@link scaffoldApp}'s `local` flag).
  *
- * The v2 packages are unpublished and version-less today (all `private`, no
- * `version` field — final identity + the release train is TODO 6.3). Until
- * they publish there is no honest semver range to point at, so this is a
- * `workspace:*`-shaped LOCAL default too, and the CLI warns loudly that a
- * published install is not yet possible. When the packages ship, replace this
- * with `^<version>` (or teach the CLI to read the published version) — one
- * edit, here.
+ * Derived from this package's own version: the release train bumps every
+ * @syncular/* package in lockstep, so `^<own version>` is always an honest
+ * published range — no constant to remember on each release.
  */
-export const PUBLISHED_DEPENDENCY_RANGE = 'workspace:*';
+const ownVersion = createRequire(import.meta.url)('../package.json')
+  .version as string;
+
+export const PUBLISHED_DEPENDENCY_RANGE = `^${ownVersion}`;
 
 /** Placeholder tokens substituted verbatim during scaffold (dumb + greppable). */
 export const PLACEHOLDER = {
