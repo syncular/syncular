@@ -4,7 +4,7 @@ Files and other large binary bodies do not belong in the sync stream. Syncular
 models them as **blobs**: durable, content-addressed objects that live in a
 blob store, referenced from rows by a small `blob_ref` value.
 
-Normative detail: [SPEC.md §5.9](../../SPEC.md#5-bootstrap-segments-and-the-download-endpoint).
+Normative detail: [SPEC.md §5.9](https://github.com/syncular/syncular/blob/main/SPEC.md#5-bootstrap-segments-and-the-download-endpoint).
 
 ## The `blob_ref` column
 
@@ -52,7 +52,7 @@ Every blob **download re-authorizes** against the rows that reference the
 blob, on every request — holding a blobId grants nothing. The server keeps a
 commit→blob reference index, and a download is denied (`blob.forbidden`) when
 the actor holds no referencing row
-([SPEC §5.9.5](../../SPEC.md#5-bootstrap-segments-and-the-download-endpoint)).
+([SPEC §5.9.5](https://github.com/syncular/syncular/blob/main/SPEC.md#5-bootstrap-segments-and-the-download-endpoint)).
 A push that references a blob the server has never received fails loud
 (`blob.not_found`), and an upload whose bytes do not match the claimed address
 is rejected (`blob.hash_mismatch`).

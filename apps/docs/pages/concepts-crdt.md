@@ -11,7 +11,7 @@ the same commit* as your LWW columns. It carries opaque CRDT bytes — a Yjs
 update — that the **server merges** on push instead of overwriting. Concurrent
 edits merge order-independently, so everyone lands on identical bytes.
 
-Normative detail: [SPEC.md §5.10](../../SPEC.md#510-crdt-columns--opt-in-collaborative-state).
+Normative detail: [SPEC.md §5.10](https://github.com/syncular/syncular/blob/main/SPEC.md#510-crdt-columns--opt-in-collaborative-state).
 
 ## The `crdt` column
 

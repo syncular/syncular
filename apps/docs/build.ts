@@ -11,12 +11,27 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { renderLanding } from './landing';
 import { render } from './markdown';
 import { nav } from './nav';
 
 const ROOT = import.meta.dir;
 const PAGES = join(ROOT, 'pages');
 const DIST = join(ROOT, 'dist');
+
+/**
+ * Base path for the published site. GitHub Pages serves project sites at
+ * `/<repo>/`, so the Pages workflow sets DOCS_BASE=/syncular/; a custom
+ * domain (or local dev) uses the default `/`. All internal hrefs in
+ * generated HTML are root-absolute and rewritten to the base at build time.
+ */
+const BASE = (process.env.DOCS_BASE ?? '/').replace(/\/?$/, '/');
+
+/** Rewrite root-absolute hrefs to the deploy base path. */
+function rebase(html: string): string {
+  if (BASE === '/') return html;
+  return html.replace(/(href|src)="\//g, `$1="${BASE}`);
+}
 
 interface Page {
   readonly slug: string; // "" for index
@@ -36,7 +51,7 @@ function sidebar(activeSlug: string): string {
     .map((section) => {
       const items = section.items
         .map((item) => {
-          const href = item.slug === '' ? '/' : `/${item.slug}/`;
+          const href = `/${item.slug}/`;
           const active = item.slug === activeSlug ? ' class="active"' : '';
           return `<li><a href="${href}"${active}>${item.title}</a></li>`;
         })
@@ -45,7 +60,7 @@ function sidebar(activeSlug: string): string {
     })
     .join('');
   return `<nav class="sidebar">
-  <a class="brand" href="/">syncular <span>v2</span></a>
+  <a class="brand" href="/">syncular</a>
   ${sections}
 </nav>`;
 }
@@ -70,7 +85,7 @@ function loadPages(): Page[] {
   const files = readdirSync(PAGES).filter((f) => f.endsWith('.md'));
   return files.map((file) => {
     const markdown = readFileSync(join(PAGES, file), 'utf8');
-    const slug = file === 'index.md' ? '' : file.replace(/\.md$/, '');
+    const slug = file.replace(/\.md$/, '');
     const { title, body } = extractTitle(markdown);
     return { slug, title, html: render(body) };
   });
@@ -81,10 +96,12 @@ async function build(): Promise<Page[]> {
   await mkdir(DIST, { recursive: true });
   const pages = loadPages();
   for (const page of pages) {
-    const dir = page.slug === '' ? DIST : join(DIST, page.slug);
+    const dir = join(DIST, page.slug);
     await mkdir(dir, { recursive: true });
-    await Bun.write(join(dir, 'index.html'), layout(page));
+    await Bun.write(join(dir, 'index.html'), rebase(layout(page)));
   }
+  // The landing page lives at `/` and has its own full-width template.
+  await Bun.write(join(DIST, 'index.html'), rebase(renderLanding()));
   await Bun.write(join(DIST, 'style.css'), Bun.file(join(ROOT, 'style.css')));
   return pages;
 }

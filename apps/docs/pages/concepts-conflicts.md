@@ -5,8 +5,8 @@ and queues the commit for the next push. Reads never wait for the server. When
 two clients edit the same row, syncular surfaces a **conflict** — it never
 silently auto-resolves.
 
-Normative detail: [SPEC.md §6](../../SPEC.md#6-push-and-commit-application) and
-[§7](../../SPEC.md#7-the-client-outbox).
+Normative detail: [SPEC.md §6](https://github.com/syncular/syncular/blob/main/SPEC.md#6-push-and-commit-application) and
+[§7](https://github.com/syncular/syncular/blob/main/SPEC.md#7-the-client-outbox).
 
 ## The optimistic outbox
 
@@ -26,14 +26,14 @@ client.query('SELECT * FROM notes WHERE id = ?', ['n1']);
 Because the outbox is schema-agnostic and encoded at send time, a commit
 written under schema N replays cleanly after an upgrade to N+1 — it re-encodes
 with the current codec rather than the server accepting a retired encoding
-([SPEC §2.4](../../SPEC.md#24-schema-ir-and-the-generated-row-codec)).
+([SPEC §2.4](https://github.com/syncular/syncular/blob/main/SPEC.md#24-schema-ir-and-the-generated-row-codec)).
 
 ## Conflict detection
 
 Pass a `baseVersion` on a mutation to assert "I edited version K." If the
 server's stored `server_version` has moved on, the commit is **rejected with a
 conflict record** rather than overwriting
-([SPEC §6.2](../../SPEC.md#6-push-and-commit-application)):
+([SPEC §6.2](https://github.com/syncular/syncular/blob/main/SPEC.md#6-push-and-commit-application)):
 
 ```ts
 client.mutate([
@@ -66,4 +66,4 @@ A rejected commit that is not a version conflict (e.g. `sync.forbidden` from a
 scope check, or a serving hiccup that is retryable) surfaces as a
 **rejection** instead, with its own list (`client.rejections`) and retry
 semantics driven by the error's `retryable` flag. The
-[error catalog](../../SPEC.md#10-errors) is normative.
+[error catalog](https://github.com/syncular/syncular/blob/main/SPEC.md#10-errors) is normative.

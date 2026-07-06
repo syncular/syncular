@@ -7,7 +7,7 @@ field, an API token. Mark those columns **encrypted**, and Syncular encrypts
 them on the device before they leave and decrypts them on the device after they
 arrive. The server stores and serves **ciphertext** and never holds a key.
 
-Normative detail: [SPEC.md §5.11](../../SPEC.md#511-client-side-encryption-e2ee--opt-in-per-column).
+Normative detail: [SPEC.md §5.11](https://github.com/syncular/syncular/blob/main/SPEC.md#511-client-side-encryption-e2ee--opt-in-per-column).
 
 ## The model — plaintext locally, ciphertext on the wire
 

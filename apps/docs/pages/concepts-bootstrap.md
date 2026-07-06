@@ -5,8 +5,8 @@ current state of its scoped rows, rather than replaying the whole commit log.
 Bootstrap data travels as **segments** — content-addressed, scope-bound
 snapshot artifacts.
 
-Normative detail: [SPEC.md §4.7](../../SPEC.md#47-bootstrap-state-machine) and
-[§5](../../SPEC.md#5-bootstrap-segments-and-the-download-endpoint).
+Normative detail: [SPEC.md §4.7](https://github.com/syncular/syncular/blob/main/SPEC.md#47-bootstrap-state-machine) and
+[§5](https://github.com/syncular/syncular/blob/main/SPEC.md#5-bootstrap-segments-and-the-download-endpoint).
 
 ## One concept: the segment
 
@@ -22,7 +22,7 @@ carries a `mediaType`:
 The **sqlite image** is the headline. The client attaches the image and copies
 whole tables in, instead of inserting rows one by one. On the in-process
 bench, a 100k-row image bootstrap lands at **30 ms** warm versus 365 ms for
-the rows lane ([bench results](../../bench/RESULTS.md)). The server builds each
+the rows lane ([bench results](/benchmarks/)). The server builds each
 image once per (scopes, pin) and reuses it, so a bootstrap storm — many clients
 booting the same scope at once — is served from one stored image.
 
@@ -30,16 +30,16 @@ booting the same scope at once — is served from one stored image.
 
 Segments are the CDN/bulk path and stay on HTTP by design (never over the sync
 socket). Three delivery shapes, negotiated by the client's `accept` bitmask
-([SPEC §4.2](../../SPEC.md#42-pull_header-frame)):
+([SPEC §4.2](https://github.com/syncular/syncular/blob/main/SPEC.md#42-pull_header-frame)):
 
 - **Inline** — small rows segments ride in the sync response, no second
   round-trip.
 - **Direct download** — the client fetches `<mount>/segments/{id}`, which
-  re-authorizes on every request ([SPEC §5.5](../../SPEC.md#55-the-direct-download-endpoint)).
+  re-authorizes on every request ([SPEC §5.5](https://github.com/syncular/syncular/blob/main/SPEC.md#55-the-direct-download-endpoint)).
 - **Signed URL** — the descriptor carries a short-lived URL (native HMAC or
   S3/R2 presign); the client fetches it with no host credentials, so server
   egress for cold starts approaches zero
-  ([SPEC §5.4](../../SPEC.md#54-signed-url-segment-delivery)).
+  ([SPEC §5.4](https://github.com/syncular/syncular/blob/main/SPEC.md#54-signed-url-segment-delivery)).
 
 The client verifies every segment's content address after download and applies
 it in one transaction per block. Bootstrap is resumable and paged, pinned to
@@ -49,7 +49,7 @@ the `commitSeq` at which it started.
 
 Segment bytes are content-addressed **uncompressed**; compression is a
 transport/storage concern (zstd preferred, gzip fallback) and never visible on
-the wire ([SPEC §5.8](../../SPEC.md#0-deliberate-simplifications-vs-wire-v14--decisions)).
+the wire ([SPEC §5.8](https://github.com/syncular/syncular/blob/main/SPEC.md#0-deliberate-simplifications-vs-wire-v14--decisions)).
 Clients rely on native fetch decoding — no decompression code ships in the
 client bundle.
 
