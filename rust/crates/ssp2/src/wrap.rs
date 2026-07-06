@@ -36,7 +36,8 @@ pub fn public_from_private(private: &[u8; 32]) -> [u8; 32] {
 fn derive_wrap_key(shared: &[u8; 32]) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(Some(&[]), shared);
     let mut out = [0u8; 32];
-    hk.expand(HKDF_INFO, &mut out).expect("32 is a valid length");
+    hk.expand(HKDF_INFO, &mut out)
+        .expect("32 is a valid length");
     out
 }
 
@@ -94,8 +95,8 @@ pub fn unwrap_key(envelope: &[u8], recipient_private: &[u8; 32]) -> Result<Vec<u
     let recipient = StaticSecret::from(*recipient_private);
     let shared = recipient.diffie_hellman(&PublicKey::from(e_pub));
     let wrap_key = derive_wrap_key(shared.as_bytes());
-    let cipher = Aes256Gcm::new_from_slice(&wrap_key)
-        .map_err(|e| DecryptError(format!("bad key: {e}")))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&wrap_key).map_err(|e| DecryptError(format!("bad key: {e}")))?;
     cipher
         .decrypt(
             Nonce::from_slice(&nonce),

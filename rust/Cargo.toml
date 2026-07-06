@@ -7,4 +7,5 @@ members = [
   "crates/conformance-shim",
   "crates/ffi",
   "crates/bench",
+  "crates/syncular",
 ]

@@ -89,10 +89,7 @@ pub fn serialize_plain(value: &PlainValue) -> Result<Vec<u8>, String> {
 }
 
 /// Parse decrypted plaintext bytes back to a declared-type value (§5.11).
-pub fn deserialize_plain(
-    declared: DeclaredType,
-    bytes: &[u8],
-) -> Result<PlainValue, DecryptError> {
+pub fn deserialize_plain(declared: DeclaredType, bytes: &[u8]) -> Result<PlainValue, DecryptError> {
     match declared {
         DeclaredType::String | DeclaredType::Json | DeclaredType::BlobRef => {
             let text = std::str::from_utf8(bytes)
@@ -268,14 +265,20 @@ mod tests {
     #[test]
     fn round_trips_every_declared_type() {
         let cases = vec![
-            (DeclaredType::String, PlainValue::String("hello 🔐".to_owned())),
+            (
+                DeclaredType::String,
+                PlainValue::String("hello 🔐".to_owned()),
+            ),
             (DeclaredType::Json, PlainValue::Json("{\"a\":1}".to_owned())),
             (
                 DeclaredType::BlobRef,
                 PlainValue::BlobRef("{\"blobId\":\"x\"}".to_owned()),
             ),
             (DeclaredType::Integer, PlainValue::Integer(9007199254740991)),
-            (DeclaredType::Integer, PlainValue::Integer(-9007199254740991)),
+            (
+                DeclaredType::Integer,
+                PlainValue::Integer(-9007199254740991),
+            ),
             (DeclaredType::Float, PlainValue::Float(3.141592653589793)),
             (DeclaredType::Boolean, PlainValue::Boolean(true)),
             (DeclaredType::Bytes, PlainValue::Bytes(vec![0xde, 0xad])),

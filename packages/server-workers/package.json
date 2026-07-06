@@ -1,10 +1,49 @@
 {
   "name": "@syncular/server-workers",
-  "private": true,
-  "type": "module",
-  "exports": {
-    ".": "./src/index.ts"
+  "version": "0.2.0",
+  "description": "Cloudflare Workers adapter for the Syncular sync server",
+  "license": "Apache-2.0",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/server-workers"
   },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "browser": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!dist/**/*.test.js",
+    "!dist/**/*.test.d.ts"
+  ],
   "dependencies": {
     "@syncular/server": "workspace:*",
     "@syncular/server-hono": "workspace:*",

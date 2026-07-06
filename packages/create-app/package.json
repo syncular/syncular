@@ -1,13 +1,53 @@
 {
   "name": "create-syncular-app",
-  "private": true,
+  "version": "0.2.0",
+  "description": "Scaffold a new Syncular app: `create-syncular-app`",
+  "license": "Apache-2.0",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/create-app"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript"
+  ],
   "type": "module",
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
-    "create-syncular-app": "./src/cli.ts"
+    "create-syncular-app": "./dist/cli.js"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "bun": "./src/index.ts",
+      "browser": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
   },
+  "files": [
+    "dist",
+    "src",
+    "template",
+    "README.md",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!dist/**/*.test.js",
+    "!dist/**/*.test.d.ts"
+  ],
   "devDependencies": {
     "@syncular/typegen": "workspace:*"
   }

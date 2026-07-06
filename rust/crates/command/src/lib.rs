@@ -101,8 +101,8 @@ pub fn parse_encryption(
         return Ok(config);
     };
     for (key_id, key_val) in keys {
-        let bytes = value_bytes(Some(key_val))
-            .map_err(|e| format!("encryption key {key_id:?}: {e}"))?;
+        let bytes =
+            value_bytes(Some(key_val)).map_err(|e| format!("encryption key {key_id:?}: {e}"))?;
         if bytes.len() != 32 {
             return Err(format!(
                 "encryption key {key_id:?} must be 32 bytes, got {}",

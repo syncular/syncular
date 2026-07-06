@@ -1,0 +1,18 @@
+[package]
+name = "syncular"
+version = "0.2.0"
+edition = "2021"
+description = "Deprecated: the Syncular Rust client moved to the `syncular-client` crate. This crate is a placeholder."
+license = "Apache-2.0"
+repository = "https://github.com/syncular/syncular"
+readme = "README.md"
+keywords = ["sync", "offline-first", "crdt"]
+categories = ["database"]
+
+# Distinct lib name to avoid a `libsyncular.rlib` output collision with
+# `syncular-ffi` (whose [lib] name is `syncular`, the shipping native lib).
+# Nobody imports this placeholder crate — the crate NAME `syncular` is what
+# reserves the crates.io name; the lib name is irrelevant to the redirect.
+[lib]
+name = "syncular_deprecated"
+path = "src/lib.rs"

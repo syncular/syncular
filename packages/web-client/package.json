@@ -1,16 +1,83 @@
 {
   "name": "@syncular/client",
-  "private": true,
+  "version": "0.2.0",
+  "description": "Syncular TypeScript client core — offline-first sync over SQLite (WASM/OPFS, Bun, Node)",
+  "license": "Apache-2.0",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/web-client"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript"
+  ],
   "type": "module",
-  "scripts": {
-    "verify:node": "bun build ./test/node-database/verify-node.mjs --target=node --external better-sqlite3 --outfile=./.verify-node.built.mjs && node ./.verify-node.built.mjs"
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
   },
   "exports": {
-    ".": "./src/index.ts",
-    "./bun": "./src/bun-database.ts",
-    "./node": "./src/node-database.ts",
-    "./wasm": "./src/wasm-database.ts",
-    "./worker": "./src/worker-entry.ts"
+    ".": {
+      "bun": "./src/index.ts",
+      "browser": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./bun": {
+      "bun": "./src/bun-database.ts",
+      "browser": "./src/bun-database.ts",
+      "import": {
+        "types": "./dist/bun-database.d.ts",
+        "default": "./dist/bun-database.js"
+      }
+    },
+    "./node": {
+      "bun": "./src/node-database.ts",
+      "browser": "./src/node-database.ts",
+      "import": {
+        "types": "./dist/node-database.d.ts",
+        "default": "./dist/node-database.js"
+      }
+    },
+    "./wasm": {
+      "bun": "./src/wasm-database.ts",
+      "browser": "./src/wasm-database.ts",
+      "import": {
+        "types": "./dist/wasm-database.d.ts",
+        "default": "./dist/wasm-database.js"
+      }
+    },
+    "./worker": {
+      "bun": "./src/worker-entry.ts",
+      "browser": "./src/worker-entry.ts",
+      "import": {
+        "types": "./dist/worker-entry.d.ts",
+        "default": "./dist/worker-entry.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!dist/**/*.test.js",
+    "!dist/**/*.test.d.ts"
+  ],
+  "scripts": {
+    "verify:node": "bun build ./test/node-database/verify-node.mjs --target=node --external better-sqlite3 --outfile=./.verify-node.built.mjs && node ./.verify-node.built.mjs"
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
