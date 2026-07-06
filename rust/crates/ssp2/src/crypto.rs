@@ -279,7 +279,7 @@ mod tests {
                 DeclaredType::Integer,
                 PlainValue::Integer(-9007199254740991),
             ),
-            (DeclaredType::Float, PlainValue::Float(3.141592653589793)),
+            (DeclaredType::Float, PlainValue::Float(std::f64::consts::PI)),
             (DeclaredType::Boolean, PlainValue::Boolean(true)),
             (DeclaredType::Bytes, PlainValue::Bytes(vec![0xde, 0xad])),
         ];
