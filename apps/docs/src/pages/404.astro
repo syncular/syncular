@@ -1,0 +1,50 @@
+---
+// Teletype 404 — served by the Workers static-assets deploy
+// (not_found_handling: "404-page").
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>404 — signal lost — syncular</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body class="landing-body">
+    <div class="wrap">
+      <div class="statusbar">
+        <span>SYNCULAR TRANSMISSION // OFFLINE-FIRST SQL SYNC</span>
+        <span>SYNC: <span class="ok">NOMINAL</span> · LINK: <span class="ok">WS/OK</span></span>
+      </div>
+      <header class="topnav">
+        <a class="brand" href="/">SYNCULAR<span class="blink">_</span></a>
+        <nav>
+          <a href="/what-is/">DOCS</a>
+          <a href="/quickstart/">QUICKSTART</a>
+          <a href="https://github.com/syncular/syncular">GITHUB</a>
+        </nav>
+      </header>
+      <div class="rule" aria-hidden="true">{'='.repeat(160)}</div>
+      <main class="landing">
+        <section class="hero" style="text-align:center; padding-top:4rem;">
+          <h1 style="font-size:clamp(3rem,12vw,7rem); margin:0;">404<span>.</span></h1>
+          <p class="sub" style="margin-left:auto; margin-right:auto;">
+            Signal lost. That path crossed the event horizon and never came
+            back. Nothing escapes validation — including broken links.
+          </p>
+          <div class="cta-row" style="justify-content:center;">
+            <a class="btn primary" href="/">[ RETURN TO ORBIT ]</a>
+            <a class="btn" href="/what-is/">[ READ THE DOCS ]</a>
+          </div>
+        </section>
+      </main>
+      <footer class="footer">
+        <div class="rule" aria-hidden="true">{'='.repeat(160)}</div>
+        <div class="row">
+          <span class="end">SYNCULAR · APACHE-2.0 · END OF TRANSMISSION <span class="sq">■</span></span>
+        </div>
+      </footer>
+    </div>
+  </body>
+</html>

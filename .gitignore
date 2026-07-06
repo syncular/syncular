@@ -23,3 +23,6 @@ target/
 
 # astro build cache
 apps/docs/.astro/
+
+# wrangler local state
+apps/docs/.wrangler/

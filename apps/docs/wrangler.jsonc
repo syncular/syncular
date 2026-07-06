@@ -1,0 +1,17 @@
+{
+  // The docs site is served as a Workers static-assets deployment (not Pages)
+  // at the apex syncular.dev via a zone route over the apex's existing
+  // proxied DNS record — a plain worker route rather than a custom domain, so
+  // deploys never touch DNS. `dist/` is produced by `bun run build` (astro
+  // build + scripts/rebase.mjs); DOCS_BASE stays unset so root-absolute links
+  // are correct at the domain root.
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "syncular-docs",
+  "compatibility_date": "2026-07-01",
+  "assets": {
+    "directory": "./dist",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  "routes": [{ "pattern": "syncular.dev/*", "zone_name": "syncular.dev" }]
+}
