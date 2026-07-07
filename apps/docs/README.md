@@ -10,11 +10,12 @@ published site ships no highlighter JavaScript.
 The build also generates agent-discovery assets from the docs tree:
 `sitemap.xml`, `robots.txt`, `llms.txt`, Markdown page copies, an RFC 9727 API
 catalog, an OpenAPI description for public discovery endpoints, Auth.md notes,
-OAuth protected-resource metadata for the public docs resource, and an Agent
-Skills index. `src/worker.ts` fronts the static assets on Workers so homepage
-responses get discovery `Link` headers and `Accept: text/markdown` returns the
-generated Markdown variant. `public/webmcp.js` registers browser WebMCP tools
-when `navigator.modelContext` is available.
+OAuth authorization-server and protected-resource metadata for anonymous public
+docs access, and an Agent Skills index. `src/worker.ts` fronts the static
+assets on Workers so homepage responses get discovery `Link` headers,
+`Accept: text/markdown` returns the generated Markdown variant, and the public
+docs auth endpoints can answer simple POST requests. `public/webmcp.js`
+registers browser WebMCP tools when `navigator.modelContext` is available.
 
 ## Local build / dev
 
@@ -68,10 +69,14 @@ instead (auto-managed DNS), delete the apex A/AAAA record and re-add the
 hostname as a custom domain — that step needs DNS:Edit (dashboard or a
 DNS-scoped token), which the deploy token intentionally lacks.
 
-DNS for AI Discovery (DNS-AID) is also out-of-band because it must be published
-in Cloudflare DNS, not in the Worker bundle. When the discovery endpoint shape
-is finalized for the domain, add SVCB/HTTPS records under `_agents.syncular.dev`
-and keep DNSSEC enabled for authenticated answers.
+DNS for AI Discovery (DNS-AID) is also out-of-band because it is published in
+Cloudflare DNS, not in the Worker bundle. The organizational entrypoint is:
+
+```dns
+_index._agents.syncular.dev. 3600 IN SVCB 1 syncular.dev. mandatory=alpn,port alpn=h2 port=443
+```
+
+Keep DNSSEC enabled for authenticated answers.
 
 ### Manual deploy (locally authed wrangler)
 
