@@ -27,7 +27,7 @@ suite runs against.
 The production database path. It implements the same `ServerStorage`
 contract with the inverted scope index carried through as **covering
 indexes**, so scope fanout is an index range scan, never a
-scan-before-`LIMIT` (v1's production wound). A dedicated test asserts via
+scan-before-`LIMIT` (a production wound from earlier releases). A dedicated test asserts via
 `EXPLAIN` that the fanout candidate scans stay index-driven, so the
 regression cannot silently return. `storage.migrate()` applies the DDL
 idempotently — safe to call on every boot.

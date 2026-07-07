@@ -1,6 +1,6 @@
 # __PROJECT_NAME__
 
-A minimal [syncular](https://github.com/bkniffler/syncular) v2 app: a schema, a
+A minimal [syncular](https://github.com/bkniffler/syncular) app: a schema, a
 ~30-line server, and two client cores that converge — all in a terminal, no
 browser. This is the shape you grow a real backend from.
 

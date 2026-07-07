@@ -66,7 +66,7 @@ For a subscription `notesInList`, a `notesInListSubscription` with a
 ## Schema bumps — the upgrade story
 
 When your schema changes, you bump `schemaVersions` in the manifest and
-regenerate. The v2 model is **no client-side migration engine**
+regenerate. The model is **no client-side migration engine**
 ([direction decision 3](https://github.com/syncular/syncular/blob/main/ROADMAP.md),
 SPEC §7.4): a client never transforms its local tables from one version to the
 next. On a version change it **keeps the outbox, wipes its local tables,

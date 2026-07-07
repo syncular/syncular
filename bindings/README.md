@@ -1,6 +1,6 @@
 # syncular · bindings
 
-Host-integration packages over the syncular v2 core. Each binding is its **own
+Host-integration packages over the syncular core. Each binding is its **own
 isolated build** — a separate cargo/SwiftPM/Gradle/npm project with its own
 `check.sh` — and **none joins the main workspaces' gates** (`bun run check`, the
 main cargo gate, `bench:ci`). This keeps heavy platform toolchains (Tauri's
@@ -73,4 +73,4 @@ Kotlin needs JDK 21+ and Gradle; Flutter/Dart needs a Dart SDK (bundled with
 Flutter, or standalone); Tauri needs its cargo tree (+ webkit on Linux); RN needs
 only bun. CI runs the cheap lanes (Kotlin/FFM + Flutter/Dart + RN on Ubuntu, Tauri
 path-gated); the Swift lane is a documented local gate (a macOS runner is
-expensive) — see each README's CI note and `.github/workflows/v2.yml`.
+expensive) — see each README's CI note and `.github/workflows/ci.yml`.

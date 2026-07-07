@@ -146,6 +146,6 @@ else a system `gradle`.
 
 Unlike Swift (which needs an expensive macOS runner and is a local-only gate),
 the Kotlin/FFM gate is **cheap to compile-check on Ubuntu** with a JDK — so the
-`swift-kotlin-bindings` job in `.github/workflows/v2.yml` sets up JDK 21, builds
+`swift-kotlin-bindings` job in `.github/workflows/ci.yml` sets up JDK 21, builds
 the lean dylib, and runs `gradle test` on Linux. That exercises the real FFM
 downcalls against the real native core.

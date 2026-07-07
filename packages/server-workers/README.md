@@ -1,6 +1,6 @@
 # @syncular/server-workers
 
-The Cloudflare Workers entry for the Syncular v2 sync server (TODO §4.2). It
+The Cloudflare Workers entry for the Syncular sync server (TODO §4.2). It
 wires the runtime-neutral server core to Workers bindings — **D1** for
 storage, **R2** for durable segment/blob bytes, secrets for signing and
 auth — behind a standard Workers module `fetch` handler.

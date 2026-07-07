@@ -58,7 +58,7 @@ queue); set `SYNCULAR_CLIENT_ID` for a stable identity across runs.
 
 [`ci-smoke.sh`](ci-smoke.sh) is the full native-transport-to-real-server proof,
 run by the `swift-kotlin-bindings` job in
-[`.github/workflows/v2.yml`](../../../../.github/workflows/v2.yml): it builds the
+[`.github/workflows/ci.yml`](../../../../.github/workflows/ci.yml): it builds the
 native-transport dylib, starts the quickstart server, runs the example with
 scripted stdin (`add` → `sync`), asserts the outbox drained, then has an
 **independent** quickstart web-client sync and read the exact row back —

@@ -9,7 +9,7 @@ interface, after direct / worker-leader / multi-tab follower / Tauri.
 ## Why the native core (not JS syncular in Hermes)
 
 Decided in [ROADMAP block 1](../../ROADMAP.md#1-native-bindings-block-the-one-real-parity-gap):
-RN's Hermes runtime has **no OPFS and no sqlite-wasm**, and the v2 TS client's
+RN's Hermes runtime has **no OPFS and no sqlite-wasm**, and the TS client's
 persistent path depends on both. So RN uses the **native core** — `rusqlite` on
 the device filesystem, HTTP+WS owned in Rust (`native-transport`) — bridged
 through a TurboModule. The bridge is thin because the surface is already
@@ -140,7 +140,7 @@ honest scoping applies. To verify manually:
 
 The RN gate runs on the standard Ubuntu runner (bun bridge tests + the App
 integration render + tsc — **no native toolchain**), as part of the
-`swift-kotlin-bindings` job in `.github/workflows/v2.yml` (path-gated on
+`swift-kotlin-bindings` job in `.github/workflows/ci.yml` (path-gated on
 `bindings/**`). This lane now also proves the example App's hooks↔module
 integration, not just the bridge.
 

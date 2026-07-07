@@ -228,7 +228,7 @@ duplicate or unknown-column index; trailing clauses (`STRICT`).
 
 **`DEFAULT` literals are accepted and ignored**: typegen extracts the
 schema *shape*; executing migrations (where defaults matter) is the
-host's job. Rejecting them would make real v1-style migrations unusable
+host's job. Rejecting them would make real-world migrations unusable
 as input; recording them is not needed by any emitter today.
 
 ## 4. Generated-module contract
