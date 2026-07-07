@@ -1,0 +1,317 @@
+# DESIGN — The query surface: two frontends, one IR, SQL underneath
+
+Status: **draft for direction decision** (2026-07-08). Supersedes the ad-hoc
+named-query annotations (`-- name:` et al.) as the plan of record for the
+typed read tier. Folds in four already-sense-checked decisions from the same
+discussion thread: Kysely removal, hook renames, core read guards, and the
+untyped `sql` tag escape hatch (§8). Nothing here changes the wire protocol;
+this is entirely a codegen/DX surface.
+
+Problem, one line: reads need **reusable filters, optional filters, safe
+dynamic knobs (orderBy/limit), and typed signatures on every platform** —
+without a runtime query builder (TS-only, rejected) and without growing a
+templating language inside SQL comments (dbt-Jinja failure mode).
+
+Recommendation summary (one line per design question, argued below):
+
+| # | Question | Recommendation |
+|---|---|---|
+| 1 | How many query-file formats | **Two frontends, one IR**: a minimal `.sql` frontend (sqlc-style, zero learning) and a full custom DSL. Both parse to the same `QueryIR`; everything downstream is frontend-agnostic |
+| 2 | Where composition happens | **Generate time, always.** Every feature must: resolve at generate time, produce SQLite-checkable SQL, emit identically on all codegen targets, keep the invalidation table set static |
+| 3 | `.sql` frontend scope | Deliberately minimal: `:params` + `-- name:` only. No fragments, no conditionals, no knobs. It is the "any SQL tool understands this file" tier and the compatibility floor |
+| 4 | DSL shape | Functional container (GraphQL-style signatures, SQLDelight-style inference), **SQL expressions inside**. Not a new query language — the skeleton is structured, the predicates are SQL |
+| 5 | Conditional filters | **Auto-guarded conjuncts**: a WHERE conjunct that mentions an optional param applies only when that param is provided. Explicit `if (…) { … }` for guards whose param is not in the predicate. No `IS NULL OR` boilerplate in the DSL tier |
+| 6 | Conditional compilation | Two interchangeable backends behind one semantic: `(:p IS NULL OR …)` neutralization (default) and 2^N variant enumeration (opt-in / auto above a planner-relevant threshold). API-invisible |
+| 7 | Fragments | First-class declarations with their own params (optional params propagate into the using query's signature, GraphQL-fragment style). Splice + re-check; never a runtime concept |
+| 8 | Identifier/value knobs | `orderBy` = allowlist (identifiers can't be bound); `limit`/`offset` = bound params with codegen-declared clamp (they are values; no allowlist needed) |
+| 9 | Injection stance | Values only ever bind; identifiers only enter via codegen allowlists; `client.query` gains the read-only verb allowlist + single-statement enforcement **in core** (moved out of the deleted Kysely layer) |
+| 10 | Tooling | Owned as a product surface: `syncular fmt`, `generate --print <name>`, VS Code TextMate grammar with embedded `source.sql` regions, LSP staged after. Grammar + golden fixtures are spec'd like the wire vectors |
+
+---
+
+## 1. Architecture: two frontends, one IR
+
+```
+queries/*.sql        queries/*.<ext>
+     │                     │
+  sql frontend        dsl frontend          (parsers; zero deps, hand-rolled)
+     └────────┬────────────┘
+          QueryIR                            (name, params, fragments applied,
+     ┌────────┴────────┐                      knobs, conditional groups)
+     │  expand + lower │                     (fragment splice, guard lowering,
+     └────────┬────────┘                      variant enumeration)
+        plain SQL (1..n statements per query)
+     ┌────────┴────────┐
+     │  SQLite check   │                     (prepare against real schema:
+     └────────┬────────┘                      types, columns, projection)
+        checked QueryIR + inferred types + table set
+     ┌────────┴────────┐
+     │   emitters      │                     (TS / Swift / Kotlin / Dart …)
+     └─────────────────┘
+```
+
+The forcing function is deliberate (and is the reason to ship both
+frontends rather than one): **nothing below `QueryIR` may know which file
+format a query came from.** The conformance test for the frontends is the
+same trick the protocol uses for the two cores — golden fixtures where
+equivalent inputs in both formats must produce byte-identical IR JSON.
+
+`QueryIR` extends the existing typegen IR (`ir.ts` / `query.ts`), roughly:
+
+```ts
+interface QueryIrUnit {
+  name: string;
+  params: { name: string; type: SqlType /* inferred */; optional: boolean;
+            group?: string /* from+to pairing */ }[];
+  sql: string;                        // lowered, static — or:
+  variants?: { when: string[]; sql: string }[]; // variant backend (§6)
+  tables: string[];                   // static invalidation set
+  orderBy?: { allowed: string[]; default: string };
+  limit?: { max?: number; default?: number };
+}
+```
+
+Everything after the IR already exists (SQLite checking, per-language
+emitters, `tables` descriptors for live-query invalidation) — this design
+adds frontends and the lowering stage, not a new pipeline.
+
+## 2. The `.sql` frontend — the compatibility floor
+
+Exactly what ships today, minus ambition: UTF-8 `.sql` files, one or more
+statements, `-- name: identifier` labels, `:param` binds. Checked by
+SQLite, typed signatures inferred, done. **No fragments, no conditionals,
+no knobs, ever.** Its contract is: every SQL editor, formatter, LLM, and
+`sqlite3` shell on earth understands this file with zero context. Users who
+never open the DSL still get typed cross-platform queries; users who need
+one weird query that the DSL can't express can always drop to it.
+
+This tier is also the migration story: existing `queries/*.sql` files keep
+working unchanged.
+
+## 3. The DSL — container, not query language
+
+Design position (from the survey of sqlc, SQLDelight, GraphQL, Prisma,
+PRQL/EdgeQL, dbt, Malloy): keep **SQL as the expression language**, steal
+the **container** from GraphQL (named operations, declared variables,
+optionality, fragments) and **inference** from SQLDelight (param and row
+types come from the real schema — signatures declare only what SQL cannot
+express: existence, optionality, grouping, knobs).
+
+Reference sketch (grammar to be spec'd in §10):
+
+```text
+fragment visibleIn(listId) {
+  list_id = :listId and archived_at is null and deleted = 0
+}
+
+fragment search(q?) {
+  title like '%' || :q || '%'
+}
+
+query listTodos(listId, status?, from+to?, unassigned?: flag)
+  orderBy position | created_at | title default position
+  limit max 200 default 50
+{
+  select id, title, done, created_at
+  from todos
+  where @visibleIn(:listId)
+    and @search(:q)
+    and status = :status
+    and created_at between :from and :to
+    and if (:unassigned) { assignee_id is null }
+}
+```
+
+Notes:
+
+- The body is SQL-shaped and every predicate is a real SQL expression —
+  copy-paste fluency and SQLite checkability survive. Only the skeleton
+  (signature, knob clauses, `@fragment` refs, `if` guards) is DSL.
+- `@search(:q)` declares an optional param in the *fragment*; using the
+  fragment adds `q?` to `listTodos`' generated signature (GraphQL-fragment
+  variable propagation). This is the reuse story: define "searchable" once,
+  every query that spreads it gets the optional param and the guard.
+- `: flag` is the one param type annotation that exists — a boolean guard
+  param that never binds into SQL (it has no `:unassigned` in any
+  predicate). Everything else is inferred.
+
+## 4. Conditionals — the design question this doc exists for
+
+Constraint recap: "conditional" may never mean runtime SQL assembly. It
+means: the finite set of possible statements is enumerated, lowered, and
+SQLite-checked at generate time (§6). The question is purely *syntax* — how
+does the author express "this filter applies only when its param is given"?
+
+**Rejected — R1, comment-guard prefix in .sql** (`@when(:x) AND …`): scoping
+is line-break-implied and the macro rewrites text into something that reads
+differently than written. Killed in review; it's what pushed the advanced
+tier out of `.sql` files entirely.
+
+**Rejected — R2, WYSIWYG `IS NULL OR` + header annotation**: correct and
+maximally boring, and it remains *valid* in both tiers (it's just SQL). But
+as the primary interface it's verbose, the `from+to` form is genuinely easy
+to fumble, and the user-facing point of the DSL tier is to be better than
+this.
+
+**Option A — explicit guards with delimiters:**
+
+```text
+where @visibleIn(:listId)
+  and if (:status)    { status = :status }
+  and if (:from, :to) { created_at between :from and :to }
+```
+
+Pro: nothing implicit; the braces bound the guarded predicate; multi-param
+guards are visible. Con: ceremony on every optional filter — and the guard
+param list duplicates information already present in the signature (`?`)
+and in the predicate (which params it mentions).
+
+**Option B — auto-guarded conjuncts (recommended):**
+
+> A top-level `AND` conjunct of a `where` clause that mentions one or more
+> **optional** params applies only when all of them are provided.
+
+```text
+query listTodos(listId, status?, from+to?)
+{
+  …
+  where @visibleIn(:listId)
+    and status = :status                        -- applies iff status given
+    and created_at between :from and :to        -- applies iff both given
+}
+```
+
+The signature's `?` is the *entire* conditional syntax. This is precise —
+unlike the rejected comment-tier idea, the DSL parses the WHERE expression
+into an AST, so "top-level conjunct containing `:status`" is an exact,
+teachable boundary, not a textual heuristic. It also composes with
+fragments for free (`@search(:q)` is a conjunct; `q` is optional; done).
+
+Two rules keep B honest:
+
+- **B1 — placement validator.** An optional param appearing anywhere other
+  than a top-level conjunct (nested under `OR`, inside a subquery, in the
+  projection) is a generate-time **error** telling the author to write an
+  explicit `if` guard or make the param required. No silent weird
+  semantics.
+- **B2 — explicit `if` remains** for the case auto-guarding cannot express:
+  a guard whose param does not appear in the predicate
+  (`if (:unassigned) { assignee_id is null }`). So Option A's syntax ships
+  too, as the fallback — B is sugar over A, A is the primitive, and the
+  lowering is identical.
+
+**Option C — pipeline/builder syntax** (PRQL-style `filter`, structured
+where-blocks): rejected. It abandons SQL-expression fluency for the whole
+body and is the first step of the "new query language" cliff (years of
+parser/semantics work, breaks copy-from-anywhere, unfamiliar to LLMs).
+
+Recommendation: **B with A as its primitive** (`if` for the flag case,
+auto-guard for the 90% case), R2 always available underneath as plain SQL.
+
+## 5. Knobs: orderBy and limit
+
+- `orderBy a | b | c default a` — the only genuine identifier problem
+  (column names cannot bind). Lowered as a codegen-baked map: the generated
+  function takes `orderBy?: 'a'|'b'|'c'` (an enum on native targets) +
+  `dir?: 'asc'|'desc'`; user input selects *from* the allowlist and never
+  becomes SQL text. Each allowed column is SQLite-checked at generate time.
+- `limit max 200 default 50` — limits/offsets are **values**: they bind as
+  ordinary params. The clause only adds the clamp (enforced in the
+  generated function) and the default. No allowlist machinery.
+- Both knobs are declared per-query; a fragment cannot carry knobs (keeps
+  fragments purely predicative — revisit only with evidence).
+
+## 6. Lowering conditionals: two backends, one semantic
+
+- **Default — neutralization**: each guarded conjunct lowers to
+  `(:p IS NULL OR (conjunct))` (all guard params disjoined for groups). One
+  static statement, one prepared statement, static table set. On local
+  SQLite at local-first data sizes, the planner cost of the `OR :p IS NULL`
+  form is noise.
+- **Opt-in / auto — variant enumeration**: lower to one statement per
+  combination of provided optional groups (2^N, N = optional *groups*, not
+  params), dispatch in the generated function by null-ness. Perfect index
+  use, still fully generate-time-checked (every variant is prepared against
+  the schema). Guard: warn at N > 4, error at N > 8 (16/256 statements) —
+  a query with nine independent optional filters is a design smell, not a
+  codegen challenge.
+
+The two backends are semantically identical by construction and covered by
+the same golden fixtures; switching is a per-query flag (or a future
+heuristic), never an API change. This is the concrete payoff of composing
+at generate time.
+
+## 7. Injection posture (restated as invariants)
+
+- **I1** — values only ever reach SQLite as bound parameters. True today in
+  every driver (bun:sqlite, sqlite-wasm `bind`, better-sqlite3, rusqlite);
+  the DSL adds no interpolation path.
+- **I2** — identifiers only enter SQL via generate-time allowlists
+  (`orderBy`) or literal author-written SQL. There is no runtime identifier
+  API in the typed tier.
+- **I3** — `client.query()` (the raw tier) gains, **in core**, the
+  read-only verb allowlist (`select/with/explain/pragma/values`) and
+  single-statement enforcement (sqlite-wasm `exec` happily runs
+  `SELECT …; DROP …` today; bun/better-sqlite3 don't — unify on the strict
+  behavior). These guards currently live in `@syncular/kysely`, i.e. the
+  package being deleted; they move before it dies.
+- **I4** — the TS `sql` tagged-template helper (escape hatch tier) is
+  values→params + `ident(value, allowlist)` + loud `raw()`. It is
+  permanently untyped plumbing; it never grows fragments, types, or any
+  feature that overlaps the DSL. One DSL, not two half-DSLs.
+
+## 8. Folded-in decisions from the same thread
+
+These ship in the same milestone because they are one coherent story
+("the v0.3 query surface"):
+
+- **Kysely removal**: `@syncular/kysely` deprecated + deleted from the
+  tree; `useTypedQuery` and the typegen Kysely `Database` emitter go with
+  it. Reasons of record: TS-only (breaks the ×5 story), weaker checking
+  than generate-time SQLite, the only third-party dep in the read path.
+- **Hook renames**: `useNamedQuery` → **`useQuery`** (the way),
+  `useSyncQuery` → **`useRawSql<T>`** (the escape hatch). "Sync" as an
+  adjective was noise (everything is synced) and misread as "synchronous".
+  `useSyncStatus`/`SyncProvider` keep their names (sync is the noun there).
+- **Docs**: `tooling-kysely` page dies; `tooling-queries` becomes the DSL
+  page; migration page gains an honest "removed in 0.3" note.
+
+## 9. Tooling (owned surface, staged)
+
+1. `syncular generate --print <name>` — dump the lowered, checked SQL (and
+   variants) for any query. Ships with the DSL; "what does this actually
+   run" must always be one command away.
+2. `syncular fmt` — canonical formatter for the DSL (one style, no
+   options), built on the same parser. `.sql` files are left to the
+   ecosystem's formatters on purpose.
+3. VS Code extension — TextMate grammar with embedded `source.sql` regions
+   for bodies/predicates (explicit block structure makes this easy);
+   diagnostics by running `generate --check` on save. LSP (go-to-fragment,
+   hover-expanded-SQL, signature hints) staged after the format stabilizes.
+4. Grammar spec + golden fixtures (parse → IR JSON → lowered SQL) live in
+   the repo like `spec/vectors/` — a format change requires updated
+   fixtures in the same commit.
+
+## 10. Staging
+
+| Stage | Contents | Gate |
+|---|---|---|
+| Q0 | Direction decision recorded; grammar spec (EBNF) + fixture format authored | review of this doc |
+| Q1 | Core guards in `client.query` (I3); `sql` tag helper (I4); hook renames; Kysely removal | existing tests + new guard tests |
+| Q2 | `QueryIR` + lowering pipeline extracted in typegen; `.sql` frontend re-based onto it (no user-visible change) | golden IR fixtures green; existing named-query fixtures byte-identical |
+| Q3 | DSL frontend: parser, fragments, auto-guarded conditionals (B1 validator, `if` primitive), knobs; neutralization backend; `--print` | dual-frontend equivalence fixtures; demo apps ported |
+| Q4 | Variant-enumeration backend; `syncular fmt`; VS Code grammar | fixture parity across backends |
+| Q5 | LSP; heuristic backend selection | usage evidence |
+
+## 11. Open questions (decide at Q0)
+
+- File extension for the DSL (`.sq` is SQLDelight's — avoid; candidates:
+  `.syq`, `.sqx`, `.synql`). Pure bikeshed, decide once.
+- Casing/keyword style: the sketch uses lowercase SQL; `fmt` will pick one
+  canon — which?
+- Should fragments be usable from the `.sql` frontend? Current answer:
+  **no** (keeps §2's contract absolute); revisit only with demand.
+- `offset` knob: ship with `limit` or wait for pagination-pattern evidence
+  (keyset vs offset)?
+- Does the DSL allow multiple queries per file (like `.sql`)? Sketch
+  assumes yes; confirm.
