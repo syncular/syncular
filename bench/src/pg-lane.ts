@@ -4,8 +4,8 @@
  * `bench:ci` budgets (those stay on the deterministic in-process sqlite
  * loopback). This lane measures the production database path — 100k
  * bootstrap and online propagation — against a real Postgres, so the
- * inverted-scope-index behavior is exercised end to end where v1's
- * production wound actually lived.
+ * inverted-scope-index behavior is exercised end to end on the engine
+ * where scan-before-LIMIT regressions would actually bite.
  *
  *   SYNCULAR_PG_URL=postgres://user:pass@localhost:5432/db bun run bench
  *

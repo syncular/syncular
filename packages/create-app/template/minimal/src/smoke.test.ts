@@ -2,7 +2,7 @@
  * The template's own smoke test: boots the real Hono server on an ephemeral
  * port and drives two independent bun:sqlite client cores through it over real
  * HTTP, asserting they converge. This runs in the scaffolded app's own `bun
- * test`, AND (because the template lives in the workspace) in the v2 sweep — so
+ * test`, AND (because the template lives in the workspace) in the repo test sweep — so
  * the template itself cannot rot.
  */
 import { afterAll, beforeAll, expect, test } from 'bun:test';

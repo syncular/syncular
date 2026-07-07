@@ -4,7 +4,7 @@
  * background pruner churns the log. The point is stability over time, not
  * peak throughput: RSS is watched (a leak shows as peak RSS creeping past
  * the ceiling), and the zero-protocol-error budget must hold for the whole
- * duration. Ports v1's mixed-soak intent.
+ * duration.
  */
 
 import { clientProject, STORM_PROJECT } from '../fixture';

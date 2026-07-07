@@ -74,11 +74,9 @@ It is deliberately not several other things:
 
 ## Boring by design
 
-Earlier releases of syncular proved the design — scopes, a server-authoritative
-log with an optimistic outbox, precomputed snapshots — but bled effort on
-infrastructure entropy: one Rust binary bridged everywhere, an implicit
-protocol, toolchain taxes on JS users. Today's syncular keeps the design and
-spends the whole budget on **boring-ness**:
+Sync engines usually bleed effort on infrastructure entropy: implicit
+protocols, toolchain taxes, fallback ladders. Syncular spends its whole
+budget on **boring-ness**:
 
 | Decision | Why it matters |
 |---|---|
