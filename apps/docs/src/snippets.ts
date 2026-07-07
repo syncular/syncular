@@ -34,7 +34,7 @@ client.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['inbox'] } }
 client.mutate([{
   table: 'todos',
   op: 'upsert',
-  values: { id: 't1', list_id: 'inbox', title: 'Ship it', done: 0 },
+  values: { id: 't1', listId: 'inbox', title: 'Ship it', done: 0 },
 }]);
 await client.syncUntilIdle();
 

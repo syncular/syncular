@@ -67,7 +67,9 @@ schema guide and suggests `syncular init`.
 |---|---|---|
 | `manifestVersion` | yes | Must be `1`. Format growth happens by bumping this, not by tolerating unknown keys. |
 | `migrations` | no (default `./migrations`) | Directory of `NNNN_name/up.sql` migrations, relative to the manifest. |
-| `queries` | no (default `./queries`) | Directory of `.sql` named-query files (see §6). Only read when some output requests a queries file. |
+| `queries` | no (default `./queries`) | Directory of `.sql` / `.syql` named-query files (see §6). Only read when some output requests a queries file. |
+| `naming` | no (default `"camel"`) | §5-of-DESIGN-queries casing: `"camel"` maps snake_case SQL names to camelCase in generated row types/params (projections lower with `AS` aliases so runtime keys match); `"preserve"` keeps SQL-truth names. Collisions/keyword hazards are generate-time errors. |
+| `queryBackend` | no (default `"neutralize"`) | `.syql` conditional lowering: `"neutralize"` (one guarded statement), `"variants"` (enumerate per provided-combination whenever eligible), `"auto"` (enumerate at ≤ 2 optional groups). The per-query `variants` knob always forces. |
 | `output.ir` | no (default `./syncular.ir.json`) | IR output path, relative to the manifest. |
 | `output.module` | no (default `./syncular.generated.ts`) | Generated TS module path, relative to the manifest. |
 | `output.queries` | no | Opt-in TS named-queries output path (see §6). A sibling `.ts` file. |
@@ -318,10 +320,23 @@ null/nil (fail-soft at the decode boundary, not a crash).
 ## 6. Named queries (the `.sql` → typed-function tier)
 
 The **named-query** tier is syncular's cross-platform answer to sqlc /
-SQLDelight: you write a `.sql` file, and typegen transpiles it into a typed
+SQLDelight: you write a query file, and typegen transpiles it into a typed
 function on every platform — killing query↔type drift *by construction*. It is
 the type-safe **read** tier; raw `query(sql, params)` — guarded read-only —
 stays the escape hatch for queries built at runtime.
+
+Two frontends feed one pipeline (DESIGN-queries.md is the design of record):
+**`.sql`** — plain SQL + `:params`, the compatibility floor, documented in
+this section — and **`.syql`** — the DSL container (declared optional params
+with auto-guarded conjuncts, `from+to?` groups, `?: flag` guards with
+`if (…) { … }`, file-scoped `@fragments`, `orderBy`/`limit` knobs, and the
+opt-in `variants` enumeration backend), which lowers at generate time to the
+same checked plain SQL. Tooling: `syncular generate --print <name>` (the
+lowered SQL), `syncular fmt` (canonical `.syql` style), `syncular lsp`
+(diagnostics/hover/definition over stdio). Casing follows the manifest
+`naming` mode (§1): generated rows/params are camelCase and projections are
+`AS`-aliased so runtime keys match; `mutate` accepts camel and snake keys
+both.
 
 **File & naming convention.** Named queries live in a `queries/` directory
 next to `migrations/` (override with the top-level `"queries"` manifest key).

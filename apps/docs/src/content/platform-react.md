@@ -112,7 +112,7 @@ queries re-run on the resulting invalidation batch without a manual refetch.
 ```tsx
 const { mutate, isPending } = useMutation();
 await mutate([
-  { table: 'tasks', op: 'upsert', values: { id: crypto.randomUUID(), project_id: 'p1', title: 'new', done: false } },
+  { table: 'tasks', op: 'upsert', values: { id: crypto.randomUUID(), projectId: 'p1', title: 'new', done: false } },
 ]);
 ```
 
@@ -165,7 +165,7 @@ function TodoApp() {
       {
         table: 'todos',
         op: 'upsert',
-        values: { id: crypto.randomUUID(), list_id: list, title, done: false, position: rows.length + 1, updated_at_ms: Date.now(), attachment: null },
+        values: { id: crypto.randomUUID(), listId: list, title, done: false, position: rows.length + 1, updatedAtMs: Date.now(), attachment: null },
       },
     ]);
 

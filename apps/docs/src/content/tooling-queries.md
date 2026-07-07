@@ -1,20 +1,30 @@
 # Named queries
 
-Write a `.sql` file, get a **typed function on every platform**. The
+Write a query file, get a **typed function on every platform**. The
 named-query tier is syncular's cross-platform answer to sqlc / SQLDelight:
 typegen type-checks each query against your real SQLite schema at generate
 time and emits it as a typed function for TypeScript, Swift, Kotlin, and
 Dart — killing query↔type drift by construction.
 
+There are two frontends, one pipeline:
+
+- **`.sql`** — the compatibility floor. Plain SQL + `:params`; every SQL
+  editor, formatter, and LLM understands the file with zero context.
+- **`.syql`** — the DSL tier. A thin, GraphQL-style *container* around SQL
+  expressions: declared optional params, reusable fragments, and safe
+  `orderBy`/`limit` knobs — all composed at **generate time** into one plain,
+  SQLite-checked statement. Never a runtime query builder.
+
 This page is the workflow. The authoritative contract (naming rules, typing
 fidelity, error catalog) is
-[typegen README §6](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md).
+[typegen README §6](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md);
+the design of record is `DESIGN-queries.md` in the repo.
 
-## Write a query
+## Write a query (.sql)
 
 Named queries live in a `queries/` directory next to `migrations/`
 (override with the `"queries"` manifest key; subfolders are pure
-organization). Each file holds one or more `SELECT` statements:
+organization). Each `.sql` file holds one or more `SELECT` statements:
 
 ```sql
 -- queries/list-todos.sql
@@ -59,24 +69,139 @@ precede. The marker form is deliberate: a plain prose comment never silently
 renames a query. Duplicate names anywhere in the manifest are a hard error
 listing both source locations.
 
+## SQL stays snake_case; your code gets camelCase
+
+Column names are SQL truth — schema, `.sql`, and `.syql` bodies are authored
+against the real snake_case names. **Casing is an emitter concern**: the
+generated row types, params, and native struct fields are camelCase
+(`created_at` → `createdAt`), and the projection is lowered with `AS`
+aliases so the *runtime* result keys are the camelCase names too — zero
+runtime mapping, visible via `generate --print`.
+
+- Author-written aliases are respected and convention-mapped like any
+  column (`AS doc_count` → `docCount`).
+- Collisions (`col_2` + `col2`), target-language keywords, and leading
+  underscores on the Dart target are generate-time **errors**.
+- `client.mutate` accepts value keys in **both** casings — the canonical
+  camelCase of the generated row types and the SQL-truth snake_case — one
+  map lookup per key, nothing fuzzy.
+- The raw tier is raw: `client.query` / `useRawSql` return whatever SQLite
+  returns. Alias in SQL if you want camel keys there.
+- Opt out with `"naming": "preserve"` in `syncular.json`.
+
+## The `.syql` DSL tier
+
+When a screen needs *optional* filters, reusable predicates, or a
+user-selectable sort, plain SQL gets verbose. `.syql` files declare that
+structure in the signature and keep every predicate real SQL:
+
+```text
+fragment visibleIn(listId) {
+  list_id = :listId and archived_at is null
+}
+
+fragment search(q?) {
+  title like '%' || :q || '%'
+}
+
+query listTodos(listId, status?, from+to?, unassigned?: flag)
+  orderBy position | created_at | title default position
+  limit max 200 default 50
+{
+  select id, title, done, created_at
+  from todos
+  where @visibleIn(:listId)
+    and @search(:q)
+    and status = :status
+    and created_at between :from and :to
+    and if (:unassigned) { assignee_id is null }
+}
+```
+
+What each piece means:
+
+- **`status?` — auto-guarded optionals.** A top-level `where` conjunct that
+  mentions an optional param applies **only when it is provided**. Omit
+  `status` at the call site and `and status = :status` is a no-op; pass it
+  and it filters. The signature's `?` is the entire conditional syntax.
+- **`from+to?` — groups.** Both params apply together: the `between`
+  conjunct runs only when *both* are provided.
+- **`unassigned?: flag` — boolean guards.** A flag never appears in a
+  predicate; it gates one via the explicit primitive:
+  `if (:unassigned) { assignee_id is null }` applies its predicate only
+  when the flag is passed as `true`. (`if (:a, :b) { … }` is also how you
+  guard a predicate on params it doesn't mention.)
+- **`@visibleIn(:listId)` — fragments.** First-class, file-scoped, spliced
+  at generate time. A fragment's own optional params propagate: using
+  `@search(:q)` adds `q?` to `listTodos`' generated signature.
+- **`orderBy … default …` — the identifier knob.** Column names cannot
+  bind, so the allowlist is baked into the generated code: the function
+  takes `orderBy?: 'position' | 'createdAt' | 'title'` + `dir?: 'asc' |
+  'desc'`, user input only ever *selects* from the checked list, and every
+  allowed column is prepared against the schema at generate time.
+- **`limit max 200 default 50` — the value knob.** Limits bind as ordinary
+  params; the default and clamp live in the SQL
+  (`limit min(coalesce(:limit, 50), 200)`), so an absent value is a no-op.
+
+Everything lowers to **one plain SQL statement** — optional conjuncts
+become `(:p is null or (…))` guards — checked by SQLite like any `.sql`
+query. Optional params outside a top-level `where` conjunct (under an `OR`,
+inside a subquery, in the projection) are loud generate-time errors telling
+you to use `if (…) { … }` or make the param required.
+
+### Pagination is keyset, on purpose
+
+There is no `offset` knob: offset pagination over *live* local queries
+drifts as synced writes shift rows. The right pattern falls out of optional
+params with zero new syntax:
+
+```text
+query todosPage(listId, before?)
+  limit max 100 default 50
+{
+  select id, title, created_at from todos
+  where list_id = :listId
+    and created_at < :before
+  order by created_at desc
+}
+```
+
+First call: no `before`, newest page. Next call: pass the last row's
+`createdAt`. Stable under live updates and index-friendly.
+
+### The variants backend
+
+By default a `.syql` query is one neutralized statement. Add the `variants`
+knob (or set `"queryBackend": "variants" | "auto"` in the manifest — `auto`
+enumerates at ≤ 2 optional groups) and typegen instead emits one checked
+statement per combination of provided optional groups, with the generated
+function dispatching on provided-ness — perfect index use, same semantics,
+same API. More than 8 groups is an error: a query with nine independent
+optional filters is a design smell, not a codegen challenge.
+
 ## Type-checked against the real schema
 
 At generate time, typegen synthesizes your schema's DDL from the IR, builds
-an in-memory SQLite database, and `prepare()`s each query — **SQLite itself
-is the correctness authority**. A bad table or column reference fails
-`syncular generate` with SQLite's own message, not at runtime on a device.
+an in-memory SQLite database, and `prepare()`s each query (and every knob
+variant) — **SQLite itself is the correctness authority**. A bad table or
+column reference fails `syncular generate` with SQLite's own message, not at
+runtime on a device.
 
 - A plain column reference (`title`, `t.title`, `title AS x`) resolves to
   the exact IR column type and nullability.
 - A computed expression (`count(*)`, `done + 1`) falls back to number or
   string, always nullable — alias it to a plain ref if you want an exact type.
 - Parameters use `:name`. A param compared against a column
-  (`WHERE list_id = :listId`) infers that column's type; anything ambiguous
-  needs a `-- param :name type` comment, and missing both is a generate-time
-  error naming the param and the fix.
+  (`WHERE list_id = :listId`), a `BETWEEN` endpoint, or a `LIKE` operand
+  infers its type; anything ambiguous needs a `-- param :name type` comment
+  (`.sql` tier), and missing both is a generate-time error naming the param
+  and the fix.
 
-Named queries are **reads**. Any non-`SELECT` statement is a hard error at
-generate time, pointing at `mutate()` — writes go through the outbox.
+Named queries are **reads**. Any write statement is a hard error at
+generate time, pointing at `mutate()` — writes go through the outbox. A
+`WITH` is allowed when its main statement is a `SELECT` (SQLite also allows
+`WITH … DELETE`; both the generator and the core's raw-query guard reject
+those).
 
 ## Turn on the outputs you need
 
@@ -109,7 +234,7 @@ For `list-todos.sql` above, each platform gets the projection's own row type
 import { listTodos } from './syncular.queries';
 
 const rows = await listTodos(client, { listId: 'demo' });
-// rows: ListTodosRow[] — typed by the query's own projection
+// rows: ListTodosRow[] — { id, listId, title, done, position, updatedAtMs }
 ```
 
 `client` is anything with `query(sql, params)` — a direct `SyncClient`, a
@@ -124,7 +249,9 @@ import { listTodosQuery } from './syncular.queries';
 const { rows, isLoading } = useQuery(listTodosQuery, { listId });
 ```
 
-Swift (throws on failure, rows decode to the generated struct):
+Optional `.syql` params are optional keys (`status?: string | null`); knobs
+add `orderBy?` / `dir?` / `limit?`. Swift (throws on failure, rows decode to
+the generated struct):
 
 ```swift
 let rows = try SyncularSchemaQueries.listTodos(client: client, listId: "demo")
@@ -144,7 +271,8 @@ final rows = syncularListTodosQuery(client, listId: 'demo');
 
 Native rows decode through the same rules as the schema structs: SQLite's
 `0`/`1` booleans become real `Bool`/`Boolean`/`bool`, and bytes columns
-decode from the core's hex marshaling.
+decode from the core's hex marshaling. Optional params default to
+`nil`/`null`; orderBy allowlists are per-query enums.
 
 ## Exact invalidation
 
@@ -153,18 +281,35 @@ validated by the same `prepare()`. On React, `useQuery` uses it as the exact
 dependency set, so a named query re-runs exactly when one of its tables
 invalidates, never on unrelated writes.
 
+## Tooling
+
+- **`syncular generate --print <name>`** — dump one query's lowered,
+  checked SQL (params, tables, knob variants). "What does this actually
+  run" is always one command away.
+- **`syncular fmt`** — the canonical `.syql` formatter (one style, no
+  options): lowercase keywords, one clause per line, and-prefixed WHERE
+  conjuncts. `--check` for CI. `.sql` files are left to the ecosystem's
+  formatters on purpose.
+- **`syncular lsp`** — a zero-dependency language server over stdio:
+  generate-time diagnostics as you type, hover shows the lowered SQL,
+  go-to-definition on `@fragment` refs.
+- **VS Code** — `editors/vscode-syql` in the repo highlights the container
+  grammar with embedded SQL regions.
+
 ## Why this is the recommended read tier
 
-- **Cross-platform**: one `.sql` file, four language outputs — the only
+- **Cross-platform**: one query file, four language outputs — the only
   typed read tier that exists on Swift, Kotlin, and Dart, not just TypeScript.
 - **Checked at generate time**: schema drift breaks the build, not the app.
 - **Boring by design**: the SQL you ship is the SQL you wrote — comments
-  stripped, `:name` rewritten to positional `?`, nothing else.
+  stripped, `:name` rewritten to positional placeholders, camel aliases and
+  optional-param guards visible via `--print`, nothing else.
 
 Raw `client.query(sql, params)` (and React's `useRawSql`) is the escape
 hatch for queries built at runtime — guarded read-only in the core: exactly
-one statement, `SELECT`/`WITH`/`EXPLAIN`/`PRAGMA`/`VALUES` only. Writes
-always go through `client.mutate()` — no query tier writes.
+one statement, `SELECT`/`WITH`/`EXPLAIN`/`PRAGMA`/`VALUES` only (a `WITH`
+must resolve to a read). Writes always go through `client.mutate()` — no
+query tier writes.
 
 ## Where to go next
 

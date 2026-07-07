@@ -1,6 +1,10 @@
 # DESIGN — The query surface: two frontends, one IR, SQL underneath
 
-Status: **direction decision — Q0 complete** (2026-07-08). Decided:
+Status: **shipped — Q0–Q5 complete** (2026-07-07). Q1 (guards, sql tag,
+hook renames, Kysely removal), Q2 (naming map + camel emission + mutate
+two-casing), Q3 (`.syql` frontend + neutralization + `--print`), Q4
+(variants backend + `syncular fmt` + VS Code grammar), Q5 (`syncular lsp` +
+`queryBackend` heuristic) are all implemented per §11. Decided:
 extension `.syql`, camel-case emission, no fragments in the `.sql` tier,
 multiple queries per `.syql` file, no `offset` knob, lowercase-keyword `fmt`
 canon, pinned naming-map algorithm, two-casing `mutate` normalization (§12).
