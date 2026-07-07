@@ -24,7 +24,10 @@ const { title, active } = Astro.props;
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title} — syncular</title>
+    <link rel="alternate" type="text/markdown" href={`/${active}.md`} />
+    <link rel="api-catalog" href="/.well-known/api-catalog" />
     <link rel="stylesheet" href="/style.css" />
+    <script src="/webmcp.js" defer></script>
     <ClientRouter />
   </head>
   <body>

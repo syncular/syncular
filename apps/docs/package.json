@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "astro build && node scripts/rebase.mjs",
+    "build": "astro build && node scripts/agent-assets.mjs && node scripts/rebase.mjs",
     "dev": "astro dev",
-    "deploy": "astro build && node scripts/rebase.mjs && wrangler deploy"
+    "deploy": "astro build && node scripts/agent-assets.mjs && node scripts/rebase.mjs && wrangler deploy"
   },
   "dependencies": {
     "astro": "^7.0.6"

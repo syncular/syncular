@@ -5,14 +5,21 @@ The documentation site — an **Astro** static site. Markdown pages in
 `src/pages/[slug].astro` into the teletype layout; the landing page is
 `src/pages/index.astro`. Syntax highlighting is Shiki at build time
 (`css-variables` theme, colored by the palette in `public/style.css`), so the
-published site ships no highlighter JavaScript. The only client-side script on
-the whole site is the landing hero's ASCII black-hole simulation, inline in
-`index.astro` — it is the design language, not a framework.
+published site ships no highlighter JavaScript.
+
+The build also generates agent-discovery assets from the docs tree:
+`sitemap.xml`, `robots.txt`, `llms.txt`, Markdown page copies, an RFC 9727 API
+catalog, an OpenAPI description for public discovery endpoints, Auth.md notes,
+OAuth protected-resource metadata for the public docs resource, and an Agent
+Skills index. `src/worker.ts` fronts the static assets on Workers so homepage
+responses get discovery `Link` headers and `Accept: text/markdown` returns the
+generated Markdown variant. `public/webmcp.js` registers browser WebMCP tools
+when `navigator.modelContext` is available.
 
 ## Local build / dev
 
 ```sh
-bun run build     # astro build + scripts/rebase.mjs → dist/
+bun run build     # astro build + agent assets + scripts/rebase.mjs -> dist/
 bun run dev       # astro dev at http://localhost:3100
 ```
 
@@ -30,6 +37,10 @@ route (`syncular.dev/*`) over the apex's existing proxied DNS record.
 `wrangler.jsonc` holds the config; `.github/workflows/docs.yml` builds and
 deploys on every push to `main` that touches `apps/docs/**` or the workflow.
 The domain serves at root, so `DOCS_BASE` stays unset.
+
+The deployment uses a small Worker script with a static assets binding. Static
+files still come from `dist/`; the Worker adds request-dependent behavior that
+plain assets cannot express, such as Markdown content negotiation.
 
 Why Workers and not Pages: the deploy identity (a wrangler API token) manages
 the worker + its route but not DNS, and Pages needs a manually-created apex
@@ -56,6 +67,11 @@ but never creates/edits DNS. To move to a clean worker **custom domain**
 instead (auto-managed DNS), delete the apex A/AAAA record and re-add the
 hostname as a custom domain — that step needs DNS:Edit (dashboard or a
 DNS-scoped token), which the deploy token intentionally lacks.
+
+DNS for AI Discovery (DNS-AID) is also out-of-band because it must be published
+in Cloudflare DNS, not in the Worker bundle. When the discovery endpoint shape
+is finalized for the domain, add SVCB/HTTPS records under `_agents.syncular.dev`
+and keep DNSSEC enabled for authenticated answers.
 
 ### Manual deploy (locally authed wrangler)
 
