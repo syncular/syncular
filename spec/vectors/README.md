@@ -1,6 +1,6 @@
 # Golden vectors
 
-Committed, CI-blocking test vectors for the v2 wire protocol. Every
+Committed, CI-blocking test vectors for the SSP2 wire protocol. Every
 implementation in this tree (TS web core, TS server, later the Rust native
 core) must pass all of them; a wire-format change requires updated vectors
 in the same commit as the spec change (SPEC.md §9).

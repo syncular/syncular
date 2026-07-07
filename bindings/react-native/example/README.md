@@ -1,6 +1,6 @@
 # syncular · react-native example
 
-The syncular v2 **React Native todo** — proof that `@syncular/react` hooks
+The syncular **React Native todo** — proof that `@syncular/react` hooks
 work **unchanged** over the native core. Same clean interface as the web demos
 (`apps/demo-react`); the only difference is the client host: instead of the
 worker/OPFS client, `<SyncProvider>` is fed a `createNativeSyncClient()` — a
@@ -35,7 +35,7 @@ offline).
 | `index.js` | RN entry: builds the native client, wires `AppState`, registers `<App>`. |
 | `app.json`, `babel.config.js`, `metro.config.js`, `package.json` | Bare-RN scaffold. |
 
-The `metro.config.js` watches the v2 tree and forces a single `react` /
+The `metro.config.js` watches the repo tree and forces a single `react` /
 `react-native` copy, so the two workspace source packages
 (`@syncular/react`, `@syncular/react-native`) resolve against the app's
 React — the example is deliberately **outside** the bun workspace (RN apps pin
@@ -102,7 +102,7 @@ documented one-time overlay above.
 ## CI
 
 The RN gate (bun bridge tests + the App integration test + `tsc`) runs on the
-standard Ubuntu runner — no native toolchain — in `.github/workflows/v2.yml`. A
+standard Ubuntu runner — no native toolchain — in `.github/workflows/ci.yml`. A
 full **device-build lane** (Android `assembleDebug` with cargo-ndk cross-builds
 of the cdylib) is the heaviest of all binding lanes; it is a documented
 follow-up, not yet wired, to avoid shipping a flaky lane (see the module

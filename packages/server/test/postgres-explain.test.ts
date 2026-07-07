@@ -1,7 +1,6 @@
 /**
- * The scan-before-LIMIT regression guard (REVISE B2). v1's production wound
- * was that scope fanout on Postgres scanned the commit log before applying
- * LIMIT. This test asserts, via `EXPLAIN`, that the candidate-selection
+ * The scan-before-LIMIT regression guard: scope fanout on Postgres must
+ * never scan the commit log before applying LIMIT. This test asserts, via `EXPLAIN`, that the candidate-selection
  * queries behind `readCommitWindow` and `scanRows` are driven by the
  * inverted-scope-index PRIMARY KEY — an `Index`/`Index Only Scan` node, never
  * a `Seq Scan` on the scope tables — so the regression cannot silently

@@ -49,18 +49,16 @@ landing in a plain isolate wakes the partition's DO (the in-platform
 LISTEN/NOTIFY analogue). Full shape, wiring, hibernation semantics, and the
 manual real-workerd smoke recipe in `@syncular/server-workers/README.md`.
 
-**Relay does not return (decision).** v1 shipped a *relay* — a bridge that let
-a self-hosted server forward realtime to a managed realtime service, because
-v1's realtime was a separate socketed subsystem the self-hosted core couldn't
-serve on its own. v2 has no such gap: realtime is the **second binding of the
-same handler** (§8.7, Direction decision 1 — the WS-native loop), so any host
-that runs the core serves realtime directly; multi-instance fanout is covered
-by **LISTEN/NOTIFY** on Postgres (below), and the Workers case is covered by
-the **DO design** (writes and sockets co-located per partition). Every job the
-relay did is now done by a binding of the core or by in-database fanout —
-reintroducing a relay would add a hop, a second protocol surface, and a
-managed dependency for zero capability the core lacks. So it is retired, not
-ported.
+**No relay (decision).** There is deliberately no *relay* — no bridge that
+forwards realtime from a self-hosted server to a managed realtime service.
+Realtime is the **second binding of the same handler** (§8.7, Direction
+decision 1 — the WS-native loop), so any host that runs the core serves
+realtime directly; multi-instance fanout is covered by **LISTEN/NOTIFY** on
+Postgres (below), and the Workers case is covered by the **DO design**
+(writes and sockets co-located per partition). Every job a relay would do is
+done by a binding of the core or by in-database fanout — a relay would add a
+hop, a second protocol surface, and a managed dependency for zero capability
+the core lacks.
 
 ## Structured events (the ops seam)
 
@@ -127,8 +125,8 @@ exists) `partition` / `actorId`.
 The operator-facing read surface over the server core. It is a module in
 this package — **not** a separate UI package — and adds **zero** wire
 protocol: SPEC.md says nothing about it, because authorization for these
-reads is entirely the host's. It is the v2 answer to v1's full React
-console app: the same 80% operator value (who's connected, what's flowing,
+reads is entirely the host's. It delivers the 80% operator value (who's
+connected, what's flowing,
 horizon health, the event tail) as a handful of read-only, partition-scoped,
 JSON-able queries.
 
@@ -215,8 +213,8 @@ framework, no build step, no React. It fetches the sibling JSON endpoints
 (relative to its own mount path, so it works under any prefix and the same
 guard covers its XHRs), renders tables for horizon, store stats, clients,
 recent commits, and the event tail, with an auto-refresh toggle (2 s poll).
-This is the ~300-line answer to v1's console app: 5% of the code, the 80%
-operator value.
+This is a deliberate ~300-line console: 5% of the code a full console app
+would cost, the 80% operator value.
 
 **No SSE (yet).** `GET /events` is a polled ring query; the page's
 auto-refresh polls it. Server-Sent-Events streaming was deliberately
@@ -571,8 +569,7 @@ whose cursor record was touched within `activeWindowMs` (default 14
 days). Two escape hatches keep laggards from pinning the log forever:
 commits older than `ageForceMs` (default 30 days) may be pruned
 regardless, and at least the newest `minRetainedCommits` (default 1000)
-commits are always kept. Defaults are the v1 production values; raise
-them freely, lower them with care.
+commits are always kept. Raise the defaults freely, lower them with care.
 
 **What `sync.cursor_expired` means operationally.** A client whose
 cursor fell behind the horizon gets `SUB_START.status = reset` and
@@ -624,7 +621,7 @@ same table+scope during a storm, your TTL is shorter than the storm.
 production, `PostgresServerStorage` implements the same `ServerStorage`
 contract against Postgres, with the inverted scope index carried through
 as **covering indexes** so scope fanout is an index range scan, never a
-scan-before-LIMIT (REVISE B2 — this was v1's production wound). The
+scan-before-LIMIT. The
 schema (`POSTGRES_DDL`) and its index design live in
 `src/postgres-storage.ts`; `storage.migrate()` applies it idempotently
 (every DDL is `CREATE … IF NOT EXISTS`, run statement-by-statement, so

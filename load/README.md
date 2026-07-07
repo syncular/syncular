@@ -1,6 +1,6 @@
 # @syncular-load — load & scale verification
 
-A **bun-native, dependency-light** load suite for syncular v2. It spawns
+A **bun-native, dependency-light** load suite for syncular. It spawns
 **one real server process** (Hono adapter, real HTTP + WebSocket on
 localhost, `bun:sqlite` storage by default) and drives **N lightweight,
 protocol-level virtual clients** — encoded SSP2 rounds over the real wire,
@@ -13,7 +13,7 @@ a real deployment. **Not in CI by default** (see [What this is not](#what-this-i
 ## What this is NOT
 
 - **Not a benchmark.** `bench/` owns the comparative, curated numbers
-  (rows/sec, bundle size, propagation p95 vs v1). This suite is
+  (rows/sec, bundle size, propagation p95). This suite is
   **stability/scale verification**: does the server stay up, correct, and
   memory-flat under many concurrent clients, storms, churn, and soak? The
   numbers here are pass/fail against thresholds, not a leaderboard.
@@ -54,7 +54,7 @@ machine-readable JSON result to `load/results/<scenario>-<profile>-<ts>.json`.
 ### Postgres lane
 
 By default storage is in-memory `bun:sqlite`. To target a real Postgres —
-the production database path (TODO §4.1), where v1's production wound lived —
+the production database path (TODO §4.1) —
 set `SYNCULAR_PG_URL`:
 
 ```bash
@@ -76,7 +76,7 @@ headroom for shared/busy machines — they catch a *regression* (a sleep/poll
 in a loop, a re-bootstrap on catch-up, a rebuild-per-client storm, an RSS
 leak), not a busy laptop.
 
-| Scenario | Intent (ported from v1) | Full profile | Key thresholds |
+| Scenario | Intent | Full profile | Key thresholds |
 |---|---|---|---|
 | `push-pull` | Steady mixed write/read; N clients loop push+pull, sustained ops/s | 50 VU / 20s | round p95 ≤ 500ms; 0 errors; RSS ≤ 700MB |
 | `bootstrap-storm` | **The scale scenario.** M fresh clients bootstrap the same seeded 100k dataset at once | 50 VU / 60s / 100k | **reused > built** (§5.3); bootstrap p95 ≤ 15s; 0 errors; RSS ≤ 900MB |

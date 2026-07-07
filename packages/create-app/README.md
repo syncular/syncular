@@ -1,6 +1,6 @@
 # create-syncular-app
 
-The `create-syncular-app` scaffolder — the create-app experience for syncular v2.
+The `create-syncular-app` scaffolder — the create-app experience for syncular.
 
 ```sh
 bun create syncular-app my-app            # prompts for the template
@@ -42,7 +42,7 @@ ranges:
   repo's workspace.
 - **default** (a normal `bunx create-…` run): rewrite to
   `PUBLISHED_DEPENDENCY_RANGE` (`src/constants.ts`). **Today that constant is
-  *also* `workspace:*`** because the v2 packages are unpublished and
+  *also* `workspace:*`** because the workspace packages are unpublished and
   version-less (all `private`, no `version` — TODO 6.3), so there is no honest
   semver range yet. The CLI **warns loudly** in this case: a `bun install`
   outside the repo cannot resolve the deps until publishing lands. When the

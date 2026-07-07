@@ -10,7 +10,7 @@ Normative detail: [SPEC.md §4.7](https://github.com/syncular/syncular/blob/main
 
 ## One concept: the segment
 
-v1 grew two parallel snapshot systems; v2 has exactly one. A **segment** is
+A **segment** is
 content-addressed (its id is the SHA-256 of its bytes), scope-bound, and
 carries a `mediaType`:
 
@@ -49,7 +49,7 @@ the `commitSeq` at which it started.
 
 Segment bytes are content-addressed **uncompressed**; compression is a
 transport/storage concern (zstd preferred, gzip fallback) and never visible on
-the wire ([SPEC §5.8](https://github.com/syncular/syncular/blob/main/SPEC.md#0-deliberate-simplifications-vs-wire-v14--decisions)).
+the wire ([SPEC §5.8](https://github.com/syncular/syncular/blob/main/SPEC.md#58-compression)).
 Clients rely on native fetch decoding — no decompression code ships in the
 client bundle.
 

@@ -1,6 +1,6 @@
 # @syncular/react
 
-React bindings for the syncular v2 client, with **fine-grained live
+React bindings for the syncular client, with **fine-grained live
 queries** designed in from day one (TODO 3.1 / `DESIGN-eviction.md` I1–I4).
 A `useRawSql` re-runs **only** when a table it depends on is touched by an
 apply batch — never "re-run everything on any change".

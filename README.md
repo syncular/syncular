@@ -5,49 +5,51 @@
   </picture>
 </p>
 
-# syncular v2
+# syncular
 
-Clean-tree rebuild of syncular's TypeScript surface around a written
-protocol. Strategy, milestones, and the kill/merge gate live in
-[`../REVISE.md`](../REVISE.md) — read that first. This file is the rules of
-the tree.
+Server-authoritative, offline-first SQL sync you can operate. Clients keep a
+real local SQLite database (OPFS in the browser, native SQLite elsewhere),
+writes go through an optimistic outbox, and one ordered commit log on the
+server stays the source of truth. Docs live at
+[syncular.dev](https://syncular.dev).
 
-## What this is
+```sh
+bun create syncular-app my-app
+```
 
-- Its **own workspace root**: own lockfile, **latest Bun** (no version pin —
-  the old tree's 1.3.9 pin exists for a WASM worker bridge that v2 does not
-  have), own biome/tsconfig. Root-repo gates ignore this directory; CI runs
-  `.github/workflows/ci.yml` (renamed from v2.yml at the 2026-07-04 promotion).
-- **Spec-first**: `SPEC.md` is normative; `spec/vectors/` are golden
-  fixtures; implementations follow the spec, never the other way around.
-- Target shape (matches the published 0.1.x consolidation, minus baggage):
-  - `packages/core` — protocol codecs, shared types, vectors round-trip
-  - `packages/server` — `handleSyncRequest(bytes, ctx)` + storage/auth
-    interfaces; framework adapters as thin subpaths
-  - `packages/client` — TS core on `@sqlite.org/sqlite-wasm`,
-    worker-optional
-  - `packages/conformance` — implementation-agnostic scenario runner
-  - `packages/codegen` — schema IR + TS emitter (cargo-free)
+## How the repo is built
 
-## Rules (from REVISE.md, enforced in review)
+- **Spec-first**: [`SPEC.md`](SPEC.md) is normative; [`spec/vectors/`](spec/vectors)
+  are golden fixtures; implementations follow the spec, never the other way
+  around. Two cores — TypeScript and Rust — are kept in lockstep by an
+  implementation-agnostic conformance suite.
+- **Test doctrine**: loopback in-memory transport for integration scenarios;
+  fault injection at the transport interface; readiness waits, never sleeps;
+  real-socket tests few and quarantined. See
+  [`packages/conformance`](packages/conformance/README.md).
+- **One good path**: OPFS or fail-loud in the browser, sync over the
+  WebSocket, no fallback ladders.
 
-1. **Never copy implementation files from `../packages` or `../rust`.**
-   Contracts, scenario definitions, golden semantics, benchmark harnesses:
-   yes. Implementation code: reference only, rewrite on purpose.
-2. **Skeleton non-goals** until the gate passes: blobs, CRDT, encryption,
-   auth leases, presence, console, native bindings, relay. Do not "while
-   we're here" any of them.
-3. **Test doctrine from day one**: loopback in-memory transport for
-   integration scenarios; fault injection at the transport interface;
-   readiness waits, never sleeps; real-socket tests few and quarantined.
-4. **Tripwire**: two clients must be syncing through the TS server within
-   ~2 weeks of agent-time, or work stops and REVISE.md's gate is evaluated
-   early.
+## Layout
+
+| Path | What it is |
+|---|---|
+| [`packages/core`](packages/core) | Protocol codecs, shared types, vector round-trip |
+| [`packages/server`](packages/server) | `handleSyncRequest(bytes, ctx)` + storage/auth interfaces (SQLite, Postgres, D1) |
+| [`packages/server-hono`](packages/server-hono), [`packages/server-workers`](packages/server-workers) | Framework bindings (Hono, Cloudflare Workers) |
+| [`packages/web-client`](packages/web-client) | `@syncular/client` — TS client core on `@sqlite.org/sqlite-wasm` |
+| [`packages/react`](packages/react) | React hooks over the client |
+| [`packages/typegen`](packages/typegen) | Schema IR + TypeScript emitter, named queries (cargo-free) |
+| [`packages/crypto`](packages/crypto), [`packages/crdt-yjs`](packages/crdt-yjs) | Per-column E2EE primitives, Yjs CRDT mergers |
+| [`packages/testing`](packages/testing) | `@syncular/testkit` — in-memory loopback of real server + clients |
+| [`packages/conformance`](packages/conformance) | Scenario runner both cores must pass |
+| [`rust/`](rust) | The Rust client core and its C-ABI FFI crate |
+| [`bindings/`](bindings) | Tauri, React Native, Swift, Kotlin, Flutter |
+| [`apps/docs`](apps/docs) | The docs site ([syncular.dev](https://syncular.dev)) |
 
 ## Commands
 
 ```sh
-cd v2
 bun install
 bun run check   # typecheck + lint + test
 ```

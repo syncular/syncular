@@ -9,7 +9,7 @@ and maps every published package, crate, and binding to where it lives.
 
 | Section | Topic |
 |---|---|
-| [§0](https://github.com/syncular/syncular/blob/main/SPEC.md#0-deliberate-simplifications-vs-wire-v14--decisions) | Deliberate simplifications vs v1 (the decisions) |
+| [§0](https://github.com/syncular/syncular/blob/main/SPEC.md#0-design-decisions) | Design decisions, with their rationale |
 | [§1](https://github.com/syncular/syncular/blob/main/SPEC.md#1-transport-bindings-and-envelope) | Transport bindings, the SSP2 envelope, framing, streaming, decode vs validation |
 | [§2](https://github.com/syncular/syncular/blob/main/SPEC.md#2-data-model-and-identity) | Commits, changes, versions, idempotency, the schema IR & row codec |
 | [§3](https://github.com/syncular/syncular/blob/main/SPEC.md#3-scopes-and-authorization) | Scopes: patterns, requested/allowed/effective, revocation, write-path authz |
@@ -101,4 +101,3 @@ repo checkout rather than a registry:
 
 - [Quickstart](/quickstart/) — the whole shape end to end in five minutes.
 - [Protocol & conformance](/guide-conformance/) — how the spec is enforced across cores.
-- [Migration guide](/migration/) — coming from 0.1.x.

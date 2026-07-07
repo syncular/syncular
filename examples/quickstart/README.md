@@ -1,4 +1,4 @@
-# syncular v2 quickstart
+# syncular quickstart
 
 The ≤5-minute path: a schema, a ~30-line server, and two client cores that
 converge — all in a terminal, no browser. This is the runnable source the

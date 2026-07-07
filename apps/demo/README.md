@@ -1,4 +1,4 @@
-# syncular v2 — two-pane convergence demo (B6)
+# syncular — two-pane convergence demo (B6)
 
 Two independent client cores from `@syncular/client` — each a Web
 Worker running the WHOLE core (SyncClient + transports + sqlite-wasm on
@@ -11,7 +11,6 @@ main-thread mode (labeled; nothing survives a reload).
 ## Run
 
 ```sh
-cd v2
 bun install
 cd apps/demo
 bun run dev          # http://localhost:8787 (PORT=… to override)

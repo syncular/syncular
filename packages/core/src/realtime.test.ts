@@ -45,7 +45,7 @@ describe('realtime control messages (SPEC.md §8)', () => {
           data: {
             cursor: 1,
             requiresPull: true,
-            reason: 'payload-too-large', // v1 legacy reason, removed in v2
+            reason: 'payload-too-large', // not one of the three §8.3 reasons
             timestamp: 0,
           },
         }),

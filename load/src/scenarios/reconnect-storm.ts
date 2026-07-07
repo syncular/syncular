@@ -3,9 +3,8 @@
  * then all drop and reconnect within a tight window while a writer keeps
  * pushing. Each reconnect drives a fresh §8.7 socket round to catch up;
  * the scenario measures reconnect+catch-up latency per client and the
- * wall-clock time for the WHOLE fleet to be caught up again after a drop.
- * Ports v1's reconnect-storm intent onto the WS-native loop (Direction
- * decision 1).
+ * wall-clock time for the WHOLE fleet to be caught up again after a drop,
+ * on the WS-native loop (Direction decision 1).
  */
 
 import { STORM_PROJECT } from '../fixture';

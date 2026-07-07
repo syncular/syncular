@@ -7,7 +7,7 @@ describe('protocol constants', () => {
     expect(PROTOCOL_WIRE_VERSION).toBeGreaterThan(0);
   });
 
-  it('uses a 4-byte ASCII magic distinct from the v1 wire format', () => {
+  it('uses a 4-byte ASCII magic that cannot collide with SSP1 bodies', () => {
     expect(SYNC_PACK_MAGIC).toHaveLength(4);
     expect(SYNC_PACK_MAGIC).not.toBe('SSP1');
   });

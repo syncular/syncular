@@ -2,9 +2,9 @@
  * `SyncularAdmin` — the operator-facing read surface over the server core
  * (TODO §2.5). A read-only, partition-scoped, JSON-able query layer over
  * `ServerStorage`, the optional segment/blob store stats, and an in-memory
- * event ring. This is v2's answer to v1's full React console app: the same
- * 80% operator value (who's connected, what's flowing, horizon health, the
- * event tail) as a handful of queries in the server package — no separate
+ * event ring. It delivers the 80% operator value (who's connected, what's
+ * flowing, horizon health, the event tail) as a handful of queries in the
+ * server package — no separate
  * UI package, no framework, no wire-protocol surface (SPEC.md is untouched;
  * this is host surface, mirrored in the server README).
  *
