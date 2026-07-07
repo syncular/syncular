@@ -1,7 +1,7 @@
 # Quickstart
 
-Two independent client cores syncing through one server — in a terminal, no
-browser, in about five minutes.
+Two independent client cores converge through one server, all in a terminal,
+in about five minutes.
 
 ## 1. Scaffold
 
@@ -11,10 +11,10 @@ cd my-app
 bun install
 ```
 
-That is the fastest path: the scaffolder writes exactly the project this page
-walks through — a schema, a ~30-line server, and a two-client script — plus a
-README and a smoke test. (Prefer a browser app? `--template web` scaffolds a
-Hono server + a single-pane todo UI on the worker + OPFS client instead.)
+That is the fastest path: the scaffolder writes the project this page walks
+through (a schema, a ~30-line server, a two-client script, a README, and a
+smoke test). Prefer a browser app? `--template web` scaffolds a Hono server +
+a single-pane todo UI on the worker + OPFS client instead.
 
 > The rest of this page is the **"what it did" explainer**: every snippet is
 > extracted from the runnable [`examples/quickstart`](https://github.com/syncular/syncular/tree/main/examples/quickstart)
@@ -45,7 +45,7 @@ CREATE TABLE notes (
 ```
 
 The manifest names the synced tables, their **scopes** (how rows are
-authorized — `list:{list_id}` means "a note belongs to the list in its
+authorized: `list:{list_id}` means "a note belongs to the list in its
 `list_id` column"), and any subscription templates:
 
 ```json
@@ -75,7 +75,7 @@ authorized — `list:{list_id}` means "a note belongs to the list in its
 bun run generate     # → syncular generate --manifest-dir .
 ```
 
-This writes `src/syncular.generated.ts` — a zero-import module exporting a
+This writes `src/syncular.generated.ts`, a zero-import module exporting a
 `schema` object (used by both server and client) plus per-table row types.
 Commit it; regenerate whenever the schema changes. See
 [Schema & typegen](/guide-schema/) for the full workflow.
@@ -84,8 +84,8 @@ Commit it; regenerate whenever the schema changes. See
 
 The whole backend is one Bun process. `createSyncularHono` mounts the
 protocol routes over the framework-free server core; storage is bun:sqlite.
-The server manages its own internal `sync_*` tables — the app migration only
-tells typegen the schema shape, it is never run here.
+The server manages its own internal `sync_*` tables. The app migration exists
+to tell typegen the schema shape; this server does not run it.
 
 ```ts
 // src/server.ts
@@ -126,7 +126,7 @@ bun run server       # http://localhost:8787
 
 ## 5. Two clients
 
-A `SyncClient` is plain library code — give it a database backend and a
+A `SyncClient` is plain library code: give it a database backend and a
 transport and it runs anywhere. In the browser that is sqlite-wasm on OPFS;
 here it is bun:sqlite + `fetch`, so it runs in a terminal. Everything else is
 identical to a web build.
@@ -152,8 +152,8 @@ export function makeClient(baseUrl: string, clientId: string): SyncClient {
 }
 ```
 
-Now write from A and read it back on B — two separate client cores, each with
-its own local database, converging through the server:
+Now write from A and read it back on B: two separate client cores, each with
+its own local database, converging through the server.
 
 ```ts
 // src/clients.ts (abridged — see the file for logging)
@@ -205,14 +205,14 @@ B sees: [
 ✓ converged
 ```
 
-That is the whole loop: `mutate` records a local commit and queues it,
-`syncUntilIdle` runs combined push+pull rounds, and B's independent database
-converges on A's write — filtered to the scope B is authorized for.
+That is the whole loop. `mutate` records a local commit and queues it.
+`syncUntilIdle` runs combined push+pull rounds until B's independent database
+converges on A's write, filtered to the scope B is authorized for.
 
 ## Where to go from here
 
-- **[Web (browser)](/platform-web/)** — the real browser build (worker + OPFS),
-  realtime, and offline replay — or jump straight to your platform:
+- **[Web (browser)](/platform-web/)** — the real browser build (worker + OPFS)
+  with realtime and offline replay. Or jump straight to your platform:
   [Swift](/platform-swift/), [Kotlin](/platform-kotlin/),
   [Flutter](/platform-flutter/), [React Native](/platform-react-native/),
   [Tauri](/platform-tauri/), [Rust](/platform-rust/).

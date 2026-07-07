@@ -8,10 +8,10 @@ Normative detail: [SPEC.md §5.9](https://github.com/syncular/syncular/blob/main
 
 ## The `blob_ref` column
 
-A `blob_ref` column holds a canonical BlobRef document — a content address
+A `blob_ref` column holds a canonical BlobRef document: a content address
 (`blobId` = SHA-256 of the bytes), byte length, and optional media type / name.
 On the wire it is byte-for-byte a JSON string, so commits, pushes, and
-segments carry it with **zero new codec cost**. It rides everywhere a `json`
+segments carry it at zero added codec cost. It travels everywhere a `json`
 value does; the distinct type only tells the schema, apply, and query layers
 "this is a reference to blob bytes."
 
@@ -46,23 +46,24 @@ await client.sync();
 const cached = await client.fetchBlob(row.attachment);
 ```
 
-## Authorization: a blobId is never a capability
+## Download authorization
 
 Every blob **download re-authorizes** against the rows that reference the
-blob, on every request — holding a blobId grants nothing. The server keeps a
+blob, on every request; a blobId on its own grants no access. The server keeps a
 commit→blob reference index, and a download is denied (`blob.forbidden`) when
 the actor holds no referencing row
 ([SPEC §5.9.5](https://github.com/syncular/syncular/blob/main/SPEC.md#5-bootstrap-segments-and-the-download-endpoint)).
-A push that references a blob the server has never received fails loud
-(`blob.not_found`), and an upload whose bytes do not match the claimed address
-is rejected (`blob.hash_mismatch`).
+A push that references a blob the server has never received is rejected with
+`blob.not_found`, and an upload whose bytes do not match the claimed address
+is rejected with `blob.hash_mismatch`.
 
 The local cache is content-addressed and refcounted by live rows: when a
 scope is revoked, the now-unauthorized blob bodies are purged along with their
-rows (evicted ≠ revoked).
+rows. Window eviction treats cached bodies differently; see
+[Windowed sync](/concepts-windowing/).
 
 ## Storage backends
 
-Blobs share the same store abstractions as segments — `MemoryBlobStore` for
+Blobs share the same store abstractions as segments: `MemoryBlobStore` for
 tests, `SqliteBlobStore` for a single node, and the S3/R2 backend for
 production. Wire one into `SyncServerConfig.blobs`; see [Server setup](/guide-server/).

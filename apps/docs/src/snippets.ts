@@ -67,7 +67,7 @@ function Todos() {
       ))}
     </ul>
   );
-  // Re-renders only when the todos table changes — offline or online.
+  // Re-renders only when the todos table changes.
 }`,
   },
   {

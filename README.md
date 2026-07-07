@@ -19,16 +19,16 @@ bun create syncular-app my-app
 
 ## How the repo is built
 
-- **Spec-first**: [`SPEC.md`](SPEC.md) is normative; [`spec/vectors/`](spec/vectors)
-  are golden fixtures; implementations follow the spec, never the other way
-  around. Two cores — TypeScript and Rust — are kept in lockstep by an
-  implementation-agnostic conformance suite.
+- **Spec-first**: [`SPEC.md`](SPEC.md) is normative and
+  [`spec/vectors/`](spec/vectors) are golden fixtures; when spec and code
+  disagree, the code changes. Two cores (TypeScript and Rust) are kept in
+  lockstep by an implementation-agnostic conformance suite.
 - **Test doctrine**: loopback in-memory transport for integration scenarios;
-  fault injection at the transport interface; readiness waits, never sleeps;
-  real-socket tests few and quarantined. See
+  fault injection at the transport interface; tests wait on explicit readiness
+  signals (sleeps are banned); real-socket tests few and quarantined. See
   [`packages/conformance`](packages/conformance/README.md).
-- **One good path**: OPFS or fail-loud in the browser, sync over the
-  WebSocket, no fallback ladders.
+- **One good path**: the browser persists to OPFS and reports unsupported
+  environments as errors; sync runs over the WebSocket.
 
 ## Layout
 

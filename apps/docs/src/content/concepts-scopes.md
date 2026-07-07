@@ -1,9 +1,9 @@
 # Scopes & authorization
 
-Scopes are the moat. They decide, per user, exactly which rows sync — and the
-decision runs in **your** backend, next to your auth, not in a second
-authorization system you have to keep in agreement. This is the one piece of
-syncular you always write yourself.
+Scopes are the authorization core, and you write them yourself. They decide,
+per user, which rows sync, and the decision runs in **your** backend, next to
+your auth, so it stays in agreement with the rest of your access control. This
+is the one piece of syncular you always write yourself.
 
 Normative detail lives in [SPEC.md §3](https://github.com/syncular/syncular/blob/main/SPEC.md#3-scopes-and-authorization);
 this page is the mental model.
@@ -32,11 +32,11 @@ On every pull, per subscription, three maps meet
 | **Effective** | requested ∩ allowed | what actually syncs |
 
 If the intersection loses a key the client asked for, the subscription is
-**revoked** — syncular fails loud rather than silently deliver a subset the
-client did not ask to trust. Revocation purges the now-unauthorized rows from
-the local database ([SPEC §3.3](https://github.com/syncular/syncular/blob/main/SPEC.md#33-revocation-and-the-purge-contract)).
+**revoked**: syncular returns an error for the whole subscription instead of
+delivering a smaller, unrequested subset. Revocation purges the
+now-unauthorized rows from the local database ([SPEC §3.3](https://github.com/syncular/syncular/blob/main/SPEC.md#33-revocation-and-the-purge-contract)).
 
-## `resolveScopes` — the one function you write
+## `resolveScopes`: the one function you write
 
 One resolver per server, invoked at most once per request and memoized. It
 returns every scope value the actor holds, across all tables:
@@ -59,12 +59,12 @@ no data leaks on an authorization error.
 
 ## Write-path authorization
 
-The same resolver guards writes ([SPEC §3.4](https://github.com/syncular/syncular/blob/main/SPEC.md#34-write-path-authorization)).
-Two rules do the heavy lifting:
+The same resolver guards writes ([SPEC §3.4](https://github.com/syncular/syncular/blob/main/SPEC.md#34-write-path-authorization)),
+through two rules:
 
 - A write is authorized against the row **as currently stored** (or, for an
-  insert, the pushed row) — never a client can't grant itself access by
-  claiming a scope in the payload.
+  insert, the pushed row), so a client can't grant itself access by claiming
+  a scope in the payload.
 - **Scope columns are immutable on update.** A client cannot re-home a row
   into another scope by pushing a changed `list_id`; scope migration is
   server-emitted only. This closes the cross-scope-write hole.
@@ -72,8 +72,8 @@ Two rules do the heavy lifting:
 ## Windowed sync
 
 A client does not have to hold *every* row it is authorized for. **Windowed
-sync** lets a client keep a **partial local replica** — the hot projects, the
-last few months — while the server keeps everything, with correct sync
+sync** lets a client keep a **partial local replica** (the hot projects, the
+last few months) while the server keeps everything, with correct sync
 semantics throughout. See [Windowed sync](/concepts-windowing/) for the
 full model; the short version is that a window is a **set of scope values**,
 and changing the window is a set difference on subscriptions: values that
