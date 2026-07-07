@@ -7,9 +7,12 @@
   // are correct at the domain root.
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "syncular-docs",
+  "main": "./src/worker.ts",
   "compatibility_date": "2026-07-01",
   "assets": {
     "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": true,
     "html_handling": "auto-trailing-slash",
     "not_found_handling": "404-page"
   },
