@@ -355,8 +355,9 @@ ensureWrite(
     scopes_supported: ['docs:read'],
     service_documentation: `${site}/auth.md`,
     agent_auth: {
-      skill: 'auth.md',
+      skill: `${site}/auth.md`,
       register_uri: `${site}/agent/auth/register`,
+      claim_uri: `${site}/agent/auth/claim`,
       identity_types_supported: ['anonymous'],
       credential_types_supported: ['bearer'],
       anonymous: {
