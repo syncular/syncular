@@ -3688,7 +3688,7 @@ match across implementations).
 ## Appendix A. Golden vectors
 
 Location and per-case requirements are defined in
-[`spec/vectors/README.md`](spec/vectors/README.md): for each case a
+[`spec/vectors/README.md`](../spec/vectors/README.md): for each case a
 canonical `.bin`, its §11 JSON rendering as `.json`, and a per-kind
 `manifest.json`. `invalid/` cases carry descriptive slug names (several
 share an error code, so names describe the violation); the expected

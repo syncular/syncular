@@ -67,7 +67,7 @@ For a subscription `notesInList`, a `notesInListSubscription` with a
 
 When your schema changes, you bump `schemaVersions` in the manifest and
 regenerate. There is no client-side migration engine
-([direction decision 3](https://github.com/syncular/syncular/blob/main/ROADMAP.md),
+([direction decision 3](https://github.com/syncular/syncular/blob/main/docs/ROADMAP.md),
 SPEC §7.4): a client does not transform its local tables from one version to
 the next. On a version change it keeps the outbox, wipes its local tables,
 re-bootstraps at the new version, and replays the outbox on top. Bootstrap

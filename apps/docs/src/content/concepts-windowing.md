@@ -8,9 +8,9 @@ post-parity differentiator, solving three problems at once: cold rows that
 pile up as permanent tombstones, full re-downloads triggered by any change,
 and queries served from a replica with no way to prove it complete.
 
-Normative detail: [SPEC.md §4.8](https://github.com/syncular/syncular/blob/main/SPEC.md#48-windowed-subscriptions).
+Normative detail: [SPEC.md §4.8](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#48-windowed-subscriptions).
 The design record is
-[DESIGN-eviction.md](https://github.com/syncular/syncular/blob/main/DESIGN-eviction.md) (W1 landed 2026-07-04).
+[DESIGN-eviction.md](https://github.com/syncular/syncular/blob/main/docs/DESIGN-eviction.md) (W1 landed 2026-07-04).
 
 ## A window is a set of scope values
 

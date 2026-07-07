@@ -2,18 +2,18 @@
 
 Once connected, a client has one sync loop, and it runs over a WebSocket. The
 WebSocket loop is the only realtime transport: a
-[direction decision](https://github.com/syncular/syncular/blob/main/ROADMAP.md)
+[direction decision](https://github.com/syncular/syncular/blob/main/docs/ROADMAP.md)
 to keep a single, well-tested path per concern.
 
-Normative detail: [SPEC.md §8](https://github.com/syncular/syncular/blob/main/SPEC.md#8-realtime).
+Normative detail: [SPEC.md §8](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#8-realtime).
 
 ## Two bindings, one handler
 
 `POST /sync` and the realtime socket are two **framings of the same
 request/response semantics**. The socket carries sync rounds as tagged binary
 byte streams driven by the same handler as the HTTP endpoint, so the protocol
-treats the two identically ([SPEC §8.7](https://github.com/syncular/syncular/blob/main/SPEC.md#87-websocket-native-sync-loop),
-[§1.1](https://github.com/syncular/syncular/blob/main/SPEC.md#11-endpoints)).
+treats the two identically ([SPEC §8.7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#87-websocket-native-sync-loop),
+[§1.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#11-endpoints)).
 
 - **Reference clients sync exclusively over the socket** once connected.
 - `POST /sync` stays fully conformant, for push-only producers, curl
@@ -28,7 +28,7 @@ as a **delta** (an ordinary sync response over the socket), and the client
 applies it and acks. There is one delta kind and one JSON **wake-up** kind
 (three reason codes: `catchup-required`, `delta-too-large`, `reset-required`)
 that tells the client to run a pull soon; the wake-up itself carries no data
-([SPEC §8.2/§8.3](https://github.com/syncular/syncular/blob/main/SPEC.md#8-realtime)). Propagation on the in-process
+([SPEC §8.2/§8.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#8-realtime)). Propagation on the in-process
 bench is **0.2 ms p95** ([bench results](/benchmarks/)).
 
 ## Connect-then-sync
@@ -53,7 +53,7 @@ shows the full host loop, including jittered wake coalescing.
 
 The socket also carries **presence**: ephemeral, scope-keyed peer state
 (who's here, what they're doing), held in memory only. A disconnect removes
-the member ([SPEC §8.6](https://github.com/syncular/syncular/blob/main/SPEC.md#86-presence)).
+the member ([SPEC §8.6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#86-presence)).
 
 ```ts
 await client.setPresence('list:welcome', { editing: 'note-1' }); // join / update

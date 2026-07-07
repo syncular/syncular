@@ -5,7 +5,7 @@ per user, which rows sync, and the decision runs in **your** backend, next to
 your auth, so it stays in agreement with the rest of your access control. This
 is the one piece of syncular you always write yourself.
 
-Normative detail lives in [SPEC.md §3](https://github.com/syncular/syncular/blob/main/SPEC.md#3-scopes-and-authorization);
+Normative detail lives in [SPEC.md §3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#3-scopes-and-authorization);
 this page is the mental model.
 
 ## Scope patterns
@@ -15,7 +15,7 @@ of the form `prefix:{variable}`. A note table scoped by `list:{list_id}` says
 "a row belongs to the list named by its `list_id` column." The prefix plus the
 column value form a **scope key** — `list:welcome`, `list:team-42` — and the
 server maintains an inverted index from scope key to commit, so pulls filter
-by scope without scanning ([SPEC §3.1](https://github.com/syncular/syncular/blob/main/SPEC.md#31-scope-patterns-and-stored-scopes)).
+by scope without scanning ([SPEC §3.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#31-scope-patterns-and-stored-scopes)).
 
 There is no "global" table without a scope; model shared data with an explicit
 scope column every row carries.
@@ -23,7 +23,7 @@ scope column every row carries.
 ## The three scope sets
 
 On every pull, per subscription, three maps meet
-([SPEC §3.2](https://github.com/syncular/syncular/blob/main/SPEC.md#32-requested-allowed-effective)):
+([SPEC §3.2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#32-requested-allowed-effective)):
 
 | Set | Comes from | Meaning |
 |---|---|---|
@@ -34,7 +34,7 @@ On every pull, per subscription, three maps meet
 If the intersection loses a key the client asked for, the subscription is
 **revoked**: syncular returns an error for the whole subscription instead of
 delivering a smaller, unrequested subset. Revocation purges the
-now-unauthorized rows from the local database ([SPEC §3.3](https://github.com/syncular/syncular/blob/main/SPEC.md#33-revocation-and-the-purge-contract)).
+now-unauthorized rows from the local database ([SPEC §3.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#33-revocation-and-the-purge-contract)).
 
 ## `resolveScopes`: the one function you write
 
@@ -59,7 +59,7 @@ no data leaks on an authorization error.
 
 ## Write-path authorization
 
-The same resolver guards writes ([SPEC §3.4](https://github.com/syncular/syncular/blob/main/SPEC.md#34-write-path-authorization)),
+The same resolver guards writes ([SPEC §3.4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#34-write-path-authorization)),
 through two rules:
 
 - A write is authorized against the row **as currently stored** (or, for an
@@ -78,4 +78,4 @@ semantics throughout. See [Windowed sync](/concepts-windowing/) for the
 full model; the short version is that a window is a **set of scope values**,
 and changing the window is a set difference on subscriptions: values that
 enter fresh-bootstrap, values that leave are evicted from the local database.
-Shipped in W1 ([SPEC §4.8](https://github.com/syncular/syncular/blob/main/SPEC.md#48-windowed-subscriptions)).
+Shipped in W1 ([SPEC §4.8](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#48-windowed-subscriptions)).

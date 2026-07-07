@@ -17,7 +17,7 @@ Two pieces:
 
 ## Architecture: why a native instance, not JS-in-the-webview
 
-Decided 2026-07-03 (see [ROADMAP block 1](../../ROADMAP.md#1-native-bindings-block-the-one-real-parity-gap)):
+Decided 2026-07-03 (see [ROADMAP block 1](../../docs/ROADMAP.md#1-native-bindings-block-the-one-real-parity-gap)):
 we do **not** run JS syncular in the webview. Webview OPFS is eviction-prone and
 inconsistent across WKWebView / webkitgtk; the Rust core gives a real on-disk
 SQLite database and native performance. So a full syncular client runs in the

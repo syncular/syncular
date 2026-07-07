@@ -1,7 +1,7 @@
 # @syncular/conformance
 
 Implementation-agnostic conformance runner for the SSP2 protocol
-([`SPEC.md`](../../SPEC.md) is normative; REVISE.md B4 is the mandate).
+([`SPEC.md`](../../docs/SPEC.md) is normative; REVISE.md B4 is the mandate).
 A catalog of scenario scripts executes against any (client, server)
 pairing through a driver interface; `bun run check` at the workspace root
 runs the whole catalog on (TS web client × TS server) plus the

@@ -4,7 +4,7 @@ SQL migrations + one manifest → neutral schema IR (JSON) → generated TS
 module (REVISE B5). This file is the authoritative contract for the three
 tool-level formats: the manifest, the IR, and the SQL subset. Wire-protocol
 semantics (column types, scope patterns, schema-version gating) live in
-[`../../SPEC.md`](../../SPEC.md) §2.4, §3.1, §1.5 — this document never
+[`../../docs/SPEC.md`](../../docs/SPEC.md) §2.4, §3.1, §1.5 — this document never
 overrides it.
 
 ```sh
