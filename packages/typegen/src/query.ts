@@ -48,7 +48,7 @@
  * error listing the fix. bun:sqlite can't name params, so we parse `:name`
  * tokens from the SQL ourselves (first-occurrence order = positional order).
  *
- * ## The tables set (for useSyncQuery `{tables}` — exact invalidation)
+ * ## The tables set (for useRawSql `{tables}` — exact invalidation)
  *
  * bun:sqlite exposes no authorizer and no statement table-list; EXPLAIN
  * opcodes are fragile. The honest mechanism: the FROM/JOIN table set we
@@ -118,7 +118,7 @@ export interface AnalyzedQuery {
   readonly params: readonly QueryParam[];
   /** Result columns in SELECT order. */
   readonly columns: readonly QueryColumn[];
-  /** IR tables this query reads (the useSyncQuery `{tables}` set), sorted. */
+  /** IR tables this query reads (the useRawSql `{tables}` set), sorted. */
   readonly tables: readonly string[];
 }
 

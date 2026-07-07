@@ -9,13 +9,11 @@
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
     "@syncular/core": "workspace:*",
-    "@syncular/kysely": "workspace:*",
     "@syncular/react": "workspace:*",
     "@syncular/server": "workspace:*",
     "@syncular/server-hono": "workspace:*",
     "@syncular/client": "workspace:*",
     "hono": "^4.11.0",
-    "kysely": "^0.29.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

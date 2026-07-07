@@ -320,8 +320,8 @@ null/nil (fail-soft at the decode boundary, not a crash).
 The **named-query** tier is syncular's cross-platform answer to sqlc /
 SQLDelight: you write a `.sql` file, and typegen transpiles it into a typed
 function on every platform — killing query↔type drift *by construction*. It is
-the type-safe **read** tier; Kysely stays the TS **dynamic** tier, and raw
-`query(sql, params)` stays the escape hatch.
+the type-safe **read** tier; raw `query(sql, params)` — guarded read-only —
+stays the escape hatch for queries built at runtime.
 
 **File & naming convention.** Named queries live in a `queries/` directory
 next to `migrations/` (override with the top-level `"queries"` manifest key).
@@ -428,7 +428,7 @@ stripped and whitespace collapsed to a clean one-line string.
 **The tables dependency set** (for React's exact invalidation). Each query
 emits a `tables` set — the FROM/JOIN tables it reads, resolved against the IR
 and *validated by the same SQLite `prepare()`* (an unknown table would have
-thrown). This feeds `useSyncQuery`'s `{tables}` option so a named query
+thrown). This feeds `useRawSql`'s `{tables}` option so a named query
 re-runs exactly when a depended-on table invalidates. **Boundary**:
 `bun:sqlite` exposes no authorizer and no statement table-list, and EXPLAIN
 opcodes are fragile — so the set is derived by scanning every `FROM`/`JOIN`
@@ -451,12 +451,12 @@ the same `fromRow` mapping rules (0/1 booleans, `{"$bytes":"<hex>"}` bytes) as
 the schema structs. `--check` gates every queries file byte-exactly, like the
 schema files; each carries the DO-NOT-EDIT header + IR hash.
 
-**React helper.** `@syncular/react` exports `useNamedQuery(query, params?)`,
-which takes the TS `NamedQuery` descriptor and reuses `useSyncQuery`'s
+**React helper.** `@syncular/react` exports `useQuery(query, params?)`,
+which takes the TS `NamedQuery` descriptor and reuses `useRawSql`'s
 invalidation machinery with the descriptor's exact `tables` set:
 
 ```ts
 import { listTodosQuery } from './syncular.queries';
-const { rows } = useNamedQuery(listTodosQuery, { listId });
+const { rows } = useQuery(listTodosQuery, { listId });
 //      ^ ListTodosRow[] — typed by the query's own projection
 ```

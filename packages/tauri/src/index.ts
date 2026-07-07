@@ -5,7 +5,7 @@
  * The Tauri host runs a REAL Rust syncular client (file DB + native HTTP+WS
  * transport). This module is a thin webview-side proxy that implements the SAME
  * `SyncClientLike` interface the React package normalizes — so the hooks
- * (`useSyncQuery`, `useMutation`, `usePresence`, …) work UNCHANGED against a
+ * (`useRawSql`, `useMutation`, `usePresence`, …) work UNCHANGED against a
  * Tauri app. It is the fourth host of one interface, after the direct
  * `SyncClient`, the worker-leader `SyncClientHandle`, and the multi-tab
  * follower (ROADMAP.md block 1).

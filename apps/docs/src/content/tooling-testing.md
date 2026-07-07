@@ -155,7 +155,7 @@ await a.sync();            // the hub fans the commit to b as a delta
 
 ```tsx
 import { renderHook, act, waitFor } from '@testing-library/react';
-import { useSyncQuery } from '@syncular/react';
+import { useRawSql } from '@syncular/react';
 import { createTestSync } from '@syncular/testkit';
 import { syncWrapper } from '@syncular/testkit/react';
 
@@ -165,7 +165,7 @@ client.api.subscribe({ id: 's', table: 'notes', scopes: { list_id: ['x'] } });
 await client.sync();
 
 const { result } = renderHook(
-  () => useSyncQuery('SELECT * FROM notes'),
+  () => useRawSql('SELECT * FROM notes'),
   { wrapper: syncWrapper(client) },
 );
 
@@ -177,7 +177,7 @@ await waitFor(() => expect(result.current.rows).toHaveLength(1));
 
 The re-render is driven by the client's **real** invalidation choke point —
 the same one production hooks fire on — so a passing test reflects real
-live-query behavior. This works identically for `useNamedQuery` and the
+live-query behavior. This works identically for `useQuery` and the
 other hooks.
 
 ## What it is not

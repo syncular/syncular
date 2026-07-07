@@ -65,7 +65,7 @@ persists it to a file.
   packages; the frontend is vanilla DOM.
 - **Hooks variant**: [`apps/demo-react`](../demo-react) is the same server
   with a **React** frontend built on `@syncular/react` — `SyncProvider` +
-  `useTypedQuery` (Kysely-typed, read-only) + `useMutation` + `useSyncStatus`
+  `useQuery` (typed named queries, read-only) + `useMutation` + `useSyncStatus`
   + a `useWindow` list-filter dropdown that dogfoods W1 windowing. Run it with
   `bun run --cwd apps/demo-react dev` (port 8788).
 

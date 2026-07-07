@@ -1,6 +1,6 @@
 /**
  * SSR safety: rendering the hooks on the server (no DOM, effects never run)
- * must not crash. `useSyncQuery`/`useSyncStatus`/`useConflicts` return their
+ * must not crash. `useRawSql`/`useSyncStatus`/`useConflicts` return their
  * initial state during `renderToString`; the query fires only in the mount
  * effect (client-side), so the server render is inert and safe.
  */
@@ -10,13 +10,13 @@ import { renderToString } from 'react-dom/server';
 import {
   SyncProvider,
   useConflicts,
-  useSyncQuery,
+  useRawSql,
   useSyncStatus,
 } from '../src/index';
 import { FakeClient } from './fake-client';
 
 function App(): ReactNode {
-  const { rows, isLoading } = useSyncQuery('SELECT * FROM tasks');
+  const { rows, isLoading } = useRawSql('SELECT * FROM tasks');
   const status = useSyncStatus();
   const { conflicts } = useConflicts();
   return createElement(

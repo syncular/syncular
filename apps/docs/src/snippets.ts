@@ -44,10 +44,10 @@ client.query('SELECT * FROM todos WHERE done = 0');`,
     id: 'react',
     label: 'REACT',
     lang: 'tsx',
-    code: `import { useMutation, useSyncQuery } from '@syncular/react';
+    code: `import { useMutation, useRawSql } from '@syncular/react';
 
 function Todos() {
-  const { rows } = useSyncQuery(
+  const { rows } = useRawSql(
     'SELECT * FROM todos WHERE done = 0 ORDER BY position',
   );
   const { mutate } = useMutation();

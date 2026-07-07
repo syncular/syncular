@@ -1,5 +1,5 @@
 /**
- * `useSyncQuery` — a live local SQL query with fine-grained invalidation
+ * `useRawSql` — a live local SQL query with fine-grained invalidation
  * (TODO 3.1 / DESIGN-eviction I1–I4). The query runs once on mount, then
  * re-runs ONLY when an invalidation event (one per apply batch, from the
  * web-client choke point) touches a table this query depends on — never
@@ -19,7 +19,7 @@ import { inferTables } from './infer-tables';
 import { FrameScheduler, type HashedRows, reconcileRows } from './query-churn';
 import { useSyncClient } from './use-client';
 
-export interface UseSyncQueryOptions {
+export interface UseRawSqlOptions {
   /**
    * Tables this query depends on. Defaults to a conservative scan of `sql`.
    * Pass explicitly to override the heuristic (the escape hatch).
@@ -36,7 +36,7 @@ export interface UseSyncQueryOptions {
   readonly enabled?: boolean;
 }
 
-export interface UseSyncQueryResult<Row> {
+export interface UseRawSqlResult<Row> {
   readonly rows: readonly Row[];
   readonly isLoading: boolean;
   readonly error: Error | undefined;
@@ -78,11 +78,11 @@ function eventMatches(
   return false;
 }
 
-export function useSyncQuery<Row = SqlRow>(
+export function useRawSql<Row = SqlRow>(
   sql: string,
   params?: readonly SqlValue[],
-  options?: UseSyncQueryOptions,
-): UseSyncQueryResult<Row> {
+  options?: UseRawSqlOptions,
+): UseRawSqlResult<Row> {
   const client = useSyncClient();
   const enabled = options?.enabled ?? true;
 

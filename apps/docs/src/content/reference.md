@@ -37,7 +37,6 @@ All published under the `@syncular/*` scope (plus the unscoped scaffolder):
 | `@syncular/server-workers` | Cloudflare Workers entry: fetch handler over D1 storage + R2 segments/blobs | [packages/server-workers](https://github.com/syncular/syncular/tree/main/packages/server-workers) |
 | `@syncular/client` | The TS client core on sqlite-wasm/OPFS, worker + transports, multi-tab | [packages/web-client](https://github.com/syncular/syncular/tree/main/packages/web-client) |
 | `@syncular/react` | React bindings: `SyncProvider` + hooks over fine-grained invalidation | [packages/react](https://github.com/syncular/syncular/tree/main/packages/react) |
-| `@syncular/kysely` | The typed READ layer: a Kysely dialect over any syncular host, typed by the generated `Database` interface | [packages/kysely](https://github.com/syncular/syncular/tree/main/packages/kysely) |
 | `@syncular/crypto` | Client-side E2EE primitives (symmetric + asymmetric) — see [Encryption](/concepts-encryption/) | [packages/crypto](https://github.com/syncular/syncular/tree/main/packages/crypto) |
 | `@syncular/crdt-yjs` | The Yjs `crdt`-column merger (server) + `YjsColumn` client helper — see [CRDT columns](/concepts-crdt/) | [packages/crdt-yjs](https://github.com/syncular/syncular/tree/main/packages/crdt-yjs) |
 | `@syncular/typegen` | Migrations + manifest → schema IR → generated modules (TS, Swift, Kotlin, Dart) + named queries; ships the `syncular` CLI | [packages/typegen](https://github.com/syncular/syncular/tree/main/packages/typegen) |

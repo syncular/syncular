@@ -4,7 +4,7 @@
  * `{tables, scopeKeys}` event per apply batch, keyed by the §3.1 scope
  * vocabulary where the wire carries it. These tests assert the granularity
  * truth and the coalescing rule against the real loopback server — the
- * substrate the React `useSyncQuery` re-run logic depends on.
+ * substrate the React `useRawSql` re-run logic depends on.
  */
 import { describe, expect, test } from 'bun:test';
 import type { InvalidationEvent } from '@syncular/client';

@@ -114,14 +114,14 @@ const rows = await listTodos(client, { listId: 'demo' });
 
 `client` is anything with `query(sql, params)` — a direct `SyncClient`, a
 worker handle, or the Tauri / React Native bridges. React gets a live hook —
-`useNamedQuery` from `@syncular/react` takes the generated descriptor and
+`useQuery` from `@syncular/react` takes the generated descriptor and
 re-runs exactly when a depended-on table changes:
 
 ```tsx
-import { useNamedQuery } from '@syncular/react';
+import { useQuery } from '@syncular/react';
 import { listTodosQuery } from './syncular.queries';
 
-const { rows, isLoading } = useNamedQuery(listTodosQuery, { listId });
+const { rows, isLoading } = useQuery(listTodosQuery, { listId });
 ```
 
 Swift (throws on failure, rows decode to the generated struct):
@@ -149,10 +149,9 @@ decode from the core's hex marshaling.
 ## Exact invalidation
 
 Each query also emits a `tables` constant — the set of tables it reads,
-validated by the same `prepare()`. On React this feeds `useSyncQuery`'s
-`{tables}` option automatically via `useNamedQuery`, so a named query
-re-runs exactly when one of its tables invalidates, never on unrelated
-writes.
+validated by the same `prepare()`. On React, `useQuery` uses it as the exact
+dependency set, so a named query re-runs exactly when one of its tables
+invalidates, never on unrelated writes.
 
 ## Why this is the recommended read tier
 
@@ -162,13 +161,13 @@ writes.
 - **Boring by design**: the SQL you ship is the SQL you wrote — comments
   stripped, `:name` rewritten to positional `?`, nothing else.
 
-Kysely remains the TS-only dynamic tier ([Typed reads with Kysely](/tooling-kysely/))
-and raw `client.query(sql, params)` the escape hatch. Writes always go
-through `client.mutate()` — no query tier writes.
+Raw `client.query(sql, params)` (and React's `useRawSql`) is the escape
+hatch for queries built at runtime — guarded read-only in the core: exactly
+one statement, `SELECT`/`WITH`/`EXPLAIN`/`PRAGMA`/`VALUES` only. Writes
+always go through `client.mutate()` — no query tier writes.
 
 ## Where to go next
 
 - [Schema & typegen](/guide-schema/) — the manifest, migrations, and generate workflow this builds on.
-- [Typed reads with Kysely](/tooling-kysely/) — the dynamic TS tier for queries built at runtime.
-- [React](/platform-react/) — `useNamedQuery`, `useSyncQuery`, and the rest of the hooks.
+- [React](/platform-react/) — `useQuery`, `useRawSql`, and the rest of the hooks.
 - [typegen README §6](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md) — the authoritative named-query contract.

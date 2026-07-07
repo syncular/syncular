@@ -33,14 +33,6 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
-    },
-    "./typed": {
-      "bun": "./src/typed.ts",
-      "browser": "./src/typed.ts",
-      "import": {
-        "types": "./dist/typed.d.ts",
-        "default": "./dist/typed.js"
-      }
     }
   },
   "files": [
@@ -59,26 +51,14 @@
     "@syncular/client": "workspace:*"
   },
   "peerDependencies": {
-    "@syncular/kysely": "workspace:*",
-    "kysely": ">=0.27.0",
     "react": ">=18.0.0"
-  },
-  "peerDependenciesMeta": {
-    "@syncular/kysely": {
-      "optional": true
-    },
-    "kysely": {
-      "optional": true
-    }
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^15.11.0",
     "@syncular/core": "workspace:*",
-    "@syncular/kysely": "workspace:*",
     "@syncular/server": "workspace:*",
     "@testing-library/react": "^16.1.0",
     "@types/react": "^18.3.0",
-    "kysely": "^0.29.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   }

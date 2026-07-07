@@ -2,7 +2,7 @@
 
 `@syncular/react-native` — the syncular native Rust core (over the C-ABI FFI)
 surfaced to React Native as the **same `SyncClientLike` interface** the React
-package normalizes, so `@syncular/react` hooks (`useSyncQuery`, `useMutation`,
+package normalizes, so `@syncular/react` hooks (`useRawSql`, `useMutation`,
 `usePresence`, …) work **unchanged** in an RN app. It is the fifth host of one
 interface, after direct / worker-leader / multi-tab follower / Tauri.
 
@@ -50,7 +50,7 @@ whose hooks↔module integration is proven headless:
 - **`syncular-react-native.podspec` + `android/build.gradle`** — RN packaging.
 - **[`example/`](example)** — a bare-RN **todo app** over the hooks
   (`<SyncProvider client={await createNativeSyncClient(…)}>` +
-  `useSyncQuery`/`useMutation`/`useSyncStatus`), the same clean interface as the
+  `useRawSql`/`useMutation`/`useSyncStatus`), the same clean interface as the
   web demos. Its real `App.tsx` is rendered headless against a NativeModule
   double as the hooks↔module integration proof (see the verification bar); the
   device build is a documented one-time overlay (no Xcode/Android SDK here).
@@ -98,7 +98,7 @@ pump + disconnect realtime — call from `AppState` `'background'`) and
     `App.tsx`** rendered with `@testing-library/react` against a **stateful**
     NativeModule double — the list renders the rows the native `query` returns,
     and Add drives `useMutation` → `command('mutate')` → an `invalidate` event →
-    `useSyncQuery` re-run → the new row appears. This proves the
+    `useRawSql` re-run → the new row appears. This proves the
     `@syncular/react` hooks drive the native client end-to-end. `react-native`
     primitives are mocked to DOM tags by a bunfig preload (`test/setup-app.ts`) —
     the one thing bun can't resolve off-device.
@@ -133,7 +133,7 @@ honest scoping applies. To verify manually:
    overlay + the artifact drop).
 3. iOS: `cd ios && pod install`; build in Xcode. Android: `./gradlew
    :app:assembleDebug`.
-4. Run the app: `createNativeSyncClient` + the `useSyncQuery` todo view proves
+4. Run the app: `createNativeSyncClient` + the `useRawSql` todo view proves
    the round trip end-to-end (mirrors the tauri README's `cargo tauri dev` note).
 
 ## CI

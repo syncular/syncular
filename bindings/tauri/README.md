@@ -139,7 +139,7 @@ const client = await createTauriSyncClient({ clientId: 'device-1', schema });
 
 ## IPC latency & pagination
 
-Every `useSyncQuery` run is **one IPC round trip** — fine at Tauri IPC latency
+Every `useRawSql` run is **one IPC round trip** — fine at Tauri IPC latency
 for typical view queries. For very large result sets, the round-trip
 serialization dominates: paginate with `LIMIT`/`OFFSET` (or keyset pagination)
 in the SQL you pass, exactly as you would for any query API. The native core
@@ -150,7 +150,7 @@ holds the whole database; the webview should pull windows of it, not the lot.
 A minimal Tauri app proving syncular works end to end: `example/src-tauri`
 registers the plugin (with `native-transport`) and points its native instance at
 a local dev server; `example/src/frontend` is a **React** todo list on
-`@syncular/react` hooks (`useSyncQuery` + `useMutation` + `useSyncStatus`)
+`@syncular/react` hooks (`useRawSql` + `useMutation` + `useSyncStatus`)
 over `createTauriSyncClient` — the exact hooks the browser demo uses, with the
 only Tauri-specific line being the client construction. See
 [`example/README.md`](example/README.md) for the full run recipe and the ~40

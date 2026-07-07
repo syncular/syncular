@@ -58,12 +58,6 @@ export interface TodosUpdate {
   attachment?: string | null;
 }
 
-/** Kysely `Database` interface (table → Row); the generic for
- *  @syncular/kysely's SyncularDialect. */
-export interface Database {
-  todos: TodosRow;
-}
-
 export interface TodoListParams {
   listId: string;
 }

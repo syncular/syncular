@@ -1,8 +1,8 @@
 /**
- * `useNamedQuery` — the live-query hook for the generated NAMED-query tier
+ * `useQuery` — the live-query hook for the generated NAMED-query tier
  * (typegen's sqlc/SQLDelight rung). You author a `.sql` file; typegen emits a
  * typed `NamedQuery` descriptor (`{ sql, tables, bind }`) + its `Row` type.
- * This hook runs that descriptor live and reuses {@link useSyncQuery}'s
+ * This hook runs that descriptor live and reuses {@link useRawSql}'s
  * invalidation machinery verbatim — the descriptor's `tables` set is the EXACT
  * dependency set (typegen resolved it from the query's FROM/JOIN against the
  * schema IR), so invalidation is precise with zero SQL-text heuristic and the
@@ -10,7 +10,7 @@
  *
  * ```ts
  * import { listProjectTasksQuery } from './syncular.queries';
- * const { rows } = useNamedQuery(listProjectTasksQuery, { projectId });
+ * const { rows } = useQuery(listProjectTasksQuery, { projectId });
  * //      ^ ListProjectTasksRow[]
  * ```
  *
@@ -20,10 +20,10 @@
  */
 import type { SqlValue } from '@syncular/client';
 import {
-  type UseSyncQueryOptions,
-  type UseSyncQueryResult,
-  useSyncQuery,
-} from './use-sync-query';
+  type UseRawSqlOptions,
+  type UseRawSqlResult,
+  useRawSql,
+} from './use-raw-sql';
 
 /** The structural shape typegen's `NamedQuery<Row, Params>` satisfies. */
 export interface NamedQueryDescriptor<Row, Params> {
@@ -35,31 +35,31 @@ export interface NamedQueryDescriptor<Row, Params> {
 }
 
 /** Run a param-less named query live. */
-export function useNamedQuery<Row>(
+export function useQuery<Row>(
   query: NamedQueryDescriptor<Row, undefined>,
-  options?: Omit<UseSyncQueryOptions, 'tables'>,
-): UseSyncQueryResult<Row>;
+  options?: Omit<UseRawSqlOptions, 'tables'>,
+): UseRawSqlResult<Row>;
 /** Run a named query live with its typed params. */
-export function useNamedQuery<Row, Params>(
+export function useQuery<Row, Params>(
   query: NamedQueryDescriptor<Row, Params>,
   params: Params,
-  options?: Omit<UseSyncQueryOptions, 'tables'>,
-): UseSyncQueryResult<Row>;
-export function useNamedQuery<Row, Params>(
+  options?: Omit<UseRawSqlOptions, 'tables'>,
+): UseRawSqlResult<Row>;
+export function useQuery<Row, Params>(
   query: NamedQueryDescriptor<Row, Params>,
-  paramsOrOptions?: Params | Omit<UseSyncQueryOptions, 'tables'>,
-  maybeOptions?: Omit<UseSyncQueryOptions, 'tables'>,
-): UseSyncQueryResult<Row> {
+  paramsOrOptions?: Params | Omit<UseRawSqlOptions, 'tables'>,
+  maybeOptions?: Omit<UseRawSqlOptions, 'tables'>,
+): UseRawSqlResult<Row> {
   // Overload disambiguation: a param-less query's second arg (if any) is the
   // options object; a parameterized query's second arg is the params.
   const hasParams = query.bind.length > 0;
   const params = (hasParams ? paramsOrOptions : undefined) as Params;
   const options = (hasParams ? maybeOptions : paramsOrOptions) as
-    | Omit<UseSyncQueryOptions, 'tables'>
+    | Omit<UseRawSqlOptions, 'tables'>
     | undefined;
 
   const bound = query.bind(params) as readonly SqlValue[];
-  return useSyncQuery<Row>(query.sql, bound, {
+  return useRawSql<Row>(query.sql, bound, {
     ...options,
     tables: query.tables,
   });

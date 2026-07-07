@@ -1,14 +1,14 @@
 /**
  * Integration: the hooks against a REAL `SyncClient` (bun:sqlite) with REAL
  * choke-point invalidation from a real server core. This is the end-to-end
- * proof that `useSyncQuery` re-runs on a relevant commit and NOT on an
+ * proof that `useRawSql` re-runs on a relevant commit and NOT on an
  * unrelated one (I4) — the invalidation seam and the hook wired together.
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { SyncProvider, useSyncQuery } from '../src/index';
+import { SyncProvider, useRawSql } from '../src/index';
 import { makeClient, makeServer, taskValues } from './loopback';
 import { installHappyDom } from './setup';
 
@@ -22,7 +22,7 @@ afterEach(async () => {
   document.body.innerHTML = '';
 });
 
-describe('useSyncQuery against a real SyncClient', () => {
+describe('useRawSql against a real SyncClient', () => {
   test('a local mutate makes the query re-run and show the row', async () => {
     const server = makeServer();
     const client = await makeClient(server, 'client-a');
@@ -38,7 +38,7 @@ describe('useSyncQuery against a real SyncClient', () => {
       <SyncProvider client={client}>{children}</SyncProvider>
     );
     const { result } = renderHook(
-      () => useSyncQuery('SELECT id, title FROM tasks ORDER BY id'),
+      () => useRawSql('SELECT id, title FROM tasks ORDER BY id'),
       { wrapper },
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -70,7 +70,7 @@ describe('useSyncQuery against a real SyncClient', () => {
     const wrapper = ({ children }: { children: ReactNode }) => (
       <SyncProvider client={b}>{children}</SyncProvider>
     );
-    const { result } = renderHook(() => useSyncQuery('SELECT * FROM tasks'), {
+    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
       wrapper,
     });
     await waitFor(() => expect(result.current.isLoading).toBe(false));

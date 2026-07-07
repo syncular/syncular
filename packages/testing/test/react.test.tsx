@@ -6,7 +6,7 @@
 
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { ClientSchema } from '@syncular/client';
-import { useSyncQuery } from '@syncular/react';
+import { useRawSql } from '@syncular/react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { createTestSync, type TestSync } from '../src/index';
 import { syncWrapper } from '../src/react';
@@ -49,7 +49,7 @@ describe('syncWrapper', () => {
     await client.sync();
 
     const { result } = renderHook(
-      () => useSyncQuery('SELECT id, body FROM notes ORDER BY id'),
+      () => useRawSql('SELECT id, body FROM notes ORDER BY id'),
       { wrapper: syncWrapper(client) },
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));

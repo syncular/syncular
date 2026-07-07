@@ -4,8 +4,11 @@
  *
  * - `SyncProvider` wraps the worker-mode `SyncClientHandle` (whole core in a
  *   worker on persistent OPFS; the page talks RPC).
- * - `useTypedQuery` (Kysely-typed by the generated `Database`) reads the
- *   visible list's todos, live — no SQL strings, exact table invalidation.
+ * - `useQuery` (typegen's named-query tier) reads the visible list's todos,
+ *   live — the SQL lives in `queries/list-todos.sql`, typed row + exact
+ *   `{tables}` invalidation, no SQL strings in the component.
+ * - `useRawSql` (the raw escape-hatch tier) computes the done/total badge —
+ *   guarded read-only, exact `{tables}` given explicitly.
  * - `useMutation` adds/toggles/deletes (writes go through the outbox).
  * - `useSyncStatus` shows the outbox depth + upgrading/floor state.
  * - `useWindow` drives the list-filter dropdown: picking a list calls
@@ -21,14 +24,14 @@ import {
 import {
   SyncProvider,
   useMutation,
-  useNamedQuery,
+  useQuery,
+  useRawSql,
   useSyncStatus,
   useWindow,
 } from '@syncular/react';
-import { useTypedQuery } from '@syncular/react/typed';
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { type Database, schema, type TodosRow } from '../syncular.generated';
+import { schema, type TodosRow } from '../syncular.generated';
 import { type ListTodosRow, listTodosQuery } from '../syncular.queries';
 
 const LISTS = ['groceries', 'work', 'travel'] as const;
@@ -68,25 +71,17 @@ function TodoApp() {
 
   // The live read — a NAMED query (typegen's sqlc-style tier): the SQL lives
   // in `queries/list-todos.sql`, typegen emits `listTodosQuery` (typed row +
-  // exact `{tables}`), and `useNamedQuery` runs it live, re-running exactly
-  // when `todos` invalidates. This is the type-safe read tier.
-  const { rows, isLoading } = useNamedQuery(listTodosQuery, { listId: list });
+  // exact `{tables}`), and `useQuery` runs it live, re-running exactly when
+  // `todos` invalidates. This is the recommended type-safe read tier.
+  const { rows, isLoading } = useQuery(listTodosQuery, { listId: list });
 
-  // The dynamic tier still lives: a Kysely-typed aggregate for the header
-  // badge (done vs total), driven by `useTypedQuery` over the same client.
-  const { rows: summary } = useTypedQuery<
-    Database,
-    { total: number; done_count: number }
-  >(
-    (db) =>
-      db
-        .selectFrom('todos')
-        .where('list_id', '=', list)
-        .select((eb) => [
-          eb.fn.countAll<number>().as('total'),
-          eb.fn.sum<number>('done').as('done_count'),
-        ]),
+  // The escape-hatch tier: an aggregate for the header badge (done vs total),
+  // via `useRawSql` — a guarded read-only string with its `{tables}` given
+  // explicitly so invalidation stays exact.
+  const { rows: summary } = useRawSql<{ total: number; done_count: number }>(
+    'SELECT count(*) AS total, sum(done) AS done_count FROM todos WHERE list_id = ?',
     [list],
+    { tables: ['todos'] },
   );
   const doneCount = summary[0]?.done_count ?? 0;
 
@@ -135,7 +130,7 @@ function TodoApp() {
       <header>
         <h1>syncular v2 — demo-react</h1>
         <span className="hint">
-          named queries + Kysely — {doneCount}/{rows.length} done
+          named query + raw SQL — {doneCount}/{rows.length} done
         </span>
         <StatusBadges />
       </header>
@@ -217,9 +212,9 @@ function TodoApp() {
         dropdown drives <code>useWindow.setWindow([list])</code> — switching
         lists bootstraps the new list and evicts the previous one (W1
         value-sharded windowing). Writes go through <code>useMutation</code>{' '}
-        (the outbox); the list read is a <code>useNamedQuery</code> (typed{' '}
+        (the outbox); the list read is a <code>useQuery</code> (typed{' '}
         <code>.sql</code>, exact invalidation) and the done-count badge is a{' '}
-        <code>useTypedQuery</code> (Kysely dynamic tier) — both read-only.
+        <code>useRawSql</code> (raw tier) — both read-only.
       </footer>
     </>
   );

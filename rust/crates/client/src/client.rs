@@ -1422,6 +1422,7 @@ impl SyncClient {
     /// arbitrary SQL can alias, join, and compute — there is no schema column
     /// to consult per output cell, unlike [`read_rows`].
     pub fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Map<String, Value>>, String> {
+        crate::query_guard::assert_read_only_query(sql)?;
         let bound: Vec<SqlValue> = params
             .iter()
             .map(json_param_to_sql)

@@ -21,9 +21,9 @@ bunx create-syncular-app my-app --template web
 
 > **Third-template candidate: `react`.** [`apps/demo-react`](../../apps/demo-react)
 > is the ready-made source for a hooks-based template — `@syncular/react`
-> (`SyncProvider` + `useTypedQuery` + `useMutation` + `useSyncStatus` +
-> `useWindow`) over the same worker + OPFS core, with the Kysely-typed read
-> layer wired. Slim it the way `web` slims `apps/demo` (drop the three-list
+> (`SyncProvider` + `useQuery` + `useRawSql` + `useMutation` + `useSyncStatus` +
+> `useWindow`) over the same worker + OPFS core, with the named-query read
+> tier wired. Slim it the way `web` slims `apps/demo` (drop the three-list
 > seed to one, keep one hook of each kind) and add it here when a React
 > template is wanted. Not built yet — noted so the shape is on record.
 

@@ -1,8 +1,11 @@
 # DESIGN — The query surface: two frontends, one IR, SQL underneath
 
-Status: **draft for direction decision** (2026-07-08; Q0 decisions recorded
-same day: extension `.syql`, camel-case emission, no fragments in the `.sql`
-tier, multiple queries per `.syql` file, no `offset` knob). Supersedes the
+Status: **direction decision — Q0 complete** (2026-07-08). Decided:
+extension `.syql`, camel-case emission, no fragments in the `.sql` tier,
+multiple queries per `.syql` file, no `offset` knob, lowercase-keyword `fmt`
+canon, pinned naming-map algorithm, two-casing `mutate` normalization (§12).
+Q1 (core read guards, `sql` tag, hook renames, Kysely removal) implementable
+now — it is independent of the `.syql` grammar. Supersedes the
 ad-hoc named-query annotations (`-- name:` et al.) as the plan of record for
 the typed read tier. Folds in four already-sense-checked decisions from the
 same discussion thread: Kysely removal, hook renames, core read guards, and
@@ -368,12 +371,32 @@ These ship in the same milestone because they are one coherent story
 | Q4 | Variant-enumeration backend; `syncular fmt`; VS Code grammar | fixture parity across backends |
 | Q5 | LSP; heuristic backend selection | usage evidence |
 
-## 12. Open questions
+## 12. Q0 decisions (were open questions)
 
-- Keyword/casing canon *inside* `.syql` files for `fmt` (the sketch uses
-  lowercase SQL; pick one canon at Q0 review).
-- Naming-map edge cases to pin in the spec: leading underscores, digits
-  after underscores (`col_2` → `col2`?), all-caps segments (`id_url`).
-- Does `mutate` key normalization accept *only* the two canonical casings,
-  or any-case match? (Proposal: exactly two — camel and SQL-truth —
-  anything else errors.)
+- **`fmt` canon: lowercase SQL keywords.** Matches the DSL skeleton
+  keywords (`query`, `fragment`, `if`), reads calmer in a code context, and
+  is where modern SQL formatters have converged. `fmt` lowercases keywords,
+  preserves identifier casing (SQL-truth), one space after commas, one
+  clause per line in the WHERE. No options.
+- **Naming-map algorithm (`snake → camel`), pinned:**
+  1. Split off and preserve any leading run of `_` as a prefix, and any
+     trailing run of `_` as a suffix (they carry intent — privacy markers,
+     disambiguation).
+  2. Split the middle on `_`; drop empty segments from doubled underscores.
+  3. First segment verbatim; each later segment gets its first character
+     upper-cased, rest verbatim. **No acronym awareness** (`id_url` →
+     `idUrl`, not `idURL`; `api_key` → `apiKey`) — mechanical and
+     predictable beats clever.
+  4. Re-attach prefix/suffix. Examples: `created_at`→`createdAt`,
+     `col_2`→`col2`, `user_id`→`userId`, `_internal`→`_internal`,
+     `__foo_bar`→`__fooBar`, `row_`→`row_`.
+  - **Collisions and hazards are generate-time errors**, not warnings: two
+    SQL names mapping to one (`col_2` + `col2`), a mapped name hitting a
+    target-language keyword, or a **leading underscore on the Dart target**
+    (Dart treats `_name` as library-private — a real cross-language trap).
+    The error names both columns/targets and points at the manifest
+    `"naming": "preserve"` opt-out or an explicit `AS` alias.
+- **`mutate` key normalization accepts exactly two casings**: the canonical
+  camelCase (generated row-type keys) and the SQL-truth snake_case. Both are
+  a single bijective-map lookup; anything else is an error (no fuzzy
+  matching, no per-key case-insensitive scan). Predictable and O(1).

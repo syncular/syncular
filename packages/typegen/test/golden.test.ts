@@ -44,11 +44,11 @@ describe('golden fixtures', () => {
     expect(checkOutputs(generate(FIXTURE))).toEqual([]);
   });
 
-  test('emits a Kysely Database interface mapping every table to its Row', () => {
+  test('no longer emits the removed Kysely Database interface', () => {
+    // Kysely was dropped (DESIGN-queries.md §9); the Row interfaces stay.
     const module = generate(FIXTURE).module;
-    expect(module).toContain('export interface Database {');
-    expect(module).toContain('  tasks: TasksRow;');
-    expect(module).toContain('  docs: DocsRow;');
+    expect(module).not.toContain('export interface Database {');
+    expect(module).toContain('export interface TasksRow {');
   });
 
   test('IR shape: versioned, extension slots present, no TS types', () => {

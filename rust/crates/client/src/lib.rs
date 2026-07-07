@@ -17,6 +17,7 @@ pub mod client;
 /// Yjs binding, mirroring `@syncular/crdt-yjs`. Off by default (dependency-lean).
 #[cfg(feature = "crdt-yjs")]
 pub mod crdt;
+pub mod query_guard;
 pub mod realtime_round;
 pub mod schema;
 pub mod transport;

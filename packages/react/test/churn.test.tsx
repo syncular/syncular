@@ -1,6 +1,6 @@
 /**
  * Live-query churn hardening at the HOOK level (RTL + happy-dom, act-hygienic).
- * Proves the three levers on the shipped `useSyncQuery` machinery:
+ * Proves the three levers on the shipped `useRawSql` machinery:
  *  1a. unchanged data → ZERO re-renders (a render-count probe);
  *  1b. one-row change → only that row's memo'd component re-renders;
  *  2.  a burst of N invalidations → exactly ONE re-query (queryCount probe);
@@ -14,7 +14,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { memo, type ReactNode } from 'react';
-import { SyncProvider, useSyncQuery } from '../src/index';
+import { SyncProvider, useRawSql } from '../src/index';
 import { FakeClient } from './fake-client';
 import { installHappyDom } from './setup';
 
@@ -45,7 +45,7 @@ describe('lever 1a — result stability (zero re-render on unchanged data)', () 
     let renders = 0;
     function Probe(): ReactNode {
       renders += 1;
-      useSyncQuery('SELECT * FROM tasks');
+      useRawSql('SELECT * FROM tasks');
       return null;
     }
     render(<Probe />, { wrapper: wrapper(client) });
@@ -83,7 +83,7 @@ describe('lever 1b — row identity reuse (only the changed row re-renders)', ()
     });
 
     function List(): ReactNode {
-      const { rows } = useSyncQuery<{ id: string; title: string }>(
+      const { rows } = useRawSql<{ id: string; title: string }>(
         'SELECT * FROM tasks',
       );
       return (
@@ -115,7 +115,7 @@ describe('lever 2 — frame-coalesced re-query', () => {
   test('a burst of N invalidations triggers exactly ONE re-query', async () => {
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1' }]);
-    const { result } = renderHook(() => useSyncQuery('SELECT * FROM tasks'), {
+    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
       wrapper: wrapper(client),
     });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -139,7 +139,7 @@ describe('lever 3 — scope-key filtering', () => {
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1' }]);
     const { result } = renderHook(
-      () => useSyncQuery('SELECT * FROM tasks', undefined, opts),
+      () => useRawSql('SELECT * FROM tasks', undefined, opts),
       { wrapper: wrapper(client) },
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -155,7 +155,7 @@ describe('lever 3 — scope-key filtering', () => {
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1' }]);
     const { result } = renderHook(
-      () => useSyncQuery('SELECT * FROM tasks', undefined, opts),
+      () => useRawSql('SELECT * FROM tasks', undefined, opts),
       { wrapper: wrapper(client) },
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -169,7 +169,7 @@ describe('lever 3 — scope-key filtering', () => {
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1' }]);
     const { result } = renderHook(
-      () => useSyncQuery('SELECT * FROM tasks', undefined, opts),
+      () => useRawSql('SELECT * FROM tasks', undefined, opts),
       { wrapper: wrapper(client) },
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));

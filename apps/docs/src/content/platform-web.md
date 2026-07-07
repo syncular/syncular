@@ -74,9 +74,9 @@ await handle.mutate([
 ]);
 ```
 
-For typed reads (generated `.sql` queries, Kysely) see
-[Named queries](/tooling-queries/) and [Kysely](/tooling-kysely/). For React
-live queries see [React](/platform-react/).
+For typed reads (generated `.sql` queries) see
+[Named queries](/tooling-queries/). For React live queries see
+[React](/platform-react/).
 
 ## Ephemeral mode (explicit, in-memory)
 

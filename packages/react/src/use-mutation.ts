@@ -1,7 +1,7 @@
 /**
  * `useMutation` — submit local mutations (§6.1). Returns a stable `mutate`
  * that appends to the outbox and applies the optimistic overlay immediately
- * (§7.1); the referencing `useSyncQuery` re-runs on the resulting
+ * (§7.1); the referencing `useRawSql` re-runs on the resulting
  * invalidation batch, so optimistic writes appear without a manual refetch.
  * `mutate` resolves to the `clientCommitId` (track it against
  * `useConflicts`/status). `isPending`/`error` cover the (usually instant)

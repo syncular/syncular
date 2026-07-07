@@ -1,5 +1,5 @@
 /**
- * `useNamedQuery` against the controllable `SyncClientLike` fake. Proves the
+ * `useQuery` against the controllable `SyncClientLike` fake. Proves the
  * generated NAMED-query tier composes with the invalidation machinery:
  * - a descriptor runs live and returns the seeded rows;
  * - the descriptor's `tables` set is the EXACT dependency set — a depended-on
@@ -16,7 +16,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import type { NamedQueryDescriptor } from '../src/index';
-import { SyncProvider, useNamedQuery } from '../src/index';
+import { SyncProvider, useQuery } from '../src/index';
 import { FakeClient } from './fake-client';
 import { installHappyDom } from './setup';
 
@@ -58,12 +58,12 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-describe('useNamedQuery', () => {
+describe('useQuery', () => {
   test('runs a parameterized descriptor and returns rows', async () => {
     const client = new FakeClient();
     client.setRows('todos', [{ id: 't1', title: 'hello' }]);
     const { result } = renderHook(
-      () => useNamedQuery(listTodosQuery, { listId: 'a' }),
+      () => useQuery(listTodosQuery, { listId: 'a' }),
       { wrapper: wrapper(client) },
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -81,7 +81,7 @@ describe('useNamedQuery', () => {
     }) as typeof client.query;
     client.setRows('todos', [{ id: 't1', title: 'x' }]);
     const { result } = renderHook(
-      () => useNamedQuery(listTodosQuery, { listId: 'my-list' }),
+      () => useQuery(listTodosQuery, { listId: 'my-list' }),
       { wrapper: wrapper(client) },
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -91,7 +91,7 @@ describe('useNamedQuery', () => {
   test('a param-less descriptor takes no params argument', async () => {
     const client = new FakeClient();
     client.setRows('todos', [{ id: 't1', title: 'a' }]);
-    const { result } = renderHook(() => useNamedQuery(allTitlesQuery), {
+    const { result } = renderHook(() => useQuery(allTitlesQuery), {
       wrapper: wrapper(client),
     });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -102,7 +102,7 @@ describe('useNamedQuery', () => {
     const client = new FakeClient();
     client.setRows('todos', [{ id: 't1', title: 'a' }]);
     const { result } = renderHook(
-      () => useNamedQuery(listTodosQuery, { listId: 'a' }),
+      () => useQuery(listTodosQuery, { listId: 'a' }),
       { wrapper: wrapper(client) },
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -125,11 +125,7 @@ describe('useNamedQuery', () => {
     client.setRows('todos', [{ id: 't1', title: 'a' }]);
     const { result } = renderHook(
       () =>
-        useNamedQuery(
-          listTodosQuery,
-          { listId: 'a' },
-          { scopeKeys: ['list:a'] },
-        ),
+        useQuery(listTodosQuery, { listId: 'a' }, { scopeKeys: ['list:a'] }),
       { wrapper: wrapper(client) },
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -151,7 +147,7 @@ describe('useNamedQuery', () => {
   test('a JOIN descriptor depends on BOTH its tables', async () => {
     const client = new FakeClient();
     client.setRows('todos', [{ id: 't1', title: 'a' }]);
-    const { result } = renderHook(() => useNamedQuery(joinedQuery), {
+    const { result } = renderHook(() => useQuery(joinedQuery), {
       wrapper: wrapper(client),
     });
     await waitFor(() => expect(result.current.isLoading).toBe(false));

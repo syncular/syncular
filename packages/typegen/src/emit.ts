@@ -157,25 +157,6 @@ function emitRowInterfaces(table: IrTable): string {
   return lines.join('\n');
 }
 
-/**
- * A Kysely-compatible `Database` interface: table name → Row type. This is
- * the generic `@syncular/kysely`'s `SyncularDialect` is parameterized by
- * (`new Kysely<Database>({ dialect })`). Additive — the Row interfaces it
- * references are already emitted above. Property keys use the raw table name
- * (quoted when not an identifier) so `db.selectFrom('table-name')` types.
- */
-function emitDatabaseInterface(ir: IrDocument): string {
-  const lines: string[] = [];
-  lines.push('/** Kysely `Database` interface (table → Row); the generic for');
-  lines.push(" *  @syncular/kysely's SyncularDialect. */");
-  lines.push('export interface Database {');
-  for (const table of ir.tables) {
-    lines.push(`  ${propertyKey(table.name)}: ${pascalCase(table.name)}Row;`);
-  }
-  lines.push('}');
-  return lines.join('\n');
-}
-
 function emitSubscription(sub: IrSubscription): string {
   const params: string[] = [];
   for (const scope of sub.scopes) {
@@ -231,7 +212,6 @@ export function emitModule(ir: IrDocument, hash: string): string {
   for (const table of ir.tables) {
     parts.push(emitRowInterfaces(table));
   }
-  parts.push(emitDatabaseInterface(ir));
   for (const sub of ir.subscriptions) {
     parts.push(emitSubscription(sub));
   }

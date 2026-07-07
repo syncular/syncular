@@ -94,7 +94,7 @@ import { schema } from './syncular.generated';
 
 const client = await createTauriSyncClient({ clientId: 'device-1', schema });
 // Every hook works unchanged:
-// <SyncProvider client={client}> … useSyncQuery / useMutation / usePresence
+// <SyncProvider client={client}> … useQuery / useRawSql / useMutation / usePresence
 ```
 
 The JS side supplies the schema, `clientId`, and optional `limits`; the
@@ -146,7 +146,7 @@ is connected, each combined push+pull round runs **over the socket** in the
 round rides `POST /sync`. One round in flight per connection; a mid-round
 socket drop fails the round rather than hanging.
 
-One practical note: every `useSyncQuery` run is one IPC round trip — fine at
+One practical note: every live-query run is one IPC round trip — fine at
 Tauri IPC latency for typical view queries. For very large result sets the
 serialization dominates, so paginate with `LIMIT`/`OFFSET` (or keyset
 pagination) in the SQL you pass. The native core holds the whole database;
@@ -157,7 +157,7 @@ the webview should pull windows of it.
 [`bindings/tauri/example`](https://github.com/syncular/syncular/tree/main/bindings/tauri/example)
 is a minimal Tauri app proving the loop end to end: `src-tauri` registers the
 plugin with `native-transport` pointed at a local dev server, and the
-frontend is a React todo list on `useSyncQuery` + `useMutation` +
+frontend is a React todo list on `useRawSql` + `useMutation` +
 `useSyncStatus` over `createTauriSyncClient` — the exact hooks the browser
 demo uses. The only Tauri-specific line is the client construction.
 

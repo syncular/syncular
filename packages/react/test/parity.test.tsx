@@ -11,7 +11,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { SyncProvider, useSyncQuery, useSyncStatus } from '../src/index';
+import { SyncProvider, useRawSql, useSyncStatus } from '../src/index';
 import { handleShapeOf } from './handle-shape';
 import { makeClient, makeServer, taskValues } from './loopback';
 import { installHappyDom } from './setup';
@@ -27,7 +27,7 @@ afterEach(async () => {
 });
 
 describe('hooks against the handle (all-async) surface', () => {
-  test('useSyncQuery re-runs on invalidation through the promise path', async () => {
+  test('useRawSql re-runs on invalidation through the promise path', async () => {
     const server = makeServer();
     const client = await makeClient(server, 'handle-a');
     clients.push(client);
@@ -42,7 +42,7 @@ describe('hooks against the handle (all-async) surface', () => {
     const wrapper = ({ children }: { children: ReactNode }) => (
       <SyncProvider client={handle}>{children}</SyncProvider>
     );
-    const { result } = renderHook(() => useSyncQuery('SELECT * FROM tasks'), {
+    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
       wrapper,
     });
     await waitFor(() => expect(result.current.isLoading).toBe(false));

@@ -2,7 +2,7 @@
 
 React bindings for the syncular v2 client, with **fine-grained live
 queries** designed in from day one (TODO 3.1 / `DESIGN-eviction.md` I1–I4).
-A `useSyncQuery` re-runs **only** when a table it depends on is touched by an
+A `useRawSql` re-runs **only** when a table it depends on is touched by an
 apply batch — never "re-run everything on any change".
 
 Works against **both** client cores through one interface:
@@ -19,7 +19,7 @@ React 18+ is a **peer dependency**. There are no other runtime dependencies.
 ## Quick start
 
 ```tsx
-import { SyncProvider, useSyncQuery, useMutation } from '@syncular/react';
+import { SyncProvider, useRawSql, useMutation } from '@syncular/react';
 
 // `client` is a SyncClient or a SyncClientHandle you already started.
 function App({ client }) {
@@ -31,7 +31,7 @@ function App({ client }) {
 }
 
 function Tasks() {
-  const { rows, isLoading, error, refresh } = useSyncQuery(
+  const { rows, isLoading, error, refresh } = useRawSql(
     'SELECT id, title, done FROM tasks ORDER BY id',
   );
   const { mutate } = useMutation();
@@ -88,14 +88,14 @@ schema-bump reset — the ONE choke point). Never one event per row.
   - Purge / reset / optimistic writes are keyed by table (and by effective
     scope keys where a scope map is in hand).
 
-**Consequence for `useSyncQuery`:** by default a query re-runs whenever a
+**Consequence for `useRawSql`:** by default a query re-runs whenever a
 depended-on **table** is touched. You may narrow further with `scopeKeys`
 (below), but a **table-level** event (a segment bootstrap, a reset — one that
 carries no scope keys) **always** re-runs a matching query, because it carries
 no key to discriminate on. This is deliberate: under-running is a stale query,
 the one thing a live-query layer must never do.
 
-## `useSyncQuery(sql, params?, options?)`
+## `useRawSql(sql, params?, options?)`
 
 Runs a local SQL query and keeps it live.
 
@@ -112,7 +112,7 @@ When the text cannot be read (dynamic SQL, views, unusual syntax), pass the
 explicit **`tables`** option — it always wins:
 
 ```tsx
-useSyncQuery(buildDynamicSql(), params, { tables: ['tasks', 'projects'] });
+useRawSql(buildDynamicSql(), params, { tables: ['tasks', 'projects'] });
 ```
 
 ### Options
@@ -122,34 +122,6 @@ useSyncQuery(buildDynamicSql(), params, { tables: ['tasks', 'projects'] });
 | `tables`    | Explicit dependency tables. Overrides the SQL-text inference (the escape hatch).                                                    |
 | `scopeKeys` | Narrow re-runs to specific `prefix:value` keys. A dependency-table event still re-runs if it carries **no** scope keys (see above). |
 | `enabled`   | Skip running while `false` (e.g. inputs not ready).                                                                                 |
-
-## `useTypedQuery(build, deps?, options?)` — the typed twin
-
-Behind the `@syncular/react/typed` subpath (needs the `@syncular/kysely`
-+ `kysely` peers). You write a [Kysely](https://kysely.dev) builder typed by
-your generated `Database` interface; the hook compiles it, runs it live, and
-extracts the `{tables}` dependency set from the compiled query's **AST** — so
-invalidation is *exact*, never a text heuristic. It reuses `useSyncQuery`'s
-machinery verbatim.
-
-```tsx
-import { useTypedQuery } from '@syncular/react/typed';
-import type { Database, TodosRow } from './syncular.generated';
-
-function TodoList({ listId }: { listId: string }) {
-  const { rows } = useTypedQuery<Database, Pick<TodosRow, 'id' | 'title'>>(
-    (db) =>
-      db.selectFrom('todos').select(['id', 'title']).where('list_id', '=', listId),
-    [listId], // re-key the builder like a useEffect dep array
-  );
-  return <ul>{rows.map((r) => <li key={r.id}>{r.title}</li>)}</ul>;
-}
-```
-
-Read-only, like the dialect: a write builder throws — use `useMutation` for
-writes (they must go through the outbox, SPEC §7.1). Works on every host the
-other hooks do (direct, worker, follower, Tauri, RN) — it drives the same
-normalized `query` surface.
 
 ## Other hooks
 
@@ -163,7 +135,7 @@ normalized `query` surface.
   connected realtime socket.
 - **`useMutation()`** → `{ mutate, isPending, error }`. `mutate(mutations)`
   resolves to the `clientCommitId`; the optimistic overlay is applied
-  immediately, and dependent `useSyncQuery`s re-run on the resulting batch.
+  immediately, and dependent `useRawSql`s re-run on the resulting batch.
 
 ## SSR
 
@@ -177,6 +149,6 @@ Per `DESIGN-eviction.md` I3, query bindings must be able to route a query's
 scope footprint through the window registry once windowed sync (TODO §5
 item 2) lands, so a query can report **completeness** (answerable from the
 local replica vs a window miss). Today the registry trivially contains
-"everything subscribed", so `useSyncQuery` always answers from the local
+"everything subscribed", so `useRawSql` always answers from the local
 replica. The `scopeKeys` option is the seam through which per-scope
 completeness will be surfaced without an API break.

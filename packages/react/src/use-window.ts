@@ -34,7 +34,7 @@ export function useWindow(base: WindowBase): UseWindowResult {
 
   // A stable key so the effects re-run only when the base identity changes,
   // not on every render's fresh object. The latest `base` is read via a ref
-  // inside the closures (the useSyncQuery pattern), so the dep list stays on
+  // inside the closures (the useRawSql pattern), so the dep list stays on
   // primitive keys.
   const baseKey = `${base.table} ${base.variable} ${JSON.stringify(
     base.fixedScopes ?? {},

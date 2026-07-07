@@ -176,7 +176,7 @@ mounting hooks against a test client is a one-liner. `syncWrapper` builds the
 
 ```tsx
 import { renderHook, act, waitFor } from '@testing-library/react';
-import { useSyncQuery } from '@syncular/react';
+import { useRawSql } from '@syncular/react';
 import { createTestSync } from '@syncular/testkit';
 import { syncWrapper } from '@syncular/testkit/react';
 
@@ -186,7 +186,7 @@ client.api.subscribe({ id: 's', table: 'notes', scopes: { list_id: ['x'] } });
 await client.sync();
 
 const { result } = renderHook(
-  () => useSyncQuery('SELECT * FROM notes'),
+  () => useRawSql('SELECT * FROM notes'),
   { wrapper: syncWrapper(client) },
 );
 

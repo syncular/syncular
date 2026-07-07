@@ -6,7 +6,7 @@
  *
  * This module is the webview-equivalent of `@syncular/tauri`: a thin JS proxy
  * that implements the SAME `SyncClientLike` interface the React package
- * normalizes, so `@syncular/react` hooks (`useSyncQuery`, `useMutation`,
+ * normalizes, so `@syncular/react` hooks (`useRawSql`, `useMutation`,
  * `usePresence`, …) work UNCHANGED in a React Native app. It is the fifth host
  * of one interface, after direct / worker-leader / multi-tab follower / Tauri.
  *

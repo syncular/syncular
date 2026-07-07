@@ -47,15 +47,13 @@ per apply batch (a pull round, a local `mutate`, a purge, or a schema-bump
 reset). A live query re-runs only when that event touches one of its
 **dependency tables**.
 
-Where do the dependency tables come from? Three answers, by tier:
+Where do the dependency tables come from? Two answers, by tier:
 
-- `useSyncQuery` infers them with a conservative scan of the SQL text (the
+- `useRawSql` infers them with a conservative scan of the SQL text (the
   identifiers after `FROM`/`JOIN`). It is a heuristic, intentionally
   over-inclusive (an extra harmless re-run) rather than under-inclusive (a
   stale query). The explicit `tables` option always wins.
-- `useTypedQuery` extracts them from the compiled Kysely query's AST — exact,
-  no text heuristic.
-- `useNamedQuery` gets them baked into the generated descriptor — typegen
+- `useQuery` gets them baked into the generated descriptor — typegen
   resolved them from the query's `FROM`/`JOIN` against the schema.
 
 Events also carry `scopeKeys` where the wire delivered them (commit frames
@@ -65,15 +63,18 @@ no keys always re-runs a matching query — under-running is a stale query, the
 one thing a live-query layer must never do. The full granularity contract is
 in the [react package README](https://github.com/syncular/syncular/tree/main/packages/react).
 
-## `useSyncQuery(sql, params?, options?)`
+## `useRawSql(sql, params?, options?)`
 
-Runs a local SQL query and keeps it live. Returns
-`{ rows, isLoading, error, refresh }`.
+Runs a local SQL string and keeps it live — the raw escape-hatch tier.
+Returns `{ rows, isLoading, error, refresh }`. The statement goes through
+the core's read guard: exactly one statement, read-only verbs only
+(`SELECT`/`WITH`/`EXPLAIN`/`PRAGMA`/`VALUES`) — writes must go through the
+outbox via `useMutation`.
 
 ```tsx
-import { useSyncQuery } from '@syncular/react';
+import { useRawSql } from '@syncular/react';
 
-const { rows, isLoading } = useSyncQuery(
+const { rows, isLoading } = useRawSql(
   'SELECT id, title, done FROM tasks WHERE project_id = ? ORDER BY id',
   [projectId],
 );
@@ -85,44 +86,23 @@ const { rows, isLoading } = useSyncQuery(
 | `scopeKeys` | Narrow re-runs to specific `prefix:value` keys (see the invalidation model above). |
 | `enabled`   | Skip running while `false` (e.g. inputs not ready).                                |
 
-## `useNamedQuery(query, params?, options?)`
+## `useQuery(query, params?, options?)`
 
-The hook for the generated **named-query** tier: you author a `.sql` file,
-typegen emits a typed descriptor plus its `Row` type, and the hook runs it
-live with the descriptor's exact table set — precise invalidation, zero
-heuristics, and the row type is the query's own projection.
+The hook for the generated **named-query** tier — the recommended read tier:
+you author a `.sql` file, typegen emits a typed descriptor plus its `Row`
+type, and the hook runs it live with the descriptor's exact table set —
+precise invalidation, zero heuristics, and the row type is the query's own
+projection.
 
 ```tsx
-import { useNamedQuery } from '@syncular/react';
+import { useQuery } from '@syncular/react';
 import { listTodosQuery, type ListTodosRow } from './syncular.queries';
 
-const { rows } = useNamedQuery(listTodosQuery, { listId }); // ListTodosRow[]
+const { rows } = useQuery(listTodosQuery, { listId }); // ListTodosRow[]
 ```
 
 A param-less query takes no second argument. See
 [Named queries](/tooling-queries/) for authoring `.sql` files.
-
-## `useTypedQuery(build, deps?, options?)`
-
-The Kysely-typed twin, behind the `@syncular/react/typed` subpath (it needs
-the `@syncular/kysely` and `kysely` peers, kept out of the main barrel so apps
-using only `useSyncQuery` never bundle Kysely). You write a builder typed by
-your generated `Database` interface; the hook compiles it, runs it live, and
-extracts the dependency tables from the compiled query's AST. `deps` re-keys
-the builder like a `useEffect` dependency array.
-
-```tsx
-import { useTypedQuery } from '@syncular/react/typed';
-import type { Database, TodosRow } from './syncular.generated';
-
-const { rows } = useTypedQuery<Database, Pick<TodosRow, 'id' | 'title'>>(
-  (db) => db.selectFrom('todos').select(['id', 'title']).where('list_id', '=', listId),
-  [listId],
-);
-```
-
-Read-only, like the dialect: a write builder throws — writes must go through
-the outbox. See [Kysely](/tooling-kysely/).
 
 ## `useMutation()`
 
@@ -161,7 +141,7 @@ a windowed todo list where the selector drives `setWindow`, the read is a
 named query, and writes go through the outbox.
 
 ```tsx
-import { SyncProvider, useMutation, useNamedQuery, useSyncStatus, useWindow } from '@syncular/react';
+import { SyncProvider, useMutation, useQuery, useSyncStatus, useWindow } from '@syncular/react';
 import { useEffect, useState } from 'react';
 import { listTodosQuery } from './syncular.queries';
 
@@ -179,7 +159,7 @@ function TodoApp() {
   }, [list, setWindow]);
 
   // Live read: re-runs exactly when `todos` invalidates.
-  const { rows, isLoading } = useNamedQuery(listTodosQuery, { listId: list });
+  const { rows, isLoading } = useQuery(listTodosQuery, { listId: list });
 
   const add = (title: string) =>
     mutate([
@@ -223,6 +203,5 @@ crashes.
 ## Where to go next
 
 - [Web (browser)](/platform-web/) — building the client the provider wraps.
-- [Named queries](/tooling-queries/) — the typed `.sql` tier `useNamedQuery` runs.
-- [Kysely](/tooling-kysely/) — the dynamic typed tier behind `useTypedQuery`.
+- [Named queries](/tooling-queries/) — the typed `.sql` tier `useQuery` runs.
 - [`@syncular/react` README](https://github.com/syncular/syncular/tree/main/packages/react) — the full granularity contract.

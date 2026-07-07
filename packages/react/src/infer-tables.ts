@@ -1,5 +1,5 @@
 /**
- * Conservative table inference for `useSyncQuery` (TODO 3.1: "infer
+ * Conservative table inference for `useRawSql` (TODO 3.1: "infer
  * conservatively from the SQL text's table names … documented as a
  * heuristic with the explicit option as the escape hatch").
  *

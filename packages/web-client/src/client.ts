@@ -79,6 +79,7 @@ import {
   OutboxEncodeError,
   type OutboxOperation,
 } from './outbox';
+import { assertReadOnlyQuery } from './query-guard';
 import {
   type ClientSchema,
   type CompiledClientSchema,
@@ -549,7 +550,14 @@ export class SyncClient {
     return this.#db;
   }
 
+  /**
+   * The raw-SQL read tier. Guarded (query-guard.ts): a single read-only
+   * statement only — writes must go through `mutate()` so they hit the
+   * outbox (SPEC §7.1). Engine internals read `this.#db` directly and skip
+   * this guard by design.
+   */
   query(sql: string, params?: readonly SqlValue[]): SqlRow[] {
+    assertReadOnlyQuery(sql);
     return this.#db.query(sql, params);
   }
 

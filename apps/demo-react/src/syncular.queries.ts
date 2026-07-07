@@ -23,13 +23,13 @@ export interface QueryClient {
 
 /** A named-query descriptor — sql + its exact table dependency set + a
  *  `bind(params)` → positional args. Consumed by
- *  `@syncular/react`'s `useNamedQuery`. `Row` is the projection row
+ *  `@syncular/react`'s `useQuery`. `Row` is the projection row
  *  type; `Params` is `undefined` for a param-less query. */
 export interface NamedQuery<Row, Params = undefined> {
   readonly sql: string;
   readonly tables: readonly string[];
   readonly bind: (params: Params) => readonly QueryValue[];
-  /** Phantom — carries the Row type for `useNamedQuery` inference. */
+  /** Phantom — carries the Row type for `useQuery` inference. */
   readonly __row?: Row;
 }
 
@@ -49,7 +49,7 @@ export interface ListTodosParams {
   listId: string;
 }
 
-/** Tables 'listTodos' reads — the exact useSyncQuery `{tables}` set. */
+/** Tables 'listTodos' reads — the exact useRawSql `{tables}` set. */
 export const listTodosTables = ['todos'] as const;
 
 const listTodosSql = 'SELECT id, list_id, title, done, position, updated_at_ms, attachment FROM todos WHERE list_id = ? ORDER BY position, id';
@@ -60,7 +60,7 @@ export async function listTodos(client: QueryClient, params: ListTodosParams): P
   return rows as unknown as ListTodosRow[];
 }
 
-/** Descriptor for `useNamedQuery(listTodosQuery, params)` — sql + tables + row type. */
+/** Descriptor for `useQuery(listTodosQuery, params)` — sql + tables + row type. */
 export const listTodosQuery: NamedQuery<ListTodosRow, ListTodosParams> = {
   sql: listTodosSql,
   tables: listTodosTables,
