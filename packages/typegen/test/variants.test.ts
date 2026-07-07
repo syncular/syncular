@@ -210,6 +210,48 @@ describe('§7 variant enumeration', () => {
     ).toThrow(/at least one optional param/);
   });
 
+  test('queryBackend heuristic: auto enumerates small-N, leaves big-N neutralized', () => {
+    const auto = { ...NAMING, backend: 'auto' as const };
+    const small = analyzeSyqlFile(
+      'h.syql',
+      `query s(listId, status?) {
+         select id from todos where list_id = :listId and status = :status
+       }`,
+      IR,
+      db,
+      auto,
+    )[0];
+    expect(small?.variants).toHaveLength(2); // 1 group → auto-enumerated
+    const big = analyzeSyqlFile(
+      'h.syql',
+      `query b(listId, status?, from+to?, unassigned?: flag) {
+         select id from todos
+         where list_id = :listId
+           and status = :status
+           and created_at between :from and :to
+           and if (:unassigned) { assignee_id is null }
+       }`,
+      IR,
+      db,
+      auto,
+    )[0];
+    expect(big?.variants).toBeUndefined(); // 3 groups → stays neutralized
+    const forced = analyzeSyqlFile(
+      'h.syql',
+      `query f(listId, status?, from+to?, unassigned?: flag) {
+         select id from todos
+         where list_id = :listId
+           and status = :status
+           and created_at between :from and :to
+           and if (:unassigned) { assignee_id is null }
+       }`,
+      IR,
+      db,
+      { ...NAMING, backend: 'variants' as const },
+    )[0];
+    expect(forced?.variants).toHaveLength(8); // manifest-wide force
+  });
+
   test('more than 8 optional groups is a loud error', () => {
     const params = Array.from({ length: 9 }, (_, i) => `p${i}?`).join(', ');
     const preds = Array.from(

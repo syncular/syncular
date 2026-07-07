@@ -137,12 +137,19 @@ export interface QueryColumn {
   readonly fidelity: 'exact' | 'fallback';
 }
 
-/** Naming options threaded from the manifest into query analysis. */
+/** §7/§8 backend selection: neutralization (default), always-variants, or
+ * the small-N heuristic (`auto`: enumerate at ≤ 2 optional groups). */
+export type QueryBackend = 'neutralize' | 'variants' | 'auto';
+
+/** Naming/backend options threaded from the manifest into query analysis. */
 export interface QueryNamingOptions {
   readonly naming: NamingMode;
   /** Emitter targets this run generates — keyword hazards are only real on
    * targets that exist. */
   readonly targets: readonly NamingTarget[];
+  /** `.syql` conditional-lowering backend (default `neutralize`); the
+   * per-query `variants` knob always forces enumeration. */
+  readonly backend?: QueryBackend;
 }
 
 const DEFAULT_NAMING: QueryNamingOptions = { naming: 'camel', targets: ['ts'] };

@@ -42,6 +42,9 @@
 import { TypegenError } from './errors';
 import type { NamingMode } from './naming';
 
+/** §7/§8 `.syql` conditional-lowering backend selection. */
+export type ManifestQueryBackend = 'neutralize' | 'variants' | 'auto';
+
 export const MANIFEST_FILENAME = 'syncular.json';
 
 /** Same shorthand the server schema accepts (§3.1). */
@@ -121,6 +124,10 @@ export interface Manifest {
    * generated row types/params (queries lower with `AS` aliases); "preserve"
    * keeps SQL-truth names everywhere. */
   readonly naming: NamingMode;
+  /** §7 `.syql` backend: "neutralize" (default), "variants" (enumerate
+   * whenever eligible), or "auto" (enumerate at ≤ 2 optional groups). The
+   * per-query `variants` knob always forces enumeration. */
+  readonly queryBackend: ManifestQueryBackend;
   readonly output: ManifestOutput;
   readonly schemaVersions: readonly ManifestSchemaVersion[];
   readonly tables: readonly ManifestTable[];
@@ -349,6 +356,7 @@ export function parseManifest(raw: unknown): Manifest {
       'migrations',
       'queries',
       'naming',
+      'queryBackend',
       'output',
       'schemaVersions',
       'tables',
@@ -376,6 +384,19 @@ export function parseManifest(raw: unknown): Manifest {
       );
     }
     naming = obj.naming;
+  }
+  let queryBackend: ManifestQueryBackend = 'neutralize';
+  if (obj.queryBackend !== undefined) {
+    if (
+      obj.queryBackend !== 'neutralize' &&
+      obj.queryBackend !== 'variants' &&
+      obj.queryBackend !== 'auto'
+    ) {
+      fail(
+        `queryBackend must be "neutralize", "variants" or "auto", got ${JSON.stringify(obj.queryBackend)}`,
+      );
+    }
+    queryBackend = obj.queryBackend;
   }
   let ir = './syncular.ir.json';
   let module = './syncular.generated.ts';
@@ -452,6 +473,7 @@ export function parseManifest(raw: unknown): Manifest {
     migrations,
     queries,
     naming,
+    queryBackend,
     output: outputSpec,
     schemaVersions,
     tables,

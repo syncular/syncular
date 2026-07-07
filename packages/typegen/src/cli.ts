@@ -20,6 +20,7 @@ import { resolve } from 'node:path';
 import { formatSyql } from './fmt';
 import { checkOutputs, generate, loadQueries, writeOutputs } from './generate';
 import { InitError, initProject } from './init';
+import { runLspStdio } from './lsp';
 import { MANIFEST_FILENAME, parseManifest } from './manifest';
 
 const DOCS_HINT =
@@ -31,6 +32,7 @@ const USAGE = `usage: syncular <command> [options]
 commands:
   generate   build the IR + typed module from syncular.json + migrations/
   fmt        format .syql query files canonically (one style, no options)
+  lsp        run the .syql language server over stdio (editor tooling)
   init       scaffold a starter syncular.json + migrations/0001_initial
 
 generate options:
@@ -304,6 +306,10 @@ export function runCli(argv: readonly string[]): void {
   }
   if (command === 'fmt') {
     runFmt(argv.slice(1));
+    return;
+  }
+  if (command === 'lsp') {
+    void runLspStdio();
     return;
   }
   if (command === 'init') {

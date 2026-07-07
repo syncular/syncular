@@ -16,6 +16,7 @@ export * from './fmt';
 export * from './generate';
 export * from './ir';
 export * from './lower';
+export * from './lsp';
 export * from './manifest';
 export * from './naming';
 export * from './query';
