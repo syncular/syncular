@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="design/logo/banner-dark.svg" />
+    <img alt="syncular" src="design/logo/banner-light.svg" width="440" />
+  </picture>
+</p>
+
 # syncular v2
 
 Clean-tree rebuild of syncular's TypeScript surface around a written
