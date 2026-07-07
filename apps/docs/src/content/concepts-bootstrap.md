@@ -10,7 +10,8 @@ Normative detail: [SPEC.md §4.7](https://github.com/syncular/syncular/blob/main
 
 ## One concept: the segment
 
-v1 grew two parallel snapshot systems; v2 has exactly one. A **segment** is
+Earlier releases grew two parallel snapshot systems; there is now exactly
+one. A **segment** is
 content-addressed (its id is the SHA-256 of its bytes), scope-bound, and
 carries a `mediaType`:
 

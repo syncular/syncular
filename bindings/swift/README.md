@@ -158,4 +158,4 @@ Running `swift test` in CI needs a macOS runner (expensive). Per the tauri-job
 precedent's honest scoping, the Swift gate is **not** run in CI — it is the local
 `check.sh` bar documented here. The Kotlin gate (FFM, JDK-only) IS cheap enough
 to compile-check on an Ubuntu runner; see [`../kotlin`](../kotlin) and the
-`swift-kotlin-bindings` job in `.github/workflows/v2.yml`.
+`swift-kotlin-bindings` job in `.github/workflows/ci.yml`.

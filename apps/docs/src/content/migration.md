@@ -1,23 +1,23 @@
 # Migrating from 0.1.x
 
-v2 is a **clean break**: a new wire protocol ([SSP2](https://github.com/syncular/syncular/blob/main/SPEC.md)), a new
+Syncular 0.2 is a **clean break**: a new wire protocol ([SSP2](https://github.com/syncular/syncular/blob/main/SPEC.md)), a new
 server storage schema, and a consolidated package set. There is no
-in-place upgrade — you stand up a v2 server, port your schema and init code
+in-place upgrade — you stand up a 0.2.x server, port your schema and init code
 with this guide, and clients re-bootstrap. What carries over unchanged is the
 part that matters: your mental model and your authorization logic.
 
 > **Package names are final.** Everything ships under the `@syncular/*` scope
 > (plus the unscoped scaffolder `create-syncular-app`). The names in this guide
-> are the names you install — no further rename is coming. The v1-era npm names
-> `@syncular/core`, `@syncular/server`, `@syncular/client`, `@syncular/typegen`,
-> `@syncular/testkit`, and `create-syncular-app` are reused; the remaining
-> packages (`@syncular/react`, `@syncular/crdt-yjs`,
+> are the names you install — no further rename is coming. The 0.1.x-era npm
+> names `@syncular/core`, `@syncular/server`, `@syncular/client`,
+> `@syncular/typegen`, `@syncular/testkit`, and `create-syncular-app` are
+> reused; the remaining packages (`@syncular/react`, `@syncular/crdt-yjs`,
 > `@syncular/server-hono`, `@syncular/server-workers`, `@syncular/tauri`,
 > `@syncular/react-native`) are new names reserved for this release.
 
 ## What stayed the same
 
-The v1 semantics survive intact — port your mental model unchanged:
+The 0.1.x semantics survive intact — port your mental model unchanged:
 
 - **Scopes decide what syncs.** Rows are authorized by scope patterns like
   `user:{user_id}`, resolved per actor by a function that runs in *your*
@@ -35,7 +35,7 @@ The v1 semantics survive intact — port your mental model unchanged:
 
 ## What changed conceptually
 
-| v1 concept | v2 concept |
+| 0.1.x | 0.2.x |
 |---|---|
 | Rust-WASM client — `@syncular/client` hosted a Rust binary in a worker | TypeScript client core on sqlite-wasm + OPFS (`@syncular/client`); the Rust core is a separate *native* client, kept in lockstep by a [conformance suite](/guide-conformance/) |
 | SSP1, implicit — the protocol lived in code (wire v14) | SSP2, written — [SPEC.md](https://github.com/syncular/syncular/blob/main/SPEC.md) + golden vectors are normative |
@@ -53,11 +53,11 @@ The v1 semantics survive intact — port your mental model unchanged:
 
 ### 1. Schema
 
-v1 authored the sync contract in TypeScript (`syncular.app.ts`) and ran a
+0.1.x authored the sync contract in TypeScript (`syncular.app.ts`) and ran a
 Rust codegen binary:
 
 ```ts
-// v1 — syncular.app.ts
+// 0.1.x — syncular.app.ts
 import { defineSyncularClient, scope, syncedTable } from '@syncular/typegen';
 
 export const app = defineSyncularClient({
@@ -72,15 +72,15 @@ export const app = defineSyncularClient({
 ```
 
 ```sh
-npx syncular generate        # v1: emits codegen JSON, runs the Rust binary
+npx syncular generate        # 0.1.x: emits codegen JSON, runs the Rust binary
 ```
 
-v2 reads your **SQL migrations** for table shape and one **manifest** for
+0.2.x reads your **SQL migrations** for table shape and one **manifest** for
 sync semantics, and generates a zero-import TypeScript module — no Rust
 toolchain anywhere:
 
 ```json
-// v2 — syncular.json
+// 0.2.x — syncular.json
 {
   "manifestVersion": 1,
   "migrations": "./migrations",
@@ -106,11 +106,11 @@ manifest contract is the [typegen README](https://github.com/syncular/syncular/b
 
 ### 2. Server
 
-v1 built per-table handlers (each with its own scope resolver) over your
+0.1.x built per-table handlers (each with its own scope resolver) over your
 Kysely database and a dialect:
 
 ```ts
-// v1
+// 0.1.x
 import { createServerHandler } from '@syncular/server';
 import { createSyncServer } from '@syncular/server/hono';
 import { createSqliteServerDialect } from '@syncular/server/sqlite';
@@ -129,12 +129,12 @@ const { syncRoutes } = createSyncServer({
 app.route('/sync', syncRoutes);
 ```
 
-v2 takes the generated `schema` object, a storage backend, and **one**
+0.2.x takes the generated `schema` object, a storage backend, and **one**
 `resolveScopes` for the whole actor — no per-table handlers, and the server
 owns its own database (you never hand it your Kysely instance):
 
 ```ts
-// v2
+// 0.2.x
 import {
   MemorySegmentStore,
   SqliteServerStorage,
@@ -163,17 +163,17 @@ Bun.serve({ port: 8787, fetch: app.fetch });
 Dialect mapping: `@syncular/server/sqlite` → `SqliteServerStorage`;
 `/postgres` → `PostgresServerStorage` (bring your driver through the
 `PgExecutor` seam); `/d1` → `D1ServerStorage` via `@syncular/server-workers`.
-The v1 `pglite`/`libsql`/`neon`/`better-sqlite3` dialects have no v2
+The 0.1.x `pglite`/`libsql`/`neon`/`better-sqlite3` dialects have no 0.2.x
 equivalent — the policy is adapters only where the conformance catalog runs.
 See [Server setup](/guide-server/).
 
 ### 3. Client
 
-v1's client was a generated helper over the Rust-WASM worker, with Kysely
+The 0.1.x client was a generated helper over the Rust-WASM worker, with Kysely
 reads and generated per-table mutation objects:
 
 ```ts
-// v1
+// 0.1.x
 const syncular = await createSyncularAppDatabase({
   config: { baseUrl: '/sync', actorId, clientId, fileName: 'app.sqlite' },
   getHeaders: async () => ({ authorization: `Bearer ${token}` }),
@@ -184,11 +184,11 @@ await syncular.mutations.tasks.insert({ title: 'hi', user_id: actorId });
 const live = await syncular.live(query, { onChange: render });
 ```
 
-v2's browser client is the TypeScript core in an OPFS worker, driven by a
+The 0.2.x browser client is the TypeScript core in an OPFS worker, driven by a
 handle; reads are plain SQL, writes are explicit change lists:
 
 ```ts
-// v2
+// 0.2.x
 import { createSyncClientHandle } from '@syncular/client';
 import { schema } from './syncular.generated';
 
@@ -224,11 +224,11 @@ fail loud. See [Web client](/guide-client/).
 
 ### 4. React hooks
 
-v1 created a typed hook set per app (`createSyncularReact<DB>()`); v2 exports
-hooks directly from `@syncular/react` — wrap your tree in `SyncProvider`
-and import:
+0.1.x created a typed hook set per app (`createSyncularReact<DB>()`); 0.2.x
+exports hooks directly from `@syncular/react` — wrap your tree in
+`SyncProvider` and import:
 
-| v1 hook | v2 |
+| 0.1.x hook | 0.2.x |
 |---|---|
 | `SyncProvider` | `SyncProvider` (takes a `SyncClient` or worker handle) |
 | `useSyncQuery(kyselyQuery)` (live) | `useQuery(descriptor, params?)` for generated named queries, or `useRawSql(sql, params?, { tables? })` — both live via fine-grained invalidation |
@@ -247,9 +247,9 @@ narrowing only where the wire carried keys).
 
 ### 5. Blobs
 
-v1: `syncular.blobs.store(file, { mimeType })` → a `BlobRef` written into a
+0.1.x: `syncular.blobs.store(file, { mimeType })` → a `BlobRef` written into a
 column declared via `blobColumns`, with an upload queue you could flush.
-v2: declare a `BLOB_REF` column in the migration, then upload-before-push:
+0.2.x: declare a `BLOB_REF` column in the migration, then upload-before-push:
 
 ```ts
 const ref = await client.uploadBlob(bytes, { mediaType: 'image/png', name: 'a.png' });
@@ -263,8 +263,8 @@ request), tighter surface. See [Blobs](/concepts-blobs/) and
 
 ### 6. CRDT fields
 
-v1 declared Yjs text columns in the authoring layer (`yjsText({ stateColumn })`)
-with client CRDT adapters. v2 makes it a column type: declare `CRDT` in the
+0.1.x declared Yjs text columns in the authoring layer (`yjsText({ stateColumn })`)
+with client CRDT adapters. 0.2.x makes it a column type: declare `CRDT` in the
 migration, register the merger on the server, and use the `YjsColumn` helper
 on the client:
 
@@ -278,17 +278,18 @@ Semantics moved server-side: clients push Yjs *updates*, the **server
 merges**, and `crdt` columns are excluded from `baseVersion` conflict
 detection — concurrent edits converge instead of conflicting
 ([SPEC §5.10](https://github.com/syncular/syncular/blob/main/SPEC.md#510-crdt-columns--opt-in-collaborative-state)).
-v1's `encrypted-crdt` has no v2 equivalent: v2 [E2EE](/concepts-encryption/)
-is per-column, and a server-merged `crdt` column cannot be an encrypted
-column (the server cannot merge bytes it cannot read).
+The 0.1.x `encrypted-crdt` has no 0.2.x equivalent:
+[E2EE](/concepts-encryption/) is per-column, and a server-merged `crdt`
+column cannot be an encrypted column (the server cannot merge bytes it
+cannot read).
 
 ### 7. Auth leases
 
-The v1 lease was client-driven: `issueAuthLease({ schemaVersion, scopes })`
+The 0.1.x lease was client-driven: `issueAuthLease({ schemaVersion, scopes })`
 granted per-operation offline write capability, used through
 `leasedMutations`, with seven `sync.auth_lease_*` error codes.
 
-The v2 lease is **server-issued and client-opaque**: enable
+The 0.2.x lease is **server-issued and client-opaque**: enable
 `leases: { ttlMs }` on the server config and the server records each actor's
 resolved scopes as a signed, time-bounded grant, refreshed on every authorized
 round. Its job is narrower — keeping sync authorized across a scope-resolver
@@ -301,8 +302,8 @@ pruned with rationale in
 
 ### 8. Presence
 
-v1: `joinPresence(key, meta)` / `updatePresenceMetadata` / `leavePresence` /
-`addPresenceListener`. v2 collapses join/update/leave into one call:
+0.1.x: `joinPresence(key, meta)` / `updatePresenceMetadata` / `leavePresence` /
+`addPresenceListener`. 0.2.x collapses join/update/leave into one call:
 
 ```ts
 await client.setPresence('list:welcome', { editing: 'task-1' }); // join/update
@@ -316,33 +317,33 @@ holding the scope key ([SPEC §8.6](https://github.com/syncular/syncular/blob/ma
 
 ## Data migration — the honest story
 
-v2 changes the wire protocol **and** the server storage schema, and this
-rung ships **no automated data-migration tool**. Plainly: moving production
-data is an export/import you write yourself, against your v1 database.
+Syncular 0.2 changes the wire protocol **and** the server storage schema, and
+ships **no automated data-migration tool**. Plainly: moving production
+data is an export/import you write yourself, against your 0.1.x database.
 
-**Server data.** In v1 your application rows live in *your* database (the
+**Server data.** In 0.1.x your application rows live in *your* database (the
 Kysely instance you handed to `createSyncServer`); the `sync_*` bookkeeping
-tables next to them are v1-internal and do not port. The working recipe is a
-one-off backfill script: stand up the v2 server fresh, read the current rows
-out of the v1 database, and push them into v2 as ordinary commits through a
+tables next to them are 0.1.x-internal and do not port. The working recipe is a
+one-off backfill script: stand up the new server fresh, read the current rows
+out of the 0.1.x database, and push them in as ordinary commits through a
 backfill client (a `SyncClient` with a wide-open `resolveScopes` for the
 backfill actor, batching `mutate` + `sync`). That replays your data through
 the front door — scope extraction, versioning, and the commit log all come
 out right by construction. Verify counts per table and per scope key before
 cutover.
 
-**Client data.** There is nothing to migrate — v2 clients **re-bootstrap from
-the server**, and that is the design, not a workaround: fresh bootstrap rides
-the [segment path](/concepts-bootstrap/) (a 100k-row SQLite image applies in
-tens of milliseconds), the same flow every v2
+**Client data.** There is nothing to migrate — 0.2.x clients **re-bootstrap
+from the server**, and that is the design, not a workaround: fresh bootstrap
+rides the [segment path](/concepts-bootstrap/) (a 100k-row SQLite image
+applies in tens of milliseconds), the same flow every
 [schema bump](/guide-schema/) already drills.
 
-**Pending offline writes.** The v1 outbox cannot replay into a v2 server
-(different wire, different encoding). Have v1 clients drain their outboxes —
+**Pending offline writes.** The 0.1.x outbox cannot replay into a 0.2.x server
+(different wire, different encoding). Have 0.1.x clients drain their outboxes —
 sync to idle — before you cut over; anything still queued at cutover is lost
-with the v1 database.
+with the 0.1.x database.
 
-## What's not in v2
+## What's not in 0.2.x
 
 Three gaps this guide once listed have since **shipped**: E2EE
 ([per-column client-side encryption](/concepts-encryption/), with
@@ -355,15 +356,15 @@ with npm publication a follow-up), and typed reads — as
 (a Kysely dialect shipped briefly and was retired in favor of them). What
 genuinely remains out:
 
-- **The relay.** Retired, not pending: v2 realtime is a second binding of the
+- **The relay.** Retired, not pending: realtime is a second binding of the
   same sync handler, multi-instance fanout is LISTEN/NOTIFY, and the Workers
   path is a Durable Object design — each relay job is covered by a core
   mechanism.
 - **The full React console.** Replaced by the leaner `SyncularAdmin` query
   surface + one static admin page ([Server setup](/guide-server/)).
 - **Storage breadth.** No `pglite`/`libsql`/`neon`/`better-sqlite3` dialects;
-  v2 ships SQLite (bun:sqlite), Postgres, and D1 — adapters exist only where
-  the conformance catalog runs.
+  0.2.x ships SQLite (bun:sqlite), Postgres, and D1 — adapters exist only
+  where the conformance catalog runs.
 - **IndexedDB fallback, HTTP polling loop, service-worker transport.** All
   retired under the one-good-path rule: OPFS or fail-loud, sync over the
   socket, no degraded modes.
@@ -373,10 +374,10 @@ genuinely remains out:
 
 ## Where to go next
 
-- [Quickstart](/quickstart/) — the v2 shape end to end in five minutes
+- [Quickstart](/quickstart/) — the current shape end to end in five minutes
   (`bun create syncular-app my-app`).
 - [Server setup](/guide-server/) and [Web client](/guide-client/) — the full
   wiring this guide's snippets abridge.
 - [SPEC.md §0](https://github.com/syncular/syncular/blob/main/SPEC.md#0-deliberate-simplifications-vs-wire-v14--decisions)
-  — every v1→v2 protocol simplification, with the reasoning, decision by
+  — every protocol simplification from 0.1.x, with the reasoning, decision by
   decision.
