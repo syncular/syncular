@@ -8,6 +8,7 @@
  * Header carries the IR hash for byte-exact `--check`.
  */
 import type { IrColumnType } from './ir';
+import { snakeToCamel } from './naming';
 import type { AnalyzedQuery, QueryColumn } from './query';
 
 const DART_TYPE: Readonly<Record<IrColumnType, string>> = {
@@ -29,9 +30,9 @@ function pascalCase(name: string): string {
     .join('');
 }
 
+/** Language-facing field name — the pinned §12 naming map. */
 function camelCase(name: string): string {
-  const pascal = pascalCase(name);
-  return pascal.charAt(0).toLowerCase() + pascal.slice(1);
+  return snakeToCamel(name);
 }
 
 function typeName(name: string): string {
@@ -43,7 +44,7 @@ function quote(value: string): string {
 }
 
 function rowAccessor(column: QueryColumn): string {
-  const key = `row[${quote(column.name)}]`;
+  const key = `row[${quote(column.langName)}]`;
   switch (column.type) {
     case 'string':
     case 'json':
@@ -80,26 +81,26 @@ function emitClass(query: AnalyzedQuery): string[] {
   for (const column of query.columns) {
     const opt = column.nullable ? '?' : '';
     lines.push(
-      `  final ${DART_TYPE[column.type]}${opt} ${camelCase(column.name)};`,
+      `  final ${DART_TYPE[column.type]}${opt} ${camelCase(column.langName)};`,
     );
   }
   lines.push('');
   const ctorParams = query.columns
-    .map((c) => `${c.nullable ? '' : 'required '}this.${camelCase(c.name)}`)
+    .map((c) => `${c.nullable ? '' : 'required '}this.${camelCase(c.langName)}`)
     .join(', ');
   lines.push(`  const ${Row}({${ctorParams}});`);
   lines.push('');
   lines.push(`  static ${Row}? fromRow(Map<String, Object?> row) {`);
   for (const column of query.columns) {
     if (!column.nullable) {
-      const name = camelCase(column.name);
+      const name = camelCase(column.langName);
       lines.push(`    final ${name} = ${rowAccessor(column)};`);
       lines.push(`    if (${name} == null) return null;`);
     }
   }
   const args = query.columns
     .map((c) => {
-      const name = camelCase(c.name);
+      const name = camelCase(c.langName);
       return c.nullable ? `${name}: ${rowAccessor(c)}` : `${name}: ${name}`;
     })
     .join(', ');
@@ -124,7 +125,7 @@ function emitRunner(query: AnalyzedQuery): string[] {
   lines.push('');
   lines.push(`/// Run the ${query.name} named query (SELECT-only).`);
   const args = query.params
-    .map((p) => `required ${DART_TYPE[p.type]} ${camelCase(p.name)}`)
+    .map((p) => `required ${DART_TYPE[p.type]} ${camelCase(p.langName)}`)
     .join(', ');
   const argsClause = query.params.length > 0 ? `, {${args}}` : '';
   lines.push(
@@ -132,7 +133,7 @@ function emitRunner(query: AnalyzedQuery): string[] {
   );
   if (query.params.length > 0) {
     const binds = query.params
-      .map((p) => paramValue(p.type, camelCase(p.name)))
+      .map((p) => paramValue(p.type, camelCase(p.langName)))
       .join(', ');
     lines.push(`  final params = <Object?>[${binds}];`);
     lines.push(

@@ -31,15 +31,91 @@ pub fn assert_read_only_query(sql: &str) -> Result<(), String> {
         .take_while(|c| c.is_ascii_alphabetic())
         .collect::<String>()
         .to_ascii_lowercase();
-    if !READ_ONLY_VERBS.contains(&verb.as_str()) {
-        return Err(format!(
+    let reject = || {
+        Err(format!(
             "query() is read-only — this statement writes the local database \
              directly, which bypasses the sync outbox (SPEC §7.1); use \
              mutate() for inserts/updates/deletes. Rejected: {}",
             first_words(sql)
-        ));
+        ))
+    };
+    if !READ_ONLY_VERBS.contains(&verb.as_str()) {
+        return reject();
+    }
+    if verb == "with" {
+        // SQLite allows `WITH … DELETE/INSERT/UPDATE`; only a SELECT/VALUES
+        // main statement is a read.
+        match main_verb_after_with(head) {
+            Some(main) if main == "select" || main == "values" => {}
+            _ => return reject(),
+        }
     }
     Ok(())
+}
+
+/// The main verb of a `WITH …` statement. CTE bodies live inside
+/// parentheses, and a bare keyword cannot be a CTE name, so the first
+/// paren-depth-0 keyword after the clause is the main verb.
+fn main_verb_after_with(sql: &str) -> Option<String> {
+    const MAIN_VERBS: [&str; 6] = ["select", "values", "insert", "update", "delete", "replace"];
+    let bytes = sql.as_bytes();
+    let n = bytes.len();
+    let mut depth: i32 = 0;
+    let mut i = 0usize;
+    let mut saw_with = false;
+    while i < n {
+        match bytes[i] {
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                i = sql[i..].find('\n').map_or(n, |off| i + off + 1);
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i = sql[i + 2..].find("*/").map_or(n, |off| i + 2 + off + 2);
+            }
+            q @ (b'\'' | b'"' | b'`') => {
+                i += 1;
+                while i < n {
+                    if bytes[i] == q {
+                        if bytes.get(i + 1) == Some(&q) {
+                            i += 2;
+                        } else {
+                            i += 1;
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'[' => {
+                i = sql[i + 1..].find(']').map_or(n, |off| i + 1 + off + 1);
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth -= 1;
+                i += 1;
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let mut j = i + 1;
+                while j < n && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                    j += 1;
+                }
+                let word = sql[i..j].to_ascii_lowercase();
+                if depth == 0 {
+                    if !saw_with && word == "with" {
+                        saw_with = true;
+                    } else if saw_with && MAIN_VERBS.contains(&word.as_str()) {
+                        return Some(word);
+                    }
+                }
+                i = j;
+            }
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 /// Split into top-level statements at unquoted `;`, skipping string
@@ -130,6 +206,8 @@ mod tests {
             "SELECT 1",
             "  select * from tasks",
             "WITH x AS (SELECT 1) SELECT * FROM x",
+            "WITH x AS (SELECT 1), y AS (SELECT 2) SELECT * FROM x, y",
+            "WITH RECURSIVE c(n) AS (VALUES (1)) SELECT n FROM c",
             "EXPLAIN QUERY PLAN SELECT 1",
             "PRAGMA table_info(tasks)",
             "VALUES (1), (2)",
@@ -158,6 +236,9 @@ mod tests {
             "VACUUM",
             "SELECT 1; DROP TABLE tasks",
             "SELECT 1; SELECT 2",
+            "WITH t AS (SELECT 1) DELETE FROM tasks",
+            "WITH t AS (SELECT 1) INSERT INTO tasks (id) SELECT 'x'",
+            "WITH t AS (SELECT 1) UPDATE tasks SET title = 'x'",
             "",
             "   ",
             "-- only a comment",

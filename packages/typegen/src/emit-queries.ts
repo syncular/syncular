@@ -51,14 +51,15 @@ function emitQuery(query: AnalyzedQuery): string {
   const Params = `${pascalCase(query.name)}Params`;
   const lines: string[] = [];
 
-  // Row interface.
+  // Row interface — keyed by the language-facing names, which ARE the
+  // runtime result keys (§5 projection lowering aliases them in SQL).
   lines.push(
     `/** One row of the ${quote(query.name)} query (its projection). */`,
   );
   lines.push(`export interface ${Row} {`);
   for (const column of query.columns) {
     lines.push(
-      `  ${propertyKey(column.name)}: ${TS_TYPE[column.type]}${column.nullable ? ' | null' : ''};`,
+      `  ${propertyKey(column.langName)}: ${TS_TYPE[column.type]}${column.nullable ? ' | null' : ''};`,
     );
   }
   lines.push('}');
@@ -70,7 +71,9 @@ function emitQuery(query: AnalyzedQuery): string {
     lines.push(`/** Named parameters for ${quote(query.name)}. */`);
     lines.push(`export interface ${Params} {`);
     for (const param of query.params) {
-      lines.push(`  ${propertyKey(param.name)}: ${PARAM_TS_TYPE[param.type]};`);
+      lines.push(
+        `  ${propertyKey(param.langName)}: ${PARAM_TS_TYPE[param.type]};`,
+      );
     }
     lines.push('}');
     lines.push('');
@@ -89,7 +92,7 @@ function emitQuery(query: AnalyzedQuery): string {
   const paramArg = hasParams ? `params: ${Params}` : '';
   const sqlConst = `${query.name}Sql`;
   const positional = hasParams
-    ? `[${query.params.map((p) => `params.${propertyKey(p.name)}`).join(', ')}]`
+    ? `[${query.params.map((p) => `params.${propertyKey(p.langName)}`).join(', ')}]`
     : '[]';
   lines.push(`const ${sqlConst} = ${quote(query.positionalSql)};`);
   lines.push('');

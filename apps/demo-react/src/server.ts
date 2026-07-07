@@ -79,11 +79,11 @@ async function seed(): Promise<void> {
   ];
   const rows: TodosRow[] = seeds.map(([list, title], index) => ({
     id: `seed-${index + 1}`,
-    list_id: list,
+    listId: list,
     title,
     done: false,
     position: index + 1,
-    updated_at_ms: now,
+    updatedAtMs: now,
     attachment: null,
   }));
   const frames: RequestFrame[] = [
@@ -97,11 +97,11 @@ async function seed(): Promise<void> {
         op: 'upsert' as const,
         payload: encodeRow(table.columns, [
           row.id,
-          row.list_id,
+          row.listId,
           row.title,
           row.done,
           row.position,
-          row.updated_at_ms,
+          row.updatedAtMs,
           row.attachment,
         ]),
       })),

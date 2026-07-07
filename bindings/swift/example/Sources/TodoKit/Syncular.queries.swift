@@ -23,11 +23,11 @@ public struct ListNotesRow: Sendable, Equatable {
     public init?(row: [String: JSONValue]) {
         guard let id = row["id"]?.stringValue else { return nil }
         self.id = id
-        guard let listId = row["list_id"]?.stringValue else { return nil }
+        guard let listId = row["listId"]?.stringValue else { return nil }
         self.listId = listId
         guard let body = row["body"]?.stringValue else { return nil }
         self.body = body
-        guard let updatedAtMs = row["updated_at_ms"]?.numberValue.map(Int.init) else { return nil }
+        guard let updatedAtMs = row["updatedAtMs"]?.numberValue.map(Int.init) else { return nil }
         self.updatedAtMs = updatedAtMs
     }
 }
@@ -35,7 +35,7 @@ public struct ListNotesRow: Sendable, Equatable {
 /// Typed named queries (the sqlc/SQLDelight tier).
 public enum SyncularSchemaQueries {
     public static let listNotesTables = ["notes"]
-    private static let listNotesSql = "SELECT id, list_id, body, updated_at_ms FROM notes WHERE list_id = ? ORDER BY id"
+    private static let listNotesSql = "SELECT id, list_id AS listId, body, updated_at_ms AS updatedAtMs FROM notes WHERE list_id = ? ORDER BY id"
 
     /// Run the listNotes named query (SELECT-only).
     public static func listNotes(client: SyncularClient, listId: String) throws -> [ListNotesRow] {

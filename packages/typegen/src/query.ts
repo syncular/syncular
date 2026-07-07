@@ -62,6 +62,8 @@
  */
 import { TypegenError } from './errors';
 import type { IrColumnType, IrDocument, IrTable } from './ir';
+import { lowerProjection, mainVerbAfterWith } from './lower';
+import { buildNamingMap, type NamingMode, type NamingTarget } from './naming';
 
 /** The SQL decltype keyword → §2.4 type map (mirrors sql.ts TYPE_MAP so a
  * plain column ref's decltype resolves to the exact IR type). */
@@ -89,14 +91,21 @@ const DECLTYPE_MAP: Readonly<Record<string, IrColumnType>> = {
 export type QueryParamType = IrColumnType;
 
 export interface QueryParam {
+  /** SQL-truth `:name` (as authored). */
   readonly name: string;
+  /** Language-facing name (§5 naming map; equals `name` under "preserve"). */
+  readonly langName: string;
   readonly type: QueryParamType;
   /** How the type was resolved — for the docs/tests, not emitted. */
   readonly source: 'inferred' | 'comment';
 }
 
 export interface QueryColumn {
+  /** SQL-truth result name (pre-lowering, as authored). */
   readonly name: string;
+  /** Language-facing name — the RUNTIME result key after §5 projection
+   * lowering (equals `name` under "preserve"). */
+  readonly langName: string;
   readonly type: IrColumnType;
   readonly nullable: boolean;
   /** `exact` = resolved to an IR column (plain ref); `fallback` = a computed
@@ -104,15 +113,29 @@ export interface QueryColumn {
   readonly fidelity: 'exact' | 'fallback';
 }
 
+/** Naming options threaded from the manifest into query analysis. */
+export interface QueryNamingOptions {
+  readonly naming: NamingMode;
+  /** Emitter targets this run generates — keyword hazards are only real on
+   * targets that exist. */
+  readonly targets: readonly NamingTarget[];
+}
+
+const DEFAULT_NAMING: QueryNamingOptions = { naming: 'camel', targets: ['ts'] };
+
 export interface AnalyzedQuery {
   /** camelCase function name (path-derived, or a `-- name:` override). */
   readonly name: string;
   /** Source location for errors, e.g. `billing/list.sql` (or `list.sql#2`
    * for the 2nd statement of a multi-statement file). */
   readonly file: string;
-  /** The SQL as written (named `:params`), trimmed. */
+  /** The SQL as authored (named `:params`), trimmed — pre-lowering. */
+  readonly sourceSql: string;
+  /** The LOWERED SQL (named `:params`): §5 projection aliasing applied, so
+   * runtime result keys are the language-facing names. Equals `sourceSql`
+   * when nothing needed rewriting. */
   readonly sql: string;
-  /** The SQL with `:name` rewritten to positional `?` (wrapper surface). */
+  /** The lowered SQL with `:name` rewritten to positional `?`. */
   readonly positionalSql: string;
   /** Params in first-occurrence (positional) order. */
   readonly params: readonly QueryParam[];
@@ -747,36 +770,49 @@ export function analyzeStatement(
   statementText: string,
   ir: IrDocument,
   db: QueryDb,
+  naming: QueryNamingOptions = DEFAULT_NAMING,
 ): AnalyzedQuery {
   const file = location;
   const commentParams = parseCommentParams(file, statementText);
-  const sql = statementText.trim();
-  if (sql.length === 0) {
+  const sourceSql = statementText.trim();
+  if (sourceSql.length === 0) {
     throw new TypegenError(file, 'query file is empty');
   }
 
-  // SELECT-only (the read tier). Reject the first keyword loudly otherwise.
+  // SELECT-only (the read tier). A `WITH` is allowed when its main statement
+  // is a SELECT (SQLite also allows WITH … INSERT/UPDATE/DELETE — writes).
   const firstKeyword = /^\s*([A-Za-z]+)/.exec(
     stripCommentsAndStrings(statementText).trimStart(),
   )?.[1];
-  if (firstKeyword === undefined || firstKeyword.toUpperCase() !== 'SELECT') {
+  const upperKeyword = firstKeyword?.toUpperCase();
+  if (upperKeyword === 'WITH') {
+    const main = mainVerbAfterWith(stripCommentsAndStrings(statementText));
+    if (main !== 'SELECT') {
+      throw new TypegenError(
+        file,
+        `named queries are SELECT-only (the read tier); this WITH statement's main verb is ${JSON.stringify(main ?? '')}. Writes go through mutate() (SPEC §7.1).`,
+      );
+    }
+  } else if (upperKeyword !== 'SELECT') {
     throw new TypegenError(
       file,
       `named queries are SELECT-only (the read tier); found ${JSON.stringify(firstKeyword ?? '')}. Writes go through mutate() (SPEC §7.1).`,
     );
   }
 
-  // Let SQLite validate + describe the query. Any bad reference throws here
-  // with SQLite's own message (which names the offending table/column).
-  let described: ReturnType<QueryDb['analyze']>;
-  try {
-    described = db.analyze(sql);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new TypegenError(file, `SQL rejected by SQLite: ${message}`);
-  }
+  // Let SQLite validate + describe the AUTHORED query first. Any bad
+  // reference throws here with SQLite's own message.
+  const analyze = (candidate: string): ReturnType<QueryDb['analyze']> => {
+    try {
+      return db.analyze(candidate);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new TypegenError(file, `SQL rejected by SQLite: ${message}`);
+    }
+  };
+  let described = analyze(sourceSql);
 
-  const refs = scanTableRefs(sql, ir);
+  const refs = scanTableRefs(sourceSql, ir);
   const tableSet = new Set(refs.map((r) => r.table));
   const tables = [...tableSet].sort();
   if (tables.length === 0) {
@@ -786,17 +822,57 @@ export function analyzeStatement(
     );
   }
 
-  // Columns: pair bun's column names + decltypes with our source resolution.
+  // §5 lowering: rewrite the projection so runtime result keys are the
+  // language-facing names ("camel"); a no-op pass-through under "preserve".
+  let sql = sourceSql;
+  let sqlNames: readonly string[] = described.columnNames;
+  let langNames: readonly string[] = described.columnNames;
+  if (naming.naming === 'camel') {
+    const lowered = lowerProjection(
+      sourceSql,
+      refs,
+      ir,
+      file,
+      (candidate) => analyze(candidate).columnNames,
+      (names) =>
+        buildNamingMap(names, 'camel', file, 'projection', naming.targets).map(
+          (m) => m.langName,
+        ),
+    );
+    sqlNames = lowered.sqlNames;
+    langNames = lowered.langNames;
+    if (lowered.changed) {
+      sql = lowered.sql;
+      described = analyze(sql);
+      // Defensive: the rewritten projection's runtime keys must BE the
+      // language names — this is the whole point of the lowering.
+      if (
+        described.columnNames.length !== langNames.length ||
+        described.columnNames.some((n, i) => n !== langNames[i])
+      ) {
+        throw new TypegenError(
+          file,
+          `internal: lowered projection keys [${described.columnNames.join(', ')}] do not match the naming map [${langNames.join(', ')}]`,
+        );
+      }
+    }
+  }
+
+  // Columns: pair bun's column names + decltypes with our source resolution
+  // (against the LOWERED sql — aliased plain refs still resolve exactly).
   const items = splitSelectList(sql);
   const columns: QueryColumn[] = described.columnNames.map((colName, index) => {
     const decl = described.declaredTypes[index];
     const item = items?.[index];
     const source = item !== undefined ? resolveSource(item, refs, ir) : null;
+    const sqlName = sqlNames[index] ?? colName;
+    const langName = langNames[index] ?? colName;
     if (source !== null) {
       // Exact: IR column type + IR nullability. (decltype agrees; we prefer
       // the IR type so blob_ref/crdt/json semantic types survive.)
       return {
-        name: colName,
+        name: sqlName,
+        langName,
         type: source.column.type,
         nullable: source.column.nullable,
         fidelity: 'exact',
@@ -809,11 +885,18 @@ export function analyzeStatement(
         : undefined;
     const type =
       mapped ?? (item !== undefined ? fallbackColumnType(item.expr) : 'string');
-    return { name: colName, type, nullable: true, fidelity: 'fallback' };
+    return {
+      name: sqlName,
+      langName,
+      type,
+      nullable: true,
+      fidelity: 'fallback',
+    };
   });
 
   // Params: names from the text (positional order), types from inference or
-  // the `-- param` comment; every param must resolve.
+  // the `-- param` comment; every param must resolve. Param langNames go
+  // through the same §12 map (authored camelCase params are identity).
   const paramNames = scanParamNames(sql);
   if (paramNames.length !== described.paramsCount) {
     // Defensive: our scan and SQLite disagree (shouldn't happen for the subset).
@@ -822,15 +905,23 @@ export function analyzeStatement(
       `internal: scanned ${paramNames.length} params (${paramNames.join(', ')}) but SQLite reports ${described.paramsCount}`,
     );
   }
+  const paramLangNames = buildNamingMap(
+    paramNames,
+    naming.naming,
+    file,
+    'params',
+    naming.targets,
+  );
   const commentByName = new Map(commentParams.map((p) => [p.name, p.type]));
-  const params: QueryParam[] = paramNames.map((paramName) => {
+  const params: QueryParam[] = paramNames.map((paramName, index) => {
+    const langName = paramLangNames[index]?.langName ?? paramName;
     const commented = commentByName.get(paramName);
     if (commented !== undefined) {
-      return { name: paramName, type: commented, source: 'comment' };
+      return { name: paramName, langName, type: commented, source: 'comment' };
     }
     const inferred = inferParamType(paramName, sql, refs, ir);
     if (inferred !== null) {
-      return { name: paramName, type: inferred, source: 'inferred' };
+      return { name: paramName, langName, type: inferred, source: 'inferred' };
     }
     throw new TypegenError(
       file,
@@ -850,6 +941,7 @@ export function analyzeStatement(
   return {
     name,
     file,
+    sourceSql,
     sql,
     positionalSql: toPositionalSql(sql),
     params,
@@ -874,6 +966,7 @@ export function analyzeQueryFile(
   content: string,
   ir: IrDocument,
   db: QueryDb,
+  naming: QueryNamingOptions = DEFAULT_NAMING,
 ): AnalyzedQuery[] {
   const statements = splitStatements(content);
   if (statements.length === 0) {
@@ -893,7 +986,7 @@ export function analyzeQueryFile(
       );
     }
     const name = override ?? defaultName;
-    return analyzeStatement(name, location, stmt.text, ir, db);
+    return analyzeStatement(name, location, stmt.text, ir, db, naming);
   });
 }
 
@@ -905,6 +998,7 @@ export function analyzeQuery(
   raw: string,
   ir: IrDocument,
   db: QueryDb,
+  naming: QueryNamingOptions = DEFAULT_NAMING,
 ): AnalyzedQuery {
   const statements = splitStatements(raw);
   if (statements.length > 1) {
@@ -913,6 +1007,6 @@ export function analyzeQuery(
       'a query file holds exactly one SELECT statement here (found a `;` separating statements) — use analyzeQueryFile for multi-statement files',
     );
   }
-  const results = analyzeQueryFile(file, raw, ir, db);
+  const results = analyzeQueryFile(file, raw, ir, db, naming);
   return results[0] as AnalyzedQuery;
 }

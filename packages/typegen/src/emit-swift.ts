@@ -15,6 +15,7 @@
  * emitter.
  */
 import type { IrColumnType, IrDocument, IrSubscription, IrTable } from './ir';
+import { snakeToCamel } from './naming';
 
 /**
  * §2.4 column type → honest Swift type. `json`/`blob_ref` are the raw
@@ -49,9 +50,9 @@ function pascalCase(name: string): string {
     .join('');
 }
 
+/** Language-facing field name — the pinned §12 naming map. */
 function camelCase(name: string): string {
-  const pascal = pascalCase(name);
-  return pascal.charAt(0).toLowerCase() + pascal.slice(1);
+  return snakeToCamel(name);
 }
 
 function quote(value: string): string {

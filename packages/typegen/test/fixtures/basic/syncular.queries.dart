@@ -54,11 +54,11 @@ class DocWithBodyRow {
   const DocWithBodyRow({required this.docId, required this.body, required this.taskTitle});
 
   static DocWithBodyRow? fromRow(Map<String, Object?> row) {
-    final docId = row['doc_id'] as String?;
+    final docId = row['docId'] as String?;
     if (docId == null) return null;
     final body = row['body'] as String?;
     if (body == null) return null;
-    final taskTitle = row['task_title'] as String?;
+    final taskTitle = row['taskTitle'] as String?;
     if (taskTitle == null) return null;
     return DocWithBodyRow(docId: docId, body: body, taskTitle: taskTitle);
   }
@@ -93,9 +93,9 @@ class ProjectDocCountRow {
   const ProjectDocCountRow({required this.projectId, this.docCount});
 
   static ProjectDocCountRow? fromRow(Map<String, Object?> row) {
-    final projectId = row['project_id'] as String?;
+    final projectId = row['projectId'] as String?;
     if (projectId == null) return null;
-    return ProjectDocCountRow(projectId: projectId, docCount: (row['doc_count'] as num?)?.toDouble());
+    return ProjectDocCountRow(projectId: projectId, docCount: (row['docCount'] as num?)?.toDouble());
   }
 }
 
@@ -146,7 +146,7 @@ class ReportDocScoresRow {
   static ReportDocScoresRow? fromRow(Map<String, Object?> row) {
     final id = row['id'] as String?;
     if (id == null) return null;
-    final orgId = row['org_id'] as String?;
+    final orgId = row['orgId'] as String?;
     if (orgId == null) return null;
     return ReportDocScoresRow(id: id, orgId: orgId, score: (row['score'] as num?)?.toDouble());
   }
@@ -214,7 +214,7 @@ List<FindDocByOrgRow> syncularFindDocByOrgQuery(SyncularClient client, {required
 /// Tables the docWithBody query reads (exact invalidation set).
 const List<String> syncularDocWithBodyQueryTables = ['docs', 'tasks'];
 
-const String _docWithBodySql = 'SELECT d.id AS doc_id, d.body, t.title AS task_title FROM docs d JOIN tasks t ON t.project_id = d.project_id WHERE d.org_id = ?';
+const String _docWithBodySql = 'SELECT d.id AS docId, d.body, t.title AS taskTitle FROM docs d JOIN tasks t ON t.project_id = d.project_id WHERE d.org_id = ?';
 
 /// Run the docWithBody named query (SELECT-only).
 List<DocWithBodyRow> syncularDocWithBodyQuery(SyncularClient client, {required String orgId}) {
@@ -236,7 +236,7 @@ List<ListProjectTasksRow> syncularListProjectTasksQuery(SyncularClient client, {
 /// Tables the projectDocCount query reads (exact invalidation set).
 const List<String> syncularProjectDocCountQueryTables = ['docs'];
 
-const String _projectDocCountSql = 'SELECT project_id, count(*) AS doc_count FROM docs GROUP BY project_id';
+const String _projectDocCountSql = 'SELECT project_id AS projectId, count(*) AS docCount FROM docs GROUP BY project_id';
 
 /// Run the projectDocCount named query (SELECT-only).
 List<ProjectDocCountRow> syncularProjectDocCountQuery(SyncularClient client) {
@@ -268,7 +268,7 @@ List<ReportOpenTasksRow> syncularReportOpenTasksQuery(SyncularClient client, {re
 /// Tables the reportDocScores query reads (exact invalidation set).
 const List<String> syncularReportDocScoresQueryTables = ['docs'];
 
-const String _reportDocScoresSql = 'SELECT id, org_id, score FROM docs WHERE score > ? * 1.0 ORDER BY id';
+const String _reportDocScoresSql = 'SELECT id, org_id AS orgId, score FROM docs WHERE score > ? * 1.0 ORDER BY id';
 
 /// Run the reportDocScores named query (SELECT-only).
 List<ReportDocScoresRow> syncularReportDocScoresQuery(SyncularClient client, {required double minScore}) {

@@ -140,7 +140,12 @@ describe('parameter typing', () => {
   test('inference from equality against a plain column', () => {
     const q = analyze('q.sql', 'SELECT id FROM todos WHERE list_id = :listId');
     expect(q.params).toEqual([
-      { name: 'listId', type: 'string', source: 'inferred' },
+      {
+        name: 'listId',
+        langName: 'listId',
+        type: 'string',
+        source: 'inferred',
+      },
     ]);
   });
   test('an un-inferable param demands a comment (loud, names the fix)', () => {
@@ -154,7 +159,7 @@ describe('parameter typing', () => {
       '-- param :label string\nSELECT id, :label AS l FROM todos',
     );
     expect(q.params).toEqual([
-      { name: 'label', type: 'string', source: 'comment' },
+      { name: 'label', langName: 'label', type: 'string', source: 'comment' },
     ]);
   });
   test('a comment for an unused param is a mistake', () => {
@@ -209,7 +214,12 @@ describe('multi-statement files', () => {
     // The :listId param belongs to the SECOND statement only.
     expect(qs[0]?.params).toEqual([]);
     expect(qs[1]?.params).toEqual([
-      { name: 'listId', type: 'string', source: 'inferred' },
+      {
+        name: 'listId',
+        langName: 'listId',
+        type: 'string',
+        source: 'inferred',
+      },
     ]);
   });
 

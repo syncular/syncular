@@ -11,6 +11,7 @@
  * separate output). Header carries the IR hash for byte-exact `--check`.
  */
 import type { IrColumnType } from './ir';
+import { snakeToCamel } from './naming';
 import type { AnalyzedQuery, QueryColumn } from './query';
 
 const KOTLIN_TYPE: Readonly<Record<IrColumnType, string>> = {
@@ -32,9 +33,9 @@ function pascalCase(name: string): string {
     .join('');
 }
 
+/** Language-facing field name — the pinned §12 naming map. */
 function camelCase(name: string): string {
-  const pascal = pascalCase(name);
-  return pascal.charAt(0).toLowerCase() + pascal.slice(1);
+  return snakeToCamel(name);
 }
 
 function typeName(name: string): string {
@@ -46,7 +47,7 @@ function quote(value: string): string {
 }
 
 function rowAccessor(column: QueryColumn): string {
-  const key = `row[${quote(column.name)}]`;
+  const key = `row[${quote(column.langName)}]`;
   switch (column.type) {
     case 'string':
     case 'json':
@@ -89,14 +90,14 @@ function emitDataClass(query: AnalyzedQuery): string[] {
   for (const column of query.columns) {
     const opt = column.nullable ? '?' : '';
     lines.push(
-      `    val ${camelCase(column.name)}: ${KOTLIN_TYPE[column.type]}${opt},`,
+      `    val ${camelCase(column.langName)}: ${KOTLIN_TYPE[column.type]}${opt},`,
     );
   }
   lines.push(') {');
   lines.push('    companion object {');
   lines.push(`        fun fromRow(row: JsonValue): ${Row}? {`);
   for (const column of query.columns) {
-    const name = camelCase(column.name);
+    const name = camelCase(column.langName);
     const accessor = rowAccessor(column);
     if (column.nullable) {
       lines.push(`            val ${name} = ${accessor}`);
@@ -104,7 +105,7 @@ function emitDataClass(query: AnalyzedQuery): string[] {
       lines.push(`            val ${name} = ${accessor} ?: return null`);
     }
   }
-  const args = query.columns.map((c) => camelCase(c.name)).join(', ');
+  const args = query.columns.map((c) => camelCase(c.langName)).join(', ');
   lines.push(`            return ${Row}(${args})`);
   lines.push('        }');
   lines.push('    }');
@@ -124,7 +125,7 @@ function emitRunner(query: AnalyzedQuery): string[] {
   lines.push('');
   lines.push(`        /** Run the ${query.name} named query (SELECT-only). */`);
   const args = query.params
-    .map((p) => `${camelCase(p.name)}: ${KOTLIN_TYPE[p.type]}`)
+    .map((p) => `${camelCase(p.langName)}: ${KOTLIN_TYPE[p.type]}`)
     .join(', ');
   const signature =
     query.params.length > 0
@@ -133,7 +134,7 @@ function emitRunner(query: AnalyzedQuery): string[] {
   lines.push(`        fun ${query.name}(${signature}): List<${Row}> {`);
   if (query.params.length > 0) {
     const binds = query.params
-      .map((p) => paramValue(p.type, camelCase(p.name)))
+      .map((p) => paramValue(p.type, camelCase(p.langName)))
       .join(', ');
     lines.push(`            val params = listOf(${binds})`);
     lines.push(

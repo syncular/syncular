@@ -33,11 +33,11 @@ public struct DocWithBodyRow: Sendable, Equatable {
     public let taskTitle: String
 
     public init?(row: [String: JSONValue]) {
-        guard let docId = row["doc_id"]?.stringValue else { return nil }
+        guard let docId = row["docId"]?.stringValue else { return nil }
         self.docId = docId
         guard let body = row["body"]?.stringValue else { return nil }
         self.body = body
-        guard let taskTitle = row["task_title"]?.stringValue else { return nil }
+        guard let taskTitle = row["taskTitle"]?.stringValue else { return nil }
         self.taskTitle = taskTitle
     }
 }
@@ -68,9 +68,9 @@ public struct ProjectDocCountRow: Sendable, Equatable {
     public let docCount: Double?
 
     public init?(row: [String: JSONValue]) {
-        guard let projectId = row["project_id"]?.stringValue else { return nil }
+        guard let projectId = row["projectId"]?.stringValue else { return nil }
         self.projectId = projectId
-        self.docCount = row["doc_count"]?.numberValue
+        self.docCount = row["docCount"]?.numberValue
     }
 }
 
@@ -114,7 +114,7 @@ public struct ReportDocScoresRow: Sendable, Equatable {
     public init?(row: [String: JSONValue]) {
         guard let id = row["id"]?.stringValue else { return nil }
         self.id = id
-        guard let orgId = row["org_id"]?.stringValue else { return nil }
+        guard let orgId = row["orgId"]?.stringValue else { return nil }
         self.orgId = orgId
         self.score = row["score"]?.numberValue
     }
@@ -174,7 +174,7 @@ public enum BasicSchemaQueries {
     }
 
     public static let docWithBodyTables = ["docs", "tasks"]
-    private static let docWithBodySql = "SELECT d.id AS doc_id, d.body, t.title AS task_title FROM docs d JOIN tasks t ON t.project_id = d.project_id WHERE d.org_id = ?"
+    private static let docWithBodySql = "SELECT d.id AS docId, d.body, t.title AS taskTitle FROM docs d JOIN tasks t ON t.project_id = d.project_id WHERE d.org_id = ?"
 
     /// Run the docWithBody named query (SELECT-only).
     public static func docWithBody(client: SyncularClient, orgId: String) throws -> [DocWithBodyRow] {
@@ -198,7 +198,7 @@ public enum BasicSchemaQueries {
     }
 
     public static let projectDocCountTables = ["docs"]
-    private static let projectDocCountSql = "SELECT project_id, count(*) AS doc_count FROM docs GROUP BY project_id"
+    private static let projectDocCountSql = "SELECT project_id AS projectId, count(*) AS docCount FROM docs GROUP BY project_id"
 
     /// Run the projectDocCount named query (SELECT-only).
     public static func projectDocCount(client: SyncularClient) throws -> [ProjectDocCountRow] {
@@ -233,7 +233,7 @@ public enum BasicSchemaQueries {
     }
 
     public static let reportDocScoresTables = ["docs"]
-    private static let reportDocScoresSql = "SELECT id, org_id, score FROM docs WHERE score > ? * 1.0 ORDER BY id"
+    private static let reportDocScoresSql = "SELECT id, org_id AS orgId, score FROM docs WHERE score > ? * 1.0 ORDER BY id"
 
     /// Run the reportDocScores named query (SELECT-only).
     public static func reportDocScores(client: SyncularClient, minScore: Double) throws -> [ReportDocScoresRow] {

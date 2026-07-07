@@ -23,6 +23,7 @@ import {
   SqliteServerStorage,
   type SyncRequestContext,
 } from '@syncular/server';
+import { snakeToCamel } from '../src';
 import {
   projectTasksSubscription,
   schema,
@@ -68,17 +69,21 @@ describe('generated schema against the B2 server', () => {
     const tasks = schema.tables[0];
     const row: TasksRow = {
       id: 't1',
-      project_id: 'p1',
+      projectId: 'p1',
       title: 'generated end to end',
       done: false,
       priority: 3,
       meta: null,
       estimate: 1.5,
-      estimated_at: null,
+      estimatedAt: null,
     };
+    // Generated row keys are camelCase (§5); the wire codec wants schema
+    // (snake) order — map through the pinned naming function.
     const payload = encodeRow(
       tasks.columns,
-      tasks.columns.map((column) => row[column.name]),
+      tasks.columns.map(
+        (column) => row[snakeToCamel(column.name) as keyof TasksRow],
+      ),
     );
 
     const pushed = await sync(ctx, [
@@ -121,7 +126,7 @@ describe('generated schema against the B2 server', () => {
 
     const values = decodeRow(tasks.columns, change?.row ?? new Uint8Array());
     const decoded = Object.fromEntries(
-      tasks.columns.map((column, i) => [column.name, values[i]]),
+      tasks.columns.map((column, i) => [snakeToCamel(column.name), values[i]]),
     ) as unknown as TasksRow;
     expect(decoded).toEqual(row);
   });

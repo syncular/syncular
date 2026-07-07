@@ -40,10 +40,12 @@ import {
   type ManifestScopeSpec,
   parseManifest,
 } from './manifest';
+import { buildNamingMap, type NamingTarget } from './naming';
 import {
   type AnalyzedQuery,
   analyzeQueryFile,
   type QueryDb,
+  type QueryNamingOptions,
   synthesizeDdl,
 } from './query';
 import { applyMigrationSql, type ParsedTable } from './sql';
@@ -408,13 +410,14 @@ function makeQueryDb(ir: IrDocument): { db: QueryDb; close: () => void } {
 export function analyzeQueries(
   ir: IrDocument,
   queries: readonly QueryInput[],
+  naming?: QueryNamingOptions,
 ): AnalyzedQuery[] {
   if (queries.length === 0) return [];
   const { db, close } = makeQueryDb(ir);
   try {
     // Each file may hold multiple statements; flatten in path order (stable).
     const analyzed = queries.flatMap((q) =>
-      analyzeQueryFile(q.file, q.sql, ir, db),
+      analyzeQueryFile(q.file, q.sql, ir, db, naming),
     );
     // Names must be unique across the whole manifest — the filesystem no longer
     // guarantees uniqueness once `-- name:` overrides exist. Report BOTH source
@@ -476,9 +479,28 @@ export function generate(manifestDir: string): GenerateResult {
   const manifest = parseManifest(raw);
   const migrations = loadMigrations(resolve(manifestDir, manifest.migrations));
   const ir = buildIr(manifest, migrations);
+
+  // §5/§12 naming: the emitter targets this run generates (keyword hazards
+  // are only real on targets that exist), and the per-table collision check
+  // for the generated row types.
+  const targets: NamingTarget[] = ['ts'];
+  if (manifest.output.swift !== undefined) targets.push('swift');
+  if (manifest.output.kotlin !== undefined) targets.push('kotlin');
+  if (manifest.output.dart !== undefined) targets.push('dart');
+  const naming: QueryNamingOptions = { naming: manifest.naming, targets };
+  for (const table of ir.tables) {
+    buildNamingMap(
+      table.columns.map((c) => c.name),
+      manifest.naming,
+      MANIFEST_FILENAME,
+      `table ${table.name}`,
+      targets,
+    );
+  }
+
   const irJson = serializeIr(ir);
   const hash = irHash(irJson);
-  const module = emitModule(ir, hash);
+  const module = emitModule(ir, hash, manifest.naming);
   const irPath = resolve(manifestDir, manifest.output.ir);
   const modulePath = resolve(manifestDir, manifest.output.module);
   const outputs: GeneratedOutput[] = [
@@ -497,7 +519,11 @@ export function generate(manifestDir: string): GenerateResult {
     kotlin?.queriesPath !== undefined ||
     dart?.queriesPath !== undefined;
   const analyzedQueries = wantsQueries
-    ? analyzeQueries(ir, loadQueries(resolve(manifestDir, manifest.queries)))
+    ? analyzeQueries(
+        ir,
+        loadQueries(resolve(manifestDir, manifest.queries)),
+        naming,
+      )
     : [];
   if (wantsQueries && analyzedQueries.length === 0) {
     throw new TypegenError(

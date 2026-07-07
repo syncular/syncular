@@ -27,31 +27,31 @@ export const schema = {
 /** One todos row (§2.4 column order). */
 export interface TodosRow {
   id: string;
-  list_id: string;
+  listId: string;
   title: string;
   done: boolean;
   position: number;
-  updated_at_ms: number;
+  updatedAtMs: number;
 }
 
 /** Insert shape: nullable columns may be omitted. */
 export interface TodosInsert {
   id: string;
-  list_id: string;
+  listId: string;
   title: string;
   done: boolean;
   position: number;
-  updated_at_ms: number;
+  updatedAtMs: number;
 }
 
 /** Update shape: primary key required, all other columns optional. */
 export interface TodosUpdate {
   id: string;
-  list_id?: string;
+  listId?: string;
   title?: string;
   done?: boolean;
   position?: number;
-  updated_at_ms?: number;
+  updatedAtMs?: number;
 }
 
 export interface TodoListParams {

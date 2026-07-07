@@ -14,6 +14,8 @@ describe('assertReadOnlyQuery', () => {
       'SELECT 1',
       '  select * from tasks',
       'WITH x AS (SELECT 1) SELECT * FROM x',
+      'WITH x AS (SELECT 1), y AS (SELECT 2) SELECT * FROM x, y',
+      'WITH RECURSIVE c(n) AS (VALUES (1)) SELECT n FROM c',
       'EXPLAIN QUERY PLAN SELECT 1',
       'PRAGMA table_info(tasks)',
       'VALUES (1), (2)',
@@ -35,6 +37,17 @@ describe('assertReadOnlyQuery', () => {
       'BEGIN',
       'VACUUM',
       "REPLACE INTO tasks (id) VALUES ('t1')",
+    ]) {
+      expect(() => assertReadOnlyQuery(sql)).toThrow(RawSqlError);
+    }
+  });
+
+  test('a WITH clause cannot smuggle a write (SQLite allows WITH … DELETE)', () => {
+    for (const sql of [
+      'WITH t AS (SELECT 1) DELETE FROM tasks',
+      "WITH t AS (SELECT 1) INSERT INTO tasks (id) SELECT 'x'",
+      "WITH t AS (SELECT 1) UPDATE tasks SET title = 'x'",
+      "WITH t AS (SELECT 1), u AS (SELECT 2) REPLACE INTO tasks (id) VALUES ('t1')",
     ]) {
       expect(() => assertReadOnlyQuery(sql)).toThrow(RawSqlError);
     }

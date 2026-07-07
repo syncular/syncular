@@ -357,11 +357,11 @@ class Pane {
         op: 'upsert',
         values: {
           id: crypto.randomUUID(),
-          list_id: LIST_ID,
+          listId: LIST_ID,
           title,
           done: false,
           position: position + 1,
-          updated_at_ms: Date.now(),
+          updatedAtMs: Date.now(),
           attachment: null,
         } satisfies TodosRow,
       },
@@ -374,11 +374,11 @@ class Pane {
   async updateTodo(row: LocalTodo, patch: Partial<TodosRow>): Promise<void> {
     const values: TodosRow = {
       id: row.id,
-      list_id: row.list_id,
+      listId: row.listId,
       title: row.title,
       done: Boolean(row.done),
       position: row.position,
-      updated_at_ms: Date.now(),
+      updatedAtMs: Date.now(),
       // Preserve the blob_ref across unrelated edits (§5.9): a full-row
       // upsert that omitted it would clear the attachment.
       attachment: row.attachment ?? null,
@@ -459,7 +459,9 @@ class Pane {
     if (!this.#ready) return;
     const [todos, pending, conflicts] = await Promise.all([
       this.core.query(
-        `SELECT *, "${SYNC_VERSION_COLUMN}" AS _sync_version
+        `SELECT id, list_id AS listId, title, done, position,
+                updated_at_ms AS updatedAtMs, attachment,
+                "${SYNC_VERSION_COLUMN}" AS _sync_version
          FROM todos ORDER BY position ASC, id ASC`,
       ),
       this.core.pendingCount(),
@@ -661,11 +663,11 @@ async function simulateConflict(
       op: 'upsert',
       values: {
         id,
-        list_id: LIST_ID,
+        listId: LIST_ID,
         title: 'Conflict target',
         done: false,
         position: 999,
-        updated_at_ms: Date.now(),
+        updatedAtMs: Date.now(),
         attachment: null,
       } satisfies TodosRow,
     },

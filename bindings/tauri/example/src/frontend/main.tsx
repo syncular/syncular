@@ -51,7 +51,7 @@ function TodoApp() {
 
   // Live local read: one IPC round trip, re-run only when `todos` invalidates.
   const { rows, isLoading } = useRawSql<TodosRow>(
-    'SELECT id, list_id, title, done, position, updated_at_ms, attachment' +
+    'SELECT id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment' +
       ' FROM todos WHERE list_id = ? ORDER BY position, id',
     [LIST_ID],
   );
@@ -65,11 +65,11 @@ function TodoApp() {
         op: 'upsert',
         values: {
           id: crypto.randomUUID(),
-          list_id: LIST_ID,
+          listId: LIST_ID,
           title,
           done: false,
           position,
-          updated_at_ms: Date.now(),
+          updatedAtMs: Date.now(),
           attachment: null,
         },
       },
@@ -84,7 +84,7 @@ function TodoApp() {
         values: {
           ...row,
           done: !row.done,
-          updated_at_ms: Date.now(),
+          updatedAtMs: Date.now(),
         },
       },
     ]);

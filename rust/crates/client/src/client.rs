@@ -30,7 +30,8 @@ use crate::schema::{parse_schema_json, ClientSchema};
 use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 use crate::values::{
     bytes_to_hex, canonical_scope_json, column_value_to_json, decode_row_bytes, encode_row_json,
-    json_to_column_value, json_to_scope_map, render_row_id_json, scope_map_to_json, sort_scope_map,
+    json_to_column_value, json_to_scope_map, normalize_values_casing, render_row_id_json,
+    scope_map_to_json, sort_scope_map,
 };
 
 /// §4.2 default: the rows baseline plus sqlite images (§5.3) — rusqlite
@@ -1105,6 +1106,10 @@ impl SyncClient {
                         .schema
                         .table(&table)
                         .ok_or_else(|| format!("unknown table {table:?}"))?;
+                    // §5: value keys are accepted in snake_case AND the
+                    // generated row types' camelCase; normalize to SQL truth
+                    // before the pk lookup / codec see them.
+                    let values = normalize_values_casing(schema_table, values)?;
                     let row_id = render_row_id_json(values.get(&schema_table.primary_key))?;
                     // Validate the payload encodes with the current codec
                     // (and, §5.11, that the encrypt seam has its keys).
