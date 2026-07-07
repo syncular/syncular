@@ -36,11 +36,11 @@ export interface NamedQuery<Row, Params = undefined> {
 /** One row of the 'listTodos' query (its projection). */
 export interface ListTodosRow {
   id: string;
-  list_id: string;
+  listId: string;
   title: string;
   done: boolean;
   position: number;
-  updated_at_ms: number;
+  updatedAtMs: number;
   attachment: string | null;
 }
 
@@ -52,7 +52,7 @@ export interface ListTodosParams {
 /** Tables 'listTodos' reads — the exact useRawSql `{tables}` set. */
 export const listTodosTables = ['todos'] as const;
 
-const listTodosSql = 'SELECT id, list_id, title, done, position, updated_at_ms, attachment FROM todos WHERE list_id = ? ORDER BY position, id';
+const listTodosSql = 'SELECT id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment FROM todos WHERE list_id = ? ORDER BY position, id';
 
 /** Run the 'listTodos' named query (SELECT-only). */
 export async function listTodos(client: QueryClient, params: ListTodosParams): Promise<ListTodosRow[]> {

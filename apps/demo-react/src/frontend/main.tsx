@@ -96,11 +96,11 @@ function TodoApp() {
         op: 'upsert',
         values: {
           id: crypto.randomUUID(),
-          list_id: list,
+          listId: list,
           title,
           done: false,
           position,
-          updated_at_ms: Date.now(),
+          updatedAtMs: Date.now(),
           attachment: null,
         } satisfies TodosRow,
       },
@@ -115,7 +115,7 @@ function TodoApp() {
         values: {
           ...row,
           done: !row.done,
-          updated_at_ms: Date.now(),
+          updatedAtMs: Date.now(),
         } satisfies TodosRow,
       },
     ]);

@@ -25,25 +25,25 @@ export const schema = {
 /** One notes row (§2.4 column order). */
 export interface NotesRow {
   id: string;
-  list_id: string;
+  listId: string;
   body: string;
-  updated_at_ms: number;
+  updatedAtMs: number;
 }
 
 /** Insert shape: nullable columns may be omitted. */
 export interface NotesInsert {
   id: string;
-  list_id: string;
+  listId: string;
   body: string;
-  updated_at_ms: number;
+  updatedAtMs: number;
 }
 
 /** Update shape: primary key required, all other columns optional. */
 export interface NotesUpdate {
   id: string;
-  list_id?: string;
+  listId?: string;
   body?: string;
-  updated_at_ms?: number;
+  updatedAtMs?: number;
 }
 
 export interface ListNotesParams {

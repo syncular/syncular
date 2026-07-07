@@ -1,0 +1,378 @@
+{
+  "queryIrVersion": 1,
+  "queries": [
+    {
+      "name": "findDocByOrg",
+      "file": "doc-lookup.sql",
+      "sourceSql": "-- Single-statement file with a `-- name:` override: the path default would be\n-- docLookup, but the marker renames it verbatim to findDocByOrg.\n-- name: findDocByOrg\nSELECT id, body\nFROM docs\nWHERE org_id = :orgId\nORDER BY id",
+      "sql": "-- Single-statement file with a `-- name:` override: the path default would be\n-- docLookup, but the marker renames it verbatim to findDocByOrg.\n-- name: findDocByOrg\nSELECT id, body\nFROM docs\nWHERE org_id = :orgId\nORDER BY id",
+      "positionalSql": "SELECT id, body FROM docs WHERE org_id = ? ORDER BY id",
+      "params": [
+        {
+          "name": "orgId",
+          "langName": "orgId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "body",
+          "langName": "body",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        }
+      ],
+      "tables": [
+        "docs"
+      ]
+    },
+    {
+      "name": "docWithBody",
+      "file": "doc-with-body.sql",
+      "sourceSql": "-- Join across docs+tasks (same project); projection mixes both tables.\nSELECT d.id AS doc_id, d.body, t.title AS task_title\nFROM docs d\nJOIN tasks t ON t.project_id = d.project_id\nWHERE d.org_id = :orgId",
+      "sql": "-- Join across docs+tasks (same project); projection mixes both tables.\nSELECT d.id AS docId, d.body, t.title AS taskTitle FROM docs d\nJOIN tasks t ON t.project_id = d.project_id\nWHERE d.org_id = :orgId",
+      "positionalSql": "SELECT d.id AS docId, d.body, t.title AS taskTitle FROM docs d JOIN tasks t ON t.project_id = d.project_id WHERE d.org_id = ?",
+      "params": [
+        {
+          "name": "orgId",
+          "langName": "orgId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "doc_id",
+          "langName": "docId",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "body",
+          "langName": "body",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "task_title",
+          "langName": "taskTitle",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        }
+      ],
+      "tables": [
+        "docs",
+        "tasks"
+      ]
+    },
+    {
+      "name": "listProjectTasks",
+      "file": "list-project-tasks.sql",
+      "sourceSql": "-- Plain select + param inference: :projectId types to project_id (TEXT).\nSELECT id, title, done, priority, estimate\nFROM tasks\nWHERE project_id = :projectId\nORDER BY priority",
+      "sql": "-- Plain select + param inference: :projectId types to project_id (TEXT).\nSELECT id, title, done, priority, estimate\nFROM tasks\nWHERE project_id = :projectId\nORDER BY priority",
+      "positionalSql": "SELECT id, title, done, priority, estimate FROM tasks WHERE project_id = ? ORDER BY priority",
+      "params": [
+        {
+          "name": "projectId",
+          "langName": "projectId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "title",
+          "langName": "title",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "done",
+          "langName": "done",
+          "type": "boolean",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "priority",
+          "langName": "priority",
+          "type": "integer",
+          "nullable": true,
+          "fidelity": "exact"
+        },
+        {
+          "name": "estimate",
+          "langName": "estimate",
+          "type": "float",
+          "nullable": true,
+          "fidelity": "exact"
+        }
+      ],
+      "tables": [
+        "tasks"
+      ]
+    },
+    {
+      "name": "projectDocCount",
+      "file": "project-doc-count.sql",
+      "sourceSql": "-- Aggregate (count(*) → fallback nullable number) + a plain grouped ref.\nSELECT project_id, count(*) AS doc_count\nFROM docs\nGROUP BY project_id",
+      "sql": "-- Aggregate (count(*) → fallback nullable number) + a plain grouped ref.\nSELECT project_id AS projectId, count(*) AS docCount FROM docs\nGROUP BY project_id",
+      "positionalSql": "SELECT project_id AS projectId, count(*) AS docCount FROM docs GROUP BY project_id",
+      "params": [],
+      "columns": [
+        {
+          "name": "project_id",
+          "langName": "projectId",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "doc_count",
+          "langName": "docCount",
+          "type": "float",
+          "nullable": true,
+          "fidelity": "fallback"
+        }
+      ],
+      "tables": [
+        "docs"
+      ]
+    },
+    {
+      "name": "reportingTasksByPriority",
+      "file": "reporting/tasks-by-priority.sql",
+      "sourceSql": "-- Nested-folder query: default name is path-derived\n-- (reporting/tasks-by-priority.sql → reportingTasksByPriority).\nSELECT id, title, priority\nFROM tasks\nWHERE priority = :priority\nORDER BY id",
+      "sql": "-- Nested-folder query: default name is path-derived\n-- (reporting/tasks-by-priority.sql → reportingTasksByPriority).\nSELECT id, title, priority\nFROM tasks\nWHERE priority = :priority\nORDER BY id",
+      "positionalSql": "SELECT id, title, priority FROM tasks WHERE priority = ? ORDER BY id",
+      "params": [
+        {
+          "name": "priority",
+          "langName": "priority",
+          "type": "integer"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "title",
+          "langName": "title",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "priority",
+          "langName": "priority",
+          "type": "integer",
+          "nullable": true,
+          "fidelity": "exact"
+        }
+      ],
+      "tables": [
+        "tasks"
+      ]
+    },
+    {
+      "name": "reportOpenTasks",
+      "file": "task-reports.sql#1",
+      "sourceSql": "-- Multi-statement file: two queries in one .sql. Each statement REQUIRES a\n-- `-- name:` marker (the file's path can't disambiguate them) and each carries\n-- its own leading `-- param`/`-- name` scope.\n\n-- name: reportOpenTasks\n-- One statement's scope: infers :projectId from project_id (TEXT).\nSELECT id, title, done\nFROM tasks\nWHERE project_id = :projectId AND done = 0\nORDER BY id",
+      "sql": "-- Multi-statement file: two queries in one .sql. Each statement REQUIRES a\n-- `-- name:` marker (the file's path can't disambiguate them) and each carries\n-- its own leading `-- param`/`-- name` scope.\n\n-- name: reportOpenTasks\n-- One statement's scope: infers :projectId from project_id (TEXT).\nSELECT id, title, done\nFROM tasks\nWHERE project_id = :projectId AND done = 0\nORDER BY id",
+      "positionalSql": "SELECT id, title, done FROM tasks WHERE project_id = ? AND done = 0 ORDER BY id",
+      "params": [
+        {
+          "name": "projectId",
+          "langName": "projectId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "title",
+          "langName": "title",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "done",
+          "langName": "done",
+          "type": "boolean",
+          "nullable": false,
+          "fidelity": "exact"
+        }
+      ],
+      "tables": [
+        "tasks"
+      ]
+    },
+    {
+      "name": "reportDocScores",
+      "file": "task-reports.sql#2",
+      "sourceSql": "-- name: reportDocScores\n-- A separate statement, separately scoped: :minScore is compared to an\n-- expression, so it needs its own `-- param` comment.\n-- param :minScore float\nSELECT id, org_id, score\nFROM docs\nWHERE score > :minScore * 1.0\nORDER BY id",
+      "sql": "-- name: reportDocScores\n-- A separate statement, separately scoped: :minScore is compared to an\n-- expression, so it needs its own `-- param` comment.\n-- param :minScore float\nSELECT id, org_id AS orgId, score FROM docs\nWHERE score > :minScore * 1.0\nORDER BY id",
+      "positionalSql": "SELECT id, org_id AS orgId, score FROM docs WHERE score > ? * 1.0 ORDER BY id",
+      "params": [
+        {
+          "name": "minScore",
+          "langName": "minScore",
+          "type": "float"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "org_id",
+          "langName": "orgId",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "score",
+          "langName": "score",
+          "type": "float",
+          "nullable": true,
+          "fidelity": "exact"
+        }
+      ],
+      "tables": [
+        "docs"
+      ]
+    },
+    {
+      "name": "taskTitles",
+      "file": "task-titles.sql",
+      "sourceSql": "-- Projection subset (a narrow row), no params.\nSELECT id, title FROM tasks",
+      "sql": "-- Projection subset (a narrow row), no params.\nSELECT id, title FROM tasks",
+      "positionalSql": "SELECT id, title FROM tasks",
+      "params": [],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "title",
+          "langName": "title",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        }
+      ],
+      "tables": [
+        "tasks"
+      ]
+    },
+    {
+      "name": "tasksInProjects",
+      "file": "tasks-in-projects.sql",
+      "sourceSql": "-- IN-clause param inference: both params type to project_id (TEXT).\nSELECT id, title FROM tasks WHERE project_id IN (:first, :second)",
+      "sql": "-- IN-clause param inference: both params type to project_id (TEXT).\nSELECT id, title FROM tasks WHERE project_id IN (:first, :second)",
+      "positionalSql": "SELECT id, title FROM tasks WHERE project_id IN (?, ?)",
+      "params": [
+        {
+          "name": "first",
+          "langName": "first",
+          "type": "string"
+        },
+        {
+          "name": "second",
+          "langName": "second",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "title",
+          "langName": "title",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        }
+      ],
+      "tables": [
+        "tasks"
+      ]
+    },
+    {
+      "name": "tasksSince",
+      "file": "tasks-since.sql",
+      "sourceSql": "-- Comment-typed param: :sinceMs isn't compared to a plain column (it hits an\n-- expression), so its type is declared explicitly.\n-- param :sinceMs integer\nSELECT id, title FROM tasks WHERE estimated_at > :sinceMs + 0",
+      "sql": "-- Comment-typed param: :sinceMs isn't compared to a plain column (it hits an\n-- expression), so its type is declared explicitly.\n-- param :sinceMs integer\nSELECT id, title FROM tasks WHERE estimated_at > :sinceMs + 0",
+      "positionalSql": "SELECT id, title FROM tasks WHERE estimated_at > ? + 0",
+      "params": [
+        {
+          "name": "sinceMs",
+          "langName": "sinceMs",
+          "type": "integer"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "title",
+          "langName": "title",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        }
+      ],
+      "tables": [
+        "tasks"
+      ]
+    }
+  ]
+}

@@ -11,7 +11,13 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { analyzeQueries, checkOutputs, generate, loadQueries } from '../src';
+import {
+  analyzeQueries,
+  checkOutputs,
+  generate,
+  loadQueries,
+  serializeQueryIr,
+} from '../src';
 
 const FIXTURE = join(import.meta.dir, 'fixtures', 'basic');
 
@@ -63,6 +69,16 @@ describe('named-query emitter goldens', () => {
   test('checkOutputs covers the query files (no drift on committed)', () => {
     expect(checkOutputs(generate(FIXTURE))).toEqual([]);
   });
+
+  test('the QueryIR JSON matches the committed golden byte-exactly', () => {
+    // The frontend-equivalence contract (DESIGN-queries.md §1): whatever
+    // frontend produced these queries, this exact IR JSON must come out.
+    const committed = readFileSync(
+      join(FIXTURE, 'syncular.queries.ir.json'),
+      'utf8',
+    );
+    expect(serializeQueryIr(generate(FIXTURE).queries)).toBe(committed);
+  });
 });
 
 describe('named-query analysis fidelity', () => {
@@ -94,17 +110,32 @@ describe('named-query analysis fidelity', () => {
 
   test('param types are inferred from equality + IN comparisons', () => {
     expect(byName.get('listProjectTasks')?.params).toEqual([
-      { name: 'projectId', type: 'string', source: 'inferred' },
+      {
+        name: 'projectId',
+        langName: 'projectId',
+        type: 'string',
+        source: 'inferred',
+      },
     ]);
     expect(byName.get('tasksInProjects')?.params).toEqual([
-      { name: 'first', type: 'string', source: 'inferred' },
-      { name: 'second', type: 'string', source: 'inferred' },
+      { name: 'first', langName: 'first', type: 'string', source: 'inferred' },
+      {
+        name: 'second',
+        langName: 'second',
+        type: 'string',
+        source: 'inferred',
+      },
     ]);
   });
 
   test('a comment overrides an un-inferable param', () => {
     expect(byName.get('tasksSince')?.params).toEqual([
-      { name: 'sinceMs', type: 'integer', source: 'comment' },
+      {
+        name: 'sinceMs',
+        langName: 'sinceMs',
+        type: 'integer',
+        source: 'comment',
+      },
     ]);
   });
 
@@ -138,7 +169,12 @@ describe('named-query analysis fidelity', () => {
     expect(q).toBeDefined();
     expect(q?.tables).toEqual(['tasks']);
     expect(q?.params).toEqual([
-      { name: 'priority', type: 'integer', source: 'inferred' },
+      {
+        name: 'priority',
+        langName: 'priority',
+        type: 'integer',
+        source: 'inferred',
+      },
     ]);
   });
 
@@ -150,12 +186,22 @@ describe('named-query analysis fidelity', () => {
     expect(scores).toBeDefined();
     // Per-statement param scoping: :projectId inferred in the first statement…
     expect(open?.params).toEqual([
-      { name: 'projectId', type: 'string', source: 'inferred' },
+      {
+        name: 'projectId',
+        langName: 'projectId',
+        type: 'string',
+        source: 'inferred',
+      },
     ]);
     expect(open?.tables).toEqual(['tasks']);
     // …:minScore's `-- param float` comment belongs to the SECOND statement.
     expect(scores?.params).toEqual([
-      { name: 'minScore', type: 'float', source: 'comment' },
+      {
+        name: 'minScore',
+        langName: 'minScore',
+        type: 'float',
+        source: 'comment',
+      },
     ]);
     expect(scores?.tables).toEqual(['docs']);
     // A path-derived `taskReports` name does NOT exist (overrides replace it).
@@ -167,7 +213,7 @@ describe('named-query analysis fidelity', () => {
     expect(byName.get('findDocByOrg')).toBeDefined();
     expect(byName.get('docLookup')).toBeUndefined();
     expect(byName.get('findDocByOrg')?.params).toEqual([
-      { name: 'orgId', type: 'string', source: 'inferred' },
+      { name: 'orgId', langName: 'orgId', type: 'string', source: 'inferred' },
     ]);
   });
 });

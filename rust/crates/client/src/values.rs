@@ -31,6 +31,84 @@ impl EncryptionConfig {
     }
 }
 
+/// The pinned §12 snake→camel conversion (DESIGN-queries.md §5) — the Rust
+/// copy of the typegen/TS-client algorithm, kept in lockstep by shared test
+/// vectors. Leading/trailing `_` runs are preserved; middle segments split
+/// on `_` (doubled underscores drop); no acronym awareness.
+pub fn snake_to_camel(name: &str) -> String {
+    let is_mappable = {
+        let bare = name.trim_start_matches('_');
+        !bare.is_empty()
+            && bare.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    if !is_mappable {
+        return name.to_owned();
+    }
+    let lead_len = name.len() - name.trim_start_matches('_').len();
+    let (lead, bare) = name.split_at(lead_len);
+    let trail_len = bare.len() - bare.trim_end_matches('_').len();
+    let (middle, trail) = bare.split_at(bare.len() - trail_len);
+    let mut segments = middle.split('_').filter(|s| !s.is_empty());
+    let Some(first) = segments.next() else {
+        return name.to_owned();
+    };
+    let mut out = String::with_capacity(name.len());
+    out.push_str(lead);
+    out.push_str(first);
+    for segment in segments {
+        let mut chars = segment.chars();
+        if let Some(head) = chars.next() {
+            out.push(head.to_ascii_uppercase());
+            out.push_str(chars.as_str());
+        }
+    }
+    out.push_str(trail);
+    out
+}
+
+/// §5 mutate key normalization: accept BOTH casings for upsert value keys —
+/// the SQL-truth snake_case and the generated row types' camelCase. A camel
+/// key renames to its column's SQL name when that is unambiguous (the alias
+/// equals no other column's exact name, and no two columns share it). A
+/// column given in both casings is an error. Unknown keys pass through
+/// unchanged (they are ignored downstream, as before).
+pub fn normalize_values_casing(
+    table: &TableSchema,
+    mut values: Map<String, Value>,
+) -> Result<Map<String, Value>, String> {
+    for column in &table.columns {
+        let camel = snake_to_camel(&column.name);
+        if camel == column.name {
+            continue;
+        }
+        // Exact names always win; an alias colliding with another column's
+        // real name (or with another column's alias) is not an alias.
+        if table.columns.iter().any(|c| c.name == camel) {
+            continue;
+        }
+        if table
+            .columns
+            .iter()
+            .filter(|c| snake_to_camel(&c.name) == camel)
+            .count()
+            > 1
+        {
+            continue;
+        }
+        if let Some(value) = values.remove(&camel) {
+            if values.contains_key(&column.name) {
+                return Err(format!(
+                    "table {:?}: column {:?} appears twice in mutation values (as both snake_case and camelCase) — pass it once",
+                    table.name, column.name
+                ));
+            }
+            values.insert(column.name.clone(), value);
+        }
+    }
+    Ok(values)
+}
+
 pub fn bytes_to_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {
@@ -410,4 +488,99 @@ pub fn json_to_scope_map(value: &Value) -> Result<Vec<(String, Vec<String>)>, St
         out.push((key.clone(), strings));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod naming_tests {
+    use serde_json::{json, Map, Value};
+    use ssp2::segment::{Column, ColumnType};
+
+    use super::{normalize_values_casing, snake_to_camel};
+    use crate::schema::TableSchema;
+
+    #[test]
+    fn snake_to_camel_pinned_vectors() {
+        for (input, expected) in [
+            ("created_at", "createdAt"),
+            ("col_2", "col2"),
+            ("user_id", "userId"),
+            ("_internal", "_internal"),
+            ("__foo_bar", "__fooBar"),
+            ("row_", "row_"),
+            ("id_url", "idUrl"),
+            ("api_key", "apiKey"),
+            ("title", "title"),
+            ("alreadyCamel", "alreadyCamel"),
+            ("a__b", "aB"),
+            ("_lead_and_trail_", "_leadAndTrail_"),
+            ("count(*)", "count(*)"),
+        ] {
+            assert_eq!(snake_to_camel(input), expected, "input {input:?}");
+        }
+    }
+
+    fn table(names: &[&str]) -> TableSchema {
+        let columns: Vec<Column> = names
+            .iter()
+            .map(|n| Column {
+                name: (*n).to_owned(),
+                ty: ColumnType::String,
+                nullable: true,
+            })
+            .collect();
+        TableSchema {
+            name: "t".to_owned(),
+            columns: columns.clone(),
+            wire_columns: columns,
+            primary_key: "id".to_owned(),
+            pk_index: 0,
+            scope_variables: Vec::new(),
+            indexes: Vec::new(),
+            encrypted_columns: Vec::new(),
+        }
+    }
+
+    fn map(entries: &[(&str, &str)]) -> Map<String, Value> {
+        entries
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), json!(v)))
+            .collect()
+    }
+
+    #[test]
+    fn camel_keys_normalize_to_sql_names() {
+        let t = table(&["id", "list_id", "updated_at_ms"]);
+        let out = normalize_values_casing(
+            &t,
+            map(&[("id", "x"), ("listId", "l"), ("updatedAtMs", "9")]),
+        )
+        .expect("normalizes");
+        assert_eq!(out.get("list_id"), Some(&json!("l")));
+        assert_eq!(out.get("updated_at_ms"), Some(&json!("9")));
+        assert!(!out.contains_key("listId"));
+    }
+
+    #[test]
+    fn snake_keys_pass_through() {
+        let t = table(&["id", "list_id"]);
+        let out = normalize_values_casing(&t, map(&[("id", "x"), ("list_id", "l")])).expect("ok");
+        assert_eq!(out.get("list_id"), Some(&json!("l")));
+    }
+
+    #[test]
+    fn both_casings_for_one_column_is_an_error() {
+        let t = table(&["id", "list_id"]);
+        let err = normalize_values_casing(&t, map(&[("list_id", "a"), ("listId", "b")]))
+            .expect_err("rejects");
+        assert!(err.contains("both snake_case and camelCase"), "{err}");
+    }
+
+    #[test]
+    fn an_alias_colliding_with_a_real_column_never_steals_it() {
+        // `col_2` camel-maps to `col2`, which IS a column: exact wins, no rename.
+        let t = table(&["id", "col_2", "col2"]);
+        let out = normalize_values_casing(&t, map(&[("id", "x"), ("col2", "v")])).expect("ok");
+        assert_eq!(out.get("col2"), Some(&json!("v")));
+        assert!(!out.contains_key("col_2"));
+    }
 }

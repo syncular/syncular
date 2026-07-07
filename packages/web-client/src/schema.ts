@@ -7,6 +7,7 @@
 import type { RowColumn, RowValue } from '@syncular/core';
 import type { ClientDatabase, SqlValue } from './database';
 import { ClientSyncError } from './errors';
+import { snakeToCamel } from './naming';
 
 /** `'prefix:{variable}'` shorthand (column name = variable) or explicit. */
 export type ScopePatternSpec = string | { pattern: string; column: string };
@@ -41,6 +42,13 @@ export interface CompiledClientTable {
   readonly primaryKey: string;
   readonly primaryKeyIndex: number;
   readonly columnIndex: ReadonlyMap<string, number>;
+  /**
+   * §5 mutate key normalization: unambiguous camelCase alias → column
+   * index. An alias is dropped when it equals another column's exact name
+   * or when two columns map to the same alias (exact names always win; the
+   * generator errors on such schemas under camel naming anyway).
+   */
+  readonly columnIndexByCamel: ReadonlyMap<string, number>;
   /** Scope variable → local scope column (§3.3 purge mapping). */
   readonly scopeColumnByVariable: ReadonlyMap<string, string>;
   /**
@@ -119,6 +127,19 @@ export function compileClientSchema(
       scopeColumnByVariable.set(variable, column);
       scopePrefixByVariable.set(variable, prefix);
     }
+    // §5: unambiguous camelCase aliases for mutate key normalization.
+    const columnIndexByCamel = new Map<string, number>();
+    const ambiguous = new Set<string>();
+    table.columns.forEach((column, index) => {
+      const alias = snakeToCamel(column.name);
+      if (alias === column.name || columnIndex.has(alias)) return;
+      if (columnIndexByCamel.has(alias)) {
+        ambiguous.add(alias);
+        return;
+      }
+      columnIndexByCamel.set(alias, index);
+    });
+    for (const alias of ambiguous) columnIndexByCamel.delete(alias);
     const indexes = table.indexes ?? [];
     for (const index of indexes) {
       for (const column of index.columns) {
@@ -135,6 +156,7 @@ export function compileClientSchema(
       primaryKey: table.primaryKey,
       primaryKeyIndex,
       columnIndex,
+      columnIndexByCamel,
       scopeColumnByVariable,
       scopePrefixByVariable,
       indexes,
@@ -330,22 +352,36 @@ export function fromSqlValue(column: RowColumn, value: SqlValue): RowValue {
 
 /**
  * App-facing record → schema-ordered row values for the codec and the
- * local mirror. Missing keys become NULL; unknown keys fail loud.
+ * local mirror. Missing keys become NULL; unknown keys fail loud. Keys are
+ * accepted in exactly two casings (§5/§12): the SQL-truth snake_case and
+ * the generated row types' camelCase — one bijective-map lookup per key,
+ * no fuzzy matching. Giving one column in both casings is an error.
  */
 export function recordToRowValues(
   table: CompiledClientTable,
   record: Readonly<Record<string, unknown>>,
 ): RowValue[] {
-  for (const key of Object.keys(record)) {
-    if (!table.columnIndex.has(key)) {
+  const normalized = new Map<string, unknown>();
+  for (const [key, value] of Object.entries(record)) {
+    const index =
+      table.columnIndex.get(key) ?? table.columnIndexByCamel.get(key);
+    if (index === undefined) {
       throw new ClientSyncError(
         'sync.invalid_request',
-        `table ${table.name}: unknown column ${JSON.stringify(key)} in mutation values`,
+        `table ${table.name}: unknown column ${JSON.stringify(key)} in mutation values (snake_case and camelCase keys are accepted)`,
       );
     }
+    const sqlName = (table.columns[index] as RowColumn).name;
+    if (normalized.has(sqlName)) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        `table ${table.name}: column ${JSON.stringify(sqlName)} appears twice in mutation values (as both snake_case and camelCase) — pass it once`,
+      );
+    }
+    normalized.set(sqlName, value);
   }
   return table.columns.map((column) => {
-    const value = record[column.name];
+    const value = normalized.get(column.name);
     if (value === undefined || value === null) {
       if (!column.nullable) {
         throw new ClientSyncError(

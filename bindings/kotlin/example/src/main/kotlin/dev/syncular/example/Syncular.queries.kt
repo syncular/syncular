@@ -36,9 +36,9 @@ data class ListNotesRow(
     companion object {
         fun fromRow(row: JsonValue): ListNotesRow? {
             val id = row["id"]?.string ?: return null
-            val listId = row["list_id"]?.string ?: return null
+            val listId = row["listId"]?.string ?: return null
             val body = row["body"]?.string ?: return null
-            val updatedAtMs = row["updated_at_ms"]?.number?.toLong() ?: return null
+            val updatedAtMs = row["updatedAtMs"]?.number?.toLong() ?: return null
             return ListNotesRow(id, listId, body, updatedAtMs)
         }
     }
@@ -47,7 +47,7 @@ data class ListNotesRow(
 /** Typed named queries (the sqlc/SQLDelight tier). */
 object SyncularSchemaQueries {
         val listNotesTables = listOf("notes")
-        private const val listNotesSql = "SELECT id, list_id, body, updated_at_ms FROM notes WHERE list_id = ? ORDER BY id"
+        private const val listNotesSql = "SELECT id, list_id AS listId, body, updated_at_ms AS updatedAtMs FROM notes WHERE list_id = ? ORDER BY id"
 
         /** Run the listNotes named query (SELECT-only). */
         fun listNotes(client: SyncularClient, listId: String): List<ListNotesRow> {

@@ -40,6 +40,7 @@
  *   WP-49 passthrough slot copied verbatim into the IR.
  */
 import { TypegenError } from './errors';
+import type { NamingMode } from './naming';
 
 export const MANIFEST_FILENAME = 'syncular.json';
 
@@ -116,6 +117,10 @@ export interface Manifest {
   /** Directory of `.sql` named-query files (default `./queries`). Only read
    * when at least one output requests a named-queries file. */
   readonly queries: string;
+  /** §5 casing: "camel" (default) maps snake_case SQL names to camelCase in
+   * generated row types/params (queries lower with `AS` aliases); "preserve"
+   * keeps SQL-truth names everywhere. */
+  readonly naming: NamingMode;
   readonly output: ManifestOutput;
   readonly schemaVersions: readonly ManifestSchemaVersion[];
   readonly tables: readonly ManifestTable[];
@@ -343,6 +348,7 @@ export function parseManifest(raw: unknown): Manifest {
       'manifestVersion',
       'migrations',
       'queries',
+      'naming',
       'output',
       'schemaVersions',
       'tables',
@@ -362,6 +368,15 @@ export function parseManifest(raw: unknown): Manifest {
       : asString(obj.migrations, 'migrations');
   const queries =
     obj.queries === undefined ? './queries' : asString(obj.queries, 'queries');
+  let naming: NamingMode = 'camel';
+  if (obj.naming !== undefined) {
+    if (obj.naming !== 'camel' && obj.naming !== 'preserve') {
+      fail(
+        `naming must be "camel" or "preserve", got ${JSON.stringify(obj.naming)}`,
+      );
+    }
+    naming = obj.naming;
+  }
   let ir = './syncular.ir.json';
   let module = './syncular.generated.ts';
   let queriesOut: string | undefined;
@@ -436,6 +451,7 @@ export function parseManifest(raw: unknown): Manifest {
     manifestVersion: 1,
     migrations,
     queries,
+    naming,
     output: outputSpec,
     schemaVersions,
     tables,

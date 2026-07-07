@@ -14,6 +14,7 @@
  * verifies freshness byte-exactly.
  */
 import type { IrColumnType, IrDocument, IrSubscription, IrTable } from './ir';
+import { snakeToCamel } from './naming';
 
 /** §2.4 column type → honest Dart type. `json`/`blob_ref` are the raw
  * canonical JSON string; `bytes`/`crdt` are opaque `List<int>`. */
@@ -45,9 +46,9 @@ function pascalCase(name: string): string {
     .join('');
 }
 
+/** Language-facing field name — the pinned §12 naming map. */
 function camelCase(name: string): string {
-  const pascal = pascalCase(name);
-  return pascal.charAt(0).toLowerCase() + pascal.slice(1);
+  return snakeToCamel(name);
 }
 
 function quote(value: string): string {

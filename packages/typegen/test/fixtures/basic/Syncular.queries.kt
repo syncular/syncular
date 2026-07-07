@@ -48,9 +48,9 @@ data class DocWithBodyRow(
 ) {
     companion object {
         fun fromRow(row: JsonValue): DocWithBodyRow? {
-            val docId = row["doc_id"]?.string ?: return null
+            val docId = row["docId"]?.string ?: return null
             val body = row["body"]?.string ?: return null
-            val taskTitle = row["task_title"]?.string ?: return null
+            val taskTitle = row["taskTitle"]?.string ?: return null
             return DocWithBodyRow(docId, body, taskTitle)
         }
     }
@@ -83,8 +83,8 @@ data class ProjectDocCountRow(
 ) {
     companion object {
         fun fromRow(row: JsonValue): ProjectDocCountRow? {
-            val projectId = row["project_id"]?.string ?: return null
-            val docCount = row["doc_count"]?.number
+            val projectId = row["projectId"]?.string ?: return null
+            val docCount = row["docCount"]?.number
             return ProjectDocCountRow(projectId, docCount)
         }
     }
@@ -131,7 +131,7 @@ data class ReportDocScoresRow(
     companion object {
         fun fromRow(row: JsonValue): ReportDocScoresRow? {
             val id = row["id"]?.string ?: return null
-            val orgId = row["org_id"]?.string ?: return null
+            val orgId = row["orgId"]?.string ?: return null
             val score = row["score"]?.number
             return ReportDocScoresRow(id, orgId, score)
         }
@@ -192,7 +192,7 @@ object BasicSchemaQueries {
         }
 
         val docWithBodyTables = listOf("docs", "tasks")
-        private const val docWithBodySql = "SELECT d.id AS doc_id, d.body, t.title AS task_title FROM docs d JOIN tasks t ON t.project_id = d.project_id WHERE d.org_id = ?"
+        private const val docWithBodySql = "SELECT d.id AS docId, d.body, t.title AS taskTitle FROM docs d JOIN tasks t ON t.project_id = d.project_id WHERE d.org_id = ?"
 
         /** Run the docWithBody named query (SELECT-only). */
         fun docWithBody(client: SyncularClient, orgId: String): List<DocWithBodyRow> {
@@ -210,7 +210,7 @@ object BasicSchemaQueries {
         }
 
         val projectDocCountTables = listOf("docs")
-        private const val projectDocCountSql = "SELECT project_id, count(*) AS doc_count FROM docs GROUP BY project_id"
+        private const val projectDocCountSql = "SELECT project_id AS projectId, count(*) AS docCount FROM docs GROUP BY project_id"
 
         /** Run the projectDocCount named query (SELECT-only). */
         fun projectDocCount(client: SyncularClient): List<ProjectDocCountRow> {
@@ -236,7 +236,7 @@ object BasicSchemaQueries {
         }
 
         val reportDocScoresTables = listOf("docs")
-        private const val reportDocScoresSql = "SELECT id, org_id, score FROM docs WHERE score > ? * 1.0 ORDER BY id"
+        private const val reportDocScoresSql = "SELECT id, org_id AS orgId, score FROM docs WHERE score > ? * 1.0 ORDER BY id"
 
         /** Run the reportDocScores named query (SELECT-only). */
         fun reportDocScores(client: SyncularClient, minScore: Double): List<ReportDocScoresRow> {

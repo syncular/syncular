@@ -50,70 +50,70 @@ export const schema = {
 /** One tasks row (§2.4 column order). */
 export interface TasksRow {
   id: string;
-  project_id: string;
+  projectId: string;
   title: string;
   done: boolean;
   priority: number | null;
   meta: string | null;
   estimate: number | null;
-  estimated_at: number | null;
+  estimatedAt: number | null;
 }
 
 /** Insert shape: nullable columns may be omitted. */
 export interface TasksInsert {
   id: string;
-  project_id: string;
+  projectId: string;
   title: string;
   done: boolean;
   priority?: number | null;
   meta?: string | null;
   estimate?: number | null;
-  estimated_at?: number | null;
+  estimatedAt?: number | null;
 }
 
 /** Update shape: primary key required, all other columns optional. */
 export interface TasksUpdate {
   id: string;
-  project_id?: string;
+  projectId?: string;
   title?: string;
   done?: boolean;
   priority?: number | null;
   meta?: string | null;
   estimate?: number | null;
-  estimated_at?: number | null;
+  estimatedAt?: number | null;
 }
 
 /** One docs row (§2.4 column order). */
 export interface DocsRow {
   id: string;
-  org_id: string;
-  project_id: string;
+  orgId: string;
+  projectId: string;
   body: string;
   score: number | null;
   attachment: Uint8Array | null;
-  body_doc: Uint8Array | null;
+  bodyDoc: Uint8Array | null;
 }
 
 /** Insert shape: nullable columns may be omitted. */
 export interface DocsInsert {
   id: string;
-  org_id: string;
-  project_id: string;
+  orgId: string;
+  projectId: string;
   body: string;
   score?: number | null;
   attachment?: Uint8Array | null;
-  body_doc?: Uint8Array | null;
+  bodyDoc?: Uint8Array | null;
 }
 
 /** Update shape: primary key required, all other columns optional. */
 export interface DocsUpdate {
   id: string;
-  org_id?: string;
-  project_id?: string;
+  orgId?: string;
+  projectId?: string;
   body?: string;
   score?: number | null;
   attachment?: Uint8Array | null;
-  body_doc?: Uint8Array | null;
+  bodyDoc?: Uint8Array | null;
 }
 
 export interface ProjectTasksParams {

@@ -13,6 +13,7 @@
  * byte-exactly.
  */
 import type { IrColumnType, IrDocument, IrSubscription, IrTable } from './ir';
+import { type NamingMode, snakeToCamel } from './naming';
 
 const TS_TYPE: Readonly<Record<IrColumnType, string>> = {
   string: 'string',
@@ -114,15 +115,20 @@ function emitSchema(ir: IrDocument): string {
   return lines.join('\n');
 }
 
-function emitRowInterfaces(table: IrTable): string {
+function emitRowInterfaces(table: IrTable, naming: NamingMode): string {
   const type = pascalCase(table.name);
+  // §5: mutation-input/row keys are the language-facing names; `mutate`
+  // normalizes them back through the schema naming map (camel or snake both
+  // bind — one map lookup per key).
+  const key = (name: string): string =>
+    propertyKey(naming === 'camel' ? snakeToCamel(name) : name);
   const lines: string[] = [];
   lines.push(`/** One ${table.name} row (§2.4 column order). */`);
   lines.push(`export interface ${type}Row {`);
   for (const column of table.columns) {
     const ts = appTsType(column);
     lines.push(
-      `  ${propertyKey(column.name)}: ${ts}${column.nullable ? ' | null' : ''};`,
+      `  ${key(column.name)}: ${ts}${column.nullable ? ' | null' : ''};`,
     );
   }
   lines.push('}');
@@ -133,8 +139,8 @@ function emitRowInterfaces(table: IrTable): string {
     const ts = appTsType(column);
     lines.push(
       column.nullable
-        ? `  ${propertyKey(column.name)}?: ${ts} | null;`
-        : `  ${propertyKey(column.name)}: ${ts};`,
+        ? `  ${key(column.name)}?: ${ts} | null;`
+        : `  ${key(column.name)}: ${ts};`,
     );
   }
   lines.push('}');
@@ -146,10 +152,10 @@ function emitRowInterfaces(table: IrTable): string {
   for (const column of table.columns) {
     const ts = appTsType(column);
     if (column.name === table.primaryKey) {
-      lines.push(`  ${propertyKey(column.name)}: ${ts};`);
+      lines.push(`  ${key(column.name)}: ${ts};`);
     } else {
       lines.push(
-        `  ${propertyKey(column.name)}?: ${ts}${column.nullable ? ' | null' : ''};`,
+        `  ${key(column.name)}?: ${ts}${column.nullable ? ' | null' : ''};`,
       );
     }
   }
@@ -199,7 +205,11 @@ function emitSubscription(sub: IrSubscription): string {
   return lines.join('\n');
 }
 
-export function emitModule(ir: IrDocument, hash: string): string {
+export function emitModule(
+  ir: IrDocument,
+  hash: string,
+  naming: NamingMode = 'camel',
+): string {
   const parts: string[] = [];
   parts.push(
     [
@@ -210,7 +220,7 @@ export function emitModule(ir: IrDocument, hash: string): string {
   );
   parts.push(emitSchema(ir));
   for (const table of ir.tables) {
-    parts.push(emitRowInterfaces(table));
+    parts.push(emitRowInterfaces(table, naming));
   }
   for (const sub of ir.subscriptions) {
     parts.push(emitSubscription(sub));

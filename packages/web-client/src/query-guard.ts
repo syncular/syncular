@@ -103,6 +103,61 @@ function firstWords(sql: string): string {
 }
 
 /**
+ * The main verb of a `WITH …` statement: SQLite allows a with-clause before
+ * SELECT **and before INSERT/UPDATE/DELETE**, so `WITH t AS (…) DELETE …`
+ * must not slip through the verb allowlist. CTE bodies live inside
+ * parentheses, and a bare keyword cannot be a CTE name, so the first
+ * paren-depth-0 keyword after the clause IS the main verb.
+ */
+function mainVerbAfterWith(sql: string): string | undefined {
+  const MAIN_VERBS = new Set([
+    'select',
+    'values',
+    'insert',
+    'update',
+    'delete',
+    'replace',
+  ]);
+  let depth = 0;
+  let i = 0;
+  const n = sql.length;
+  let sawWith = false;
+  while (i < n) {
+    const c = sql[i] as string;
+    if (c === '-' && sql[i + 1] === '-') {
+      const nl = sql.indexOf('\n', i + 2);
+      i = nl === -1 ? n : nl + 1;
+    } else if (c === '/' && sql[i + 1] === '*') {
+      const close = sql.indexOf('*/', i + 2);
+      i = close === -1 ? n : close + 2;
+    } else if (c === "'" || c === '"' || c === '`') {
+      i = skipQuoted(sql, i, c as "'" | '"' | '`');
+    } else if (c === '[') {
+      const close = sql.indexOf(']', i + 1);
+      i = close === -1 ? n : close + 1;
+    } else if (c === '(') {
+      depth += 1;
+      i += 1;
+    } else if (c === ')') {
+      depth -= 1;
+      i += 1;
+    } else if (/[A-Za-z_]/.test(c)) {
+      let j = i + 1;
+      while (j < n && /[A-Za-z0-9_]/.test(sql[j] as string)) j += 1;
+      const word = sql.slice(i, j).toLowerCase();
+      if (depth === 0) {
+        if (!sawWith && word === 'with') sawWith = true;
+        else if (sawWith && MAIN_VERBS.has(word)) return word;
+      }
+      i = j;
+    } else {
+      i += 1;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Assert `sql` is a single read-only statement, or throw `RawSqlError`.
  * Called by `client.query()` before the string reaches the database.
  */
@@ -118,15 +173,21 @@ export function assertReadOnlyQuery(sql: string): void {
         `First: ${firstWords(statements[0] ?? '')}`,
     );
   }
-  const verb = stripLeading(statements[0] ?? '')
-    .match(/^([a-zA-Z]+)/)?.[1]
-    ?.toLowerCase();
-  if (verb === undefined || !READ_ONLY_VERBS.has(verb)) {
+  const statement = stripLeading(statements[0] ?? '');
+  const verb = statement.match(/^([a-zA-Z]+)/)?.[1]?.toLowerCase();
+  const rejectWrite = (): never => {
     throw new RawSqlError(
       'client.query() is read-only — this statement writes the local ' +
         'database directly, which bypasses the sync outbox (SPEC §7.1). Use ' +
         '`client.mutate([...])` for inserts/updates/deletes. ' +
         `Rejected: ${firstWords(sql)}`,
     );
+  };
+  if (verb === undefined || !READ_ONLY_VERBS.has(verb)) rejectWrite();
+  if (verb === 'with') {
+    // SQLite allows `WITH … DELETE/INSERT/UPDATE`; only a SELECT/VALUES
+    // main statement is a read.
+    const main = mainVerbAfterWith(statement);
+    if (main !== 'select' && main !== 'values') rejectWrite();
   }
 }

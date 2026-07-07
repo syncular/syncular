@@ -19,6 +19,7 @@ export * from './http';
 export * from './invalidation';
 export * from './leader-lock';
 export * from './multi-tab';
+export * from './naming';
 export * from './outbox';
 export * from './query-guard';
 export * from './schema';

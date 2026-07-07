@@ -13,6 +13,7 @@
  * bytes decode). Header carries the IR hash for byte-exact `--check`.
  */
 import type { IrColumnType } from './ir';
+import { snakeToCamel } from './naming';
 import type { AnalyzedQuery, QueryColumn } from './query';
 
 const SWIFT_TYPE: Readonly<Record<IrColumnType, string>> = {
@@ -34,9 +35,9 @@ function pascalCase(name: string): string {
     .join('');
 }
 
+/** Language-facing field name — the pinned §12 naming map. */
 function camelCase(name: string): string {
-  const pascal = pascalCase(name);
-  return pascal.charAt(0).toLowerCase() + pascal.slice(1);
+  return snakeToCamel(name);
 }
 
 /** The query function/type name: already camelCase; PascalCase for the type. */
@@ -49,7 +50,7 @@ function quote(value: string): string {
 }
 
 function rowAccessor(column: QueryColumn): string {
-  const key = `row[${quote(column.name)}]`;
+  const key = `row[${quote(column.langName)}]`;
   switch (column.type) {
     case 'string':
     case 'json':
@@ -90,13 +91,13 @@ function emitRowStruct(query: AnalyzedQuery): string[] {
   for (const column of query.columns) {
     const opt = column.nullable ? '?' : '';
     lines.push(
-      `    public let ${camelCase(column.name)}: ${SWIFT_TYPE[column.type]}${opt}`,
+      `    public let ${camelCase(column.langName)}: ${SWIFT_TYPE[column.type]}${opt}`,
     );
   }
   lines.push('');
   lines.push('    public init?(row: [String: JSONValue]) {');
   for (const column of query.columns) {
-    const name = camelCase(column.name);
+    const name = camelCase(column.langName);
     const accessor = rowAccessor(column);
     if (column.nullable) {
       lines.push(`        self.${name} = ${accessor}`);
@@ -122,7 +123,7 @@ function emitRunner(query: AnalyzedQuery): string[] {
   lines.push('');
   lines.push(`    /// Run the ${query.name} named query (SELECT-only).`);
   const args = query.params
-    .map((p) => `${camelCase(p.name)}: ${SWIFT_TYPE[p.type]}`)
+    .map((p) => `${camelCase(p.langName)}: ${SWIFT_TYPE[p.type]}`)
     .join(', ');
   const signature =
     query.params.length > 0
@@ -133,7 +134,7 @@ function emitRunner(query: AnalyzedQuery): string[] {
   );
   if (query.params.length > 0) {
     const binds = query.params
-      .map((p) => paramValue(p.type, camelCase(p.name)))
+      .map((p) => paramValue(p.type, camelCase(p.langName)))
       .join(', ');
     lines.push(`        let params: [JSONValue] = [${binds}]`);
     lines.push(

@@ -64,9 +64,9 @@ export const findDocByOrgQuery: NamedQuery<FindDocByOrgRow, FindDocByOrgParams> 
 
 /** One row of the 'docWithBody' query (its projection). */
 export interface DocWithBodyRow {
-  doc_id: string;
+  docId: string;
   body: string;
-  task_title: string;
+  taskTitle: string;
 }
 
 /** Named parameters for 'docWithBody'. */
@@ -77,7 +77,7 @@ export interface DocWithBodyParams {
 /** Tables 'docWithBody' reads — the exact useRawSql `{tables}` set. */
 export const docWithBodyTables = ['docs', 'tasks'] as const;
 
-const docWithBodySql = 'SELECT d.id AS doc_id, d.body, t.title AS task_title FROM docs d JOIN tasks t ON t.project_id = d.project_id WHERE d.org_id = ?';
+const docWithBodySql = 'SELECT d.id AS docId, d.body, t.title AS taskTitle FROM docs d JOIN tasks t ON t.project_id = d.project_id WHERE d.org_id = ?';
 
 /** Run the 'docWithBody' named query (SELECT-only). */
 export async function docWithBody(client: QueryClient, params: DocWithBodyParams): Promise<DocWithBodyRow[]> {
@@ -126,14 +126,14 @@ export const listProjectTasksQuery: NamedQuery<ListProjectTasksRow, ListProjectT
 
 /** One row of the 'projectDocCount' query (its projection). */
 export interface ProjectDocCountRow {
-  project_id: string;
-  doc_count: number | null;
+  projectId: string;
+  docCount: number | null;
 }
 
 /** Tables 'projectDocCount' reads — the exact useRawSql `{tables}` set. */
 export const projectDocCountTables = ['docs'] as const;
 
-const projectDocCountSql = 'SELECT project_id, count(*) AS doc_count FROM docs GROUP BY project_id';
+const projectDocCountSql = 'SELECT project_id AS projectId, count(*) AS docCount FROM docs GROUP BY project_id';
 
 /** Run the 'projectDocCount' named query (SELECT-only). */
 export async function projectDocCount(client: QueryClient): Promise<ProjectDocCountRow[]> {
@@ -211,7 +211,7 @@ export const reportOpenTasksQuery: NamedQuery<ReportOpenTasksRow, ReportOpenTask
 /** One row of the 'reportDocScores' query (its projection). */
 export interface ReportDocScoresRow {
   id: string;
-  org_id: string;
+  orgId: string;
   score: number | null;
 }
 
@@ -223,7 +223,7 @@ export interface ReportDocScoresParams {
 /** Tables 'reportDocScores' reads — the exact useRawSql `{tables}` set. */
 export const reportDocScoresTables = ['docs'] as const;
 
-const reportDocScoresSql = 'SELECT id, org_id, score FROM docs WHERE score > ? * 1.0 ORDER BY id';
+const reportDocScoresSql = 'SELECT id, org_id AS orgId, score FROM docs WHERE score > ? * 1.0 ORDER BY id';
 
 /** Run the 'reportDocScores' named query (SELECT-only). */
 export async function reportDocScores(client: QueryClient, params: ReportDocScoresParams): Promise<ReportDocScoresRow[]> {

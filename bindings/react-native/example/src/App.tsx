@@ -60,7 +60,7 @@ function TodoList(): React.ReactElement {
   // A live local read: runs on mount, re-runs on every `todos` invalidation
   // (optimistic writes land here without a manual refetch).
   const { rows, isLoading } = useRawSql<TodosRow>(
-    'SELECT id, list_id, title, done, position, updated_at_ms FROM todos WHERE list_id = ? ORDER BY position, id',
+    'SELECT id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs FROM todos WHERE list_id = ? ORDER BY position, id',
     [LIST_ID],
   );
 
@@ -75,11 +75,11 @@ function TodoList(): React.ReactElement {
         op: 'upsert',
         values: {
           id: crypto.randomUUID(),
-          list_id: LIST_ID,
+          listId: LIST_ID,
           title,
           done: false,
           position,
-          updated_at_ms: Date.now(),
+          updatedAtMs: Date.now(),
           // `attachment` (a nullable blob_ref) is omitted — TodosInsert allows it.
         } satisfies TodosInsert,
       },
@@ -91,7 +91,7 @@ function TodoList(): React.ReactElement {
       {
         table: 'todos',
         op: 'upsert',
-        values: { ...row, done: !row.done, updated_at_ms: Date.now() },
+        values: { ...row, done: !row.done, updatedAtMs: Date.now() },
       },
     ]);
   };
