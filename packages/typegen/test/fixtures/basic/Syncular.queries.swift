@@ -13,6 +13,12 @@ enum SyncularSchemaQueryBind {
     }
 }
 
+/// §6 orderBy direction (shared by every orderBy-knob query).
+public enum SyncularQueryDir: String, Sendable {
+    case asc = "asc"
+    case desc = "desc"
+}
+
 /// One row of the findDocByOrg query (its projection).
 public struct FindDocByOrgRow: Sendable, Equatable {
     public let id: String
@@ -117,6 +123,48 @@ public struct ReportDocScoresRow: Sendable, Equatable {
         guard let orgId = row["orgId"]?.stringValue else { return nil }
         self.orgId = orgId
         self.score = row["score"]?.numberValue
+    }
+}
+
+/// One row of the searchTasks query (its projection).
+public struct SearchTasksRow: Sendable, Equatable {
+    public let id: String
+    public let title: String
+    public let done: Bool
+    public let priority: Int?
+    public let estimatedAt: Int?
+
+    public init?(row: [String: JSONValue]) {
+        guard let id = row["id"]?.stringValue else { return nil }
+        self.id = id
+        guard let title = row["title"]?.stringValue else { return nil }
+        self.title = title
+        guard let done = SyncularSchemaRow.bool(row["done"]) else { return nil }
+        self.done = done
+        self.priority = row["priority"]?.numberValue.map(Int.init)
+        self.estimatedAt = row["estimatedAt"]?.numberValue.map(Int.init)
+    }
+}
+
+/// §6 orderBy allowlist for searchTasks — checked at generate time.
+public enum SearchTasksOrderBy: String, Sendable {
+    case priority = "priority"
+    case estimatedAt = "estimated_at"
+    case title = "title"
+}
+
+/// One row of the taskEstimateRange query (its projection).
+public struct TaskEstimateRangeRow: Sendable, Equatable {
+    public let id: String
+    public let title: String
+    public let estimate: Double?
+
+    public init?(row: [String: JSONValue]) {
+        guard let id = row["id"]?.stringValue else { return nil }
+        self.id = id
+        guard let title = row["title"]?.stringValue else { return nil }
+        self.title = title
+        self.estimate = row["estimate"]?.numberValue
     }
 }
 
@@ -241,6 +289,31 @@ public enum BasicSchemaQueries {
         return try client.query(reportDocScoresSql, params: params).compactMap { row in
             guard case let .object(fields) = row else { return nil }
             return ReportDocScoresRow(row: fields)
+        }
+    }
+
+    public static let searchTasksTables = ["tasks"]
+    private static let searchTasksSqlBase = "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (project_id = ?1) and (?2 is null or ((title like '%' || ?2 || '%'))) and (?3 is null or (priority >= ?3)) and (coalesce(?4, 0) = 0 or (done = 0))"
+
+    /// Run the searchTasks named query (SELECT-only).
+    public static func searchTasks(client: SyncularClient, projectId: String, q: String? = nil, minPriority: Int? = nil, openOnly: Bool? = nil, limit: Int? = nil, orderBy: SearchTasksOrderBy = .priority, dir: SyncularQueryDir = .desc) throws -> [SearchTasksRow] {
+        let sql = searchTasksSqlBase + " order by " + orderBy.rawValue + " " + dir.rawValue + " limit min(coalesce(?5, 50), 200)"
+        let params: [JSONValue] = [.string(projectId), q.map { JSONValue.string($0) } ?? .null, minPriority.map { JSONValue.number(Double($0)) } ?? .null, openOnly.map { JSONValue.bool($0) } ?? .null, limit.map { JSONValue.number(Double($0)) } ?? .null]
+        return try client.query(sql, params: params).compactMap { row in
+            guard case let .object(fields) = row else { return nil }
+            return SearchTasksRow(row: fields)
+        }
+    }
+
+    public static let taskEstimateRangeTables = ["tasks"]
+    private static let taskEstimateRangeSql = "select id, title, estimate from tasks where (project_id = ?1) and (?2 is null or ?3 is null or (estimated_at between ?2 and ?3))"
+
+    /// Run the taskEstimateRange named query (SELECT-only).
+    public static func taskEstimateRange(client: SyncularClient, projectId: String, from: Int? = nil, to: Int? = nil) throws -> [TaskEstimateRangeRow] {
+        let params: [JSONValue] = [.string(projectId), from.map { JSONValue.number(Double($0)) } ?? .null, to.map { JSONValue.number(Double($0)) } ?? .null]
+        return try client.query(taskEstimateRangeSql, params: params).compactMap { row in
+            guard case let .object(fields) = row else { return nil }
+            return TaskEstimateRangeRow(row: fields)
         }
     }
 

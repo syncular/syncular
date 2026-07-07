@@ -4,12 +4,18 @@
  *
  * - `QRow` — the projection row interface (its OWN type per query — the
  *   drift-kill: the row shape is exactly what the SELECT returns),
- * - `QParams` — the typed params object (when the query has params),
+ * - `QParams` — the typed params object (when the query has params or
+ *   knobs); §4 optional params are optional keys (`status?: string | null`),
+ *   §6 knobs add `orderBy?/dir?/limit?`,
  * - `qTables` — the readonly table-dependency set (feeds useRawSql `{tables}`
  *   for EXACT invalidation),
  * - `q(client, params?): Promise<QRow[]>` — runs the query over the wrapper's
  *   positional `query(sql, params[])` surface, reordering the named params
- *   object into the positional array the wire expects.
+ *   object into the positional array the wire expects (optionals bind NULL —
+ *   the §7 neutralization guards make an absent param a no-op),
+ * - for an orderBy knob: a baked column map + a compose function — user
+ *   input only ever SELECTS from the generate-time-checked allowlist (I2);
+ *   it never becomes SQL text.
  *
  * A tiny structural `QueryClient` interface (just `query(sql, params?)`) keeps
  * the module import-free — it structurally accepts `SyncClientLike` /
@@ -17,7 +23,7 @@
  * `--check` gates freshness byte-exactly, like every other emitter.
  */
 import type { IrColumnType } from './ir';
-import type { AnalyzedQuery } from './query';
+import type { AnalyzedQuery, QueryParam } from './query';
 
 const TS_TYPE: Readonly<Record<IrColumnType, string>> = {
   string: 'string',
@@ -46,6 +52,25 @@ function propertyKey(name: string): string {
 /** A named-query param value is the SqlValue subset its type maps to. */
 const PARAM_TS_TYPE: Readonly<Record<IrColumnType, string>> = TS_TYPE;
 
+function isOptional(param: QueryParam): boolean {
+  return param.optional === true || param.flag === true;
+}
+
+/** The positional bind expression for one param. `access` is `params` or
+ * `params?` depending on whether the params object itself may be absent. */
+function bindExpr(
+  query: AnalyzedQuery,
+  param: QueryParam,
+  access: string,
+): string {
+  if (query.limit !== undefined && param.name === 'limit') {
+    // The default + clamp live IN the SQL (`min(coalesce(?, d), m)`).
+    return `${access}.limit ?? null`;
+  }
+  const key = propertyKey(param.langName);
+  return isOptional(param) ? `${access}.${key} ?? null` : `params.${key}`;
+}
+
 function emitQuery(query: AnalyzedQuery): string {
   const Row = `${pascalCase(query.name)}Row`;
   const Params = `${pascalCase(query.name)}Params`;
@@ -65,15 +90,39 @@ function emitQuery(query: AnalyzedQuery): string {
   lines.push('}');
   lines.push('');
 
-  // Params interface (only when there are params).
-  const hasParams = query.params.length > 0;
+  const hasParams = query.params.length > 0 || query.orderBy !== undefined;
+  const requiresParams = query.params.some(
+    (p) => !isOptional(p) && !(query.limit !== undefined && p.name === 'limit'),
+  );
+
+  // Params interface (params and/or knob keys).
   if (hasParams) {
     lines.push(`/** Named parameters for ${quote(query.name)}. */`);
     lines.push(`export interface ${Params} {`);
     for (const param of query.params) {
+      if (query.limit !== undefined && param.name === 'limit') continue;
+      const opt = isOptional(param);
       lines.push(
-        `  ${propertyKey(param.langName)}: ${PARAM_TS_TYPE[param.type]};`,
+        `  ${propertyKey(param.langName)}${opt ? '?' : ''}: ${PARAM_TS_TYPE[param.type]}${opt ? ' | null' : ''};`,
       );
+    }
+    if (query.orderBy !== undefined) {
+      const keys = query.orderBy.allowed
+        .map((c) => quote(c.langName))
+        .join(' | ');
+      lines.push(
+        `  /** §6 orderBy knob — a generate-time-checked allowlist. */`,
+      );
+      lines.push(`  orderBy?: ${keys};`);
+      lines.push(`  dir?: 'asc' | 'desc';`);
+    }
+    if (query.limit !== undefined) {
+      const clamp =
+        query.limit.max !== undefined ? ` (clamped to ${query.limit.max})` : '';
+      lines.push(
+        `  /** §6 limit knob — binds as a value${clamp}; default ${query.limit.default ?? query.limit.max}. */`,
+      );
+      lines.push('  limit?: number;');
     }
     lines.push('}');
     lines.push('');
@@ -88,32 +137,67 @@ function emitQuery(query: AnalyzedQuery): string {
   );
   lines.push('');
 
-  // The runner. SQL is the positional form; params reorder into the array.
-  const paramArg = hasParams ? `params: ${Params}` : '';
+  // SQL constants: the static default statement, plus (orderBy knob) the
+  // baked base + column map + compose function.
   const sqlConst = `${query.name}Sql`;
-  const positional = hasParams
-    ? `[${query.params.map((p) => `params.${propertyKey(p.langName)}`).join(', ')}]`
-    : '[]';
   lines.push(`const ${sqlConst} = ${quote(query.positionalSql)};`);
+  const composeFn = `${query.name}ComposeSql`;
+  if (query.orderBy !== undefined) {
+    const base = `${query.name}SqlBase`;
+    const colsConst = `${query.name}OrderColumns`;
+    const defaultLang =
+      query.orderBy.allowed.find((c) => c.name === query.orderBy?.defaultColumn)
+        ?.langName ?? query.orderBy.defaultColumn;
+    lines.push(`const ${base} = ${quote(query.positionalSqlBase ?? '')};`);
+    lines.push(
+      `const ${colsConst} = { ${query.orderBy.allowed
+        .map((c) => `${propertyKey(c.langName)}: ${quote(c.name)}`)
+        .join(', ')} } as const;`,
+    );
+    lines.push(`function ${composeFn}(params?: ${Params}): string {`);
+    lines.push(
+      `  const column = ${colsConst}[params?.orderBy ?? ${quote(defaultLang)}] ?? ${quote(query.orderBy.defaultColumn)};`,
+    );
+    lines.push(
+      `  const dir = (params?.dir ?? ${quote(query.orderBy.defaultDir)}) === 'desc' ? 'desc' : 'asc';`,
+    );
+    lines.push(
+      `  return \`\${${base}} order by \${column} \${dir}${query.positionalLimitTail ?? ''}\`;`,
+    );
+    lines.push('}');
+  }
   lines.push('');
+
+  // Positional bind list.
+  const access = requiresParams ? 'params' : 'params?';
+  const positional = hasParams
+    ? `[${query.params.map((p) => bindExpr(query, p, access)).join(', ')}]`
+    : '[]';
+
+  // The runner.
+  const paramArg = !hasParams
+    ? ''
+    : requiresParams
+      ? `params: ${Params}`
+      : `params?: ${Params}`;
   lines.push(`/** Run the ${quote(query.name)} named query (SELECT-only). */`);
   lines.push(
     `export async function ${query.name}(client: QueryClient${hasParams ? `, ${paramArg}` : ''}): Promise<${Row}[]> {`,
   );
+  const sqlExpr =
+    query.orderBy !== undefined ? `${composeFn}(params)` : sqlConst;
   if (hasParams) {
-    lines.push(
-      `  const rows = await client.query(${sqlConst}, ${positional});`,
-    );
+    lines.push(`  const rows = await client.query(${sqlExpr}, ${positional});`);
   } else {
-    lines.push(`  const rows = await client.query(${sqlConst});`);
+    lines.push(`  const rows = await client.query(${sqlExpr});`);
   }
   lines.push(`  return rows as unknown as ${Row}[];`);
   lines.push('}');
   lines.push('');
 
-  // A descriptor for react's `useQuery` — the SQL, the exact table
-  // dependency set, and a `bind(params)` → positional array. Typed by the
-  // query's own Row/Params so the hook stays fully typed.
+  // A descriptor for react's `useQuery` — the SQL (static, or composed from
+  // the baked allowlist), the exact table dependency set, and a
+  // `bind(params)` → positional array. Typed by the query's own Row/Params.
   lines.push(
     `/** Descriptor for \`useQuery(${query.name}Query${hasParams ? ', params' : ''})\` — sql + tables + row type. */`,
   );
@@ -122,6 +206,9 @@ function emitQuery(query: AnalyzedQuery): string {
     `export const ${query.name}Query: NamedQuery<${Row}, ${paramsTypeArg}> = {`,
   );
   lines.push(`  sql: ${sqlConst},`);
+  if (query.orderBy !== undefined) {
+    lines.push(`  sqlFor: (params: ${Params}) => ${composeFn}(params),`);
+  }
   lines.push(`  tables: ${query.name}Tables,`);
   if (hasParams) {
     lines.push(`  bind: (params: ${Params}) => ${positional},`);
@@ -169,11 +256,14 @@ export function emitQueriesModule(
       '/** A named-query descriptor — sql + its exact table dependency set + a',
       ' *  `bind(params)` → positional args. Consumed by',
       " *  `@syncular/react`'s `useQuery`. `Row` is the projection row",
-      ' *  type; `Params` is `undefined` for a param-less query. */',
+      ' *  type; `Params` is `undefined` for a param-less query. `sqlFor`',
+      ' *  (present only with an orderBy knob) composes the statement from a',
+      ' *  generate-time-checked column allowlist. */',
       'export interface NamedQuery<Row, Params = undefined> {',
       '  readonly sql: string;',
       '  readonly tables: readonly string[];',
       '  readonly bind: (params: Params) => readonly QueryValue[];',
+      '  readonly sqlFor?: (params: Params) => string;',
       '  /** Phantom — carries the Row type for `useQuery` inference. */',
       '  readonly __row?: Row;',
       '}',

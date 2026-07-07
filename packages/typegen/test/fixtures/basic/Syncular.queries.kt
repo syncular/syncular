@@ -26,6 +26,12 @@ private fun queryBindBytes(value: ByteArray): JsonValue {
     return JsonValue.obj("\$bytes" to JsonValue.of(hex))
 }
 
+/** §6 orderBy direction (shared by every orderBy-knob query). */
+enum class SyncularQueryDir(val sql: String) {
+    ASC("asc"),
+    DESC("desc");
+}
+
 /** One row of the findDocByOrg query (its projection). */
 data class FindDocByOrgRow(
     val id: String,
@@ -138,6 +144,49 @@ data class ReportDocScoresRow(
     }
 }
 
+/** One row of the searchTasks query (its projection). */
+data class SearchTasksRow(
+    val id: String,
+    val title: String,
+    val done: Boolean,
+    val priority: Long?,
+    val estimatedAt: Long?,
+) {
+    companion object {
+        fun fromRow(row: JsonValue): SearchTasksRow? {
+            val id = row["id"]?.string ?: return null
+            val title = row["title"]?.string ?: return null
+            val done = queryRowBool(row["done"]) ?: return null
+            val priority = row["priority"]?.number?.toLong()
+            val estimatedAt = row["estimatedAt"]?.number?.toLong()
+            return SearchTasksRow(id, title, done, priority, estimatedAt)
+        }
+    }
+}
+
+/** §6 orderBy allowlist for searchTasks — checked at generate time. */
+enum class SearchTasksOrderBy(val column: String) {
+    priority("priority"),
+    estimatedAt("estimated_at"),
+    title("title");
+}
+
+/** One row of the taskEstimateRange query (its projection). */
+data class TaskEstimateRangeRow(
+    val id: String,
+    val title: String,
+    val estimate: Double?,
+) {
+    companion object {
+        fun fromRow(row: JsonValue): TaskEstimateRangeRow? {
+            val id = row["id"]?.string ?: return null
+            val title = row["title"]?.string ?: return null
+            val estimate = row["estimate"]?.number
+            return TaskEstimateRangeRow(id, title, estimate)
+        }
+    }
+}
+
 /** One row of the taskTitles query (its projection). */
 data class TaskTitlesRow(
     val id: String,
@@ -242,6 +291,25 @@ object BasicSchemaQueries {
         fun reportDocScores(client: SyncularClient, minScore: Double): List<ReportDocScoresRow> {
             val params = listOf(JsonValue.of(minScore))
             return client.query(reportDocScoresSql, params).mapNotNull { ReportDocScoresRow.fromRow(it) }
+        }
+
+        val searchTasksTables = listOf("tasks")
+        private const val searchTasksSqlBase = "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (project_id = ?1) and (?2 is null or ((title like '%' || ?2 || '%'))) and (?3 is null or (priority >= ?3)) and (coalesce(?4, 0) = 0 or (done = 0))"
+
+        /** Run the searchTasks named query (SELECT-only). */
+        fun searchTasks(client: SyncularClient, projectId: String, q: String? = null, minPriority: Long? = null, openOnly: Boolean? = null, limit: Long? = null, orderBy: SearchTasksOrderBy = SearchTasksOrderBy.priority, dir: SyncularQueryDir = SyncularQueryDir.DESC): List<SearchTasksRow> {
+            val sql = searchTasksSqlBase + " order by " + orderBy.column + " " + dir.sql + " limit min(coalesce(?5, 50), 200)"
+            val params = listOf(JsonValue.of(projectId), q?.let { JsonValue.of(it) } ?: JsonValue.Null, minPriority?.let { JsonValue.of(it.toDouble()) } ?: JsonValue.Null, openOnly?.let { JsonValue.of(it) } ?: JsonValue.Null, limit?.let { JsonValue.of(it.toDouble()) } ?: JsonValue.Null)
+            return client.query(sql, params).mapNotNull { SearchTasksRow.fromRow(it) }
+        }
+
+        val taskEstimateRangeTables = listOf("tasks")
+        private const val taskEstimateRangeSql = "select id, title, estimate from tasks where (project_id = ?1) and (?2 is null or ?3 is null or (estimated_at between ?2 and ?3))"
+
+        /** Run the taskEstimateRange named query (SELECT-only). */
+        fun taskEstimateRange(client: SyncularClient, projectId: String, from: Long? = null, to: Long? = null): List<TaskEstimateRangeRow> {
+            val params = listOf(JsonValue.of(projectId), from?.let { JsonValue.of(it.toDouble()) } ?: JsonValue.Null, to?.let { JsonValue.of(it.toDouble()) } ?: JsonValue.Null)
+            return client.query(taskEstimateRangeSql, params).mapNotNull { TaskEstimateRangeRow.fromRow(it) }
         }
 
         val taskTitlesTables = listOf("tasks")

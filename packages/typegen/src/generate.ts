@@ -49,6 +49,7 @@ import {
   synthesizeDdl,
 } from './query';
 import { applyMigrationSql, type ParsedTable } from './sql';
+import { analyzeSyqlFile } from './syql';
 
 export interface MigrationInput {
   /** Directory name, e.g. `0001_initial`. */
@@ -342,31 +343,36 @@ export function loadMigrations(migrationsDir: string): MigrationInput[] {
   });
 }
 
-/** One `.sql` named-query file: path (relative to the queries root, forward
- * slashes) + raw contents. A file may hold multiple statements. */
+/** One named-query file (`.sql` — the compatibility floor — or `.syql`, the
+ * DSL): path relative to the queries root (forward slashes) + raw contents.
+ * A file may hold multiple statements/declarations. */
 export interface QueryInput {
   /** Path relative to the queries root, forward-slashed (e.g.
-   * `billing/invoices/list.sql`). Drives the path-derived default name. */
+   * `billing/invoices/list.sql`). Drives the path-derived default name for
+   * `.sql`; `.syql` queries carry their own names. */
   readonly file: string;
   readonly sql: string;
 }
 
-/** Recursively collect `*.sql` paths under `dir`, relative to `root`
- * (forward-slashed), sorted for deterministic emission. */
+/** Recursively collect `*.sql` + `*.syql` paths under `dir`, relative to
+ * `root` (forward-slashed), sorted for deterministic emission. */
 function collectSqlFiles(root: string, dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const abs = join(dir, entry.name);
     if (entry.isDirectory()) {
       out.push(...collectSqlFiles(root, abs));
-    } else if (entry.isFile() && entry.name.endsWith('.sql')) {
+    } else if (
+      entry.isFile() &&
+      (entry.name.endsWith('.sql') || entry.name.endsWith('.syql'))
+    ) {
       out.push(relative(root, abs).split(sep).join('/'));
     }
   }
   return out;
 }
 
-/** Load `queries/**\/*.sql` recursively, ordered by relative path
+/** Load `queries/**\/*.{sql,syql}` recursively, ordered by relative path
  * (deterministic emission). Folders are pure organization. */
 export function loadQueries(queriesDir: string): QueryInput[] {
   if (!existsSync(queriesDir)) return [];
@@ -416,8 +422,12 @@ export function analyzeQueries(
   const { db, close } = makeQueryDb(ir);
   try {
     // Each file may hold multiple statements; flatten in path order (stable).
+    // Frontends dispatch on extension; both produce the same AnalyzedQuery
+    // shape (§1 — nothing downstream knows the frontend).
     const analyzed = queries.flatMap((q) =>
-      analyzeQueryFile(q.file, q.sql, ir, db, naming),
+      q.file.endsWith('.syql')
+        ? analyzeSyqlFile(q.file, q.sql, ir, db, naming)
+        : analyzeQueryFile(q.file, q.sql, ir, db, naming),
     );
     // Names must be unique across the whole manifest — the filesystem no longer
     // guarantees uniqueness once `-- name:` overrides exist. Report BOTH source
