@@ -13,7 +13,7 @@ a real deployment. **Not in CI by default** (see [What this is not](#what-this-i
 ## What this is NOT
 
 - **Not a benchmark.** `bench/` owns the comparative, curated numbers
-  (rows/sec, bundle size, propagation p95 vs the 0.1.3 reference). This suite is
+  (rows/sec, bundle size, propagation p95). This suite is
   **stability/scale verification**: does the server stay up, correct, and
   memory-flat under many concurrent clients, storms, churn, and soak? The
   numbers here are pass/fail against thresholds, not a leaderboard.
@@ -54,7 +54,7 @@ machine-readable JSON result to `load/results/<scenario>-<profile>-<ts>.json`.
 ### Postgres lane
 
 By default storage is in-memory `bun:sqlite`. To target a real Postgres —
-the production database path (TODO §4.1), where a hard-won production lesson lives —
+the production database path (TODO §4.1) —
 set `SYNCULAR_PG_URL`:
 
 ```bash

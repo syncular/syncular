@@ -3,8 +3,8 @@
  *
  * Semantics mirror `SqliteServerStorage` exactly (both run the shared
  * storage contract in `test/storage-contract.ts`); the difference is that
- * scope fanout MUST survive contact with Postgres. v1's production wound was
- * scan-before-LIMIT here, so (REVISE B2, performance-by-construction):
+ * scope fanout MUST survive contact with Postgres — no scan-before-LIMIT,
+ * ever (performance-by-construction):
  *
  *   - both the commit log and the current-row table carry a (table, var,
  *     value) inverted scope index;

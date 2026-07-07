@@ -126,7 +126,7 @@ is the merge precondition (REVISE).
 
 ## The catalog
 
-~35 scenarios covering the original testkit gate intent within skeleton scope
+~35 scenarios within skeleton scope
 (convergence, offline replay + idempotency, both conflict shapes, scope
 grant/revoke/purge, bootstrap fresh/resumed/interrupted + segments,
 cursor expiry/horizon, schema floor, realtime delta/wake-up/catch-up,

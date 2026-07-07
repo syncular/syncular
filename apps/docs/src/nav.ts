@@ -68,7 +68,6 @@ export const nav: readonly NavSection[] = [
       { slug: 'reference', title: 'Spec & package map' },
       { slug: 'guide-conformance', title: 'Protocol & conformance' },
       { slug: 'benchmarks', title: 'Benchmarks' },
-      { slug: 'migration', title: 'Migrating from 0.1.x' },
     ],
   },
 ];

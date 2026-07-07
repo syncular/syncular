@@ -117,10 +117,10 @@ summary table with artifact sizes:
 - **cross** — linux/windows `.so`/`.dll` for JVM/desktop when the Rust cross
   targets + linkers are present.
 
-Reuses hard-won packaging *knowledge* (which platforms/artifacts matter: apple
-xcframework, android arm64+x86_64 jniLibs, linux/windows JVM libs) without any
-`boltffi`/UniFFI machinery — the core is a hand-written C ABI, so packaging
-is plain `cargo` + platform tools.
+Targets the platforms/artifacts that matter (apple xcframework, android
+arm64+x86_64 jniLibs, linux/windows JVM libs) without any `boltffi`/UniFFI
+machinery — the core is a hand-written C ABI, so packaging is plain `cargo`
++ platform tools.
 
 ## C smoke test
 

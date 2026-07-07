@@ -1,9 +1,8 @@
 /**
  * The single static console page (TODO §2.5). Zero framework, no build
  * step, ~one file: it fetches the sibling JSON endpoints (relative to its
- * own mount path), renders tables, and offers an auto-refresh toggle. This
- * is the v2 answer to v1's full React console app — 5% of the code, the
- * 80% operator value.
+ * own mount path), renders tables, and offers an auto-refresh toggle —
+ * 5% of the code a full console app would cost, the 80% operator value.
  *
  * The HTML is a single exported string so the routes module can serve it
  * with no filesystem read (works identically on Bun, Node, and Workers).
