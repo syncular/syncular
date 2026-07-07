@@ -24,11 +24,14 @@ export interface QueryClient {
 /** A named-query descriptor — sql + its exact table dependency set + a
  *  `bind(params)` → positional args. Consumed by
  *  `@syncular/react`'s `useQuery`. `Row` is the projection row
- *  type; `Params` is `undefined` for a param-less query. */
+ *  type; `Params` is `undefined` for a param-less query. `sqlFor`
+ *  (present only with an orderBy knob) composes the statement from a
+ *  generate-time-checked column allowlist. */
 export interface NamedQuery<Row, Params = undefined> {
   readonly sql: string;
   readonly tables: readonly string[];
   readonly bind: (params: Params) => readonly QueryValue[];
+  readonly sqlFor?: (params: Params) => string;
   /** Phantom — carries the Row type for `useQuery` inference. */
   readonly __row?: Row;
 }
@@ -236,6 +239,86 @@ export const reportDocScoresQuery: NamedQuery<ReportDocScoresRow, ReportDocScore
   sql: reportDocScoresSql,
   tables: reportDocScoresTables,
   bind: (params: ReportDocScoresParams) => [params.minScore],
+};
+
+/** One row of the 'searchTasks' query (its projection). */
+export interface SearchTasksRow {
+  id: string;
+  title: string;
+  done: boolean;
+  priority: number | null;
+  estimatedAt: number | null;
+}
+
+/** Named parameters for 'searchTasks'. */
+export interface SearchTasksParams {
+  projectId: string;
+  q?: string | null;
+  minPriority?: number | null;
+  openOnly?: boolean | null;
+  /** §6 orderBy knob — a generate-time-checked allowlist. */
+  orderBy?: 'priority' | 'estimatedAt' | 'title';
+  dir?: 'asc' | 'desc';
+  /** §6 limit knob — binds as a value (clamped to 200); default 50. */
+  limit?: number;
+}
+
+/** Tables 'searchTasks' reads — the exact useRawSql `{tables}` set. */
+export const searchTasksTables = ['tasks'] as const;
+
+const searchTasksSql = 'select id, title, done, priority, estimated_at AS estimatedAt from tasks where (project_id = ?1) and (?2 is null or ((title like \'%\' || ?2 || \'%\'))) and (?3 is null or (priority >= ?3)) and (coalesce(?4, 0) = 0 or (done = 0)) order by priority desc limit min(coalesce(?5, 50), 200)';
+const searchTasksSqlBase = 'select id, title, done, priority, estimated_at AS estimatedAt from tasks where (project_id = ?1) and (?2 is null or ((title like \'%\' || ?2 || \'%\'))) and (?3 is null or (priority >= ?3)) and (coalesce(?4, 0) = 0 or (done = 0))';
+const searchTasksOrderColumns = { priority: 'priority', estimatedAt: 'estimated_at', title: 'title' } as const;
+function searchTasksComposeSql(params?: SearchTasksParams): string {
+  const column = searchTasksOrderColumns[params?.orderBy ?? 'priority'] ?? 'priority';
+  const dir = (params?.dir ?? 'desc') === 'desc' ? 'desc' : 'asc';
+  return `${searchTasksSqlBase} order by ${column} ${dir} limit min(coalesce(?5, 50), 200)`;
+}
+
+/** Run the 'searchTasks' named query (SELECT-only). */
+export async function searchTasks(client: QueryClient, params: SearchTasksParams): Promise<SearchTasksRow[]> {
+  const rows = await client.query(searchTasksComposeSql(params), [params.projectId, params.q ?? null, params.minPriority ?? null, params.openOnly ?? null, params.limit ?? null]);
+  return rows as unknown as SearchTasksRow[];
+}
+
+/** Descriptor for `useQuery(searchTasksQuery, params)` — sql + tables + row type. */
+export const searchTasksQuery: NamedQuery<SearchTasksRow, SearchTasksParams> = {
+  sql: searchTasksSql,
+  sqlFor: (params: SearchTasksParams) => searchTasksComposeSql(params),
+  tables: searchTasksTables,
+  bind: (params: SearchTasksParams) => [params.projectId, params.q ?? null, params.minPriority ?? null, params.openOnly ?? null, params.limit ?? null],
+};
+
+/** One row of the 'taskEstimateRange' query (its projection). */
+export interface TaskEstimateRangeRow {
+  id: string;
+  title: string;
+  estimate: number | null;
+}
+
+/** Named parameters for 'taskEstimateRange'. */
+export interface TaskEstimateRangeParams {
+  projectId: string;
+  from?: number | null;
+  to?: number | null;
+}
+
+/** Tables 'taskEstimateRange' reads — the exact useRawSql `{tables}` set. */
+export const taskEstimateRangeTables = ['tasks'] as const;
+
+const taskEstimateRangeSql = 'select id, title, estimate from tasks where (project_id = ?1) and (?2 is null or ?3 is null or (estimated_at between ?2 and ?3))';
+
+/** Run the 'taskEstimateRange' named query (SELECT-only). */
+export async function taskEstimateRange(client: QueryClient, params: TaskEstimateRangeParams): Promise<TaskEstimateRangeRow[]> {
+  const rows = await client.query(taskEstimateRangeSql, [params.projectId, params.from ?? null, params.to ?? null]);
+  return rows as unknown as TaskEstimateRangeRow[];
+}
+
+/** Descriptor for `useQuery(taskEstimateRangeQuery, params)` — sql + tables + row type. */
+export const taskEstimateRangeQuery: NamedQuery<TaskEstimateRangeRow, TaskEstimateRangeParams> = {
+  sql: taskEstimateRangeSql,
+  tables: taskEstimateRangeTables,
+  bind: (params: TaskEstimateRangeParams) => [params.projectId, params.from ?? null, params.to ?? null],
 };
 
 /** One row of the 'taskTitles' query (its projection). */

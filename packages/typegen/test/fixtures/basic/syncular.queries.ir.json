@@ -277,6 +277,162 @@
       ]
     },
     {
+      "name": "searchTasks",
+      "file": "task-search.syql (query searchTasks)",
+      "sourceSql": "select id, title, done, priority, estimated_at\n  from tasks\n  where @inProject(:projectId)\n    and @search(:q)\n    and priority >= :minPriority\n    and if (:openOnly) { done = 0 }",
+      "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (project_id = :projectId) and (:q is null or ((title like '%' || :q || '%'))) and (:minPriority is null or (priority >= :minPriority)) and (coalesce(:openOnly, 0) = 0 or (done = 0)) order by priority desc limit min(coalesce(:limit, 50), 200)",
+      "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (project_id = ?1) and (?2 is null or ((title like '%' || ?2 || '%'))) and (?3 is null or (priority >= ?3)) and (coalesce(?4, 0) = 0 or (done = 0)) order by priority desc limit min(coalesce(?5, 50), 200)",
+      "params": [
+        {
+          "name": "projectId",
+          "langName": "projectId",
+          "type": "string"
+        },
+        {
+          "name": "q",
+          "langName": "q",
+          "type": "string",
+          "optional": true
+        },
+        {
+          "name": "minPriority",
+          "langName": "minPriority",
+          "type": "integer",
+          "optional": true
+        },
+        {
+          "name": "openOnly",
+          "langName": "openOnly",
+          "type": "boolean",
+          "optional": true,
+          "flag": true
+        },
+        {
+          "name": "limit",
+          "langName": "limit",
+          "type": "integer",
+          "optional": true
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "title",
+          "langName": "title",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "done",
+          "langName": "done",
+          "type": "boolean",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "priority",
+          "langName": "priority",
+          "type": "integer",
+          "nullable": true,
+          "fidelity": "exact"
+        },
+        {
+          "name": "estimated_at",
+          "langName": "estimatedAt",
+          "type": "integer",
+          "nullable": true,
+          "fidelity": "exact"
+        }
+      ],
+      "tables": [
+        "tasks"
+      ],
+      "orderBy": {
+        "allowed": [
+          {
+            "name": "priority",
+            "langName": "priority"
+          },
+          {
+            "name": "estimated_at",
+            "langName": "estimatedAt"
+          },
+          {
+            "name": "title",
+            "langName": "title"
+          }
+        ],
+        "defaultColumn": "priority",
+        "defaultDir": "desc"
+      },
+      "limit": {
+        "max": 200,
+        "default": 50
+      },
+      "positionalSqlBase": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (project_id = ?1) and (?2 is null or ((title like '%' || ?2 || '%'))) and (?3 is null or (priority >= ?3)) and (coalesce(?4, 0) = 0 or (done = 0))"
+    },
+    {
+      "name": "taskEstimateRange",
+      "file": "task-search.syql (query taskEstimateRange)",
+      "sourceSql": "select id, title, estimate\n  from tasks\n  where @inProject(:projectId)\n    and estimated_at between :from and :to",
+      "sql": "select id, title, estimate from tasks where (project_id = :projectId) and (:from is null or :to is null or (estimated_at between :from and :to))",
+      "positionalSql": "select id, title, estimate from tasks where (project_id = ?1) and (?2 is null or ?3 is null or (estimated_at between ?2 and ?3))",
+      "params": [
+        {
+          "name": "projectId",
+          "langName": "projectId",
+          "type": "string"
+        },
+        {
+          "name": "from",
+          "langName": "from",
+          "type": "integer",
+          "optional": true,
+          "group": "from"
+        },
+        {
+          "name": "to",
+          "langName": "to",
+          "type": "integer",
+          "optional": true,
+          "group": "from"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "title",
+          "langName": "title",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact"
+        },
+        {
+          "name": "estimate",
+          "langName": "estimate",
+          "type": "float",
+          "nullable": true,
+          "fidelity": "exact"
+        }
+      ],
+      "tables": [
+        "tasks"
+      ]
+    },
+    {
       "name": "taskTitles",
       "file": "task-titles.sql",
       "sourceSql": "-- Projection subset (a narrow row), no params.\nSELECT id, title FROM tasks",

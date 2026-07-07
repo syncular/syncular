@@ -98,6 +98,30 @@ export interface QueryParam {
   readonly type: QueryParamType;
   /** How the type was resolved — for the docs/tests, not emitted. */
   readonly source: 'inferred' | 'comment';
+  /** §4 (DESIGN-queries.md): an optional param — its auto-guarded conjunct
+   * applies only when it is provided. Always false for the `.sql` tier. */
+  readonly optional?: boolean;
+  /** §4: the `from+to` pairing — params sharing a group apply together. */
+  readonly group?: string;
+  /** §3: a `: flag` boolean guard param (never in a predicate as written;
+   * the lowering binds it). Implies optional. */
+  readonly flag?: boolean;
+}
+
+/** §6 orderBy knob: a generate-time allowlist (identifiers cannot bind). */
+export interface QueryOrderBy {
+  /** Allowed columns: authored SQL name + the language-facing key the
+   * generated signature accepts. Each is SQLite-checked at generate time. */
+  readonly allowed: readonly { name: string; langName: string }[];
+  /** Default column (authored SQL name). */
+  readonly defaultColumn: string;
+  readonly defaultDir: 'asc' | 'desc';
+}
+
+/** §6 limit knob: a bound value with a codegen clamp + default. */
+export interface QueryLimit {
+  readonly max?: number;
+  readonly default?: number;
 }
 
 export interface QueryColumn {
@@ -143,6 +167,20 @@ export interface AnalyzedQuery {
   readonly columns: readonly QueryColumn[];
   /** IR tables this query reads (the useRawSql `{tables}` set), sorted. */
   readonly tables: readonly string[];
+  /** §6 orderBy knob (`.syql` tier). When present, `sql`/`positionalSql`
+   * carry the DEFAULT order-by tail and `positionalSqlBase` is the static
+   * prefix emitters compose the selected column onto. */
+  readonly orderBy?: QueryOrderBy;
+  /** §6 limit knob (`.syql` tier): the trailing `LIMIT ?` bind's clamp. */
+  readonly limit?: QueryLimit;
+  /** positional SQL WITHOUT the dynamic ORDER BY/LIMIT tail; present only
+   * when `orderBy` is (emitters build `base + ORDER BY <baked> + limit
+   * tail`). */
+  readonly positionalSqlBase?: string;
+  /** The positional limit tail (e.g. ` limit min(coalesce(?, 50), 100)` —
+   * the default+clamp live IN the SQL, so runtimes bind `limit ?? null`).
+   * Present only when BOTH knobs are declared (composers need it verbatim). */
+  readonly positionalLimitTail?: string;
 }
 
 // -- path → name --------------------------------------------------------------
@@ -445,12 +483,21 @@ function scanParamNames(sql: string): string[] {
   return seen;
 }
 
-/** Rewrite `:name` → positional `?` (repeats included) AND strip comments +
- * collapse whitespace, producing a clean single-line SQL string suitable for
+/** Rewrite `:name` → positional placeholders AND strip comments + collapse
+ * whitespace, producing a clean single-line SQL string suitable for
  * embedding in a generated string literal. String literals are preserved
- * verbatim (their inner whitespace is not collapsed). */
+ * verbatim (their inner whitespace is not collapsed).
+ *
+ * When every param occurs exactly once, plain `?` is emitted. When ANY
+ * param repeats (the §7 neutralization guards mention a param in the guard
+ * AND the predicate), the WHOLE statement uses SQLite's numbered `?N`
+ * form — one bound value per DISTINCT param, reuse resolved by SQLite —
+ * so the generated bind array stays one-entry-per-param. */
 function toPositionalSql(sql: string): string {
-  const tokens: string[] = [];
+  interface ParamToken {
+    readonly param: string;
+  }
+  const tokens: (string | ParamToken)[] = [];
   let i = 0;
   while (i < sql.length) {
     const ch = sql[i] as string;
@@ -490,7 +537,7 @@ function toPositionalSql(sql: string): string {
       while (end < sql.length && /[A-Za-z0-9_]/.test(sql[end] as string)) {
         end += 1;
       }
-      tokens.push('?');
+      tokens.push({ param: sql.slice(i + 1, end) });
       i = end;
     } else if (/\s/.test(ch)) {
       tokens.push(' ');
@@ -500,8 +547,21 @@ function toPositionalSql(sql: string): string {
       i += 1;
     }
   }
+  const order: string[] = [];
+  let repeats = false;
+  for (const token of tokens) {
+    if (typeof token === 'string') continue;
+    if (order.includes(token.param)) repeats = true;
+    else order.push(token.param);
+  }
+  const rendered = tokens
+    .map((token) => {
+      if (typeof token === 'string') return token;
+      return repeats ? `?${order.indexOf(token.param) + 1}` : '?';
+    })
+    .join('');
   // Collapse runs of the whitespace placeholders; trim.
-  return tokens.join('').replace(/\s+/g, ' ').trim();
+  return rendered.replace(/\s+/g, ' ').trim();
 }
 
 // -- FROM/JOIN table resolution ----------------------------------------------
@@ -694,6 +754,31 @@ function inferParamType(
     const t = lookup(inM[1], inM[2] as string);
     if (t !== null) return t;
   }
+  // `col BETWEEN :name AND …` / `col BETWEEN … AND :name` — both endpoints
+  // take the column's type (the §4 from+to group shape).
+  const btwLeft = new RegExp(
+    `(?:(${IDENT})\\.)?(${IDENT})\\s+BETWEEN\\s+:${paramName}\\b`,
+    'i',
+  );
+  const btwLeftM = btwLeft.exec(cleaned);
+  if (btwLeftM !== null) {
+    const t = lookup(btwLeftM[1], btwLeftM[2] as string);
+    if (t !== null) return t;
+  }
+  const btwRight = new RegExp(
+    `(?:(${IDENT})\\.)?(${IDENT})\\s+BETWEEN\\s+\\S+\\s+AND\\s+:${paramName}\\b`,
+    'i',
+  );
+  const btwRightM = btwRight.exec(cleaned);
+  if (btwRightM !== null) {
+    const t = lookup(btwRightM[1], btwRightM[2] as string);
+    if (t !== null) return t;
+  }
+  // `… LIKE <expr mentioning :name>` — a LIKE operand is TEXT, even inside
+  // a concatenation (`title like '%' || :q || '%'`, the search-fragment
+  // shape).
+  const like = new RegExp(`\\bLIKE\\b[^()]*:${paramName}\\b`, 'i');
+  if (like.test(cleaned)) return 'string';
   return null;
 }
 

@@ -25,6 +25,11 @@ export function serializeQueryIr(queries: readonly AnalyzedQuery[]): string {
         name: param.name,
         langName: param.langName,
         type: param.type,
+        // §4 metadata — emitted only when set, so `.sql`-tier IR bytes are
+        // unchanged from before the DSL existed.
+        ...(param.optional === true ? { optional: true } : {}),
+        ...(param.group !== undefined ? { group: param.group } : {}),
+        ...(param.flag === true ? { flag: true } : {}),
       })),
       columns: query.columns.map((column) => ({
         name: column.name,
@@ -34,6 +39,23 @@ export function serializeQueryIr(queries: readonly AnalyzedQuery[]): string {
         fidelity: column.fidelity,
       })),
       tables: query.tables,
+      // §6 knob metadata — emitted only when declared.
+      ...(query.orderBy !== undefined
+        ? {
+            orderBy: {
+              allowed: query.orderBy.allowed.map((c) => ({
+                name: c.name,
+                langName: c.langName,
+              })),
+              defaultColumn: query.orderBy.defaultColumn,
+              defaultDir: query.orderBy.defaultDir,
+            },
+          }
+        : {}),
+      ...(query.limit !== undefined ? { limit: query.limit } : {}),
+      ...(query.positionalSqlBase !== undefined
+        ? { positionalSqlBase: query.positionalSqlBase }
+        : {}),
     })),
   };
   return `${JSON.stringify(doc, null, 2)}\n`;

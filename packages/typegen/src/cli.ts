@@ -35,6 +35,8 @@ generate options:
   --manifest-dir <dir>   directory holding syncular.json (default: .)
   --check                fail unless generated files are byte-exactly fresh
   --watch                regenerate on file change (Ctrl-C to stop)
+  --print <name>         print one named query's lowered, checked SQL
+                         (params, tables, knob variants) and exit
 
 init options:
   --manifest-dir <dir>   directory to scaffold into (default: .)`;
@@ -48,10 +50,16 @@ interface GenerateArgs {
   manifestDir: string;
   check: boolean;
   watch: boolean;
+  print: string | undefined;
 }
 
 function parseGenerateArgs(argv: readonly string[]): GenerateArgs {
-  const args: GenerateArgs = { manifestDir: '.', check: false, watch: false };
+  const args: GenerateArgs = {
+    manifestDir: '.',
+    check: false,
+    watch: false,
+    print: undefined,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--check') {
@@ -63,6 +71,11 @@ function parseGenerateArgs(argv: readonly string[]): GenerateArgs {
       if (value === undefined) fail('--manifest-dir requires a value');
       args.manifestDir = value;
       i += 1;
+    } else if (arg === '--print') {
+      const value = argv[i + 1];
+      if (value === undefined) fail('--print requires a query name');
+      args.print = value;
+      i += 1;
     } else {
       fail(`unknown argument ${JSON.stringify(arg)}\n${USAGE}`);
     }
@@ -70,7 +83,57 @@ function parseGenerateArgs(argv: readonly string[]): GenerateArgs {
   if (args.check && args.watch) {
     fail('--check and --watch cannot be combined');
   }
+  if (args.print !== undefined && (args.check || args.watch)) {
+    fail('--print cannot be combined with --check/--watch');
+  }
   return args;
+}
+
+/** `generate --print <name>`: "what does this actually run" — the lowered,
+ * checked SQL for one named query, plus its params/tables/knob variants. */
+function runGeneratePrint(args: GenerateArgs, name: string): void {
+  let result: ReturnType<typeof generate>;
+  try {
+    result = generate(args.manifestDir);
+  } catch (error) {
+    fail(friendlyGenerateError(error));
+  }
+  const query = result.queries.find((q) => q.name === name);
+  if (query === undefined) {
+    const known = result.queries.map((q) => q.name).join(', ');
+    fail(
+      `no named query ${JSON.stringify(name)} — this manifest defines: ${known.length > 0 ? known : '(none)'}`,
+    );
+  }
+  console.log(`-- ${query.name} (${query.file})`);
+  console.log(`-- tables: ${query.tables.join(', ')}`);
+  if (query.params.length > 0) {
+    console.log('-- params:');
+    for (const param of query.params) {
+      const marks = [
+        param.optional === true ? 'optional' : 'required',
+        ...(param.flag === true ? ['flag'] : []),
+        ...(param.group !== undefined ? [`group ${param.group}`] : []),
+      ].join(', ');
+      console.log(`--   :${param.name} ${param.type} (${marks})`);
+    }
+  }
+  console.log(query.sql);
+  if (query.orderBy !== undefined) {
+    console.log('-- orderBy variants (each checked against the schema):');
+    const base = query.positionalSqlBase ?? '';
+    for (const col of query.orderBy.allowed) {
+      const isDefault = col.name === query.orderBy.defaultColumn;
+      console.log(
+        `--   ${col.langName}: ${base} order by ${col.name} asc|desc${query.positionalLimitTail ?? ''}${isDefault ? '   (default)' : ''}`,
+      );
+    }
+  }
+  if (query.limit !== undefined) {
+    console.log(
+      `-- limit: bound value, default ${query.limit.default ?? query.limit.max}${query.limit.max !== undefined ? `, clamped to ${query.limit.max}` : ''}`,
+    );
+  }
 }
 
 function parseManifestDir(argv: readonly string[]): string {
@@ -154,6 +217,10 @@ export function runCli(argv: readonly string[]): void {
   const command = argv[0];
   if (command === 'generate') {
     const args = parseGenerateArgs(argv.slice(1));
+    if (args.print !== undefined) {
+      runGeneratePrint(args, args.print);
+      return;
+    }
     if (args.watch) {
       runGenerateWatch(args);
       return;

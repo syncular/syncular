@@ -1,0 +1,30 @@
+-- The .syql tier (DESIGN-queries.md §3): fragments, auto-guarded optional
+-- conjuncts, an if-guarded flag, and both §6 knobs — exercising the DSL
+-- through every emitter golden.
+
+fragment inProject(projectId) {
+  project_id = :projectId
+}
+
+fragment search(q?) {
+  title like '%' || :q || '%'
+}
+
+query searchTasks(projectId, minPriority?, openOnly?: flag)
+  orderBy priority | estimated_at | title default priority desc
+  limit max 200 default 50
+{
+  select id, title, done, priority, estimated_at
+  from tasks
+  where @inProject(:projectId)
+    and @search(:q)
+    and priority >= :minPriority
+    and if (:openOnly) { done = 0 }
+}
+
+query taskEstimateRange(projectId, from+to?) {
+  select id, title, estimate
+  from tasks
+  where @inProject(:projectId)
+    and estimated_at between :from and :to
+}

@@ -29,6 +29,9 @@ Map<String, Object?> _queryBindBytes(List<int> value) {
   return {r'$bytes': hex};
 }
 
+/// §6 orderBy direction (shared by every orderBy-knob query).
+enum SyncularQueryDir { asc, desc }
+
 /// One row of the findDocByOrg query (its projection).
 class FindDocByOrgRow {
   final String id;
@@ -149,6 +152,54 @@ class ReportDocScoresRow {
     final orgId = row['orgId'] as String?;
     if (orgId == null) return null;
     return ReportDocScoresRow(id: id, orgId: orgId, score: (row['score'] as num?)?.toDouble());
+  }
+}
+
+/// One row of the searchTasks query (its projection).
+class SearchTasksRow {
+  final String id;
+  final String title;
+  final bool done;
+  final int? priority;
+  final int? estimatedAt;
+
+  const SearchTasksRow({required this.id, required this.title, required this.done, this.priority, this.estimatedAt});
+
+  static SearchTasksRow? fromRow(Map<String, Object?> row) {
+    final id = row['id'] as String?;
+    if (id == null) return null;
+    final title = row['title'] as String?;
+    if (title == null) return null;
+    final done = _queryRowBool(row['done']);
+    if (done == null) return null;
+    return SearchTasksRow(id: id, title: title, done: done, priority: (row['priority'] as num?)?.toInt(), estimatedAt: (row['estimatedAt'] as num?)?.toInt());
+  }
+}
+
+/// §6 orderBy allowlist for searchTasks — checked at generate time.
+enum SearchTasksOrderBy {
+  priority('priority'),
+  estimatedAt('estimated_at'),
+  title('title');
+
+  const SearchTasksOrderBy(this.column);
+  final String column;
+}
+
+/// One row of the taskEstimateRange query (its projection).
+class TaskEstimateRangeRow {
+  final String id;
+  final String title;
+  final double? estimate;
+
+  const TaskEstimateRangeRow({required this.id, required this.title, this.estimate});
+
+  static TaskEstimateRangeRow? fromRow(Map<String, Object?> row) {
+    final id = row['id'] as String?;
+    if (id == null) return null;
+    final title = row['title'] as String?;
+    if (title == null) return null;
+    return TaskEstimateRangeRow(id: id, title: title, estimate: (row['estimate'] as num?)?.toDouble());
   }
 }
 
@@ -274,6 +325,30 @@ const String _reportDocScoresSql = 'SELECT id, org_id AS orgId, score FROM docs 
 List<ReportDocScoresRow> syncularReportDocScoresQuery(SyncularClient client, {required double minScore}) {
   final params = <Object?>[minScore];
   return client.query(_reportDocScoresSql, params: params).map(ReportDocScoresRow.fromRow).whereType<ReportDocScoresRow>().toList();
+}
+
+/// Tables the searchTasks query reads (exact invalidation set).
+const List<String> syncularSearchTasksQueryTables = ['tasks'];
+
+const String _searchTasksSqlBase = 'select id, title, done, priority, estimated_at AS estimatedAt from tasks where (project_id = ?1) and (?2 is null or ((title like \'%\' || ?2 || \'%\'))) and (?3 is null or (priority >= ?3)) and (coalesce(?4, 0) = 0 or (done = 0))';
+
+/// Run the searchTasks named query (SELECT-only).
+List<SearchTasksRow> syncularSearchTasksQuery(SyncularClient client, {required String projectId, String? q, int? minPriority, bool? openOnly, int? limit, SearchTasksOrderBy orderBy = SearchTasksOrderBy.priority, SyncularQueryDir dir = SyncularQueryDir.desc}) {
+  final sql = '$_searchTasksSqlBase order by ${orderBy.column} ${dir.name}'
+      ' ' 'limit min(coalesce(?5, 50), 200)';
+  final params = <Object?>[projectId, q, minPriority, openOnly, limit];
+  return client.query(sql, params: params).map(SearchTasksRow.fromRow).whereType<SearchTasksRow>().toList();
+}
+
+/// Tables the taskEstimateRange query reads (exact invalidation set).
+const List<String> syncularTaskEstimateRangeQueryTables = ['tasks'];
+
+const String _taskEstimateRangeSql = 'select id, title, estimate from tasks where (project_id = ?1) and (?2 is null or ?3 is null or (estimated_at between ?2 and ?3))';
+
+/// Run the taskEstimateRange named query (SELECT-only).
+List<TaskEstimateRangeRow> syncularTaskEstimateRangeQuery(SyncularClient client, {required String projectId, int? from, int? to}) {
+  final params = <Object?>[projectId, from, to];
+  return client.query(_taskEstimateRangeSql, params: params).map(TaskEstimateRangeRow.fromRow).whereType<TaskEstimateRangeRow>().toList();
 }
 
 /// Tables the taskTitles query reads (exact invalidation set).

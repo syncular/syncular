@@ -30,6 +30,10 @@ export interface NamedQueryDescriptor<Row, Params> {
   readonly sql: string;
   readonly tables: readonly string[];
   readonly bind: (params: Params) => readonly SqlValue[];
+  /** §6 orderBy knob: composes the statement for the CHOSEN order from a
+   * generate-time-checked allowlist (identifiers never come from runtime
+   * input). Absent on knob-less queries — `sql` is the whole statement. */
+  readonly sqlFor?: (params: Params) => string;
   /** Phantom row carrier (never read at runtime). */
   readonly __row?: Row;
 }
@@ -59,7 +63,8 @@ export function useQuery<Row, Params>(
     | undefined;
 
   const bound = query.bind(params) as readonly SqlValue[];
-  return useRawSql<Row>(query.sql, bound, {
+  const sql = query.sqlFor === undefined ? query.sql : query.sqlFor(params);
+  return useRawSql<Row>(sql, bound, {
     ...options,
     tables: query.tables,
   });

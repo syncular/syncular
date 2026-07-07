@@ -20,3 +20,4 @@ export * from './naming';
 export * from './query';
 export * from './query-ir';
 export * from './sql';
+export * from './syql';

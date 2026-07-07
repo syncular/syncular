@@ -24,11 +24,14 @@ export interface QueryClient {
 /** A named-query descriptor — sql + its exact table dependency set + a
  *  `bind(params)` → positional args. Consumed by
  *  `@syncular/react`'s `useQuery`. `Row` is the projection row
- *  type; `Params` is `undefined` for a param-less query. */
+ *  type; `Params` is `undefined` for a param-less query. `sqlFor`
+ *  (present only with an orderBy knob) composes the statement from a
+ *  generate-time-checked column allowlist. */
 export interface NamedQuery<Row, Params = undefined> {
   readonly sql: string;
   readonly tables: readonly string[];
   readonly bind: (params: Params) => readonly QueryValue[];
+  readonly sqlFor?: (params: Params) => string;
   /** Phantom — carries the Row type for `useQuery` inference. */
   readonly __row?: Row;
 }
@@ -47,16 +50,17 @@ export interface ListTodosRow {
 /** Named parameters for 'listTodos'. */
 export interface ListTodosParams {
   listId: string;
+  q?: string | null;
 }
 
 /** Tables 'listTodos' reads — the exact useRawSql `{tables}` set. */
 export const listTodosTables = ['todos'] as const;
 
-const listTodosSql = 'SELECT id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment FROM todos WHERE list_id = ? ORDER BY position, id';
+const listTodosSql = 'select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment from todos where list_id = ?1 and (?2 is null or (title like \'%\' || ?2 || \'%\')) order by position, id';
 
 /** Run the 'listTodos' named query (SELECT-only). */
 export async function listTodos(client: QueryClient, params: ListTodosParams): Promise<ListTodosRow[]> {
-  const rows = await client.query(listTodosSql, [params.listId]);
+  const rows = await client.query(listTodosSql, [params.listId, params.q ?? null]);
   return rows as unknown as ListTodosRow[];
 }
 
@@ -64,5 +68,5 @@ export async function listTodos(client: QueryClient, params: ListTodosParams): P
 export const listTodosQuery: NamedQuery<ListTodosRow, ListTodosParams> = {
   sql: listTodosSql,
   tables: listTodosTables,
-  bind: (params: ListTodosParams) => [params.listId],
+  bind: (params: ListTodosParams) => [params.listId, params.q ?? null],
 };

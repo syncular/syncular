@@ -12,7 +12,7 @@
  */
 import type { IrColumnType } from './ir';
 import { snakeToCamel } from './naming';
-import type { AnalyzedQuery, QueryColumn } from './query';
+import type { AnalyzedQuery, QueryColumn, QueryParam } from './query';
 
 const KOTLIN_TYPE: Readonly<Record<IrColumnType, string>> = {
   string: 'String',
@@ -82,6 +82,45 @@ function paramValue(type: IrColumnType, name: string): string {
   }
 }
 
+/** Bind for a §4 OPTIONAL param: `null` rides as JSON null (the §7
+ * neutralization guards make it a no-op). */
+function optionalParamValue(type: IrColumnType, name: string): string {
+  switch (type) {
+    case 'integer':
+      return `${name}?.let { JsonValue.of(it.toDouble()) } ?: JsonValue.Null`;
+    case 'bytes':
+    case 'crdt':
+      return `${name}?.let { queryBindBytes(it) } ?: JsonValue.Null`;
+    default:
+      return `${name}?.let { JsonValue.of(it) } ?: JsonValue.Null`;
+  }
+}
+
+function isOptionalParam(query: AnalyzedQuery, p: QueryParam): boolean {
+  return (
+    p.optional === true ||
+    p.flag === true ||
+    (query.limit !== undefined && p.name === 'limit')
+  );
+}
+
+/** Per-query orderBy allowlist enum (column = the checked SQL column). */
+function emitOrderByEnum(query: AnalyzedQuery): string[] {
+  if (query.orderBy === undefined) return [];
+  const lines: string[] = [];
+  lines.push(
+    `/** §6 orderBy allowlist for ${query.name} — checked at generate time. */`,
+  );
+  lines.push(`enum class ${typeName(query.name)}OrderBy(val column: String) {`);
+  lines.push(
+    query.orderBy.allowed
+      .map((col) => `    ${camelCase(col.langName)}(${quote(col.name)})`)
+      .join(',\n') + ';',
+  );
+  lines.push('}');
+  return lines;
+}
+
 function emitDataClass(query: AnalyzedQuery): string[] {
   const Row = `${typeName(query.name)}Row`;
   const lines: string[] = [];
@@ -119,30 +158,69 @@ function emitRunner(query: AnalyzedQuery): string[] {
   lines.push(
     `        val ${query.name}Tables = listOf(${query.tables.map(quote).join(', ')})`,
   );
-  lines.push(
-    `        private const val ${query.name}Sql = ${quote(query.positionalSql)}`,
-  );
-  lines.push('');
-  lines.push(`        /** Run the ${query.name} named query (SELECT-only). */`);
-  const args = query.params
-    .map((p) => `${camelCase(p.langName)}: ${KOTLIN_TYPE[p.type]}`)
-    .join(', ');
-  const signature =
-    query.params.length > 0
-      ? `client: SyncularClient, ${args}`
-      : 'client: SyncularClient';
-  lines.push(`        fun ${query.name}(${signature}): List<${Row}> {`);
-  if (query.params.length > 0) {
-    const binds = query.params
-      .map((p) => paramValue(p.type, camelCase(p.langName)))
-      .join(', ');
-    lines.push(`            val params = listOf(${binds})`);
+  if (query.orderBy !== undefined) {
     lines.push(
-      `            return client.query(${query.name}Sql, params).mapNotNull { ${Row}.fromRow(it) }`,
+      `        private const val ${query.name}SqlBase = ${quote(query.positionalSqlBase ?? '')}`,
     );
   } else {
     lines.push(
-      `            return client.query(${query.name}Sql).mapNotNull { ${Row}.fromRow(it) }`,
+      `        private const val ${query.name}Sql = ${quote(query.positionalSql)}`,
+    );
+  }
+  lines.push('');
+  lines.push(`        /** Run the ${query.name} named query (SELECT-only). */`);
+  const args: string[] = [];
+  for (const p of query.params) {
+    const name = camelCase(p.langName);
+    if (isOptionalParam(query, p)) {
+      args.push(`${name}: ${KOTLIN_TYPE[p.type]}? = null`);
+    } else {
+      args.push(`${name}: ${KOTLIN_TYPE[p.type]}`);
+    }
+  }
+  if (query.orderBy !== undefined) {
+    const defaultCase = camelCase(
+      query.orderBy.allowed.find((c) => c.name === query.orderBy?.defaultColumn)
+        ?.langName ?? query.orderBy.defaultColumn,
+    );
+    args.push(
+      `orderBy: ${typeName(query.name)}OrderBy = ${typeName(query.name)}OrderBy.${defaultCase}`,
+    );
+    args.push(
+      `dir: SyncularQueryDir = SyncularQueryDir.${query.orderBy.defaultDir.toUpperCase()}`,
+    );
+  }
+  const signature =
+    args.length > 0
+      ? `client: SyncularClient, ${args.join(', ')}`
+      : 'client: SyncularClient';
+  lines.push(`        fun ${query.name}(${signature}): List<${Row}> {`);
+  if (query.orderBy !== undefined) {
+    const limitTail =
+      query.positionalLimitTail !== undefined
+        ? ` + ${quote(query.positionalLimitTail)}`
+        : '';
+    lines.push(
+      `            val sql = ${query.name}SqlBase + " order by " + orderBy.column + " " + dir.sql${limitTail}`,
+    );
+  }
+  const sqlRef = query.orderBy !== undefined ? 'sql' : `${query.name}Sql`;
+  if (query.params.length > 0) {
+    const binds = query.params
+      .map((p) => {
+        const name = camelCase(p.langName);
+        return isOptionalParam(query, p)
+          ? optionalParamValue(p.type, name)
+          : paramValue(p.type, name);
+      })
+      .join(', ');
+    lines.push(`            val params = listOf(${binds})`);
+    lines.push(
+      `            return client.query(${sqlRef}, params).mapNotNull { ${Row}.fromRow(it) }`,
+    );
+  } else {
+    lines.push(
+      `            return client.query(${sqlRef}).mapNotNull { ${Row}.fromRow(it) }`,
     );
   }
   lines.push('        }');
@@ -195,8 +273,22 @@ export function emitQueriesKotlinModule(
     ].join('\n'),
   );
 
+  if (queries.some((q) => q.orderBy !== undefined)) {
+    parts.push(
+      [
+        '/** §6 orderBy direction (shared by every orderBy-knob query). */',
+        'enum class SyncularQueryDir(val sql: String) {',
+        '    ASC("asc"),',
+        '    DESC("desc");',
+        '}',
+      ].join('\n'),
+    );
+  }
+
   for (const query of queries) {
     parts.push(emitDataClass(query).join('\n'));
+    const orderByEnum = emitOrderByEnum(query);
+    if (orderByEnum.length > 0) parts.push(orderByEnum.join('\n'));
   }
 
   const objLines: string[] = [];
