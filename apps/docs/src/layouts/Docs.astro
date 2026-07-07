@@ -2,6 +2,13 @@
 // The docs shell: teletype sidebar + article column. Styling lives in
 // public/style.css (shared with the landing page), not in scoped styles —
 // the markdown body needs the global classes anyway.
+//
+// <ClientRouter> turns docs↔docs navigation into client-side swaps (no full
+// reload, no white flash). The sidebar carries `transition:persist`, so the
+// SAME element survives each swap — its scroll position is kept and it never
+// re-renders. Links to pages without the router (the landing hero, 404) fall
+// back to a normal full navigation automatically.
+import { ClientRouter } from 'astro:transitions';
 import { nav } from '../nav';
 
 interface Props {
@@ -18,9 +25,10 @@ const { title, active } = Astro.props;
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title} — syncular</title>
     <link rel="stylesheet" href="/style.css" />
+    <ClientRouter />
   </head>
   <body>
-    <nav class="sidebar">
+    <nav class="sidebar" transition:persist="sidebar">
       <a class="brand" href="/">syncular</a>
       {
         nav.map((section) => (
@@ -47,5 +55,31 @@ const { title, active } = Astro.props;
         <slot />
       </article>
     </main>
+
+    <script>
+      // The sidebar is persisted across swaps. Two things need doing by hand:
+      // (1) its server-rendered `.active` is frozen on the first page, so
+      // re-derive it from the URL on every navigation; (2) re-inserting the
+      // persisted node during a swap drops its scrollTop, so save it just
+      // before the swap and restore it just after.
+      let sidebarScroll = 0;
+      const sidebar = () => document.querySelector('.sidebar');
+
+      document.addEventListener('astro:before-swap', () => {
+        sidebarScroll = sidebar()?.scrollTop ?? 0;
+      });
+      document.addEventListener('astro:after-swap', () => {
+        const sb = sidebar();
+        if (sb) sb.scrollTop = sidebarScroll;
+      });
+      document.addEventListener('astro:page-load', () => {
+        const path = location.pathname;
+        for (const a of document.querySelectorAll<HTMLAnchorElement>(
+          '.sidebar .nav-section a',
+        )) {
+          a.classList.toggle('active', a.getAttribute('href') === path);
+        }
+      });
+    </script>
   </body>
 </html>
