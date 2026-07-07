@@ -181,6 +181,27 @@ export interface AnalyzedQuery {
    * the default+clamp live IN the SQL, so runtimes bind `limit ?? null`).
    * Present only when BOTH knobs are declared (composers need it verbatim). */
   readonly positionalLimitTail?: string;
+  /** §7 variant-enumeration backend (opt-in `variants` knob): one checked
+   * statement per combination of provided optional groups. Semantically
+   * identical to the neutralization `sql` by construction; the TS emitter
+   * dispatches on provided-ness for perfect index use. `when` lists the
+   * provided group keys; `params` are the DISTINCT param names this variant
+   * binds, positional order. */
+  readonly variants?: readonly {
+    readonly when: readonly string[];
+    readonly sql: string;
+    readonly positionalSql: string;
+    readonly params: readonly string[];
+  }[];
+  /** The optional-group keys, in dispatch-bit order (bit i of the variant
+   * index = group i provided). Present iff `variants` is. */
+  readonly variantGroups?: readonly {
+    readonly key: string;
+    /** Params whose provision defines the group (all must be non-null; a
+     * flag group is "on" when its single param is TRUE). */
+    readonly params: readonly string[];
+    readonly flag: boolean;
+  }[];
 }
 
 // -- path → name --------------------------------------------------------------
@@ -493,7 +514,7 @@ function scanParamNames(sql: string): string[] {
  * AND the predicate), the WHOLE statement uses SQLite's numbered `?N`
  * form — one bound value per DISTINCT param, reuse resolved by SQLite —
  * so the generated bind array stays one-entry-per-param. */
-function toPositionalSql(sql: string): string {
+export function toPositionalSql(sql: string): string {
   interface ParamToken {
     readonly param: string;
   }

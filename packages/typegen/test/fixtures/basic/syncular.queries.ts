@@ -307,18 +307,32 @@ export interface TaskEstimateRangeParams {
 export const taskEstimateRangeTables = ['tasks'] as const;
 
 const taskEstimateRangeSql = 'select id, title, estimate from tasks where (project_id = ?1) and (?2 is null or ?3 is null or (estimated_at between ?2 and ?3))';
+const taskEstimateRangeVariants: { sql: string; bind: (params: TaskEstimateRangeParams) => QueryValue[] }[] = [
+  // [no optional filters]
+  { sql: 'select id, title, estimate from tasks where (project_id = ?)', bind: (params) => [params.projectId] },
+  // [from]
+  { sql: 'select id, title, estimate from tasks where (project_id = ?) and estimated_at between ? and ?', bind: (params) => [params.projectId, params.from ?? null, params.to ?? null] },
+];
+function taskEstimateRangeSelectVariant(params: TaskEstimateRangeParams): { sql: string; bind: QueryValue[] } {
+  let mask = 0;
+  if ((params?.from ?? null) !== null && (params?.to ?? null) !== null) mask |= 1;
+  const variant = taskEstimateRangeVariants[mask] as (typeof taskEstimateRangeVariants)[number];
+  return { sql: variant.sql, bind: variant.bind(params) };
+}
 
 /** Run the 'taskEstimateRange' named query (SELECT-only). */
 export async function taskEstimateRange(client: QueryClient, params: TaskEstimateRangeParams): Promise<TaskEstimateRangeRow[]> {
-  const rows = await client.query(taskEstimateRangeSql, [params.projectId, params.from ?? null, params.to ?? null]);
+  const variant = taskEstimateRangeSelectVariant(params);
+  const rows = await client.query(variant.sql, variant.bind);
   return rows as unknown as TaskEstimateRangeRow[];
 }
 
 /** Descriptor for `useQuery(taskEstimateRangeQuery, params)` — sql + tables + row type. */
 export const taskEstimateRangeQuery: NamedQuery<TaskEstimateRangeRow, TaskEstimateRangeParams> = {
   sql: taskEstimateRangeSql,
+  sqlFor: (params: TaskEstimateRangeParams) => taskEstimateRangeSelectVariant(params).sql,
   tables: taskEstimateRangeTables,
-  bind: (params: TaskEstimateRangeParams) => [params.projectId, params.from ?? null, params.to ?? null],
+  bind: (params: TaskEstimateRangeParams) => taskEstimateRangeSelectVariant(params).bind,
 };
 
 /** One row of the 'taskTitles' query (its projection). */

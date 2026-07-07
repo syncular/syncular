@@ -48,6 +48,7 @@ import {
   type QueryDb,
   type QueryNamingOptions,
   type QueryParam,
+  toPositionalSql,
   validateOverrideName,
 } from './query';
 
@@ -87,6 +88,9 @@ export interface SyqlQueryDecl {
   readonly params: readonly SyqlParamDecl[];
   readonly orderBy?: SyqlOrderBy;
   readonly limit?: SyqlLimit;
+  /** §7 opt-in: lower to 2^N enumerated statements (perfect index use)
+   * instead of one neutralized statement. API-invisible. */
+  readonly variants?: boolean;
   /** The SQL-shaped body (may contain @fragment refs and if-guards). */
   readonly body: string;
 }
@@ -288,12 +292,17 @@ function parseSignature(cur: Cursor, owner: string): SyqlParamDecl[] {
 function parseKnobs(
   cur: Cursor,
   owner: string,
-): { orderBy?: SyqlOrderBy; limit?: SyqlLimit } {
+): { orderBy?: SyqlOrderBy; limit?: SyqlLimit; variants?: boolean } {
   let orderBy: SyqlOrderBy | undefined;
   let limit: SyqlLimit | undefined;
+  let variants: boolean | undefined;
   for (;;) {
     const word = cur.peekWord();
-    if (word === 'orderBy') {
+    if (word === 'variants') {
+      if (variants === true) cur.fail(`${owner}: duplicate variants knob`);
+      cur.word('variants');
+      variants = true;
+    } else if (word === 'orderBy') {
       if (orderBy !== undefined) cur.fail(`${owner}: duplicate orderBy knob`);
       cur.word('orderBy');
       const allowed: string[] = [];
@@ -361,6 +370,7 @@ function parseKnobs(
       return {
         ...(orderBy !== undefined ? { orderBy } : {}),
         ...(limit !== undefined ? { limit } : {}),
+        ...(variants !== undefined ? { variants } : {}),
       };
     }
   }
@@ -456,6 +466,8 @@ function scanParams(text: string): string[] {
 }
 
 interface WhereSpan {
+  /** Offset of the `where` keyword itself. */
+  readonly kwStart: number;
   /** Offset just after the `where` keyword. */
   readonly start: number;
   /** Offset of the clause end (next top-level clause keyword or EOS). */
@@ -469,6 +481,7 @@ function findWhere(body: string): WhereSpan | null {
   const b = blank(body);
   let depth = 0;
   let i = 0;
+  let kwStart = -1;
   let start = -1;
   while (i < b.length) {
     const ch = b[i] as string;
@@ -480,9 +493,10 @@ function findWhere(body: string): WhereSpan | null {
       const word = b.slice(i, j).toLowerCase();
       if (depth === 0) {
         if (start === -1 && word === 'where') {
+          kwStart = i;
           start = j;
         } else if (start !== -1 && CLAUSE_ENDERS.has(word)) {
-          return { start, end: i };
+          return { kwStart, start, end: i };
         }
       }
       i = j;
@@ -490,7 +504,7 @@ function findWhere(body: string): WhereSpan | null {
     }
     i += 1;
   }
-  return start === -1 ? null : { start, end: body.length };
+  return start === -1 ? null : { kwStart, start, end: body.length };
 }
 
 /**
@@ -644,11 +658,26 @@ function guardTerm(name: string, info: ParamInfo | undefined): string {
   return `:${name} is null`;
 }
 
+/** One top-level WHERE conjunct after guard analysis: `governing` is the
+ * set of OPTIONAL param names gating it (empty = required conjunct). */
+export interface LoweredConjunct {
+  readonly pred: string;
+  readonly governing: readonly string[];
+}
+
 export interface LoweredSyqlQuery {
   /** The lowered single SQL statement (named params, no knob tails). */
   readonly sql: string;
   /** Params discovered/declared, in signature-then-first-use order. */
   readonly paramInfo: ReadonlyMap<string, ParamInfo>;
+  /** Statement text before the `where` keyword (whole statement when there
+   * is no WHERE). */
+  readonly prefix: string;
+  /** Statement text after the WHERE clause (may be empty). */
+  readonly suffix: string;
+  /** The structured conjuncts (empty when there is no WHERE) — the §7
+   * variant backend re-assembles per provided-combination from these. */
+  readonly conjuncts: readonly LoweredConjunct[];
 }
 
 /**
@@ -685,6 +714,7 @@ export function lowerSyqlBody(
 
   const where = findWhere(spliced);
   const conjuncts: string[] = [];
+  const structured: LoweredConjunct[] = [];
   let loweredWhere = '';
   if (where !== null) {
     const expr = spliced.slice(where.start, where.end);
@@ -732,6 +762,7 @@ export function lowerSyqlBody(
           .map((g) => guardTerm(g, paramInfo.get(g)))
           .join(' or ');
         conjuncts.push(`(${guards} or (${pred}))`);
+        structured.push({ pred, governing: guardParams });
         continue;
       }
 
@@ -746,6 +777,7 @@ export function lowerSyqlBody(
       }
       if (optionals.length === 0) {
         conjuncts.push(conjunct);
+        structured.push({ pred: conjunct, governing: [] });
         continue;
       }
       // B1 placement validator: inside its conjunct, an optional param must
@@ -779,6 +811,7 @@ export function lowerSyqlBody(
         .map((g) => guardTerm(g, paramInfo.get(g)))
         .join(' or ');
       conjuncts.push(`(${guards} or (${conjunct}))`);
+      structured.push({ pred: conjunct, governing: [...governing] });
     }
     loweredWhere = conjuncts.join(' and ');
   }
@@ -814,7 +847,23 @@ export function lowerSyqlBody(
       ? spliced
       : `${spliced.slice(0, where.start)} ${loweredWhere}${spliced.slice(where.end).length > 0 ? ` ${spliced.slice(where.end).trimStart()}` : ''}`;
 
-  return { sql: sql.replace(/\s+/g, ' ').trim(), paramInfo };
+  const prefix = (
+    where === null ? spliced : spliced.slice(0, where.kwStart)
+  ).replace(/\s+/g, ' ');
+  const suffix = (where === null ? '' : spliced.slice(where.end)).replace(
+    /\s+/g,
+    ' ',
+  );
+  return {
+    sql: sql.replace(/\s+/g, ' ').trim(),
+    paramInfo,
+    prefix: prefix.trim(),
+    suffix: suffix.trim(),
+    conjuncts: structured.map((c) => ({
+      pred: c.pred.replace(/\s+/g, ' ').trim(),
+      governing: c.governing,
+    })),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -985,12 +1034,106 @@ export function analyzeSyqlFile(
       }
     }
 
+    // Drop the internal `-- param` typing headers from the exposed
+    // (projection-lowered) SQL.
+    const exposedSql = base.sql
+      .replace(/^(?:\s*-- param :[^\n]*\n)+/, '')
+      .trimStart();
+
+    // §7 variant-enumeration backend (opt-in): one checked statement per
+    // combination of provided optional GROUPS. Assembled by swapping the
+    // WHERE clause of the (projection-lowered) neutralization statement, so
+    // the two backends differ ONLY in guard mechanics — semantically
+    // identical by construction.
+    let variants: AnalyzedQuery['variants'];
+    let variantGroups: AnalyzedQuery['variantGroups'];
+    if (decl.variants === true) {
+      if (decl.orderBy !== undefined) {
+        throw new TypegenError(
+          location,
+          'the variants backend and the orderBy knob both multiply statements — they cannot combine (yet); drop one',
+        );
+      }
+      const groupList: { key: string; params: string[]; flag: boolean }[] = [];
+      for (const [name, info] of lowered.paramInfo) {
+        if (!info.optional) continue;
+        const key = info.group ?? name;
+        const existing = groupList.find((g) => g.key === key);
+        if (existing !== undefined) existing.params.push(name);
+        else groupList.push({ key, params: [name], flag: info.flag });
+      }
+      const n = groupList.length;
+      if (n === 0) {
+        throw new TypegenError(
+          location,
+          'the variants backend needs at least one optional param — a fully static query has exactly one variant already',
+        );
+      }
+      if (n > 8) {
+        throw new TypegenError(
+          location,
+          `${n} optional groups would enumerate ${2 ** n} statements — a query with nine independent optional filters is a design smell, not a codegen challenge (§7); split the query or drop \`variants\``,
+        );
+      }
+      if (n > 4) {
+        console.warn(
+          `${location}: variants enumerates ${2 ** n} statements (${n} optional groups) — consider the default neutralization backend`,
+        );
+      }
+      const w = findWhere(exposedSql);
+      if (w === null) throw new Error('unreachable: optional params ⇒ WHERE');
+      const before = exposedSql.slice(0, w.kwStart).trimEnd();
+      const after = exposedSql.slice(w.end).trim();
+      const groupOf = (param: string): string =>
+        lowered.paramInfo.get(param)?.group ?? param;
+      const out: NonNullable<AnalyzedQuery['variants']>[number][] = [];
+      for (let mask = 0; mask < 2 ** n; mask++) {
+        const provided = new Set(
+          groupList.filter((_, i) => ((mask >> i) & 1) === 1).map((g) => g.key),
+        );
+        const included = lowered.conjuncts.filter((c) =>
+          c.governing.every((p) => provided.has(groupOf(p))),
+        );
+        const whereSql = included.map((c) => c.pred).join(' and ');
+        const sqlV = [
+          before,
+          ...(whereSql.length > 0 ? [`where ${whereSql}`] : []),
+          ...(after.length > 0 ? [after] : []),
+        ]
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        try {
+          db.analyze(sqlV);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          throw new TypegenError(
+            location,
+            `variant [${[...provided].join('+') || 'none'}] rejected by SQLite: ${message}`,
+          );
+        }
+        out.push({
+          when: groupList
+            .filter((_, i) => ((mask >> i) & 1) === 1)
+            .map((g) => g.key),
+          sql: sqlV,
+          positionalSql: toPositionalSql(sqlV),
+          params: scanParams(sqlV),
+        });
+      }
+      variants = out;
+      variantGroups = groupList.map((g) => ({
+        key: g.key,
+        params: g.params,
+        flag: g.flag,
+      }));
+    }
+
     return {
       ...base,
       sourceSql: decl.body.trim(),
-      // Drop the internal `-- param` typing headers from the exposed
-      // (projection-lowered) SQL.
-      sql: base.sql.replace(/^(?:\s*-- param :[^\n]*\n)+/, '').trimStart(),
+      sql: exposedSql,
       params,
       ...(orderBy !== undefined ? { orderBy } : {}),
       ...(decl.limit !== undefined ? { limit: decl.limit } : {}),
@@ -998,6 +1141,8 @@ export function analyzeSyqlFile(
       ...(positionalLimitTail !== undefined && decl.orderBy !== undefined
         ? { positionalLimitTail }
         : {}),
+      ...(variants !== undefined ? { variants } : {}),
+      ...(variantGroups !== undefined ? { variantGroups } : {}),
     };
   });
 }

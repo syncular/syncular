@@ -15,11 +15,12 @@
  * The generate CONTRACT (inputs, outputs, byte-exact `--check`) is unchanged;
  * this file only adds `init`, `--watch`, and friendlier errors.
  */
-import { watch } from 'node:fs';
+import { existsSync, readFileSync, watch, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { checkOutputs, generate, writeOutputs } from './generate';
+import { formatSyql } from './fmt';
+import { checkOutputs, generate, loadQueries, writeOutputs } from './generate';
 import { InitError, initProject } from './init';
-import { MANIFEST_FILENAME } from './manifest';
+import { MANIFEST_FILENAME, parseManifest } from './manifest';
 
 const DOCS_HINT =
   'See the schema guide: https://github.com/bkniffler/syncular (guide-schema), ' +
@@ -29,6 +30,7 @@ const USAGE = `usage: syncular <command> [options]
 
 commands:
   generate   build the IR + typed module from syncular.json + migrations/
+  fmt        format .syql query files canonically (one style, no options)
   init       scaffold a starter syncular.json + migrations/0001_initial
 
 generate options:
@@ -37,6 +39,12 @@ generate options:
   --watch                regenerate on file change (Ctrl-C to stop)
   --print <name>         print one named query's lowered, checked SQL
                          (params, tables, knob variants) and exit
+
+fmt options:
+  [files…]               .syql files to format (default: the manifest's
+                         queries directory, recursively)
+  --manifest-dir <dir>   directory holding syncular.json (default: .)
+  --check                fail unless every file is already canonical
 
 init options:
   --manifest-dir <dir>   directory to scaffold into (default: .)`;
@@ -213,6 +221,72 @@ function runGenerateWatch(args: GenerateArgs): void {
   });
 }
 
+/** `syncular fmt`: canonicalize `.syql` files in place (or `--check`). */
+function runFmt(argv: readonly string[]): void {
+  let manifestDir = '.';
+  let check = false;
+  const files: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i] as string;
+    if (arg === '--check') check = true;
+    else if (arg === '--manifest-dir') {
+      const value = argv[i + 1];
+      if (value === undefined) fail('--manifest-dir requires a value');
+      manifestDir = value;
+      i += 1;
+    } else if (arg.startsWith('--')) {
+      fail(`unknown argument ${JSON.stringify(arg)}\n${USAGE}`);
+    } else {
+      files.push(arg);
+    }
+  }
+  let targets: string[];
+  if (files.length > 0) {
+    targets = files.map((f) => resolve(f));
+  } else {
+    const manifestPath = resolve(manifestDir, MANIFEST_FILENAME);
+    if (!existsSync(manifestPath)) {
+      fail(
+        `no files given and no ${MANIFEST_FILENAME} in ${manifestDir} — pass .syql files or --manifest-dir`,
+      );
+    }
+    const manifest = parseManifest(
+      JSON.parse(readFileSync(manifestPath, 'utf8')),
+    );
+    const queriesDir = resolve(manifestDir, manifest.queries);
+    targets = loadQueries(queriesDir)
+      .filter((q) => q.file.endsWith('.syql'))
+      .map((q) => resolve(queriesDir, q.file));
+  }
+  if (targets.length === 0) {
+    console.log('no .syql files to format');
+    return;
+  }
+  let drifted = 0;
+  for (const path of targets) {
+    if (!path.endsWith('.syql')) {
+      fail(`fmt formats .syql files only, got ${path}`);
+    }
+    const source = readFileSync(path, 'utf8');
+    let formatted: string;
+    try {
+      formatted = formatSyql(path, source);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+    }
+    if (formatted === source) continue;
+    drifted += 1;
+    if (check) {
+      console.error(`${path}: not canonical — run \`syncular fmt\``);
+    } else {
+      writeFileSync(path, formatted, 'utf8');
+      console.log(`formatted ${path}`);
+    }
+  }
+  if (check && drifted > 0) process.exit(1);
+  if (drifted === 0) console.log('all .syql files canonical');
+}
+
 export function runCli(argv: readonly string[]): void {
   const command = argv[0];
   if (command === 'generate') {
@@ -226,6 +300,10 @@ export function runCli(argv: readonly string[]): void {
       return;
     }
     runGenerateOnce(args);
+    return;
+  }
+  if (command === 'fmt') {
+    runFmt(argv.slice(1));
     return;
   }
   if (command === 'init') {
