@@ -265,11 +265,57 @@ const openapi = {
         },
       },
     },
+    '/.well-known/oauth-authorization-server': {
+      get: {
+        summary: 'OAuth Authorization Server metadata',
+        responses: {
+          200: { description: 'RFC 8414 OAuth metadata.' },
+        },
+      },
+    },
+    '/.well-known/oauth-protected-resource': {
+      get: {
+        summary: 'OAuth Protected Resource metadata',
+        responses: {
+          200: { description: 'RFC 9728 protected resource metadata.' },
+        },
+      },
+    },
     '/auth.md': {
       get: {
         summary: 'Agent registration and auth notes',
         responses: {
           200: { description: 'Markdown auth metadata.' },
+        },
+      },
+    },
+    '/agent/auth/register': {
+      get: {
+        summary: 'Anonymous agent registration metadata',
+        responses: {
+          200: { description: 'Registration instructions.' },
+        },
+      },
+      post: {
+        summary: 'Register an anonymous docs-reading agent',
+        responses: {
+          201: { description: 'Anonymous client registration accepted.' },
+        },
+      },
+    },
+    '/agent/auth/claim': {
+      get: {
+        summary: 'Anonymous credential claim metadata',
+        responses: {
+          200: { description: 'Claim instructions for public docs access.' },
+        },
+      },
+    },
+    '/oauth/token': {
+      post: {
+        summary: 'Issue a public docs-read bearer token',
+        responses: {
+          200: { description: 'Bearer token for public docs discovery.' },
         },
       },
     },
@@ -289,7 +335,60 @@ ensureWrite(
     resource: `${site}/`,
     resource_name: 'syncular public documentation',
     resource_documentation: `${site}/auth.md`,
-    bearer_methods_supported: [],
+    authorization_servers: [site],
+    scopes_supported: ['docs:read'],
+    bearer_methods_supported: ['header'],
+  }),
+);
+
+ensureWrite(
+  join(distDir, '.well-known/oauth-authorization-server'),
+  json({
+    issuer: site,
+    authorization_endpoint: `${site}/oauth/authorize`,
+    token_endpoint: `${site}/oauth/token`,
+    jwks_uri: `${site}/oauth/jwks.json`,
+    registration_endpoint: `${site}/agent/auth/register`,
+    grant_types_supported: ['client_credentials'],
+    response_types_supported: ['none'],
+    token_endpoint_auth_methods_supported: ['none'],
+    scopes_supported: ['docs:read'],
+    service_documentation: `${site}/auth.md`,
+    agent_auth: {
+      skill: 'auth.md',
+      register_uri: `${site}/agent/auth/register`,
+      identity_types_supported: ['anonymous'],
+      credential_types_supported: ['bearer'],
+      anonymous: {
+        credential_types_supported: ['bearer'],
+        claim_uri: `${site}/agent/auth/claim`,
+      },
+    },
+  }),
+);
+
+ensureWrite(join(distDir, 'oauth/jwks.json'), json({ keys: [] }));
+
+ensureWrite(
+  join(distDir, 'agent/auth/register'),
+  json({
+    registration: 'anonymous',
+    register_uri: `${site}/agent/auth/register`,
+    token_endpoint: `${site}/oauth/token`,
+    scopes_supported: ['docs:read'],
+    token_endpoint_auth_method: 'none',
+    note: 'POST to register for a public docs-reading client identifier. No user account or secret is required.',
+  }),
+);
+
+ensureWrite(
+  join(distDir, 'agent/auth/claim'),
+  json({
+    identity_type: 'anonymous',
+    credential_type: 'bearer',
+    token_endpoint: `${site}/oauth/token`,
+    scope: 'docs:read',
+    note: 'The bearer token grants access only to public syncular documentation and discovery metadata.',
   }),
 );
 
@@ -298,9 +397,8 @@ ensureWrite(
   `# auth.md
 
 syncular.dev serves public documentation and public discovery metadata. Agents
-do not need to register, request OAuth credentials, or send bearer tokens to
-read the docs, sitemap, API catalog, agent skill index, or Markdown page
-variants.
+can read the docs without credentials, and can also register as anonymous
+docs-reading agents when an OAuth-style discovery flow is required.
 
 ## Agent audience
 
@@ -309,14 +407,36 @@ for applications that embed syncular.
 
 ## Registration
 
-No registration endpoint is required for this documentation site.
+Anonymous agent registration is available at:
+
+- Register URI: ${site}/agent/auth/register
+- Authorization server metadata: ${site}/.well-known/oauth-authorization-server
+- Protected resource metadata: ${site}/.well-known/oauth-protected-resource
+
+Registration does not create a user account and does not grant access to
+private data. It identifies an agent as a public docs reader.
+
+## Supported method
+
+- Identity type: anonymous
+- Credential type: bearer
+- Scope: docs:read
+- Token endpoint: ${site}/oauth/token
+- Claim URI: ${site}/agent/auth/claim
 
 ## Credential use
 
-Do not send credentials to syncular.dev for docs discovery. Application-specific
-Syncular deployments define their own authentication and authorization in the
-application server, typically by implementing scope resolution as described in
-the server and scopes documentation.
+Send an Authorization header only when your agent policy requires an explicit
+bearer credential:
+
+\`\`\`http
+Authorization: Bearer public-docs
+\`\`\`
+
+The token grants access only to public documentation and discovery metadata.
+Application-specific Syncular deployments define their own authentication and
+authorization in the application server, typically by implementing scope
+resolution as described in the server and scopes documentation.
 `,
 );
 
