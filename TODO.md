@@ -158,8 +158,8 @@ verification; push is Benjamin's alone).
 - [ ] **Sunset remainder** — `v1/` deleted from disk (2026-07-07, Benjamin's
       call; full history stays in git). Remaining: execute the registry
       deprecations (incl. the broken-WASM 0.1.x artifacts).
-- [ ] **Gate decision + push** — the evidence is in `bench/RESULTS.md`
-      and `STATUS.md`; the local commit stack ships when pushed.
+- [ ] **Gate decision + push** — the evidence is in `bench/RESULTS.md`;
+      the local commit stack ships when pushed.
 - [ ] **File the two bun issues** — the v1 worker-delivery draft
       (`.context/`), and the worker+sqlite native corruption (repro
       documented in ROADMAP block 4; the test retry-once drops out when
