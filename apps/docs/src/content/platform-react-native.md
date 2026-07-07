@@ -1,19 +1,19 @@
 # React Native
 
-`@syncular/react-native` runs the **native Rust client core** behind a React
-Native TurboModule — rusqlite on the device filesystem, HTTP and WebSockets
-owned in Rust — and surfaces it as the same `SyncClientLike` interface every
-other host implements. The payoff: every `@syncular/react` hook works
+`@syncular/react-native` runs the native Rust client core behind a React
+Native TurboModule (rusqlite on the device filesystem, HTTP and WebSockets
+owned in Rust) and surfaces it as the same `SyncClientLike` interface every
+other host implements. As a result, every `@syncular/react` hook works
 unchanged in a React Native app.
 
-## Why a native core, not JS syncular in Hermes
+## Why the binding runs the native core
 
-RN's Hermes runtime has **no OPFS and no sqlite-wasm**, and the TypeScript
+RN's Hermes runtime lacks both OPFS and sqlite-wasm, and the TypeScript
 client's persistent path depends on both. So React Native uses the native
 core from the [`syncular-ffi`](https://github.com/syncular/syncular/tree/main/rust/crates/ffi)
-crate instead: a real SQLite file on the device filesystem (rusqlite) and a
+crate: a real SQLite file on the device filesystem (rusqlite) and a
 native HTTP + WebSocket transport, bridged through a TurboModule. The bridge
-is thin because the surface is already JSON-command-shaped — `{method,
+is thin because the surface is already JSON-command-shaped: `{method,
 params}` in, `{result|error}` out, bytes as `{"$bytes":"hex"}`, and
 `poll_event` feeding a `NativeEventEmitter`.
 
@@ -21,10 +21,11 @@ params}` in, `{result|error}` out, bytes as `{"$bytes":"hex"}`, and
 
 The package lives at
 [`bindings/react-native`](https://github.com/syncular/syncular/tree/main/bindings/react-native)
-and is **not yet published to npm** — consume it from a repo checkout, the
+and is not yet published to npm; consume it from a repo checkout, the
 way the bundled [example app](https://github.com/syncular/syncular/tree/main/bindings/react-native/example)
-does (Metro `watchFolders` pointed at the workspace source packages, outside
-the bun workspace because RN apps pin exact `react`/`react-native` versions).
+does (Metro `watchFolders` pointed at the workspace source packages, kept
+outside the bun workspace because RN apps pin exact `react`/`react-native`
+versions).
 
 The native artifact is built from the Rust tree:
 
@@ -76,8 +77,8 @@ The config keys:
 ## Every React hook works unchanged
 
 Pass the client to `<SyncProvider>` and the entire
-[`@syncular/react`](/platform-react/) surface — `useQuery`, `useRawSql`,
-`useMutation`, `useSyncStatus`, `usePresence` — behaves exactly as it does
+[`@syncular/react`](/platform-react/) surface (`useQuery`, `useRawSql`,
+`useMutation`, `useSyncStatus`, `usePresence`) behaves exactly as it does
 against the browser client. From the example app's real `App.tsx`:
 
 ```tsx
@@ -104,8 +105,8 @@ export function App({ client }) {
 ```
 
 Native CRDT text (needs the FFI `crdt-yjs` feature) is exposed as typed
-methods on the client — `crdtText`, `crdtInsertText`, `crdtDeleteText`,
-`crdtApplyUpdate` — byte-compatible with the web `@syncular/crdt-yjs` helper.
+methods on the client (`crdtText`, `crdtInsertText`, `crdtDeleteText`,
+`crdtApplyUpdate`), byte-compatible with the web `@syncular/crdt-yjs` helper.
 See [CRDT columns](/concepts-crdt/).
 
 ## Events and lifecycle
@@ -114,8 +115,8 @@ The client core has no callbacks: the native shims pump
 `syncular_client_poll_event` on a background queue and emit each event JSON on
 the `syncular::event` topic. The JS bridge fans `invalidate` out to live
 queries (so `useRawSql` / `useQuery` re-run) and `presence` to presence listeners; the
-rest of the derived event set — `sync-needed`, `conflict`, `rejection`,
-`schema-floor`, `lease` — is observable through the client's accessor methods.
+rest of the derived event set (`sync-needed`, `conflict`, `rejection`,
+`schema-floor`, `lease`) is observable through the client's accessor methods.
 
 Lifecycle is explicit and battery-aware:
 
@@ -131,15 +132,15 @@ Lifecycle is explicit and battery-aware:
   ObjC++. Owns the opaque handle, forwards JSON command strings to the C ABI,
   pumps `poll_event` on a serial background dispatch queue, and emits via
   `RCTEventEmitter`. Every library-owned string is released with
-  `syncular_free_string`, never `free()`.
+  `syncular_free_string`, the deallocator the C ABI requires.
 - **Android shim** — `SyncularModule.kt` + `SyncularPackage.kt`, Kotlin. Binds
-  the C ABI via **FFM** (`java.lang.foreign`) — zero JNI C glue, the same
-  technique as the [Kotlin binding](/platform-kotlin/) — and loads
+  the C ABI via FFM (`java.lang.foreign`) with zero JNI C glue, the same
+  technique as the [Kotlin binding](/platform-kotlin/), and loads
   `libsyncular.so` from the APK's `jniLibs`.
-- The shims compile at the **consuming app's build** (they need the RN pods /
+- The shims compile at the consuming app's build (they need the RN pods /
   Android Gradle Plugin plus the codegen'd spec and the native artifact). The
   JS bridge and the hooks↔module integration are tested hermetically in the
-  repo with an injected NativeModule double — no device needed.
+  repo with an injected NativeModule double, so no device is needed.
 - The native module and event emitter are injectable
   (`createNativeSyncClient({ nativeModule, eventEmitter })`), which is how the
   bridge unit-tests off-device; in an app both auto-resolve.

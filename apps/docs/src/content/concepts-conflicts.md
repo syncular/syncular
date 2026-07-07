@@ -2,8 +2,8 @@
 
 Writes are **optimistic**: `mutate` applies to the local database immediately
 and queues the commit for the next push. Reads never wait for the server. When
-two clients edit the same row, syncular surfaces a **conflict** — it never
-silently auto-resolves.
+two clients edit the same row, syncular surfaces a **conflict** for your app to
+resolve.
 
 Normative detail: [SPEC.md §6](https://github.com/syncular/syncular/blob/main/SPEC.md#6-push-and-commit-application) and
 [§7](https://github.com/syncular/syncular/blob/main/SPEC.md#7-the-client-outbox).
@@ -24,15 +24,16 @@ client.query('SELECT * FROM notes WHERE id = ?', ['n1']);
 ```
 
 Because the outbox is schema-agnostic and encoded at send time, a commit
-written under schema N replays cleanly after an upgrade to N+1 — it re-encodes
-with the current codec rather than the server accepting a retired encoding
+written under schema N replays cleanly after an upgrade to N+1: the outbox
+re-encodes it with the current codec, so the server only ever sees current
+encodings
 ([SPEC §2.4](https://github.com/syncular/syncular/blob/main/SPEC.md#24-schema-ir-and-the-generated-row-codec)).
 
 ## Conflict detection
 
 Pass a `baseVersion` on a mutation to assert "I edited version K." If the
 server's stored `server_version` has moved on, the commit is **rejected with a
-conflict record** rather than overwriting
+conflict record** and the stored row stays as it was
 ([SPEC §6.2](https://github.com/syncular/syncular/blob/main/SPEC.md#6-push-and-commit-application)):
 
 ```ts
@@ -41,9 +42,8 @@ client.mutate([
 ]);
 ```
 
-The conflict is surfaced to your app — never resolved behind your back — and
-carries the current server row already decoded, so you can resolve without a
-round-trip:
+The conflict record carries the current server row already decoded, so you can
+resolve without a round-trip:
 
 ```ts
 const client = new SyncClient({

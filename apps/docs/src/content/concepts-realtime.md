@@ -1,9 +1,9 @@
 # Realtime & the WebSocket-native loop
 
-Once connected, a client has exactly **one** sync loop, and it runs over a
-WebSocket. There is no polling mode and no degraded fallback loop — a
-[direction decision](https://github.com/syncular/syncular/blob/main/ROADMAP.md):
-one good path per concern.
+Once connected, a client has one sync loop, and it runs over a WebSocket. The
+WebSocket loop is the only realtime transport: a
+[direction decision](https://github.com/syncular/syncular/blob/main/ROADMAP.md)
+to keep a single, well-tested path per concern.
 
 Normative detail: [SPEC.md §8](https://github.com/syncular/syncular/blob/main/SPEC.md#8-realtime).
 
@@ -11,23 +11,23 @@ Normative detail: [SPEC.md §8](https://github.com/syncular/syncular/blob/main/S
 
 `POST /sync` and the realtime socket are two **framings of the same
 request/response semantics**. The socket carries sync rounds as tagged binary
-byte streams driven by the same handler as the HTTP endpoint — nothing in the
-protocol distinguishes the two ([SPEC §8.7](https://github.com/syncular/syncular/blob/main/SPEC.md#87-websocket-native-sync-loop),
+byte streams driven by the same handler as the HTTP endpoint, so the protocol
+treats the two identically ([SPEC §8.7](https://github.com/syncular/syncular/blob/main/SPEC.md#87-websocket-native-sync-loop),
 [§1.1](https://github.com/syncular/syncular/blob/main/SPEC.md#11-endpoints)).
 
 - **Reference clients sync exclusively over the socket** once connected.
 - `POST /sync` stays fully conformant, for push-only producers, curl
-  debugging, and server-to-server integration — clients just never touch it,
-  and it adds zero protocol surface.
+  debugging, and server-to-server integration. Reference clients skip it in
+  practice, and it adds zero protocol surface.
 - Segment downloads are HTTP-only (the CDN bulk path).
 
 ## Deltas and wake-ups
 
 When a commit lands that a connected client cares about, the server pushes it
-as a **delta** — an ordinary sync response over the socket — and the client
-applies it and acks. There is exactly one delta kind and one JSON **wake-up**
-kind (three reason codes: `catchup-required`, `delta-too-large`,
-`reset-required`) that means "run a pull soon," never carries data
+as a **delta** (an ordinary sync response over the socket), and the client
+applies it and acks. There is one delta kind and one JSON **wake-up** kind
+(three reason codes: `catchup-required`, `delta-too-large`, `reset-required`)
+that tells the client to run a pull soon; the wake-up itself carries no data
 ([SPEC §8.2/§8.3](https://github.com/syncular/syncular/blob/main/SPEC.md#8-realtime)). Propagation on the in-process
 bench is **0.2 ms p95** ([bench results](/benchmarks/)).
 
@@ -36,7 +36,7 @@ bench is **0.2 ms p95** ([bench results](/benchmarks/)).
 The reference boot order is: connect the socket first, then run the first sync
 round *over* it. The round registers this connection's subscriptions at its
 end, which structurally kills the old "connect-before-first-pull ⇒ silent
-no-fanout" footgun. In client code that is simply:
+no-fanout" footgun. In client code:
 
 ```ts
 await client.start();
@@ -52,9 +52,8 @@ shows the full host loop, including jittered wake coalescing.
 ## Presence
 
 The socket also carries **presence**: ephemeral, scope-keyed peer state
-(who's here, what they're doing) that is never persisted and never enters the
-commit log — lost on disconnect means "left"
-([SPEC §8.6](https://github.com/syncular/syncular/blob/main/SPEC.md#86-presence)).
+(who's here, what they're doing), held in memory only. A disconnect removes
+the member ([SPEC §8.6](https://github.com/syncular/syncular/blob/main/SPEC.md#86-presence)).
 
 ```ts
 await client.setPresence('list:welcome', { editing: 'note-1' }); // join / update
@@ -62,8 +61,8 @@ await client.setPresence('list:welcome', null);                  // leave
 const peers = await client.presence('list:welcome');             // [{ actorId, clientId, doc, … }]
 ```
 
-Authorization rides the same registration as sync: you can publish to and
-receive from a scope key only if your connection holds it — publishing to an
-unheld key fails loudly (`presence.forbidden`), never silently. Peers are
-identified as `(actorId, clientId)`, visible only to scope-mates. In React,
+Authorization uses the same registration as sync: you can publish to and
+receive from a scope key only if your connection holds it. Publishing to an
+unheld key returns `presence.forbidden`. Peers are identified as
+`(actorId, clientId)`, visible only to scope-mates. In React,
 `usePresence(scopeKey)` keeps the peer list live.

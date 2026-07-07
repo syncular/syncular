@@ -1,9 +1,8 @@
 # React
 
-`@syncular/react` ships live queries over **fine-grained invalidation**: a
-query re-runs only when a table it depends on changes — never "re-run
-everything on any change". This page covers the whole hook surface and the
-invalidation model behind it.
+`@syncular/react` ships live queries over fine-grained invalidation: a
+query re-runs only when a table it depends on changes. This page covers the
+whole hook surface and the invalidation model behind it.
 
 React 18+ is a peer dependency; there are no other runtime dependencies.
 
@@ -11,13 +10,13 @@ React 18+ is a peer dependency; there are no other runtime dependencies.
 bun add @syncular/react   # or: npm install @syncular/react
 ```
 
-The bindings work against **both** client hosts through one interface: a
+The bindings work against both client hosts through one interface: a
 direct `SyncClient` (constructed on the current thread) and a
-`SyncClientHandle` (the whole core in an OPFS worker — see
+`SyncClientHandle` (the whole core in an OPFS worker; see
 [Web (browser)](/platform-web/)). Their surfaces diverge (getters vs methods,
-sync vs promise); the bindings normalize both, so a component never cares
-which it holds. The same hooks run unchanged over the Tauri and React Native
-bridges — see [Tauri](/platform-tauri/) and
+sync vs promise); the bindings normalize both, so a component works the same
+with either. The same hooks run unchanged over the Tauri and React Native
+bridges; see [Tauri](/platform-tauri/) and
 [React Native](/platform-react-native/).
 
 ## `SyncProvider`
@@ -42,33 +41,33 @@ it directly if you need it).
 
 ## The invalidation model
 
-The client emits **exactly one** `{ tables, scopeKeys }` invalidation event
+The client emits exactly one `{ tables, scopeKeys }` invalidation event
 per apply batch (a pull round, a local `mutate`, a purge, or a schema-bump
 reset). A live query re-runs only when that event touches one of its
-**dependency tables**.
+dependency tables.
 
-Where do the dependency tables come from? Two answers, by tier:
+The dependency tables come from a different place in each tier:
 
 - `useRawSql` infers them with a conservative scan of the SQL text (the
-  identifiers after `FROM`/`JOIN`). It is a heuristic, intentionally
-  over-inclusive (an extra harmless re-run) rather than under-inclusive (a
-  stale query). The explicit `tables` option always wins.
+  identifiers after `FROM`/`JOIN`). The scan is a heuristic that errs toward
+  including extra tables, so its worst case is a harmless extra re-run. The
+  explicit `tables` option always wins.
 - `useQuery` gets them baked into the generated descriptor — typegen
   resolved them from the query's `FROM`/`JOIN` against the schema.
 
 Events also carry `scopeKeys` where the wire delivered them (commit frames
 carry precise per-row scope keys; segment bootstraps carry only the table).
 The `scopeKeys` option narrows re-runs further, but a table-level event with
-no keys always re-runs a matching query — under-running is a stale query, the
-one thing a live-query layer must never do. The full granularity contract is
+no keys always re-runs a matching query, so results stay fresh even when the
+wire carried no key information. The full granularity contract is
 in the [react package README](https://github.com/syncular/syncular/tree/main/packages/react).
 
 ## `useRawSql(sql, params?, options?)`
 
-Runs a local SQL string and keeps it live — the raw escape-hatch tier.
+Runs a local SQL string and keeps it live.
 Returns `{ rows, isLoading, error, refresh }`. The statement goes through
 the core's read guard: exactly one statement, read-only verbs only
-(`SELECT`/`WITH`/`EXPLAIN`/`PRAGMA`/`VALUES`) — writes must go through the
+(`SELECT`/`WITH`/`EXPLAIN`/`PRAGMA`/`VALUES`); writes go through the
 outbox via `useMutation`.
 
 ```tsx
@@ -82,17 +81,17 @@ const { rows, isLoading } = useRawSql(
 
 | Option      | Meaning                                                                           |
 | ----------- | --------------------------------------------------------------------------------- |
-| `tables`    | Explicit dependency tables. Overrides the SQL-text inference (the escape hatch).   |
+| `tables`    | Explicit dependency tables. Overrides the SQL-text inference.                      |
 | `scopeKeys` | Narrow re-runs to specific `prefix:value` keys (see the invalidation model above). |
 | `enabled`   | Skip running while `false` (e.g. inputs not ready).                                |
 
 ## `useQuery(query, params?, options?)`
 
-The hook for the generated **named-query** tier — the recommended read tier:
+The hook for the generated named-query tier, the recommended read tier:
 you author a `.sql` file, typegen emits a typed descriptor plus its `Row`
-type, and the hook runs it live with the descriptor's exact table set —
-precise invalidation, zero heuristics, and the row type is the query's own
-projection.
+type, and the hook runs it live with the descriptor's exact table set.
+Invalidation is precise with no heuristics involved, and the row type is the
+query's own projection.
 
 ```tsx
 import { useQuery } from '@syncular/react';
@@ -108,7 +107,7 @@ A param-less query takes no second argument. See
 
 Returns `{ mutate, isPending, error }`. `mutate(mutations)` resolves to the
 commit id; the optimistic overlay is applied immediately, and dependent
-queries re-run on the resulting invalidation batch — no manual refetch.
+queries re-run on the resulting invalidation batch without a manual refetch.
 
 ```tsx
 const { mutate, isPending } = useMutation();
@@ -121,13 +120,13 @@ await mutate([
 
 - `useSyncStatus()` → `{ outbox, upgrading, leaseState, schemaFloor,
   syncNeeded, isLoading, refresh }`. Re-reads after every apply batch.
-  (`online` is not reported — the core does not own connectivity, so the hook
-  never guesses it.)
+  (`online` is not reported: the core does not own connectivity, so the hook
+  reports only what the core knows.)
 - `useConflicts()` → `{ conflicts, rejections, refresh }` — see
   [Conflicts](/concepts-conflicts/).
 - `usePresence(scopeKey)` → the ephemeral peers present on a scope key, as an
-  array; updates on join/update/leave. Empty (never crashes) without a
-  connected realtime socket — see [Realtime](/concepts-realtime/).
+  array; updates on join/update/leave. Returns an empty array when no realtime
+  socket is connected; see [Realtime](/concepts-realtime/).
 - `useWindow(base)` → `{ units, setWindow, isComplete }` — the
   [windowed sync](/concepts-windowing/) surface: `setWindow(units)` swaps the
   live scope values (added units bootstrap, removed units evict), and
@@ -197,8 +196,8 @@ other host.
 ## SSR
 
 The hooks are SSR-safe: on the server they render their initial state and the
-query fires only in the client-side mount effect. `renderToString` never
-crashes.
+query fires only in the client-side mount effect, so `renderToString`
+completes cleanly.
 
 ## Where to go next
 

@@ -2,7 +2,7 @@
 
 Every demo is the same very simple todo list, proving two things per
 platform: **syncular compiles/works there**, and **the integration is a
-handful of clean lines — no hacks**. All demos speak to a stock server
+handful of clean lines**. All demos speak to a stock server
 (`apps/demo`/`apps/demo-react` serve the `todos` schema on :8787/:8788;
 `examples/quickstart` serves the `notes` schema).
 

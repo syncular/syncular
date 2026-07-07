@@ -2,8 +2,8 @@
 
 The docs are the guide;
 [`SPEC.md`](https://github.com/syncular/syncular/blob/main/SPEC.md) is the
-reference. Normative text is never duplicated here — this page points into it,
-and maps every published package, crate, and binding to where it lives.
+reference. All normative text stays in the spec; this page points into it, and
+maps every published package, crate, and binding to where it lives.
 
 ## SPEC.md by section
 
@@ -37,10 +37,10 @@ All published under the `@syncular/*` scope (plus the unscoped scaffolder):
 | `@syncular/server-workers` | Cloudflare Workers entry: fetch handler over D1 storage + R2 segments/blobs | [packages/server-workers](https://github.com/syncular/syncular/tree/main/packages/server-workers) |
 | `@syncular/client` | The TS client core on sqlite-wasm/OPFS, worker + transports, multi-tab | [packages/web-client](https://github.com/syncular/syncular/tree/main/packages/web-client) |
 | `@syncular/react` | React bindings: `SyncProvider` + hooks over fine-grained invalidation | [packages/react](https://github.com/syncular/syncular/tree/main/packages/react) |
-| `@syncular/crypto` | Client-side E2EE primitives (symmetric + asymmetric) — see [Encryption](/concepts-encryption/) | [packages/crypto](https://github.com/syncular/syncular/tree/main/packages/crypto) |
-| `@syncular/crdt-yjs` | The Yjs `crdt`-column merger (server) + `YjsColumn` client helper — see [CRDT columns](/concepts-crdt/) | [packages/crdt-yjs](https://github.com/syncular/syncular/tree/main/packages/crdt-yjs) |
+| `@syncular/crypto` | Client-side E2EE primitives (symmetric + asymmetric); see [Encryption](/concepts-encryption/) | [packages/crypto](https://github.com/syncular/syncular/tree/main/packages/crypto) |
+| `@syncular/crdt-yjs` | The Yjs `crdt`-column merger (server) + `YjsColumn` client helper; see [CRDT columns](/concepts-crdt/) | [packages/crdt-yjs](https://github.com/syncular/syncular/tree/main/packages/crdt-yjs) |
 | `@syncular/typegen` | Migrations + manifest → schema IR → generated modules (TS, Swift, Kotlin, Dart) + named queries; ships the `syncular` CLI | [packages/typegen](https://github.com/syncular/syncular/tree/main/packages/typegen) |
-| `@syncular/tauri` | `createTauriSyncClient()` — a `SyncClientLike` over Tauri IPC, paired with the `tauri-plugin-syncular` Rust plugin | [packages/tauri](https://github.com/syncular/syncular/tree/main/packages/tauri) |
+| `@syncular/tauri` | `createTauriSyncClient()`, a `SyncClientLike` over Tauri IPC, paired with the `tauri-plugin-syncular` Rust plugin | [packages/tauri](https://github.com/syncular/syncular/tree/main/packages/tauri) |
 | `@syncular/testkit` | App-developer test kit: in-memory server + N real clients in one test file | [packages/testing](https://github.com/syncular/syncular/tree/main/packages/testing) |
 | `create-syncular-app` | Scaffolder: `bun create syncular-app my-app` (`minimal` / `web` templates) | [packages/create-app](https://github.com/syncular/syncular/tree/main/packages/create-app) |
 
@@ -58,9 +58,9 @@ The Rust side, published in dependency order:
 | Crate | What it is | Source |
 |---|---|---|
 | `syncular-ssp2` | The SSP2 wire codec, implemented from SPEC.md alone | [rust/crates/ssp2](https://github.com/syncular/syncular/tree/main/rust/crates/ssp2) |
-| `syncular-client` | The Rust client core on rusqlite — the native runtime the bindings host | [rust/crates/client](https://github.com/syncular/syncular/tree/main/rust/crates/client) |
-| `syncular-command` | The shared JSON command router over the client core — one command surface for the conformance shim, the FFI core, and the Tauri plugin | [rust/crates/command](https://github.com/syncular/syncular/tree/main/rust/crates/command) |
-| `syncular-ffi` | The client core packaged as a C-ABI native library (`rust/ffi.h`) — the shipping runtime for iOS/Android/JVM/desktop | [rust/crates/ffi](https://github.com/syncular/syncular/tree/main/rust/crates/ffi) |
+| `syncular-client` | The Rust client core on rusqlite, the native runtime the bindings host | [rust/crates/client](https://github.com/syncular/syncular/tree/main/rust/crates/client) |
+| `syncular-command` | The shared JSON command router over the client core, used by the conformance shim, the FFI core, and the Tauri plugin | [rust/crates/command](https://github.com/syncular/syncular/tree/main/rust/crates/command) |
+| `syncular-ffi` | The client core packaged as a C-ABI native library (`rust/ffi.h`); the shipping runtime for iOS/Android/JVM/desktop | [rust/crates/ffi](https://github.com/syncular/syncular/tree/main/rust/crates/ffi) |
 
 The bare `syncular` crate name is a deprecated placeholder that points at
 `syncular-client`.
@@ -72,23 +72,24 @@ repo checkout rather than a registry:
 
 | Binding | What it is | How you consume it |
 |---|---|---|
-| [bindings/swift](https://github.com/syncular/syncular/tree/main/bindings/swift) | `SyncularClient` — an idiomatic Swift wrapper over `syncular-ffi` | A separate SwiftPM package (`Package.swift`); add it as a SwiftPM dependency |
-| [bindings/kotlin](https://github.com/syncular/syncular/tree/main/bindings/kotlin) | `SyncularClient` — a Kotlin/JVM wrapper over `syncular-ffi` via FFM (JDK 21+, zero runtime deps beyond the stdlib) | A separate Gradle project; depend on it from your Gradle build |
-| [bindings/flutter](https://github.com/syncular/syncular/tree/main/bindings/flutter) | `SyncularClient` — a Dart wrapper over `syncular-ffi` via `dart:ffi` | The `syncular` Dart package at `bindings/flutter/syncular`; add it as a pub path dependency |
-| [bindings/tauri](https://github.com/syncular/syncular/tree/main/bindings/tauri) | `tauri-plugin-syncular` — the client core running natively in the Tauri host process | A cargo path/git dependency on `bindings/tauri/plugin`, paired with `@syncular/tauri` in the webview |
+| [bindings/swift](https://github.com/syncular/syncular/tree/main/bindings/swift) | `SyncularClient`, an idiomatic Swift wrapper over `syncular-ffi` | A separate SwiftPM package (`Package.swift`); add it as a SwiftPM dependency |
+| [bindings/kotlin](https://github.com/syncular/syncular/tree/main/bindings/kotlin) | `SyncularClient`, a Kotlin/JVM wrapper over `syncular-ffi` via FFM (JDK 21+, zero runtime deps beyond the stdlib) | A separate Gradle project; depend on it from your Gradle build |
+| [bindings/flutter](https://github.com/syncular/syncular/tree/main/bindings/flutter) | `SyncularClient`, a Dart wrapper over `syncular-ffi` via `dart:ffi` | The `syncular` Dart package at `bindings/flutter/syncular`; add it as a pub path dependency |
+| [bindings/tauri](https://github.com/syncular/syncular/tree/main/bindings/tauri) | `tauri-plugin-syncular`, the client core running natively in the Tauri host process | A cargo path/git dependency on `bindings/tauri/plugin`, paired with `@syncular/tauri` in the webview |
 
 ## Contracts
 
-- **Manifest / IR / SQL subset / named queries** — [typegen README](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md).
+Each operational contract lives next to the code that enforces it:
+
+- The manifest, schema IR, SQL subset, and named-query format are specified in the [typegen README](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md).
 - **Ops events catalog** — [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md#structured-events-the-ops-seam).
 - **Horizon & pruning runbook** — [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md#horizon--pruning-operational-guidance).
 - **S3/R2 + CDN + signed URLs** — [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md#segment-storage-on-s3--r2-s3segmentstore).
 - **Postgres storage** — [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md#postgres-storage-the-production-database-path).
-- **Runtime / deployment matrix (Bun/Node, Cloudflare Workers)** — [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md#deployment-matrix-runtime-adapters-todo-42).
-- **Admin / console surface** — [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md#admin--console-surface-syncularadmin).
-- **Load-test suite (scale & stability lanes)** — [load/README.md](https://github.com/syncular/syncular/blob/main/load/README.md).
-- **Native core C ABI (the five functions every binding wraps)** — [FFI README](https://github.com/syncular/syncular/blob/main/rust/crates/ffi/README.md).
-- **Bindings doctrine (what a wrapper must prove)** — [bindings/README.md](https://github.com/syncular/syncular/blob/main/bindings/README.md).
+- The runtime / deployment matrix (Bun/Node, Cloudflare Workers) is in the [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md#deployment-matrix-runtime-adapters-todo-42), as is the [admin / console surface](https://github.com/syncular/syncular/blob/main/packages/server/README.md#admin--console-surface-syncularadmin).
+- The load-test suite (scale & stability lanes) is documented in [load/README.md](https://github.com/syncular/syncular/blob/main/load/README.md).
+- **Native core C ABI**, the five functions every binding wraps: [FFI README](https://github.com/syncular/syncular/blob/main/rust/crates/ffi/README.md).
+- **Bindings doctrine**, what a wrapper must prove: [bindings/README.md](https://github.com/syncular/syncular/blob/main/bindings/README.md).
 
 ## Design & roadmap docs
 

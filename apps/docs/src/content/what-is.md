@@ -1,36 +1,36 @@
 # What is syncular
 
 Syncular gives your app a **local SQLite database that stays in sync** with a
-server-authoritative commit log, scoped to exactly the data each user is
-allowed to see. You read and write local SQL; syncular handles the rest —
-optimistic writes, bootstrap, realtime deltas, offline replay, conflicts.
+server-authoritative commit log, scoped to the data each user is allowed to
+see. You read and write local SQL; syncular handles optimistic writes,
+bootstrap, realtime deltas, offline replay, and conflicts.
 
 The one-liner: **local SQLite + a server-authoritative commit log + scopes.**
 
 ## How it fits together
 
-Every client — a browser tab, an iPhone, a Flutter app, a Rust process — owns a
-real SQLite database. Reads are plain SQL against that database: joins,
-aggregates, indexes, all local and instant. Writes apply locally at once and
-queue in a durable **outbox**; when the network is there, they push to the
-server as idempotent **commits**.
+Every client (a browser tab, an iPhone, a Flutter app, a Rust process) owns a
+real SQLite database. Reads are plain SQL against that database, so joins,
+aggregates, and indexes work locally without a network round trip. Writes
+apply locally at once and queue in a durable **outbox**; when the network is
+there, they push to the server as idempotent **commits**.
 
 The server is authoritative. It validates every commit against your **scopes**
 (one `resolveScopes(actor)` function that lives in *your* backend, next to your
 auth), appends it to an ordered commit log, and delivers it to every subscribed
-client — as a fast bootstrap **segment** for fresh replicas, and as realtime
+client: as a fast bootstrap **segment** for fresh replicas, and as realtime
 deltas over WebSocket for live ones. Conflicting writes are detected by version
-and surfaced to your app with the server row attached; nothing is silently
-merged.
+and handed to your app with the server row attached, so your app decides the
+merge.
 
-## One protocol, two cores, every platform
+## One protocol, two cores
 
 Syncular is a **written protocol** ([SPEC.md](https://github.com/syncular/syncular/blob/main/SPEC.md))
 with two independent, conformance-locked implementations:
 
-- A **TypeScript core** for the web — the whole client runs in a Web Worker on
+- A **TypeScript core** for the web. The whole client runs in a Web Worker on
   OPFS-backed sqlite-wasm, 19.6 KB gzip of syncular's own code.
-- A **Rust core** for everything else — rusqlite on the device filesystem,
+- A **Rust core** for everything else: rusqlite on the device filesystem,
   shipped through a five-function C FFI.
 
 Both pass the same golden byte-level vectors and the same conformance catalog
@@ -56,52 +56,51 @@ On the server you get a framework-neutral core with adapters for
 [SQLite, Postgres, or D1](/server-storage/), and segments/blobs on
 S3-compatible stores.
 
-## What it is — and is not
+## Boundaries
 
 Syncular is **server-authoritative, offline-first SQL sync you can operate**.
-It is deliberately not several other things:
+A few boundaries define it:
 
-- **Not decentralized.** There is one server and one ordered log. That is a
-  feature: authorization, audit, and pruning stay tractable.
-- **Not a pure CRDT engine.** Rows converge through versioned upserts with
-  explicit conflicts; [CRDT columns](/concepts-crdt/) (Yjs/yrs) are opt-in for
-  collaborative text, not the default for all data.
-- **Not automatic conflict resolution.** Version mismatches are surfaced with
-  the server row attached; your app decides. See
+- **One server, one ordered log.** A single source of truth keeps
+  authorization, audit, and pruning tractable. There is no peer-to-peer mode.
+- **Versioned rows with explicit conflicts.** Rows converge through versioned
+  upserts, and conflicts surface to your app. Where you want collaborative
+  text, [CRDT columns](/concepts-crdt/) (Yjs/yrs) handle merging per column.
+- **Your app resolves conflicts.** Version mismatches arrive with the server
+  row attached, and your code decides what happens next. See
   [Conflicts](/concepts-conflicts/).
-- **Not for frame-by-frame multiplayer.** Great for durable, authorized app
-  data; wrong tool for physics state.
+- **Built for durable, authorized app data.** Frame-by-frame multiplayer
+  state belongs in a dedicated netcode layer.
 
 ## Boring by design
 
-Sync engines usually bleed effort on infrastructure entropy: implicit
-protocols, toolchain taxes, fallback ladders. Syncular spends its whole
-budget on **boring-ness**:
+Sync engines usually bleed effort on infrastructure: implicit protocols and
+toolchain overhead. Syncular spends its whole budget on boring-ness:
 
 | Decision | Why it matters |
 |---|---|
-| A written protocol ([SPEC.md](https://github.com/syncular/syncular/blob/main/SPEC.md)) | A third implementation plugs in against a spec + vectors, not a binary. Divergence is a bug you can point at. |
-| Two cores, one protocol | The web core is small, debuggable TypeScript with no cargo; the Rust core ships native. Parity is a CI gate, not a hope. |
-| No fallback ladders | One sync loop over WebSocket, one persistent browser mode (OPFS), one bootstrap format preference. Unsupported means fail-loud, never a silent degraded path. |
-| Scopes run in *your* backend | `resolveScopes(actor)` lives next to your auth. Sync never becomes a second authorization system to keep in agreement. |
-| One command to a running app | `bun create syncular-app my-app` scaffolds a working server + client with the typed schema wired up — no cargo, no config archaeology. |
+| A written protocol ([SPEC.md](https://github.com/syncular/syncular/blob/main/SPEC.md)) | A third implementation plugs in against the spec and its golden vectors. Divergence is a bug you can point at. |
+| Two cores, one protocol | The web core is small, debuggable TypeScript that builds without the Rust toolchain; the Rust core ships native. Parity between them is a CI gate. |
+| One path per concern | One sync loop over WebSocket, one persistent browser mode (OPFS), one preferred bootstrap format. An unsupported environment produces a clear error. |
+| Scopes run in *your* backend | `resolveScopes(actor)` lives next to your auth, so sync reuses the authorization you already have. |
+| One command to a running app | `bun create syncular-app my-app` scaffolds a working server and client with the typed schema already wired up. |
 
 ## The numbers
 
 - **30 ms** to bootstrap a 100k-row image on a fresh client (the rows lane is
-  365 ms) — see [benchmarks](/benchmarks/).
+  365 ms). See [benchmarks](/benchmarks/).
 - **0.2 ms p95** realtime propagation between two live clients.
 - **19.6 KB gzip** of syncular's own client JavaScript; the rest of the browser
   payload is the stock sqlite-wasm distribution every wasm-SQLite product ships.
-- **764 tests, 74 conformance scenarios × 2 cores, 19 golden vector cases** —
+- **764 tests, 74 conformance scenarios × 2 cores, 19 golden vector cases**,
   all CI-blocking.
 
-> Version-truth: these docs describe what is in the tree today. Roadmap items
-> are called out as roadmap where they appear, never documented as shipped.
+> These docs describe what is in the tree today. Roadmap items are labeled as
+> roadmap where they appear.
 
 ## Where to go next
 
 - **[Quickstart](/quickstart/)** — two synced clients in a terminal, ≤ 5 minutes.
 - **[Live demos](/demos/)** — see convergence, offline replay, and conflicts run.
-- **[Scopes & authorization](/concepts-scopes/)** — the moat, and the one piece you write.
+- **[Scopes & authorization](/concepts-scopes/)** — the one piece you write yourself.
 - **[Protocol & conformance](/guide-conformance/)** — how the two cores stay in lockstep.

@@ -1,18 +1,19 @@
 # Tauri
 
-A Tauri app runs a **native syncular instance inside the host process** —
+A Tauri app runs a native syncular instance inside the host process:
 `tauri-plugin-syncular` (Rust) consumes the client core directly as a crate,
-no FFI — and the webview talks to it through a thin JS bridge,
+with no FFI layer, and the webview talks to it through a thin JS bridge,
 `@syncular/tauri`, that implements the same `SyncClientLike` interface every
 other host does. Every `@syncular/react` hook works unchanged.
 
-## Why a native instance, not JS in the webview
+## Why the client lives in the host process
 
 Webview OPFS is eviction-prone and inconsistent across WKWebView and
 webkitgtk. The Rust core gives a real on-disk SQLite database (rusqlite) and
 native performance. So the full client runs in the Tauri host process and the
-webview is a thin RPC client of it — the same shape as the browser worker
-mode, except the "worker" is the native process and the RPC is Tauri IPC.
+webview is a thin RPC client of it. This is the same shape as the browser
+worker mode, except the "worker" is the native process and the RPC is Tauri
+IPC.
 
 ## Install
 
@@ -24,7 +25,7 @@ bun add @syncular/tauri @syncular/react
 
 The Rust plugin lives at
 [`bindings/tauri/plugin`](https://github.com/syncular/syncular/tree/main/bindings/tauri/plugin)
-and is **not published to crates.io** — consume it as a path dependency from a
+and is not published to crates.io; consume it as a path dependency from a
 repo checkout:
 
 ```toml
@@ -33,9 +34,9 @@ tauri-plugin-syncular = { path = "../../syncular/bindings/tauri/plugin", feature
 ```
 
 The `native-transport` feature compiles the plugin's HTTP + WebSocket stack
-(`ureq` + `tungstenite` — blocking, no async runtime). Without it the plugin
-builds a client-local core: network commands fail loudly, local reads and
-writes still work.
+(`ureq` + `tungstenite`, both blocking, with no async runtime). Without it the
+plugin builds a client-local core: network commands return errors while local
+reads and writes keep working.
 
 ## Register the plugin
 
@@ -122,31 +123,31 @@ conformance-locked.
 
 Native CRDT text (plugin `crdt-yjs` feature) rides `syncular_command`, and
 `@syncular/tauri` exposes typed `crdtText` / `crdtInsertText` /
-`crdtDeleteText` / `crdtApplyUpdate` methods — byte-compatible with the web
+`crdtDeleteText` / `crdtApplyUpdate` methods, byte-compatible with the web
 `@syncular/crdt-yjs` helper, so a Tauri app and a browser can edit the same
 document. See [CRDT columns](/concepts-crdt/).
 
 ## Threading
 
-`SyncClient` is synchronous and owns a rusqlite connection — it is not
-`Sync`. The plugin therefore keeps exactly **one owning thread** holding the
-core, and every access arrives over a command **mailbox** (an mpsc channel):
-the Tauri commands post a request and await the reply, never touching the
-client. The §8.4 background host loop (wake-driven `syncUntilIdle` with
-jitter) runs on that same owning thread, interleaved with mailbox requests,
-so the connection is never accessed concurrently.
+`SyncClient` is synchronous, owns a rusqlite connection, and is not
+`Sync`. The plugin therefore keeps exactly one owning thread holding the
+core, and every access arrives over a command mailbox (an mpsc channel):
+the Tauri commands post a request and await the reply, and only the owning
+thread touches the client. The §8.4 background host loop (wake-driven
+`syncUntilIdle` with jitter) runs on that same owning thread, interleaved
+with mailbox requests, so all access to the connection is serialized.
 
 ## Native transport
 
 With `native-transport`, the plugin owns the network: blocking HTTP via
 `ureq` (`POST /sync`, segment and blob endpoints) and the realtime socket via
 `tungstenite`, with a reader thread routing inbound frames. When the socket
-is connected, each combined push+pull round runs **over the socket** in the
-§8.7 one-loop shape — the same behavior as the web client; with no socket the
-round rides `POST /sync`. One round in flight per connection; a mid-round
-socket drop fails the round rather than hanging.
+is connected, each combined push+pull round runs over the socket in the
+§8.7 one-loop shape, the same behavior as the web client; with no socket the
+round rides `POST /sync`. One round is in flight per connection, and a
+mid-round socket drop fails the round immediately.
 
-One practical note: every live-query run is one IPC round trip — fine at
+Every live-query run is one IPC round trip, which is fine at
 Tauri IPC latency for typical view queries. For very large result sets the
 serialization dominates, so paginate with `LIMIT`/`OFFSET` (or keyset
 pagination) in the SQL you pass. The native core holds the whole database;
@@ -158,7 +159,7 @@ the webview should pull windows of it.
 is a minimal Tauri app proving the loop end to end: `src-tauri` registers the
 plugin with `native-transport` pointed at a local dev server, and the
 frontend is a React todo list on `useRawSql` + `useMutation` +
-`useSyncStatus` over `createTauriSyncClient` — the exact hooks the browser
+`useSyncStatus` over `createTauriSyncClient`, the exact hooks the browser
 demo uses. The only Tauri-specific line is the client construction.
 
 ## Where to go next

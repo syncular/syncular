@@ -14,8 +14,8 @@ Normative detail: [SPEC.md §2](https://github.com/syncular/syncular/blob/main/S
   monotonic per partition. All changes in a commit share it
   ([SPEC §2.1](https://github.com/syncular/syncular/blob/main/SPEC.md#21-commits-and-the-log)).
 - A **partition** is your tenant boundary. Your `authenticate()` maps each
-  request to exactly one partition; commit logs, cursors, and segments are all
-  partition-local. Partitions never appear on the wire.
+  request to a single partition; commit logs, cursors, and segments are all
+  partition-local. Partitions are server-internal and never appear on the wire.
 - Every synced row carries a **`server_version`** (starts at 1, +1 per
   upsert). It is the optimistic-concurrency token behind conflict detection
   ([Conflicts](/concepts-conflicts/)).
@@ -25,10 +25,10 @@ Normative detail: [SPEC.md §2](https://github.com/syncular/syncular/blob/main/S
 A subscription's cursor is the last `commitSeq` it has fully applied. Each
 pull returns the window after the cursor, filtered to the subscription's
 effective scopes, and reports the new cursor to persist. The cursor advances
-even when no matching changes exist — which is what makes quiet subscriptions
+even when no matching changes exist, which keeps quiet subscriptions
 cheap ([SPEC §4.5](https://github.com/syncular/syncular/blob/main/SPEC.md#45-incremental-pull-and-commit-frames)).
 
-`cursor = -1` means "never synced" — the signal to bootstrap
+`cursor = -1` means "never synced": the signal to bootstrap
 ([Bootstrap & segments](/concepts-bootstrap/)).
 
 ## Idempotency
@@ -44,15 +44,15 @@ ack is safe:
 - an originally-rejected commit replays as the same rejection.
 
 Exactly-once apply per client commit; at-least-once delivery of results. This
-is why the client outbox can retry freely after any network blip — the
+is why the client outbox can retry freely after any network blip; the
 [offline replay](/guide-client/) story rests on it.
 
 ## The pruning horizon
 
 The log does not grow forever. The server maintains a per-partition
 **`horizonSeq`**; commits at or below it may be pruned. A client whose cursor
-falls behind the horizon gets a `reset` and re-bootstraps — correct behavior,
-not an error ([SPEC §4.6](https://github.com/syncular/syncular/blob/main/SPEC.md#46-the-pruning-horizon)). Operating
+falls behind the horizon gets a `reset` and re-bootstraps; this is the
+designed recovery path ([SPEC §4.6](https://github.com/syncular/syncular/blob/main/SPEC.md#46-the-pruning-horizon)). Operating
 the horizon (retention floors, when to prune, what to alert on) is covered in
 [Server setup](/guide-server/) and the
 [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md#horizon--pruning-operational-guidance).

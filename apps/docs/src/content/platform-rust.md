@@ -1,6 +1,6 @@
 # Rust
 
-The **`syncular-client`** crate is the Rust client core itself — the same
+The `syncular-client` crate is the Rust client core itself, the same
 engine the Tauri plugin, the C FFI, and every native binding run. Use it
 directly when your host is a Rust program: you get a synchronous,
 host-driven `SyncClient` on rusqlite, with your code owning the transport
@@ -15,7 +15,8 @@ Published on crates.io:
 syncular-client = "0.2.1"
 ```
 
-Feature flags (both off by default, keeping the core dependency-lean):
+Feature flags (both off by default, which keeps the core's dependency tree
+small):
 
 ```toml
 [dependencies]
@@ -27,13 +28,13 @@ syncular-client = { version = "0.2.1", features = ["crdt-yjs", "e2ee"] }
   Yjs-wire-compatible with the web `@syncular/crdt-yjs` helper.
 - `e2ee` — §5.11 client-side encryption (installed via `set_encryption`).
 
-The wire codec lives in **`syncular-ssp2`** (library name `ssp2`, also
+The wire codec lives in `syncular-ssp2` (library name `ssp2`, also
 `0.2.1` on crates.io); it arrives as a dependency and you rarely need it
 directly.
 
 ## The character of the API
 
-Three decisions shape everything:
+Three decisions shape the API:
 
 - **Synchronous and host-driven.** There is no async runtime and no
   background thread inside the core. Your code calls `sync()` /
@@ -42,7 +43,7 @@ Three decisions shape everything:
   is host policy.
 - **Thread-affine.** `SyncClient` owns a rusqlite connection and is not
   `Sync`. Drive one client from one thread; if other threads need access,
-  use a mailbox (an mpsc channel to the owning thread) — the pattern the
+  use a mailbox (an mpsc channel to the owning thread), the pattern the
   Tauri plugin and the FFI use.
 - **Transport is a seam.** The core never opens a socket. You hand every
   network-touching call a `&mut dyn Transport` you implement.
@@ -75,7 +76,7 @@ let mut client = SyncClient::open_path(
 )?;
 ```
 
-The schema JSON is the §2.4 client IR — the same shape
+The schema JSON is the §2.4 client IR, the same shape
 [typegen](/guide-schema/) emits (`syncular.ir.json` / the generated module),
 so a Rust client and a TypeScript client can share one generated schema.
 Three constructors cover the storage choices: `SyncClient::new` (in-memory),
@@ -114,7 +115,7 @@ let rows = client.query("SELECT id, title FROM todos ORDER BY id", &[])?;
 ```
 
 `mutate` records a local commit, applies it optimistically, and queues it in
-the outbox — it works fully offline. `Mutation` has two arms: `Upsert
+the outbox; it works fully offline. `Mutation` has two arms: `Upsert
 { table, values, base_version }` and `Delete { table, row_id, base_version }`
 (`base_version` drives [conflict detection](/concepts-conflicts/)).
 Divergence surfaces through `conflicts()`, `rejections()`, and
@@ -138,8 +139,8 @@ match client.sync_until_idle(&mut transport, None) {
 }
 ```
 
-`sync()` never panics or errors out-of-band — transport and protocol
-failures come back as `SyncOutcome::Failed`. After a round, `sync_needed()`
+Transport and protocol failures come back as `SyncOutcome::Failed`;
+`sync()` does not panic or error out-of-band. After a round, `sync_needed()`
 tells you whether another round is already warranted.
 
 ## The `Transport` trait
@@ -156,17 +157,17 @@ network-touching call. The required methods:
 - `realtime_connect` / `realtime_send` / `realtime_close` — the socket
   lifecycle and client→server control messages.
 
-Optional methods (with fail-loud defaults) cover signed-URL fetches
+Optional methods (whose default implementations return an error) cover
+signed-URL fetches
 (`supports_url_fetch` + `fetch_url`) and the blob endpoints (`blob_upload`,
 `blob_download`, `blob_upload_grant`, `blob_put_url`, `fetch_blob_url`).
 
 The reference implementation is the `syncular-ffi` crate's native transport
 (behind its `native-transport` feature): blocking HTTP via `ureq` and a
-`tungstenite` realtime socket with a reader thread — see
+`tungstenite` realtime socket with a reader thread; see
 [`rust/crates/ffi/src/transport.rs`](https://github.com/syncular/syncular/blob/main/rust/crates/ffi/src/transport.rs).
-If you want that stack instead of writing your own, embed `syncular-ffi`
-rather than hand-rolling; if your host already has an HTTP client, the trait
-is deliberately small.
+To reuse that stack, embed `syncular-ffi`; if your host already has an HTTP
+client, the trait is small enough to implement over it.
 
 ## Realtime
 
@@ -179,8 +180,8 @@ your socket reader into the core:
 
 Applied deltas update the local tables directly; `sync_needed()` flips when a
 round is warranted. `disconnect_realtime` closes the lane. While the socket
-is connected the core routes sync rounds through `Transport::realtime_sync`
-— the socket is the sync-round transport, not a fallback pair. See
+is connected the core routes sync rounds through `Transport::realtime_sync`;
+the connected socket carries the sync rounds themselves. See
 [Realtime](/concepts-realtime/).
 
 ## Where to go next

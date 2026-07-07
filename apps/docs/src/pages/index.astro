@@ -9,14 +9,14 @@ import { TABS } from '../snippets';
 const FEATURES = [
   { title: 'scopes-as-code', body: 'one resolveScopes(actor) in your backend gates every read and write', href: '/concepts-scopes/' },
   { title: 'offline outbox', body: 'writes queue while out of range, replay in order on reconnect', href: '/concepts-conflicts/' },
-  { title: 'honest conflicts', body: 'surfaced with the server row attached, never silently merged', href: '/concepts-conflicts/' },
-  { title: 'realtime', body: 'verified deltas over one WebSocket loop — no polling, no fallback ladder', href: '/concepts-realtime/' },
+  { title: 'honest conflicts', body: 'surfaced with the server row attached; your app decides the merge', href: '/concepts-conflicts/' },
+  { title: 'realtime', body: 'verified deltas pushed over a single WebSocket loop', href: '/concepts-realtime/' },
   { title: 'fast bootstrap', body: 'precomputed sqlite-image segments; 100k rows in ~30 ms', href: '/concepts-bootstrap/' },
   { title: 'CRDT columns', body: 'collaborative text per column, byte-identical across both cores', href: '/concepts-crdt/' },
   { title: 'blobs', body: 'content-addressed attachments on S3/R2, re-authorized per download', href: '/concepts-blobs/' },
-  { title: 'optional E2EE', body: 'per-column AES-256-GCM — the well does not need to read your matter', href: '/concepts-encryption/' },
+  { title: 'optional E2EE', body: 'per-column AES-256-GCM; the well stays blind to your matter', href: '/concepts-encryption/' },
   { title: 'windowed sync', body: 'partial replicas with atomic eviction and a completeness oracle', href: '/concepts-windowing/' },
-  { title: 'testkit', body: 'in-process server, fault injection, virtual clock — real tests, no mocks', href: '/tooling-testing/' },
+  { title: 'testkit', body: 'in-process server, fault injection, and a virtual clock drive the real engine', href: '/tooling-testing/' },
 ] as const;
 
 const PLATFORM_LINKS = [
@@ -98,7 +98,7 @@ const RULE_DASH = '-'.repeat(160);
 
         <div class="rule" aria-hidden="true">{RULE_DASH}</div>
         <section>
-          <p class="kicker">TELEMETRY — MEASURED, NOT PROMISED</p>
+          <p class="kicker">TELEMETRY — MEASURED NUMBERS</p>
           <div class="receipt"><pre>BOOTSTRAP 100,000 ROWS ..................... <span class="v">30 ms</span>
 REALTIME PROPAGATION (p95) ................. <span class="v">0.2 ms</span>
 WEB CLIENT, GZIPPED ........................ <span class="v">19.6 KB</span>
@@ -193,9 +193,9 @@ CONFORMANCE SCENARIOS ...................... <span class="v">74 × 2 cores</span
             One <a href="https://github.com/syncular/syncular/blob/main/SPEC.md">written protocol</a>
             is the law. Two independent cores obey it, held identical by golden
             byte-level vectors and 74 conformance scenarios run against both in
-            CI. Divergence is a bug you can point at; a third implementation
-            joins against the <a href="/guide-conformance/">spec</a>, not a
-            binary.
+            CI. Divergence is a bug you can point at, and a third
+            implementation joins by reading the
+            <a href="/guide-conformance/">spec</a>.
           </p>
           <div class="cores">
             <div class="core">

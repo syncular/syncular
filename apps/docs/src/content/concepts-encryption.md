@@ -2,20 +2,20 @@
 
 Most columns sync as plaintext: the server sees their values, extracts scopes
 from them, runs write-validators over them, and merges CRDT bytes. Some
-columns hold data the server should **never** see — a private note, a medical
+columns hold data the server should **never** see: a private note, a medical
 field, an API token. Mark those columns **encrypted**, and Syncular encrypts
 them on the device before they leave and decrypts them on the device after they
 arrive. The server stores and serves **ciphertext** and never holds a key.
 
 Normative detail: [SPEC.md §5.11](https://github.com/syncular/syncular/blob/main/SPEC.md#511-client-side-encryption-e2ee--opt-in-per-column).
 
-## The model — plaintext locally, ciphertext on the wire
+## The model: plaintext locally, ciphertext on the wire
 
-The one idea to hold onto: **encryption happens at the wire boundary, not in
-your local database.**
+The one idea to hold onto: **encryption applies at the wire boundary.** The
+local database always holds plaintext.
 
 - Your **local SQLite mirror stays plaintext.** Local queries, named queries,
-  and indexes all keep working over the real values — an encrypted `amount`
+  and indexes all keep working over the real values: an encrypted `amount`
   column is a real integer locally, an encrypted `note` is a real string.
 - A column is encrypted **only in transit and at rest on the server.** The
   client encrypts it when the outbox encodes a commit for send, and decrypts it
@@ -31,15 +31,15 @@ your local database.**
         over plaintext                     reach here                over plaintext
 ```
 
-The wire/stored type of an encrypted column is always `bytes` — it carries a
+The wire/stored type of an encrypted column is always `bytes`. It carries a
 [ciphertext envelope](#the-envelope). Your generated types still show the
 **declared** type (`string`, `number`, …), because that is what your app reads
 and writes; the envelope is invisible above the wire boundary.
 
 ## Declaring an encrypted column
 
-Encryption is **app configuration, not schema DDL** — the column stays an
-ordinary SQL column in your migration, and you list it in `syncular.json`:
+Encryption is **app configuration.** The column stays an ordinary SQL column
+in your migration, and you list it in `syncular.json`:
 
 ```jsonc
 // syncular.json
@@ -56,13 +56,13 @@ ordinary SQL column in your migration, and you list it in `syncular.json`:
 
 Regenerate your client. The generated `SecretsRow.note` is still typed
 `string`; only the wire contract changed. Three columns can **never** be
-encrypted, and codegen fails loud if you try:
+encrypted; codegen refuses to build if you try:
 
-- a **scope column** — the server extracts scopes from it (it must stay
-  plaintext);
-- a **`crdt` column** — the server merges its bytes (impossible over
-  ciphertext);
-- the **primary key** — it renders the row's server-side id.
+- a **scope column**: the server extracts scopes from it, so it must stay
+  plaintext;
+- a **`crdt` column**: the server merges its bytes, which is impossible over
+  ciphertext;
+- the **primary key**: it renders the row's server-side id.
 
 ## Supplying keys
 
@@ -90,8 +90,9 @@ const client = new SyncClient({
 The key-id travels **inside** the envelope, so rotation and per-scope keys work
 without a schema change: on decrypt the client reads the key-id from the
 envelope and asks your `keyProvider` for it. A missing key or a wrong key
-surfaces as `client.decrypt_failed` (client-local, not retryable) at the apply
-seam — the app decides whether to skip the row, halt, or prompt for a re-key.
+surfaces as `client.decrypt_failed` (local to the client, non-retryable) at
+the apply seam. The app decides whether to skip the row, halt, or prompt for a
+re-key.
 
 ## The envelope
 
@@ -103,15 +104,15 @@ Rust cores, pinned by golden vectors in `spec/vectors/crypto/`):
 ```
 
 AES-256-GCM with a fresh random 96-bit nonce per encrypt. A `NULL` value stays
-`NULL` (it is not encrypted — the null bitmap already hides it).
+`NULL`: it is not encrypted, since the null bitmap already hides it.
 
-## Sharing a key — asymmetric ("async") encryption
+## Sharing a key: asymmetric ("async") encryption
 
 Symmetric keys are great until you need to give one to a **new member**. That
 is what the asymmetric utilities are for: **X25519 sealed-box key wrapping**,
-in `@syncular/crypto` (TS) and `ssp2::wrap` (Rust). These are utilities, **not**
-part of the sync wire protocol — key distribution rides your own channel or a
-synced table.
+in `@syncular/crypto` (TS) and `ssp2::wrap` (Rust). These are standalone
+utilities that sit outside the sync wire protocol. Key distribution travels
+over your own channel or a synced table.
 
 ```ts
 import { generateKeyPair, wrapKey, unwrapKey } from '@syncular/crypto';
@@ -144,27 +145,27 @@ CREATE TABLE key_grants (
 To grant access, one member wraps the table key to the newcomer's public key
 and writes a `key_grants` row. It syncs like any other row. The newcomer reads
 their grant, `unwrapKey`s it with their private key, and feeds the recovered
-key to their `keyProvider`. The server stores wrapped bytes it can never open —
-no key ever reaches it.
+key to their `keyProvider`. The server only ever stores the wrapped bytes.
 
-## What the server can and cannot see — threat model
+## What the server can and cannot see: threat model
 
 Be honest about the boundary. With an encrypted column, the server:
 
-- **cannot** read the plaintext, ever;
-- **can** see the value's **length** (the ciphertext is length-revealing — pad
+- **cannot** read the plaintext;
+- **can** see the value's **length** (the ciphertext is length-revealing; pad
   before encrypting if length is sensitive);
 - **can** see **which rows change and when** (metadata: row ids, scopes,
-  versions, timestamps are plaintext by design — that is how sync works);
-- sees **ciphertext** in a [write-validator](concepts-conflicts.md) — a §6.7
-  validator cannot assert on an encrypted column's contents (business rules over
-  encrypted data run on the client, before the write);
-- serves an encrypted table only on the **rows lane**, never as a whole-table
-  sqlite image (an image is copied wholesale with no per-row decrypt pass, so
-  the server excludes encrypted tables from image eligibility automatically).
+  versions, timestamps are plaintext by design; that is how sync works);
+- sees **ciphertext** in a [write-validator](concepts-conflicts.md): a §6.7
+  validator cannot assert on an encrypted column's contents, so business rules
+  over encrypted data run on the client, before the write;
+- serves an encrypted table only on the **rows lane**, and skips the
+  whole-table sqlite image (an image is copied wholesale with no per-row
+  decrypt pass, so the server excludes encrypted tables from image eligibility
+  automatically).
 
 E2EE also shifts responsibility to **you**: if a member loses their key, their
-data is unrecoverable — there is no server-side reset. Plan key backup and
+data is unrecoverable. There is no server-side reset. Plan key backup and
 rotation deliberately.
 
 ## Cross-core

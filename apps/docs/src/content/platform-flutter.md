@@ -2,12 +2,11 @@
 
 The Dart binding is a **pub package** (`syncular` under
 [`bindings/flutter/syncular`](https://github.com/syncular/syncular/tree/main/bindings/flutter/syncular))
-over the Rust native core's C FFI, bound via `dart:ffi` — five hand-written
+over the Rust native core's C FFI. It uses `dart:ffi`: five hand-written
 function bindings, no ffigen, and `package:ffi` as the only runtime
-dependency. The binding is thin marshaling over the shared Rust core —
-protocol behavior is identical on every platform because every binding drives
-the same `syncular-command` surface. See
-[FFI & the native core](/platform-ffi/) for the underlying C ABI.
+dependency. The package itself only marshals JSON across that boundary.
+[FFI & the native core](/platform-ffi/) covers the C ABI and the command
+surface underneath.
 
 ## Install
 
@@ -21,17 +20,18 @@ dependencies:
 
 The native core (`libsyncular`) is built by
 [`rust/scripts/build-native.sh`](https://github.com/syncular/syncular/blob/main/rust/scripts/build-native.sh)
-and shipped per platform — see the library-loading section below. The binding
-itself is plain Dart, so it works in Flutter apps and headless Dart alike
-(there is no web target — `dart:ffi` has none).
+and shipped per platform (see the library-loading section below). The binding
+itself is plain Dart, so it runs in Flutter apps and in headless Dart programs
+alike. The one gap is web: `dart:ffi` doesn't target it.
 
 ## Create a client
 
-`SyncularClient.create` loads the library, constructs the native core, issues
-`create` with your schema and client id, and starts the event poll loop. The
-schema comes from typegen — declare a `dart` output in `syncular.json` and
-`syncular generate` emits a `syncular.generated.dart` with a ready-made
-`syncularSchema` map plus typed rows and subscription helpers (see
+`SyncularClient.create` loads the native library, spins up the core, sends
+the initial `create` command with your schema and client id, and kicks off
+the event poll loop. The schema itself comes from typegen: point a `dart`
+output in `syncular.json` and `syncular generate` produces
+`syncular.generated.dart`, exporting a ready-made `syncularSchema` map along
+with typed row classes and subscription helpers (see
 [Schema & typegen](/guide-schema/)).
 
 ```dart
@@ -47,13 +47,14 @@ final client = SyncularClient.create(
 );
 ```
 
-`baseUrl` engages the native HTTP + WebSocket transport (a core built with the
-`native-transport` feature); omit it for the dependency-lean, offline-only
-core. `dbPath` installs a file-backed SQLite database (in a Flutter app,
-`getApplicationSupportDirectory()` from `path_provider` is the natural home);
-omit it for in-memory. `SyncularConfig` also takes `wsUrl` and `headers`.
-`create` additionally accepts `limits`, an explicit `libraryPath`, and
-`pollInterval` (default 40 ms).
+Passing `baseUrl` activates the native transport layer, HTTP plus WebSocket;
+that requires a core built with the `native-transport` feature, and leaving
+it out keeps the client on the offline-only core. Passing `dbPath` points the
+client at a file-backed SQLite database that outlives app restarts (in a
+Flutter app, `getApplicationSupportDirectory()` from `path_provider` is the
+natural place for it); skip it and state lives only for the current process.
+`SyncularConfig` also accepts `wsUrl` and `headers`, and `create` takes
+`limits`, an explicit `libraryPath`, and `pollInterval` (40 ms by default).
 
 ## Reads & writes
 
@@ -61,7 +62,7 @@ omit it for in-memory. `SyncularConfig` also takes `wsUrl` and `headers`.
 // Subscribe: table + scope map. Local; sync fills it.
 client.subscribe('todos', 'todos', scopes: {'list_id': ['inbox']});
 
-// Optimistic write — visible immediately, offline or not.
+// Optimistic write: the local read sees it right away.
 final commitId = client.mutate([
   {
     'op': 'upsert',
@@ -74,19 +75,19 @@ final commitId = client.mutate([
 // RowState maps: {rowId, version, values}; version == -1 = optimistic.
 final states = client.readRows('todos');
 
-// The live-query fast path: arbitrary read-only SQL, flat rows.
+// Arbitrary read-only SQL against the local database, returned as flat rows.
 final rows = client.query(
   'SELECT id, title, done FROM todos WHERE list_id = ?', params: ['inbox']);
 ```
 
-The scope map is the same authorization vocabulary as everywhere else in
-syncular — see [Scopes & authorization](/concepts-scopes/). The full
-convenience set mirrors the Swift/Kotlin wrappers: `mutate`, `subscribe`,
-`unsubscribe`, `sync`, `syncUntilIdle`, `readRows`, `query`,
+Scope maps use the same authorization vocabulary as the rest of syncular;
+see [Scopes & authorization](/concepts-scopes/). The Dart client exposes the
+same convenience methods as the Swift and Kotlin wrappers: `mutate`,
+`subscribe`, `unsubscribe`, `sync`, `syncUntilIdle`, `readRows`, `query`,
 `pendingCommitIds`, `syncNeeded`, `subscriptionState`, `conflicts`,
 `presence`, `setPresence`, `setWindow`, `windowState`, `connectRealtime`,
-`disconnectRealtime`, and the CRDT helpers. Anything not lifted is reachable
-via the raw `command(method, params)` escape hatch.
+`disconnectRealtime`, and the CRDT helpers. For anything not lifted into a
+named method, call `command(method, params)` directly.
 
 ## Sync loop & events
 
@@ -101,22 +102,25 @@ client.events.listen((e) {
 
 Events (`sync-needed`, `conflict`, `rejection`, `presence`, `schema-floor`,
 `lease`) arrive on `client.events`, a **broadcast Stream** delivered on the
-owning isolate's event loop — listeners can touch UI state directly. Under
+owning isolate's event loop, so listeners can touch UI state directly. Under
 the hood a `Timer.periodic` on the owning isolate drains the core's
-`poll_event` queue with non-blocking polls, so event delivery can never race
-an in-flight command and never parks the isolate inside the FFI.
+`poll_event` queue with non-blocking polls, so event delivery runs safely
+alongside in-flight commands without blocking the isolate inside the FFI.
 
-Failed commands throw `SyncularError` (a stable `code` plus a message) — with
-one deliberate exception: `sync()` never errors out-of-band. Offline or on the
-lean core it returns `{ok: false, errorCode: "transport.unavailable"}`, and
-the mutation stays in the **offline outbox** (`pendingCommitIds()` is
-non-empty until sync drains it). Writes are always optimistic: a `mutate` is
-immediately visible via `readRows`/`query`, server or not.
+Failed commands throw `SyncularError`, carrying a stable `code` and a
+message. `sync()` is the one call that folds transport trouble into its
+result instead of throwing: offline, or on the lean core, it comes back as
+`{ok: false, errorCode: "transport.unavailable"}`, and the write sits in the
+offline outbox until the next sync clears it (check `pendingCommitIds()`
+for what's queued). Every `mutate` writes optimistically, so `readRows` and
+`query` reflect it the moment the call returns, well ahead of any round trip
+to the server.
 
 ## Collaborative text (CRDT)
 
-With a core built with the `crdt-yjs` feature, `crdt` columns get native
-helpers — byte-compatible with the web `@syncular/crdt-yjs` helper (see
+Enable the `crdt-yjs` feature on the core and `crdt` columns pick up native
+editing helpers. The wire format matches the web `@syncular/crdt-yjs` helper,
+so a Flutter app and a browser can collaborate on the same document (see
 [CRDT](/concepts-crdt/)):
 
 ```dart
@@ -125,9 +129,10 @@ client.crdtInsertText('notes', 'n1', 'doc', 0, 'Hi ');
 client.crdtDeleteText('notes', 'n1', 'doc', 0, 3);
 ```
 
-`crdtApplyUpdate` applies an arbitrary Yjs update (a `List<int>`) as an escape
-hatch. Each editing helper pushes the update through the normal mutate path
-and returns the enqueued `clientCommitId`.
+When the built-in text helpers don't cover a case, hand `crdtApplyUpdate` an
+arbitrary Yjs update as a `List<int>`. Whichever route you take, the update
+rides the standard mutate call and comes back with a queued
+`clientCommitId`.
 
 ## Library loading & platform artifacts
 
@@ -139,12 +144,12 @@ path. What each platform ships:
 | Platform | Library | How a consuming app ships it |
 |---|---|---|
 | Android | `libsyncular.so` (`arm64-v8a`, `x86_64`) | `cargo-ndk` via `build-native.sh android` → `android/src/main/jniLibs/<abi>/` |
-| iOS | statically linked | link the `Syncular.xcframework` slice into the Runner (`build-native.sh apple`); `libraryPath` stays null — symbols live in the process |
+| iOS | statically linked | link the `Syncular.xcframework` slice into the Runner (`build-native.sh apple`); `libraryPath` stays null since the symbols already live in the process |
 | macOS | `libsyncular.dylib` | bundle into `.app/Contents/Frameworks`, or link the xcframework mac slice |
 | Linux | `libsyncular.so` | ship next to the executable / on the loader path |
 | Windows | `syncular.dll` | ship next to the executable |
 
-These are the same artifacts the Swift and Kotlin release paths use — only
+These are the same artifacts the Swift and Kotlin release paths use; only
 the load call site differs.
 
 ## Lifecycle & threading
@@ -155,22 +160,24 @@ client.resume();  // reconnect + restart poll
 client.close();   // release DB/transport/socket; idempotent
 ```
 
-- **`pause()`** — call from `AppLifecycleState.paused` or a connectivity-lost
-  handler. Database and outbox intact; mutations still queue.
-- **`resume()`** — reconnects realtime (if present) and restarts the poll.
-- **`close()`** — cancels the poll Timer, frees the core, and closes the
-  event Stream. Idempotent; commands throw `client.closed` afterwards.
+- **`pause()`** shuts down the poll timer and drops the realtime connection.
+  Trigger it from `AppLifecycleState.paused` or a connectivity-lost handler.
+  The database and outbox stay intact; mutations keep queuing.
+- **`resume()`** brings the realtime socket back (if one exists) and
+  restarts polling.
+- **`close()`** cancels the poll timer, frees the core, and closes the event
+  stream. It is idempotent; once closed, commands throw `client.closed`.
 
-The core is **thread-affine**, and Dart's concurrency model makes that
-natural: commands and the poll loop both run on the isolate that created the
-handle, so there is exactly one thread and nothing to race. The
+Only one thread ever touches the core, and Dart's concurrency model makes
+that automatic: commands and the poll loop both run on the isolate that
+created the handle, so there is nothing to race. The
 [example](https://github.com/syncular/syncular/tree/main/bindings/flutter/example)
 is a ~150-line Flutter todo app (`flutter run` against the demo server); its
-platform scaffolds are generated with `flutter create`, not committed.
+platform scaffolds come from `flutter create` and stay out of the repo.
 
 ## Where to go next
 
-- [FFI & the native core](/platform-ffi/) — the C ABI every binding shares.
-- [Scopes & authorization](/concepts-scopes/) — the scope maps you subscribe with.
-- [Conflicts & optimistic writes](/concepts-conflicts/) — what the `conflict` event carries.
-- [Quickstart](/quickstart/) — the server the example app talks to.
+- [FFI & the native core](/platform-ffi/) — the C ABI this package binds via `dart:ffi`.
+- [Scopes & authorization](/concepts-scopes/) — the rules behind the scope maps in `subscribe`.
+- [Conflicts & optimistic writes](/concepts-conflicts/) — what shows up in the `conflict` event.
+- [Quickstart](/quickstart/) — the server the todo example runs against.
