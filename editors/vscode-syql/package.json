@@ -1,0 +1,32 @@
+{
+  "name": "syncular-syql",
+  "displayName": "Syncular .syql",
+  "description": "Syntax highlighting for Syncular's .syql query files (DESIGN-queries.md §10): the query/fragment container grammar with embedded SQL.",
+  "version": "0.0.1",
+  "publisher": "syncular",
+  "private": true,
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "syql",
+        "aliases": ["Syncular Query", "syql"],
+        "extensions": [".syql"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "syql",
+        "scopeName": "source.syql",
+        "path": "./syntaxes/syql.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.block.sql": "sql"
+        }
+      }
+    ]
+  }
+}

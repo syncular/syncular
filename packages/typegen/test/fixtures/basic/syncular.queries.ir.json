@@ -430,6 +430,38 @@
       ],
       "tables": [
         "tasks"
+      ],
+      "variantGroups": [
+        {
+          "key": "from",
+          "params": [
+            "from",
+            "to"
+          ],
+          "flag": false
+        }
+      ],
+      "variants": [
+        {
+          "when": [],
+          "sql": "select id, title, estimate from tasks where (project_id = :projectId)",
+          "positionalSql": "select id, title, estimate from tasks where (project_id = ?)",
+          "params": [
+            "projectId"
+          ]
+        },
+        {
+          "when": [
+            "from"
+          ],
+          "sql": "select id, title, estimate from tasks where (project_id = :projectId) and estimated_at between :from and :to",
+          "positionalSql": "select id, title, estimate from tasks where (project_id = ?) and estimated_at between ? and ?",
+          "params": [
+            "projectId",
+            "from",
+            "to"
+          ]
+        }
       ]
     },
     {

@@ -2,7 +2,6 @@
 -- the signature declares existence/optionality, the body is plain SQL.
 -- `q?` is an auto-guarded optional — omit it and the search conjunct
 -- is a no-op; pass it and the list filters live.
-
 query listTodos(listId, q?) {
   select id, list_id, title, done, position, updated_at_ms, attachment
   from todos

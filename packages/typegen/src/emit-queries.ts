@@ -166,7 +166,6 @@ function emitQuery(query: AnalyzedQuery): string {
     );
     lines.push('}');
   }
-  lines.push('');
 
   // Positional bind list.
   const access = requiresParams ? 'params' : 'params?';
@@ -174,30 +173,85 @@ function emitQuery(query: AnalyzedQuery): string {
     ? `[${query.params.map((p) => bindExpr(query, p, access)).join(', ')}]`
     : '[]';
 
+  // §7 variant backend: one statement per provided-combination, selected by
+  // a bitmask over the optional groups (bit i = group i provided/true). The
+  // neutralization statement above stays the canonical/default form.
+  const selectFn = `${query.name}SelectVariant`;
+  const paramArgDecl = requiresParams
+    ? `params: ${Params}`
+    : `params?: ${Params}`;
+  if (query.variants !== undefined && query.variantGroups !== undefined) {
+    const variantsConst = `${query.name}Variants`;
+    lines.push(
+      `const ${variantsConst}: { sql: string; bind: (${paramArgDecl}) => QueryValue[] }[] = [`,
+    );
+    for (const variant of query.variants) {
+      const binds = variant.params
+        .map((name) => {
+          const param = query.params.find((p) => p.name === name);
+          if (param === undefined) throw new Error(`unknown param ${name}`);
+          return bindExpr(query, param, access);
+        })
+        .join(', ');
+      lines.push(`  // [${variant.when.join(' + ') || 'no optional filters'}]`);
+      lines.push(
+        `  { sql: ${quote(variant.positionalSql)}, bind: (${requiresParams ? 'params' : 'params?'}) => [${binds}] },`,
+      );
+    }
+    lines.push('];');
+    lines.push(
+      `function ${selectFn}(${paramArgDecl}): { sql: string; bind: QueryValue[] } {`,
+    );
+    lines.push('  let mask = 0;');
+    query.variantGroups.forEach((group, index) => {
+      const langOf = (name: string): string =>
+        query.params.find((p) => p.name === name)?.langName ?? name;
+      const condition = group.flag
+        ? `params?.${propertyKey(langOf(group.params[0] as string))} === true`
+        : group.params
+            .map(
+              (name) =>
+                `(params?.${propertyKey(langOf(name))} ?? null) !== null`,
+            )
+            .join(' && ');
+      lines.push(`  if (${condition}) mask |= ${1 << index};`);
+    });
+    lines.push(
+      `  const variant = ${variantsConst}[mask] as (typeof ${variantsConst})[number];`,
+    );
+    lines.push('  return { sql: variant.sql, bind: variant.bind(params) };');
+    lines.push('}');
+  }
+  lines.push('');
+
   // The runner.
-  const paramArg = !hasParams
-    ? ''
-    : requiresParams
-      ? `params: ${Params}`
-      : `params?: ${Params}`;
+  const paramArg = !hasParams ? '' : paramArgDecl;
   lines.push(`/** Run the ${quote(query.name)} named query (SELECT-only). */`);
   lines.push(
     `export async function ${query.name}(client: QueryClient${hasParams ? `, ${paramArg}` : ''}): Promise<${Row}[]> {`,
   );
-  const sqlExpr =
-    query.orderBy !== undefined ? `${composeFn}(params)` : sqlConst;
-  if (hasParams) {
-    lines.push(`  const rows = await client.query(${sqlExpr}, ${positional});`);
+  if (query.variants !== undefined) {
+    lines.push(`  const variant = ${selectFn}(params);`);
+    lines.push('  const rows = await client.query(variant.sql, variant.bind);');
   } else {
-    lines.push(`  const rows = await client.query(${sqlExpr});`);
+    const sqlExpr =
+      query.orderBy !== undefined ? `${composeFn}(params)` : sqlConst;
+    if (hasParams) {
+      lines.push(
+        `  const rows = await client.query(${sqlExpr}, ${positional});`,
+      );
+    } else {
+      lines.push(`  const rows = await client.query(${sqlExpr});`);
+    }
   }
   lines.push(`  return rows as unknown as ${Row}[];`);
   lines.push('}');
   lines.push('');
 
-  // A descriptor for react's `useQuery` — the SQL (static, or composed from
-  // the baked allowlist), the exact table dependency set, and a
-  // `bind(params)` → positional array. Typed by the query's own Row/Params.
+  // A descriptor for react's `useQuery` — the SQL (static, composed from
+  // the baked allowlist, or variant-selected), the exact table dependency
+  // set, and a `bind(params)` → positional array (always paired with the
+  // sqlFor selection). Typed by the query's own Row/Params.
   lines.push(
     `/** Descriptor for \`useQuery(${query.name}Query${hasParams ? ', params' : ''})\` — sql + tables + row type. */`,
   );
@@ -206,11 +260,15 @@ function emitQuery(query: AnalyzedQuery): string {
     `export const ${query.name}Query: NamedQuery<${Row}, ${paramsTypeArg}> = {`,
   );
   lines.push(`  sql: ${sqlConst},`);
-  if (query.orderBy !== undefined) {
+  if (query.variants !== undefined) {
+    lines.push(`  sqlFor: (params: ${Params}) => ${selectFn}(params).sql,`);
+  } else if (query.orderBy !== undefined) {
     lines.push(`  sqlFor: (params: ${Params}) => ${composeFn}(params),`);
   }
   lines.push(`  tables: ${query.name}Tables,`);
-  if (hasParams) {
+  if (query.variants !== undefined) {
+    lines.push(`  bind: (params: ${Params}) => ${selectFn}(params).bind,`);
+  } else if (hasParams) {
     lines.push(`  bind: (params: ${Params}) => ${positional},`);
   } else {
     lines.push('  bind: () => [],');

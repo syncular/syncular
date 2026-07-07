@@ -1,7 +1,6 @@
 -- The .syql tier (DESIGN-queries.md §3): fragments, auto-guarded optional
 -- conjuncts, an if-guarded flag, and both §6 knobs — exercising the DSL
 -- through every emitter golden.
-
 fragment inProject(projectId) {
   project_id = :projectId
 }
@@ -22,7 +21,9 @@ query searchTasks(projectId, minPriority?, openOnly?: flag)
     and if (:openOnly) { done = 0 }
 }
 
-query taskEstimateRange(projectId, from+to?) {
+query taskEstimateRange(projectId, from+to?)
+  variants
+{
   select id, title, estimate
   from tasks
   where @inProject(:projectId)

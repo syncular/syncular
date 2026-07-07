@@ -1,0 +1,128 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Syncular Query",
+  "scopeName": "source.syql",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#declaration" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-dash.syql",
+          "match": "--.*$"
+        },
+        {
+          "name": "comment.block.syql",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "declaration": {
+      "begin": "\\b(query|fragment)\\s+([A-Za-z][A-Za-z0-9]*)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.declaration.syql" },
+        "2": { "name": "entity.name.function.syql" }
+      },
+      "end": "(?<=\\})",
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#signature" },
+        { "include": "#knobs" },
+        { "include": "#body" }
+      ]
+    },
+    "signature": {
+      "begin": "\\(",
+      "end": "\\)",
+      "patterns": [
+        {
+          "match": "([A-Za-z_][A-Za-z0-9_]*)(\\+)([A-Za-z_][A-Za-z0-9_]*)(\\?)",
+          "captures": {
+            "1": { "name": "variable.parameter.syql" },
+            "2": { "name": "keyword.operator.group.syql" },
+            "3": { "name": "variable.parameter.syql" },
+            "4": { "name": "keyword.operator.optional.syql" }
+          }
+        },
+        {
+          "match": "([A-Za-z_][A-Za-z0-9_]*)(\\?)?(\\s*:\\s*(flag))?",
+          "captures": {
+            "1": { "name": "variable.parameter.syql" },
+            "2": { "name": "keyword.operator.optional.syql" },
+            "4": { "name": "storage.type.flag.syql" }
+          }
+        }
+      ]
+    },
+    "knobs": {
+      "patterns": [
+        {
+          "match": "\\b(orderBy|limit|variants)\\b",
+          "name": "keyword.other.knob.syql"
+        },
+        {
+          "match": "\\b(default|max|asc|desc)\\b",
+          "name": "keyword.other.knob-option.syql"
+        },
+        {
+          "match": "\\b\\d+\\b",
+          "name": "constant.numeric.syql"
+        }
+      ]
+    },
+    "body": {
+      "begin": "\\{",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.body.begin.syql" }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.body.end.syql" }
+      },
+      "contentName": "meta.embedded.block.sql",
+      "patterns": [
+        { "include": "#comments" },
+        {
+          "match": "@([A-Za-z_][A-Za-z0-9_]*)",
+          "name": "entity.name.function.fragment-ref.syql"
+        },
+        {
+          "begin": "\\b(if)\\s*(\\()",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.guard.syql" },
+            "2": { "name": "punctuation.section.guard.begin.syql" }
+          },
+          "end": "\\)",
+          "patterns": [{ "include": "#param" }]
+        },
+        {
+          "begin": "\\{",
+          "end": "\\}",
+          "contentName": "meta.embedded.block.sql",
+          "patterns": [
+            { "include": "#comments" },
+            { "include": "#param" },
+            { "include": "#string" },
+            { "include": "source.sql" }
+          ]
+        },
+        { "include": "#param" },
+        { "include": "#string" },
+        { "include": "source.sql" }
+      ]
+    },
+    "param": {
+      "match": ":([A-Za-z_][A-Za-z0-9_]*)",
+      "name": "variable.parameter.bind.syql"
+    },
+    "string": {
+      "name": "string.quoted.single.sql",
+      "begin": "'",
+      "end": "'",
+      "patterns": [{ "match": "''", "name": "constant.character.escape.sql" }]
+    }
+  }
+}

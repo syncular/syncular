@@ -12,6 +12,7 @@ export * from './emit-queries-kotlin';
 export * from './emit-queries-swift';
 export * from './emit-swift';
 export * from './errors';
+export * from './fmt';
 export * from './generate';
 export * from './ir';
 export * from './lower';
