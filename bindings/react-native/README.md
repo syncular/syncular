@@ -8,7 +8,7 @@ interface, after direct / worker-leader / multi-tab follower / Tauri.
 
 ## Why the native core (not JS syncular in Hermes)
 
-Decided in [implementation plan block 1](../../implementation history#1-native-bindings-block-the-one-real-parity-gap):
+Decided in [implementation plan block 1](../../docs/implementation history#1-native-bindings-block-the-one-real-parity-gap):
 RN's Hermes runtime has **no OPFS and no sqlite-wasm**, and the TS client's
 persistent path depends on both. So RN uses the **native core** — `rusqlite` on
 the device filesystem, HTTP+WS owned in Rust (`native-transport`) — bridged

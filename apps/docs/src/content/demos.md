@@ -99,7 +99,7 @@ covers the typed hook surface, and the native examples show that React web,
 Tauri, and React Native run identical hook code while Swift, Kotlin, and Dart
 mirror one wrapper surface over the same conformance-locked JSON command
 router. The full per-platform verification matrix is
-[demo guide](https://github.com/syncular/syncular/blob/main/demo guide).
+[demo guide](https://github.com/syncular/syncular/blob/main/docs/demo guide).
 
 ## Where to go next
 

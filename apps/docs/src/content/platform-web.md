@@ -97,7 +97,7 @@ the whole-core-in-a-worker architecture.
 ## Transports
 
 The browser bindings are `fetch`/WebSocket wrappers over the protocol
-([SPEC §1.1](https://github.com/syncular/syncular/blob/main/SPEC.md)):
+([SPEC §1.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md)):
 
 - `httpSyncTransport(syncUrl)` — `POST /sync` with protocol bodies.
 - `httpSegmentDownloader(segmentsUrl)` — direct segment download plus the

@@ -1,7 +1,7 @@
 # Spec & package map
 
 The docs are the guide;
-[`SPEC.md`](https://github.com/syncular/syncular/blob/main/SPEC.md) is the
+[`SPEC.md`](https://github.com/syncular/syncular/blob/main/docs/SPEC.md) is the
 reference. All normative text stays in the spec; this page points into it, and
 maps every published package, crate, and binding to where it lives.
 
@@ -9,18 +9,18 @@ maps every published package, crate, and binding to where it lives.
 
 | Section | Topic |
 |---|---|
-| [§0](https://github.com/syncular/syncular/blob/main/SPEC.md#0-design-decisions) | Design decisions, with their rationale |
-| [§1](https://github.com/syncular/syncular/blob/main/SPEC.md#1-transport-bindings-and-envelope) | Transport bindings, the SSP2 envelope, framing, streaming, decode vs validation |
-| [§2](https://github.com/syncular/syncular/blob/main/SPEC.md#2-data-model-and-identity) | Commits, changes, versions, idempotency, the schema IR & row codec |
-| [§3](https://github.com/syncular/syncular/blob/main/SPEC.md#3-scopes-and-authorization) | Scopes: patterns, requested/allowed/effective, revocation, write-path authz |
-| [§4](https://github.com/syncular/syncular/blob/main/SPEC.md#4-subscriptions-cursors-pull) | Subscriptions, cursors, pull, the pruning horizon, the bootstrap state machine |
-| [§5](https://github.com/syncular/syncular/blob/main/SPEC.md#5-bootstrap-segments) | Bootstrap segments, the download endpoint, signed URLs, sqlite images, blobs (§5.9), CRDT columns (§5.10) |
-| [§6](https://github.com/syncular/syncular/blob/main/SPEC.md#6-push-conflicts-results) | Push and commit application, conflicts, atomicity, write-validation hooks (§6.7) |
-| [§7](https://github.com/syncular/syncular/blob/main/SPEC.md#7-offline-writes-and-replay) | The client outbox, auth leases (§7.3), the schema-bump flow (§7.4) |
-| [§8](https://github.com/syncular/syncular/blob/main/SPEC.md#8-realtime) | Realtime: deltas, wake-ups, presence (§8.6), the WebSocket-native sync loop (§8.7) |
-| [§9](https://github.com/syncular/syncular/blob/main/SPEC.md#9-versioning-and-evolution) | Versioning and evolution |
-| [§10](https://github.com/syncular/syncular/blob/main/SPEC.md#10-error-catalog) | The error catalog |
-| [§11](https://github.com/syncular/syncular/blob/main/SPEC.md#11-canonical-json-debug-rendering) | Canonical JSON debug rendering |
+| [§0](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#0-design-decisions) | Design decisions, with their rationale |
+| [§1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#1-transport-bindings-and-envelope) | Transport bindings, the SSP2 envelope, framing, streaming, decode vs validation |
+| [§2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#2-data-model-and-identity) | Commits, changes, versions, idempotency, the schema IR & row codec |
+| [§3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#3-scopes-and-authorization) | Scopes: patterns, requested/allowed/effective, revocation, write-path authz |
+| [§4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#4-subscriptions-cursors-pull) | Subscriptions, cursors, pull, the pruning horizon, the bootstrap state machine |
+| [§5](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#5-bootstrap-segments) | Bootstrap segments, the download endpoint, signed URLs, sqlite images, blobs (§5.9), CRDT columns (§5.10) |
+| [§6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#6-push-conflicts-results) | Push and commit application, conflicts, atomicity, write-validation hooks (§6.7) |
+| [§7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#7-offline-writes-and-replay) | The client outbox, auth leases (§7.3), the schema-bump flow (§7.4) |
+| [§8](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#8-realtime) | Realtime: deltas, wake-ups, presence (§8.6), the WebSocket-native sync loop (§8.7) |
+| [§9](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#9-versioning-and-evolution) | Versioning and evolution |
+| [§10](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#10-error-catalog) | The error catalog |
+| [§11](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#11-canonical-json-debug-rendering) | Canonical JSON debug rendering |
 
 Appendix A holds the golden vectors; Appendix B the conformance scenario
 catalog.
@@ -93,9 +93,9 @@ Each operational contract lives next to the code that enforces it:
 
 ## Design & implementation plan docs
 
-- [implementation history](https://github.com/syncular/syncular/blob/main/implementation history) — the strategy blocks, the gap register, and the decided non-goals.
-- [work record](https://github.com/syncular/syncular/blob/main/work record) — the live working checklist.
-- [windowing contract](https://github.com/syncular/syncular/blob/main/windowing contract) — the windowed-sync / local-eviction design.
+- [implementation history](https://github.com/syncular/syncular/blob/main/docs/implementation history) — the strategy blocks, the gap register, and the decided non-goals.
+- [work record](https://github.com/syncular/syncular/blob/main/docs/work record) — the live working checklist.
+- [windowing contract](https://github.com/syncular/syncular/blob/main/docs/windowing contract) — the windowed-sync / local-eviction design.
 - [bench/RESULTS.md](https://github.com/syncular/syncular/blob/main/bench/RESULTS.md) — the curated performance record (summarized at [Benchmarks](/benchmarks/)).
 
 ## Where to go next

@@ -5,14 +5,14 @@ either applies entirely or not at all. Clients track how far they have caught
 up with a **cursor**, and retries are safe because commits are **idempotent**.
 This is the spine of the whole system.
 
-Normative detail: [SPEC.md §2](https://github.com/syncular/syncular/blob/main/SPEC.md#2-data-model-and-identity) and
-[§4](https://github.com/syncular/syncular/blob/main/SPEC.md#4-subscriptions-cursors-pull).
+Normative detail: [SPEC.md §2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#2-data-model-and-identity) and
+[§4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#4-subscriptions-cursors-pull).
 
 ## The commit log
 
 - Each applied commit gets a **`commitSeq`** — a strictly increasing integer,
   monotonic per partition. All changes in a commit share it
-  ([SPEC §2.1](https://github.com/syncular/syncular/blob/main/SPEC.md#21-commits-and-the-log)).
+  ([SPEC §2.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#21-commits-and-the-log)).
 - A **partition** is your tenant boundary. Your `authenticate()` maps each
   request to a single partition; commit logs, cursors, and segments are all
   partition-local. Partitions are server-internal and never appear on the wire.
@@ -26,7 +26,7 @@ A subscription's cursor is the last `commitSeq` it has fully applied. Each
 pull returns the window after the cursor, filtered to the subscription's
 effective scopes, and reports the new cursor to persist. The cursor advances
 even when no matching changes exist, which keeps quiet subscriptions
-cheap ([SPEC §4.5](https://github.com/syncular/syncular/blob/main/SPEC.md#45-incremental-pull-and-commit-frames)).
+cheap ([SPEC §4.5](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#45-incremental-pull-and-commit-frames)).
 
 `cursor = -1` means "never synced": the signal to bootstrap
 ([Bootstrap & segments](/concepts-bootstrap/)).
@@ -36,7 +36,7 @@ cheap ([SPEC §4.5](https://github.com/syncular/syncular/blob/main/SPEC.md#45-in
 Each pushed commit carries a client-chosen `clientCommitId`. The server keys
 its result on the triple `(partition, clientId, clientCommitId)` and persists
 the outcome before acknowledging
-([SPEC §2.3](https://github.com/syncular/syncular/blob/main/SPEC.md#23-idempotency-identity)). So a retry after a lost
+([SPEC §2.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#23-idempotency-identity)). So a retry after a lost
 ack is safe:
 
 - an originally-applied commit replays as `cached` ("already applied — you may
@@ -52,7 +52,7 @@ is why the client outbox can retry freely after any network blip; the
 The log does not grow forever. The server maintains a per-partition
 **`horizonSeq`**; commits at or below it may be pruned. A client whose cursor
 falls behind the horizon gets a `reset` and re-bootstraps; this is the
-designed recovery path ([SPEC §4.6](https://github.com/syncular/syncular/blob/main/SPEC.md#46-the-pruning-horizon)). Operating
+designed recovery path ([SPEC §4.6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#46-the-pruning-horizon)). Operating
 the horizon (retention floors, when to prune, what to alert on) is covered in
 [Server setup](/guide-server/) and the
 [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md#horizon--pruning-operational-guidance).

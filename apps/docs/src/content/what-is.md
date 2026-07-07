@@ -25,7 +25,7 @@ merge.
 
 ## One protocol, two cores
 
-Syncular is a **written protocol** ([SPEC.md](https://github.com/syncular/syncular/blob/main/SPEC.md))
+Syncular is a **written protocol** ([SPEC.md](https://github.com/syncular/syncular/blob/main/docs/SPEC.md))
 with two independent, conformance-locked implementations:
 
 - A **TypeScript core** for the web. The whole client runs in a Web Worker on
@@ -79,7 +79,7 @@ toolchain overhead. Syncular spends its whole budget on boring-ness:
 
 | Decision | Why it matters |
 |---|---|
-| A written protocol ([SPEC.md](https://github.com/syncular/syncular/blob/main/SPEC.md)) | A third implementation plugs in against the spec and its golden vectors. Divergence is a bug you can point at. |
+| A written protocol ([SPEC.md](https://github.com/syncular/syncular/blob/main/docs/SPEC.md)) | A third implementation plugs in against the spec and its golden vectors. Divergence is a bug you can point at. |
 | Two cores, one protocol | The web core is small, debuggable TypeScript that builds without the Rust toolchain; the Rust core ships native. Parity between them is a CI gate. |
 | One path per concern | One sync loop over WebSocket, one persistent browser mode (OPFS), one preferred bootstrap format. An unsupported environment produces a clear error. |
 | Scopes run in *your* backend | `resolveScopes(actor)` lives next to your auth, so sync reuses the authorization you already have. |

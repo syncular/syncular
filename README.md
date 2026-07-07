@@ -19,7 +19,7 @@ bun create syncular-app my-app
 
 ## How the repo is built
 
-- **Spec-first**: [`SPEC.md`](SPEC.md) is normative and
+- **Spec-first**: [`SPEC.md`](docs/SPEC.md) is normative and
   [`spec/vectors/`](spec/vectors) are golden fixtures; when spec and code
   disagree, the code changes. Two cores (TypeScript and Rust) are kept in
   lockstep by an implementation-agnostic conformance suite.
