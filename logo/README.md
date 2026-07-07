@@ -9,7 +9,7 @@ tab size.
 
 ## Assets in use
 
-- `../../apps/docs/public/favicon.svg` — the singularity, near-square crop.
+- `../apps/docs/public/favicon.svg` — the singularity, near-square crop.
   Linked from every page head (landing, docs layout, 404).
 - `banner-dark.svg` / `banner-light.svg` — the wordmark lockup (mark +
   `SYNCULAR_`) shown at the top of the repo `README.md` via a `<picture>`
@@ -21,7 +21,7 @@ face wherever they appear standalone — a browser tab, a GitHub README.
 ## Regenerate
 
 ```
-bun design/logo/gen-brand.mjs        # favicon.svg + both banners
+bun logo/gen-brand.mjs               # favicon.svg + both banners
 ```
 
 `gen-logos.mjs` is the mark library (the singularity/wordmark generator) that
@@ -29,7 +29,7 @@ bun design/logo/gen-brand.mjs        # favicon.svg + both banners
 for exploration:
 
 ```
-bun design/logo/gen-logos.mjs out/   # 1-singularity … 5-ring, dark + light
+bun logo/gen-logos.mjs out/          # 1-singularity … 5-ring, dark + light
 ```
 
 Tune `horizonFrac` / `ringFrac` to change how much of the disk fills the
