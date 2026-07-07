@@ -1,6 +1,6 @@
 # __PROJECT_NAME__
 
-A [syncular](https://github.com/bkniffler/syncular) v2 browser app: a Hono sync
+A [syncular](https://github.com/bkniffler/syncular) browser app: a Hono sync
 server, a WebSocket realtime channel, and a single-pane todo UI whose whole
 client core runs in a Web Worker on OPFS. Everything is served by one Bun
 process.

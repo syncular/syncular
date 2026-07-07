@@ -2,8 +2,8 @@
  * push-pull — steady mixed write/read load. N virtual clients each own a
  * distinct project scope, loop push+pull rounds over HTTP for the run
  * window, and observe their own writes coming back. Measures round p50/p95/
- * p99 and sustained ops/s. Ports v1's push-pull intent (steady throughput,
- * push-to-visibility) onto the v2 SSP2/HTTP stack.
+ * p99 and sustained ops/s: steady throughput and push-to-visibility on
+ * the SSP2/HTTP stack.
  */
 
 import { clientProject } from '../fixture';

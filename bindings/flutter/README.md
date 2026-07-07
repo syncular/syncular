@@ -1,6 +1,6 @@
 # syncular · flutter/dart binding
 
-An idiomatic **Dart/Flutter** wrapper over the syncular v2 native core — the
+An idiomatic **Dart/Flutter** wrapper over the syncular native core — the
 C-ABI `syncular-ffi` (the five functions in [`rust/ffi.h`](../../rust/ffi.h)),
 bound via `dart:ffi`. It is the Flutter sibling of [`bindings/swift`](../swift)
 (`SyncularClient`) and [`bindings/kotlin`](../kotlin) (`SyncularClient` via FFM):
@@ -146,7 +146,7 @@ against the **real native core**.
 
 Per the [bindings conformance doctrine](../README.md), wrappers are
 protocol-thin, so they earn a thin bar: an **offline hermetic smoke** against
-the real core. The CI lane (`.github/workflows/v2.yml`, `flutter-bindings` job,
+the real core. The CI lane (`.github/workflows/ci.yml`, `flutter-bindings` job,
 Ubuntu) does exactly that:
 
 - `cargo build -p syncular-ffi` → the real cdylib;

@@ -1,4 +1,4 @@
-# syncular-ffi — the Syncular v2 Rust client as a shippable native core
+# syncular-ffi — the Syncular Rust client as a shippable native core
 
 The POC client crate (`syncular-client`), packaged for shipping. This crate
 turns the clean-room Rust client into a native library with a small, stable
@@ -7,7 +7,7 @@ and desktop hosts, and the substrate a React Native TurboModule wraps.
 
 ## The FFI surface (five functions)
 
-The v1-proven bindings shape: one constructor, one JSON-command dispatch, one
+The proven bindings shape: one constructor, one JSON-command dispatch, one
 event poll, and two lifecycle/memory functions. The full C signatures live in
 [`rust/ffi.h`](../../ffi.h) (hand-written, dependency-free, kept in sync by the
 `header_matches_symbols` test):
@@ -117,10 +117,10 @@ summary table with artifact sizes:
 - **cross** — linux/windows `.so`/`.dll` for JVM/desktop when the Rust cross
   targets + linkers are present.
 
-Reuses v1's packaging *knowledge* (which platforms/artifacts matter: apple
-xcframework, android arm64+x86_64 jniLibs, linux/windows JVM libs) without its
-`boltffi`/UniFFI machinery — the v2 core is a hand-written C ABI, so packaging
-is plain `cargo` + platform tools.
+Targets the platforms/artifacts that matter (apple xcframework, android
+arm64+x86_64 jniLibs, linux/windows JVM libs) without any `boltffi`/UniFFI
+machinery — the core is a hand-written C ABI, so packaging is plain `cargo`
++ platform tools.
 
 ## C smoke test
 
@@ -143,7 +143,7 @@ a blocker — the command-JSON shape already maps onto Tauri's `invoke`.
 
 **React Native uses the FFI surface via a JSI/TurboModule, over the NATIVE
 core — not the TS core.** RN's JavaScript runtime (Hermes) lacks OPFS and
-sqlite-wasm; the v2 TS client's persistent path depends on both. The honest RN
+sqlite-wasm; the TS client's persistent path depends on both. The honest RN
 path is therefore the **native core** in this crate — `rusqlite` on the real
 device filesystem, HTTP+WS owned in Rust (`native-transport`) — bridged through
 a TurboModule. The bridge is thin because the surface is already

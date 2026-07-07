@@ -65,7 +65,7 @@ there is no default-open admin. Every endpoint runs the guard first; a
 falsy result is a 401. `GET /admin` serves a single static HTML page (no
 framework, no build step) that polls the sibling JSON endpoints and
 renders horizon, store stats, clients, recent commits, and the event tail
-with a 2 s auto-refresh — the ~300-line answer to v1's console app.
+with a 2 s auto-refresh — ~300 lines by design.
 S3-backed stats are labeled `approximate` honestly; a storage backend that
 omits an optional admin method fails loud rather than rendering a
 silently-empty console.
@@ -92,8 +92,7 @@ The retention floors (`RetentionPolicy`): the horizon never advances past
 `min(cursor)` of clients active within `activeWindowMs` (default 14 days);
 commits older than `ageForceMs` (default 30 days) may be pruned regardless;
 and the newest `minRetainedCommits` (default 1000) are always kept.
-Defaults are the v1 production values — raise them freely, lower them with
-care.
+Raise the defaults freely, lower them with care.
 
 A client whose cursor fell behind the horizon gets a reset and
 re-bootstraps from scratch. That is correct behavior, not an error — but

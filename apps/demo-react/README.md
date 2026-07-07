@@ -1,4 +1,4 @@
-# syncular v2 — demo-react (hooks example)
+# syncular — demo-react (hooks example)
 
 The hooks-based counterpart to the vanilla two-pane [`apps/demo`](../demo).
 A single-pane todo app built entirely on `@syncular/react`, running against
@@ -22,7 +22,6 @@ It dogfoods the full hook surface:
 ## Run
 
 ```sh
-cd v2
 bun install
 cd apps/demo-react
 bun run dev          # http://localhost:8788 (PORT=… to override)

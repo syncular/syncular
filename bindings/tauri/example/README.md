@@ -1,6 +1,6 @@
 # syncular · Tauri example (React)
 
-A minimal Tauri desktop app proving syncular v2 works end to end: a simple todo
+A minimal Tauri desktop app proving syncular works end to end: a simple todo
 list built on **`@syncular/react` hooks** over a **native syncular instance**
 running in the Tauri host process. The webview is a thin RPC client of that
 instance — the hooks are the SAME ones the browser demo (`apps/demo-react`)
