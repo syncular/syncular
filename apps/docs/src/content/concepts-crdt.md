@@ -96,7 +96,7 @@ thin over the shared command router:
 const text = await client.crdtText('notes', 'n1', 'doc');   // materialize
 await client.crdtInsertText('notes', 'n1', 'doc', 0, 'Hello ');   // edit + push
 await client.crdtDeleteText('notes', 'n1', 'doc', 0, 6);          // edit + push
-await client.crdtApplyUpdate('notes', 'n1', 'doc', updateBytes);  // escape hatch
+await client.crdtApplyUpdate('notes', 'n1', 'doc', updateBytes);  // raw update
 ```
 
 Each edit loads the row's current merged bytes, applies the op with `yrs`,

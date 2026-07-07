@@ -1,12 +1,13 @@
 # Testing your app
 
 `@syncular/testkit` stands up a whole syncular backend and N real clients
-**in memory** — no HTTP server, no browser, no mocks — so you can assert
-what your app actually sees: convergence, offline queues, conflicts, live
-queries. Everything in it is the shipped core: the same `SyncClient` and the
-same `@syncular/server` protocol handler your production app runs, wired
-through an in-process loopback. A green test here is real sync behavior,
-not a fake.
+**in memory**, running as plain function calls rather than over HTTP, a
+browser, or mocked pieces, so you can assert what your app actually sees:
+convergence, offline queues, conflicts, live queries. Everything in it is
+the shipped core: the same `SyncClient` and the same `@syncular/server`
+protocol handler your production app runs, wired through an in-process
+loopback. A passing test here reflects real sync behavior, running through
+the same code paths production uses.
 
 ## Install
 
@@ -45,7 +46,7 @@ test('two clients converge', async () => {
 ```
 
 `sync.client(id?)` creates **and starts** a `TestClient`. Its `.api` is a
-real `SyncClient` — `subscribe`, `mutate`, `query`, `syncUntilIdle`,
+real `SyncClient`: `subscribe`, `mutate`, `query`, `syncUntilIdle`,
 `conflicts`, `setWindow`, `uploadBlob`, everything. The `TestClient` wraps
 it with test-only controls: `goOffline()` / `goOnline()`, `sync()`,
 `faults`, `connectRealtime()`.
@@ -93,13 +94,14 @@ test('an offline client queues writes, then drains on reconnect', async () => {
 });
 ```
 
-`goOnline()` does not auto-sync — your test decides when the round happens.
+`goOnline()` does not auto-sync: your test decides when the round happens.
 
 ## Fault injection
 
 `client.faults` arms transport faults with the same vocabulary the
-conformance harness uses (re-exported, not re-implemented). Arm one flag;
-the next matching exchange misbehaves:
+conformance harness uses; testkit re-exports that vocabulary directly
+instead of duplicating it. Arm one flag; the next matching exchange
+misbehaves:
 
 ```ts
 a.faults.dropNextRequests = 1;        // lose the next request (outbox survives)
@@ -125,7 +127,7 @@ expect(a.api.pendingCommits()).toHaveLength(0);
 
 The server, every client, and the realtime hub share one `VirtualClock`.
 Time only moves when you move it, so segment TTLs, signed-URL expiry, and
-lease windows are deterministic — no wall-clock flake:
+lease windows are deterministic, with no wall-clock flake:
 
 ```ts
 sync.clock.now();                  // current epoch ms
@@ -135,7 +137,7 @@ sync.clock.set(1_800_000_000_000); // jump to an absolute instant
 
 The clock is the epoch-ms source syncular reads. It does **not** intercept
 `setTimeout`, so real-timer behaviors (presence heartbeats, rate caps) are
-out of scope — the kit targets sync, offline, and fault behavior.
+out of scope: the kit targets sync, offline, and fault behavior.
 
 ## Realtime deltas
 
@@ -175,24 +177,24 @@ await act(async () => {
 await waitFor(() => expect(result.current.rows).toHaveLength(1));
 ```
 
-The re-render is driven by the client's **real** invalidation choke point —
-the same one production hooks fire on — so a passing test reflects real
+The re-render is driven by the client's real invalidation choke point, the
+same one production hooks fire on, so a passing test reflects real
 live-query behavior. This works identically for `useQuery` and the
 other hooks.
 
-## What it is not
+## Scope
 
-- Not an HTTP harness. The transport is an in-process loopback; to test your
-  Hono/Workers adapter or real fetch/WebSocket wiring, boot the server
-  yourself (see [Quickstart](/quickstart/)).
-- Not the conformance runner. Driver/pairing machinery and the scenario
-  catalog live in `@syncular/conformance` — see
-  [Conformance](/guide-conformance/).
-- Not a `setTimeout` mock. See the clock note above.
+- The transport here is an in-process loopback. To test your Hono/Workers
+  adapter or real fetch/WebSocket wiring, boot the server yourself (see
+  [Quickstart](/quickstart/)).
+- Driver/pairing machinery and the scenario catalog live in
+  `@syncular/conformance` instead. See [Conformance](/guide-conformance/).
+- The clock advances only when your test moves it; setTimeout runs on its
+  own. See the clock note above.
 
 ## Where to go next
 
-- [Schema & typegen](/guide-schema/) — generate the `schema` your tests import.
-- [React](/platform-react/) — the hooks you just tested.
-- [Conformance](/guide-conformance/) — the deeper harness for implementing clients and servers.
-- [testkit README](https://github.com/syncular/syncular/blob/main/packages/testing/README.md) — the full `TestSync` / `TestClient` surface.
+- [Schema & typegen](/guide-schema/): generate the `schema` your tests import.
+- [React](/platform-react/): the hooks you just tested.
+- [Conformance](/guide-conformance/): the deeper harness for implementing clients and servers.
+- [testkit README](https://github.com/syncular/syncular/blob/main/packages/testing/README.md): the full `TestSync` / `TestClient` surface.

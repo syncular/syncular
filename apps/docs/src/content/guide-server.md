@@ -4,7 +4,7 @@ The server is a framework-free protocol library:
 `handleSyncRequest(bytes, ctx) → bytes` over host-provided storage,
 scope-resolution, and segment/blob-store interfaces. A thin Hono adapter
 mounts the routes, and `resolveScopes` runs in your process, next to your
-auth. This page is the core wiring story; storage choices, Workers
+auth. This page walks through that wiring; storage choices, Workers
 deployment, and operations each have their own page.
 
 The full host surface is the
@@ -43,10 +43,10 @@ const app = createSyncularHono({
 Bun.serve({ port: 8787, fetch: app.fetch });
 ```
 
-Two callbacks are the entire security story, and both run in **your**
+Two callbacks handle all of the security, and both run in **your**
 backend: `authenticate` maps a request to `{ actorId, partition }` (or
 `null` for a 401), and `resolveScopes` maps that identity to the scope
-values it may read and write — see
+values it may read and write. See
 [Scopes & authorization](/concepts-scopes/).
 
 ## The route surface
@@ -55,7 +55,7 @@ values it may read and write — see
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/sync` | POST | Combined push+pull — the whole protocol rides here |
+| `/sync` | POST | Combined push+pull; the whole protocol runs through here |
 | `/segments/:segmentId` | GET | Bootstrap segment download (compressed per `Accept-Encoding`) |
 | `/blobs/:blobId` | PUT | Blob upload, content-address verified |
 | `/blobs/:blobId` | GET | Blob download, re-authorized against referencing rows |
@@ -63,20 +63,21 @@ values it may read and write — see
 
 Two more surfaces attach outside the adapter:
 
-- `GET /realtime` — the WebSocket upgrade is runtime-specific and stays with
+- `GET /realtime`: the WebSocket upgrade is runtime-specific and stays with
   your host process (below).
-- `GET /admin` — the optional operator console, mounted separately and
-  **never** open by default. See [Operations](/server-operations/).
+- `GET /admin`: the optional operator console, mounted separately and
+  never open by default. See [Operations](/server-operations/).
 
 An HTTP-only deployment is fully conformant: clients that never open the
-socket sync over `POST /sync` with identical semantics. Realtime is a
-second binding of the same handler, not a separate subsystem.
+socket sync over `POST /sync` with identical semantics. Realtime is simply
+a second binding onto that same handler, adding a live channel for
+connected sockets.
 
 ## Realtime hub wiring
 
 `createRealtimeHub` builds the transport-agnostic hub; passing it as
 `config.realtime` makes every applied commit fan out to connected sockets.
-Give the hub the **same** storage and segment store as the HTTP path — the
+Give the hub the **same** storage and segment store as the HTTP path: the
 socket carries full sync rounds through the same handler.
 
 ```ts
@@ -132,38 +133,38 @@ const server = Bun.serve<{ clientId: string; session?: RealtimeSession }, never>
 
 The
 [demo server](https://github.com/syncular/syncular/blob/main/apps/demo/src/server.ts)
-is the complete worked example — one Bun process serving HTTP, WebSocket
+is the complete worked example: one Bun process serving HTTP, WebSocket
 realtime, the admin console, and a static frontend. On Cloudflare Workers
-the upgrade rides a Durable Object instead; see
+the upgrade runs through a Durable Object instead; see
 [Cloudflare Workers](/server-workers/).
 
 Behind a load balancer, an in-memory hub only reaches its own instance's
-sockets — multi-instance deployments add a fanout bridge
+sockets. Multi-instance deployments add a fanout bridge
 (`PostgresFanout` on Postgres, the Durable Object on Workers). See
 [Storage backends](/server-storage/).
 
 ## Choosing the rest
 
-- **Storage** — `SqliteServerStorage` (bun:sqlite) is the dev-speed default;
+- **Storage**: `SqliteServerStorage` (bun:sqlite) is the dev-speed default;
   `PostgresServerStorage` is the production database path; `D1ServerStorage`
   serves Workers. Full trade-offs in [Storage backends](/server-storage/).
-- **Segments and blobs** — memory stores for tests, SQLite for a single
+- **Segments and blobs**: memory stores for tests, SQLite for a single
   node, S3-compatible object storage (AWS S3, Cloudflare R2, MinIO) with
   presigned URLs for production. Also in
   [Storage backends](/server-storage/).
-- **Runtime** — the core is runtime-neutral TypeScript (enforced by a static
+- **Runtime**: the core is runtime-neutral TypeScript (enforced by a static
   import-graph test). `@syncular/server-hono` covers Bun/Node;
-  `@syncular/server-workers` covers Cloudflare Workers — see
+  `@syncular/server-workers` covers Cloudflare Workers. See
   [Cloudflare Workers](/server-workers/).
-- **Day two** — structured events, the admin console, commit-log pruning,
+- **Day two**: structured events, the admin console, commit-log pruning,
   blob GC, and load testing live in [Operations](/server-operations/).
 
 ## Where to go next
 
-- [Storage backends](/server-storage/) — SQLite, Postgres, D1, segment and
+- [Storage backends](/server-storage/): SQLite, Postgres, D1, segment and
   blob stores, signed URLs and CDN.
-- [Cloudflare Workers](/server-workers/) — D1 + R2 + Durable Object realtime.
-- [Operations](/server-operations/) — events, admin console, pruning, GC,
+- [Cloudflare Workers](/server-workers/): D1 + R2 + Durable Object realtime.
+- [Operations](/server-operations/): events, admin console, pruning, GC,
   load tests.
-- [Scopes & authorization](/concepts-scopes/) — how `resolveScopes` gates
+- [Scopes & authorization](/concepts-scopes/): how `resolveScopes` gates
   every read and write.

@@ -118,10 +118,10 @@ conformance-locked.
   read-only SQL over the local tables, one IPC round trip per run.
 - **`syncular://event`** — the event stream the bridge subscribes to:
   `invalidate` (live queries re-run), `presence`, `sync-needed`, `conflict`,
-  `rejection`, `schema-floor`, `lease`. Bytes ride as `{ "$bytes": "<hex>" }`
+  `rejection`, `schema-floor`, `lease`. Bytes are encoded as `{ "$bytes": "<hex>" }`
   everywhere.
 
-Native CRDT text (plugin `crdt-yjs` feature) rides `syncular_command`, and
+Native CRDT text (plugin `crdt-yjs` feature) goes through `syncular_command`, and
 `@syncular/tauri` exposes typed `crdtText` / `crdtInsertText` /
 `crdtDeleteText` / `crdtApplyUpdate` methods, byte-compatible with the web
 `@syncular/crdt-yjs` helper, so a Tauri app and a browser can edit the same
@@ -144,7 +144,7 @@ With `native-transport`, the plugin owns the network: blocking HTTP via
 `tungstenite`, with a reader thread routing inbound frames. When the socket
 is connected, each combined push+pull round runs over the socket in the
 §8.7 one-loop shape, the same behavior as the web client; with no socket the
-round rides `POST /sync`. One round is in flight per connection, and a
+round runs over `POST /sync`. One round is in flight per connection, and a
 mid-round socket drop fails the round immediately.
 
 Every live-query run is one IPC round trip, which is fine at
