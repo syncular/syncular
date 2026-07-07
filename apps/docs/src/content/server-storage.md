@@ -14,11 +14,58 @@ contract suite.
 | Postgres | `PostgresServerStorage` + your driver via `PgExecutor` | LISTEN/NOTIFY via `PostgresFanout` | Production on Bun/Node, especially multi-instance |
 | Cloudflare D1 | `D1ServerStorage` | in-Durable-Object fanout | Cloudflare Workers, see [Cloudflare Workers](/server-workers/) |
 
+## Materialized app tables
+
+Every synced table is stored as a real table in the server database, on all
+three backends. Each one carries your app's typed columns plus the sync
+meta columns:
+
+```sql
+CREATE TABLE tasks(
+  _sync_partition       TEXT NOT NULL,
+  id                    TEXT NOT NULL,
+  project_id            TEXT,
+  title                 TEXT,
+  done                  INTEGER,
+  _sync_server_version  INTEGER NOT NULL,
+  _sync_scopes          TEXT NOT NULL,      -- JSONB on Postgres
+  _sync_payload         BLOB NOT NULL,
+  PRIMARY KEY (_sync_partition, id)
+);
+```
+
+The typed columns are a queryable projection: you can run live SQL, joins,
+and analytics against synced data right in your server database, and
+indexes declared in your migrations are created here as well. The sync
+serve path (pull, bootstrap, segments) reads `_sync_payload`, the verbatim
+wire bytes, so server-side querying and the protocol stay decoupled.
+`ensureSchema` creates and migrates these tables on first contact and on
+schema-version bumps.
+
+A per-table `materialize` flag on the server schema controls the
+projection:
+
+- **Default `true`.** Tables whose every non-key, non-scope column is
+  end-to-end encrypted default to `false`, since their projection would be
+  columns of ciphertext. An explicit value always wins.
+- **`materialize: false`** writes only the meta columns on push (skipping
+  the row decode) and skips user indexes. Use it for very wide tables on
+  D1, where the 100-bind-parameter cap holds a materialized row to roughly
+  95 app columns.
+- **Changing the flag requires a schema-version bump.** Turning it on
+  backfills the typed columns from stored payloads; turning it off stops
+  writing them, and the stale columns remain until you drop them manually.
+
+The storage layout, scope index, and serve path are identical in both
+modes; the flag only decides whether the typed projection is populated.
+
 ## SQLite (`SqliteServerStorage`)
 
 `new SqliteServerStorage('./data.db')` (or `':memory:'`) over bun:sqlite is
-the dev-speed default. The server manages its own internal `sync_*`
-tables: your app migrations only feed typegen, they never run here. It is
+the dev-speed default. The server manages all of its own tables (the
+`sync_*` internals plus the materialized app tables above): your app
+migrations feed typegen, and the server derives its DDL from the compiled
+schema. It is
 the storage the [quickstart](/quickstart/) uses and the baseline the load
 suite runs against.
 
@@ -26,8 +73,8 @@ suite runs against.
 
 The production database path. It implements the same `ServerStorage`
 contract with the inverted scope index carried through as **covering
-indexes**, so scope fanout runs as an index range scan and never falls
-back to a scan-before-`LIMIT`. A dedicated test asserts via
+indexes**, so scope fanout always runs as an index range scan. A dedicated
+test asserts via
 `EXPLAIN` that the fanout candidate scans stay index-driven, so the
 regression cannot silently return. `storage.migrate()` applies the DDL
 idempotently: safe to call on every boot.
