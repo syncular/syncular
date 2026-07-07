@@ -1,5 +1,5 @@
 // Brand assets built from the coarse singularity: the site favicon and the
-// README banners. Run from the repo root:  bun design/logo/gen-brand.mjs
+// README banners. Run from the repo root:  bun logo/gen-brand.mjs
 // Fonts are embedded (data-URI @font-face) so the marks render in true IBM
 // Plex Mono anywhere they are shown standalone — a browser tab, a GitHub README.
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -19,7 +19,7 @@ const favSpec = singularity({
 writeFileSync('apps/docs/public/favicon.svg', toSvg({ ...favSpec, round: true }, P.dark, 0.6, fontCss));
 
 // README BANNERS — the wordmark lockup, dark + light, font embedded.
-writeFileSync('design/logo/banner-dark.svg', wordmark(COARSE.wordmark, P.dark, fontCss));
-writeFileSync('design/logo/banner-light.svg', wordmark(COARSE.wordmark, P.light, fontCss));
+writeFileSync('logo/banner-dark.svg', wordmark(COARSE.wordmark, P.dark, fontCss));
+writeFileSync('logo/banner-light.svg', wordmark(COARSE.wordmark, P.light, fontCss));
 
 console.log('wrote favicon.svg + README banners');
