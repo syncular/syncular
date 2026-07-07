@@ -388,7 +388,10 @@ export function loadQueries(queriesDir: string): QueryInput[] {
  * `analyze` prepares the statement (validating references) and reads its
  * column names + declared types; it executes once against the empty DB so
  * `declaredTypes` (decltype) is populated. */
-function makeQueryDb(ir: IrDocument): { db: QueryDb; close: () => void } {
+export function makeQueryDb(ir: IrDocument): {
+  db: QueryDb;
+  close: () => void;
+} {
   const sqlite = new Database(':memory:');
   sqlite.run(synthesizeDdl(ir));
   const db: QueryDb = {
@@ -497,7 +500,11 @@ export function generate(manifestDir: string): GenerateResult {
   if (manifest.output.swift !== undefined) targets.push('swift');
   if (manifest.output.kotlin !== undefined) targets.push('kotlin');
   if (manifest.output.dart !== undefined) targets.push('dart');
-  const naming: QueryNamingOptions = { naming: manifest.naming, targets };
+  const naming: QueryNamingOptions = {
+    naming: manifest.naming,
+    targets,
+    backend: manifest.queryBackend,
+  };
   for (const table of ir.tables) {
     buildNamingMap(
       table.columns.map((c) => c.name),

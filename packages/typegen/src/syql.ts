@@ -81,6 +81,8 @@ export interface SyqlFragmentDecl {
   readonly params: readonly SyqlParamDecl[];
   /** The predicate body (raw SQL expression text). */
   readonly body: string;
+  /** Source offset of the `fragment` keyword (editor tooling). */
+  readonly offset: number;
 }
 
 export interface SyqlQueryDecl {
@@ -93,6 +95,8 @@ export interface SyqlQueryDecl {
   readonly variants?: boolean;
   /** The SQL-shaped body (may contain @fragment refs and if-guards). */
   readonly body: string;
+  /** Source offset of the `query` keyword (editor tooling). */
+  readonly offset: number;
 }
 
 export interface SyqlFile {
@@ -383,6 +387,8 @@ export function parseSyqlFile(file: string, content: string): SyqlFile {
   const queries: SyqlQueryDecl[] = [];
   const names = new Set<string>();
   while (!cur.atEnd()) {
+    cur.skip();
+    const offset = cur.i;
     const kw = cur.word('`query` or `fragment`');
     if (kw !== 'query' && kw !== 'fragment') {
       cur.fail(
@@ -401,13 +407,13 @@ export function parseSyqlFile(file: string, content: string): SyqlFile {
       cur.skip();
       const body = cur.braceBlock().trim();
       if (body.length === 0) cur.fail(`${owner}: empty fragment body`);
-      fragments.push({ name, params, body });
+      fragments.push({ name, params, body, offset });
     } else {
       const knobs = parseKnobs(cur, owner);
       cur.skip();
       const body = cur.braceBlock().trim();
       if (body.length === 0) cur.fail(`${owner}: empty query body`);
-      queries.push({ name, params, ...knobs, body });
+      queries.push({ name, params, ...knobs, body, offset });
     }
   }
   return { fragments, queries };
@@ -1040,14 +1046,31 @@ export function analyzeSyqlFile(
       .replace(/^(?:\s*-- param :[^\n]*\n)+/, '')
       .trimStart();
 
-    // §7 variant-enumeration backend (opt-in): one checked statement per
-    // combination of provided optional GROUPS. Assembled by swapping the
-    // WHERE clause of the (projection-lowered) neutralization statement, so
-    // the two backends differ ONLY in guard mechanics — semantically
-    // identical by construction.
+    // §7 variant-enumeration backend: opt-in per query (`variants`), or
+    // selected by the manifest's queryBackend heuristic — `auto` enumerates
+    // when the combination count is trivially small (N ≤ 2 groups → ≤ 4
+    // statements, perfect index use for free), `variants` enumerates
+    // whenever the query is eligible. Assembled by swapping the WHERE
+    // clause of the (projection-lowered) neutralization statement, so the
+    // two backends differ ONLY in guard mechanics — semantically identical
+    // by construction.
+    const optionalGroupCount = (() => {
+      const keys = new Set<string>();
+      for (const [name, info] of lowered.paramInfo) {
+        if (info.optional) keys.add(info.group ?? name);
+      }
+      return keys.size;
+    })();
+    const backend = naming?.backend ?? 'neutralize';
+    const wantVariants =
+      decl.variants === true ||
+      (decl.orderBy === undefined &&
+        optionalGroupCount > 0 &&
+        (backend === 'variants' ||
+          (backend === 'auto' && optionalGroupCount <= 2)));
     let variants: AnalyzedQuery['variants'];
     let variantGroups: AnalyzedQuery['variantGroups'];
-    if (decl.variants === true) {
+    if (wantVariants) {
       if (decl.orderBy !== undefined) {
         throw new TypegenError(
           location,
