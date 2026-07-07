@@ -23,13 +23,13 @@ export interface QueryClient {
 
 /** A named-query descriptor — sql + its exact table dependency set + a
  *  `bind(params)` → positional args. Consumed by
- *  `@syncular/react`'s `useNamedQuery`. `Row` is the projection row
+ *  `@syncular/react`'s `useQuery`. `Row` is the projection row
  *  type; `Params` is `undefined` for a param-less query. */
 export interface NamedQuery<Row, Params = undefined> {
   readonly sql: string;
   readonly tables: readonly string[];
   readonly bind: (params: Params) => readonly QueryValue[];
-  /** Phantom — carries the Row type for `useNamedQuery` inference. */
+  /** Phantom — carries the Row type for `useQuery` inference. */
   readonly __row?: Row;
 }
 
@@ -44,7 +44,7 @@ export interface FindDocByOrgParams {
   orgId: string;
 }
 
-/** Tables 'findDocByOrg' reads — the exact useSyncQuery `{tables}` set. */
+/** Tables 'findDocByOrg' reads — the exact useRawSql `{tables}` set. */
 export const findDocByOrgTables = ['docs'] as const;
 
 const findDocByOrgSql = 'SELECT id, body FROM docs WHERE org_id = ? ORDER BY id';
@@ -55,7 +55,7 @@ export async function findDocByOrg(client: QueryClient, params: FindDocByOrgPara
   return rows as unknown as FindDocByOrgRow[];
 }
 
-/** Descriptor for `useNamedQuery(findDocByOrgQuery, params)` — sql + tables + row type. */
+/** Descriptor for `useQuery(findDocByOrgQuery, params)` — sql + tables + row type. */
 export const findDocByOrgQuery: NamedQuery<FindDocByOrgRow, FindDocByOrgParams> = {
   sql: findDocByOrgSql,
   tables: findDocByOrgTables,
@@ -74,7 +74,7 @@ export interface DocWithBodyParams {
   orgId: string;
 }
 
-/** Tables 'docWithBody' reads — the exact useSyncQuery `{tables}` set. */
+/** Tables 'docWithBody' reads — the exact useRawSql `{tables}` set. */
 export const docWithBodyTables = ['docs', 'tasks'] as const;
 
 const docWithBodySql = 'SELECT d.id AS doc_id, d.body, t.title AS task_title FROM docs d JOIN tasks t ON t.project_id = d.project_id WHERE d.org_id = ?';
@@ -85,7 +85,7 @@ export async function docWithBody(client: QueryClient, params: DocWithBodyParams
   return rows as unknown as DocWithBodyRow[];
 }
 
-/** Descriptor for `useNamedQuery(docWithBodyQuery, params)` — sql + tables + row type. */
+/** Descriptor for `useQuery(docWithBodyQuery, params)` — sql + tables + row type. */
 export const docWithBodyQuery: NamedQuery<DocWithBodyRow, DocWithBodyParams> = {
   sql: docWithBodySql,
   tables: docWithBodyTables,
@@ -106,7 +106,7 @@ export interface ListProjectTasksParams {
   projectId: string;
 }
 
-/** Tables 'listProjectTasks' reads — the exact useSyncQuery `{tables}` set. */
+/** Tables 'listProjectTasks' reads — the exact useRawSql `{tables}` set. */
 export const listProjectTasksTables = ['tasks'] as const;
 
 const listProjectTasksSql = 'SELECT id, title, done, priority, estimate FROM tasks WHERE project_id = ? ORDER BY priority';
@@ -117,7 +117,7 @@ export async function listProjectTasks(client: QueryClient, params: ListProjectT
   return rows as unknown as ListProjectTasksRow[];
 }
 
-/** Descriptor for `useNamedQuery(listProjectTasksQuery, params)` — sql + tables + row type. */
+/** Descriptor for `useQuery(listProjectTasksQuery, params)` — sql + tables + row type. */
 export const listProjectTasksQuery: NamedQuery<ListProjectTasksRow, ListProjectTasksParams> = {
   sql: listProjectTasksSql,
   tables: listProjectTasksTables,
@@ -130,7 +130,7 @@ export interface ProjectDocCountRow {
   doc_count: number | null;
 }
 
-/** Tables 'projectDocCount' reads — the exact useSyncQuery `{tables}` set. */
+/** Tables 'projectDocCount' reads — the exact useRawSql `{tables}` set. */
 export const projectDocCountTables = ['docs'] as const;
 
 const projectDocCountSql = 'SELECT project_id, count(*) AS doc_count FROM docs GROUP BY project_id';
@@ -141,7 +141,7 @@ export async function projectDocCount(client: QueryClient): Promise<ProjectDocCo
   return rows as unknown as ProjectDocCountRow[];
 }
 
-/** Descriptor for `useNamedQuery(projectDocCountQuery)` — sql + tables + row type. */
+/** Descriptor for `useQuery(projectDocCountQuery)` — sql + tables + row type. */
 export const projectDocCountQuery: NamedQuery<ProjectDocCountRow, undefined> = {
   sql: projectDocCountSql,
   tables: projectDocCountTables,
@@ -160,7 +160,7 @@ export interface ReportingTasksByPriorityParams {
   priority: number;
 }
 
-/** Tables 'reportingTasksByPriority' reads — the exact useSyncQuery `{tables}` set. */
+/** Tables 'reportingTasksByPriority' reads — the exact useRawSql `{tables}` set. */
 export const reportingTasksByPriorityTables = ['tasks'] as const;
 
 const reportingTasksByPrioritySql = 'SELECT id, title, priority FROM tasks WHERE priority = ? ORDER BY id';
@@ -171,7 +171,7 @@ export async function reportingTasksByPriority(client: QueryClient, params: Repo
   return rows as unknown as ReportingTasksByPriorityRow[];
 }
 
-/** Descriptor for `useNamedQuery(reportingTasksByPriorityQuery, params)` — sql + tables + row type. */
+/** Descriptor for `useQuery(reportingTasksByPriorityQuery, params)` — sql + tables + row type. */
 export const reportingTasksByPriorityQuery: NamedQuery<ReportingTasksByPriorityRow, ReportingTasksByPriorityParams> = {
   sql: reportingTasksByPrioritySql,
   tables: reportingTasksByPriorityTables,
@@ -190,7 +190,7 @@ export interface ReportOpenTasksParams {
   projectId: string;
 }
 
-/** Tables 'reportOpenTasks' reads — the exact useSyncQuery `{tables}` set. */
+/** Tables 'reportOpenTasks' reads — the exact useRawSql `{tables}` set. */
 export const reportOpenTasksTables = ['tasks'] as const;
 
 const reportOpenTasksSql = 'SELECT id, title, done FROM tasks WHERE project_id = ? AND done = 0 ORDER BY id';
@@ -201,7 +201,7 @@ export async function reportOpenTasks(client: QueryClient, params: ReportOpenTas
   return rows as unknown as ReportOpenTasksRow[];
 }
 
-/** Descriptor for `useNamedQuery(reportOpenTasksQuery, params)` — sql + tables + row type. */
+/** Descriptor for `useQuery(reportOpenTasksQuery, params)` — sql + tables + row type. */
 export const reportOpenTasksQuery: NamedQuery<ReportOpenTasksRow, ReportOpenTasksParams> = {
   sql: reportOpenTasksSql,
   tables: reportOpenTasksTables,
@@ -220,7 +220,7 @@ export interface ReportDocScoresParams {
   minScore: number;
 }
 
-/** Tables 'reportDocScores' reads — the exact useSyncQuery `{tables}` set. */
+/** Tables 'reportDocScores' reads — the exact useRawSql `{tables}` set. */
 export const reportDocScoresTables = ['docs'] as const;
 
 const reportDocScoresSql = 'SELECT id, org_id, score FROM docs WHERE score > ? * 1.0 ORDER BY id';
@@ -231,7 +231,7 @@ export async function reportDocScores(client: QueryClient, params: ReportDocScor
   return rows as unknown as ReportDocScoresRow[];
 }
 
-/** Descriptor for `useNamedQuery(reportDocScoresQuery, params)` — sql + tables + row type. */
+/** Descriptor for `useQuery(reportDocScoresQuery, params)` — sql + tables + row type. */
 export const reportDocScoresQuery: NamedQuery<ReportDocScoresRow, ReportDocScoresParams> = {
   sql: reportDocScoresSql,
   tables: reportDocScoresTables,
@@ -244,7 +244,7 @@ export interface TaskTitlesRow {
   title: string;
 }
 
-/** Tables 'taskTitles' reads — the exact useSyncQuery `{tables}` set. */
+/** Tables 'taskTitles' reads — the exact useRawSql `{tables}` set. */
 export const taskTitlesTables = ['tasks'] as const;
 
 const taskTitlesSql = 'SELECT id, title FROM tasks';
@@ -255,7 +255,7 @@ export async function taskTitles(client: QueryClient): Promise<TaskTitlesRow[]> 
   return rows as unknown as TaskTitlesRow[];
 }
 
-/** Descriptor for `useNamedQuery(taskTitlesQuery)` — sql + tables + row type. */
+/** Descriptor for `useQuery(taskTitlesQuery)` — sql + tables + row type. */
 export const taskTitlesQuery: NamedQuery<TaskTitlesRow, undefined> = {
   sql: taskTitlesSql,
   tables: taskTitlesTables,
@@ -274,7 +274,7 @@ export interface TasksInProjectsParams {
   second: string;
 }
 
-/** Tables 'tasksInProjects' reads — the exact useSyncQuery `{tables}` set. */
+/** Tables 'tasksInProjects' reads — the exact useRawSql `{tables}` set. */
 export const tasksInProjectsTables = ['tasks'] as const;
 
 const tasksInProjectsSql = 'SELECT id, title FROM tasks WHERE project_id IN (?, ?)';
@@ -285,7 +285,7 @@ export async function tasksInProjects(client: QueryClient, params: TasksInProjec
   return rows as unknown as TasksInProjectsRow[];
 }
 
-/** Descriptor for `useNamedQuery(tasksInProjectsQuery, params)` — sql + tables + row type. */
+/** Descriptor for `useQuery(tasksInProjectsQuery, params)` — sql + tables + row type. */
 export const tasksInProjectsQuery: NamedQuery<TasksInProjectsRow, TasksInProjectsParams> = {
   sql: tasksInProjectsSql,
   tables: tasksInProjectsTables,
@@ -303,7 +303,7 @@ export interface TasksSinceParams {
   sinceMs: number;
 }
 
-/** Tables 'tasksSince' reads — the exact useSyncQuery `{tables}` set. */
+/** Tables 'tasksSince' reads — the exact useRawSql `{tables}` set. */
 export const tasksSinceTables = ['tasks'] as const;
 
 const tasksSinceSql = 'SELECT id, title FROM tasks WHERE estimated_at > ? + 0';
@@ -314,7 +314,7 @@ export async function tasksSince(client: QueryClient, params: TasksSinceParams):
   return rows as unknown as TasksSinceRow[];
 }
 
-/** Descriptor for `useNamedQuery(tasksSinceQuery, params)` — sql + tables + row type. */
+/** Descriptor for `useQuery(tasksSinceQuery, params)` — sql + tables + row type. */
 export const tasksSinceQuery: NamedQuery<TasksSinceRow, TasksSinceParams> = {
   sql: tasksSinceSql,
   tables: tasksSinceTables,

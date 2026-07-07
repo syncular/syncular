@@ -76,17 +76,17 @@ The config keys:
 ## Every React hook works unchanged
 
 Pass the client to `<SyncProvider>` and the entire
-[`@syncular/react`](/platform-react/) surface — `useSyncQuery`,
+[`@syncular/react`](/platform-react/) surface — `useQuery`, `useRawSql`,
 `useMutation`, `useSyncStatus`, `usePresence` — behaves exactly as it does
 against the browser client. From the example app's real `App.tsx`:
 
 ```tsx
-import { SyncProvider, useMutation, useSyncQuery } from '@syncular/react';
+import { SyncProvider, useMutation, useRawSql } from '@syncular/react';
 import type { TodosRow } from './syncular.generated';
 
 function TodoList() {
   const { mutate } = useMutation();
-  const { rows } = useSyncQuery<TodosRow>(
+  const { rows } = useRawSql<TodosRow>(
     'SELECT id, title, done FROM todos WHERE list_id = ? ORDER BY position, id',
     ['groceries'],
   );
@@ -113,7 +113,7 @@ See [CRDT columns](/concepts-crdt/).
 The client core has no callbacks: the native shims pump
 `syncular_client_poll_event` on a background queue and emit each event JSON on
 the `syncular::event` topic. The JS bridge fans `invalidate` out to live
-queries (so `useSyncQuery` re-runs) and `presence` to presence listeners; the
+queries (so `useRawSql` / `useQuery` re-run) and `presence` to presence listeners; the
 rest of the derived event set — `sync-needed`, `conflict`, `rejection`,
 `schema-floor`, `lease` — is observable through the client's accessor methods.
 
@@ -146,7 +146,7 @@ Lifecycle is explicit and battery-aware:
 
 ## Where to go next
 
-- **[React hooks](/platform-react/)** — the full `useSyncQuery` /
+- **[React hooks](/platform-react/)** — the full `useQuery` / `useRawSql` /
   `useMutation` / `usePresence` surface this binding feeds.
 - **[Embedding via C FFI](/platform-ffi/)** — the five-function C ABI
   underneath the TurboModule.

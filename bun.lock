@@ -31,12 +31,10 @@
         "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
         "@syncular/client": "workspace:*",
         "@syncular/core": "workspace:*",
-        "@syncular/kysely": "workspace:*",
         "@syncular/react": "workspace:*",
         "@syncular/server": "workspace:*",
         "@syncular/server-hono": "workspace:*",
         "hono": "^4.11.0",
-        "kysely": "^0.29.2",
         "react": "^18.3.1",
         "react-dom": "^18.3.1",
       },
@@ -157,21 +155,6 @@
       "name": "@syncular/crypto",
       "version": "0.2.1",
     },
-    "packages/kysely": {
-      "name": "@syncular/kysely",
-      "version": "0.2.1",
-      "dependencies": {
-        "@syncular/client": "workspace:*",
-      },
-      "devDependencies": {
-        "@syncular/core": "workspace:*",
-        "@syncular/server": "workspace:*",
-        "kysely": "^0.29.2",
-      },
-      "peerDependencies": {
-        "kysely": ">=0.27.0",
-      },
-    },
     "packages/react": {
       "name": "@syncular/react",
       "version": "0.2.1",
@@ -181,23 +164,15 @@
       "devDependencies": {
         "@happy-dom/global-registrator": "^15.11.0",
         "@syncular/core": "workspace:*",
-        "@syncular/kysely": "workspace:*",
         "@syncular/server": "workspace:*",
         "@testing-library/react": "^16.1.0",
         "@types/react": "^18.3.0",
-        "kysely": "^0.29.2",
         "react": "^18.3.1",
         "react-dom": "^18.3.1",
       },
       "peerDependencies": {
-        "@syncular/kysely": "workspace:*",
-        "kysely": ">=0.27.0",
         "react": ">=18.0.0",
       },
-      "optionalPeers": [
-        "@syncular/kysely",
-        "kysely",
-      ],
     },
     "packages/server": {
       "name": "@syncular/server",
@@ -275,7 +250,7 @@
       "name": "@syncular/typegen",
       "version": "0.2.1",
       "bin": {
-        "syncular": "./src/cli.ts",
+        "syncular": "./dist/cli.js",
       },
       "devDependencies": {
         "@syncular/core": "workspace:*",
@@ -671,8 +646,6 @@
 
     "@syncular/example-quickstart": ["@syncular/example-quickstart@workspace:examples/quickstart"],
 
-    "@syncular/kysely": ["@syncular/kysely@workspace:packages/kysely"],
-
     "@syncular/react": ["@syncular/react@workspace:packages/react"],
 
     "@syncular/react-native": ["@syncular/react-native@workspace:bindings/react-native"],
@@ -1052,8 +1025,6 @@
     "jsonc-parser": ["jsonc-parser@3.3.1", "", {}, "sha512-HUgH65KyejrUFPvHFPbqOY0rsFip3Bo5wb4ngvdi1EpCYWUQDC5V+Y7mZws+DLkr4M//zQJoanu1SP+87Dv1oQ=="],
 
     "kleur": ["kleur@4.1.5", "", {}, "sha512-o+NO+8WrRiQEE4/7nwRJhN1HWpVmJm511pBHUxPLtp0BUISzlBplORYSmTclCnJvQq2tKu/sgl3xVpkc7ZWuQQ=="],
-
-    "kysely": ["kysely@0.29.2", "", {}, "sha512-s6WVJyEZrbm6jhBpiKHsGHyePMrVQKJ85wZCFCr9W4QHv6WTjWIrdvTmO9hDEA3bNK0xkrE2DqrHsXMLWuZpQg=="],
 
     "leven": ["leven@3.1.0", "", {}, "sha512-qsda+H8jTaUaN/x5vzW2rzc+8Rw4TAQ/4KjB46IwK5VH+IlVeeeje/EoZRpiXvIqjFgK84QffqPztGI3VBLG1A=="],
 

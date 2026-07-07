@@ -2,7 +2,7 @@
  * demo-react backend: the SAME sync server as `apps/demo` (server-hono over
  * bun:sqlite, a RealtimeHub WebSocket, segment + blob endpoints) with a
  * React frontend instead of the vanilla-DOM one. It exists to dogfood the
- * hooks: `SyncProvider` + `useTypedQuery` (Kysely-typed) + `useMutation` +
+ * hooks: `SyncProvider` + `useQuery` (named) + `useRawSql` (raw) + `useMutation` +
  * `useSyncStatus` + `useWindow`.
  *
  * Two Bun.build bundles at startup: /app.js (the React page) and /worker.js
@@ -74,7 +74,7 @@ async function seed(): Promise<void> {
     ['groceries', 'Milk, eggs, coffee'],
     ['groceries', 'Olive oil'],
     ['work', 'Ship the demo-react app'],
-    ['work', 'Review the Kysely dialect PR'],
+    ['work', 'Review the query surface RFC'],
     ['travel', 'Renew passport'],
   ];
   const rows: TodosRow[] = seeds.map(([list, title], index) => ({

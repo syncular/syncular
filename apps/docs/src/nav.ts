@@ -59,7 +59,6 @@ export const nav: readonly NavSection[] = [
     items: [
       { slug: 'guide-schema', title: 'Schema & typegen' },
       { slug: 'tooling-queries', title: 'Named queries' },
-      { slug: 'tooling-kysely', title: 'Typed reads (Kysely)' },
       { slug: 'tooling-testing', title: 'Testing your app' },
     ],
   },

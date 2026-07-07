@@ -5,7 +5,7 @@
  * - `QRow` — the projection row interface (its OWN type per query — the
  *   drift-kill: the row shape is exactly what the SELECT returns),
  * - `QParams` — the typed params object (when the query has params),
- * - `qTables` — the readonly table-dependency set (feeds useSyncQuery `{tables}`
+ * - `qTables` — the readonly table-dependency set (feeds useRawSql `{tables}`
  *   for EXACT invalidation),
  * - `q(client, params?): Promise<QRow[]>` — runs the query over the wrapper's
  *   positional `query(sql, params[])` surface, reordering the named params
@@ -76,9 +76,9 @@ function emitQuery(query: AnalyzedQuery): string {
     lines.push('');
   }
 
-  // Tables dependency set (for useSyncQuery {tables} / useNamedQuery).
+  // Tables dependency set (for useRawSql {tables} / useQuery).
   lines.push(
-    `/** Tables ${quote(query.name)} reads — the exact useSyncQuery \`{tables}\` set. */`,
+    `/** Tables ${quote(query.name)} reads — the exact useRawSql \`{tables}\` set. */`,
   );
   lines.push(
     `export const ${query.name}Tables = [${query.tables.map(quote).join(', ')}] as const;`,
@@ -108,11 +108,11 @@ function emitQuery(query: AnalyzedQuery): string {
   lines.push('}');
   lines.push('');
 
-  // A descriptor for react's `useNamedQuery` — the SQL, the exact table
+  // A descriptor for react's `useQuery` — the SQL, the exact table
   // dependency set, and a `bind(params)` → positional array. Typed by the
   // query's own Row/Params so the hook stays fully typed.
   lines.push(
-    `/** Descriptor for \`useNamedQuery(${query.name}Query${hasParams ? ', params' : ''})\` — sql + tables + row type. */`,
+    `/** Descriptor for \`useQuery(${query.name}Query${hasParams ? ', params' : ''})\` — sql + tables + row type. */`,
   );
   const paramsTypeArg = hasParams ? Params : 'undefined';
   lines.push(
@@ -165,13 +165,13 @@ export function emitQueriesModule(
       '',
       '/** A named-query descriptor — sql + its exact table dependency set + a',
       ' *  `bind(params)` → positional args. Consumed by',
-      " *  `@syncular/react`'s `useNamedQuery`. `Row` is the projection row",
+      " *  `@syncular/react`'s `useQuery`. `Row` is the projection row",
       ' *  type; `Params` is `undefined` for a param-less query. */',
       'export interface NamedQuery<Row, Params = undefined> {',
       '  readonly sql: string;',
       '  readonly tables: readonly string[];',
       '  readonly bind: (params: Params) => readonly QueryValue[];',
-      '  /** Phantom — carries the Row type for `useNamedQuery` inference. */',
+      '  /** Phantom — carries the Row type for `useQuery` inference. */',
       '  readonly __row?: Row;',
       '}',
     ].join('\n'),

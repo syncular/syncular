@@ -46,12 +46,6 @@ export interface NotesUpdate {
   updated_at_ms?: number;
 }
 
-/** Kysely `Database` interface (table → Row); the generic for
- *  @syncular/kysely's SyncularDialect. */
-export interface Database {
-  notes: NotesRow;
-}
-
 export interface ListNotesParams {
   listId: string;
 }

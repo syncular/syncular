@@ -51,10 +51,11 @@ Details: the [demo README](https://github.com/syncular/syncular/tree/main/apps/d
 
 The hooks counterpart: a single-pane todo app on `@syncular/react` against the
 same server core, with the whole client core in a Web Worker on persistent
-OPFS. It dogfoods the full hook surface — `SyncProvider`, `useTypedQuery`
-(**Kysely-typed** reads from the generated `Database` interface, read-only,
-exact table invalidation), `useMutation` (writes through the outbox),
-`useSyncStatus` (the `outbox N` badge), and `useWindow`.
+OPFS. It dogfoods the full hook surface — `SyncProvider`, `useQuery`
+(**typed named-query** reads from a generated `.sql` descriptor, read-only,
+exact table invalidation), `useRawSql` (the guarded raw tier), `useMutation`
+(writes through the outbox), `useSyncStatus` (the `outbox N` badge), and
+`useWindow`.
 
 ```sh
 bun run --cwd apps/demo-react dev   # http://localhost:8788 (PORT=… to override)
@@ -101,7 +102,7 @@ Rust core, run recipes in each example's README:
   clients converge over realtime deltas, replay offline edits idempotently,
   surface (never auto-resolve) conflicts, and survive leader-tab loss in
   multi-tab mode.
-- `apps/demo-react` proves the typed developer surface: Kysely-typed live
+- `apps/demo-react` proves the typed developer surface: named-query live
   reads, outbox writes, sync status, and visible value-sharded windowing —
   all from the published hooks.
 - The native examples prove the **one interface** claim: React web, Tauri,

@@ -11,14 +11,14 @@
  * `render` want, so a test never hand-writes the provider element.
  *
  *     import { renderHook, waitFor } from '@testing-library/react';
- *     import { useSyncQuery } from '@syncular/react';
+ *     import { useRawSql } from '@syncular/react';
  *     import { createTestSync } from '@syncular/testkit';
  *     import { syncWrapper } from '@syncular/testkit/react';
  *
  *     const sync = await createTestSync({ schema });
  *     const client = await sync.client('a');
  *     const { result } = renderHook(
- *       () => useSyncQuery('SELECT * FROM notes'),
+ *       () => useRawSql('SELECT * FROM notes'),
  *       { wrapper: syncWrapper(client) },
  *     );
  *

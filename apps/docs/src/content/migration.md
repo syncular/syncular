@@ -11,7 +11,7 @@ part that matters: your mental model and your authorization logic.
 > are the names you install — no further rename is coming. The v1-era npm names
 > `@syncular/core`, `@syncular/server`, `@syncular/client`, `@syncular/typegen`,
 > `@syncular/testkit`, and `create-syncular-app` are reused; the remaining
-> packages (`@syncular/react`, `@syncular/kysely`, `@syncular/crdt-yjs`,
+> packages (`@syncular/react`, `@syncular/crdt-yjs`,
 > `@syncular/server-hono`, `@syncular/server-workers`, `@syncular/tauri`,
 > `@syncular/react-native`) are new names reserved for this release.
 
@@ -45,7 +45,7 @@ The v1 semantics survive intact — port your mental model unchanged:
 | Client-side migrations (`@syncular/migrations`) | No client migration engine — [wipe-and-rebootstrap](/guide-schema/) with the outbox preserved ([SPEC §7.4](https://github.com/syncular/syncular/blob/main/SPEC.md#74-schema-bump-flow--wipe-re-bootstrap-replay)) |
 | `syncular.app.ts` authoring + Rust codegen binary | SQL migrations + `syncular.json` manifest + `syncular generate` — pure TypeScript, no cargo ([Schema & typegen](/guide-schema/)) |
 | Relay (`@syncular/server/relay`) | Retired — realtime is a second binding of the same handler; multi-instance fanout is LISTEN/NOTIFY; Workers is a Durable Object design |
-| Per-package micro-surface (~23 packages) | Consolidated set — see the [package map](/reference/): `core`, `server`, `server-hono`, `server-workers`, `client`, `react`, `kysely`, `crypto`, `crdt-yjs`, `typegen`, `tauri`, `testkit`, `create-syncular-app` |
+| Per-package micro-surface (~23 packages) | Consolidated set — see the [package map](/reference/): `core`, `server`, `server-hono`, `server-workers`, `client`, `react`, `crypto`, `crdt-yjs`, `typegen`, `tauri`, `testkit`, `create-syncular-app` |
 | Full React console app (`@syncular/console`) | `SyncularAdmin` query surface + a single static admin page in `@syncular/server-hono` |
 | `@syncular/testkit` mocks | `@syncular/testkit` reborn without mocks — an in-memory loopback of the real server + real clients for app tests; protocol work uses the conformance catalog ([Protocol & conformance](/guide-conformance/)) |
 
@@ -209,14 +209,15 @@ await client.mutate([
 ]);
 ```
 
-Porting notes: Kysely reads move to `@syncular/kysely` — a Kysely dialect
-over the client, typed by the generated `Database` interface, **reads only**
-(raw SQL via `client.query` remains the base layer);
+Porting notes: Kysely reads move to [named queries](/tooling-queries/) —
+author a `.sql` file, typegen type-checks it against your real schema and
+emits a typed function (raw SQL via `client.query` remains the base layer,
+guarded read-only);
 `mutations.tasks.insert(...)` becomes
 `mutate([{ table, op: 'upsert', values }])` (the wire is full-row upserts);
-`live(query, { onChange })` becomes either the React `useSyncQuery` hook
-(below) or `client.onInvalidate` — one `{ tables, scopeKeys }` event per apply
-batch to drive your own re-query. Subscriptions are registered on the client
+`live(query, { onChange })` becomes either the React `useQuery` / `useRawSql`
+hooks (below) or `client.onInvalidate` — one `{ tables, scopeKeys }` event per
+apply batch to drive your own re-query. Subscriptions are registered on the client
 (`client.subscribe(...)`), not passed at construction. There is no
 IndexedDB storage option — persistent means OPFS, and unsupported browsers
 fail loud. See [Web client](/guide-client/).
@@ -230,15 +231,15 @@ and import:
 | v1 hook | v2 |
 |---|---|
 | `SyncProvider` | `SyncProvider` (takes a `SyncClient` or worker handle) |
-| `useSyncQuery(kyselyQuery)` (live) | `useSyncQuery(sql, params?, { tables? })` — live via fine-grained invalidation |
-| `useQuery` (one-shot) | `useSyncQuery` (all queries are live; `enabled` opts out) |
+| `useSyncQuery(kyselyQuery)` (live) | `useQuery(descriptor, params?)` for generated named queries, or `useRawSql(sql, params?, { tables? })` — both live via fine-grained invalidation |
+| `useQuery` (one-shot) | `useQuery` / `useRawSql` (all queries are live; `enabled` opts out) |
 | `useMutations` / `useMutation` | `useMutation` |
 | `useLeasedMutations` / `useLeasedMutation` | retired — see [leases](#7-auth-leases) below; ordinary `useMutation` |
 | `useOutboxStats`, `useSyncStatus`, `useSyncConnection` | `useSyncStatus` |
 | `useConflictStats` | `useConflicts` |
 | `usePresence` / `usePresenceWithJoin` | `usePresence(scopeKey)` + `client.setPresence(scopeKey, doc)` |
 | `useBlob` / `useBlobUploadQueue` | no hook — `client.uploadBlob` / `client.fetchBlob` directly |
-| `useRowsChanged` | `client.onInvalidate` (or just depend on `useSyncQuery`) |
+| `useRowsChanged` | `client.onInvalidate` (or just depend on `useQuery` / `useRawSql`) |
 
 The [react source](https://github.com/syncular/syncular/blob/main/packages/react/src/index.ts) documents the
 invalidation granularity contract (`tables` is the reliable floor; scope-key
@@ -349,9 +350,10 @@ Three gaps this guide once listed have since **shipped**: E2EE
 (`@syncular/tauri` + the `tauri-plugin-syncular` Rust plugin on npm;
 `@syncular/react-native` in the repo at
 [bindings/react-native](https://github.com/syncular/syncular/tree/main/bindings/react-native),
-with npm publication a follow-up), and the typed query builder
-(`@syncular/kysely` reads plus generated named queries). What genuinely
-remains out:
+with npm publication a follow-up), and typed reads — as
+[generated named queries](/tooling-queries/), not a runtime query builder
+(a Kysely dialect shipped briefly and was retired in favor of them). What
+genuinely remains out:
 
 - **The relay.** Retired, not pending: v2 realtime is a second binding of the
   same sync handler, multi-instance fanout is LISTEN/NOTIFY, and the Workers

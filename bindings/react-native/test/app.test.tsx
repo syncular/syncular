@@ -3,13 +3,13 @@
  * (the same file that ships to the device) against an injected NativeModule
  * double, with NO device and NO Metro. This closes the loop the bridge unit
  * test (`bridge.test.ts`) leaves open — that one proves the SyncClientLike
- * marshaling; this one proves `@syncular/react`'s hooks (`useSyncQuery` /
+ * marshaling; this one proves `@syncular/react`'s hooks (`useRawSql` /
  * `useMutation` / `useSyncStatus`) drive the native client through the JSX the
  * user actually wrote:
  *
  *   1. the list renders the rows the native `query` returns;
  *   2. typing + Add calls `useMutation.mutate` → the native `command('mutate')`;
- *   3. the resulting `invalidate` event re-runs `useSyncQuery` and the new row
+ *   3. the resulting `invalidate` event re-runs `useRawSql` and the new row
  *      appears (the optimistic-write round trip, hooks end-to-end).
  *
  * The NativeModule double here is STATEFUL (a tiny todo store) so `query`
@@ -135,7 +135,7 @@ describe('App over the native client (integration)', () => {
 
     const screen = render(React.createElement(App, { client }));
 
-    // Empty state resolves (the initial useSyncQuery read returned no rows).
+    // Empty state resolves (the initial useRawSql read returned no rows).
     await waitFor(() => expect(screen.getByText('no todos yet')).toBeDefined());
 
     // Type a title and press Add — drives useMutation → command('mutate').
@@ -152,7 +152,7 @@ describe('App over the native client (integration)', () => {
       fireEvent.click(addButton);
     });
 
-    // The invalidate re-ran useSyncQuery; the optimistic row is on screen.
+    // The invalidate re-ran useRawSql; the optimistic row is on screen.
     await waitFor(() => expect(screen.getByText('buy milk')).toBeDefined());
   });
 

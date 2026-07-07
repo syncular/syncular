@@ -4,7 +4,7 @@
  * (the webview-side bridge to the NATIVE syncular instance running in the Tauri
  * host process) plus three hooks:
  *
- * - `useSyncQuery` — the live todo list; re-runs exactly when `todos`
+ * - `useRawSql` — the live todo list; re-runs exactly when `todos`
  *   invalidates (one IPC round trip per run — see the README's pagination note).
  * - `useMutation`  — add / toggle / delete; writes go through the outbox.
  * - `useSyncStatus`— the status line (outbox depth + upgrading / schema-floor).
@@ -17,7 +17,7 @@
 import {
   SyncProvider,
   useMutation,
-  useSyncQuery,
+  useRawSql,
   useSyncStatus,
 } from '@syncular/react';
 import { createTauriSyncClient, type TauriSyncClient } from '@syncular/tauri';
@@ -50,7 +50,7 @@ function TodoApp() {
   const { mutate, isPending } = useMutation();
 
   // Live local read: one IPC round trip, re-run only when `todos` invalidates.
-  const { rows, isLoading } = useSyncQuery<TodosRow>(
+  const { rows, isLoading } = useRawSql<TodosRow>(
     'SELECT id, list_id, title, done, position, updated_at_ms, attachment' +
       ' FROM todos WHERE list_id = ? ORDER BY position, id',
     [LIST_ID],
@@ -150,7 +150,7 @@ function TodoApp() {
 
       <footer>
         A native syncular instance runs in the Tauri host process; this webview
-        is a thin RPC client of it. Reads are <code>useSyncQuery</code> (live,
+        is a thin RPC client of it. Reads are <code>useRawSql</code> (live,
         table-scoped invalidation), writes are <code>useMutation</code> (the
         outbox). The only Tauri-specific line is{' '}
         <code>createTauriSyncClient</code> — the hooks are identical to the

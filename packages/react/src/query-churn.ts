@@ -11,7 +11,7 @@
  *    so `React.memo`'d row components keyed by row identity skip re-render.
  * 2. {@link FrameScheduler} — frame-coalesced re-query scheduling. Many
  *    invalidation events between paints collapse to ONE re-run per query.
- * 3. scope-key filtering lives in {@link ../use-sync-query} `eventMatches`
+ * 3. scope-key filtering lives in {@link ../use-raw-sql} `eventMatches`
  *    (it needs the event + the hook's options), documented there.
  *
  * Row identity mechanism (the honest key): the hook knows no primary key —

@@ -1,7 +1,7 @@
 /**
  * Hook semantics against a controllable `SyncClientLike` (the fake exercises
  * the SHIPPED hook logic; only the substrate is faked). Covers:
- * - `useSyncQuery` re-runs on a relevant-table invalidation ONLY (I4 the
+ * - `useRawSql` re-runs on a relevant-table invalidation ONLY (I4 the
  *   counter-proof: an unrelated-table event never re-runs);
  * - coalescing (one apply batch = one re-run);
  * - status / conflicts / presence hooks;
@@ -18,7 +18,7 @@ import {
   SyncProvider,
   useConflicts,
   usePresence,
-  useSyncQuery,
+  useRawSql,
   useSyncStatus,
   useWindow,
 } from '../src/index';
@@ -52,11 +52,11 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-describe('useSyncQuery', () => {
+describe('useRawSql', () => {
   test('runs on mount and returns rows', async () => {
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1', title: 'hello' }]);
-    const { result } = renderHook(() => useSyncQuery('SELECT * FROM tasks'), {
+    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
       wrapper: wrapper(client),
     });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -66,7 +66,7 @@ describe('useSyncQuery', () => {
   test('re-runs when a depended-on table invalidates', async () => {
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1' }]);
-    const { result } = renderHook(() => useSyncQuery('SELECT * FROM tasks'), {
+    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
       wrapper: wrapper(client),
     });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -81,7 +81,7 @@ describe('useSyncQuery', () => {
   test('I4 counter-proof: an unrelated-table invalidation NEVER re-runs', async () => {
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1' }]);
-    const { result } = renderHook(() => useSyncQuery('SELECT * FROM tasks'), {
+    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
       wrapper: wrapper(client),
     });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -97,7 +97,7 @@ describe('useSyncQuery', () => {
   test('coalescing: one apply batch = exactly one re-run', async () => {
     const client = new FakeClient();
     client.setRows('tasks', []);
-    const { result } = renderHook(() => useSyncQuery('SELECT * FROM tasks'), {
+    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
       wrapper: wrapper(client),
     });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -114,8 +114,7 @@ describe('useSyncQuery', () => {
     // The SQL reads `tasks`, but we DECLARE the dep as `docs` — so a `tasks`
     // event must not re-run, and a `docs` event must.
     const { result } = renderHook(
-      () =>
-        useSyncQuery('SELECT * FROM tasks', undefined, { tables: ['docs'] }),
+      () => useRawSql('SELECT * FROM tasks', undefined, { tables: ['docs'] }),
       { wrapper: wrapper(client) },
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -132,7 +131,7 @@ describe('useSyncQuery', () => {
   test('refresh() forces a re-run', async () => {
     const client = new FakeClient();
     client.setRows('tasks', []);
-    const { result } = renderHook(() => useSyncQuery('SELECT * FROM tasks'), {
+    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
       wrapper: wrapper(client),
     });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -243,7 +242,7 @@ describe('provider', () => {
 });
 
 function Bare(): ReactNode {
-  useSyncQuery('SELECT 1');
+  useRawSql('SELECT 1');
   return null;
 }
 

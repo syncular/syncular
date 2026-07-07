@@ -6,7 +6,7 @@
  *   createNativeSyncClient()  →  a SyncClientLike over the TurboModule (the
  *                                native Rust core: rusqlite on the device FS)
  *   <SyncProvider client={…}> →  the exact provider the web apps use
- *   useSyncQuery / useMutation / useSyncStatus → the exact hooks, unchanged
+ *   useRawSql / useMutation / useSyncStatus → the exact hooks, unchanged
  *
  * No hacks, no RN-specific client shim in the tree: the whole point of the
  * binding is that RN is just the fifth host of the one interface. Everything
@@ -22,7 +22,7 @@ import type { SyncClientLike } from '@syncular/react';
 import {
   SyncProvider,
   useMutation,
-  useSyncQuery,
+  useRawSql,
   useSyncStatus,
 } from '@syncular/react';
 import { useState } from 'react';
@@ -52,14 +52,14 @@ function StatusBar(): React.ReactElement {
   );
 }
 
-/** The todo list itself — `useSyncQuery` (live SQL) + `useMutation` (outbox). */
+/** The todo list itself — `useRawSql` (live SQL) + `useMutation` (outbox). */
 function TodoList(): React.ReactElement {
   const [draft, setDraft] = useState('');
   const { mutate, isPending } = useMutation();
 
   // A live local read: runs on mount, re-runs on every `todos` invalidation
   // (optimistic writes land here without a manual refetch).
-  const { rows, isLoading } = useSyncQuery<TodosRow>(
+  const { rows, isLoading } = useRawSql<TodosRow>(
     'SELECT id, list_id, title, done, position, updated_at_ms FROM todos WHERE list_id = ? ORDER BY position, id',
     [LIST_ID],
   );
