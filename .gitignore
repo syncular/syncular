@@ -1,7 +1,3 @@
-# The archived v1 tree lives on disk only (promotion 2026-07-04); its full
-# history is in git. Delete the directory when the sunset completes.
-v1/
-
 .context/
 .claude/
 .ignore/
