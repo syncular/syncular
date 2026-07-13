@@ -164,6 +164,14 @@ jobs:
         with:
           workspaces: bindings/tauri -> target
 
+      # tauri::generate_context! fails the whole compile when the example's
+      # `frontendDist` ("../dist") does not exist; dist/ is a gitignored build
+      # artifact, so materialize the (empty) directory before anything
+      # compiles the example.
+      - name: materialize the example frontendDist
+        if: steps.changed.outputs.run == 'true'
+        run: mkdir -p example/dist
+
       - name: cargo fmt
         if: steps.changed.outputs.run == 'true'
         run: cargo fmt --check

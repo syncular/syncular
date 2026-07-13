@@ -212,28 +212,41 @@ export function emitDartModule(ir: IrDocument, hash: string): string {
   for (const line of schemaValue) schemaLines.push(line);
   parts.push(schemaLines.join('\n'));
 
-  // Shared row-decode helpers.
-  parts.push(
-    [
-      '/// Lift a SQLite boolean: a real bool, or 0/1 as a number.',
-      'bool? _rowBool(Object? value) {',
-      '  if (value is bool) return value;',
-      '  if (value is num) return value != 0;',
-      '  return null;',
-      '}',
-      '',
-      "/// Decode the core's {'\\$bytes': '<hex>'} marshaling (bytes as hex).",
-      'List<int>? _rowBytes(Object? value) {',
-      '  if (value is! Map) return null;',
-      "  final hex = value[r'$bytes'];",
-      '  if (hex is! String || hex.length % 2 != 0) return null;',
-      '  return [',
-      '    for (var i = 0; i < hex.length; i += 2)',
-      '      int.parse(hex.substring(i, i + 2), radix: 16),',
-      '  ];',
-      '}',
-    ].join('\n'),
+  // Shared row-decode helpers — emitted only when a column type references
+  // them. An unused private helper is an ANALYZER diagnostic (unused_element),
+  // which the `type=lint` ignore above does not cover, so a schema without
+  // boolean or bytes/crdt columns would fail a fatal-warnings `dart analyze`.
+  const columnTypes = new Set(
+    ir.tables.flatMap((table) => table.columns.map((column) => column.type)),
   );
+  if (columnTypes.has('boolean')) {
+    parts.push(
+      [
+        '/// Lift a SQLite boolean: a real bool, or 0/1 as a number.',
+        'bool? _rowBool(Object? value) {',
+        '  if (value is bool) return value;',
+        '  if (value is num) return value != 0;',
+        '  return null;',
+        '}',
+      ].join('\n'),
+    );
+  }
+  if (columnTypes.has('bytes') || columnTypes.has('crdt')) {
+    parts.push(
+      [
+        "/// Decode the core's {'\\$bytes': '<hex>'} marshaling (bytes as hex).",
+        'List<int>? _rowBytes(Object? value) {',
+        '  if (value is! Map) return null;',
+        "  final hex = value[r'$bytes'];",
+        '  if (hex is! String || hex.length % 2 != 0) return null;',
+        '  return [',
+        '    for (var i = 0; i < hex.length; i += 2)',
+        '      int.parse(hex.substring(i, i + 2), radix: 16),',
+        '  ];',
+        '}',
+      ].join('\n'),
+    );
+  }
 
   for (const table of ir.tables) {
     parts.push(emitClass(table).join('\n'));
