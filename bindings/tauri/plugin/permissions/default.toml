@@ -3,7 +3,12 @@
 [default]
 description = """
 Allows the webview to drive the native syncular client: the one command
-surface (syncular_command) and the live-query fast path (syncular_query).
-Grant this to the window(s) that host your syncular-backed UI.
+surface (syncular_command), the live-query fast path (syncular_query), and
+the auth-rotation path (syncular_set_headers). Grant this to the window(s)
+that host your syncular-backed UI.
 """
-permissions = ["allow-syncular-command", "allow-syncular-query"]
+permissions = [
+  "allow-syncular-command",
+  "allow-syncular-query",
+  "allow-syncular-set-headers",
+]

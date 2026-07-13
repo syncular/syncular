@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-syncular-set-headers"
+description = "Enables the syncular_set_headers command without any pre-configured scope."
+commands.allow = ["syncular_set_headers"]
+
+[[permission]]
+identifier = "deny-syncular-set-headers"
+description = "Denies the syncular_set_headers command without any pre-configured scope."
+commands.deny = ["syncular_set_headers"]

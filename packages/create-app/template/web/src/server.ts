@@ -58,6 +58,10 @@ const build = await Bun.build({
     join(import.meta.dir, 'frontend', 'worker.ts'),
   ],
   target: 'browser',
+  // Resolve syncular packages through their `bun` condition (TS source,
+  // shipped in the npm tarballs) — bun transpiles it, and a `--local`
+  // workspace link works without a dist build.
+  conditions: ['bun'],
   sourcemap: 'inline',
   external: ['@sqlite.org/sqlite-wasm'],
 });

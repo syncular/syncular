@@ -21,12 +21,14 @@ export const nav: readonly NavSection[] = [
     title: 'Platforms',
     items: [
       { slug: 'platform-web', title: 'Web (browser)' },
+      { slug: 'guide-vite', title: 'Vite' },
       { slug: 'platform-react', title: 'React' },
       { slug: 'platform-swift', title: 'Swift (iOS & macOS)' },
       { slug: 'platform-kotlin', title: 'Kotlin (Android & JVM)' },
       { slug: 'platform-flutter', title: 'Flutter & Dart' },
       { slug: 'platform-react-native', title: 'React Native' },
       { slug: 'platform-tauri', title: 'Tauri' },
+      { slug: 'guide-web-desktop', title: 'One codebase: web + desktop' },
       { slug: 'platform-rust', title: 'Rust' },
       { slug: 'platform-ffi', title: 'Embedding via C FFI' },
     ],
@@ -68,6 +70,7 @@ export const nav: readonly NavSection[] = [
       { slug: 'reference', title: 'Spec & package map' },
       { slug: 'guide-conformance', title: 'Protocol & conformance' },
       { slug: 'benchmarks', title: 'Benchmarks' },
+      { slug: 'troubleshooting', title: 'Troubleshooting' },
     ],
   },
 ];

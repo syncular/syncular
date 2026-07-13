@@ -36,6 +36,7 @@ export * from './s3-blob-store';
 export * from './s3-segment-store';
 export * from './schema';
 export * from './scopes';
+export * from './seed';
 export * from './segment-download';
 export * from './segment-store';
 export * from './signed-url';

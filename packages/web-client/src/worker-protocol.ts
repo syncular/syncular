@@ -113,6 +113,13 @@ export interface WorkerApi {
   /** §4.8 completeness oracle (I3): the windowed-in units for a base. */
   windowState(base: WindowBase): WindowState;
   mutate(mutations: readonly MutationInput[]): string;
+  /** Partial-update convenience: read-merge-write one full-row upsert. */
+  patch(
+    table: string,
+    rowId: string,
+    partial: Readonly<Record<string, unknown>>,
+    options?: { readonly baseVersion?: number },
+  ): string;
   sync(): Promise<SyncSummary>;
   syncUntilIdle(maxRounds?: number): Promise<SyncSummary>;
   query(sql: string, params?: readonly SqlValue[]): SqlRow[];
