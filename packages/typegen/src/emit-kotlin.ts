@@ -229,26 +229,40 @@ export function emitKotlinModule(
   schemaLines.push('}');
   parts.push(schemaLines.join('\n'));
 
-  // Shared row-decode helpers.
-  parts.push(
-    [
-      '/** Lift a SQLite boolean: a real JSON bool, or 0/1 as a number. */',
-      'private fun rowBool(value: JsonValue?): Boolean? {',
-      '    value?.bool?.let { return it }',
-      '    value?.number?.let { return it != 0.0 }',
-      '    return null',
-      '}',
-      '',
-      '/** Decode the core\'s `{"$bytes":"<hex>"}` marshaling into a ByteArray. */',
-      'private fun rowBytes(value: JsonValue?): ByteArray? {',
-      '    val hex = value?.get("\\$bytes")?.string ?: return null',
-      '    if (hex.length % 2 != 0) return null',
-      '    return ByteArray(hex.length / 2) { i ->',
-      '        hex.substring(i * 2, i * 2 + 2).toInt(16).toByte()',
-      '    }',
-      '}',
-    ].join('\n'),
+  // Shared row-decode helpers — emitted only when a column type references
+  // them (the Dart emitter's rule): an unused private fun is dead code in a
+  // generated file and an "is never used" inspection in every IDE. The
+  // query emitter is unaffected — it declares its own queryRowBool/
+  // queryRowBytes copies under distinct names.
+  const columnTypes = new Set(
+    ir.tables.flatMap((table) => table.columns.map((column) => column.type)),
   );
+  if (columnTypes.has('boolean')) {
+    parts.push(
+      [
+        '/** Lift a SQLite boolean: a real JSON bool, or 0/1 as a number. */',
+        'private fun rowBool(value: JsonValue?): Boolean? {',
+        '    value?.bool?.let { return it }',
+        '    value?.number?.let { return it != 0.0 }',
+        '    return null',
+        '}',
+      ].join('\n'),
+    );
+  }
+  if (columnTypes.has('bytes') || columnTypes.has('crdt')) {
+    parts.push(
+      [
+        '/** Decode the core\'s `{"$bytes":"<hex>"}` marshaling into a ByteArray. */',
+        'private fun rowBytes(value: JsonValue?): ByteArray? {',
+        '    val hex = value?.get("\\$bytes")?.string ?: return null',
+        '    if (hex.length % 2 != 0) return null',
+        '    return ByteArray(hex.length / 2) { i ->',
+        '        hex.substring(i * 2, i * 2 + 2).toInt(16).toByte()',
+        '    }',
+        '}',
+      ].join('\n'),
+    );
+  }
 
   for (const table of ir.tables) {
     parts.push(emitDataClass(table).join('\n'));

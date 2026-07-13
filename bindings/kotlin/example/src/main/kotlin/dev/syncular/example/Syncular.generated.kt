@@ -42,22 +42,6 @@ object SyncularSchema {
     }
 }
 
-/** Lift a SQLite boolean: a real JSON bool, or 0/1 as a number. */
-private fun rowBool(value: JsonValue?): Boolean? {
-    value?.bool?.let { return it }
-    value?.number?.let { return it != 0.0 }
-    return null
-}
-
-/** Decode the core's `{"$bytes":"<hex>"}` marshaling into a ByteArray. */
-private fun rowBytes(value: JsonValue?): ByteArray? {
-    val hex = value?.get("\$bytes")?.string ?: return null
-    if (hex.length % 2 != 0) return null
-    return ByteArray(hex.length / 2) { i ->
-        hex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
-    }
-}
-
 /** One notes row (§2.4 column order). */
 data class Notes(
     val id: String,
