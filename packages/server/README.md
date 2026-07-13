@@ -134,9 +134,11 @@ JSON-able queries.
 
 `RingBufferEvents` is a `SyncularServerEvents` sink that retains the last N
 events in memory (bounded — oldest dropped when full) with a
-`query({type?, sinceMs?, limit})`. It is the event stream without any
-infrastructure dependency. Compose it with any other sink so the console
-tail and your logs/metrics see the same emissions:
+`query({type?, sinceMs?, clientId?, actorId?, limit})` and a
+`subscribe(listener)` hook for live tails (the SSE route below). It is the
+event stream without any infrastructure dependency. Compose it with any
+other sink so the console tail and your logs/metrics see the same
+emissions:
 
 ```ts
 import {
@@ -153,21 +155,28 @@ const admin = SyncularAdmin.fromConfig(config, { ring });
 
 ### Query surface
 
-Every method is read-only and partition-scoped:
+Every method is read-only. All are partition-scoped except the two fleet
+reads (`listPartitions` / `partitionsOverview`), which enumerate partitions
+by design:
 
 | Method | Returns |
 | --- | --- |
-| `listClients(partition)` | Known clients: `clientId`, `actorId`, `cursor`, `updatedAtMs`, `subscriptions[]`, and an `active` flag (cursor touched within the §4.6 active window). |
+| `listClients(partition)` | Known clients: `clientId`, `actorId`, `cursor`, `lag` (commits not yet pulled: `maxCommitSeq − max(cursor, 0)`), `updatedAtMs`, `subscriptions[]`, and an `active` flag (cursor touched within the §4.6 active window). |
+| `clientDetail(partition, clientId, {eventLimit?})` | One client's drill-down: `{exists, client?, lease?, events}` — the record (with lag), its §7.3 lease when a lease store is wired, and its slice of the event tail. Answers "why is this client stale" in one read. |
 | `listCommits(partition, {afterSeq?, limit?, table?})` | Commit-log **metadata** (never payloads), newest first: `commitSeq`, `clientId`, `clientCommitId`, `actorId`, `createdAtMs`, `changeCount`, `tables[]`. |
 | `inspectRow(partition, table, rowId)` | `{exists, serverVersion?, scopes?}` — current row version + stored scopes, payload **not** decoded. |
 | `scopeActivity(partition, {variable, value}, {limit?})` | Recent commits touching one scope key, via the §3.1 change-scope index (never a log scan). |
 | `horizonStatus(partition)` | `{maxCommitSeq, horizonSeq, retainedCommits, activeCursorFloor, recommendedHorizonSeq, recommendation}` — the horizon a prune pass would reach now (§4.6) + a coarse `up-to-date` / `prune-recommended`. |
 | `segmentStats()` / `blobStats(partition)` / `stats(partition)` | Counts/bytes where the stores expose them (segments split rows/sqlite). `undefined` when a store omits `stats()`. |
-| `events({type?, sinceMs?, limit?})` | The ring tail, newest first. Empty when no ring is wired (`hasEventStream` reports which). |
+| `metrics(partition, {windowMs?, buckets?})` | Ring-derived request/push health over a trailing window (default 5 min): request count/rate, error share, p50/p95 duration, push applied/rejected/conflicted, and per-bucket counts for a sparkline. Zero new server state; all zeros when no ring is wired. |
+| `listPartitions()` / `partitionsOverview()` | Every partition the storage holds state for; the overview adds retained backlog, client counts (known/active), and the prune recommendation per partition — the fleet view. |
+| `events({type?, sinceMs?, clientId?, actorId?, limit?})` | The ring tail, newest first. Empty when no ring is wired (`hasEventStream` reports which). |
+| `subscribeEvents(listener)` | Live events as they land in the ring; returns the unsubscribe function, `undefined` when no ring is wired. |
 
 The query surface leans on **additive, optional** storage/store methods
 (`ServerStorage.listClientRecords` / `listCommitMetadata` / `scopeActivity` /
-`getRowScopes`; `SegmentStore.stats`; `BlobStore.stats`) — the established
+`getRowScopes` / `listPartitions`; `SegmentStore.stats`; `BlobStore.stats`)
+— the established
 optional-method pattern. `SqliteServerStorage`, `PostgresServerStorage`,
 `D1ServerStorage`, and the memory/sqlite stores implement them; the shared
 `ServerStorage` contract suite exercises them on all backends. A backend that
@@ -199,29 +208,44 @@ app.route('/admin', routes);
 | --- | --- |
 | `GET /` | The console page (see below). |
 | `GET /clients` | `listClients` |
+| `GET /clients/:clientId?eventLimit` | `clientDetail` |
 | `GET /commits?afterSeq&limit&table` | `listCommits` |
 | `GET /rows/:table/:rowId` | `inspectRow` |
 | `GET /scope-activity?variable&value&limit` | `scopeActivity` |
 | `GET /horizon` | `horizonStatus` |
 | `GET /stats` | `stats` |
-| `GET /events?type&sinceMs&limit` | `events` (ring tail) |
+| `GET /metrics?windowMs` | `metrics` |
+| `GET /partitions` | `partitionsOverview` (fleet view) |
+| `GET /events?type&sinceMs&clientId&actorId&limit` | `events` (ring tail) |
+| `GET /events/stream?type&clientId&actorId&limit` | live SSE tail (backlog replay, then `subscribeEvents`) |
 
 `?partition=` selects the partition (falls back to `defaultPartition`).
+`GET /partitions` is the one cross-partition endpoint: the guard still runs
+on it, with an empty `partition` in its context unless the query passes one
+— a host that authorizes per partition should treat it accordingly.
 
 `GET /` (or `/admin`) serves a **single static HTML page** — zero
 framework, no build step, no React. It fetches the sibling JSON endpoints
 (relative to its own mount path, so it works under any prefix and the same
-guard covers its XHRs), renders tables for horizon, store stats, clients,
-recent commits, and the event tail, with an auto-refresh toggle (2 s poll).
-This is a deliberate ~300-line console: 5% of the code a full console app
+guard covers its XHRs) and renders: a metrics statusbar (push rate,
+conflicts, error share, p95, ASCII sparkline), the fleet view (which doubles
+as the partition picker), horizon, store stats, clients with cursor lag and
+a per-client drill-down (subscriptions with full scope sets, lease status,
+the client's event slice), recent commits, the row inspector, scope
+activity, and the event tail — with an auto-refresh toggle (2 s poll).
+This is a deliberate one-file console: 5% of the code a full console app
 would cost, the 80% operator value.
 
-**No SSE (yet).** `GET /events` is a polled ring query; the page's
-auto-refresh polls it. Server-Sent-Events streaming was deliberately
-skipped for this rung — the ring is pull-only, so SSE would need a
-push-notification path from the sink into open connections (extra
-machinery for marginal benefit at admin cadence). Polling is the right
-rung; SSE is a noted follow-up.
+**Live tail over SSE.** `GET /events/stream` streams the ring as
+server-sent events: a recent backlog replays first, then events arrive as
+they land (a `subscribe` hook on the ring), with a comment ping every 5 s
+(under Bun.serve's 10 s default idle timeout, so a quiet stream survives).
+It is plain web-streams, so it serves identically on Bun, Node, and
+Workers. The page upgrades its event panel to the stream automatically and
+falls back to the 2-second poll when the stream is unavailable (no ring, or
+`EventSource` cannot pass the host's auth headers — cookie-authorized
+setups stream fine). The tail can carry sensitive identifiers (actorIds,
+session ids), the same as `GET /events`; the admin guard gates both.
 
 The demo server (`apps/demo`) mounts the admin behind a dev guard:
 `SYNCULAR_DEMO_ADMIN=1` enables `/admin` (optionally token-gated with

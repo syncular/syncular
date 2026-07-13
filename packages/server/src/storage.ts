@@ -289,6 +289,10 @@ export interface ServerStorage {
    * change scope index (never a log scan).
    * `getRowScopes`: the (table, rowId) row's current server_version and
    * stored scopes without decoding its payload — the row inspector.
+   * `listPartitions`: every partition this storage holds state for — the
+   * union of the partition registry (commit log counters) and client
+   * records, sorted. Powers the console's fleet view / partition picker;
+   * deliberately NOT partition-scoped (the one cross-partition read).
    */
   listClientRecords?(partition: string): Promise<ClientRecord[]>;
   listCommitMetadata?(
@@ -306,6 +310,7 @@ export interface ServerStorage {
   ): Promise<
     { serverVersion: number; scopes: Record<string, string> } | undefined
   >;
+  listPartitions?(): Promise<string[]>;
 }
 
 /** A row referencing a blob, with the scopes needed to authorize download. */

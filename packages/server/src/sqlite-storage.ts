@@ -789,4 +789,16 @@ export class SqliteServerStorage implements ServerStorage {
       scopes: JSON.parse(record.scopes) as Record<string, string>,
     };
   }
+
+  async listPartitions(): Promise<string[]> {
+    // Union: the registry row appears on first commit, the client row on
+    // first pull — a partition with only one of the two still shows up.
+    const rows = this.db
+      .query<{ partition: string }, []>(
+        `SELECT partition FROM sync_partitions
+         UNION SELECT partition FROM sync_clients ORDER BY partition`,
+      )
+      .all();
+    return rows.map((r) => r.partition);
+  }
 }
