@@ -56,10 +56,20 @@ jobs:
           set -euo pipefail
           # bun pm pack materializes workspace:* deps in the tarball
           # manifest; npm publish provides OIDC + provenance.
+          # Already-published versions are SKIPPED (not failed) so a re-run
+          # after a partial failure — e.g. the crates job died mid-release —
+          # publishes only what is missing instead of failing on the first
+          # duplicate.
           for dir in core crypto crdt-yjs server server-hono \
                      server-workers web-client react typegen tauri \
                      testing create-app; do
-            echo "── publishing packages/$dir"
+            name=$(bun -e "console.log((await Bun.file('packages/$dir/package.json').json()).name)")
+            ver=$(bun -e "console.log((await Bun.file('packages/$dir/package.json').json()).version)")
+            if npm view "$name@$ver" version >/dev/null 2>&1; then
+              echo "── skipping $name@$ver (already published)"
+              continue
+            fi
+            echo "── publishing $name@$ver"
             (cd "packages/$dir" \
               && bun pm pack --quiet \
               && npm publish ./*.tgz --provenance --access public \
@@ -79,6 +89,16 @@ jobs:
             V=$(grep -m1 '^version' "$toml" | sed 's/.*"\(.*\)"/\1/')
             [ "$TAG" = "$V" ] || { echo "tag $TAG != $toml version $V"; exit 1; }
           done
+      # The Tauri plugin's verify build compiles tauri on Linux, which needs
+      # the GTK/WebKit system libraries — without them gdk-sys/gio-sys/
+      # gobject-sys build scripts fail and the publish dies at the last step
+      # (observed on the v0.3.1 run).
+      - name: install Tauri Linux system deps (plugin verify build)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
       - name: publish (dependency order)
@@ -86,16 +106,40 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
           set -euo pipefail
+          # All crates release in lockstep — one version, read once (the
+          # tag-verify step above already enforced it matches the tag).
+          VERSION=$(grep -m1 '^version' rust/crates/ssp2/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          # Skip crates whose version already sits on the index (sparse-index
+          # lookup, no auth), so a re-run after a partial failure publishes
+          # only what is missing. cargo waits for each publish to reach the
+          # index before the dependent crate publishes.
+          published() { # published <crate> → 0 if $VERSION is on the index
+            local c=$1 path
+            case ${#c} in
+              1) path="1/$c" ;;
+              2) path="2/$c" ;;
+              3) path="3/${c:0:1}/$c" ;;
+              *) path="${c:0:2}/${c:2:2}/$c" ;;
+            esac
+            curl -fsSL "https://index.crates.io/$path" 2>/dev/null \
+              | grep -q "\"vers\":\"$VERSION\""
+          }
+          publish() {
+            if published "$1"; then
+              echo "── skipping $1@$VERSION (already on the index)"
+              return 0
+            fi
+            echo "── publishing $1@$VERSION"
+            cargo publish -p "$1"
+          }
           cd rust
-          # cargo waits for each publish to reach the index before the
-          # dependent crate publishes.
-          cargo publish -p syncular-ssp2
-          cargo publish -p syncular-client
-          cargo publish -p syncular-command
-          cargo publish -p syncular-ffi
-          cargo publish -p syncular
+          publish syncular-ssp2
+          publish syncular-client
+          publish syncular-command
+          publish syncular-ffi
+          publish syncular
           # The Tauri plugin lives in its OWN workspace (bindings/tauri/,
           # kept out of the main cargo gate); its path deps carry version
           # constraints that resolve against the crates just published.
           cd ../bindings/tauri
-          cargo publish -p tauri-plugin-syncular
+          publish tauri-plugin-syncular
