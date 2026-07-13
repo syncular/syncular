@@ -20,6 +20,8 @@ import {
   httpSyncTransport,
   type MutationInput,
   NOT_LEADER_CODE,
+  type RealtimeHandlers,
+  type RealtimeSocket,
   type SqlRow,
   type SqlValue,
   type SubscribeInput,
@@ -34,6 +36,15 @@ import {
   type TodosRow,
   todoListSubscription,
 } from '../syncular.generated';
+
+/**
+ * Build-time flag (Bun.build `define`): the static, backend-free bundle sets
+ * it, and the panes then talk to the embedded server worker instead of HTTP.
+ * The dev server bundle leaves it unset.
+ */
+declare const SYNCULAR_DEMO_EMBEDDED: boolean;
+const EMBEDDED =
+  typeof SYNCULAR_DEMO_EMBEDDED !== 'undefined' && SYNCULAR_DEMO_EMBEDDED;
 
 const LIST_ID = 'demo';
 const SUBSCRIPTION_ID = 'todos';
@@ -142,6 +153,223 @@ async function makeWorkerCore(
     fetchBlob: async (blobIdOrRef) =>
       (await handle.fetchBlob(blobIdOrRef)).bytes,
     connectRealtime,
+  };
+}
+
+// -- embedded mode (static build): the server runs in a web worker -----------
+
+/** The page-side handle on the embedded server worker (one per page). */
+interface EmbeddedServer {
+  sync(bytes: Uint8Array): Promise<Uint8Array>;
+  blobUpload(
+    blobId: string,
+    bytes: Uint8Array,
+    mediaType?: string,
+  ): Promise<void>;
+  blobDownload(blobId: string): Promise<Uint8Array>;
+  /** A realtime "socket": a numbered channel into the worker's hub (§8.7). */
+  rtOpen(clientId: string, handlers: RealtimeHandlers): Promise<RealtimeSocket>;
+}
+
+let embeddedServer: Promise<EmbeddedServer> | undefined;
+
+function getEmbeddedServer(): Promise<EmbeddedServer> {
+  if (embeddedServer !== undefined) return embeddedServer;
+  embeddedServer = new Promise<EmbeddedServer>((resolve, reject) => {
+    const worker = new Worker('/server-worker.js', { type: 'module' });
+    let nextId = 1;
+    let nextChannel = 1;
+    const pending = new Map<
+      number,
+      {
+        resolve: (msg: { bytes?: Uint8Array }) => void;
+        reject: (error: Error) => void;
+      }
+    >();
+    const channels = new Map<number, RealtimeHandlers>();
+    const call = (
+      body: Record<string, unknown>,
+    ): Promise<{ bytes?: Uint8Array }> =>
+      new Promise((res, rej) => {
+        const id = nextId++;
+        pending.set(id, { resolve: res, reject: rej });
+        worker.postMessage({ id, ...body });
+      });
+    const api: EmbeddedServer = {
+      sync: async (bytes) => {
+        const out = (await call({ kind: 'sync', bytes })).bytes;
+        if (out === undefined) throw new Error('sync rpc returned no bytes');
+        return out;
+      },
+      blobUpload: async (blobId, bytes, mediaType) => {
+        await call({ kind: 'blob-upload', blobId, bytes, mediaType });
+      },
+      blobDownload: async (blobId) => {
+        const out = (await call({ kind: 'blob-download', blobId })).bytes;
+        if (out === undefined) throw new Error('blob rpc returned no bytes');
+        return out;
+      },
+      rtOpen: async (clientId, handlers) => {
+        const channel = nextChannel++;
+        channels.set(channel, handlers);
+        await call({ kind: 'rt-open', channel, clientId });
+        return {
+          send: (text) =>
+            worker.postMessage({ kind: 'rt-text', channel, text }),
+          sendBytes: (bytes) =>
+            worker.postMessage({ kind: 'rt-bytes', channel, bytes }),
+          close: () => {
+            worker.postMessage({ kind: 'rt-close', channel });
+            channels.delete(channel);
+          },
+        };
+      },
+    };
+    worker.onmessage = (event: MessageEvent) => {
+      const msg = event.data as {
+        kind: string;
+        id?: number;
+        ok?: boolean;
+        bytes?: Uint8Array;
+        text?: string;
+        channel?: number;
+        error?: { code: string; message: string };
+      };
+      switch (msg.kind) {
+        case 'ready':
+          resolve(api);
+          break;
+        case 'result': {
+          if (msg.id === undefined) break;
+          const waiter = pending.get(msg.id);
+          if (waiter === undefined) break;
+          pending.delete(msg.id);
+          if (msg.ok === true) waiter.resolve(msg);
+          else
+            waiter.reject(
+              new ClientSyncError(
+                msg.error?.code ?? 'sync.transport_failed',
+                msg.error?.message ?? 'embedded server call failed',
+                false,
+              ),
+            );
+          break;
+        }
+        case 'rt-text':
+          if (msg.channel !== undefined && msg.text !== undefined) {
+            channels.get(msg.channel)?.onText(msg.text);
+          }
+          break;
+        case 'rt-bytes':
+          if (msg.channel !== undefined && msg.bytes !== undefined) {
+            channels.get(msg.channel)?.onBinary(msg.bytes);
+          }
+          break;
+        case 'rt-closed':
+          if (msg.channel !== undefined) {
+            channels.get(msg.channel)?.onClose?.();
+            channels.delete(msg.channel);
+          }
+          break;
+      }
+    };
+    worker.onerror = (event) => {
+      reject(new Error(`embedded server worker failed: ${event.message}`));
+    };
+  });
+  return embeddedServer;
+}
+
+/**
+ * A pane core for the embedded mode: the same in-memory main-thread
+ * `SyncClient` as the ephemeral mode, with every transport routed into the
+ * server worker — sync bytes, blobs, and a real realtime channel.
+ */
+async function makeEmbeddedCore(
+  paneName: string,
+  onDataMaybeChanged: () => void,
+): Promise<PaneCore> {
+  const server = await getEmbeddedServer();
+  const database = await openWasmDatabase();
+  const clientId = crypto.randomUUID();
+  let offline = false;
+  let syncScheduled = false;
+  const offlineError = () =>
+    new ClientSyncError(
+      'sync.transport_failed',
+      `pane ${paneName} is offline`,
+      true,
+    );
+  const client = new SyncClient({
+    database,
+    schema,
+    clientId,
+    transport: async (bytes) => {
+      if (offline) throw offlineError();
+      return server.sync(bytes);
+    },
+    blobs: {
+      upload: async (blobId, bytes, mediaType) => {
+        if (offline) throw offlineError();
+        await server.blobUpload(blobId, bytes, mediaType);
+      },
+      download: async (blobId) => {
+        if (offline) throw offlineError();
+        return { kind: 'bytes', bytes: await server.blobDownload(blobId) };
+      },
+    },
+    realtime: (handlers) => server.rtOpen(clientId, handlers),
+    limits: { limitSnapshotRows: 5000, maxSnapshotPages: 20 },
+    onSyncNeeded: () => scheduleSync(),
+    onConflict: () => onDataMaybeChanged(),
+  });
+
+  function scheduleSync(): void {
+    if (syncScheduled || offline) return;
+    syncScheduled = true;
+    window.setTimeout(() => {
+      syncScheduled = false;
+      void client
+        .syncUntilIdle()
+        .catch(() => {})
+        .then(() => onDataMaybeChanged());
+    }, 50);
+  }
+
+  await client.start();
+  const connectRealtime = async () => {
+    try {
+      await client.connectRealtime();
+    } catch {
+      // request/response sync still works without the channel
+    }
+  };
+  return {
+    backendLabel: 'sqlite-wasm ↔ in-page server worker',
+    subscribe: (input) => {
+      client.subscribe(input);
+      return Promise.resolve();
+    },
+    mutate: (mutations) => Promise.resolve(client.mutate(mutations)),
+    syncUntilIdle: () => client.syncUntilIdle(),
+    query: (sql, params) => Promise.resolve(client.query(sql, params)),
+    pendingCount: () => Promise.resolve(client.pendingCommits().length),
+    conflicts: () => Promise.resolve(client.conflicts),
+    uploadBlob: async (bytes, options) => {
+      const ref = await client.uploadBlob(bytes, options);
+      return client.blobRefString(ref);
+    },
+    fetchBlob: async (blobIdOrRef) =>
+      (await client.fetchBlob(blobIdOrRef)).bytes,
+    connectRealtime,
+    setOffline: async (value) => {
+      offline = value;
+      if (offline) {
+        client.disconnectRealtime();
+      } else {
+        await connectRealtime();
+      }
+    },
   };
 }
 
@@ -274,9 +502,11 @@ class Pane {
   async init(): Promise<void> {
     this.#buildShell();
     try {
-      this.core = EPHEMERAL
-        ? await makeEphemeralCore(this.name, () => this.refreshSoon())
-        : await makeWorkerCore(this.name, () => this.refreshSoon());
+      this.core = EMBEDDED
+        ? await makeEmbeddedCore(this.name, () => this.refreshSoon())
+        : EPHEMERAL
+          ? await makeEphemeralCore(this.name, () => this.refreshSoon())
+          : await makeWorkerCore(this.name, () => this.refreshSoon());
     } catch (error) {
       const message =
         error instanceof ClientSyncError
@@ -694,11 +924,13 @@ async function simulateConflict(
 async function main(): Promise<void> {
   const modeEl = document.getElementById('mode-hint');
   if (modeEl !== null) {
-    modeEl.innerHTML = EPHEMERAL
-      ? 'mode: <strong>ephemeral</strong> (in-memory, main thread — explicit) · <a href="/">persistent</a>'
-      : MULTITAB
-        ? 'mode: <strong>persistent + multi-tab</strong> (OPFS, worker) — open a second tab to see a follower · <a href="/">single-tab</a>'
-        : 'mode: <strong>persistent</strong> (OPFS, worker) · <a href="/?ephemeral">ephemeral</a> · <a href="/?multitab">multi-tab</a>';
+    modeEl.innerHTML = EMBEDDED
+      ? 'server: <strong>in this page</strong> (web worker) — nothing leaves the browser'
+      : EPHEMERAL
+        ? 'mode: <strong>ephemeral</strong> (in-memory, main thread — explicit) · <a href="/">persistent</a>'
+        : MULTITAB
+          ? 'mode: <strong>persistent + multi-tab</strong> (OPFS, worker) — open a second tab to see a follower · <a href="/">single-tab</a>'
+          : 'mode: <strong>persistent</strong> (OPFS, worker) · <a href="/?ephemeral">ephemeral</a> · <a href="/?multitab">multi-tab</a>';
   }
   const paneA = new Pane('A', document.getElementById('pane-a') as HTMLElement);
   const paneB = new Pane('B', document.getElementById('pane-b') as HTMLElement);
