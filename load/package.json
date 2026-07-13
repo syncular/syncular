@@ -1,5 +1,5 @@
 {
-  "name": "@syncular-load",
+  "name": "@syncular/load",
   "private": true,
   "type": "module",
   "scripts": {

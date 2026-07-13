@@ -1,5 +1,5 @@
 {
-  "name": "@syncular-bench",
+  "name": "@syncular/bench",
   "private": true,
   "type": "module",
   "scripts": {
