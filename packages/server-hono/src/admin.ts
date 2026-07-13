@@ -12,9 +12,11 @@
  */
 import {
   errorBody,
+  matchesRingQuery,
   type RingEventQuery,
   SyncError,
   type SyncularAdmin,
+  type SyncularServerEvent,
 } from '@syncular/server';
 import { Hono } from 'hono';
 import { ADMIN_CONSOLE_HTML } from './admin-page';
@@ -108,6 +110,41 @@ export function createSyncularAdminRoutes(
     }
   });
 
+  app.get('/clients/:clientId', async (c) => {
+    try {
+      const detail = await admin.clientDetail(
+        partitionOf(c),
+        c.req.param('clientId'),
+        { eventLimit: intParam(c.req.query('eventLimit'), 100) },
+      );
+      return Response.json({ detail });
+    } catch (error) {
+      return jsonError(error);
+    }
+  });
+
+  app.get('/metrics', async (c) => {
+    try {
+      const metrics = admin.metrics(partitionOf(c), {
+        windowMs: intParam(c.req.query('windowMs'), 5 * 60 * 1000),
+      });
+      return Response.json({ metrics, hasEventStream: admin.hasEventStream });
+    } catch (error) {
+      return jsonError(error);
+    }
+  });
+
+  // Cross-partition fleet view: the ONE endpoint that is not partition-
+  // scoped (the guard still runs, with `partition` empty unless passed).
+  app.get('/partitions', async () => {
+    try {
+      const partitions = await admin.partitionsOverview();
+      return Response.json({ partitions });
+    } catch (error) {
+      return jsonError(error);
+    }
+  });
+
   app.get('/commits', async (c) => {
     try {
       const table = c.req.query('table');
@@ -174,16 +211,97 @@ export function createSyncularAdminRoutes(
     }
   });
 
+  /** The ring filters shared by the polled tail and the SSE stream. */
+  function eventFilterOf(c: {
+    req: { query: (k: string) => string | undefined };
+  }): Omit<RingEventQuery, 'limit' | 'sinceMs'> {
+    const type = c.req.query('type') as RingEventQuery['type'];
+    const clientId = c.req.query('clientId');
+    const actorId = c.req.query('actorId');
+    return {
+      ...(type !== undefined ? { type } : {}),
+      ...(clientId !== undefined ? { clientId } : {}),
+      ...(actorId !== undefined ? { actorId } : {}),
+    };
+  }
+
   app.get('/events', async (c) => {
     try {
-      const type = c.req.query('type') as RingEventQuery['type'];
       const sinceMs = c.req.query('sinceMs');
       const events = admin.events({
-        ...(type !== undefined ? { type } : {}),
+        ...eventFilterOf(c),
         ...(sinceMs !== undefined ? { sinceMs: intParam(sinceMs, 0) } : {}),
         limit: intParam(c.req.query('limit'), 200),
       });
       return Response.json({ events, hasEventStream: admin.hasEventStream });
+    } catch (error) {
+      return jsonError(error);
+    }
+  });
+
+  // Live event tail over SSE, fed by the ring's subscribe hook. Plain
+  // web-streams (no filesystem, no Node API), so it serves identically on
+  // Bun, Node, and Workers. A recent backlog is replayed first (oldest →
+  // newest), then events stream as they land; a comment ping every 5 s
+  // keeps the connection under runtime idle timeouts (Bun.serve drops an
+  // idle response after 10 s by default) and intermediaries alive.
+  app.get('/events/stream', (c) => {
+    try {
+      if (!admin.hasEventStream) {
+        throw new SyncError(
+          'sync.invalid_request',
+          'no RingBufferEvents wired on this admin — the event stream is off',
+        );
+      }
+      const filter = eventFilterOf(c);
+      const backlogLimit = intParam(c.req.query('limit'), 50);
+      const encoder = new TextEncoder();
+      let unsubscribe: (() => void) | undefined;
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
+      const stop = (): void => {
+        unsubscribe?.();
+        unsubscribe = undefined;
+        if (heartbeat !== undefined) clearInterval(heartbeat);
+        heartbeat = undefined;
+      };
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const send = (event: SyncularServerEvent): void => {
+            try {
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
+              );
+            } catch {
+              stop(); // the consumer went away mid-enqueue
+            }
+          };
+          controller.enqueue(encoder.encode('retry: 2000\n\n'));
+          for (const event of admin
+            .events({ ...filter, limit: backlogLimit })
+            .reverse()) {
+            send(event);
+          }
+          unsubscribe = admin.subscribeEvents((event) => {
+            if (matchesRingQuery(event, filter)) send(event);
+          });
+          heartbeat = setInterval(() => {
+            try {
+              controller.enqueue(encoder.encode(': ping\n\n'));
+            } catch {
+              stop();
+            }
+          }, 5_000);
+        },
+        cancel() {
+          stop();
+        },
+      });
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-store',
+        },
+      });
     } catch (error) {
       return jsonError(error);
     }
