@@ -22,6 +22,44 @@ await __SYNCULAR__.clients[0].ref.query('SELECT * FROM todos');
 apply batch — the fastest way to confirm data is arriving and your live
 queries should have re-run.
 
+## Enter/mutate silently does nothing
+
+Seen in the dev loop: you restart the dev server while a tab stays open,
+then adding an item does nothing — no new row, no error on screen. The old
+page is still running against its old worker, and the worker's RPC (or its
+transport session) is dead; every `mutate()` **rejects**, but an app that
+never renders the failure can't show it, so the symptom reads as "the app
+ignored me".
+
+Two fixes, both worth doing:
+
+- **Render `useMutation().error` — always.** The hook catches the rejection
+  and exposes it; an app that only calls `mutate` and drops the promise has
+  no failure surface at all. The submit-wrapper pattern:
+
+  ```tsx
+  function AddForm() {
+    const { mutate, isPending, error } = useMutation();
+    const add = (title: string) =>
+      void mutate([{ table: 'todos', op: 'upsert', values: /* … */ }]);
+    return (
+      <form onSubmit={/* … calls add() */}>
+        <input name="title" />
+        <button disabled={isPending}>add</button>
+        {error !== undefined ? (
+          <div className="error">write failed: {String(error)}</div>
+        ) : null}
+      </form>
+    );
+  }
+  ```
+
+  The scaffolded templates ship this shape; keep it when you grow the form.
+
+- **Reload open tabs after a dev-server restart.** The served bundles and
+  the worker changed under the page; a stale page over a fresh server is
+  not a state the dev loop tries to preserve.
+
 ## Data is in the local database, the UI never updates
 
 Live queries in `@syncular/react` schedule their re-runs on
@@ -32,6 +70,17 @@ the document is hidden (plus a `visibilitychange` re-dispatch), so scheduled
 re-runs keep firing everywhere. If you see this symptom, upgrade
 `@syncular/react` to the latest release; if it persists on the latest,
 that's a bug — please report it.
+
+## A list switch briefly reports `isComplete(unit) === false`
+
+That is the completeness oracle being honest, not a bug. Registration is
+not completeness (§4.8): between `setWindow` and the unit's bootstrap
+landing, the unit is **pending** — its local replica may be empty or
+partial — and `useWindow.isComplete` says so. Render a loading state for a
+pending unit instead of an empty list; the verdict flips to `true` on the
+invalidation that accompanies bootstrap completion, even for a unit with
+zero rows. `useWindow` exposes the `pending` subset directly if you want to
+badge it. See [Windowed sync](/concepts-windowing/).
 
 ## `sync.invalid_request` naming an `_sync_*` column
 
