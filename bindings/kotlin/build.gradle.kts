@@ -22,6 +22,10 @@ kotlin {
 
 dependencies {
     testImplementation(kotlin("test"))
+    // Gradle 9 no longer injects the JUnit Platform launcher onto the test
+    // runtime classpath (CI's wrapper-less setup-gradle provisions current
+    // Gradle); declare it explicitly. Harmless on Gradle 8.
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 // The vendored native library path (check.sh builds + copies it into vendor/).

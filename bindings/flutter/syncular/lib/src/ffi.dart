@@ -49,27 +49,28 @@ typedef _FreeStringDart = void Function(Pointer<Utf8> ptr);
 /// in rust/ffi.h). Everything above this — JSON, typed conveniences, the poll
 /// loop — lives in [SyncularClient].
 class SyncularFfi {
-  final DynamicLibrary _lib;
   final _ClientNewDart _clientNew;
   final _ClientCommandDart _clientCommand;
   final _ClientPollEventDart _clientPollEvent;
   final _ClientCloseDart _clientClose;
   final _FreeStringDart _freeString;
 
-  SyncularFfi._(this._lib)
-      : _clientNew = _lib
+  // The DynamicLibrary is not retained as a field: the looked-up function
+  // pointers keep the library mapped, and nothing re-resolves symbols later.
+  SyncularFfi._(DynamicLibrary lib)
+      : _clientNew = lib
             .lookupFunction<_ClientNewNative, _ClientNewDart>(
                 'syncular_client_new'),
-        _clientCommand = _lib
+        _clientCommand = lib
             .lookupFunction<_ClientCommandNative, _ClientCommandDart>(
                 'syncular_client_command'),
-        _clientPollEvent = _lib
+        _clientPollEvent = lib
             .lookupFunction<_ClientPollEventNative, _ClientPollEventDart>(
                 'syncular_client_poll_event'),
-        _clientClose = _lib
+        _clientClose = lib
             .lookupFunction<_ClientCloseNative, _ClientCloseDart>(
                 'syncular_client_close'),
-        _freeString = _lib
+        _freeString = lib
             .lookupFunction<_FreeStringNative, _FreeStringDart>(
                 'syncular_free_string');
 
