@@ -91,6 +91,25 @@ verification; push is Benjamin's alone).
       byte-identical convergence both directions; both pairings green. yrs is
       Yjs-wire-compatible, so no wire changes. Docs: `concepts-crdt.md` +
       wrapper READMEs.
+- [ ] **Honest per-unit window completeness** (§4.8 I3) — *trigger fired
+      2026-07-13 by the first real windowing app (Diego ui-poc)*: the
+      completeness oracle reports a unit complete at REGISTRATION —
+      `WindowState` is `{units}` and `windowComplete` is registry
+      membership — so between `setWindow` and the unit's bootstrap
+      landing, `isComplete(unit)` is true over an empty local replica.
+      Observed: a list switch renders a false "empty" state for ~250ms
+      (the app now works around it with settle-tracking + a deadline).
+      The truth already exists per unit: each windowed unit owns a
+      subscription with `cursor: -1 = never synced` and `bootstrapState`
+      present mid-bootstrap. Fix is cross-core and shape-affecting:
+      `WindowState` gains a per-unit pending/complete verdict (TS
+      client + worker protocol + handle, Rust core `window_state`
+      returns `Vec<String>` today → richer shape through the C-ABI and
+      all five wrappers), `useWindow.isComplete` consults it, and the
+      react hook's optimistic `setWindow` units update must not claim
+      completeness. Conformance: window catalog scenario asserting
+      isComplete stays false until the unit's bootstrap round completes,
+      both cores.
 - [ ] **W2 TTL sugar** (codegen creation-time bucket columns + window
       helpers) — *trigger: first real windowing app's feedback on bucket
       granularity*. W1 already does time-windowing manually.
