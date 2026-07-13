@@ -33,7 +33,6 @@ cd ../server-hono        && bun publish        # @syncular/server-hono
 cd ../server-workers     && bun publish        # @syncular/server-workers
 cd ../crdt-yjs           && bun publish        # @syncular/crdt-yjs
 cd ../web-client         && bun publish        # @syncular/client
-cd ../kysely             && bun publish        # @syncular/kysely
 cd ../react              && bun publish        # @syncular/react
 cd ../typegen            && bun publish        # @syncular/typegen  (bin: syncular)
 cd ../tauri              && bun publish        # @syncular/tauri

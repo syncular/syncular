@@ -1030,7 +1030,7 @@ dependencies = [
 
 [[package]]
 name = "syncular"
-version = "0.2.1"
+version = "0.3.0"
 
 [[package]]
 name = "syncular-bench"
@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "syncular-client"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "rand_core",
  "rusqlite",
@@ -1058,7 +1058,7 @@ dependencies = [
 
 [[package]]
 name = "syncular-command"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "serde_json",
  "syncular-client",
@@ -1067,7 +1067,7 @@ dependencies = [
 
 [[package]]
 name = "syncular-ffi"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "serde_json",
  "syncular-client",
@@ -1079,7 +1079,7 @@ dependencies = [
 
 [[package]]
 name = "syncular-ssp2"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "hkdf",
