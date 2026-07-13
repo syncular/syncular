@@ -22,4 +22,6 @@ apps/docs/.astro/
 
 # wrangler local state
 apps/docs/.wrangler/
+apps/demo/.wrangler/
 tsconfig.tsbuildinfo
+.wrangler/
