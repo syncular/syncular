@@ -23,22 +23,22 @@ Two pieces. The JS bridge is on npm:
 bun add @syncular/tauri @syncular/react
 ```
 
-The Rust plugin lives at
-[`bindings/tauri/plugin`](https://github.com/syncular/syncular/tree/main/bindings/tauri/plugin).
-Until it lands on crates.io, consume it as a git dependency — cargo finds the
-package inside the repo by name:
+The Rust plugin is on crates.io:
+
+```toml
+[dependencies]
+tauri-plugin-syncular = { version = "0.2", features = ["native-transport"] }
+```
+
+To track unreleased changes, consume it as a git dependency instead — cargo
+finds the package inside the repo by name (pin a `rev = "<commit>"` for
+reproducible builds); with a local checkout, a path dependency to
+[`bindings/tauri/plugin`](https://github.com/syncular/syncular/tree/main/bindings/tauri/plugin)
+works too:
 
 ```toml
 [dependencies]
 tauri-plugin-syncular = { git = "https://github.com/syncular/syncular", features = ["native-transport"] }
-```
-
-Pin a rev (`rev = "<commit>"`) for reproducible builds. With a local checkout
-of the repo, a path dependency works too:
-
-```toml
-[dependencies]
-tauri-plugin-syncular = { path = "../../syncular/bindings/tauri/plugin", features = ["native-transport"] }
 ```
 
 The `native-transport` feature compiles the plugin's HTTP + WebSocket stack

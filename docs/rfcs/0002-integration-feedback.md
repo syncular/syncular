@@ -2,9 +2,10 @@
 
 - **Status:** Implemented 2026-07-13. All thirteen items landed, with three
   scope notes: 2.2 was already satisfied at HEAD (the RFC observed the
-  published 0.2.1); 1.2 landed as publish PREP (crate metadata, versioned
-  path deps, a RELEASE.md step, and the git-dependency recipe in the docs —
-  running the publish is a release action); 4.1 landed as the
+  published 0.2.1); 1.2 is fully closed — `tauri-plugin-syncular 0.2.1` was
+  published to crates.io the same day (plus crate metadata, versioned path
+  deps, a RELEASE.md step, and the git/path recipes in the docs); 4.1
+  landed as the
   "One codebase, web + desktop" guide (a `--template tauri` scaffold is
   deferred until the plugin is on crates.io). 2.1 additionally grew a
   SQL-representation coercion in mutation values (booleans as 0/1, bigint
