@@ -6,8 +6,9 @@
 #     Settings → Trusted publisher → GitHub Actions →
 #     owner `syncular`, repo `syncular`, workflow `release.yml`.
 #   - crates.io: syncular-ssp2, syncular-client, syncular-command,
-#     syncular-ffi, syncular → Settings → Trusted Publishing →
-#     GitHub repo `syncular/syncular`, workflow `release.yml`.
+#     syncular-ffi, syncular, tauri-plugin-syncular → Settings →
+#     Trusted Publishing → GitHub repo `syncular/syncular`, workflow
+#     `release.yml`.
 #
 # No registry tokens are stored anywhere; both jobs authenticate via the
 # GitHub OIDC token (`id-token: write`).
@@ -74,8 +75,10 @@ jobs:
         if: github.ref_type == 'tag'
         run: |
           TAG="${GITHUB_REF_NAME#v}"
-          V=$(grep -m1 '^version' rust/crates/ssp2/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
-          [ "$TAG" = "$V" ] || { echo "tag $TAG != crate version $V"; exit 1; }
+          for toml in rust/crates/ssp2/Cargo.toml bindings/tauri/plugin/Cargo.toml; do
+            V=$(grep -m1 '^version' "$toml" | sed 's/.*"\(.*\)"/\1/')
+            [ "$TAG" = "$V" ] || { echo "tag $TAG != $toml version $V"; exit 1; }
+          done
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
       - name: publish (dependency order)
@@ -91,3 +94,8 @@ jobs:
           cargo publish -p syncular-command
           cargo publish -p syncular-ffi
           cargo publish -p syncular
+          # The Tauri plugin lives in its OWN workspace (bindings/tauri/,
+          # kept out of the main cargo gate); its path deps carry version
+          # constraints that resolve against the crates just published.
+          cd ../bindings/tauri
+          cargo publish -p tauri-plugin-syncular
