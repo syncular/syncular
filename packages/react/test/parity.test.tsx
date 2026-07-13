@@ -10,7 +10,7 @@
 
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import type { ReactNode } from 'react';
+import { type ReactNode, StrictMode } from 'react';
 import { SyncProvider, useRawSql, useSyncStatus } from '../src/index';
 import { handleShapeOf } from './handle-shape';
 import { makeClient, makeServer, taskValues } from './loopback';
@@ -49,6 +49,39 @@ describe('hooks against the handle (all-async) surface', () => {
 
     // Wrap the mutate so the invalidation→re-query→setState it drives flushes
     // inside act (the promise-path core resolves the re-query asynchronously).
+    await act(async () => {
+      client.mutate([
+        { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'hi') },
+      ]);
+    });
+    await waitFor(() => expect(result.current.rows).toHaveLength(1));
+  });
+
+  // StrictMode regression on the REAL client surface (hooks.test.tsx covers
+  // the FakeClient variant): the double-effect cycle disposes the per-hook
+  // FrameScheduler; without re-creation the live query freezes forever.
+  test('StrictMode remount: invalidation still re-runs through the promise path', async () => {
+    const server = makeServer();
+    const client = await makeClient(server, 'strict-a');
+    clients.push(client);
+    client.subscribe({
+      id: 's1',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    await client.syncUntilIdle();
+
+    const handle = handleShapeOf(client);
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <StrictMode>
+        <SyncProvider client={handle}>{children}</SyncProvider>
+      </StrictMode>
+    );
+    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
+      wrapper,
+    });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
     await act(async () => {
       client.mutate([
         { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1', 'hi') },
