@@ -34,17 +34,6 @@ bool? _rowBool(Object? value) {
   return null;
 }
 
-/// Decode the core's {'\$bytes': '<hex>'} marshaling (bytes as hex).
-List<int>? _rowBytes(Object? value) {
-  if (value is! Map) return null;
-  final hex = value[r'$bytes'];
-  if (hex is! String || hex.length % 2 != 0) return null;
-  return [
-    for (var i = 0; i < hex.length; i += 2)
-      int.parse(hex.substring(i, i + 2), radix: 16),
-  ];
-}
-
 /// One todos row (§2.4 column order).
 class Todos {
   final String id;

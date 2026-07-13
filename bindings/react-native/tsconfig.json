@@ -3,6 +3,11 @@
     "target": "ES2023",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    // Resolve @syncular/* through the `bun` exports condition (src/*.ts):
+    // the default `import` condition points at dist/, which is gitignored,
+    // and the repo dev loop is dist-free (same convention as the Bun.build
+    // sites' `conditions: ['bun']`).
+    "customConditions": ["bun"],
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": ["bun", "react"],
     "jsx": "react-jsx",
