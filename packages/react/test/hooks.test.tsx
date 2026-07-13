@@ -13,7 +13,7 @@
 
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
-import type { ReactNode } from 'react';
+import { type ReactNode, StrictMode } from 'react';
 import {
   SyncProvider,
   useConflicts,
@@ -76,6 +76,31 @@ describe('useRawSql', () => {
     act(() => client.emitInvalidate(['tasks'], ['project:p1']));
     await waitFor(() => expect(result.current.rows).toHaveLength(2));
     expect(client.queryCount).toBe(before + 1);
+  });
+
+  test('StrictMode remount: invalidation still re-runs (scheduler survives the double-effect cycle)', async () => {
+    // StrictMode mounts, cleans up, and mounts effects again on the SAME hook
+    // instance. The cleanup disposes the per-hook FrameScheduler; the setup
+    // must re-create it — a disposed scheduler swallows every schedule()
+    // silently and the live query freezes forever (found in the wild: data in
+    // the local db, invalidations firing, UI never updating).
+    const client = new FakeClient();
+    client.setRows('tasks', [{ id: 't1' }]);
+    const strictWrapper = ({ children }: { children: ReactNode }) => (
+      <StrictMode>
+        <SyncProvider client={client}>{children}</SyncProvider>
+      </StrictMode>
+    );
+    const { result } = renderHook(() => useRawSql('SELECT * FROM tasks'), {
+      wrapper: strictWrapper,
+    });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const before = client.queryCount;
+
+    client.setRows('tasks', [{ id: 't1' }, { id: 't2' }]);
+    act(() => client.emitInvalidate(['tasks']));
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+    expect(client.queryCount).toBeGreaterThan(before);
   });
 
   test('I4 counter-proof: an unrelated-table invalidation NEVER re-runs', async () => {

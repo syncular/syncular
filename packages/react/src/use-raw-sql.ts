@@ -200,23 +200,35 @@ export function useRawSql<Row = SqlRow>(
   }, [client, key, enabled, tick]);
 
   // Subscribe once per client/enabled/query identity; a matching event asks the
-  // scheduler for a run (coalesced). `key`/`scopeKeysKey` re-key the sub.
+  // scheduler for a run (coalesced). `key`/`scopeKeysKey` re-key the sub. The
+  // scheduler is read from the ref AT EVENT TIME (never captured at effect
+  // setup): the lifecycle effect below may replace it on a remount, and a
+  // captured disposed instance would swallow every schedule() silently.
   // biome-ignore lint/correctness/useExhaustiveDependencies: key/scopeKeysKey re-key the subscription intentionally
   useEffect(() => {
     if (!enabled) return;
-    const scheduler = schedulerRef.current;
     const unsubscribe = client.onInvalidate((event) => {
       if (eventMatches(event, depTablesRef.current, scopeKeysRef.current)) {
-        scheduler?.schedule();
+        schedulerRef.current?.schedule();
       }
     });
     return unsubscribe;
   }, [client, enabled, key, scopeKeysKey]);
 
-  // Dispose the scheduler when the hook unmounts (drop any pending frame).
+  // Scheduler lifecycle. Under StrictMode (and any future fiber remount)
+  // React runs mount → cleanup → mount on the SAME hook instance: the cleanup
+  // disposes the scheduler, so the setup must RE-CREATE it — the render-time
+  // lazy init above never runs again (the ref is non-undefined), and a
+  // disposed scheduler turns every later invalidation into a silent no-op
+  // that freezes the live query forever.
   useEffect(() => {
-    const scheduler = schedulerRef.current;
-    return () => scheduler?.dispose();
+    if (schedulerRef.current === undefined) {
+      schedulerRef.current = new FrameScheduler(() => runRef.current?.());
+    }
+    return () => {
+      schedulerRef.current?.dispose();
+      schedulerRef.current = undefined;
+    };
   }, []);
 
   return { rows, isLoading, error, refresh };
