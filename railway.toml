@@ -1,0 +1,13 @@
+# Railway service config for the public demo (apps/demo), deployed as the
+# `demo` service in the `syncular` project and served at demo.syncular.dev.
+# Deploys upload the repo root (the workspace packages resolve via the `bun`
+# export condition straight from src — no build step). CI deploys run through
+# .github/workflows/demo.yml; `railway up --service demo` works locally too.
+
+[build]
+builder = "RAILPACK"
+
+[deploy]
+startCommand = "bun apps/demo/src/server.ts"
+healthcheckPath = "/"
+restartPolicyType = "ON_FAILURE"

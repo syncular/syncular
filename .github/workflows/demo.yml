@@ -1,0 +1,49 @@
+name: Demo
+
+# Deploys apps/demo (the Bun demo server) to the Railway service `demo` in
+# the `syncular` project, served at demo.syncular.dev. Kept in its OWN
+# workflow (the docs.yml reasoning): it deploys and needs the RAILWAY_TOKEN
+# secret, which the gate workflow should not have.
+#
+# One-time repo setup (by hand): mint a project token in the Railway
+# dashboard (project `syncular` → Settings → Tokens, environment
+# `production`), then
+#   gh secret set RAILWAY_TOKEN
+# Service config (start command, healthcheck) lives in railway.toml at the
+# repo root; the deploy uploads the repo root so the workspace packages
+# resolve via the `bun` export condition straight from src.
+
+on:
+  push:
+    branches: [main]
+    # Path gate: the demo showcases the engine, so package changes redeploy
+    # it too — a stale demo undersells every engine improvement.
+    paths:
+      - 'apps/demo/**'
+      - 'packages/**'
+      - 'railway.toml'
+      - 'bun.lock'
+      - '.github/workflows/demo.yml'
+
+# One in-flight deploy at a time; a newer push supersedes an older run rather
+# than racing it. Don't cancel mid-deploy — let it finish, then the next runs.
+concurrency:
+  group: demo-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # `up --ci` streams the build and exits with its result: exit 0 means
+      # the deployment reached SUCCESS, nonzero means it failed.
+      - name: Deploy to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: npx -y @railway/cli@latest up --service demo --ci
