@@ -111,11 +111,23 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
   .empty { color: var(--faint); padding: .8rem .9rem; font-style: italic; font-size: .78rem; }
   .evt-type { color: var(--amber); }
   .full { grid-column: 1 / -1; }
-  .detail { border-top: 1px solid var(--border-strong); }
-  .detail h3 { font-size: .68rem; margin: 0; padding: .45rem .9rem; color: var(--faint);
-    font-weight: 400; letter-spacing: .12em; text-transform: uppercase;
-    display: flex; justify-content: space-between; align-items: center; gap: .6rem;
-    border-bottom: 1px solid var(--border); }
+
+  #modal { position: fixed; inset: 0; z-index: 10; background: rgba(0,0,0,.82);
+    display: flex; align-items: center; justify-content: center; padding: 2rem; }
+  #modal[hidden] { display: none; }
+  #modal .box { background: var(--void); border: 1px solid var(--border-strong);
+    width: min(820px, 100%); max-height: 85vh; display: flex; flex-direction: column;
+    position: relative; }
+  #modal .box::before, #modal .box::after { color: var(--faint); position: absolute; font-size: .72rem; }
+  #modal .box::before { content: '+'; top: -0.6em; left: -0.28em; }
+  #modal .box::after { content: '+'; bottom: -0.6em; right: -0.28em; }
+  #modal h3 { font-size: .72rem; margin: 0; padding: .55rem .9rem;
+    border-bottom: 1px solid var(--border); font-weight: 400; color: var(--faint);
+    letter-spacing: .12em; text-transform: uppercase;
+    display: flex; justify-content: space-between; align-items: center; gap: .6rem; }
+  #modal h3 .count { color: var(--amber); letter-spacing: .04em; text-transform: none; }
+  #modal h3 .spacer { flex: 1; }
+  #modal .body { overflow: auto; }
 
   footer { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
     padding: .8rem 1.25rem 1.4rem; color: var(--faint); font-size: .68rem; letter-spacing: .1em; }
@@ -154,10 +166,6 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
   <section>
     <h2>── clients <span class="count" id="clients-count"></span></h2>
     <div class="body" id="clients"></div>
-    <div class="detail" id="client-detail" hidden>
-      <h3>── client drill-down <button id="detail-close">[ CLOSE ]</button></h3>
-      <div class="body" id="detail-body"></div>
-    </div>
   </section>
   <section>
     <h2>── commits <span class="count" id="commits-count"></span></h2>
@@ -188,6 +196,12 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
     <div class="body" id="events"></div>
   </section>
 </main>
+<div id="modal" hidden>
+  <div class="box">
+    <h3>── client drill-down <span class="count" id="modal-title"></span> <span class="spacer"></span> <button id="detail-close">[ CLOSE ]</button></h3>
+    <div class="body" id="detail-body"></div>
+  </div>
+</div>
 <div class="rule">================================================================================================================================================================</div>
 <footer>
   <span>SYNCULAR · ADMIN</span>
@@ -332,7 +346,6 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
       function (i) { return 'class="pick" data-client="' + esc(list[i].clientId) + '"'; });
   }
   function renderDetail(d) {
-    el('client-detail').hidden = false;
     if (!d.exists) {
       el('detail-body').innerHTML = empty('no record for ' + d.clientId);
       return;
@@ -478,12 +491,14 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
       .catch(function (err) { el('scope').innerHTML = empty('error: ' + err.message); });
   }
   function openDetail(clientId) {
-    el('client-detail').hidden = false;
+    el('modal').hidden = false;
+    el('modal-title').textContent = clientId;
     el('detail-body').innerHTML = empty('loading ' + clientId + '…');
     get('/clients/' + encodeURIComponent(clientId))
       .then(function (r) { renderDetail(r.detail); })
       .catch(function (err) { el('detail-body').innerHTML = empty('error: ' + err.message); });
   }
+  function closeDetail() { el('modal').hidden = true; }
   function onEnter(id, fn) {
     el(id).addEventListener('keydown', function (e) { if (e.key === 'Enter') fn(); });
   }
@@ -495,7 +510,7 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
   el('refresh').addEventListener('click', loadAll);
   el('partition').addEventListener('change', function () {
     if (tail.source) { tail.source.close(); tail.source = null; }
-    el('client-detail').hidden = true;
+    closeDetail();
     loadAll();
   });
   el('commits-filter').addEventListener('change', loadAll);
@@ -506,8 +521,12 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
     var id = pickedRow(e.target, 'client');
     if (id !== null) openDetail(id);
   });
-  el('detail-close').addEventListener('click', function () {
-    el('client-detail').hidden = true;
+  el('detail-close').addEventListener('click', closeDetail);
+  el('modal').addEventListener('click', function (e) {
+    if (e.target === el('modal')) closeDetail();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeDetail();
   });
   el('fleet').addEventListener('click', function (e) {
     var p = pickedRow(e.target, 'partition');
