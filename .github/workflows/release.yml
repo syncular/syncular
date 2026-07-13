@@ -55,7 +55,7 @@ jobs:
           set -euo pipefail
           # bun pm pack materializes workspace:* deps in the tarball
           # manifest; npm publish provides OIDC + provenance.
-          for dir in core crypto kysely crdt-yjs server server-hono \
+          for dir in core crypto crdt-yjs server server-hono \
                      server-workers web-client react typegen tauri \
                      testing create-app; do
             echo "── publishing packages/$dir"

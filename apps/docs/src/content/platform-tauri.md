@@ -27,7 +27,7 @@ The Rust plugin is on crates.io:
 
 ```toml
 [dependencies]
-tauri-plugin-syncular = { version = "0.2", features = ["native-transport"] }
+tauri-plugin-syncular = { version = "0.3", features = ["native-transport"] }
 ```
 
 To track unreleased changes, consume it as a git dependency instead — cargo
