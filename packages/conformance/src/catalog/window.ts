@@ -268,6 +268,77 @@ export const windowScenarios: readonly Scenario[] = [
   },
 
   {
+    name: 'window/completeness-pending-until-bootstrap',
+    specRefs: ['§4.8', 'B.18g'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1', 'p-empty'] },
+      });
+      await seedTasks(ctx, [task('t1', 'p1')]);
+
+      // Registration alone is not completeness: between setWindow and the
+      // bootstrap landing, both units are registered but PENDING — the gap
+      // where a registry-membership verdict renders a false "empty" state.
+      await a.api.setWindow?.(BASE, ['p1', 'p-empty']);
+      const before = await a.api.windowState?.(BASE);
+      checkEqual(
+        [...(before?.units ?? [])].sort(),
+        ['p-empty', 'p1'],
+        'both units registered at setWindow',
+      );
+      checkEqual(
+        [...(before?.pending ?? [])].sort(),
+        ['p-empty', 'p1'],
+        'both units pending before their bootstrap lands — not complete',
+      );
+
+      // After the bootstrap round every unit is complete — including the
+      // unit with zero server rows (emptiness ≠ pendency).
+      await syncIdle(a);
+      const after = await a.api.windowState?.(BASE);
+      checkEqual(
+        [...(after?.units ?? [])].sort(),
+        ['p-empty', 'p1'],
+        'registration unchanged by the bootstrap',
+      );
+      checkEqual(
+        [...(after?.pending ?? ['unread'])],
+        [],
+        'no unit pending after idle — the zero-row p-empty completed too',
+      );
+      checkEqual(
+        await readIds(a),
+        ['t1'],
+        'p1 bootstrapped its row; p-empty is truthfully empty',
+      );
+
+      // Re-entry is a fresh bootstrap (§4.8): the verdict returns to
+      // pending until that bootstrap completes; untouched units stay
+      // complete throughout.
+      await a.api.setWindow?.(BASE, ['p-empty']);
+      await a.api.setWindow?.(BASE, ['p1', 'p-empty']);
+      const reentry = await a.api.windowState?.(BASE);
+      check(
+        reentry?.pending.includes('p1') ?? false,
+        're-entered p1 is pending again until its fresh bootstrap lands',
+      );
+      check(
+        !(reentry?.pending.includes('p-empty') ?? true),
+        'the untouched p-empty unit stays complete across the re-entry',
+      );
+      await syncIdle(a);
+      const settled = await a.api.windowState?.(BASE);
+      checkEqual(
+        [...(settled?.pending ?? ['unread'])],
+        [],
+        'the re-entry bootstrap completed',
+      );
+    },
+  },
+
+  {
     name: 'window/re-entry-across-pruned-horizon-converges',
     specRefs: ['§4.8', '§4.6', '§4.7', 'B.18f'],
     async run(ctx) {

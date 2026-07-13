@@ -274,7 +274,7 @@ function Bare(): ReactNode {
 describe('useWindow (§4.8 completeness oracle, I3)', () => {
   const base = { table: 'tasks', variable: 'project_id' } as const;
 
-  test('setWindow updates the live units and the isComplete verdict', async () => {
+  test('setWindow registers units as pending; bootstrap completion flips the verdict', async () => {
     const client = new FakeClient();
     const { result } = renderHook(() => useWindow(base), {
       wrapper: wrapper(client),
@@ -289,21 +289,59 @@ describe('useWindow (§4.8 completeness oracle, I3)', () => {
     await waitFor(() =>
       expect([...result.current.units].sort()).toEqual(['p1', 'p2']),
     );
+    // Registration alone is NOT completeness: between setWindow and the
+    // bootstrap landing, the units are pending — never a false "empty".
+    expect([...result.current.pending].sort()).toEqual(['p1', 'p2']);
+    expect(result.current.isComplete('p1')).toBe(false);
+    expect(result.current.isComplete('p2')).toBe(false);
+
+    // The bootstrap completing (even with zero rows) emits the table
+    // invalidation; the re-read flips the verdict to complete.
+    act(() => {
+      client.completeBootstrap(base);
+    });
+    await waitFor(() => expect(result.current.pending).toEqual([]));
     expect(result.current.isComplete('p1')).toBe(true);
     expect(result.current.isComplete('p2')).toBe(true);
     // A window MISS is reported honestly — never silently complete.
     expect(result.current.isComplete('p3')).toBe(false);
   });
 
+  test('the optimistic setWindow update keeps already-complete units complete', async () => {
+    const client = new FakeClient();
+    client.setWindow(base, ['p1']);
+    client.completeBootstrap(base);
+    const { result } = renderHook(() => useWindow(base), {
+      wrapper: wrapper(client),
+    });
+    await waitFor(() => expect(result.current.isComplete('p1')).toBe(true));
+
+    // Widen {p1}→{p1,p2}: the optimistic update must not claim p2 complete
+    // (it is mid-bootstrap), while the untouched p1 stays complete.
+    await act(async () => {
+      await result.current.setWindow(['p1', 'p2']);
+    });
+    expect(result.current.isComplete('p1')).toBe(true);
+    expect(result.current.isComplete('p2')).toBe(false);
+    expect(result.current.pending).toEqual(['p2']);
+
+    act(() => {
+      client.completeBootstrap(base);
+    });
+    await waitFor(() => expect(result.current.isComplete('p2')).toBe(true));
+  });
+
   test('shrinking drops a unit from completeness', async () => {
     const client = new FakeClient();
     client.setWindow(base, ['p1', 'p2']);
+    client.completeBootstrap(base);
     const { result } = renderHook(() => useWindow(base), {
       wrapper: wrapper(client),
     });
     await waitFor(() =>
       expect([...result.current.units].sort()).toEqual(['p1', 'p2']),
     );
+    await waitFor(() => expect(result.current.isComplete('p1')).toBe(true));
     await act(async () => {
       await result.current.setWindow(['p2']);
     });

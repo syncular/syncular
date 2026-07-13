@@ -24,7 +24,7 @@ use ssp2::{
 
 use crate::api::{
     ClientLimits, ConflictRecord, LeaseState, Mutation, PresencePeer, RejectionRecord, RowState,
-    SchemaFloor, SubscriptionStateView, SyncOutcome, SyncReport, WindowBase,
+    SchemaFloor, SubscriptionStateView, SyncOutcome, SyncReport, WindowBase, WindowState,
 };
 use crate::schema::{parse_schema_json, ClientSchema};
 use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
@@ -851,12 +851,24 @@ impl SyncClient {
         Ok(())
     }
 
-    /// §4.8 completeness oracle (I3): the windowed-in units for a base.
-    pub fn window_state(&self, base: &WindowBase) -> Vec<String> {
-        self.load_window_units(&window_base_key(base))
-            .into_iter()
-            .map(|(unit, _)| unit)
-            .collect()
+    /// §4.8 completeness oracle (I3): the windowed-in units for a base plus
+    /// the subset still bootstrap-pending. Registration alone is not
+    /// completeness — a unit is pending until its subscription completes a
+    /// bootstrap round (cursor advances past -1 with no resume token held).
+    pub fn window_state(&self, base: &WindowBase) -> WindowState {
+        let mut units = Vec::new();
+        let mut pending = Vec::new();
+        for (unit, sub_id) in self.load_window_units(&window_base_key(base)) {
+            let is_pending = match self.subs.iter().find(|s| s.id == sub_id) {
+                Some(sub) => sub.cursor < 0 || sub.bootstrap_state.is_some(),
+                None => true,
+            };
+            if is_pending {
+                pending.push(unit.clone());
+            }
+            units.push(unit);
+        }
+        WindowState { units, pending }
     }
 
     fn load_window_units(&self, base_key: &str) -> Vec<(String, String)> {

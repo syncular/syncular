@@ -25,7 +25,7 @@ pub mod values;
 
 pub use api::{
     ClientLimits, ConflictRecord, Mutation, PresencePeer, RejectionRecord, RowState, SchemaFloor,
-    SubscriptionStateView, SyncOutcome, SyncReport, WindowBase,
+    SubscriptionStateView, SyncOutcome, SyncReport, WindowBase, WindowState,
 };
 pub use client::SyncClient;
 pub use schema::{compile_schema, parse_schema_json, ClientSchema};

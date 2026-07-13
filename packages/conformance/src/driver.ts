@@ -600,10 +600,15 @@ export interface ClientInstance {
    * scenarios requiring it skip on that driver.
    */
   setWindow?(base: DriverWindowBase, units: readonly string[]): Promise<void>;
-  /** §4.8 completeness oracle (I3): the windowed-in units for a base. */
-  windowState?(
-    base: DriverWindowBase,
-  ): Promise<{ readonly units: readonly string[] }>;
+  /**
+   * §4.8 completeness oracle (I3): the windowed-in units for a base, plus
+   * the subset still bootstrap-pending (registered, bootstrap not yet
+   * completed — not complete until it lands; zero rows still complete).
+   */
+  windowState?(base: DriverWindowBase): Promise<{
+    readonly units: readonly string[];
+    readonly pending: readonly string[];
+  }>;
 
   /** Record one atomic local commit (§7.1); returns its clientCommitId. */
   mutate(mutations: readonly ClientMutation[]): Promise<string>;

@@ -18,6 +18,29 @@ pub struct WindowBase {
     pub params: Option<String>,
 }
 
+/// §4.8 completeness oracle (I3): the windowed-in units for a base, plus
+/// the subset whose bootstrap has not yet completed. Registration alone is
+/// not completeness — a `pending` unit's local replica may be empty or
+/// partial (its subscription still has `cursor: -1` or holds a resume
+/// token), and MUST NOT be rendered as complete. A unit with zero server
+/// rows still completes once its bootstrap round finishes.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowState {
+    /// Windowed-in units for this base, ordered by value.
+    pub units: Vec<String>,
+    /// Registered units whose bootstrap has not yet completed.
+    pub pending: Vec<String>,
+}
+
+impl WindowState {
+    /// The per-unit verdict: registered AND bootstrap-complete.
+    #[must_use]
+    pub fn complete(&self, unit: &str) -> bool {
+        self.units.iter().any(|u| u == unit) && !self.pending.iter().any(|u| u == unit)
+    }
+}
+
 /// One local mutation (§6.1 shapes, schema-agnostic local form per §0).
 #[derive(Debug, Clone)]
 pub enum Mutation {

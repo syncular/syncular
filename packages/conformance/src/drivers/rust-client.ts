@@ -546,13 +546,17 @@ class RustClientInstance implements ClientInstance {
     });
   }
 
-  async windowState(
-    base: DriverWindowBase,
-  ): Promise<{ readonly units: readonly string[] }> {
+  async windowState(base: DriverWindowBase): Promise<{
+    readonly units: readonly string[];
+    readonly pending: readonly string[];
+  }> {
     const result = await this.#shim.call('windowState', {
       base: base as unknown as JsonValue,
     });
-    return result as unknown as { readonly units: readonly string[] };
+    return result as unknown as {
+      readonly units: readonly string[];
+      readonly pending: readonly string[];
+    };
   }
 
   async mutate(mutations: readonly ClientMutation[]): Promise<string> {

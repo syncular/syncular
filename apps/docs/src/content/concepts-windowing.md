@@ -66,9 +66,15 @@ eviction correct:
 ## The completeness oracle
 
 The window registry doubles as a **completeness oracle**. A local query is
-answerable in full only if every scope value it touches is windowed-in. If
-not, the result is **partial**, and the API reports that state explicitly:
-the engine never reports a partial replica as complete.
+answerable in full only if every scope value it touches is windowed-in
+**and bootstrapped**: registration alone is not completeness. Between
+`setWindow` and a unit's bootstrap landing, the unit is **pending** — its
+local replica may be empty or partial, and the oracle says so instead of
+letting the app render a false "empty" state on a list switch. A unit with
+zero server rows still becomes complete once its bootstrap round finishes
+(an empty replica is a truthful one). If a query touches a windowed-out or
+pending unit, the result is **partial**, and the API reports that state
+explicitly: the engine never reports a partial replica as complete.
 
 ## Using it
 
@@ -78,23 +84,32 @@ Both the web client and the native (Rust) client expose the same surface:
 // Hold p1 and p2 locally; drop p3 if it was held.
 await client.setWindow({ table: 'tasks', variable: 'project_id' }, ['p1', 'p2']);
 
-// The registry — which units are held in full (the oracle).
-const { units } = client.windowState({ table: 'tasks', variable: 'project_id' });
+// The oracle — registered units, plus the subset still mid-bootstrap.
+const { units, pending } = client.windowState({
+  table: 'tasks',
+  variable: 'project_id',
+});
+// windowComplete(state, unit) = registered AND not pending.
 ```
 
 In React, `useWindow` manages the set and exposes the verdict:
 
 ```tsx
-const { units, setWindow, isComplete } = useWindow({
+const { units, pending, setWindow, isComplete } = useWindow({
   table: 'tasks',
   variable: 'project_id',
 });
 
 // Tell the user whether they see everything or a local subset.
 if (!isComplete(activeProject)) {
-  // this project is a window miss: widen, or flag the result partial
+  // window miss OR still bootstrapping: widen, show a loading state, or
+  // flag the result partial — never render it as a complete empty list
 }
 ```
+
+`isComplete` flips to `true` on the invalidation that accompanies the
+unit's bootstrap completion — including a zero-row bootstrap — so a
+loading state resolves without polling.
 
 ## What's next
 

@@ -11,6 +11,7 @@
     "astro": "^7.0.6"
   },
   "devDependencies": {
+    "@shikijs/langs": "^4.3.1",
     "wrangler": "^4.105.0"
   }
 }

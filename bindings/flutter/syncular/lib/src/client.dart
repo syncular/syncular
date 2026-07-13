@@ -45,6 +45,25 @@ class SyncularError implements Exception {
   String toString() => 'SyncularError($code): $message';
 }
 
+/// §4.8 completeness oracle (I3): the windowed-in [units] of a window base,
+/// plus the [pending] subset whose bootstrap has not yet completed.
+/// Registration alone is not completeness — a pending unit's local replica
+/// may be empty or partial, so render it as loading/partial, never complete.
+/// A unit with zero server rows still completes once its bootstrap finishes.
+class WindowState {
+  const WindowState({required this.units, required this.pending});
+
+  /// Windowed-in units for the base, ordered by value.
+  final List<String> units;
+
+  /// Registered units whose bootstrap has not yet completed.
+  final List<String> pending;
+
+  /// The per-unit verdict: registered AND bootstrap-complete.
+  bool complete(String unit) =>
+      units.contains(unit) && !pending.contains(unit);
+}
+
 /// Configuration for a [SyncularClient]. [baseUrl] engages the native HTTP+WS
 /// transport (only in a `native-transport` core build); omit it for the
 /// dependency-lean, offline-first local core. [dbPath] installs a file-backed
@@ -367,12 +386,19 @@ class SyncularClient {
   void setWindow(Map<String, Object?> base, List<String> units) =>
       command('setWindow', {'base': base, 'units': units});
 
-  /// §4.8 windowed sync: the current window unit set for a base descriptor.
-  List<String> windowState(Map<String, Object?> base) {
+  /// §4.8 windowed sync: the completeness oracle for a base descriptor —
+  /// the windowed-in units plus the subset whose bootstrap has not yet
+  /// completed. Registration alone is not completeness: render a
+  /// [WindowState.pending] unit as loading/partial, never as complete.
+  WindowState windowState(Map<String, Object?> base) {
     final result = command('windowState', {'base': base});
     final units = result['units'];
-    if (units is List) return units.whereType<String>().toList();
-    return const [];
+    final pending = result['pending'];
+    return WindowState(
+      units: units is List ? units.whereType<String>().toList() : const [],
+      pending:
+          pending is List ? pending.whereType<String>().toList() : const [],
+    );
   }
 
   /// Open the realtime socket (needs `native-transport`).

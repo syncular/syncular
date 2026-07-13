@@ -409,8 +409,8 @@ export class TauriSyncClient {
   async windowState(base: WindowBase): Promise<WindowState> {
     const result = (await this.#command('windowState', {
       base: base as unknown as Record<string, unknown>,
-    })) as { units: string[] };
-    return { units: result.units };
+    })) as { units: string[]; pending: string[] };
+    return { units: result.units, pending: result.pending };
   }
 
   async sync(): Promise<unknown> {

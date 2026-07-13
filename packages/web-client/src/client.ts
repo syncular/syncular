@@ -309,11 +309,23 @@ export interface SubscribeInput {
 export interface WindowState {
   /** Windowed-in units for this base, ordered by value. */
   readonly units: readonly string[];
+  /**
+   * Registered units whose bootstrap has not yet completed (§4.8): the
+   * unit's subscription still has `cursor: -1` (never synced) or holds a
+   * resume token (mid-bootstrap). Between `setWindow` and the bootstrap
+   * landing, the local replica for a pending unit may be empty or partial —
+   * it MUST NOT be rendered as complete.
+   */
+  readonly pending: readonly string[];
 }
 
-/** True iff `unit` is windowed-in for this snapshot (a registry hit, I3). */
+/**
+ * True iff `unit` is windowed-in AND its bootstrap completed (§4.8 I3):
+ * registered and not pending. A unit with zero server rows still becomes
+ * complete once its bootstrap round finishes — emptiness ≠ pendency.
+ */
 export function windowComplete(state: WindowState, unit: string): boolean {
-  return state.units.includes(unit);
+  return state.units.includes(unit) && !state.pending.includes(unit);
 }
 
 // ---------------------------------------------------------------------------
@@ -1069,15 +1081,30 @@ export class SyncClient {
 
   /**
    * The completeness oracle (§4.8 I3): which units of a base are windowed-in
-   * locally, and a per-unit verdict a live query renders "may be partial"
-   * from. A query whose scope footprint includes an un-windowed unit is
+   * locally, which of those are still bootstrap-pending, and thereby the
+   * per-unit verdict a live query renders "may be partial" from. A query
+   * whose scope footprint includes an un-windowed OR still-pending unit is
    * NOT answerable in full — the host widens or shows partial, never
-   * silently-complete.
+   * silently-complete. Registration alone is not completeness: a unit is
+   * pending until its subscription completes a bootstrap round (cursor
+   * advances past -1 with no resume token held).
    */
   windowState(base: WindowBase): WindowState {
     this.#requireStarted();
     const baseKey = windowBaseKey(base);
-    return { units: loadWindowUnits(this.#db, baseKey).map((u) => u.unit) };
+    const live = loadWindowUnits(this.#db, baseKey);
+    const pending: string[] = [];
+    for (const { unit, subId } of live) {
+      const sub = getSubscription(this.#db, subId);
+      if (
+        sub === undefined ||
+        sub.cursor < 0 ||
+        sub.bootstrapState !== undefined
+      ) {
+        pending.push(unit);
+      }
+    }
+    return { units: live.map((u) => u.unit), pending };
   }
 
   /**
@@ -2236,6 +2263,7 @@ export class SyncClient {
       // §3.3: the effective-scope echo is persisted for the purge contract.
       // An absent bootstrapState clears any previous resume token (§4.4:
       // absent = bootstrap complete, or not bootstrapping).
+      const wasPending = sub.cursor < 0 || sub.bootstrapState !== undefined;
       saveSubscription(this.#db, {
         id: sub.id,
         table: sub.table,
@@ -2246,6 +2274,12 @@ export class SyncClient {
         effectiveScopes: start.effectiveScopes,
         status: 'active',
       });
+      if (wasPending && nextCursor >= 0 && bootstrapState === undefined) {
+        // §4.8: the completeness verdict flipped pending → complete. A
+        // zero-row bootstrap applies nothing, so the flip itself must reach
+        // live oracles through the choke point (shares the pull's batch).
+        this.#applyBatch((batch) => batch.table(sub.table));
+      }
       return true;
     }
 
