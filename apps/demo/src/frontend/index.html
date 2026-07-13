@@ -3,47 +3,128 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>syncular v2 — two-pane demo</title>
+  <title>Syncular — two-pane demo</title>
   <style>
-    :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
-    body { margin: 0; padding: 1rem; }
-    header { display: flex; align-items: baseline; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
-    header h1 { font-size: 1.1rem; margin: 0; }
-    header .hint { opacity: 0.7; font-size: 0.85rem; }
-    main { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: start; }
-    .pane { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); border-radius: 8px; padding: 0.75rem; }
-    .pane.offline { border-color: #d97706; }
-    .pane h2 { margin: 0 0 0.5rem; font-size: 1rem; display: flex; align-items: center; gap: 0.5rem; }
-    .badge { font-size: 0.7rem; padding: 0.1rem 0.45rem; border-radius: 999px; border: 1px solid currentColor; opacity: 0.8; }
-    .badge.online { color: #16a34a; }
-    .badge.offline { color: #d97706; }
-    .statusline { font-size: 0.78rem; opacity: 0.75; margin: 0.25rem 0 0.5rem; min-height: 1.1em; }
-    form.add { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
-    form.add input { flex: 1; padding: 0.35rem 0.5rem; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-    td { padding: 0.3rem 0.25rem; border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
-    td.title { width: 100%; }
-    tr.done td.title { text-decoration: line-through; opacity: 0.55; }
-    td .ver { font-size: 0.7rem; opacity: 0.5; margin-left: 0.35rem; }
-    button { cursor: pointer; }
-    .conflicts { margin-top: 0.6rem; font-size: 0.8rem; }
-    .conflicts .item { border: 1px solid #dc2626; border-radius: 6px; padding: 0.4rem 0.5rem; margin-top: 0.35rem; }
-    .conflicts .item code { font-size: 0.75rem; }
-    @media (max-width: 780px) { main { grid-template-columns: 1fr; } }
+    /* docs/DESIGN.md — the teletype theme. Single self-contained file, so
+       the system mono fallback stack carries the face. */
+    :root {
+      --void: #000000; --panel: #0a0908; --ink: #f4efe4; --dim: #9a948a;
+      --faint: #756f64; --border: rgba(154,148,138,.35);
+      --border-strong: rgba(154,148,138,.6); --amber: #ffb000;
+      --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    ::selection { background: var(--amber); color: #000; }
+    body { margin: 0; background: var(--void); color: var(--ink); font: 14px/1.6 var(--mono); }
+    @keyframes blink { 50% { opacity: 0; } }
+    .blink { animation: blink 1.1s steps(1) infinite; color: var(--amber); }
+    @media (prefers-reduced-motion: reduce) { .blink { animation: none; } }
+
+    header { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+      padding: .8rem 1.25rem; border-bottom: 1px solid var(--border); }
+    header h1 { font-size: .85rem; margin: 0; font-weight: 700; letter-spacing: .18em; }
+    header h1 .d { color: var(--faint); }
+    header .hint { color: var(--dim); font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; }
+    header .hint a { color: var(--amber); text-decoration: none; }
+    header .hint a:hover { background: var(--amber); color: #000; }
+    header .hint strong { color: var(--ink); font-weight: 700; }
+    header .spacer { flex: 1; }
+
+    button { background: var(--void); border: 1px solid var(--ink); color: var(--ink);
+      border-radius: 0; padding: .3rem .7rem; cursor: pointer;
+      font: .72rem var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+    button::before { content: '[ '; color: var(--faint); }
+    button::after { content: ' ]'; color: var(--faint); }
+    button:hover { background: var(--ink); color: #000; }
+    button:hover::before, button:hover::after { color: #000; }
+    button:disabled { border-color: var(--faint); color: var(--faint); cursor: default; }
+    button:disabled:hover { background: var(--void); color: var(--faint); }
+    button:disabled:hover::before, button:disabled:hover::after { color: var(--faint); }
+    button.primary { border-color: var(--amber); color: var(--amber); }
+    button.primary:hover { background: var(--amber); color: #000; }
+
+    main { padding: 1.25rem; display: grid; grid-template-columns: 1fr 1fr;
+      gap: 1.2rem; align-items: start; }
+    .pane { border: 1px solid var(--border); background: var(--void); position: relative; }
+    .pane::before, .pane::after { color: var(--faint); position: absolute; font-size: .72rem; }
+    .pane::before { content: '+'; top: -0.6em; left: -0.28em; }
+    .pane::after { content: '+'; bottom: -0.6em; right: -0.28em; }
+    .pane.offline { border-color: var(--amber); }
+    .pane h2 { font-size: .72rem; margin: 0; padding: .55rem .9rem;
+      border-bottom: 1px solid var(--border); font-weight: 400; color: var(--faint);
+      letter-spacing: .12em; text-transform: uppercase;
+      display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+    .pane h2 button { margin-left: auto; }
+
+    .badge { font-size: .68rem; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); }
+    .badge::before { content: '[ '; color: var(--faint); }
+    .badge::after { content: ' ]'; color: var(--faint); }
+    .badge.online { color: var(--amber); }
+    .badge.offline { background: var(--amber); color: #000; }
+    .badge.offline::before, .badge.offline::after { color: #000; }
+
+    .statusline { color: var(--dim); font-size: .72rem; letter-spacing: .06em;
+      text-transform: uppercase; margin: 0; padding: .45rem .9rem;
+      border-bottom: 1px solid var(--border); min-height: 2em; }
+
+    form.add { display: flex; gap: .5rem; padding: .55rem .9rem;
+      border-bottom: 1px solid var(--border); margin: 0; }
+    form.add input { flex: 1; background: var(--void); border: 1px solid var(--border);
+      color: var(--ink); border-radius: 0; padding: .3rem .5rem; font: .78rem var(--mono); }
+    form.add input:focus { outline: none; border-color: var(--amber); }
+    form.add input::placeholder { color: var(--faint); }
+
+    table { width: 100%; border-collapse: collapse; font-size: .78rem; }
+    td { padding: .35rem .9rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    tr:hover td { background: var(--panel); }
+    td.title { width: 100%; word-break: break-word; }
+    tr.done td.title { text-decoration: line-through; color: var(--faint); }
+    td .ver { color: var(--faint); font-size: .68rem; margin-left: .5rem; }
+    input[type=checkbox] { accent-color: var(--amber); }
+    td button { padding: .1rem .3rem; border-color: var(--border); white-space: nowrap; }
+    td button:hover { border-color: var(--ink); }
+    .attach-label { cursor: pointer; color: var(--dim); font-size: .68rem;
+      letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
+    .attach-label::before { content: '[ '; color: var(--faint); }
+    .attach-label::after { content: ' ]'; color: var(--faint); }
+    .attach-label:hover { background: var(--amber); color: #000; }
+    .attach-label:hover::before, .attach-label:hover::after { color: #000; }
+
+    .conflicts { font-size: .78rem; }
+    .conflicts strong { display: block; padding: .45rem .9rem;
+      font-size: .68rem; font-weight: 700; letter-spacing: .12em;
+      text-transform: uppercase; background: var(--amber); color: #000; }
+    .conflicts .item { border-top: 1px solid var(--border); padding: .45rem .9rem; }
+    .conflicts .item code { background: var(--panel); border: 1px solid var(--border);
+      padding: 0 .3rem; font-size: .72rem; color: #e3d3a2; }
+
+    .rule { color: var(--faint); font-size: .72rem; white-space: nowrap; overflow: hidden;
+      user-select: none; padding: 0 1.25rem; }
+    footer { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+      padding: .8rem 1.25rem 1.4rem; color: var(--faint); font-size: .68rem; letter-spacing: .1em; }
+    footer .sq { color: var(--amber); }
+
+    @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <header>
-    <h1>syncular v2 — two-pane convergence demo</h1>
-    <span class="hint">two independent client cores syncing through one server</span>
+    <h1>SYNCULAR<span class="d"> · </span>DEMO<span class="blink">_</span></h1>
+    <span class="hint">two panes · two client cores · one server</span>
     <span id="mode-hint" class="hint"></span>
-    <button id="conflict-btn" disabled>Simulate conflict</button>
+    <button id="conflict-btn" class="primary" disabled>simulate conflict</button>
+    <span class="spacer"></span>
     <span id="global-status" class="hint"></span>
   </header>
   <main>
     <section class="pane" id="pane-a"></section>
     <section class="pane" id="pane-b"></section>
   </main>
+  <div class="rule">================================================================================================================================================================</div>
+  <footer>
+    <span>SYNCULAR · DEMO</span>
+    <span>END OF TRANSMISSION <span class="sq">■</span></span>
+  </footer>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

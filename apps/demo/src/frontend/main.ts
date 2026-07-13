@@ -572,7 +572,7 @@ class Pane {
       } catch {
         // keep the fallback label
       }
-      const dl = el('button', undefined, `⬇ ${name}`);
+      const dl = el('button', undefined, `↓ ${name}`);
       dl.title = 'download attachment';
       dl.addEventListener('click', () => {
         void this.downloadAttachment(row);
@@ -582,7 +582,7 @@ class Pane {
       const label = document.createElement('label');
       label.className = 'attach-label';
       label.title = 'attach a file';
-      label.append('📎');
+      label.append('attach');
       const fileInput = document.createElement('input');
       fileInput.type = 'file';
       fileInput.style.display = 'none';

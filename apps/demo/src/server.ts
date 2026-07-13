@@ -317,4 +317,4 @@ const server = Bun.serve<SocketData, never>({
   },
 });
 
-console.log(`syncular v2 demo: http://localhost:${server.port}`);
+console.log(`syncular demo: http://localhost:${server.port}`);
