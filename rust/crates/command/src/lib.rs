@@ -327,8 +327,8 @@ pub fn dispatch<T: Transport>(
         }
         "windowState" => {
             let base = window_base_from_params(params.get("base")).map_err(client_err)?;
-            let units = need_client(client)?.window_state(&base);
-            Ok(json!({ "units": units }))
+            let state = need_client(client)?.window_state(&base);
+            Ok(json!({ "units": state.units, "pending": state.pending }))
         }
         "mutate" => {
             let mutations = parse_mutations(params.get("mutations")).map_err(client_err)?;

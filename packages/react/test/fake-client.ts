@@ -112,19 +112,47 @@ export class FakeClient implements SyncClientLike {
   }
 
   #windowUnits = new Map<string, string[]>();
+  /** Units whose (fake) bootstrap completed — everything else is pending. */
+  #windowBootstrapped = new Map<string, Set<string>>();
 
   #windowKey(base: WindowBase): string {
     return `${base.table} ${base.variable}`;
   }
 
   setWindow(base: WindowBase, units: readonly string[]): void {
-    this.#windowUnits.set(this.#windowKey(base), [...units]);
+    const key = this.#windowKey(base);
+    this.#windowUnits.set(key, [...units]);
+    // Departing units lose their bootstrap state (eviction, E3); entering
+    // units start pending — `completeBootstrap` lands them.
+    const done = this.#windowBootstrapped.get(key) ?? new Set<string>();
+    this.#windowBootstrapped.set(
+      key,
+      new Set([...done].filter((unit) => units.includes(unit))),
+    );
     // A window change touches the base table — the useWindow hook re-reads.
     this.emitInvalidate([base.table]);
   }
 
+  /**
+   * Test control: complete the fake bootstrap for `units` (default: every
+   * registered unit) and emit the table invalidation the real client emits
+   * at bootstrap completion (§4.8 — even a zero-row bootstrap flips the
+   * verdict through the choke point).
+   */
+  completeBootstrap(base: WindowBase, units?: readonly string[]): void {
+    const key = this.#windowKey(base);
+    const registered = this.#windowUnits.get(key) ?? [];
+    const done = this.#windowBootstrapped.get(key) ?? new Set<string>();
+    for (const unit of units ?? registered) done.add(unit);
+    this.#windowBootstrapped.set(key, done);
+    this.emitInvalidate([base.table]);
+  }
+
   windowState(base: WindowBase): WindowState {
-    return { units: this.#windowUnits.get(this.#windowKey(base)) ?? [] };
+    const key = this.#windowKey(base);
+    const units = this.#windowUnits.get(key) ?? [];
+    const done = this.#windowBootstrapped.get(key) ?? new Set<string>();
+    return { units, pending: units.filter((unit) => !done.has(unit)) };
   }
 
   // These four are getters on the real SyncClient — as plain values here,

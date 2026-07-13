@@ -96,7 +96,7 @@ When a screen needs *optional* filters, reusable predicates, or a
 user-selectable sort, plain SQL gets verbose. `.syql` files declare that
 structure in the signature and keep every predicate real SQL:
 
-```text
+```syql
 fragment visibleIn(listId) {
   list_id = :listId and archived_at is null
 }
@@ -156,7 +156,7 @@ There is no `offset` knob: offset pagination over *live* local queries
 drifts as synced writes shift rows. The right pattern falls out of optional
 params with zero new syntax:
 
-```text
+```syql
 query todosPage(listId, before?)
   limit max 100 default 50
 {

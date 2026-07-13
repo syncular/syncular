@@ -127,11 +127,13 @@ await mutate([
 - `usePresence(scopeKey)` → the ephemeral peers present on a scope key, as an
   array; updates on join/update/leave. Returns an empty array when no realtime
   socket is connected; see [Realtime](/concepts-realtime/).
-- `useWindow(base)` → `{ units, setWindow, isComplete }` — the
+- `useWindow(base)` → `{ units, pending, setWindow, isComplete }` — the
   [windowed sync](/concepts-windowing/) surface: `setWindow(units)` swaps the
-  live scope values (added units bootstrap, removed units evict), and
-  `isComplete(unit)` is the completeness oracle, so you can render "this data
-  may be partial" honestly.
+  live scope values (added units bootstrap, removed units evict), `pending`
+  is the subset still mid-bootstrap, and `isComplete(unit)` is the
+  completeness oracle — `false` until the unit's bootstrap lands (a list
+  switch renders a loading state, never a false "empty"), then `true`, even
+  for a unit with zero rows.
 
 ## A full component
 

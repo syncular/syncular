@@ -1148,12 +1148,23 @@ protocol object.
 window base (table + variable + the fixed remainder of the scope map).
 The registry is authoritative for two things: (i) which subscriptions the
 next pull carries (so omission-as-unregistration, §4.1, drives shrink),
-and (ii) whether a local query is **answerable in full** — a query is
-complete iff every scope value its predicate touches is windowed-in;
-otherwise the result is partial and the client MUST be able to say so
-(never silently return partial data as complete). A client MAY expose
-this completeness verdict to the host; it MUST NOT represent a
-windowed-out result as complete.
+and (ii) whether a local query is **answerable in full**. Registration
+alone is not completeness: a registered unit is **pending** from
+`setWindow` until its subscription completes a bootstrap round — that
+is, while its cursor is `-1` (never synced, §4.3) or a §4.7 resume token
+is held (mid-bootstrap; a §4.6 reset re-enters this state). A unit is
+**complete** iff it is registered and not pending. A bootstrap round
+that finishes with zero rows completes its unit — an empty replica is a
+truthful one (emptiness ≠ pendency). A query is answerable in full iff
+every scope value its predicate touches is complete; otherwise the
+result is partial and the client MUST be able to say so (never silently
+return partial data as complete). A client MAY expose the per-unit
+verdict to the host; it MUST NOT represent a windowed-out or
+still-pending unit's result as complete. Because the verdict can flip
+with no row changing (a zero-row bootstrap completing), a client that
+exposes a live-view invalidation seam MUST emit the subscription's
+table through its apply-path choke point when a bootstrap completes,
+exactly as eviction does — a live oracle re-reads, it is never polled.
 
 **Server confirmation (no new rules).** A newly widened unit's
 subscription is bootstrapping and not yet synced-once, so it is excluded
@@ -4008,7 +4019,13 @@ Each is a driver-interface script, not a prose test.
     the unit grain). (f) **Re-entry across a pruned horizon converges**:
     evict p1, advance and prune the server log past p1's old cursor, then
     re-enter p1; the fresh bootstrap (snapshotting current state, §4.7)
-    converges with no dependence on the pruned log. Throughout, the server
+    converges with no dependence on the pruned log. (g) **Completeness is
+    pending until bootstrap, and zero rows still complete**: immediately
+    after `setWindow` registers new units, the oracle reports them
+    registered but *pending* (not complete — the gap where a naive
+    registry-membership verdict renders a false "empty" state); after the
+    bootstrap round finishes, every unit is complete — including a unit
+    with zero server rows (emptiness ≠ pendency). Throughout, the server
     is never told of any eviction and tombstones nothing (evicted ≠
     revoked — no `revoked` status, no server-side purge). Both pairings
     (TS×TS, Rust×TS).
