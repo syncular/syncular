@@ -19,8 +19,8 @@ import {
   PUBLISHED_DEPENDENCY_RANGE,
 } from './constants';
 
-/** The two templates this rung ships. */
-export const TEMPLATES = ['minimal', 'web'] as const;
+/** The templates this rung ships. */
+export const TEMPLATES = ['minimal', 'web', 'tauri'] as const;
 export type TemplateName = (typeof TEMPLATES)[number];
 
 export function isTemplateName(value: string): value is TemplateName {
@@ -106,7 +106,12 @@ export interface ScaffoldResult {
  * skipped per-template) — substitution stays dumb and auditable rather than
  * scanning every file. Paths are relative + POSIX-joined below.
  */
-const SUBSTITUTE_FILES = ['README.md', 'src/frontend/index.html'] as const;
+const SUBSTITUTE_FILES = [
+  'README.md',
+  'src/frontend/index.html',
+  'src/frontend/main.tsx',
+  'src-tauri/tauri.conf.json',
+] as const;
 
 function directoryIsEmpty(path: string): boolean {
   return readdirSync(path).length === 0;

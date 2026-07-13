@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * `create-syncular-app [project-name] [--template <minimal|web>] [--local]`
+ * `create-syncular-app [project-name] [--template <minimal|web|tauri>]
+ * [--local]`
  *
  * Runnable as `bun create syncular-app my-app` or `bunx create-syncular-app
  * my-app`. Prompts for anything a flag did not supply. Scaffolds one of the
- * two templates (see `./scaffold`).
+ * templates (see `./scaffold`).
  */
 import { relative } from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -32,6 +33,9 @@ templates:
   minimal   server + a terminal two-client convergence demo (no browser)
   web       Hono server + WebSocket + a single-pane browser todo app
             (worker core on OPFS)
+  tauri     one React codebase, web + desktop: the web template's server
+            plus a src-tauri host running the native core
+            (tauri-plugin-syncular from crates.io)
 
 options:
   --template <name>   one of: ${TEMPLATES.join(', ')} (prompts if omitted)

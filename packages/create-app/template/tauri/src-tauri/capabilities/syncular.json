@@ -1,0 +1,9 @@
+{
+  "identifier": "syncular",
+  "description": "Grants the main window the syncular plugin command surface.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "syncular:default"
+  ]
+}

@@ -88,6 +88,13 @@ permission granted — the [Tauri page](/platform-tauri/) walks through it.
 Auth rotation on desktop goes through `client.setHeaders(...)`; on the web
 the worker's transport sends whatever your reverse proxy/session carries.
 
+## Scaffold it
+
+`bun create syncular-app my-app --template tauri` writes this whole story as
+a runnable project: the engine seam, the shared React tree, the sync server,
+and a `src-tauri/` host with `tauri-plugin-syncular` from crates.io — run the
+web half with `bun run dev` and the desktop half with `cargo tauri dev`.
+
 ## Where to go next
 
 - **[Tauri](/platform-tauri/)** — plugin registration, config, the command

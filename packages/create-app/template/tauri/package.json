@@ -1,0 +1,30 @@
+{
+  "name": "__PROJECT_NAME__",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/server.ts",
+    "build-frontend": "bun run build-frontend.ts",
+    "generate": "syncular generate --manifest-dir .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
+    "@syncular/core": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/server-hono": "workspace:*",
+    "@syncular/client": "workspace:*",
+    "@syncular/react": "workspace:*",
+    "@syncular/tauri": "workspace:*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@syncular/typegen": "workspace:*",
+    "@tauri-apps/api": "^2.0.0",
+    "@types/bun": "latest",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.9.0"
+  }
+}

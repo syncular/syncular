@@ -14,7 +14,9 @@ bun install
 That is the fastest path: the scaffolder writes the project this page walks
 through (a schema, a ~30-line server, a two-client script, a README, and a
 smoke test). Prefer a browser app? `--template web` scaffolds a Hono server +
-a single-pane todo UI on the worker + OPFS client instead.
+a single-pane todo UI on the worker + OPFS client instead. Want
+[one codebase, web + desktop](/guide-web-desktop/)? `--template tauri` adds a
+`src-tauri/` host running the native Rust core behind the engine seam.
 
 > The rest of this page is the **"what it did" explainer**: every snippet is
 > extracted from the runnable [`examples/quickstart`](https://github.com/syncular/syncular/tree/main/examples/quickstart)
