@@ -77,7 +77,7 @@ void main() {
       'table': 'todo',
       'scopes': <String, Object?>{},
     });
-    expect(result, isA<Map>());
+    expect(result, isA<Map<String, Object?>>());
   });
 
   test('error reply surfaces as SyncularError', () {
