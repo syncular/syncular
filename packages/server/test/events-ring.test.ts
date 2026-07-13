@@ -33,6 +33,20 @@ function blobEvent(atMs: number): SyncularServerEvent {
   };
 }
 
+function pushEvent(atMs: number, clientId: string): SyncularServerEvent {
+  return {
+    type: 'push.applied',
+    atMs,
+    partition: 'p',
+    actorId: 'a',
+    clientId,
+    clientCommitId: `k${atMs}`,
+    operations: 1,
+    commitSeq: atMs,
+    replay: false,
+  };
+}
+
 describe('RingBufferEvents', () => {
   test('retains up to capacity, newest first', () => {
     const ring = new RingBufferEvents({ capacity: 3 });
@@ -69,6 +83,32 @@ describe('RingBufferEvents', () => {
     ring.emit(pruneEvent(20, 2));
     ring.emit(pruneEvent(30, 3));
     expect(ring.query({ sinceMs: 20 }).map((e) => e.atMs)).toEqual([30, 20]);
+  });
+
+  test('filters by clientId / actorId; identity-free events never match', () => {
+    const ring = new RingBufferEvents();
+    ring.emit(pushEvent(1, 'c1'));
+    ring.emit(pushEvent(2, 'c2'));
+    ring.emit(blobEvent(3)); // actorId 'a', no clientId
+    ring.emit(pruneEvent(4, 4)); // neither identity field
+    expect(ring.query({ clientId: 'c1' }).map((e) => e.atMs)).toEqual([1]);
+    expect(ring.query({ actorId: 'a' }).map((e) => e.atMs)).toEqual([3, 2, 1]);
+    expect(ring.query({ clientId: 'nope' })).toEqual([]);
+  });
+
+  test('subscribe delivers live events until unsubscribed; a throwing listener is isolated', () => {
+    const ring = new RingBufferEvents();
+    const seen: number[] = [];
+    const unsubscribe = ring.subscribe((e) => seen.push(e.atMs));
+    const unsubscribeThrowing = ring.subscribe(() => {
+      throw new Error('boom');
+    });
+    expect(() => ring.emit(pruneEvent(1, 1))).not.toThrow();
+    ring.emit(pruneEvent(2, 2));
+    unsubscribe();
+    ring.emit(pruneEvent(3, 3));
+    unsubscribeThrowing();
+    expect(seen).toEqual([1, 2]);
   });
 
   test('caps to limit', () => {

@@ -719,5 +719,33 @@ export function runStorageContract(
         await storage.getRowScopes(PARTITION, 'tasks', 'missing'),
       ).toBeUndefined();
     });
+
+    test('listPartitions unions the registry and client records, sorted', async () => {
+      const storage = await make();
+      if (storage.listPartitions === undefined) {
+        // A backend may legitimately omit the admin surface; skip cleanly.
+        return;
+      }
+      expect(await storage.listPartitions()).toEqual([]);
+      // A commit registers one partition…
+      const tx = await storage.begin('part-b');
+      await tx.appendCommit({
+        clientId: 'c1',
+        clientCommitId: 'k1',
+        actorId: 'a1',
+        createdAtMs: NOW,
+        changes: [],
+      });
+      await tx.commit();
+      // …a client record alone registers another (no commits there yet).
+      await storage.putClientRecord('part-a', {
+        clientId: 'c1',
+        actorId: 'a1',
+        cursor: 0,
+        updatedAtMs: NOW,
+        subscriptions: [],
+      });
+      expect(await storage.listPartitions()).toEqual(['part-a', 'part-b']);
+    });
   });
 }

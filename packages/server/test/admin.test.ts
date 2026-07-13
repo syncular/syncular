@@ -5,7 +5,9 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
+  type LeaseStore,
   type MemoryBlobStore,
+  MemoryLeaseStore,
   RingBufferEvents,
   S3SegmentStore,
   type SegmentMetadata,
@@ -31,6 +33,7 @@ function adminOf(
   extra?: {
     ring?: RingBufferEvents;
     blobs?: MemoryBlobStore | SqliteBlobStore;
+    leases?: LeaseStore;
   },
 ): SyncularAdmin {
   return new SyncularAdmin({
@@ -40,6 +43,7 @@ function adminOf(
     clock: () => t.now.ms,
     ...(extra?.ring !== undefined ? { ring: extra.ring } : {}),
     ...(extra?.blobs !== undefined ? { blobs: extra.blobs } : {}),
+    ...(extra?.leases !== undefined ? { leases: extra.leases } : {}),
   });
 }
 
@@ -59,12 +63,29 @@ describe('listClients', () => {
     expect(client?.clientId).toBe('client-1');
     expect(client?.actorId).toBe('actor-1');
     expect(client?.cursor).toBe(1);
+    expect(client?.lag).toBe(0);
     expect(client?.active).toBe(true);
     expect(client?.subscriptions[0]).toMatchObject({
       id: 's1',
       table: 'tasks',
       scopes: { project_id: ['p1'] },
     });
+  });
+
+  test('lag counts commits the client has not pulled', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1');
+    await sync(t, [
+      pullHeader(),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+    ]);
+    // Two more commits land after the client's last pull (cursor 1).
+    await seedTask(t, 'c2', 't2', 'p1');
+    await seedTask(t, 'c3', 't3', 'p1');
+    const admin = adminOf(t);
+    const client = (await admin.listClients('part-1'))[0];
+    expect(client?.cursor).toBe(1);
+    expect(client?.lag).toBe(2);
   });
 
   test('a stale client falls outside the active window', async () => {
@@ -78,6 +99,148 @@ describe('listClients', () => {
     t.now.ms += 15 * 24 * 60 * 60 * 1000;
     const admin = adminOf(t);
     expect((await admin.listClients('part-1'))[0]?.active).toBe(false);
+  });
+});
+
+describe('clientDetail', () => {
+  test('drill-down: record with lag, lease, and the client event slice', async () => {
+    const ring = new RingBufferEvents({ capacity: 100 });
+    const t = makeContext({ events: ring });
+    await seedTask(t, 'c1', 't1', 'p1');
+    await sync(t, [
+      pullHeader(),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+    ]);
+    await seedTask(t, 'c2', 't2', 'p1'); // one commit of lag
+    const leases = new MemoryLeaseStore({ leaseId: () => 'lease_test' });
+    await leases.issue(
+      'part-1',
+      'client-1',
+      'actor-1',
+      { project_id: ['p1'] },
+      t.now.ms,
+      60_000,
+    );
+    const admin = adminOf(t, { ring, leases });
+    const detail = await admin.clientDetail('part-1', 'client-1');
+    expect(detail.exists).toBe(true);
+    expect(detail.client).toMatchObject({
+      clientId: 'client-1',
+      cursor: 1,
+      lag: 1,
+      active: true,
+    });
+    expect(detail.lease).toMatchObject({
+      leaseId: 'lease_test',
+      actorId: 'actor-1',
+      revoked: false,
+    });
+    // Only this client's events; every one carries its clientId.
+    expect(detail.events.length).toBeGreaterThan(0);
+    expect(
+      detail.events.every(
+        (e) => (e as { clientId?: string }).clientId === 'client-1',
+      ),
+    ).toBe(true);
+  });
+
+  test('an unknown client reports exists: false (events still queried)', async () => {
+    const t = makeContext();
+    const admin = adminOf(t);
+    const detail = await admin.clientDetail('part-1', 'ghost');
+    expect(detail).toMatchObject({ clientId: 'ghost', exists: false });
+    expect(detail.client).toBeUndefined();
+    expect(detail.events).toEqual([]);
+  });
+});
+
+describe('metrics', () => {
+  test('ring-derived request/push aggregates + sparkline buckets', async () => {
+    const ring = new RingBufferEvents({ capacity: 100 });
+    const t = makeContext({ events: ring });
+    await seedTask(t, 'c1', 't1', 'p1');
+    await seedTask(t, 'c2', 't2', 'p1');
+    const admin = adminOf(t, { ring });
+    const m = admin.metrics('part-1', { windowMs: 60_000, buckets: 6 });
+    expect(m.partition).toBe('part-1');
+    expect(m.requests.count).toBe(2);
+    expect(m.requests.perMinute).toBe(2);
+    expect(m.requests.errorCount).toBe(0);
+    expect(m.requests.errorRate).toBe(0);
+    expect(m.pushes).toEqual({ applied: 2, rejected: 0, conflicted: 0 });
+    expect(m.buckets.counts).toHaveLength(6);
+    expect(m.buckets.counts.reduce((a, b) => a + b, 0)).toBe(2);
+    // Virtual clock: both requests land in the newest bucket.
+    expect(m.buckets.counts[5]).toBe(2);
+  });
+
+  test('another partition’s events do not count; no ring ⇒ zeros', async () => {
+    const ring = new RingBufferEvents({ capacity: 100 });
+    const t = makeContext({ events: ring });
+    await seedTask(t, 'c1', 't1', 'p1');
+    const admin = adminOf(t, { ring });
+    const other = admin.metrics('elsewhere', { windowMs: 60_000 });
+    expect(other.requests.count).toBe(0);
+    expect(other.requests.p95Ms).toBe(0);
+    const unwired = adminOf(t).metrics('part-1', { windowMs: 60_000 });
+    expect(unwired.requests.count).toBe(0);
+  });
+});
+
+describe('partitions', () => {
+  test('listPartitions + partitionsOverview across two partitions', async () => {
+    const t = makeContext();
+    await seedTask(t, 'c1', 't1', 'p1');
+    await sync(t, [
+      pullHeader(),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, -1),
+    ]);
+    const admin = adminOf(t);
+    // A second partition on the same storage, via a direct commit.
+    const tx = await t.storage.begin('part-2');
+    await tx.appendCommit({
+      clientId: 'c-two',
+      clientCommitId: 'k1',
+      actorId: 'a2',
+      createdAtMs: t.now.ms,
+      changes: [],
+    });
+    await tx.commit();
+    expect(await admin.listPartitions()).toEqual(['part-1', 'part-2']);
+    const overview = await admin.partitionsOverview();
+    expect(overview).toHaveLength(2);
+    expect(overview[0]).toMatchObject({
+      partition: 'part-1',
+      maxCommitSeq: 1,
+      knownClients: 1,
+      activeClients: 1,
+      recommendation: 'up-to-date',
+    });
+    expect(overview[1]).toMatchObject({
+      partition: 'part-2',
+      maxCommitSeq: 1,
+      knownClients: 0,
+      activeClients: 0,
+    });
+  });
+});
+
+describe('subscribeEvents', () => {
+  test('streams live events through the admin; undefined when unwired', async () => {
+    const ring = new RingBufferEvents({ capacity: 10 });
+    const t = makeContext({ events: ring });
+    const admin = adminOf(t, { ring });
+    const seen: string[] = [];
+    const unsubscribe = admin.subscribeEvents((e) => seen.push(e.type));
+    expect(unsubscribe).toBeDefined();
+    await seedTask(t, 'c1', 't1', 'p1');
+    expect(seen).toContain('push.applied');
+    expect(seen).toContain('request.handled');
+    unsubscribe?.();
+    const before = seen.length;
+    await seedTask(t, 'c2', 't2', 'p1');
+    expect(seen.length).toBe(before);
+    expect(adminOf(t).subscribeEvents(() => {})).toBeUndefined();
   });
 });
 

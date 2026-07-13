@@ -18,6 +18,7 @@ import type { BlobStore, BlobStoreStats } from './blob-store';
 import { clockOf, type SyncServerConfig } from './context';
 import type { SyncularServerEvent } from './events';
 import type { RingBufferEvents, RingEventQuery } from './events-ring';
+import type { LeaseRecord, LeaseStore } from './lease-store';
 import { DEFAULT_RETENTION, type RetentionPolicy } from './prune';
 import { compileSchema, type ServerSchema } from './schema';
 import type { SegmentStore, SegmentStoreStats } from './segment-store';
@@ -33,6 +34,11 @@ export interface AdminClient {
   readonly clientId: string;
   readonly actorId: string;
   readonly cursor: number;
+  /**
+   * Commits the client has not pulled yet: `maxCommitSeq − max(cursor, 0)`.
+   * The first number an operator wants for "why is this client stale".
+   */
+  readonly lag: number;
   readonly updatedAtMs: number;
   readonly subscriptions: readonly {
     readonly id: string;
@@ -41,6 +47,61 @@ export interface AdminClient {
   }[];
   /** True when the cursor record was touched within the active window. */
   readonly active: boolean;
+}
+
+/** One client's drill-down: record + lease + its slice of the event tail. */
+export interface AdminClientDetail {
+  readonly clientId: string;
+  readonly exists: boolean;
+  /** Present iff `exists` — the same shape `listClients` returns. */
+  readonly client?: AdminClient;
+  /** The client's §7.3 lease, when a lease store is wired and one exists. */
+  readonly lease?: LeaseRecord;
+  /** Recent ring events carrying this clientId (newest first). */
+  readonly events: readonly SyncularServerEvent[];
+}
+
+/** Ring-derived request/push aggregates over a trailing window. */
+export interface AdminMetrics {
+  readonly partition: string;
+  readonly windowMs: number;
+  /** Wall-clock the aggregation ran at (window end). */
+  readonly atMs: number;
+  readonly requests: {
+    readonly count: number;
+    readonly perMinute: number;
+    readonly errorCount: number;
+    /** errors ÷ requests, 0 when the window is empty. */
+    readonly errorRate: number;
+    readonly p50Ms: number;
+    readonly p95Ms: number;
+  };
+  readonly pushes: {
+    readonly applied: number;
+    readonly rejected: number;
+    readonly conflicted: number;
+  };
+  /**
+   * Request counts split into `counts.length` equal buckets, oldest first —
+   * the console's sparkline. `errors` marks the error share per bucket.
+   */
+  readonly buckets: {
+    readonly widthMs: number;
+    readonly counts: readonly number[];
+    readonly errors: readonly number[];
+  };
+}
+
+/** One partition's row in the fleet view (`listPartitions` + horizon math). */
+export interface AdminPartitionOverview {
+  readonly partition: string;
+  readonly maxCommitSeq: number;
+  readonly horizonSeq: number;
+  readonly retainedCommits: number;
+  readonly knownClients: number;
+  /** Clients whose cursor record was touched within the active window. */
+  readonly activeClients: number;
+  readonly recommendation: 'up-to-date' | 'prune-recommended';
 }
 
 export interface AdminRowInspection {
@@ -93,6 +154,8 @@ export interface SyncularAdminOptions {
   readonly ring?: RingBufferEvents;
   readonly segments?: SegmentStore;
   readonly blobs?: BlobStore;
+  /** The §7.3 lease store — feeds the client drill-down's lease read. */
+  readonly leases?: LeaseStore;
   /** Retention policy for horizon recommendation (defaults to §4.6). */
   readonly retention?: Partial<RetentionPolicy>;
   /** Epoch-ms clock (defaults to `Date.now`) — active-window math. */
@@ -101,6 +164,17 @@ export interface SyncularAdminOptions {
 
 const DEFAULT_COMMIT_LIMIT = 50;
 const DEFAULT_SCOPE_LIMIT = 50;
+const DEFAULT_CLIENT_EVENT_LIMIT = 100;
+const DEFAULT_METRICS_WINDOW_MS = 5 * 60 * 1000;
+const DEFAULT_METRICS_BUCKETS = 30;
+
+/** Nearest-rank percentile over an unsorted sample; 0 for an empty one. */
+function percentile(sample: readonly number[], q: number): number {
+  if (sample.length === 0) return 0;
+  const sorted = [...sample].sort((a, b) => a - b);
+  const rank = Math.max(1, Math.ceil(q * sorted.length));
+  return sorted[rank - 1] ?? 0;
+}
 
 function required<T>(value: T | undefined, what: string): T {
   if (value === undefined) {
@@ -111,11 +185,17 @@ function required<T>(value: T | undefined, what: string): T {
   return value;
 }
 
-function toAdminClient(record: ClientRecord, active: boolean): AdminClient {
+function toAdminClient(
+  record: ClientRecord,
+  active: boolean,
+  maxCommitSeq: number,
+): AdminClient {
   return {
     clientId: record.clientId,
     actorId: record.actorId,
     cursor: record.cursor,
+    // A never-pulled cursor (-1) has seen nothing: it lags the whole log.
+    lag: Math.max(0, maxCommitSeq - Math.max(0, record.cursor)),
     updatedAtMs: record.updatedAtMs,
     subscriptions: record.subscriptions.map((sub) => ({
       id: sub.id,
@@ -133,6 +213,7 @@ export class SyncularAdmin {
   readonly #ring?: RingBufferEvents;
   readonly #segments?: SegmentStore;
   readonly #blobs?: BlobStore;
+  readonly #leases?: LeaseStore;
   readonly #retention: RetentionPolicy;
   readonly #clock: () => number;
 
@@ -142,6 +223,7 @@ export class SyncularAdmin {
     if (options.ring !== undefined) this.#ring = options.ring;
     if (options.segments !== undefined) this.#segments = options.segments;
     if (options.blobs !== undefined) this.#blobs = options.blobs;
+    if (options.leases !== undefined) this.#leases = options.leases;
     this.#retention = { ...DEFAULT_RETENTION, ...options.retention };
     this.#clock = options.clock ?? Date.now;
   }
@@ -160,23 +242,59 @@ export class SyncularAdmin {
       schema: config.schema,
       segments: config.segments,
       ...(config.blobs !== undefined ? { blobs: config.blobs } : {}),
+      ...(config.leases !== undefined ? { leases: config.leases.store } : {}),
       ...(extra?.ring !== undefined ? { ring: extra.ring } : {}),
       ...(extra?.retention !== undefined ? { retention: extra.retention } : {}),
       clock: clockOf(config),
     });
   }
 
-  /** The known clients for a partition (cursor, last-seen, subscriptions). */
+  /** The known clients for a partition (cursor, lag, subscriptions). */
   async listClients(partition: string): Promise<AdminClient[]> {
     const list = required(
       this.#storage.listClientRecords?.bind(this.#storage),
       'storage',
     );
     const records = await list(partition);
+    const maxCommitSeq = await this.#storage.getMaxCommitSeq(partition);
     const activeFloorMs = this.#clock() - this.#retention.activeWindowMs;
     return records.map((record) =>
-      toAdminClient(record, record.updatedAtMs >= activeFloorMs),
+      toAdminClient(record, record.updatedAtMs >= activeFloorMs, maxCommitSeq),
     );
+  }
+
+  /**
+   * One client's drill-down: its record (with lag), its §7.3 lease when a
+   * lease store is wired, and its recent slice of the event tail. Answers
+   * "why is this client stale" in a single read.
+   */
+  async clientDetail(
+    partition: string,
+    clientId: string,
+    options: { readonly eventLimit?: number } = {},
+  ): Promise<AdminClientDetail> {
+    const record = await this.#storage.getClientRecord(partition, clientId);
+    const events = this.events({
+      clientId,
+      limit: options.eventLimit ?? DEFAULT_CLIENT_EVENT_LIMIT,
+    });
+    if (record === undefined) {
+      return { clientId, exists: false, events };
+    }
+    const maxCommitSeq = await this.#storage.getMaxCommitSeq(partition);
+    const activeFloorMs = this.#clock() - this.#retention.activeWindowMs;
+    const lease = await this.#leases?.get(partition, clientId);
+    return {
+      clientId,
+      exists: true,
+      client: toAdminClient(
+        record,
+        record.updatedAtMs >= activeFloorMs,
+        maxCommitSeq,
+      ),
+      ...(lease !== undefined ? { lease } : {}),
+      events,
+    };
   }
 
   /** Commit-log metadata (no payloads), newest first. */
@@ -308,5 +426,112 @@ export class SyncularAdmin {
   /** The event tail from the ring buffer (newest first). Empty when unwired. */
   events(query: RingEventQuery = {}): SyncularServerEvent[] {
     return this.#ring?.query(query) ?? [];
+  }
+
+  /**
+   * Subscribe to events as they land in the ring (the SSE tail). Returns
+   * the unsubscribe function, or `undefined` when no ring is wired — a
+   * host can branch on that the same way `hasEventStream` reports it.
+   */
+  subscribeEvents(
+    listener: (event: SyncularServerEvent) => void,
+  ): (() => void) | undefined {
+    return this.#ring?.subscribe(listener);
+  }
+
+  /**
+   * Request/push health over a trailing window, derived entirely from the
+   * ring (zero new server state): rates, error share, duration percentiles,
+   * and per-bucket counts for the console's sparkline. Only events carrying
+   * this `partition` count. Empty (all zeros) when no ring is wired.
+   */
+  metrics(
+    partition: string,
+    options: { readonly windowMs?: number; readonly buckets?: number } = {},
+  ): AdminMetrics {
+    const windowMs = options.windowMs ?? DEFAULT_METRICS_WINDOW_MS;
+    const bucketCount = options.buckets ?? DEFAULT_METRICS_BUCKETS;
+    const atMs = this.#clock();
+    const sinceMs = atMs - windowMs;
+    const widthMs = windowMs / bucketCount;
+    const counts = new Array<number>(bucketCount).fill(0);
+    const errors = new Array<number>(bucketCount).fill(0);
+    const durations: number[] = [];
+    let requestCount = 0;
+    let errorCount = 0;
+    let applied = 0;
+    let rejected = 0;
+    let conflicted = 0;
+    for (const event of this.events({ sinceMs })) {
+      if (event.partition !== partition) continue;
+      if (event.type === 'push.applied') applied += 1;
+      else if (event.type === 'push.rejected') rejected += 1;
+      else if (event.type === 'push.conflicted') conflicted += 1;
+      if (event.type !== 'request.handled') continue;
+      requestCount += 1;
+      durations.push(event.durationMs);
+      const failed = event.outcome === 'rejected' || event.outcome === 'error';
+      if (failed) errorCount += 1;
+      const bucket = Math.min(
+        bucketCount - 1,
+        Math.max(0, Math.floor((event.atMs - sinceMs) / widthMs)),
+      );
+      counts[bucket] = (counts[bucket] ?? 0) + 1;
+      if (failed) errors[bucket] = (errors[bucket] ?? 0) + 1;
+    }
+    return {
+      partition,
+      windowMs,
+      atMs,
+      requests: {
+        count: requestCount,
+        perMinute: requestCount / (windowMs / 60_000),
+        errorCount,
+        errorRate: requestCount === 0 ? 0 : errorCount / requestCount,
+        p50Ms: percentile(durations, 0.5),
+        p95Ms: percentile(durations, 0.95),
+      },
+      pushes: { applied, rejected, conflicted },
+      buckets: { widthMs, counts, errors },
+    };
+  }
+
+  /**
+   * Every partition the storage knows (commit log + client records) — the
+   * fleet-view backing and the console's partition picker. Fails loud when
+   * the backend omits the optional `listPartitions`.
+   */
+  async listPartitions(): Promise<string[]> {
+    const list = required(
+      this.#storage.listPartitions?.bind(this.#storage),
+      'storage',
+    );
+    return list();
+  }
+
+  /**
+   * The fleet view: one row per known partition — retained backlog, client
+   * counts, prune recommendation. A cross-partition read (every other
+   * method is partition-scoped); host authorization should account for it.
+   */
+  async partitionsOverview(): Promise<AdminPartitionOverview[]> {
+    const partitions = await this.listPartitions();
+    const activeFloorMs = this.#clock() - this.#retention.activeWindowMs;
+    const out: AdminPartitionOverview[] = [];
+    for (const partition of partitions) {
+      const status = await this.horizonStatus(partition);
+      const cursors = await this.#storage.listClientCursors(partition);
+      out.push({
+        partition,
+        maxCommitSeq: status.maxCommitSeq,
+        horizonSeq: status.horizonSeq,
+        retainedCommits: status.retainedCommits,
+        knownClients: cursors.length,
+        activeClients: cursors.filter((c) => c.updatedAtMs >= activeFloorMs)
+          .length,
+        recommendation: status.recommendation,
+      });
+    }
+    return out;
   }
 }

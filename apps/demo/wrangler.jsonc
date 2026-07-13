@@ -1,0 +1,17 @@
+{
+  // The public demo (demo.syncular.dev) is a Workers static-assets
+  // deployment with NO worker script and no backend at all: the sync server
+  // runs inside the page in a Web Worker (src/frontend/server-worker.ts).
+  // The worker name matches the pre-existing `syncular-demo` worker, so a
+  // deploy replaces its content in place and the existing
+  // demo.syncular.dev attachment keeps serving — deploys never touch DNS.
+  // `dist/` is produced by `bun run build:static`.
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "syncular-demo",
+  "compatibility_date": "2026-07-01",
+  "assets": {
+    "directory": "./dist",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "single-page-application"
+  }
+}
