@@ -141,4 +141,83 @@ describe('FrameScheduler', () => {
     s.flush();
     expect(runs).toBe(0);
   });
+
+  test('a hidden document schedules on the microtask boundary, not the suspended rAF', async () => {
+    const g = globalThis as {
+      requestAnimationFrame?: unknown;
+      document?: unknown;
+    };
+    const prevRaf = g.requestAnimationFrame;
+    const prevDoc = g.document;
+    // An rAF that parks forever — the browser's behavior on a hidden page.
+    const parked: Array<() => void> = [];
+    g.requestAnimationFrame = (cb: () => void) => {
+      parked.push(cb);
+      return 0;
+    };
+    g.document = { visibilityState: 'hidden' };
+    try {
+      let runs = 0;
+      const s = new FrameScheduler(() => {
+        runs += 1;
+      });
+      s.schedule();
+      expect(parked).toHaveLength(0); // never handed to the suspended rAF
+      await Promise.resolve(); // drain the microtask fallback
+      expect(runs).toBe(1);
+      s.dispose();
+    } finally {
+      g.requestAnimationFrame = prevRaf;
+      g.document = prevDoc;
+    }
+  });
+
+  test('a frame parked in rAF before the page hides re-dispatches on visibilitychange; the stale rAF no-ops', async () => {
+    const g = globalThis as {
+      requestAnimationFrame?: unknown;
+      document?: unknown;
+    };
+    const prevRaf = g.requestAnimationFrame;
+    const prevDoc = g.document;
+    const parked: Array<() => void> = [];
+    let onVisibility: (() => void) | undefined;
+    const doc = {
+      visibilityState: 'visible',
+      addEventListener: (type: string, listener: () => void) => {
+        if (type === 'visibilitychange') onVisibility = listener;
+      },
+    };
+    g.requestAnimationFrame = (cb: () => void) => {
+      parked.push(cb);
+      return 0;
+    };
+    g.document = doc;
+    try {
+      let runs = 0;
+      const s = new FrameScheduler(() => {
+        runs += 1;
+      });
+      expect(onVisibility).toBeDefined(); // construction hooked visibilitychange
+      s.schedule(); // visible → parked in rAF
+      expect(parked).toHaveLength(1);
+      expect(runs).toBe(0);
+
+      // The page hides: rAF suspends, the transition hands the frame to a
+      // microtask, and the query still converges off-screen.
+      doc.visibilityState = 'hidden';
+      onVisibility?.();
+      await Promise.resolve();
+      expect(runs).toBe(1);
+
+      // The page becomes visible again and the stale parked rAF finally
+      // fires — it must be a no-op, not a duplicate run.
+      doc.visibilityState = 'visible';
+      for (const cb of parked) cb();
+      expect(runs).toBe(1);
+      s.dispose();
+    } finally {
+      g.requestAnimationFrame = prevRaf;
+      g.document = prevDoc;
+    }
+  });
 });

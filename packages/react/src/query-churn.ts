@@ -122,12 +122,23 @@ export function reconcileRows<Row>(
  * running (re-entrant, or an event during an async re-query) marks dirty and
  * runs the callback exactly once more after — never lost, never concurrent.
  *
- * Timing source: `requestAnimationFrame` when the host has it (a real browser
- * paints one frame; the coalescing window is a frame), else a microtask via a
- * resolved promise (bun tests have no rAF — this keeps them deterministic and
- * timer-free, honoring the no-timers doctrine: it's a readiness turn, not a
- * wall-clock sleep). {@link flush} runs any pending callback synchronously for
- * tests, so no arbitrary sleeps are needed to observe coalescing.
+ * Timing source: `requestAnimationFrame` when the host has it AND the document
+ * is visible (a real browser paints one frame; the coalescing window is a
+ * frame), else a microtask via a resolved promise (bun tests have no rAF —
+ * this keeps them deterministic and timer-free, honoring the no-timers
+ * doctrine: it's a readiness turn, not a wall-clock sleep). {@link flush} runs
+ * any pending callback synchronously for tests, so no arbitrary sleeps are
+ * needed to observe coalescing.
+ *
+ * Hidden documents: browsers SUSPEND rAF while a page is hidden (background
+ * tab, occluded webview, headless embed), so a frame parked there fires only
+ * when the page becomes visible again — and a page that is never visible would
+ * freeze its live queries forever while invalidations keep arriving. Two
+ * guards keep the schedule honest: a `schedule()` issued while hidden goes to
+ * the microtask boundary (there is no paint to coalesce against anyway), and a
+ * visible → hidden transition re-dispatches any frame already parked in rAF to
+ * a microtask (the stale rAF callback later no-ops via the `#scheduled` guard
+ * in {@link #fire}).
  */
 export class FrameScheduler {
   #scheduled = false;
@@ -138,6 +149,7 @@ export class FrameScheduler {
   constructor(callback: () => void | Promise<void>) {
     this.#callback = callback;
     liveSchedulers.add(this);
+    hookVisibility();
   }
 
   /** Request a run. Coalesces until the next frame/microtask boundary. */
@@ -153,7 +165,21 @@ export class FrameScheduler {
   }
 
   #fire(): void {
+    // A stale dispatch must be a no-op: an rAF parked before the page went
+    // hidden fires again on the visible transition, AFTER the microtask
+    // fallback already ran the callback and cleared `#scheduled`.
+    if (!this.#scheduled) return;
     this.#run();
+  }
+
+  /**
+   * @internal — the visible → hidden transition hands a frame parked in the
+   * (now suspended) rAF to the microtask boundary, so live queries keep
+   * converging off-screen. A no-op when nothing is pending.
+   */
+  redispatchPending(): void {
+    if (!this.#scheduled) return;
+    queueMicrotask(() => this.#fire());
   }
 
   /**
@@ -231,18 +257,61 @@ export function flushQuerySchedulers(): Promise<void> {
   return Promise.all(pending).then(() => undefined);
 }
 
-const raf: ((cb: () => void) => unknown) | undefined =
-  typeof globalThis.requestAnimationFrame === 'function'
-    ? globalThis.requestAnimationFrame.bind(globalThis)
-    : undefined;
+/** The document surface this module reads — kept structural so the package
+ *  needs no DOM lib types and tests can inject a double. */
+interface DocumentLike {
+  readonly visibilityState?: string;
+  addEventListener?: (type: string, listener: () => void) => void;
+}
+
+function currentDocument(): DocumentLike | undefined {
+  return (globalThis as { document?: DocumentLike }).document;
+}
+
+function documentHidden(): boolean {
+  return currentDocument()?.visibilityState === 'hidden';
+}
 
 function scheduleFrame(cb: () => void): void {
-  if (raf !== undefined) {
+  // Read rAF per call (not cached at module load) so a test can install a
+  // double around one scenario.
+  const raf =
+    typeof globalThis.requestAnimationFrame === 'function'
+      ? globalThis.requestAnimationFrame.bind(globalThis)
+      : undefined;
+  if (raf !== undefined && !documentHidden()) {
     raf(cb);
     return;
   }
-  // No rAF (bun test / worker): a microtask is the deterministic, timer-free
-  // coalescing boundary. Everything queued in the current synchronous run
-  // (a burst of emits) has already called schedule() before this drains.
+  // No rAF (bun test / worker) or a hidden document (rAF suspended): a
+  // microtask is the deterministic, timer-free coalescing boundary.
+  // Everything queued in the current synchronous run (a burst of emits) has
+  // already called schedule() before this drains.
   queueMicrotask(cb);
+}
+
+/**
+ * The document whose `visibilitychange` is currently hooked. Re-hooked when
+ * the document identity changes (never in a browser — one document per page —
+ * but each test double gets its own listener; stale listeners die with their
+ * document). Registration is lazy (first scheduler construction) so importing
+ * the module has no side effect.
+ */
+let hookedDocument: DocumentLike | undefined;
+
+function hookVisibility(): void {
+  const doc = currentDocument();
+  if (
+    doc === undefined ||
+    doc === hookedDocument ||
+    typeof doc.addEventListener !== 'function'
+  ) {
+    return;
+  }
+  hookedDocument = doc;
+  doc.addEventListener('visibilitychange', () => {
+    if (doc.visibilityState !== 'hidden') return;
+    // rAF is suspended from here on; hand every parked frame to a microtask.
+    for (const s of liveSchedulers) s.redispatchPending();
+  });
 }
