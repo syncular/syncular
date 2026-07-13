@@ -28,9 +28,6 @@ const HKDF_INFO = new TextEncoder().encode('syncular/e2ee/x25519-wrap/v1');
 export class UnwrapError extends Error {
   override readonly name = 'UnwrapError';
   readonly code = 'client.decrypt_failed';
-  constructor(message: string) {
-    super(message);
-  }
 }
 
 function toBuffer(bytes: Uint8Array): ArrayBuffer {

@@ -209,7 +209,7 @@ function listObjectsV2(objects: Map<string, StoredObject>, url: URL): Response {
   const allKeys = [...objects.keys()]
     .filter((k) => k.startsWith(prefix))
     .sort();
-  const start = after === '' ? 0 : allKeys.findIndex((k) => k === after);
+  const start = after === '' ? 0 : allKeys.indexOf(after);
   const from = start < 0 ? allKeys.length : start;
   const page = allKeys.slice(from, from + maxKeys);
   const rest = allKeys.slice(from + maxKeys);

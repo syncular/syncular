@@ -46,10 +46,6 @@ export class DecryptError extends Error {
   override readonly name = 'DecryptError';
   readonly code = 'client.decrypt_failed';
   readonly retryable = false;
-
-  constructor(message: string) {
-    super(message);
-  }
 }
 
 /**
