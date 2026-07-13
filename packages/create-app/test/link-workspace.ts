@@ -37,6 +37,11 @@ const EXTERNAL_DEPS = [
   '@sqlite.org/sqlite-wasm',
   '@types/bun',
   'bun-types',
+  'react',
+  'react-dom',
+  '@types/react',
+  '@types/react-dom',
+  '@tauri-apps/api',
 ] as const;
 
 /**

@@ -1,0 +1,27 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The desktop host: a Tauri shell around the native syncular core"
+
+# Standalone crate on purpose: the scaffold is not part of any cargo
+# workspace, so a plain `cargo build` here never walks up into one.
+[workspace]
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+# The syncular plugin from crates.io. `native-transport` gives the core its
+# real HTTP + WebSocket transport (ureq + tungstenite) inside the host
+# process — the webview never talks to the sync server directly.
+tauri-plugin-syncular = { version = "0.3", features = ["native-transport"] }
+
+[features]
+default = []

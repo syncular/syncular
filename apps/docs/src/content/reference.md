@@ -42,7 +42,7 @@ All published under the `@syncular/*` scope (plus the unscoped scaffolder):
 | `@syncular/typegen` | Migrations + manifest → schema IR → generated modules (TS, Swift, Kotlin, Dart) + named queries; ships the `syncular` CLI | [packages/typegen](https://github.com/syncular/syncular/tree/main/packages/typegen) |
 | `@syncular/tauri` | `createTauriSyncClient()`, a `SyncClientLike` over Tauri IPC, paired with the `tauri-plugin-syncular` Rust plugin | [packages/tauri](https://github.com/syncular/syncular/tree/main/packages/tauri) |
 | `@syncular/testkit` | App-developer test kit: in-memory server + N real clients in one test file | [packages/testing](https://github.com/syncular/syncular/tree/main/packages/testing) |
-| `create-syncular-app` | Scaffolder: `bun create syncular-app my-app` (`minimal` / `web` templates) | [packages/create-app](https://github.com/syncular/syncular/tree/main/packages/create-app) |
+| `create-syncular-app` | Scaffolder: `bun create syncular-app my-app` (`minimal` / `web` / `tauri` templates) | [packages/create-app](https://github.com/syncular/syncular/tree/main/packages/create-app) |
 
 Two more live in the repo but are not published to npm:
 `@syncular/conformance` (the implementation-agnostic scenario runner + test

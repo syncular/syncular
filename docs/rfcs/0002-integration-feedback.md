@@ -6,8 +6,10 @@
   published to crates.io the same day (plus crate metadata, versioned path
   deps, a RELEASE.md step, and the git/path recipes in the docs); 4.1
   landed as the
-  "One codebase, web + desktop" guide (a `--template tauri` scaffold is
-  deferred until the plugin is on crates.io). 2.1 additionally grew a
+  "One codebase, web + desktop" guide, and its deferred half — the
+  `--template tauri` scaffold — landed 2026-07-14 once the plugin was on
+  crates.io (the scaffold's `src-tauri` depends on the registry release).
+  2.1 additionally grew a
   SQL-representation coercion in mutation values (booleans as 0/1, bigint
   integers), because stripping `_sync_*` alone still left `SELECT *` rows
   poisoning the outbox at encode time.

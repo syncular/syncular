@@ -31,6 +31,8 @@ export const WORKSPACE_PACKAGES = [
   `${PACKAGE_SCOPE}/server`,
   `${PACKAGE_SCOPE}/server-hono`,
   `${PACKAGE_SCOPE}/client`,
+  `${PACKAGE_SCOPE}/react`,
+  `${PACKAGE_SCOPE}/tauri`,
   `${PACKAGE_SCOPE}/typegen`,
 ] as const;
 

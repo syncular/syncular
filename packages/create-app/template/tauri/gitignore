@@ -1,0 +1,11 @@
+node_modules/
+*.log
+.DS_Store
+*.sqlite
+*.sqlite-*
+# built frontend (materialized by `bun run build-frontend`; a placeholder
+# ships with the scaffold so a direct `cargo build` works before the first
+# frontend build)
+dist/
+src-tauri/target/
+src-tauri/gen/

@@ -18,14 +18,13 @@ bunx create-syncular-app my-app --template web
 |---|---|
 | `minimal` | Server + a terminal two-client convergence demo (no browser) — migrations + manifest + `generate` wiring. Copy-evolved from `examples/quickstart`. The smallest honest starting point. |
 | `web` | Hono server + WebSocket realtime + a single-pane browser todo app whose whole client core runs in a Web Worker on OPFS. Derived from `apps/demo`, slimmed to one pane (no conflict simulator, no blob attachments) — the minimal browser app a real user starts from. |
+| `tauri` | One React codebase, web + desktop (RFC 0002 §4.1): the `web` template's server plus a shared React tree behind the `__TAURI_INTERNALS__` engine seam (`src/frontend/engine.ts`) — worker core on OPFS in the browser, native Rust core in a `src-tauri/` host (`tauri-plugin-syncular` from crates.io, `native-transport`). Derived from `bindings/tauri/example` + the [web+desktop guide](../../apps/docs/src/content/guide-web-desktop.md). |
 
-> **Third-template candidate: `react`.** [`apps/demo-react`](../../apps/demo-react)
-> is the ready-made source for a hooks-based template — `@syncular/react`
-> (`SyncProvider` + `useQuery` + `useRawSql` + `useMutation` + `useSyncStatus` +
-> `useWindow`) over the same worker + OPFS core, with the named-query read
-> tier wired. Slim it the way `web` slims `apps/demo` (drop the three-list
-> seed to one, keep one hook of each kind) and add it here when a React
-> template is wanted. Not built yet — noted so the shape is on record.
+> **Next-template candidate: `react` (web-only).** [`apps/demo-react`](../../apps/demo-react)
+> is the ready-made source for a hooks-based web-only template — the `tauri`
+> template already carries the hook surface for the two-host story. Slim
+> demo-react the way `web` slims `apps/demo` when a web-only React template
+> is wanted. Not built yet — noted so the shape is on record.
 
 Each template ships its own `README.md` (run steps, what to edit first),
 `.gitignore` (as `gitignore` — see below), a working `tsconfig.json`, and a
@@ -80,3 +79,12 @@ The in-tree template `*.test.ts` files are excluded from the root `bun test`
 sweep (`--path-ignore-patterns '**/create-app/template/**'` in the root `test`
 script) — they can only resolve their deps inside a scaffolded, linked copy,
 which the tier test above provides.
+
+The `tauri` template's desktop half (`src-tauri/`) is deliberately outside
+both tiers: compiling it needs the Rust toolchain, the Tauri system
+libraries, and the crates.io registry. Its compile proof is a local
+`cargo check` in a scaffolded app (documented in the template README) plus
+the tauri-bindings CI job, which builds the same plugin wiring from the
+in-tree path dep — the honest scoping the tauri/RN binding gates already
+use. The webview side (engine seam, React tree, `build-frontend.ts`) rides
+the always-run tier like any other template file.
