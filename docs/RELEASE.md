@@ -80,6 +80,10 @@ cd bindings/tauri
 cargo publish -p tauri-plugin-syncular   # (after syncular-command)
 ```
 
+Since 0.3.0 the plugin has a crates.io trusted publisher attached and rides
+the `release.yml` crates job with everything above — the manual step exists
+for first-publish/recovery situations only.
+
 Not published (`publish = false`): `conformance-shim`, `syncular-bench`.
 
 > Between steps, wait for each crate to appear on the crates.io index before
