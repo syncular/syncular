@@ -5,10 +5,11 @@
  * `q(client, …): List<QRow>` runner + `qTables` constant. The runner binds
  * named params positionally into the wrapper's `query(sql, params)`.
  *
- * Reuses the schema file's `rowBool`/`rowBytes` helpers (they are top-level
- * private in the schema module; queries live in the same package so re-declare
- * package-private copies here to stay self-contained — the query file is a
- * separate output). Header carries the IR hash for byte-exact `--check`.
+ * Self-contained: declares its own `queryRowBool`/`queryRowBytes` copies of
+ * the schema file's row-decode helpers (distinct names — both files are
+ * file-`private` in the same package, and the schema file only emits its
+ * helpers when a column type needs them). Header carries the IR hash for
+ * byte-exact `--check`.
  */
 import type { IrColumnType } from './ir';
 import { snakeToCamel } from './naming';
