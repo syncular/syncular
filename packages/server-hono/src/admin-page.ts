@@ -15,10 +15,13 @@
  * works under whatever prefix the host mounts the routes at, and the host's
  * `authorize` guard applies to the page's own XHRs (same cookies/headers).
  *
- * Panels cover the whole read surface: horizon, store stats, clients,
- * commits (with a table filter), the row inspector (`/rows/:table/:rowId`),
- * scope activity (`/scope-activity`), and the event tail (with a type
- * filter).
+ * Panels cover the whole read surface: a metrics statusbar (ring-derived
+ * rates + sparkline), the fleet view (`/partitions`, doubling as the
+ * partition picker), horizon, store stats, clients (with cursor lag and a
+ * per-client drill-down: subscriptions, lease, event slice), commits (with
+ * a table filter), the row inspector, scope activity, and the event tail —
+ * live over SSE (`/events/stream`) when the ring is wired, falling back to
+ * the 2-second poll otherwise.
  */
 export const ADMIN_CONSOLE_HTML = `<!doctype html>
 <html lang="en">
@@ -61,6 +64,13 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
   #status { color: var(--dim); font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; }
   #status.err { color: var(--amber); }
 
+  #statusbar { display: flex; gap: 1.4rem; align-items: baseline; flex-wrap: wrap;
+    padding: .5rem 1.25rem; border-bottom: 1px solid var(--border);
+    font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+  #statusbar .m b { color: var(--amber); font-weight: 400; }
+  #statusbar .spark { color: var(--amber); letter-spacing: 0; text-transform: none; }
+  #statusbar .spark.flat { color: var(--faint); }
+
   main { padding: 1.25rem; display: grid; gap: 1.2rem;
     grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
   section { border: 1px solid var(--border); background: var(--void); position: relative; }
@@ -84,6 +94,7 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
     text-transform: uppercase; position: sticky; top: 0; background: var(--panel); z-index: 1; }
   td.wrap, .wrap { white-space: normal; word-break: break-all; }
   tr:hover td { background: var(--panel); }
+  tr.pick { cursor: pointer; }
 
   .chip { font-size: .68rem; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); }
   .chip::before { content: '[ '; color: var(--faint); }
@@ -100,6 +111,11 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
   .empty { color: var(--faint); padding: .8rem .9rem; font-style: italic; font-size: .78rem; }
   .evt-type { color: var(--amber); }
   .full { grid-column: 1 / -1; }
+  .detail { border-top: 1px solid var(--border-strong); }
+  .detail h3 { font-size: .68rem; margin: 0; padding: .45rem .9rem; color: var(--faint);
+    font-weight: 400; letter-spacing: .12em; text-transform: uppercase;
+    display: flex; justify-content: space-between; align-items: center; gap: .6rem;
+    border-bottom: 1px solid var(--border); }
 
   footer { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
     padding: .8rem 1.25rem 1.4rem; color: var(--faint); font-size: .68rem; letter-spacing: .1em; }
@@ -112,17 +128,37 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
 <header>
   <h1>SYNCULAR<span class="d"> · </span>CONSOLE<span class="blink">_</span></h1>
   <label>partition
-    <input id="partition" type="text" placeholder="(default)" />
+    <input id="partition" type="text" placeholder="(default)" list="partitions-list" />
   </label>
+  <datalist id="partitions-list"></datalist>
   <button id="refresh" class="primary">[ REFRESH ]</button>
   <button id="auto">[ AUTO OFF ]</button>
   <span class="spacer"></span>
   <span id="status">idle</span>
 </header>
+<div id="statusbar">
+  <span class="m">push <b id="m-push">–</b>/min</span>
+  <span class="m">conflicts <b id="m-conflicts">–</b></span>
+  <span class="m">err <b id="m-err">–</b></span>
+  <span class="m">p95 <b id="m-p95">–</b></span>
+  <span class="spark" id="m-spark"></span>
+  <span class="m" id="m-window"></span>
+</div>
 <main>
   <section><h2>── horizon <span class="count" id="horizon-rec"></span></h2><div class="body" id="horizon"></div></section>
   <section><h2>── store stats</h2><div class="body" id="stats"></div></section>
-  <section><h2>── clients <span class="count" id="clients-count"></span></h2><div class="body" id="clients"></div></section>
+  <section>
+    <h2>── fleet <span class="count" id="fleet-count"></span></h2>
+    <div class="body" id="fleet"></div>
+  </section>
+  <section>
+    <h2>── clients <span class="count" id="clients-count"></span></h2>
+    <div class="body" id="clients"></div>
+    <div class="detail" id="client-detail" hidden>
+      <h3>── client drill-down <button id="detail-close">[ CLOSE ]</button></h3>
+      <div class="body" id="detail-body"></div>
+    </div>
+  </section>
   <section>
     <h2>── commits <span class="count" id="commits-count"></span></h2>
     <div class="tools"><input id="commits-filter" type="text" placeholder="filter by table" /></div>
@@ -147,7 +183,7 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
     <div class="body" id="scope"></div>
   </section>
   <section class="full">
-    <h2>── event stream <span class="count" id="events-count"></span></h2>
+    <h2>── event stream <span class="count" id="events-live"></span> <span class="count" id="events-count"></span></h2>
     <div class="tools"><input id="events-filter" type="text" placeholder="filter by type e.g. push.applied" /></div>
     <div class="body" id="events"></div>
   </section>
@@ -167,7 +203,7 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
   // trailing slash so 'base + /clients' hits '…/admin/clients' regardless of
   // whether the URL had the trailing slash.
   var base = location.pathname.replace(/\\/+$/, '');
-  function get(path, params) {
+  function qs(params) {
     var parts = [];
     var p = el('partition').value.trim();
     if (p) parts.push('partition=' + encodeURIComponent(p));
@@ -177,8 +213,10 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
         parts.push(k + '=' + encodeURIComponent(v));
       }
     });
-    var qs = parts.length ? '?' + parts.join('&') : '';
-    return fetch(base + path + qs, { headers: { accept: 'application/json' } })
+    return parts.length ? '?' + parts.join('&') : '';
+  }
+  function get(path, params) {
+    return fetch(base + path + qs(params), { headers: { accept: 'application/json' } })
       .then(function (r) {
         if (!r.ok) return r.json().then(function (b) { throw new Error(b.code || ('HTTP ' + r.status)); });
         return r.json();
@@ -196,6 +234,13 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
     if (d < 3600000) return Math.round(d / 60000) + 'm';
     return Math.round(d / 3600000) + 'h';
   }
+  function until(ms) {
+    var d = ms - Date.now();
+    if (d <= 0) return 'expired';
+    if (d < 60000) return 'in ' + Math.round(d / 1000) + 's';
+    if (d < 3600000) return 'in ' + Math.round(d / 60000) + 'm';
+    return 'in ' + Math.round(d / 3600000) + 'h';
+  }
   function bytes(n) {
     if (n == null) return '-';
     if (n < 1024) return n + ' B';
@@ -203,16 +248,54 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
     return (n / 1048576).toFixed(1) + ' MiB';
   }
   function empty(text) { return '<div class="empty">— ' + esc(text || 'none') + ' —</div>'; }
-  function table(head, rows) {
+  function table(head, rows, rowAttrs) {
     if (!rows.length) return empty('none');
     var h = '<table><thead><tr>' + head.map(function (c) { return '<th>' + esc(c) + '</th>'; }).join('') + '</tr></thead><tbody>';
-    h += rows.map(function (r) {
-      return '<tr>' + r.map(function (c) { return '<td>' + c + '</td>'; }).join('') + '</tr>';
+    h += rows.map(function (r, i) {
+      var attrs = rowAttrs ? rowAttrs(i) : '';
+      return '<tr' + (attrs ? ' ' + attrs : '') + '>' + r.map(function (c) { return '<td>' + c + '</td>'; }).join('') + '</tr>';
     }).join('');
     return h + '</tbody></table>';
   }
   function chip(text, cls) { return '<span class="chip ' + cls + '">' + esc(text) + '</span>'; }
+  var SPARK = '▁▂▃▄▅▆▇█';
+  function spark(counts) {
+    var max = 0;
+    counts.forEach(function (n) { if (n > max) max = n; });
+    return counts.map(function (n) {
+      var level = max === 0 ? 0 : Math.round((n / max) * (SPARK.length - 1));
+      return SPARK.charAt(level);
+    }).join('');
+  }
 
+  function renderMetrics(m) {
+    el('m-push').textContent = m.requests.count === 0 ? '0' :
+      (m.requests.perMinute >= 10 ? Math.round(m.requests.perMinute) : m.requests.perMinute.toFixed(1));
+    el('m-conflicts').textContent = m.pushes.conflicted;
+    el('m-err').textContent = (m.requests.errorRate * 100).toFixed(1) + '%';
+    el('m-p95').textContent = Math.round(m.requests.p95Ms) + 'ms';
+    var sp = el('m-spark');
+    sp.textContent = spark(m.buckets.counts);
+    sp.className = 'spark' + (m.requests.count === 0 ? ' flat' : '');
+    el('m-window').textContent = 'last ' + Math.round(m.windowMs / 60000) + 'min';
+  }
+  function renderFleet(list) {
+    el('fleet-count').textContent = list.length + ' partitions';
+    var picker = el('partitions-list');
+    picker.innerHTML = list.map(function (p) {
+      return '<option value="' + esc(p.partition) + '"></option>';
+    }).join('');
+    el('fleet').innerHTML = table(
+      ['partition', 'max seq', 'horizon', 'retained', 'clients', ''],
+      list.map(function (p) {
+        var rec = p.recommendation === 'prune-recommended'
+          ? chip('prune', 'warn') : chip('ok', 'ok');
+        return ['<span class="v">' + esc(p.partition) + '</span>', esc(p.maxCommitSeq),
+          esc(p.horizonSeq), esc(p.retainedCommits),
+          esc(p.activeClients) + '/' + esc(p.knownClients) + ' active', rec];
+      }),
+      function (i) { return 'class="pick" data-partition="' + esc(list[i].partition) + '"'; });
+  }
   function renderHorizon(h) {
     el('horizon').innerHTML =
       '<dl class="kv">' +
@@ -240,11 +323,41 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
   }
   function renderClients(list) {
     el('clients-count').textContent = list.length + ' known';
-    el('clients').innerHTML = table(['client', 'actor', 'cursor', 'seen', 'subs', ''],
+    el('clients').innerHTML = table(['client', 'actor', 'cursor', 'lag', 'seen', 'subs', ''],
       list.map(function (c) {
         var pill = c.active ? chip('active', 'ok') : chip('idle', '');
-        return [esc(c.clientId), esc(c.actorId), esc(c.cursor), ago(c.updatedAtMs), esc(c.subscriptions.length), pill];
-      }));
+        var lag = c.lag > 0 ? '<span class="v">' + esc(c.lag) + '</span>' : esc(c.lag);
+        return [esc(c.clientId), esc(c.actorId), esc(c.cursor), lag, ago(c.updatedAtMs), esc(c.subscriptions.length), pill];
+      }),
+      function (i) { return 'class="pick" data-client="' + esc(list[i].clientId) + '"'; });
+  }
+  function renderDetail(d) {
+    el('client-detail').hidden = false;
+    if (!d.exists) {
+      el('detail-body').innerHTML = empty('no record for ' + d.clientId);
+      return;
+    }
+    var c = d.client;
+    var h = '<dl class="kv">' +
+      '<dt>client</dt><dd class="v">' + esc(c.clientId) + '</dd>' +
+      '<dt>actor</dt><dd>' + esc(c.actorId) + '</dd>' +
+      '<dt>cursor / lag</dt><dd>' + esc(c.cursor) + ' / ' + esc(c.lag) + '</dd>' +
+      '<dt>seen</dt><dd>' + ago(c.updatedAtMs) + ' ago ' + (c.active ? chip('active', 'ok') : chip('idle', '')) + '</dd>';
+    if (d.lease) {
+      h += '<dt>lease</dt><dd class="wrap">' + esc(d.lease.leaseId) + ' · ' +
+        (d.lease.revoked ? chip('revoked', 'warn') : chip(until(d.lease.expiresAtMs), 'ok')) + '</dd>';
+    } else {
+      h += '<dt>lease</dt><dd>none</dd>';
+    }
+    h += '</dl>';
+    h += table(['sub', 'table', 'scopes'], c.subscriptions.map(function (s) {
+      return [esc(s.id), esc(s.table), '<span class="wrap">' + esc(JSON.stringify(s.scopes)) + '</span>'];
+    }));
+    h += table(['when', 'type', 'detail'], d.events.map(function (e) {
+      return [ago(e.atMs), '<span class="evt-type">' + esc(e.type) + '</span>',
+        '<span class="wrap">' + esc(evtDetail(e)) + '</span>'];
+    }));
+    el('detail-body').innerHTML = h;
   }
   function renderCommits(list) {
     el('commits-count').textContent = list.length + ' shown';
@@ -275,20 +388,53 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
         return [esc(a.commitSeq), esc(a.table), esc(a.actorId), esc(a.changeCount), ago(a.createdAtMs)];
       }));
   }
-  function renderEvents(res) {
-    el('events-count').textContent = res.hasEventStream
-      ? (res.events.length + ' events')
-      : 'no ring buffer wired';
-    if (!res.hasEventStream) { el('events').innerHTML = empty('no RingBufferEvents wired on this admin'); return; }
+  function evtDetail(e) {
+    return Object.keys(e)
+      .filter(function (k) { return k !== 'type' && k !== 'atMs'; })
+      .map(function (k) { return k + '=' + JSON.stringify(e[k]); })
+      .join(' ');
+  }
+  var MAX_TAIL = 200;
+  function renderEventList(list) {
+    el('events-count').textContent = list.length + ' events';
     el('events').innerHTML = table(['when', 'type', 'detail'],
-      res.events.map(function (e) {
-        var detail = Object.keys(e)
-          .filter(function (k) { return k !== 'type' && k !== 'atMs'; })
-          .map(function (k) { return k + '=' + JSON.stringify(e[k]); })
-          .join(' ');
+      list.map(function (e) {
         return [ago(e.atMs), '<span class="evt-type">' + esc(e.type) + '</span>',
-          '<span class="wrap">' + esc(detail) + '</span>'];
+          '<span class="wrap">' + esc(evtDetail(e)) + '</span>'];
       }));
+  }
+
+  // -- the event tail: SSE when the ring is wired, 2 s poll otherwise -------
+  var tail = { source: null, list: [] };
+  function connectStream() {
+    if (tail.source) { tail.source.close(); tail.source = null; }
+    tail.list = [];
+    var source = new EventSource(base + '/events/stream' + qs({ type: el('events-filter').value.trim(), limit: MAX_TAIL }));
+    tail.source = source;
+    source.onopen = function () { el('events-live').innerHTML = chip('live', 'ok'); };
+    source.onmessage = function (msg) {
+      tail.list.unshift(JSON.parse(msg.data));
+      if (tail.list.length > MAX_TAIL) tail.list.length = MAX_TAIL;
+      renderEventList(tail.list);
+    };
+    source.onerror = function () {
+      // Auth or transport failure: fall back to the poll for good.
+      source.close();
+      tail.source = null;
+      el('events-live').innerHTML = chip('poll', '');
+    };
+  }
+  function loadEvents() {
+    if (tail.source) return Promise.resolve(); // the stream owns the panel
+    return get('/events', { type: el('events-filter').value.trim() }).then(function (res) {
+      if (!res.hasEventStream) {
+        el('events-count').textContent = 'no ring buffer wired';
+        el('events').innerHTML = empty('no RingBufferEvents wired on this admin');
+        return;
+      }
+      if (typeof EventSource === 'function') { connectStream(); return; }
+      renderEventList(res.events);
+    });
   }
 
   var loading = false;
@@ -297,12 +443,16 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
     loading = true;
     status.className = '';
     status.textContent = 'loading…';
+    // The fleet read is optional server surface — it must not fail the load.
+    get('/partitions').then(function (r) { renderFleet(r.partitions); })
+      .catch(function () { el('fleet').innerHTML = empty('listPartitions not supported by this storage'); });
     Promise.all([
       get('/horizon').then(function (r) { renderHorizon(r.horizon); }),
       get('/stats').then(function (r) { renderStats(r.stats); }),
+      get('/metrics').then(function (r) { renderMetrics(r.metrics); }),
       get('/clients').then(function (r) { renderClients(r.clients); }),
       get('/commits', { table: el('commits-filter').value.trim() }).then(function (r) { renderCommits(r.commits); }),
-      get('/events', { type: el('events-filter').value.trim() }).then(renderEvents)
+      loadEvents()
     ]).then(function () {
       status.textContent = 'updated ' + new Date().toLocaleTimeString();
     }).catch(function (err) {
@@ -327,14 +477,42 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
       .then(function (r) { renderScope(r.activity); })
       .catch(function (err) { el('scope').innerHTML = empty('error: ' + err.message); });
   }
+  function openDetail(clientId) {
+    el('client-detail').hidden = false;
+    el('detail-body').innerHTML = empty('loading ' + clientId + '…');
+    get('/clients/' + encodeURIComponent(clientId))
+      .then(function (r) { renderDetail(r.detail); })
+      .catch(function (err) { el('detail-body').innerHTML = empty('error: ' + err.message); });
+  }
   function onEnter(id, fn) {
     el(id).addEventListener('keydown', function (e) { if (e.key === 'Enter') fn(); });
   }
+  function pickedRow(target, attr) {
+    var row = target.closest ? target.closest('tr[data-' + attr + ']') : null;
+    return row ? row.getAttribute('data-' + attr) : null;
+  }
 
   el('refresh').addEventListener('click', loadAll);
-  el('partition').addEventListener('change', loadAll);
+  el('partition').addEventListener('change', function () {
+    if (tail.source) { tail.source.close(); tail.source = null; }
+    el('client-detail').hidden = true;
+    loadAll();
+  });
   el('commits-filter').addEventListener('change', loadAll);
-  el('events-filter').addEventListener('change', loadAll);
+  el('events-filter').addEventListener('change', function () {
+    if (tail.source) connectStream(); else loadAll();
+  });
+  el('clients').addEventListener('click', function (e) {
+    var id = pickedRow(e.target, 'client');
+    if (id !== null) openDetail(id);
+  });
+  el('detail-close').addEventListener('click', function () {
+    el('client-detail').hidden = true;
+  });
+  el('fleet').addEventListener('click', function (e) {
+    var p = pickedRow(e.target, 'partition');
+    if (p !== null) { el('partition').value = p; el('partition').dispatchEvent(new Event('change')); }
+  });
   el('inspect-go').addEventListener('click', inspect);
   onEnter('inspect-table', inspect);
   onEnter('inspect-row', inspect);

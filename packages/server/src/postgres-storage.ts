@@ -1179,4 +1179,15 @@ export class PostgresServerStorage implements ServerStorage {
         : row.scopes) as Record<string, string>,
     };
   }
+
+  async listPartitions(): Promise<string[]> {
+    // Union: the registry row appears on first commit, the client row on
+    // first pull — a partition with only one of the two still shows up.
+    const { rows } = await this.#exec.query<{ partition: string }>(
+      `SELECT partition FROM sync_partitions
+       UNION SELECT partition FROM sync_clients ORDER BY partition`,
+      [],
+    );
+    return rows.map((r) => r.partition);
+  }
 }

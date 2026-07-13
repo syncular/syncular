@@ -242,6 +242,120 @@ describe('JSON endpoints mirror the read surface', () => {
     expect(body.events.every((e) => e.type === 'pull.served')).toBe(true);
     expect(body.events.length).toBeGreaterThan(0);
   });
+
+  test('GET /admin/events filters by clientId', async () => {
+    const { app, seed, auth } = harness();
+    await seed();
+    const res = await app.request('/admin/events?clientId=client-1', auth);
+    const body = (await res.json()) as { events: { clientId?: string }[] };
+    expect(body.events.length).toBeGreaterThan(0);
+    expect(body.events.every((e) => e.clientId === 'client-1')).toBe(true);
+    const none = await app.request('/admin/events?clientId=ghost', auth);
+    expect(((await none.json()) as { events: unknown[] }).events).toEqual([]);
+  });
+
+  test('GET /admin/clients/:clientId returns the drill-down', async () => {
+    const { app, seed, auth } = harness();
+    await seed();
+    const res = await app.request('/admin/clients/client-1', auth);
+    const body = (await res.json()) as {
+      detail: {
+        exists: boolean;
+        client: { clientId: string; lag: number };
+        events: { clientId?: string }[];
+      };
+    };
+    expect(body.detail.exists).toBe(true);
+    expect(body.detail.client).toMatchObject({ clientId: 'client-1', lag: 0 });
+    expect(body.detail.events.length).toBeGreaterThan(0);
+
+    const missing = await app.request('/admin/clients/ghost', auth);
+    const missingBody = (await missing.json()) as {
+      detail: { exists: boolean };
+    };
+    expect(missingBody.detail.exists).toBe(false);
+  });
+
+  test('GET /admin/metrics aggregates the ring', async () => {
+    const { app, seed, auth } = harness();
+    await seed();
+    const res = await app.request('/admin/metrics?windowMs=60000', auth);
+    const body = (await res.json()) as {
+      metrics: {
+        requests: { count: number };
+        pushes: { applied: number };
+        buckets: { counts: number[] };
+      };
+      hasEventStream: boolean;
+    };
+    expect(body.hasEventStream).toBe(true);
+    expect(body.metrics.requests.count).toBe(1);
+    expect(body.metrics.pushes.applied).toBe(1);
+    expect(body.metrics.buckets.counts.reduce((a, b) => a + b, 0)).toBe(1);
+  });
+
+  test('GET /admin/partitions returns the fleet overview', async () => {
+    const { app, seed, auth } = harness();
+    await seed();
+    const res = await app.request('/admin/partitions', auth);
+    const body = (await res.json()) as {
+      partitions: { partition: string; activeClients: number }[];
+    };
+    expect(body.partitions).toHaveLength(1);
+    expect(body.partitions[0]).toMatchObject({
+      partition: 'part-1',
+      maxCommitSeq: 1,
+      knownClients: 1,
+      activeClients: 1,
+    });
+  });
+});
+
+describe('SSE event stream', () => {
+  test('GET /admin/events/stream replays the backlog as SSE frames', async () => {
+    const { app, seed, auth } = harness();
+    await seed();
+    const res = await app.request('/admin/events/stream?type=push.applied', {
+      ...auth,
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/event-stream');
+    const reader = res.body?.getReader();
+    if (reader === undefined) throw new Error('expected a body stream');
+    // Every enqueue may arrive as its own chunk: accumulate until the
+    // backlog's data frame shows up.
+    const decoder = new TextDecoder();
+    let text = '';
+    for (let i = 0; i < 10 && !text.includes('"type"'); i += 1) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    expect(text).toContain('retry: 2000');
+    expect(text).toContain('data: ');
+    expect(text).toContain('"type":"push.applied"');
+    await reader.cancel();
+  });
+
+  test('the stream is guarded like every other route', async () => {
+    const { app } = harness();
+    const res = await app.request('/admin/events/stream');
+    expect(res.status).toBe(401);
+  });
+
+  test('without a ring the stream refuses with 400', async () => {
+    const admin = new SyncularAdmin({
+      storage: new SqliteServerStorage(),
+      segments: new MemorySegmentStore(),
+    });
+    const routes = createSyncularAdminRoutes(admin, {
+      authorize: () => true,
+    });
+    const app = new Hono();
+    app.route('/admin', routes);
+    const res = await app.request('/admin/events/stream');
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('static console page', () => {

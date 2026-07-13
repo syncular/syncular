@@ -1,6 +1,7 @@
 # RFC 0001 — The admin console: teletype restyle and the ops rework
 
-- **Status:** Draft
+- **Status:** Partially landed — Part 1 and Part 2 items 1–4 shipped;
+  items 5–6 remain proposed (5 is decision-gated, 6 needs a design pass)
 - **Date:** 2026-07-13
 - **Scope:** `packages/server/src/admin.ts`, `packages/server-hono/src/admin.ts`,
   `packages/server-hono/src/admin-page.ts`, `docs/DESIGN.md`
@@ -12,9 +13,11 @@ Syncular ships an embedded admin console: a read-only query layer
 mandatory host `authorize` guard. This RFC covers two things. First, the
 **style refactor** (landed): the console now follows the teletype design
 system documented in `docs/DESIGN.md`, and the page exposes the full
-existing read API. Second, the **ops rework** (proposed): six additions,
-ordered by value per effort, that turn the console from a gauge into a
-cockpit — and into a headline value prop for Syncular.
+existing read API. Second, the **ops rework**: six additions, ordered by
+value per effort, that turn the console from a gauge into a cockpit — and
+into a headline value prop for Syncular. Items 1–4 (lag + drill-down,
+metrics statusbar, SSE tail, fleet view) have landed; items 5–6 (operator
+actions, table browser) remain proposed.
 
 ## Background
 
@@ -24,17 +27,22 @@ write vanish*, *is it safe to prune*. A console that ships inside the
 server package, mounts in one line, and answers those questions is a
 real differentiator against the rest of the sync-engine field.
 
-What exists today (all read-only, partition-scoped, auth-mandatory):
+What exists today (all read-only, auth-mandatory; partition-scoped except
+the fleet view):
 
 | Surface | Route | Backing |
 | --- | --- | --- |
-| Clients (cursor, last-seen, subscriptions, active flag) | `GET /clients` | `storage.listClientRecords` |
+| Clients (cursor, lag, last-seen, subscriptions, active flag) | `GET /clients` | `storage.listClientRecords` |
+| Client drill-down (record + lease + event slice) | `GET /clients/:clientId` | `admin.clientDetail` (item 1) |
 | Commit metadata (`?afterSeq`, `?limit`, `?table`) | `GET /commits` | `storage.listCommitMetadata` |
 | Row inspection (version, scopes, blob refs; payload undecoded) | `GET /rows/:table/:rowId` | `storage.getRowScopes` |
 | Scope activity (index-driven, never a scan) | `GET /scope-activity` | `storage.scopeActivity` |
 | Horizon health + prune recommendation | `GET /horizon` | cursor floor / retention math (§4.6) |
 | Segment + blob store counters | `GET /stats` | store `stats()` (`approximate` marker) |
-| Event tail (`?type`, `?sinceMs`, `?limit`) | `GET /events` | `RingBufferEvents` (default 1000) |
+| Request/push metrics + sparkline buckets | `GET /metrics` | ring aggregation (item 2) |
+| Fleet view (per-partition health, one call) | `GET /partitions` | `storage.listPartitions` (item 4) |
+| Event tail (`?type`, `?sinceMs`, `?clientId`, `?actorId`, `?limit`) | `GET /events` | `RingBufferEvents` (default 1000) |
+| Live event tail (SSE: backlog replay, then push) | `GET /events/stream` | `RingBufferEvents.subscribe` (item 3) |
 
 The event seam (`packages/server/src/events.ts`) already emits 17
 structured event types — `request.handled` (with `durationMs`,
@@ -87,55 +95,60 @@ existing row (`todos/seed-1` → version 1, `{"list_id":"demo"}`) and a
 missing one; scope query `list_id=demo` returns the seed commit; 14/14
 admin tests, typecheck, and lint pass.
 
-## Part 2 — the ops rework (proposed)
+## Part 2 — the ops rework
 
-Six additions, ordered by value per effort.
+Six additions, ordered by value per effort. Items 1–4 are landed; their
+sections record the decisions taken.
 
-### 1. Cursor lag + client drill-down
+### 1. Cursor lag + client drill-down (landed)
 
-Add a `lag` column to the clients panel (`maxCommitSeq − cursor`) and a
-per-client drill-down: subscriptions with full scope sets, the client's
-recent events, lease status. This directly answers *why is this client
-stale* — the #1 support question for any sync engine.
+A `lag` field on `AdminClient` (`maxCommitSeq − max(cursor, 0)`, computed
+server-side in `listClients`) and a per-client drill-down: `GET
+/clients/:clientId` → `admin.clientDetail`, returning the record with lag,
+the client's §7.3 lease when a lease store is wired (`SyncularAdmin` takes
+an optional `leases`, picked up from `config.leases.store` by
+`fromConfig`), and the client's slice of the event tail. The page renders
+the lag column and opens the drill-down on row click. This directly
+answers *why is this client stale* — the #1 support question for any sync
+engine.
 
-- Data: already available (`AdminClient`, `maxCommitSeq`, ring).
-- New surface: ring query filter by `clientId`/`actorId` (the ring
-  currently filters by `type`/`sinceMs` only); optional lease-store
-  read.
-- Effort: S.
+- Ring filtering landed as `clientId`/`actorId` fields on
+  `RingEventQuery`, matched in `RingBufferEvents.query` via the shared
+  `matchesRingQuery` predicate (open question 2: resolved in the ring, so
+  the polled tail, the drill-down, and the SSE stream share one rule).
 
-### 2. Derived metrics statusbar
+### 2. Derived metrics statusbar (landed)
 
 A top strip in the console — `PUSH 12/min · CONFLICTS 0 · ERR 0.2% ·
-P95 34ms` — derived entirely from the ring buffer's `request.handled`
-events, plus ASCII sparklines (`▁▂▃▅▇`) for the last N minutes. Zero
-new server state; on-brand; turns the console into a live health
-dashboard.
+P95 34ms` — plus an ASCII sparkline (`▁▂▃▅▇`) for the trailing window.
+Landed server-side as `admin.metrics(partition, {windowMs?, buckets?})` +
+`GET /metrics`: derived entirely from the ring's `request.handled` /
+`push.*` events (zero new server state), windowed with per-bucket counts
+so the page only renders.
 
-- Data: ring only. Aggregation can happen client-side in the page, or
-  as a small `GET /metrics` summary endpoint on `SyncularAdmin`.
-- Effort: S (page-side) / M (server-side endpoint with windowing).
+### 3. Live event tail over SSE (landed)
 
-### 3. Live event tail over SSE
+`GET /events/stream` streams the ring as server-sent events: backlog
+replay first, then live events via the new `RingBufferEvents.subscribe`
+hook (`admin.subscribeEvents`), heartbeat comments every 5 s (under
+Bun.serve's 10 s default idle timeout). Plain
+web-streams — serves identically on Bun, Node, and Workers. The page
+upgrades the event panel to the stream when the ring is wired and falls
+back to the 2-second poll otherwise. The live tail is also the best demo
+asset Syncular has — an embedded live console on syncular.app would sell
+the engine better than copy.
 
-Replace the 2-second poll with a server-sent-events stream fed by the
-ring (Workers-compatible via streams). The live tail is also the best
-demo asset Syncular has — an embedded live console on syncular.app
-would sell the engine better than copy.
+### 4. Partition discovery / fleet view (landed)
 
-- New surface: `GET /events/stream` (SSE), a ring subscription hook.
-- Effort: M.
-
-### 4. Partition discovery / fleet view
-
-Today the operator must type partition names blind. Add an optional
-`storage.listPartitions()` read and a fleet overview: one row per
-partition with retained backlog, active-client count, and prune
-recommendation. The partition input becomes a picker.
-
-- New surface: one optional storage method per backend (SQLite,
-  Postgres, D1) + `admin.listPartitions()` + `GET /partitions`.
-- Effort: M.
+`storage.listPartitions()` landed as the optional admin-surface method on
+all three backends — derived as the union of the existing
+`sync_partitions` registry and `sync_clients` partitions, no new table
+(open question 3: the registry already existed). `admin.listPartitions()`
++ `admin.partitionsOverview()` + `GET /partitions` return one row per
+partition with retained backlog, known/active client counts, and the
+prune recommendation in a single call (open question 4: server-side
+fan-in, so the page issues one request). The page's fleet panel doubles
+as the partition picker (row click + datalist on the partition input).
 
 ### 5. Guarded operator actions
 
@@ -176,10 +189,9 @@ schema-decode toggle is a host decision (`decodePayloads: true`), since
 
 ### Sequencing
 
-1. **Now (landed):** teletype restyle; full read surface exposed.
-2. **Next (read-only, small):** items 1–2 — lag column, drill-down,
-   metrics statusbar.
-3. **Then:** items 3–4 — SSE tail, fleet view.
+1. **Landed:** teletype restyle; full read surface exposed.
+2. **Landed:** items 1–2 — lag column, drill-down, metrics statusbar.
+3. **Landed:** items 3–4 — SSE tail, fleet view.
 4. **Decision-gated:** item 5 — mutating admin routes (Benjamin call:
    default posture, `readOnly` flag semantics).
 5. **Design pass first:** item 6 — table browser + payload decode.
@@ -200,21 +212,21 @@ schema-decode toggle is a host decision (`decodePayloads: true`), since
   called out in the server README's admin section.
 - The event tail can carry sensitive identifiers (actorIds, session
   ids). That is already true today; SSE (item 3) widens the pipe, so
-  the docs should note that admin authorization gates the stream.
+  the server README notes that admin authorization gates the stream the
+  same as the polled tail.
+- The fleet view (item 4) is the one cross-partition read. The guard
+  still runs on `GET /partitions`, with an empty `partition` in its
+  context — documented in the README so hosts that authorize per
+  partition treat it deliberately.
 
 ## Open questions
+
+Questions 2–4 were resolved by the item 1–4 implementation (decisions
+recorded in the item sections above). Still open:
 
 1. Item 5's default posture: should mutating routes require a second
    explicit flag (`actions: true`) on top of `authorize`, mirroring the
    refuse-to-mount-open principle?
-2. Ring filtering by client/actor (item 1): filter in `RingBufferEvents.query`
-   or generically in `SyncularAdmin.events`?
-3. `listPartitions()` on Postgres/D1: derive from the commit log's
-   distinct partitions or keep a partition registry table?
-4. Does the fleet view (item 4) warrant cross-partition endpoints
-   (`GET /partitions` returning per-partition health in one call), or
-   is client-side fan-out over the existing per-partition endpoints
-   enough?
-5. Client devtools (`docs/TODO.md` §3) share the panel language and the
+2. Client devtools (`docs/TODO.md` §3) share the panel language and the
    design system — should the console page factor its CSS into a shared
    snippet then, or stay fully self-contained per surface?
