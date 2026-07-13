@@ -20,8 +20,10 @@ browser window on the same URL to watch them converge over the realtime socket.
 `bun test` runs a server-level convergence smoke test (the browser UI is
 covered by `tsc`).
 
-> One core per origin: a second *tab* gets a clear not-leader error (multi-tab
-> followers are a roadmap item). Use two windows/profiles to see two clients.
+> One core per origin: the first tab leads (owns the worker, the OPFS
+> database, and the socket) and every further tab follows it over a
+> BroadcastChannel — same API, one sync loop. Use two windows/profiles to
+> see two separate clients converge.
 
 ## Layout
 

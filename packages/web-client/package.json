@@ -28,7 +28,7 @@
   "exports": {
     ".": {
       "bun": "./src/index.ts",
-      "browser": "./src/index.ts",
+      "browser": "./dist/index.js",
       "import": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
@@ -36,7 +36,7 @@
     },
     "./bun": {
       "bun": "./src/bun-database.ts",
-      "browser": "./src/bun-database.ts",
+      "browser": "./dist/bun-database.js",
       "import": {
         "types": "./dist/bun-database.d.ts",
         "default": "./dist/bun-database.js"
@@ -44,7 +44,7 @@
     },
     "./node": {
       "bun": "./src/node-database.ts",
-      "browser": "./src/node-database.ts",
+      "browser": "./dist/node-database.js",
       "import": {
         "types": "./dist/node-database.d.ts",
         "default": "./dist/node-database.js"
@@ -52,7 +52,7 @@
     },
     "./wasm": {
       "bun": "./src/wasm-database.ts",
-      "browser": "./src/wasm-database.ts",
+      "browser": "./dist/wasm-database.js",
       "import": {
         "types": "./dist/wasm-database.d.ts",
         "default": "./dist/wasm-database.js"
@@ -60,7 +60,7 @@
     },
     "./worker": {
       "bun": "./src/worker-entry.ts",
-      "browser": "./src/worker-entry.ts",
+      "browser": "./dist/worker-entry.js",
       "import": {
         "types": "./dist/worker-entry.d.ts",
         "default": "./dist/worker-entry.js"

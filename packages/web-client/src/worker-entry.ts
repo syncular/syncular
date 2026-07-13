@@ -332,6 +332,13 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       scheduleAutoSync();
       return id;
     },
+    patch: (table, rowId, partial, options) => {
+      // Same §8.4 rule as `mutate`: a local write must push without the app
+      // orchestrating sync, so schedule a jittered round to drain the outbox.
+      const id = requireClient().patch(table, rowId, partial, options);
+      scheduleAutoSync();
+      return id;
+    },
     sync: () => {
       const running = requireClient();
       return serializedSync(() => running.sync());

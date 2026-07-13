@@ -131,7 +131,8 @@ function makeGroup(): Group {
       },
       wakeJitterMs: 10,
       autoSync: false,
-      multiTab: true,
+      // multiTab is deliberately OMITTED: this suite exercises the
+      // follower path as the default it is (RFC 0002 §2.4).
       leaderLock: lock,
       lockName,
       ...overrides,
@@ -411,7 +412,7 @@ test('a follower call times out loudly when no leader answers', async () => {
   link.close();
 });
 
-test('single-tab regression: multiTab off keeps the not-leader contract', async () => {
+test('single-tab opt-out: multiTab false keeps the not-leader contract', async () => {
   const lock = makeSharedLock();
   const lockName = `mt-off-${lockSeq++}`;
   const leader = await createSyncClientHandle({
@@ -436,7 +437,8 @@ test('single-tab regression: multiTab off keeps the not-leader contract', async 
     endpoints: { syncUrl: http.syncUrl },
     leaderLock: lock,
     lockName,
-    // multiTab omitted (off).
+    // The explicit opt-out (multi-tab followers are the default).
+    multiTab: false,
   });
   open.push(loser);
   expect(loser.isLeader).toBe(false);

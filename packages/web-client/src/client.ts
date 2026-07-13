@@ -24,6 +24,7 @@ import {
   REALTIME_TAG_ROUND,
   type RequestFrame,
   type ResponseMessage,
+  type RowColumn,
   type RowValue,
   type ScopeMap,
   type SegmentRefFrame,
@@ -57,6 +58,7 @@ import {
   serializeBlobRef,
 } from './blob';
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
+import { registerDevtools } from './devtools';
 import type { EncryptionConfig } from './encryption';
 import { ClientSyncError } from './errors';
 import {
@@ -87,13 +89,16 @@ import {
   compileClientSchema,
   dropAndRecreateSyncedTables,
   ensureLocalSchema,
+  fromSqlValue,
   jsonToRowValue,
   LOCAL_SCHEMA_VERSION_KEY,
+  normalizeRecordKeys,
   OPTIMISTIC_VERSION,
   quoteIdent,
   recordToRowValues,
   rowValueToJson,
   SYNC_VERSION_COLUMN,
+  stripSyncColumns,
 } from './schema';
 import {
   deleteSubscription,
@@ -397,6 +402,7 @@ export class SyncClient {
   #started = false;
   #lease: LeaderLease | undefined;
   #clientId = '';
+  #devtoolsUnregister: (() => void) | undefined;
   #schemaFloor: SchemaFloor | undefined;
   #leaseState: LeaseState | undefined;
   /** §7.4.5: true while a schema-bump reset + first bootstrap is in flight. */
@@ -476,6 +482,20 @@ export class SyncClient {
     // already at the generated version.
     this.#detectAndResetSchema();
     this.#started = true;
+    // RFC 0002 §3.2: console introspection — a no-op outside a dev page.
+    this.#devtoolsUnregister = registerDevtools({
+      kind: 'client',
+      ref: this,
+      clientId: () => this.#clientId,
+      role: () => 'direct',
+      outbox: async () => this.pendingCommits().length,
+      subscriptions: async () => this.subscriptions(),
+      conflicts: async () => this.conflicts.length,
+      rejections: async () => this.rejections.length,
+      syncNeeded: async () => this.syncNeeded,
+      upgrading: async () => this.upgrading,
+      onInvalidate: (listener) => this.onInvalidate(listener),
+    });
   }
 
   /**
@@ -531,6 +551,8 @@ export class SyncClient {
   }
 
   async close(): Promise<void> {
+    this.#devtoolsUnregister?.();
+    this.#devtoolsUnregister = undefined;
     this.#socket?.close();
     this.#socket = undefined;
     this.#abortPendingRound('client closed mid-round');
@@ -553,12 +575,14 @@ export class SyncClient {
   /**
    * The raw-SQL read tier. Guarded (query-guard.ts): a single read-only
    * statement only — writes must go through `mutate()` so they hit the
-   * outbox (SPEC §7.1). Engine internals read `this.#db` directly and skip
-   * this guard by design.
+   * outbox (SPEC §7.1). Reserved `_sync_*` columns are stripped from the
+   * result, so a `SELECT *` row is safe to feed back into `mutate()`
+   * values; alias explicitly (`_sync_version AS v`) to read one. Engine
+   * internals read `this.#db` directly and skip this method by design.
    */
   query(sql: string, params?: readonly SqlValue[]): SqlRow[] {
     assertReadOnlyQuery(sql);
-    return this.#db.query(sql, params);
+    return stripSyncColumns(this.#db.query(sql, params));
   }
 
   // -- live-query invalidation (TODO 3.1 / DESIGN-eviction I1–I4) -----------
@@ -1187,6 +1211,53 @@ export class SyncClient {
       });
     });
     return clientCommitId;
+  }
+
+  /**
+   * Partial-update convenience over the §6.1 full-row wire: read the
+   * current LOCAL row, merge `partial` over it, and record one full-row
+   * upsert through `mutate()`. `partial` keys follow the same two-casing
+   * rule as mutation values (snake_case or camelCase). The row must be
+   * locally present (subscribed/windowed-in); patching an absent row is
+   * an error — there is no base to merge into.
+   */
+  patch(
+    table: string,
+    rowId: string,
+    partial: Readonly<Record<string, unknown>>,
+    options?: { readonly baseVersion?: number },
+  ): string {
+    this.#requireStarted();
+    const compiled = this.#table(table);
+    const pkColumn = compiled.columns[compiled.primaryKeyIndex] as RowColumn;
+    const rows = this.#db.query(
+      `SELECT * FROM ${quoteIdent(compiled.name)} WHERE ${quoteIdent(pkColumn.name)} = ?`,
+      [rowId],
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        `table ${compiled.name}: no local row with primary key ${JSON.stringify(rowId)} to patch`,
+      );
+    }
+    const record: Record<string, unknown> = {};
+    for (const column of compiled.columns as readonly RowColumn[]) {
+      record[column.name] = fromSqlValue(column, row[column.name] ?? null);
+    }
+    for (const [name, value] of normalizeRecordKeys(compiled, partial)) {
+      record[name] = value;
+    }
+    return this.mutate([
+      {
+        table,
+        op: 'upsert',
+        values: record,
+        ...(options?.baseVersion !== undefined
+          ? { baseVersion: options.baseVersion }
+          : {}),
+      },
+    ]);
   }
 
   // -- lease state (§7.3.5) ---------------------------------------------------

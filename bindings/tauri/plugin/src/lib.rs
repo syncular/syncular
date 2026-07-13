@@ -103,6 +103,13 @@ enum Request {
         params: Value,
         reply: Sender<Value>,
     },
+    /// Replace the transport's request headers (RFC 0002 §2.3). Header state
+    /// lives on the core-owned transport, so mutation rides the same mailbox
+    /// as every other access — the one-owning-thread invariant holds.
+    SetHeaders {
+        headers: Vec<(String, String)>,
+        reply: Sender<Value>,
+    },
     Shutdown,
 }
 
@@ -172,6 +179,10 @@ where
                 let result = core.query(&sql, params);
                 let _ = reply.send(result);
                 pump_events(&mut core, &emit);
+            }
+            Ok(Request::SetHeaders { headers, reply }) => {
+                core.set_headers(headers);
+                let _ = reply.send(json!({ "result": null }));
             }
             Ok(Request::Shutdown) => {
                 core.shutdown();
@@ -246,6 +257,26 @@ async fn syncular_command<R: Runtime>(
         .map_err(|_| "the syncular core dropped the reply".to_owned())
 }
 
+/// Replace the native transport's request headers at runtime — the auth
+/// rotation path (RFC 0002 §2.3): a fresh JWT reaches the transport without
+/// re-registering the plugin. HTTP requests use the new set from the next
+/// call; the realtime socket applies it on its next (re)connect.
+#[tauri::command]
+async fn syncular_set_headers<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    headers: std::collections::BTreeMap<String, String>,
+) -> Result<Value, String> {
+    let state = app.state::<SyncularState>();
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    state.send(Request::SetHeaders {
+        headers: headers.into_iter().collect(),
+        reply: reply_tx,
+    })?;
+    reply_rx
+        .recv()
+        .map_err(|_| "the syncular core dropped the reply".to_owned())
+}
+
 #[tauri::command]
 async fn syncular_query<R: Runtime>(
     app: tauri::AppHandle<R>,
@@ -286,7 +317,11 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
     };
 
     Builder::<R>::new("syncular")
-        .invoke_handler(tauri::generate_handler![syncular_command, syncular_query])
+        .invoke_handler(tauri::generate_handler![
+            syncular_command,
+            syncular_query,
+            syncular_set_headers
+        ])
         .setup(move |app, _api| {
             let (tx, rx) = std::sync::mpsc::channel::<Request>();
             app.manage(SyncularState {
@@ -417,6 +452,16 @@ mod tests {
         .unwrap();
         let rows = qrx.recv().unwrap();
         assert_eq!(rows["result"]["rows"][0]["title"], "hi");
+
+        // RFC 0002 §2.3: header rotation rides the same mailbox; a
+        // client-local (Null-transport) core accepts and ignores the set.
+        let (htx, hrx) = channel();
+        tx.send(Request::SetHeaders {
+            headers: vec![("authorization".to_owned(), "Bearer fresh".to_owned())],
+            reply: htx,
+        })
+        .unwrap();
+        assert_eq!(hrx.recv().unwrap()["result"], Value::Null);
 
         tx.send(Request::Shutdown).unwrap();
         handle.join().unwrap();

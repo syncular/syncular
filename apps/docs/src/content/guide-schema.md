@@ -135,3 +135,27 @@ the new version.
 This flow is conformance-locked across both client cores (the
 `schema-bump/*` scenarios: local-bump replay, floor-triggered convergence,
 dropped-column rejection, and image-lane re-bootstrap).
+
+### What a bump costs
+
+The two questions a production evaluator asks first, answered:
+
+**How much re-downloads?** Exactly the data the app still declares. The
+reset keeps every subscription *registration* — including the per-unit
+subscriptions a [window](/concepts-windowing/) maintains — and clears only
+their sync state, so the re-bootstrap covers the subscriptions and the
+currently windowed-in units, nothing more. A phone holding a 3-project
+window of a 500-project workspace re-downloads those 3 projects. Data
+outside the window was never local and stays that way.
+
+**What does N rows cost?** On the wire, one segment download of the
+subscribed data at the new version — the same bytes as a fresh install, with
+[segment compression](/concepts-bootstrap/) applied. Locally, the
+[measured](/benchmarks/) apply cost on the sqlite-image lane is ~30 ms for
+100k rows (~3.3M rows/sec); the rows lane applies ~275k rows/sec. The image
+is built once per (scopes, pin) server-side, so a fleet of clients bumping
+after a release deploy shares one build and each pays a file-copy-speed
+import. For cellular-sensitive apps the lever is the window: keep the
+windowed-in set proportional to what the user actually works with, and a
+bump costs a few seconds of background download, an "upgrading…" affordance,
+and no lost offline writes.

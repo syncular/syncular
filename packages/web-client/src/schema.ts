@@ -5,7 +5,7 @@
  * mapping (scope variable → local column).
  */
 import type { RowColumn, RowValue } from '@syncular/core';
-import type { ClientDatabase, SqlValue } from './database';
+import type { ClientDatabase, SqlRow, SqlValue } from './database';
 import { ClientSyncError } from './errors';
 import { snakeToCamel } from './naming';
 
@@ -181,6 +181,26 @@ export const SYNC_VERSION_COLUMN = '_sync_version';
 /** `_sync_version` for optimistic rows the server has never confirmed. */
 export const OPTIMISTIC_VERSION = -1;
 
+/**
+ * Strip the reserved `_sync_*` columns from app-facing query rows, so a
+ * `SELECT *` row round-trips straight into `mutate()` values. Result
+ * columns are per-statement, so the first row decides for all rows; an
+ * explicit alias (`SELECT _sync_version AS v`) passes through untouched.
+ * Engine internals read `_sync_version` via `client.database` and never
+ * pass through this filter.
+ */
+export function stripSyncColumns(rows: SqlRow[]): SqlRow[] {
+  const first = rows[0];
+  if (first === undefined) return rows;
+  const reserved = Object.keys(first).filter((key) => key.startsWith('_sync_'));
+  if (reserved.length === 0) return rows;
+  return rows.map((row) => {
+    const copy: SqlRow = { ...row };
+    for (const key of reserved) delete copy[key];
+    return copy;
+  });
+}
+
 export function quoteIdent(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
@@ -351,21 +371,27 @@ export function fromSqlValue(column: RowColumn, value: SqlValue): RowValue {
 }
 
 /**
- * App-facing record → schema-ordered row values for the codec and the
- * local mirror. Missing keys become NULL; unknown keys fail loud. Keys are
- * accepted in exactly two casings (§5/§12): the SQL-truth snake_case and
+ * Normalize an app-facing record's keys to the SQL-truth snake_case column
+ * names. Keys are accepted in exactly two casings (§5/§12): snake_case and
  * the generated row types' camelCase — one bijective-map lookup per key,
- * no fuzzy matching. Giving one column in both casings is an error.
+ * no fuzzy matching. Unknown keys fail loud (with a dedicated hint for the
+ * reserved `_sync_*` names); giving one column in both casings is an error.
  */
-export function recordToRowValues(
+export function normalizeRecordKeys(
   table: CompiledClientTable,
   record: Readonly<Record<string, unknown>>,
-): RowValue[] {
+): Map<string, unknown> {
   const normalized = new Map<string, unknown>();
   for (const [key, value] of Object.entries(record)) {
     const index =
       table.columnIndex.get(key) ?? table.columnIndexByCamel.get(key);
     if (index === undefined) {
+      if (key.startsWith('_sync_')) {
+        throw new ClientSyncError(
+          'sync.invalid_request',
+          `table ${table.name}: ${JSON.stringify(key)} is an internal sync column and cannot appear in mutation values — did you build this record from a raw SELECT * row? (client.query() strips _sync_* columns; rows read via client.database keep them)`,
+        );
+      }
       throw new ClientSyncError(
         'sync.invalid_request',
         `table ${table.name}: unknown column ${JSON.stringify(key)} in mutation values (snake_case and camelCase keys are accepted)`,
@@ -380,6 +406,38 @@ export function recordToRowValues(
     }
     normalized.set(sqlName, value);
   }
+  return normalized;
+}
+
+/**
+ * Accept the local SQL representation of a value alongside the app-facing
+ * one, so a row read straight off the mirror (`SELECT *`) feeds back into
+ * `mutate()` without per-column fixups: SQLite stores booleans as 0/1 and
+ * may surface integers as bigint. Anything else passes through untouched —
+ * the codec still fails loud on genuine type garbage at encode time.
+ */
+function coerceSqlRepresentation(column: RowColumn, value: unknown): unknown {
+  switch (localColumnType(column)) {
+    case 'boolean':
+      return value === 0 ? false : value === 1 ? true : value;
+    case 'integer':
+    case 'float':
+      return typeof value === 'bigint' ? Number(value) : value;
+    default:
+      return value;
+  }
+}
+
+/**
+ * App-facing record → schema-ordered row values for the codec and the
+ * local mirror. Missing keys become NULL; unknown keys fail loud (see
+ * {@link normalizeRecordKeys} for the accepted casings).
+ */
+export function recordToRowValues(
+  table: CompiledClientTable,
+  record: Readonly<Record<string, unknown>>,
+): RowValue[] {
+  const normalized = normalizeRecordKeys(table, record);
   return table.columns.map((column) => {
     const value = normalized.get(column.name);
     if (value === undefined || value === null) {
@@ -391,7 +449,7 @@ export function recordToRowValues(
       }
       return null;
     }
-    return value as RowValue;
+    return coerceSqlRepresentation(column, value) as RowValue;
   });
 }
 

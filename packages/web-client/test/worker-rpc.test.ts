@@ -288,7 +288,7 @@ test('offline gate queues, reconnect drains through the worker', async () => {
   expect((await handle.pendingCommits()).length).toBe(0);
 });
 
-test('a second handle on the same lock gets a clear not-leader state', async () => {
+test('a second handle on the same lock (multiTab: false) gets a clear not-leader state', async () => {
   let held = false;
   const lock: LeaderLock = {
     acquire: () => Promise.resolve({ release: () => {} }),
@@ -320,6 +320,8 @@ test('a second handle on the same lock gets a clear not-leader state', async () 
     endpoints: { syncUrl: http.syncUrl },
     leaderLock: lock,
     lockName: 'rpc-lock',
+    // The explicit opt-out (multi-tab followers are the default).
+    multiTab: false,
   });
   expect(follower.isLeader).toBe(false);
   expect(follower.clientId).toBe('');

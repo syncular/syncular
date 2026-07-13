@@ -293,6 +293,10 @@ async function measureBundle(): Promise<BundleResult> {
   const build = await Bun.build({
     entrypoints: [join(import.meta.dir, 'bundle-entry.ts')],
     target: 'browser',
+    // The size gate measures syncular's TS source via the `bun` condition
+    // (the published `browser` condition points at compiled dist and needs
+    // a `build:packages` first, RFC 0002 §1.1).
+    conditions: ['bun'],
     minify: true,
     sourcemap: 'none',
   });

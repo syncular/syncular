@@ -138,19 +138,21 @@ counter, surfaced conflicts, and file attachments.
 
 ## Multi-tab
 
-`createSyncClientHandle({ multiTab: true, ... })` gives N tabs one core: the
-tab holding the Web Locks leader lock spawns the worker (one sync loop, one
-WebSocket, one OPFS database), and every other tab becomes a follower
-proxying the identical async API over BroadcastChannel, with the leader's
-events fanned out to all tabs. When the leader closes, a follower promotes in
-place over the same OPFS database: the handle object survives, `role` flips
-to `'leader'`, and `onRoleChange` fires, so a React provider keeps a stable
+`createSyncClientHandle` gives N tabs one core by default: the tab holding
+the Web Locks leader lock spawns the worker (one sync loop, one WebSocket,
+one OPFS database), and every other tab becomes a follower proxying the
+identical async API over BroadcastChannel, with the leader's events fanned
+out to all tabs. When the leader closes, a follower promotes in place over
+the same OPFS database: the handle object survives, `role` flips to
+`'leader'`, and `onRoleChange` fires, so a React provider keeps a stable
 reference. All tabs share the leader's one connection, so a device is exactly
 one presence peer.
 
-With `multiTab` off (the default), a losing tab is a `role === 'follower'`
-handle whose calls reject with `client.not_leader`, a defined state your code
-can detect and render.
+Pass `multiTab: false` to opt out: a losing tab is then a
+`role === 'follower'` handle whose calls reject with `client.not_leader`, a
+defined state your code can detect and render. Use this when your app must
+run in exactly one tab and any second tab should show a "already open
+elsewhere" screen.
 
 ## Windowed sync
 

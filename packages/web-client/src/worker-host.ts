@@ -8,17 +8,18 @@
  * holding the lock). The returned {@link SyncClientHandle} is a thin, fully
  * async proxy over the `worker-protocol` RPC.
  *
- * With `multiTab: true`, a tab that LOSES the election does not resolve to a
- * dead not-leader handle: it becomes a FOLLOWER (`role === 'follower'`) that
- * proxies every call to the leader tab over a BroadcastChannel (see
- * `multi-tab.ts`). When the leader tab closes, its lock releases; the
- * followers contest, the winner PROMOTES in place — spawns the worker over
- * the persisted OPFS database and re-announces — and the handle's `role`
- * flips to `'leader'` with `onRoleChange` firing. The same handle object is
- * kept across the transition so React bindings hold a stable reference.
+ * Multi-tab is the DEFAULT (RFC 0002 §2.4 — the follower path is
+ * conformance-covered): a tab that LOSES the election becomes a FOLLOWER
+ * (`role === 'follower'`) that proxies every call to the leader tab over a
+ * BroadcastChannel (see `multi-tab.ts`). When the leader tab closes, its
+ * lock releases; the followers contest, the winner PROMOTES in place —
+ * spawns the worker over the persisted OPFS database and re-announces — and
+ * the handle's `role` flips to `'leader'` with `onRoleChange` firing. The
+ * same handle object is kept across the transition so React bindings hold a
+ * stable reference.
  *
- * With `multiTab` off (default), behavior is unchanged: the loser is an
- * `isLeader === false` handle whose calls reject with `client.not_leader`.
+ * With `multiTab: false`, the loser is an `isLeader === false` handle whose
+ * calls reject with `client.not_leader` (the single-tab contract).
  */
 import type { WakeReason } from '@syncular/core';
 import type { BlobRef, CachedBlob } from './blob';
@@ -35,6 +36,7 @@ import type {
   WindowState,
 } from './client';
 import type { SqlRow, SqlValue } from './database';
+import { registerDevtools } from './devtools';
 import { ClientSyncError } from './errors';
 import { InvalidationEmitter, type InvalidationListener } from './invalidation';
 import {
@@ -92,10 +94,11 @@ export interface SyncClientHandleConfig {
   readonly leaderLock?: LeaderLock;
   readonly lockName?: string;
   /**
-   * Multi-tab followers (TODO 3.2). When true, a tab that loses the leader
-   * election becomes a FOLLOWER that proxies to the leader over a
-   * BroadcastChannel, and contests + promotes when the leader closes. When
-   * false (default), the loser is a dead `isLeader === false` handle.
+   * Multi-tab followers (TODO 3.2). On by default: a tab that loses the
+   * leader election becomes a FOLLOWER that proxies to the leader over a
+   * BroadcastChannel, and contests + promotes when the leader closes. Set
+   * false for the single-tab contract — the loser is a dead
+   * `isLeader === false` handle rejecting with `client.not_leader`.
    */
   readonly multiTab?: boolean;
   /** Cross-tab channel factory (default `BroadcastChannel`); injectable for tests. */
@@ -170,6 +173,7 @@ export class SyncClientHandle {
   readonly #invalidation: InvalidationEmitter;
   readonly #presence: Set<(scopeKey: string) => void>;
   readonly #roleListeners: Set<(role: HandleRole) => void>;
+  readonly #devtoolsUnregister: () => void;
   #closed = false;
 
   /** @internal — use {@link createSyncClientHandle}. */
@@ -189,6 +193,20 @@ export class SyncClientHandle {
     this.#invalidation = internals.invalidation;
     this.#presence = internals.presence;
     this.#roleListeners = internals.roleListeners ?? new Set();
+    // RFC 0002 §3.2: console introspection — a no-op outside a dev page.
+    this.#devtoolsUnregister = registerDevtools({
+      kind: 'handle',
+      ref: this,
+      clientId: () => this.#clientId,
+      role: () => this.#role,
+      outbox: async () => (await this.pendingCommits()).length,
+      subscriptions: () => this.subscriptions(),
+      conflicts: async () => (await this.conflicts()).length,
+      rejections: async () => (await this.rejections()).length,
+      syncNeeded: () => this.syncNeeded(),
+      upgrading: () => this.upgrading(),
+      onInvalidate: (listener) => this.onInvalidate(listener),
+    });
   }
 
   /** @internal — swap this handle from follower to leader (promotion). */
@@ -266,7 +284,8 @@ export class SyncClientHandle {
           new ClientSyncError(
             NOT_LEADER_CODE,
             'this tab is not the leader — another tab owns the syncular ' +
-              'core for this origin (enable multiTab for follower proxying)',
+              'core for this origin (this handle opted out of follower ' +
+              'proxying with multiTab: false)',
           ),
         );
       }
@@ -302,6 +321,16 @@ export class SyncClientHandle {
 
   mutate(mutations: readonly MutationInput[]): Promise<string> {
     return this.#call('mutate', [mutations]);
+  }
+
+  /** Partial-update convenience: read-merge-write one full-row upsert. */
+  patch(
+    table: string,
+    rowId: string,
+    partial: Readonly<Record<string, unknown>>,
+    options?: { readonly baseVersion?: number },
+  ): Promise<string> {
+    return this.#call('patch', [table, rowId, partial, options]);
   }
 
   sync(): Promise<SyncSummary> {
@@ -394,6 +423,7 @@ export class SyncClientHandle {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#devtoolsUnregister();
     if (this.#follower !== undefined) {
       this.#follower.close();
       this.#follower = undefined;
@@ -574,9 +604,9 @@ function fireConfigCallbacks(
 /**
  * Acquire leadership, spawn the worker, initialize the core inside it.
  *
- * With `multiTab` off: a losing tab resolves to a dead not-leader handle.
- * With `multiTab` on: a losing tab becomes a FOLLOWER proxying to the leader,
- * and promotes itself if the leader later closes.
+ * With `multiTab` on (the default): a losing tab becomes a FOLLOWER proxying
+ * to the leader, and promotes itself if the leader later closes. With
+ * `multiTab: false`: a losing tab resolves to a dead not-leader handle.
  */
 export async function createSyncClientHandle(
   config: SyncClientHandleConfig,
@@ -609,8 +639,8 @@ export async function createSyncClientHandle(
   }
 
   // ---- Lost the election. ----
-  if (config.multiTab !== true) {
-    // Legacy single-tab contract: a dead not-leader handle.
+  if (config.multiTab === false) {
+    // Opted-out single-tab contract: a dead not-leader handle.
     return new SyncClientHandle({
       role: 'follower',
       clientId: '',
@@ -650,7 +680,7 @@ async function bootLeader(
     handleRef.handle?.__dispatchEvent(event);
   };
   const makeBridge =
-    config.multiTab === true
+    config.multiTab !== false
       ? (
           clientId: string,
           invoke: (
@@ -743,7 +773,7 @@ async function bootFollower(
           fireConfigCallbacks(config, event);
           handle.__dispatchEvent(event);
         },
-        ...(config.multiTab === true
+        ...(config.multiTab !== false
           ? {
               makeBridge: (
                 clientId: string,

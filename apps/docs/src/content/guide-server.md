@@ -143,6 +143,33 @@ sockets. Multi-instance deployments add a fanout bridge
 (`PostgresFanout` on Postgres, the Durable Object on Workers). See
 [Storage backends](/server-storage/).
 
+## Seeding data
+
+`seedMutations` pushes app-shaped values through the real push pipeline —
+authorization, validation, idempotency, realtime fanout — so seeded rows
+behave exactly like synced rows. It is THE supported seeding recipe for dev
+servers, demos, and ops scripts:
+
+```ts
+import { seedMutations } from '@syncular/server';
+
+await seedMutations(config, { partition: 'demo', actorId: 'seed-user' }, [
+  {
+    table: 'todos',
+    op: 'upsert',
+    // snake_case or camelCase keys; missing nullable columns become NULL.
+    values: { id: 'seed-1', listId: 'welcome', title: 'Hello', done: false },
+  },
+]);
+```
+
+The commit id defaults to a stable `seed-commit-1`, so re-running the seed
+replays idempotently and writes nothing twice; pass `commitId` to seed
+additional batches. A rejected seed (bad scopes, failed validation, unknown
+column) throws with the failing operation's code — a broken seed fails loud
+at boot. In tests, prefer [`@syncular/testkit`](/tooling-testing/): a test
+client that mutates and syncs covers the same ground with virtual time.
+
 ## Choosing the rest
 
 - **Storage**: `SqliteServerStorage` (bun:sqlite) is the dev-speed default;

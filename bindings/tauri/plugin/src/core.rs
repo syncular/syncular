@@ -136,6 +136,13 @@ impl SyncularCore {
         self.queue.drain(..).collect()
     }
 
+    /// Replace the transport's request headers (RFC 0002 §2.3 — rotating
+    /// auth without tearing the plugin down). See
+    /// `HostTransport::set_headers` for the HTTP/WS pickup semantics.
+    pub fn set_headers(&mut self, headers: Vec<(String, String)>) {
+        self.transport.set_headers(headers);
+    }
+
     /// Release the socket/reader thread. Idempotent.
     pub fn shutdown(&mut self) {
         self.transport.shutdown();

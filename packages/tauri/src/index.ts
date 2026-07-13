@@ -143,6 +143,10 @@ function decodeCell(value: unknown): SqlValue {
 function decodeRow(row: Record<string, unknown>): SqlRow {
   const out: SqlRow = {};
   for (const [key, value] of Object.entries(row)) {
+    // Reserved `_sync_*` columns stay engine-internal (parity with the
+    // web client's `query()`), so a `SELECT *` row round-trips straight
+    // into `mutate()` values. Alias (`_sync_version AS v`) to read one.
+    if (key.startsWith('_sync_')) continue;
     out[key] = decodeCell(value);
   }
   return out;
@@ -282,6 +286,22 @@ export class TauriSyncClient {
       mutations: mutations.map(encodeMutation),
     })) as { clientCommitId: string };
     return result.clientCommitId;
+  }
+
+  /**
+   * Replace the native transport's request headers at runtime — the auth
+   * rotation path (RFC 0002 §2.3). Pass the FULL header set (it replaces,
+   * it does not merge). HTTP requests use the new set from the next call;
+   * the realtime socket applies it on its next (re)connect.
+   */
+  async setHeaders(headers: Readonly<Record<string, string>>): Promise<void> {
+    const reply = await this.#tauri.invoke<CommandReply>(
+      `${PLUGIN}syncular_set_headers`,
+      { headers },
+    );
+    if (reply.error !== undefined) {
+      throw new TauriSyncError(reply.error.code, reply.error.message);
+    }
   }
 
   // -- Native CRDT (SPEC.md §5.10.5; needs the plugin `crdt-yjs` feature) ------

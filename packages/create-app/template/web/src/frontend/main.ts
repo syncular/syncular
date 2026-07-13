@@ -6,15 +6,15 @@
  * query/mutate/subscribe messages and re-renders. This is the real browser
  * shape; grow your app from here.
  *
- * Open two browser windows on the same URL to watch them converge over the
- * realtime socket. (One core per origin: a second TAB gets a clear not-leader
- * error — multi-tab followers are a roadmap item. Separate windows/profiles or
- * the two-window trick show convergence today.)
+ * One core per origin: the first tab wins the leader lock and spawns the
+ * worker; every further tab becomes a follower proxying the same API to the
+ * leader over a BroadcastChannel (and promotes in place when the leader
+ * closes). Open two tabs — or two browser windows for two separate actors —
+ * to watch them converge over the realtime socket.
  */
 import {
   ClientSyncError,
   createSyncClientHandle,
-  NOT_LEADER_CODE,
   type SqlRow,
 } from '@syncular/client';
 import { schema, todoListSubscription } from '../syncular.generated';
@@ -56,14 +56,6 @@ async function main(): Promise<void> {
     lockName: 'app-core',
     onSynced: () => void refresh(),
   });
-
-  if (!handle.isLeader) {
-    throw new ClientSyncError(
-      NOT_LEADER_CODE,
-      'another tab already owns this app’s core — close it first ' +
-        '(multi-tab followers are a roadmap item).',
-    );
-  }
 
   await handle.subscribe({
     id: 'todos',

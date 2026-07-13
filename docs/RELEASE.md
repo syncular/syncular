@@ -70,6 +70,17 @@ Then the deprecation-substitute stub for the v1 `syncular` crate:
 cargo publish -p syncular           # empty placeholder → points at syncular-client
 ```
 
+Then the Tauri plugin — it lives in its OWN workspace (`bindings/tauri/`,
+kept out of the main cargo gate), so publish it from there, after
+`syncular-command` is live on the index (its path deps carry `version`
+constraints that resolve against the index at publish time; RFC 0002 §1.2 —
+without this crate on crates.io, Tauri adoption requires a repo checkout):
+
+```sh
+cd bindings/tauri
+cargo publish -p tauri-plugin-syncular   # (after syncular-command)
+```
+
 Not published (`publish = false`): `conformance-shim`, `syncular-bench`.
 
 > Between steps, wait for each crate to appear on the crates.io index before

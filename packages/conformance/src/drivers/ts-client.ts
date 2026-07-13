@@ -340,7 +340,10 @@ class TsClientInstance implements ClientInstance {
   async readRows(table: string): Promise<ClientRowState[]> {
     const schemaTable = this.#schema.tables.find((t) => t.name === table);
     if (schemaTable === undefined) throw new Error(`unknown table ${table}`);
-    const rows = this.#client.query(
+    // The raw database tier, deliberately: the driver's row state carries
+    // `_sync_version`, which the app-facing `client.query()` strips from
+    // `SELECT *` results (RFC 0002 §2.1).
+    const rows = this.#client.database.query(
       `SELECT * FROM "${table}" ORDER BY "${schemaTable.primaryKey}" ASC`,
     );
     return rows.map((row) => {

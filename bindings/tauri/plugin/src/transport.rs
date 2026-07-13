@@ -84,6 +84,19 @@ impl HostTransport {
         }
     }
 
+    /// Replace the extra request headers at runtime (rotating auth — RFC 0002
+    /// §2.3). HTTP requests use the new set from the next call; the WS
+    /// handshake reads headers at connect, so a live realtime socket keeps
+    /// its old set until it reconnects. A `Null` transport accepts and
+    /// ignores the set (it never sends requests).
+    pub fn set_headers(&mut self, headers: Vec<(String, String)>) {
+        match self {
+            HostTransport::Null { .. } => drop(headers),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.set_headers(headers),
+        }
+    }
+
     /// Drain the inbound realtime frames buffered since the last call.
     pub fn take_inbound(&mut self) -> Vec<Inbound> {
         match self {
@@ -425,6 +438,11 @@ mod native {
             }
             let resp = req.call().map_err(|e| http_err("GET", e))?;
             read_body(resp)
+        }
+
+        /// Replace the per-request headers (see `HostTransport::set_headers`).
+        pub fn set_headers(&mut self, headers: Vec<(String, String)>) {
+            self.headers = headers;
         }
 
         pub fn shutdown(&mut self) {

@@ -25,6 +25,10 @@ const build = await Bun.build({
   entrypoints: [join(frontend, 'main.tsx')],
   outdir: dist,
   target: 'browser',
+  // Workspace packages resolve their `bun` condition (TS source) so the
+  // example builds without `build:packages` (the published `browser`
+  // condition points at compiled dist, RFC 0002 §1.1).
+  conditions: ['bun'],
   minify: true,
   sourcemap: 'linked',
   naming: { entry: 'app.js' },

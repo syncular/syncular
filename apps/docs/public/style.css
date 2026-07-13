@@ -148,10 +148,28 @@ main {
   flex: 1;
   min-width: 0;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
   padding: 3rem 2.2rem 6rem;
 }
 article { width: 100%; max-width: 47rem; font-size: 0.92rem; }
+
+/* The main-vs-released drift marker (RFC 0002 §1.3). */
+.release-banner {
+  width: 100%;
+  max-width: 47rem;
+  margin: -1.6rem 0 2rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--faint);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.release-banner code {
+  color: var(--dim);
+  text-transform: none;
+}
 article h1 {
   font-size: clamp(1.5rem, 3.4vw, 2.1rem);
   line-height: 1.2;

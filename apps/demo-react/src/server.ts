@@ -12,22 +12,17 @@
  */
 import { dirname, join } from 'node:path';
 import {
-  encodeMessage,
-  encodeRow,
-  PROTOCOL_WIRE_VERSION,
-  type RequestFrame,
-} from '@syncular/core';
-import {
   createRealtimeHub,
-  handleSyncRequest,
   MemorySegmentStore,
   type RealtimeSession,
+  type SeedMutation,
   SqliteBlobStore,
   SqliteServerStorage,
   type SyncServerConfig,
+  seedMutations,
 } from '@syncular/server';
 import { createSyncularHono } from '@syncular/server-hono';
-import { schema, type TodosRow } from './syncular.generated';
+import { schema } from './syncular.generated';
 
 const PORT = Number(process.env.PORT ?? 8788);
 const PARTITION = 'demo';
@@ -65,10 +60,11 @@ const hono = createSyncularHono({
   authenticate: async () => ({ actorId: ACTOR_ID, partition: PARTITION }),
 });
 
-/** Seed a few rows across the three lists through the real push path. */
+/** Seed a few rows across the three lists (RFC 0002 §2.5 — the supported
+ * recipe: `seedMutations` pushes app-shaped values through the real §6
+ * pipeline, idempotent per commit id). */
 async function seed(): Promise<void> {
   if ((await storage.getMaxCommitSeq(PARTITION)) > 0) return;
-  const table = schema.tables[0];
   const now = Date.now();
   const seeds: Array<[string, string]> = [
     ['groceries', 'Milk, eggs, coffee'],
@@ -77,50 +73,23 @@ async function seed(): Promise<void> {
     ['work', 'Review the query surface RFC'],
     ['travel', 'Renew passport'],
   ];
-  const rows: TodosRow[] = seeds.map(([list, title], index) => ({
-    id: `seed-${index + 1}`,
-    listId: list,
-    title,
-    done: false,
-    position: index + 1,
-    updatedAtMs: now,
-    attachment: null,
+  const mutations: SeedMutation[] = seeds.map(([list, title], index) => ({
+    table: 'todos',
+    op: 'upsert',
+    values: {
+      id: `seed-${index + 1}`,
+      listId: list,
+      title,
+      done: false,
+      position: index + 1,
+      updatedAtMs: now,
+      attachment: null,
+    },
   }));
-  const frames: RequestFrame[] = [
-    { type: 'REQ_HEADER', clientId: 'seed', schemaVersion: schema.version },
-    {
-      type: 'PUSH_COMMIT',
-      clientCommitId: 'seed-commit-1',
-      operations: rows.map((row) => ({
-        table: 'todos',
-        rowId: row.id,
-        op: 'upsert' as const,
-        payload: encodeRow(table.columns, [
-          row.id,
-          row.listId,
-          row.title,
-          row.done,
-          row.position,
-          row.updatedAtMs,
-          row.attachment,
-        ]),
-      })),
-    },
-    {
-      type: 'PULL_HEADER',
-      limitCommits: 0,
-      limitSnapshotRows: 0,
-      maxSnapshotPages: 0,
-      accept: 0b0011,
-    },
-  ];
-  await handleSyncRequest(
-    encodeMessage({
-      wireVersion: PROTOCOL_WIRE_VERSION,
-      msgKind: 'request',
-      frames,
-    }),
-    { ...config, partition: PARTITION, actorId: ACTOR_ID },
+  await seedMutations(
+    config,
+    { partition: PARTITION, actorId: ACTOR_ID },
+    mutations,
   );
 }
 
@@ -132,6 +101,10 @@ const build = await Bun.build({
     join(import.meta.dir, 'frontend', 'worker.ts'),
   ],
   target: 'browser',
+  // Workspace packages resolve their `bun` condition (TS source), so the
+  // dev loop never needs `build:packages` (the published `browser`
+  // condition points at compiled dist for external bundlers, RFC 0002 §1.1).
+  conditions: ['bun'],
   sourcemap: 'inline',
   external: ['@sqlite.org/sqlite-wasm'],
   define: { 'process.env.NODE_ENV': '"development"' },

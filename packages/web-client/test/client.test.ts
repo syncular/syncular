@@ -439,3 +439,105 @@ describe('sync loop discipline', () => {
     await first;
   });
 });
+
+describe('the SELECT * → mutate round trip (RFC 0002 §2.1)', () => {
+  test('query() strips _sync_* columns; explicit aliases pass through', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'client-a' });
+    a.client.subscribe({
+      id: 's1',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    a.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
+    ]);
+    await a.client.syncUntilIdle();
+
+    const rows = a.client.query('SELECT * FROM tasks');
+    expect(rows).toHaveLength(1);
+    expect(Object.keys(rows[0] ?? {})).not.toContain('_sync_version');
+    expect(rows[0]?.title).toBe('task');
+    // The raw database tier keeps the column (engine internals need it).
+    expect(tableRows(a.db, 'tasks')[0]?._sync_version).toBe(1);
+    // An explicit alias reads it on purpose.
+    const aliased = a.client.query('SELECT _sync_version AS v FROM tasks');
+    expect(aliased[0]?.v).toBe(1);
+  });
+
+  test('a stray _sync_* key in mutation values fails with the SELECT * hint', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'client-a' });
+    expect(() =>
+      a.client.mutate([
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: { ...taskValues('t1', 'p1'), _sync_version: 1 },
+        },
+      ]),
+    ).toThrow(/internal sync column/);
+  });
+
+  test('a SELECT * row round-trips into mutate() unchanged', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'client-a' });
+    a.client.subscribe({
+      id: 's1',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    a.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
+    ]);
+    await a.client.syncUntilIdle();
+    const row = a.client.query('SELECT * FROM tasks')[0] ?? {};
+    a.client.mutate([
+      { table: 'tasks', op: 'upsert', values: { ...row, title: 'renamed' } },
+    ]);
+    await a.client.syncUntilIdle();
+    expect(a.client.query('SELECT title FROM tasks')[0]?.title).toBe('renamed');
+  });
+
+  test('patch() merges a partial over the current row and converges', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'client-a' });
+    const b = await makeClient(server, { clientId: 'client-b' });
+    for (const c of [a, b]) {
+      c.client.subscribe({
+        id: 's1',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+    }
+    a.client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('t1', 'p1', 'keep-me', false, 3),
+      },
+    ]);
+    await a.client.syncUntilIdle();
+
+    // camelCase keys follow the same two-casing rule as mutate values.
+    a.client.patch('tasks', 't1', { done: true });
+    const local = tableRows(a.db, 'tasks')[0];
+    expect(local?.done).toBe(1);
+    expect(local?.title).toBe('keep-me');
+    expect(local?.priority).toBe(3);
+
+    await a.client.syncUntilIdle();
+    await b.client.syncUntilIdle();
+    const remote = tableRows(b.db, 'tasks')[0];
+    expect(remote?.done).toBe(1);
+    expect(remote?.title).toBe('keep-me');
+  });
+
+  test('patch() of an absent row fails loud', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'client-a' });
+    expect(() => a.client.patch('tasks', 'missing', { done: true })).toThrow(
+      /no local row/,
+    );
+  });
+});

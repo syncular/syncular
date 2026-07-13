@@ -1,6 +1,15 @@
 # RFC 0002 — Integration feedback: findings from a two-engine app integration
 
-- **Status:** Draft
+- **Status:** Implemented 2026-07-13. All thirteen items landed, with three
+  scope notes: 2.2 was already satisfied at HEAD (the RFC observed the
+  published 0.2.1); 1.2 landed as publish PREP (crate metadata, versioned
+  path deps, a RELEASE.md step, and the git-dependency recipe in the docs —
+  running the publish is a release action); 4.1 landed as the
+  "One codebase, web + desktop" guide (a `--template tauri` scaffold is
+  deferred until the plugin is on crates.io). 2.1 additionally grew a
+  SQL-representation coercion in mutation values (booleans as 0/1, bigint
+  integers), because stripping `_sync_*` alone still left `SELECT *` rows
+  poisoning the outbox at encode time.
 - **Date:** 2026-07-13
 - **Scope:** packaging (`exports` maps, crates.io), `packages/react`,
   `packages/web-client`, `packages/typegen`, `bindings/tauri`, docs site,

@@ -28,7 +28,7 @@
   "exports": {
     ".": {
       "bun": "./src/index.ts",
-      "browser": "./src/index.ts",
+      "browser": "./dist/index.js",
       "import": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
@@ -36,7 +36,7 @@
     },
     "./react": {
       "bun": "./src/react.ts",
-      "browser": "./src/react.ts",
+      "browser": "./dist/react.js",
       "import": {
         "types": "./dist/react.d.ts",
         "default": "./dist/react.js"
@@ -44,7 +44,7 @@
     },
     "./faults": {
       "bun": "./src/faults.ts",
-      "browser": "./src/faults.ts",
+      "browser": "./dist/faults.js",
       "import": {
         "types": "./dist/faults.d.ts",
         "default": "./dist/faults.js"

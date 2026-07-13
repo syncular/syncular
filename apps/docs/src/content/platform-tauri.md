@@ -24,9 +24,17 @@ bun add @syncular/tauri @syncular/react
 ```
 
 The Rust plugin lives at
-[`bindings/tauri/plugin`](https://github.com/syncular/syncular/tree/main/bindings/tauri/plugin)
-and is not published to crates.io; consume it as a path dependency from a
-repo checkout:
+[`bindings/tauri/plugin`](https://github.com/syncular/syncular/tree/main/bindings/tauri/plugin).
+Until it lands on crates.io, consume it as a git dependency — cargo finds the
+package inside the repo by name:
+
+```toml
+[dependencies]
+tauri-plugin-syncular = { git = "https://github.com/syncular/syncular", features = ["native-transport"] }
+```
+
+Pin a rev (`rev = "<commit>"`) for reproducible builds. With a local checkout
+of the repo, a path dependency works too:
 
 ```toml
 [dependencies]
@@ -116,6 +124,8 @@ conformance-locked.
   is `{ "result": ... }` or `{ "error": { "code", "message" } }`.
 - **`syncular_query(sql, params)`** — the live-query fast path: arbitrary
   read-only SQL over the local tables, one IPC round trip per run.
+- **`syncular_set_headers(headers)`** — replace the native transport's
+  request headers at runtime (see below).
 - **`syncular://event`** — the event stream the bridge subscribes to:
   `invalidate` (live queries re-run), `presence`, `sync-needed`, `conflict`,
   `rejection`, `schema-floor`, `lease`. Bytes are encoded as `{ "$bytes": "<hex>" }`
@@ -126,6 +136,22 @@ Native CRDT text (plugin `crdt-yjs` feature) goes through `syncular_command`, an
 `crdtDeleteText` / `crdtApplyUpdate` methods, byte-compatible with the web
 `@syncular/crdt-yjs` helper, so a Tauri app and a browser can edit the same
 document. See [CRDT columns](/concepts-crdt/).
+
+## Rotating auth
+
+`SyncularConfig.headers` sets the initial header set at plugin registration.
+Real apps rotate JWTs, so the bridge exposes a runtime replacement:
+
+```ts
+await client.setHeaders({ authorization: `Bearer ${freshToken}` });
+```
+
+Pass the FULL header set each time — it replaces the previous set. HTTP
+requests (sync rounds, segments, blobs) use the new headers from the next
+call; the realtime WebSocket sends headers at handshake time, so a live
+socket keeps its old set until it reconnects. To force the new auth onto the
+socket immediately, call `disconnectRealtime()` followed by
+`connectRealtime()` after `setHeaders`.
 
 ## Threading
 

@@ -1,10 +1,10 @@
 [package]
 name = "tauri-plugin-syncular"
-version = "0.1.0"
+version = "0.2.1"
 edition = "2021"
-description = "A native syncular v2 client inside the Tauri process, exposed to the webview as commands + events (consumes the Rust client core directly — no FFI)"
-license = "UNLICENSED"
-publish = false
+description = "A native syncular client inside the Tauri process, exposed to the webview as commands + events (consumes the Rust client core directly — no FFI)"
+license = "Apache-2.0"
+repository = "https://github.com/syncular/syncular"
 # Required by tauri-plugin's build script (it keys permission generation off
 # the links name); must equal package.name.
 links = "tauri-plugin-syncular"
@@ -16,8 +16,10 @@ links = "tauri-plugin-syncular"
 [dependencies]
 # Path deps across the workspace boundary into the main rust tree — the plugin
 # consumes the client core DIRECTLY and dispatches through the shared router.
-syncular-client = { path = "../../../rust/crates/client" }
-syncular-command = { path = "../../../rust/crates/command" }
+# The version constraints are what a `cargo publish` resolves against the
+# crates.io index (path deps are stripped at publish time).
+syncular-client = { path = "../../../rust/crates/client", version = "0.2.1" }
+syncular-command = { path = "../../../rust/crates/command", version = "0.2.1" }
 tauri = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

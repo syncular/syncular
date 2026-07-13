@@ -139,6 +139,33 @@ describe('createTauriSyncClient', () => {
     expect(id).toBe('commit-1');
   });
 
+  test('query strips reserved _sync_* columns (RFC 0002 §2.1)', async () => {
+    const { tauri } = makeTauri((cmd, args) => {
+      if (cmd === 'plugin:syncular|syncular_query') {
+        return OK({
+          rows: [{ id: 't1', title: 'hello', _sync_version: 3 }],
+        });
+      }
+      return defaultResponder(cmd, args);
+    });
+    const client = await createTauriSyncClient({
+      clientId: 'c1',
+      schema: { version: 1, tables: [] },
+      tauri,
+    });
+    const rows = await client.query('SELECT * FROM todo');
+    expect(rows).toEqual([{ id: 't1', title: 'hello' }]);
+  });
+
+  test('setHeaders posts the full set to syncular_set_headers (RFC 0002 §2.3)', async () => {
+    const { client, calls } = await build();
+    await client.setHeaders({ authorization: 'Bearer fresh' });
+    const call = calls.find(
+      (c) => c.cmd === 'plugin:syncular|syncular_set_headers',
+    );
+    expect(call?.args.headers).toEqual({ authorization: 'Bearer fresh' });
+  });
+
   test('accessor methods unwrap their command replies', async () => {
     const { client } = await build();
     expect(await client.syncNeeded()).toBe(true);

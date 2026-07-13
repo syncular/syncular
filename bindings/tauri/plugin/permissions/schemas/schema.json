@@ -319,10 +319,22 @@
           "markdownDescription": "Denies the syncular_query command without any pre-configured scope."
         },
         {
-          "description": "Allows the webview to drive the native syncular client: the one command\nsurface (syncular_command) and the live-query fast path (syncular_query).\nGrant this to the window(s) that host your syncular-backed UI.\n\n#### This default permission set includes:\n\n- `allow-syncular-command`\n- `allow-syncular-query`",
+          "description": "Enables the syncular_set_headers command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-syncular-set-headers",
+          "markdownDescription": "Enables the syncular_set_headers command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the syncular_set_headers command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-syncular-set-headers",
+          "markdownDescription": "Denies the syncular_set_headers command without any pre-configured scope."
+        },
+        {
+          "description": "Allows the webview to drive the native syncular client: the one command\nsurface (syncular_command), the live-query fast path (syncular_query), and\nthe auth-rotation path (syncular_set_headers). Grant this to the window(s)\nthat host your syncular-backed UI.\n\n#### This default permission set includes:\n\n- `allow-syncular-command`\n- `allow-syncular-query`\n- `allow-syncular-set-headers`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Allows the webview to drive the native syncular client: the one command\nsurface (syncular_command) and the live-query fast path (syncular_query).\nGrant this to the window(s) that host your syncular-backed UI.\n\n#### This default permission set includes:\n\n- `allow-syncular-command`\n- `allow-syncular-query`"
+          "markdownDescription": "Allows the webview to drive the native syncular client: the one command\nsurface (syncular_command), the live-query fast path (syncular_query), and\nthe auth-rotation path (syncular_set_headers). Grant this to the window(s)\nthat host your syncular-backed UI.\n\n#### This default permission set includes:\n\n- `allow-syncular-command`\n- `allow-syncular-query`\n- `allow-syncular-set-headers`"
         }
       ]
     }
