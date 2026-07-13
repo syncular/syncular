@@ -308,6 +308,7 @@ async function measureBundle(): Promise<BundleResult> {
   const ownBuild = await Bun.build({
     entrypoints: [join(import.meta.dir, 'bundle-entry.ts')],
     target: 'browser',
+    conditions: ['bun'],
     minify: true,
     sourcemap: 'none',
     external: ['@sqlite.org/sqlite-wasm'],
