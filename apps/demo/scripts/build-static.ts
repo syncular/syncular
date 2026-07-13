@@ -47,6 +47,10 @@ const build = await Bun.build({
     join(frontendDir, 'server-worker.ts'),
   ],
   target: 'browser',
+  // Workspace packages resolve their `bun` condition (TS source) so the
+  // build works without `build:packages` (the published `browser`
+  // condition points at compiled dist, RFC 0002 §1.1).
+  conditions: ['bun'],
   minify: true,
   define: { SYNCULAR_DEMO_EMBEDDED: 'true' },
   external: ['@sqlite.org/sqlite-wasm'],
