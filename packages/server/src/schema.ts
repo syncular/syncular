@@ -240,7 +240,7 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
       scopePatterns.map((pattern) => pattern.columnIndex),
     );
     const projectable = table.columns.filter(
-      (column, index) =>
+      (_column, index) =>
         index !== primaryKeyIndex && !scopeColumnIndices.has(index),
     );
     const fullyEncrypted =

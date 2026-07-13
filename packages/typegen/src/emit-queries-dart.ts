@@ -102,9 +102,9 @@ function emitOrderByEnum(query: AnalyzedQuery): string[] {
   );
   lines.push(`enum ${typeName(query.name)}OrderBy {`);
   lines.push(
-    query.orderBy.allowed
+    `${query.orderBy.allowed
       .map((col) => `  ${camelCase(col.langName)}(${quote(col.name)})`)
-      .join(',\n') + ';',
+      .join(',\n')};`,
   );
   lines.push('');
   lines.push(`  const ${typeName(query.name)}OrderBy(this.column);`);

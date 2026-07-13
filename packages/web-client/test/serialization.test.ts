@@ -32,7 +32,6 @@ import { handleSegmentDownload, handleSyncRequest } from '@syncular/server';
 import {
   CLIENT_SCHEMA,
   makeServer,
-  PARTITION,
   type TestServer,
   taskValues,
 } from './helpers';

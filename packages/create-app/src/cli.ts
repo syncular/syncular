@@ -8,7 +8,7 @@
  */
 import { relative } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { CLI_BIN, CREATE_BIN, PRODUCT_NAME } from './constants';
+import { CREATE_BIN, PRODUCT_NAME } from './constants';
 import {
   isTemplateName,
   scaffoldApp,

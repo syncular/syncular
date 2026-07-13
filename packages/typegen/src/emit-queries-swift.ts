@@ -27,14 +27,6 @@ const SWIFT_TYPE: Readonly<Record<IrColumnType, string>> = {
   crdt: '[UInt8]',
 };
 
-function pascalCase(name: string): string {
-  return name
-    .split(/[_-]+/)
-    .filter((p) => p.length > 0)
-    .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
-    .join('');
-}
-
 /** Language-facing field name — the pinned §12 naming map. */
 function camelCase(name: string): string {
   return snakeToCamel(name);

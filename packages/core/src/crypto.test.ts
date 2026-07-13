@@ -23,7 +23,7 @@ const cases: ReadonlyArray<[DeclaredType, PlainValue]> = [
   ['blob_ref', '{"blobId":"abc","size":1}'],
   ['integer', 9007199254740991],
   ['integer', -9007199254740991],
-  ['float', 3.141592653589793],
+  ['float', Math.PI],
   ['boolean', true],
   ['boolean', false],
   ['bytes', new Uint8Array([0xde, 0xad, 0xbe, 0xef])],

@@ -136,7 +136,7 @@ describe('row-codec round-trip invariant (encode∘decode = id)', () => {
       [{ name: 'c', type: 'integer', nullable: false }],
       [Number.MAX_SAFE_INTEGER],
     ],
-    ['float', [{ name: 'c', type: 'float', nullable: false }], [3.14159]],
+    ['float', [{ name: 'c', type: 'float', nullable: false }], [Math.PI]],
     ['boolean', [{ name: 'c', type: 'boolean', nullable: false }], [true]],
     [
       'json',

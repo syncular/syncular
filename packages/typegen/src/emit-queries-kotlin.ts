@@ -25,14 +25,6 @@ const KOTLIN_TYPE: Readonly<Record<IrColumnType, string>> = {
   crdt: 'ByteArray',
 };
 
-function pascalCase(name: string): string {
-  return name
-    .split(/[_-]+/)
-    .filter((p) => p.length > 0)
-    .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
-    .join('');
-}
-
 /** Language-facing field name — the pinned §12 naming map. */
 function camelCase(name: string): string {
   return snakeToCamel(name);
@@ -113,9 +105,9 @@ function emitOrderByEnum(query: AnalyzedQuery): string[] {
   );
   lines.push(`enum class ${typeName(query.name)}OrderBy(val column: String) {`);
   lines.push(
-    query.orderBy.allowed
+    `${query.orderBy.allowed
       .map((col) => `    ${camelCase(col.langName)}(${quote(col.name)})`)
-      .join(',\n') + ';',
+      .join(',\n')};`,
   );
   lines.push('}');
   return lines;

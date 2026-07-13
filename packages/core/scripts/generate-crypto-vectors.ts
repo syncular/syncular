@@ -45,7 +45,7 @@ const aesCases: {
     value: '{"algo":"sha256","hash":"ab","size":3}',
   },
   { name: 'integer', declaredType: 'integer', value: 9007199254740991 },
-  { name: 'float', declaredType: 'float', value: 3.141592653589793 },
+  { name: 'float', declaredType: 'float', value: Math.PI },
   { name: 'boolean', declaredType: 'boolean', value: true },
   { name: 'bytes', declaredType: 'bytes', value: hexToBytes('deadbeef') },
 ];
