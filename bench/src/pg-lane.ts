@@ -100,7 +100,7 @@ async function createPgServer(url: string): Promise<{
     await (sql as any).unsafe(
       `DO $$ BEGIN
          IF to_regclass('tasks') IS NOT NULL THEN
-           DELETE FROM tasks WHERE _sync_partition = '${'${PARTITION}'}';
+           DELETE FROM tasks WHERE _sync_partition = '${PARTITION}';
          END IF;
        END $$`,
     );
