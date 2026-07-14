@@ -161,8 +161,26 @@ Both registries only attach trusted publishers to EXISTING packages/crates
    *Trusted Publishing* → add GitHub `syncular/syncular`, workflow
    `release.yml`.
 3. From then on a release is: bump versions (packages + crates in
-   lockstep), commit, tag `v<version>`, push the tag —
+   lockstep, **including the bun.lock workspace `version` stamps — see
+   below**), commit, tag `v<version>`, push the tag —
    `.github/workflows/release.yml` runs the check suite, builds dists, and
    publishes both registries in dependency order via OIDC (npm with
    `--provenance`; crates via `rust-lang/crates-io-auth-action`). No
    tokens are stored in CI.
+
+## The bun.lock stamp pitfall (shipped broken in 0.4.0)
+
+`bun pm pack` materializes `workspace:*` dependency ranges from the
+LOCKFILE's workspace `version` stamps, not from package.json — and
+`bun install` after a version bump reports "no changes" WITHOUT rewriting
+those stamps. The 0.4.0 tarballs therefore pinned their `@syncular/*`
+siblings at 0.3.1: consumers got split-brain installs (react@0.4.0 over a
+nested client@0.3.1; server-hono crashed importing a 0.4-only export from
+a nested server@0.3.1).
+
+Release bumps must therefore ALSO update the `"version"` stamps on the
+workspace entries in `bun.lock` (plain sed, then `bun install` to
+validate). Two guards enforce it: `scripts/check-lockstep.mjs` fails
+`bun run check` on stale stamps, and the release workflow re-verifies each
+packed tarball's `@syncular/*` pins against the release version before
+`npm publish`.

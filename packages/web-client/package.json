@@ -1,6 +1,6 @@
 {
   "name": "@syncular/client",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Syncular TypeScript client core — offline-first sync over SQLite (WASM/OPFS, Bun, Node)",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

@@ -13,7 +13,8 @@
   ],
   "scripts": {
     "postinstall": "git config core.hooksPath .githooks 2>/dev/null || true",
-    "check": "bun run typecheck && bun run lint && bun run test",
+    "check": "bun run check:lockstep && bun run typecheck && bun run lint && bun run test",
+    "check:lockstep": "node scripts/check-lockstep.mjs",
     "//test-split": "multi-tab runs in its OWN bun process (test:isolated), NOT for a syncular race — that cross-operation interleaving race is fixed in the core (SyncClient #opChain). The residual is a bun 1.3.14 native crash: many Worker OS-threads each opening bun:sqlite under BroadcastChannel/fetch load intermittently segfaults the runtime (repros with zero syncular code; browsers use per-worker OPFS files so it cannot happen in production). Isolation reduces cross-file thread contention. Collapse this split once bun fixes the segfault. See ROADMAP block 4.",
     "test": "bun run test:main && bun run test:isolated",
     "test:main": "bun test --path-ignore-patterns '**/create-app/template/**' --path-ignore-patterns '**/load/**' --path-ignore-patterns '**/bindings/**' --path-ignore-patterns '**/web-client/test/multi-tab.test.ts'",
