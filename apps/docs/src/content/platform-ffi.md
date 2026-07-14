@@ -105,7 +105,7 @@ thread and forwards each event onto the platform's event loop.
 The crate builds as both `cdylib` (the shared object hosts load:
 `libsyncular.dylib` / `libsyncular.so` / `syncular.dll`) and `staticlib`
 (the archive for static linking, e.g. the iOS xcframework). It is published
-as `syncular-ffi` `0.2.1` on crates.io; artifacts are built from the repo:
+as `syncular-ffi` `0.0.0` on crates.io; artifacts are built from the repo:
 
 ```sh
 rust/scripts/build-native.sh

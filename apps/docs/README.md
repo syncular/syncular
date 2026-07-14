@@ -27,17 +27,22 @@ bun run dev       # astro dev at http://localhost:3100
 `dist/` is a plain static bundle: one directory per page, `style.css`, and
 self-hosted `fonts/` (IBM Plex Mono woff2 — no CDN at runtime). Nothing about
 it is host-specific. Internal links are authored root-absolute and rewritten
-to `DOCS_BASE` by the post-build rebase step (the Pages workflow sets
-`DOCS_BASE=/syncular/`; a custom domain uses the default `/`).
+to an optional `DOCS_BASE` by the post-build rebase step. The production custom
+domain uses the default `/`.
+
+The repository root `package.json` is the release-version authority. Source
+install snippets use `0.0.0`; the Markdown processor, landing page, and agent
+asset generator reflect the root version into `dist/` during the build.
 
 ## Deploy — Cloudflare Workers (static assets)
 
 The site is a **Workers static-assets** deployment (worker `syncular-docs`,
 Syncular account), served at the apex **https://syncular.dev** via a zone
 route (`syncular.dev/*`) over the apex's existing proxied DNS record.
-`wrangler.jsonc` holds the config; `.github/workflows/docs.yml` builds and
-deploys on every push to `main` that touches `apps/docs/**` or the workflow.
-The domain serves at root, so `DOCS_BASE` stays unset.
+`wrangler.jsonc` holds the config. CI builds the site for normal `main` pushes
+and pull requests, but production deploys only from the version tag workflow
+in `.github/workflows/release.yml`, after npm and crates.io publication both
+succeed. The domain serves at root, so `DOCS_BASE` stays unset.
 
 The deployment uses a small Worker script with a static assets binding. Static
 files still come from `dist/`; the Worker adds request-dependent behavior that

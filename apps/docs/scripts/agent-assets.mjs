@@ -8,6 +8,10 @@ import {
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  reflectReleaseVersion,
+  releaseVersion,
+} from './release-version.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const contentDir = join(root, 'src/content');
@@ -45,7 +49,7 @@ const contentFiles = readdirSync(contentDir)
   .map((name) => {
     const path = join(contentDir, name);
     const slug = basename(name, '.md');
-    const body = readFileSync(path, 'utf8');
+    const body = reflectReleaseVersion(readFileSync(path, 'utf8'));
     return {
       slug,
       path,
@@ -71,6 +75,8 @@ const landingMarkdown = `# syncular
 syncular is offline-first SQL sync: local SQLite on every client, a
 server-authoritative commit log at the center, and scope-based authorization on
 every read and write.
+
+Published release: **v${releaseVersion}**.
 
 ## Start
 
@@ -203,7 +209,7 @@ const openapi = {
   openapi: '3.1.0',
   info: {
     title: 'Syncular public discovery API',
-    version: '0.1.0',
+    version: releaseVersion,
     description:
       'Machine-readable discovery endpoints for the public syncular documentation site.',
   },
@@ -222,8 +228,9 @@ const openapi = {
                   properties: {
                     ok: { type: 'boolean' },
                     service: { type: 'string' },
+                    version: { type: 'string' },
                   },
-                  required: ['ok', 'service'],
+                  required: ['ok', 'service', 'version'],
                 },
               },
             },
@@ -326,7 +333,7 @@ ensureWrite(join(distDir, '.well-known/openapi.json'), json(openapi));
 
 ensureWrite(
   join(distDir, 'health'),
-  json({ ok: true, service: 'syncular-docs' }),
+  json({ ok: true, service: 'syncular-docs', version: releaseVersion }),
 );
 
 ensureWrite(
@@ -486,7 +493,7 @@ ensureWrite(
   json({
     serverInfo: {
       name: 'syncular-docs',
-      version: '0.1.0',
+      version: releaseVersion,
     },
     transport: {
       type: 'webmcp',
@@ -509,6 +516,19 @@ ensureWrite(
       'Browser WebMCP tools are registered on page load when navigator.modelContext is available.',
   }),
 );
+
+for (const path of [
+  'index.html',
+  'platform-rust/index.html',
+  'platform-rust.md',
+  'health',
+  '.well-known/mcp/server-card.json',
+]) {
+  const body = readFileSync(join(distDir, path), 'utf8');
+  if (body.includes('0.0.0') || !body.includes(releaseVersion)) {
+    throw new Error(`${path}: release version was not reflected into dist`);
+  }
+}
 
 console.log(
   `generated agent discovery assets for ${orderedPages.length + 1} pages`,

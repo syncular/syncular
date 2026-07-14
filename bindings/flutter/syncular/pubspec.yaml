@@ -3,7 +3,7 @@ description: >-
   Idiomatic Dart/Flutter bindings over the syncular v2 native core (the C-ABI
   syncular-ffi), via dart:ffi. Offline-first local sync client with a JSON
   command surface, typed conveniences, an event Stream, and pause/resume/close.
-version: 0.1.0
+version: 0.0.0
 publish_to: none
 
 environment:

@@ -6,6 +6,7 @@
 // stay root-absolute exactly as before.
 import { defineConfig } from 'astro/config';
 import sqlGrammar from '@shikijs/langs/sql';
+import { reflectReleaseVersion } from './scripts/release-version.mjs';
 import syqlGrammar from '../../editors/vscode-syql/syntaxes/syql.tmLanguage.json' with {
   type: 'json',
 };
@@ -13,6 +14,20 @@ import syqlGrammar from '../../editors/vscode-syql/syntaxes/syql.tmLanguage.json
 export default defineConfig({
   server: { port: 3100 },
   devToolbar: { enabled: false },
+  vite: {
+    plugins: [
+      {
+        name: 'syncular-release-version-in-markdown',
+        enforce: 'pre',
+        transform(code, id) {
+          const path = id.split('?', 1)[0];
+          if (path?.includes('/src/content/') && path.endsWith('.md')) {
+            return reflectReleaseVersion(code);
+          }
+        },
+      },
+    ],
+  },
   markdown: {
     shikiConfig: {
       theme: 'css-variables',

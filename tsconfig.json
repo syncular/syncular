@@ -19,6 +19,7 @@
     "spec/**/*.ts",
     "apps/**/*.ts",
     "examples/**/*.ts",
+    "scripts/**/*.ts",
     "bench/**/*.ts",
     "load/**/*.ts"
   ],

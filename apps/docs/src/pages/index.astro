@@ -5,6 +5,7 @@
 // at build time.
 import { Code } from 'astro:components';
 import { TABS } from '../snippets';
+import rootPkg from '../../../../package.json';
 
 const FEATURES = [
   { title: 'scopes-as-code', body: 'one resolveScopes(actor) in your backend gates every read and write', href: '/concepts-scopes/' },
@@ -54,7 +55,7 @@ const RULE_DASH = '-'.repeat(160);
   <body class="landing-body">
     <div class="wrap">
       <div class="statusbar">
-        <span>SYNCULAR TRANSMISSION // OFFLINE-FIRST SQL SYNC</span>
+        <span>SYNCULAR v{rootPkg.version} // OFFLINE-FIRST SQL SYNC</span>
         <span>SYNC: <span class="ok">NOMINAL</span> · OUTBOX: 0 · LINK: <span class="ok">WS/OK</span></span>
       </div>
       <header class="topnav">
@@ -236,7 +237,7 @@ CONFORMANCE SCENARIOS ...................... <span class="v">74 × 2 cores</span
             <a href="https://crates.io/crates/syncular-client">CRATES.IO</a>
             <a href="/what-is/">DOCS</a>
           </nav>
-          <span class="end">SYNCULAR · APACHE-2.0 · END OF TRANSMISSION <span class="sq">■</span></span>
+          <span class="end">SYNCULAR v{rootPkg.version} · APACHE-2.0 · END OF TRANSMISSION <span class="sq">■</span></span>
         </div>
       </footer>
     </div>
