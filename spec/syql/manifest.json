@@ -2,7 +2,7 @@
   "$schema": "./schema/manifest.schema.json",
   "language": "SYQL",
   "revision": 1,
-  "fixtureSchemaRevision": 1,
+  "fixtureSchemaRevision": 2,
   "sqliteProfile": "3.46.0",
   "families": [
     {
@@ -12,6 +12,22 @@
     {
       "kind": "syntax",
       "path": "v1/syntax/container.json"
+    },
+    {
+      "kind": "semantic",
+      "path": "v1/semantic/core.json"
+    },
+    {
+      "kind": "lowering",
+      "path": "v1/lowering/core.json"
+    },
+    {
+      "kind": "formatter",
+      "path": "v1/formatter/core.json"
+    },
+    {
+      "kind": "emitter",
+      "path": "v1/emitter/core.json"
     }
   ]
 }

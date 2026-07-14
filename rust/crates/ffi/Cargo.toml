@@ -1,6 +1,6 @@
 [package]
 name = "syncular-ffi"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 description = "Syncular v2 Rust client core packaged as a C-ABI native library — the shipping native runtime for iOS/Android/JVM/desktop over the shared command surface"
 license = "Apache-2.0"
@@ -13,8 +13,8 @@ name = "syncular"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
-syncular-client = { path = "../client", version = "0.5.1" }
-syncular-command = { path = "../command", version = "0.5.1" }
+syncular-client = { path = "../client", version = "0.6.0" }
+syncular-command = { path = "../command", version = "0.6.0" }
 serde_json = "1"
 
 # The §8.7 round-over-socket tests spin a scripted in-test WS server

@@ -134,7 +134,7 @@ jobs:
             base="${{ github.event.pull_request.base.sha }}"
           fi
           if git diff --name-only "$base" HEAD 2>/dev/null \
-              | grep -qE '^bindings/tauri/|^packages/(tauri|react|web-client)/|^rust/crates/(client|command)/|^\.github/workflows/ci\.yml$'; then
+              | grep -qE '^bindings/tauri/|^packages/(tauri|react|web-client|typegen)/|^rust/crates/(client|command)/|^\.github/workflows/ci\.yml$'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -241,7 +241,7 @@ jobs:
             base="${{ github.event.pull_request.base.sha }}"
           fi
           if git diff --name-only "$base" HEAD 2>/dev/null \
-              | grep -qE '^bindings/(swift|kotlin|react-native)/|^rust/crates/ffi/|^rust/crates/command/|^rust/ffi\.h$|^\.github/workflows/ci\.yml$'; then
+              | grep -qE '^bindings/(swift|kotlin|react-native)/|^packages/typegen/|^rust/crates/ffi/|^rust/crates/command/|^rust/ffi\.h$|^\.github/workflows/ci\.yml$'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -336,7 +336,7 @@ jobs:
             base="${{ github.event.pull_request.base.sha }}"
           fi
           if git diff --name-only "$base" HEAD 2>/dev/null \
-              | grep -qE '^bindings/flutter/|^rust/crates/ffi/|^rust/crates/command/|^rust/ffi\.h$|^\.github/workflows/ci\.yml$'; then
+              | grep -qE '^bindings/flutter/|^packages/typegen/|^rust/crates/ffi/|^rust/crates/command/|^rust/ffi\.h$|^\.github/workflows/ci\.yml$'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"

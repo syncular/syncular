@@ -1,6 +1,8 @@
 query listTodos(listId) {
-  select id, list_id, title, done, position, updated_at_ms
-  from todos
-  where list_id = :listId
-  order by position, id
+  sql {
+    select id, list_id, title, done, position, updated_at_ms
+    from todos
+    where @scope(todos.list_id = :listId)
+    order by position, id
+  }
 }

@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://syncular.dev/schema/syql/semantic-fixture-v1.json",
+  "title": "SYQL revision-1 semantic fixture family",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["revision", "cases", "invalid"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "revision": { "const": 1 },
+    "cases": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/validCase" }
+    },
+    "invalid": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/invalidCase" }
+    }
+  },
+  "$defs": {
+    "sourceFile": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "minProperties": 1
+    },
+    "type": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base", "nullable"],
+      "properties": {
+        "base": {
+          "enum": ["string", "integer", "float", "boolean", "json", "bytes", "blob_ref", "crdt"]
+        },
+        "nullable": { "type": "boolean" }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "optional"],
+      "properties": {
+        "kind": { "enum": ["value", "group", "switch"] },
+        "name": { "type": "string" },
+        "optional": { "type": "boolean" },
+        "type": { "$ref": "#/$defs/type" },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "type"],
+            "properties": {
+              "name": { "type": "string" },
+              "type": { "$ref": "#/$defs/type" }
+            }
+          }
+        }
+      }
+    },
+    "query": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "inputs", "conditions", "renderedSqlContains"],
+      "properties": {
+        "name": { "type": "string" },
+        "inputs": { "type": "array", "items": { "$ref": "#/$defs/input" } },
+        "conditions": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+        },
+        "renderedSqlContains": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "validCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "entry", "sources", "queries"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "entry": { "type": "string" },
+        "sources": { "$ref": "#/$defs/sourceFile" },
+        "queries": { "type": "array", "items": { "$ref": "#/$defs/query" } }
+      }
+    },
+    "invalidCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "entry", "sources", "code", "start"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "entry": { "type": "string" },
+        "sources": { "$ref": "#/$defs/sourceFile" },
+        "code": { "type": "string", "pattern": "^SYQL[0-9]{4}_[A-Z0-9_]+$" },
+        "start": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["offset", "line", "column"],
+          "properties": {
+            "offset": { "type": "integer", "minimum": 0 },
+            "line": { "type": "integer", "minimum": 1 },
+            "column": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    }
+  }
+}
