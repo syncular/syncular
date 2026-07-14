@@ -5,7 +5,13 @@
   "patterns": [
     { "include": "#comments" },
     { "include": "#imports" },
-    { "include": "#declarations" }
+    { "include": "#declarations" },
+    { "include": "#types" },
+    { "include": "#container-keywords" },
+    { "include": "#embedded-nodes" },
+    { "include": "#binds" },
+    { "include": "#atomic-sql" },
+    { "include": "source.sql" }
   ],
   "repository": {
     "comments": {
@@ -27,21 +33,11 @@
       ]
     },
     "declarations": {
-      "begin": "\\b(query|predicate)\\s+([a-z][A-Za-z0-9]*)",
-      "beginCaptures": {
+      "match": "\\b(query|predicate)\\s+([a-z][A-Za-z0-9]*)",
+      "captures": {
         "1": { "name": "keyword.control.declaration.syql" },
         "2": { "name": "entity.name.function.syql" }
-      },
-      "end": "(?<=\\})",
-      "patterns": [
-        { "include": "#comments" },
-        { "include": "#types" },
-        { "include": "#container-keywords" },
-        { "include": "#embedded-nodes" },
-        { "include": "#binds" },
-        { "include": "#atomic-sql" },
-        { "include": "source.sql" }
-      ]
+      }
     },
     "types": {
       "patterns": [

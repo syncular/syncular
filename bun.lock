@@ -52,6 +52,7 @@
       },
       "devDependencies": {
         "@shikijs/langs": "^4.3.1",
+        "shiki": "^4.3.1",
         "wrangler": "^4.105.0",
       },
     },
