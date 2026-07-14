@@ -16,7 +16,6 @@ import { snakeToCamel } from './naming';
 import type {
   AnalyzedQuery,
   QueryColumn,
-  QueryParam,
   QuerySyqlPlanBind,
   QuerySyqlPublicInput,
 } from './query';
@@ -93,14 +92,6 @@ function optionalParamValue(type: IrColumnType, name: string): string {
     default:
       return `${name}?.let { JsonValue.of(it) } ?: JsonValue.Null`;
   }
-}
-
-function isOptionalParam(query: AnalyzedQuery, p: QueryParam): boolean {
-  return (
-    p.optional === true ||
-    p.flag === true ||
-    (query.limit !== undefined && p.name === 'limit')
-  );
 }
 
 function syqlInput(query: AnalyzedQuery, name: string): QuerySyqlPublicInput {
@@ -279,23 +270,6 @@ function emitSyqlKotlinRunner(query: AnalyzedQuery): string[] {
   return lines;
 }
 
-/** Per-query orderBy allowlist enum (column = the checked SQL column). */
-function emitOrderByEnum(query: AnalyzedQuery): string[] {
-  if (query.orderBy === undefined) return [];
-  const lines: string[] = [];
-  lines.push(
-    `/** §6 orderBy allowlist for ${query.name} — checked at generate time. */`,
-  );
-  lines.push(`enum class ${typeName(query.name)}OrderBy(val column: String) {`);
-  lines.push(
-    `${query.orderBy.allowed
-      .map((col) => `    ${camelCase(col.langName)}(${quote(col.name)})`)
-      .join(',\n')};`,
-  );
-  lines.push('}');
-  return lines;
-}
-
 function emitDataClass(query: AnalyzedQuery): string[] {
   const Row = `${typeName(query.name)}Row`;
   const lines: string[] = [];
@@ -334,60 +308,27 @@ function emitRunner(query: AnalyzedQuery): string[] {
   lines.push(
     `        val ${query.name}Tables = listOf(${query.tables.map(quote).join(', ')})`,
   );
-  if (query.orderBy !== undefined) {
-    lines.push(
-      `        private const val ${query.name}SqlBase = ${quote(query.positionalSqlBase ?? '')}`,
-    );
-  } else {
-    lines.push(
-      `        private const val ${query.name}Sql = ${quote(query.positionalSql)}`,
-    );
-  }
+  lines.push(
+    `        private const val ${query.name}Sql = ${quote(query.positionalSql)}`,
+  );
   lines.push('');
   lines.push(`        /** Run the ${query.name} named query (SELECT-only). */`);
   const args: string[] = [];
   for (const p of query.params) {
     const name = camelCase(p.langName);
-    if (isOptionalParam(query, p)) {
-      args.push(`${name}: ${KOTLIN_TYPE[p.type]}? = null`);
-    } else {
-      args.push(`${name}: ${KOTLIN_TYPE[p.type]}`);
-    }
-  }
-  if (query.orderBy !== undefined) {
-    const defaultCase = camelCase(
-      query.orderBy.allowed.find((c) => c.name === query.orderBy?.defaultColumn)
-        ?.langName ?? query.orderBy.defaultColumn,
-    );
-    args.push(
-      `orderBy: ${typeName(query.name)}OrderBy = ${typeName(query.name)}OrderBy.${defaultCase}`,
-    );
-    args.push(
-      `dir: SyncularQueryDir = SyncularQueryDir.${query.orderBy.defaultDir.toUpperCase()}`,
-    );
+    args.push(`${name}: ${KOTLIN_TYPE[p.type]}`);
   }
   const signature =
     args.length > 0
       ? `client: SyncularClient, ${args.join(', ')}`
       : 'client: SyncularClient';
   lines.push(`        fun ${query.name}(${signature}): List<${Row}> {`);
-  if (query.orderBy !== undefined) {
-    const limitTail =
-      query.positionalLimitTail !== undefined
-        ? ` + ${quote(query.positionalLimitTail)}`
-        : '';
-    lines.push(
-      `            val sql = ${query.name}SqlBase + " order by " + orderBy.column + " " + dir.sql${limitTail}`,
-    );
-  }
-  const sqlRef = query.orderBy !== undefined ? 'sql' : `${query.name}Sql`;
+  const sqlRef = `${query.name}Sql`;
   if (query.params.length > 0) {
     const binds = query.params
       .map((p) => {
         const name = camelCase(p.langName);
-        return isOptionalParam(query, p)
-          ? optionalParamValue(p.type, name)
-          : paramValue(p.type, name);
+        return paramValue(p.type, name);
       })
       .join(', ');
     lines.push(`            val params = listOf(${binds})`);
@@ -465,24 +406,10 @@ export function emitQueriesKotlinModule(
     ].join('\n'),
   );
 
-  if (queries.some((q) => q.orderBy !== undefined)) {
-    parts.push(
-      [
-        '/** §6 orderBy direction (shared by every orderBy-knob query). */',
-        'enum class SyncularQueryDir(val sql: String) {',
-        '    ASC("asc"),',
-        '    DESC("desc");',
-        '}',
-      ].join('\n'),
-    );
-  }
-
   for (const query of queries) {
     const syqlTypes = emitSyqlKotlinTypes(query);
     if (syqlTypes.length > 0) parts.push(syqlTypes.join('\n'));
     parts.push(emitDataClass(query).join('\n'));
-    const orderByEnum = emitOrderByEnum(query);
-    if (orderByEnum.length > 0) parts.push(orderByEnum.join('\n'));
   }
 
   const objLines: string[] = [];

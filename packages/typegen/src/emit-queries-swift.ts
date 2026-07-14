@@ -17,7 +17,6 @@ import { snakeToCamel } from './naming';
 import type {
   AnalyzedQuery,
   QueryColumn,
-  QueryParam,
   QuerySyqlPlanBind,
   QuerySyqlPublicInput,
 } from './query';
@@ -101,14 +100,6 @@ function optionalParamValue(type: IrColumnType, name: string): string {
     default:
       return `${name}.map { JSONValue.string($0) } ?? .null`;
   }
-}
-
-function isOptionalParam(query: AnalyzedQuery, p: QueryParam): boolean {
-  return (
-    p.optional === true ||
-    p.flag === true ||
-    (query.limit !== undefined && p.name === 'limit')
-  );
 }
 
 function syqlInput(query: AnalyzedQuery, name: string): QuerySyqlPublicInput {
@@ -327,21 +318,6 @@ function emitRowStruct(query: AnalyzedQuery): string[] {
   return lines;
 }
 
-/** Per-query orderBy allowlist enum (rawValue = the checked SQL column). */
-function emitOrderByEnum(query: AnalyzedQuery): string[] {
-  if (query.orderBy === undefined) return [];
-  const lines: string[] = [];
-  lines.push(
-    `/// §6 orderBy allowlist for ${query.name} — checked at generate time.`,
-  );
-  lines.push(`public enum ${typeName(query.name)}OrderBy: String, Sendable {`);
-  for (const col of query.orderBy.allowed) {
-    lines.push(`    case ${camelCase(col.langName)} = ${quote(col.name)}`);
-  }
-  lines.push('}');
-  return lines;
-}
-
 function emitRunner(query: AnalyzedQuery): string[] {
   if (query.syql !== undefined) return emitSyqlSwiftRunner(query);
   const Row = `${typeName(query.name)}Row`;
@@ -349,33 +325,15 @@ function emitRunner(query: AnalyzedQuery): string[] {
   lines.push(
     `    public static let ${query.name}Tables = [${query.tables.map(quote).join(', ')}]`,
   );
-  if (query.orderBy !== undefined) {
-    lines.push(
-      `    private static let ${query.name}SqlBase = ${quote(query.positionalSqlBase ?? '')}`,
-    );
-  } else {
-    lines.push(
-      `    private static let ${query.name}Sql = ${quote(query.positionalSql)}`,
-    );
-  }
+  lines.push(
+    `    private static let ${query.name}Sql = ${quote(query.positionalSql)}`,
+  );
   lines.push('');
   lines.push(`    /// Run the ${query.name} named query (SELECT-only).`);
   const args: string[] = [];
   for (const p of query.params) {
     const name = camelCase(p.langName);
-    if (isOptionalParam(query, p)) {
-      args.push(`${name}: ${SWIFT_TYPE[p.type]}? = nil`);
-    } else {
-      args.push(`${name}: ${SWIFT_TYPE[p.type]}`);
-    }
-  }
-  if (query.orderBy !== undefined) {
-    const defaultCase = camelCase(
-      query.orderBy.allowed.find((c) => c.name === query.orderBy?.defaultColumn)
-        ?.langName ?? query.orderBy.defaultColumn,
-    );
-    args.push(`orderBy: ${typeName(query.name)}OrderBy = .${defaultCase}`);
-    args.push(`dir: SyncularQueryDir = .${query.orderBy.defaultDir}`);
+    args.push(`${name}: ${SWIFT_TYPE[p.type]}`);
   }
   const signature =
     args.length > 0
@@ -384,21 +342,12 @@ function emitRunner(query: AnalyzedQuery): string[] {
   lines.push(
     `    public static func ${query.name}(${signature}) throws -> [${Row}] {`,
   );
-  const sqlExpr =
-    query.orderBy !== undefined
-      ? `${query.name}SqlBase + " order by " + orderBy.rawValue + " " + dir.rawValue${query.positionalLimitTail !== undefined ? ` + ${quote(query.positionalLimitTail)}` : ''}`
-      : `${query.name}Sql`;
-  if (query.orderBy !== undefined) {
-    lines.push(`        let sql = ${sqlExpr}`);
-  }
-  const sqlRef = query.orderBy !== undefined ? 'sql' : `${query.name}Sql`;
+  const sqlRef = `${query.name}Sql`;
   if (query.params.length > 0) {
     const binds = query.params
       .map((p) => {
         const name = camelCase(p.langName);
-        return isOptionalParam(query, p)
-          ? optionalParamValue(p.type, name)
-          : paramValue(p.type, name);
+        return paramValue(p.type, name);
       })
       .join(', ');
     lines.push(`        let params: [JSONValue] = [${binds}]`);
@@ -469,24 +418,10 @@ export function emitQueriesSwiftModule(
     ].join('\n'),
   );
 
-  if (queries.some((q) => q.orderBy !== undefined)) {
-    parts.push(
-      [
-        '/// §6 orderBy direction (shared by every orderBy-knob query).',
-        'public enum SyncularQueryDir: String, Sendable {',
-        '    case asc = "asc"',
-        '    case desc = "desc"',
-        '}',
-      ].join('\n'),
-    );
-  }
-
   for (const query of queries) {
     const syqlTypes = emitSyqlSwiftTypes(query);
     if (syqlTypes.length > 0) parts.push(syqlTypes.join('\n'));
     parts.push(emitRowStruct(query).join('\n'));
-    const orderByEnum = emitOrderByEnum(query);
-    if (orderByEnum.length > 0) parts.push(orderByEnum.join('\n'));
   }
 
   const enumLines: string[] = [];

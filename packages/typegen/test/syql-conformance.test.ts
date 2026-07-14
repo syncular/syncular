@@ -141,6 +141,11 @@ interface LoweringFixture {
     readonly forbiddenSql: readonly string[];
     readonly executions: readonly LoweringExecution[];
   }[];
+  readonly invalid: readonly {
+    readonly name: string;
+    readonly source: string;
+    readonly code: string;
+  }[];
 }
 
 interface FormatterFixture {
@@ -511,6 +516,26 @@ describe('normative SYQL revision-1 conformance fixtures', () => {
           expect(neutralized).toEqual(execution.ids);
           expect(enumerated).toEqual(execution.ids);
         }
+      } finally {
+        sqlite.close();
+      }
+    }
+
+    for (const item of fixture.invalid) {
+      const { sqlite, db } = fixtureDatabase();
+      try {
+        const semantic = program(
+          resolve('/virtual/syql-conformance', item.name),
+          'query.syql',
+          { 'query.syql': item.source },
+        );
+        const error = frontendError(() =>
+          validateSyqlProgram(semantic, IR, db, {
+            naming: 'camel',
+            targets: ['ts'],
+          }),
+        );
+        expect(error.code).toBe(item.code);
       } finally {
         sqlite.close();
       }

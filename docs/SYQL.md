@@ -761,6 +761,12 @@ order which the compiler can prove total for that statement's row shape.
 Choosing an arbitrary member or subset is not deterministic merely because
 SQLite accepts the statement.
 
+Revision 1 defines no nested-statement identity proof. Consequently, a nested
+`LIMIT` or `OFFSET` is rejected even when it has a local `ORDER BY`. Revision 1
+also defines no partition-identity proof for `OVER`; every window expression is
+rejected. A future language revision may admit either shape only together with
+a normative proof algorithm and conformance vectors.
+
 This restriction is required for reactive caching and invalidation, not merely
 for backend tests: state outside the database/input environment has no revision
 or dependency event which could make a cached query rerun.
@@ -993,7 +999,8 @@ The default and maximum are decimal integer literals satisfying:
 
 The page control name must not collide under §7.1. A query with a page
 declaration MUST NOT contain an outer `LIMIT` or `OFFSET`. An authored nested
-`LIMIT`/`OFFSET` does not conflict.
+`LIMIT`/`OFFSET` is not a page-clause conflict, but is rejected by the
+revision-1 determinism rule in §9.5.
 
 ### 12.2 Public input and validation
 

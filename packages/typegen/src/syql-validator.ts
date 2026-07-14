@@ -578,10 +578,29 @@ class Validator {
   #validateDeterminism(sql: string, span: SyqlSourceSpan): void {
     const tokens = significant(lexSyqlSqlSource(span.file, sql));
     const functionStack: Array<string | undefined> = [];
+    let depth = 0;
     for (let index = 0; index < tokens.length; index += 1) {
       const token = tokens[index] as SyqlToken;
       const lower = tokenLower(token);
       const next = tokens[index + 1];
+      if (
+        depth > 0 &&
+        token.kind === 'identifier' &&
+        (lower === 'limit' || lower === 'offset')
+      ) {
+        this.#fail(
+          'SYQL6003_NONDETERMINISTIC_SQL',
+          token.span,
+          `nested ${token.text.toUpperCase()} is rejected until its local row identity and total order can be proven`,
+        );
+      }
+      if (token.kind === 'identifier' && lower === 'over') {
+        this.#fail(
+          'SYQL6003_NONDETERMINISTIC_SQL',
+          token.span,
+          'window expressions are rejected until their partition identity and total order can be proven',
+        );
+      }
       if (CURRENT_TIME_KEYWORDS.has(lower ?? '')) {
         this.#fail(
           'SYQL6003_NONDETERMINISTIC_SQL',
@@ -607,8 +626,10 @@ class Validator {
             ? previous.text.toLowerCase()
             : undefined,
         );
+        depth += 1;
       } else if (token.text === ')') {
         functionStack.pop();
+        depth -= 1;
       } else if (
         decodeSqlString(token)?.toLowerCase() === 'now' &&
         functionStack.some(

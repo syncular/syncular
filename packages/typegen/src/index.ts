@@ -22,7 +22,6 @@ export * from './naming';
 export * from './query';
 export * from './query-ir';
 export * from './sql';
-export * from './syql';
 export * from './syql-ast';
 export * from './syql-lexer';
 export * from './syql-lowering';

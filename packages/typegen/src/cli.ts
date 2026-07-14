@@ -170,30 +170,10 @@ function runGeneratePrint(args: GenerateArgs, name: string): void {
   if (query.params.length > 0) {
     console.log('-- params:');
     for (const param of query.params) {
-      const marks = [
-        param.optional === true ? 'optional' : 'required',
-        ...(param.flag === true ? ['flag'] : []),
-        ...(param.group !== undefined ? [`group ${param.group}`] : []),
-      ].join(', ');
-      console.log(`--   :${param.name} ${param.type} (${marks})`);
+      console.log(`--   :${param.name} ${param.type} (required)`);
     }
   }
   console.log(query.sql);
-  if (query.orderBy !== undefined) {
-    console.log('-- orderBy variants (each checked against the schema):');
-    const base = query.positionalSqlBase ?? '';
-    for (const col of query.orderBy.allowed) {
-      const isDefault = col.name === query.orderBy.defaultColumn;
-      console.log(
-        `--   ${col.langName}: ${base} order by ${col.name} asc|desc${query.positionalLimitTail ?? ''}${isDefault ? '   (default)' : ''}`,
-      );
-    }
-  }
-  if (query.limit !== undefined) {
-    console.log(
-      `-- limit: bound value, default ${query.limit.default ?? query.limit.max}${query.limit.max !== undefined ? `, clamped to ${query.limit.max}` : ''}`,
-    );
-  }
 }
 
 function parseManifestDir(argv: readonly string[]): string {
