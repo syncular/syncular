@@ -108,6 +108,31 @@ describe('parseSyqlFile — the container grammar', () => {
     expect(q?.limit).toEqual({ max: 200, default: 50 });
   });
 
+  test('parses checked reactive and composite-key declarations', () => {
+    const file = parseSyqlFile(
+      'x.syql',
+      `query listTodos(left, right)
+         depends todos on list_id = left | right
+         window todos by list_id = left | right
+         key by id
+       { select id from todos where list_id = :left or list_id = :right }`,
+    );
+    expect(file.queries[0]).toMatchObject({
+      depends: [
+        { table: 'todos', variable: 'list_id', params: ['left', 'right'] },
+      ],
+      windows: [
+        {
+          table: 'todos',
+          variable: 'list_id',
+          units: ['left', 'right'],
+          fixedScopes: [],
+        },
+      ],
+      keyBy: ['id'],
+    });
+  });
+
   test('a non-flag annotation is rejected', () => {
     expect(() =>
       parseSyqlFile('x.syql', 'query q(a?: string) { select 1 }'),
@@ -124,6 +149,74 @@ describe('parseSyqlFile — the container grammar', () => {
     expect(() =>
       parseSyqlFile('x.syql', 'query q() orderBy a | b default c { select 1 }'),
     ).toThrow(/not in the allowlist/);
+  });
+});
+
+describe('checked reactive declarations', () => {
+  test('supply exact dependencies and coverage when OR prevents inference', () => {
+    const query = analyzeSyql(
+      `query listTodos(left, right)
+         depends todos on list_id = left | right
+         window todos by list_id = left | right
+       { select id, title from todos where list_id = :left or list_id = :right }`,
+    )[0];
+    expect(query?.reactive).toEqual({
+      dependencies: [
+        {
+          table: 'todos',
+          scopes: [
+            {
+              table: 'todos',
+              variable: 'list_id',
+              pattern: 'list:{list_id}',
+              params: ['left', 'right'],
+            },
+          ],
+        },
+      ],
+      coverage: [
+        {
+          table: 'todos',
+          variable: 'list_id',
+          units: ['left', 'right'],
+          fixedScopes: [],
+        },
+      ],
+      rowKey: ['id'],
+    });
+  });
+
+  test('checked composite key enables safe identity for a join', () => {
+    const query = analyzeSyql(
+      `query paired()
+         key by leftId | rightId
+       {
+         select left_todo.id as left_id, right_todo.id as right_id
+         from todos left_todo join todos right_todo on right_todo.id = left_todo.id
+       }`,
+    )[0];
+    expect(query?.reactive.rowKey).toEqual(['leftId', 'rightId']);
+  });
+
+  test('fails loudly for optional units, unknown scopes, and unprojected keys', () => {
+    expect(() =>
+      analyzeSyql(
+        `query bad(listId?) window todos by list_id = listId
+         { select id from todos where list_id = :listId }`,
+      ),
+    ).toThrow(/cannot use optional param/);
+    expect(() =>
+      analyzeSyql(
+        `query bad(listId) depends todos on missing = listId
+         { select id from todos where list_id = :listId }`,
+      ),
+    ).toThrow(/no scope variable "missing"/);
+    expect(() =>
+      analyzeSyql(
+        `query bad() key by title
+         { select id from todos }`,
+      ),
+    ).toThrow(/not projected/);
   });
 });
 

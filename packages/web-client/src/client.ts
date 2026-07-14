@@ -62,9 +62,17 @@ import { registerDevtools } from './devtools';
 import type { EncryptionConfig } from './encryption';
 import { ClientSyncError } from './errors';
 import {
-  Invalidation,
+  ChangeAccumulator,
+  ChangeEmitter,
+  type ClientChangeListener,
+  type CommandEffects,
+  type CommandResult,
   InvalidationEmitter,
   type InvalidationListener,
+  invalidationFromChange,
+  type LocalRevision,
+  type SyncIntent,
+  type SyncStatusSnapshot,
 } from './invalidation';
 import {
   type LeaderLease,
@@ -101,7 +109,9 @@ import {
   stripSyncColumns,
 } from './schema';
 import {
+  bumpLocalRevision,
   deleteSubscription,
+  getLocalRevision,
   getMeta,
   getSubscription,
   loadSubscriptions,
@@ -120,6 +130,7 @@ import {
   deletePendingEviction,
   deleteWindowUnit,
   deriveSubId,
+  getWindowUnitBySubId,
   insertWindowUnit,
   loadPendingEvictions,
   loadWindowUnits,
@@ -260,7 +271,10 @@ export interface SyncClientConfig {
   readonly limits?: SyncClientLimits;
   readonly now?: () => number;
   /** §8: hello `requiresSync` or a wake-up — run a pull soon. */
-  readonly onSyncNeeded?: (reason: 'hello' | WakeReason) => void;
+  readonly onSyncNeeded?: (reason: 'startup' | 'hello' | WakeReason) => void;
+  /** Exact core-owned scheduling intent. Hosts consume this to run an
+   * event-driven retry deadline without polling or inferring sync state. */
+  readonly onSyncIntent?: (intent: SyncIntent) => void;
   readonly onConflict?: (conflict: ConflictRecord) => void;
   /**
    * §7.4.5: the schema-bump `upgrading` state changed. `true` when a reset
@@ -317,6 +331,35 @@ export interface WindowState {
    * it MUST NOT be rendered as complete.
    */
   readonly pending: readonly string[];
+}
+
+/** One generated/raw query's required window units (SPEC §7.5). */
+export interface WindowCoverage {
+  readonly base: WindowBase;
+  readonly units: readonly string[];
+}
+
+export interface WindowUnitRef {
+  readonly baseKey: string;
+  readonly unit: string;
+}
+
+export interface CoverageSnapshot {
+  readonly complete: boolean;
+  readonly pending: readonly WindowUnitRef[];
+  readonly missing: readonly WindowUnitRef[];
+}
+
+export interface QueryReadSpec {
+  readonly sql: string;
+  readonly params?: readonly SqlValue[];
+  readonly coverage?: readonly WindowCoverage[];
+}
+
+export interface QuerySnapshot<Row = SqlRow> {
+  readonly revision: LocalRevision;
+  readonly rows: readonly Row[];
+  readonly coverage: CoverageSnapshot;
 }
 
 /**
@@ -433,15 +476,19 @@ export class SyncClient {
    * (the fast-bail the delta path reads).
    */
   #syncOutstanding = false;
+  /** Retry policy belongs to the operation that classified the failure. */
+  #retryDelayMs = 250;
   readonly #hasBlobs: boolean;
   /** §8.6 presence: scopeKey → (peerKey `actorId clientId` → peer). */
   readonly #presence = new Map<string, Map<string, PresencePeer>>();
-  /** TODO 3.1 / I1: the ONE apply-path invalidation listener set. */
+  /** SPEC §7.5: exact core-originated observer transaction batches. */
+  readonly #changes = new ChangeEmitter();
+  /** Compatibility projection from exact batches; never bridge-inferred. */
   readonly #invalidation = new InvalidationEmitter();
   /** §8.6: subscribable presence-change listeners (twin of onPresence). */
   readonly #presenceListeners = new Set<(scopeKey: string) => void>();
   /** The batch accumulator; non-undefined only inside `#applyBatch`. */
-  #batch: Invalidation | undefined;
+  #batch: ChangeAccumulator | undefined;
   /**
    * Operation-serialization mutex (the core owns one loop). Every
    * transaction-entering ASYNC operation — `sync`, the delta-apply body, and
@@ -479,8 +526,20 @@ export class SyncClient {
     ensureLocalSchema(this.#db, this.#schema);
     if (this.#hasBlobs) ensureBlobSchema(this.#db);
     const persisted = getMeta(this.#db, 'clientId');
-    this.#clientId = this.#config.clientId ?? persisted ?? crypto.randomUUID();
-    if (persisted !== this.#clientId) {
+    if (
+      persisted !== undefined &&
+      this.#config.clientId !== undefined &&
+      persisted !== this.#config.clientId
+    ) {
+      await this.#lease.release();
+      this.#lease = undefined;
+      throw new ClientSyncError(
+        'client.identity_mismatch',
+        `this client database belongs to ${JSON.stringify(persisted)}; refusing to rebind it to ${JSON.stringify(this.#config.clientId)}`,
+      );
+    }
+    this.#clientId = persisted ?? this.#config.clientId ?? crypto.randomUUID();
+    if (persisted === undefined) {
       setMeta(this.#db, 'clientId', this.#clientId);
     }
     // §7.3.5: restore the persisted lease so leaseState survives restart.
@@ -494,6 +553,21 @@ export class SyncClient {
     // already at the generated version.
     this.#detectAndResetSchema();
     this.#started = true;
+    // A persisted active subscription needs one catch-up round on every open:
+    // realtime only covers changes after the socket connects, and an
+    // idempotent setWindow/subscribe call correctly creates no new command
+    // effect. Pending outbox work has the same restart requirement. Surface
+    // this as an exact core-owned intent so hosts never need a startup poll or
+    // an application-issued sync() call.
+    const startupWork =
+      this.#schemaFloor === undefined &&
+      (listOutbox(this.#db).length > 0 ||
+        loadSubscriptions(this.#db).some((sub) => sub.status === 'active'));
+    if (startupWork) {
+      this.#needsPull = true;
+      this.#config.onSyncNeeded?.('startup');
+      this.#config.onSyncIntent?.({ kind: 'interactive' });
+    }
     // RFC 0002 §3.2: console introspection — a no-op outside a dev page.
     this.#devtoolsUnregister = registerDevtools({
       kind: 'client',
@@ -552,14 +626,34 @@ export class SyncClient {
     // The stop state is over: this client now ships a servable schema. The
     // outbox is re-applied optimistically over the (now empty) tables so
     // pending offline writes stay visible across the bump (§7.4.5).
-    this.#schemaFloor = undefined;
+    this.#setSchemaFloor(undefined);
     this.#replayOutbox();
   }
 
   #setUpgrading(upgrading: boolean): void {
     if (this.#upgrading === upgrading) return;
-    this.#upgrading = upgrading;
+    this.#applyBatch((batch) => {
+      this.#upgrading = upgrading;
+      batch.status();
+    });
     this.#config.onUpgrading?.(upgrading);
+  }
+
+  #setSyncNeeded(syncNeeded: boolean): void {
+    if (this.#needsPull === syncNeeded) return;
+    this.#applyBatch((batch) => {
+      this.#needsPull = syncNeeded;
+      batch.status();
+    });
+  }
+
+  #setSchemaFloor(schemaFloor: SchemaFloor | undefined): void {
+    const current = JSON.stringify(this.#schemaFloor);
+    if (current === JSON.stringify(schemaFloor)) return;
+    this.#applyBatch((batch) => {
+      this.#schemaFloor = schemaFloor;
+      batch.status();
+    });
   }
 
   async close(): Promise<void> {
@@ -597,6 +691,65 @@ export class SyncClient {
     return stripSyncColumns(this.#db.query(sql, params));
   }
 
+  /** Current durable local observer revision (SPEC §7.5). */
+  get localRevision(): LocalRevision {
+    this.#requireStarted();
+    return getLocalRevision(this.#db);
+  }
+
+  /**
+   * Read rows, window answerability, and revision from one SQLite snapshot.
+   * Reactive integrations use this instead of composing `query()` and
+   * `windowState()` across separate worker/IPC calls.
+   */
+  querySnapshot<Row = SqlRow>(spec: QueryReadSpec): QuerySnapshot<Row> {
+    this.#requireStarted();
+    assertReadOnlyQuery(spec.sql);
+    return this.#db.transaction(() => {
+      const revision = getLocalRevision(this.#db);
+      const rows = stripSyncColumns(
+        this.#db.query(spec.sql, spec.params),
+      ) as unknown as readonly Row[];
+      const pending: WindowUnitRef[] = [];
+      const missing: WindowUnitRef[] = [];
+      for (const requested of spec.coverage ?? []) {
+        const baseKey = windowBaseKey(requested.base);
+        const live = new Map(
+          loadWindowUnits(this.#db, baseKey).map((entry) => [
+            entry.unit,
+            entry.subId,
+          ]),
+        );
+        for (const unit of new Set(requested.units)) {
+          const subId = live.get(unit);
+          const ref = { baseKey, unit };
+          if (subId === undefined) {
+            missing.push(ref);
+            continue;
+          }
+          const sub = getSubscription(this.#db, subId);
+          if (
+            sub === undefined ||
+            sub.status !== 'active' ||
+            sub.cursor < 0 ||
+            sub.bootstrapState !== undefined
+          ) {
+            pending.push(ref);
+          }
+        }
+      }
+      return {
+        revision,
+        rows,
+        coverage: {
+          complete: pending.length === 0 && missing.length === 0,
+          pending,
+          missing,
+        },
+      };
+    });
+  }
+
   // -- live-query invalidation (TODO 3.1 / DESIGN-eviction I1–I4) -----------
 
   /**
@@ -614,23 +767,63 @@ export class SyncClient {
     return this.#invalidation.on(listener);
   }
 
+  /** Subscribe to exact revisioned observer transactions (SPEC §7.5). */
+  onChange(listener: ClientChangeListener): () => void {
+    return this.#changes.on(listener);
+  }
+
+  /** One call for the complete status domain used by reactive hosts. */
+  statusSnapshot(): SyncStatusSnapshot {
+    this.#requireStarted();
+    return this.#statusSnapshot();
+  }
+
+  #statusSnapshot(): SyncStatusSnapshot {
+    return {
+      outbox: listOutbox(this.#db).length,
+      upgrading: this.#upgrading,
+      leaseState: this.#leaseState,
+      schemaFloor: this.#schemaFloor,
+      syncNeeded: this.#needsPull,
+    };
+  }
+
   /**
    * Run `fn` as one apply batch: install a fresh accumulator, collect every
    * touched key, then emit exactly one coalesced event if anything changed.
    * Re-entrant calls share the outer batch so a nested apply never
    * double-emits (e.g. purge → blob reconcile → replay inside one round).
    */
-  #applyBatch<T>(fn: (batch: Invalidation) => T): T {
+  #applyBatch<T>(fn: (batch: ChangeAccumulator) => T): T {
     if (this.#batch !== undefined) return fn(this.#batch);
-    const batch = new Invalidation();
-    this.#batch = batch;
+    const batch = new ChangeAccumulator();
+    let revision: LocalRevision | undefined;
+    let status: SyncStatusSnapshot | undefined;
+    let result!: T;
     try {
-      return fn(batch);
-    } finally {
+      this.#db.transaction(() => {
+        this.#batch = batch;
+        try {
+          result = fn(batch);
+          if (batch.touched) {
+            revision = bumpLocalRevision(this.#db);
+            if (batch.statusChanged) status = this.#statusSnapshot();
+          }
+        } finally {
+          this.#batch = undefined;
+        }
+      });
+    } catch (error) {
       this.#batch = undefined;
-      const event = batch.finish();
-      if (event !== undefined) this.#invalidation.emit(event);
+      throw error;
     }
+    if (revision !== undefined) {
+      const event = batch.finish(revision, status);
+      this.#changes.emit(event);
+      const legacy = invalidationFromChange(event);
+      if (legacy !== undefined) this.#invalidation.emit(legacy);
+    }
+    return result;
   }
 
   /**
@@ -650,22 +843,6 @@ export class SyncClient {
       () => undefined,
     );
     return next;
-  }
-
-  /** Async twin of {@link #applyBatch} for the pull/delta apply round. */
-  async #applyBatchAsync<T>(
-    fn: (batch: Invalidation) => Promise<T>,
-  ): Promise<T> {
-    if (this.#batch !== undefined) return fn(this.#batch);
-    const batch = new Invalidation();
-    this.#batch = batch;
-    try {
-      return await fn(batch);
-    } finally {
-      this.#batch = undefined;
-      const event = batch.finish();
-      if (event !== undefined) this.#invalidation.emit(event);
-    }
   }
 
   // -- blobs (§5.9) ---------------------------------------------------------
@@ -1035,6 +1212,14 @@ export class SyncClient {
    * re-registers realtime at round end (§8.7). No socket cycle needed.
    */
   async setWindow(base: WindowBase, units: readonly string[]): Promise<void> {
+    await this.setWindowCommand(base, units);
+  }
+
+  /** Exact core command result consumed by automatic host loops (§7.5). */
+  async setWindowCommand(
+    base: WindowBase,
+    units: readonly string[],
+  ): Promise<CommandResult<void>> {
     this.#requireStarted();
     const table = this.#table(base.table);
     if (!table.scopeColumnByVariable.has(base.variable)) {
@@ -1046,6 +1231,8 @@ export class SyncClient {
     // Serialize the whole window edit: it spans an `await deriveSubId` between
     // db transactions, so without the chain a delta apply (or a concurrent
     // setWindow) could interleave its transactions and corrupt the registry.
+    let changed = false;
+    let widened = false;
     await this.#serialize(async () => {
       const baseKey = windowBaseKey(base);
       const wanted = new Set(units);
@@ -1056,27 +1243,37 @@ export class SyncClient {
       for (const unit of wanted) {
         if (liveByUnit.has(unit)) continue;
         const subId = await deriveSubId(base, unit);
-        this.#db.transaction(() => {
-          // Re-entry cancels any deferred eviction for this sub id.
-          deletePendingEviction(this.#db, subId);
-          insertWindowUnit(this.#db, baseKey, unit, subId);
-          saveSubscription(this.#db, {
-            id: subId,
-            table: base.table,
-            scopes: unitScopes(base, unit),
-            ...(base.params !== undefined ? { params: base.params } : {}),
-            cursor: -1,
-            status: 'active',
+        this.#applyBatch((batch) => {
+          this.#db.transaction(() => {
+            // Re-entry cancels any deferred eviction for this sub id.
+            deletePendingEviction(this.#db, subId);
+            insertWindowUnit(this.#db, baseKey, unit, subId);
+            saveSubscription(this.#db, {
+              id: subId,
+              table: base.table,
+              scopes: unitScopes(base, unit),
+              ...(base.params !== undefined ? { params: base.params } : {}),
+              cursor: -1,
+              status: 'active',
+            });
           });
+          batch.window(baseKey, base.table, unit);
         });
+        changed = true;
+        widened = true;
       }
 
       // Shrink: units live but not wanted → unsubscribe fused with eviction.
       for (const { unit, subId } of live) {
         if (wanted.has(unit)) continue;
         this.#evictUnit(baseKey, base, unit, subId);
+        changed = true;
       }
     });
+    const effects: CommandEffects = {
+      sync: changed || widened ? { kind: 'interactive' } : { kind: 'none' },
+    };
+    return { value: undefined, effects };
   }
 
   /**
@@ -1098,6 +1295,7 @@ export class SyncClient {
       const sub = getSubscription(this.#db, subId);
       if (
         sub === undefined ||
+        sub.status !== 'active' ||
         sub.cursor < 0 ||
         sub.bootstrapState !== undefined
       ) {
@@ -1140,9 +1338,8 @@ export class SyncClient {
           deletePendingEviction(this.#db, subId);
         }
       });
-      // I1: eviction is a bulk delete — a query over the evicted unit re-runs.
-      batch.table(table.name);
       batch.scopeMap(table, effective);
+      batch.window(baseKey, table.name, unit);
     });
   }
 
@@ -1167,7 +1364,6 @@ export class SyncClient {
           deferred = evictScopedRows(this.#db, table, entry.effective, pinned);
           if (!deferred) deletePendingEviction(this.#db, entry.subId);
         });
-        batch.table(table.name);
         batch.scopeMap(table, entry.effective);
       });
     }
@@ -1235,9 +1431,18 @@ export class SyncClient {
       this.#db.transaction(() => {
         appendOutboxCommit(this.#db, clientCommitId, operations, this.#now());
         this.#applyOperationsLocally(operations, batch);
+        batch.status();
       });
     });
     return clientCommitId;
+  }
+
+  /** Host-facing mutation result with explicit network work intent (§7.5). */
+  mutateCommand(mutations: readonly MutationInput[]): CommandResult<string> {
+    return {
+      value: this.mutate(mutations),
+      effects: { sync: { kind: 'interactive' } },
+    };
   }
 
   /**
@@ -1287,12 +1492,28 @@ export class SyncClient {
     ]);
   }
 
+  /** Host-facing patch result with explicit network work intent (§7.5). */
+  patchCommand(
+    table: string,
+    rowId: string,
+    partial: Readonly<Record<string, unknown>>,
+    options?: { readonly baseVersion?: number },
+  ): CommandResult<string> {
+    return {
+      value: this.patch(table, rowId, partial, options),
+      effects: { sync: { kind: 'interactive' } },
+    };
+  }
+
   // -- lease state (§7.3.5) ---------------------------------------------------
 
   /** Merge and persist the lease state (opaque, §7.3.5). */
   #setLeaseState(next: LeaseState): void {
-    this.#leaseState = next;
-    setMeta(this.#db, 'leaseState', JSON.stringify(next));
+    this.#applyBatch((batch) => {
+      this.#leaseState = next;
+      setMeta(this.#db, 'leaseState', JSON.stringify(next));
+      batch.status();
+    });
   }
 
   /** The request-level lease error codes (§7.3.4): stop-and-surface. */
@@ -1357,7 +1578,7 @@ export class SyncClient {
    * purely-optimistic rows are undone, and a rejection record is raised.
    */
   #dropIncompatibleCommit(commit: OutboxCommit, message: string): void {
-    this.#db.transaction(() => {
+    this.#applyBatch((batch) => {
       deleteOutboxCommit(this.#db, commit.clientCommitId);
       for (const operation of commit.operations) {
         if (operation.op !== 'upsert') continue;
@@ -1368,19 +1589,24 @@ export class SyncClient {
           [operation.rowId],
         )[0];
         if (row !== undefined && row.v === OPTIMISTIC_VERSION) {
+          if (!this.#recordStoredRowScopes(batch, table, operation.rowId)) {
+            batch.table(table.name);
+          }
           deleteLocalRow(this.#db, table, operation.rowId);
         }
       }
-    });
-    this.#rejections.push({
-      clientCommitId: commit.clientCommitId,
-      opIndex: 0,
-      code: OUTBOX_INCOMPATIBLE_CODE,
-      message,
-      retryable: false,
-      ...(commit.operations[0] !== undefined
-        ? { operation: commit.operations[0] }
-        : {}),
+      this.#rejections.push({
+        clientCommitId: commit.clientCommitId,
+        opIndex: 0,
+        code: OUTBOX_INCOMPATIBLE_CODE,
+        message,
+        retryable: false,
+        ...(commit.operations[0] !== undefined
+          ? { operation: commit.operations[0] }
+          : {}),
+      });
+      batch.status();
+      batch.rejections();
     });
   }
 
@@ -1423,7 +1649,7 @@ export class SyncClient {
     // Cleared before the round, not after: a wake-up (or a delta dropped
     // because this pull is mid-flight) that lands during the round must
     // survive it — the reference server keeps no replay buffer (§8.2).
-    this.#needsPull = false;
+    this.#setSyncNeeded(false);
     try {
       // §5.9.7 B4: upload pending blobs BEFORE pushing rows that reference
       // them, so the server-side existence check (§6.6) passes.
@@ -1491,10 +1717,11 @@ export class SyncClient {
       // §4.8 E1: the push half may have drained commits that pinned rows of
       // a shrunk window unit — retry any deferred evictions now.
       this.#drainPendingEvictions();
+      this.#retryDelayMs = 250;
       if (deferred > 0) {
         // §6.1 splitBatch remainder: more queued commits than this request
         // could carry — keep the sync-needed signal raised for the host.
-        this.#needsPull = true;
+        this.#setSyncNeeded(true);
         return { ...summary, deferredCommits: deferred };
       }
       return summary;
@@ -1510,6 +1737,22 @@ export class SyncClient {
           ...(this.#leaseState ?? {}),
           errorCode: code,
         });
+      }
+      const explicitlyRetryable = (error as { retryable?: unknown }).retryable;
+      const retryable =
+        explicitlyRetryable === true ||
+        (explicitlyRetryable === undefined && typeof code !== 'string');
+      if (retryable) {
+        const intent: SyncIntent = {
+          kind: 'background',
+          delayMs: this.#retryDelayMs,
+        };
+        this.#retryDelayMs = Math.min(this.#retryDelayMs * 2, 30_000);
+        try {
+          this.#config.onSyncIntent?.(intent);
+        } catch {
+          // An observer cannot alter sync correctness.
+        }
       }
       throw error;
     } finally {
@@ -1670,14 +1913,14 @@ export class SyncClient {
     const event = parsed.event;
     if (event.event === 'hello') {
       if (event.data.requiresSync) {
-        this.#needsPull = true;
+        this.#setSyncNeeded(true);
         this.#config.onSyncNeeded?.('hello');
       }
       return;
     }
     if (event.event === 'sync') {
       // §8.3: any wake-up means "run a pull soon", never data.
-      this.#needsPull = true;
+      this.#setSyncNeeded(true);
       this.#config.onSyncNeeded?.(event.data.reason);
       return;
     }
@@ -1735,7 +1978,7 @@ export class SyncClient {
       // worth it. (An optimization; the op chain below is the correctness
       // mechanism — it also excludes a delta from racing a `setWindow` or a
       // sync round that started between this check and the apply.)
-      this.#needsPull = true;
+      this.#setSyncNeeded(true);
       return;
     }
     // Serialize the apply on the operation chain: a delta must never
@@ -1749,7 +1992,7 @@ export class SyncClient {
         await this.#processResponse(message, [], undefined, 'delta');
       } catch {
         // A delta that cannot be applied is recovered by a pull (§8.3).
-        this.#needsPull = true;
+        this.#setSyncNeeded(true);
         this.#config.onSyncNeeded?.('catchup-required');
       }
     });
@@ -1800,16 +2043,17 @@ export class SyncClient {
       // version this client sends. The §7.4.2 trigger-2 convergence runs
       // when the APP updates (recreating the client with a new generated
       // schema), which fires the boot-time §7.4.1 marker check instead.
-      this.#schemaFloor = {
+      const schemaFloor: SchemaFloor = {
         requiredSchemaVersion: header.requiredSchemaVersion,
         ...(header.latestSchemaVersion !== undefined
           ? { latestSchemaVersion: header.latestSchemaVersion }
           : {}),
       };
+      this.#setSchemaFloor(schemaFloor);
       return {
         ...summary,
         bootstrapping: [],
-        schemaFloor: this.#schemaFloor,
+        schemaFloor,
       };
     }
 
@@ -1817,55 +2061,151 @@ export class SyncClient {
     let errorFrame: ClientSyncError | undefined;
     let deltaCursor = -1;
 
-    // One apply batch per pull/delta round (I1): COMMIT + segment applies,
-    // the revocation purge, and the optimistic replay all coalesce into a
-    // single invalidation event emitted when this batch unwinds.
-    await this.#applyBatchAsync(async () => {
-      try {
-        for (const frame of message.frames.slice(1)) {
-          switch (frame.type) {
-            case 'RESP_HEADER':
-              break;
-            case 'LEASE':
-              // §7.3.5: persist the opaque lease and clear any prior lease
-              // error — a fresh lease means the outage/revocation is over.
-              this.#setLeaseState({
-                leaseId: frame.leaseId,
-                expiresAtMs: frame.expiresAtMs,
-              });
-              break;
-            case 'PUSH_RESULT':
-              this.#handlePushResult(frame, commitsById, summary);
-              break;
-            case 'SUB_START': {
-              const sub = subsById.get(frame.id);
-              const fresh =
-                sub !== undefined &&
-                sub.cursor < 0 &&
-                sub.bootstrapState === undefined &&
-                frame.bootstrap;
-              const skip =
-                sub === undefined ||
-                (mode === 'delta' &&
-                  (sub.status !== 'active' ||
-                    sub.bootstrapState !== undefined));
-              section = { start: frame, sub, fresh, skip, cleared: false };
+    // Each durable observer transaction emits its own revisioned batch.
+    // Async decrypt/download work happens outside SQLite transactions.
+    try {
+      for (const frame of message.frames.slice(1)) {
+        switch (frame.type) {
+          case 'RESP_HEADER':
+            break;
+          case 'LEASE':
+            // §7.3.5: persist the opaque lease and clear any prior lease
+            // error — a fresh lease means the outage/revocation is over.
+            this.#setLeaseState({
+              leaseId: frame.leaseId,
+              expiresAtMs: frame.expiresAtMs,
+            });
+            break;
+          case 'PUSH_RESULT':
+            this.#applyBatch((batch) =>
+              this.#handlePushResult(frame, commitsById, summary, batch),
+            );
+            break;
+          case 'SUB_START': {
+            const sub = subsById.get(frame.id);
+            const fresh =
+              sub !== undefined &&
+              sub.cursor < 0 &&
+              sub.bootstrapState === undefined &&
+              frame.bootstrap;
+            const skip =
+              sub === undefined ||
+              (mode === 'delta' &&
+                (sub.status !== 'active' || sub.bootstrapState !== undefined));
+            section = { start: frame, sub, fresh, skip, cleared: false };
+            break;
+          }
+          case 'COMMIT':
+            if (section !== undefined && !section.skip) {
+              await this.#applyCommit(frame, summary);
+            }
+            break;
+          case 'SEGMENT_INLINE': {
+            if (
+              section === undefined ||
+              section.skip ||
+              section.sub === undefined
+            ) {
               break;
             }
-            case 'COMMIT':
-              if (section !== undefined && !section.skip) {
-                await this.#applyCommit(frame, summary);
-              }
+            const segment = decodeRowsSegment(frame.payload);
+            await this.#applySegmentOrFail(
+              section,
+              summary,
+              (table, clearFirst, effective) =>
+                applyRowsSegment(
+                  this.#db,
+                  this.#schema,
+                  table,
+                  segment,
+                  {
+                    clearFirst,
+                    effective,
+                    transaction: (fn) =>
+                      this.#applyBatch((batch) => {
+                        if (
+                          segment.blocks.some((block) => block.length > 0) ||
+                          (clearFirst &&
+                            this.#scopedRowsExist(table, effective))
+                        ) {
+                          batch.table(table.name);
+                        }
+                        return fn();
+                      }),
+                  },
+                  this.#encryption,
+                ),
+              section.fresh && !section.cleared,
+            );
+            break;
+          }
+          case 'SEGMENT_REF': {
+            if (
+              section === undefined ||
+              section.skip ||
+              section.sub === undefined
+            ) {
               break;
-            case 'SEGMENT_INLINE': {
+            }
+            // §4.2: a descriptor whose mediaType was not advertised is a
+            // broken server — fail loud, never skip or guess.
+            if (
+              frame.mediaType === 'sqlite' &&
+              (this.#acceptMask() & ACCEPT_SQLITE) === 0
+            ) {
+              throw new ClientSyncError(
+                'sync.invalid_request',
+                'SEGMENT_REF mediaType sqlite was not advertised in accept (§4.2)',
+              );
+            }
+            const bytes = await this.#downloadSegment(frame, section.sub);
+            if (frame.mediaType === 'sqlite') {
+              // §5.3: images are whole-table — a paged descriptor is
+              // invalid, and the image is always its table's first page.
               if (
-                section === undefined ||
-                section.skip ||
-                section.sub === undefined
+                frame.rowCursor !== undefined ||
+                frame.nextRowCursor !== undefined
               ) {
-                break;
+                throw new ClientSyncError(
+                  'sync.invalid_request',
+                  'sqlite segments are whole-table: rowCursor/nextRowCursor must be absent (§5.3)',
+                );
               }
-              const segment = decodeRowsSegment(frame.payload);
+              await this.#applySegmentOrFail(
+                section,
+                summary,
+                (table, clearFirst, effective) =>
+                  applySqliteSegment(
+                    this.#db,
+                    this.#schema,
+                    table,
+                    bytes,
+                    {
+                      table: frame.table,
+                      rowCount: frame.rowCount,
+                      asOfCommitSeq: frame.asOfCommitSeq,
+                      scopeDigest: frame.scopeDigest,
+                    },
+                    {
+                      clearFirst,
+                      effective,
+                      transaction: (fn) =>
+                        this.#applyBatch((batch) => {
+                          if (
+                            frame.rowCount > 0 ||
+                            (clearFirst &&
+                              this.#scopedRowsExist(table, effective))
+                          ) {
+                            batch.table(table.name);
+                          }
+                          return fn();
+                        }),
+                    },
+                  ),
+                section.fresh && !section.cleared,
+              );
+            } else {
+              const segment = decodeRowsSegment(bytes);
               await this.#applySegmentOrFail(
                 section,
                 summary,
@@ -1875,131 +2215,71 @@ export class SyncClient {
                     this.#schema,
                     table,
                     segment,
-                    { clearFirst, effective },
+                    {
+                      clearFirst,
+                      effective,
+                      transaction: (fn) =>
+                        this.#applyBatch((batch) => {
+                          if (
+                            segment.blocks.some((block) => block.length > 0) ||
+                            (clearFirst &&
+                              this.#scopedRowsExist(table, effective))
+                          ) {
+                            batch.table(table.name);
+                          }
+                          return fn();
+                        }),
+                    },
                     this.#encryption,
                   ),
-                section.fresh && !section.cleared,
+                section.fresh &&
+                  !section.cleared &&
+                  frame.rowCursor === undefined,
               );
-              break;
             }
-            case 'SEGMENT_REF': {
-              if (
-                section === undefined ||
-                section.skip ||
-                section.sub === undefined
-              ) {
-                break;
-              }
-              // §4.2: a descriptor whose mediaType was not advertised is a
-              // broken server — fail loud, never skip or guess.
-              if (
-                frame.mediaType === 'sqlite' &&
-                (this.#acceptMask() & ACCEPT_SQLITE) === 0
-              ) {
-                throw new ClientSyncError(
-                  'sync.invalid_request',
-                  'SEGMENT_REF mediaType sqlite was not advertised in accept (§4.2)',
-                );
-              }
-              const bytes = await this.#downloadSegment(frame, section.sub);
-              if (frame.mediaType === 'sqlite') {
-                // §5.3: images are whole-table — a paged descriptor is
-                // invalid, and the image is always its table's first page.
-                if (
-                  frame.rowCursor !== undefined ||
-                  frame.nextRowCursor !== undefined
-                ) {
-                  throw new ClientSyncError(
-                    'sync.invalid_request',
-                    'sqlite segments are whole-table: rowCursor/nextRowCursor must be absent (§5.3)',
-                  );
-                }
-                await this.#applySegmentOrFail(
-                  section,
-                  summary,
-                  (table, clearFirst, effective) =>
-                    applySqliteSegment(
-                      this.#db,
-                      this.#schema,
-                      table,
-                      bytes,
-                      {
-                        table: frame.table,
-                        rowCount: frame.rowCount,
-                        asOfCommitSeq: frame.asOfCommitSeq,
-                        scopeDigest: frame.scopeDigest,
-                      },
-                      { clearFirst, effective },
-                    ),
-                  section.fresh && !section.cleared,
-                );
-              } else {
-                const segment = decodeRowsSegment(bytes);
-                await this.#applySegmentOrFail(
-                  section,
-                  summary,
-                  (table, clearFirst, effective) =>
-                    applyRowsSegment(
-                      this.#db,
-                      this.#schema,
-                      table,
-                      segment,
-                      { clearFirst, effective },
-                      this.#encryption,
-                    ),
-                  section.fresh &&
-                    !section.cleared &&
-                    frame.rowCursor === undefined,
-                );
-              }
-              break;
-            }
-            case 'SUB_END': {
-              if (
-                section !== undefined &&
-                !section.skip &&
-                section.sub !== undefined
-              ) {
-                const applied = this.#finishSection(
-                  section.sub,
-                  section.start,
-                  frame.nextCursor,
-                  frame.bootstrapState,
-                  summary,
-                );
-                if (mode === 'delta' && applied) {
-                  deltaCursor = Math.max(deltaCursor, frame.nextCursor);
-                }
-              }
-              section = undefined;
-              break;
-            }
-            case 'ERROR':
-              // §1.4 rule 5 / §1.6: the request failed; the open
-              // subscription's SUB_END values are never persisted.
-              errorFrame = new ClientSyncError(
-                frame.code,
-                frame.message,
-                frame.retryable,
-              );
-              section = undefined;
-              break;
-            case 'UNKNOWN':
-              break; // §1.2 rule 2: skipped, never interpreted
+            break;
           }
-          if (errorFrame !== undefined) break;
+          case 'SUB_END': {
+            if (
+              section !== undefined &&
+              !section.skip &&
+              section.sub !== undefined
+            ) {
+              const applied = this.#finishSection(
+                section.sub,
+                section.start,
+                frame.nextCursor,
+                frame.bootstrapState,
+                summary,
+              );
+              if (mode === 'delta' && applied) {
+                deltaCursor = Math.max(deltaCursor, frame.nextCursor);
+              }
+            }
+            section = undefined;
+            break;
+          }
+          case 'ERROR':
+            // §1.4 rule 5 / §1.6: the request failed; the open
+            // subscription's SUB_END values are never persisted.
+            errorFrame = new ClientSyncError(
+              frame.code,
+              frame.message,
+              frame.retryable,
+            );
+            section = undefined;
+            break;
+          case 'UNKNOWN':
+            break; // §1.2 rule 2: skipped, never interpreted
         }
-      } finally {
-        // §7.1: local reads see outbox state applied optimistically — replay
-        // the still-pending commits on top of the freshly applied server
-        // state (the simple reconciliation mandated for B3).
-        this.#replayOutbox();
-        // §5.9.7 B1: after every apply/replay, refcounts follow the live rows.
-        // A benign apply retains zero-ref bodies (LRU default); the revocation
-        // purge below deletes orphaned bodies with deleteOrphans (B2).
-        this.#reconcileBlobs(false);
+        if (errorFrame !== undefined) break;
       }
-    });
+    } finally {
+      // §7.1: local reads see outbox state applied optimistically — replay
+      // the still-pending commits on top of the freshly applied server state.
+      this.#replayOutbox();
+      this.#reconcileBlobs(false);
+    }
 
     if (errorFrame !== undefined) throw errorFrame;
 
@@ -2026,6 +2306,7 @@ export class SyncClient {
     frame: PushResultFrame,
     commitsById: ReadonlyMap<string, OutboxCommit>,
     summary: MutableSummary,
+    batch: ChangeAccumulator,
   ): void {
     const commit = commitsById.get(frame.clientCommitId);
     if (commit === undefined) return;
@@ -2033,6 +2314,7 @@ export class SyncClient {
       // §6.3: applied and cached both drain the outbox — cached means
       // "already applied, you may have missed the ack".
       deleteOutboxCommit(this.#db, frame.clientCommitId);
+      batch.status();
       summary.applied.push(frame.clientCommitId);
       return;
     }
@@ -2064,6 +2346,7 @@ export class SyncClient {
           ...(operation !== undefined ? { operation } : {}),
         };
         this.#conflicts.push(conflict);
+        batch.conflicts();
         summary.conflicts.push(conflict);
         this.#config.onConflict?.(conflict);
       } else if (result.status === 'error') {
@@ -2075,6 +2358,7 @@ export class SyncClient {
           retryable: result.retryable,
           ...(operation !== undefined ? { operation } : {}),
         });
+        batch.rejections();
       }
     }
     // §7.2: stop optimistic display and decide about dependents — the
@@ -2092,10 +2376,14 @@ export class SyncClient {
           [operation.rowId],
         )[0];
         if (row !== undefined && row.v === OPTIMISTIC_VERSION) {
+          if (!this.#recordStoredRowScopes(batch, table, operation.rowId)) {
+            batch.table(table.name);
+          }
           deleteLocalRow(this.#db, table, operation.rowId);
         }
       }
     });
+    batch.status();
     summary.rejected.push(frame.clientCommitId);
   }
 
@@ -2118,21 +2406,86 @@ export class SyncClient {
     frame: CommitFrame,
     summary: MutableSummary,
   ): Promise<void> {
-    await applyCommitFrame(this.#db, this.#schema, frame, this.#encryption);
+    await applyCommitFrame(
+      this.#db,
+      this.#schema,
+      frame,
+      this.#encryption,
+      (fn) =>
+        this.#applyBatch((batch) => {
+          this.#recordCommitChanges(batch, frame);
+          return fn();
+        }),
+    );
     summary.commitsApplied += 1;
-    // I1/I2: record touched tables and precise `prefix:value` scope keys —
-    // COMMIT changes carry per-row stored scopes (§4.5), the finest honest
-    // invalidation the wire provides.
-    const batch = this.#batch;
-    if (batch === undefined) return;
+  }
+
+  /** Record before + after scope keys while the commit transaction is open. */
+  #recordCommitChanges(batch: ChangeAccumulator, frame: CommitFrame): void {
     for (const change of frame.changes) {
       const tableName = frame.tables[change.tableIndex];
       if (tableName === undefined) continue;
       const table = this.#schema.tables.get(tableName);
       if (table === undefined) continue;
-      batch.table(tableName);
+      let precise = this.#recordStoredRowScopes(batch, table, change.rowId);
+      for (const variable of Object.keys(change.scopes)) {
+        if (table.scopePrefixByVariable.has(variable)) precise = true;
+      }
       batch.changeScopes(table, change.scopes);
+      if (!precise) batch.table(tableName);
     }
+  }
+
+  /** Add the currently materialized row's scope keys; returns whether known. */
+  #recordStoredRowScopes(
+    batch: ChangeAccumulator,
+    table: CompiledClientTable,
+    rowId: string,
+  ): boolean {
+    const mappings = [...table.scopeColumnByVariable].filter(([variable]) =>
+      table.scopePrefixByVariable.has(variable),
+    );
+    if (mappings.length === 0) return false;
+    const row = this.#db.query(
+      `SELECT ${mappings.map(([, column]) => quoteIdent(column)).join(', ')}
+         FROM ${quoteIdent(table.name)}
+        WHERE ${quoteIdent(table.primaryKey)} = ?`,
+      [rowId],
+    )[0];
+    if (row === undefined) return false;
+    let recorded = false;
+    for (const [variable, column] of mappings) {
+      const value = row[column];
+      const prefix = table.scopePrefixByVariable.get(variable);
+      if (value != null && prefix !== undefined) {
+        batch.scope(table.name, `${prefix}:${String(value)}`);
+        recorded = true;
+      }
+    }
+    return recorded;
+  }
+
+  /** Whether a fresh-bootstrap clear would remove at least one local row. */
+  #scopedRowsExist(table: CompiledClientTable, effective: ScopeMap): boolean {
+    const entries = Object.entries(effective);
+    if (entries.length === 0) return false;
+    const clauses: string[] = [];
+    const params: string[] = [];
+    for (const [variable, values] of entries) {
+      const column = table.scopeColumnByVariable.get(variable);
+      if (column === undefined || values.length === 0) return false;
+      clauses.push(
+        `${quoteIdent(column)} IN (${values.map(() => '?').join(', ')})`,
+      );
+      params.push(...values);
+    }
+    return (
+      this.#db.query(
+        `SELECT 1 FROM ${quoteIdent(table.name)}
+          WHERE ${clauses.join(' AND ')} LIMIT 1`,
+        params,
+      ).length > 0
+    );
   }
 
   /**
@@ -2160,27 +2513,28 @@ export class SyncClient {
         section.start.effectiveScopes,
       );
       section.cleared = true;
-      // I1/I2: segments carry only a table + scopeDigest, never per-row
-      // scope keys — invalidate the table plus the subscription's effective
-      // scope keys (the coarsest honest key for bulk data).
-      this.#batch?.table(table.name);
-      this.#batch?.scopeMap(table, section.start.effectiveScopes);
     } catch (error) {
       if (
         error instanceof ClientSyncError &&
         error.code === 'sync.scope_revoked'
       ) {
-        saveSubscription(this.#db, {
-          id: sub.id,
-          table: sub.table,
-          scopes: sub.scopes,
-          ...(sub.params !== undefined ? { params: sub.params } : {}),
-          cursor: sub.cursor,
-          ...(sub.effectiveScopes !== undefined
-            ? { effectiveScopes: sub.effectiveScopes }
-            : {}),
-          status: 'failed',
-          reasonCode: 'sync.scope_revoked',
+        const registered = getWindowUnitBySubId(this.#db, sub.id);
+        this.#applyBatch((batch) => {
+          saveSubscription(this.#db, {
+            id: sub.id,
+            table: sub.table,
+            scopes: sub.scopes,
+            ...(sub.params !== undefined ? { params: sub.params } : {}),
+            cursor: sub.cursor,
+            ...(sub.effectiveScopes !== undefined
+              ? { effectiveScopes: sub.effectiveScopes }
+              : {}),
+            status: 'failed',
+            reasonCode: 'sync.scope_revoked',
+          });
+          if (registered !== undefined) {
+            batch.window(registered.baseKey, sub.table, registered.unit);
+          }
         });
         summary.failed.push(sub.id);
         section.skip = true;
@@ -2264,39 +2618,49 @@ export class SyncClient {
       // An absent bootstrapState clears any previous resume token (§4.4:
       // absent = bootstrap complete, or not bootstrapping).
       const wasPending = sub.cursor < 0 || sub.bootstrapState !== undefined;
-      saveSubscription(this.#db, {
-        id: sub.id,
-        table: sub.table,
-        scopes: sub.scopes,
-        ...(sub.params !== undefined ? { params: sub.params } : {}),
-        cursor: nextCursor,
-        ...(bootstrapState !== undefined ? { bootstrapState } : {}),
-        effectiveScopes: start.effectiveScopes,
-        status: 'active',
+      const completed =
+        wasPending && nextCursor >= 0 && bootstrapState === undefined;
+      const registered = getWindowUnitBySubId(this.#db, sub.id);
+      this.#applyBatch((batch) => {
+        saveSubscription(this.#db, {
+          id: sub.id,
+          table: sub.table,
+          scopes: sub.scopes,
+          ...(sub.params !== undefined ? { params: sub.params } : {}),
+          cursor: nextCursor,
+          ...(bootstrapState !== undefined ? { bootstrapState } : {}),
+          effectiveScopes: start.effectiveScopes,
+          status: 'active',
+        });
+        if (completed && registered !== undefined) {
+          // A zero-row bootstrap is a window-domain transition, not a fake
+          // row/table change (SPEC §4.8 / §7.5).
+          batch.window(registered.baseKey, sub.table, registered.unit);
+        }
       });
-      if (wasPending && nextCursor >= 0 && bootstrapState === undefined) {
-        // §4.8: the completeness verdict flipped pending → complete. A
-        // zero-row bootstrap applies nothing, so the flip itself must reach
-        // live oracles through the choke point (shares the pull's batch).
-        this.#applyBatch((batch) => batch.table(sub.table));
-      }
       return true;
     }
 
     if (start.status === 'reset') {
       // §4.6: discard cursor + resume token, keep local rows, re-bootstrap
       // with cursor = -1 on the next pull. Staleness, not a purge.
-      saveSubscription(this.#db, {
-        id: sub.id,
-        table: sub.table,
-        scopes: sub.scopes,
-        ...(sub.params !== undefined ? { params: sub.params } : {}),
-        cursor: -1,
-        ...(sub.effectiveScopes !== undefined
-          ? { effectiveScopes: sub.effectiveScopes }
-          : {}),
-        status: 'active',
-        reasonCode: start.reasonCode,
+      const registered = getWindowUnitBySubId(this.#db, sub.id);
+      this.#applyBatch((batch) => {
+        saveSubscription(this.#db, {
+          id: sub.id,
+          table: sub.table,
+          scopes: sub.scopes,
+          ...(sub.params !== undefined ? { params: sub.params } : {}),
+          cursor: -1,
+          ...(sub.effectiveScopes !== undefined
+            ? { effectiveScopes: sub.effectiveScopes }
+            : {}),
+          status: 'active',
+          reasonCode: start.reasonCode,
+        });
+        if (registered !== undefined) {
+          batch.window(registered.baseKey, sub.table, registered.unit);
+        }
       });
       summary.resets.push(sub.id);
       return false;
@@ -2306,44 +2670,48 @@ export class SyncClient {
     // (never the requested map), drop doomed outbox commits, stop pulling.
     const table = this.#table(sub.table);
     const lastEffective = sub.effectiveScopes;
+    const registered = getWindowUnitBySubId(this.#db, sub.id);
     let failed = false;
-    if (lastEffective !== undefined && Object.keys(lastEffective).length > 0) {
-      try {
-        this.#db.transaction(() => {
+    this.#applyBatch((batch) => {
+      if (
+        lastEffective !== undefined &&
+        Object.keys(lastEffective).length > 0
+      ) {
+        try {
           deleteScopedRows(this.#db, table, lastEffective);
-        });
-        // I1: the §3.3 purge is a bulk delete — invalidate the table + the
-        // purged effective scope keys so live queries over them re-run.
-        this.#batch?.table(table.name);
-        this.#batch?.scopeMap(table, lastEffective);
-        dropOutboxCommitsInScope(this.#db, table, lastEffective);
-        // §5.9.7 B2: revocation deletes now-unauthorized blob bodies —
-        // reconcile with deleteOrphans (evicted ≠ revoked).
-        this.#reconcileBlobs(true);
-      } catch (error) {
-        if (
-          error instanceof ClientSyncError &&
-          error.code === 'sync.scope_revoked'
-        ) {
-          // Fail closed: no local mapping — surface a fatal configuration
-          // error and stop syncing the table without clearing anything.
-          failed = true;
-        } else {
-          throw error;
+          batch.scopeMap(table, lastEffective);
+          if (
+            dropOutboxCommitsInScope(this.#db, table, lastEffective).length > 0
+          ) {
+            batch.status();
+          }
+          this.#reconcileBlobs(true);
+        } catch (error) {
+          if (
+            error instanceof ClientSyncError &&
+            error.code === 'sync.scope_revoked'
+          ) {
+            failed = true;
+          } else {
+            throw error;
+          }
         }
       }
-    }
-    saveSubscription(this.#db, {
-      id: sub.id,
-      table: sub.table,
-      scopes: sub.scopes,
-      ...(sub.params !== undefined ? { params: sub.params } : {}),
-      cursor: nextCursor,
-      ...(lastEffective !== undefined
-        ? { effectiveScopes: lastEffective }
-        : {}),
-      status: failed ? 'failed' : 'revoked',
-      reasonCode: start.reasonCode,
+      saveSubscription(this.#db, {
+        id: sub.id,
+        table: sub.table,
+        scopes: sub.scopes,
+        ...(sub.params !== undefined ? { params: sub.params } : {}),
+        cursor: nextCursor,
+        ...(lastEffective !== undefined
+          ? { effectiveScopes: lastEffective }
+          : {}),
+        status: failed ? 'failed' : 'revoked',
+        reasonCode: start.reasonCode,
+      });
+      if (registered !== undefined) {
+        batch.window(registered.baseKey, sub.table, registered.unit);
+      }
     });
     summary.revoked.push(sub.id);
     if (failed) summary.failed.push(sub.id);
@@ -2354,12 +2722,16 @@ export class SyncClient {
 
   #applyOperationsLocally(
     operations: readonly OutboxOperation[],
-    batch?: Invalidation,
+    batch?: ChangeAccumulator,
   ): void {
     for (const op of operations) {
       const table = this.#table(op.table);
-      batch?.table(op.table);
+      let precise =
+        batch === undefined
+          ? false
+          : this.#recordStoredRowScopes(batch, table, op.rowId);
       if (op.op === 'delete') {
+        if (batch !== undefined && !precise) batch.table(op.table);
         deleteLocalRow(this.#db, table, op.rowId);
         continue;
       }
@@ -2374,9 +2746,11 @@ export class SyncClient {
           const cell = idx === undefined ? undefined : values[idx];
           const prefix = table.scopePrefixByVariable.get(variable);
           if (prefix !== undefined && cell != null) {
-            batch.scopeKey(`${prefix}:${String(cell)}`);
+            batch.scope(table.name, `${prefix}:${String(cell)}`);
+            precise = true;
           }
         }
+        if (!precise) batch.table(table.name);
       }
       const existing = this.#db.query(
         `SELECT ${quoteIdent(SYNC_VERSION_COLUMN)} AS v FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,

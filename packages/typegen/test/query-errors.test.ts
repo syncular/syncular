@@ -174,6 +174,61 @@ describe('parameter typing', () => {
   });
 });
 
+describe('reactive metadata is proof-based', () => {
+  test('infers a required scope beside an unrelated optional-style OR group', () => {
+    const query = analyze(
+      'q.sql',
+      `SELECT id, title FROM todos
+       WHERE list_id = :listId
+         AND (:search = '' OR title = :search)`,
+    );
+    expect(query.reactive.dependencies).toEqual([
+      {
+        table: 'todos',
+        scopes: [
+          {
+            table: 'todos',
+            variable: 'list_id',
+            pattern: 'list:{list_id}',
+            params: ['listId'],
+          },
+        ],
+      },
+    ]);
+    expect(query.reactive.coverage).toEqual([
+      {
+        table: 'todos',
+        variable: 'list_id',
+        units: ['listId'],
+        fixedScopes: [],
+      },
+    ]);
+  });
+
+  test('does not claim a scope when equality is only one OR branch', () => {
+    const query = analyze(
+      'q.sql',
+      'SELECT id FROM todos WHERE list_id = :left OR list_id = :right',
+    );
+    expect(query.reactive.dependencies).toEqual([
+      { table: 'todos', scopes: [] },
+    ]);
+    expect(query.reactive.coverage).toEqual([]);
+  });
+
+  test('omits row identity for joins and grouped queries', () => {
+    const joined = analyze(
+      'q.sql',
+      `SELECT left_todo.id
+       FROM todos AS left_todo
+       JOIN todos AS right_todo ON right_todo.id = left_todo.id`,
+    );
+    const grouped = analyze('q.sql', 'SELECT id FROM todos GROUP BY id');
+    expect(joined.reactive.rowKey).toBeUndefined();
+    expect(grouped.reactive.rowKey).toBeUndefined();
+  });
+});
+
 describe('column fidelity', () => {
   test('a nullable plain ref stays nullable + exact', () => {
     const q = analyze('q.sql', 'SELECT note FROM todos');

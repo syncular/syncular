@@ -13,6 +13,7 @@ import { encryptionScenarios } from './encryption';
 import { errorScenarios } from './errors';
 import { leaseScenarios } from './leases';
 import { lifecycleScenarios } from './lifecycle';
+import { observationScenarios } from './observation';
 import { offlineScenarios } from './offline';
 import { presenceScenarios } from './presence';
 import { realtimeScenarios } from './realtime';
@@ -29,6 +30,7 @@ import { wsRoundScenarios } from './ws-rounds';
 export const CATALOG: readonly Scenario[] = [
   ...convergenceScenarios,
   ...offlineScenarios,
+  ...observationScenarios,
   ...conflictScenarios,
   ...scopeScenarios,
   ...bootstrapScenarios,

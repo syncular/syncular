@@ -81,7 +81,6 @@ async function makeHandle(
       segmentsUrl: http.segmentsUrl,
       realtimeUrl: http.realtimeUrl,
     },
-    wakeJitterMs: 10,
     // Distinct lock names: these handles coexist inside one test process.
     lockName: `rpc-test-${options.clientId}`,
     onSyncNeeded: (reason) => {
@@ -153,6 +152,37 @@ test('query results carry blobs across the boundary (transfer path)', async () =
   expect([...(bytes as Uint8Array)]).toEqual([1, 2, 255]);
   expect(rows[0]?.n).toBe(42);
   expect(rows[0]?.missing).toBeNull();
+});
+
+test('warm worker querySnapshot IPC p95 stays within the local-view budget', async () => {
+  const { handle } = await makeHandle({
+    clientId: 'rpc-performance',
+    autoSync: false,
+  });
+  await handle.mutate([
+    {
+      table: 'tasks',
+      op: 'upsert',
+      values: taskValues('perf', 'perf', 'fast'),
+    },
+  ]);
+  const spec = {
+    sql: 'SELECT id, title FROM tasks WHERE id = ?',
+    params: ['perf'],
+  } as const;
+  await handle.querySnapshot(spec);
+  const samples: number[] = [];
+  for (let run = 0; run < 50; run += 1) {
+    const started = performance.now();
+    const snapshot = await handle.querySnapshot(spec);
+    samples.push(performance.now() - started);
+    expect(snapshot.rows).toHaveLength(1);
+  }
+  samples.sort((left, right) => left - right);
+  const p95 = samples[Math.floor(samples.length * 0.95)] ?? Infinity;
+  expect(p95).toBeLessThanOrEqual(
+    process.env.SYNCULAR_PERF_GATE === '1' ? 5 : 25,
+  );
 });
 
 test('two worker cores converge through the real server', async () => {

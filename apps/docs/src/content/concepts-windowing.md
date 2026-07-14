@@ -78,38 +78,57 @@ explicitly: the engine never reports a partial replica as complete.
 
 ## Using it
 
-Both the web client and the native (Rust) client expose the same surface:
-
-```ts
-// Hold p1 and p2 locally; drop p3 if it was held.
-await client.setWindow({ table: 'tasks', variable: 'project_id' }, ['p1', 'p2']);
-
-// The oracle — registered units, plus the subset still mid-bootstrap.
-const { units, pending } = client.windowState({
-  table: 'tasks',
-  variable: 'project_id',
-});
-// windowComplete(state, unit) = registered AND not pending.
-```
-
-In React, `useWindow` manages the set and exposes the verdict:
+For named queries, typegen normally owns this plumbing. A predicate such as
+`WHERE project_id = :projectId` is proven against the schema and emitted as
+query coverage. `useQuery` claims that unit and reads rows, completeness, and
+the exact local revision in one SQLite snapshot:
 
 ```tsx
-const { units, pending, setWindow, isComplete } = useWindow({
-  table: 'tasks',
-  variable: 'project_id',
-});
+const tasks = useQuery(listProjectTasksQuery, { projectId });
 
-// Tell the user whether they see everything or a local subset.
-if (!isComplete(activeProject)) {
-  // window miss OR still bootstrapping: widen, show a loading state, or
-  // flag the result partial — never render it as a complete empty list
-}
+if (tasks.phase === 'loading') return <Skeleton />;
+if (tasks.phase === 'ready' && tasks.rows.length === 0) return <Empty />;
+return <Rows rows={tasks.rows} partial={tasks.phase === 'partial'} />;
 ```
 
-`isComplete` flips to `true` on the invalidation that accompanies the
-unit's bootstrap completion — including a zero-row bootstrap — so a
-loading state resolves without polling.
+That distinction makes a zero-row bootstrap safe: `[]` is not a complete empty
+answer until the same snapshot says the unit has finished. There is no
+render-order dependency between a query hook and a separate window hook.
+
+Claims compose. If two mounted consumers require `{A,B}` and `{B,C}` on the
+same base, the effective core window is `{A,B,C}`. Unmounting the first drops
+only `A`; it cannot overwrite the second consumer's claim.
+
+The lower-level API remains useful for prefetching, retention policies, and
+runtime-built queries:
+
+```ts
+const store = useReactiveStore();
+const retention = store.retainWindow(
+  { table: 'tasks', variable: 'project_id' },
+  ['p1', 'p2'],
+);
+await retention.ready;
+
+// Later, release only this owner's claim.
+retention.release();
+```
+
+React applications use the lifecycle-safe adapter for a known working set:
+
+```tsx
+const retention = useRetainedWindow(
+  { table: 'tasks', variable: 'project_id' },
+  ['p1', 'p2'],
+);
+```
+
+It composes with generated query claims, normalizes duplicate units, cleans up
+on unmount, and surfaces registration through `isPending` / `error`.
+
+`setWindow`/`windowState` and React's `useWindow` remain explicit primitives.
+They feed the same union coordinator, but ordinary generated queries should
+not repeat their coverage by hand.
 
 ## What's next
 

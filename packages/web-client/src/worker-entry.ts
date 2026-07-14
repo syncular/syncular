@@ -9,7 +9,7 @@
  * same bootstrap, the same RPC, a different SQLite.
  *
  * The §8.4 host loop lives HERE: wake-ups (hello/`sync` events, delta
- * drops) coalesce into one jittered `syncUntilIdle` round in the worker;
+ * drops) coalesce into one intent-driven `syncUntilIdle` round in the worker;
  * RPC-driven and auto-driven sync rounds serialize on one queue because
  * the core owns exactly one loop.
  */
@@ -22,6 +22,7 @@ import {
   httpSyncTransport,
   webSocketRealtimeConnector,
 } from './http';
+import type { CommandEffects, SyncIntent } from './invalidation';
 import type {
   RealtimeConnector,
   SegmentDownloader,
@@ -133,36 +134,67 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     return next;
   }
 
-  // -- §8.4 host loop: coalesced, jittered, inside the worker --------------
+  // -- SPEC §7.5 host loop: event-driven intents, no interactive polling --
   let autoSync = true;
-  let wakeJitterMs = 200;
   let autoSyncScheduled = false;
-  function scheduleAutoSync(): void {
+  let backgroundTimer: ReturnType<typeof setTimeout> | undefined;
+  let backgroundDue = Number.POSITIVE_INFINITY;
+
+  function runAutoSync(): void {
+    autoSyncScheduled = false;
+    if (closed || client === undefined) return;
+    const running = client;
+    void serializedSync(() => running.syncUntilIdle())
+      .then((summary) => {
+        if (!closed) post({ t: 'event', event: { kind: 'synced', summary } });
+      })
+      .catch((error: unknown) => {
+        if (!closed) {
+          post({
+            t: 'event',
+            event: { kind: 'synced', error: toErrorShape(error) },
+          });
+        }
+      });
+  }
+
+  function consumeSyncIntent(intent: SyncIntent): void {
+    if (!autoSync || closed || client === undefined || intent.kind === 'none') {
+      return;
+    }
+    if (intent.kind === 'background') {
+      if (autoSyncScheduled) return;
+      const due = Date.now() + Math.max(0, intent.delayMs);
+      if (backgroundTimer !== undefined && due >= backgroundDue) return;
+      if (backgroundTimer !== undefined) clearTimeout(backgroundTimer);
+      backgroundDue = due;
+      backgroundTimer = setTimeout(
+        () => {
+          backgroundTimer = undefined;
+          backgroundDue = Number.POSITIVE_INFINITY;
+          if (!autoSyncScheduled) {
+            autoSyncScheduled = true;
+            runAutoSync();
+          }
+        },
+        Math.max(0, due - Date.now()),
+      );
+      return;
+    }
+    if (backgroundTimer !== undefined) {
+      clearTimeout(backgroundTimer);
+      backgroundTimer = undefined;
+      backgroundDue = Number.POSITIVE_INFINITY;
+    }
     if (!autoSync || autoSyncScheduled || closed || client === undefined) {
       return;
     }
     autoSyncScheduled = true;
-    setTimeout(
-      () => {
-        autoSyncScheduled = false;
-        if (closed || client === undefined) return;
-        const running = client;
-        void serializedSync(() => running.syncUntilIdle())
-          .then((summary) => {
-            if (!closed)
-              post({ t: 'event', event: { kind: 'synced', summary } });
-          })
-          .catch((error: unknown) => {
-            if (!closed) {
-              post({
-                t: 'event',
-                event: { kind: 'synced', error: toErrorShape(error) },
-              });
-            }
-          });
-      },
-      Math.floor(Math.random() * wakeJitterMs),
-    );
+    queueMicrotask(runAutoSync);
+  }
+
+  function consumeEffects(effects: CommandEffects): void {
+    consumeSyncIntent(effects.sync);
   }
 
   function requireClient(): SyncClient {
@@ -215,7 +247,6 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       );
     }
     autoSync = config.autoSync ?? true;
-    wakeJitterMs = config.wakeJitterMs ?? 200;
 
     database =
       overrides.openDatabase !== undefined
@@ -270,8 +301,9 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       ...(config.limits !== undefined ? { limits: config.limits } : {}),
       onSyncNeeded: (reason) => {
         post({ t: 'event', event: { kind: 'sync-needed', reason } });
-        scheduleAutoSync();
+        consumeSyncIntent({ kind: 'interactive' });
       },
+      onSyncIntent: consumeSyncIntent,
       onConflict: (conflict) => {
         post({ t: 'event', event: { kind: 'conflict', conflict } });
       },
@@ -284,10 +316,8 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
         post({ t: 'event', event: { kind: 'presence', scopeKey } });
       },
     });
-    // TODO 3.1 / I1: forward every coalesced apply-batch invalidation to the
-    // UI thread so `SyncClientHandle.onInvalidate` fires with worker parity.
-    started.onInvalidate((event) => {
-      if (!closed) post({ t: 'event', event: { kind: 'invalidate', event } });
+    started.onChange((batch) => {
+      if (!closed) post({ t: 'event', event: { kind: 'change', batch } });
     });
     await started.start();
     realtimeConnector =
@@ -302,6 +332,10 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
             )
           : undefined;
     client = started;
+    // `start()` may discover persisted subscriptions/outbox work. Its callback
+    // fires before this worker publishes the initialized client, so consume
+    // the durable state once here as well; coalescing makes this a single task.
+    if (started.syncNeeded) consumeSyncIntent({ kind: 'interactive' });
     return { clientId: started.clientId };
   }
 
@@ -309,35 +343,26 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     subscribe: (input) => requireClient().subscribe(input),
     unsubscribe: (id) => requireClient().unsubscribe(id),
     setWindow: async (base, units) => {
-      await requireClient().setWindow(base, units);
-      // A window change adds/removes value-sharded subscriptions; a widened
-      // unit needs a bootstrap pull to become visible. In autoSync mode the
-      // host loop owns rounds, so schedule one now — otherwise the new unit
-      // waits for an unrelated server wake-up (§8.4). A no-op change still
-      // schedules a harmless idempotent round.
-      scheduleAutoSync();
+      const result = await requireClient().setWindowCommand(base, units);
+      consumeEffects(result.effects);
     },
     windowState: (base) => requireClient().windowState(base),
     mutate: (mutations) => {
-      const id = requireClient().mutate(mutations);
-      // In autoSync mode the host loop owns rounds (§8.4): a local write must
-      // push without the app orchestrating sync, so schedule a jittered round
-      // to drain the outbox promptly. `mutate` is synchronous — its outbox
-      // write has committed before this line — and the round itself serializes
-      // on SyncClient's operation chain, so no ordering hack is needed here;
-      // the §8.4 jitter in `scheduleAutoSync` is the only deferral, and it
-      // coalesces bursts. (Historically this used setTimeout to dodge a
-      // nested-transaction flake; that race is fixed at the source now — the
-      // real cause was cross-operation interleaving, serialized in the core.)
-      scheduleAutoSync();
-      return id;
+      const result = requireClient().mutateCommand(mutations);
+      consumeEffects(result.effects);
+      return result.value;
     },
     patch: (table, rowId, partial, options) => {
       // Same §8.4 rule as `mutate`: a local write must push without the app
-      // orchestrating sync, so schedule a jittered round to drain the outbox.
-      const id = requireClient().patch(table, rowId, partial, options);
-      scheduleAutoSync();
-      return id;
+      // orchestrating sync, so consume the core's immediate intent.
+      const result = requireClient().patchCommand(
+        table,
+        rowId,
+        partial,
+        options,
+      );
+      consumeEffects(result.effects);
+      return result.value;
     },
     sync: () => {
       const running = requireClient();
@@ -348,6 +373,9 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       return serializedSync(() => running.syncUntilIdle(maxRounds));
     },
     query: (sql, params) => requireClient().query(sql, params),
+    querySnapshot: (spec) => requireClient().querySnapshot(spec),
+    localRevision: () => requireClient().localRevision,
+    statusSnapshot: () => requireClient().statusSnapshot(),
     conflicts: () => requireClient().conflicts,
     rejections: () => requireClient().rejections,
     schemaFloor: () => requireClient().schemaFloor,
@@ -369,6 +397,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     },
     close: async () => {
       closed = true;
+      if (backgroundTimer !== undefined) clearTimeout(backgroundTimer);
       await client?.close();
       database?.close();
       client = undefined;

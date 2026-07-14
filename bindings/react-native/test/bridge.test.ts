@@ -1,7 +1,7 @@
 /**
  * Bridge unit tests with an injected NativeModule + event-emitter double:
  * assert the `SyncClientLike` contract — method → command mapping, the query
- * fast path, event fanout to onInvalidate/onPresence, the `{$bytes:hex}`
+ * fast path, exact change fanout, the `{$bytes:hex}`
  * convention, and lifecycle (pause/resume/close driving the native pump). Plus
  * a shape-parity test against the React `normalizeClient`, so a drift in
  * `SyncClientLike` breaks this suite (the bridge is the fifth host of that one
@@ -87,10 +87,25 @@ function defaultResponder(
       return OK({
         rows: [{ id: 't1', title: 'hello', blob: { $bytes: 'deadbeef' } }],
       });
+    case 'querySnapshot':
+      return OK({
+        revision: '7',
+        rows: [
+          { id: 't1', title: 'hello', count: { $bigint: '9007199254740993' } },
+        ],
+        coverage: { complete: true, pending: [], missing: [] },
+      });
     case 'create':
       return OK({});
     case 'mutate':
+    case 'patch':
       return OK({ clientCommitId: 'commit-1' });
+    case 'statusSnapshot':
+      return OK({
+        outbox: 1,
+        upgrading: false,
+        syncNeeded: false,
+      });
     case 'conflicts':
       return OK({ conflicts: [] });
     case 'rejections':
@@ -162,12 +177,42 @@ describe('createNativeSyncClient', () => {
     });
   });
 
+  test('querySnapshot is one atomic command and decodes bigint rows', async () => {
+    const { client, calls } = await build();
+    const snapshot = await client.querySnapshot({
+      sql: 'SELECT id, count FROM todo',
+    });
+    const command = calls.find(
+      (call) =>
+        call.fn === 'command' &&
+        (call.arg as { method: string }).method === 'querySnapshot',
+    );
+    expect(command).toBeDefined();
+    expect(snapshot.revision).toBe(7n);
+    expect(snapshot.coverage.complete).toBe(true);
+    expect(snapshot.rows[0]?.count).toBe(9007199254740993n);
+  });
+
   test('mutate returns the clientCommitId', async () => {
     const { client } = await build();
     const id = await client.mutate([
       { op: 'upsert', table: 'todo', values: { id: 't1', title: 'x' } },
     ]);
     expect(id).toBe('commit-1');
+  });
+
+  test('patch forwards a partial update without a full-row spread', async () => {
+    const { client, calls } = await build();
+    expect(await client.patch('todo', 't1', { done: true })).toBe('commit-1');
+    const command = calls.findLast(
+      (call) =>
+        call.fn === 'command' &&
+        (call.arg as { method: string }).method === 'patch',
+    );
+    expect(command?.arg).toMatchObject({
+      method: 'patch',
+      params: { table: 'todo', rowId: 't1', partial: { done: true } },
+    });
   });
 
   test('accessor methods unwrap their command replies', async () => {
@@ -196,18 +241,28 @@ describe('createNativeSyncClient', () => {
     });
   });
 
-  test('invalidate events fan out to onInvalidate listeners', async () => {
+  test('exact change batches fan out and derive legacy invalidations', async () => {
     const { client, emit } = await build();
+    const changes: bigint[] = [];
     const seen: Array<{ tables: string[]; scopeKeys: string[] }> = [];
+    client.onChange((batch) => changes.push(batch.revision));
     client.onInvalidate((event) => {
       seen.push({ tables: [...event.tables], scopeKeys: [...event.scopeKeys] });
     });
-    emit({ type: 'invalidate', tables: ['todo'], scopeKeys: ['project:1'] });
+    emit({
+      type: 'change',
+      batch: {
+        revision: '8',
+        tables: [{ table: 'todo', scopeKeys: ['project:1'] }],
+        windows: [],
+        conflictsChanged: false,
+        rejectionsChanged: false,
+      },
+    });
+    expect(changes).toEqual([8n]);
     expect(seen).toHaveLength(1);
     expect(seen[0]?.tables).toEqual(['todo']);
     expect(seen[0]?.scopeKeys).toEqual(['project:1']);
-    emit({ type: 'invalidate' });
-    expect(seen[1]?.tables).toEqual([]);
   });
 
   test('presence events fan out to onPresence listeners', async () => {
@@ -216,6 +271,21 @@ describe('createNativeSyncClient', () => {
     client.onPresence((key) => scopeKeys.push(key));
     emit({ type: 'presence', scopeKey: 'room:42' });
     expect(scopeKeys).toEqual(['room:42']);
+  });
+
+  test('interactive sync intents coalesce into one immediate native round', async () => {
+    const { client, calls, emit } = await build();
+    emit({ type: 'sync-intent', intent: { kind: 'interactive' } });
+    emit({ type: 'sync-intent', intent: { kind: 'interactive' } });
+    for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+    expect(
+      calls.filter(
+        (call) =>
+          call.fn === 'command' &&
+          (call.arg as { method: string }).method === 'syncUntilIdle',
+      ),
+    ).toHaveLength(1);
+    await client.close();
   });
 
   test('pause stops the pump; resume restarts it', async () => {
@@ -230,12 +300,21 @@ describe('createNativeSyncClient', () => {
   test('close stops the pump, detaches the listener, and closes the core', async () => {
     const { client, emit, pump } = await build();
     let count = 0;
-    client.onInvalidate(() => {
+    client.onChange(() => {
       count += 1;
     });
     await client.close();
     expect(pump.closed).toBe(1);
-    emit({ type: 'invalidate', tables: ['todo'] });
+    emit({
+      type: 'change',
+      batch: {
+        revision: '9',
+        tables: [{ table: 'todo' }],
+        windows: [],
+        conflictsChanged: false,
+        rejectionsChanged: false,
+      },
+    });
     expect(count).toBe(0);
     // Idempotent.
     await client.close();
@@ -252,11 +331,19 @@ describe('SyncClientLike parity', () => {
     const like: SyncClientLike = client;
     const normalized = normalizeClient(like);
 
+    expect(typeof normalized.onChange(() => {})).toBe('function');
     expect(typeof normalized.onInvalidate(() => {})).toBe('function');
     expect(typeof normalized.onPresence(() => {})).toBe('function');
 
     expect(await normalized.query('SELECT 1')).toBeInstanceOf(Array);
+    expect((await normalized.querySnapshot({ sql: 'SELECT 1' })).revision).toBe(
+      7n,
+    );
     expect(await normalized.mutate([])).toBe('commit-1');
+    expect(await normalized.patch('todo', 't1', { done: true })).toBe(
+      'commit-1',
+    );
+    expect((await normalized.statusSnapshot()).outbox).toBe(1);
     expect(await normalized.conflicts()).toEqual([]);
     expect(await normalized.rejections()).toEqual([]);
     expect(await normalized.schemaFloor()).toBeUndefined();

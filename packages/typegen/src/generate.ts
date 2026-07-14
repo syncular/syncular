@@ -48,6 +48,7 @@ import {
   type QueryNamingOptions,
   synthesizeDdl,
 } from './query';
+import { serializeQueryIr } from './query-ir';
 import { applyMigrationSql, type ParsedTable } from './sql';
 import { analyzeSyqlFile } from './syql';
 
@@ -463,6 +464,10 @@ export interface GenerateResult {
   /** Serialized IR document (the exact bytes of the `.ir.json` output). */
   readonly irJson: string;
   readonly hash: string;
+  /** Serialized QueryIR and its content hash. Query descriptors use this hash
+   * so a SQL-only edit cannot reuse a stale reactive cache entry. */
+  readonly queryIrJson: string;
+  readonly queryHash: string;
   /** Generated TS module source (the exact bytes of the `.ts` output). */
   readonly module: string;
   readonly irPath: string;
@@ -525,12 +530,19 @@ export function generate(manifestDir: string): GenerateResult {
     { path: modulePath, content: module },
   ];
   // Opt-in native emitters — each present only when the manifest requests it.
-  const { queries: tsQueriesPath, swift, kotlin, dart } = manifest.output;
+  const {
+    queryIr: queryIrPath,
+    queries: tsQueriesPath,
+    swift,
+    kotlin,
+    dart,
+  } = manifest.output;
 
   // Named queries: analyzed once (SELECT-only, typed against the IR via
   // SQLite), then emitted per-language into its OWN file so schema-only
   // consumers never churn. Only analyzed when SOME query output is requested.
   const wantsQueries =
+    queryIrPath !== undefined ||
     tsQueriesPath !== undefined ||
     swift?.queriesPath !== undefined ||
     kotlin?.queriesPath !== undefined ||
@@ -549,10 +561,19 @@ export function generate(manifestDir: string): GenerateResult {
     );
   }
 
+  const queryIrJson = serializeQueryIr(analyzedQueries);
+  const queryHash = irHash(queryIrJson);
+  if (queryIrPath !== undefined) {
+    outputs.push({
+      path: resolve(manifestDir, queryIrPath),
+      content: queryIrJson,
+    });
+  }
+
   if (tsQueriesPath !== undefined) {
     outputs.push({
       path: resolve(manifestDir, tsQueriesPath),
-      content: emitQueriesModule(analyzedQueries, hash, ir.irVersion),
+      content: emitQueriesModule(analyzedQueries, queryHash, ir.irVersion),
     });
   }
   if (swift !== undefined) {
@@ -565,7 +586,7 @@ export function generate(manifestDir: string): GenerateResult {
         path: resolve(manifestDir, swift.queriesPath),
         content: emitQueriesSwiftModule(
           analyzedQueries,
-          hash,
+          queryHash,
           ir.irVersion,
           swift.enumName,
         ),
@@ -582,7 +603,7 @@ export function generate(manifestDir: string): GenerateResult {
         path: resolve(manifestDir, kotlin.queriesPath),
         content: emitQueriesKotlinModule(
           analyzedQueries,
-          hash,
+          queryHash,
           ir.irVersion,
           kotlin.package,
           kotlin.objectName,
@@ -598,7 +619,11 @@ export function generate(manifestDir: string): GenerateResult {
     if (dart.queriesPath !== undefined) {
       outputs.push({
         path: resolve(manifestDir, dart.queriesPath),
-        content: emitQueriesDartModule(analyzedQueries, hash, ir.irVersion),
+        content: emitQueriesDartModule(
+          analyzedQueries,
+          queryHash,
+          ir.irVersion,
+        ),
       });
     }
   }
@@ -606,6 +631,8 @@ export function generate(manifestDir: string): GenerateResult {
     ir,
     irJson,
     hash,
+    queryIrJson,
+    queryHash,
     module,
     irPath,
     modulePath,

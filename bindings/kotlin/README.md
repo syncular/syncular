@@ -38,7 +38,6 @@ FFM is the one supported path for this JVM wrapper.
 import dev.syncular.*
 
 val client = SyncularClient.create(
-    clientId = "device-1",
     schema = schemaJson,                      // JsonValue from your generated schema
     config = SyncularConfig(
         baseUrl = "https://your.server/sync", // engages native transport
@@ -61,8 +60,8 @@ client.crdtDeleteText("notes", "n1", "doc", 0, 3)
 
 client.listener = SyncularEventListener { event ->
     when (event.type) {
-        "sync-needed" -> scheduleSync()
-        "conflict"    -> reloadConflicts()
+        "sync-intent" -> scheduleSync()
+        "change"      -> refreshVisibleState()
     }
 }
 

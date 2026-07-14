@@ -42,7 +42,7 @@ Point the app at a different server with `--dart-define=SYNCULAR_SERVER=http://�
   before any round-trip — `mutate` then `query`.
 - **The outbox**: the app-bar badge is `pendingCommitIds().length` — unsynced
   work is visible.
-- **Auto-sync**: `client.events` delivers `sync-needed`; the app calls
+- **Auto-sync**: `client.events` delivers `sync-intent`; the app calls
   `syncUntilIdle()` in response, so writes push and server changes pull without
   a manual tap. The sync button forces a round.
 - **Convergence**: run a second client (this app on another device, or the

@@ -13,7 +13,7 @@
 # No registry tokens are stored anywhere; both jobs authenticate via the
 # GitHub OIDC token (`id-token: write`).
 #
-# Trigger: push a version tag (`v0.2.0`). Versions in package.json /
+# Trigger: push a version tag (`v<version>`). Versions in package.json /
 # Cargo.toml must already match the tag — the jobs verify and fail loudly
 # rather than publish a mismatch.
 

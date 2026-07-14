@@ -28,12 +28,11 @@ void   syncular_free_string(char* ptr);
   `connectRealtime`, `recreateWithSchema`, … Bytes ride as
   `{"$bytes": "<hex>"}`, so a JSI/TurboModule bridge marshals plain JSON with
   zero custom serialization.
-- **`poll_event`** drains client-observable events — `sync-needed`,
-  `conflict`, `rejection`, `presence`, `schema-floor`, `lease` — with a
-  timeout (`<0` blocks, `0` non-blocking, `>0` waits N ms). The client core has
-  no callbacks; the FFI derives these events by diffing observable state after
-  each command and after draining inbound realtime traffic, and enqueues them
-  on a blocking queue the native WS reader thread also pushes into.
+- **`poll_event`** drains exact revisioned `change` batches, explicit
+  `sync-intent` effects, and ephemeral `presence` events with a timeout (`<0`
+  blocks, `0` non-blocking, `>0` waits N ms). The client core has no callbacks;
+  the FFI forwards committed core output after each command and after draining
+  inbound realtime traffic. It never reconstructs changes from counters.
 
 ### One command surface, conformance-locked
 

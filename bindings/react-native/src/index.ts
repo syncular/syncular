@@ -12,9 +12,9 @@
  *
  * Every method forwards to the TurboModule's `command` (the whole command
  * surface in one JSON envelope — `{method, params}`); `query` uses the `query`
- * fast path. Client-observable events (`invalidate` / `presence` / `sync-needed`
- * / `conflict` / …) arrive on the `syncular::event` NativeEventEmitter topic and
- * fan out to the registered listeners.
+ * fast path. Exact revisioned `change` batches and `presence` events arrive on
+ * the `syncular::event` NativeEventEmitter topic and fan out to the registered
+ * listeners. The bridge never reconstructs changes from counters.
  *
  * Bytes cross as the established `{$bytes:hex}` envelope — the same convention
  * the Rust command router, the driver protocol, and the Tauri bridge use.
@@ -24,16 +24,21 @@
  * device. In an app it auto-resolves the codegen module from `NativeSyncular`.
  */
 import type {
+  ClientChangeBatch,
+  ClientChangeListener,
   ConflictRecord,
   InvalidationEvent,
   InvalidationListener,
   LeaseState,
   MutationInput,
   PresencePeer,
+  QueryReadSpec,
+  QuerySnapshot,
   RejectionRecord,
   SchemaFloor,
   SqlRow,
   SqlValue,
+  SyncStatusSnapshot,
   WindowBase,
   WindowState,
 } from '@syncular/client';
@@ -79,8 +84,11 @@ export const SYNCULAR_EVENT = 'syncular::event';
 export interface NativeSyncClientConfig {
   /** The generated schema JSON (the app passes `schema` from typegen). */
   readonly schema: unknown;
-  /** Stable per-device/actor client id (reuse across launches). */
-  readonly clientId: string;
+  /**
+   * Stable per-device/actor client id. If omitted, the native core creates and
+   * persists one in the database. A mismatched explicit id fails loudly.
+   */
+  readonly clientId?: string;
   /** §4.2 client limits, forwarded to the native `create`. */
   readonly limits?: Record<string, unknown>;
   /** Base URL of the sync server mount (engages the native transport). */
@@ -89,6 +97,8 @@ export interface NativeSyncClientConfig {
   readonly dbPath?: string;
   /** Extra transport headers (auth, tenant, …). */
   readonly headers?: Record<string, string>;
+  /** Consume explicit core sync intents on the JS event loop. Default true. */
+  readonly autoSync?: boolean;
   /**
    * The native module + event emitter. Omit in an app to auto-resolve the
    * codegen `NativeSyncular` module and construct a `NativeEventEmitter` over
@@ -100,12 +110,21 @@ export interface NativeSyncClientConfig {
 
 /** The bytes envelope both sides share. */
 export type BytesEnvelope = { readonly $bytes: string };
+type BigIntEnvelope = { readonly $bigint: string };
 
 function isBytesEnvelope(value: unknown): value is BytesEnvelope {
   return (
     typeof value === 'object' &&
     value !== null &&
     typeof (value as { $bytes?: unknown }).$bytes === 'string'
+  );
+}
+
+function isBigIntEnvelope(value: unknown): value is BigIntEnvelope {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { $bigint?: unknown }).$bigint === 'string'
   );
 }
 
@@ -127,13 +146,28 @@ function hexToBytes(hex: string): Uint8Array {
 /** Encode an SQL param for the command JSON (bytes → `{$bytes:hex}`). */
 function encodeParam(value: SqlValue): unknown {
   if (value instanceof Uint8Array) return { $bytes: bytesToHex(value) };
-  if (typeof value === 'bigint') return Number(value);
+  if (typeof value === 'bigint') return { $bigint: value.toString() };
+  return value;
+}
+
+function encodeJsonValue(value: unknown): unknown {
+  if (value instanceof Uint8Array) return { $bytes: bytesToHex(value) };
+  if (typeof value === 'bigint') return { $bigint: value.toString() };
+  if (Array.isArray(value)) return value.map(encodeJsonValue);
+  if (value !== null && typeof value === 'object') {
+    const encoded: Record<string, unknown> = {};
+    for (const [key, member] of Object.entries(value)) {
+      encoded[key] = encodeJsonValue(member);
+    }
+    return encoded;
+  }
   return value;
 }
 
 /** Decode one query-result cell back to an `SqlValue` (`{$bytes}` → bytes). */
 function decodeCell(value: unknown): SqlValue {
   if (isBytesEnvelope(value)) return hexToBytes(value.$bytes);
+  if (isBigIntEnvelope(value)) return BigInt(value.$bigint);
   if (
     value === null ||
     typeof value === 'string' ||
@@ -147,7 +181,10 @@ function decodeCell(value: unknown): SqlValue {
 
 function decodeRow(row: Record<string, unknown>): SqlRow {
   const out: SqlRow = {};
-  for (const [key, value] of Object.entries(row)) out[key] = decodeCell(value);
+  for (const [key, value] of Object.entries(row)) {
+    if (key.startsWith('_sync_')) continue;
+    out[key] = decodeCell(value);
+  }
   return out;
 }
 
@@ -207,15 +244,28 @@ function requireNativeSyncular(): unknown {
  */
 export class NativeSyncClient {
   readonly #native: SyncularNativeModule;
+  readonly #autoSync: boolean;
   readonly #invalidationListeners = new Set<InvalidationListener>();
+  readonly #changeListeners = new Set<ClientChangeListener>();
   readonly #presenceListeners = new Set<(scopeKey: string) => void>();
   #subscription: { remove(): void } | undefined;
   #closed = false;
+  #paused = false;
+  #syncScheduled = false;
+  #syncRunning = false;
+  #syncAgain = false;
+  #retryAt: number | undefined;
+  #retryTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** @internal — use {@link createNativeSyncClient}. */
-  constructor(native: SyncularNativeModule, subscription: { remove(): void }) {
+  constructor(
+    native: SyncularNativeModule,
+    subscription: { remove(): void },
+    autoSync: boolean,
+  ) {
     this.#native = native;
     this.#subscription = subscription;
+    this.#autoSync = autoSync;
   }
 
   /** Dispatch a `command` and unwrap `{result}` / throw on `{error}`. */
@@ -236,11 +286,18 @@ export class NativeSyncClient {
   /** @internal — fan an incoming native event out to the local listeners. */
   __dispatchEvent(event: SyncularEvent): void {
     switch (event.type) {
-      case 'invalidate': {
-        const payload: InvalidationEvent = {
-          tables: toStringSet(event.tables),
-          scopeKeys: toStringSet(event.scopeKeys),
-        };
+      case 'change': {
+        const batch = decodeChangeBatch(event.batch);
+        if (batch === undefined) break;
+        for (const listener of this.#changeListeners) {
+          try {
+            listener(batch);
+          } catch {
+            /* a UI listener must never break event dispatch */
+          }
+        }
+        const payload = invalidationFromChange(batch);
+        if (payload === undefined) break;
         for (const listener of this.#invalidationListeners) {
           try {
             listener(payload);
@@ -262,10 +319,73 @@ export class NativeSyncClient {
         }
         break;
       }
-      default:
-        // sync-needed / conflict / rejection / schema-floor / lease: observable
-        // via the accessor methods; nothing else to fan out here.
+      case 'sync-intent': {
+        if (!this.#autoSync) break;
+        const intent =
+          event.intent !== null && typeof event.intent === 'object'
+            ? (event.intent as Record<string, unknown>)
+            : undefined;
+        if (intent?.kind === 'interactive') {
+          this.#requestAutoSync();
+        } else if (
+          intent?.kind === 'background' &&
+          typeof intent.delayMs === 'number' &&
+          Number.isFinite(intent.delayMs)
+        ) {
+          this.#requestBackgroundSync(Math.max(0, intent.delayMs));
+        }
         break;
+      }
+      default:
+        // Unknown extension events are deliberately ignored.
+        break;
+    }
+  }
+
+  #requestAutoSync(): void {
+    if (this.#closed || this.#paused) return;
+    if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
+    this.#retryTimer = undefined;
+    this.#retryAt = undefined;
+    if (this.#syncRunning) {
+      this.#syncAgain = true;
+      return;
+    }
+    if (this.#syncScheduled) return;
+    this.#syncScheduled = true;
+    queueMicrotask(() => {
+      this.#syncScheduled = false;
+      void this.#runAutoSync();
+    });
+  }
+
+  #requestBackgroundSync(delayMs: number): void {
+    if (this.#closed || this.#paused) return;
+    const deadline = Date.now() + delayMs;
+    if (this.#retryAt !== undefined && this.#retryAt <= deadline) return;
+    if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
+    this.#retryAt = deadline;
+    this.#retryTimer = setTimeout(() => {
+      this.#retryTimer = undefined;
+      this.#retryAt = undefined;
+      this.#requestAutoSync();
+    }, delayMs);
+  }
+
+  async #runAutoSync(): Promise<void> {
+    if (this.#closed || this.#paused || this.#syncRunning) return;
+    this.#syncRunning = true;
+    try {
+      await this.syncUntilIdle();
+    } catch {
+      // The core emits an explicit background intent for retryable failures;
+      // non-retryable outcomes remain visible through status/change state.
+    } finally {
+      this.#syncRunning = false;
+      if (this.#syncAgain) {
+        this.#syncAgain = false;
+        this.#requestAutoSync();
+      }
     }
   }
 
@@ -274,6 +394,11 @@ export class NativeSyncClient {
   onInvalidate(listener: InvalidationListener): () => void {
     this.#invalidationListeners.add(listener);
     return () => this.#invalidationListeners.delete(listener);
+  }
+
+  onChange(listener: ClientChangeListener): () => void {
+    this.#changeListeners.add(listener);
+    return () => this.#changeListeners.delete(listener);
   }
 
   onPresence(listener: (scopeKey: string) => void): () => void {
@@ -294,9 +419,56 @@ export class NativeSyncClient {
     return rows.map((r) => decodeRow(r as Record<string, unknown>));
   }
 
+  async querySnapshot<Row = SqlRow>(
+    spec: QueryReadSpec,
+  ): Promise<QuerySnapshot<Row>> {
+    const result = (await this.#command('querySnapshot', {
+      sql: spec.sql,
+      params: (spec.params ?? []).map(encodeParam),
+      coverage: spec.coverage ?? [],
+    })) as {
+      revision: string;
+      rows: Record<string, unknown>[];
+      coverage: QuerySnapshot['coverage'];
+    };
+    return {
+      revision: BigInt(result.revision),
+      rows: result.rows.map(decodeRow) as unknown as readonly Row[],
+      coverage: result.coverage,
+    };
+  }
+
+  async localRevision(): Promise<bigint> {
+    const result = (await this.#command('localRevision', {})) as {
+      revision: string;
+    };
+    return BigInt(result.revision);
+  }
+
+  async statusSnapshot(): Promise<SyncStatusSnapshot> {
+    return (await this.#command('statusSnapshot', {})) as SyncStatusSnapshot;
+  }
+
   async mutate(mutations: readonly MutationInput[]): Promise<string> {
     const result = (await this.#command('mutate', {
-      mutations: mutations.map((m) => m as unknown),
+      mutations: mutations.map(encodeMutation),
+    })) as { clientCommitId: string };
+    return result.clientCommitId;
+  }
+
+  async patch(
+    table: string,
+    rowId: string,
+    partial: Readonly<Record<string, unknown>>,
+    options?: { readonly baseVersion?: number },
+  ): Promise<string> {
+    const result = (await this.#command('patch', {
+      table,
+      rowId,
+      partial: encodeJsonValue(partial),
+      ...(options?.baseVersion !== undefined
+        ? { baseVersion: options.baseVersion }
+        : {}),
     })) as { clientCommitId: string };
     return result.clientCommitId;
   }
@@ -495,6 +667,10 @@ export class NativeSyncClient {
    * intact; mutations still queue offline. {@link resume} restarts them.
    */
   async pause(): Promise<void> {
+    this.#paused = true;
+    if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
+    this.#retryTimer = undefined;
+    this.#retryAt = undefined;
     this.#native.stopEvents();
     try {
       await this.disconnectRealtime();
@@ -510,17 +686,22 @@ export class NativeSyncClient {
     } catch {
       /* lean/offline core */
     }
+    this.#paused = false;
     this.#native.startEvents();
+    if (this.#autoSync) this.#requestAutoSync();
   }
 
   /** Detach the event listener and close the native core. Idempotent. */
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
+    this.#retryTimer = undefined;
     this.#native.stopEvents();
     this.#subscription?.remove();
     this.#subscription = undefined;
     this.#invalidationListeners.clear();
+    this.#changeListeners.clear();
     this.#presenceListeners.clear();
     await this.#native.close();
   }
@@ -543,6 +724,79 @@ function toStringSet(value: unknown): ReadonlySet<string> {
   return new Set<string>();
 }
 
+function decodeChangeBatch(value: unknown): ClientChangeBatch | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.revision !== 'string') return undefined;
+  const tables = Array.isArray(raw.tables)
+    ? raw.tables.flatMap((entry) => {
+        if (entry === null || typeof entry !== 'object') return [];
+        const item = entry as Record<string, unknown>;
+        if (typeof item.table !== 'string') return [];
+        return [
+          {
+            table: item.table,
+            ...(Array.isArray(item.scopeKeys)
+              ? { scopeKeys: toStringSet(item.scopeKeys) }
+              : {}),
+          },
+        ];
+      })
+    : [];
+  const windows = Array.isArray(raw.windows)
+    ? raw.windows.flatMap((entry) => {
+        if (entry === null || typeof entry !== 'object') return [];
+        const item = entry as Record<string, unknown>;
+        if (
+          typeof item.baseKey !== 'string' ||
+          typeof item.table !== 'string'
+        ) {
+          return [];
+        }
+        return [
+          {
+            baseKey: item.baseKey,
+            table: item.table,
+            units: toStringSet(item.units),
+          },
+        ];
+      })
+    : [];
+  return {
+    revision: BigInt(raw.revision),
+    tables,
+    windows,
+    ...(raw.status !== undefined
+      ? { status: raw.status as SyncStatusSnapshot }
+      : {}),
+    conflictsChanged: raw.conflictsChanged === true,
+    rejectionsChanged: raw.rejectionsChanged === true,
+  };
+}
+
+function invalidationFromChange(
+  batch: ClientChangeBatch,
+): InvalidationEvent | undefined {
+  if (batch.tables.length === 0 && batch.windows.length === 0) return undefined;
+  const tables = new Set<string>();
+  const scopeKeys = new Set<string>();
+  for (const table of batch.tables) {
+    tables.add(table.table);
+    for (const key of table.scopeKeys ?? []) scopeKeys.add(key);
+  }
+  for (const window of batch.windows) tables.add(window.table);
+  return { tables, scopeKeys };
+}
+
+function encodeMutation(mutation: MutationInput): unknown {
+  if (mutation.op === 'delete') return mutation;
+  const values: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(mutation.values)) {
+    values[key] = encodeJsonValue(value);
+  }
+  return { ...mutation, values };
+}
+
 /**
  * Construct the bridge and issue the native `create` (opening the file DB on
  * the Rust side). Returns a ready `NativeSyncClient` satisfying `SyncClientLike`
@@ -553,7 +807,7 @@ export async function createNativeSyncClient(
 ): Promise<NativeSyncClient> {
   const { nativeModule, eventEmitter } = resolveNative(config);
 
-  // Wire the event stream BEFORE create so no early invalidate is missed.
+  // Wire the event stream BEFORE create so no early change batch is missed.
   const clientRef: { client: NativeSyncClient | undefined } = {
     client: undefined,
   };
@@ -561,17 +815,19 @@ export async function createNativeSyncClient(
     clientRef.client?.__dispatchEvent(payload);
   });
 
-  const client = new NativeSyncClient(nativeModule, subscription);
+  const client = new NativeSyncClient(
+    nativeModule,
+    subscription,
+    config.autoSync ?? true,
+  );
   clientRef.client = client;
 
   const transportConfig: Record<string, unknown> = {};
   if (config.baseUrl !== undefined) transportConfig.baseUrl = config.baseUrl;
   if (config.headers !== undefined) transportConfig.headers = config.headers;
 
-  const createParams: Record<string, unknown> = {
-    clientId: config.clientId,
-    schema: config.schema,
-  };
+  const createParams: Record<string, unknown> = { schema: config.schema };
+  if (config.clientId !== undefined) createParams.clientId = config.clientId;
   if (config.limits !== undefined) createParams.limits = config.limits;
   if (config.dbPath !== undefined) createParams.dbPath = config.dbPath;
 

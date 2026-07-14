@@ -12,15 +12,19 @@
  * never has to care which core it holds.
  */
 import type {
+  ClientChangeListener,
   ConflictRecord,
   InvalidationListener,
   LeaseState,
   MutationInput,
   PresencePeer,
+  QueryReadSpec,
+  QuerySnapshot,
   RejectionRecord,
   SchemaFloor,
   SqlRow,
   SqlValue,
+  SyncStatusSnapshot,
   WindowBase,
   WindowState,
 } from '@syncular/client';
@@ -32,6 +36,7 @@ import type {
  * never reach past this surface.
  */
 export interface SyncClientLike {
+  onChange(listener: ClientChangeListener): () => void;
   onInvalidate(listener: InvalidationListener): () => void;
   onPresence(listener: (scopeKey: string) => void): () => void;
   query(
@@ -39,6 +44,16 @@ export interface SyncClientLike {
     params?: readonly SqlValue[],
   ): SqlRow[] | Promise<SqlRow[]>;
   mutate(mutations: readonly MutationInput[]): string | Promise<string>;
+  patch(
+    table: string,
+    rowId: string,
+    partial: Readonly<Record<string, unknown>>,
+    options?: { readonly baseVersion?: number },
+  ): string | Promise<string>;
+  querySnapshot<Row = SqlRow>(
+    spec: QueryReadSpec,
+  ): QuerySnapshot<Row> | Promise<QuerySnapshot<Row>>;
+  statusSnapshot(): SyncStatusSnapshot | Promise<SyncStatusSnapshot>;
   conflicts:
     | readonly ConflictRecord[]
     | (() => readonly ConflictRecord[] | Promise<readonly ConflictRecord[]>);
@@ -88,10 +103,19 @@ function resolveMember<T>(
 
 /** The uniform async facade the hooks actually call. */
 export interface NormalizedClient {
+  onChange(listener: ClientChangeListener): () => void;
   onInvalidate(listener: InvalidationListener): () => void;
   onPresence(listener: (scopeKey: string) => void): () => void;
   query(sql: string, params?: readonly SqlValue[]): Promise<SqlRow[]>;
   mutate(mutations: readonly MutationInput[]): Promise<string>;
+  patch(
+    table: string,
+    rowId: string,
+    partial: Readonly<Record<string, unknown>>,
+    options?: { readonly baseVersion?: number },
+  ): Promise<string>;
+  querySnapshot<Row = SqlRow>(spec: QueryReadSpec): Promise<QuerySnapshot<Row>>;
+  statusSnapshot(): Promise<SyncStatusSnapshot>;
   conflicts(): Promise<readonly ConflictRecord[]>;
   rejections(): Promise<readonly RejectionRecord[]>;
   schemaFloor(): Promise<SchemaFloor | undefined>;
@@ -110,10 +134,15 @@ export interface NormalizedClient {
 
 export function normalizeClient(client: SyncClientLike): NormalizedClient {
   return {
+    onChange: (listener) => client.onChange(listener),
     onInvalidate: (listener) => client.onInvalidate(listener),
     onPresence: (listener) => client.onPresence(listener),
     query: (sql, params) => Promise.resolve(client.query(sql, params)),
     mutate: (mutations) => Promise.resolve(client.mutate(mutations)),
+    patch: (table, rowId, partial, options) =>
+      Promise.resolve(client.patch(table, rowId, partial, options)),
+    querySnapshot: (spec) => Promise.resolve(client.querySnapshot(spec)),
+    statusSnapshot: () => Promise.resolve(client.statusSnapshot()),
     conflicts: () => resolveMember(client, 'conflicts'),
     rejections: () => resolveMember(client, 'rejections'),
     schemaFloor: () => resolveMember(client, 'schemaFloor'),

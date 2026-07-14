@@ -29,16 +29,16 @@ This block is assembly on a proven core — packages, not protocol.
       core gives a real file DB and native perf). Shape:
       `tauri-plugin-syncular` (Rust, consumes the client crate DIRECTLY —
       no FFI — exposing the `syncular-command` router as Tauri commands +
-      invalidate/presence/sync-needed/conflict over Tauri events) plus
+      exact revisioned change/presence events) plus
       `@syncular/tauri` (JS bridge implementing the same
       `SyncClientLike` interface the react package already normalizes —
       hooks work unchanged, the fourth host of one interface after direct/
       worker/follower). Example upgraded to React (2026-07-04 —
       `example/src/frontend` is now a `@syncular/react` hooks todo list over
       `createTauriSyncClient`, bundled with a dependency-light `Bun.build`; the
-      only Tauri-specific line is the client construction). Caveat to document:
-      every useSyncQuery run is one IPC round trip — fine at Tauri IPC latency;
-      pagination guidance for huge result sets is a docs note.
+      only Tauri-specific line is the client construction). RFC 0003 now adds
+      atomic query snapshots, shared-query dedupe, generated coverage claims,
+      exact native changes, and an event/deadline-driven owner loop.
 - [x] **Swift + Kotlin wrappers** (landed 2026-07-04 — `bindings/swift`
       (SwiftPM `SyncularClient`) and `bindings/kotlin` (Kotlin/JVM
       `SyncularClient` via **FFM**, `java.lang.foreign`, JDK 21+ — zero JNI C
@@ -121,7 +121,7 @@ This block is assembly on a proven core — packages, not protocol.
       synchronously), and pause/resume/close. Dylib loading: `DynamicLibrary.
       open` per-platform names + a `libraryPath`/`SYNCULAR_LIBRARY_PATH`
       override (the Kotlin/Swift pattern). The example todo app lists via
-      `query`, adds/toggles via `mutate`, auto-syncs on the `sync-needed` event
+      `query`, adds/toggles via `mutate`, auto-syncs on the `sync-intent` event
       + a manual sync button, connecting to the `apps/demo` server (8787).
       Offline-first hermetic tests (`dart test`) mirror the Swift/Kotlin suite
       (mutate → optimistic `version -1` row, query, outbox, `transport.
@@ -342,41 +342,16 @@ wire changes, zero server changes; sequenced AFTER the WS-native loop
       generic `sync_rows` table with an opaque payload (no per-user-table SQL
       columns exist there), so the scope inverted-index already covers server
       reads and a user-column index has nothing to attach to.
-- [x] **Live-query churn hardening** (LANDED 2026-07-05): under constant
-      sync churn a naive live query re-renders and re-queries once per
-      invalidation event. The fix is three cheap levers on the shared hook
-      machinery (`packages/react/src/query-churn.ts` + `use-sync-query.ts`,
-      wired through `useNamedQuery`/`useTypedQuery` pass-through options), NOT
-      the per-rowid idea originally sketched here:
-      - **Result stability**. After a re-run, reconcile the fresh result
-        against the previous one (`reconcileRows`): whole-result deep-equal →
-        skip `setRows` entirely (zero re-render, proven by a render-count
-        probe; note this also required guarding the `isLoading`/`error` setters
-        — React does not reliably bail on a no-op `setState(sameValue)` when
-        other setters fire in the same batch). Changed → build the new array
-        but REUSE the previous row object at each index whose content is
-        unchanged, so `React.memo`'d row components keyed by row identity skip.
-        Row-identity mechanism (the honest key): the hook knows no primary key
-        — rows are plain JSON-able SQLite objects — so per-row content equality
-        IS the identity. Each row is hashed once with a key-sorted JSON
-        serialization and matched by index (a live query's ORDER BY makes index
-        the stable position). O(n) with one string hash per row; measured
-        ~0.2 ms for 1k narrow rows (bounded, well under a frame).
-      - **Frame-coalesced re-query scheduling** (`FrameScheduler`). A burst of
-        invalidation events between paints collapses to ONE re-run per query
-        (rAF when the host has it, microtask fallback for bun/worker — timer
-        -free, honoring the no-timers doctrine; a `flush()` gives tests a
-        deterministic drain, no sleeps). An event arriving DURING a re-run
-        marks dirty and re-runs exactly once after — never lost, never
-        concurrent.
-      - **Scope-key filtering**. When the hook has an explicit `scopeKeys`
-        option AND the event carries scope keys, a disjoint event is skipped;
-        a table-floor event (no scope keys, e.g. a segment/reset apply) ALWAYS
-        re-runs — under-running is forbidden (the honest granularity rule).
-      Tests: `packages/react/test/query-churn.test.ts` (reconcile/scheduler
-      units + the 1k-row cost measurement) and `churn.test.tsx` (the four
-      hook-level levers, act-hygienic); the I4 counter-proof and worker-handle
-      parity paths still pass unchanged.
+- [x] **Live-query churn hardening** (LANDED 2026-07-05; superseded by RFC 0003
+      on 2026-07-14): the initial hook-local implementation added result
+      stability, frame coalescing, and scope filtering. RFC 0003 moved those
+      responsibilities into one client-scoped renderer-independent reactive
+      store. Equal observers now share one read; exact revisions gate stale
+      results; generated row keys preserve object identity through reorder;
+      generated dependencies route exact batches; and microtasks only coalesce
+      work—they do not establish correctness. The current gates live in
+      `packages/web-client/test/reactive-store.test.ts`,
+      `packages/web-client/test/performance.test.ts`, and the React hook suites.
 
       *Why not per-rowid* (the ditched idea): a table→rowid dependency can
       refine invalidation for a hot SINGLE-row view, but it structurally

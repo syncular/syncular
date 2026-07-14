@@ -4,9 +4,9 @@
  * (the webview-side bridge to the NATIVE syncular instance running in the Tauri
  * host process) plus three hooks:
  *
- * - `useRawSql` — the live todo list; re-runs exactly when `todos`
- *   invalidates (one IPC round trip per run — see the README's pagination note).
- * - `useMutation`  — add / toggle / delete; writes go through the outbox.
+ * - `useQuery` — generated dependencies, window coverage and row identity;
+ *   rows/completeness/revision arrive in one native IPC snapshot.
+ * - typed `useMutation` — add / toggle / delete through the outbox.
  * - `useSyncStatus`— the status line (outbox depth + upgrading / schema-floor).
  *
  * Everything below `<SyncProvider>` is host-agnostic: it is the SAME hook code
@@ -15,15 +15,17 @@
  * app land (the bridge owns all of it).
  */
 import {
+  createSyncClientResource,
   SyncProvider,
   useMutation,
-  useRawSql,
+  useQuery,
   useSyncStatus,
 } from '@syncular/react';
-import { createTauriSyncClient, type TauriSyncClient } from '@syncular/tauri';
-import { StrictMode, useEffect, useState } from 'react';
+import { createTauriSyncClient } from '@syncular/tauri';
+import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { schema, type TodosRow } from './syncular.generated';
+import { schema, todosTable } from './syncular.generated';
+import { type ListTodosRow, listTodosQuery } from './syncular.queries';
 
 /** One demo list — the native instance syncs it against the dev server. */
 const LIST_ID = 'groceries';
@@ -47,51 +49,34 @@ function StatusLine() {
 }
 
 function TodoApp() {
-  const { mutate, isPending } = useMutation();
+  const mutation = useMutation(todosTable);
 
-  // Live local read: one IPC round trip, re-run only when `todos` invalidates.
-  const { rows, isLoading } = useRawSql<TodosRow>(
-    'SELECT id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment' +
-      ' FROM todos WHERE list_id = ? ORDER BY position, id',
-    [LIST_ID],
-  );
+  const todos = useQuery(listTodosQuery, { listId: LIST_ID });
+  const { rows } = todos;
 
   const add = (title: string) => {
     const position =
       rows.reduce((max, row) => Math.max(max, row.position), 0) + 1;
-    void mutate([
-      {
-        table: 'todos',
-        op: 'upsert',
-        values: {
-          id: crypto.randomUUID(),
-          listId: LIST_ID,
-          title,
-          done: false,
-          position,
-          updatedAtMs: Date.now(),
-          attachment: null,
-        },
-      },
-    ]);
+    void mutation.upsert({
+      id: crypto.randomUUID(),
+      listId: LIST_ID,
+      title,
+      done: false,
+      position,
+      updatedAtMs: Date.now(),
+      attachment: null,
+    });
   };
 
-  const toggle = (row: TodosRow) => {
-    void mutate([
-      {
-        table: 'todos',
-        op: 'upsert',
-        values: {
-          ...row,
-          done: !row.done,
-          updatedAtMs: Date.now(),
-        },
-      },
-    ]);
+  const toggle = (row: ListTodosRow) => {
+    void mutation.patch(row.id, {
+      done: !row.done,
+      updatedAtMs: Date.now(),
+    });
   };
 
   const remove = (id: string) => {
-    void mutate([{ table: 'todos', op: 'delete', rowId: id }]);
+    void mutation.remove(id);
   };
 
   return (
@@ -116,13 +101,15 @@ function TodoApp() {
         }}
       >
         <input name="title" placeholder="a new todo" autoComplete="off" />
-        <button type="submit" disabled={isPending}>
+        <button type="submit" disabled={mutation.isPending}>
           add
         </button>
       </form>
 
-      {isLoading ? (
+      {todos.phase === 'loading' ? (
         <div className="empty">loading…</div>
+      ) : todos.phase === 'error' ? (
+        <div className="empty">query failed: {todos.error?.message}</div>
       ) : rows.length === 0 ? (
         <div className="empty">no todos yet — add one</div>
       ) : (
@@ -150,9 +137,8 @@ function TodoApp() {
 
       <footer>
         A native syncular instance runs in the Tauri host process; this webview
-        is a thin RPC client of it. Reads are <code>useRawSql</code> (live,
-        table-scoped invalidation), writes are <code>useMutation</code> (the
-        outbox). The only Tauri-specific line is{' '}
+        is a thin RPC client of it. Reads use a generated atomic query snapshot
+        and writes use typed mutation helpers. The only Tauri-specific line is{' '}
         <code>createTauriSyncClient</code> — the hooks are identical to the
         browser demo.
       </footer>
@@ -160,39 +146,21 @@ function TodoApp() {
   );
 }
 
+const clientResource = createSyncClientResource(async () => {
+  const client = await createTauriSyncClient({ schema });
+  await client.connectRealtime().catch(() => {});
+  return client;
+});
+
 function Root() {
-  const [client, setClient] = useState<TauriSyncClient | undefined>(undefined);
-  const [error, setError] = useState<string | undefined>(undefined);
-
-  useEffect(() => {
-    let live: TauriSyncClient | undefined;
-    void createTauriSyncClient({ clientId: 'example-device', schema })
-      .then((c) => {
-        live = c;
-        // Ride the socket for realtime; HTTP sync still works without it.
-        void c.connectRealtime().catch(() => {});
-        // Bring the list into the window so it bootstraps + streams.
-        void c.subscribe({
-          id: 'todos',
-          table: 'todos',
-          scopes: { list_id: [LIST_ID] },
-        });
-        setClient(c);
-      })
-      .catch((e: unknown) => setError(String(e)));
-    return () => {
-      void live?.close();
-    };
-  }, []);
-
-  if (error !== undefined) {
-    return <div className="empty">failed to start: {error}</div>;
-  }
-  if (client === undefined) {
-    return <div className="empty">starting native syncular instance…</div>;
-  }
   return (
-    <SyncProvider client={client}>
+    <SyncProvider
+      client={clientResource}
+      fallback={<div className="empty">starting native syncular instance…</div>}
+      renderError={(error) => (
+        <div className="empty">failed to start: {error.message}</div>
+      )}
+    >
       <TodoApp />
     </SyncProvider>
   );

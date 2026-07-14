@@ -180,6 +180,36 @@ function dispatching on provided-ness: perfect index use with the same
 semantics and the same API. More than 8 groups is an error; a query with
 nine independent optional filters needs a redesign.
 
+### Checked reactive declarations
+
+Typegen infers reactive metadata conservatively. When a valid SQL shape is too
+complex to prove—an `OR`, a multi-table join, or a computed composite
+identity—put the missing fact on the `.syql` query itself:
+
+```syql
+query compareLists(left, right)
+  depends todos on list_id = left | right
+  window todos by list_id = left | right
+  key by id
+{
+  select id, title
+  from todos
+  where list_id = :left or list_id = :right
+}
+```
+
+- `depends <table> on <scope> = <param> | …` supplies exact scope routing.
+- `window <table> by <scope> = <param> | …` supplies required coverage.
+  On a table with multiple scope variables, append
+  `fixed <other_scope> = <param>, …` for every remaining scope.
+- `key by <result-column> | …` supplies stable row identity, including a
+  composite identity for joins.
+
+These are checked declarations, not trust-me hints. The table must be read by
+the query; scopes and params must exist and have compatible types; coverage
+params must be required; every fixed scope must be present; and key columns
+must appear in the result. Invalid declarations fail generation.
+
 ## Type-checked against the real schema
 
 At generate time, typegen synthesizes your schema's DDL from the IR, builds
@@ -247,7 +277,7 @@ re-runs exactly when a depended-on table changes:
 import { useQuery } from '@syncular/react';
 import { listTodosQuery } from './syncular.queries';
 
-const { rows, isLoading } = useQuery(listTodosQuery, { listId });
+const todos = useQuery(listTodosQuery, { listId });
 ```
 
 Optional `.syql` params are optional keys (`status?: string | null`); knobs
@@ -275,12 +305,18 @@ Native rows decode through the same rules as the schema structs: SQLite's
 decode from the core's hex marshaling. Optional params default to
 `nil`/`null`; orderBy allowlists are per-query enums.
 
-## Exact invalidation
+## Reactive descriptors
 
-Each query also emits a `tables` constant — the set of tables it reads,
-validated by the same `prepare()`. On React, `useQuery` uses it as the exact
-dependency set, so a named query re-runs exactly when one of its tables
-invalidates.
+Each query emits a descriptor with a QueryIR-derived cache id, exact
+table/scope dependencies, provable window coverage, and a safe row key when
+the projection proves one. On React, `useQuery` claims the coverage and reads
+rows, completeness, and local revision atomically. A zero-row bootstrap can
+therefore transition from `loading` to an honestly empty `ready` without a
+separate window read.
+
+Set `output.queryIr` to keep the deterministic analyzed QueryIR JSON beside
+generated code. Its hash is the descriptor identity, so changing only SQL or
+reactive declarations invalidates old cache entries.
 
 ## Tooling
 

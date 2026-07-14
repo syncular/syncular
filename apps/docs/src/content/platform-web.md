@@ -119,8 +119,8 @@ await handle.syncUntilIdle();
 ```
 
 After that, deltas arrive on their own over the socket, and server wake-ups
-raise the sync-needed signal. In worker mode the host loop (auto-sync +
-jitter) runs inside the worker; the page just reacts to change notifications
+raise an immediate sync intent. In worker mode the event/deadline host loop
+runs inside the worker; the page just reacts to revisioned change notifications
 and re-queries. On a direct `SyncClient`, provide `onSyncNeeded` and run
 `sync()` when it fires.
 

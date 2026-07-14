@@ -31,21 +31,37 @@ interface ListTodosParams {
 }
 
 const listTodosQuery: NamedQueryDescriptor<TodoRow, ListTodosParams> = {
+  id: 'test/listTodos',
+  hasParams: true,
   sql: 'SELECT id, title FROM todos WHERE list_id = ? ORDER BY title',
   tables: ['todos'],
   bind: (params) => [params.listId],
+  dependencies: (params) => [
+    { table: 'todos', scopeKeys: [`list:${params.listId}`] },
+  ],
+  coverage: () => [],
+  rowKey: (row) => [row.id],
 };
 
 const allTitlesQuery: NamedQueryDescriptor<TodoRow, undefined> = {
+  id: 'test/allTitles',
+  hasParams: false,
   sql: 'SELECT id, title FROM todos',
   tables: ['todos'],
   bind: () => [],
+  dependencies: () => [{ table: 'todos' }],
+  coverage: () => [],
+  rowKey: (row) => [row.id],
 };
 
 const joinedQuery: NamedQueryDescriptor<TodoRow, undefined> = {
+  id: 'test/joined',
+  hasParams: false,
   sql: 'SELECT t.id, l.name AS title FROM todos t JOIN lists l ON l.id = t.list_id',
   tables: ['todos', 'lists'],
   bind: () => [],
+  dependencies: () => [{ table: 'todos' }, { table: 'lists' }],
+  coverage: () => [],
 };
 
 function wrapper(client: FakeClient) {
@@ -124,8 +140,7 @@ describe('useQuery', () => {
     const client = new FakeClient();
     client.setRows('todos', [{ id: 't1', title: 'a' }]);
     const { result } = renderHook(
-      () =>
-        useQuery(listTodosQuery, { listId: 'a' }, { scopeKeys: ['list:a'] }),
+      () => useQuery(listTodosQuery, { listId: 'a' }),
       { wrapper: wrapper(client) },
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));

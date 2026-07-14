@@ -37,7 +37,10 @@ import type {
   ClientSyncResult,
   CodecDriver,
   CodecRoundtrip,
+  DriverChangeBatch,
+  DriverRowValue,
   DriverSchema,
+  DriverSyncIntent,
   DriverWindowBase,
   JsonValue,
 } from '../driver';
@@ -513,6 +516,7 @@ function asObject(value: JsonValue, what: string): Record<string, JsonValue> {
 
 class RustClientInstance implements ClientInstance {
   readonly #shim: ShimProcess;
+  readonly #intents: DriverSyncIntent[] = [];
 
   constructor(shim: ShimProcess) {
     this.#shim = shim;
@@ -540,10 +544,16 @@ class RustClientInstance implements ClientInstance {
     base: DriverWindowBase,
     units: readonly string[],
   ): Promise<void> {
-    await this.#shim.call('setWindow', {
-      base: base as unknown as JsonValue,
-      units: units as unknown as JsonValue,
-    });
+    const result = asObject(
+      await this.#shim.call('setWindow', {
+        base: base as unknown as JsonValue,
+        units: units as unknown as JsonValue,
+      }),
+      'setWindow',
+    );
+    const intent = (result.effects as { sync?: DriverSyncIntent } | undefined)
+      ?.sync;
+    if (intent !== undefined) this.#intents.push(intent);
   }
 
   async windowState(base: DriverWindowBase): Promise<{
@@ -586,7 +596,78 @@ class RustClientInstance implements ClientInstance {
     if (typeof result.clientCommitId !== 'string') {
       throw new Error('mutate: shim returned no clientCommitId');
     }
+    const intent = (result.effects as { sync?: DriverSyncIntent } | undefined)
+      ?.sync;
+    if (intent !== undefined) this.#intents.push(intent);
     return result.clientCommitId;
+  }
+
+  async localRevision(): Promise<string> {
+    const result = asObject(
+      await this.#shim.call('localRevision', {}),
+      'localRevision',
+    );
+    return String(result.revision);
+  }
+
+  async statusSnapshot(): Promise<{
+    readonly outbox: number;
+    readonly upgrading: boolean;
+    readonly syncNeeded: boolean;
+  }> {
+    return (await this.#shim.call('statusSnapshot', {})) as unknown as {
+      readonly outbox: number;
+      readonly upgrading: boolean;
+      readonly syncNeeded: boolean;
+    };
+  }
+
+  async querySnapshot(
+    sql: string,
+    params: readonly DriverRowValue[] = [],
+    coverage: readonly {
+      readonly base: DriverWindowBase;
+      readonly units: readonly string[];
+    }[] = [],
+  ) {
+    return (await this.#shim.call('querySnapshot', {
+      sql,
+      params: params as unknown as JsonValue,
+      coverage: coverage as unknown as JsonValue,
+    })) as unknown as {
+      readonly revision: string;
+      readonly rows: readonly Record<string, DriverRowValue>[];
+      readonly coverage: {
+        readonly complete: boolean;
+        readonly pending: readonly {
+          readonly baseKey: string;
+          readonly unit: string;
+        }[];
+        readonly missing: readonly {
+          readonly baseKey: string;
+          readonly unit: string;
+        }[];
+      };
+    };
+  }
+
+  async drainChangeBatches(): Promise<readonly DriverChangeBatch[]> {
+    const result = asObject(
+      await this.#shim.call('drainChangeBatches', {}),
+      'drainChangeBatches',
+    );
+    return (result.batches ?? []) as unknown as DriverChangeBatch[];
+  }
+
+  async drainSyncIntents(): Promise<readonly DriverSyncIntent[]> {
+    const result = asObject(
+      await this.#shim.call('drainSyncIntents', {}),
+      'drainSyncIntents',
+    );
+    return [
+      ...this.#intents.splice(0),
+      ...((result.intents ?? []) as unknown as DriverSyncIntent[]),
+    ];
   }
 
   async sync(): Promise<ClientSyncResult> {

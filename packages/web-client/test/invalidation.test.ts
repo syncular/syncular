@@ -155,7 +155,7 @@ describe('invalidation choke point (TODO 3.1)', () => {
     expect(rec.events).toHaveLength(0);
   });
 
-  test('segment bootstrap invalidates the table + subscription scope keys', async () => {
+  test('segment bootstrap invalidates honestly at table granularity', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
     // Seed rows on the server via client A first.
@@ -180,6 +180,7 @@ describe('invalidation choke point (TODO 3.1)', () => {
     });
     await b.client.syncUntilIdle();
     expect(rec.tables()).toContain('tasks');
-    expect(rec.scopeKeys()).toContain('project:p1');
+    // Bulk segment rows do not carry per-row before/after facts (§7.5).
+    expect(rec.scopeKeys()).not.toContain('project:p1');
   });
 });

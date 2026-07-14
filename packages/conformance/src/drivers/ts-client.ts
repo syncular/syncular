@@ -6,12 +6,14 @@
  */
 
 import {
+  type ClientChangeBatch,
   type ClientSchema,
   ClientSyncError,
   type EncryptionConfig,
   type MutationInput,
   SYNC_VERSION_COLUMN,
   SyncClient,
+  type SyncIntent,
   type SyncSummary,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
@@ -28,12 +30,14 @@ import type {
   ClientRowState,
   ClientSubscriptionState,
   ClientSyncResult,
+  DriverChangeBatch,
   DriverColumn,
   DriverEncryptionConfig,
   DriverRow,
   DriverRowValue,
   DriverSchema,
   DriverScopeMap,
+  DriverSyncIntent,
   DriverWindowBase,
 } from '../driver';
 import { bytesToHex, hexToBytes } from '../raw';
@@ -230,6 +234,8 @@ class TsClientInstance implements ClientInstance {
   readonly #db: BunClientDatabase;
   #schema: DriverSchema;
   readonly #options: ClientCreateOptions;
+  readonly #changes: ClientChangeBatch[] = [];
+  readonly #intents: SyncIntent[] = [];
 
   constructor(
     client: SyncClient,
@@ -241,6 +247,7 @@ class TsClientInstance implements ClientInstance {
     this.#db = db;
     this.#schema = schema;
     this.#options = options;
+    client.onChange((batch) => this.#changes.push(batch));
   }
 
   async subscribe(input: {
@@ -265,7 +272,7 @@ class TsClientInstance implements ClientInstance {
     base: DriverWindowBase,
     units: readonly string[],
   ): Promise<void> {
-    await this.#client.setWindow(
+    const result = await this.#client.setWindowCommand(
       {
         table: base.table,
         variable: base.variable,
@@ -276,6 +283,7 @@ class TsClientInstance implements ClientInstance {
       },
       units,
     );
+    this.#intents.push(result.effects.sync);
   }
 
   async windowState(base: DriverWindowBase): Promise<{
@@ -317,7 +325,105 @@ class TsClientInstance implements ClientInstance {
           : {}),
       };
     });
-    return this.#client.mutate(inputs);
+    const result = this.#client.mutateCommand(inputs);
+    this.#intents.push(result.effects.sync);
+    return result.value;
+  }
+
+  async localRevision(): Promise<string> {
+    return this.#client.localRevision.toString();
+  }
+
+  async statusSnapshot(): Promise<{
+    readonly outbox: number;
+    readonly upgrading: boolean;
+    readonly syncNeeded: boolean;
+  }> {
+    const status = this.#client.statusSnapshot();
+    return {
+      outbox: status.outbox,
+      upgrading: status.upgrading,
+      syncNeeded: status.syncNeeded,
+    };
+  }
+
+  async querySnapshot(
+    sql: string,
+    params: readonly DriverRowValue[] = [],
+    coverage: readonly {
+      readonly base: DriverWindowBase;
+      readonly units: readonly string[];
+    }[] = [],
+  ) {
+    const snapshot = this.#client.querySnapshot({
+      sql,
+      params: params.map((value) =>
+        value !== null && typeof value === 'object'
+          ? hexToBytes(value.$bytes)
+          : value,
+      ),
+      coverage: coverage.map((item) => ({
+        base: {
+          table: item.base.table,
+          variable: item.base.variable,
+          ...(item.base.fixedScopes !== undefined
+            ? { fixedScopes: item.base.fixedScopes as ScopeMap }
+            : {}),
+          ...(item.base.params !== undefined
+            ? { params: item.base.params }
+            : {}),
+        },
+        units: item.units,
+      })),
+    });
+    return {
+      revision: snapshot.revision.toString(),
+      rows: snapshot.rows.map((row) =>
+        Object.fromEntries(
+          Object.entries(row).map(([key, value]) => [
+            key,
+            value instanceof Uint8Array
+              ? { $bytes: bytesToHex(value) }
+              : typeof value === 'bigint'
+                ? Number(value)
+                : value,
+          ]),
+        ),
+      ),
+      coverage: snapshot.coverage,
+    };
+  }
+
+  async drainChangeBatches(): Promise<readonly DriverChangeBatch[]> {
+    return this.#changes.splice(0).map((batch) => ({
+      revision: batch.revision.toString(),
+      tables: batch.tables.map((table) => ({
+        table: table.table,
+        ...(table.scopeKeys !== undefined
+          ? { scopeKeys: [...table.scopeKeys].sort() }
+          : {}),
+      })),
+      windows: batch.windows.map((window) => ({
+        baseKey: window.baseKey,
+        table: window.table,
+        units: [...window.units].sort(),
+      })),
+      ...(batch.status !== undefined
+        ? {
+            status: {
+              outbox: batch.status.outbox,
+              upgrading: batch.status.upgrading,
+              syncNeeded: batch.status.syncNeeded,
+            },
+          }
+        : {}),
+      conflictsChanged: batch.conflictsChanged,
+      rejectionsChanged: batch.rejectionsChanged,
+    }));
+  }
+
+  async drainSyncIntents(): Promise<readonly DriverSyncIntent[]> {
+    return this.#intents.splice(0);
   }
 
   async sync(): Promise<ClientSyncResult> {
@@ -448,6 +554,9 @@ class TsClientInstance implements ClientInstance {
       ...this.#options,
       schema,
     });
+    if (this.#client.syncNeeded) {
+      this.#intents.push({ kind: 'interactive' });
+    }
     this.#schema = schema;
     return this;
   }

@@ -71,8 +71,9 @@ pub fn snake_to_camel(name: &str) -> String {
 /// the SQL-truth snake_case and the generated row types' camelCase. A camel
 /// key renames to its column's SQL name when that is unambiguous (the alias
 /// equals no other column's exact name, and no two columns share it). A
-/// column given in both casings is an error. Unknown keys pass through
-/// unchanged (they are ignored downstream, as before).
+/// column given in both casings is an error. Unknown keys fail loud, matching
+/// the TypeScript core; silently dropping an app field would corrupt a
+/// full-row mutation while appearing successful.
 pub fn normalize_values_casing(
     table: &TableSchema,
     mut values: Map<String, Value>,
@@ -104,6 +105,20 @@ pub fn normalize_values_casing(
                 ));
             }
             values.insert(column.name.clone(), value);
+        }
+    }
+    for key in values.keys() {
+        if !table.columns.iter().any(|column| column.name == *key) {
+            if key.starts_with("_sync_") {
+                return Err(format!(
+                    "table {:?}: {:?} is an internal sync column and cannot appear in mutation values",
+                    table.name, key
+                ));
+            }
+            return Err(format!(
+                "table {:?}: unknown column {:?} in mutation values (snake_case and camelCase keys are accepted)",
+                table.name, key
+            ));
         }
     }
     Ok(values)
@@ -223,7 +238,14 @@ pub fn encode_row_json(
     // Build the row from the LOCAL (declared-type) columns.
     let mut row: Row = Vec::with_capacity(table.columns.len());
     for column in &table.columns {
-        row.push(json_to_column_value(column, values.get(&column.name))?);
+        let value = json_to_column_value(column, values.get(&column.name))?;
+        if value.is_none() && !column.nullable {
+            return Err(format!(
+                "table {:?}: column {:?} is not nullable (§6.1 full-row payloads)",
+                table.name, column.name
+            ));
+        }
+        row.push(value);
     }
     if table.has_encrypted_columns() {
         encrypt_row(table, row_id, &mut row, encryption)?;
@@ -582,5 +604,16 @@ mod naming_tests {
         let out = normalize_values_casing(&t, map(&[("id", "x"), ("col2", "v")])).expect("ok");
         assert_eq!(out.get("col2"), Some(&json!("v")));
         assert!(!out.contains_key("col_2"));
+    }
+
+    #[test]
+    fn unknown_and_internal_columns_fail_loud() {
+        let t = table(&["id", "title"]);
+        let unknown = normalize_values_casing(&t, map(&[("id", "x"), ("typo", "v")]))
+            .expect_err("unknown field");
+        assert!(unknown.contains("unknown column"), "{unknown}");
+        let internal = normalize_values_casing(&t, map(&[("id", "x"), ("_sync_version", "1")]))
+            .expect_err("internal field");
+        assert!(internal.contains("internal sync column"), "{internal}");
     }
 }

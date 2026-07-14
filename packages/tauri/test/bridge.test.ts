@@ -1,7 +1,7 @@
 /**
  * Bridge unit tests with injected invoke/listen doubles: assert the
  * `SyncClientLike` contract — method → command mapping, the query fast path,
- * event fanout to onInvalidate/onPresence, and the `{$bytes: hex}` convention.
+ * exact change fanout, presence, and lossless parameter envelopes.
  * Plus a shape-parity test against the React `normalizeClient`, so a drift in
  * `SyncClientLike` breaks this suite (the bridge is the fourth host of that
  * one interface).
@@ -58,6 +58,22 @@ function defaultResponder(cmd: string, args: Record<string, unknown>): unknown {
       return OK({});
     case 'mutate':
       return OK({ clientCommitId: 'commit-1' });
+    case 'patch':
+      return OK({ clientCommitId: 'patch-1' });
+    case 'querySnapshot':
+      return OK({
+        revision: '7',
+        rows: [],
+        coverage: { complete: true, pending: [], missing: [] },
+      });
+    case 'localRevision':
+      return OK({ revision: '7' });
+    case 'statusSnapshot':
+      return OK({
+        outbox: 0,
+        upgrading: false,
+        syncNeeded: false,
+      });
     case 'conflicts':
       return OK({ conflicts: [] });
     case 'rejections':
@@ -131,6 +147,59 @@ describe('createTauriSyncClient', () => {
     expect((q?.args.params as unknown[])[0]).toEqual({ $bytes: '01ff' });
   });
 
+  test('query round-trips bigint params and unsafe SQLite integers losslessly', async () => {
+    const { tauri, calls } = makeTauri((cmd, args) => {
+      if (cmd === 'plugin:syncular|syncular_query') {
+        return OK({ rows: [{ value: { $bigint: '9007199254740993' } }] });
+      }
+      return defaultResponder(cmd, args);
+    });
+    const client = await createTauriSyncClient({
+      schema: { version: 1, tables: [] },
+      tauri,
+    });
+    const rows = await client.query('SELECT ?', [9_007_199_254_740_993n]);
+    const query = calls.findLast(
+      (call) => call.cmd === 'plugin:syncular|syncular_query',
+    );
+    expect(query?.args.params).toEqual([{ $bigint: '9007199254740993' }]);
+    expect(rows).toEqual([{ value: 9_007_199_254_740_993n }]);
+  });
+
+  test('querySnapshot is one IPC read for rows, coverage, and exact revision', async () => {
+    const { tauri, calls } = makeTauri((cmd, args) => {
+      const method = (args.command as { method?: string } | undefined)?.method;
+      if (method === 'querySnapshot') {
+        return OK({
+          revision: '42',
+          rows: [{ id: 't1', payload: { $bytes: '0102' } }],
+          coverage: { complete: true, pending: [], missing: [] },
+        });
+      }
+      return defaultResponder(cmd, args);
+    });
+    const client = await createTauriSyncClient({ schema: {}, tauri });
+    const snapshot = await client.querySnapshot({
+      sql: 'SELECT * FROM tasks WHERE list_id = ?',
+      params: ['a'],
+      coverage: [
+        {
+          base: { table: 'tasks', variable: 'list_id' },
+          units: ['a'],
+        },
+      ],
+    });
+    expect(snapshot.revision).toBe(42n);
+    expect(snapshot.coverage.complete).toBe(true);
+    expect(snapshot.rows[0]?.payload).toEqual(new Uint8Array([1, 2]));
+    const callsForSnapshot = calls.filter(
+      (call) =>
+        (call.args.command as { method?: string } | undefined)?.method ===
+        'querySnapshot',
+    );
+    expect(callsForSnapshot).toHaveLength(1);
+  });
+
   test('mutate returns the clientCommitId', async () => {
     const { client } = await build();
     const id = await client.mutate([
@@ -192,22 +261,31 @@ describe('createTauriSyncClient', () => {
     });
   });
 
-  test('invalidate events fan out to onInvalidate listeners', async () => {
+  test('change batches fan out exactly and derive legacy invalidations', async () => {
     const { client, emit } = await build();
+    const revisions: bigint[] = [];
     const seen: Array<{ tables: string[]; scopeKeys: string[] }> = [];
+    client.onChange((batch) => revisions.push(batch.revision));
     client.onInvalidate((event) => {
       seen.push({
         tables: [...event.tables],
         scopeKeys: [...event.scopeKeys],
       });
     });
-    emit({ type: 'invalidate', tables: ['todo'], scopeKeys: ['project:1'] });
+    emit({
+      type: 'change',
+      batch: {
+        revision: '9',
+        tables: [{ table: 'todo', scopeKeys: ['project:1'] }],
+        windows: [],
+        conflictsChanged: false,
+        rejectionsChanged: false,
+      },
+    });
+    expect(revisions).toEqual([9n]);
     expect(seen).toHaveLength(1);
     expect(seen[0]?.tables).toEqual(['todo']);
     expect(seen[0]?.scopeKeys).toEqual(['project:1']);
-    // A bare invalidate (no keys) yields empty sets, not a crash.
-    emit({ type: 'invalidate' });
-    expect(seen[1]?.tables).toEqual([]);
   });
 
   test('presence events fan out to onPresence listeners', async () => {
@@ -224,9 +302,27 @@ describe('createTauriSyncClient', () => {
     const off = client.onInvalidate(() => {
       count += 1;
     });
-    emit({ type: 'invalidate', tables: ['todo'] });
+    emit({
+      type: 'change',
+      batch: {
+        revision: '1',
+        tables: [{ table: 'todo' }],
+        windows: [],
+        conflictsChanged: false,
+        rejectionsChanged: false,
+      },
+    });
     off();
-    emit({ type: 'invalidate', tables: ['todo'] });
+    emit({
+      type: 'change',
+      batch: {
+        revision: '2',
+        tables: [{ table: 'todo' }],
+        windows: [],
+        conflictsChanged: false,
+        rejectionsChanged: false,
+      },
+    });
     expect(count).toBe(1);
   });
 
@@ -237,7 +333,16 @@ describe('createTauriSyncClient', () => {
       count += 1;
     });
     await client.close();
-    emit({ type: 'invalidate', tables: ['todo'] });
+    emit({
+      type: 'change',
+      batch: {
+        revision: '1',
+        tables: [{ table: 'todo' }],
+        windows: [],
+        conflictsChanged: false,
+        rejectionsChanged: false,
+      },
+    });
     expect(count).toBe(0);
   });
 });
@@ -257,7 +362,14 @@ describe('SyncClientLike parity', () => {
 
     // Every async accessor resolves (the hooks call exactly these).
     expect(await normalized.query('SELECT 1')).toBeInstanceOf(Array);
+    expect((await normalized.querySnapshot({ sql: 'SELECT 1' })).revision).toBe(
+      7n,
+    );
+    expect((await normalized.statusSnapshot()).outbox).toBe(0);
     expect(await normalized.mutate([])).toBe('commit-1');
+    expect(await normalized.patch('todo', 't1', { title: 'next' })).toBe(
+      'patch-1',
+    );
     expect(await normalized.conflicts()).toEqual([]);
     expect(await normalized.rejections()).toEqual([]);
     expect(await normalized.schemaFloor()).toBeUndefined();

@@ -30,8 +30,7 @@ pub fn run() {
             let config = SyncularConfig {
                 base_url: Some("http://localhost:8788".to_owned()),
                 db_path,
-                // Real host-loop cadence with a little jitter (§8.4).
-                wake_jitter_ms: 250,
+                // Wake/deadline-driven host loop (§8.4), with no idle poll.
                 auto_sync: true,
                 ..Default::default()
             };

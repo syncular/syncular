@@ -29,16 +29,14 @@
 //! `transport.unavailable` and only client-local commands run — which is all
 //! the C smoke test and pure-logic tests need.
 //!
-//! ## Events (lean queue over a callback-free core)
+//! ## Events (lean queue over exact core output)
 //!
-//! The client core exposes no callbacks; it surfaces observable state
-//! (`sync_needed`, presence peers, conflicts, schema floor, lease errors).
-//! After each command — and after draining inbound realtime traffic — the FFI
-//! diffs that state and enqueues client-observable events
-//! (`sync-needed` / `conflict` / `presence` / `schema-floor`, the
-//! invalidation-equivalent set). `poll_event` drains them. This keeps the core
-//! callback-free (portable, testable) while giving native hosts a push-shaped
-//! signal.
+//! The client core exposes no callbacks. Each observer transaction instead
+//! commits an exact revisioned change batch, and commands which create network
+//! work emit an explicit sync intent. After every command — and after draining
+//! inbound realtime traffic — the FFI forwards those outputs verbatim as
+//! `change` and `sync-intent` events. `poll_event` drains them. Native hosts do
+//! not infer changes by diffing counters or method names.
 
 use std::collections::VecDeque;
 use std::ffi::{c_char, CStr, CString};
@@ -61,24 +59,12 @@ struct Event {
 }
 
 /// The opaque handle behind the `void*`. One `SyncClient` instance, its owned
-/// transport, and the derived event queue, guarded for cross-thread use (the
-/// native WS reader thread pushes into `queue`).
+/// transport, and the exact core-output queue, guarded for cross-thread polling.
 pub struct Handle {
     client: Option<SyncClient>,
     transport: HostTransport,
     effects: CreateEffects,
-    /// Snapshot of observable state after the last drain, for diffing.
-    last: ObservedState,
     queue: Arc<EventQueue>,
-}
-
-#[derive(Debug, Default, Clone)]
-struct ObservedState {
-    sync_needed: bool,
-    conflicts: usize,
-    rejections: usize,
-    schema_floor: Option<Value>,
-    lease_error: Option<String>,
 }
 
 /// A bounded, blocking event queue: `poll_event` waits up to `timeout_ms` for
@@ -132,18 +118,17 @@ impl EventQueue {
 impl Handle {
     fn new(config: &Value) -> Result<Self, String> {
         let queue = Arc::new(EventQueue::new());
-        let transport = HostTransport::from_config(config, Arc::clone(&queue))?;
+        let transport = HostTransport::from_config(config)?;
         Ok(Handle {
             client: None,
             transport,
             effects: CreateEffects::default(),
-            last: ObservedState::default(),
             queue,
         })
     }
 
     /// Run one JSON command through the shared router, then drain inbound
-    /// realtime traffic and derive events.
+    /// realtime traffic and forward exact core outputs.
     fn command(&mut self, command: &Value) -> Value {
         let method = command.get("method").and_then(Value::as_str).unwrap_or("");
         let params = command.get("params").cloned().unwrap_or(Value::Null);
@@ -157,10 +142,22 @@ impl Handle {
         if method == "create" {
             self.transport.set_signed_urls(self.effects.signed_urls);
         }
+        // Command-local work is an explicit router effect (mutation and
+        // window changes); realtime/retry work is drained from the core queue
+        // below. Forward both sources without inferring from the method name.
+        if let Ok(value) = &result {
+            if let Some(intent) = value.pointer("/effects/sync") {
+                if intent.get("kind").and_then(Value::as_str) != Some("none") {
+                    self.queue.push(Event {
+                        json: json!({ "type": "sync-intent", "intent": intent }),
+                    });
+                }
+            }
+        }
         // Deliver any realtime traffic the owned transport buffered, then
-        // diff observable state into events.
+        // forward the core's committed observation output.
         self.drain_realtime();
-        self.derive_events();
+        self.drain_core_outputs();
         match result {
             Ok(value) => json!({ "result": value }),
             Err((code, message)) => json!({ "error": { "code": code, "message": message } }),
@@ -193,51 +190,23 @@ impl Handle {
         }
     }
 
-    /// Diff the client's observable state against the last snapshot and
-    /// enqueue an event per change (the invalidation-equivalent set).
-    fn derive_events(&mut self) {
-        let Some(client) = self.client.as_ref() else {
+    /// Forward exact observer batches and sync intents produced by the Rust
+    /// core. The FFI is a manual-sync host; consumers may schedule an intent
+    /// on their own event loop without polling core state.
+    fn drain_core_outputs(&mut self) {
+        let Some(client) = self.client.as_mut() else {
             return;
         };
-        let now = ObservedState {
-            sync_needed: client.sync_needed(),
-            conflicts: client.conflicts().len(),
-            rejections: client.rejections().len(),
-            schema_floor: client
-                .schema_floor()
-                .map(|f| serde_json::to_value(f).unwrap_or(Value::Null)),
-            lease_error: client.lease_state().and_then(|l| l.error_code.clone()),
-        };
-        if now.sync_needed && !self.last.sync_needed {
+        for batch in client.drain_change_batches() {
             self.queue.push(Event {
-                json: json!({ "type": "sync-needed" }),
+                json: json!({ "type": "change", "batch": batch }),
             });
         }
-        if now.conflicts > self.last.conflicts {
+        for intent in client.drain_sync_intents() {
             self.queue.push(Event {
-                json: json!({ "type": "conflict", "count": now.conflicts }),
+                json: json!({ "type": "sync-intent", "intent": intent }),
             });
         }
-        if now.rejections > self.last.rejections {
-            self.queue.push(Event {
-                json: json!({ "type": "rejection", "count": now.rejections }),
-            });
-        }
-        if now.schema_floor != self.last.schema_floor {
-            if let Some(floor) = &now.schema_floor {
-                self.queue.push(Event {
-                    json: json!({ "type": "schema-floor", "floor": floor }),
-                });
-            }
-        }
-        if now.lease_error != self.last.lease_error {
-            if let Some(code) = &now.lease_error {
-                self.queue.push(Event {
-                    json: json!({ "type": "lease", "errorCode": code }),
-                });
-            }
-        }
-        self.last = now;
     }
 }
 

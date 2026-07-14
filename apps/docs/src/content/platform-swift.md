@@ -36,7 +36,7 @@ Swift target compiles unchanged against either linkage.
 ## Create a client
 
 The initializer creates the native core, issues `create` with your schema and
-client id, and starts the background event poll loop. The schema comes from
+optional explicit client id, and starts the background event poll loop. The schema comes from
 typegen: declare a `swift` output in `syncular.json` and `syncular generate`
 emits a `Syncular.generated.swift` with a ready-made `SyncularSchema.schema`
 value plus typed row structs and subscription helpers (see
@@ -46,7 +46,6 @@ value plus typed row structs and subscription helpers (see
 import Syncular
 
 let client = try SyncularClient(
-    clientId: "device-1",                      // stable per-device id
     schema: SyncularSchema.schema,             // from Syncular.generated.swift
     config: SyncularConfig(
         baseUrl: "https://your.server/sync",   // engages the native transport
@@ -105,15 +104,15 @@ try client.syncUntilIdle(maxRounds: 10)     // drive to quiescence
 
 client.onEvent = { event in
     switch event.type {
-    case "sync-needed": scheduleSync()
-    case "conflict":    reloadConflicts()
+    case "sync-intent": scheduleSync()
+    case "change":      refreshVisibleState()
     default:            break
     }
 }
 ```
 
-Events (`sync-needed`, `conflict`, `rejection`, `presence`, `schema-floor`,
-`lease`) are drained from the core's `poll_event` queue on a background queue
+Exact `change` batches, `sync-intent`, and `presence` are drained from the
+core's `poll_event` queue on a background queue
 and delivered on the main queue; set the `onEvent` closure or a
 `SyncularClientDelegate`. A different `deliveryQueue` can be passed to the
 initializer. Supporting reads: `syncNeeded()`, `pendingCommitIds()`,

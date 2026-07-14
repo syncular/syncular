@@ -96,7 +96,7 @@ let outcome = try client.sync()
 let rows = try client.query("SELECT * FROM todos WHERE done = ?", params: [.bool(false)])
 
 client.onEvent = { event in
-    if event.type == "sync-needed" { scheduleSync() }
+    if event.type == "sync-intent" { scheduleSync() }
 }`,
   },
   {
@@ -126,7 +126,7 @@ val outcome = client.sync()
 val rows = client.query("SELECT * FROM todos WHERE done = ?", listOf(JsonValue.of(false)))
 
 client.listener = SyncularEventListener { event ->
-    if (event.type == "sync-needed") scheduleSync()
+    if (event.type == "sync-intent") scheduleSync()
 }`,
   },
   {
@@ -156,7 +156,7 @@ final rows = client.query(
   'SELECT * FROM todos WHERE done = ?', params: [false]);
 
 client.events.listen((e) {
-  if (e.type == 'sync-needed') client.sync();
+  if (e.type == 'sync-intent') client.sync();
 });`,
   },
   {

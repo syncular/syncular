@@ -1,0 +1,136 @@
+{
+  "queryIrVersion": 2,
+  "queries": [
+    {
+      "name": "listTodos",
+      "file": "list-todos.syql (query listTodos)",
+      "sourceSql": "select id, list_id, title, done, position, updated_at_ms, attachment\n  from todos\n  where list_id = :listId\n    and title like '%' || :q || '%'\n  order by position, id",
+      "sql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment from todos where list_id = :listId and (:q is null or (title like '%' || :q || '%')) order by position, id",
+      "positionalSql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment from todos where list_id = ?1 and (?2 is null or (title like '%' || ?2 || '%')) order by position, id",
+      "params": [
+        {
+          "name": "listId",
+          "langName": "listId",
+          "type": "string"
+        },
+        {
+          "name": "q",
+          "langName": "q",
+          "type": "string",
+          "optional": true
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "todos",
+            "column": "id"
+          }
+        },
+        {
+          "name": "list_id",
+          "langName": "listId",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "todos",
+            "column": "list_id"
+          }
+        },
+        {
+          "name": "title",
+          "langName": "title",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "todos",
+            "column": "title"
+          }
+        },
+        {
+          "name": "done",
+          "langName": "done",
+          "type": "boolean",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "todos",
+            "column": "done"
+          }
+        },
+        {
+          "name": "position",
+          "langName": "position",
+          "type": "integer",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "todos",
+            "column": "position"
+          }
+        },
+        {
+          "name": "updated_at_ms",
+          "langName": "updatedAtMs",
+          "type": "integer",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "todos",
+            "column": "updated_at_ms"
+          }
+        },
+        {
+          "name": "attachment",
+          "langName": "attachment",
+          "type": "blob_ref",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "todos",
+            "column": "attachment"
+          }
+        }
+      ],
+      "tables": [
+        "todos"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "todos",
+            "scopes": [
+              {
+                "variable": "list_id",
+                "pattern": "list:{list_id}",
+                "params": [
+                  "listId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "todos",
+            "variable": "list_id",
+            "units": [
+              "listId"
+            ],
+            "fixedScopes": []
+          }
+        ],
+        "rowKey": [
+          "id"
+        ]
+      }
+    }
+  ]
+}

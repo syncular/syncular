@@ -129,7 +129,6 @@ function makeGroup(): Group {
         segmentsUrl: http.segmentsUrl,
         realtimeUrl: http.realtimeUrl,
       },
-      wakeJitterMs: 10,
       autoSync: false,
       // multiTab is deliberately OMITTED: this suite exercises the
       // follower path as the default it is (RFC 0002 §2.4).

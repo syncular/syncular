@@ -13,12 +13,13 @@
 
 import { afterEach, describe, expect, test } from 'bun:test';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
-import { type ReactNode, StrictMode, useEffect } from 'react';
+import { type ReactNode, StrictMode } from 'react';
 import {
   SyncProvider,
   useConflicts,
   usePresence,
   useRawSql,
+  useRetainedWindow,
   useSyncStatus,
   useWindow,
 } from '../src/index';
@@ -78,12 +79,9 @@ describe('useRawSql', () => {
     expect(client.queryCount).toBe(before + 1);
   });
 
-  test('StrictMode remount: invalidation still re-runs (scheduler survives the double-effect cycle)', async () => {
-    // StrictMode mounts, cleans up, and mounts effects again on the SAME hook
-    // instance. The cleanup disposes the per-hook FrameScheduler; the setup
-    // must re-create it — a disposed scheduler swallows every schedule()
-    // silently and the live query freezes forever (found in the wild: data in
-    // the local db, invalidations firing, UI never updating).
+  test('StrictMode remount: the shared store subscription survives the double-effect cycle', async () => {
+    // StrictMode mounts, cleans up, and mounts effects again. The client-scoped
+    // external store must retain a live subscription through that cycle.
     const client = new FakeClient();
     client.setRows('tasks', [{ id: 't1' }]);
     const strictWrapper = ({ children }: { children: ReactNode }) => (
@@ -189,7 +187,7 @@ describe('useSyncStatus', () => {
     });
     await waitFor(() => expect(result.current.outbox).toBe(0));
     client.setPending([{}]);
-    act(() => client.emitInvalidate(['tasks']));
+    act(() => client.emitStatus());
     await waitFor(() => expect(result.current.outbox).toBe(1));
   });
 });
@@ -213,7 +211,7 @@ describe('useConflicts', () => {
         serverRow: {},
       },
     ]);
-    act(() => client.emitInvalidate(['tasks']));
+    act(() => client.emitConflicts());
     await waitFor(() => expect(result.current.conflicts).toHaveLength(1));
   });
 });
@@ -273,6 +271,21 @@ function Bare(): ReactNode {
 
 describe('useWindow (§4.8 completeness oracle, I3)', () => {
   const base = { table: 'tasks', variable: 'project_id' } as const;
+
+  test('retains a declarative working set and releases only its claim', async () => {
+    const client = new FakeClient();
+    const { result, unmount } = renderHook(
+      () => useRetainedWindow(base, ['p2', 'p1', 'p2']),
+      { wrapper: wrapper(client) },
+    );
+
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+    expect(result.current.error).toBeUndefined();
+    expect(client.windowState(base).units).toEqual(['p1', 'p2']);
+
+    unmount();
+    await waitFor(() => expect(client.windowState(base).units).toEqual([]));
+  });
 
   test('setWindow registers units as pending; bootstrap completion flips the verdict', async () => {
     const client = new FakeClient();
@@ -350,24 +363,13 @@ describe('useWindow (§4.8 completeness oracle, I3)', () => {
     expect(result.current.isComplete('p2')).toBe(true);
   });
 
-  test('an invalidation issues the query re-read BEFORE the windowState re-read', async () => {
-    // The render-boundary honesty contract: a consumer gating its empty
-    // state on `isComplete` must never paint a frame where the verdict is
-    // complete but a same-event query still shows the pre-bootstrap rows.
-    // The real transports answer in issue order (the worker handle is one
-    // FIFO channel), so the contract reduces to ISSUE order: the window
-    // re-read must reach the client only after every query re-run for the
-    // same invalidation has issued its read — then the pendency verdict
-    // resolves, and commits, after the rows it vouches for. (Asserting on
-    // painted frames instead would be blind here: the act() environment
-    // batches both commits into one flush and masks the interleaving that
-    // a real frame-by-frame paint exposes.)
+  test('a generated window query reads rows and completeness atomically', async () => {
     const client = new FakeClient();
     const calls: string[] = [];
-    const origQuery = client.query.bind(client);
-    client.query = (sql: string) => {
-      calls.push('query');
-      return origQuery(sql);
+    const originalSnapshot = client.querySnapshot.bind(client);
+    client.querySnapshot = (spec) => {
+      calls.push('querySnapshot');
+      return originalSnapshot(spec);
     };
     const origWindowState = client.windowState.bind(client);
     client.windowState = (b: typeof base) => {
@@ -375,31 +377,22 @@ describe('useWindow (§4.8 completeness oracle, I3)', () => {
       return origWindowState(b);
     };
     function Probe() {
-      // Mount order mirrors a real consumer: the window hook first, the
-      // query second (worst case — its invalidation listener runs first).
-      const { setWindow } = useWindow(base);
-      useRawSql('SELECT * FROM tasks');
-      // biome-ignore lint/correctness/useExhaustiveDependencies: mount-once
-      useEffect(() => {
-        void setWindow(['p1']);
-      }, []);
+      useRawSql('SELECT * FROM tasks WHERE project_id = ?', ['p1'], {
+        id: 'test/project-tasks',
+        dependencies: [{ table: 'tasks', scopeKeys: ['project:p1'] }],
+        coverage: [{ base, units: ['p1'] }],
+      });
       return null;
     }
     render(<Probe />, { wrapper: wrapper(client) });
-    await waitFor(() => expect(calls).toContain('query'));
+    await waitFor(() => expect(calls).toContain('querySnapshot'));
 
-    // One apply batch: rows land and the bootstrap completes (the fake
-    // mirrors the real choke point — one invalidation for both).
     calls.length = 0;
     client.setRows('tasks', [{ id: 't1' }]);
     act(() => {
       client.completeBootstrap(base);
     });
-    await waitFor(() => expect(calls).toContain('windowState'));
-    await waitFor(() => expect(calls).toContain('query'));
-    // The window verdict was read after the rows — never before.
-    expect(calls.indexOf('windowState')).toBeGreaterThan(
-      calls.indexOf('query'),
-    );
+    await waitFor(() => expect(calls).toContain('querySnapshot'));
+    expect(calls).not.toContain('windowState');
   });
 });

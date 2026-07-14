@@ -16,10 +16,27 @@ export type {
 // the exact normalizer the bindings use.
 export { normalizeClient } from './client';
 export { inferTables } from './infer-tables';
-export { SyncContext, SyncProvider, type SyncProviderProps } from './provider';
-export { useSyncClient } from './use-client';
+export {
+  SyncContext,
+  SyncProvider,
+  type SyncProviderProps,
+  SyncStoreContext,
+} from './provider';
+export {
+  createSyncClientResource,
+  isSyncClientResource,
+  type SyncClientResource,
+  type SyncClientResourceSnapshot,
+} from './resource';
+export { useReactiveStore, useSyncClient } from './use-client';
 export { type UseConflictsResult, useConflicts } from './use-conflicts';
-export { type UseMutationResult, useMutation } from './use-mutation';
+export {
+  type SyncTableDescriptor,
+  type UseMutationOptions,
+  type UseMutationResult,
+  type UseTableMutationResult,
+  useMutation,
+} from './use-mutation';
 export { usePresence } from './use-presence';
 export {
   type NamedQueryDescriptor,
@@ -31,4 +48,9 @@ export {
   useRawSql,
 } from './use-raw-sql';
 export { type SyncStatus, useSyncStatus } from './use-sync-status';
-export { type UseWindowResult, useWindow } from './use-window';
+export {
+  type UseRetainedWindowResult,
+  type UseWindowResult,
+  useRetainedWindow,
+  useWindow,
+} from './use-window';

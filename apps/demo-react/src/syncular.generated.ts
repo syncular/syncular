@@ -2,6 +2,20 @@
 // irVersion: 1
 // irHash: sha256:111865cdb8b7c0175196b6397d3b78f2972877e2600ac8d335dd563a55901213
 
+/** Structural descriptor consumed by renderer bindings; phantom type
+ * fields make row/insert/update/id inference available without imports. */
+export interface SyncTable<Row, Insert, Update, Id> {
+  readonly name: string;
+  /** Language-facing key used in generated row and mutation types. */
+  readonly primaryKey: keyof Row & string;
+  /** Physical SQLite/wire primary-key column. */
+  readonly physicalPrimaryKey: string;
+  readonly __row?: Row;
+  readonly __insert?: Insert;
+  readonly __update?: Update;
+  readonly __id?: Id;
+}
+
 /** ServerSchema-compatible schema object (SPEC §2.4, §3.1). */
 export const schema = {
   version: 1,
@@ -57,6 +71,13 @@ export interface TodosUpdate {
   updatedAtMs?: number;
   attachment?: string | null;
 }
+
+/** Typed mutation/resource descriptor for 'todos'. */
+export const todosTable: SyncTable<TodosRow, TodosInsert, TodosUpdate, string> = {
+  name: 'todos',
+  primaryKey: 'id',
+  physicalPrimaryKey: 'id',
+};
 
 export interface TodoListParams {
   listId: string;

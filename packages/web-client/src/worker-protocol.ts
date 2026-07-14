@@ -12,7 +12,7 @@
  *
  * Scheduling note (SPEC §8.4): the sync-needed signal is host-driven,
  * and in worker mode the HOST LOOP LIVES IN THE WORKER — wake-ups
- * coalesce into jittered `syncUntilIdle` rounds there (`autoSync`),
+ * coalesce into intent-driven `syncUntilIdle` rounds there (`autoSync`),
  * so the UI thread never has to react to keep data flowing. Events are
  * still forwarded to the handle for visibility.
  */
@@ -23,6 +23,8 @@ import type {
   LeaseState,
   MutationInput,
   PresencePeer,
+  QueryReadSpec,
+  QuerySnapshot,
   RejectionRecord,
   SchemaFloor,
   SubscribeInput,
@@ -31,7 +33,11 @@ import type {
   WindowState,
 } from './client';
 import type { SqlRow, SqlValue } from './database';
-import type { InvalidationEvent } from './invalidation';
+import type {
+  ClientChangeBatch,
+  LocalRevision,
+  SyncStatusSnapshot,
+} from './invalidation';
 import type { OutboxCommit } from './outbox';
 import type { ClientSchema } from './schema';
 import type { SubscriptionRecord } from './state';
@@ -88,12 +94,11 @@ export interface WorkerInitConfig {
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
   /**
-   * Worker-side host loop (§8.4): coalesce wake-ups into jittered
+   * Worker-side host loop (§8.4): coalesce interactive work immediately and
+   * honor explicit background retry deadlines
    * `syncUntilIdle` rounds inside the worker. Default true.
    */
   readonly autoSync?: boolean;
-  /** Max jitter before a coalesced auto-sync round (default 200 ms). */
-  readonly wakeJitterMs?: number;
 }
 
 /** Successful init reply. */
@@ -123,6 +128,9 @@ export interface WorkerApi {
   sync(): Promise<SyncSummary>;
   syncUntilIdle(maxRounds?: number): Promise<SyncSummary>;
   query(sql: string, params?: readonly SqlValue[]): SqlRow[];
+  querySnapshot(spec: QueryReadSpec): QuerySnapshot;
+  localRevision(): LocalRevision;
+  statusSnapshot(): SyncStatusSnapshot;
   conflicts(): readonly ConflictRecord[];
   rejections(): readonly RejectionRecord[];
   schemaFloor(): SchemaFloor | undefined;
@@ -182,7 +190,10 @@ export interface WorkerErrorShape {
 }
 
 export type SyncWorkerEvent =
-  | { readonly kind: 'sync-needed'; readonly reason: 'hello' | WakeReason }
+  | {
+      readonly kind: 'sync-needed';
+      readonly reason: 'startup' | 'hello' | WakeReason;
+    }
   | { readonly kind: 'conflict'; readonly conflict: ConflictRecord }
   | {
       /** An autoSync round finished (or failed) inside the worker. */
@@ -201,13 +212,9 @@ export type SyncWorkerEvent =
       readonly scopeKey: string;
     }
   | {
-      /**
-       * TODO 3.1 / I1: one coalesced apply-batch invalidation. `Set`s
-       * structured-clone across the worker boundary, so the event crosses
-       * verbatim — the handle re-emits it to `onInvalidate` listeners.
-       */
-      readonly kind: 'invalidate';
-      readonly event: InvalidationEvent;
+      /** Exact revisioned core transaction; Sets and bigint clone directly. */
+      readonly kind: 'change';
+      readonly batch: ClientChangeBatch;
     };
 
 export type WorkerToMainMessage =

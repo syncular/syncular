@@ -71,7 +71,27 @@ function bindExpr(
   return isOptional(param) ? `${access}.${key} ?? null` : `params.${key}`;
 }
 
-function emitQuery(query: AnalyzedQuery): string {
+function reactiveParam(query: AnalyzedQuery, name: string): string {
+  const param = query.params.find((candidate) => candidate.name === name);
+  if (param === undefined) throw new Error(`unknown reactive param ${name}`);
+  return `String(params.${propertyKey(param.langName)})`;
+}
+
+function scopeKeyExpression(
+  query: AnalyzedQuery,
+  pattern: string,
+  variable: string,
+  param: string,
+): string {
+  const marker = `{${variable}}`;
+  const index = pattern.indexOf(marker);
+  if (index < 0) throw new Error(`scope pattern ${pattern} lacks ${marker}`);
+  const prefix = pattern.slice(0, index);
+  const suffix = pattern.slice(index + marker.length);
+  return `${quote(prefix)} + ${reactiveParam(query, param)} + ${quote(suffix)}`;
+}
+
+function emitQuery(query: AnalyzedQuery, hash: string): string {
   const Row = `${pascalCase(query.name)}Row`;
   const Params = `${pascalCase(query.name)}Params`;
   const lines: string[] = [];
@@ -130,7 +150,7 @@ function emitQuery(query: AnalyzedQuery): string {
 
   // Tables dependency set (for useRawSql {tables} / useQuery).
   lines.push(
-    `/** Tables ${quote(query.name)} reads — the exact useRawSql \`{tables}\` set. */`,
+    `/** Tables ${quote(query.name)} reads (compatibility/export surface). */`,
   );
   lines.push(
     `export const ${query.name}Tables = [${query.tables.map(quote).join(', ')}] as const;`,
@@ -253,12 +273,14 @@ function emitQuery(query: AnalyzedQuery): string {
   // set, and a `bind(params)` → positional array (always paired with the
   // sqlFor selection). Typed by the query's own Row/Params.
   lines.push(
-    `/** Descriptor for \`useQuery(${query.name}Query${hasParams ? ', params' : ''})\` — sql + tables + row type. */`,
+    `/** Revisioned reactive descriptor for \`useQuery(${query.name}Query${hasParams ? ', params' : ''})\`. */`,
   );
   const paramsTypeArg = hasParams ? Params : 'undefined';
   lines.push(
     `export const ${query.name}Query: NamedQuery<${Row}, ${paramsTypeArg}> = {`,
   );
+  lines.push(`  id: ${quote(`${hash}/${query.name}`)},`);
+  lines.push(`  hasParams: ${hasParams},`);
   lines.push(`  sql: ${sqlConst},`);
   if (query.variants !== undefined) {
     lines.push(`  sqlFor: (params: ${Params}) => ${selectFn}(params).sql,`);
@@ -266,12 +288,51 @@ function emitQuery(query: AnalyzedQuery): string {
     lines.push(`  sqlFor: (params: ${Params}) => ${composeFn}(params),`);
   }
   lines.push(`  tables: ${query.name}Tables,`);
+  const reactiveUsesParams = query.reactive.dependencies.some((dependency) =>
+    dependency.scopes.some((scope) => scope.params.length > 0),
+  );
+  lines.push(`  dependencies: (${reactiveUsesParams ? 'params' : ''}) => [`);
+  for (const dependency of query.reactive.dependencies) {
+    const keys = dependency.scopes.flatMap((scope) =>
+      scope.params.map((param) =>
+        scopeKeyExpression(query, scope.pattern, scope.variable, param),
+      ),
+    );
+    lines.push(
+      `    { table: ${quote(dependency.table)}${keys.length > 0 ? `, scopeKeys: [${keys.join(', ')}]` : ''} },`,
+    );
+  }
+  lines.push('  ],');
+  const coverageUsesParams = query.reactive.coverage.some(
+    (coverage) =>
+      coverage.units.length > 0 ||
+      coverage.fixedScopes.some((scope) => scope.params.length > 0),
+  );
+  lines.push(`  coverage: (${coverageUsesParams ? 'params' : ''}) => [`);
+  for (const coverage of query.reactive.coverage) {
+    const fixed = coverage.fixedScopes
+      .map(
+        (scope) =>
+          `${propertyKey(scope.variable)}: [${scope.params.map((param) => reactiveParam(query, param)).join(', ')}]`,
+      )
+      .join(', ');
+    const fixedPart = fixed.length > 0 ? `, fixedScopes: { ${fixed} }` : '';
+    lines.push(
+      `    { base: { table: ${quote(coverage.table)}, variable: ${quote(coverage.variable)}${fixedPart} }, units: [${coverage.units.map((param) => reactiveParam(query, param)).join(', ')}] },`,
+    );
+  }
+  lines.push('  ],');
   if (query.variants !== undefined) {
     lines.push(`  bind: (params: ${Params}) => ${selectFn}(params).bind,`);
   } else if (hasParams) {
     lines.push(`  bind: (params: ${Params}) => ${positional},`);
   } else {
     lines.push('  bind: () => [],');
+  }
+  if (query.reactive.rowKey !== undefined) {
+    lines.push(
+      `  rowKey: (row) => [${query.reactive.rowKey.map((key) => `row.${propertyKey(key)}`).join(', ')}],`,
+    );
   }
   lines.push('};');
   return lines.join('\n');
@@ -311,24 +372,44 @@ export function emitQueriesModule(
       '  ): unknown[] | Promise<unknown[]>;',
       '}',
       '',
-      '/** A named-query descriptor — sql + its exact table dependency set + a',
+      '/** A named-query descriptor — checked SQL plus revisioned reactive metadata and a',
       ' *  `bind(params)` → positional args. Consumed by',
       " *  `@syncular/react`'s `useQuery`. `Row` is the projection row",
       ' *  type; `Params` is `undefined` for a param-less query. `sqlFor`',
       ' *  (present only with an orderBy knob) composes the statement from a',
       ' *  generate-time-checked column allowlist. */',
       'export interface NamedQuery<Row, Params = undefined> {',
+      '  readonly id: string;',
+      '  readonly hasParams: boolean;',
       '  readonly sql: string;',
       '  readonly tables: readonly string[];',
       '  readonly bind: (params: Params) => readonly QueryValue[];',
       '  readonly sqlFor?: (params: Params) => string;',
+      '  readonly dependencies: (params: Params) => readonly QueryDependency[];',
+      '  readonly coverage: (params: Params) => readonly WindowCoverage[];',
+      '  readonly rowKey?: (row: Row) => readonly QueryValue[];',
       '  /** Phantom — carries the Row type for `useQuery` inference. */',
       '  readonly __row?: Row;',
+      '}',
+      '',
+      'export interface QueryDependency {',
+      '  readonly table: string;',
+      '  readonly scopeKeys?: readonly string[];',
+      '}',
+      '',
+      'export interface WindowCoverage {',
+      '  readonly base: {',
+      '    readonly table: string;',
+      '    readonly variable: string;',
+      '    readonly fixedScopes?: Readonly<Record<string, readonly string[]>>;',
+      '    readonly params?: string;',
+      '  };',
+      '  readonly units: readonly string[];',
       '}',
     ].join('\n'),
   );
   for (const query of queries) {
-    parts.push(emitQuery(query));
+    parts.push(emitQuery(query, hash));
   }
   return `${parts.join('\n\n')}\n`;
 }

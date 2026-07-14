@@ -1,13 +1,13 @@
 [package]
 name = "syncular-client"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 description = "Syncular v2 Rust client core on rusqlite, implemented from SPEC.md alone (language-neutrality POC, stage 2)"
 license = "Apache-2.0"
 repository = "https://github.com/syncular/syncular"
 
 [dependencies]
-ssp2 = { package = "syncular-ssp2", path = "../ssp2", version = "0.4.1" }
+ssp2 = { package = "syncular-ssp2", path = "../ssp2", version = "0.5.0" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

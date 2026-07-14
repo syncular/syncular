@@ -47,7 +47,8 @@ await client.syncUntilIdle();
 
 After that, deltas arrive on their own; when the client's `onSyncNeeded`
 fires (a wake-up), run another `sync()`. The [web client guide](/guide-client/)
-shows the full host loop, including jittered wake coalescing.
+shows the full host loop, including immediate interactive work and explicit
+background retry deadlines.
 
 ## Presence
 

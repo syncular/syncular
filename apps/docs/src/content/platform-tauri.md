@@ -27,7 +27,7 @@ The Rust plugin is on crates.io:
 
 ```toml
 [dependencies]
-tauri-plugin-syncular = { version = "0.4", features = ["native-transport"] }
+tauri-plugin-syncular = { version = "0.5", features = ["native-transport"] }
 ```
 
 To track unreleased changes, consume it as a git dependency instead — cargo
@@ -65,7 +65,6 @@ tauri::Builder::default()
         let config = SyncularConfig {
             base_url: Some("https://your.server".into()),
             db_path,
-            wake_jitter_ms: 250,
             auto_sync: true,
             ..Default::default()
         };
@@ -84,7 +83,6 @@ The config fields:
 | `ws_url` | Optional realtime WebSocket URL; derived from `base_url` when absent. |
 | `headers` | Extra request headers (auth, actor/project ids) as name/value pairs. |
 | `db_path` | On-disk SQLite path. Absent → in-memory, nothing survives a restart. |
-| `wake_jitter_ms` | §8.4 host-loop jitter cap per wake before a `syncUntilIdle`. `0` disables. Default 250. |
 | `auto_sync` | Run the background host loop. Default `true`. |
 
 Grant the plugin's permission in a capability file
@@ -96,19 +94,29 @@ Grant the plugin's permission in a capability file
 
 ## Create the client in the webview
 
+Install both the bridge and its required Tauri API peer so Vite/Bun can bundle
+the `core` and `event` ESM entry points:
+
+```sh
+bun add @syncular/tauri @tauri-apps/api
+```
+
 ```tsx
 import { createTauriSyncClient } from '@syncular/tauri';
 import { SyncProvider } from '@syncular/react';
 import { schema } from './syncular.generated';
 
-const client = await createTauriSyncClient({ clientId: 'device-1', schema });
+const client = await createTauriSyncClient({ schema });
 // Every hook works unchanged:
 // <SyncProvider client={client}> … useQuery / useRawSql / useMutation / usePresence
 ```
 
-The JS side supplies the schema, `clientId`, and optional `limits`; the
-native side owns the database path (plugin config). Pass the same `clientId`
-across launches — the native database persists. The bridge resolves
+The JS side supplies the schema and optional `limits`; the native side owns
+the database path (plugin config). On first open the core generates and stores
+a cryptographically random client id in that database. Later opens restore it.
+An explicit `clientId` can initialize a new database, but a different id for
+an existing database fails with `client.identity_mismatch` instead of silently
+rebinding identity. The bridge resolves
 `@tauri-apps/api` automatically (or the ambient `window.__TAURI__` when
 `withGlobalTauri` is enabled); tests inject `invoke`/`listen` doubles.
 
@@ -122,14 +130,16 @@ conformance-locked.
   `command` is `{ "method": "...", "params": {...} }` (create, subscribe,
   mutate, sync, syncUntilIdle, conflicts, presence, setPresence, …). The reply
   is `{ "result": ... }` or `{ "error": { "code", "message" } }`.
-- **`syncular_query(sql, params)`** — the live-query fast path: arbitrary
-  read-only SQL over the local tables, one IPC round trip per run.
+- **`syncular_query(sql, params)`** — the raw read-only SQL fast path.
+- **`querySnapshot` through `syncular_command`** — one IPC read for rows,
+  window completeness, and exact local revision.
 - **`syncular_set_headers(headers)`** — replace the native transport's
   request headers at runtime (see below).
-- **`syncular://event`** — the event stream the bridge subscribes to:
-  `invalidate` (live queries re-run), `presence`, `sync-needed`, `conflict`,
-  `rejection`, `schema-floor`, `lease`. Bytes are encoded as `{ "$bytes": "<hex>" }`
-  everywhere.
+- **`syncular://event`** — exact revisioned `change` batches plus `presence`
+  and lifecycle events. The Rust core originates table/scope/window/status/
+  conflict domains; the bridge forwards them without counter diffing or a
+  global-invalidation fallback. Bytes use `{ "$bytes": "<hex>" }`, and unsafe
+  SQLite integers use `{ "$bigint": "<decimal>" }`.
 
 Native CRDT text (plugin `crdt-yjs` feature) goes through `syncular_command`, and
 `@syncular/tauri` exposes typed `crdtText` / `crdtInsertText` /
@@ -159,9 +169,10 @@ socket immediately, call `disconnectRealtime()` followed by
 `Sync`. The plugin therefore keeps exactly one owning thread holding the
 core, and every access arrives over a command mailbox (an mpsc channel):
 the Tauri commands post a request and await the reply, and only the owning
-thread touches the client. The §8.4 background host loop (wake-driven
-`syncUntilIdle` with jitter) runs on that same owning thread, interleaved
-with mailbox requests, so all access to the connection is serialized.
+thread touches the client. The §8.4 host loop blocks on that mailbox or one
+explicit retry deadline. Interactive mutation/window/realtime intents preempt
+the deadline; idle clients have zero periodic wakeups. All access to the
+connection remains serialized.
 
 ## Native transport
 
@@ -173,20 +184,19 @@ is connected, each combined push+pull round runs over the socket in the
 round runs over `POST /sync`. One round is in flight per connection, and a
 mid-round socket drop fails the round immediately.
 
-Every live-query run is one IPC round trip, which is fine at
-Tauri IPC latency for typical view queries. For very large result sets the
-serialization dominates, so paginate with `LIMIT`/`OFFSET` (or keyset
-pagination) in the SQL you pass. The native core holds the whole database;
-the webview should pull windows of it.
+Each unique live query is one atomic IPC round trip per relevant revision,
+shared by equal observers. Status/conflict-only changes do not rerun SQL. For
+large result sets serialization can dominate, so prefer indexed keyset
+pagination and bounded windows.
 
 ## The example
 
 [`bindings/tauri/example`](https://github.com/syncular/syncular/tree/main/bindings/tauri/example)
 is a minimal Tauri app proving the loop end to end: `src-tauri` registers the
 plugin with `native-transport` pointed at a local dev server, and the
-frontend is a React todo list on `useRawSql` + `useMutation` +
-`useSyncStatus` over `createTauriSyncClient`, the exact hooks the browser
-demo uses. The only Tauri-specific line is the client construction.
+frontend is a React todo list over `createTauriSyncClient`; the same generated
+query phases, typed mutations, and status hooks used by browser clients apply.
+The only Tauri-specific line is client construction.
 
 ## Where to go next
 

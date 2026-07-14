@@ -24,7 +24,7 @@ and loaded at runtime; see the library-loading section below.
 ## Create a client
 
 `SyncularClient.create` constructs the native core, issues `create` with your
-schema and client id, and starts the event poll loop. The schema comes from
+schema and optional explicit client id, and starts the event poll loop. The schema comes from
 typegen: declare a `kotlin` output in `syncular.json` and
 `syncular generate` emits a `Syncular.generated.kt` with a ready-made
 `SyncularSchema.schema` value plus typed rows and subscription helpers (see
@@ -34,7 +34,6 @@ typegen: declare a `kotlin` output in `syncular.json` and
 import dev.syncular.*
 
 val client = SyncularClient.create(
-    clientId = "device-1",                    // stable per-device id
     schema = SyncularSchema.schema,           // from Syncular.generated.kt
     config = SyncularConfig(
         baseUrl = "https://your.server/sync", // engages the native transport
@@ -90,14 +89,14 @@ client.syncUntilIdle(maxRounds = 10)
 
 client.listener = SyncularEventListener { event ->
     when (event.type) {
-        "sync-needed" -> scheduleSync()
-        "conflict"    -> reloadConflicts()
+        "sync-intent" -> scheduleSync()
+        "change"      -> refreshVisibleState()
     }
 }
 ```
 
-Events (`sync-needed`, `conflict`, `rejection`, `presence`, `schema-floor`,
-`lease`) are drained from the core's `poll_event` queue on a background daemon
+Exact `change` batches, `sync-intent`, and `presence` are drained from the
+core's `poll_event` queue on a background daemon
 thread and delivered to the registered `listener` **on that poll thread**;
 marshal to your UI thread as needed. Supporting reads: `syncNeeded()`,
 `pendingCommitIds()`, `subscriptionState(id)`, `conflicts()`,

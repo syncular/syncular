@@ -22,6 +22,9 @@ import {
   toSqlValue,
 } from './schema';
 
+/** Lets the client wrap the physical write in its revision transaction. */
+export type ApplyTransaction = <T>(fn: () => T) => T;
+
 function upsertSql(table: CompiledClientTable): string {
   const names = [
     ...table.columns.map((column) => quoteIdent(column.name)),
@@ -68,6 +71,7 @@ export async function applyCommitFrame(
   schema: CompiledClientSchema,
   frame: CommitFrame,
   encryption?: EncryptionConfig,
+  transaction: ApplyTransaction = (fn) => db.transaction(fn),
 ): Promise<void> {
   type Resolved =
     | { op: 'delete'; table: CompiledClientTable; rowId: string }
@@ -115,7 +119,7 @@ export async function applyCommitFrame(
       rowVersion: change.rowVersion,
     });
   }
-  db.transaction(() => {
+  transaction(() => {
     for (const change of resolved) {
       if (change.op === 'delete') {
         deleteLocalRow(db, change.table, change.rowId);
@@ -290,7 +294,11 @@ export function applySqliteSegment(
   table: CompiledClientTable,
   bytes: Uint8Array,
   descriptor: SqliteSegmentDescriptor,
-  options: { readonly clearFirst: boolean; readonly effective: ScopeMap },
+  options: {
+    readonly clearFirst: boolean;
+    readonly effective: ScopeMap;
+    readonly transaction?: ApplyTransaction;
+  },
 ): number {
   const withImage = db.withSqliteImage?.bind(db);
   if (withImage === undefined) {
@@ -359,7 +367,7 @@ export function applySqliteSegment(
 
     // 3. One transaction: fresh-bootstrap clear, then replace-or-upsert.
     const names = table.columns.map((column) => quoteIdent(column.name));
-    return db.transaction(() => {
+    return (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
       if (options.clearFirst) {
         deleteScopedRows(db, table, options.effective);
       }
@@ -396,7 +404,11 @@ export async function applyRowsSegment(
   schema: CompiledClientSchema,
   table: CompiledClientTable,
   segment: RowsSegment,
-  options: { readonly clearFirst: boolean; readonly effective: ScopeMap },
+  options: {
+    readonly clearFirst: boolean;
+    readonly effective: ScopeMap;
+    readonly transaction?: ApplyTransaction;
+  },
   encryption?: EncryptionConfig,
 ): Promise<number> {
   validateSegmentColumns(schema, table, segment);
@@ -421,7 +433,8 @@ export async function applyRowsSegment(
     }
     const clearThisBlock = first && options.clearFirst;
     first = false;
-    db.transaction(() => {
+    if (!clearThisBlock && rows.length === 0) continue;
+    (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
       if (clearThisBlock) {
         deleteScopedRows(db, table, options.effective);
       }

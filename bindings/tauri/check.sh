@@ -49,6 +49,10 @@ cargo clippy -p tauri-plugin-syncular --all-targets --features crdt-yjs -- -D wa
 echo "== cargo test =="
 cargo test
 
+echo "== real native core -> TypeScript bridge -> reactive store =="
+cargo build -p syncular-tauri-bridge-harness
+( cd ../.. && SYNCULAR_TAURI_NATIVE_TEST=1 bun test packages/tauri/test/native-bridge.test.ts )
+
 echo "== example compiles =="
 cargo build -p syncular-tauri-example
 

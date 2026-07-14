@@ -58,9 +58,9 @@ describe('hooks against the handle (all-async) surface', () => {
   });
 
   // StrictMode regression on the REAL client surface (hooks.test.tsx covers
-  // the FakeClient variant): the double-effect cycle disposes the per-hook
-  // FrameScheduler; without re-creation the live query freezes forever.
-  test('StrictMode remount: invalidation still re-runs through the promise path', async () => {
+  // the FakeClient variant): the shared external-store subscription must stay
+  // live across the double-effect cycle.
+  test('StrictMode remount: the shared store re-runs through the promise path', async () => {
     const server = makeServer();
     const client = await makeClient(server, 'strict-a');
     clients.push(client);

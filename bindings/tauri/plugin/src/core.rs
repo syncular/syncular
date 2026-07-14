@@ -8,7 +8,7 @@
 //!
 //! This mirrors the `syncular-ffi` `Handle`: one owned [`SyncClient`], one
 //! owned [`HostTransport`] (native HTTP+WS via the `native-transport` feature),
-//! and a derived event queue. The plugin is the THIRD consumer of the shared
+//! and an exact core-output event queue. The plugin is the THIRD consumer of the shared
 //! `syncular-command` router (after the conformance shim and the FFI core), so
 //! the command surface stays conformance-locked.
 //!
@@ -26,7 +26,7 @@
 use std::collections::VecDeque;
 
 use serde_json::{json, Value};
-use syncular_client::SyncClient;
+use syncular_client::{SyncClient, SyncIntent};
 use syncular_command::{dispatch, CreateEffects};
 
 use crate::transport::{self, HostTransport};
@@ -39,26 +39,15 @@ pub struct Event {
     pub json: Value,
 }
 
-/// Snapshot of the client's observable state after the last drain, for
-/// diffing into events (the FFI derive-events pattern).
-#[derive(Debug, Default, Clone)]
-struct ObservedState {
-    sync_needed: bool,
-    conflicts: usize,
-    rejections: usize,
-    pending_commits: usize,
-    schema_floor: Option<Value>,
-    lease_error: Option<String>,
-}
-
-/// The Tauri-free core: one client, its owned transport, the derived-event
-/// diff state, and the pending event queue. Lives on ONE owning thread.
+/// The Tauri-free core: one client, its owned transport, explicit scheduling
+/// state, and the pending exact-event queue. Lives on ONE owning thread.
 pub struct SyncularCore {
     client: Option<SyncClient>,
     transport: HostTransport,
     effects: CreateEffects,
-    last: ObservedState,
     queue: VecDeque<Event>,
+    interactive_sync: bool,
+    background_sync_ms: Option<u64>,
 }
 
 impl SyncularCore {
@@ -66,18 +55,26 @@ impl SyncularCore {
     /// `baseUrl` under the `native-transport` feature owns a real HTTP+WS
     /// transport; without it the core is client-local only (tests, offline).
     pub fn new(config: &Value) -> Result<Self, String> {
-        let transport = HostTransport::from_config(config)?;
+        Self::new_with_notify(config, None)
+    }
+
+    pub fn new_with_notify(
+        config: &Value,
+        notify: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    ) -> Result<Self, String> {
+        let transport = HostTransport::from_config_with_notify(config, notify)?;
         Ok(SyncularCore {
             client: None,
             transport,
             effects: CreateEffects::default(),
-            last: ObservedState::default(),
             queue: VecDeque::new(),
+            interactive_sync: false,
+            background_sync_ms: None,
         })
     }
 
     /// Run one JSON command (`{"method","params"}`) through the shared router,
-    /// then drain inbound realtime traffic and derive events. Returns the
+    /// then drain inbound realtime traffic and exact core events. Returns the
     /// driver-protocol `{"result"|"error"}` reply.
     pub fn command(&mut self, command: &Value) -> Value {
         let method = command.get("method").and_then(Value::as_str).unwrap_or("");
@@ -92,8 +89,13 @@ impl SyncularCore {
         if method == "create" {
             self.transport.set_signed_urls(self.effects.signed_urls);
         }
+        if let Ok(value) = &result {
+            if value.pointer("/effects/sync/kind").and_then(Value::as_str) == Some("interactive") {
+                self.interactive_sync = true;
+            }
+        }
         self.drain_realtime();
-        self.derive_events(method);
+        self.drain_core_outputs();
         match result {
             Ok(value) => json!({ "result": value }),
             Err((code, message)) => json!({ "error": { "code": code, "message": message } }),
@@ -112,13 +114,17 @@ impl SyncularCore {
         self.command(&json!({ "method": "query", "params": { "sql": sql, "params": bind } }))
     }
 
-    /// True when the core wants a sync round (§8.4 coalesced signal). The host
-    /// loop polls this to decide whether to run `syncUntilIdle`.
-    pub fn sync_needed(&self) -> bool {
-        self.client
-            .as_ref()
-            .map(SyncClient::sync_needed)
-            .unwrap_or(false)
+    /// Consume the next coalesced host schedule. Interactive work preempts a
+    /// pending retry; background work keeps the earliest real deadline.
+    pub fn take_sync_intent(&mut self) -> SyncIntent {
+        if std::mem::take(&mut self.interactive_sync) {
+            self.background_sync_ms = None;
+            SyncIntent::Interactive
+        } else if let Some(delay_ms) = self.background_sync_ms.take() {
+            SyncIntent::Background { delay_ms }
+        } else {
+            SyncIntent::None
+        }
     }
 
     /// Run one `syncUntilIdle` round for the background host loop, deriving
@@ -128,6 +134,12 @@ impl SyncularCore {
             return json!({ "result": null });
         }
         self.command(&json!({ "method": "syncUntilIdle", "params": {} }))
+    }
+
+    /// Owner-mailbox wake from the native realtime reader.
+    pub fn poll_transport(&mut self) {
+        self.drain_realtime();
+        self.drain_core_outputs();
     }
 
     /// Drain every event queued since the last call (the host thread pushes
@@ -178,63 +190,27 @@ impl SyncularCore {
         }
     }
 
-    /// Diff observable state against the last snapshot and enqueue one event
-    /// per change (the invalidation-equivalent set). Same policy as the FFI,
-    /// plus a coarse `invalidate` whenever the local database plausibly
-    /// changed, so the webview's live queries re-run.
-    ///
-    /// `method` is the command that just ran (or `""` for a realtime-only
-    /// drain). A `mutate` writes the optimistic overlay immediately — visible
-    /// to local queries before any sync — so it always invalidates; sync
-    /// rounds invalidate when they applied commits/segment rows or changed
-    /// pending state.
-    fn derive_events(&mut self, method: &str) {
-        let Some(client) = self.client.as_ref() else {
+    /// Drain exact observer batches and sync intents produced by the Rust core.
+    fn drain_core_outputs(&mut self) {
+        let Some(client) = self.client.as_mut() else {
             return;
         };
-        let now = ObservedState {
-            sync_needed: client.sync_needed(),
-            conflicts: client.conflicts().len(),
-            rejections: client.rejections().len(),
-            pending_commits: client.pending_commit_ids().len(),
-            schema_floor: client
-                .schema_floor()
-                .map(|f| serde_json::to_value(f).unwrap_or(Value::Null)),
-            lease_error: client.lease_state().and_then(|l| l.error_code.clone()),
-        };
-        let mut pending: Vec<Value> = Vec::new();
-        if now.sync_needed && !self.last.sync_needed {
-            pending.push(json!({ "type": "sync-needed" }));
+        let batches = client.drain_change_batches();
+        let intents = client.drain_sync_intents();
+        for batch in batches {
+            self.push(json!({ "type": "change", "batch": batch }));
         }
-        if now.conflicts > self.last.conflicts {
-            pending.push(json!({ "type": "conflict", "count": now.conflicts }));
-        }
-        if now.rejections > self.last.rejections {
-            pending.push(json!({ "type": "rejection", "count": now.rejections }));
-        }
-        if now.schema_floor != self.last.schema_floor {
-            if let Some(floor) = &now.schema_floor {
-                pending.push(json!({ "type": "schema-floor", "floor": floor }));
+        for intent in intents {
+            match intent {
+                SyncIntent::Interactive => self.interactive_sync = true,
+                SyncIntent::Background { delay_ms } => {
+                    self.background_sync_ms = Some(
+                        self.background_sync_ms
+                            .map_or(delay_ms, |current| current.min(delay_ms)),
+                    );
+                }
+                SyncIntent::None => {}
             }
-        }
-        if now.lease_error != self.last.lease_error {
-            if let Some(code) = &now.lease_error {
-                pending.push(json!({ "type": "lease", "errorCode": code }));
-            }
-        }
-        // A local apply changed rows the webview's live queries depend on:
-        // emit a coarse `invalidate` so the JS bridge re-runs its queries. A
-        // `mutate` always writes the optimistic overlay; a sync round changes
-        // data when its pending-commit count moved or conflicts appeared.
-        let data_changed = method == "mutate"
-            || now.pending_commits != self.last.pending_commits
-            || now.conflicts != self.last.conflicts;
-        if data_changed {
-            pending.push(json!({ "type": "invalidate" }));
-        }
-        self.last = now;
-        for event in pending {
-            self.push(event);
         }
     }
 }
@@ -339,14 +315,23 @@ mod tests {
             }] }
         }));
         let events = core.drain_events();
-        // A local mutate writes the optimistic overlay immediately (a pending
-        // outbox commit appears) → an `invalidate` so live queries re-run. It
-        // does NOT flag sync_needed (that is a realtime-wake signal per SPEC).
+        // A local mutate writes the optimistic overlay and revision in one
+        // transaction, then emits the exact committed change batch.
         let kinds: Vec<&str> = events
             .iter()
             .filter_map(|e| e.json.get("type").and_then(Value::as_str))
             .collect();
-        assert!(kinds.contains(&"invalidate"), "kinds: {kinds:?}");
+        assert!(kinds.contains(&"change"), "kinds: {kinds:?}");
+        let change = events
+            .iter()
+            .find(|event| event.json["type"] == "change")
+            .expect("change event");
+        assert_eq!(change.json["batch"]["revision"], "1");
+        assert_eq!(change.json["batch"]["tables"][0]["table"], "todo");
+        assert_eq!(change.json["batch"]["status"]["outbox"], 1);
+        // `syncNeeded` is an inbound pull/catch-up signal. Local push work is
+        // represented exactly by `outbox` and by the interactive sync intent.
+        assert_eq!(change.json["batch"]["status"]["syncNeeded"], false);
         // Draining is exhaustive.
         assert!(core.drain_events().is_empty());
     }
@@ -381,18 +366,46 @@ mod tests {
                     "values": { "id": "persisted", "title": "kept", "done": false }
                 }] }
             }));
+            let revision = core.command(&json!({
+                "method": "localRevision", "params": {}
+            }));
+            assert_eq!(revision["result"]["revision"], "1");
         }
-        // Reopen the same file: the persisted row is still there.
+        // Reopen without supplying an id: identity, revision, outbox/status,
+        // and the optimistic visible row all come from the durable database.
         {
             let mut core = SyncularCore::new(&json!({})).unwrap();
-            core.command(&json!({
+            let reopened = core.command(&json!({
                 "method": "create",
-                "params": { "clientId": "c1", "schema": simple_schema(), "dbPath": path_str }
+                "params": { "schema": simple_schema(), "dbPath": path_str }
             }));
+            assert_eq!(reopened["result"], json!({}), "reopen: {reopened}");
             let rows = core.query("SELECT title FROM todo", Value::Null);
             let list = rows["result"]["rows"].as_array().expect("rows");
             assert_eq!(list.len(), 1, "reopened db: {rows}");
             assert_eq!(list[0]["title"], "kept");
+            let revision = core.command(&json!({
+                "method": "localRevision", "params": {}
+            }));
+            assert_eq!(revision["result"]["revision"], "1");
+            let pending = core.command(&json!({
+                "method": "pendingCommitIds", "params": {}
+            }));
+            assert_eq!(pending["result"]["ids"].as_array().map(Vec::len), Some(1));
+            let status = core.command(&json!({
+                "method": "statusSnapshot", "params": {}
+            }));
+            assert_eq!(status["result"]["outbox"], 1);
+            assert_eq!(status["result"]["syncNeeded"], true);
+            assert!(matches!(core.take_sync_intent(), SyncIntent::Interactive));
+        }
+        {
+            let mut core = SyncularCore::new(&json!({})).unwrap();
+            let mismatch = core.command(&json!({
+                "method": "create",
+                "params": { "clientId": "different", "schema": simple_schema(), "dbPath": path_str }
+            }));
+            assert_eq!(mismatch["error"]["code"], "client.identity_mismatch");
         }
         let _ = std::fs::remove_file(&path);
     }

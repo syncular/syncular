@@ -88,10 +88,18 @@ if [ -n "${DEV}" ] && [ -d "${DEV}/Library/Developer/Frameworks/Testing.framewor
     -Xlinker -rpath -Xlinker "${INTEROP}"
   )
 fi
-case "$(uname -s)" in
-  Darwin) DYLD_LIBRARY_PATH="${SWIFT_DIR}/vendor" swift test "${TEST_FLAGS[@]}" ;;
-  *)      LD_LIBRARY_PATH="${SWIFT_DIR}/vendor" swift test "${TEST_FLAGS[@]}" ;;
-esac
+if [ "${#TEST_FLAGS[@]}" -gt 0 ]; then
+  case "$(uname -s)" in
+    Darwin) DYLD_LIBRARY_PATH="${SWIFT_DIR}/vendor" swift test "${TEST_FLAGS[@]}" ;;
+    *)      LD_LIBRARY_PATH="${SWIFT_DIR}/vendor" swift test "${TEST_FLAGS[@]}" ;;
+  esac
+else
+  # Bash 3.2 treats an empty-array expansion as unbound under `set -u`.
+  case "$(uname -s)" in
+    Darwin) DYLD_LIBRARY_PATH="${SWIFT_DIR}/vendor" swift test ;;
+    *)      LD_LIBRARY_PATH="${SWIFT_DIR}/vendor" swift test ;;
+  esac
+fi
 
 # -- example: the todo demo (SwiftUI window + terminal) -----------------------
 # Build the example so it can't rot. It needs the NATIVE-TRANSPORT dylib (the

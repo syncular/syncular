@@ -1,154 +1,171 @@
 # @syncular/react
 
-React bindings for the syncular client, with **fine-grained live
-queries** designed in from day one (TODO 3.1 / `DESIGN-eviction.md` I1–I4).
-A `useRawSql` re-runs **only** when a table it depends on is touched by an
-apply batch — never "re-run everything on any change".
+React 18+ bindings for Syncular's revisioned reactive store. The same hooks
+work with the direct TypeScript client, the browser worker handle, and the
+Tauri/React Native bridges.
 
-Works against **both** client cores through one interface:
+The store is client-scoped, not hook-scoped. Equal queries share one local SQL
+read per revision, rows and window completeness come from one SQLite snapshot,
+and stale promises cannot overwrite a newer revision. React is only a
+`useSyncExternalStore` adapter over that renderer-independent state.
 
-- `SyncClient` — the direct core (constructed on the current thread), and
-- `SyncClientHandle` — the worker-mode proxy (the whole core in an OPFS
-  worker).
+## Recommended query and mutation path
 
-Their public surfaces diverge (getters vs methods, sync vs promise); the
-bindings normalize both, so a component never cares which it holds.
-
-React 18+ is a **peer dependency**. There are no other runtime dependencies.
-
-## Quick start
+Author reads in `queries/*.sql` or `queries/*.syql`, run `syncular generate`,
+and pass the generated descriptor to `useQuery`:
 
 ```tsx
-import { SyncProvider, useRawSql, useMutation } from '@syncular/react';
+import { SyncProvider, useMutation, useQuery } from '@syncular/react';
+import { tasksTable } from './syncular.generated';
+import { listTasksQuery } from './syncular.queries';
 
-// `client` is a SyncClient or a SyncClientHandle you already started.
-function App({ client }) {
-  return (
-    <SyncProvider client={client}>
-      <Tasks />
-    </SyncProvider>
-  );
-}
+function Tasks({ projectId }: { projectId: string }) {
+  const tasks = useQuery(listTasksQuery, { projectId });
+  const mutation = useMutation(tasksTable);
 
-function Tasks() {
-  const { rows, isLoading, error, refresh } = useRawSql(
-    'SELECT id, title, done FROM tasks ORDER BY id',
-  );
-  const { mutate } = useMutation();
-
-  if (isLoading) return <p>Loading…</p>;
-  if (error) return <p>Query failed: {error.message}</p>;
+  if (tasks.phase === 'loading') return <p>Loading…</p>;
+  if (tasks.phase === 'error') return <p>{tasks.error?.message}</p>;
+  if (tasks.phase === 'ready' && tasks.rows.length === 0) return <p>Empty</p>;
 
   return (
     <ul>
-      {rows.map((r) => (
-        <li key={r.id}>{r.title}</li>
+      {tasks.rows.map((task) => (
+        <li key={task.id}>
+          <button onClick={() => mutation.patch(task.id, { done: !task.done })}>
+            {task.title}
+          </button>
+        </li>
       ))}
-      <button
-        onClick={() =>
-          mutate([
-            {
-              table: 'tasks',
-              op: 'upsert',
-              values: { id: crypto.randomUUID(), project_id: 'p1', title: 'new', done: false },
-            },
-          ])
-        }
-      >
-        Add
-      </button>
     </ul>
   );
 }
 ```
 
-The mutate applies optimistically (§7.1) and fires the invalidation batch, so
-the list updates immediately — no manual refetch.
+Typegen puts these facts on the descriptor:
 
-## The invalidation granularity truth
+- a QueryIR-derived cache id, so SQL-only edits cannot reuse old state;
+- exact table/scope dependencies for change routing;
+- provable window coverage, claimed automatically while observed;
+- a stable row key when the projection proves one.
 
-This is the honest granularity the wire actually provides — read it before
-relying on scope-key narrowing.
+`useQuery` returns `{ rows, phase, revision, isLoading, isRefreshing, error,
+refresh }`. `phase` is:
 
-The web-client emits **exactly one** `{ tables, scopeKeys }` invalidation event
-per apply batch (a pull/delta round, a local `mutate`, a purge, or a
-schema-bump reset — the ONE choke point). Never one event per row.
+- `loading`: there is not yet a complete answer and there are no partial rows;
+- `partial`: rows exist, but some required window coverage is incomplete;
+- `ready`: the atomic snapshot says the answer is complete, including an
+  honestly empty result;
+- `error`: the initial read failed. A later refresh error keeps existing rows
+  and phase visible through `error`/`isRefreshing`.
 
-- **`tables`** — the set of tables whose local rows changed this batch. This
-  is the **reliable floor**: it is always present and always correct.
-- **`scopeKeys`** — `prefix:value` scope keys (§3.1), present **where the
-  source carried them**:
-  - `COMMIT` frames carry per-row stored scopes (§4.5), so commit-driven
-    invalidation carries **precise** scope keys.
-  - **Segments carry no per-row scope keys** — only a table + a scope digest.
-    A segment (bootstrap / re-bootstrap) invalidation therefore carries the
-    table plus the **subscription's effective scope keys**, the coarsest
-    honest key for bulk data. It never fabricates per-row keys the wire did
-    not deliver.
-  - Purge / reset / optimistic writes are keyed by table (and by effective
-    scope keys where a scope map is in hand).
+## Provider and async initialization
 
-**Consequence for `useRawSql`:** by default a query re-runs whenever a
-depended-on **table** is touched. You may narrow further with `scopeKeys`
-(below), but a **table-level** event (a segment bootstrap, a reset — one that
-carries no scope keys) **always** re-runs a matching query, because it carries
-no key to discriminate on. This is deliberate: under-running is a stale query,
-the one thing a live-query layer must never do.
-
-## `useRawSql(sql, params?, options?)`
-
-Runs a local SQL query and keeps it live.
-
-Returns `{ rows, isLoading, error, refresh }`.
-
-### Dependency tables — inference and the escape hatch
-
-By default the hook infers its dependency tables with a **conservative scan**
-of the SQL text (the identifiers after `FROM`/`JOIN`). This is a heuristic,
-**not** a SQL parser — it is intentionally over-inclusive at the edges (an
-extra harmless re-run) rather than under-inclusive (a stale query).
-
-When the text cannot be read (dynamic SQL, views, unusual syntax), pass the
-explicit **`tables`** option — it always wins:
+A ready client can be passed directly:
 
 ```tsx
-useRawSql(buildDynamicSql(), params, { tables: ['tasks', 'projects'] });
+<SyncProvider client={client}><Tasks projectId="p1" /></SyncProvider>
 ```
 
-### Options
+For async engines, create one resource outside React render. It owns one
+initialization attempt across StrictMode remounts and closes the client exactly
+once when explicitly disposed:
 
-| Option      | Meaning                                                                                                                             |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `tables`    | Explicit dependency tables. Overrides the SQL-text inference (the escape hatch).                                                    |
-| `scopeKeys` | Narrow re-runs to specific `prefix:value` keys. A dependency-table event still re-runs if it carries **no** scope keys (see above). |
-| `enabled`   | Skip running while `false` (e.g. inputs not ready).                                                                                 |
+```tsx
+import { createSyncClientResource, SyncProvider } from '@syncular/react';
+
+const clientResource = createSyncClientResource(() => createClient());
+
+<SyncProvider
+  client={clientResource}
+  fallback={<p>Starting local database…</p>}
+  renderError={(error) => <p>{error.message}</p>}
+>
+  <App />
+</SyncProvider>
+```
+
+Call `await clientResource.dispose()` from the application's real lifecycle
+owner, not from a StrictMode-sensitive child effect.
+
+## `useMutation`
+
+`useMutation()` retains the raw batch API. `useMutation(generatedTable)` adds
+typed `upsert`, `patch`, and `remove` helpers:
+
+```tsx
+const mutation = useMutation(tasksTable, {
+  onSuccess(commitId) {},
+  onError(error) {},
+});
+
+await mutation.upsert({ id, projectId, title, done: false });
+await mutation.patch(id, { title: 'Renamed' });
+await mutation.remove(id);
+```
+
+It returns `pendingCount`, `isPending`, `error`, and `resetError`. Overlapping
+writes remain pending until all calls settle. Every method still returns a
+promise and rejects on failure; callbacks do not replace error handling.
+
+## `useRawSql`
+
+`useRawSql(sql, params?, options?)` is the read-only escape hatch for dynamic
+SQL. It returns the same phase/revision result as `useQuery`.
+
+```tsx
+const summary = useRawSql<{ total: number }>(
+  'SELECT count(*) AS total FROM tasks WHERE project_id = ?',
+  [projectId],
+  {
+    dependencies: [{ table: 'tasks', scopeKeys: [`project:${projectId}`] }],
+  },
+);
+```
+
+Options:
+
+| Option | Meaning |
+| --- | --- |
+| `dependencies` | Exact table-associated dependencies. |
+| `coverage` | Required window units read atomically with the rows. |
+| `rowKey` | Stable identity fields used to retain unchanged row objects. |
+| `claimCoverage` | Claim declared coverage while observed; default `true`. |
+| `enabled` | Disable observation and reads while `false`. |
+| `id` | Stable cache identity for a raw query. |
+| `tables`, `scopeKeys` | Compatibility shorthand; prefer `dependencies`. |
+
+Without explicit dependencies, raw SQL uses a conservative `FROM`/`JOIN`
+scan. Generated queries are preferred whenever the statement is known at
+build time because typegen can prove more.
+
+## Exact changes and windows
+
+Both cores emit one revisioned `ClientChangeBatch` per observer transaction.
+Table changes keep scope keys associated with their table; window changes can
+complete a zero-row unit without inventing a row change; status/conflict-only
+batches do not rerun SQL. Bridges forward this batch unchanged.
+
+Generated query coverage uses composable claims. Multiple consumers of the
+same window base contribute a union, and unmounting one removes only its own
+units. `useWindow(base)` remains the lower-level imperative interface for
+prefetching or dynamic query builders. Applications normally do not need it
+beside a generated `useQuery`.
+
+For a small known navigation working set,
+`useRetainedWindow(base, units)` prefetches and retains those units through the
+same coordinator. It returns `{ isPending, error }`, normalizes duplicate
+units, and releases only its own claim on unmount, so application code does
+not need a custom retention effect.
 
 ## Other hooks
 
-- **`useSyncStatus()`** → `{ outbox, upgrading, leaseState, schemaFloor,
-  syncNeeded, isLoading, refresh }`. Re-reads after every apply batch.
-  (`online` is not a value the core exposes — §1.3 transport-owned — so it is
-  not reported rather than guessed.)
-- **`useConflicts()`** → `{ conflicts, rejections, refresh }` (§6.2/§6.3).
-- **`usePresence(scopeKey)`** → the ephemeral peers present on a §8.6 scope
-  key; updates on join/update/leave. Empty (and never crashes) without a
-  connected realtime socket.
-- **`useMutation()`** → `{ mutate, isPending, error }`. `mutate(mutations)`
-  resolves to the `clientCommitId`; the optimistic overlay is applied
-  immediately, and dependent `useRawSql`s re-run on the resulting batch.
+- `useSyncStatus()` observes the status domain without a follow-up read after
+  every row change. `outbox` is local push work; `syncNeeded` specifically
+  means an inbound pull/catch-up signal.
+- `useConflicts()` observes conflicts and rejections only when that domain
+  changes.
+- `usePresence(scopeKey)` observes ephemeral realtime peers.
+- `useSyncClient()` and `useReactiveStore()` expose the normalized low-level
+  surfaces for integrations.
 
-## SSR
-
-The hooks are SSR-safe: on the server they render their initial state and the
-query fires only in the client-side mount effect. `renderToString` never
-crashes.
-
-## Design note — the window registry (forward-looking)
-
-Per `DESIGN-eviction.md` I3, query bindings must be able to route a query's
-scope footprint through the window registry once windowed sync (TODO §5
-item 2) lands, so a query can report **completeness** (answerable from the
-local replica vs a window miss). Today the registry trivially contains
-"everything subscribed", so `useRawSql` always answers from the local
-replica. The `scopeKeys` option is the seam through which per-scope
-completeness will be surfaced without an API break.
+The hooks are SSR-safe: no local query runs during server rendering.

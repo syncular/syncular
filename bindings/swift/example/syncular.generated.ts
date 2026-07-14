@@ -2,6 +2,20 @@
 // irVersion: 1
 // irHash: sha256:e2ab7513a95a05589cd85d01bb1ef36c52dea0788df2ff31bff8bb08d5f65009
 
+/** Structural descriptor consumed by renderer bindings; phantom type
+ * fields make row/insert/update/id inference available without imports. */
+export interface SyncTable<Row, Insert, Update, Id> {
+  readonly name: string;
+  /** Language-facing key used in generated row and mutation types. */
+  readonly primaryKey: keyof Row & string;
+  /** Physical SQLite/wire primary-key column. */
+  readonly physicalPrimaryKey: string;
+  readonly __row?: Row;
+  readonly __insert?: Insert;
+  readonly __update?: Update;
+  readonly __id?: Id;
+}
+
 /** ServerSchema-compatible schema object (SPEC §2.4, §3.1). */
 export const schema = {
   version: 1,
@@ -45,6 +59,13 @@ export interface NotesUpdate {
   body?: string;
   updatedAtMs?: number;
 }
+
+/** Typed mutation/resource descriptor for 'notes'. */
+export const notesTable: SyncTable<NotesRow, NotesInsert, NotesUpdate, string> = {
+  name: 'notes',
+  primaryKey: 'id',
+  physicalPrimaryKey: 'id',
+};
 
 export interface ListNotesParams {
   listId: string;

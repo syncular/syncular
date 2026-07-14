@@ -4,21 +4,22 @@
  * the Tauri webview it talks to the native Rust core in the host process.
  * The only host-aware code is `createEngine()` in `./engine.ts`.
  *
- * - `useRawSql` — the live todo list; re-runs exactly when `todos`
- *   invalidates.
- * - `useMutation` — add / toggle / delete; writes go through the outbox.
+ * - generated `useQuery` — exact dependencies, coverage, revision and row key.
+ * - typed `useMutation` — add / toggle / delete through the outbox.
  * - `useSyncStatus` — outbox depth + upgrading / schema-floor badges.
  */
 import {
+  createSyncClientResource,
   SyncProvider,
   useMutation,
-  useRawSql,
+  useQuery,
   useSyncStatus,
 } from '@syncular/react';
-import { StrictMode, useEffect, useState } from 'react';
+import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { type TodosRow, todoListSubscription } from '../syncular.generated';
-import { createEngine, type Engine } from './engine';
+import { todosTable } from '../syncular.generated';
+import { type ListTodosRow, listTodosQuery } from '../syncular.queries';
+import { createEngine } from './engine';
 
 const LIST_ID = 'welcome';
 
@@ -41,47 +42,33 @@ function StatusLine() {
 }
 
 function TodoApp() {
-  const { mutate, isPending, error } = useMutation();
+  const mutation = useMutation(todosTable);
 
-  // Live local read: re-runs exactly when `todos` invalidates.
-  const { rows, isLoading } = useRawSql<TodosRow>(
-    'SELECT id, list_id AS listId, title, done, position,' +
-      ' updated_at_ms AS updatedAtMs FROM todos WHERE list_id = ?' +
-      ' ORDER BY position, id',
-    [LIST_ID],
-  );
+  const todos = useQuery(listTodosQuery, { listId: LIST_ID });
+  const { rows } = todos;
 
   const add = (title: string) => {
     const position =
       rows.reduce((max, row) => Math.max(max, row.position), 0) + 1;
-    void mutate([
-      {
-        table: 'todos',
-        op: 'upsert',
-        values: {
-          id: crypto.randomUUID(),
-          listId: LIST_ID,
-          title,
-          done: false,
-          position,
-          updatedAtMs: Date.now(),
-        },
-      },
-    ]);
+    void mutation.upsert({
+      id: crypto.randomUUID(),
+      listId: LIST_ID,
+      title,
+      done: false,
+      position,
+      updatedAtMs: Date.now(),
+    });
   };
 
-  const toggle = (row: TodosRow) => {
-    void mutate([
-      {
-        table: 'todos',
-        op: 'upsert',
-        values: { ...row, done: !row.done, updatedAtMs: Date.now() },
-      },
-    ]);
+  const toggle = (row: ListTodosRow) => {
+    void mutation.patch(row.id, {
+      done: !row.done,
+      updatedAtMs: Date.now(),
+    });
   };
 
   const remove = (id: string) => {
-    void mutate([{ table: 'todos', op: 'delete', rowId: id }]);
+    void mutation.remove(id);
   };
 
   return (
@@ -105,19 +92,21 @@ function TodoApp() {
         }}
       >
         <input name="title" placeholder="a new todo" autoComplete="off" />
-        <button type="submit" disabled={isPending}>
+        <button type="submit" disabled={mutation.isPending}>
           add
         </button>
       </form>
 
       {/* Always render the write error: a dead worker/bridge RPC otherwise
           fails silently and "add does nothing" is undebuggable. */}
-      {error !== undefined ? (
-        <div className="error">write failed: {String(error)}</div>
+      {mutation.error !== undefined ? (
+        <div className="error">write failed: {mutation.error.message}</div>
       ) : null}
 
-      {isLoading ? (
+      {todos.phase === 'loading' ? (
         <div className="empty">loading…</div>
+      ) : todos.phase === 'error' ? (
+        <div className="empty">query failed: {todos.error?.message}</div>
       ) : rows.length === 0 ? (
         <div className="empty">no todos yet — add one</div>
       ) : (
@@ -152,42 +141,25 @@ function TodoApp() {
   );
 }
 
+const engineResource = createSyncClientResource(async () => {
+  const engine = await createEngine();
+  try {
+    await engine.connectRealtime();
+  } catch {
+    // offline / no socket — the host loop keeps syncing over HTTP
+  }
+  return engine;
+});
+
 function Root() {
-  const [engine, setEngine] = useState<Engine | undefined>(undefined);
-  const [error, setError] = useState<string | undefined>(undefined);
-
-  useEffect(() => {
-    let live: Engine | undefined;
-    void createEngine()
-      .then(async (e) => {
-        live = e;
-        await e.subscribe({
-          id: 'todos',
-          table: 'todos',
-          scopes: todoListSubscription.scopes({ listId: LIST_ID }),
-        });
-        // Ride the socket for realtime; HTTP sync still works without it.
-        try {
-          await e.connectRealtime();
-        } catch {
-          // offline / no socket — the host loop keeps syncing over HTTP
-        }
-        setEngine(e);
-      })
-      .catch((err: unknown) => setError(String(err)));
-    return () => {
-      void live?.close();
-    };
-  }, []);
-
-  if (error !== undefined) {
-    return <div className="empty">failed to start: {error}</div>;
-  }
-  if (engine === undefined) {
-    return <div className="empty">starting client core…</div>;
-  }
   return (
-    <SyncProvider client={engine}>
+    <SyncProvider
+      client={engineResource}
+      fallback={<div className="empty">starting client core…</div>}
+      renderError={(error) => (
+        <div className="empty">failed to start: {error.message}</div>
+      )}
+    >
       <TodoApp />
     </SyncProvider>
   );

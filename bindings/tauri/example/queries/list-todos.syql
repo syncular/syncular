@@ -1,0 +1,6 @@
+query listTodos(listId) {
+  select id, list_id, title, done, position, updated_at_ms, attachment
+  from todos
+  where list_id = :listId
+  order by position, id
+}

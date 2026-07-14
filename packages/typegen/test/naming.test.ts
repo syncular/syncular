@@ -264,6 +264,10 @@ describe('QueryIR serialization is deterministic', () => {
       type: 'integer',
       nullable: false,
       fidelity: 'exact',
+      origin: {
+        table: 'todos',
+        column: 'created_at',
+      },
     });
   });
 });

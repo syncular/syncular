@@ -15,30 +15,36 @@
  * and the conformance shim. `query` uses the dedicated `syncular_query` fast
  * path (one IPC round trip per live-query run — fine at Tauri IPC latency; see
  * the README's pagination note for very large result sets). Client-observable
- * events (`invalidate` / `presence` / `sync-needed` / `conflict` / …) arrive on
+ * events (`change` / `presence`) arrive on
  * the `syncular://event` Tauri event and fan out to the registered listeners.
  *
  * Bytes cross the command JSON as the established `{$bytes: hex}` envelope, the
  * same convention the Rust command router and the driver protocol use.
  *
- * `@tauri-apps/api` is a PEER dependency: the bridge takes `invoke`/`listen`
- * either from the ambient `window.__TAURI__` or via injected doubles (tests).
+ * `@tauri-apps/api` is a required peer dependency: the bridge takes
+ * `invoke`/`listen` either from its ESM entry points, from the ambient
+ * `window.__TAURI__`, or via injected doubles (tests).
  */
 
 // -- Types the bridge speaks (structurally the web-client's) -----------------
 // Imported as types only, so the bridge has no runtime dependency on
 // @syncular/client (the app already carries it via @syncular/react).
 import type {
+  ClientChangeBatch,
+  ClientChangeListener,
   ConflictRecord,
   InvalidationEvent,
   InvalidationListener,
   LeaseState,
   MutationInput,
   PresencePeer,
+  QueryReadSpec,
+  QuerySnapshot,
   RejectionRecord,
   SchemaFloor,
   SqlRow,
   SqlValue,
+  SyncStatusSnapshot,
   WindowBase,
   WindowState,
 } from '@syncular/client';
@@ -74,11 +80,11 @@ export interface TauriSyncClientConfig {
   /** The generated schema JSON (the app passes `schema` from typegen). */
   readonly schema: unknown;
   /**
-   * Client id for this device/actor. If omitted, a stable random id is
-   * generated and persisted by the caller (the bridge does not persist it —
-   * the native side owns the database, so pass the same id across launches).
+   * Client id for this device/actor. If omitted, the native client generates
+   * one and persists it in the database. Supplying a different id when opening
+   * an existing database fails with `client.identity_mismatch`.
    */
-  readonly clientId: string;
+  readonly clientId?: string;
   /** §4.2 client limits, forwarded to the native `create`. */
   readonly limits?: Record<string, unknown>;
   /**
@@ -91,12 +97,21 @@ export interface TauriSyncClientConfig {
 
 /** The bytes envelope both sides share. */
 export type BytesEnvelope = { readonly $bytes: string };
+type BigIntEnvelope = { readonly $bigint: string };
 
 function isBytesEnvelope(value: unknown): value is BytesEnvelope {
   return (
     typeof value === 'object' &&
     value !== null &&
     typeof (value as { $bytes?: unknown }).$bytes === 'string'
+  );
+}
+
+function isBigIntEnvelope(value: unknown): value is BigIntEnvelope {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { $bigint?: unknown }).$bigint === 'string'
   );
 }
 
@@ -120,13 +135,28 @@ function hexToBytes(hex: string): Uint8Array {
 /** Encode an SQL param for the command JSON (bytes → `{$bytes: hex}`). */
 function encodeParam(value: SqlValue): unknown {
   if (value instanceof Uint8Array) return { $bytes: bytesToHex(value) };
-  if (typeof value === 'bigint') return Number(value);
+  if (typeof value === 'bigint') return { $bigint: value.toString() };
+  return value;
+}
+
+function encodeJsonValue(value: unknown): unknown {
+  if (value instanceof Uint8Array) return { $bytes: bytesToHex(value) };
+  if (typeof value === 'bigint') return { $bigint: value.toString() };
+  if (Array.isArray(value)) return value.map(encodeJsonValue);
+  if (value !== null && typeof value === 'object') {
+    const encoded: Record<string, unknown> = {};
+    for (const [key, member] of Object.entries(value)) {
+      encoded[key] = encodeJsonValue(member);
+    }
+    return encoded;
+  }
   return value;
 }
 
 /** Decode one query-result cell back to an `SqlValue` (`{$bytes}` → bytes). */
 function decodeCell(value: unknown): SqlValue {
   if (isBytesEnvelope(value)) return hexToBytes(value.$bytes);
+  if (isBigIntEnvelope(value)) return BigInt(value.$bigint);
   if (
     value === null ||
     typeof value === 'string' ||
@@ -170,18 +200,14 @@ async function resolveTauri(injected: TauriApi | undefined): Promise<TauriApi> {
       listen: ambient.event.listen.bind(ambient.event),
     };
   }
-  // Fall back to the ESM package (the common path). The specifiers are built
-  // indirectly so this optional peer dependency is not a hard compile-time
-  // module resolution — apps that inject `tauri` (or use the ambient global)
-  // never need `@tauri-apps/api` type-resolvable at build.
-  const dynamicImport = (specifier: string): Promise<unknown> =>
-    import(/* @vite-ignore */ specifier);
-  const core = (await dynamicImport('@tauri-apps/api/core')) as {
-    invoke: TauriApi['invoke'];
-  };
-  const event = (await dynamicImport('@tauri-apps/api/event')) as {
-    listen: TauriApi['listen'];
-  };
+  // Fall back to the ESM package (the common path). These must remain literal,
+  // bundler-visible specifiers: hiding a bare package import behind
+  // `@vite-ignore` makes WebKit resolve it as a URL at runtime instead of
+  // letting Vite/Bun include the Tauri API in the webview bundle.
+  const [core, event] = await Promise.all([
+    import('@tauri-apps/api/core'),
+    import('@tauri-apps/api/event'),
+  ]);
   return { invoke: core.invoke, listen: event.listen };
 }
 
@@ -193,6 +219,7 @@ async function resolveTauri(injected: TauriApi | undefined): Promise<TauriApi> {
 export class TauriSyncClient {
   readonly #tauri: TauriApi;
   readonly #invalidationListeners = new Set<InvalidationListener>();
+  readonly #changeListeners = new Set<ClientChangeListener>();
   readonly #presenceListeners = new Set<(scopeKey: string) => void>();
   #unlisten: (() => void) | undefined;
   #closed = false;
@@ -221,13 +248,18 @@ export class TauriSyncClient {
   /** @internal — fan an incoming plugin event out to the local listeners. */
   __dispatchEvent(event: SyncularEvent): void {
     switch (event.type) {
-      case 'invalidate': {
-        // The native side derives a coarse invalidate (table granularity is the
-        // honest floor — the plugin does not ship per-row scope keys over IPC).
-        const payload: InvalidationEvent = {
-          tables: toStringSet(event.tables),
-          scopeKeys: toStringSet(event.scopeKeys),
-        };
+      case 'change': {
+        const batch = decodeChangeBatch(event.batch);
+        if (batch === undefined) break;
+        for (const listener of this.#changeListeners) {
+          try {
+            listener(batch);
+          } catch {
+            /* a UI listener must never break event dispatch */
+          }
+        }
+        const payload = invalidationFromChange(batch);
+        if (payload === undefined) break;
         for (const listener of this.#invalidationListeners) {
           try {
             listener(payload);
@@ -250,9 +282,8 @@ export class TauriSyncClient {
         break;
       }
       default:
-        // sync-needed / conflict / rejection / schema-floor / lease / error:
-        // observable via the accessor methods; a coarse invalidate already
-        // accompanies data-changing events, so nothing else to fan out here.
+        // Unknown extension events are deliberately ignored. All durable
+        // observable state arrives in the revisioned `change` batch.
         break;
     }
   }
@@ -262,6 +293,11 @@ export class TauriSyncClient {
   onInvalidate(listener: InvalidationListener): () => void {
     this.#invalidationListeners.add(listener);
     return () => this.#invalidationListeners.delete(listener);
+  }
+
+  onChange(listener: ClientChangeListener): () => void {
+    this.#changeListeners.add(listener);
+    return () => this.#changeListeners.delete(listener);
   }
 
   onPresence(listener: (scopeKey: string) => void): () => void {
@@ -281,9 +317,56 @@ export class TauriSyncClient {
     return rows.map((r) => decodeRow(r as Record<string, unknown>));
   }
 
+  async querySnapshot<Row = SqlRow>(
+    spec: QueryReadSpec,
+  ): Promise<QuerySnapshot<Row>> {
+    const result = (await this.#command('querySnapshot', {
+      sql: spec.sql,
+      params: (spec.params ?? []).map(encodeParam),
+      coverage: spec.coverage ?? [],
+    })) as {
+      revision: string;
+      rows: Record<string, unknown>[];
+      coverage: QuerySnapshot['coverage'];
+    };
+    return {
+      revision: BigInt(result.revision),
+      rows: result.rows.map(decodeRow) as unknown as readonly Row[],
+      coverage: result.coverage,
+    };
+  }
+
+  async localRevision(): Promise<bigint> {
+    const result = (await this.#command('localRevision', {})) as {
+      revision: string;
+    };
+    return BigInt(result.revision);
+  }
+
+  async statusSnapshot(): Promise<SyncStatusSnapshot> {
+    return (await this.#command('statusSnapshot', {})) as SyncStatusSnapshot;
+  }
+
   async mutate(mutations: readonly MutationInput[]): Promise<string> {
     const result = (await this.#command('mutate', {
       mutations: mutations.map(encodeMutation),
+    })) as { clientCommitId: string };
+    return result.clientCommitId;
+  }
+
+  async patch(
+    table: string,
+    rowId: string,
+    partial: Readonly<Record<string, unknown>>,
+    options?: { readonly baseVersion?: number },
+  ): Promise<string> {
+    const result = (await this.#command('patch', {
+      table,
+      rowId,
+      partial: encodeJsonValue(partial),
+      ...(options?.baseVersion !== undefined
+        ? { baseVersion: options.baseVersion }
+        : {}),
     })) as { clientCommitId: string };
     return result.clientCommitId;
   }
@@ -499,6 +582,7 @@ export class TauriSyncClient {
     this.#unlisten?.();
     this.#unlisten = undefined;
     this.#invalidationListeners.clear();
+    this.#changeListeners.clear();
     this.#presenceListeners.clear();
   }
 }
@@ -520,10 +604,79 @@ function toStringSet(value: unknown): ReadonlySet<string> {
   return new Set<string>();
 }
 
+function decodeChangeBatch(value: unknown): ClientChangeBatch | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.revision !== 'string') return undefined;
+  const tables = Array.isArray(raw.tables)
+    ? raw.tables.flatMap((entry) => {
+        if (entry === null || typeof entry !== 'object') return [];
+        const item = entry as Record<string, unknown>;
+        if (typeof item.table !== 'string') return [];
+        return [
+          {
+            table: item.table,
+            ...(Array.isArray(item.scopeKeys)
+              ? { scopeKeys: toStringSet(item.scopeKeys) }
+              : {}),
+          },
+        ];
+      })
+    : [];
+  const windows = Array.isArray(raw.windows)
+    ? raw.windows.flatMap((entry) => {
+        if (entry === null || typeof entry !== 'object') return [];
+        const item = entry as Record<string, unknown>;
+        if (
+          typeof item.baseKey !== 'string' ||
+          typeof item.table !== 'string'
+        ) {
+          return [];
+        }
+        return [
+          {
+            baseKey: item.baseKey,
+            table: item.table,
+            units: toStringSet(item.units),
+          },
+        ];
+      })
+    : [];
+  return {
+    revision: BigInt(raw.revision),
+    tables,
+    windows,
+    ...(raw.status !== undefined
+      ? { status: raw.status as SyncStatusSnapshot }
+      : {}),
+    conflictsChanged: raw.conflictsChanged === true,
+    rejectionsChanged: raw.rejectionsChanged === true,
+  };
+}
+
+function invalidationFromChange(
+  batch: ClientChangeBatch,
+): InvalidationEvent | undefined {
+  if (batch.tables.length === 0 && batch.windows.length === 0) return undefined;
+  const tables = new Set<string>();
+  const scopeKeys = new Set<string>();
+  for (const table of batch.tables) {
+    tables.add(table.table);
+    for (const key of table.scopeKeys ?? []) scopeKeys.add(key);
+  }
+  for (const window of batch.windows) tables.add(window.table);
+  return { tables, scopeKeys };
+}
+
 /** Encode one mutation for the command JSON (bytes inside `values` handled by
  * the native side; the driver form is already JSON-able). */
 function encodeMutation(mutation: MutationInput): unknown {
-  return mutation;
+  if (mutation.op === 'delete') return mutation;
+  const values: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(mutation.values)) {
+    values[key] = encodeJsonValue(value);
+  }
+  return { ...mutation, values };
 }
 
 /**
@@ -537,7 +690,7 @@ export async function createTauriSyncClient(
 ): Promise<TauriSyncClient> {
   const tauri = await resolveTauri(config.tauri);
 
-  // Wire the event stream BEFORE create, so no early invalidate is missed.
+  // Wire the event stream BEFORE create, so no early change batch is missed.
   const clientRef: { client: TauriSyncClient | undefined } = {
     client: undefined,
   };
@@ -557,7 +710,7 @@ export async function createTauriSyncClient(
     command: {
       method: 'create',
       params: {
-        clientId: config.clientId,
+        ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
         schema: config.schema,
         ...(config.limits !== undefined ? { limits: config.limits } : {}),
       },

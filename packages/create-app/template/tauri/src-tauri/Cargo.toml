@@ -21,7 +21,7 @@ tauri = { version = "2", features = [] }
 # The syncular plugin from crates.io. `native-transport` gives the core its
 # real HTTP + WebSocket transport (ureq + tungstenite) inside the host
 # process — the webview never talks to the sync server directly.
-tauri-plugin-syncular = { version = "0.4", features = ["native-transport"] }
+tauri-plugin-syncular = { version = "0.5", features = ["native-transport"] }
 
 [features]
 default = []

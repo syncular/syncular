@@ -4,8 +4,8 @@
  * `/app.js` is the `Bun.build`-bundled `main.tsx`, the piece that can rot
  * silently (a broken hook import, a JSX/type slip, a bad generated schema).
  * A served, non-empty `/app.js` that references the React entry means the
- * whole frontend graph — SyncProvider, useQuery + useRawSql,
- * useWindow — compiled.
+ * whole frontend graph — async SyncProvider, generated useQuery coverage,
+ * typed mutations, and useRawSql — compiled.
  *
  * The worker + OPFS + realtime runtime path itself can't run headless in
  * `bun test`; it is exercised by the two-pane demo and the conformance

@@ -14,7 +14,7 @@ import type { AnalyzedQuery } from './query';
 /** Serialize analyzed queries as the deterministic QueryIR JSON document. */
 export function serializeQueryIr(queries: readonly AnalyzedQuery[]): string {
   const doc = {
-    queryIrVersion: 1,
+    queryIrVersion: 2,
     queries: queries.map((query) => ({
       name: query.name,
       file: query.file,
@@ -37,8 +37,31 @@ export function serializeQueryIr(queries: readonly AnalyzedQuery[]): string {
         type: column.type,
         nullable: column.nullable,
         fidelity: column.fidelity,
+        ...(column.origin !== undefined ? { origin: column.origin } : {}),
       })),
       tables: query.tables,
+      reactive: {
+        dependencies: query.reactive.dependencies.map((dependency) => ({
+          table: dependency.table,
+          scopes: dependency.scopes.map((scope) => ({
+            variable: scope.variable,
+            pattern: scope.pattern,
+            params: scope.params,
+          })),
+        })),
+        coverage: query.reactive.coverage.map((coverage) => ({
+          table: coverage.table,
+          variable: coverage.variable,
+          units: coverage.units,
+          fixedScopes: coverage.fixedScopes.map((scope) => ({
+            variable: scope.variable,
+            params: scope.params,
+          })),
+        })),
+        ...(query.reactive.rowKey !== undefined
+          ? { rowKey: query.reactive.rowKey }
+          : {}),
+      },
       // §6 knob metadata — emitted only when declared.
       ...(query.orderBy !== undefined
         ? {

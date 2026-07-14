@@ -18,8 +18,6 @@ use std::sync::{Arc, Mutex};
 
 use syncular_client::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 
-use crate::EventQueue;
-
 /// One inbound realtime frame buffered for the client's `on_realtime_*`.
 pub enum Inbound {
     Text(String),
@@ -27,8 +25,8 @@ pub enum Inbound {
 }
 
 /// The shared inbound buffer the WS reader thread fills and the command path
-/// drains. Separate from the event queue: raw frames go here, derived events
-/// go to the `EventQueue`.
+/// drains. Separate from the event queue: raw frames go here, committed core
+/// outputs go to the `EventQueue`.
 #[derive(Default)]
 pub struct InboundBuffer {
     frames: Mutex<Vec<Inbound>>,
@@ -56,11 +54,7 @@ pub enum HostTransport {
 impl HostTransport {
     /// Build the transport from the `new` config. `{}` (or no `baseUrl`) →
     /// `Null`; a `baseUrl` under the `native-transport` feature → `Native`.
-    pub(crate) fn from_config(
-        config: &serde_json::Value,
-        queue: Arc<EventQueue>,
-    ) -> Result<Self, String> {
-        let _ = &queue;
+    pub(crate) fn from_config(config: &serde_json::Value) -> Result<Self, String> {
         Self::new_from_config(config)
     }
 

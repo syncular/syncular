@@ -39,8 +39,8 @@ Three decisions shape the API:
 - **Synchronous and host-driven.** There is no async runtime and no
   background thread inside the core. Your code calls `sync()` /
   `sync_until_idle()` when it decides to; the core exposes the coalesced
-  `sync_needed()` signal, and scheduling (§8.4 wake loop, jitter, backoff)
-  is host policy.
+  exact `SyncIntent` values. The core classifies immediate work and transient
+  retry backoff; the host owns the mailbox/deadline wait.
 - **Thread-affine.** `SyncClient` owns a rusqlite connection and is not
   `Sync`. Drive one client from one thread; if other threads need access,
   use a mailbox (an mpsc channel to the owning thread), the pattern the

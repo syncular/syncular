@@ -57,7 +57,6 @@ import { SyncProvider } from '@syncular/react';
 import { schema } from './syncular.generated';
 
 const client = await createNativeSyncClient({
-  clientId: 'device-1',            // stable per device — reuse across launches
   schema,                          // the typegen output, same as every host
   baseUrl: 'https://your.server',  // engages the native HTTP+WS transport
 });
@@ -67,7 +66,7 @@ The config keys:
 
 | Key | Meaning |
 | --- | --- |
-| `clientId` | Stable per-device/actor client id (reuse across launches). |
+| `clientId` | Optional explicit id; otherwise the core creates and persists one. |
 | `schema` | The generated schema from [typegen](/guide-schema/). |
 | `baseUrl` | Sync server mount; engages the native transport. Omit for a client-local core. |
 | `dbPath` | On-disk SQLite path (apps usually pass a file under the app-data dir). |
@@ -113,10 +112,10 @@ See [CRDT columns](/concepts-crdt/).
 
 The client core has no callbacks: the native shims pump
 `syncular_client_poll_event` on a background queue and emit each event JSON on
-the `syncular::event` topic. The JS bridge fans `invalidate` out to live
-queries (so `useRawSql` / `useQuery` re-run) and `presence` to presence listeners; the
-rest of the derived event set (`sync-needed`, `conflict`, `rejection`,
-`schema-floor`, `lease`) is observable through the client's accessor methods.
+the `syncular::event` topic. The FFI forwards exact revisioned `change` batches
+and explicit `sync-intent` effects from the Rust core; it does not diff
+counters. The JS bridge feeds changes into the same shared reactive store as
+web and Tauri, while `presence` remains ephemeral.
 
 Lifecycle is explicit and battery-aware:
 

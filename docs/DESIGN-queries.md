@@ -1,5 +1,12 @@
 # DESIGN — The query surface: two frontends, one IR, SQL underneath
 
+> **Prototype replacement proposed:**
+> [RFC 0004](./rfcs/0004-syql-language.md) replaces the shipped `.syql`
+> grammar destructively, and [the SYQL specification](./SYQL.md) defines the
+> proposed language normatively. Until the RFC is accepted, this document
+> describes the current implementation; after acceptance, contradictory SYQL
+> sections here are superseded and must be removed or rewritten.
+
 Status: **shipped — Q0–Q5 complete** (2026-07-07). Q1 (guards, sql tag,
 hook renames, Kysely removal), Q2 (naming map + camel emission + mutate
 two-casing), Q3 (`.syql` frontend + neutralization + `--print`), Q4
@@ -148,6 +155,26 @@ Notes:
 - `: flag` is the one param type annotation that exists — a boolean guard
   param that never binds into SQL (it has no `:unassigned` in any
   predicate). Everything else is inferred.
+
+Reactive facts are inferred from checked predicates where possible. The
+container also has checked declarations for shapes the conservative analyzer
+cannot prove:
+
+```text
+query compareLists(left, right)
+  depends todos on list_id = left | right
+  window todos by list_id = left | right
+  key by id
+{ ... }
+```
+
+`depends` declares table-associated scope routing; `window` declares coverage
+(and requires `fixed scope = param` entries for every other scope on a
+multi-scope table); `key by` names one or more projected result columns. These
+are not unchecked annotations: typegen validates the query reads the table,
+scope/param type compatibility, required coverage params, complete fixed
+scopes, and projected key fields. Plain `.sql` remains annotation-free and
+falls back conservatively when proof is not possible.
 
 ## 4. Conditionals — the design question this doc exists for
 

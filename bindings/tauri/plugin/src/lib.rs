@@ -19,19 +19,19 @@
 //!   surface stays conformance-locked).
 //! - `syncular_query(sql, params)` — the React live-query fast path (arbitrary
 //!   read-only SQL); routed through the same `query` command.
-//! - `syncular://event` — a Tauri event carrying the derived client-observable
-//!   events (`sync-needed` / `conflict` / `presence` / `invalidate` / …), the
-//!   invalidation-equivalent set the FFI `poll_event` surfaces.
+//! - `syncular://event` — exact revisioned `change` batches plus ephemeral
+//!   `presence`; command/realtime sync intents stay inside the event-driven
+//!   owner loop.
 //!
 //! ## Thread-safety, honestly
 //!
 //! [`core::SyncularCore`] owns a rusqlite connection and is NOT `Sync`. One
 //! owning thread holds it; every command arrives over a mailbox (mpsc). The
-//! background host loop (§8.4 wake-driven `syncUntilIdle` with jitter) runs ON
+//! background host loop (§8.4 wake-driven `syncUntilIdle` with deadlines) runs ON
 //! that same thread, interleaved with mailbox requests, so the connection is
 //! never touched concurrently — the same one-owning-thread pattern as the shim.
 
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -50,7 +50,7 @@ pub const EVENT_NAME: &str = "syncular://event";
 /// Plugin configuration. Passed to [`init`]; every field is optional except a
 /// caller almost always wants a `base_url` (for real network sync) and a
 /// `db_path` (for persistence — defaults to an in-memory core if absent).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SyncularConfig {
     /// Server base URL for the native HTTP+WS transport (needs the
     /// `native-transport` feature). Absent → client-local only.
@@ -62,11 +62,20 @@ pub struct SyncularConfig {
     /// On-disk SQLite path. Absent → in-memory (nothing survives a restart).
     /// Apps usually set this to a file under the app-data dir; see [`init`].
     pub db_path: Option<String>,
-    /// §8.4 host-loop jitter cap (ms) applied to each wake before a
-    /// `syncUntilIdle`. 0 disables jitter. Default 250.
-    pub wake_jitter_ms: u64,
     /// Run the background host loop (§8.4). Default true.
     pub auto_sync: bool,
+}
+
+impl Default for SyncularConfig {
+    fn default() -> Self {
+        Self {
+            base_url: None,
+            ws_url: None,
+            headers: Vec::new(),
+            db_path: None,
+            auto_sync: true,
+        }
+    }
 }
 
 impl SyncularConfig {
@@ -110,6 +119,8 @@ enum Request {
         headers: Vec<(String, String)>,
         reply: Sender<Value>,
     },
+    /// Native realtime reader wake; contains no data (the transport buffer does).
+    TransportWake,
     Shutdown,
 }
 
@@ -131,12 +142,16 @@ impl SyncularState {
 
 /// The owning thread: builds the core, then loops over the mailbox and the
 /// background host policy. `emit` pushes drained events onto the Tauri channel.
-fn run_owner_thread<F>(config: SyncularConfig, rx: Receiver<Request>, emit: F)
+fn run_owner_thread<F>(config: SyncularConfig, tx: Sender<Request>, rx: Receiver<Request>, emit: F)
 where
     F: Fn(&Value) + Send + 'static,
 {
     let transport_json = config.to_transport_json();
-    let mut core = match SyncularCore::new(&transport_json) {
+    let wake_tx = tx.clone();
+    let notify: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(move || {
+        let _ = wake_tx.send(Request::TransportWake);
+    });
+    let mut core = match SyncularCore::new_with_notify(&transport_json, Some(notify)) {
         Ok(core) => core,
         Err(message) => {
             // A construction failure is terminal for this instance; surface it
@@ -146,65 +161,82 @@ where
         }
     };
 
-    // The host loop cadence: block on the mailbox with a timeout so we wake
-    // periodically to run a sync round when the core wants one (§8.4). The
-    // db_path is injected into the FIRST `create` command so the app does not
-    // have to thread it through the JS side.
-    let idle_poll = Duration::from_millis(200);
-    let jitter_cap = config.wake_jitter_ms;
-    let mut next_seed: u64 = std::process::id() as u64 ^ 0x9E37_79B9_7F4A_7C15;
-
-    // A tiny xorshift for jitter — no rand dependency for one number.
-    let mut jitter = || {
-        if jitter_cap == 0 {
-            return Duration::ZERO;
-        }
-        next_seed ^= next_seed << 13;
-        next_seed ^= next_seed >> 7;
-        next_seed ^= next_seed << 17;
-        Duration::from_millis(next_seed % (jitter_cap + 1))
-    };
-
-    let mut last_sync = Instant::now();
+    // No idle poll: commands/realtime wake the mailbox, while a retryable
+    // transport failure contributes one real monotonic deadline.
+    let mut background_deadline: Option<Instant> = None;
     loop {
-        let request = rx.recv_timeout(idle_poll);
+        if config.auto_sync {
+            match core.take_sync_intent() {
+                syncular_client::SyncIntent::Interactive => {
+                    background_deadline = None;
+                    core.sync_until_idle();
+                    pump_events(&mut core, &emit);
+                    continue;
+                }
+                syncular_client::SyncIntent::Background { delay_ms } => {
+                    let candidate = Instant::now()
+                        .checked_add(Duration::from_millis(delay_ms))
+                        .unwrap_or_else(Instant::now);
+                    background_deadline = Some(
+                        background_deadline.map_or(candidate, |current| current.min(candidate)),
+                    );
+                }
+                syncular_client::SyncIntent::None => {}
+            }
+        }
+
+        let request = if let Some(deadline) = background_deadline {
+            let now = Instant::now();
+            if deadline <= now {
+                background_deadline = None;
+                core.sync_until_idle();
+                pump_events(&mut core, &emit);
+                continue;
+            }
+            match rx.recv_timeout(deadline.saturating_duration_since(now)) {
+                Ok(request) => request,
+                Err(RecvTimeoutError::Timeout) => {
+                    background_deadline = None;
+                    core.sync_until_idle();
+                    pump_events(&mut core, &emit);
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    core.shutdown();
+                    return;
+                }
+            }
+        } else {
+            match rx.recv() {
+                Ok(request) => request,
+                Err(std::sync::mpsc::RecvError) => {
+                    core.shutdown();
+                    return;
+                }
+            }
+        };
+
         match request {
-            Ok(Request::Command { command, reply }) => {
+            Request::Command { command, reply } => {
                 let command = inject_db_path(command, &config);
                 let result = core.command(&command);
                 let _ = reply.send(result);
                 pump_events(&mut core, &emit);
             }
-            Ok(Request::Query { sql, params, reply }) => {
+            Request::Query { sql, params, reply } => {
                 let result = core.query(&sql, params);
                 let _ = reply.send(result);
                 pump_events(&mut core, &emit);
             }
-            Ok(Request::SetHeaders { headers, reply }) => {
+            Request::SetHeaders { headers, reply } => {
                 core.set_headers(headers);
                 let _ = reply.send(json!({ "result": null }));
             }
-            Ok(Request::Shutdown) => {
-                core.shutdown();
-                return;
+            Request::TransportWake => {
+                core.poll_transport();
+                pump_events(&mut core, &emit);
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                // Background host loop (§8.4): if the core wants a sync and the
-                // transport can reach the network, run one syncUntilIdle round
-                // after a jittered wait. Client-local (`Null` transport) cores
-                // simply never report sync_needed usefully → cheap no-op.
-                if config.auto_sync && core.sync_needed() {
-                    let wait = jitter();
-                    if !wait.is_zero() {
-                        std::thread::sleep(wait);
-                    }
-                    core.sync_until_idle();
-                    last_sync = Instant::now();
-                    pump_events(&mut core, &emit);
-                }
-                let _ = last_sync;
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Request::Shutdown => {
                 core.shutdown();
                 return;
             }
@@ -303,19 +335,6 @@ async fn syncular_query<R: Runtime>(
 /// [`EVENT_NAME`], and runs the §8.4 host loop. The mailbox `Sender` is managed
 /// as plugin state and torn down on `RunEvent::Exit`.
 pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
-    // Default the auto_sync flag on (the caller-built Default has it false).
-    let config = SyncularConfig {
-        auto_sync: true,
-        wake_jitter_ms: if config.wake_jitter_ms == 0 && config.base_url.is_none() {
-            0
-        } else if config.wake_jitter_ms == 0 {
-            250
-        } else {
-            config.wake_jitter_ms
-        },
-        ..config
-    };
-
     Builder::<R>::new("syncular")
         .invoke_handler(tauri::generate_handler![
             syncular_command,
@@ -325,7 +344,7 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
         .setup(move |app, _api| {
             let (tx, rx) = std::sync::mpsc::channel::<Request>();
             app.manage(SyncularState {
-                sender: Mutex::new(tx),
+                sender: Mutex::new(tx.clone()),
             });
             let app_handle = app.clone();
             let emit = move |value: &Value| {
@@ -335,7 +354,7 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
             };
             std::thread::Builder::new()
                 .name("syncular-core".to_owned())
-                .spawn(move || run_owner_thread(config, rx, emit))
+                .spawn(move || run_owner_thread(config, tx, rx, emit))
                 .map_err(|e| format!("failed to spawn syncular core thread: {e}"))?;
             Ok(())
         })
@@ -406,8 +425,9 @@ mod tests {
             auto_sync: false,
             ..Default::default()
         };
+        let owner_tx = tx.clone();
         let handle = std::thread::spawn(move || {
-            run_owner_thread(config, rx, move |v| {
+            run_owner_thread(config, owner_tx, rx, move |v| {
                 events_for_thread.lock().unwrap().push(v.clone());
             });
         });
@@ -471,8 +491,7 @@ mod tests {
             .iter()
             .filter_map(|e| e.get("type").and_then(Value::as_str).map(str::to_owned))
             .collect();
-        // The local mutate emits an `invalidate` onto the channel (the signal
-        // the JS bridge fans out to onInvalidate so live queries re-run).
-        assert!(kinds.iter().any(|k| k == "invalidate"), "kinds: {kinds:?}");
+        // The local mutate emits the exact revisioned batch onto the channel.
+        assert!(kinds.iter().any(|k| k == "change"), "kinds: {kinds:?}");
     }
 }

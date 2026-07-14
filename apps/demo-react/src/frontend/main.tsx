@@ -11,35 +11,27 @@
  *   guarded read-only, exact `{tables}` given explicitly.
  * - `useMutation` adds/toggles/deletes (writes go through the outbox).
  * - `useSyncStatus` shows the outbox depth + upgrading/floor state.
- * - `useWindow` drives the list-filter dropdown: picking a list calls
- *   `setWindow([list])`, which subscribes+bootstraps that list and evicts the
- *   others (W1 value-sharded windowing, visible). `isComplete(list)` renders
- *   the completeness oracle honestly.
+ * - the generated query descriptor owns the list window claim. Rows,
+ *   completeness and the exact local revision arrive as one atomic snapshot.
  */
 
+import { createSyncClientHandle } from '@syncular/client';
 import {
-  createSyncClientHandle,
-  type SyncClientHandle,
-} from '@syncular/client';
-import {
+  createSyncClientResource,
   SyncProvider,
   useMutation,
   useQuery,
   useRawSql,
   useSyncStatus,
-  useWindow,
 } from '@syncular/react';
-import { StrictMode, useEffect, useState } from 'react';
+import { StrictMode, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { schema, type TodosRow } from '../syncular.generated';
+import { schema, todosTable } from '../syncular.generated';
 import { type ListTodosRow, listTodosQuery } from '../syncular.queries';
 
 const LISTS = ['groceries', 'work', 'travel'] as const;
 type ListId = (typeof LISTS)[number];
 const WS_PROTO = location.protocol === 'https:' ? 'wss' : 'ws';
-
-/** The window base: todos value-sharded by list_id (§4.8 / W1). */
-const WINDOW_BASE = { table: 'todos', variable: 'list_id' } as const;
 
 // -- app ----------------------------------------------------------------------
 
@@ -60,20 +52,14 @@ function StatusBadges() {
 
 function TodoApp() {
   const [list, setList] = useState<ListId>('groceries');
-  const { units, setWindow, isComplete } = useWindow(WINDOW_BASE);
-  const { mutate, isPending } = useMutation();
-
-  // Window the selected list in on mount and whenever the dropdown changes:
-  // one live unit at a time, so switching evicts the previous list (W1).
-  useEffect(() => {
-    void setWindow([list]);
-  }, [list, setWindow]);
+  const mutation = useMutation(todosTable);
 
   // The live read — a NAMED query (typegen's sqlc-style tier): the SQL lives
-  // in `queries/list-todos.sql`, typegen emits `listTodosQuery` (typed row +
-  // exact `{tables}`), and `useQuery` runs it live, re-running exactly when
-  // `todos` invalidates. This is the recommended type-safe read tier.
-  const { rows, isLoading } = useQuery(listTodosQuery, { listId: list });
+  // in `queries/list-todos.syql`. Typegen emits its exact dependencies,
+  // window coverage, cache identity and row key. The store claims that window
+  // and reads rows + completeness + revision atomically.
+  const todos = useQuery(listTodosQuery, { listId: list });
+  const { rows } = todos;
 
   // The escape-hatch tier: an aggregate for the header badge (done vs total),
   // via `useRawSql` — a guarded read-only string with its `{tables}` given
@@ -85,44 +71,29 @@ function TodoApp() {
   );
   const doneCount = summary[0]?.done_count ?? 0;
 
-  const complete = isComplete(list);
-
   const add = (title: string) => {
     const position =
       rows.reduce((max, row) => Math.max(max, row.position), 0) + 1;
-    void mutate([
-      {
-        table: 'todos',
-        op: 'upsert',
-        values: {
-          id: crypto.randomUUID(),
-          listId: list,
-          title,
-          done: false,
-          position,
-          updatedAtMs: Date.now(),
-          attachment: null,
-        } satisfies TodosRow,
-      },
-    ]);
+    void mutation.upsert({
+      id: crypto.randomUUID(),
+      listId: list,
+      title,
+      done: false,
+      position,
+      updatedAtMs: Date.now(),
+      attachment: null,
+    });
   };
 
   const toggle = (row: ListTodosRow) => {
-    void mutate([
-      {
-        table: 'todos',
-        op: 'upsert',
-        values: {
-          ...row,
-          done: !row.done,
-          updatedAtMs: Date.now(),
-        } satisfies TodosRow,
-      },
-    ]);
+    void mutation.patch(row.id, {
+      done: !row.done,
+      updatedAtMs: Date.now(),
+    });
   };
 
   const remove = (id: string) => {
-    void mutate([{ table: 'todos', op: 'delete', rowId: id }]);
+    void mutation.remove(id);
   };
 
   return (
@@ -148,7 +119,7 @@ function TodoApp() {
             </option>
           ))}
         </select>
-        <span className="hint">windowed-in: {units.join(', ') || '—'}</span>
+        <span className="hint">view phase: {todos.phase}</span>
       </div>
 
       <form
@@ -169,13 +140,15 @@ function TodoApp() {
           placeholder={`Add to "${list}"…`}
           autoComplete="off"
         />
-        <button type="submit" disabled={isPending}>
+        <button type="submit" disabled={mutation.isPending}>
           Add
         </button>
       </form>
 
-      {isLoading ? (
+      {todos.phase === 'loading' ? (
         <div className="empty">loading…</div>
+      ) : todos.phase === 'error' ? (
+        <div className="empty">query failed: {todos.error?.message}</div>
       ) : rows.length === 0 ? (
         <div className="empty">no todos in this list yet</div>
       ) : (
@@ -201,70 +174,55 @@ function TodoApp() {
         </ul>
       )}
 
-      {!complete ? (
+      {todos.phase === 'partial' ? (
         <div className="partial">
           this list is not fully windowed-in — data may be partial (I3)
         </div>
       ) : null}
 
       <footer>
-        Worker + OPFS client, same server as the two-pane demo. The list
-        dropdown drives <code>useWindow.setWindow([list])</code> — switching
-        lists bootstraps the new list and evicts the previous one (W1
-        value-sharded windowing). Writes go through <code>useMutation</code>{' '}
-        (the outbox); the list read is a <code>useQuery</code> (typed{' '}
-        <code>.sql</code>, exact invalidation) and the done-count badge is a{' '}
-        <code>useRawSql</code> (raw tier) — both read-only.
+        Worker + OPFS client, same server as the two-pane demo. The list query's
+        generated coverage claims the selected list, and its atomic snapshot
+        drives loading/partial/ready without a separate window read. Writes use
+        typed table helpers; the done-count badge remains a{' '}
+        <code>useRawSql</code> escape hatch.
       </footer>
     </>
   );
 }
 
+const clientResource = createSyncClientResource(async () => {
+  const handle = await createSyncClientHandle({
+    worker: () => new Worker('/worker.js', { type: 'module' }),
+    schema,
+    database: { mode: 'persistent', name: 'demo-react' },
+    endpoints: {
+      syncUrl: '/sync',
+      segmentsUrl: '/segments',
+      blobsUrl: '/blobs',
+      realtimeUrl: `${WS_PROTO}://${location.host}/realtime?clientId={clientId}`,
+    },
+    limits: { limitSnapshotRows: 5000, maxSnapshotPages: 20 },
+    autoSync: true,
+    lockName: 'syncular-demo-react',
+  });
+  try {
+    await handle.connectRealtime();
+  } catch {
+    // HTTP sync still works without the socket.
+  }
+  return handle;
+});
+
 function Root() {
-  const [handle, setHandle] = useState<SyncClientHandle | undefined>(undefined);
-  const [error, setError] = useState<string | undefined>(undefined);
-
-  useEffect(() => {
-    let live: SyncClientHandle | undefined;
-    void createSyncClientHandle({
-      worker: () => new Worker('/worker.js', { type: 'module' }),
-      schema,
-      database: { mode: 'persistent', name: 'demo-react' },
-      endpoints: {
-        syncUrl: '/sync',
-        segmentsUrl: '/segments',
-        blobsUrl: '/blobs',
-        realtimeUrl: `${WS_PROTO}://${location.host}/realtime?clientId={clientId}`,
-      },
-      limits: { limitSnapshotRows: 5000, maxSnapshotPages: 20 },
-      autoSync: true,
-      lockName: 'syncular-demo-react',
-    })
-      .then(async (h) => {
-        live = h;
-        // Connect-then-sync boot order (§8.7): the first round rides the
-        // socket and registers this connection's subscriptions at round end.
-        try {
-          await h.connectRealtime();
-        } catch {
-          // HTTP sync still works without the socket.
-        }
-        setHandle(h);
-      })
-      .catch((e: unknown) => setError(String(e)));
-    return () => {
-      void live?.close();
-    };
-  }, []);
-
-  if (error !== undefined) {
-    return <div className="empty">failed to start: {error}</div>;
-  }
-  if (handle === undefined) {
-    return <div className="empty">starting client core…</div>;
-  }
   return (
-    <SyncProvider client={handle}>
+    <SyncProvider
+      client={clientResource}
+      fallback={<div className="empty">starting client core…</div>}
+      renderError={(error) => (
+        <div className="empty">failed to start: {error.message}</div>
+      )}
+    >
       <TodoApp />
     </SyncProvider>
   );

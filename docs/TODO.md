@@ -108,11 +108,8 @@ verification; push is Benjamin's alone).
       Dart wrapper surface it (swift/kotlin never lifted windowState —
       their raw `command` surface carries the new field as-is).
       Conformance: `window/completeness-pending-until-bootstrap`
-      (B.18g), both pairings. Follow-up in the mono repo: remove
-      ui-poc's settle-tracking workaround (TodosView.tsx). Known
-      residual: the tauri plugin's coarse `invalidate` derivation does
-      not fire on a row-less sync round, so a bridge-side live oracle
-      re-reads on the next data event rather than on the flip itself.
+      (B.18g), both pairings. The mono repo's settle-tracking workaround was
+      removed in 0.4.1.
       **0.4.1 addendum — render-boundary ordering**: the honest oracle
       alone still painted one false-"empty" frame per ui-poc list switch:
       `useWindow` re-read `windowState` synchronously inside the
@@ -127,7 +124,10 @@ verification; push is Benjamin's alone).
       Regression-locked by the hooks test "an invalidation issues the
       query re-read BEFORE the windowState re-read" (proven failing
       pre-fix). Verified end-to-end in ui-poc: 12/12 list switches paint
-      skeleton→rows with zero false-empty frames.
+      skeleton→rows with zero false-empty frames. **Superseded by RFC 0003:**
+      rows, coverage, and local revision now come from one query snapshot;
+      exact Rust change batches cover zero-row completion on Tauri and FFI;
+      render/frame ordering is no longer a correctness mechanism.
 - [ ] **W2 TTL sugar** (codegen creation-time bucket columns + window
       helpers) — *trigger: first real windowing app's feedback on bucket
       granularity*. W1 already does time-windowing manually.

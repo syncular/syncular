@@ -585,6 +585,33 @@ export interface DriverWindowBase {
   readonly params?: string;
 }
 
+/** Exact client-local observation output (RFC 0003). Revisions are decimal
+ * strings so the same vectors cross JSON/stdin and JavaScript losslessly. */
+export interface DriverChangeBatch {
+  readonly revision: string;
+  readonly tables: readonly {
+    readonly table: string;
+    readonly scopeKeys?: readonly string[];
+  }[];
+  readonly windows: readonly {
+    readonly baseKey: string;
+    readonly table: string;
+    readonly units: readonly string[];
+  }[];
+  readonly status?: {
+    readonly outbox: number;
+    readonly upgrading: boolean;
+    readonly syncNeeded: boolean;
+  };
+  readonly conflictsChanged: boolean;
+  readonly rejectionsChanged: boolean;
+}
+
+export type DriverSyncIntent =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'interactive' }
+  | { readonly kind: 'background'; readonly delayMs: number };
+
 export interface ClientInstance {
   subscribe(input: {
     readonly id: string;
@@ -609,6 +636,38 @@ export interface ClientInstance {
     readonly units: readonly string[];
     readonly pending: readonly string[];
   }>;
+
+  /** RFC 0003 observation/conformance surface. */
+  localRevision?(): Promise<string>;
+  statusSnapshot?(): Promise<{
+    readonly outbox: number;
+    readonly upgrading: boolean;
+    readonly syncNeeded: boolean;
+  }>;
+  querySnapshot?(
+    sql: string,
+    params?: readonly DriverRowValue[],
+    coverage?: readonly {
+      readonly base: DriverWindowBase;
+      readonly units: readonly string[];
+    }[],
+  ): Promise<{
+    readonly revision: string;
+    readonly rows: readonly Record<string, DriverRowValue>[];
+    readonly coverage: {
+      readonly complete: boolean;
+      readonly pending: readonly {
+        readonly baseKey: string;
+        readonly unit: string;
+      }[];
+      readonly missing: readonly {
+        readonly baseKey: string;
+        readonly unit: string;
+      }[];
+    };
+  }>;
+  drainChangeBatches?(): Promise<readonly DriverChangeBatch[]>;
+  drainSyncIntents?(): Promise<readonly DriverSyncIntent[]>;
 
   /** Record one atomic local commit (§7.1); returns its clientCommitId. */
   mutate(mutations: readonly ClientMutation[]): Promise<string>;

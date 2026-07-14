@@ -68,6 +68,7 @@ pub struct ScopePatternIr {
 pub struct ScopeVariable {
     pub variable: String,
     pub column: String,
+    pub prefix: String,
 }
 
 /// §5.11: one encrypted column — its positional index and its app-side
@@ -215,7 +216,16 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
         for scope in &table.scopes {
             let variable = parse_pattern_variable(&scope.pattern)?;
             let column = scope.column.clone().unwrap_or_else(|| variable.clone());
-            scope_variables.push(ScopeVariable { variable, column });
+            let open = scope.pattern.find('{').expect("validated scope pattern");
+            let prefix = scope.pattern[..open]
+                .strip_suffix(':')
+                .unwrap_or(&scope.pattern[..open])
+                .to_owned();
+            scope_variables.push(ScopeVariable {
+                variable,
+                column,
+                prefix,
+            });
         }
         let mut indexes = Vec::with_capacity(table.indexes.len());
         for index in &table.indexes {

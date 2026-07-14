@@ -2,8 +2,8 @@
  * demo-react backend: the SAME sync server as `apps/demo` (server-hono over
  * bun:sqlite, a RealtimeHub WebSocket, segment + blob endpoints) with a
  * React frontend instead of the vanilla-DOM one. It exists to dogfood the
- * hooks: `SyncProvider` + `useQuery` (named) + `useRawSql` (raw) + `useMutation` +
- * `useSyncStatus` + `useWindow`.
+ * hooks: async `SyncProvider` resource + revisioned `useQuery` + raw aggregate
+ * + typed mutations + `useSyncStatus`.
  *
  * Two Bun.build bundles at startup: /app.js (the React page) and /worker.js
  * (the whole client core on opfs-sahpool, Direction decision 2). Module

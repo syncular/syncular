@@ -15,12 +15,17 @@ import type { SyncClientLike } from '../src/client';
 
 export function handleShapeOf(client: SyncClient): SyncClientLike {
   return {
+    onChange: (listener) => client.onChange(listener),
     onInvalidate: (listener) => client.onInvalidate(listener),
     onPresence: (listener) => client.onPresence(listener),
     // query is async on the handle (RPC round-trip).
     query: (sql: string, params?: readonly SqlValue[]) =>
       Promise.resolve(client.query(sql, params)),
     mutate: (mutations) => Promise.resolve(client.mutate(mutations)),
+    patch: (table, rowId, partial, options) =>
+      Promise.resolve(client.patch(table, rowId, partial, options)),
+    querySnapshot: (spec) => Promise.resolve(client.querySnapshot(spec)),
+    statusSnapshot: () => Promise.resolve(client.statusSnapshot()),
     // Getters on SyncClient become async methods on the handle.
     conflicts: () => Promise.resolve(client.conflicts),
     rejections: () => Promise.resolve(client.rejections),

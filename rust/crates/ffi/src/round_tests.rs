@@ -87,8 +87,7 @@ fn connect_native(port: u16) -> HostTransport {
         "baseUrl": format!("http://127.0.0.1:{port}"),
         "wsUrl": format!("ws://127.0.0.1:{port}"),
     });
-    let queue = std::sync::Arc::new(crate::EventQueue::new());
-    let mut transport = HostTransport::from_config(&config, queue).expect("native transport");
+    let mut transport = HostTransport::from_config(&config).expect("native transport");
     transport.realtime_connect().expect("realtime connect");
     transport
 }

@@ -28,6 +28,8 @@ import type {
   LeaseState,
   MutationInput,
   PresencePeer,
+  QueryReadSpec,
+  QuerySnapshot,
   RejectionRecord,
   SchemaFloor,
   SubscribeInput,
@@ -38,7 +40,15 @@ import type {
 import type { SqlRow, SqlValue } from './database';
 import { registerDevtools } from './devtools';
 import { ClientSyncError } from './errors';
-import { InvalidationEmitter, type InvalidationListener } from './invalidation';
+import {
+  ChangeEmitter,
+  type ClientChangeListener,
+  InvalidationEmitter,
+  type InvalidationListener,
+  invalidationFromChange,
+  type LocalRevision,
+  type SyncStatusSnapshot,
+} from './invalidation';
 import {
   type LeaderLease,
   type LeaderLock,
@@ -89,7 +99,6 @@ export interface SyncClientHandleConfig {
   readonly limits?: SyncClientLimits;
   /** Worker-side host loop (§8.4); default true. */
   readonly autoSync?: boolean;
-  readonly wakeJitterMs?: number;
   /** Default: Web Locks when available, else single-owner. */
   readonly leaderLock?: LeaderLock;
   readonly lockName?: string;
@@ -107,7 +116,7 @@ export interface SyncClientHandleConfig {
   readonly followerCallTimeoutMs?: number;
   /** Fires when this handle's role changes (follower → leader on promotion). */
   readonly onRoleChange?: (role: HandleRole) => void;
-  readonly onSyncNeeded?: (reason: 'hello' | WakeReason) => void;
+  readonly onSyncNeeded?: (reason: 'startup' | 'hello' | WakeReason) => void;
   readonly onConflict?: (conflict: ConflictRecord) => void;
   /** A worker-side autoSync round finished (or failed). */
   readonly onSynced?: (result: {
@@ -171,6 +180,7 @@ export class SyncClientHandle {
   #core: LeaderCore | undefined;
   #follower: FollowerLink | undefined;
   readonly #invalidation: InvalidationEmitter;
+  readonly #changes: ChangeEmitter;
   readonly #presence: Set<(scopeKey: string) => void>;
   readonly #roleListeners: Set<(role: HandleRole) => void>;
   readonly #devtoolsUnregister: () => void;
@@ -183,6 +193,7 @@ export class SyncClientHandle {
     core?: LeaderCore;
     follower?: FollowerLink;
     invalidation: InvalidationEmitter;
+    changes: ChangeEmitter;
     presence: Set<(scopeKey: string) => void>;
     roleListeners?: Set<(role: HandleRole) => void>;
   }) {
@@ -191,6 +202,7 @@ export class SyncClientHandle {
     this.#core = internals.core;
     this.#follower = internals.follower;
     this.#invalidation = internals.invalidation;
+    this.#changes = internals.changes;
     this.#presence = internals.presence;
     this.#roleListeners = internals.roleListeners ?? new Set();
     // RFC 0002 §3.2: console introspection — a no-op outside a dev page.
@@ -235,8 +247,10 @@ export class SyncClientHandle {
           /* a UI listener must never break event dispatch */
         }
       }
-    } else if (event.kind === 'invalidate') {
-      this.#invalidation.emit(event.event);
+    } else if (event.kind === 'change') {
+      this.#changes.emit(event.batch);
+      const legacy = invalidationFromChange(event.batch);
+      if (legacy !== undefined) this.#invalidation.emit(legacy);
     }
   }
 
@@ -248,6 +262,10 @@ export class SyncClientHandle {
    */
   onInvalidate(listener: InvalidationListener): () => void {
     return this.#invalidation.on(listener);
+  }
+
+  onChange(listener: ClientChangeListener): () => void {
+    return this.#changes.on(listener);
   }
 
   /**
@@ -343,6 +361,20 @@ export class SyncClientHandle {
 
   query(sql: string, params?: readonly SqlValue[]): Promise<SqlRow[]> {
     return this.#call('query', [sql, params]);
+  }
+
+  querySnapshot<Row = SqlRow>(
+    spec: QueryReadSpec,
+  ): Promise<QuerySnapshot<Row>> {
+    return this.#call('querySnapshot', [spec]) as Promise<QuerySnapshot<Row>>;
+  }
+
+  localRevision(): Promise<LocalRevision> {
+    return this.#call('localRevision', []);
+  }
+
+  statusSnapshot(): Promise<SyncStatusSnapshot> {
+    return this.#call('statusSnapshot', []);
   }
 
   conflicts(): Promise<readonly ConflictRecord[]> {
@@ -574,9 +606,6 @@ function buildInitConfig(config: SyncClientHandleConfig): WorkerInitConfig {
     ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
     ...(config.limits !== undefined ? { limits: config.limits } : {}),
     ...(config.autoSync !== undefined ? { autoSync: config.autoSync } : {}),
-    ...(config.wakeJitterMs !== undefined
-      ? { wakeJitterMs: config.wakeJitterMs }
-      : {}),
   };
 }
 
@@ -614,6 +643,7 @@ export async function createSyncClientHandle(
   const lock = config.leaderLock ?? defaultLeaderLock();
   const lockName = config.lockName ?? 'syncular-leader';
   const invalidation = new InvalidationEmitter();
+  const changes = new ChangeEmitter();
   const presence = new Set<(scopeKey: string) => void>();
   const roleListeners = new Set<(role: HandleRole) => void>();
   if (config.onRoleChange !== undefined) roleListeners.add(config.onRoleChange);
@@ -633,6 +663,7 @@ export async function createSyncClientHandle(
     return await bootLeader(config, lockName, lease, {
       epoch: 0,
       invalidation,
+      changes,
       presence,
       roleListeners,
     });
@@ -645,6 +676,7 @@ export async function createSyncClientHandle(
       role: 'follower',
       clientId: '',
       invalidation,
+      changes,
       presence,
       roleListeners,
     });
@@ -653,6 +685,7 @@ export async function createSyncClientHandle(
   // ---- Follower: proxy to the leader; contest + promote on its close. ----
   return await bootFollower(config, lockName, lock, {
     invalidation,
+    changes,
     presence,
     roleListeners,
   });
@@ -661,6 +694,7 @@ export async function createSyncClientHandle(
 interface HandleParts {
   epoch?: number;
   invalidation: InvalidationEmitter;
+  changes: ChangeEmitter;
   presence: Set<(scopeKey: string) => void>;
   roleListeners: Set<(role: HandleRole) => void>;
 }
@@ -712,6 +746,7 @@ async function bootLeader(
     clientId: core.clientId,
     core,
     invalidation: parts.invalidation,
+    changes: parts.changes,
     presence: parts.presence,
     roleListeners: parts.roleListeners,
   });
@@ -809,6 +844,7 @@ async function bootFollower(
     clientId: '',
     follower,
     invalidation: parts.invalidation,
+    changes: parts.changes,
     presence: parts.presence,
     roleListeners: parts.roleListeners,
   });

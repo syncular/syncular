@@ -4,9 +4,9 @@ import java.lang.foreign.MemorySegment
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * An event surfaced by the native core's `poll_event` — one of `sync-needed`,
- * `conflict`, `rejection`, `presence`, `schema-floor`, `lease`. The full decoded
- * object is preserved; [type] is lifted for switching.
+ * An event surfaced by the native core's `poll_event`: an exact revisioned
+ * `change` batch, explicit `sync-intent`, or ephemeral `presence`. The full
+ * decoded object is preserved; [type] is lifted for switching.
  */
 data class SyncularEvent(val type: String, val payload: JsonValue)
 
@@ -69,11 +69,11 @@ class SyncularClient private constructor(
 
     companion object {
         /**
-         * Create the native core and issue `create` with the given schema and
-         * clientId, then start the event poll loop.
+         * Create the native core and issue `create` with the given schema,
+         * then start the event poll loop.
          *
-         * @param clientId stable per-device/actor id (reuse across launches so
-         *   the persisted database matches).
+         * @param clientId optional explicit stable id. When null, the core
+         *   creates and persists one in the database.
          * @param schema the generated schema JSON.
          * @param config transport + db path configuration.
          * @param limits optional §4.2 client limits, forwarded to `create`.
@@ -81,7 +81,7 @@ class SyncularClient private constructor(
         @JvmStatic
         @JvmOverloads
         fun create(
-            clientId: String,
+            clientId: String? = null,
             schema: JsonValue,
             config: SyncularConfig = SyncularConfig(),
             limits: JsonValue? = null,
@@ -95,7 +95,7 @@ class SyncularClient private constructor(
             }
             val client = SyncularClient(handle)
             val createParams = LinkedHashMap<String, JsonValue>()
-            createParams["clientId"] = JsonValue.of(clientId)
+            clientId?.let { createParams["clientId"] = JsonValue.of(it) }
             createParams["schema"] = schema
             config.dbPath?.let { createParams["dbPath"] = JsonValue.of(it) }
             limits?.let { createParams["limits"] = it }

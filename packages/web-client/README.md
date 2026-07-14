@@ -73,9 +73,9 @@ it holds the lock, spawns the worker, and runs the core (the single-tab
 path, unchanged — the lock IS the exactly-one-core invariant, and a worker
 is *never* spawned without it). Every other tab is a **follower**: it opens
 a `BroadcastChannel` to the leader and proxies the whole logical API over
-it (`req`/`res`), while the leader fans its worker events —
-invalidate / presence / conflict / sync-needed / synced / upgrading — out
-to all followers (`event`). Queries forward to the leader's one DB; rows
+it (`req`/`res`), while the leader fans its worker events — exact revisioned
+change batches plus presence / conflict / sync-needed / synced / upgrading —
+out to all followers (`event`). Queries forward to the leader's one DB; rows
 (including `bytes` columns) ride back through structured clone.
 
 **Promotion.** When the leader tab closes, its lock releases. Followers are
@@ -224,7 +224,7 @@ any divergence from the contract.
 `init`, `call`, `ready`, `result`, `error`, `event` — every API method
 multiplexes over `call` (typed end-to-end from the single `WorkerApi`
 shape in `worker-protocol.ts`); `event` carries `sync-needed`,
-`conflict` and `synced`. Query-result blobs transfer (not copy) when
+`change`, `conflict` and `synced`. Query-result blobs transfer (not copy) when
 they own their buffer.
 
 ## Package layout

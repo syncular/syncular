@@ -93,14 +93,12 @@ routes:
 
 ## Events
 
-The client core has no callbacks, so the FFI derives client-observable
-events (`sync-needed`, `conflict`, `rejection`, `presence`, `schema-floor`,
-`lease`) by diffing observable state after each command and after draining
-inbound realtime traffic, then enqueues them on a blocking queue the native
-WebSocket reader thread also pushes into. `syncular_client_poll_event`
-drains that queue; each event is a JSON object with a `type` field. A
-binding typically pumps `poll_event` on one background thread and forwards
-each event onto the platform's event loop.
+The client core has no callbacks, so the FFI forwards its exact revisioned
+`change` batches and explicit `sync-intent` effects, plus ephemeral `presence`,
+onto a blocking queue. It never derives changes from counters.
+`syncular_client_poll_event` drains that queue; each event is a JSON object
+with a `type` field. A binding typically pumps `poll_event` on one background
+thread and forwards each event onto the platform's event loop.
 
 ## Build artifacts
 

@@ -18,7 +18,11 @@
  * (typegen emits its own `NamedQuery` type), so this hook depends only on the
  * descriptor's structural shape — no generated-file import coupling.
  */
-import type { SqlValue } from '@syncular/client';
+import type {
+  QueryDependency,
+  SqlValue,
+  WindowCoverage,
+} from '@syncular/client';
 import {
   type UseRawSqlOptions,
   type UseRawSqlResult,
@@ -27,6 +31,8 @@ import {
 
 /** The structural shape typegen's `NamedQuery<Row, Params>` satisfies. */
 export interface NamedQueryDescriptor<Row, Params> {
+  readonly id: string;
+  readonly hasParams: boolean;
   readonly sql: string;
   readonly tables: readonly string[];
   readonly bind: (params: Params) => readonly SqlValue[];
@@ -34,38 +40,51 @@ export interface NamedQueryDescriptor<Row, Params> {
    * generate-time-checked allowlist (identifiers never come from runtime
    * input). Absent on knob-less queries — `sql` is the whole statement. */
   readonly sqlFor?: (params: Params) => string;
+  readonly dependencies: (params: Params) => readonly QueryDependency[];
+  readonly coverage: (params: Params) => readonly WindowCoverage[];
+  readonly rowKey?: (row: Row) => readonly SqlValue[];
   /** Phantom row carrier (never read at runtime). */
   readonly __row?: Row;
 }
 
+type NamedQueryOptions<Row> = Omit<
+  UseRawSqlOptions<Row>,
+  'tables' | 'scopeKeys' | 'dependencies' | 'coverage' | 'rowKey' | 'id'
+>;
+
 /** Run a param-less named query live. */
 export function useQuery<Row>(
   query: NamedQueryDescriptor<Row, undefined>,
-  options?: Omit<UseRawSqlOptions, 'tables'>,
+  options?: NamedQueryOptions<Row>,
 ): UseRawSqlResult<Row>;
 /** Run a named query live with its typed params. */
 export function useQuery<Row, Params>(
   query: NamedQueryDescriptor<Row, Params>,
   params: Params,
-  options?: Omit<UseRawSqlOptions, 'tables'>,
+  options?: NamedQueryOptions<Row>,
 ): UseRawSqlResult<Row>;
 export function useQuery<Row, Params>(
   query: NamedQueryDescriptor<Row, Params>,
-  paramsOrOptions?: Params | Omit<UseRawSqlOptions, 'tables'>,
-  maybeOptions?: Omit<UseRawSqlOptions, 'tables'>,
+  paramsOrOptions?: Params | NamedQueryOptions<Row>,
+  maybeOptions?: NamedQueryOptions<Row>,
 ): UseRawSqlResult<Row> {
   // Overload disambiguation: a param-less query's second arg (if any) is the
   // options object; a parameterized query's second arg is the params.
-  const hasParams = query.bind.length > 0;
+  const hasParams = query.hasParams;
   const params = (hasParams ? paramsOrOptions : undefined) as Params;
   const options = (hasParams ? maybeOptions : paramsOrOptions) as
-    | Omit<UseRawSqlOptions, 'tables'>
+    | NamedQueryOptions<Row>
     | undefined;
 
   const bound = query.bind(params) as readonly SqlValue[];
   const sql = query.sqlFor === undefined ? query.sql : query.sqlFor(params);
+  const dependencies = query.dependencies(params);
+  const coverage = query.coverage(params);
   return useRawSql<Row>(sql, bound, {
     ...options,
-    tables: query.tables,
+    id: query.id,
+    dependencies,
+    coverage,
+    ...(query.rowKey !== undefined ? { rowKey: query.rowKey } : {}),
   });
 }
