@@ -1,8 +1,8 @@
 # SYQL Language Specification
 
-- **Status:** Draft, normative upon acceptance of
+- **Status:** Normative; accepted by
   [RFC 0004](./rfcs/0004-syql-language.md)
-- **Specification revision:** 1
+- **Specification revision:** 1 (implemented in Syncular 0.6.0)
 - **Date:** 2026-07-14
 - **File extension:** `.syql`
 - **Encoding:** UTF-8
@@ -10,11 +10,10 @@
 ## 0. Status and terminology
 
 This document defines the SYQL source language, static semantics, lowering
-contract, and conformance requirements. Once RFC 0004 is accepted, this
-document supersedes descriptive SYQL grammar in `docs/DESIGN-queries.md`, the
-typegen README, implementation comments, tests, editor grammars, and examples.
-Those artifacts may explain or implement the language but may not contradict
-this specification.
+contract, and conformance requirements. It supersedes descriptive SYQL grammar
+in `docs/DESIGN-queries.md`, the typegen README, implementation comments,
+tests, editor grammars, and examples. Those artifacts may explain or implement
+the language but may not contradict this specification.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**,
 **SHOULD**, **SHOULD NOT**, **RECOMMENDED**, **MAY**, and **OPTIONAL** are to be

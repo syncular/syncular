@@ -1,11 +1,21 @@
-# Spec & package map
+# Specifications & package map
 
-The docs are the guide;
-[`SPEC.md`](https://github.com/syncular/syncular/blob/main/docs/SPEC.md) is the
-reference. All normative text stays in the spec; this page points into it, and
-maps every published package, crate, and binding to where it lives.
+The docs are the guide; the specifications are the normative contracts. This
+page points into both specifications and maps every published package, crate,
+and binding to where it lives.
 
-## SPEC.md by section
+## Normative specifications
+
+| Specification | Defines |
+|---|---|
+| [Syncular protocol specification](https://github.com/syncular/syncular/blob/main/docs/SPEC.md) | Transport, data model, scopes, synchronization, storage-independent behavior, errors, and conformance |
+| [SYQL language specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md) | `.syql` lexical grammar, syntax, types, static semantics, SQLite profile, lowering, generated API contract, tooling, and conformance |
+
+Start with the dedicated [SYQL language guide](/syql/) for examples and the
+authoring model. Use the language specification when implementing tooling or
+when exact normative behavior matters.
+
+## Protocol specification by section
 
 | Section | Topic |
 |---|---|
