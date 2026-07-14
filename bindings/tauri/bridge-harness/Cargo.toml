@@ -6,4 +6,5 @@ publish = false
 
 [dependencies]
 serde_json = "1"
+syncular-client = { path = "../../../rust/crates/client" }
 tauri-plugin-syncular = { path = "../plugin" }

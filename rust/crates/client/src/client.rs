@@ -11,7 +11,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use ssp2::model::{Frame, MediaType, Message, MsgKind, Op, OpResult, PushStatus, SubStatus};
@@ -162,6 +162,86 @@ mod observation_tests {
             [SyncIntent::Interactive]
         ));
         drop(reopened);
+        std::fs::remove_file(path).expect("remove temp database");
+    }
+
+    #[test]
+    fn file_snapshot_reader_matches_owner_rows_revision_and_coverage() {
+        let path =
+            std::env::temp_dir().join(format!("syncular-read-sidecar-{}.db", uuid::Uuid::new_v4()));
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "project_id", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "project:{project_id}" }]
+            }]
+        });
+        let mut client = SyncClient::open_path_with_identity(
+            Some("sidecar-client".to_owned()),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().expect("UTF-8 temp path"),
+        )
+        .expect("open owner");
+        let base = WindowBase {
+            table: "tasks".to_owned(),
+            variable: "project_id".to_owned(),
+            fixed_scopes: Vec::new(),
+            params: None,
+        };
+        client
+            .set_window(&base, &["one".to_owned()])
+            .expect("set window");
+        client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".to_owned(),
+                values: Map::from_iter([
+                    ("id".to_owned(), Value::from("t1")),
+                    ("project_id".to_owned(), Value::from("one")),
+                ]),
+                base_version: None,
+            }])
+            .expect("local mutate");
+
+        let coverage = [WindowCoverage {
+            base,
+            units: vec!["one".to_owned(), "missing".to_owned()],
+        }];
+        let owner = client
+            .query_snapshot(
+                "SELECT id, project_id FROM tasks ORDER BY id",
+                &[],
+                &coverage,
+            )
+            .expect("owner snapshot");
+        let mut reader = FileQuerySnapshotReader::new(path.to_string_lossy());
+        let sidecar = reader
+            .query_snapshot(
+                "SELECT id, project_id FROM tasks ORDER BY id",
+                &[],
+                &coverage,
+            )
+            .expect("sidecar snapshot");
+
+        assert_eq!(sidecar.revision, owner.revision);
+        assert_eq!(sidecar.rows, owner.rows);
+        assert_eq!(
+            serde_json::to_value(&sidecar.coverage).expect("serialize sidecar coverage"),
+            serde_json::to_value(&owner.coverage).expect("serialize owner coverage")
+        );
+        assert_eq!(sidecar.revision, "2");
+        assert_eq!(sidecar.rows[0]["id"], "t1");
+        assert!(!sidecar.coverage.complete);
+        assert_eq!(sidecar.coverage.pending.len(), 1);
+        assert_eq!(sidecar.coverage.missing.len(), 1);
+
+        drop(reader);
+        drop(client);
         std::fs::remove_file(path).expect("remove temp database");
     }
 }
@@ -569,6 +649,175 @@ fn sql_ref_to_json_dynamic(value: rusqlite::types::ValueRef<'_>) -> Value {
     }
 }
 
+fn query_connection(
+    conn: &Connection,
+    sql: &str,
+    params: &[Value],
+) -> Result<Vec<Map<String, Value>>, String> {
+    crate::query_guard::assert_read_only_query(sql)?;
+    let bound: Vec<SqlValue> = params
+        .iter()
+        .map(json_param_to_sql)
+        .collect::<Result<_, _>>()?;
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let column_names: Vec<String> = stmt.column_names().into_iter().map(str::to_owned).collect();
+    let bound_refs: Vec<&dyn rusqlite::ToSql> =
+        bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let mut sql_rows = stmt
+        .query(bound_refs.as_slice())
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    while let Some(row) = sql_rows.next().map_err(|e| e.to_string())? {
+        let mut record = Map::new();
+        for (i, name) in column_names.iter().enumerate() {
+            let value = row.get_ref(i).map_err(|e| e.to_string())?;
+            record.insert(name.clone(), sql_ref_to_json_dynamic(value));
+        }
+        out.push(record);
+    }
+    Ok(out)
+}
+
+fn persisted_window_state(conn: &Connection, base: &WindowBase) -> Result<WindowState, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT windows.unit, subscriptions.state_json
+               FROM _syncular_windows AS windows
+               JOIN _syncular_subscriptions AS subscriptions
+                 ON subscriptions.id = windows.sub_id
+              WHERE windows.base = ?1
+              ORDER BY windows.unit ASC",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![window_base_key(base)], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut units = Vec::new();
+    let mut pending = Vec::new();
+    for row in rows {
+        let (unit, raw) = row.map_err(|error| error.to_string())?;
+        let state: Value = serde_json::from_str(&raw)
+            .map_err(|error| format!("invalid persisted window subscription: {error}"))?;
+        let is_pending = state.get("status").and_then(Value::as_str) != Some("active")
+            || state.get("cursor").and_then(Value::as_i64).unwrap_or(-1) < 0
+            || state
+                .get("bootstrapState")
+                .is_some_and(|value| !value.is_null());
+        if is_pending {
+            pending.push(unit.clone());
+        }
+        units.push(unit);
+    }
+    Ok(WindowState { units, pending })
+}
+
+fn snapshot_connection(
+    conn: &Connection,
+    sql: &str,
+    params: &[Value],
+    coverage: &[WindowCoverage],
+) -> Result<QuerySnapshot, String> {
+    conn.execute_batch("SAVEPOINT syncular_snapshot_read")
+        .map_err(|error| error.to_string())?;
+    let result = (|| {
+        let revision = conn
+            .query_row(
+                "SELECT value FROM _syncular_meta WHERE key = ?1",
+                rusqlite::params![LOCAL_REVISION_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let rows = query_connection(conn, sql, params)?;
+        let mut pending = Vec::new();
+        let mut missing = Vec::new();
+        for requested in coverage {
+            let base_key = window_base_key(&requested.base);
+            let state = persisted_window_state(conn, &requested.base)?;
+            for unit in BTreeSet::from_iter(requested.units.iter().cloned()) {
+                let reference = WindowUnitRef {
+                    base_key: base_key.clone(),
+                    unit: unit.clone(),
+                };
+                if !state.units.iter().any(|held| held == &unit) {
+                    missing.push(reference);
+                } else if state.pending.iter().any(|held| held == &unit) {
+                    pending.push(reference);
+                }
+            }
+        }
+        Ok(QuerySnapshot {
+            revision: revision.to_string(),
+            rows,
+            coverage: CoverageSnapshot {
+                complete: pending.is_empty() && missing.is_empty(),
+                pending,
+                missing,
+            },
+        })
+    })();
+    match result {
+        Ok(snapshot) => {
+            conn.execute_batch("RELEASE syncular_snapshot_read")
+                .map_err(|error| error.to_string())?;
+            Ok(snapshot)
+        }
+        Err(error) => {
+            let _ = conn.execute_batch(
+                "ROLLBACK TO syncular_snapshot_read; RELEASE syncular_snapshot_read",
+            );
+            Err(error)
+        }
+    }
+}
+
+/// A long-lived read-only SQLite sidecar for latency-critical native views.
+/// Network rounds stay serialized on the mutable core owner, while atomic
+/// query snapshots use this independent connection and therefore never queue
+/// behind HTTP/WebSocket latency.
+pub struct FileQuerySnapshotReader {
+    path: String,
+    conn: Option<Connection>,
+}
+
+impl FileQuerySnapshotReader {
+    #[must_use]
+    pub fn new(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            conn: None,
+        }
+    }
+
+    fn connection(&mut self) -> Result<&Connection, String> {
+        if self.conn.is_none() {
+            let conn = Connection::open_with_flags(
+                &self.path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .map_err(|error| format!("open read sidecar {:?}: {error}", self.path))?;
+            conn.busy_timeout(std::time::Duration::from_millis(250))
+                .map_err(|error| error.to_string())?;
+            self.conn = Some(conn);
+        }
+        self.conn
+            .as_ref()
+            .ok_or_else(|| "read sidecar connection missing".to_owned())
+    }
+
+    pub fn query_snapshot(
+        &mut self,
+        sql: &str,
+        params: &[Value],
+        coverage: &[WindowCoverage],
+    ) -> Result<QuerySnapshot, String> {
+        snapshot_connection(self.connection()?, sql, params, coverage)
+    }
+}
+
 impl SyncClient {
     pub fn new_with_identity(
         client_id: Option<String>,
@@ -611,6 +860,15 @@ impl SyncClient {
         path: &str,
     ) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|e| format!("open db {path:?}: {e}"))?;
+        // File-backed native clients use an independent read connection for
+        // latency-critical snapshots. WAL is SQLite's intended reader/writer
+        // concurrency mode: a view read never holds a rollback-journal lock
+        // that delays the mutable client's next commit, and a short busy
+        // timeout absorbs the tiny checkpoint/schema-lock windows.
+        conn.busy_timeout(std::time::Duration::from_millis(250))
+            .map_err(|error| format!("configure db {path:?} busy timeout: {error}"))?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(|error| format!("configure db {path:?} WAL mode: {error}"))?;
         let persisted = conn
             .query_row(
                 "SELECT value FROM _syncular_meta WHERE key = 'clientId'",
@@ -2327,29 +2585,7 @@ impl SyncClient {
     /// arbitrary SQL can alias, join, and compute — there is no schema column
     /// to consult per output cell, unlike [`read_rows`].
     pub fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Map<String, Value>>, String> {
-        crate::query_guard::assert_read_only_query(sql)?;
-        let bound: Vec<SqlValue> = params
-            .iter()
-            .map(json_param_to_sql)
-            .collect::<Result<_, _>>()?;
-        let mut stmt = self.conn.prepare(sql).map_err(|e| e.to_string())?;
-        let column_names: Vec<String> =
-            stmt.column_names().into_iter().map(str::to_owned).collect();
-        let bound_refs: Vec<&dyn rusqlite::ToSql> =
-            bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-        let mut sql_rows = stmt
-            .query(bound_refs.as_slice())
-            .map_err(|e| e.to_string())?;
-        let mut out = Vec::new();
-        while let Some(row) = sql_rows.next().map_err(|e| e.to_string())? {
-            let mut record = Map::new();
-            for (i, name) in column_names.iter().enumerate() {
-                let value = row.get_ref(i).map_err(|e| e.to_string())?;
-                record.insert(name.clone(), sql_ref_to_json_dynamic(value));
-            }
-            out.push(record);
-        }
-        Ok(out)
+        query_connection(&self.conn, sql, params)
     }
 
     /// Rows, coverage, and local revision from one SQLite read snapshot.
@@ -2359,53 +2595,7 @@ impl SyncClient {
         params: &[Value],
         coverage: &[WindowCoverage],
     ) -> Result<QuerySnapshot, String> {
-        self.conn
-            .execute_batch("SAVEPOINT syncular_read")
-            .map_err(|error| error.to_string())?;
-        let result = (|| {
-            let revision = self.local_revision();
-            let rows = self.query(sql, params)?;
-            let mut pending = Vec::new();
-            let mut missing = Vec::new();
-            for requested in coverage {
-                let base_key = window_base_key(&requested.base);
-                let state = self.window_state(&requested.base);
-                for unit in BTreeSet::from_iter(requested.units.iter().cloned()) {
-                    let reference = WindowUnitRef {
-                        base_key: base_key.clone(),
-                        unit: unit.clone(),
-                    };
-                    if !state.units.iter().any(|held| held == &unit) {
-                        missing.push(reference);
-                    } else if state.pending.iter().any(|held| held == &unit) {
-                        pending.push(reference);
-                    }
-                }
-            }
-            Ok(QuerySnapshot {
-                revision: revision.to_string(),
-                rows,
-                coverage: CoverageSnapshot {
-                    complete: pending.is_empty() && missing.is_empty(),
-                    pending,
-                    missing,
-                },
-            })
-        })();
-        match result {
-            Ok(snapshot) => {
-                self.conn
-                    .execute_batch("RELEASE syncular_read")
-                    .map_err(|error| error.to_string())?;
-                Ok(snapshot)
-            }
-            Err(error) => {
-                let _ = self
-                    .conn
-                    .execute_batch("ROLLBACK TO syncular_read; RELEASE syncular_read");
-                Err(error)
-            }
-        }
+        snapshot_connection(&self.conn, sql, params, coverage)
     }
 
     // -- request building ---------------------------------------------------------
@@ -4170,7 +4360,7 @@ impl SyncClient {
 
     pub fn connect_realtime(&mut self, transport: &mut dyn Transport) -> Result<(), String> {
         transport
-            .realtime_connect()
+            .realtime_connect_for_client(&self.client_id)
             .map_err(|e| format!("{}: {}", e.code, e.message))?;
         self.realtime_connected = true;
         Ok(())

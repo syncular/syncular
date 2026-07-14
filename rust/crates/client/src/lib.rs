@@ -17,6 +17,10 @@ pub mod client;
 /// Yjs binding, mirroring `@syncular/crdt-yjs`. Off by default (dependency-lean).
 #[cfg(feature = "crdt-yjs")]
 pub mod crdt;
+/// Shared blocking HTTP/WebSocket host transport for Rust-backed bindings.
+/// The network stack is feature-gated; its no-network shape remains available
+/// in dependency-lean builds so host code needs only one transport type.
+pub mod native_transport;
 pub mod query_guard;
 pub mod realtime_round;
 pub mod schema;
@@ -29,7 +33,7 @@ pub use api::{
     SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange, WindowBase, WindowChange,
     WindowCoverage, WindowState, WindowUnitRef,
 };
-pub use client::SyncClient;
+pub use client::{FileQuerySnapshotReader, SyncClient};
 pub use schema::{compile_schema, parse_schema_json, ClientSchema};
 pub use transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 

@@ -1,13 +1,13 @@
 [package]
 name = "syncular-client"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "Syncular v2 Rust client core on rusqlite, implemented from SPEC.md alone (language-neutrality POC, stage 2)"
 license = "Apache-2.0"
 repository = "https://github.com/syncular/syncular"
 
 [dependencies]
-ssp2 = { package = "syncular-ssp2", path = "../ssp2", version = "0.5.0" }
+ssp2 = { package = "syncular-ssp2", path = "../ssp2", version = "0.5.1" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -32,7 +32,23 @@ version = "0.6"
 features = ["getrandom"]
 optional = true
 
+# One native transport implementation shared by the FFI and Tauri hosts.
+# Keeping it behind a client feature preserves dependency-lean core builds.
+[dependencies.ureq]
+version = "2"
+optional = true
+
+[dependencies.tungstenite]
+version = "0.24"
+optional = true
+features = ["rustls-tls-webpki-roots"]
+
+[dependencies.url]
+version = "2"
+optional = true
+
 [features]
 default = []
 crdt-yjs = ["dep:yrs"]
 e2ee = ["ssp2/e2ee", "dep:rand_core"]
+native-transport = ["dep:ureq", "dep:tungstenite", "dep:url"]

@@ -1,8 +1,31 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.5.0** (`v0.5.0`). All artifacts use Apache-2.0, except
+current release is **0.5.1** (`v0.5.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.5.1 release notes
+
+0.5.1 hardens the native host paths after driving the published 0.5.0 Tauri
+engine against a persisted database and a live realtime server:
+
+- FFI and Tauri now use one canonical native HTTP/WebSocket transport instead
+  of two copies that could drift;
+- realtime connects with the persisted database client id, so registrations,
+  scoped invalidations, socket sync rounds, and HTTP request identity agree;
+- the socket reader uses a short read quantum and explicitly yields outside
+  its mutex, preventing a quiet realtime connection from starving sends;
+- Tauri reactive `querySnapshot` reads use a dedicated read-only SQLite
+  connection and mailbox. Local views no longer queue behind HTTP/WebSocket
+  work on the mutable client owner;
+- native round tests lock client identity, socket fairness, and framing, while
+  a Tauri regression test blocks the network owner and requires the local
+  snapshot sidecar to respond independently.
+
+The Diego Tauri PoC, with automatic sync enabled, moved from 54–58 ms warm
+mutation-to-React-commit samples to 10–14 ms after warm-up. The remaining time
+includes event delivery, React scheduling, reconciliation, and the display
+boundary; the local snapshot IPC lane retains its ≤5 ms p95 gate.
 
 ## 0.5.0 release notes
 
@@ -93,9 +116,9 @@ workflow also inspects every packed tarball before publishing it.
 The release is a commit on `main` followed by a version tag:
 
 ```sh
-git tag -a v0.5.0 -m "Syncular 0.5.0"
+git tag -a v0.5.1 -m "Syncular 0.5.1"
 git push origin main
-git push origin v0.5.0
+git push origin v0.5.1
 ```
 
 `.github/workflows/release.yml` verifies the tag against package and crate

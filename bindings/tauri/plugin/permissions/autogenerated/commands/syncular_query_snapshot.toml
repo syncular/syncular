@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-syncular-query-snapshot"
+description = "Enables the syncular_query_snapshot command without any pre-configured scope."
+commands.allow = ["syncular_query_snapshot"]
+
+[[permission]]
+identifier = "deny-syncular-query-snapshot"
+description = "Denies the syncular_query_snapshot command without any pre-configured scope."
+commands.deny = ["syncular_query_snapshot"]

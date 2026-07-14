@@ -10,8 +10,8 @@ Two pieces:
 
 - **`plugin/`** — `tauri-plugin-syncular` (Rust). Runs the `syncular-client`
   core DIRECTLY (no FFI), with a real file DB and the native HTTP+WS transport.
-  Exposes `syncular_command` / `syncular_query` commands and a `syncular://event`
-  event stream.
+  Exposes `syncular_command`, `syncular_query`, and the independent atomic
+  `syncular_query_snapshot` read path plus a `syncular://event` event stream.
 - **`../../packages/tauri`** — `@syncular/tauri` (JS). `createTauriSyncClient()`
   returns a `SyncClientLike` over `@tauri-apps/api`'s `invoke` / `listen`.
 
@@ -26,13 +26,13 @@ as the browser worker mode, but the "worker" is the native process and the RPC
 is Tauri IPC.
 
 ```
-┌── webview ────────────────┐        ┌── tauri host process ──────────────┐
-│ @syncular/react hooks  │        │ tauri-plugin-syncular              │
-│   │ SyncClientLike        │  IPC   │   owning thread (mailbox)          │
-│ @syncular/tauri  ──────┼───────▶│     SyncClient (rusqlite FILE db)  │
-│   invoke / listen         │◀───────┤     HostTransport (HTTP + WS)      │
-└───────────────────────────┘ events │     §8.4 host loop (auto-sync)     │
-                                      └────────────────────────────────────┘
+┌── webview ────────────────┐        ┌── tauri host process ────────────────┐
+│ @syncular/react hooks  │        │ tauri-plugin-syncular                │
+│   │ SyncClientLike        │  IPC   │   mutable owner (commands + sync)    │
+│ @syncular/tauri  ──────┼───────▶│     SyncClient + native transport    │
+│   invoke / listen         │        │   read owner (atomic snapshots)      │
+│                         │◀───────┤     read-only SQLite connection      │
+└───────────────────────────┘ events └──────────────────────────────────────┘
 ```
 
 ## The command + event surface
@@ -48,6 +48,11 @@ conformance-locked: whatever the shim exercises, the plugin inherits.
 - **`syncular_query(sql, params)`** — the live-query fast path (arbitrary
   read-only SQL over the local tables). Routed through the router's `query`
   command so there is one implementation.
+- **`syncular_query_snapshot(sql, params, coverage)`** — rows, persisted local
+  revision, and window coverage in one SQLite read snapshot. File-backed apps
+  serve it on a dedicated read-only connection, so HTTP/WebSocket work cannot
+  head-of-line-block reactive UI reads. Anonymous in-memory clients fall back
+  to the mutable owner.
 - **Native CRDT** (SPEC.md §5.10.5; needs the plugin `crdt-yjs` feature) —
   `crdtText` / `crdtInsertText` / `crdtDeleteText` / `crdtApplyUpdate` ride
   `syncular_command`, and `@syncular/tauri` exposes typed methods for them.
@@ -62,13 +67,14 @@ conformance-locked: whatever the shim exercises, the plugin inherits.
 ## Thread-safety (honest)
 
 `SyncClient` is synchronous and owns a rusqlite connection — it is **not**
-`Sync`. The plugin uses the shim/FFI pattern: exactly ONE owning thread holds
-the core, and every access arrives over a command **mailbox** (an mpsc channel).
-The Tauri commands post a request and await the reply; they never touch the
-client. The §8.4 host loop blocks on the mailbox or one explicit retry
-deadline. Interactive work preempts the deadline and an idle owner has zero
-periodic wakeups. It runs ON that same owning thread, so the connection is
-never accessed concurrently.
+`Sync`. Exactly one owning thread holds the mutable core; commands, mutations,
+and the §8.4 sync loop reach it over one mailbox. File-backed configurations
+also have one read owner with its own mailbox and read-only SQLite connection
+for `querySnapshot`. It cannot mutate client state and SQLite supplies the
+snapshot boundary. This separation lets local views proceed while the mutable
+owner waits on the network without creating a second client or violating the
+single-writer invariant. Both owners are wake-driven and idle with zero
+periodic polling.
 
 ## Sync rounds over the socket (§8.7) — complete
 
@@ -80,12 +86,12 @@ its `END`, routing any `0x00` delta or text control frame that interleaves to
 the inbound lane (tolerate-and-queue). One round in flight per connection is
 enforced client-side; a mid-round socket drop fails the round rather than
 hanging; with no socket the round rides `POST /sync` (the not-connected rule,
-not a fallback pair). The transport-agnostic tag demux + reassembly is shared
-with the FFI crate via `syncular_client::RealtimeRound` (unit-tested there and
-in `ssp2::MessageStreamScanner`); the WS plumbing in
-`plugin/src/transport.rs` is kept byte-for-byte parallel with
-`rust/crates/ffi/src/transport.rs`, whose `round_tests` prove the framing
-end-to-end against a scripted §8.7 WebSocket server.
+not a fallback pair). The complete HTTP/WebSocket host transport is implemented
+once in `syncular-client` and re-exported by both FFI and Tauri. Realtime
+connects with the persisted core client id in the URL, and the short socket read
+quantum yields outside its mutex so a quiet reader cannot starve sends.
+Scripted native round tests prove identity, fairness, framing, and response
+reassembly end to end.
 
 ## Setup
 
@@ -99,7 +105,7 @@ bun add @syncular/tauri @tauri-apps/api
 
 ```toml
 [dependencies]
-tauri-plugin-syncular = { path = "…/bindings/tauri/plugin", features = ["native-transport"] }
+tauri-plugin-syncular = { version = "0.5", features = ["native-transport"] }
 ```
 
 `lib.rs`:
@@ -149,10 +155,11 @@ an explicit id is optional and cannot rebind an existing database.
 ## IPC latency & pagination
 
 Each unique reactive query performs **one atomic IPC round trip per relevant
-revision** for rows, completeness, and local revision. Equal observers share
-that read, and status/conflict-only changes issue no SQL. For very large result
-sets serialization dominates; use indexed keyset pagination and bounded
-windows.
+revision** for rows, completeness, and local revision. On a file database that
+round trip uses the independent read owner, so it does not queue behind a sync
+round. Equal observers share the read, and status/conflict-only changes issue
+no SQL. For very large result sets serialization dominates; use indexed keyset
+pagination and bounded windows.
 
 ## The example (`example/`)
 

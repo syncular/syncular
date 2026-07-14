@@ -3,6 +3,8 @@
 - **Status:** Implemented for Syncular 0.5.0 on 2026-07-14. V0–V7 are green,
   including the browser and real Tauri/native bridge lanes, strict local-data
   performance gates, release documentation, and the Diego consumer migration.
+  Native transport and read-path hardening shipped in 0.5.1 after live Tauri
+  observation exposed two host-specific gaps (§15.1).
 - **Date:** 2026-07-14
 - **Scope:** `packages/web-client`, `packages/react`, `packages/typegen`,
   `packages/tauri`, `rust/crates/client`, `rust/crates/command`,
@@ -955,3 +957,43 @@ freshness checks, and a launched macOS Tauri PoC using its persisted file DB
 and native realtime socket. Kotlin execution remains environment-skipped
 without JDK 21; Flutter execution remains environment-skipped without Dart,
 as documented by their check scripts.
+
+### 15.1 Native hardening after live 0.5.0 observation
+
+The first published 0.5.0 Tauri run exposed two assumptions that the original
+native harness did not exercise:
+
+1. The Tauri transport had drifted from the FFI transport's socket-fairness
+   fix, and its realtime URL did not carry the persisted database client id.
+   A quiet reader could starve socket sends, and the server registered a random
+   socket identity while sync requests carried the real identity. This broke
+   native realtime invalidation and could strand interactive sync work.
+2. `querySnapshot` was atomic but still shared the mutable core owner's
+   mailbox. An immediate local mutation correctly scheduled network sync, then
+   the React reread queued behind that HTTP/WebSocket round. SQLite itself was
+   fast; the UI latency was cross-domain head-of-line blocking.
+
+Syncular 0.5.1 applies the long-term host architecture:
+
+- `syncular-client` owns the single feature-gated native transport used by
+  both FFI and Tauri. Realtime URL construction replaces or appends exactly one
+  `clientId` query parameter from the persisted core identity, retains other
+  query parameters, and uses the proven short read quantum plus an explicit
+  yield outside the socket mutex.
+- A file-backed native client exposes `FileQuerySnapshotReader`, a long-lived
+  read-only SQLite connection. Tauri routes atomic reactive snapshots through
+  a dedicated command, mailbox, and reader thread. The mutable owner remains
+  the sole writer and sync owner; in-memory clients intentionally fall back to
+  it because anonymous SQLite databases cannot be shared across connections.
+- The snapshot sidecar reads rows, local revision, and persisted window
+  coverage inside one SQLite savepoint. It therefore preserves the RFC's
+  atomic-publication contract while allowing local UI reads during network
+  work.
+- Regression coverage now includes scripted socket identity/fairness rounds,
+  sidecar/owner snapshot parity, and a deterministic Tauri test that blocks
+  the owner for 200 ms but requires the local snapshot to return within 50 ms.
+
+This does not reintroduce polling, timers, render-order inference, or a second
+mutable client. It separates read and write scheduling at SQLite's native
+concurrency boundary, which is the architecture required for local-first
+latency under an active network connection.

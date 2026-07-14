@@ -3,8 +3,10 @@
 //! Everything here is plain Rust with no dependency on the `tauri` crate, so
 //! it is unit-testable without a window or a mock runtime. The Tauri shell
 //! (see `lib.rs`) is a thin layer that owns one [`SyncularCore`] on a
-//! dedicated thread, forwards `syncular_command` / `syncular_query` invokes to
-//! it, and pumps drained events onto the `syncular://event` Tauri channel.
+//! dedicated thread, forwards mutable commands and raw queries to it, and pumps
+//! drained events onto the `syncular://event` Tauri channel. The shell's
+//! file-backed atomic snapshot sidecar is intentionally outside this mutable
+//! core and uses a separate read-only SQLite connection.
 //!
 //! This mirrors the `syncular-ffi` `Handle`: one owned [`SyncClient`], one
 //! owned [`HostTransport`] (native HTTP+WS via the `native-transport` feature),
@@ -15,13 +17,12 @@
 //! ## Thread-safety, honestly
 //!
 //! [`SyncClient`] is synchronous and NOT `Sync` — it owns a rusqlite
-//! connection. The plugin follows the shim/FFI pattern: exactly ONE thread
-//! owns the core, and all access arrives through a command MAILBOX (an mpsc
-//! channel). The Tauri commands (running on Tauri's async runtime) never touch
-//! the client directly; they post a [`Request`] to the owning thread and await
-//! the reply. The background host loop (§8.4) runs ON that same owning thread,
-//! interleaved with mailbox requests, so there is never concurrent access to
-//! the connection.
+//! connection. Exactly one thread owns the mutable core, and all mutable access
+//! arrives through a command mailbox (an mpsc channel). Tauri commands never
+//! touch that client directly. The background host loop (§8.4) runs on the same
+//! owner, so the mutable connection is never accessed concurrently. The shell
+//! may independently read the file database through SQLite's snapshot model;
+//! it does not access this `SyncClient`.
 
 use std::collections::VecDeque;
 
@@ -332,6 +333,7 @@ mod tests {
         // `syncNeeded` is an inbound pull/catch-up signal. Local push work is
         // represented exactly by `outbox` and by the interactive sync intent.
         assert_eq!(change.json["batch"]["status"]["syncNeeded"], false);
+        assert!(matches!(core.take_sync_intent(), SyncIntent::Interactive));
         // Draining is exhaustive.
         assert!(core.drain_events().is_empty());
     }
