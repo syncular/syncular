@@ -1,6 +1,6 @@
 {
   "name": "create-syncular-app",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Scaffold a new Syncular app: `create-syncular-app`",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

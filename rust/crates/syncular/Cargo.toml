@@ -1,6 +1,6 @@
 [package]
 name = "syncular"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "Deprecated: the Syncular Rust client moved to the `syncular-client` crate. This crate is a placeholder."
 license = "Apache-2.0"

@@ -119,7 +119,7 @@
     },
     "packages/conformance": {
       "name": "@syncular/conformance",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@syncular/client": "workspace:*",
         "@syncular/core": "workspace:*",
@@ -130,11 +130,11 @@
     },
     "packages/core": {
       "name": "@syncular/core",
-      "version": "0.5.0",
+      "version": "0.6.0",
     },
     "packages/crdt-yjs": {
       "name": "@syncular/crdt-yjs",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@syncular/core": "workspace:*",
         "yjs": "^13.6.0",
@@ -145,7 +145,7 @@
     },
     "packages/create-app": {
       "name": "create-syncular-app",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "bin": {
         "create-syncular-app": "./src/cli.ts",
       },
@@ -155,11 +155,11 @@
     },
     "packages/crypto": {
       "name": "@syncular/crypto",
-      "version": "0.5.0",
+      "version": "0.6.0",
     },
     "packages/react": {
       "name": "@syncular/react",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@syncular/client": "workspace:*",
       },
@@ -178,7 +178,7 @@
     },
     "packages/server": {
       "name": "@syncular/server",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@syncular/core": "workspace:*",
       },
@@ -188,7 +188,7 @@
     },
     "packages/server-hono": {
       "name": "@syncular/server-hono",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@syncular/server": "workspace:*",
         "hono": "^4.11.0",
@@ -199,7 +199,7 @@
     },
     "packages/server-workers": {
       "name": "@syncular/server-workers",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@syncular/server": "workspace:*",
         "@syncular/server-hono": "workspace:*",
@@ -211,7 +211,7 @@
     },
     "packages/tauri": {
       "name": "@syncular/tauri",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@syncular/client": "workspace:*",
       },
@@ -224,7 +224,7 @@
     },
     "packages/testing": {
       "name": "@syncular/testkit",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@syncular/client": "workspace:*",
         "@syncular/server": "workspace:*",
@@ -247,7 +247,7 @@
     },
     "packages/typegen": {
       "name": "@syncular/typegen",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "bin": {
         "syncular": "./dist/cli.js",
       },
@@ -258,7 +258,7 @@
     },
     "packages/web-client": {
       "name": "@syncular/client",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
         "@syncular/core": "workspace:*",
