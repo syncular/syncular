@@ -1,11 +1,10 @@
 # syncular-syql — VS Code support for `.syql`
 
-Syntax highlighting for Syncular's `.syql` query files (the DSL tier of the
-query surface — see `DESIGN-queries.md`). The container grammar (`query` /
-`fragment` declarations, signatures with `?` optionals, `from+to?` groups and
-`?: flag` annotations, the `orderBy` / `limit` / `variants` knobs, `@fragment`
-refs, `if (…) { … }` guards) is highlighted natively; everything inside a
-body is an **embedded SQL region** (`source.sql`), so your SQL theme applies.
+Syntax highlighting for SYQL revision 1. The grammar covers `import`, `query`,
+and `predicate` declarations; typed optional values and atomic groups; `sql`,
+named `sort` profiles, `page`, and `identity` sections; predicate calls;
+`when` conjuncts; and constructive `@scope` / `@cover` directives. SQL regions
+remain embedded as `source.sql`, so the active SQL theme still applies.
 
 ## Install (from the repo)
 
@@ -27,5 +26,6 @@ that runs:
 syncular generate --check
 ```
 
-Formatting: `syncular fmt` is the canonical formatter (one style, no
-options); run it on save via a task, or `syncular fmt --check` in CI.
+The `syncular lsp` server provides compiler diagnostics, imported-predicate
+navigation/references, hover, document symbols, and canonical formatting.
+`syncular fmt --check` remains the CI-friendly formatting gate.

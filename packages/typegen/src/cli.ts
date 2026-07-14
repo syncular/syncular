@@ -117,6 +117,56 @@ function runGeneratePrint(args: GenerateArgs, name: string): void {
   }
   console.log(`-- ${query.name} (${query.file})`);
   console.log(`-- tables: ${query.tables.join(', ')}`);
+  if (query.syql !== undefined) {
+    console.log('-- revision: SYQL 1');
+    console.log(`-- backend: ${query.syql.plan.backend}`);
+    if (query.syql.inputs.length > 0) {
+      console.log('-- public inputs:');
+      for (const input of query.syql.inputs) {
+        if (input.kind === 'value') {
+          console.log(
+            `--   ${input.name}: ${input.type}${input.nullable ? ' | null' : ''} (${input.required ? 'required' : 'optional'})`,
+          );
+        } else if (input.kind === 'group') {
+          console.log(
+            `--   ${input.name}: optional group (${input.members.map((member) => `${member.name}: ${member.type}${member.nullable ? ' | null' : ''}`).join(', ')})`,
+          );
+        } else if (input.kind === 'switch') {
+          console.log(`--   ${input.name}: switch (default false)`);
+        } else if (input.kind === 'sort') {
+          console.log(
+            `--   ${input.name}: sort [${input.profiles.map((profile) => profile.name).join(', ')}] (default ${input.defaultProfile})`,
+          );
+        } else {
+          console.log(
+            `--   ${input.name}: page 1..${input.maxSize} (default ${input.defaultSize})`,
+          );
+        }
+      }
+    }
+    if (query.syql.identity !== undefined) {
+      console.log(`-- identity: ${query.syql.identity.join(', ')}`);
+    }
+    console.log(
+      `-- checked statements: ${query.syql.plan.statements.length} (activation controls: ${query.syql.plan.activationControls.join(', ') || 'none'})`,
+    );
+    for (const statement of query.syql.plan.statements) {
+      const selectors = [
+        ...(statement.activationMask === undefined
+          ? []
+          : [`mask=${statement.activationMask}`]),
+        ...(statement.sortProfile === undefined
+          ? []
+          : [`sort=${statement.sortProfile}`]),
+      ];
+      console.log(`-- [${selectors.join(', ') || 'default'}]`);
+      console.log(statement.sql);
+      console.log(
+        `-- binds: ${statement.binds.map((bind) => `:${bind.name}`).join(', ') || '(none)'}`,
+      );
+    }
+    return;
+  }
   if (query.params.length > 0) {
     console.log('-- params:');
     for (const param of query.params) {

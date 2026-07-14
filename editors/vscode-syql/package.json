@@ -1,7 +1,7 @@
 {
   "name": "syncular-syql",
   "displayName": "Syncular .syql",
-  "description": "Syntax highlighting for Syncular's .syql query files (DESIGN-queries.md §10): the query/fragment container grammar with embedded SQL.",
+  "description": "SYQL revision-1 highlighting for typed queries, predicates, controls, reactive directives, and embedded SQLite.",
   "version": "0.0.1",
   "publisher": "syncular",
   "private": true,

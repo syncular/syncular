@@ -1,137 +1,39 @@
-/**
- * `syncular fmt` — the canonical `.syql` formatter (DESIGN-queries.md §10,
- * §12). One style, no options:
+/** Canonical revision-1 SYQL formatter (§19).
  *
- * - SQL keywords lowercase; identifier casing preserved (SQL-truth).
- * - one space after commas; collapsed whitespace elsewhere.
- * - one clause per line in the body; WHERE conjuncts one per line,
- *   `and`-prefixed and indented under the `where`.
- * - declarations separated by one blank line; knobs on their own lines.
- * - comments are preserved: a declaration's leading comment block stays
- *   above it; comments inside bodies stay on their own lines.
- *
- * The formatter is built on the same parser as the generator (`.syql` that
- * does not parse does not format), and formatting is semantics-preserving
- * by construction — `fmt` output re-parses to the same declarations.
+ * Formatting is a lossless-token rewrite: semantic/atomic tokens and comments
+ * keep their order and exact spelling, while trivia is regenerated. The pass
+ * parses both sides and refuses output unless their normalized semantic ASTs
+ * agree. This keeps the formatter on the same lexer/parser contract as codegen.
  */
 import { TypegenError } from './errors';
-import { parseSyqlFile, type SyqlQueryDecl } from './syql';
+import { type SyqlSemanticFile, toSyqlSemanticAst } from './syql-ast';
+import type { SyqlToken } from './syql-lexer';
+import {
+  parseSyqlSyntaxFile,
+  type SyqlSyntaxFile,
+  type SyqlTemplate,
+} from './syql-parser';
 
-/** SQL keywords the canon lowercases (a pragmatic core set — identifiers
- * that collide with these would need quoting anyway). */
 const SQL_KEYWORDS = new Set(
   (
-    'select from where group by having order limit offset window and or not ' +
-    'in is null like glob between exists case when then else end as on using ' +
-    'join left right full outer inner cross natural union all except ' +
-    'intersect distinct values with recursive asc desc collate cast'
-  ).split(' '),
+    'abort action add after all alter analyze and as asc attach autoincrement ' +
+    'before begin between by cascade case cast check collate column commit ' +
+    'conflict constraint create cross current current_date current_time ' +
+    'current_timestamp database default deferrable deferred delete desc ' +
+    'detach distinct do drop each else end escape except exclude exclusive ' +
+    'exists explain fail filter first following for foreign from full ' +
+    'generated glob group groups having if ignore immediate in index indexed ' +
+    'initially inner insert instead intersect into is isnull join key last ' +
+    'left like limit match materialized natural no not nothing notnull null ' +
+    'nulls of offset on or order others outer over partition plan pragma ' +
+    'preceding primary query raise range recursive references regexp reindex ' +
+    'release rename replace restrict returning right rollback row rows savepoint ' +
+    'select set table temp temporary then ties to transaction trigger ' +
+    'unbounded union unique update using vacuum values view virtual when where ' +
+    'window with without asc desc'
+  ).split(/\s+/),
 );
 
-interface Token {
-  readonly kind: 'word' | 'string' | 'comment' | 'punct' | 'param' | 'fragment';
-  readonly text: string;
-}
-
-/** Tokenize a body: strings/comments verbatim, words, `:params`,
- * `@fragment` refs, single punctuation chars. */
-function tokenize(body: string): Token[] {
-  const tokens: Token[] = [];
-  let i = 0;
-  while (i < body.length) {
-    const ch = body[i] as string;
-    if (/\s/.test(ch)) {
-      i += 1;
-      continue;
-    }
-    if (body.startsWith('--', i)) {
-      const nl = body.indexOf('\n', i);
-      const end = nl === -1 ? body.length : nl;
-      tokens.push({ kind: 'comment', text: body.slice(i, end).trimEnd() });
-      i = end;
-      continue;
-    }
-    if (body.startsWith('/*', i)) {
-      const close = body.indexOf('*/', i + 2);
-      const end = close === -1 ? body.length : close + 2;
-      tokens.push({ kind: 'comment', text: body.slice(i, end) });
-      i = end;
-      continue;
-    }
-    if (ch === "'") {
-      let j = i + 1;
-      for (;;) {
-        if (j >= body.length) break;
-        if (body[j] === "'") {
-          if (body[j + 1] === "'") j += 2;
-          else {
-            j += 1;
-            break;
-          }
-        } else j += 1;
-      }
-      tokens.push({ kind: 'string', text: body.slice(i, j) });
-      i = j;
-      continue;
-    }
-    if (ch === ':' && /[A-Za-z_]/.test(body[i + 1] ?? '')) {
-      let j = i + 1;
-      while (j < body.length && /[A-Za-z0-9_]/.test(body[j] as string)) j += 1;
-      tokens.push({ kind: 'param', text: body.slice(i, j) });
-      i = j;
-      continue;
-    }
-    if (ch === '@' && /[A-Za-z_]/.test(body[i + 1] ?? '')) {
-      let j = i + 1;
-      while (j < body.length && /[A-Za-z0-9_]/.test(body[j] as string)) j += 1;
-      tokens.push({ kind: 'fragment', text: body.slice(i, j) });
-      i = j;
-      continue;
-    }
-    if (/[A-Za-z_]/.test(ch)) {
-      let j = i + 1;
-      while (j < body.length && /[A-Za-z0-9_]/.test(body[j] as string)) j += 1;
-      tokens.push({ kind: 'word', text: body.slice(i, j) });
-      i = j;
-      continue;
-    }
-    // Multi-char operators stay one token (`||`, `>=`, `<=`, `<>`, `!=`, `==`).
-    const two = body.slice(i, i + 2);
-    if (['||', '>=', '<=', '<>', '!=', '=='].includes(two)) {
-      tokens.push({ kind: 'punct', text: two });
-      i += 2;
-      continue;
-    }
-    tokens.push({ kind: 'punct', text: ch });
-    i += 1;
-  }
-  return tokens;
-}
-
-/** Render tokens back to one line with canonical spacing + keyword case. */
-function render(tokens: readonly Token[]): string {
-  let out = '';
-  let prev: Token | undefined;
-  for (const token of tokens) {
-    let text = token.text;
-    if (token.kind === 'word' && SQL_KEYWORDS.has(text.toLowerCase())) {
-      text = text.toLowerCase();
-    }
-    const glueLeft =
-      token.kind === 'punct' &&
-      (text === ',' || text === ')' || text === ';' || text === '.');
-    const glueRight =
-      prev !== undefined &&
-      ((prev.kind === 'punct' && (prev.text === '(' || prev.text === '.')) ||
-        prev.kind === 'fragment');
-    if (out.length > 0 && !glueLeft && !glueRight) out += ' ';
-    out += text;
-    prev = token;
-  }
-  return out;
-}
-
-/** Clause keywords that start a new line at paren depth 0. */
 const CLAUSE_STARTERS = new Set([
   'select',
   'from',
@@ -140,212 +42,384 @@ const CLAUSE_STARTERS = new Set([
   'having',
   'order',
   'limit',
+  'offset',
   'window',
   'union',
   'except',
   'intersect',
 ]);
 
-/** Format a body: one clause per line; WHERE conjuncts one per line. */
-function formatBody(body: string): string[] {
-  const tokens = tokenize(body);
-  const lines: string[] = [];
-  let current: Token[] = [];
-  let depth = 0;
-  let braceDepth = 0;
-  let inWhere = false;
-  let pendingBetween = 0;
-  const flush = (): void => {
-    if (current.length > 0) lines.push(render(current));
-    current = [];
-  };
-  for (const token of tokens) {
-    if (token.kind === 'comment') {
-      flush();
-      lines.push(token.text);
-      continue;
-    }
-    if (token.kind === 'punct') {
-      if (token.text === '(') depth += 1;
-      else if (token.text === ')') depth -= 1;
-      else if (token.text === '{') braceDepth += 1;
-      else if (token.text === '}') braceDepth -= 1;
-    }
-    if (token.kind === 'word' && depth === 0 && braceDepth === 0) {
-      const word = token.text.toLowerCase();
-      if (CLAUSE_STARTERS.has(word)) {
-        flush();
-        inWhere = word === 'where';
-        pendingBetween = 0;
-      } else if (inWhere) {
-        if (word === 'between') pendingBetween += 1;
-        else if (word === 'and') {
-          if (pendingBetween > 0) pendingBetween -= 1;
-          else flush();
-        }
-      }
-    }
-    current.push(token);
-  }
-  flush();
-  // Indent: clauses flush-left; WHERE continuation (`and …`) indented 2.
-  return lines.map((line) =>
-    /^(and|or)\b/.test(line) || line.startsWith('--') ? `  ${line}` : line,
+function templates(file: SyqlSyntaxFile): readonly SyqlTemplate[] {
+  return file.declarations.flatMap((declaration) => {
+    if (declaration.kind === 'predicate') return [declaration.body];
+    return [
+      declaration.sql.body,
+      ...(declaration.sort?.profiles.map((profile) => profile.order) ?? []),
+    ];
+  });
+}
+
+function inTemplate(
+  ranges: readonly SyqlTemplate[],
+  token: SyqlToken,
+): boolean {
+  return ranges.some(
+    (template) =>
+      token.span.start.offset >= template.span.start.offset &&
+      token.span.end.offset <= template.span.end.offset,
   );
 }
 
-function formatSignature(decl: {
-  readonly params: SyqlQueryDecl['params'];
-}): string {
-  const parts: string[] = [];
-  const seenGroups = new Set<string>();
-  for (const param of decl.params) {
-    if (param.group !== undefined) {
-      if (seenGroups.has(param.group)) continue;
-      seenGroups.add(param.group);
-      const members = decl.params.filter((p) => p.group === param.group);
-      parts.push(`${members.map((p) => p.name).join('+')}?`);
-      continue;
-    }
-    if (param.flag) parts.push(`${param.name}?: flag`);
-    else parts.push(`${param.name}${param.optional ? '?' : ''}`);
-  }
-  return parts.join(', ');
-}
-
-/** The leading comment block (verbatim lines) before each declaration. */
-function leadingComments(source: string): Map<number, string[]> {
-  // Map from declaration index (0-based, in order of appearance) to its
-  // preceding comment lines.
-  const out = new Map<number, string[]>();
-  let pending: string[] = [];
-  let declIndex = 0;
-  let i = 0;
-  while (i < source.length) {
-    const ch = source[i] as string;
-    if (/\s/.test(ch)) {
-      i += 1;
-      continue;
-    }
-    if (source.startsWith('--', i)) {
-      const nl = source.indexOf('\n', i);
-      const end = nl === -1 ? source.length : nl;
-      pending.push(source.slice(i, end).trimEnd());
-      i = end;
-      continue;
-    }
-    if (source.startsWith('/*', i)) {
-      const close = source.indexOf('*/', i + 2);
-      const end = close === -1 ? source.length : close + 2;
-      pending.push(source.slice(i, end));
-      i = end;
-      continue;
-    }
-    // A declaration keyword: attach pending comments, then skip through its
-    // brace block.
-    if (pending.length > 0) {
-      out.set(declIndex, pending);
-      pending = [];
-    }
-    declIndex += 1;
-    const brace = source.indexOf('{', i);
-    if (brace === -1) break;
-    let depth = 0;
-    let j = brace;
-    while (j < source.length) {
-      const c = source[j] as string;
-      if (c === "'") {
-        j += 1;
-        while (j < source.length && source[j] !== "'") j += 1;
-      } else if (source.startsWith('--', j)) {
-        const nl = source.indexOf('\n', j);
-        j = nl === -1 ? source.length : nl;
-      } else if (c === '{') depth += 1;
-      else if (c === '}') {
-        depth -= 1;
-        if (depth === 0) {
-          j += 1;
-          break;
-        }
+function normalizedAst(ast: SyqlSemanticFile): unknown {
+  return JSON.parse(
+    JSON.stringify(ast, (_key, value: unknown) => {
+      if (
+        value !== null &&
+        typeof value === 'object' &&
+        'kind' in value &&
+        'text' in value &&
+        (value as { kind?: unknown }).kind === 'identifier' &&
+        typeof (value as { text?: unknown }).text === 'string'
+      ) {
+        const token = value as { readonly kind: string; readonly text: string };
+        const lower = token.text.toLowerCase();
+        return {
+          kind: token.kind,
+          text: SQL_KEYWORDS.has(lower) ? lower : token.text,
+        };
       }
-      j += 1;
-    }
-    i = j;
-  }
-  return out;
+      return value;
+    }),
+  );
 }
 
-/** Format one `.syql` source file into its canonical form. Throws
- * {@link TypegenError} when the source does not parse. */
-export function formatSyql(file: string, source: string): string {
-  const parsed = parseSyqlFile(file, source);
-  const comments = leadingComments(source);
-  const decls: { order: number; text: string }[] = [];
+function comments(file: SyqlSyntaxFile): readonly string[] {
+  return file.tokens
+    .filter(
+      (token) =>
+        token.kind === 'line-comment' || token.kind === 'block-comment',
+    )
+    .map((token) => token.text);
+}
 
-  // Re-derive declaration order (fragments/queries interleave in-source);
-  // parseSyqlFile keeps per-kind order, so re-scan the source for kind
-  // keywords to interleave faithfully.
-  const orderRe = /\b(query|fragment)\s+([A-Za-z][A-Za-z0-9]*)/g;
-  const blanked = source
-    .replace(/--[^\n]*/g, (m) => ' '.repeat(m.length))
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => ' '.repeat(m.length))
-    .replace(/'(?:[^']|'')*'/g, (m) => ' '.repeat(m.length));
-  const sequence: { kind: string; name: string }[] = [];
+class TokenWriter {
+  readonly #lines: string[] = [''];
+  readonly #blockIndents: {
+    readonly close: number;
+    readonly parent: number;
+  }[] = [];
+  #indent = 0;
+  #nextIndent = 0;
+
+  get line(): string {
+    return this.#lines[this.#lines.length - 1] as string;
+  }
+
+  #setLine(value: string): void {
+    this.#lines[this.#lines.length - 1] = value;
+  }
+
+  write(text: string, spaceBefore: boolean): void {
+    if (this.line.length === 0) {
+      this.#setLine('  '.repeat(this.#indent + this.#nextIndent));
+      this.#nextIndent = 0;
+    }
+    if (
+      spaceBefore &&
+      this.line.trim().length > 0 &&
+      !this.line.endsWith(' ')
+    ) {
+      this.#setLine(`${this.line} `);
+    }
+    this.#setLine(`${this.line}${text}`);
+  }
+
+  comment(text: string): void {
+    if (this.line.trim().length > 0) this.write('', true);
+    const pieces = text.split('\n');
+    this.write(pieces[0] ?? '', false);
+    for (const piece of pieces.slice(1)) {
+      this.newline();
+      // Internal block-comment indentation is part of the token. Do not add
+      // formatter indentation before its continuation text.
+      this.#setLine(piece);
+    }
+    this.newline();
+  }
+
+  newline(extraIndent = 0): void {
+    this.#setLine(this.line.trimEnd());
+    if (this.line.length > 0 || this.#lines.length === 1) this.#lines.push('');
+    this.#nextIndent = extraIndent;
+  }
+
+  blankline(): void {
+    this.newline();
+    while (
+      this.#lines.length >= 2 &&
+      this.#lines[this.#lines.length - 2] === ''
+    ) {
+      this.#lines.pop();
+    }
+    if (this.#lines[this.#lines.length - 1] !== '') this.#lines.push('');
+    this.#lines.push('');
+  }
+
+  openBlock(): void {
+    const parentIndent = this.#indent;
+    this.write('{', true);
+    const leadingSpaces = this.line.length - this.line.trimStart().length;
+    this.#blockIndents.push({
+      close: leadingSpaces / 2,
+      parent: parentIndent,
+    });
+    this.#indent = leadingSpaces / 2 + 1;
+    this.newline();
+  }
+
+  indent(): void {
+    this.#indent += 1;
+  }
+
+  dedent(): void {
+    this.#indent -= 1;
+  }
+
+  closeBlock(): void {
+    const block = this.#blockIndents.pop();
+    if (block === undefined) {
+      throw new Error('formatter block indentation stack underflow');
+    }
+    if (this.line.trim().length > 0) this.newline();
+    this.#indent = block.close;
+    this.write('}', false);
+    this.#indent = block.parent;
+  }
+
+  finish(): string {
+    while (this.#lines.length > 0 && this.#lines.at(-1)?.trim() === '') {
+      this.#lines.pop();
+    }
+    return `${this.#lines.join('\n')}\n`;
+  }
+}
+
+interface DeclarationParameters {
+  readonly depth: number;
+  readonly multiline: boolean;
+}
+
+function declarationParametersMultiline(
+  tokens: readonly SyqlToken[],
+  openIndex: number,
+  prefixLength: number,
+): boolean {
+  let depth = 0;
+  let parameters = 0;
+  let hasContent = false;
+  let length = prefixLength + 1;
+  for (let index = openIndex + 1; index < tokens.length; index += 1) {
+    const token = tokens[index] as SyqlToken;
+    if (token.kind === 'line-comment' || token.kind === 'block-comment') {
+      return true;
+    }
+    if (token.text === '(') depth += 1;
+    if (token.text === ')') {
+      if (depth === 0) {
+        if (hasContent) parameters += 1;
+        return parameters >= 4 || length + 1 > 88;
+      }
+      depth -= 1;
+    }
+    if (depth === 0 && token.text === ',') {
+      parameters += 1;
+      hasContent = false;
+    } else if (depth === 0) {
+      hasContent = true;
+    }
+    length += token.text.length + 1;
+  }
+  return false;
+}
+
+function needsSpace(
+  previous: SyqlToken | undefined,
+  token: SyqlToken,
+): boolean {
+  if (previous === undefined) return false;
+  if ([',', ')', ']', ';', '.', '?', ':'].includes(token.text)) return false;
+  if (['(', '[', '.', '@'].includes(previous.text)) return false;
+  if (token.text === '(') return false;
+  if (previous.text === ':') return true;
+  if (token.kind === 'operator' || previous.kind === 'operator') return true;
+  return true;
+}
+
+function formatTokens(parsed: SyqlSyntaxFile): string {
+  const writer = new TokenWriter();
+  const ranges = templates(parsed);
+  const tokens = parsed.tokens.filter(
+    (token) => token.kind !== 'whitespace' && token.kind !== 'eof',
+  );
+  let previous: SyqlToken | undefined;
   let braceDepth = 0;
-  let lastIndex = 0;
-  for (let i = 0; i < blanked.length; i++) {
-    const c = blanked[i];
-    if (c === '{') braceDepth += 1;
-    else if (c === '}') braceDepth -= 1;
-    else if (braceDepth === 0) {
-      orderRe.lastIndex = i;
-      const m = orderRe.exec(blanked);
-      if (m !== null && m.index === i) {
-        sequence.push({ kind: m[1] as string, name: m[2] as string });
-        i = orderRe.lastIndex - 1;
-        lastIndex = orderRe.lastIndex;
+  let parenDepth = 0;
+  let importList = false;
+  let justClosedImportList = false;
+  let seenTopLevel = false;
+  let pendingBetween = 0;
+
+  let declarationParameters: DeclarationParameters | undefined;
+  let awaitsDeclarationParameters = false;
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] as SyqlToken;
+    const lower = token.text.toLowerCase();
+    const template = inTemplate(ranges, token);
+    const topLevelDeclaration =
+      braceDepth === 0 &&
+      token.kind === 'identifier' &&
+      (lower === 'import' || lower === 'predicate' || lower === 'query');
+    if (topLevelDeclaration) {
+      if (seenTopLevel) writer.blankline();
+      seenTopLevel = true;
+      previous = undefined;
+      awaitsDeclarationParameters = lower === 'predicate' || lower === 'query';
+    } else if (
+      previous?.text === '}' &&
+      !justClosedImportList &&
+      token.text !== ';' &&
+      token.text !== ','
+    ) {
+      writer.newline();
+      previous = undefined;
+    }
+
+    if (token.kind === 'line-comment' || token.kind === 'block-comment') {
+      writer.comment(token.text);
+      previous = undefined;
+      continue;
+    }
+
+    if (
+      template &&
+      parenDepth === 0 &&
+      token.kind === 'identifier' &&
+      CLAUSE_STARTERS.has(lower) &&
+      writer.line.trim().length > 0
+    ) {
+      writer.newline();
+      previous = undefined;
+      pendingBetween = 0;
+    }
+    if (template && parenDepth === 0 && lower === 'and') {
+      if (pendingBetween > 0) pendingBetween -= 1;
+      else {
+        writer.newline(1);
+        previous = undefined;
       }
+    } else if (template && lower === 'between') {
+      pendingBetween += 1;
+    }
+
+    if (token.text === '{') {
+      if (previous?.kind === 'identifier' && previous.text === 'import') {
+        writer.write('{', true);
+        importList = true;
+      } else {
+        writer.openBlock();
+        braceDepth += 1;
+      }
+      previous = token;
+      continue;
+    }
+    if (token.text === '}') {
+      if (importList && braceDepth === 0) {
+        writer.write('}', true);
+        importList = false;
+        justClosedImportList = true;
+      } else {
+        writer.closeBlock();
+        braceDepth -= 1;
+      }
+      previous = token;
+      continue;
+    }
+    justClosedImportList = false;
+
+    if (token.text === '(') {
+      parenDepth += 1;
+      const multiline =
+        awaitsDeclarationParameters &&
+        declarationParametersMultiline(tokens, index, writer.line.length);
+      if (awaitsDeclarationParameters) {
+        declarationParameters = { depth: parenDepth, multiline };
+        awaitsDeclarationParameters = false;
+      }
+      writer.write(token.text, needsSpace(previous, token));
+      if (multiline) {
+        writer.indent();
+        writer.newline();
+      }
+      previous = token;
+      continue;
+    }
+
+    if (token.text === ',' && declarationParameters?.depth === parenDepth) {
+      const next = tokens[index + 1];
+      if (!(declarationParameters.multiline === false && next?.text === ')')) {
+        writer.write(',', false);
+        if (declarationParameters.multiline) writer.newline();
+      }
+      previous = token;
+      continue;
+    }
+
+    if (token.text === ')' && declarationParameters?.depth === parenDepth) {
+      if (declarationParameters.multiline) {
+        if (previous?.text !== ',') writer.write(',', false);
+        writer.dedent();
+        if (writer.line.trim().length > 0) writer.newline();
+      }
+      writer.write(')', false);
+      declarationParameters = undefined;
+      parenDepth -= 1;
+      previous = token;
+      continue;
+    }
+
+    if (token.text === ')') parenDepth -= 1;
+
+    const text =
+      template && token.kind === 'identifier' && SQL_KEYWORDS.has(lower)
+        ? lower
+        : token.text;
+    writer.write(text, needsSpace(previous, token));
+    if (token.text === ';') {
+      writer.newline();
+      previous = undefined;
+    } else {
+      previous = token;
     }
   }
-  void lastIndex;
+  return writer.finish();
+}
 
-  sequence.forEach((entry, index) => {
-    const lines: string[] = [];
-    const leading = comments.get(index);
-    if (leading !== undefined) lines.push(...leading);
-    if (entry.kind === 'fragment') {
-      const decl = parsed.fragments.find((f) => f.name === entry.name);
-      if (decl === undefined) return;
-      lines.push(`fragment ${decl.name}(${formatSignature(decl)}) {`);
-      for (const line of formatBody(decl.body)) lines.push(`  ${line}`);
-      lines.push('}');
-    } else {
-      const decl = parsed.queries.find((q) => q.name === entry.name);
-      if (decl === undefined) return;
-      const knobs: string[] = [];
-      if (decl.orderBy !== undefined) {
-        const dir = decl.orderBy.defaultDir === 'desc' ? ' desc' : '';
-        knobs.push(
-          `  orderBy ${decl.orderBy.allowed.join(' | ')} default ${decl.orderBy.defaultColumn}${dir}`,
-        );
-      }
-      if (decl.limit !== undefined) {
-        const parts: string[] = [];
-        if (decl.limit.max !== undefined) parts.push(`max ${decl.limit.max}`);
-        if (decl.limit.default !== undefined) {
-          parts.push(`default ${decl.limit.default}`);
-        }
-        knobs.push(`  limit ${parts.join(' ')}`);
-      }
-      if (decl.variants === true) knobs.push('  variants');
-      lines.push(
-        `query ${decl.name}(${formatSignature(decl)})${knobs.length > 0 ? `\n${knobs.join('\n')}\n{` : ' {'}`,
-      );
-      for (const line of formatBody(decl.body)) lines.push(`  ${line}`);
-      lines.push('}');
-    }
-    decls.push({ order: index, text: lines.join('\n') });
-  });
-
-  return `${decls.map((d) => d.text).join('\n\n')}\n`;
+/** Format one `.syql` source. Invalid or non-equivalent output is rejected so
+ * the CLI never writes a partially understood file. */
+export function formatSyql(file: string, source: string): string {
+  const before = parseSyqlSyntaxFile(file, source);
+  const formatted = formatTokens(before);
+  const after = parseSyqlSyntaxFile(file, formatted);
+  if (
+    JSON.stringify(normalizedAst(toSyqlSemanticAst(before))) !==
+      JSON.stringify(normalizedAst(toSyqlSemanticAst(after))) ||
+    JSON.stringify(comments(before)) !== JSON.stringify(comments(after))
+  ) {
+    throw new TypegenError(
+      file,
+      'SYQL8001_FORMATTER_EQUIVALENCE: formatter output changed the revision-1 semantic AST or comment order',
+    );
+  }
+  return formatted;
 }

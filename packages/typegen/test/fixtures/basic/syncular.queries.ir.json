@@ -668,8 +668,8 @@
     {
       "name": "searchTasks",
       "file": "task-search.syql",
-      "sourceSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n) ) end\n      and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority ) end\n      and case when :__syqlActive2 = 0 then 1 else ( done = 0 ) end order by priority desc, id desc limit min(coalesce(:__syqlPageSize, 50), 200)",
-      "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n) ) end\n      and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority ) end\n      and case when :__syqlActive2 = 0 then 1 else ( done = 0 ) end order by priority desc, id desc limit min(coalesce(:__syqlPageSize, 50), 200)",
+      "sourceSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else (\n        (\n  title like '%' || :needle || '%'\n)\n      ) end\n      and case when :__syqlActive1 = 0 then 1 else (\n        priority >= :minPriority\n      ) end\n      and case when :__syqlActive2 = 0 then 1 else (\n        done = 0\n      ) end order by priority desc, id desc limit min(coalesce(:__syqlPageSize, 50), 200)",
+      "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else (\n        (\n  title like '%' || :needle || '%'\n)\n      ) end\n      and case when :__syqlActive1 = 0 then 1 else (\n        priority >= :minPriority\n      ) end\n      and case when :__syqlActive2 = 0 then 1 else (\n        done = 0\n      ) end order by priority desc, id desc limit min(coalesce(:__syqlPageSize, 50), 200)",
       "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (tasks.project_id = ?) and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' ) ) end and case when ? = 0 then 1 else ( priority >= ? ) end and case when ? = 0 then 1 else ( done = 0 ) end order by priority desc, id desc limit min(coalesce(?, 50), 200)",
       "params": [
         {
@@ -891,7 +891,7 @@
           "statements": [
             {
               "sortProfile": "priorityAsc",
-              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n) ) end\n      and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority ) end\n      and case when :__syqlActive2 = 0 then 1 else ( done = 0 ) end order by priority asc, id asc limit min(coalesce(:__syqlPageSize, 50), 200)",
+              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else (\n        (\n  title like '%' || :needle || '%'\n)\n      ) end\n      and case when :__syqlActive1 = 0 then 1 else (\n        priority >= :minPriority\n      ) end\n      and case when :__syqlActive2 = 0 then 1 else (\n        done = 0\n      ) end order by priority asc, id asc limit min(coalesce(:__syqlPageSize, 50), 200)",
               "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (tasks.project_id = ?) and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' ) ) end and case when ? = 0 then 1 else ( priority >= ? ) end and case when ? = 0 then 1 else ( done = 0 ) end order by priority asc, id asc limit min(coalesce(?, 50), 200)",
               "binds": [
                 {
@@ -949,7 +949,7 @@
             },
             {
               "sortProfile": "priorityDesc",
-              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n) ) end\n      and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority ) end\n      and case when :__syqlActive2 = 0 then 1 else ( done = 0 ) end order by priority desc, id desc limit min(coalesce(:__syqlPageSize, 50), 200)",
+              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else (\n        (\n  title like '%' || :needle || '%'\n)\n      ) end\n      and case when :__syqlActive1 = 0 then 1 else (\n        priority >= :minPriority\n      ) end\n      and case when :__syqlActive2 = 0 then 1 else (\n        done = 0\n      ) end order by priority desc, id desc limit min(coalesce(:__syqlPageSize, 50), 200)",
               "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (tasks.project_id = ?) and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' ) ) end and case when ? = 0 then 1 else ( priority >= ? ) end and case when ? = 0 then 1 else ( done = 0 ) end order by priority desc, id desc limit min(coalesce(?, 50), 200)",
               "binds": [
                 {
@@ -1007,7 +1007,7 @@
             },
             {
               "sortProfile": "estimatedAtAsc",
-              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n) ) end\n      and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority ) end\n      and case when :__syqlActive2 = 0 then 1 else ( done = 0 ) end order by estimated_at asc, id asc limit min(coalesce(:__syqlPageSize, 50), 200)",
+              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else (\n        (\n  title like '%' || :needle || '%'\n)\n      ) end\n      and case when :__syqlActive1 = 0 then 1 else (\n        priority >= :minPriority\n      ) end\n      and case when :__syqlActive2 = 0 then 1 else (\n        done = 0\n      ) end order by estimated_at asc, id asc limit min(coalesce(:__syqlPageSize, 50), 200)",
               "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (tasks.project_id = ?) and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' ) ) end and case when ? = 0 then 1 else ( priority >= ? ) end and case when ? = 0 then 1 else ( done = 0 ) end order by estimated_at asc, id asc limit min(coalesce(?, 50), 200)",
               "binds": [
                 {
@@ -1065,7 +1065,7 @@
             },
             {
               "sortProfile": "estimatedAtDesc",
-              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n) ) end\n      and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority ) end\n      and case when :__syqlActive2 = 0 then 1 else ( done = 0 ) end order by estimated_at desc, id desc limit min(coalesce(:__syqlPageSize, 50), 200)",
+              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else (\n        (\n  title like '%' || :needle || '%'\n)\n      ) end\n      and case when :__syqlActive1 = 0 then 1 else (\n        priority >= :minPriority\n      ) end\n      and case when :__syqlActive2 = 0 then 1 else (\n        done = 0\n      ) end order by estimated_at desc, id desc limit min(coalesce(:__syqlPageSize, 50), 200)",
               "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (tasks.project_id = ?) and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' ) ) end and case when ? = 0 then 1 else ( priority >= ? ) end and case when ? = 0 then 1 else ( done = 0 ) end order by estimated_at desc, id desc limit min(coalesce(?, 50), 200)",
               "binds": [
                 {
@@ -1123,7 +1123,7 @@
             },
             {
               "sortProfile": "titleAsc",
-              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n) ) end\n      and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority ) end\n      and case when :__syqlActive2 = 0 then 1 else ( done = 0 ) end order by title asc, id asc limit min(coalesce(:__syqlPageSize, 50), 200)",
+              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else (\n        (\n  title like '%' || :needle || '%'\n)\n      ) end\n      and case when :__syqlActive1 = 0 then 1 else (\n        priority >= :minPriority\n      ) end\n      and case when :__syqlActive2 = 0 then 1 else (\n        done = 0\n      ) end order by title asc, id asc limit min(coalesce(:__syqlPageSize, 50), 200)",
               "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (tasks.project_id = ?) and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' ) ) end and case when ? = 0 then 1 else ( priority >= ? ) end and case when ? = 0 then 1 else ( done = 0 ) end order by title asc, id asc limit min(coalesce(?, 50), 200)",
               "binds": [
                 {
@@ -1181,7 +1181,7 @@
             },
             {
               "sortProfile": "titleDesc",
-              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n) ) end\n      and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority ) end\n      and case when :__syqlActive2 = 0 then 1 else ( done = 0 ) end order by title desc, id desc limit min(coalesce(:__syqlPageSize, 50), 200)",
+              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else (\n        (\n  title like '%' || :needle || '%'\n)\n      ) end\n      and case when :__syqlActive1 = 0 then 1 else (\n        priority >= :minPriority\n      ) end\n      and case when :__syqlActive2 = 0 then 1 else (\n        done = 0\n      ) end order by title desc, id desc limit min(coalesce(:__syqlPageSize, 50), 200)",
               "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (tasks.project_id = ?) and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' ) ) end and case when ? = 0 then 1 else ( priority >= ? ) end and case when ? = 0 then 1 else ( done = 0 ) end order by title desc, id desc limit min(coalesce(?, 50), 200)",
               "binds": [
                 {
@@ -1374,7 +1374,7 @@
             },
             {
               "activationMask": 1,
-              "sql": "select id, title, estimate\n    from tasks\n    where (tasks.project_id = :projectId)\n      and ( estimated_at between :start and :end )",
+              "sql": "select id, title, estimate\n    from tasks\n    where (tasks.project_id = :projectId)\n      and (\n        estimated_at between :start and :end\n      )",
               "positionalSql": "select id, title, estimate from tasks where (tasks.project_id = ?) and ( estimated_at between ? and ? )",
               "binds": [
                 {

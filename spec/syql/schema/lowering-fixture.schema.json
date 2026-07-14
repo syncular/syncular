@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://syncular.dev/schema/syql/lowering-fixture-v1.json",
+  "title": "SYQL revision-1 lowering fixture family",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["revision", "cases"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "revision": { "const": 1 },
+    "cases": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/case" }
+    }
+  },
+  "$defs": {
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "active", "values", "sort", "page", "ids"],
+      "properties": {
+        "name": { "type": "string" },
+        "active": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "values": { "type": "object" },
+        "sort": { "type": "string" },
+        "page": { "type": "integer", "minimum": 1 },
+        "ids": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name", "source", "selectedBackend", "activationControls",
+        "neutralizedStatements", "enumeratedStatements", "queryIrVersion",
+        "requiredSql", "forbiddenSql", "executions"
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "source": { "type": "string" },
+        "selectedBackend": { "enum": ["neutralize", "variants"] },
+        "activationControls": { "type": "array", "items": { "type": "string" } },
+        "neutralizedStatements": { "type": "integer", "minimum": 1 },
+        "enumeratedStatements": { "type": "integer", "minimum": 1 },
+        "queryIrVersion": { "const": 3 },
+        "requiredSql": { "type": "array", "items": { "type": "string" } },
+        "forbiddenSql": { "type": "array", "items": { "type": "string" } },
+        "executions": { "type": "array", "items": { "$ref": "#/$defs/execution" } }
+      }
+    }
+  }
+}

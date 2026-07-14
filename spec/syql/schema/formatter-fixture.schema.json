@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://syncular.dev/schema/syql/formatter-fixture-v1.json",
+  "title": "SYQL revision-1 formatter fixture family",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["revision", "cases"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "revision": { "const": 1 },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "input", "output"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "input": { "type": "string" },
+          "output": { "type": "string" }
+        }
+      }
+    }
+  }
+}

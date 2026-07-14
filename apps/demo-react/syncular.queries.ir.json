@@ -164,7 +164,7 @@
             },
             {
               "activationMask": 1,
-              "sql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment from todos\n    where (todos.list_id = :listId)\n      and ( title like '%' || :q || '%' )\n    order by position, id",
+              "sql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment from todos\n    where (todos.list_id = :listId)\n      and (\n        title like '%' || :q || '%'\n      )\n    order by position, id",
               "positionalSql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment from todos where (todos.list_id = ?) and ( title like '%' || ? || '%' ) order by position, id",
               "binds": [
                 {

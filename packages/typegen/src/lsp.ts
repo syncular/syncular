@@ -1,34 +1,28 @@
-/**
- * `syncular lsp` — a minimal `.syql` language server (DESIGN-queries.md
- * §10, staged Q5). Zero dependencies: hand-rolled JSON-RPC over stdio with
- * Content-Length framing, and the SAME parser/checker the generator runs —
- * diagnostics are generate-time truth, not a re-implementation.
- *
- * Capabilities:
- * - diagnostics (on open/change): parse errors, lowering errors (B1,
- *   knob conflicts), and — when a `syncular.json` is found above the file —
- *   the full SQLite-checked analysis (types, unknown columns, naming
- *   collisions).
- * - hover: a query name shows its lowered, checked SQL (what actually
- *   runs); an `@fragment` ref shows the fragment body.
- * - definition: an `@fragment` ref jumps to its declaration (same file —
- *   fragments are file-scoped).
- *
- * The server core is a pure(ish) class (`SyqlLanguageServer.handle`)
- * so tests drive it without stdio; `runLspStdio` is the thin transport.
- */
+/** Revision-1 SYQL language server backed by the compiler frontend (§21). */
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, relative, resolve } from 'node:path';
+import { dirname, relative, resolve, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { TypegenError } from './errors';
-import { buildIr, loadMigrations, makeQueryDb } from './generate';
+import { formatSyql } from './fmt';
+import { buildIr, loadMigrations, loadQueries, makeQueryDb } from './generate';
 import type { IrDocument } from './ir';
 import { MANIFEST_FILENAME, parseManifest } from './manifest';
 import type { QueryDb, QueryNamingOptions } from './query';
-import { analyzeSyqlFile, parseSyqlFile } from './syql';
-
-// ---------------------------------------------------------------------------
-// JSON-RPC / LSP shapes (the subset we speak)
-// ---------------------------------------------------------------------------
+import { SyqlFrontendError, type SyqlSourceSpan } from './syql-lexer';
+import type { SyqlLoweredQuery } from './syql-lowering';
+import { lowerSyqlQuery } from './syql-lowering';
+import { buildSyqlModuleGraph } from './syql-modules';
+import {
+  parseSyqlSyntaxFile,
+  type SyqlQueryParameter,
+  type SyqlSyntaxFile,
+  type SyqlValueType,
+} from './syql-parser';
+import {
+  analyzeSyqlSemantics,
+  type SyqlSemanticProgram,
+} from './syql-semantics';
+import { validateSyqlProgram } from './syql-validator';
 
 export interface RpcMessage {
   jsonrpc?: '2.0';
@@ -51,23 +45,41 @@ interface Range {
 
 interface Diagnostic {
   range: Range;
-  severity: number; // 1 = error
+  severity: number;
   source: string;
+  code?: string;
   message: string;
 }
 
-// ---------------------------------------------------------------------------
-// Text/position helpers
-// ---------------------------------------------------------------------------
+interface ProjectContext {
+  readonly ir: IrDocument;
+  readonly db: QueryDb;
+  readonly naming: QueryNamingOptions;
+  readonly manifestDir: string;
+  readonly queriesRoot: string;
+}
+
+type ProjectLookup =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'ready'; readonly context: ProjectContext }
+  | { readonly kind: 'error'; readonly error: unknown };
+
+interface CompilerView {
+  readonly root: string;
+  readonly file: string;
+  readonly module: SyqlSyntaxFile;
+  readonly semantic: SyqlSemanticProgram;
+  readonly lowered: readonly SyqlLoweredQuery[];
+}
 
 function offsetToPosition(text: string, offset: number): Position {
   const clamped = Math.max(0, Math.min(offset, text.length));
   let line = 0;
   let lineStart = 0;
-  for (let i = 0; i < clamped; i++) {
-    if (text[i] === '\n') {
+  for (let index = 0; index < clamped; index += 1) {
+    if (text[index] === '\n') {
       line += 1;
-      lineStart = i + 1;
+      lineStart = index + 1;
     }
   }
   return { line, character: clamped - lineStart };
@@ -75,21 +87,24 @@ function offsetToPosition(text: string, offset: number): Position {
 
 function positionToOffset(text: string, position: Position): number {
   let line = 0;
-  let i = 0;
-  while (i < text.length && line < position.line) {
-    if (text[i] === '\n') line += 1;
-    i += 1;
+  let index = 0;
+  while (index < text.length && line < position.line) {
+    if (text[index] === '\n') line += 1;
+    index += 1;
   }
-  return Math.min(text.length, i + position.character);
+  return Math.min(text.length, index + position.character);
 }
 
-/** The `@word` / `word` under the cursor, with its range. */
 function wordAt(
   text: string,
   offset: number,
-): { word: string; start: number; end: number } | null {
-  const isWord = (ch: string | undefined): boolean =>
-    ch !== undefined && /[A-Za-z0-9_@]/.test(ch);
+): {
+  readonly word: string;
+  readonly start: number;
+  readonly end: number;
+} | null {
+  const isWord = (character: string | undefined): boolean =>
+    character !== undefined && /[A-Za-z0-9_@]/.test(character);
   if (!isWord(text[offset]) && !isWord(text[offset - 1])) return null;
   let start = isWord(text[offset]) ? offset : offset - 1;
   while (start > 0 && isWord(text[start - 1])) start -= 1;
@@ -102,37 +117,56 @@ function uriToPath(uri: string): string {
   return uri.startsWith('file://') ? decodeURIComponent(uri.slice(7)) : uri;
 }
 
-// ---------------------------------------------------------------------------
-// Project context (manifest discovery, cached per directory)
-// ---------------------------------------------------------------------------
-
-interface ProjectContext {
-  readonly ir: IrDocument;
-  readonly db: QueryDb;
-  readonly naming: QueryNamingOptions;
-  readonly manifestDir: string;
-}
-
 function findManifestDir(fromPath: string): string | null {
-  let dir = dirname(fromPath);
-  for (let i = 0; i < 20; i++) {
-    if (existsSync(resolve(dir, MANIFEST_FILENAME))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
+  let directory = dirname(fromPath);
+  for (let count = 0; count < 20; count += 1) {
+    if (existsSync(resolve(directory, MANIFEST_FILENAME))) return directory;
+    const parent = dirname(directory);
+    if (parent === directory) return null;
+    directory = parent;
   }
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// The server
-// ---------------------------------------------------------------------------
+function isWithin(root: string, file: string): boolean {
+  const path = relative(root, file);
+  return path === '' || (!path.startsWith(`..${sep}`) && path !== '..');
+}
+
+function spanRange(text: string, span: SyqlSourceSpan): Range {
+  const start = offsetToPosition(text, span.start.offset);
+  const end = offsetToPosition(text, span.end.offset);
+  return {
+    start,
+    end:
+      end.line === start.line && end.character === start.character
+        ? { line: end.line, character: end.character + 1 }
+        : end,
+  };
+}
+
+function typeText(type: SyqlValueType | undefined): string {
+  return type === undefined
+    ? 'inferred'
+    : `${type.base}${type.nullable ? ' | null' : ''}`;
+}
+
+function parameterHover(parameter: SyqlQueryParameter): string {
+  if (parameter.kind === 'switch') {
+    return `switch \`${parameter.name}\` — false/absent or true`;
+  }
+  if (parameter.kind === 'group') {
+    return `optional group \`${parameter.name}\`\n\n${parameter.members
+      .map((member) => `- \`${member.name}: ${typeText(member.type)}\``)
+      .join('\n')}`;
+  }
+  return `${parameter.optional ? 'optional' : 'required'} input \`${parameter.name}: ${typeText(parameter.type)}\``;
+}
 
 export class SyqlLanguageServer {
   readonly #documents = new Map<string, string>();
-  #contexts = new Map<string, ProjectContext | null>();
+  #contexts = new Map<string, ProjectLookup>();
 
-  /** Handle one incoming message; returns the outgoing messages. */
   handle(message: RpcMessage): RpcMessage[] {
     const { method, id } = message;
     if (method === 'initialize') {
@@ -142,11 +176,14 @@ export class SyqlLanguageServer {
           id,
           result: {
             capabilities: {
-              textDocumentSync: 1, // full
+              textDocumentSync: 1,
               hoverProvider: true,
               definitionProvider: true,
+              referencesProvider: true,
+              documentSymbolProvider: true,
+              documentFormattingProvider: true,
             },
-            serverInfo: { name: 'syncular-syql-lsp', version: '0.0.1' },
+            serverInfo: { name: 'syncular-syql-lsp', version: '1.0.0' },
           },
         },
       ];
@@ -163,10 +200,9 @@ export class SyqlLanguageServer {
         textDocument: { uri: string };
         contentChanges: { text: string }[];
       };
-      const last = params.contentChanges[params.contentChanges.length - 1];
-      if (last !== undefined) {
+      const last = params.contentChanges.at(-1);
+      if (last !== undefined)
         this.#documents.set(params.textDocument.uri, last.text);
-      }
       return [this.#publishDiagnostics(params.textDocument.uri)];
     }
     if (method === 'textDocument/didClose') {
@@ -174,15 +210,28 @@ export class SyqlLanguageServer {
       this.#documents.delete(params.textDocument.uri);
       return [];
     }
+    if (method === 'workspace/didChangeWatchedFiles') {
+      this.invalidateProjects();
+      return [...this.#documents.keys()].map((uri) =>
+        this.#publishDiagnostics(uri),
+      );
+    }
     if (method === 'textDocument/hover') {
       return [{ jsonrpc: '2.0', id, result: this.#hover(message.params) }];
     }
     if (method === 'textDocument/definition') {
       return [{ jsonrpc: '2.0', id, result: this.#definition(message.params) }];
     }
-    if (method === 'shutdown') {
-      return [{ jsonrpc: '2.0', id, result: null }];
+    if (method === 'textDocument/references') {
+      return [{ jsonrpc: '2.0', id, result: this.#references(message.params) }];
     }
+    if (method === 'textDocument/documentSymbol') {
+      return [{ jsonrpc: '2.0', id, result: this.#symbols(message.params) }];
+    }
+    if (method === 'textDocument/formatting') {
+      return [{ jsonrpc: '2.0', id, result: this.#formatting(message.params) }];
+    }
+    if (method === 'shutdown') return [{ jsonrpc: '2.0', id, result: null }];
     if (id !== undefined && method !== undefined) {
       return [
         {
@@ -195,15 +244,14 @@ export class SyqlLanguageServer {
     return [];
   }
 
-  /** Reset cached manifest contexts (e.g. after schema edits). */
   invalidateProjects(): void {
     this.#contexts = new Map();
   }
 
-  #context(uri: string): ProjectContext | null {
+  #context(uri: string): ProjectLookup {
     const path = uriToPath(uri);
     const manifestDir = findManifestDir(path);
-    if (manifestDir === null) return null;
+    if (manifestDir === null) return { kind: 'none' };
     const cached = this.#contexts.get(manifestDir);
     if (cached !== undefined) return cached;
     try {
@@ -212,199 +260,354 @@ export class SyqlLanguageServer {
           readFileSync(resolve(manifestDir, MANIFEST_FILENAME), 'utf8'),
         ),
       );
-      const migrations = loadMigrations(
-        resolve(manifestDir, manifest.migrations),
+      const ir = buildIr(
+        manifest,
+        loadMigrations(resolve(manifestDir, manifest.migrations)),
       );
-      const ir = buildIr(manifest, migrations);
       const { db } = makeQueryDb(ir);
-      const targets: QueryNamingOptions['targets'] = ['ts'];
-      const context: ProjectContext = {
-        ir,
-        db,
-        manifestDir,
-        naming: {
-          naming: manifest.naming,
-          targets,
-          backend: manifest.queryBackend,
+      const targets: QueryNamingOptions['targets'][number][] = ['ts'];
+      if (manifest.output.swift !== undefined) targets.push('swift');
+      if (manifest.output.kotlin !== undefined) targets.push('kotlin');
+      if (manifest.output.dart !== undefined) targets.push('dart');
+      const lookup: ProjectLookup = {
+        kind: 'ready',
+        context: {
+          ir,
+          db,
+          manifestDir,
+          queriesRoot: resolve(manifestDir, manifest.queries),
+          naming: {
+            naming: manifest.naming,
+            targets,
+            backend: manifest.queryBackend,
+          },
         },
       };
-      this.#contexts.set(manifestDir, context);
-      return context;
-    } catch {
-      this.#contexts.set(manifestDir, null);
-      return null;
+      this.#contexts.set(manifestDir, lookup);
+      return lookup;
+    } catch (error) {
+      const lookup: ProjectLookup = { kind: 'error', error };
+      this.#contexts.set(manifestDir, lookup);
+      return lookup;
     }
+  }
+
+  #openText(file: string): string | undefined {
+    for (const [uri, text] of this.#documents) {
+      if (resolve(uriToPath(uri)) === resolve(file)) return text;
+    }
+    return undefined;
+  }
+
+  #compilerView(uri: string, text: string): CompilerView {
+    const file = resolve(uriToPath(uri));
+    const lookup = this.#context(uri);
+    if (lookup.kind === 'error') throw lookup.error;
+    const project = lookup.kind === 'ready' ? lookup.context : undefined;
+    const root =
+      project !== undefined && isWithin(project.queriesRoot, file)
+        ? project.queriesRoot
+        : dirname(file);
+    const sourceByFile = new Map<string, string>();
+    const entries: string[] = [];
+    if (project !== undefined && root === project.queriesRoot) {
+      for (const input of loadQueries(root)) {
+        if (!input.file.endsWith('.syql')) continue;
+        const absolute = resolve(root, input.file);
+        sourceByFile.set(absolute, this.#openText(absolute) ?? input.sql);
+        entries.push(input.file);
+      }
+    }
+    sourceByFile.set(file, text);
+    const currentEntry = relative(root, file).split(sep).join('/');
+    if (!entries.includes(currentEntry)) entries.push(currentEntry);
+    entries.sort();
+    const graph = buildSyqlModuleGraph(root, entries, (candidate) => {
+      const open = this.#openText(candidate);
+      if (open !== undefined) return open;
+      const loaded = sourceByFile.get(candidate);
+      if (loaded !== undefined) return loaded;
+      return existsSync(candidate)
+        ? readFileSync(candidate, 'utf8')
+        : undefined;
+    });
+    const semantic = analyzeSyqlSemantics(graph);
+    const module = graph.moduleByPath.get(file);
+    if (module === undefined)
+      throw new TypegenError(file, 'current SYQL module missing');
+    const lowered =
+      project === undefined
+        ? []
+        : validateSyqlProgram(
+            semantic,
+            project.ir,
+            project.db,
+            project.naming,
+          ).queries.map((query) =>
+            lowerSyqlQuery(query, project.ir, project.db, project.naming),
+          );
+    return { root, file, module, semantic, lowered };
   }
 
   #publishDiagnostics(uri: string): RpcMessage {
     const text = this.#documents.get(uri) ?? '';
-    const diagnostics = this.#diagnose(uri, text);
     return {
       jsonrpc: '2.0',
       method: 'textDocument/publishDiagnostics',
-      params: { uri, diagnostics },
+      params: { uri, diagnostics: this.#diagnose(uri, text) },
     };
   }
 
   #diagnose(uri: string, text: string): Diagnostic[] {
-    const path = uriToPath(uri);
-    const context = this.#context(uri);
     try {
-      if (context !== null) {
-        // The full generate-time analysis: parse + lower + SQLite check.
-        const rel = relative(context.manifestDir, path).split('\\').join('/');
-        analyzeSyqlFile(rel, text, context.ir, context.db, context.naming);
-      } else {
-        // No manifest reachable: parser + lowering only.
-        const parsed = parseSyqlFile(path, text);
-        void parsed;
-      }
+      this.#compilerView(uri, text);
       return [];
     } catch (error) {
-      return [this.#errorToDiagnostic(error, text)];
+      return [this.#errorToDiagnostic(error, text, resolve(uriToPath(uri)))];
     }
   }
 
-  #errorToDiagnostic(error: unknown, text: string): Diagnostic {
+  #errorToDiagnostic(error: unknown, text: string, file: string): Diagnostic {
     const message = error instanceof Error ? error.message : String(error);
-    let range: Range = {
-      start: { line: 0, character: 0 },
-      end: { line: 0, character: 1 },
-    };
-    if (error instanceof TypegenError) {
-      // Cursor errors carry `file:line`; lowering errors carry
-      // `file (query name)` — anchor those at the declaration.
-      const lineMatch = /:(\d+): /.exec(message);
-      const queryMatch = /\(query ([A-Za-z][A-Za-z0-9]*)\)/.exec(message);
-      if (lineMatch !== null) {
-        const line = Number.parseInt(lineMatch[1] as string, 10) - 1;
-        range = {
-          start: { line, character: 0 },
-          end: { line, character: 200 },
-        };
-      } else if (queryMatch !== null) {
-        try {
-          const parsed = parseSyqlFile('doc', text);
-          const decl = parsed.queries.find((q) => q.name === queryMatch[1]);
-          if (decl !== undefined) {
-            const start = offsetToPosition(text, decl.offset);
-            range = {
-              start,
-              end: { line: start.line, character: start.character + 200 },
-            };
-          }
-        } catch {
-          // fall through to line 0
-        }
-      }
+    if (
+      error instanceof SyqlFrontendError &&
+      resolve(error.sourceFile) === file
+    ) {
+      return {
+        range: spanRange(text, error.span),
+        severity: 1,
+        source: 'syncular',
+        code: error.code,
+        message,
+      };
     }
-    return { range, severity: 1, source: 'syncular', message };
+    return {
+      range: {
+        start: { line: 0, character: 0 },
+        end: {
+          line: 0,
+          character: Math.max(1, text.split('\n')[0]?.length ?? 1),
+        },
+      },
+      severity: 1,
+      source: 'syncular',
+      ...(error instanceof SyqlFrontendError ? { code: error.code } : {}),
+      message:
+        this.#context(pathToFileURL(file).href).kind === 'error'
+          ? `SYQL9001_PROJECT_CONTEXT: ${message}`
+          : message,
+    };
   }
 
-  #hover(params: unknown): unknown {
-    const p = params as {
+  #request(params: unknown): {
+    readonly uri: string;
+    readonly text: string;
+    readonly offset: number;
+    readonly found: NonNullable<ReturnType<typeof wordAt>>;
+    readonly view: CompilerView;
+  } | null {
+    const request = params as {
       textDocument: { uri: string };
       position: Position;
     };
-    const text = this.#documents.get(p.textDocument.uri);
+    const text = this.#documents.get(request.textDocument.uri);
     if (text === undefined) return null;
-    const offset = positionToOffset(text, p.position);
+    const offset = positionToOffset(text, request.position);
     const found = wordAt(text, offset);
     if (found === null) return null;
-
-    let parsed: ReturnType<typeof parseSyqlFile>;
     try {
-      parsed = parseSyqlFile('doc', text);
+      return {
+        uri: request.textDocument.uri,
+        text,
+        offset,
+        found,
+        view: this.#compilerView(request.textDocument.uri, text),
+      };
     } catch {
       return null;
     }
+  }
 
-    // `@fragment` ref → the fragment's body.
-    if (found.word.startsWith('@')) {
-      const fragment = parsed.fragments.find(
-        (f) => f.name === found.word.slice(1),
-      );
-      if (fragment === undefined) return null;
+  #hover(params: unknown): unknown {
+    const request = this.#request(params);
+    if (request === null) return null;
+    const { found, view, offset } = request;
+    if (found.word === '@scope' || found.word === '@cover') {
       return {
         contents: {
           kind: 'markdown',
-          value: `\`\`\`sql\n${fragment.body}\n\`\`\``,
+          value:
+            found.word === '@scope'
+              ? '`@scope` constructs exact reactive dependency keys and the same SQL predicate.'
+              : '`@cover` constructs exact dependencies plus checked window coverage.',
         },
       };
     }
-
-    // A query name → the lowered, checked SQL (needs the project schema).
-    const query = parsed.queries.find((q) => q.name === found.word);
+    if (found.word.startsWith('@')) {
+      const predicate = view.semantic.predicateScopes
+        .get(view.file)
+        ?.get(found.word.slice(1));
+      if (predicate === undefined) return null;
+      return {
+        contents: {
+          kind: 'markdown',
+          value: `predicate \`${predicate.declaration.name}\` from \`${relative(view.root, predicate.module.file)}\`\n\n\`\`\`sql\n${predicate.declaration.body.text.trim()}\n\`\`\``,
+        },
+      };
+    }
+    const query = view.module.queries.find(
+      (candidate) =>
+        offset >= candidate.span.start.offset &&
+        offset <= candidate.span.end.offset,
+    );
     if (query !== undefined) {
-      const context = this.#context(p.textDocument.uri);
-      if (context === null) return null;
-      try {
-        const analyzed = analyzeSyqlFile(
-          'doc.syql',
-          text,
-          context.ir,
-          context.db,
-          context.naming,
-        ).find((q) => q.name === found.word);
-        if (analyzed === undefined) return null;
-        const lines = [
-          '```sql',
-          analyzed.sql,
-          '```',
-          '',
-          `tables: ${analyzed.tables.join(', ')}`,
-          ...(analyzed.variants !== undefined
-            ? [`variants: ${analyzed.variants.length} enumerated statements`]
-            : []),
-        ];
-        return { contents: { kind: 'markdown', value: lines.join('\n') } };
-      } catch {
-        return null;
+      const parameter = query.parameters.find(
+        (candidate) => candidate.name === found.word,
+      );
+      if (parameter !== undefined) {
+        return {
+          contents: { kind: 'markdown', value: parameterHover(parameter) },
+        };
       }
+      if (query.sort?.control === found.word) {
+        return {
+          contents: {
+            kind: 'markdown',
+            value: `sort control \`${found.word}\`; default profile \`${query.sort.defaultProfile}\``,
+          },
+        };
+      }
+      const profile = query.sort?.profiles.find(
+        (candidate) => candidate.name === found.word,
+      );
+      if (profile !== undefined) {
+        return {
+          contents: {
+            kind: 'markdown',
+            value: `sort profile \`${profile.name}\`\n\n\`\`\`sql\n${profile.order.text.trim()}\n\`\`\``,
+          },
+        };
+      }
+      if (query.page?.control === found.word) {
+        return {
+          contents: {
+            kind: 'markdown',
+            value: `page control \`${found.word}\`: default ${query.page.defaultSize}, maximum ${query.page.maxSize}`,
+          },
+        };
+      }
+    }
+    if (query?.name === found.word) {
+      const lowered = view.lowered.find(
+        (candidate) => candidate.validated.logical.declaration === query,
+      );
+      if (lowered === undefined) return null;
+      const defaultStatement = lowered.selected.statements.find(
+        (statement) =>
+          (statement.activationMask === undefined ||
+            statement.activationMask === 0) &&
+          (lowered.validated.sort === undefined ||
+            statement.sortProfile === lowered.validated.sort.defaultProfile),
+      );
+      return {
+        contents: {
+          kind: 'markdown',
+          value: [
+            `backend: **${lowered.selected.backend}** (${lowered.selected.statements.length} checked statement${lowered.selected.statements.length === 1 ? '' : 's'})`,
+            '',
+            '```sql',
+            defaultStatement?.sql ?? lowered.analysis.sql,
+            '```',
+            '',
+            `tables: ${lowered.analysis.tables.join(', ')}`,
+          ].join('\n'),
+        },
+      };
     }
     return null;
   }
 
   #definition(params: unknown): unknown {
-    const p = params as {
-      textDocument: { uri: string };
-      position: Position;
-    };
-    const text = this.#documents.get(p.textDocument.uri);
-    if (text === undefined) return null;
-    const offset = positionToOffset(text, p.position);
-    const found = wordAt(text, offset);
-    if (found === null || !found.word.startsWith('@')) return null;
-    let parsed: ReturnType<typeof parseSyqlFile>;
-    try {
-      parsed = parseSyqlFile('doc', text);
-    } catch {
-      return null;
-    }
-    const fragment = parsed.fragments.find(
-      (f) => f.name === found.word.slice(1),
-    );
-    if (fragment === undefined) return null;
-    const start = offsetToPosition(text, fragment.offset);
+    const request = this.#request(params);
+    if (request === null || !request.found.word.startsWith('@')) return null;
+    const predicate = request.view.semantic.predicateScopes
+      .get(request.view.file)
+      ?.get(request.found.word.slice(1));
+    if (predicate === undefined) return null;
+    const text =
+      this.#openText(predicate.module.file) ?? predicate.module.source;
     return {
-      uri: p.textDocument.uri,
-      range: {
-        start,
-        end: {
-          line: start.line,
-          character:
-            start.character + 'fragment '.length + fragment.name.length,
-        },
-      },
+      uri: pathToFileURL(predicate.module.file).href,
+      range: spanRange(text, predicate.declaration.nameSpan),
     };
+  }
+
+  #references(params: unknown): unknown {
+    const request = this.#request(params);
+    if (request === null || !request.found.word.startsWith('@')) return [];
+    const target = request.view.semantic.predicateScopes
+      .get(request.view.file)
+      ?.get(request.found.word.slice(1));
+    if (target === undefined) return [];
+    const locations: unknown[] = [];
+    for (const module of request.view.semantic.graph.modules) {
+      const scope = request.view.semantic.predicateScopes.get(module.file);
+      for (const token of module.tokens) {
+        if (token.kind !== 'at-identifier') continue;
+        const resolved = scope?.get(token.text.slice(1));
+        if (resolved?.id !== target.id) continue;
+        locations.push({
+          uri: pathToFileURL(module.file).href,
+          range: spanRange(module.source, token.span),
+        });
+      }
+    }
+    return locations;
+  }
+
+  #symbols(params: unknown): unknown {
+    const request = params as { textDocument: { uri: string } };
+    const text = this.#documents.get(request.textDocument.uri);
+    if (text === undefined) return [];
+    try {
+      const parsed = parseSyqlSyntaxFile(
+        uriToPath(request.textDocument.uri),
+        text,
+      );
+      return parsed.declarations.map((declaration) => ({
+        name: declaration.name,
+        kind: declaration.kind === 'query' ? 12 : 12,
+        range: spanRange(text, declaration.span),
+        selectionRange: spanRange(text, declaration.nameSpan),
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  #formatting(params: unknown): unknown {
+    const request = params as { textDocument: { uri: string } };
+    const text = this.#documents.get(request.textDocument.uri);
+    if (text === undefined) return [];
+    try {
+      const formatted = formatSyql(uriToPath(request.textDocument.uri), text);
+      if (formatted === text) return [];
+      return [
+        {
+          range: {
+            start: { line: 0, character: 0 },
+            end: offsetToPosition(text, text.length),
+          },
+          newText: formatted,
+        },
+      ];
+    } catch {
+      return [];
+    }
   }
 }
 
-// ---------------------------------------------------------------------------
-// stdio transport (Content-Length framing)
-// ---------------------------------------------------------------------------
-
-/** Run the language server over stdio until `exit`. */
+/** Run the LSP over Content-Length-framed JSON-RPC stdio. */
 export async function runLspStdio(): Promise<void> {
   const server = new SyqlLanguageServer();
   let buffer = Buffer.alloc(0);
@@ -429,17 +632,24 @@ export async function runLspStdio(): Promise<void> {
         continue;
       }
       const length = Number.parseInt(lengthMatch[1] as string, 10);
-      if (buffer.length < headerEnd + 4 + length) break;
-      const body = buffer.subarray(headerEnd + 4, headerEnd + 4 + length);
-      buffer = buffer.subarray(headerEnd + 4 + length);
-      let message: RpcMessage;
+      const bodyStart = headerEnd + 4;
+      if (buffer.length < bodyStart + length) break;
+      const body = buffer
+        .subarray(bodyStart, bodyStart + length)
+        .toString('utf8');
+      buffer = buffer.subarray(bodyStart + length);
+      let incoming: RpcMessage;
       try {
-        message = JSON.parse(body.toString('utf8')) as RpcMessage;
+        incoming = JSON.parse(body) as RpcMessage;
       } catch {
+        write({
+          jsonrpc: '2.0',
+          error: { code: -32700, message: 'parse error' },
+        });
         continue;
       }
-      if (message.method === 'exit') return;
-      for (const outgoing of server.handle(message)) write(outgoing);
+      for (const outgoing of server.handle(incoming)) write(outgoing);
+      if (incoming.method === 'exit') return;
     }
   }
 }

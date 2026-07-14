@@ -3,7 +3,9 @@ query listTodos(listId, q?: string) {
     select id, list_id, title, done, position, updated_at_ms, attachment
     from todos
     where @scope(todos.list_id = :listId)
-      and when(q) { title like '%' || :q || '%' }
+      and when(q) {
+        title like '%' || :q || '%'
+      }
     order by position, id
   }
 }

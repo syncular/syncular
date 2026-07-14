@@ -15,7 +15,7 @@
     "$schema": { "type": "string" },
     "language": { "const": "SYQL" },
     "revision": { "const": 1 },
-    "fixtureSchemaRevision": { "const": 1 },
+    "fixtureSchemaRevision": { "const": 2 },
     "sqliteProfile": { "const": "3.46.0" },
     "families": {
       "type": "array",
@@ -25,10 +25,12 @@
         "additionalProperties": false,
         "required": ["kind", "path"],
         "properties": {
-          "kind": { "enum": ["lexical", "syntax"] },
+          "kind": {
+            "enum": ["lexical", "syntax", "semantic", "lowering", "formatter"]
+          },
           "path": {
             "type": "string",
-            "pattern": "^v1/(lexical|syntax)/[A-Za-z0-9._/-]+\\.json$"
+            "pattern": "^v1/(lexical|syntax|semantic|lowering|formatter)/[A-Za-z0-9._/-]+\\.json$"
           }
         }
       }
