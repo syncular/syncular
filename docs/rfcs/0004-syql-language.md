@@ -1,6 +1,6 @@
 # RFC 0004 — SYQL: an explicit, hygienic, reactive-aware SQL language
 
-- **Status:** Proposed
+- **Status:** Accepted; implemented on `feats/syql-reworks`
 - **Date:** 2026-07-14
 - **Scope:** `packages/typegen`, `editors/vscode-syql`, generated query
   emitters, query IR, demos, conformance fixtures, and query documentation
@@ -8,6 +8,15 @@
 - **Compatibility posture:** destructive replacement while Syncular is a
   prototype; no compatibility parser, source-version switch, deprecation
   window, or automatic preservation of the current grammar
+- **Implementation:** L0–L7 complete; L8 repository/native/release validation
+  is the remaining merge gate
+
+The implementation follows the destructive posture of this RFC. The prototype
+parser, implicit optional guards, fragments, unchecked reactive declarations,
+free-direction sort/limit knobs, source-level backend selection, legacy query
+IR fields, and prototype tests have been deleted. Normative JSON Schemas and
+executable lexical, syntax, semantic, lowering, formatter, and cross-emitter
+vectors live in [`spec/syql`](../../spec/syql/).
 
 ## Summary
 
@@ -512,13 +521,13 @@ No ordinary SYQL token selects a backend. An advanced compiler option may
 force one for diagnostics/benchmarks, but generated public signatures and
 results remain identical.
 
-## 6. Current failure inventory and required resolution
+## 6. Prototype failure inventory and implemented resolution
 
-This table is an acceptance checklist, not historical commentary. Each issue
-found in the current implementation remains in scope where the replacement
-touches it.
+This table is the acceptance checklist carried from prototype review into the
+replacement. Every listed resolution is implemented; the stage/evidence table
+in §8 and the normative vectors are the verification index.
 
-| Current issue | Required resolution in the replacement |
+| Prototype issue | Implemented revision-1 resolution |
 | --- | --- |
 | Global whitespace collapse changes literals and line-comment extent | Lossless token stream; token-aware final rendering; literal/comment regression fixtures |
 | Fragment renaming changes `:name` text inside strings/comments | Hygienic bind-token substitution in `predicate` expansion |
@@ -597,17 +606,17 @@ same commit. Unit tests may be richer but cannot replace the normative set.
 There is intentionally no backward compatibility work. The prototype should
 pay migration cost once rather than preserve two accidental languages.
 
-| Stage | Work | Gate |
-| --- | --- | --- |
-| L0 | Accept this RFC and freeze `docs/SYQL.md` plus fixture JSON schemas | grammar/semantics review |
-| L1 | Build lossless lexer, container AST, diagnostic spans, import graph, and parser vectors | lexical + AST vectors green |
-| L2 | Implement authoritative inputs, named groups, hygienic predicates, and explicit `when` logical plan | static/expansion vectors green |
-| L3 | Implement constructive reactive directives, sort profiles, page validation, and identity proof | reactive/control vectors green |
-| L4 | Implement neutralized/enumerated lowering and update QueryIR | execution equivalence + SQLite check matrix green |
-| L5 | Update TS, Swift, Kotlin, and Dart emitters together | cross-platform API/execution vectors green |
-| L6 | Replace formatter, LSP, TextMate grammar, `--print`, and docs | round-trip/editor fixtures green |
-| L7 | Rewrite every repository `.syql` file, demo, generated output, and golden; delete v1 parser/types/tests/docs | repository contains no v1 grammar or compatibility path |
-| L8 | Run full repository checks, native checks, conformance, and query benchmarks | release gate green |
+| Stage | Status | Work | Evidence/gate |
+| --- | --- | --- | --- |
+| L0 | Complete | Accept this RFC and define `docs/SYQL.md` plus fixture JSON schemas | normative specification, manifest, and schemas committed |
+| L1 | Complete | Build lossless lexer, container AST, diagnostic spans, import graph, and parser vectors | lexical/syntax fixture families and frontend suite green |
+| L2 | Complete | Implement authoritative inputs, named groups, hygienic predicates, and explicit `when` logical plan | semantic vectors and semantic suite green |
+| L3 | Complete | Implement constructive reactive directives, sort profiles, page validation, identity, and determinism proof | validator suite and invalid lowering vectors green |
+| L4 | Complete | Implement neutralized/enumerated lowering and QueryIR v3 | both plans execute equivalently; every statement prepares |
+| L5 | Complete | Update TS, Swift, Kotlin, and Dart emitters together | normative emitter vectors plus target goldens green |
+| L6 | Complete | Replace formatter, LSP, TextMate grammar, `--print`, and docs | formatter/LSP/editor/conformance suites green |
+| L7 | Complete | Rewrite repository `.syql`, demo, generated output, and goldens; delete prototype paths | no compatibility parser or legacy query IR/emitter path remains |
+| L8 | In progress | Run full repository, native, portability, demo/docs, and release checks | required before merge and release |
 
 The cutover commit may be staged internally, but the mergeable end state does
 not contain both parsers. Unversioned `.syql` means the grammar in

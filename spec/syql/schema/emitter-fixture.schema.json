@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://syncular.dev/schema/syql/emitter-fixture-v1.json",
+  "title": "SYQL revision-1 cross-emitter fixture family",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["revision", "cases"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "revision": { "const": 1 },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "source", "required"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "source": { "type": "string" },
+          "required": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ts", "swift", "kotlin", "dart"],
+            "properties": {
+              "ts": { "$ref": "#/$defs/snippets" },
+              "swift": { "$ref": "#/$defs/snippets" },
+              "kotlin": { "$ref": "#/$defs/snippets" },
+              "dart": { "$ref": "#/$defs/snippets" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "snippets": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

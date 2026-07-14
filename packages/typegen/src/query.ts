@@ -98,30 +98,6 @@ export interface QueryParam {
   readonly type: QueryParamType;
   /** How the type was resolved — for the docs/tests, not emitted. */
   readonly source: 'inferred' | 'comment';
-  /** §4 (DESIGN-queries.md): an optional param — its auto-guarded conjunct
-   * applies only when it is provided. Always false for the `.sql` tier. */
-  readonly optional?: boolean;
-  /** §4: the `from+to` pairing — params sharing a group apply together. */
-  readonly group?: string;
-  /** §3: a `: flag` boolean guard param (never in a predicate as written;
-   * the lowering binds it). Implies optional. */
-  readonly flag?: boolean;
-}
-
-/** §6 orderBy knob: a generate-time allowlist (identifiers cannot bind). */
-export interface QueryOrderBy {
-  /** Allowed columns: authored SQL name + the language-facing key the
-   * generated signature accepts. Each is SQLite-checked at generate time. */
-  readonly allowed: readonly { name: string; langName: string }[];
-  /** Default column (authored SQL name). */
-  readonly defaultColumn: string;
-  readonly defaultDir: 'asc' | 'desc';
-}
-
-/** §6 limit knob: a bound value with a codegen clamp + default. */
-export interface QueryLimit {
-  readonly max?: number;
-  readonly default?: number;
 }
 
 export interface QueryColumn {
@@ -166,7 +142,7 @@ export interface QueryReactiveMetadata {
   readonly rowKey?: readonly string[];
 }
 
-/** §7/§8 backend selection: neutralization (default), always-variants, or
+/** §7/§8 backend selection: neutralization, always-variants, or
  * the small-N heuristic (`auto`: enumerate at ≤ 2 optional groups). */
 export type QueryBackend = 'neutralize' | 'variants' | 'auto';
 
@@ -176,12 +152,120 @@ export interface QueryNamingOptions {
   /** Emitter targets this run generates — keyword hazards are only real on
    * targets that exist. */
   readonly targets: readonly NamingTarget[];
-  /** `.syql` conditional-lowering backend (default `neutralize`); the
-   * per-query `variants` knob always forces enumeration. */
+  /** `.syql` conditional-lowering policy (default `auto`). */
   readonly backend?: QueryBackend;
+  /** Compiler-reserved physical binds. They retain their exact names and do
+   * not participate in public target-language keyword/private-name checks. */
+  readonly internalParams?: readonly string[];
 }
 
 const DEFAULT_NAMING: QueryNamingOptions = { naming: 'camel', targets: ['ts'] };
+
+/** Revision-1 SYQL public inputs. These are deliberately separate from SQL
+ * binds: groups and switches are public values without corresponding SQLite
+ * parameters, while compiler-generated parameters are never public. */
+export type QuerySyqlPublicInput =
+  | {
+      readonly kind: 'value';
+      readonly name: string;
+      readonly langName: string;
+      readonly type: QueryParamType;
+      readonly nullable: boolean;
+      readonly required: boolean;
+    }
+  | {
+      readonly kind: 'group';
+      readonly name: string;
+      readonly langName: string;
+      readonly members: readonly {
+        readonly name: string;
+        readonly langName: string;
+        readonly type: QueryParamType;
+        readonly nullable: boolean;
+      }[];
+    }
+  | {
+      readonly kind: 'switch';
+      readonly name: string;
+      readonly langName: string;
+      readonly default: false;
+    }
+  | {
+      readonly kind: 'sort';
+      readonly name: string;
+      readonly langName: string;
+      readonly defaultProfile: string;
+      readonly profiles: readonly {
+        readonly name: string;
+        readonly langName: string;
+      }[];
+    }
+  | {
+      readonly kind: 'page';
+      readonly name: string;
+      readonly langName: string;
+      readonly defaultSize: number;
+      readonly maxSize: number;
+    };
+
+/** One distinct SQLite bind in a physical revision-1 statement. */
+export type QuerySyqlPlanBind =
+  | {
+      readonly kind: 'value';
+      readonly name: string;
+      readonly type: QueryParamType;
+      readonly input: string;
+    }
+  | {
+      readonly kind: 'group-member';
+      readonly name: string;
+      readonly type: QueryParamType;
+      readonly input: string;
+      readonly member: string;
+    }
+  | {
+      readonly kind: 'condition-active';
+      readonly name: string;
+      readonly type: 'boolean';
+      readonly condition: number;
+      readonly controls: readonly string[];
+    }
+  | {
+      readonly kind: 'page';
+      readonly name: string;
+      readonly type: 'integer';
+      readonly input: string;
+    };
+
+/** One SQLite-checked statement selected by sort profile and, for the
+ * enumerated backend, the activation bitmask. */
+export interface QuerySyqlStatement {
+  readonly sortProfile?: string;
+  readonly activationMask?: number;
+  readonly sql: string;
+  readonly positionalSql: string;
+  readonly binds: readonly QuerySyqlPlanBind[];
+}
+
+/** The target-neutral physical plan every emitter must implement exactly. */
+export interface QuerySyqlExecutionPlan {
+  readonly backend: Exclude<QueryBackend, 'auto'>;
+  /** One bit per optional scalar/group/switch, in declaration order. */
+  readonly activationControls: readonly string[];
+  readonly conditions: readonly {
+    readonly controls: readonly string[];
+    /** Present only for neutralized plans. */
+    readonly bind?: string;
+  }[];
+  readonly statements: readonly QuerySyqlStatement[];
+}
+
+export interface QuerySyqlMetadata {
+  readonly revision: 1;
+  readonly inputs: readonly QuerySyqlPublicInput[];
+  readonly plan: QuerySyqlExecutionPlan;
+  readonly identity?: readonly string[];
+}
 
 export interface AnalyzedQuery {
   /** camelCase function name (path-derived, or a `-- name:` override). */
@@ -204,41 +288,9 @@ export interface AnalyzedQuery {
   /** IR tables this query reads (the useRawSql `{tables}` set), sorted. */
   readonly tables: readonly string[];
   readonly reactive: QueryReactiveMetadata;
-  /** §6 orderBy knob (`.syql` tier). When present, `sql`/`positionalSql`
-   * carry the DEFAULT order-by tail and `positionalSqlBase` is the static
-   * prefix emitters compose the selected column onto. */
-  readonly orderBy?: QueryOrderBy;
-  /** §6 limit knob (`.syql` tier): the trailing `LIMIT ?` bind's clamp. */
-  readonly limit?: QueryLimit;
-  /** positional SQL WITHOUT the dynamic ORDER BY/LIMIT tail; present only
-   * when `orderBy` is (emitters build `base + ORDER BY <baked> + limit
-   * tail`). */
-  readonly positionalSqlBase?: string;
-  /** The positional limit tail (e.g. ` limit min(coalesce(?, 50), 100)` —
-   * the default+clamp live IN the SQL, so runtimes bind `limit ?? null`).
-   * Present only when BOTH knobs are declared (composers need it verbatim). */
-  readonly positionalLimitTail?: string;
-  /** §7 variant-enumeration backend (opt-in `variants` knob): one checked
-   * statement per combination of provided optional groups. Semantically
-   * identical to the neutralization `sql` by construction; the TS emitter
-   * dispatches on provided-ness for perfect index use. `when` lists the
-   * provided group keys; `params` are the DISTINCT param names this variant
-   * binds, positional order. */
-  readonly variants?: readonly {
-    readonly when: readonly string[];
-    readonly sql: string;
-    readonly positionalSql: string;
-    readonly params: readonly string[];
-  }[];
-  /** The optional-group keys, in dispatch-bit order (bit i of the variant
-   * index = group i provided). Present iff `variants` is. */
-  readonly variantGroups?: readonly {
-    readonly key: string;
-    /** Params whose provision defines the group (all must be non-null; a
-     * flag group is "on" when its single param is TRUE). */
-    readonly params: readonly string[];
-    readonly flag: boolean;
-  }[];
+  /** Revision-1 frontend/public-input and physical execution contract. When
+   * present, emitters use this instead of treating `params` as the API. */
+  readonly syql?: QuerySyqlMetadata;
 }
 
 // -- path → name --------------------------------------------------------------
@@ -502,7 +554,7 @@ function parseCommentParams(file: string, raw: string): CommentParam[] {
 
 /** Strip `--` and block comments so identifier scans don't hit commented SQL,
  * and string literals so `':x'` inside a string isn't read as a param. */
-function stripCommentsAndStrings(sql: string): string {
+export function stripCommentsAndStrings(sql: string): string {
   let out = '';
   let i = 0;
   while (i < sql.length) {
@@ -638,7 +690,7 @@ export function toPositionalSql(sql: string): string {
 
 // -- FROM/JOIN table resolution ----------------------------------------------
 
-interface TableRef {
+export interface TableRef {
   readonly table: string;
   /** Alias (or the table name when un-aliased). */
   readonly alias: string;
@@ -668,7 +720,7 @@ const RESERVED_ALIAS = new Set([
   'having',
 ]);
 
-function scanTableRefs(sql: string, ir: IrDocument): TableRef[] {
+export function scanTableRefs(sql: string, ir: IrDocument): TableRef[] {
   const cleaned = stripCommentsAndStrings(sql);
   const known = new Map(ir.tables.map((t) => [t.name, t] as const));
   const refs: TableRef[] = [];
@@ -855,6 +907,78 @@ function inferParamType(
   return null;
 }
 
+/**
+ * Return every revision-1 column/LIKE type constraint for one bind. Unlike
+ * `inferParamType` (the legacy first-match helper), SYQL uses the complete set
+ * so conflicting checked uses cannot be silently accepted.
+ */
+export function inferParamTypeEvidence(
+  paramName: string,
+  sql: string,
+  refs: readonly TableRef[],
+  ir: IrDocument,
+): readonly IrColumnType[] {
+  const cleaned = stripCommentsAndStrings(sql);
+  const byName = new Map(
+    ir.tables.map((table) => [table.name, table] as const),
+  );
+  const evidence: IrColumnType[] = [];
+  const add = (qualifier: string | undefined, column: string): void => {
+    if (qualifier !== undefined) {
+      const ref = refs.find((candidate) => candidate.alias === qualifier);
+      const table = ref === undefined ? undefined : byName.get(ref.table);
+      const type = table?.columns.find((item) => item.name === column)?.type;
+      if (type !== undefined) evidence.push(type);
+      return;
+    }
+    const matches = refs.flatMap((ref) => {
+      const table = byName.get(ref.table);
+      const type = table?.columns.find((item) => item.name === column)?.type;
+      return type === undefined ? [] : [type];
+    });
+    if (matches.length === 1) evidence.push(matches[0] as IrColumnType);
+  };
+
+  const comparison = new RegExp(
+    `(?:(${IDENT})\\.)?(${IDENT})\\s*(?:=|==|!=|<>|<=|>=|<|>|\\bLIKE\\b|\\bIS\\b)\\s*:${paramName}\\b`,
+    'gi',
+  );
+  for (const match of cleaned.matchAll(comparison)) {
+    add(match[1], match[2] as string);
+  }
+  const reversed = new RegExp(
+    `:${paramName}\\b\\s*(?:=|==|!=|<>|<=|>=|<|>)\\s*(?:(${IDENT})\\.)?(${IDENT})`,
+    'gi',
+  );
+  for (const match of cleaned.matchAll(reversed)) {
+    add(match[1], match[2] as string);
+  }
+  const inList = new RegExp(
+    `(?:(${IDENT})\\.)?(${IDENT})\\s+IN\\s*\\(([^)]*:${paramName}\\b[^)]*)\\)`,
+    'gi',
+  );
+  for (const match of cleaned.matchAll(inList)) {
+    add(match[1], match[2] as string);
+  }
+  const betweenLeft = new RegExp(
+    `(?:(${IDENT})\\.)?(${IDENT})\\s+BETWEEN\\s+:${paramName}\\b`,
+    'gi',
+  );
+  for (const match of cleaned.matchAll(betweenLeft)) {
+    add(match[1], match[2] as string);
+  }
+  const betweenRight = new RegExp(
+    `(?:(${IDENT})\\.)?(${IDENT})\\s+BETWEEN\\s+\\S+\\s+AND\\s+:${paramName}\\b`,
+    'gi',
+  );
+  for (const match of cleaned.matchAll(betweenRight)) {
+    add(match[1], match[2] as string);
+  }
+  const like = new RegExp(`\\bLIKE\\b[^()]*:${paramName}\\b`, 'gi');
+  if (like.test(cleaned)) evidence.push('string');
+  return evidence;
+}
+
 // -- fallback column typing (computed expressions) ----------------------------
 
 const AGG_RE = /\b(count|sum|total|avg|min|max)\s*\(/i;
@@ -941,11 +1065,7 @@ function inferReactiveMetadata(
           if (!requiredAt(match.index)) continue;
           const name = match[1] ?? match[2];
           const param = name === undefined ? undefined : byParam.get(name);
-          if (
-            param !== undefined &&
-            param.optional !== true &&
-            param.flag !== true
-          ) {
+          if (param !== undefined) {
             found.push(param.name);
           }
         }
@@ -956,11 +1076,7 @@ function inferReactiveMetadata(
             /:([A-Za-z_][A-Za-z0-9_]*)/g,
           )) {
             const param = byParam.get(paramMatch[1] as string);
-            if (
-              param !== undefined &&
-              param.optional !== true &&
-              param.flag !== true
-            ) {
+            if (param !== undefined) {
               found.push(param.name);
             }
           }
@@ -1214,16 +1330,20 @@ export function analyzeStatement(
       `internal: scanned ${paramNames.length} params (${paramNames.join(', ')}) but SQLite reports ${described.paramsCount}`,
     );
   }
-  const paramLangNames = buildNamingMap(
-    paramNames,
+  const internalParams = new Set(naming.internalParams ?? []);
+  const publicParamLangNames = buildNamingMap(
+    paramNames.filter((name) => !internalParams.has(name)),
     naming.naming,
     file,
     'params',
     naming.targets,
   );
+  const langNameByParam = new Map(
+    publicParamLangNames.map((mapping) => [mapping.sqlName, mapping.langName]),
+  );
   const commentByName = new Map(commentParams.map((p) => [p.name, p.type]));
-  const params: QueryParam[] = paramNames.map((paramName, index) => {
-    const langName = paramLangNames[index]?.langName ?? paramName;
+  const params: QueryParam[] = paramNames.map((paramName) => {
+    const langName = langNameByParam.get(paramName) ?? paramName;
     const commented = commentByName.get(paramName);
     if (commented !== undefined) {
       return { name: paramName, langName, type: commented, source: 'comment' };

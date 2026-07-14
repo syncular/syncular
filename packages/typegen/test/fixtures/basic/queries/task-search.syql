@@ -1,31 +1,61 @@
--- The .syql tier (DESIGN-queries.md §3): fragments, auto-guarded optional
--- conjuncts, an if-guarded flag, and both §6 knobs — exercising the DSL
--- through every emitter golden.
-fragment inProject(projectId) {
+predicate inProject(projectId) {
   project_id = :projectId
 }
 
-fragment search(q?) {
-  title like '%' || :q || '%'
+predicate searchTitle(needle: string) {
+  title like '%' || :needle || '%'
 }
 
-query searchTasks(projectId, minPriority?, openOnly?: flag)
-  orderBy priority | estimated_at | title default priority desc
-  limit max 200 default 50
-{
-  select id, title, done, priority, estimated_at
-  from tasks
-  where @inProject(:projectId)
-    and @search(:q)
-    and priority >= :minPriority
-    and if (:openOnly) { done = 0 }
+query searchTasks(
+  projectId,
+  needle?: string,
+  minPriority?,
+  openOnly?: switch,
+) {
+  sql {
+    select id, title, done, priority, estimated_at
+    from tasks
+    where @scope(tasks.project_id = :projectId)
+      and when(needle) {
+        @searchTitle(:needle)
+      }
+      and when(minPriority) {
+        priority >= :minPriority
+      }
+      and when(openOnly) {
+        done = 0
+      }
+  }
+  sort sortBy default priorityDesc {
+    priorityAsc {
+      priority asc, id asc
+    }
+    priorityDesc {
+      priority desc, id desc
+    }
+    estimatedAtAsc {
+      estimated_at asc, id asc
+    }
+    estimatedAtDesc {
+      estimated_at desc, id desc
+    }
+    titleAsc {
+      title asc, id asc
+    }
+    titleDesc {
+      title desc, id desc
+    }
+  }
+  page pageSize default 50 max 200;
 }
 
-query taskEstimateRange(projectId, from+to?)
-  variants
-{
-  select id, title, estimate
-  from tasks
-  where @inProject(:projectId)
-    and estimated_at between :from and :to
+query taskEstimateRange(projectId, range?(start: integer, end: integer)) {
+  sql {
+    select id, title, estimate
+    from tasks
+    where @scope(tasks.project_id = :projectId)
+      and when(range) {
+        estimated_at between :start and :end
+      }
+  }
 }

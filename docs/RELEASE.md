@@ -1,8 +1,37 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.5.1** (`v0.5.1`). All artifacts use Apache-2.0, except
+current release is **0.6.0** (`v0.6.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.6.0 release notes
+
+0.6.0 ships RFC 0004 and the destructive SYQL revision-1 cutover. Syncular is
+still in prototype phase, so this release intentionally provides no parser,
+IR, or generated-API compatibility with the old `.syql` language. Regenerate
+and rewrite prototype queries before upgrading.
+
+The release includes:
+
+- a normative language specification in [`SYQL.md`](./SYQL.md), executable
+  fixture schemas, and lexical, syntax, semantic, lowering, formatter, and
+  cross-emitter conformance families;
+- a lossless lexer and container AST shared by generation, formatting, LSP,
+  and editor tooling;
+- authoritative typed query inputs, explicit `when` conditions, atomic named
+  groups, hygienic predicates/imports, and distinct absent/null/false states;
+- constructive `@scope`/`@cover` reactive facts, conservative table-wide
+  fallback, proven identity, finite sort profiles, and bounded page controls;
+- deterministic neutralized/enumerated lowering behind one QueryIR v3 plan and
+  equivalent TypeScript, Swift, Kotlin, and Dart generated APIs;
+- a closed SQLite 3.46.0 language profile which rejects extension functions,
+  post-floor functions/arities, implicit clocks, randomness, unproven nested
+  bounds, and window expressions;
+- migrated repository queries, demos, native examples, docs, VS Code grammar,
+  and generated outputs, with all prototype parser and legacy emitter paths
+  deleted;
+- CI gates that now run every native binding whenever the shared type
+  generator changes.
 
 ## 0.5.1 release notes
 
@@ -116,9 +145,9 @@ workflow also inspects every packed tarball before publishing it.
 The release is a commit on `main` followed by a version tag:
 
 ```sh
-git tag -a v0.5.1 -m "Syncular 0.5.1"
+git tag -a v0.6.0 -m "Syncular 0.6.0"
 git push origin main
-git push origin v0.5.1
+git push origin v0.6.0
 ```
 
 `.github/workflows/release.yml` verifies the tag against package and crate
