@@ -53,5 +53,17 @@
         }
       ]
     }
+  ],
+  "invalid": [
+    {
+      "name": "nested-limit-without-proof",
+      "source": "query unstable() { sql { select id from todos where id in (select id from todos order by id limit 1) } }",
+      "code": "SYQL6003_NONDETERMINISTIC_SQL"
+    },
+    {
+      "name": "window-without-proof",
+      "source": "query unstable() { sql { select id, row_number() over (order by id) as rank from todos } }",
+      "code": "SYQL6003_NONDETERMINISTIC_SQL"
+    }
   ]
 }

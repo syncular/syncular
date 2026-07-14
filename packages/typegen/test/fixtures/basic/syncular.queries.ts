@@ -49,8 +49,7 @@ export interface QueryClient {
  *  `bind(params)` → positional args. Consumed by
  *  `@syncular/react`'s `useQuery`. `Row` is the projection row
  *  type; `Params` is `undefined` for a param-less query. `sqlFor`
- *  (present only with an orderBy knob) composes the statement from a
- *  generate-time-checked column allowlist. */
+ *  selects a checked revision-1 SYQL physical statement when needed. */
 export interface NamedQuery<Row, Params = undefined> {
   readonly id: string;
   readonly hasParams: boolean;

@@ -333,11 +333,24 @@ describe('revision-1 SYQL schema/SQL validation', () => {
     const nested = validate(`query q() {
       sql {
         select id from todos
-        where id in (select id from todos order by id limit 1)
+        where id in (select id from todos order by id)
       }
       sort sortBy default byId { byId { id asc } }
     }`);
     expect(nested.queries[0]?.sort?.defaultProfile).toBe('byId');
+  });
+
+  test('rejects nested bounds and windows without a local total-order proof', () => {
+    for (const sql of [
+      'select id from todos where id in (select id from todos order by id limit 1)',
+      'select id from todos where id in (select id from todos order by id offset 1)',
+      'select id, row_number() over (order by id) as rank from todos',
+    ]) {
+      const error = frontendError(() =>
+        validate(`query q() { sql { ${sql} } }`),
+      );
+      expect(error.code).toBe('SYQL6003_NONDETERMINISTIC_SQL');
+    }
   });
 
   test('requires deterministic identity suffixes for bounded queries', () => {

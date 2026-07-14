@@ -12,7 +12,6 @@ import { snakeToCamel } from './naming';
 import type {
   AnalyzedQuery,
   QueryColumn,
-  QueryParam,
   QuerySyqlPlanBind,
   QuerySyqlPublicInput,
 } from './query';
@@ -89,14 +88,6 @@ function optionalParamValue(type: IrColumnType, name: string): string {
     default:
       return name;
   }
-}
-
-function isOptionalParam(query: AnalyzedQuery, p: QueryParam): boolean {
-  return (
-    p.optional === true ||
-    p.flag === true ||
-    (query.limit !== undefined && p.name === 'limit')
-  );
 }
 
 function syqlInput(query: AnalyzedQuery, name: string): QuerySyqlPublicInput {
@@ -270,26 +261,6 @@ function emitSyqlDartRunner(query: AnalyzedQuery): string[] {
   return lines;
 }
 
-/** Per-query orderBy allowlist enum (column = the checked SQL column). */
-function emitOrderByEnum(query: AnalyzedQuery): string[] {
-  if (query.orderBy === undefined) return [];
-  const lines: string[] = [];
-  lines.push(
-    `/// §6 orderBy allowlist for ${query.name} — checked at generate time.`,
-  );
-  lines.push(`enum ${typeName(query.name)}OrderBy {`);
-  lines.push(
-    `${query.orderBy.allowed
-      .map((col) => `  ${camelCase(col.langName)}(${quote(col.name)})`)
-      .join(',\n')};`,
-  );
-  lines.push('');
-  lines.push(`  const ${typeName(query.name)}OrderBy(this.column);`);
-  lines.push('  final String column;');
-  lines.push('}');
-  return lines;
-}
-
 function emitClass(query: AnalyzedQuery): string[] {
   const Row = `${typeName(query.name)}Row`;
   const lines: string[] = [];
@@ -339,59 +310,24 @@ function emitRunner(query: AnalyzedQuery): string[] {
     `const List<String> syncular${Pascal}QueryTables = [${query.tables.map(quote).join(', ')}];`,
   );
   lines.push('');
-  if (query.orderBy !== undefined) {
-    lines.push(
-      `const String _${query.name}SqlBase = ${quote(query.positionalSqlBase ?? '')};`,
-    );
-  } else {
-    lines.push(
-      `const String _${query.name}Sql = ${quote(query.positionalSql)};`,
-    );
-  }
+  lines.push(`const String _${query.name}Sql = ${quote(query.positionalSql)};`);
   lines.push('');
   lines.push(`/// Run the ${query.name} named query (SELECT-only).`);
   const args: string[] = [];
   for (const p of query.params) {
     const name = camelCase(p.langName);
-    if (isOptionalParam(query, p)) {
-      args.push(`${DART_TYPE[p.type]}? ${name}`);
-    } else {
-      args.push(`required ${DART_TYPE[p.type]} ${name}`);
-    }
-  }
-  if (query.orderBy !== undefined) {
-    const defaultCase = camelCase(
-      query.orderBy.allowed.find((c) => c.name === query.orderBy?.defaultColumn)
-        ?.langName ?? query.orderBy.defaultColumn,
-    );
-    args.push(
-      `${typeName(query.name)}OrderBy orderBy = ${typeName(query.name)}OrderBy.${defaultCase}`,
-    );
-    args.push(
-      `SyncularQueryDir dir = SyncularQueryDir.${query.orderBy.defaultDir}`,
-    );
+    args.push(`required ${DART_TYPE[p.type]} ${name}`);
   }
   const argsClause = args.length > 0 ? `, {${args.join(', ')}}` : '';
   lines.push(
     `List<${Row}> syncular${Pascal}Query(SyncularClient client${argsClause}) {`,
   );
-  if (query.orderBy !== undefined) {
-    const limitTail =
-      query.positionalLimitTail !== undefined
-        ? ` ${quote(query.positionalLimitTail.trim())}`
-        : '';
-    lines.push(
-      `  final sql = '$_${query.name}SqlBase order by \${orderBy.column} \${dir.name}'${limitTail === '' ? '' : `\n      ' ' ${limitTail.trim()}`};`,
-    );
-  }
-  const sqlRef = query.orderBy !== undefined ? 'sql' : `_${query.name}Sql`;
+  const sqlRef = `_${query.name}Sql`;
   if (query.params.length > 0) {
     const binds = query.params
       .map((p) => {
         const name = camelCase(p.langName);
-        return isOptionalParam(query, p)
-          ? optionalParamValue(p.type, name)
-          : paramValue(p.type, name);
+        return paramValue(p.type, name);
       })
       .join(', ');
     lines.push(`  final params = <Object?>[${binds}];`);
@@ -473,21 +409,10 @@ export function emitQueriesDartModule(
     ].join('\n'),
   );
 
-  if (queries.some((q) => q.orderBy !== undefined)) {
-    parts.push(
-      [
-        '/// §6 orderBy direction (shared by every orderBy-knob query).',
-        'enum SyncularQueryDir { asc, desc }',
-      ].join('\n'),
-    );
-  }
-
   for (const query of queries) {
     const syqlTypes = emitSyqlDartTypes(query);
     if (syqlTypes.length > 0) parts.push(syqlTypes.join('\n'));
     parts.push(emitClass(query).join('\n'));
-    const orderByEnum = emitOrderByEnum(query);
-    if (orderByEnum.length > 0) parts.push(orderByEnum.join('\n'));
   }
   for (const query of queries) {
     parts.push(emitRunner(query).join('\n'));

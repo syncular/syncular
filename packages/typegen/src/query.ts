@@ -98,30 +98,6 @@ export interface QueryParam {
   readonly type: QueryParamType;
   /** How the type was resolved — for the docs/tests, not emitted. */
   readonly source: 'inferred' | 'comment';
-  /** §4 (DESIGN-queries.md): an optional param — its auto-guarded conjunct
-   * applies only when it is provided. Always false for the `.sql` tier. */
-  readonly optional?: boolean;
-  /** §4: the `from+to` pairing — params sharing a group apply together. */
-  readonly group?: string;
-  /** §3: a `: flag` boolean guard param (never in a predicate as written;
-   * the lowering binds it). Implies optional. */
-  readonly flag?: boolean;
-}
-
-/** §6 orderBy knob: a generate-time allowlist (identifiers cannot bind). */
-export interface QueryOrderBy {
-  /** Allowed columns: authored SQL name + the language-facing key the
-   * generated signature accepts. Each is SQLite-checked at generate time. */
-  readonly allowed: readonly { name: string; langName: string }[];
-  /** Default column (authored SQL name). */
-  readonly defaultColumn: string;
-  readonly defaultDir: 'asc' | 'desc';
-}
-
-/** §6 limit knob: a bound value with a codegen clamp + default. */
-export interface QueryLimit {
-  readonly max?: number;
-  readonly default?: number;
 }
 
 export interface QueryColumn {
@@ -315,41 +291,6 @@ export interface AnalyzedQuery {
   /** Revision-1 frontend/public-input and physical execution contract. When
    * present, emitters use this instead of treating `params` as the API. */
   readonly syql?: QuerySyqlMetadata;
-  /** §6 orderBy knob (`.syql` tier). When present, `sql`/`positionalSql`
-   * carry the DEFAULT order-by tail and `positionalSqlBase` is the static
-   * prefix emitters compose the selected column onto. */
-  readonly orderBy?: QueryOrderBy;
-  /** §6 limit knob (`.syql` tier): the trailing `LIMIT ?` bind's clamp. */
-  readonly limit?: QueryLimit;
-  /** positional SQL WITHOUT the dynamic ORDER BY/LIMIT tail; present only
-   * when `orderBy` is (emitters build `base + ORDER BY <baked> + limit
-   * tail`). */
-  readonly positionalSqlBase?: string;
-  /** The positional limit tail (e.g. ` limit min(coalesce(?, 50), 100)` —
-   * the default+clamp live IN the SQL, so runtimes bind `limit ?? null`).
-   * Present only when BOTH knobs are declared (composers need it verbatim). */
-  readonly positionalLimitTail?: string;
-  /** §7 variant-enumeration backend (opt-in `variants` knob): one checked
-   * statement per combination of provided optional groups. Semantically
-   * identical to the neutralization `sql` by construction; the TS emitter
-   * dispatches on provided-ness for perfect index use. `when` lists the
-   * provided group keys; `params` are the DISTINCT param names this variant
-   * binds, positional order. */
-  readonly variants?: readonly {
-    readonly when: readonly string[];
-    readonly sql: string;
-    readonly positionalSql: string;
-    readonly params: readonly string[];
-  }[];
-  /** The optional-group keys, in dispatch-bit order (bit i of the variant
-   * index = group i provided). Present iff `variants` is. */
-  readonly variantGroups?: readonly {
-    readonly key: string;
-    /** Params whose provision defines the group (all must be non-null; a
-     * flag group is "on" when its single param is TRUE). */
-    readonly params: readonly string[];
-    readonly flag: boolean;
-  }[];
 }
 
 // -- path → name --------------------------------------------------------------
@@ -1124,11 +1065,7 @@ function inferReactiveMetadata(
           if (!requiredAt(match.index)) continue;
           const name = match[1] ?? match[2];
           const param = name === undefined ? undefined : byParam.get(name);
-          if (
-            param !== undefined &&
-            param.optional !== true &&
-            param.flag !== true
-          ) {
+          if (param !== undefined) {
             found.push(param.name);
           }
         }
@@ -1139,11 +1076,7 @@ function inferReactiveMetadata(
             /:([A-Za-z_][A-Za-z0-9_]*)/g,
           )) {
             const param = byParam.get(paramMatch[1] as string);
-            if (
-              param !== undefined &&
-              param.optional !== true &&
-              param.flag !== true
-            ) {
+            if (param !== undefined) {
               found.push(param.name);
             }
           }

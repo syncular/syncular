@@ -4,13 +4,26 @@
   "title": "SYQL revision-1 lowering fixture family",
   "type": "object",
   "additionalProperties": false,
-  "required": ["revision", "cases"],
+  "required": ["revision", "cases", "invalid"],
   "properties": {
     "$schema": { "type": "string" },
     "revision": { "const": 1 },
     "cases": {
       "type": "array",
       "items": { "$ref": "#/$defs/case" }
+    },
+    "invalid": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "source", "code"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "source": { "type": "string" },
+          "code": { "type": "string", "pattern": "^SYQL[0-9]{4}_[A-Z0-9_]+$" }
+        }
+      }
     }
   },
   "$defs": {

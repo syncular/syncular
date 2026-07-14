@@ -25,11 +25,6 @@ export function serializeQueryIr(queries: readonly AnalyzedQuery[]): string {
         name: param.name,
         langName: param.langName,
         type: param.type,
-        // §4 metadata — emitted only when set, so `.sql`-tier IR bytes are
-        // unchanged from before the DSL existed.
-        ...(param.optional === true ? { optional: true } : {}),
-        ...(param.group !== undefined ? { group: param.group } : {}),
-        ...(param.flag === true ? { flag: true } : {}),
       })),
       columns: query.columns.map((column) => ({
         name: column.name,
@@ -114,43 +109,6 @@ export function serializeQueryIr(queries: readonly AnalyzedQuery[]): string {
                 : { identity: query.syql.identity }),
             },
           }),
-      // §6 knob metadata — emitted only when declared.
-      ...(query.orderBy !== undefined
-        ? {
-            orderBy: {
-              allowed: query.orderBy.allowed.map((c) => ({
-                name: c.name,
-                langName: c.langName,
-              })),
-              defaultColumn: query.orderBy.defaultColumn,
-              defaultDir: query.orderBy.defaultDir,
-            },
-          }
-        : {}),
-      ...(query.limit !== undefined ? { limit: query.limit } : {}),
-      ...(query.positionalSqlBase !== undefined
-        ? { positionalSqlBase: query.positionalSqlBase }
-        : {}),
-      // §7 variant backend — emitted only when the query opts in.
-      ...(query.variantGroups !== undefined
-        ? {
-            variantGroups: query.variantGroups.map((g) => ({
-              key: g.key,
-              params: g.params,
-              flag: g.flag,
-            })),
-          }
-        : {}),
-      ...(query.variants !== undefined
-        ? {
-            variants: query.variants.map((v) => ({
-              when: v.when,
-              sql: v.sql,
-              positionalSql: v.positionalSql,
-              params: v.params,
-            })),
-          }
-        : {}),
     })),
   };
   return `${JSON.stringify(doc, null, 2)}\n`;
