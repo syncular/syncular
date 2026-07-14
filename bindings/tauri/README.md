@@ -105,7 +105,7 @@ bun add @syncular/tauri @tauri-apps/api
 
 ```toml
 [dependencies]
-tauri-plugin-syncular = { version = "0.5", features = ["native-transport"] }
+tauri-plugin-syncular = { version = "0.0.0", features = ["native-transport"] }
 ```
 
 `lib.rs`:

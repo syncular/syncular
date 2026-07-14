@@ -12,7 +12,7 @@ Published on crates.io:
 
 ```toml
 [dependencies]
-syncular-client = "0.2.1"
+syncular-client = "0.0.0"
 ```
 
 Feature flags (both off by default, which keeps the core's dependency tree
@@ -20,7 +20,7 @@ small):
 
 ```toml
 [dependencies]
-syncular-client = { version = "0.2.1", features = ["crdt-yjs", "e2ee"] }
+syncular-client = { version = "0.0.0", features = ["crdt-yjs", "e2ee"] }
 ```
 
 - `crdt-yjs` — the §5.10.5 native CRDT helpers (`crdt_text`,
@@ -29,7 +29,7 @@ syncular-client = { version = "0.2.1", features = ["crdt-yjs", "e2ee"] }
 - `e2ee` — §5.11 client-side encryption (installed via `set_encryption`).
 
 The wire codec lives in `syncular-ssp2` (library name `ssp2`, also
-`0.2.1` on crates.io); it arrives as a dependency and you rarely need it
+`0.0.0` on crates.io); it arrives as a dependency and you rarely need it
 directly.
 
 ## The character of the API

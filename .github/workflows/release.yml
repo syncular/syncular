@@ -13,9 +13,9 @@
 # No registry tokens are stored anywhere; both jobs authenticate via the
 # GitHub OIDC token (`id-token: write`).
 #
-# Trigger: push a version tag (`v<version>`). Versions in package.json /
-# Cargo.toml must already match the tag — the jobs verify and fail loudly
-# rather than publish a mismatch.
+# Trigger: push a version tag (`v<version>`). Root package.json is the only
+# authored version; release jobs verify the tag and materialize child metadata
+# in their ephemeral checkouts before publishing.
 
 name: release
 
@@ -23,7 +23,6 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -43,17 +42,21 @@ jobs:
           node-version: 24
       - run: npm install -g npm@latest
       - run: bun install --frozen-lockfile
-      - run: bun run check
-      - run: bun run build:packages
-      - name: verify tag matches package versions
-        if: github.ref_type == 'tag'
+      - name: validate source version and release tag
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          V=$(bun -e "console.log((await Bun.file('packages/core/package.json').json()).version)")
-          [ "$TAG" = "$V" ] || { echo "tag $TAG != package version $V"; exit 1; }
+          bun run version:check
+          bun scripts/version.ts assert-tag "$GITHUB_REF_NAME"
+      - name: materialize release metadata
+        run: |
+          bun run version:materialize
+          bun scripts/version.ts check --materialized
+          bun install --frozen-lockfile
+      - run: bun run check:code
+      - run: bun run build:packages
       - name: publish (dependency order)
         run: |
           set -euo pipefail
+          VERSION=$(bun scripts/version.ts print)
           # bun pm pack materializes workspace:* deps in the tarball
           # manifest; npm publish provides OIDC + provenance.
           # Already-published versions are SKIPPED (not failed) so a re-run
@@ -65,17 +68,14 @@ jobs:
                      testing create-app; do
             name=$(bun -e "console.log((await Bun.file('packages/$dir/package.json').json()).name)")
             ver=$(bun -e "console.log((await Bun.file('packages/$dir/package.json').json()).version)")
+            [ "$ver" = "$VERSION" ] || { echo "$dir version $ver != root $VERSION"; exit 1; }
             if npm view "$name@$ver" version >/dev/null 2>&1; then
               echo "── skipping $name@$ver (already published)"
               continue
             fi
             echo "── publishing $name@$ver"
-            # Guard (0.4.0 lesson): bun pm pack materializes workspace:*
-            # from the LOCKFILE's workspace version stamps — stale stamps
-            # ship tarballs pinning @syncular/* siblings at the PREVIOUS
-            # release (split-brain installs). scripts/check-lockstep.mjs
-            # (inside `bun run check` above) catches the root cause; this
-            # asserts it on the actual artifact before it can publish.
+            # Audit the actual tarball: all internal workspace dependencies
+            # must be exact pins to this release.
             (cd "packages/$dir" \
               && bun pm pack --quiet \
               && tar -xOf ./*.tgz package/package.json > /tmp/manifest.json \
@@ -96,15 +96,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - uses: dtolnay/rust-toolchain@stable
-      - name: verify tag matches crate versions
-        if: github.ref_type == 'tag'
+      - name: validate and materialize release metadata
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          for toml in rust/crates/ssp2/Cargo.toml bindings/tauri/plugin/Cargo.toml; do
-            V=$(grep -m1 '^version' "$toml" | sed 's/.*"\(.*\)"/\1/')
-            [ "$TAG" = "$V" ] || { echo "tag $TAG != $toml version $V"; exit 1; }
-          done
+          bun run version:check
+          bun scripts/version.ts assert-tag "$GITHUB_REF_NAME"
+          bun run version:materialize
+          bun scripts/version.ts check --materialized
       # The Tauri plugin's verify build compiles tauri on Linux, which needs
       # the GTK/WebKit system libraries — without them gdk-sys/gio-sys/
       # gobject-sys build scripts fail and the publish dies at the last step
@@ -129,9 +130,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
           set -euo pipefail
-          # All crates release in lockstep — one version, read once (the
-          # tag-verify step above already enforced it matches the tag).
-          VERSION=$(grep -m1 '^version' rust/crates/ssp2/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          VERSION=$(bun scripts/version.ts print)
           # Skip crates whose version already sits on the index (sparse-index
           # lookup, no auth), so a re-run after a partial failure publishes
           # only what is missing. cargo waits for each publish to reach the
@@ -166,3 +165,55 @@ jobs:
           # constraints that resolve against the crates just published.
           cd ../bindings/tauri
           publish tauri-plugin-syncular
+
+  docs:
+    needs: [npm, crates]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: docs-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: validate tag and build versioned docs
+        run: |
+          bun run version:check
+          bun scripts/version.ts assert-tag "$GITHUB_REF_NAME"
+          bun run --cwd apps/docs build
+      - name: deploy docs to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 336bfd20ccb2f56e24ac0afeca6b4837
+          workingDirectory: apps/docs
+          command: deploy
+
+  demo:
+    needs: [npm, crates]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: demo-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: validate tag and build versioned demo
+        run: |
+          bun run version:check
+          bun scripts/version.ts assert-tag "$GITHUB_REF_NAME"
+          bun run --cwd apps/demo build:static
+      - name: deploy demo to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 336bfd20ccb2f56e24ac0afeca6b4837
+          workingDirectory: apps/demo
+          command: deploy

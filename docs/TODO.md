@@ -69,12 +69,11 @@ verification; push is Benjamin's alone).
       (oven-sh/bun#4290) so real behavior is proven under Node
       (`web-client verify:node`) against the SAME contract the bun test
       runs on the reference bun:sqlite adapter.
-- [x] **Docs site deploy**: `.github/workflows/docs.yml` builds apps/docs
-      and publishes dist/ to GitHub Pages (upload-pages-artifact +
-      deploy-pages), push-to-main + `apps/docs/**` path-gated. One-time
-      Settings→Pages→"GitHub Actions" source setting documented in
-      apps/docs/README (NOT auto-enabled); custom-domain / CF-Pages swap
-      noted there too.
+- [x] **Docs site deploy**: `apps/docs` builds to a Workers static-assets
+      bundle. CI validates it on normal changes; the version-tag release
+      workflow deploys it to `syncular.dev` only after npm and crates.io
+      publication succeeds. Setup and custom-domain details live in
+      `apps/docs/README.md`.
 
 ## 3. Demand-gated — build when the trigger fires
 

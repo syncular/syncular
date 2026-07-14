@@ -1,6 +1,6 @@
 {
   "name": "@syncular/crdt-yjs",
-  "version": "0.6.0",
+  "version": "0.0.0",
   "description": "Yjs CRDT integration for Syncular columns",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

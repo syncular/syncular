@@ -17,10 +17,18 @@
  */
 import { dirname, join } from 'node:path';
 import type { BunPlugin } from 'bun';
+import rootPackage from '../../../package.json';
 
 const appDir = join(import.meta.dir, '..');
 const frontendDir = join(appDir, 'src', 'frontend');
 const outDir = join(appDir, 'dist');
+
+function reflectReleaseVersion(text: string): string {
+  if (text.split('0.0.0').length - 1 !== 1) {
+    throw new Error('demo index must contain exactly one 0.0.0 placeholder');
+  }
+  return text.replace('0.0.0', rootPackage.version);
+}
 
 const bunSqliteStub: BunPlugin = {
   name: 'bun-sqlite-stub',
@@ -100,7 +108,11 @@ await Bun.write(
 );
 await Bun.write(
   join(outDir, 'index.html'),
-  Bun.file(join(frontendDir, 'index.html')),
+  reflectReleaseVersion(await Bun.file(join(frontendDir, 'index.html')).text()),
+);
+await Bun.write(
+  join(outDir, 'version.json'),
+  `${JSON.stringify({ version: rootPackage.version }, null, 2)}\n`,
 );
 for (const name of WASM_FILES) {
   await Bun.write(

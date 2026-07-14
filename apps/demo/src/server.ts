@@ -35,11 +35,19 @@ import {
   createSyncularHono,
 } from '@syncular/server-hono';
 import { Hono } from 'hono';
+import rootPackage from '../../../package.json';
 import { schema } from './syncular.generated';
 
 const PORT = Number(process.env.PORT ?? 8787);
 const PARTITION = 'demo';
 const ACTOR_ID = 'demo-user';
+
+function reflectReleaseVersion(text: string): string {
+  if (text.split('0.0.0').length - 1 !== 1) {
+    throw new Error('demo index must contain exactly one 0.0.0 placeholder');
+  }
+  return text.replace('0.0.0', rootPackage.version);
+}
 
 // -- sync server ------------------------------------------------------------
 
@@ -182,7 +190,9 @@ const appJs = await bundleText('main.js');
 const workerJs = await bundleText('worker.js');
 const indexHtml = await Bun.file(
   join(import.meta.dir, 'frontend', 'index.html'),
-).text();
+)
+  .text()
+  .then(reflectReleaseVersion);
 
 const wasmDir = dirname(
   Bun.resolveSync('@sqlite.org/sqlite-wasm', import.meta.dir),
@@ -248,6 +258,14 @@ const server = Bun.serve<SocketData, never>({
     }
     if (path === '/worker.js') {
       return staticResponse(workerJs, 'text/javascript; charset=utf-8');
+    }
+    if (path === '/version.json') {
+      return Response.json(
+        { version: rootPackage.version },
+        {
+          headers: STATIC_HEADERS,
+        },
+      );
     }
     if (path.startsWith('/vendor/sqlite-wasm/')) {
       const name = path.slice('/vendor/sqlite-wasm/'.length);

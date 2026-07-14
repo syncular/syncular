@@ -1,6 +1,6 @@
 {
   "name": "@syncular/crypto",
-  "version": "0.6.0",
+  "version": "0.0.0",
   "description": "Client-side E2EE primitives for Syncular (symmetric + asymmetric)",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

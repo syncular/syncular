@@ -1,6 +1,6 @@
 {
   "name": "@syncular/server-workers",
-  "version": "0.6.0",
+  "version": "0.0.0",
   "description": "Cloudflare Workers adapter for the Syncular sync server",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

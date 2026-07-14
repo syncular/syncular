@@ -2,7 +2,7 @@
   "name": "syncular-syql",
   "displayName": "Syncular .syql",
   "description": "SYQL revision-1 highlighting for typed queries, predicates, controls, reactive directives, and embedded SQLite.",
-  "version": "0.0.1",
+  "version": "0.0.0",
   "publisher": "syncular",
   "private": true,
   "engines": {

@@ -88,6 +88,7 @@ From the repository root:
 bun install --frozen-lockfile
 bun run check
 bun run build:packages
+bun run build:sites
 cargo fmt --manifest-path rust/Cargo.toml --all -- --check
 cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets -- -D warnings
 cargo test --manifest-path rust/Cargo.toml --workspace
@@ -116,17 +117,28 @@ SYNCULAR_PERF_GATE=1 SYNCULAR_TAURI_NATIVE_TEST=1 \
 
 ## Version bump
 
-Before tagging, update all of these to exactly the same version:
+`package.json` at the repository root is the only authored release-version
+source. Change its `version`, update the historical release notes above, and
+leave every managed child version at the committed `0.0.0` placeholder.
 
-- every `packages/*/package.json`, including the private conformance package;
-- the publishable crates and their internal version constraints under
-  `rust/crates/`;
-- `bindings/tauri/plugin/Cargo.toml` and its internal crate constraints;
-- the corresponding workspace package entries in `bun.lock`;
-- `rust/Cargo.lock` and `bindings/tauri/Cargo.lock`;
-- versioned install snippets and create-app templates.
+The placeholder applies to public and private npm manifests, publishable Cargo
+manifests and internal path constraints, the Flutter and VS Code package
+manifests, Bun/Cargo lockfile workspace entries, current install snippets, and
+the Tauri create-app template. Historical facts such as prior release notes or
+minimum-supported versions retain their real numbers.
 
-Then run `bun install` and both Cargo workspaces to validate their locks.
+Validate the authored state with:
+
+```sh
+bun install --frozen-lockfile
+bun run version:check
+```
+
+`scripts/version.ts` also provides `print`, `assert-tag`, and `materialize`.
+`materialize` is for disposable release checkouts: it reflects the root
+version into package/crate manifests, exact internal constraints, templates,
+and lockfiles, then validates the resulting release state. Do not commit its
+output.
 
 ### The `bun.lock` stamp pitfall
 
@@ -136,23 +148,28 @@ workspace `version` stamps, not directly from `package.json`. A plain
 those stamps. This caused 0.4.0 tarballs to pin sibling packages at 0.3.1 and
 create split-brain consumer installs.
 
-Always update the `bun.lock` workspace stamps as part of the version bump.
-`scripts/check-lockstep.mjs` enforces the source/lock agreement, and the release
-workflow also inspects every packed tarball before publishing it.
+The source-placeholder format eliminates that manual pitfall: every workspace
+stamp is committed as `0.0.0`, `scripts/version.ts materialize` rewrites the
+manifest and lockfile together, and the release workflow still inspects every
+packed tarball before publishing it.
 
 ## Automated publication
 
 The release is a commit on `main` followed by a version tag:
 
 ```sh
-git tag -a v0.6.0 -m "Syncular 0.6.0"
+VERSION=$(bun scripts/version.ts print)
+git tag -a "v$VERSION" -m "Syncular $VERSION"
 git push origin main
-git push origin v0.6.0
+git push origin "v$VERSION"
 ```
 
-`.github/workflows/release.yml` verifies the tag against package and crate
-versions, runs the npm gate, builds packages, validates packed dependency pins,
-and publishes in dependency order with trusted OIDC publishing.
+`.github/workflows/release.yml` verifies the tag against root `package.json`,
+materializes all distributable metadata, runs the npm and native gates, builds
+packages, validates packed dependency pins, and publishes in dependency order
+with trusted OIDC publishing. After both registries succeed, the same tagged
+checkout builds and deploys the versioned docs/landing page and public demo.
+Normal `main` pushes build those sites in CI but never deploy production.
 
 The npm publish order is:
 

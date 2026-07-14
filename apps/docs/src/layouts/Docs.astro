@@ -10,19 +10,15 @@
 // back to a normal full navigation automatically.
 import { ClientRouter } from 'astro:transitions';
 import { nav } from '../nav';
-// The published-release marker for the drift banner (RFC 0002 §1.3): the
-// docs deploy from main, so anything documented here that is newer than
-// this version has not shipped to npm/crates.io yet. Versions bump in
-// lockstep at release time (docs/RELEASE.md), so core's version IS the
-// release version.
-import corePkg from '../../../../packages/core/package.json';
+// package.json at the repository root is the one release-version authority.
+import rootPkg from '../../../../package.json';
 
 interface Props {
   title: string;
   active: string;
 }
 const { title, active } = Astro.props;
-const releasedVersion = corePkg.version;
+const releasedVersion = rootPkg.version;
 ---
 
 <!doctype html>
@@ -63,8 +59,7 @@ const releasedVersion = corePkg.version;
     </nav>
     <main>
       <div class="release-banner" role="note">
-        these docs track <code>main</code> · latest published release:{' '}
-        <code>{releasedVersion}</code>
+        documentation for published release <code>v{releasedVersion}</code>
       </div>
       <article>
         <slot />
