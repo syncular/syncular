@@ -16,29 +16,46 @@ query searchTasks(
     select id, title, done, priority, estimated_at
     from tasks
     where @scope(tasks.project_id = :projectId)
-      and when(needle) { @searchTitle(:needle) }
-      and when(minPriority) { priority >= :minPriority }
-      and when(openOnly) { done = 0 }
+      and when(needle) {
+        @searchTitle(:needle)
+      }
+      and when(minPriority) {
+        priority >= :minPriority
+      }
+      and when(openOnly) {
+        done = 0
+      }
   }
   sort sortBy default priorityDesc {
-    priorityAsc { priority asc, id asc }
-    priorityDesc { priority desc, id desc }
-    estimatedAtAsc { estimated_at asc, id asc }
-    estimatedAtDesc { estimated_at desc, id desc }
-    titleAsc { title asc, id asc }
-    titleDesc { title desc, id desc }
+    priorityAsc {
+      priority asc, id asc
+    }
+    priorityDesc {
+      priority desc, id desc
+    }
+    estimatedAtAsc {
+      estimated_at asc, id asc
+    }
+    estimatedAtDesc {
+      estimated_at desc, id desc
+    }
+    titleAsc {
+      title asc, id asc
+    }
+    titleDesc {
+      title desc, id desc
+    }
   }
   page pageSize default 50 max 200;
 }
 
-query taskEstimateRange(
-  projectId,
-  range?(start: integer, end: integer),
-) {
+query taskEstimateRange(projectId, range?(start: integer, end: integer)) {
   sql {
     select id, title, estimate
     from tasks
     where @scope(tasks.project_id = :projectId)
-      and when(range) { estimated_at between :start and :end }
+      and when(range) {
+        estimated_at between :start and :end
+      }
   }
 }

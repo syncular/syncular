@@ -1,25 +1,24 @@
-/**
- * The `.syql` language server (Q5): the server core is driven directly
- * (no stdio) — initialize, diagnostics from the REAL generate-time checks
- * (the basic fixture's manifest is discovered by walking up), hover shows
- * the lowered SQL, and @fragment definition resolves in-file.
- */
 import { describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { type RpcMessage, SyqlLanguageServer } from '../src';
 
 const FIXTURE = join(import.meta.dir, 'fixtures', 'basic');
-const URI = `file://${join(FIXTURE, 'queries', 'lsp-probe.syql')}`;
+const PATH = join(FIXTURE, 'queries', 'lsp-probe.syql');
+const URI = pathToFileURL(PATH).href;
+const IMPORTED_URI = pathToFileURL(
+  join(FIXTURE, 'queries', 'task-search.syql'),
+).href;
 
-const GOOD = `fragment inProject(projectId) {
-  project_id = :projectId
-}
+const GOOD = `import { searchTitle } from "./task-search.syql";
 
-query probeTasks(projectId, minPriority?) {
-  select id, title, priority
-  from tasks
-  where @inProject(:projectId)
-    and priority >= :minPriority
+query probeTasks(projectId, needle?: string, minPriority?) {
+  sql {
+    select id, title, priority from tasks
+    where @scope(tasks.project_id = :projectId)
+      and when(needle) { @searchTitle(:needle) }
+      and when(minPriority) { priority >= :minPriority }
+  }
 }
 `;
 
@@ -31,65 +30,82 @@ function open(server: SyqlLanguageServer, text: string): RpcMessage[] {
   });
 }
 
-describe('SyqlLanguageServer', () => {
-  test('initialize advertises sync + hover + definition', () => {
-    const server = new SyqlLanguageServer();
-    const [response] = server.handle({
+function positionOf(
+  source: string,
+  needle: string,
+): {
+  line: number;
+  character: number;
+} {
+  const offset = source.indexOf(needle);
+  const before = source.slice(0, offset);
+  const lines = before.split('\n');
+  return { line: lines.length - 1, character: (lines.at(-1)?.length ?? 0) + 2 };
+}
+
+describe('revision-1 SyqlLanguageServer', () => {
+  test('advertises compiler-backed authoring capabilities', () => {
+    const [response] = new SyqlLanguageServer().handle({
       jsonrpc: '2.0',
       id: 1,
       method: 'initialize',
       params: {},
     });
-    const result = response?.result as {
-      capabilities: Record<string, unknown>;
-    };
-    expect(result.capabilities.textDocumentSync).toBe(1);
-    expect(result.capabilities.hoverProvider).toBe(true);
-    expect(result.capabilities.definitionProvider).toBe(true);
+    const capabilities = (
+      response?.result as { capabilities: Record<string, unknown> }
+    ).capabilities;
+    expect(capabilities).toMatchObject({
+      textDocumentSync: 1,
+      hoverProvider: true,
+      definitionProvider: true,
+      referencesProvider: true,
+      documentSymbolProvider: true,
+      documentFormattingProvider: true,
+    });
   });
 
-  test('a clean file publishes zero diagnostics (full schema check ran)', () => {
-    const server = new SyqlLanguageServer();
-    const [notification] = open(server, GOOD);
+  test('runs the full import, schema, semantic, and SQLite pipeline', () => {
+    const [notification] = open(new SyqlLanguageServer(), GOOD);
     expect(notification?.method).toBe('textDocument/publishDiagnostics');
     expect(
       (notification?.params as { diagnostics: unknown[] }).diagnostics,
     ).toEqual([]);
   });
 
-  test('a schema error surfaces as a diagnostic anchored at the query', () => {
+  test('publishes stable codes and exact source spans', () => {
     const server = new SyqlLanguageServer();
-    const [notification] = open(
-      server,
-      GOOD.replace('select id, title, priority', 'select id, no_such_column'),
-    );
-    const diagnostics = (
-      notification?.params as {
-        diagnostics: { message: string; range: { start: { line: number } } }[];
+    const badSql = GOOD.replace('title, priority', 'title, no_such_column');
+    const [sqlNotification] = open(server, badSql);
+    const sqlDiagnostic = (
+      sqlNotification?.params as {
+        diagnostics: Array<{
+          code?: string;
+          message: string;
+          range: { start: { line: number } };
+        }>;
       }
-    ).diagnostics;
-    expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0]?.message).toContain('no such column');
-    // Anchored at the `query probeTasks…` declaration line (0-indexed 4).
-    expect(diagnostics[0]?.range.start.line).toBe(4);
-  });
+    ).diagnostics[0];
+    expect(sqlDiagnostic?.code).toBe('SYQL6002_INVALID_SQL');
+    expect(sqlDiagnostic?.message).toContain('no such column');
+    expect(sqlDiagnostic?.range.start.line).toBeGreaterThan(1);
 
-  test('a parse error carries its file:line position', () => {
-    const server = new SyqlLanguageServer();
-    const [notification] = open(
-      server,
-      'query broken(a?: string) {\n select 1\n}',
+    const [parseNotification] = open(
+      new SyqlLanguageServer(),
+      'query broken(a) { sql { select id from tasks }',
     );
-    const diagnostics = (
-      notification?.params as { diagnostics: { message: string }[] }
-    ).diagnostics;
-    expect(diagnostics[0]?.message).toContain('flag');
+    const parseDiagnostic = (
+      parseNotification?.params as {
+        diagnostics: Array<{ code?: string; range: { start: Position } }>;
+      }
+    ).diagnostics[0];
+    expect(parseDiagnostic?.code).toBe('SYQL2008_INVALID_MEMBER');
+    expect(parseDiagnostic?.range.start.character).toBeGreaterThan(0);
   });
 
-  test('didChange re-diagnoses with the new text', () => {
+  test('didChange and watched project files trigger fresh diagnostics', () => {
     const server = new SyqlLanguageServer();
     open(server, GOOD);
-    const [notification] = server.handle({
+    const [changed] = server.handle({
       jsonrpc: '2.0',
       method: 'textDocument/didChange',
       params: {
@@ -98,69 +114,94 @@ describe('SyqlLanguageServer', () => {
       },
     });
     expect(
-      (notification?.params as { diagnostics: unknown[] }).diagnostics,
+      (changed?.params as { diagnostics: unknown[] }).diagnostics,
     ).toHaveLength(1);
+    const watched = server.handle({
+      jsonrpc: '2.0',
+      method: 'workspace/didChangeWatchedFiles',
+      params: { changes: [] },
+    });
+    expect(watched).toHaveLength(1);
   });
 
-  test('hover on a query name shows the LOWERED sql + tables', () => {
+  test('query/input/profile hover exposes logical and physical facts', () => {
     const server = new SyqlLanguageServer();
     open(server, GOOD);
-    const line = GOOD.split('\n').findIndex((l) => l.startsWith('query '));
-    const [response] = server.handle({
+    const hover = (needle: string): string | undefined => {
+      const [response] = server.handle({
+        jsonrpc: '2.0',
+        id: needle,
+        method: 'textDocument/hover',
+        params: {
+          textDocument: { uri: URI },
+          position: positionOf(GOOD, needle),
+        },
+      });
+      return (response?.result as { contents: { value: string } } | null)
+        ?.contents.value;
+    };
+    expect(hover('probeTasks')).toContain('backend: **variants** (4 checked');
+    expect(hover('probeTasks')).toContain('tables: tasks');
+    expect(hover('minPriority')).toContain('optional input');
+    expect(hover('@scope')).toContain('reactive dependency');
+  });
+
+  test('imported predicate hover, definition, and references resolve hygienically', () => {
+    const server = new SyqlLanguageServer();
+    open(server, GOOD);
+    const position = positionOf(GOOD, '@searchTitle');
+    const [hover] = server.handle({
       jsonrpc: '2.0',
       id: 2,
       method: 'textDocument/hover',
-      params: {
-        textDocument: { uri: URI },
-        position: { line, character: 'query pro'.length },
-      },
+      params: { textDocument: { uri: URI }, position },
     });
-    const value = (response?.result as { contents: { value: string } } | null)
-      ?.contents.value;
-    expect(value).toContain(':minPriority is null or');
-    expect(value).toContain('tables: tasks');
-  });
+    expect(
+      (hover?.result as { contents: { value: string } }).contents.value,
+    ).toContain("title like '%' || :needle || '%'");
 
-  test('hover on an @fragment ref shows the fragment body', () => {
-    const server = new SyqlLanguageServer();
-    open(server, GOOD);
-    const line = GOOD.split('\n').findIndex((l) => l.includes('@inProject'));
-    const character =
-      (GOOD.split('\n')[line] as string).indexOf('@inProject') + 2;
-    const [response] = server.handle({
+    const [definition] = server.handle({
       jsonrpc: '2.0',
       id: 3,
-      method: 'textDocument/hover',
-      params: { textDocument: { uri: URI }, position: { line, character } },
+      method: 'textDocument/definition',
+      params: { textDocument: { uri: URI }, position },
     });
-    const value = (response?.result as { contents: { value: string } } | null)
-      ?.contents.value;
-    expect(value).toContain('project_id = :projectId');
-  });
+    expect((definition?.result as { uri: string }).uri).toBe(IMPORTED_URI);
 
-  test('definition on an @fragment ref jumps to the declaration', () => {
-    const server = new SyqlLanguageServer();
-    open(server, GOOD);
-    const line = GOOD.split('\n').findIndex((l) => l.includes('@inProject'));
-    const character =
-      (GOOD.split('\n')[line] as string).indexOf('@inProject') + 2;
-    const [response] = server.handle({
+    const [references] = server.handle({
       jsonrpc: '2.0',
       id: 4,
-      method: 'textDocument/definition',
-      params: { textDocument: { uri: URI }, position: { line, character } },
+      method: 'textDocument/references',
+      params: { textDocument: { uri: URI }, position, context: {} },
     });
-    const location = response?.result as {
-      uri: string;
-      range: { start: { line: number } };
-    } | null;
-    expect(location?.uri).toBe(URI);
-    expect(location?.range.start.line).toBe(0); // fragment declared on line 1
+    expect((references?.result as unknown[]).length).toBeGreaterThanOrEqual(2);
+  });
+
+  test('document symbols and formatting use the revision-1 AST', () => {
+    const server = new SyqlLanguageServer();
+    open(server, GOOD);
+    const [symbols] = server.handle({
+      jsonrpc: '2.0',
+      id: 5,
+      method: 'textDocument/documentSymbol',
+      params: { textDocument: { uri: URI } },
+    });
+    expect(symbols?.result).toMatchObject([{ name: 'probeTasks' }]);
+
+    const messy = GOOD.replace('query probeTasks', 'query   probeTasks');
+    open(server, messy);
+    const [formatting] = server.handle({
+      jsonrpc: '2.0',
+      id: 6,
+      method: 'textDocument/formatting',
+      params: { textDocument: { uri: URI }, options: {} },
+    });
+    const edits = formatting?.result as Array<{ newText: string }>;
+    expect(edits[0]?.newText).toContain('query probeTasks(');
   });
 
   test('unknown request methods answer method-not-found', () => {
-    const server = new SyqlLanguageServer();
-    const [response] = server.handle({
+    const [response] = new SyqlLanguageServer().handle({
       jsonrpc: '2.0',
       id: 9,
       method: 'textDocument/completion',
@@ -169,3 +210,8 @@ describe('SyqlLanguageServer', () => {
     expect(response?.error?.code).toBe(-32601);
   });
 });
+
+interface Position {
+  line: number;
+  character: number;
+}

@@ -1,0 +1,57 @@
+{
+  "$schema": "../../schema/lowering-fixture.schema.json",
+  "revision": 1,
+  "cases": [
+    {
+      "name": "tri-state-controls-sort-and-page",
+      "source": "query list(listId: string, status?: string | null, unassigned?: switch) {\n  sql {\n    select id, status, created_at from todos\n    where @scope(todos.list_id = :listId)\n      and when(status) { status is :status }\n      and when(unassigned) { assignee_id is null }\n  }\n  sort sortBy default newest {\n    newest { created_at desc, id desc }\n    oldest { created_at asc, id asc }\n  }\n  page pageSize default 2 max 4;\n  identity by id;\n}",
+      "selectedBackend": "variants",
+      "activationControls": ["status", "unassigned"],
+      "neutralizedStatements": 2,
+      "enumeratedStatements": 8,
+      "queryIrVersion": 3,
+      "requiredSql": [
+        "order by created_at desc, id desc",
+        "limit min(coalesce(:__syqlPageSize, 2), 4)"
+      ],
+      "forbiddenSql": [
+        ":status is null or",
+        "case when :__syqlActive"
+      ],
+      "executions": [
+        {
+          "name": "all-oldest",
+          "active": [],
+          "values": { "listId": "l1" },
+          "sort": "oldest",
+          "page": 4,
+          "ids": ["t1", "t2", "t3", "t4"]
+        },
+        {
+          "name": "present-null",
+          "active": ["status"],
+          "values": { "listId": "l1", "status": null },
+          "sort": "oldest",
+          "page": 4,
+          "ids": ["t1"]
+        },
+        {
+          "name": "present-value",
+          "active": ["status"],
+          "values": { "listId": "l1", "status": "open" },
+          "sort": "newest",
+          "page": 4,
+          "ids": ["t4", "t2"]
+        },
+        {
+          "name": "switch",
+          "active": ["unassigned"],
+          "values": { "listId": "l1" },
+          "sort": "newest",
+          "page": 4,
+          "ids": ["t3", "t1"]
+        }
+      ]
+    }
+  ]
+}
