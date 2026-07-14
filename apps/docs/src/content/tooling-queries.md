@@ -12,8 +12,10 @@ There are two source frontends:
   predicates, reusable imported predicates, reactive scope facts, finite sort
   profiles, bounded pages, and proven row identity.
 
-Both lower into QueryIR v3 and the same target emitters. The normative language
-definition is the [SYQL specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md).
+Both lower into QueryIR v3 and the same target emitters. The dedicated
+[SYQL language guide](/syql/) explains the authoring model; the
+[SYQL specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md)
+defines the normative language contract.
 
 ## Plain `.sql`
 
@@ -56,6 +58,9 @@ through `mutate()` and the outbox.
 Use `.syql` when a query needs conditional inputs, reusable predicates,
 reactive coverage, or user-selectable ordering. SQL remains the expression
 language; SYQL supplies a structured compiler boundary around it.
+
+For a focused introduction and complete language tour, see the dedicated
+[SYQL language guide](/syql/).
 
 ```syql
 import { matchesTitle } from "./todo-predicates.syql";
@@ -268,6 +273,7 @@ backend execution equivalence, QueryIR v3, and formatter output.
 
 ## Where to go next
 
+- [SYQL language guide](/syql/)
 - [Schema and typegen](/guide-schema/)
 - [React](/platform-react/)
 - [SYQL language specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md)

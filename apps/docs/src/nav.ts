@@ -61,13 +61,14 @@ export const nav: readonly NavSection[] = [
     items: [
       { slug: 'guide-schema', title: 'Schema & typegen' },
       { slug: 'tooling-queries', title: 'Named queries' },
+      { slug: 'syql', title: 'SYQL language' },
       { slug: 'tooling-testing', title: 'Testing your app' },
     ],
   },
   {
     title: 'Reference',
     items: [
-      { slug: 'reference', title: 'Spec & package map' },
+      { slug: 'reference', title: 'Specifications & packages' },
       { slug: 'guide-conformance', title: 'Protocol & conformance' },
       { slug: 'benchmarks', title: 'Benchmarks' },
       { slug: 'troubleshooting', title: 'Troubleshooting' },
