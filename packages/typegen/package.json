@@ -1,6 +1,6 @@
 {
   "name": "@syncular/typegen",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Syncular schema-to-TypeScript type generator and the `syncular` CLI",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
