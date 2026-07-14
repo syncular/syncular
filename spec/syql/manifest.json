@@ -1,0 +1,17 @@
+{
+  "$schema": "./schema/manifest.schema.json",
+  "language": "SYQL",
+  "revision": 1,
+  "fixtureSchemaRevision": 1,
+  "sqliteProfile": "3.46.0",
+  "families": [
+    {
+      "kind": "lexical",
+      "path": "v1/lexical/core.json"
+    },
+    {
+      "kind": "syntax",
+      "path": "v1/syntax/container.json"
+    }
+  ]
+}

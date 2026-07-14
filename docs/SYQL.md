@@ -429,13 +429,13 @@ it active. A switch name MUST NOT appear as a user bind.
 A group is always optional and contains at least two members:
 
 ```syql
-range?(from: integer, to: integer)
+range?(start: integer, end: integer)
 ```
 
 Its abstract runtime value is:
 
 ```text
-Absent | Present({ from: value, to: value })
+Absent | Present({ start: value, end: value })
 ```
 
 Every member is required when the group is present. A generated API MUST expose
@@ -611,7 +611,7 @@ where @scope(todos.list_id = :listId)
     status = :status
   }
   and when(range, includeArchived) {
-    created_at between :from and :to
+    created_at between :start and :end
     and archived_at is not null
   }
 ```
@@ -1635,7 +1635,7 @@ import {
 query listTodos(
   listId,
   q?,
-  range?(from: integer, to: integer),
+  range?(start: integer, end: integer),
 ) {
   sql {
     select id, title, created_at
@@ -1646,7 +1646,7 @@ query listTodos(
         @matchesTitle(:q)
       }
       and when(range) {
-        created_at between :from and :to
+        created_at between :start and :end
       }
   }
 
@@ -1816,15 +1816,15 @@ The author must write an explicit conditional conjunct.
 ### 25.3 Partial group in source model
 
 ```syql
-query bad(range?(from, to)) {
+query bad(range?(start, end)) {
   sql {
     select id from todos
-    where when(range) { created_at >= :from }
+    where when(range) { created_at >= :start }
   }
 }
 ```
 
-The group member `to` is unused, so the declaration is invalid.
+The group member `end` is unused, so the declaration is invalid.
 
 ### 25.4 Unrelated coverage assertion
 

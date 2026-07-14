@@ -23,3 +23,8 @@ export * from './query';
 export * from './query-ir';
 export * from './sql';
 export * from './syql';
+export * from './syql-ast';
+export * from './syql-lexer';
+export * from './syql-modules';
+export * from './syql-parser';
+export * from './syql-template-parser';
