@@ -46,7 +46,8 @@
       "required": [
         "name", "source", "selectedBackend", "activationControls",
         "neutralizedStatements", "enumeratedStatements", "queryIrVersion",
-        "requiredSql", "forbiddenSql", "executions"
+        "publicInputKinds", "identity", "coverage", "requiredSql",
+        "forbiddenSql", "executions"
       ],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
@@ -56,6 +57,24 @@
         "neutralizedStatements": { "type": "integer", "minimum": 1 },
         "enumeratedStatements": { "type": "integer", "minimum": 1 },
         "queryIrVersion": { "const": 3 },
+        "publicInputKinds": {
+          "type": "array",
+          "items": { "enum": ["value", "group", "switch", "sort", "page"] }
+        },
+        "identity": { "type": "array", "items": { "type": "string" } },
+        "coverage": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["table", "variable", "units"],
+            "properties": {
+              "table": { "type": "string" },
+              "variable": { "type": "string" },
+              "units": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
         "requiredSql": { "type": "array", "items": { "type": "string" } },
         "forbiddenSql": { "type": "array", "items": { "type": "string" } },
         "executions": { "type": "array", "items": { "$ref": "#/$defs/execution" } }

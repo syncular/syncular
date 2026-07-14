@@ -26,11 +26,11 @@
         "required": ["kind", "path"],
         "properties": {
           "kind": {
-            "enum": ["lexical", "syntax", "semantic", "lowering", "formatter"]
+            "enum": ["lexical", "syntax", "semantic", "lowering", "formatter", "emitter"]
           },
           "path": {
             "type": "string",
-            "pattern": "^v1/(lexical|syntax|semantic|lowering|formatter)/[A-Za-z0-9._/-]+\\.json$"
+            "pattern": "^v1/(lexical|syntax|semantic|lowering|formatter|emitter)/[A-Za-z0-9._/-]+\\.json$"
           }
         }
       }

@@ -4,12 +4,17 @@
   "cases": [
     {
       "name": "tri-state-controls-sort-and-page",
-      "source": "query list(listId: string, status?: string | null, unassigned?: switch) {\n  sql {\n    select id, status, created_at from todos\n    where @scope(todos.list_id = :listId)\n      and when(status) { status is :status }\n      and when(unassigned) { assignee_id is null }\n  }\n  sort sortBy default newest {\n    newest { created_at desc, id desc }\n    oldest { created_at asc, id asc }\n  }\n  page pageSize default 2 max 4;\n  identity by id;\n}",
+      "source": "query list(listId: string, status?: string | null, unassigned?: switch) {\n  sql {\n    select id, status, created_at from todos\n    where @cover(todos.list_id = :listId)\n      and when(status) { status is :status }\n      and when(unassigned) { assignee_id is null }\n  }\n  sort sortBy default newest {\n    newest { created_at desc, id desc }\n    oldest { created_at asc, id asc }\n  }\n  page pageSize default 2 max 4;\n  identity by id;\n}",
       "selectedBackend": "variants",
       "activationControls": ["status", "unassigned"],
       "neutralizedStatements": 2,
       "enumeratedStatements": 8,
       "queryIrVersion": 3,
+      "publicInputKinds": ["value", "value", "switch", "sort", "page"],
+      "identity": ["id"],
+      "coverage": [
+        { "table": "todos", "variable": "list_id", "units": ["listId"] }
+      ],
       "requiredSql": [
         "order by created_at desc, id desc",
         "limit min(coalesce(:__syqlPageSize, 2), 4)"

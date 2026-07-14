@@ -89,12 +89,22 @@
     "invalidCase": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "entry", "sources", "code"],
+      "required": ["name", "entry", "sources", "code", "start"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
         "entry": { "type": "string" },
         "sources": { "$ref": "#/$defs/sourceFile" },
-        "code": { "type": "string", "pattern": "^SYQL[0-9]{4}_[A-Z0-9_]+$" }
+        "code": { "type": "string", "pattern": "^SYQL[0-9]{4}_[A-Z0-9_]+$" },
+        "start": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["offset", "line", "column"],
+          "properties": {
+            "offset": { "type": "integer", "minimum": 0 },
+            "line": { "type": "integer", "minimum": 1 },
+            "column": { "type": "integer", "minimum": 1 }
+          }
+        }
       }
     }
   }

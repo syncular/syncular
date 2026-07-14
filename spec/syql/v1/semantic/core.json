@@ -63,7 +63,8 @@
       "sources": {
         "bad.syql": "query bad(id) { sql { select id from todos where id = :missing } }"
       },
-      "code": "SYQL5006_UNDECLARED_BIND"
+      "code": "SYQL5006_UNDECLARED_BIND",
+      "start": { "offset": 54, "line": 1, "column": 55 }
     },
     {
       "name": "optional-bind-without-dominance",
@@ -71,7 +72,8 @@
       "sources": {
         "bad.syql": "query bad(status?) { sql { select id from todos where status = :status } }"
       },
-      "code": "SYQL5009_MISSING_DOMINANCE"
+      "code": "SYQL5009_MISSING_DOMINANCE",
+      "start": { "offset": 63, "line": 1, "column": 64 }
     }
   ]
 }
