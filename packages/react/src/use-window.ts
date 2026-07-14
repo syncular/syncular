@@ -25,6 +25,7 @@ import {
   windowComplete,
 } from '@syncular/client';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { FrameScheduler } from './query-churn';
 import { useSyncClient } from './use-client';
 
 export interface UseWindowResult {
@@ -59,7 +60,7 @@ export function useWindow(base: WindowBase): UseWindowResult {
   // biome-ignore lint/correctness/useExhaustiveDependencies: baseKey re-keys the effect for a fresh base object
   useEffect(() => {
     let cancelled = false;
-    const read = () => {
+    const read = (): Promise<void> =>
       Promise.resolve(client.windowState(baseRef.current))
         .then((next) => {
           if (!cancelled) setState(next);
@@ -67,15 +68,36 @@ export function useWindow(base: WindowBase): UseWindowResult {
         .catch(() => {
           /* transient — the next invalidation re-reads */
         });
-    };
-    read();
+    void read();
     // Re-read when the base's table changes locally: a deferred eviction
-    // (E1) completing or a re-entry bootstrapping both invalidate it.
+    // (E1) completing, a re-entry bootstrapping, or a bootstrap completing
+    // all invalidate it. The re-read is frame-coalesced like the query
+    // hooks' re-runs, then deferred ONE MORE boundary before issuing: every
+    // query re-run for the same event has issued its read by then, so on
+    // the in-order client channel the pendency verdict resolves AFTER the
+    // rows it vouches for. Bootstrap-completion commit order is therefore
+    // rows first, pending→complete second — a consumer gating "empty" on
+    // `isComplete` never paints a false empty over a stale result (§4.8
+    // honesty at the render boundary, not just in the oracle). Both
+    // boundaries run INSIDE the scheduler (a two-phase callback re-arming
+    // itself once) so a fire parked in a suspended rAF stays covered by the
+    // hidden-document rescue — a bare second rAF would not be.
+    let armed = false;
+    const scheduler = new FrameScheduler(() => {
+      if (!armed) {
+        armed = true;
+        scheduler.schedule(); // boundary two via the dirty/re-run contract
+        return;
+      }
+      armed = false;
+      return read();
+    });
     const unsubscribe = client.onInvalidate((event) => {
-      if (event.tables.has(baseRef.current.table)) read();
+      if (event.tables.has(baseRef.current.table)) scheduler.schedule();
     });
     return () => {
       cancelled = true;
+      scheduler.dispose();
       unsubscribe();
     };
   }, [client, baseKey]);

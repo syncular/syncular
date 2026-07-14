@@ -113,6 +113,21 @@ verification; push is Benjamin's alone).
       residual: the tauri plugin's coarse `invalidate` derivation does
       not fire on a row-less sync round, so a bridge-side live oracle
       re-reads on the next data event rather than on the flip itself.
+      **0.4.1 addendum — render-boundary ordering**: the honest oracle
+      alone still painted one false-"empty" frame per ui-poc list switch:
+      `useWindow` re-read `windowState` synchronously inside the
+      invalidation dispatch while query hooks defer to the next frame, so
+      on the FIFO handle channel the pending→complete verdict resolved
+      (and committed) BEFORE the rows it vouches for. Fixed in
+      `use-window.ts`: the re-read is frame-coalesced through a
+      `FrameScheduler` two-phase callback (first fire re-arms, second
+      reads — both boundaries inside the scheduler so the hidden-document
+      rescue covers them); every same-event query issues first, the
+      verdict resolves after the rows on the in-order channel.
+      Regression-locked by the hooks test "an invalidation issues the
+      query re-read BEFORE the windowState re-read" (proven failing
+      pre-fix). Verified end-to-end in ui-poc: 12/12 list switches paint
+      skeleton→rows with zero false-empty frames.
 - [ ] **W2 TTL sugar** (codegen creation-time bucket columns + window
       helpers) — *trigger: first real windowing app's feedback on bucket
       granularity*. W1 already does time-windowing manually.
