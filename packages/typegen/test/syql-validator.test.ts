@@ -296,6 +296,56 @@ describe('revision-1 SYQL schema/SQL validation', () => {
     }
   });
 
+  test('enforces the portable SQLite 3.46.0 function and collation profile', () => {
+    const accepted = validate(`query q() {
+      sql {
+        select id,
+          lower(title) as folded,
+          json_extract('{"value": 1}', '$.value') as extracted,
+          iif(status is null, 'none', status) as normalized
+        from todos
+        order by title collate nocase, id
+      }
+    }`).queries[0];
+    expect(accepted?.analysis.columns.map((column) => column.name)).toEqual([
+      'id',
+      'folded',
+      'extracted',
+      'normalized',
+    ]);
+
+    for (const expression of [
+      "unistr('\\u0041')",
+      'sqrt(position)',
+      "load_extension('extension')",
+      "iif(status is null, 'none')",
+    ]) {
+      const error = frontendError(() =>
+        validate(
+          `query q() { sql { select id, ${expression} as value from todos } }`,
+        ),
+      );
+      expect(error.code).toBe('SYQL6002_INVALID_SQL');
+      expect(error.message).toContain('SQLite 3.46.0');
+    }
+
+    for (const expression of ['date()', "strftime('%Y')"]) {
+      const error = frontendError(() =>
+        validate(
+          `query q() { sql { select id, ${expression} as value from todos } }`,
+        ),
+      );
+      expect(error.code).toBe('SYQL6003_NONDETERMINISTIC_SQL');
+    }
+
+    const collation = frontendError(() =>
+      validate(`query q() {
+        sql { select id from todos order by title collate unicode, id }
+      }`),
+    );
+    expect(collation.code).toBe('SYQL6002_INVALID_SQL');
+  });
+
   test('uses all SQL evidence for types and accepts explicit uninferrable types', () => {
     const conflict = frontendError(() =>
       validate(`query q(value) {

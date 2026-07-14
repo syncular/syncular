@@ -69,6 +69,21 @@
       "name": "window-without-proof",
       "source": "query unstable() { sql { select id, row_number() over (order by id) as rank from todos } }",
       "code": "SYQL6003_NONDETERMINISTIC_SQL"
+    },
+    {
+      "name": "post-floor-function",
+      "source": "query postFloor() { sql { select id, unistr('\\u0041') as value from todos } }",
+      "code": "SYQL6002_INVALID_SQL"
+    },
+    {
+      "name": "compile-option-function",
+      "source": "query extensionFunction() { sql { select id, sqrt(created_at) as value from todos } }",
+      "code": "SYQL6002_INVALID_SQL"
+    },
+    {
+      "name": "post-floor-iif-arity",
+      "source": "query postFloorArity() { sql { select id, iif(status is null, 'none') as value from todos } }",
+      "code": "SYQL6002_INVALID_SQL"
     }
   ]
 }
