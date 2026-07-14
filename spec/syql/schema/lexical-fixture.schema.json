@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://syncular.dev/schema/syql/lexical-fixture-v1.json",
+  "title": "SYQL revision-1 lexical fixture family",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["revision", "cases", "invalid"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "revision": { "const": 1 },
+    "cases": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/validCase" }
+    },
+    "invalid": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/invalidCase" }
+    }
+  },
+  "$defs": {
+    "position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["offset", "line", "column"],
+      "properties": {
+        "offset": { "type": "integer", "minimum": 0 },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "token": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "text", "start", "end"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "whitespace",
+            "line-comment",
+            "block-comment",
+            "identifier",
+            "number",
+            "string",
+            "quoted-identifier",
+            "import-path",
+            "blob",
+            "bind",
+            "at-identifier",
+            "punctuation",
+            "operator",
+            "eof"
+          ]
+        },
+        "text": { "type": "string" },
+        "start": { "$ref": "#/$defs/position" },
+        "end": { "$ref": "#/$defs/position" }
+      }
+    },
+    "validCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source", "tokens"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "source": { "type": "string" },
+        "tokens": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/token" }
+        }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "start"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^SYQL[0-9]{4}_[A-Z0-9_]+$" },
+        "start": { "$ref": "#/$defs/position" }
+      }
+    },
+    "invalidCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source", "diagnostic"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "source": { "type": "string" },
+        "diagnostic": { "$ref": "#/$defs/diagnostic" }
+      }
+    }
+  }
+}

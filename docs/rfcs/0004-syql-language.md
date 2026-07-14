@@ -104,7 +104,7 @@ described an invariant without giving host languages a way to enforce it.
 Named groups solve this at the type boundary:
 
 ```syql
-range?(from, to)
+range?(start, end)
 ```
 
 becomes one optional `range` object/struct with two required members.
@@ -276,7 +276,7 @@ predicate matchesTitle(q) {
 query listTodos(
   listId,
   status?,
-  range?(from, to),
+  range?(start, end),
   q?,
   unassigned?: switch,
 ) {
@@ -289,7 +289,7 @@ query listTodos(
         status = :status
       }
       and when(range) {
-        created_at between :from and :to
+        created_at between :start and :end
       }
       and when(q) {
         @matchesTitle(:q)
@@ -369,7 +369,7 @@ A `when` node is an entire top-level `WHERE` or `HAVING` conjunct:
 ```syql
 and when(status, range) {
   status = :status
-  and created_at between :from and :to
+  and created_at between :start and :end
 }
 ```
 

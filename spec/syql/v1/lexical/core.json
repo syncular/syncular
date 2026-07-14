@@ -1,0 +1,154 @@
+{
+  "$schema": "../../schema/lexical-fixture.schema.json",
+  "revision": 1,
+  "cases": [
+    {
+      "name": "atomic-tokens",
+      "source": "'a  b; :x' \"or\"\"der\" X'CAFE' -- } :no\r\n",
+      "tokens": [
+        {
+          "kind": "string",
+          "text": "'a  b; :x'",
+          "start": { "offset": 0, "line": 1, "column": 1 },
+          "end": { "offset": 10, "line": 1, "column": 11 }
+        },
+        {
+          "kind": "whitespace",
+          "text": " ",
+          "start": { "offset": 10, "line": 1, "column": 11 },
+          "end": { "offset": 11, "line": 1, "column": 12 }
+        },
+        {
+          "kind": "quoted-identifier",
+          "text": "\"or\"\"der\"",
+          "start": { "offset": 11, "line": 1, "column": 12 },
+          "end": { "offset": 20, "line": 1, "column": 21 }
+        },
+        {
+          "kind": "whitespace",
+          "text": " ",
+          "start": { "offset": 20, "line": 1, "column": 21 },
+          "end": { "offset": 21, "line": 1, "column": 22 }
+        },
+        {
+          "kind": "blob",
+          "text": "X'CAFE'",
+          "start": { "offset": 21, "line": 1, "column": 22 },
+          "end": { "offset": 28, "line": 1, "column": 29 }
+        },
+        {
+          "kind": "whitespace",
+          "text": " ",
+          "start": { "offset": 28, "line": 1, "column": 29 },
+          "end": { "offset": 29, "line": 1, "column": 30 }
+        },
+        {
+          "kind": "line-comment",
+          "text": "-- } :no",
+          "start": { "offset": 29, "line": 1, "column": 30 },
+          "end": { "offset": 37, "line": 1, "column": 38 }
+        },
+        {
+          "kind": "whitespace",
+          "text": "\r\n",
+          "start": { "offset": 37, "line": 1, "column": 38 },
+          "end": { "offset": 39, "line": 2, "column": 1 }
+        },
+        {
+          "kind": "eof",
+          "text": "",
+          "start": { "offset": 39, "line": 2, "column": 1 },
+          "end": { "offset": 39, "line": 2, "column": 1 }
+        }
+      ]
+    },
+    {
+      "name": "operators",
+      "source": "a->>b<=c<>d||e<<f",
+      "tokens": [
+        {
+          "kind": "identifier",
+          "text": "a",
+          "start": { "offset": 0, "line": 1, "column": 1 },
+          "end": { "offset": 1, "line": 1, "column": 2 }
+        },
+        {
+          "kind": "operator",
+          "text": "->>",
+          "start": { "offset": 1, "line": 1, "column": 2 },
+          "end": { "offset": 4, "line": 1, "column": 5 }
+        },
+        {
+          "kind": "identifier",
+          "text": "b",
+          "start": { "offset": 4, "line": 1, "column": 5 },
+          "end": { "offset": 5, "line": 1, "column": 6 }
+        },
+        {
+          "kind": "operator",
+          "text": "<=",
+          "start": { "offset": 5, "line": 1, "column": 6 },
+          "end": { "offset": 7, "line": 1, "column": 8 }
+        },
+        {
+          "kind": "identifier",
+          "text": "c",
+          "start": { "offset": 7, "line": 1, "column": 8 },
+          "end": { "offset": 8, "line": 1, "column": 9 }
+        },
+        {
+          "kind": "operator",
+          "text": "<>",
+          "start": { "offset": 8, "line": 1, "column": 9 },
+          "end": { "offset": 10, "line": 1, "column": 11 }
+        },
+        {
+          "kind": "identifier",
+          "text": "d",
+          "start": { "offset": 10, "line": 1, "column": 11 },
+          "end": { "offset": 11, "line": 1, "column": 12 }
+        },
+        {
+          "kind": "operator",
+          "text": "||",
+          "start": { "offset": 11, "line": 1, "column": 12 },
+          "end": { "offset": 13, "line": 1, "column": 14 }
+        },
+        {
+          "kind": "identifier",
+          "text": "e",
+          "start": { "offset": 13, "line": 1, "column": 14 },
+          "end": { "offset": 14, "line": 1, "column": 15 }
+        },
+        {
+          "kind": "operator",
+          "text": "<<",
+          "start": { "offset": 14, "line": 1, "column": 15 },
+          "end": { "offset": 16, "line": 1, "column": 17 }
+        },
+        {
+          "kind": "identifier",
+          "text": "f",
+          "start": { "offset": 16, "line": 1, "column": 17 },
+          "end": { "offset": 17, "line": 1, "column": 18 }
+        },
+        {
+          "kind": "eof",
+          "text": "",
+          "start": { "offset": 17, "line": 1, "column": 18 },
+          "end": { "offset": 17, "line": 1, "column": 18 }
+        }
+      ]
+    }
+  ],
+  "invalid": [
+    {
+      "name": "unterminated-string",
+      "source": "select 'nope",
+      "diagnostic": {
+        "code": "SYQL1001_UNTERMINATED_STRING",
+        "start": { "offset": 7, "line": 1, "column": 8 }
+      }
+    }
+  ]
+}

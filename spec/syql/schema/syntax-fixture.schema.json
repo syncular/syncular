@@ -1,0 +1,336 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://syncular.dev/schema/syql/syntax-fixture-v1.json",
+  "title": "SYQL revision-1 syntax fixture family",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["revision", "cases", "invalid"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "revision": { "const": 1 },
+    "cases": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/validCase" }
+    },
+    "invalid": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/invalidCase" }
+    }
+  },
+  "$defs": {
+    "position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["offset", "line", "column"],
+      "properties": {
+        "offset": { "type": "integer", "minimum": 0 },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "semanticAst": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "revision", "imports", "declarations"],
+      "properties": {
+        "kind": { "const": "syql-file" },
+        "revision": { "const": 1 },
+        "imports": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/import" }
+        },
+        "declarations": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "$ref": "#/$defs/predicate" },
+              { "$ref": "#/$defs/query" }
+            ]
+          }
+        }
+      }
+    },
+    "import": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "items"],
+      "properties": {
+        "path": { "type": "string" },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["imported", "local"],
+            "properties": {
+              "imported": { "$ref": "#/$defs/camelName" },
+              "local": { "$ref": "#/$defs/camelName" }
+            }
+          }
+        }
+      }
+    },
+    "camelName": { "type": "string", "pattern": "^[a-z][A-Za-z0-9]*$" },
+    "valueType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base", "nullable"],
+      "properties": {
+        "base": {
+          "enum": [
+            "string",
+            "integer",
+            "float",
+            "boolean",
+            "json",
+            "bytes",
+            "blob_ref",
+            "crdt"
+          ]
+        },
+        "nullable": { "type": "boolean" }
+      }
+    },
+    "typedName": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/camelName" },
+        "type": { "$ref": "#/$defs/valueType" }
+      }
+    },
+    "predicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "parameters", "body"],
+      "properties": {
+        "kind": { "const": "predicate" },
+        "name": { "$ref": "#/$defs/camelName" },
+        "parameters": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/typedName" }
+        },
+        "body": { "$ref": "#/$defs/template" }
+      }
+    },
+    "query": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "parameters", "sql"],
+      "properties": {
+        "kind": { "const": "query" },
+        "name": { "$ref": "#/$defs/camelName" },
+        "parameters": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/queryParameter" }
+        },
+        "sql": { "$ref": "#/$defs/template" },
+        "sort": { "$ref": "#/$defs/sort" },
+        "page": { "$ref": "#/$defs/page" },
+        "identity": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+        }
+      }
+    },
+    "queryParameter": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "name", "optional"],
+          "properties": {
+            "kind": { "const": "value" },
+            "name": { "$ref": "#/$defs/camelName" },
+            "optional": { "type": "boolean" },
+            "type": { "$ref": "#/$defs/valueType" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "name", "optional"],
+          "properties": {
+            "kind": { "const": "switch" },
+            "name": { "$ref": "#/$defs/camelName" },
+            "optional": { "const": true }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "name", "optional", "members"],
+          "properties": {
+            "kind": { "const": "group" },
+            "name": { "$ref": "#/$defs/camelName" },
+            "optional": { "const": true },
+            "members": {
+              "type": "array",
+              "minItems": 2,
+              "items": { "$ref": "#/$defs/typedName" }
+            }
+          }
+        }
+      ]
+    },
+    "template": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "nodes"],
+      "properties": {
+        "mode": { "enum": ["statement", "predicate", "condition", "order"] },
+        "nodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/templateNode" }
+        }
+      }
+    },
+    "templateNode": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "tokens"],
+          "properties": {
+            "kind": { "const": "sql" },
+            "tokens": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "text"],
+                "properties": {
+                  "kind": { "type": "string" },
+                  "text": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "name", "arguments"],
+          "properties": {
+            "kind": { "const": "predicate-call" },
+            "name": { "$ref": "#/$defs/camelName" },
+            "arguments": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/camelName" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "controls", "body"],
+          "properties": {
+            "kind": { "const": "when" },
+            "controls": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/camelName" }
+            },
+            "body": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/templateNode" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "bindings"],
+          "properties": {
+            "kind": { "enum": ["scope", "cover"] },
+            "bindings": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["qualifier", "column", "operator", "values"],
+                "properties": {
+                  "qualifier": { "type": "string" },
+                  "column": { "type": "string" },
+                  "operator": { "enum": ["equal", "in"] },
+                  "values": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "$ref": "#/$defs/camelName" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "sort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["control", "defaultProfile", "profiles"],
+      "properties": {
+        "control": { "$ref": "#/$defs/camelName" },
+        "defaultProfile": { "$ref": "#/$defs/camelName" },
+        "profiles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "order"],
+            "properties": {
+              "name": { "$ref": "#/$defs/camelName" },
+              "order": { "$ref": "#/$defs/template" }
+            }
+          }
+        }
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["control", "defaultSize", "maxSize"],
+      "properties": {
+        "control": { "$ref": "#/$defs/camelName" },
+        "defaultSize": { "type": "integer", "minimum": 1 },
+        "maxSize": { "type": "integer", "minimum": 1, "maximum": 2147483647 }
+      }
+    },
+    "validCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source", "ast"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "source": { "type": "string" },
+        "ast": { "$ref": "#/$defs/semanticAst" }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "start"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^SYQL[0-9]{4}_[A-Z0-9_]+$" },
+        "start": { "$ref": "#/$defs/position" }
+      }
+    },
+    "invalidCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source", "diagnostic"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "source": { "type": "string" },
+        "diagnostic": { "$ref": "#/$defs/diagnostic" }
+      }
+    }
+  }
+}
