@@ -196,6 +196,44 @@ the independent read owner, shared by equal observers. Status/conflict-only
 changes do not rerun SQL. For large result sets serialization can dominate, so
 prefer indexed keyset pagination and bounded windows.
 
+## Performance contract and troubleshooting
+
+For the isolated native read path, use `@syncular/tauri` and
+`tauri-plugin-syncular` **0.5.1 or newer** with a file-backed `db_path`:
+
+- `querySnapshot` reads rows, window coverage, and local revision atomically on
+  the independent SQLite owner. `auto_sync`, HTTP rounds, and realtime socket
+  work on the mutable owner cannot queue ahead of that read.
+- The native bridge release gate requires warm snapshot IPC p95 to remain at or
+  below 5 ms. That is a local-read budget, not a promise that React rendering,
+  reconciliation, and painting will all complete within 5 ms.
+- An in-memory configuration (`db_path: None`) deliberately falls back to the
+  mutable owner: it is useful for tests, but does not provide the independent
+  read-path latency contract or persistence across restarts.
+
+Web and Tauri clients should converge in both directions. They are separate
+local replicas and therefore need distinct persisted client ids, but they must
+connect to the same server partition with a compatible schema and overlapping
+authorized scopes. A web mutation drains through its outbox, commits on the
+server, and wakes the Tauri client over realtime; the reverse path is identical.
+
+If a Tauri view is slow, remains partial, or does not react to another client:
+
+1. Confirm the npm bridge and Rust plugin both resolve to 0.5.1 or newer; do
+   not mix an older crate with a newer JS bridge.
+2. Confirm `db_path` is set and writable. Without it, snapshots share the
+   mutable owner by design.
+3. Let the database own its persisted client id. Do not reuse one database or
+   explicit `clientId` across devices or actors; the native transport puts the
+   restored id on the realtime URL automatically.
+4. Verify the HTTP and WebSocket endpoints authenticate into the same server
+   partition and grants as the web client, and that both clients use the same
+   generated schema version.
+5. Check the surfaced sync error and outbox count. A non-draining outbox points
+   to transport/auth/server work; an empty outbox with slow large queries points
+   to result serialization or rendering, where bounded windows and pagination
+   are the appropriate fix.
+
 ## The example
 
 [`bindings/tauri/example`](https://github.com/syncular/syncular/tree/main/bindings/tauri/example)
