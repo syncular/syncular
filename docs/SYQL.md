@@ -201,6 +201,38 @@ application-defined collations are outside revision 1. The portable collations
 are `BINARY`, `NOCASE`, and `RTRIM`. Schema features explicitly modeled and
 validated by Syncular remain subject to §9.1.
 
+The revision-1 portable function surface is closed. It consists of:
+
+- core scalar/aggregate functions `abs`, `avg`, `char`, `coalesce`, `concat`,
+  `concat_ws`, `count`, `format`, `glob`, `group_concat`, `hex`, `ifnull`,
+  `iif`, `instr`, `length`, `like`, `likelihood`, `likely`, `lower`, `ltrim`,
+  `max`, `min`, `nullif`, `octet_length`, `printf`, `quote`, `replace`,
+  `round`, `rtrim`, `sign`, `string_agg`, `substr`, `substring`, `sum`,
+  `total`, `trim`, `typeof`, `unhex`, `unicode`, `unlikely`, `upper`, and
+  `zeroblob`;
+- date/time functions `date`, `time`, `datetime`, `julianday`, `unixepoch`,
+  `strftime`, and `timediff`, subject to §9.5;
+- JSON functions `json`, `json_array`, `json_array_length`,
+  `json_error_position`, `json_each`, `json_extract`, `json_group_array`,
+  `json_group_object`, `json_insert`, `json_object`, `json_patch`,
+  `json_pretty`, `json_quote`, `json_remove`, `json_replace`, `json_set`,
+  `json_tree`, `json_type`, `json_valid`, and the 3.46 JSONB counterparts
+  `jsonb`, `jsonb_array`, `jsonb_extract`, `jsonb_group_array`,
+  `jsonb_group_object`, `jsonb_insert`, `jsonb_object`, `jsonb_patch`,
+  `jsonb_remove`, `jsonb_replace`, and `jsonb_set`.
+
+`CAST` is portable SQL syntax rather than an application function. In revision
+1, `iif` has exactly three arguments; its two-argument and variadic forms and
+the `if` alias postdate the floor. An unknown function name is invalid even if
+the generator host happens to provide it. This deliberately excludes the math
+and soundex compile options, `load_extension`, application extensions, and
+post-floor functions such as `unistr`.
+
+The compiler applies this closed profile before preparing the statement with
+the host SQLite. That host preparation checks names and expression structure;
+it does not widen the pinned surface. Normative negative fixtures include
+post-floor functions, post-floor arities, and compile-option functions.
+
 Every supported client engine MUST be initialized with behavior-affecting
 SQLite options compatible with the reference profile. Conformance runs the
 same executable query corpus on the reference validator and every shipped

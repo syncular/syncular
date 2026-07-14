@@ -142,6 +142,119 @@ const AGGREGATE_FUNCTIONS = new Set([
   'sum',
   'total',
 ]);
+/**
+ * The function surface of the standard SQLite 3.46.0 amalgamation.
+ *
+ * Keep this explicit: preparing with Bun's host SQLite proves that SQL is
+ * valid on that (usually newer) engine, not that it is valid on the revision-1
+ * floor. Unknown, extension-provided, and post-floor functions are rejected
+ * before the host prepare step.
+ */
+const SQLITE_346_PORTABLE_FUNCTIONS = new Set([
+  // Core scalar and aggregate functions.
+  'abs',
+  'avg',
+  'char',
+  'cast',
+  'coalesce',
+  'concat',
+  'concat_ws',
+  'count',
+  'format',
+  'glob',
+  'group_concat',
+  'hex',
+  'ifnull',
+  'iif',
+  'instr',
+  'length',
+  'like',
+  'likelihood',
+  'likely',
+  'lower',
+  'ltrim',
+  'max',
+  'min',
+  'nullif',
+  'octet_length',
+  'printf',
+  'quote',
+  'replace',
+  'round',
+  'rtrim',
+  'sign',
+  'string_agg',
+  'substr',
+  'substring',
+  'sum',
+  'total',
+  'trim',
+  'typeof',
+  'unhex',
+  'unicode',
+  'unlikely',
+  'upper',
+  'zeroblob',
+  // Date/time functions. Determinism applies additional restrictions below.
+  ...DATE_FUNCTIONS,
+  // JSON1 and JSONB are core in the 3.46.0 amalgamation.
+  'json',
+  'json_array',
+  'json_array_length',
+  'json_error_position',
+  'json_each',
+  'json_extract',
+  'json_group_array',
+  'json_group_object',
+  'json_insert',
+  'json_object',
+  'json_patch',
+  'json_pretty',
+  'json_quote',
+  'json_remove',
+  'json_replace',
+  'json_set',
+  'json_type',
+  'json_tree',
+  'json_valid',
+  'jsonb',
+  'jsonb_array',
+  'jsonb_extract',
+  'jsonb_group_array',
+  'jsonb_group_object',
+  'jsonb_insert',
+  'jsonb_object',
+  'jsonb_patch',
+  'jsonb_remove',
+  'jsonb_replace',
+  'jsonb_set',
+]);
+const SQL_PAREN_KEYWORDS = new Set([
+  'and',
+  'as',
+  'else',
+  'exists',
+  'filter',
+  'from',
+  'group',
+  'having',
+  'in',
+  'join',
+  'limit',
+  'not',
+  'offset',
+  'on',
+  'or',
+  'order',
+  'over',
+  'select',
+  'then',
+  'values',
+  'when',
+  'where',
+  'with',
+]);
+const SQLITE_346_PORTABLE_COLLATIONS = new Set(['binary', 'nocase', 'rtrim']);
 const OUTER_CLAUSE_ENDERS = new Set([
   'group',
   'having',
@@ -187,6 +300,47 @@ function templateText(template: SyqlTemplate): string {
     .trim();
 }
 
+function functionArgumentCount(
+  tokens: readonly SyqlToken[],
+  openIndex: number,
+): number | undefined {
+  let depth = 0;
+  let commas = 0;
+  let hasArgument = false;
+  for (let index = openIndex + 1; index < tokens.length; index += 1) {
+    const token = tokens[index] as SyqlToken;
+    if (token.text === '(') {
+      depth += 1;
+      hasArgument = true;
+    } else if (token.text === ')') {
+      if (depth === 0) return hasArgument ? commas + 1 : 0;
+      depth -= 1;
+      hasArgument = true;
+    } else if (token.text === ',' && depth === 0) {
+      commas += 1;
+    } else {
+      hasArgument = true;
+    }
+  }
+  return undefined;
+}
+
+function matchingParenIndex(
+  tokens: readonly SyqlToken[],
+  openIndex: number,
+): number | undefined {
+  let depth = 0;
+  for (let index = openIndex + 1; index < tokens.length; index += 1) {
+    const token = tokens[index] as SyqlToken;
+    if (token.text === '(') depth += 1;
+    else if (token.text === ')') {
+      if (depth === 0) return index;
+      depth -= 1;
+    }
+  }
+  return undefined;
+}
+
 class Validator {
   readonly #semantic: SyqlSemanticProgram;
   readonly #ir: IrDocument;
@@ -230,6 +384,7 @@ class Validator {
       location,
     );
     this.#validateDeterminism(activeSql, logical.declaration.sql.span);
+    this.#validatePortableProfile(activeSql, logical.declaration.sql.span);
 
     const refs = scanTableRefs(activeSql, this.#ir);
     const bindSymbols = this.#bindSymbols(logical.declaration);
@@ -645,6 +800,82 @@ class Validator {
     }
   }
 
+  #validatePortableProfile(sql: string, span: SyqlSourceSpan): void {
+    const tokens = significant(lexSyqlSqlSource(span.file, sql));
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index] as SyqlToken;
+      const lower = tokenLower(token);
+      if (lower === 'collate') {
+        const collation = tokens[index + 1];
+        const name = tokenLower(collation);
+        if (
+          collation === undefined ||
+          !SQLITE_346_PORTABLE_COLLATIONS.has(name ?? '')
+        ) {
+          this.#fail(
+            'SYQL6002_INVALID_SQL',
+            collation?.span ?? token.span,
+            `collation ${collation?.text ?? '<missing>'} is outside the portable SQLite 3.46.0 profile`,
+          );
+        }
+      }
+      if (
+        token.kind !== 'identifier' ||
+        tokens[index + 1]?.text !== '(' ||
+        SQL_PAREN_KEYWORDS.has(lower ?? '')
+      ) {
+        continue;
+      }
+
+      const closeIndex = matchingParenIndex(tokens, index + 1);
+      // A WITH declaration such as `items(id) AS (...)` is not a function.
+      if (
+        closeIndex !== undefined &&
+        tokenLower(tokens[closeIndex + 1]) === 'as' &&
+        tokens[closeIndex + 2]?.text === '('
+      ) {
+        continue;
+      }
+      if (!SQLITE_346_PORTABLE_FUNCTIONS.has(lower ?? '')) {
+        this.#fail(
+          'SYQL6002_INVALID_SQL',
+          token.span,
+          `${token.text}() is not a core built-in in the portable SQLite 3.46.0 profile`,
+        );
+      }
+
+      const argumentCount = functionArgumentCount(tokens, index + 1);
+      if (lower === 'iif' && argumentCount !== 3) {
+        this.#fail(
+          'SYQL6002_INVALID_SQL',
+          token.span,
+          'SQLite 3.46.0 requires exactly three arguments to iif()',
+        );
+      }
+      if (
+        (lower === 'date' ||
+          lower === 'time' ||
+          lower === 'datetime' ||
+          lower === 'julianday' ||
+          lower === 'unixepoch') &&
+        argumentCount === 0
+      ) {
+        this.#fail(
+          'SYQL6003_NONDETERMINISTIC_SQL',
+          token.span,
+          `${token.text}() without a time-value implicitly reads the wall clock`,
+        );
+      }
+      if (lower === 'strftime' && (argumentCount ?? 0) < 2) {
+        this.#fail(
+          'SYQL6003_NONDETERMINISTIC_SQL',
+          token.span,
+          'strftime() without an explicit time-value implicitly reads the wall clock',
+        );
+      }
+    }
+  }
+
   #bindSymbols(query: SyqlQueryDeclaration): ReadonlyMap<string, BindSymbol> {
     const symbols = new Map<string, BindSymbol>();
     for (const parameter of query.parameters) {
@@ -1000,6 +1231,7 @@ class Validator {
         }
       }
       this.#validateDeterminism(sql, profile.order.span);
+      this.#validatePortableProfile(sql, profile.order.span);
       return { name: profile.name, sql };
     });
     return {
