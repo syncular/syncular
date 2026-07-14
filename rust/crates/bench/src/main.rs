@@ -190,6 +190,10 @@ impl Transport for BenchTransport {
         self.inner.realtime_connect()
     }
 
+    fn realtime_connect_for_client(&mut self, client_id: &str) -> Result<(), TransportError> {
+        self.inner.realtime_connect_for_client(client_id)
+    }
+
     fn realtime_send(&mut self, text: &str) -> Result<(), TransportError> {
         self.stats.ws_out_bytes += text.len() as u64;
         self.inner.realtime_send(text)

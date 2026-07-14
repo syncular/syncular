@@ -94,12 +94,17 @@ const WORKLOAD = {
  *   100× allowance absorbs runner noise; breaching 20 ms in-process means
  *   a sleep/poll crept into the sync/realtime loop.
  * - `ownJsRawCeilingBytes` 88 KB: syncular's own JS (core + codec) is
- *   83.0 KB raw under Bun 1.3.14. The SYQL cutover changes no client source
- *   (the client tree is byte-identical to v0.5.0), but the current build lane
- *   is 1.0 KB beyond the old 82 KB ceiling. Re-pinned with ~6% headroom so
- *   compiler/minifier output does not fail an otherwise source-identical
- *   release while this remains a useful anti-bloat tripwire. RAISED from
- *   82 KB (2026-07-14, RFC 0004 release audit), and before that from 72 KB
+ *   83.0 KB raw today. Bundle bytes are deterministic — no runner noise —
+ *   so this stays tight (~6% headroom: enough that a one-KB innocent
+ *   change doesn't trip, small enough to catch real bloat). RAISED from
+ *   82 KB
+ *   (2026-07-14, RFC 0003): revisioned reactive views added 5,677 raw
+ *   bytes / 1,853 gzip bytes (79,333 → 85,010 raw) for the durable local
+ *   revision, exact change batches, atomic query/status snapshots, and
+ *   core-owned sync intent. The module graph confirms no native/Tauri code
+ *   enters this browser bundle. 88 KB restores the standing ~5–6% headroom
+ *   over the shipped feature without weakening the total-gzip payload gate.
+ *   RAISED from 72 KB
  *   (2026-07-05): client-side E2EE (SPEC §5.11) — the AEAD envelope +
  *   value serializer in `@syncular/core` and the encrypt/decrypt seam in
  *   `encryption.ts` — added ~+7 KB raw (this proxy inlines it, though

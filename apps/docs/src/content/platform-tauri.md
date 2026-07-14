@@ -131,8 +131,10 @@ conformance-locked.
   mutate, sync, syncUntilIdle, conflicts, presence, setPresence, …). The reply
   is `{ "result": ... }` or `{ "error": { "code", "message" } }`.
 - **`syncular_query(sql, params)`** — the raw read-only SQL fast path.
-- **`querySnapshot` through `syncular_command`** — one IPC read for rows,
-  window completeness, and exact local revision.
+- **`syncular_query_snapshot(sql, params, coverage)`** — one IPC read for rows,
+  window completeness, and exact local revision. A file-backed plugin serves
+  this from an independent read-only SQLite connection, so network work on the
+  mutable owner cannot stall reactive views.
 - **`syncular_set_headers(headers)`** — replace the native transport's
   request headers at runtime (see below).
 - **`syncular://event`** — exact revisioned `change` batches plus `presence`
@@ -165,14 +167,14 @@ socket immediately, call `disconnectRealtime()` followed by
 
 ## Threading
 
-`SyncClient` is synchronous, owns a rusqlite connection, and is not
-`Sync`. The plugin therefore keeps exactly one owning thread holding the
-core, and every access arrives over a command mailbox (an mpsc channel):
-the Tauri commands post a request and await the reply, and only the owning
-thread touches the client. The §8.4 host loop blocks on that mailbox or one
-explicit retry deadline. Interactive mutation/window/realtime intents preempt
-the deadline; idle clients have zero periodic wakeups. All access to the
-connection remains serialized.
+`SyncClient` is synchronous, owns a rusqlite connection, and is not `Sync`.
+Exactly one owning thread holds the mutable core; commands and the §8.4 host
+loop reach it over a mailbox. File-backed plugins add a second owner for a
+read-only SQLite connection used only by atomic query snapshots. SQLite WAL
+supplies the reader/writer snapshot boundary: network sync can block the
+mutable owner without blocking local views, while no second mutable client or
+writer exists. Interactive mutation/window/realtime intents preempt retry
+deadlines, and both owners idle with zero periodic wakeups.
 
 ## Native transport
 
@@ -184,10 +186,53 @@ is connected, each combined push+pull round runs over the socket in the
 round runs over `POST /sync`. One round is in flight per connection, and a
 mid-round socket drop fails the round immediately.
 
-Each unique live query is one atomic IPC round trip per relevant revision,
-shared by equal observers. Status/conflict-only changes do not rerun SQL. For
-large result sets serialization can dominate, so prefer indexed keyset
-pagination and bounded windows.
+FFI and Tauri re-export one transport implementation from `syncular-client`.
+The socket URL carries the persisted database client id (while retaining other
+configured query parameters), and the reader yields outside its short read
+lock quantum so a quiet socket cannot starve round or acknowledgement sends.
+
+Each unique live query is one atomic IPC round trip per relevant revision on
+the independent read owner, shared by equal observers. Status/conflict-only
+changes do not rerun SQL. For large result sets serialization can dominate, so
+prefer indexed keyset pagination and bounded windows.
+
+## Performance contract and troubleshooting
+
+For the isolated native read path, use `@syncular/tauri` and
+`tauri-plugin-syncular` **0.5.1 or newer** with a file-backed `db_path`:
+
+- `querySnapshot` reads rows, window coverage, and local revision atomically on
+  the independent SQLite owner. `auto_sync`, HTTP rounds, and realtime socket
+  work on the mutable owner cannot queue ahead of that read.
+- The native bridge release gate requires warm snapshot IPC p95 to remain at or
+  below 5 ms. That is a local-read budget, not a promise that React rendering,
+  reconciliation, and painting will all complete within 5 ms.
+- An in-memory configuration (`db_path: None`) deliberately falls back to the
+  mutable owner: it is useful for tests, but does not provide the independent
+  read-path latency contract or persistence across restarts.
+
+Web and Tauri clients should converge in both directions. They are separate
+local replicas and therefore need distinct persisted client ids, but they must
+connect to the same server partition with a compatible schema and overlapping
+authorized scopes. A web mutation drains through its outbox, commits on the
+server, and wakes the Tauri client over realtime; the reverse path is identical.
+
+If a Tauri view is slow, remains partial, or does not react to another client:
+
+1. Confirm the npm bridge and Rust plugin both resolve to 0.5.1 or newer; do
+   not mix an older crate with a newer JS bridge.
+2. Confirm `db_path` is set and writable. Without it, snapshots share the
+   mutable owner by design.
+3. Let the database own its persisted client id. Do not reuse one database or
+   explicit `clientId` across devices or actors; the native transport puts the
+   restored id on the realtime URL automatically.
+4. Verify the HTTP and WebSocket endpoints authenticate into the same server
+   partition and grants as the web client, and that both clients use the same
+   generated schema version.
+5. Check the surfaced sync error and outbox count. A non-draining outbox points
+   to transport/auth/server work; an empty outbox with slow large queries points
+   to result serialization or rendering, where bounded windows and pagination
+   are the appropriate fix.
 
 ## The example
 

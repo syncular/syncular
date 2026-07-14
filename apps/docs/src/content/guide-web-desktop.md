@@ -28,7 +28,7 @@ export async function createEngine(): Promise<SyncClientLike> {
     // Desktop: the native Rust core in the Tauri process. The plugin owns
     // the database path and the transport; the webview is a thin RPC proxy.
     const { createTauriSyncClient } = await import('@syncular/tauri');
-    return createTauriSyncClient({ clientId: 'device-1', schema });
+    return createTauriSyncClient({ schema });
   }
   // Web: the whole core in a worker, persisted on OPFS. The first tab
   // leads; further tabs follow it over a BroadcastChannel.
@@ -79,7 +79,7 @@ same presence and conflict surfaces, converging against the same server.
 | Core | TypeScript client in a Web Worker | Rust client in the host process |
 | Storage | OPFS (`opfs-sahpool`) | On-disk SQLite under app-data |
 | Transport | `fetch` + WebSocket from the worker | `ureq` + `tungstenite` in Rust |
-| Query round trip | postMessage RPC | Tauri IPC |
+| Query round trip | postMessage RPC | Tauri IPC to an independent read-only SQLite owner |
 | Setup | [Vite config](/guide-vite/) | [plugin registration](/platform-tauri/) |
 
 The desktop side needs the plugin registered in `src-tauri` with a

@@ -103,9 +103,16 @@ function nativeTauri(): {
       const actual = args ?? {};
       calls.push({ cmd, args: actual });
       const response = await request(
-        cmd.endsWith('syncular_query')
-          ? { kind: 'query', sql: actual.sql, params: actual.params }
-          : { kind: 'command', command: actual.command },
+        cmd.endsWith('syncular_query_snapshot')
+          ? {
+              kind: 'snapshot',
+              sql: actual.sql,
+              params: actual.params,
+              coverage: actual.coverage,
+            }
+          : cmd.endsWith('syncular_query')
+            ? { kind: 'query', sql: actual.sql, params: actual.params }
+            : { kind: 'command', command: actual.command },
       );
       for (const payload of response.events) {
         for (const listener of listeners) listener({ payload });
@@ -206,10 +213,8 @@ if (!available) {
             ?.table,
         ).toBe('todos');
 
-        const reads = host.calls.filter(
-          (call) =>
-            (call.args.command as { method?: string } | undefined)?.method ===
-            'querySnapshot',
+        const reads = host.calls.filter((call) =>
+          call.cmd.endsWith('syncular_query_snapshot'),
         );
         expect(reads).toHaveLength(2);
         release();

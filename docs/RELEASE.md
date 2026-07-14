@@ -33,6 +33,29 @@ The release includes:
 - CI gates that now run every native binding whenever the shared type
   generator changes.
 
+## 0.5.1 release notes
+
+0.5.1 hardens the native host paths after driving the published 0.5.0 Tauri
+engine against a persisted database and a live realtime server:
+
+- FFI and Tauri now use one canonical native HTTP/WebSocket transport instead
+  of two copies that could drift;
+- realtime connects with the persisted database client id, so registrations,
+  scoped invalidations, socket sync rounds, and HTTP request identity agree;
+- the socket reader uses a short read quantum and explicitly yields outside
+  its mutex, preventing a quiet realtime connection from starving sends;
+- Tauri reactive `querySnapshot` reads use a dedicated read-only SQLite
+  connection and mailbox. Local views no longer queue behind HTTP/WebSocket
+  work on the mutable client owner;
+- native round tests lock client identity, socket fairness, and framing, while
+  a Tauri regression test blocks the network owner and requires the local
+  snapshot sidecar to respond independently.
+
+The Diego Tauri PoC, with automatic sync enabled, moved from 54–58 ms warm
+mutation-to-React-commit samples to 10–14 ms after warm-up. The remaining time
+includes event delivery, React scheduling, reconciliation, and the display
+boundary; the local snapshot IPC lane retains its ≤5 ms p95 gate.
+
 ## 0.5.0 release notes
 
 0.5.0 ships RFC 0003, the revisioned reactive-view architecture across the

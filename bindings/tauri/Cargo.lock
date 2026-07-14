@@ -3128,6 +3128,9 @@ dependencies = [
  "serde_json",
  "sha2",
  "syncular-ssp2",
+ "tungstenite",
+ "ureq",
+ "url",
  "uuid",
  "yrs",
 ]
@@ -3153,6 +3156,7 @@ name = "syncular-tauri-bridge-harness"
 version = "0.0.0"
 dependencies = [
  "serde_json",
+ "syncular-client",
  "tauri-plugin-syncular",
 ]
 
@@ -3386,8 +3390,6 @@ dependencies = [
  "syncular-command",
  "tauri",
  "tauri-plugin",
- "tungstenite",
- "ureq",
 ]
 
 [[package]]
