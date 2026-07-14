@@ -166,7 +166,7 @@ export interface QueryReactiveMetadata {
   readonly rowKey?: readonly string[];
 }
 
-/** §7/§8 backend selection: neutralization (default), always-variants, or
+/** §7/§8 backend selection: neutralization, always-variants, or
  * the small-N heuristic (`auto`: enumerate at ≤ 2 optional groups). */
 export type QueryBackend = 'neutralize' | 'variants' | 'auto';
 
@@ -176,12 +176,117 @@ export interface QueryNamingOptions {
   /** Emitter targets this run generates — keyword hazards are only real on
    * targets that exist. */
   readonly targets: readonly NamingTarget[];
-  /** `.syql` conditional-lowering backend (default `neutralize`); the
-   * per-query `variants` knob always forces enumeration. */
+  /** `.syql` conditional-lowering policy (default `auto`). */
   readonly backend?: QueryBackend;
 }
 
 const DEFAULT_NAMING: QueryNamingOptions = { naming: 'camel', targets: ['ts'] };
+
+/** Revision-1 SYQL public inputs. These are deliberately separate from SQL
+ * binds: groups and switches are public values without corresponding SQLite
+ * parameters, while compiler-generated parameters are never public. */
+export type QuerySyqlPublicInput =
+  | {
+      readonly kind: 'value';
+      readonly name: string;
+      readonly langName: string;
+      readonly type: QueryParamType;
+      readonly nullable: boolean;
+      readonly required: boolean;
+    }
+  | {
+      readonly kind: 'group';
+      readonly name: string;
+      readonly langName: string;
+      readonly members: readonly {
+        readonly name: string;
+        readonly langName: string;
+        readonly type: QueryParamType;
+        readonly nullable: boolean;
+      }[];
+    }
+  | {
+      readonly kind: 'switch';
+      readonly name: string;
+      readonly langName: string;
+      readonly default: false;
+    }
+  | {
+      readonly kind: 'sort';
+      readonly name: string;
+      readonly langName: string;
+      readonly defaultProfile: string;
+      readonly profiles: readonly {
+        readonly name: string;
+        readonly langName: string;
+      }[];
+    }
+  | {
+      readonly kind: 'page';
+      readonly name: string;
+      readonly langName: string;
+      readonly defaultSize: number;
+      readonly maxSize: number;
+    };
+
+/** One distinct SQLite bind in a physical revision-1 statement. */
+export type QuerySyqlPlanBind =
+  | {
+      readonly kind: 'value';
+      readonly name: string;
+      readonly type: QueryParamType;
+      readonly input: string;
+    }
+  | {
+      readonly kind: 'group-member';
+      readonly name: string;
+      readonly type: QueryParamType;
+      readonly input: string;
+      readonly member: string;
+    }
+  | {
+      readonly kind: 'condition-active';
+      readonly name: string;
+      readonly type: 'boolean';
+      readonly condition: number;
+      readonly controls: readonly string[];
+    }
+  | {
+      readonly kind: 'page';
+      readonly name: string;
+      readonly type: 'integer';
+      readonly input: string;
+    };
+
+/** One SQLite-checked statement selected by sort profile and, for the
+ * enumerated backend, the activation bitmask. */
+export interface QuerySyqlStatement {
+  readonly sortProfile?: string;
+  readonly activationMask?: number;
+  readonly sql: string;
+  readonly positionalSql: string;
+  readonly binds: readonly QuerySyqlPlanBind[];
+}
+
+/** The target-neutral physical plan every emitter must implement exactly. */
+export interface QuerySyqlExecutionPlan {
+  readonly backend: Exclude<QueryBackend, 'auto'>;
+  /** One bit per optional scalar/group/switch, in declaration order. */
+  readonly activationControls: readonly string[];
+  readonly conditions: readonly {
+    readonly controls: readonly string[];
+    /** Present only for neutralized plans. */
+    readonly bind?: string;
+  }[];
+  readonly statements: readonly QuerySyqlStatement[];
+}
+
+export interface QuerySyqlMetadata {
+  readonly revision: 1;
+  readonly inputs: readonly QuerySyqlPublicInput[];
+  readonly plan: QuerySyqlExecutionPlan;
+  readonly identity?: readonly string[];
+}
 
 export interface AnalyzedQuery {
   /** camelCase function name (path-derived, or a `-- name:` override). */
@@ -204,6 +309,9 @@ export interface AnalyzedQuery {
   /** IR tables this query reads (the useRawSql `{tables}` set), sorted. */
   readonly tables: readonly string[];
   readonly reactive: QueryReactiveMetadata;
+  /** Revision-1 frontend/public-input and physical execution contract. When
+   * present, emitters use this instead of treating `params` as the API. */
+  readonly syql?: QuerySyqlMetadata;
   /** §6 orderBy knob (`.syql` tier). When present, `sql`/`positionalSql`
    * carry the DEFAULT order-by tail and `positionalSqlBase` is the static
    * prefix emitters compose the selected column onto. */

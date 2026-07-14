@@ -1,5 +1,5 @@
 {
-  "queryIrVersion": 2,
+  "queryIrVersion": 3,
   "queries": [
     {
       "name": "findDocByOrg",
