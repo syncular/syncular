@@ -29,3 +29,4 @@ export * from './syql-modules';
 export * from './syql-parser';
 export * from './syql-semantics';
 export * from './syql-template-parser';
+export * from './syql-validator';

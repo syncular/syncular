@@ -163,10 +163,12 @@ class Lexer {
   #column = 1;
   #braceDepth = 0;
   #expectImportPath = false;
+  readonly #recognizeImportPaths: boolean;
 
-  constructor(file: string, source: string) {
+  constructor(file: string, source: string, recognizeImportPaths = true) {
     this.#file = file;
     this.#source = source;
+    this.#recognizeImportPaths = recognizeImportPaths;
   }
 
   lex(): readonly SyqlToken[] {
@@ -237,6 +239,7 @@ class Lexer {
     }
 
     if (
+      this.#recognizeImportPaths &&
       token.kind === 'identifier' &&
       token.text === 'from' &&
       this.#braceDepth === 0
@@ -511,4 +514,12 @@ export function lexSyqlSource(
   source: string,
 ): readonly SyqlToken[] {
   return new Lexer(file, source).lex();
+}
+
+/** Lex an isolated SQL/template string without import-path contextual rules. */
+export function lexSyqlSqlSource(
+  file: string,
+  source: string,
+): readonly SyqlToken[] {
+  return new Lexer(file, source, false).lex();
 }
