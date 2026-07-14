@@ -70,9 +70,10 @@ verification; push is Benjamin's alone).
       (`web-client verify:node`) against the SAME contract the bun test
       runs on the reference bun:sqlite adapter.
 - [x] **Docs site deploy**: `apps/docs` builds to a Workers static-assets
-      bundle. CI validates it on normal changes; the version-tag release
-      workflow deploys it to `syncular.dev` only after npm and crates.io
-      publication succeeds. Setup and custom-domain details live in
+      bundle. CI validates it on normal changes; documentation changes on
+      `main` deploy through the dedicated Docs workflow, while version tags
+      deploy again after npm and crates.io publication succeeds. Both share a
+      concurrency group. Setup and custom-domain details live in
       `apps/docs/README.md`.
 
 ## 3. Demand-gated — build when the trigger fires

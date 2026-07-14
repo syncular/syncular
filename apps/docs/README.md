@@ -39,10 +39,11 @@ asset generator reflect the root version into `dist/` during the build.
 The site is a **Workers static-assets** deployment (worker `syncular-docs`,
 Syncular account), served at the apex **https://syncular.dev** via a zone
 route (`syncular.dev/*`) over the apex's existing proxied DNS record.
-`wrangler.jsonc` holds the config. CI builds the site for normal `main` pushes
-and pull requests, but production deploys only from the version tag workflow
-in `.github/workflows/release.yml`, after npm and crates.io publication both
-succeed. The domain serves at root, so `DOCS_BASE` stays unset.
+`wrangler.jsonc` holds the config. `.github/workflows/docs.yml` builds and
+deploys documentation changes from `main`; `.github/workflows/release.yml`
+also deploys the tagged version after npm and crates.io publication succeeds.
+Both use the same concurrency group so deployments cannot race. The domain
+serves at root, so `DOCS_BASE` stays unset.
 
 The deployment uses a small Worker script with a static assets binding. Static
 files still come from `dist/`; the Worker adds request-dependent behavior that
