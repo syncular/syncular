@@ -70,8 +70,24 @@ jobs:
               continue
             fi
             echo "── publishing $name@$ver"
+            # Guard (0.4.0 lesson): bun pm pack materializes workspace:*
+            # from the LOCKFILE's workspace version stamps — stale stamps
+            # ship tarballs pinning @syncular/* siblings at the PREVIOUS
+            # release (split-brain installs). scripts/check-lockstep.mjs
+            # (inside `bun run check` above) catches the root cause; this
+            # asserts it on the actual artifact before it can publish.
             (cd "packages/$dir" \
               && bun pm pack --quiet \
+              && tar -xOf ./*.tgz package/package.json > /tmp/manifest.json \
+              && node -e '
+                   const m = require("/tmp/manifest.json");
+                   const bad = Object.entries({ ...m.dependencies, ...m.peerDependencies })
+                     .filter(([n, v]) => n.startsWith("@syncular/") && v !== process.argv[1]);
+                   if (bad.length) {
+                     console.error("stale workspace pins in tarball (fix bun.lock stamps, docs/RELEASE.md):", bad);
+                     process.exit(1);
+                   }
+                 ' "$ver" \
               && npm publish ./*.tgz --provenance --access public \
               && rm -f ./*.tgz)
           done
