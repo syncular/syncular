@@ -131,15 +131,13 @@ function runGeneratePrint(args: GenerateArgs, name: string): void {
           console.log(
             `--   ${input.name}: optional group (${input.members.map((member) => `${member.name}: ${member.type}${member.nullable ? ' | null' : ''}`).join(', ')})`,
           );
-        } else if (input.kind === 'switch') {
-          console.log(`--   ${input.name}: switch (default false)`);
         } else if (input.kind === 'sort') {
           console.log(
             `--   ${input.name}: sort [${input.profiles.map((profile) => profile.name).join(', ')}] (default ${input.defaultProfile})`,
           );
         } else {
           console.log(
-            `--   ${input.name}: page 1..${input.maxSize} (default ${input.defaultSize})`,
+            `--   ${input.name}: limit 1..${input.maxSize} (default ${input.defaultSize})`,
           );
         }
       }

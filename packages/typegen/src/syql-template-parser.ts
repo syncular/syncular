@@ -37,29 +37,11 @@ export interface SyqlPredicateCall {
 export interface SyqlWhenExpression {
   readonly kind: 'when';
   readonly controls: readonly string[];
+  /** True when the author wrote present(control); bare optional controls have
+   * the same semantics and therefore normally keep this false. */
+  readonly explicitPresence: readonly boolean[];
   readonly controlSpans: readonly SyqlSourceSpan[];
   readonly body: SyqlEmbeddedTemplate;
-  readonly tokens: readonly SyqlToken[];
-  readonly span: SyqlSourceSpan;
-}
-
-export interface SyqlQualifiedColumn {
-  readonly qualifier: string;
-  readonly name: string;
-  readonly span: SyqlSourceSpan;
-}
-
-export interface SyqlScopeBinding {
-  readonly kind: 'scope-binding';
-  readonly column: SyqlQualifiedColumn;
-  readonly operator: 'equal' | 'in';
-  readonly values: readonly SyqlBindReference[];
-  readonly span: SyqlSourceSpan;
-}
-
-export interface SyqlReactiveDirective {
-  readonly kind: 'scope' | 'cover';
-  readonly bindings: readonly SyqlScopeBinding[];
   readonly tokens: readonly SyqlToken[];
   readonly span: SyqlSourceSpan;
 }
@@ -67,8 +49,7 @@ export interface SyqlReactiveDirective {
 export type SyqlEmbeddedNode =
   | SyqlRawTemplateNode
   | SyqlPredicateCall
-  | SyqlWhenExpression
-  | SyqlReactiveDirective;
+  | SyqlWhenExpression;
 
 export interface SyqlEmbeddedTemplate {
   readonly kind: 'template';
@@ -88,7 +69,6 @@ export type SyqlTemplateParseErrorCode =
   | 'SYQL3008_FORBIDDEN_PARAMETER_FORM';
 
 const CAMEL_IDENT_RE = /^[a-z][A-Za-z0-9]*$/;
-const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 interface IndexedToken {
   readonly index: number;
@@ -112,6 +92,7 @@ class EmbeddedParser {
   readonly #tokens: readonly SyqlToken[];
   readonly #span: SyqlSourceSpan;
   readonly #mode: SyqlTemplateMode;
+  readonly #rangeNames: ReadonlySet<string>;
   #index = 0;
 
   constructor(
@@ -119,11 +100,13 @@ class EmbeddedParser {
     tokens: readonly SyqlToken[],
     span: SyqlSourceSpan,
     mode: SyqlTemplateMode,
+    rangeNames: ReadonlySet<string>,
   ) {
     this.#file = file;
     this.#tokens = tokens;
     this.#span = span;
     this.#mode = mode;
+    this.#rangeNames = rangeNames;
   }
 
   parse(): SyqlEmbeddedTemplate {
@@ -139,9 +122,7 @@ class EmbeddedParser {
       if (embeddedKind !== undefined) {
         this.#pushRaw(nodes, rawStart, next.index);
         if (embeddedKind === 'when') nodes.push(this.#parseWhen());
-        else if (embeddedKind === 'scope' || embeddedKind === 'cover') {
-          nodes.push(this.#parseDirective(embeddedKind));
-        } else {
+        else {
           nodes.push(this.#parsePredicateCall());
         }
         rawStart = this.#index;
@@ -156,14 +137,7 @@ class EmbeddedParser {
     return { kind: 'template', mode: this.#mode, nodes, span: this.#span };
   }
 
-  #embeddedKind(
-    token: SyqlToken,
-  ): 'when' | 'scope' | 'cover' | 'predicate-call' | undefined {
-    if (token.kind === 'at-identifier') {
-      if (token.text === '@scope') return 'scope';
-      if (token.text === '@cover') return 'cover';
-      return 'predicate-call';
-    }
+  #embeddedKind(token: SyqlToken): 'when' | 'predicate-call' | undefined {
     if (
       token.kind === 'identifier' &&
       token.text === 'when' &&
@@ -171,27 +145,31 @@ class EmbeddedParser {
     ) {
       return 'when';
     }
+    if (token.kind === 'identifier' && this.#isCallCandidate(token)) {
+      return 'predicate-call';
+    }
     return undefined;
+  }
+
+  #isCallCandidate(token: SyqlToken): boolean {
+    let next = this.#peekAfter(token);
+    if (next?.token.text !== '(') return false;
+    next = this.#peek(next.index + 1);
+    if (next?.token.text === ')') return true;
+    for (;;) {
+      if (next?.token.kind !== 'bind') return false;
+      next = this.#peek(next.index + 1);
+      if (next?.token.text === ')') return true;
+      if (next?.token.text !== ',') return false;
+      next = this.#peek(next.index + 1);
+      if (next?.token.text === ')') return true;
+    }
   }
 
   #parsePredicateCall(): SyqlPredicateCall {
     const startIndex = this.#index;
     const nameToken = this.#take() as SyqlToken;
-    if (this.#mode === 'order') {
-      this.#fail(
-        'SYQL3006_FORBIDDEN_TEMPLATE_NODE',
-        nameToken,
-        'predicate calls are not allowed in sort profiles',
-      );
-    }
-    const name = nameToken.text.slice(1);
-    if (!CAMEL_IDENT_RE.test(name) || name.toLowerCase().startsWith('__syql')) {
-      this.#fail(
-        'SYQL3003_INVALID_PREDICATE_CALL',
-        nameToken,
-        `predicate call name ${JSON.stringify(name)} must match [a-z][A-Za-z0-9]* and not use __syql`,
-      );
-    }
+    const name = nameToken.text;
     this.#expectText('(', 'after predicate name');
     const args: SyqlBindReference[] = [];
     if (this.#peek()?.token.text !== ')') {
@@ -224,6 +202,7 @@ class EmbeddedParser {
     }
     this.#expectText('(', 'after when');
     const controls: string[] = [];
+    const explicitPresenceFlags: boolean[] = [];
     const controlSpans: SyqlSourceSpan[] = [];
     const seen = new Set<string>();
     if (this.#peek()?.token.text === ')') {
@@ -234,7 +213,22 @@ class EmbeddedParser {
       );
     }
     for (;;) {
-      const control = this.#expectIdentifier('when control');
+      let explicitPresence = false;
+      let control: SyqlToken;
+      const candidate = this.#peek()?.token;
+      if (
+        candidate?.kind === 'identifier' &&
+        candidate.text === 'present' &&
+        this.#peekAfter(candidate)?.token.text === '('
+      ) {
+        this.#take();
+        this.#expectText('(', 'after present');
+        control = this.#expectIdentifier('present control');
+        this.#expectText(')', 'after present control');
+        explicitPresence = true;
+      } else {
+        control = this.#expectIdentifier('when control');
+      }
       this.#validateCamel(control, 'when control', 'SYQL3004_INVALID_WHEN');
       if (seen.has(control.text)) {
         this.#fail(
@@ -245,34 +239,47 @@ class EmbeddedParser {
       }
       seen.add(control.text);
       controls.push(control.text);
+      explicitPresenceFlags.push(explicitPresence);
       controlSpans.push(control.span);
       if (this.#peek()?.token.text !== ',') break;
       this.#take();
       if (this.#peek()?.token.text === ')') break;
     }
     this.#expectText(')', 'after when controls');
-    const open = this.#expectText('{', 'to open when body');
-    const closeIndex = this.#matchingBraceIndex(open);
-    const close = this.#tokens[closeIndex] as SyqlToken;
-    const bodyTokens = this.#tokens.slice(this.#index, closeIndex);
+    let close: SyqlToken;
+    let bodyTokens: readonly SyqlToken[];
+    if (this.#peek()?.token.text === '{') {
+      const open = this.#expectText('{', 'to open when body');
+      const closeIndex = this.#matchingBraceIndex(open);
+      close = this.#tokens[closeIndex] as SyqlToken;
+      bodyTokens = this.#tokens.slice(this.#index, closeIndex);
+      this.#index = closeIndex + 1;
+    } else {
+      const closeIndex = this.#singleWhenBodyEndIndex();
+      bodyTokens = this.#tokens.slice(this.#index, closeIndex);
+      const significant = bodyTokens.filter((token) => !isSyqlTrivia(token));
+      close = significant[significant.length - 1] ?? start;
+      this.#index = closeIndex;
+    }
     if (bodyTokens.every(isSyqlTrivia)) {
       this.#fail('SYQL3004_INVALID_WHEN', close, 'when body must not be empty');
     }
     const bodySpan: SyqlSourceSpan = {
       file: this.#file,
-      start: open.span.end,
-      end: close.span.start,
+      start: bodyTokens[0]?.span.start ?? close.span.start,
+      end: bodyTokens[bodyTokens.length - 1]?.span.end ?? close.span.start,
     };
     const body = parseSyqlEmbeddedTemplate(
       this.#file,
       bodyTokens,
       bodySpan,
       'condition',
+      this.#rangeNames,
     );
-    this.#index = closeIndex + 1;
     return {
       kind: 'when',
       controls,
+      explicitPresence: explicitPresenceFlags,
       controlSpans,
       body,
       tokens: this.#tokens.slice(startIndex, this.#index),
@@ -280,105 +287,56 @@ class EmbeddedParser {
     };
   }
 
-  #parseDirective(kind: 'scope' | 'cover'): SyqlReactiveDirective {
-    const startIndex = this.#index;
-    const start = this.#take() as SyqlToken;
-    if (this.#mode !== 'statement') {
-      this.#fail(
-        'SYQL3006_FORBIDDEN_TEMPLATE_NODE',
-        start,
-        `@${kind} is not allowed in a ${this.#mode} template`,
-      );
+  #singleWhenBodyEndIndex(): number {
+    let depth = 0;
+    let pendingBetween = false;
+    let rangeBetween = false;
+    const clauseEnders = new Set([
+      'group',
+      'having',
+      'order',
+      'limit',
+      'offset',
+      'window',
+      'union',
+      'intersect',
+      'except',
+    ]);
+    for (let cursor = this.#index; cursor < this.#tokens.length; cursor += 1) {
+      const token = this.#tokens[cursor] as SyqlToken;
+      if (isSyqlTrivia(token)) continue;
+      if (token.text === '(') depth += 1;
+      else if (token.text === ')') depth -= 1;
+      if (depth !== 0) continue;
+      const lower = token.text.toLowerCase();
+      if (token.kind === 'identifier' && lower === 'between') {
+        const next = this.#peek(cursor + 1)?.token;
+        pendingBetween = true;
+        rangeBetween =
+          next?.kind === 'bind' && this.#rangeNames.has(next.text.slice(1));
+        continue;
+      }
+      if (token.kind === 'identifier' && lower === 'and') {
+        if (pendingBetween && !rangeBetween) {
+          pendingBetween = false;
+          continue;
+        }
+        return this.#leadingTriviaIndex(cursor);
+      }
+      if (token.text === '}' || clauseEnders.has(lower))
+        return this.#leadingTriviaIndex(cursor);
     }
-    this.#expectText('(', `after @${kind}`);
-    const bindings: SyqlScopeBinding[] = [];
-    if (this.#peek()?.token.text === ')') {
-      this.#fail(
-        'SYQL3005_INVALID_REACTIVE_DIRECTIVE',
-        this.#peek()?.token ?? start,
-        `@${kind} requires at least one scope binding`,
-      );
-    }
-    for (;;) {
-      bindings.push(this.#parseScopeBinding());
-      if (this.#peek()?.token.text !== ',') break;
-      this.#take();
-      if (this.#peek()?.token.text === ')') break;
-    }
-    const close = this.#expectText(')', `to close @${kind}`);
-    return {
-      kind,
-      bindings,
-      tokens: this.#tokens.slice(startIndex, this.#index),
-      span: spanBetween(start, close),
-    };
+    return this.#tokens.length;
   }
 
-  #parseScopeBinding(): SyqlScopeBinding {
-    const qualifier = this.#expectIdentifier('scope table or alias');
-    this.#validateSqlIdent(qualifier, 'scope table or alias');
-    this.#expectText('.', 'in qualified scope column');
-    const columnName = this.#expectIdentifier('scope column');
-    this.#validateSqlIdent(columnName, 'scope column');
-    const column: SyqlQualifiedColumn = {
-      qualifier: qualifier.text,
-      name: columnName.text,
-      span: spanBetween(qualifier, columnName),
-    };
-
-    const operator = this.#take();
-    if (
-      operator === undefined ||
-      (operator.text !== '=' && operator.text !== 'in')
-    ) {
-      this.#fail(
-        'SYQL3005_INVALID_REACTIVE_DIRECTIVE',
-        operator ?? columnName,
-        'scope binding must use = or lowercase in',
-      );
-    }
-
-    const values: SyqlBindReference[] = [];
-    let end: SyqlToken;
-    if (operator.text === '=') {
-      const value = this.#parseBindReference();
-      values.push(value);
-      end = value.token;
-    } else {
-      this.#expectText('(', 'after scope in');
-      if (this.#peek()?.token.text === ')') {
-        this.#fail(
-          'SYQL3005_INVALID_REACTIVE_DIRECTIVE',
-          this.#peek()?.token ?? operator,
-          'scope in list must not be empty',
-        );
-      }
-      const names = new Set<string>();
-      for (;;) {
-        const value = this.#parseBindReference();
-        if (names.has(value.name)) {
-          this.#fail(
-            'SYQL3005_INVALID_REACTIVE_DIRECTIVE',
-            value.token,
-            `duplicate scope bind :${value.name}`,
-          );
-        }
-        names.add(value.name);
-        values.push(value);
-        if (this.#peek()?.token.text !== ',') break;
-        this.#take();
-        if (this.#peek()?.token.text === ')') break;
-      }
-      end = this.#expectText(')', 'to close scope in list');
-    }
-
-    return {
-      kind: 'scope-binding',
-      column,
-      operator: operator.text === '=' ? 'equal' : 'in',
-      values,
-      span: spanBetween(qualifier, end),
-    };
+  #leadingTriviaIndex(index: number): number {
+    let cursor = index;
+    while (
+      cursor > this.#index &&
+      isSyqlTrivia(this.#tokens[cursor - 1] as SyqlToken)
+    )
+      cursor -= 1;
+    return cursor;
   }
 
   #parseBindReference(): SyqlBindReference {
@@ -402,6 +360,13 @@ class EmbeddedParser {
   }
 
   #validateRawToken(token: SyqlToken): void {
+    if (token.kind === 'at-identifier') {
+      this.#fail(
+        'SYQL3006_FORBIDDEN_TEMPLATE_NODE',
+        token,
+        `${token.text} uses removed directive/call syntax; use ordinary SQL predicates or a normal predicate call`,
+      );
+    }
     if (token.kind === 'bind') {
       if (this.#mode === 'order') {
         this.#fail(
@@ -464,16 +429,6 @@ class EmbeddedParser {
         code,
         token,
         `${label} must match [a-z][A-Za-z0-9]* and not use __syql`,
-      );
-    }
-  }
-
-  #validateSqlIdent(token: SyqlToken, label: string): void {
-    if (!IDENT_RE.test(token.text)) {
-      this.#fail(
-        'SYQL3005_INVALID_REACTIVE_DIRECTIVE',
-        token,
-        `${label} must be an unquoted SQLite identifier`,
       );
     }
   }
@@ -577,6 +532,7 @@ export function parseSyqlEmbeddedTemplate(
   tokens: readonly SyqlToken[],
   span: SyqlSourceSpan,
   mode: SyqlTemplateMode,
+  rangeNames: ReadonlySet<string> = new Set(),
 ): SyqlEmbeddedTemplate {
-  return new EmbeddedParser(file, tokens, span, mode).parse();
+  return new EmbeddedParser(file, tokens, span, mode, rangeNames).parse();
 }

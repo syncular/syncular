@@ -33,14 +33,18 @@ export interface SyqlValueParameter {
   readonly name: string;
   readonly optional: boolean;
   readonly type?: SyqlValueType;
+  /** A source-level default. Revision 1 currently permits only `bool = false`. */
+  readonly default?: false;
   readonly span: SyqlSourceSpan;
   readonly nameSpan: SyqlSourceSpan;
 }
 
-export interface SyqlSwitchParameter {
-  readonly kind: 'switch';
+export interface SyqlRangeParameter {
+  readonly kind: 'range';
   readonly name: string;
-  readonly optional: true;
+  readonly optional: boolean;
+  /** Element type, inferred from the left side of BETWEEN when omitted. */
+  readonly type?: SyqlValueType;
   readonly span: SyqlSourceSpan;
   readonly nameSpan: SyqlSourceSpan;
 }
@@ -63,7 +67,7 @@ export interface SyqlGroupParameter {
 
 export type SyqlQueryParameter =
   | SyqlValueParameter
-  | SyqlSwitchParameter
+  | SyqlRangeParameter
   | SyqlGroupParameter;
 
 export interface SyqlPredicateParameter {
@@ -106,12 +110,6 @@ export interface SyqlPredicateDeclaration {
   readonly nameSpan: SyqlSourceSpan;
 }
 
-export interface SyqlSqlSection {
-  readonly kind: 'sql';
-  readonly body: SyqlTemplate;
-  readonly span: SyqlSourceSpan;
-}
-
 export interface SyqlSortProfile {
   readonly name: string;
   readonly order: SyqlTemplate;
@@ -128,8 +126,8 @@ export interface SyqlSortSection {
   readonly controlSpan: SyqlSourceSpan;
 }
 
-export interface SyqlPageDeclaration {
-  readonly kind: 'page';
+export interface SyqlLimitDeclaration {
+  readonly kind: 'limit';
   readonly control: string;
   readonly defaultSize: number;
   readonly maxSize: number;
@@ -137,20 +135,22 @@ export interface SyqlPageDeclaration {
   readonly controlSpan: SyqlSourceSpan;
 }
 
-export interface SyqlIdentityDeclaration {
-  readonly kind: 'identity';
-  readonly fields: readonly string[];
+export interface SyqlSyncDimension {
+  readonly qualifier: string;
+  readonly column: string;
   readonly span: SyqlSourceSpan;
 }
 
 export interface SyqlQueryDeclaration {
   readonly kind: 'query';
   readonly name: string;
+  readonly sync: boolean;
+  readonly syncBy?: SyqlSyncDimension;
   readonly parameters: readonly SyqlQueryParameter[];
-  readonly sql: SyqlSqlSection;
+  /** The SQL-shaped statement body, excluding its terminating semicolon. */
+  readonly statement: SyqlTemplate;
   readonly sort?: SyqlSortSection;
-  readonly page?: SyqlPageDeclaration;
-  readonly identity?: SyqlIdentityDeclaration;
+  readonly limit?: SyqlLimitDeclaration;
   readonly span: SyqlSourceSpan;
   readonly nameSpan: SyqlSourceSpan;
 }
@@ -180,10 +180,10 @@ export type SyqlParseErrorCode =
   | 'SYQL2008_INVALID_MEMBER'
   | 'SYQL2009_INVALID_INTEGER'
   | 'SYQL2010_INVALID_PAGE_RANGE'
-  | 'SYQL2011_INVALID_PARAMETER';
+  | 'SYQL2011_INVALID_PARAMETER'
+  | 'SYQL2012_INVALID_QUERY_BODY';
 
 const CAMEL_IDENT_RE = /^[a-z][A-Za-z0-9]*$/;
-const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const INTEGER_LITERAL_RE = /^(?:0|[1-9][0-9]*)$/;
 const BASE_TYPES = new Set<SyqlBaseType>([
   'string',
@@ -198,29 +198,29 @@ const BASE_TYPES = new Set<SyqlBaseType>([
 const RESERVED_NAMES = new Set([
   'as',
   'blob_ref',
+  'bool',
   'boolean',
   'by',
   'bytes',
-  'cover',
   'crdt',
   'default',
   'float',
+  'false',
   'from',
-  'identity',
   'import',
   'in',
   'integer',
   'json',
   'max',
   'null',
-  'page',
+  'limit',
+  'present',
   'predicate',
   'query',
-  'scope',
   'sort',
-  'sql',
   'string',
-  'switch',
+  'sync',
+  'true',
   'when',
 ]);
 
@@ -234,6 +234,13 @@ interface ParsedQueryParameters {
   readonly parameters: readonly SyqlQueryParameter[];
   readonly publicNames: Set<string>;
   readonly bindNames: Set<string>;
+}
+
+interface ParsedQueryBody {
+  readonly statement: SyqlTemplate;
+  readonly sort?: SyqlSortSection;
+  readonly limit?: SyqlLimitDeclaration;
+  readonly close: SyqlToken;
 }
 
 function spanBetween(start: SyqlToken, end: SyqlToken): SyqlSourceSpan {
@@ -301,8 +308,8 @@ class Parser {
         );
         declarations.push(declaration);
         predicates.push(declaration);
-      } else if (keyword.text === 'query') {
-        const declaration = this.#parseQuery();
+      } else if (keyword.text === 'query' || keyword.text === 'sync') {
+        const declaration = this.#parseQuery(keyword.text === 'sync');
         this.#claimName(
           fileNames,
           declaration.name,
@@ -315,7 +322,7 @@ class Parser {
         this.#fail(
           'SYQL2008_INVALID_MEMBER',
           keyword,
-          `expected import, predicate, or query; found ${JSON.stringify(keyword.text)}`,
+          `expected import, predicate, query, or sync query; found ${JSON.stringify(keyword.text)}`,
         );
       }
     }
@@ -462,54 +469,89 @@ class Parser {
     };
   }
 
-  #parseQuery(): SyqlQueryDeclaration {
-    const start = this.#expectText('query');
+  #parseQuery(sync: boolean): SyqlQueryDeclaration {
+    const start = sync ? this.#expectText('sync') : this.#peek();
+    this.#expectText('query');
     const name = this.#parseCamelName('query name');
     const parsedParameters = this.#parseQueryParameters();
-    const publicNames = parsedParameters.publicNames;
-    this.#expectText('{');
-
-    if (this.#peek().text !== 'sql') {
-      this.#fail(
-        'SYQL2008_INVALID_MEMBER',
-        this.#peek(),
-        'a query body must begin with exactly one sql { ... } section',
-      );
+    let syncBy: SyqlSyncDimension | undefined;
+    if (this.#peek().text === 'by') {
+      const by = this.#take();
+      if (!sync) {
+        this.#fail(
+          'SYQL2012_INVALID_QUERY_BODY',
+          by,
+          '`by table.scope` is valid only on a sync query',
+        );
+      }
+      const qualifier = this.#expectKind('identifier', 'sync table or alias');
+      this.#expectText('.');
+      const column = this.#expectKind('identifier', 'sync scope column');
+      syncBy = {
+        qualifier: qualifier.text,
+        column: column.text,
+        span: spanBetween(qualifier, column),
+      };
     }
-    const sql = this.#parseSqlSection();
-
-    let sort: SyqlSortSection | undefined;
-    let page: SyqlPageDeclaration | undefined;
-    let identity: SyqlIdentityDeclaration | undefined;
-
-    if (this.#peek().text === 'sort') {
-      sort = this.#parseSortSection(publicNames);
+    const declaredRanges = new Set(
+      parsedParameters.parameters.flatMap((parameter) =>
+        parameter.kind === 'range' ? [parameter.name] : [],
+      ),
+    );
+    const body = this.#parseQueryBody(
+      parsedParameters.publicNames,
+      declaredRanges,
+    );
+    const implicitRanges = this.#rangeShorthandNames(
+      body.statement.tokens,
+      declaredRanges,
+    );
+    const parameters = parsedParameters.parameters.map((parameter) => {
+      if (!implicitRanges.has(parameter.name)) return parameter;
+      if (parameter.kind === 'group') {
+        this.#fail(
+          'SYQL2011_INVALID_PARAMETER',
+          this.#tokenAt(parameter.nameSpan),
+          `range shorthand :${parameter.name} must name a scalar query input`,
+        );
+      }
+      if (parameter.kind === 'range') return parameter;
+      if (parameter.default !== undefined) {
+        this.#fail(
+          'SYQL2011_INVALID_PARAMETER',
+          this.#tokenAt(parameter.nameSpan),
+          `range input ${parameter.name} cannot have a boolean default`,
+        );
+      }
+      return {
+        kind: 'range' as const,
+        name: parameter.name,
+        optional: parameter.optional,
+        ...(parameter.type === undefined ? {} : { type: parameter.type }),
+        span: parameter.span,
+        nameSpan: parameter.nameSpan,
+      };
+    });
+    for (const parameter of parameters) {
+      if (parameter.kind === 'range' && !implicitRanges.has(parameter.name)) {
+        this.#fail(
+          'SYQL2011_INVALID_PARAMETER',
+          this.#tokenAt(parameter.nameSpan),
+          `range input ${parameter.name} must be used as BETWEEN :${parameter.name}`,
+        );
+      }
     }
-    if (this.#peek().text === 'page') {
-      page = this.#parsePageDeclaration(publicNames);
-    }
-    if (this.#peek().text === 'identity') {
-      identity = this.#parseIdentityDeclaration();
-    }
-
-    if (this.#peek().text !== '}') {
-      this.#fail(
-        'SYQL2008_INVALID_MEMBER',
-        this.#peek(),
-        `unexpected or out-of-order query member ${JSON.stringify(this.#peek().text)}`,
-      );
-    }
-    const close = this.#expectText('}');
 
     return {
       kind: 'query',
       name: name.text,
-      parameters: parsedParameters.parameters,
-      sql,
-      ...(sort === undefined ? {} : { sort }),
-      ...(page === undefined ? {} : { page }),
-      ...(identity === undefined ? {} : { identity }),
-      span: spanBetween(start, close),
+      sync,
+      ...(syncBy === undefined ? {} : { syncBy }),
+      parameters,
+      statement: body.statement,
+      ...(body.sort === undefined ? {} : { sort: body.sort }),
+      ...(body.limit === undefined ? {} : { limit: body.limit }),
+      span: spanBetween(start, body.close),
       nameSpan: name.span,
     };
   }
@@ -526,7 +568,19 @@ class Parser {
         const optional = this.#peek().text === '?';
         if (optional) this.#take();
 
-        if (optional && this.#peek().text === '(') {
+        if (
+          optional &&
+          this.#peek().text === ':' &&
+          this.#peekSignificantAfter(1)?.text === '{'
+        ) {
+          this.#take();
+          if (this.#peek().text !== '{') {
+            this.#fail(
+              'SYQL2011_INVALID_PARAMETER',
+              this.#peek(),
+              'an optional structured input must use `name?: { ... }`',
+            );
+          }
           if (publicNames.has(name.text)) {
             this.#duplicate(name, 'public query input');
           }
@@ -562,9 +616,9 @@ class Parser {
             });
             if (this.#peek().text !== ',') break;
             this.#take();
-            if (this.#peek().text === ')') break;
+            if (this.#peek().text === '}') break;
           }
-          const groupClose = this.#expectText(')');
+          const groupClose = this.#expectText('}');
           if (members.length < 2) {
             this.#fail(
               'SYQL2011_INVALID_PARAMETER',
@@ -593,19 +647,24 @@ class Parser {
           if (this.#peek().text === ':') {
             const colon = this.#take();
             const typeName = this.#expectKind('identifier', 'parameter type');
-            if (typeName.text === 'switch') {
-              if (!optional) {
-                this.#fail(
-                  'SYQL2011_INVALID_PARAMETER',
-                  typeName,
-                  `switch ${name.text} must use the exact optional form ${name.text}?: switch`,
-                );
+            if (typeName.text === 'range') {
+              if (bindNames.has(name.text)) {
+                this.#duplicate(name, 'query bind');
               }
+              bindNames.add(name.text);
+              this.#expectText('<');
+              const elementName = this.#expectKind(
+                'identifier',
+                'range element type',
+              );
+              const type = this.#parseValueTypeAfterName(colon, elementName);
+              const close = this.#expectText('>');
               parameters.push({
-                kind: 'switch',
+                kind: 'range',
                 name: name.text,
-                optional: true,
-                span: spanBetween(name, typeName),
+                optional,
+                type,
+                span: spanBetween(name, close),
                 nameSpan: name.span,
               });
             } else {
@@ -614,16 +673,30 @@ class Parser {
                 this.#duplicate(name, 'query bind');
               }
               bindNames.add(name.text);
+              let end = type.span.end;
+              let defaultValue: false | undefined;
+              if (this.#peek().text === '=') {
+                this.#take();
+                const value = this.#expectText('false');
+                if (type.base !== 'boolean' || type.nullable || optional) {
+                  this.#fail(
+                    'SYQL2011_INVALID_PARAMETER',
+                    value,
+                    'only a non-optional bool parameter may declare `= false`',
+                  );
+                }
+                defaultValue = false;
+                end = value.span.end;
+              }
               parameters.push({
                 kind: 'value',
                 name: name.text,
                 optional,
                 type,
-                span: spanFromPositions(
-                  this.#file,
-                  name.span.start,
-                  type.span.end,
-                ),
+                ...(defaultValue === undefined
+                  ? {}
+                  : { default: defaultValue }),
+                span: spanFromPositions(this.#file, name.span.start, end),
                 nameSpan: name.span,
               });
             }
@@ -657,18 +730,265 @@ class Parser {
     return { parameters, publicNames, bindNames };
   }
 
-  #parseSqlSection(): SyqlSqlSection {
-    const start = this.#expectText('sql');
-    const block = this.#parseTemplateBlock('sql section', 'statement');
+  #parseQueryBody(
+    publicNames: Set<string>,
+    declaredRanges: ReadonlySet<string>,
+  ): ParsedQueryBody {
+    const open = this.#expectText('{');
+    const bodyStart = this.#index;
+    let cursor = bodyStart;
+    let braceDepth = 1;
+    let parenDepth = 0;
+    let terminatorIndex: number | undefined;
+    while (cursor < this.#tokens.length) {
+      const token = this.#tokens[cursor] as SyqlToken;
+      if (token.kind === 'eof') {
+        this.#fail(
+          'SYQL2001_EXPECTED_TOKEN',
+          token,
+          'expected ; and } to close query body',
+        );
+      }
+      if (token.text === '(') parenDepth += 1;
+      else if (token.text === ')') parenDepth -= 1;
+      else if (token.text === '{') braceDepth += 1;
+      else if (token.text === '}') {
+        if (braceDepth === 1) {
+          this.#fail(
+            'SYQL2012_INVALID_QUERY_BODY',
+            token,
+            'a query statement must end with a semicolon',
+          );
+        }
+        braceDepth -= 1;
+      } else if (token.text === ';' && braceDepth === 1 && parenDepth === 0) {
+        terminatorIndex = cursor;
+        break;
+      }
+      cursor += 1;
+    }
+    const terminator = this.#tokens[terminatorIndex as number] as SyqlToken;
+
+    let dynamicSortIndex: number | undefined;
+    let dynamicLimitIndex: number | undefined;
+    braceDepth = 1;
+    parenDepth = 0;
+    for (
+      cursor = bodyStart;
+      cursor < (terminatorIndex as number);
+      cursor += 1
+    ) {
+      const token = this.#tokens[cursor] as SyqlToken;
+      if (isSyqlTrivia(token)) continue;
+      if (token.text === '(') parenDepth += 1;
+      else if (token.text === ')') parenDepth -= 1;
+      if (braceDepth === 1 && parenDepth === 0) {
+        const lower = token.text.toLowerCase();
+        if (
+          lower === 'order' &&
+          this.#significantTextAfter(cursor, 1) === 'by' &&
+          this.#significantTextAfter(cursor, 3) === 'default' &&
+          this.#significantTextAfter(cursor, 5) === '{'
+        ) {
+          dynamicSortIndex ??= cursor;
+        } else if (
+          lower === 'limit' &&
+          this.#significantTextAfter(cursor, 2) === 'default' &&
+          this.#significantTextAfter(cursor, 4) === 'max'
+        ) {
+          dynamicLimitIndex ??= cursor;
+        }
+      }
+      if (token.text === '{') braceDepth += 1;
+      else if (token.text === '}') braceDepth -= 1;
+    }
+    if (
+      dynamicSortIndex !== undefined &&
+      dynamicLimitIndex !== undefined &&
+      dynamicLimitIndex < dynamicSortIndex
+    ) {
+      this.#fail(
+        'SYQL2012_INVALID_QUERY_BODY',
+        this.#tokens[dynamicLimitIndex] as SyqlToken,
+        'dynamic ORDER BY must precede dynamic LIMIT',
+      );
+    }
+
+    const sqlEnd = Math.min(
+      dynamicSortIndex ?? Number.MAX_SAFE_INTEGER,
+      dynamicLimitIndex ?? Number.MAX_SAFE_INTEGER,
+      terminatorIndex as number,
+    );
+    const statementTokens = this.#tokens.slice(bodyStart, sqlEnd);
+    const rangeNames = this.#rangeShorthandNames(
+      statementTokens,
+      declaredRanges,
+    );
+    const statement = this.#makeTemplate(
+      statementTokens,
+      'query statement',
+      'statement',
+      rangeNames,
+      open.span.end,
+    );
+
+    let sort: SyqlSortSection | undefined;
+    let limit: SyqlLimitDeclaration | undefined;
+    this.#index = sqlEnd;
+    if (dynamicSortIndex !== undefined) {
+      sort = this.#parseInlineSort(publicNames);
+    }
+    if (dynamicLimitIndex !== undefined) {
+      limit = this.#parseLimitDeclaration(publicNames);
+    }
+    const end = this.#expectText(';');
+    if (end !== terminator) {
+      this.#fail(
+        'SYQL2012_INVALID_QUERY_BODY',
+        end,
+        'unexpected query member before the statement terminator',
+      );
+    }
+    const close = this.#expectText('}');
     return {
-      kind: 'sql',
-      body: block.template,
-      span: spanBetween(start, block.close),
+      statement,
+      ...(sort === undefined ? {} : { sort }),
+      ...(limit === undefined ? {} : { limit }),
+      close,
     };
   }
 
-  #parseSortSection(publicNames: Set<string>): SyqlSortSection {
-    const start = this.#expectText('sort');
+  #rangeShorthandNames(
+    tokens: readonly SyqlToken[],
+    declaredRanges: ReadonlySet<string> = new Set(),
+  ): ReadonlySet<string> {
+    const significant = tokens.filter((token) => !isSyqlTrivia(token));
+    const names = new Set<string>();
+    const clauseEnd = new Set([
+      'group',
+      'having',
+      'order',
+      'limit',
+      'offset',
+      'window',
+      'union',
+      'intersect',
+      'except',
+    ]);
+    for (let index = 0; index < significant.length; index += 1) {
+      const token = significant[index] as SyqlToken;
+      if (token.kind !== 'identifier' || token.text.toLowerCase() !== 'between')
+        continue;
+      const bind = significant[index + 1];
+      if (bind?.kind !== 'bind') continue;
+      const name = bind.text.slice(1);
+      const next = significant[index + 2];
+      const afterNext = significant[index + 3];
+      let conjunctStart = index - 1;
+      while (
+        conjunctStart >= 0 &&
+        !(
+          significant[conjunctStart]?.kind === 'identifier' &&
+          significant[conjunctStart]?.text.toLowerCase() === 'and'
+        )
+      ) {
+        conjunctStart -= 1;
+      }
+      const controlledByRange = significant
+        .slice(conjunctStart + 1, index)
+        .some((candidate, candidateIndex, conjunct) => {
+          if (
+            candidate.kind !== 'identifier' ||
+            candidate.text.toLowerCase() !== 'when' ||
+            conjunct[candidateIndex + 1]?.text !== '('
+          ) {
+            return false;
+          }
+          let depth = 0;
+          for (
+            let controlIndex = candidateIndex + 1;
+            controlIndex < conjunct.length;
+            controlIndex += 1
+          ) {
+            const control = conjunct[controlIndex] as SyqlToken;
+            if (control.text === '(') depth += 1;
+            else if (control.text === ')') {
+              depth -= 1;
+              if (depth === 0) return false;
+            } else if (
+              depth > 0 &&
+              control.kind === 'identifier' &&
+              control.text === name
+            ) {
+              return true;
+            }
+          }
+          return false;
+        });
+      const endsRange =
+        declaredRanges.has(name) ||
+        controlledByRange ||
+        next === undefined ||
+        next.text === '}' ||
+        (next.kind === 'identifier' &&
+          clauseEnd.has(next.text.toLowerCase())) ||
+        (next.kind === 'identifier' &&
+          next.text.toLowerCase() === 'and' &&
+          afterNext?.kind === 'identifier' &&
+          afterNext.text === 'when');
+      if (endsRange) names.add(name);
+    }
+    return names;
+  }
+
+  #makeTemplate(
+    tokens: readonly SyqlToken[],
+    label: string,
+    mode: SyqlTemplateMode,
+    rangeNames: ReadonlySet<string> = new Set(),
+    fallbackStart?: SyqlSourceSpan['end'],
+  ): SyqlTemplate {
+    const semantic = tokens.filter((token) => !isSyqlTrivia(token));
+    if (semantic.length === 0) {
+      this.#fail(
+        'SYQL2006_EMPTY_TEMPLATE',
+        semantic[0] ?? this.#peek(),
+        `${label} must not be empty`,
+      );
+    }
+    const first = tokens[0] ?? semantic[0];
+    const last = tokens[tokens.length - 1] ?? semantic[semantic.length - 1];
+    const start = first?.span.start ?? fallbackStart ?? this.#peek().span.start;
+    const end = last?.span.end ?? start;
+    const span = spanFromPositions(this.#file, start, end);
+    return {
+      text: this.#source.slice(start.offset, end.offset),
+      tokens,
+      tree: parseSyqlEmbeddedTemplate(
+        this.#file,
+        tokens,
+        span,
+        mode,
+        rangeNames,
+      ),
+      span,
+    };
+  }
+
+  #significantTextAfter(index: number, count: number): string | undefined {
+    let remaining = count;
+    for (let cursor = index + 1; cursor < this.#tokens.length; cursor += 1) {
+      const token = this.#tokens[cursor] as SyqlToken;
+      if (isSyqlTrivia(token)) continue;
+      remaining -= 1;
+      if (remaining === 0) return token.text.toLowerCase();
+    }
+    return undefined;
+  }
+
+  #parseInlineSort(publicNames: Set<string>): SyqlSortSection {
+    const start = this.#expectText('order');
+    this.#expectText('by');
     const control = this.#parseCamelName('sort control');
     if (publicNames.has(control.text)) {
       this.#duplicate(control, 'public query input');
@@ -693,11 +1013,32 @@ class Parser {
         this.#duplicate(profileName, 'sort profile');
       }
       profileNames.add(profileName.text);
-      const order = this.#parseTemplateBlock('sort profile', 'order');
+      this.#expectText(':');
+      const contentStart = this.#index;
+      let cursor = contentStart;
+      let depth = 0;
+      while (cursor < this.#tokens.length) {
+        const token = this.#tokens[cursor] as SyqlToken;
+        if (token.kind === 'eof' || token.text === '}') {
+          this.#fail(
+            'SYQL2001_EXPECTED_TOKEN',
+            token,
+            'expected ; after sort profile',
+          );
+        }
+        if (token.text === '(') depth += 1;
+        else if (token.text === ')') depth -= 1;
+        else if (token.text === ';' && depth === 0) break;
+        cursor += 1;
+      }
+      const end = this.#tokens[cursor] as SyqlToken;
+      const orderTokens = this.#tokens.slice(contentStart, cursor);
+      const order = this.#makeTemplate(orderTokens, 'sort profile', 'order');
+      this.#index = cursor + 1;
       profiles.push({
         name: profileName.text,
-        order: order.template,
-        span: spanBetween(profileName, order.close),
+        order,
+        span: spanBetween(profileName, end),
         nameSpan: profileName.span,
       });
     }
@@ -706,7 +1047,7 @@ class Parser {
       this.#fail(
         'SYQL2008_INVALID_MEMBER',
         close,
-        'a sort section must contain at least one profile',
+        'a dynamic ORDER BY must contain at least one profile',
       );
     }
     if (!profileNames.has(defaultProfile.text)) {
@@ -726,59 +1067,34 @@ class Parser {
     };
   }
 
-  #parsePageDeclaration(publicNames: Set<string>): SyqlPageDeclaration {
-    const start = this.#expectText('page');
-    const control = this.#parseCamelName('page control');
+  #parseLimitDeclaration(publicNames: Set<string>): SyqlLimitDeclaration {
+    const start = this.#expectText('limit');
+    const control = this.#parseCamelName('limit control');
     if (publicNames.has(control.text)) {
       this.#duplicate(control, 'public query input');
     }
     publicNames.add(control.text);
     this.#expectText('default');
-    const defaultToken = this.#parseInteger('page default');
+    const defaultToken = this.#parseInteger('limit default');
     this.#expectText('max');
-    const maxToken = this.#parseInteger('page maximum');
-    const end = this.#expectText(';');
+    const maxToken = this.#parseInteger('limit maximum');
     const defaultSize = Number(defaultToken.text);
     const maxSize = Number(maxToken.text);
     if (defaultSize < 1 || defaultSize > maxSize || maxSize > 2_147_483_647) {
       this.#fail(
         'SYQL2010_INVALID_PAGE_RANGE',
         defaultToken,
-        `page bounds must satisfy 1 <= default <= max <= 2147483647; found default ${defaultSize}, max ${maxSize}`,
+        `limit bounds must satisfy 1 <= default <= max <= 2147483647; found default ${defaultSize}, max ${maxSize}`,
       );
     }
     return {
-      kind: 'page',
+      kind: 'limit',
       control: control.text,
       defaultSize,
       maxSize,
-      span: spanBetween(start, end),
+      span: spanBetween(start, maxToken),
       controlSpan: control.span,
     };
-  }
-
-  #parseIdentityDeclaration(): SyqlIdentityDeclaration {
-    const start = this.#expectText('identity');
-    this.#expectText('by');
-    const fields: string[] = [];
-    const names = new Set<string>();
-    for (;;) {
-      const field = this.#expectKind('identifier', 'identity result name');
-      if (!IDENT_RE.test(field.text)) {
-        this.#fail(
-          'SYQL2002_INVALID_NAME',
-          field,
-          `invalid identity result name ${JSON.stringify(field.text)}`,
-        );
-      }
-      if (names.has(field.text)) this.#duplicate(field, 'identity field');
-      names.add(field.text);
-      fields.push(field.text);
-      if (this.#peek().text !== ',') break;
-      this.#take();
-    }
-    const end = this.#expectText(';');
-    return { kind: 'identity', fields, span: spanBetween(start, end) };
   }
 
   #parseTypeAnnotation(): SyqlValueType {
@@ -788,7 +1104,8 @@ class Parser {
   }
 
   #parseValueTypeAfterName(colon: SyqlToken, name: SyqlToken): SyqlValueType {
-    if (!BASE_TYPES.has(name.text as SyqlBaseType)) {
+    const base = name.text === 'bool' ? 'boolean' : name.text;
+    if (name.text === 'boolean' || !BASE_TYPES.has(base as SyqlBaseType)) {
       this.#fail(
         'SYQL2011_INVALID_PARAMETER',
         name,
@@ -803,7 +1120,7 @@ class Parser {
       nullable = true;
     }
     return {
-      base: name.text as SyqlBaseType,
+      base: base as SyqlBaseType,
       nullable,
       span: spanBetween(colon, end),
     };
@@ -961,6 +1278,19 @@ class Parser {
     return this.#tokens[index] as SyqlToken;
   }
 
+  #peekSignificantAfter(count: number): SyqlToken | undefined {
+    let index = this.#index;
+    let remaining = count;
+    while (index < this.#tokens.length) {
+      const token = this.#tokens[index] as SyqlToken;
+      index += 1;
+      if (isSyqlTrivia(token)) continue;
+      if (remaining === 0) return token;
+      remaining -= 1;
+    }
+    return undefined;
+  }
+
   #take(): SyqlToken {
     while (
       this.#index < this.#tokens.length &&
@@ -981,6 +1311,14 @@ class Parser {
       index -= 1;
     }
     return undefined;
+  }
+
+  #tokenAt(span: SyqlSourceSpan): SyqlToken {
+    return (
+      this.#tokens.find(
+        (token) => token.span.start.offset === span.start.offset,
+      ) ?? this.#peek()
+    );
   }
 
   #expectText(text: string): SyqlToken {

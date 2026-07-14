@@ -39,7 +39,7 @@
       "additionalProperties": false,
       "required": ["kind", "name", "optional"],
       "properties": {
-        "kind": { "enum": ["value", "group", "switch"] },
+        "kind": { "enum": ["value", "range", "group"] },
         "name": { "type": "string" },
         "optional": { "type": "boolean" },
         "type": { "$ref": "#/$defs/type" },

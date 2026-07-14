@@ -48,7 +48,7 @@ interface Manifest {
   readonly $schema: string;
   readonly language: 'SYQL';
   readonly revision: 1;
-  readonly fixtureSchemaRevision: 2;
+  readonly fixtureSchemaRevision: 3;
   readonly sqliteProfile: '3.46.0';
   readonly families: readonly {
     readonly kind: FamilyKind;
@@ -106,7 +106,7 @@ interface SemanticFixture {
     readonly queries: readonly {
       readonly name: string;
       readonly inputs: readonly {
-        readonly kind: 'value' | 'group' | 'switch';
+        readonly kind: 'value' | 'range' | 'group';
         readonly name: string;
         readonly optional: boolean;
         readonly type?: FixtureType;
@@ -133,7 +133,7 @@ interface LoweringExecution {
   readonly active: readonly string[];
   readonly values: Readonly<Record<string, unknown>>;
   readonly sort: string;
-  readonly page: number;
+  readonly limit: number;
   readonly ids: readonly string[];
 }
 
@@ -322,7 +322,7 @@ function execute(
     if (bind.kind === 'condition-active') {
       return bind.controls.every((control) => active.has(control)) ? 1 : 0;
     }
-    if (bind.kind === 'page') return fixture.page;
+    if (bind.kind === 'limit') return fixture.limit;
     if (bind.kind === 'value') return fixture.values[bind.input] ?? null;
     const group = fixture.values[bind.input];
     return typeof group === 'object' && group !== null
@@ -347,7 +347,7 @@ describe('normative SYQL revision-1 conformance fixtures', () => {
     expect(manifest).toMatchObject({
       language: 'SYQL',
       revision: 1,
-      fixtureSchemaRevision: 2,
+      fixtureSchemaRevision: 3,
       sqliteProfile: '3.46.0',
     });
     expect(existsSync(resolve(dirname(manifestPath), manifest.$schema))).toBe(
@@ -446,11 +446,17 @@ describe('normative SYQL revision-1 conformance fixtures', () => {
                 : { type: { base: type.base, nullable: type.nullable } }),
             };
           }
-          if (parameter.kind === 'switch') {
+          if (parameter.kind === 'range') {
+            const type = query.bindTypes.get(
+              `__syqlRangeStart_${parameter.name}`,
+            );
             return {
               kind: parameter.kind,
               name: parameter.name,
               optional: parameter.optional,
+              ...(type === undefined
+                ? {}
+                : { type: { base: type.base, nullable: type.nullable } }),
             };
           }
           return {

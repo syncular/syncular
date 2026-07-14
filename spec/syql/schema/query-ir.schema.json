@@ -159,7 +159,8 @@
             "langName": { "$ref": "#/$defs/identifier" },
             "type": { "$ref": "#/$defs/valueType" },
             "nullable": { "type": "boolean" },
-            "required": { "type": "boolean" }
+            "required": { "type": "boolean" },
+            "default": { "const": false }
           }
         },
         {
@@ -185,17 +186,6 @@
                 }
               }
             }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "name", "langName", "default"],
-          "properties": {
-            "kind": { "const": "switch" },
-            "name": { "$ref": "#/$defs/identifier" },
-            "langName": { "$ref": "#/$defs/identifier" },
-            "default": { "const": false }
           }
         },
         {
@@ -227,7 +217,7 @@
           "additionalProperties": false,
           "required": ["kind", "name", "langName", "defaultSize", "maxSize"],
           "properties": {
-            "kind": { "const": "page" },
+            "kind": { "const": "limit" },
             "name": { "$ref": "#/$defs/identifier" },
             "langName": { "$ref": "#/$defs/identifier" },
             "defaultSize": { "type": "integer", "minimum": 1 },
@@ -312,7 +302,7 @@
           "additionalProperties": false,
           "required": ["kind", "name", "type", "input"],
           "properties": {
-            "kind": { "const": "page" },
+            "kind": { "const": "limit" },
             "name": { "$ref": "#/$defs/identifier" },
             "type": { "const": "integer" },
             "input": { "$ref": "#/$defs/identifier" }

@@ -105,14 +105,10 @@ conjunctive scope equalities. Joins, `OR`, grouping, ambiguous aliases, or
 unproven identities fall back to table-wide dependencies, no coverage, and/or
 unkeyed reconciliation.
 
-SYQL provides constructive facts:
-
-- `@scope(table.scope = :input)` emits the SQL restriction and exact dependency
-  key from one node;
-- `@cover(...)` does the same and proves a covered window only when every scope
-  for that table instance is bound correctly;
-- `identity by ...` is accepted only when the projected non-null fields satisfy
-  the conservative uniqueness proof.
+SYQL infers exact dependency facts from ordinary required equality/`IN`
+predicates over schema scope columns. `sync query` explicitly requests coverage
+and is accepted only when one table instance and all its scopes are proven.
+Result identity is inferred conservatively from schema keys and the projection.
 
 These facts are correctness inputs to invalidation and readiness. They are
 never accepted as unchecked hints.

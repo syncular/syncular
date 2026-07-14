@@ -115,7 +115,7 @@ function syqlSwiftType(type: IrColumnType, nullable: boolean): string {
 function syqlControlActive(query: AnalyzedQuery, name: string): string {
   const input = syqlInput(query, name);
   const access = camelCase(input.langName);
-  if (input.kind === 'switch') return access;
+  if (input.kind === 'value' && input.default === false) return access;
   if (input.kind === 'value' && input.nullable) {
     return `{ if case .present = ${access} { return true }; return false }()`;
   }
@@ -138,7 +138,7 @@ function syqlBindExpr(query: AnalyzedQuery, bind: QuerySyqlPlanBind): string {
   }
   const input = syqlInput(query, bind.input);
   const access = camelCase(input.langName);
-  if (bind.kind === 'page')
+  if (bind.kind === 'limit')
     return `.number(Double(effective${typeName(access)}))`;
   if (bind.kind === 'group-member') {
     if (input.kind !== 'group') throw new Error('group bind/input mismatch');
@@ -154,6 +154,7 @@ function syqlBindExpr(query: AnalyzedQuery, bind: QuerySyqlPlanBind): string {
     return `${access}.map { value in ${present} } ?? .null`;
   }
   if (input.kind !== 'value') throw new Error('value bind/input mismatch');
+  if (input.default === false) return paramValue(input.type, access);
   if (input.required) {
     return input.nullable
       ? optionalParamValue(input.type, access)
@@ -216,6 +217,7 @@ function emitSyqlSwiftRunner(query: AnalyzedQuery): string[] {
     if (input.kind === 'value') {
       const type = syqlSwiftType(input.type, input.nullable);
       if (input.required) args.push(`${name}: ${type}`);
+      else if (input.default === false) args.push(`${name}: Bool = false`);
       else if (input.nullable)
         args.push(`${name}: SyncularQueryPresence<${type}> = .absent`);
       else args.push(`${name}: ${type}? = nil`);
@@ -223,8 +225,6 @@ function emitSyqlSwiftRunner(query: AnalyzedQuery): string[] {
       args.push(
         `${name}: ${typeName(query.name)}${typeName(input.langName)}? = nil`,
       );
-    } else if (input.kind === 'switch') {
-      args.push(`${name}: Bool = false`);
     } else if (input.kind === 'sort') {
       const defaultCase =
         input.profiles.find((profile) => profile.name === input.defaultProfile)
@@ -239,13 +239,13 @@ function emitSyqlSwiftRunner(query: AnalyzedQuery): string[] {
   lines.push(
     `    public static func ${query.name}(${args.join(', ')}) throws -> [${Row}] {`,
   );
-  const page = metadata.inputs.find((input) => input.kind === 'page');
-  if (page?.kind === 'page') {
+  const page = metadata.inputs.find((input) => input.kind === 'limit');
+  if (page?.kind === 'limit') {
     const name = camelCase(page.langName);
     lines.push(
       `        let effective${typeName(name)} = ${name} ?? ${page.defaultSize}`,
       `        guard effective${typeName(name)} >= 1 && effective${typeName(name)} <= ${page.maxSize} else {`,
-      `            throw SyncularQueryInputError(code: "SYQL_RUNTIME_INVALID_PAGE", message: ${quote(`${query.name}: invalid page size`)})`,
+      `            throw SyncularQueryInputError(code: "SYQL_RUNTIME_INVALID_LIMIT", message: ${quote(`${query.name}: invalid limit`)})`,
       '        }',
     );
   }

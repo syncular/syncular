@@ -1,10 +1,10 @@
 # syncular-syql — VS Code support for `.syql`
 
 Syntax highlighting for SYQL revision 1. The grammar covers `import`, `query`,
-and `predicate` declarations; typed optional values and atomic groups; `sql`,
-named `sort` profiles, `page`, and `identity` sections; predicate calls;
-`when` conjuncts; and constructive `@scope` / `@cover` directives. SQL regions
-remain embedded as `source.sql`, so the active SQL theme still applies.
+`sync query`, and `predicate` declarations; typed optional values, ranges, and
+atomic records; SQL-position dynamic order and limit controls; normal predicate
+calls; and `when`/`present` conjuncts. SQL remains embedded as `source.sql`, so
+the active SQL theme still applies.
 
 ## Install (from the repo)
 

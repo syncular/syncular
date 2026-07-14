@@ -20,8 +20,9 @@ The release includes:
   and editor tooling;
 - authoritative typed query inputs, explicit `when` conditions, atomic named
   groups, hygienic predicates/imports, and distinct absent/null/false states;
-- constructive `@scope`/`@cover` reactive facts, conservative table-wide
-  fallback, proven identity, finite sort profiles, and bounded page controls;
+- inferred scope dependencies, explicit `sync query` coverage, conservative
+  table-wide fallback, inferred identity, finite sort profiles, and bounded
+  limit controls;
 - deterministic neutralized/enumerated lowering behind one QueryIR v3 plan and
   equivalent TypeScript, Swift, Kotlin, and Dart generated APIs;
 - a closed SQLite 3.46.0 language profile which rejects extension functions,

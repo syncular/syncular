@@ -30,13 +30,13 @@
     "execution": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "active", "values", "sort", "page", "ids"],
+      "required": ["name", "active", "values", "sort", "limit", "ids"],
       "properties": {
         "name": { "type": "string" },
         "active": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
         "values": { "type": "object" },
         "sort": { "type": "string" },
-        "page": { "type": "integer", "minimum": 1 },
+        "limit": { "type": "integer", "minimum": 1 },
         "ids": { "type": "array", "items": { "type": "string" } }
       }
     },
@@ -59,7 +59,7 @@
         "queryIrVersion": { "const": 3 },
         "publicInputKinds": {
           "type": "array",
-          "items": { "enum": ["value", "group", "switch", "sort", "page"] }
+          "items": { "enum": ["value", "group", "sort", "limit"] }
         },
         "identity": { "type": "array", "items": { "type": "string" } },
         "coverage": {

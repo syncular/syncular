@@ -103,7 +103,7 @@ function syqlDartType(type: IrColumnType, nullable: boolean): string {
 function syqlControlActive(query: AnalyzedQuery, name: string): string {
   const input = syqlInput(query, name);
   const access = camelCase(input.langName);
-  if (input.kind === 'switch') return access;
+  if (input.kind === 'value' && input.default === false) return access;
   if (input.kind === 'value' && input.nullable) return `${access}.isPresent`;
   if (input.kind === 'value' || input.kind === 'group') {
     return `${access} != null`;
@@ -119,7 +119,7 @@ function syqlBindExpr(query: AnalyzedQuery, bind: QuerySyqlPlanBind): string {
   }
   const input = syqlInput(query, bind.input);
   const access = camelCase(input.langName);
-  if (bind.kind === 'page') return `effective${typeName(access)}`;
+  if (bind.kind === 'limit') return `effective${typeName(access)}`;
   if (bind.kind === 'group-member') {
     if (input.kind !== 'group') throw new Error('group bind/input mismatch');
     const member = input.members.find(
@@ -134,6 +134,7 @@ function syqlBindExpr(query: AnalyzedQuery, bind: QuerySyqlPlanBind): string {
     return `${access} == null ? null : ${value}`;
   }
   if (input.kind !== 'value') throw new Error('value bind/input mismatch');
+  if (input.default === false) return paramValue(input.type, access);
   if (input.required) {
     return input.nullable
       ? optionalParamValue(input.type, access)
@@ -189,6 +190,7 @@ function emitSyqlDartRunner(query: AnalyzedQuery): string[] {
     if (input.kind === 'value') {
       const type = syqlDartType(input.type, input.nullable);
       if (input.required) args.push(`required ${type} ${name}`);
+      else if (input.default === false) args.push(`bool ${name} = false`);
       else if (input.nullable) {
         args.push(
           `SyqlQueryPresence<${type}> ${name} = const SyqlQueryPresence.absent()`,
@@ -196,8 +198,6 @@ function emitSyqlDartRunner(query: AnalyzedQuery): string[] {
       } else args.push(`${type}? ${name}`);
     } else if (input.kind === 'group') {
       args.push(`${typeName(query.name)}${typeName(input.langName)}? ${name}`);
-    } else if (input.kind === 'switch') {
-      args.push(`bool ${name} = false`);
     } else if (input.kind === 'sort') {
       const defaultCase =
         input.profiles.find((profile) => profile.name === input.defaultProfile)
@@ -212,13 +212,13 @@ function emitSyqlDartRunner(query: AnalyzedQuery): string[] {
   lines.push(
     `List<${Row}> syncular${Pascal}Query(SyncularClient client${argsClause}) {`,
   );
-  const page = metadata.inputs.find((input) => input.kind === 'page');
-  if (page?.kind === 'page') {
+  const page = metadata.inputs.find((input) => input.kind === 'limit');
+  if (page?.kind === 'limit') {
     const name = camelCase(page.langName);
     lines.push(
       `  final effective${typeName(name)} = ${name} ?? ${page.defaultSize};`,
       `  if (effective${typeName(name)} < 1 || effective${typeName(name)} > ${page.maxSize}) {`,
-      `    throw SyqlQueryInputException('SYQL_RUNTIME_INVALID_PAGE', ${quote(`${query.name}: invalid page size`)});`,
+      `    throw SyqlQueryInputException('SYQL_RUNTIME_INVALID_LIMIT', ${quote(`${query.name}: invalid limit`)});`,
       '  }',
     );
   }

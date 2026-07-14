@@ -33,19 +33,19 @@
       ]
     },
     "declarations": {
-      "match": "\\b(query|predicate)\\s+([a-z][A-Za-z0-9]*)",
+      "match": "\\b(?:(sync)\\s+)?(query|predicate)\\s+([a-z][A-Za-z0-9]*)",
       "captures": {
         "1": { "name": "keyword.control.declaration.syql" },
-        "2": { "name": "entity.name.function.syql" }
+        "2": { "name": "keyword.control.declaration.syql" },
+        "3": { "name": "entity.name.function.syql" }
       }
     },
     "types": {
       "patterns": [
         {
-          "match": "\\b(string|integer|float|boolean|json|bytes|blob_ref|crdt|null)\\b",
+          "match": "\\b(string|integer|float|bool|range|json|bytes|blob_ref|crdt|null)\\b",
           "name": "storage.type.syql"
         },
-        { "match": "\\b(switch)\\b", "name": "storage.type.switch.syql" },
         { "match": "\\?", "name": "keyword.operator.optional.syql" },
         { "match": "\\|", "name": "keyword.operator.union.syql" }
       ]
@@ -53,7 +53,7 @@
     "container-keywords": {
       "patterns": [
         {
-          "match": "\\b(sql|sort|default|page|max|identity|by)\\b",
+          "match": "\\b(sync|default|max|by)\\b",
           "name": "keyword.other.member.syql"
         },
         { "match": "\\b\\d+\\b", "name": "constant.numeric.syql" }
@@ -61,15 +61,7 @@
     },
     "embedded-nodes": {
       "patterns": [
-        {
-          "match": "@(scope|cover)\\b",
-          "name": "support.function.reactive.syql"
-        },
-        {
-          "match": "@([a-z][A-Za-z0-9]*)",
-          "captures": { "1": { "name": "entity.name.function.predicate.syql" } }
-        },
-        { "match": "\\bwhen\\b", "name": "keyword.control.conditional.syql" }
+        { "match": "\\b(when|present)\\b", "name": "keyword.control.conditional.syql" }
       ]
     },
     "binds": {

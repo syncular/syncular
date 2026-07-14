@@ -105,28 +105,27 @@ function frontendError(run: () => unknown): SyqlFrontendError {
   throw new Error('expected a SyqlFrontendError');
 }
 
-describe('revision-1 SYQL schema/SQL validation', () => {
-  test('validates a complete reactive, conditional, sorted, paged query', () => {
-    const result = validate(`query listTodos(
+describe('SYQL schema/SQL validation', () => {
+  test('validates a complete reactive, conditional, sorted, limited query', () => {
+    const result = validate(`sync query listTodos(
       listId,
       status?,
-      cursor?(start: integer, end: integer),
-      includeUnassigned?: switch,
+      cursor?: { start: integer, end: integer },
+      includeUnassigned: bool = false,
     ) {
-      sql {
+
         select id, title, created_at from todos
-        where @cover(todos.list_id = :listId)
+        where todos.list_id = :listId
           and when(status) { status is :status }
           and when(cursor, includeUnassigned) {
             created_at between :start and :end
           }
+
+      order by sortBy default newest {
+        newest: created_at desc, id desc ;
+        oldest: created_at asc, id asc ;
       }
-      sort sortBy default newest {
-        newest { created_at desc, id desc }
-        oldest { created_at asc, id asc }
-      }
-      page pageSize default 50 max 200;
-      identity by id;
+      limit pageSize default 50 max 200;
     }`);
     const query = result.queries[0];
     expect(query?.bindTypes.get('listId')?.base).toBe('string');
@@ -149,63 +148,50 @@ describe('revision-1 SYQL schema/SQL validation', () => {
   test('requires embedded nodes to be whole outer conjuncts', () => {
     const underOr = frontendError(() =>
       validate(`query q(status?) {
-        sql {
+
           select id from todos
           where id = 'x' or when(status) { status = :status }
-        }
+        ;
       }`),
     );
     expect(underOr.code).toBe('SYQL6001_INVALID_PLACEMENT');
 
     const parenthesized = frontendError(() =>
       validate(`query q(status?) {
-        sql {
+
           select id from todos
           where (when(status) { status = :status })
-        }
+        ;
       }`),
     );
     expect(parenthesized.code).toBe('SYQL6001_INVALID_PLACEMENT');
-
-    const inHaving = frontendError(() =>
-      validate(`query q(listId) {
-        sql {
-          select list_id from todos group by list_id
-          having @scope(todos.list_id = :listId)
-        }
-      }`),
-    );
-    expect(inHaving.code).toBe('SYQL6001_INVALID_PLACEMENT');
   });
 
-  test('derives reactive facts only from constructive directives', () => {
+  test('infers exact dependencies from ordinary scope predicates', () => {
     const fallback = validate(`query q(listId) {
-      sql { select id from todos where list_id = :listId }
+       select id from todos where list_id = :listId ;
     }`).queries[0];
-    expect(fallback?.reactive.dependencies).toEqual([
-      { table: 'todos', scopes: [] },
+    expect(fallback?.reactive.dependencies[0]?.scopes[0]?.params).toEqual([
+      'listId',
     ]);
     expect(fallback?.reactive.coverage).toEqual([]);
 
     const scoped = validate(`query q(listId) {
-      sql {
-        select id from todos where @scope(todos.list_id = :listId)
-      }
+
+        select id from todos where todos.list_id = :listId
+      ;
     }`).queries[0];
     expect(scoped?.reactive.dependencies[0]?.scopes[0]?.params).toEqual([
       'listId',
     ]);
     expect(scoped?.reactive.coverage).toEqual([]);
 
-    const covered = validate(`query q(roomId, left, right) {
-      sql {
+    const covered =
+      validate(`sync query q(roomId, left, right) by messages.thread_id {
+
         select id from messages
-        where @cover(
-          messages.thread_id in (:left, :right),
-          messages.room_id = :roomId
-        )
-      }
-      identity by id;
+        where messages.thread_id in (:left, :right) and messages.room_id = :roomId
+      ;
     }`).queries[0];
     expect(covered?.reactive.coverage).toEqual([
       {
@@ -217,67 +203,96 @@ describe('revision-1 SYQL schema/SQL validation', () => {
     ]);
   });
 
-  test('rejects incomplete, non-scope, optional, and alias-ambiguous directives', () => {
+  test('rejects sync queries whose coverage cannot be proven', () => {
     const incomplete = frontendError(() =>
-      validate(`query q(threadId) {
-        sql {
+      validate(`sync query q(threadId) by messages.thread_id {
+
           select id from messages
-          where @cover(messages.thread_id = :threadId)
-        }
+          where messages.thread_id = :threadId
+        ;
       }`),
     );
-    expect(incomplete.code).toBe('SYQL6005_INVALID_REACTIVE_DIRECTIVE');
+    expect(incomplete.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
 
     const nonScope = frontendError(() =>
-      validate(`query q(id) {
-        sql { select id from todos where @scope(todos.id = :id) }
+      validate(`sync query q(id) {
+         select id from todos where todos.id = :id ;
       }`),
     );
-    expect(nonScope.code).toBe('SYQL6005_INVALID_REACTIVE_DIRECTIVE');
+    expect(nonScope.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
 
     const optional = frontendError(() =>
-      validate(`query q(listId?) {
-        sql {
-          select id from todos
-          where when(listId) { @scope(todos.list_id = :listId) }
-        }
-      }`),
-    );
-    expect(optional.code).toBe('SYQL3006_FORBIDDEN_TEMPLATE_NODE');
+      validate(`sync query q(listId?) {
 
-    const wrongAlias = frontendError(() =>
-      validate(`query q(listId) {
-        sql {
-          select t.id from todos as t
-          where @scope(todos.list_id = :listId)
-        }
+          select id from todos
+          where when(listId) { todos.list_id = :listId }
+        ;
       }`),
     );
-    expect(wrongAlias.code).toBe('SYQL6005_INVALID_REACTIVE_DIRECTIVE');
+    expect(optional.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
 
     const nullableScope = frontendError(() =>
-      validate(`query q(listId: string | null) {
-        sql {
-          select id from todos where @scope(todos.list_id = :listId)
-        }
+      validate(`sync query q(listId: string | null) {
+
+          select id from todos where todos.list_id = :listId
+        ;
       }`),
     );
-    expect(nullableScope.code).toBe('SYQL6005_INVALID_REACTIVE_DIRECTIVE');
+    expect(nullableScope.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
   });
 
   test('a partially scoped self-join falls back table-wide', () => {
     const query = validate(`query q(listId) {
-      sql {
+
         select a.id as leftId, b.id as rightId
         from todos as a join todos as b on a.list_id = b.list_id
-        where @scope(a.list_id = :listId)
-      }
+        where a.list_id = :listId
+      ;
     }`).queries[0];
     expect(query?.reactive.dependencies).toEqual([
       { table: 'todos', scopes: [] },
     ]);
     expect(query?.reactive.coverage).toEqual([]);
     expect(query?.identity).toBeUndefined();
+  });
+
+  test('rejects unsafe scope proofs and falls back conservatively', () => {
+    for (const predicate of [
+      "title = 'other' or todos.list_id = :listId",
+      "todos.list_id = :listId or title = 'other'",
+      'not (todos.list_id = :listId)',
+      "todos.list_id in (:listId, 'fixed')",
+    ]) {
+      const query = validate(`query q(listId) {
+        select id from todos where ${predicate};
+      }`).queries[0];
+      expect(query?.reactive.dependencies).toEqual([
+        { table: 'todos', scopes: [] },
+      ]);
+    }
+
+    const nested = validate(`query q(listId) {
+      select id from todos
+      where exists (
+        select 1 from messages
+        where messages.room_id = :listId
+      );
+    }`).queries[0];
+    expect(nested?.reactive.dependencies).toEqual([
+      { table: 'messages', scopes: [] },
+      { table: 'todos', scopes: [] },
+    ]);
+  });
+
+  test('does not allow one side of a self-join to claim sync coverage', () => {
+    const error = frontendError(() =>
+      validate(`sync query q(listId) by a.list_id {
+        select a.id as leftId, b.id as rightId
+        from todos as a join todos as b on a.list_id = b.list_id
+        where a.list_id = :listId;
+      }`),
+    );
+    expect(error.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
   });
 
   test('rejects nondeterministic snapshot-external SQL', () => {
@@ -289,7 +304,7 @@ describe('revision-1 SYQL schema/SQL validation', () => {
     ]) {
       const error = frontendError(() =>
         validate(
-          `query q() { sql { select id, ${expression} as value from todos } }`,
+          `query q() {  select id, ${expression} as value from todos ; }`,
         ),
       );
       expect(error.code).toBe('SYQL6003_NONDETERMINISTIC_SQL');
@@ -298,14 +313,14 @@ describe('revision-1 SYQL schema/SQL validation', () => {
 
   test('enforces the portable SQLite 3.46.0 function and collation profile', () => {
     const accepted = validate(`query q() {
-      sql {
+
         select id,
           lower(title) as folded,
           json_extract('{"value": 1}', '$.value') as extracted,
           iif(status is null, 'none', status) as normalized
         from todos
         order by title collate nocase, id
-      }
+      ;
     }`).queries[0];
     expect(accepted?.analysis.columns.map((column) => column.name)).toEqual([
       'id',
@@ -322,7 +337,7 @@ describe('revision-1 SYQL schema/SQL validation', () => {
     ]) {
       const error = frontendError(() =>
         validate(
-          `query q() { sql { select id, ${expression} as value from todos } }`,
+          `query q() {  select id, ${expression} as value from todos ; }`,
         ),
       );
       expect(error.code).toBe('SYQL6002_INVALID_SQL');
@@ -332,7 +347,7 @@ describe('revision-1 SYQL schema/SQL validation', () => {
     for (const expression of ['date()', "strftime('%Y')"]) {
       const error = frontendError(() =>
         validate(
-          `query q() { sql { select id, ${expression} as value from todos } }`,
+          `query q() {  select id, ${expression} as value from todos ; }`,
         ),
       );
       expect(error.code).toBe('SYQL6003_NONDETERMINISTIC_SQL');
@@ -340,7 +355,7 @@ describe('revision-1 SYQL schema/SQL validation', () => {
 
     const collation = frontendError(() =>
       validate(`query q() {
-        sql { select id from todos order by title collate unicode, id }
+         select id from todos order by title collate unicode, id ;
       }`),
     );
     expect(collation.code).toBe('SYQL6002_INVALID_SQL');
@@ -349,43 +364,43 @@ describe('revision-1 SYQL schema/SQL validation', () => {
   test('uses all SQL evidence for types and accepts explicit uninferrable types', () => {
     const conflict = frontendError(() =>
       validate(`query q(value) {
-        sql {
+
           select id from todos
           where title = :value and position = :value
-        }
+        ;
       }`),
     );
     expect(conflict.code).toBe('SYQL6004_TYPE_CONFLICT');
 
     const explicit = validate(`query q(label: string) {
-      sql { select :label as label, id from todos }
+       select :label as label, id from todos ;
     }`).queries[0];
     expect(explicit?.bindTypes.get('label')?.base).toBe('string');
   });
 
-  test('distinguishes outer sort/page conflicts from nested clauses', () => {
+  test('distinguishes outer sort/limit conflicts from nested clauses', () => {
     const orderConflict = frontendError(() =>
       validate(`query q() {
-        sql { select id from todos order by id }
-        sort sortBy default byId { byId { id asc } }
+         select id from todos order by id
+        order by sortBy default byId { byId: id asc ; };
       }`),
     );
     expect(orderConflict.code).toBe('SYQL6006_INVALID_SORT');
 
-    const pageConflict = frontendError(() =>
+    const limitConflict = frontendError(() =>
       validate(`query q() {
-        sql { select id from todos order by id limit 10 }
-        page pageSize default 5 max 10;
+         select id from todos order by id limit 10
+        limit pageSize default 5 max 10;
       }`),
     );
-    expect(pageConflict.code).toBe('SYQL6007_INVALID_PAGE');
+    expect(limitConflict.code).toBe('SYQL6007_INVALID_LIMIT');
 
     const nested = validate(`query q() {
-      sql {
+
         select id from todos
         where id in (select id from todos order by id)
-      }
-      sort sortBy default byId { byId { id asc } }
+
+      order by sortBy default byId { byId: id asc ; };
     }`);
     expect(nested.queries[0]?.sort?.defaultProfile).toBe('byId');
   });
@@ -396,9 +411,7 @@ describe('revision-1 SYQL schema/SQL validation', () => {
       'select id from todos where id in (select id from todos order by id offset 1)',
       'select id, row_number() over (order by id) as rank from todos',
     ]) {
-      const error = frontendError(() =>
-        validate(`query q() { sql { ${sql} } }`),
-      );
+      const error = frontendError(() => validate(`query q() {  ${sql} ; }`));
       expect(error.code).toBe('SYQL6003_NONDETERMINISTIC_SQL');
     }
   });
@@ -406,59 +419,49 @@ describe('revision-1 SYQL schema/SQL validation', () => {
   test('requires deterministic identity suffixes for bounded queries', () => {
     const missingIdentity = frontendError(() =>
       validate(`query q() {
-        sql { select title from todos }
-        sort sortBy default byTitle { byTitle { title asc } }
-        page pageSize default 10 max 20;
+         select title from todos
+        order by sortBy default byTitle { byTitle: title asc ; }
+        limit pageSize default 10 max 20;
       }`),
     );
     expect(missingIdentity.code).toBe('SYQL6006_INVALID_SORT');
 
     const unstable = frontendError(() =>
       validate(`query q() {
-        sql { select id, created_at from todos }
-        sort sortBy default newest { newest { created_at desc } }
-        page pageSize default 10 max 20;
-        identity by id;
+         select id, created_at from todos
+        order by sortBy default newest { newest: created_at desc ; }
+        limit pageSize default 10 max 20;
       }`),
     );
     expect(unstable.code).toBe('SYQL6006_INVALID_SORT');
 
     const randomSort = frontendError(() =>
       validate(`query q() {
-        sql { select id from todos }
-        sort sortBy default shuffled { shuffled { random() } }
-        identity by id;
+         select id from todos
+        order by sortBy default shuffled { shuffled: random() ; };
       }`),
     );
     expect(randomSort.code).toBe('SYQL6003_NONDETERMINISTIC_SQL');
   });
 
-  test('proves or conservatively omits result identity', () => {
-    const inferred = validate(
-      'query q() { sql { select id, title from todos } }',
-    ).queries[0];
+  test('infers result identity and conservatively omits it', () => {
+    const inferred = validate('query q() {  select id, title from todos ; }')
+      .queries[0];
     expect(inferred?.identity).toEqual(['id']);
 
-    const nullable = frontendError(() =>
-      validate(`query q() {
-        sql { select id, status from todos }
-        identity by status;
-      }`),
-    );
-    expect(nullable.code).toBe('SYQL6008_INVALID_IDENTITY');
+    const aliased = validate(
+      'query q() { select id as todoId, status from todos; }',
+    ).queries[0];
+    expect(aliased?.identity).toEqual(['todoId']);
 
-    const noPrimary = frontendError(() =>
-      validate(`query q() {
-        sql { select id, title from todos }
-        identity by title;
-      }`),
-    );
-    expect(noPrimary.code).toBe('SYQL6008_INVALID_IDENTITY');
+    const noPrimary = validate('query q() { select title, status from todos; }')
+      .queries[0];
+    expect(noPrimary?.identity).toBeUndefined();
   });
 
   test('wraps SQLite reference failures in stable SYQL diagnostics', () => {
     const error = frontendError(() =>
-      validate('query q() { sql { select missing from todos } }'),
+      validate('query q() {  select missing from todos ; }'),
     );
     expect(error.code).toBe('SYQL6002_INVALID_SQL');
     expect(error.message).toContain('no such column');

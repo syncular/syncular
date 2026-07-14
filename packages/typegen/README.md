@@ -330,8 +330,8 @@ Two frontends feed one QueryIR pipeline. **`.sql`** is plain SQL plus
 `:params`, the compatibility floor documented below. **`.syql`** is the
 revision-1 structured frontend: authoritative typed inputs, explicit
 `when(...)` conjuncts, atomic optional groups, imported hygienic predicates,
-constructive `@scope`/`@cover` facts, complete sort profiles, bounded pages,
-and proven identity. Its complete normative definition is
+inferred scope dependencies, explicit sync coverage, complete sort profiles,
+bounded limits, and inferred identity. Its complete normative definition is
 [`../../docs/SYQL.md`](../../docs/SYQL.md); the rationale and implementation
 record are [`../../docs/rfcs/0004-syql-language.md`](../../docs/rfcs/0004-syql-language.md).
 
@@ -345,43 +345,32 @@ definitions, references, symbols, and formatting. Casing follows the manifest
 ```syql
 import { matchesTitle } from "./predicates.syql";
 
-query listTodos(
+sync query listTodos(
   listId,
   status?: string | null,
-  range?(start: integer, end: integer),
+  range?,
   q?: string,
-  unassigned?: switch,
+  unassigned: bool = false,
 ) {
-  sql {
-    select id, title, status, created_at
-    from todos
-    where @cover(todos.list_id = :listId)
-      and when(status) {
-        status is :status
-      }
-      and when(range) {
-        created_at between :start and :end
-      }
-      and when(unassigned) {
-        assignee_id is null
-      }
-      and when(q) {
-        @matchesTitle(:q)
-      }
+  select id, title, status, created_at
+  from todos
+  where todos.list_id = :listId
+    and when(status) status is :status
+    and when(range) created_at between :range
+    and when(unassigned) assignee_id is null
+    and when(q) matchesTitle(:q)
+  order by sortBy default newest {
+    newest: created_at desc, id desc;
+    oldest: created_at asc, id asc;
   }
-  sort sortBy default newest {
-    newest { created_at desc, id desc }
-    oldest { created_at asc, id asc }
-  }
-  page pageSize default 50 max 200;
-  identity by id;
+  limit pageSize default 50 max 200;
 }
 ```
 
 Optional nullable scalars use a generated presence wrapper so absent,
 present-null, and present-value remain distinct. A group is one optional host
-object whose members are all required. A switch defaults false. Sort is a
-generated enum/union of complete checked profiles; page is validated as a
+object whose members are all required. A `bool = false` flag activates on
+true. Sort is a generated enum/union of complete checked profiles; limit is validated as a
 positive bounded integer before execution. `integer` inputs are exact signed
 64-bit values in the SYQL API (`bigint` in TypeScript, `Int64`/`Long`/`int` on
 native targets).
@@ -502,24 +491,19 @@ identifier and keeping those that name an IR table. This captures subquery /
 prepare() still guarantees the SQL itself is correct.
 
 Inference is deliberately conservative around `OR`, joins, grouping, and
-computed identity. A `.syql` query constructs exact reactive facts in the same
-node that restricts the SQL:
+computed identity. Ordinary scope predicates construct exact reactive facts;
+`sync query` additionally requests checked coverage:
 
 ```syql
-query compareLists(left, right) {
-  sql {
-    select id, title from tasks
-    where @cover(tasks.project_id in (:left, :right))
-  }
-  identity by id;
+sync query compareLists(left, right) {
+  select id, title from tasks
+  where tasks.project_id in (:left, :right);
 }
 ```
 
-`@scope` emits a real predicate plus exact dependency keys. `@cover` emits the
-same dependency facts plus proven window coverage and must bind every declared
-scope of that table instance. Only required, exactly typed binds are allowed.
-`identity by ...` is accepted only when the projected fields are proven unique;
-it is not an unchecked assertion. Without constructive proof the compiler
+Coverage must resolve one table instance and bind every declared scope. Only
+required, non-null, exactly typed binds are allowed. Result identity is inferred
+from schema keys and the projection. Without constructive proof the compiler
 falls back to table-wide dependency, no coverage, and/or unkeyed reconciliation.
 
 **Emitted shape, per language** (one query, five outputs — abbreviated):

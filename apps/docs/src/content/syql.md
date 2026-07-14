@@ -1,235 +1,199 @@
-# SYQL language
+# SYQL
 
-SYQL revision 1 is Syncular's compile-time language for checked, reactive
-SQLite reads. A `.syql` file describes a public query operation while keeping
-SQLite as the relational and expression language. Typegen validates the query
-against your generated schema and emits the same contract for TypeScript,
-Swift, Kotlin, and Dart.
+SYQL is SQLite for named, typed, reactive reads, with a small amount of checked
+sugar for optional filters, reusable predicates, finite sort choices, bounded
+limits, and synchronization coverage.
 
-This page is the authoring guide. The
-[SYQL language specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md)
-is normative and defines the exact grammar, static semantics, lowering rules,
-SQLite profile, diagnostics, and conformance requirements. Revision 1 was
-accepted by
-[RFC 0004](https://github.com/syncular/syncular/blob/main/docs/rfcs/0004-syql-language.md).
+The formal definition is the
+[SYQL language specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md).
+The executable vectors live under
+[`spec/syql`](https://github.com/syncular/syncular/tree/main/spec/syql).
 
-## When to use SYQL
-
-Use a plain `.sql` named query when fixed SQLite with named parameters is
-enough. Use `.syql` when the query needs one or more of these:
-
-- optional filters with explicit presence semantics;
-- an atomic optional input made of several values;
-- reusable, imported predicates;
-- precise reactive scope or coverage facts;
-- a finite choice of complete sort orders;
-- a bounded page size;
-- checked row identity for keyed reconciliation.
-
-SYQL has no runtime parser. It lowers at generation time to ordinary prepared
-SQLite statements and QueryIR.
+Use a plain `.sql` query when the statement is fixed. Use `.syql` when its
+shape depends on optional inputs or when it should declare sync coverage.
 
 ## Complete example
 
 ```syql
 import { matchesTitle } from "./todo-predicates.syql";
 
-query listTodos(
+sync query listTodos(
   listId,
   status?: string | null,
-  range?(start: integer, end: integer),
+  range?,
   q?: string,
-  unassigned?: switch,
+  unassigned: bool = false,
 ) {
-  sql {
-    select id, title, status, created_at
-    from todos
-    where @cover(todos.list_id = :listId)
-      and when(status) {
-        status is :status
-      }
-      and when(range) {
-        created_at between :start and :end
-      }
-      and when(q) {
-        @matchesTitle(:q)
-      }
-      and when(unassigned) {
-        assignee_id is null
-      }
+  select id, title, status, created_at
+  from todos
+  where todos.list_id = :listId
+    and when(status) status is :status
+    and when(range) created_at between :range
+    and when(q) matchesTitle(:q)
+    and when(unassigned) assignee_id is null
+  order by sortBy default newest {
+    newest: created_at desc, id desc;
+    oldest: created_at asc, id asc;
+    title: title collate nocase asc, id asc;
   }
-
-  sort sortBy default newest {
-    newest { created_at desc, id desc }
-    oldest { created_at asc, id asc }
-    title { title collate nocase asc, id asc }
-  }
-
-  page pageSize default 50 max 200;
-  identity by id;
+  limit pageSize default 50 max 200;
 }
 ```
 
-The query signature is the public API authority. The `sql` block is required;
-`sort`, `page`, and `identity` follow it in that order when present. SQL values
-always enter executable statements as binds—runtime input cannot become an
-identifier, operator, keyword, or arbitrary SQL fragment.
+The body is SQL directly—there is no `sql {}` wrapper. The final semicolon
+terminates the complete query.
 
-## Inputs and presence
+## Inputs
 
-SYQL distinguishes input presence from SQL nullability:
+The signature is the public API authority:
 
-| Declaration | Meaning |
-|---|---|
-| `listId` | Required scalar; type inferred from checked SQL evidence |
-| `q?: string` | Optional, non-null scalar |
-| `status?: string \| null` | Optional nullable scalar: absent, present null, and present value are distinct |
-| `range?(start: integer, end: integer)` | One optional object/struct whose members are both required when present |
-| `unassigned?: switch` | Guard-only boolean control; false means absent and true means active |
+| Form | Meaning |
+| --- | --- |
+| `listId` | required, type inferred from SQL |
+| `q?: string` | optional string |
+| `status?: string \| null` | absent, present-null, or present-string |
+| `unassigned: bool = false` | ordinary boolean, omitted as false |
+| `bounds?: { start, end }` | atomic optional record |
 
-Every optional value used by SQL must be dominated by an explicit `when`
-conjunct:
+Generated targets preserve presence separately from SQL `NULL`. Optional
+records must be supplied completely; partial values fail before querying.
+
+## Optional predicates
+
+For optional values and records, `when(x)` means `when(present(x))`:
 
 ```syql
-and when(status) {
-  status is :status
-}
+and when(status) status is :status
 ```
 
-If `status` is absent, the whole conjunct is inactive. If it is present with
-SQL null, the predicate remains active and matches null statuses. Merely
-mentioning an optional bind never makes a predicate conditional.
-
-TypeScript represents optional nullable values with `SyqlPresent<T>` and the
-`syqlPresent(value)` helper. Native emitters generate equivalent presence
-types. SYQL `integer` is an exact signed 64-bit value: TypeScript uses
-`bigint`, Swift `Int64`, Kotlin `Long`, and Dart `int`.
-
-## Reusable predicates and imports
-
-A predicate library is another `.syql` module:
+You can spell that explicitly:
 
 ```syql
-predicate matchesTitle(needle: string) {
-  title like '%' || :needle || '%'
+and when(present(status)) status is :status
+```
+
+For `flag: bool = false`, `when(flag)` means the effective value is true.
+
+Use braces when one optional section contains multiple conjuncts:
+
+```syql
+and when(bounds) {
+  created_at >= :start
+  and created_at <= :end
 }
 ```
 
-Import named predicates explicitly and call them with `@`:
+`when` must be a complete outer `WHERE` or `HAVING` conjunct. It cannot sit
+under `OR` or inside a nested statement.
+
+## Inclusive ranges
+
+The common two-bound case is shorter:
+
+```syql
+query createdBetween(range?) {
+  select id, created_at from events
+  where when(range) created_at between :range;
+}
+```
+
+The compiler exposes `range` as `{ start, end }`, infers the endpoint type, and
+binds both endpoints atomically. It uses SQLite `BETWEEN`, so the range is
+inclusive. If type inference has no evidence, write
+`range?: range<integer>`.
+
+## Reusable predicates
+
+```syql
+predicate matchesTitle(value: string) {
+  title like '%' || :value || '%'
+}
+```
+
+Import and call it with normal SQL-like syntax:
 
 ```syql
 import { matchesTitle } from "./todo-predicates.syql";
 
-and when(q) {
-  @matchesTitle(:q)
+and when(q) matchesTitle(:q)
+```
+
+Calls are expanded hygienically. An unrecognized call remains a SQLite
+function and is checked against Syncular's portable SQLite profile.
+
+## `query` and `sync query`
+
+An ordinary `query` reads local data reactively. The compiler infers exact
+dependency keys from required scope predicates when it can; otherwise it uses
+safe table-wide invalidation. It does not claim download coverage.
+
+`sync query` additionally asks Syncular to synchronize and cover the selected
+units:
+
+```syql
+sync query listTodos(listId) {
+  select id, list_id, title from todos
+  where todos.list_id = :listId;
 }
 ```
 
-Expansion is hygienic: arguments are resolved by token identity, not raw text
-replacement. Imports must stay inside the manifest root, declarations have
-closed signatures, and missing names, arity mismatches, unused parameters, and
-complete import or predicate cycles are generation errors.
+Coverage is accepted only when the covered table has one SQL instance and
+every declared schema scope is proven from required, non-null equality/`IN`
+predicates. Predicates under `OR`, negation, `when`, or nested queries never
+prove coverage, and an `IN` proof may contain only required binds.
 
-## Reactive scope and coverage
-
-`@scope` and `@cover` are constructive SQL predicates rather than unchecked
-metadata:
+For a table with multiple scopes, choose the unit dimension:
 
 ```syql
-@scope(todos.list_id = :listId)
-@cover(todos.list_id in (:left, :right))
-```
-
-Both emit the written SQL restriction and derive matching invalidation keys
-from the same syntax node. `@cover` additionally proves that the requested
-local window is complete, so it must bind every declared scope dimension for
-that table instance using required inputs.
-
-When the compiler cannot prove a precise restriction, it falls back safely to
-table-wide dependency and no coverage. It never narrows invalidation from an
-unverified assertion.
-
-## Sort, page, and identity
-
-A sort profile is a complete, author-written `ORDER BY` list. Runtime callers
-select a profile name; they cannot supply a direction or identifier:
-
-```syql
-sort sortBy default newest {
-  newest { created_at desc, id desc }
-  oldest { created_at asc, id asc }
+sync query messages(roomId, left, right) by messages.thread_id {
+  select id, room_id, thread_id, body from messages
+  where messages.room_id = :roomId
+    and messages.thread_id in (:left, :right);
 }
 ```
 
-For bounded queries, every profile must end in a proven unique identity suffix
-so equal leading values cannot make the result unstable.
+There are no `@scope` or `@cover` directives.
+
+## Sort and limit
+
+Dynamic sorting is a closed enum, not arbitrary runtime SQL:
 
 ```syql
-page pageSize default 50 max 200;
-identity by id;
+order by sortBy default newest {
+  newest: created_at desc, id desc;
+  oldest: created_at asc, id asc;
+}
 ```
 
-`page` creates one optional, validated public input. Every emitter rejects
-non-integral, non-positive, or over-maximum values before querying. `identity`
-must name projected, non-null fields that the compiler can prove unique for
-the outer result. Omit it when keyed identity cannot be proved.
+Every profile is checked. Bounded queries must end each profile with a proven
+unique tie-breaker, usually the projected primary key.
 
-## SQLite and determinism
-
-Revision 1 targets the portable SQLite 3.46.0 core profile. Typegen rejects
-unknown, extension-provided, compile-option-dependent, or post-profile
-functions even when its host SQLite happens to provide them. Portable
-collations are `BINARY`, `NOCASE`, and `RTRIM`.
-
-Queries are read-only and snapshot-deterministic. Randomness, implicit clocks,
-connection-local state, and SQLite-version inspection are rejected. External
-state must arrive as an explicit required input. Revision 1 also rejects window
-expressions and nested `LIMIT`/`OFFSET` because it does not define a local
-total-order proof for those shapes.
-
-Every concrete statement selected by conditional lowering is prepared against
-the generated schema before code is emitted.
-
-## Generated contract
-
-All targets consume the same QueryIR and expose the same logical operation.
-For example, TypeScript calls the query above as:
-
-```ts
-import { listTodos, syqlPresent } from './syncular.queries';
-
-const rows = await listTodos(client, {
-  listId: 'demo',
-  status: syqlPresent(null),
-  range: { start: 100n, end: 500n },
-  sortBy: 'newest',
-  pageSize: 25,
-});
+```syql
+limit pageSize default 50 max 200;
 ```
 
-The compiler may implement optional behavior with one neutralized statement or
-a finite statement matrix. That physical choice is not source syntax and does
-not change the public API or results.
+The limit input is optional and validated as an integer from 1 through 200 in
+every generated runtime.
 
-See [Named queries](/tooling-queries/) for output configuration and generated
-TypeScript, React, Swift, Kotlin, and Dart call sites.
+## Identity and types
+
+Result identity is inferred from schema primary keys, SQL lineage, and
+projection aliases. There is no `identity by` declaration. When proof is not
+possible, the generated query uses unkeyed reconciliation.
+
+Unannotated input types are inferred from all SQL and predicate uses. Add a
+type when SQL provides no evidence. Conflicting evidence is a compile error.
 
 ## Tooling
 
-- `syncular generate --print <name>` prints public inputs, selected backend,
-  statement selectors, checked SQL, and physical binds.
-- `syncular fmt [files...]` formats revision-1 source canonically. Add
-  `--check` in CI.
-- `syncular lsp` runs the schema- and project-aware language server with
-  diagnostics, hover, symbols, formatting, and imported-predicate navigation.
-- `editors/vscode-syql` provides TextMate highlighting and the LSP client.
-- [`spec/syql`](https://github.com/syncular/syncular/tree/main/spec/syql)
-  contains the normative lexer, parser, semantic, lowering, formatter, and
-  cross-emitter fixtures.
+```bash
+bunx @syncular/typegen fmt queries
+bunx @syncular/typegen generate
+```
 
-## Where to go next
+The formatter is semantic-preserving and idempotent. The VS Code extension and
+language server provide diagnostics, formatting, symbols, and
+hover/definition/references for imported predicates.
 
-- [Named queries and generated outputs](/tooling-queries/)
-- [Schema and typegen](/guide-schema/)
-- [SYQL language specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md)
-- [RFC 0004](https://github.com/syncular/syncular/blob/main/docs/rfcs/0004-syql-language.md)
+For exact grammar, lowering, portability, and diagnostic requirements, use the
+[normative specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md).

@@ -4,7 +4,7 @@
   "cases": [
     {
       "name": "equivalent-public-shapes",
-      "source": "query emitterContract(listId, status?: string | null, range?(start: integer, end: integer), unassigned?: switch) {\n  sql {\n    select id, status, created_at from todos\n    where @scope(todos.list_id = :listId)\n      and when(status) { status is :status }\n      and when(range) { created_at between :start and :end }\n      and when(unassigned) { assignee_id is null }\n  }\n  sort sortBy default newest {\n    newest { created_at desc, id desc }\n    oldest { created_at asc, id asc }\n  }\n  page pageSize default 20 max 50;\n  identity by id;\n}",
+      "source": "query emitterContract(listId, status?: string | null, range?, unassigned: bool = false) {\n  select id, status, created_at from todos\n  where todos.list_id = :listId\n    and when(status) status is :status\n    and when(range) created_at between :range\n    and when(unassigned) assignee_id is null\n  order by sortBy default newest {\n    newest: created_at desc, id desc;\n    oldest: created_at asc, id asc;\n  }\n  limit pageSize default 20 max 50;\n}",
       "required": {
         "ts": [
           "status?: SyqlPresent<string | null>",
@@ -12,7 +12,7 @@
           "start: bigint",
           "unassigned?: boolean",
           "sortBy?: 'newest' | 'oldest'",
-          "SYQL_RUNTIME_INVALID_PAGE"
+          "SYQL_RUNTIME_INVALID_LIMIT"
         ],
         "swift": [
           "SyncularQueryPresence<String?>",
@@ -20,7 +20,7 @@
           "start: Int64",
           "unassigned: Bool = false",
           "sortBy: EmitterContractSortBy = .newest",
-          "SYQL_RUNTIME_INVALID_PAGE"
+          "SYQL_RUNTIME_INVALID_LIMIT"
         ],
         "kotlin": [
           "SyncularQueryPresence<String?>",
@@ -28,7 +28,7 @@
           "val start: Long",
           "unassigned: Boolean = false",
           "sortBy: EmitterContractSortBy = EmitterContractSortBy.newest",
-          "SYQL_RUNTIME_INVALID_PAGE"
+          "SYQL_RUNTIME_INVALID_LIMIT"
         ],
         "dart": [
           "SyqlQueryPresence<String?>",
@@ -36,7 +36,7 @@
           "final int start",
           "bool unassigned = false",
           "EmitterContractSortBy sortBy = EmitterContractSortBy.newest",
-          "SYQL_RUNTIME_INVALID_PAGE"
+          "SYQL_RUNTIME_INVALID_LIMIT"
         ]
       }
     }

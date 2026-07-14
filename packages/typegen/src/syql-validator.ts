@@ -1,5 +1,5 @@
 /** Schema-aware revision-1 SYQL validation (§§5, 8–13). */
-import type { IrColumnType, IrDocument, IrTable } from './ir';
+import type { IrColumnType, IrDocument } from './ir';
 import {
   type AnalyzedQuery,
   analyzeStatement,
@@ -28,20 +28,20 @@ import type {
 } from './syql-parser';
 import type {
   SyqlLogicalQuery,
-  SyqlLogicalReactiveNode,
   SyqlLogicalTemplateNode,
   SyqlLogicalWhenNode,
   SyqlSemanticProgram,
 } from './syql-semantics';
+import { syqlRangeEndBind, syqlRangeStartBind } from './syql-semantics';
 
 export type SyqlValidationErrorCode =
   | 'SYQL6001_INVALID_PLACEMENT'
   | 'SYQL6002_INVALID_SQL'
   | 'SYQL6003_NONDETERMINISTIC_SQL'
   | 'SYQL6004_TYPE_CONFLICT'
-  | 'SYQL6005_INVALID_REACTIVE_DIRECTIVE'
+  | 'SYQL6005_INVALID_SYNC_QUERY'
   | 'SYQL6006_INVALID_SORT'
-  | 'SYQL6007_INVALID_PAGE'
+  | 'SYQL6007_INVALID_LIMIT'
   | 'SYQL6008_INVALID_IDENTITY';
 
 export interface SyqlValidatedSort {
@@ -59,7 +59,7 @@ export interface SyqlValidatedQuery {
   readonly reactive: QueryReactiveMetadata;
   readonly identity?: readonly string[];
   readonly sort?: SyqlValidatedSort;
-  readonly page?: {
+  readonly limit?: {
     readonly control: string;
     readonly defaultSize: number;
     readonly maxSize: number;
@@ -73,7 +73,7 @@ export interface SyqlValidatedProgram {
 
 interface Marker {
   readonly name: string;
-  readonly node: SyqlLogicalWhenNode | SyqlLogicalReactiveNode;
+  readonly node: SyqlLogicalWhenNode;
 }
 
 interface StructuralToken {
@@ -99,14 +99,6 @@ interface BindSymbol {
   readonly parameter: SyqlQueryParameter;
   readonly span: SyqlSourceSpan;
   readonly authoredType?: SyqlValueType;
-}
-
-interface ResolvedDirective {
-  readonly node: SyqlLogicalReactiveNode;
-  readonly ref: TableRef;
-  readonly table: IrTable;
-  readonly scopes: readonly QueryScopeBinding[];
-  readonly coverage?: QueryCoverageBinding;
 }
 
 const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -383,22 +375,19 @@ class Validator {
       logical.declaration,
       location,
     );
-    this.#validateDeterminism(activeSql, logical.declaration.sql.span);
-    this.#validatePortableProfile(activeSql, logical.declaration.sql.span);
+    this.#validateDeterminism(activeSql, logical.declaration.statement.span);
+    this.#validatePortableProfile(
+      activeSql,
+      logical.declaration.statement.span,
+    );
 
     const refs = scanTableRefs(activeSql, this.#ir);
     const bindSymbols = this.#bindSymbols(logical.declaration);
-    const resolvedDirectives = this.#resolveDirectives(
-      logical,
-      refs,
-      bindSymbols,
-    );
     const bindTypes = this.#resolveBindTypes(
       logical,
       activeSql,
       refs,
       bindSymbols,
-      resolvedDirectives,
     );
 
     const sort = this.#validateSort(
@@ -412,30 +401,48 @@ class Validator {
       sort?.profiles.find((profile) => profile.name === sort.defaultProfile)
         ?.sql,
     );
-    if (logical.declaration.page !== undefined) {
-      referenceSql = `${referenceSql.trimEnd()} limit ${logical.declaration.page.defaultSize}`;
+    if (logical.declaration.limit !== undefined) {
+      referenceSql = `${referenceSql.trimEnd()} limit ${logical.declaration.limit.defaultSize}`;
     }
 
+    const usedBindNames = new Set(
+      lexSyqlSqlSource(location, activeSql)
+        .filter((token) => token.kind === 'bind')
+        .map((token) => token.text.slice(1)),
+    );
     const headers = [...bindTypes]
+      .filter(([name]) => usedBindNames.has(name))
       .map(([name, type]) => `-- param :${name} ${type.base}`)
       .join('\n');
     const statement =
       headers.length === 0 ? referenceSql : `${headers}\n${referenceSql}`;
     let analysis: AnalyzedQuery;
     try {
+      const analysisNaming =
+        this.#naming === undefined
+          ? undefined
+          : {
+              ...this.#naming,
+              internalParams: [
+                ...(this.#naming.internalParams ?? []),
+                ...[...usedBindNames].filter((name) =>
+                  name.startsWith('__syql'),
+                ),
+              ],
+            };
       analysis = analyzeStatement(
         logical.declaration.name,
         location,
         statement,
         this.#ir,
         this.#db,
-        this.#naming,
+        analysisNaming,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.#fail(
         'SYQL6002_INVALID_SQL',
-        logical.declaration.sql.span,
+        logical.declaration.statement.span,
         `reference SQL rejected: ${message}`,
       );
     }
@@ -447,22 +454,22 @@ class Validator {
         profile.sql,
       );
       const paged =
-        logical.declaration.page === undefined
+        logical.declaration.limit === undefined
           ? candidate
-          : `${candidate.trimEnd()} limit ${logical.declaration.page.defaultSize}`;
+          : `${candidate.trimEnd()} limit ${logical.declaration.limit.defaultSize}`;
       try {
         this.#db.analyze(paged);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.#fail(
           'SYQL6006_INVALID_SORT',
-          logical.declaration.sort?.span ?? logical.declaration.sql.span,
+          logical.declaration.sort?.span ?? logical.declaration.statement.span,
           `sort profile ${profile.name} rejected by SQLite: ${message}`,
         );
       }
     }
 
-    const reactive = this.#buildReactive(refs, resolvedDirectives);
+    const reactive = this.#inferReactive(logical, markerSql, refs, bindSymbols);
     const identity = this.#proveIdentity(
       logical.declaration,
       activeSql,
@@ -491,13 +498,13 @@ class Validator {
       reactive: reactiveWithIdentity,
       ...(identity === undefined ? {} : { identity }),
       ...(sort === undefined ? {} : { sort }),
-      ...(logical.declaration.page === undefined
+      ...(logical.declaration.limit === undefined
         ? {}
         : {
-            page: {
-              control: logical.declaration.page.control,
-              defaultSize: logical.declaration.page.defaultSize,
-              maxSize: logical.declaration.page.maxSize,
+            limit: {
+              control: logical.declaration.limit.control,
+              defaultSize: logical.declaration.limit.defaultSize,
+              maxSize: logical.declaration.limit.maxSize,
             },
           }),
     };
@@ -526,20 +533,9 @@ class Validator {
         if (node.kind === 'when') {
           return `(${this.#render(node.body, mode, markers)})`;
         }
-        return this.#renderDirective(node);
+        throw new Error('unknown SYQL logical template node');
       })
       .join('');
-  }
-
-  #renderDirective(node: SyqlLogicalReactiveNode): string {
-    const predicates = node.directive.bindings.map((binding) => {
-      const column = `${binding.column.qualifier}.${binding.column.name}`;
-      const values = binding.values.map((value) => `:${value.name}`);
-      return binding.operator === 'equal'
-        ? `${column} = ${values[0]}`
-        : `${column} in (${values.join(', ')})`;
-    });
-    return `(${predicates.join(' and ')})`;
   }
 
   #inspect(sql: string, file: string): SqlStructure {
@@ -655,22 +651,14 @@ class Validator {
         this.#fail(
           'SYQL6001_INVALID_PLACEMENT',
           marker.node.span,
-          `${marker.node.kind === 'when' ? 'when' : `@${marker.node.kind}`} must be an entire outer conjunct`,
+          'when must be an entire outer conjunct',
         );
       }
-      if (marker.node.kind === 'when') {
-        if (clause !== 'where' && clause !== 'having') {
-          this.#fail(
-            'SYQL6001_INVALID_PLACEMENT',
-            marker.node.span,
-            'when is allowed only in the outer WHERE or HAVING clause',
-          );
-        }
-      } else if (clause !== 'where') {
+      if (clause !== 'where' && clause !== 'having') {
         this.#fail(
           'SYQL6001_INVALID_PLACEMENT',
           marker.node.span,
-          `@${marker.node.kind} is allowed only in the outer WHERE clause`,
+          'when is allowed only in the outer WHERE or HAVING clause',
         );
       }
     }
@@ -679,14 +667,14 @@ class Validator {
         this.#fail(
           'SYQL6001_INVALID_PLACEMENT',
           marker.node.span,
-          `${marker.node.kind === 'when' ? 'when' : `@${marker.node.kind}`} cannot appear in a nested SQL expression or statement`,
+          'when cannot appear in a nested SQL expression or statement',
         );
       }
     }
     if (structure.hasCompound && markers.length > 0) {
       this.#fail(
         'SYQL6001_INVALID_PLACEMENT',
-        query.sql.span,
+        query.statement.span,
         'embedded SYQL conjuncts are ambiguous in a compound outer statement',
       );
     }
@@ -706,13 +694,13 @@ class Validator {
       );
     }
     if (
-      query.page !== undefined &&
+      query.limit !== undefined &&
       (structure.hasOuterLimit || structure.hasOuterOffset)
     ) {
       this.#fail(
-        'SYQL6007_INVALID_PAGE',
-        query.page.span,
-        'page declaration conflicts with an authored outer LIMIT or OFFSET',
+        'SYQL6007_INVALID_LIMIT',
+        query.limit.span,
+        'dynamic LIMIT conflicts with an authored outer LIMIT or OFFSET',
       );
     }
     const first = structure.outer
@@ -721,12 +709,16 @@ class Validator {
     if (first !== 'select' && first !== 'with') {
       this.#fail(
         'SYQL6002_INVALID_SQL',
-        query.sql.span,
+        query.statement.span,
         `${location} must contain one SELECT or WITH ... SELECT statement`,
       );
     }
     if (sql.trim().length === 0) {
-      this.#fail('SYQL6002_INVALID_SQL', query.sql.span, 'empty SQL statement');
+      this.#fail(
+        'SYQL6002_INVALID_SQL',
+        query.statement.span,
+        'empty SQL statement',
+      );
     }
   }
 
@@ -879,8 +871,21 @@ class Validator {
   #bindSymbols(query: SyqlQueryDeclaration): ReadonlyMap<string, BindSymbol> {
     const symbols = new Map<string, BindSymbol>();
     for (const parameter of query.parameters) {
-      if (parameter.kind === 'switch') continue;
-      if (parameter.kind === 'group') {
+      if (parameter.kind === 'range') {
+        for (const name of [
+          syqlRangeStartBind(parameter.name),
+          syqlRangeEndBind(parameter.name),
+        ]) {
+          symbols.set(name, {
+            name,
+            parameter,
+            span: parameter.nameSpan,
+            ...(parameter.type === undefined
+              ? {}
+              : { authoredType: parameter.type }),
+          });
+        }
+      } else if (parameter.kind === 'group') {
         for (const member of parameter.members) {
           symbols.set(member.name, {
             name: member.name,
@@ -908,29 +913,11 @@ class Validator {
     sql: string,
     refs: readonly TableRef[],
     symbols: ReadonlyMap<string, BindSymbol>,
-    directives: readonly ResolvedDirective[],
   ): ReadonlyMap<string, SyqlValueType> {
     const resolved = new Map(logical.bindTypes);
-    const directiveTypes = new Map<string, IrColumnType[]>();
-    for (const directive of directives) {
-      for (const binding of directive.node.directive.bindings) {
-        const column = directive.table.columns.find(
-          (item) => item.name === binding.column.name,
-        );
-        if (column === undefined) continue;
-        for (const bind of binding.values) {
-          const list = directiveTypes.get(bind.name) ?? [];
-          list.push(column.type);
-          directiveTypes.set(bind.name, list);
-        }
-      }
-    }
 
     for (const symbol of symbols.values()) {
-      const evidence = [
-        ...inferParamTypeEvidence(symbol.name, sql, refs, this.#ir),
-        ...(directiveTypes.get(symbol.name) ?? []),
-      ];
+      const evidence = inferParamTypeEvidence(symbol.name, sql, refs, this.#ir);
       const unique = [...new Set(evidence)];
       if (unique.length > 1) {
         this.#fail(
@@ -963,224 +950,279 @@ class Validator {
         );
       }
     }
-    for (const directive of directives) {
-      for (const binding of directive.node.directive.bindings) {
-        const column = directive.table.columns.find(
-          (item) => item.name === binding.column.name,
-        );
-        if (column === undefined) continue;
-        for (const bind of binding.values) {
-          const type = resolved.get(bind.name);
-          if (
-            type === undefined ||
-            type.base !== column.type ||
-            type.nullable !== column.nullable
-          ) {
-            this.#fail(
-              'SYQL6005_INVALID_REACTIVE_DIRECTIVE',
-              bind.span,
-              `scope bind :${bind.name} must exactly match ${column.type}${column.nullable ? ' | null' : ''}`,
-            );
-          }
-        }
-      }
-    }
     return resolved;
   }
 
-  #resolveDirectives(
+  #inferReactive(
     logical: SyqlLogicalQuery,
+    markerSql: string,
     refs: readonly TableRef[],
     symbols: ReadonlyMap<string, BindSymbol>,
-  ): readonly ResolvedDirective[] {
-    const nodes: SyqlLogicalReactiveNode[] = [];
-    const collect = (template: readonly SyqlLogicalTemplateNode[]): void => {
-      for (const node of template) {
-        if (node.kind === 'scope' || node.kind === 'cover') nodes.push(node);
-        else if (node.kind === 'predicate') collect(node.body);
-      }
-    };
-    collect(logical.template);
-    return nodes.map((node) => {
-      const first = node.directive.bindings[0];
-      if (first === undefined) {
-        this.#fail(
-          'SYQL6005_INVALID_REACTIVE_DIRECTIVE',
-          node.span,
-          `@${node.kind} requires a binding`,
-        );
-      }
-      const qualifier = first.column.qualifier;
-      const matchingRefs = refs.filter((ref) => ref.alias === qualifier);
-      if (matchingRefs.length !== 1) {
-        this.#fail(
-          'SYQL6005_INVALID_REACTIVE_DIRECTIVE',
-          first.column.span,
-          `scope qualifier ${qualifier} must resolve to exactly one read table instance`,
-        );
-      }
-      const ref = matchingRefs[0] as TableRef;
-      const table = this.#ir.tables.find((item) => item.name === ref.table);
-      if (table === undefined) {
-        this.#fail(
-          'SYQL6005_INVALID_REACTIVE_DIRECTIVE',
-          first.column.span,
-          `scope qualifier ${qualifier} does not resolve to a synced table`,
-        );
-      }
-      const seenColumns = new Set<string>();
-      const scopes: QueryScopeBinding[] = [];
-      for (const binding of node.directive.bindings) {
-        if (binding.column.qualifier !== qualifier) {
-          this.#fail(
-            'SYQL6005_INVALID_REACTIVE_DIRECTIVE',
-            binding.column.span,
-            `all @${node.kind} bindings must name the same table instance`,
-          );
-        }
-        if (seenColumns.has(binding.column.name)) {
-          this.#fail(
-            'SYQL6005_INVALID_REACTIVE_DIRECTIVE',
-            binding.column.span,
-            `scope column ${binding.column.name} is listed twice`,
-          );
-        }
-        seenColumns.add(binding.column.name);
-        const scope = table.scopes.find(
-          (candidate) => candidate.column === binding.column.name,
-        );
-        if (scope === undefined) {
-          this.#fail(
-            'SYQL6005_INVALID_REACTIVE_DIRECTIVE',
-            binding.column.span,
-            `${table.name}.${binding.column.name} is not a declared scope column`,
-          );
-        }
-        for (const bind of binding.values) {
-          const symbol = symbols.get(bind.name);
-          if (
-            symbol === undefined ||
-            symbol.parameter.kind !== 'value' ||
-            symbol.parameter.optional
-          ) {
-            this.#fail(
-              'SYQL6005_INVALID_REACTIVE_DIRECTIVE',
-              bind.span,
-              `scope value :${bind.name} must be a required scalar input`,
-            );
-          }
-        }
-        scopes.push({
-          table: table.name,
-          variable: scope.variable,
-          pattern: scope.pattern,
-          params: binding.values.map((value) => value.name),
-        });
-      }
-      let coverage: QueryCoverageBinding | undefined;
-      if (node.kind === 'cover') {
-        const required = new Set(table.scopes.map((scope) => scope.column));
-        if (
-          seenColumns.size !== required.size ||
-          [...required].some((column) => !seenColumns.has(column))
-        ) {
-          this.#fail(
-            'SYQL6005_INVALID_REACTIVE_DIRECTIVE',
-            node.span,
-            `@cover for ${table.name} must bind every declared scope exactly once`,
-          );
-        }
-        const firstScope = scopes[0] as QueryScopeBinding;
-        for (
-          let index = 1;
-          index < node.directive.bindings.length;
-          index += 1
-        ) {
-          const binding = node.directive.bindings[index];
-          if (binding?.operator !== 'equal' || binding.values.length !== 1) {
-            this.#fail(
-              'SYQL6005_INVALID_REACTIVE_DIRECTIVE',
-              binding?.span ?? node.span,
-              'fixed @cover scopes after the first binding must use one equality bind',
-            );
-          }
-        }
-        const byVariable = new Map(
-          scopes.map((scope) => [scope.variable, scope]),
-        );
-        coverage = {
-          table: table.name,
-          variable: firstScope.variable,
-          units: firstScope.params,
-          fixedScopes: table.scopes
-            .filter((scope) => scope.variable !== firstScope.variable)
-            .map((scope) => {
-              const fixed = byVariable.get(scope.variable) as QueryScopeBinding;
-              return { variable: fixed.variable, params: fixed.params };
-            }),
-        };
-      }
-      return {
-        node,
-        ref,
-        table,
-        scopes,
-        ...(coverage === undefined ? {} : { coverage }),
-      };
-    });
-  }
-
-  #buildReactive(
-    refs: readonly TableRef[],
-    directives: readonly ResolvedDirective[],
   ): QueryReactiveMetadata {
-    const dependencies: Array<{
-      table: string;
-      scopes: QueryScopeBinding[];
-    }> = [];
-    const coverage: QueryCoverageBinding[] = [];
-    for (const tableName of [...new Set(refs.map((ref) => ref.table))].sort()) {
-      const instances = refs.filter((ref) => ref.table === tableName);
-      const byAlias = new Map<string, ResolvedDirective[]>();
-      for (const directive of directives.filter(
-        (item) => item.table.name === tableName,
-      )) {
-        const list = byAlias.get(directive.ref.alias) ?? [];
-        list.push(directive);
-        byAlias.set(directive.ref.alias, list);
+    type InferredScope = {
+      readonly binding: QueryScopeBinding;
+      readonly operator: 'equal' | 'in';
+    };
+    type Candidate = {
+      readonly ref: TableRef;
+      readonly scopes: readonly InferredScope[];
+    };
+    const cleaned = stripCommentsAndStrings(markerSql);
+    const structure = this.#inspect(
+      cleaned,
+      logical.declaration.statement.span.file,
+    );
+    const escapeRegex = (value: string): string =>
+      value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const requiredAt = (index: number): boolean => {
+      let whereStart: number | undefined;
+      for (const item of structure.outer) {
+        if (item.token.span.start.offset >= index) break;
+        const lower = tokenLower(item.token);
+        if (lower === 'where') whereStart = item.token.span.end.offset;
+        else if (OUTER_CLAUSE_ENDERS.has(lower ?? '')) whereStart = undefined;
       }
-      const fallback = instances.some(
-        (instance) => !byAlias.has(instance.alias),
+      if (whereStart === undefined) return false;
+
+      const clauseEnd =
+        structure.outer.find(
+          (item) =>
+            item.token.span.start.offset > index &&
+            OUTER_CLAUSE_ENDERS.has(tokenLower(item.token) ?? ''),
+        )?.token.span.start.offset ?? cleaned.length;
+      const matchStack: number[] = [];
+      for (let cursor = whereStart; cursor < index; cursor += 1) {
+        if (cleaned[cursor] === '(') matchStack.push(cursor);
+        else if (cleaned[cursor] === ')') matchStack.pop();
+      }
+
+      // Parenthesized boolean expressions are valid, but predicates inside a
+      // CTE or subquery are not outer proof obligations for sync coverage.
+      if (
+        matchStack.some((open) =>
+          /\b(?:SELECT|WITH)\b/i.test(cleaned.slice(open + 1, index)),
+        )
+      ) {
+        return false;
+      }
+
+      // Negated equality does not constrain the result to that scope.
+      const prefix = cleaned.slice(whereStart, index);
+      const boundaries = [...prefix.matchAll(/\b(?:AND|OR)\b/gi)].map(
+        (match) => (match.index ?? -1) + match[0].length,
       );
-      const scopes = fallback
-        ? []
-        : [...byAlias.values()]
-            .flatMap((items) => items.flatMap((item) => item.scopes))
-            .reduce<QueryScopeBinding[]>((out, scope) => {
-              const existing = out.find(
-                (item) => item.variable === scope.variable,
-              );
-              if (existing === undefined) out.push(scope);
-              else {
-                const merged = [
-                  ...new Set([...existing.params, ...scope.params]),
-                ];
-                out[out.indexOf(existing)] = { ...existing, params: merged };
-              }
-              return out;
-            }, []);
-      dependencies.push({ table: tableName, scopes });
-      if (!fallback) {
-        coverage.push(
-          ...[...byAlias.values()].flatMap((items) =>
-            items.flatMap((item) =>
-              item.coverage === undefined ? [] : [item.coverage],
-            ),
-          ),
-        );
+      const lastBoundary = Math.max(prefix.lastIndexOf('('), ...boundaries);
+      if (/\bNOT\b/i.test(prefix.slice(lastBoundary + 1))) return false;
+      if (
+        matchStack.some((open) =>
+          /\bNOT\s*$/i.test(cleaned.slice(whereStart, open)),
+        )
+      ) {
+        return false;
       }
+
+      const stack: number[] = [];
+      for (let cursor = whereStart; cursor < clauseEnd; cursor += 1) {
+        const char = cleaned[cursor];
+        if (char === '(') stack.push(cursor);
+        else if (char === ')') stack.pop();
+        if (
+          /^OR\b/i.test(cleaned.slice(cursor)) &&
+          stack.length <= matchStack.length &&
+          stack.every((open, stackIndex) => matchStack[stackIndex] === open)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    };
+    const required = new Set(
+      [...symbols.values()].flatMap((symbol) =>
+        symbol.parameter.kind === 'value' &&
+        !symbol.parameter.optional &&
+        symbol.authoredType?.nullable !== true
+          ? [symbol.name]
+          : [],
+      ),
+    );
+    const candidates: Candidate[] = [];
+    for (const ref of refs) {
+      const table = this.#ir.tables.find((item) => item.name === ref.table);
+      if (table === undefined) continue;
+      const inferred: InferredScope[] = [];
+      for (const scope of table.scopes) {
+        const alias = escapeRegex(ref.alias);
+        const column = escapeRegex(scope.column);
+        const unqualifiedMatches = refs.filter((candidate) => {
+          const other = this.#ir.tables.find(
+            (item) => item.name === candidate.table,
+          );
+          return other?.columns.some((item) => item.name === scope.column);
+        }).length;
+        const subject =
+          unqualifiedMatches === 1
+            ? `(?:${alias}\\.)?${column}`
+            : `${alias}\\.${column}`;
+        const found: Array<{ name: string; operator: 'equal' | 'in' }> = [];
+        const equality = new RegExp(
+          `${subject}\\s*(?:=|==|\\bIS\\b)\\s*:([A-Za-z_][A-Za-z0-9_]*)\\b|:([A-Za-z_][A-Za-z0-9_]*)\\b\\s*(?:=|==)\\s*${subject}`,
+          'gi',
+        );
+        for (const match of cleaned.matchAll(equality)) {
+          if (!requiredAt(match.index)) continue;
+          const name = match[1] ?? match[2];
+          if (name !== undefined && required.has(name)) {
+            found.push({ name, operator: 'equal' });
+          }
+        }
+        const inList = new RegExp(`${subject}\\s+IN\\s*\\(([^)]*)\\)`, 'gi');
+        for (const match of cleaned.matchAll(inList)) {
+          if (!requiredAt(match.index)) continue;
+          const body = match[1] ?? '';
+          const bodyStart = match.index + match[0].length - body.length - 1;
+          const bodyTokens = significant(
+            lexSyqlSqlSource(
+              logical.declaration.statement.span.file,
+              markerSql.slice(bodyStart, bodyStart + body.length),
+            ),
+          );
+          const validBindList = bodyTokens.every((token, index) =>
+            index % 2 === 0
+              ? token.kind === 'bind'
+              : token.kind === 'punctuation' && token.text === ',',
+          );
+          const params = bodyTokens
+            .filter((_, index) => index % 2 === 0)
+            .map((token) => token.text.slice(1));
+          if (
+            validBindList &&
+            params.length > 0 &&
+            params.every((name) => required.has(name))
+          ) {
+            for (const name of params) found.push({ name, operator: 'in' });
+          }
+        }
+        const params = [...new Set(found.map((item) => item.name))];
+        if (params.length > 0) {
+          inferred.push({
+            binding: {
+              table: table.name,
+              variable: scope.variable,
+              pattern: scope.pattern,
+              params,
+            },
+            operator: found.some((item) => item.operator === 'in')
+              ? 'in'
+              : 'equal',
+          });
+        }
+      }
+      candidates.push({ ref, scopes: inferred });
     }
-    return { dependencies, coverage };
+
+    const dependencies = [...new Set(refs.map((ref) => ref.table))]
+      .sort()
+      .map((table) => {
+        const instances = candidates.filter((item) => item.ref.table === table);
+        if (instances.some((item) => item.scopes.length === 0)) {
+          return { table, scopes: [] };
+        }
+        const scopes = instances
+          .flatMap((item) => item.scopes.map((scope) => scope.binding))
+          .reduce<QueryScopeBinding[]>((out, scope) => {
+            const existing = out.find(
+              (item) => item.variable === scope.variable,
+            );
+            if (existing === undefined) out.push(scope);
+            else {
+              out[out.indexOf(existing)] = {
+                ...existing,
+                params: [...new Set([...existing.params, ...scope.params])],
+              };
+            }
+            return out;
+          }, []);
+        return { table, scopes };
+      });
+
+    if (!logical.declaration.sync) return { dependencies, coverage: [] };
+    let eligible = candidates.filter((candidate) => {
+      const table = this.#ir.tables.find(
+        (item) => item.name === candidate.ref.table,
+      );
+      return (
+        table !== undefined &&
+        candidates.filter((item) => item.ref.table === candidate.ref.table)
+          .length === 1 &&
+        table.scopes.length > 0 &&
+        candidate.scopes.length === table.scopes.length
+      );
+    });
+    const syncBy = logical.declaration.syncBy;
+    if (syncBy !== undefined) {
+      eligible = eligible.filter(
+        (candidate) => candidate.ref.alias === syncBy.qualifier,
+      );
+    }
+    if (eligible.length !== 1) {
+      this.#fail(
+        'SYQL6005_INVALID_SYNC_QUERY',
+        logical.declaration.syncBy?.span ?? logical.declaration.nameSpan,
+        eligible.length === 0
+          ? 'sync query coverage cannot be proven from required equality/IN predicates over every declared scope'
+          : 'sync query resolves to multiple coverable table instances; split the query or select one with `by alias.scope`',
+      );
+    }
+    const candidate = eligible[0] as Candidate;
+    const table = this.#ir.tables.find(
+      (item) => item.name === candidate.ref.table,
+    );
+    if (table === undefined) throw new Error('eligible table disappeared');
+    if (table.scopes.length > 1 && syncBy === undefined) {
+      this.#fail(
+        'SYQL6005_INVALID_SYNC_QUERY',
+        logical.declaration.nameSpan,
+        `sync query for multi-scope table ${table.name} must select its unit dimension with \`by ${candidate.ref.alias}.scope_column\``,
+      );
+    }
+    const dimensionColumn = syncBy?.column ?? table.scopes[0]?.column;
+    const dimension = table.scopes.find(
+      (scope) => scope.column === dimensionColumn,
+    );
+    if (dimension === undefined) {
+      this.#fail(
+        'SYQL6005_INVALID_SYNC_QUERY',
+        syncBy?.span ?? logical.declaration.nameSpan,
+        `${candidate.ref.alias}.${dimensionColumn ?? ''} is not a declared scope`,
+      );
+    }
+    const byVariable = new Map(
+      candidate.scopes.map((scope) => [scope.binding.variable, scope]),
+    );
+    const unit = byVariable.get(dimension.variable) as InferredScope;
+    const fixedScopes = table.scopes
+      .filter((scope) => scope.variable !== dimension.variable)
+      .map((scope) => {
+        const fixed = byVariable.get(scope.variable) as InferredScope;
+        if (fixed.operator !== 'equal' || fixed.binding.params.length !== 1) {
+          this.#fail(
+            'SYQL6005_INVALID_SYNC_QUERY',
+            syncBy?.span ?? logical.declaration.nameSpan,
+            `fixed sync scope ${table.name}.${scope.column} must use one required equality bind`,
+          );
+        }
+        return {
+          variable: fixed.binding.variable,
+          params: fixed.binding.params,
+        };
+      });
+    const coverage: QueryCoverageBinding = {
+      table: table.name,
+      variable: unit.binding.variable,
+      units: unit.binding.params,
+      fixedScopes,
+    };
+    return { dependencies, coverage: [coverage] };
   }
 
   #validateSort(
@@ -1275,66 +1317,18 @@ class Validator {
       if (!IDENT_RE.test(column.name)) {
         this.#fail(
           'SYQL6008_INVALID_IDENTITY',
-          query.identity?.span ?? query.sql.span,
+          query.statement.span,
           `result name ${JSON.stringify(column.name)} must be an unquoted IDENT value`,
         );
       }
       if (resultNames.has(column.name)) {
         this.#fail(
           'SYQL6008_INVALID_IDENTITY',
-          query.identity?.span ?? query.sql.span,
+          query.statement.span,
           `result name ${JSON.stringify(column.name)} is duplicated`,
         );
       }
       resultNames.add(column.name);
-    }
-
-    if (query.identity !== undefined) {
-      if (nonSimple) {
-        this.#fail(
-          'SYQL6008_INVALID_IDENTITY',
-          query.identity.span,
-          'identity cannot be proven for this grouped, compound, nested, outer-join, aggregate, or self-join shape',
-        );
-      }
-      const selected = query.identity.fields.map((field) => {
-        const matches = analysis.columns.filter(
-          (column) => column.name === field,
-        );
-        const column = matches[0];
-        if (
-          matches.length !== 1 ||
-          column === undefined ||
-          column.fidelity !== 'exact' ||
-          column.nullable ||
-          column.origin === undefined
-        ) {
-          this.#fail(
-            'SYQL6008_INVALID_IDENTITY',
-            query.identity?.span ?? query.sql.span,
-            `identity field ${field} must be one exact, non-null physical result column`,
-          );
-        }
-        return column;
-      });
-      for (const ref of refs) {
-        const table = this.#ir.tables.find((item) => item.name === ref.table);
-        if (
-          table !== undefined &&
-          !selected.some(
-            (column) =>
-              column.origin?.table === table.name &&
-              column.origin.column === table.primaryKey,
-          )
-        ) {
-          this.#fail(
-            'SYQL6008_INVALID_IDENTITY',
-            query.identity.span,
-            `identity must include projected primary key ${table.name}.${table.primaryKey}`,
-          );
-        }
-      }
-      return selected.map((column) => column.langName);
     }
 
     if (nonSimple || refs.length === 0) return undefined;
@@ -1364,14 +1358,14 @@ class Validator {
     refs: readonly TableRef[],
   ): void {
     const bounded =
-      query.page !== undefined ||
+      query.limit !== undefined ||
       structure.hasOuterLimit ||
       structure.hasOuterOffset;
     if (!bounded) return;
     if (identity === undefined || identity.length === 0) {
       this.#fail(
         'SYQL6006_INVALID_SORT',
-        query.sort?.span ?? query.page?.span ?? query.sql.span,
+        query.sort?.span ?? query.limit?.span ?? query.statement.span,
         'a bounded query requires a proven identity and total outer order',
       );
     }
@@ -1379,7 +1373,7 @@ class Validator {
       sort?.profiles.map((profile) => ({
         name: profile.name,
         sql: profile.sql,
-        span: query.sort?.span ?? query.sql.span,
+        span: query.sort?.span ?? query.statement.span,
       })) ??
       (structure.orderBodyStart !== undefined &&
       structure.orderEnd !== undefined
@@ -1389,14 +1383,14 @@ class Validator {
               sql: sql
                 .slice(structure.orderBodyStart, structure.orderEnd)
                 .trim(),
-              span: query.sql.span,
+              span: query.statement.span,
             },
           ]
         : []);
     if (orders.length === 0) {
       this.#fail(
         'SYQL6006_INVALID_SORT',
-        query.page?.span ?? query.sql.span,
+        query.limit?.span ?? query.statement.span,
         'a bounded query requires an outer ORDER BY or sort section',
       );
     }

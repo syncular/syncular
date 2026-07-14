@@ -76,22 +76,19 @@ sqlite.run(`
 const SOURCE = `query findTodos(
   listId,
   status?: string | null,
-  range?(start: integer, end: integer),
-  unassigned?: switch,
+  range?,
+  unassigned: bool = false,
 ) {
-  sql {
-    select id, status, created_at from todos
-    where @scope(todos.list_id = :listId)
-      and when(status) { status is :status }
-      and when(range) { created_at between :start and :end }
-      and when(unassigned) { assignee_id is null }
+  select id, status, created_at from todos
+  where todos.list_id = :listId
+    and when(status) status is :status
+    and when(range) created_at between :range
+    and when(unassigned) assignee_id is null
+  order by sortBy default newest {
+    newest: created_at desc, id desc;
+    oldest: created_at asc, id asc;
   }
-  sort sortBy default newest {
-    newest { created_at desc, id desc }
-    oldest { created_at asc, id asc }
-  }
-  page pageSize default 20 max 50;
-  identity by id;
+  limit pageSize default 20 max 50;
 }`;
 
 function validated() {
@@ -142,7 +139,7 @@ function rows(
     if (bind.kind === 'condition-active') {
       return bind.controls.every((control) => active.has(control)) ? 1 : 0;
     }
-    if (bind.kind === 'page') return environment.pageSize ?? 20;
+    if (bind.kind === 'limit') return environment.pageSize ?? 20;
     if (bind.kind === 'value') {
       if (bind.input === 'listId') return 'l1';
       if (bind.input === 'status') return environment.status;
@@ -207,9 +204,12 @@ describe('revision-1 SYQL lowering', () => {
         ],
       },
       {
-        kind: 'switch',
+        kind: 'value',
         name: 'unassigned',
         langName: 'unassigned',
+        type: 'boolean',
+        nullable: false,
+        required: false,
         default: false,
       },
       {
@@ -223,7 +223,7 @@ describe('revision-1 SYQL lowering', () => {
         ],
       },
       {
-        kind: 'page',
+        kind: 'limit',
         name: 'pageSize',
         langName: 'pageSize',
         defaultSize: 20,
@@ -279,7 +279,7 @@ describe('revision-1 SYQL lowering', () => {
     );
   });
 
-  test('forced variants selects the finite matrix and page remains a bind', () => {
+  test('forced variants selects the finite matrix and limit remains a bind', () => {
     const lowered = lowerSyqlQuery(
       validated(),
       IR,
@@ -290,7 +290,7 @@ describe('revision-1 SYQL lowering', () => {
     expect(lowered.selected.backend).toBe('variants');
     expect(
       lowered.selected.statements.every((statement) =>
-        statement.binds.some((bind) => bind.kind === 'page'),
+        statement.binds.some((bind) => bind.kind === 'limit'),
       ),
     ).toBe(true);
     expect(
@@ -330,7 +330,7 @@ describe('revision-1 SYQL lowering', () => {
     ).not.toThrow();
     expect(ts).toContain('status?: SyqlPresent<string | null>');
     expect(ts).toContain('start: bigint');
-    expect(ts).toContain('SYQL_RUNTIME_INVALID_PAGE');
+    expect(ts).toContain('SYQL_RUNTIME_INVALID_LIMIT');
     expect(swift).toContain('SyncularQueryPresence<String?>');
     expect(swift).toContain('public let start: Int64');
     expect(kotlin).toContain('SyncularQueryPresence<String?>');

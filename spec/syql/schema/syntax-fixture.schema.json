@@ -118,22 +118,27 @@
     "query": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "name", "parameters", "sql"],
+      "required": ["kind", "name", "sync", "parameters", "statement"],
       "properties": {
         "kind": { "const": "query" },
         "name": { "$ref": "#/$defs/camelName" },
+        "sync": { "type": "boolean" },
+        "syncBy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["qualifier", "column"],
+          "properties": {
+            "qualifier": { "type": "string" },
+            "column": { "type": "string" }
+          }
+        },
         "parameters": {
           "type": "array",
           "items": { "$ref": "#/$defs/queryParameter" }
         },
-        "sql": { "$ref": "#/$defs/template" },
+        "statement": { "$ref": "#/$defs/template" },
         "sort": { "$ref": "#/$defs/sort" },
-        "page": { "$ref": "#/$defs/page" },
-        "identity": {
-          "type": "array",
-          "minItems": 1,
-          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
-        }
+        "limit": { "$ref": "#/$defs/limit" }
       }
     },
     "queryParameter": {
@@ -146,7 +151,8 @@
             "kind": { "const": "value" },
             "name": { "$ref": "#/$defs/camelName" },
             "optional": { "type": "boolean" },
-            "type": { "$ref": "#/$defs/valueType" }
+            "type": { "$ref": "#/$defs/valueType" },
+            "default": { "const": false }
           }
         },
         {
@@ -154,9 +160,10 @@
           "additionalProperties": false,
           "required": ["kind", "name", "optional"],
           "properties": {
-            "kind": { "const": "switch" },
+            "kind": { "const": "range" },
             "name": { "$ref": "#/$defs/camelName" },
-            "optional": { "const": true }
+            "optional": { "type": "boolean" },
+            "type": { "$ref": "#/$defs/valueType" }
           }
         },
         {
@@ -227,7 +234,7 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "controls", "body"],
+          "required": ["kind", "controls", "explicitPresence", "body"],
           "properties": {
             "kind": { "const": "when" },
             "controls": {
@@ -235,37 +242,15 @@
               "minItems": 1,
               "items": { "$ref": "#/$defs/camelName" }
             },
+            "explicitPresence": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "boolean" }
+            },
             "body": {
               "type": "array",
               "minItems": 1,
               "items": { "$ref": "#/$defs/templateNode" }
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "bindings"],
-          "properties": {
-            "kind": { "enum": ["scope", "cover"] },
-            "bindings": {
-              "type": "array",
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["qualifier", "column", "operator", "values"],
-                "properties": {
-                  "qualifier": { "type": "string" },
-                  "column": { "type": "string" },
-                  "operator": { "enum": ["equal", "in"] },
-                  "values": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": { "$ref": "#/$defs/camelName" }
-                  }
-                }
-              }
             }
           }
         }
@@ -293,7 +278,7 @@
         }
       }
     },
-    "page": {
+    "limit": {
       "type": "object",
       "additionalProperties": false,
       "required": ["control", "defaultSize", "maxSize"],

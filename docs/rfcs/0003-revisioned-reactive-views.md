@@ -489,11 +489,10 @@ value-sharded subscription/window base. Fixed scope literals and parameterized
 units are included. A query which can read outside the proven units gets
 table-wide dependencies and no automatic coverage.
 
-Revision-1 SYQL uses constructive `@scope(...)` and `@cover(...)` predicate
-nodes. Generation derives dependency and coverage facts from the same checked
-node that restricts the SQL. A shape that cannot be constructed and proven
-falls back table-wide and uncovered; there is no unchecked metadata escape
-hatch.
+Revision-1 SYQL derives dependencies from ordinary checked scope predicates.
+`sync query` separately declares coverage intent and is rejected unless the
+complete scope footprint can be proven. A shape that cannot be proven falls
+back table-wide and uncovered; there is no unchecked metadata escape hatch.
 
 Typegen never guesses coverage from a similarly named parameter.
 
@@ -501,8 +500,7 @@ Typegen never guesses coverage from a similarly named parameter.
 
 Typegen emits `rowKey` only when the projection is proven to contain a unique
 key for each result row. A simple single-table query projecting its primary key
-qualifies. Revision-1 `identity by ...;` is accepted only when the projected,
-non-null fields satisfy the compiler's conservative uniqueness proof. Joins,
+qualifies. Identity is inferred rather than authored. Joins,
 grouping, `DISTINCT`, unions, or projections which can duplicate the key omit
 identity unless that proof succeeds.
 
