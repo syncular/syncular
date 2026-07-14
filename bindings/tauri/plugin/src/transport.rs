@@ -14,7 +14,7 @@
 //! events from client state after each drain, so the transport just buffers raw
 //! inbound frames).
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use syncular_client::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 
@@ -26,14 +26,33 @@ pub enum Inbound {
 
 /// The shared inbound buffer the WS reader thread fills and the command path
 /// drains after each command.
-#[derive(Default)]
 pub struct InboundBuffer {
     frames: Mutex<Vec<Inbound>>,
+    notify: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl Default for InboundBuffer {
+    fn default() -> Self {
+        Self {
+            frames: Mutex::new(Vec::new()),
+            notify: None,
+        }
+    }
 }
 
 impl InboundBuffer {
+    pub fn with_notify(notify: Arc<dyn Fn() + Send + Sync>) -> Self {
+        Self {
+            frames: Mutex::new(Vec::new()),
+            notify: Some(notify),
+        }
+    }
+
     pub fn push(&self, frame: Inbound) {
         self.frames.lock().expect("inbound lock").push(frame);
+        if let Some(notify) = &self.notify {
+            notify();
+        }
     }
     fn take(&self) -> Vec<Inbound> {
         std::mem::take(&mut *self.frames.lock().expect("inbound lock"))
@@ -54,11 +73,18 @@ impl HostTransport {
     /// Build the transport from the plugin config. `{}` (or no `baseUrl`) →
     /// `Null`; a `baseUrl` under the `native-transport` feature → `Native`.
     pub fn from_config(config: &serde_json::Value) -> Result<Self, String> {
+        Self::from_config_with_notify(config, None)
+    }
+
+    pub fn from_config_with_notify(
+        config: &serde_json::Value,
+        notify: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Result<Self, String> {
         #[cfg(feature = "native-transport")]
         {
             if let Some(base_url) = config.get("baseUrl").and_then(|v| v.as_str()) {
                 return Ok(HostTransport::Native(native::NativeTransport::new(
-                    base_url, config,
+                    base_url, config, notify,
                 )?));
             }
         }
@@ -72,7 +98,10 @@ impl HostTransport {
         }
         Ok(HostTransport::Null {
             signed_urls: false,
-            inbound: std::sync::Arc::new(InboundBuffer::default()),
+            inbound: Arc::new(match notify {
+                Some(notify) => InboundBuffer::with_notify(notify),
+                None => InboundBuffer::default(),
+            }),
         })
     }
 
@@ -386,7 +415,11 @@ mod native {
     }
 
     impl NativeTransport {
-        pub fn new(base_url: &str, config: &serde_json::Value) -> Result<Self, String> {
+        pub fn new(
+            base_url: &str,
+            config: &serde_json::Value,
+            notify: Option<Arc<dyn Fn() + Send + Sync>>,
+        ) -> Result<Self, String> {
             let mut headers = Vec::new();
             if let Some(map) = config.get("headers").and_then(|v| v.as_object()) {
                 for (k, v) in map {
@@ -406,7 +439,10 @@ mod native {
                 headers,
                 agent: ureq::AgentBuilder::new().build(),
                 signed_urls: false,
-                inbound: Arc::new(InboundBuffer::default()),
+                inbound: Arc::new(match notify {
+                    Some(notify) => InboundBuffer::with_notify(notify),
+                    None => InboundBuffer::default(),
+                }),
                 socket: None,
                 reader: None,
                 reader_stop: Arc::new(AtomicBool::new(false)),

@@ -280,6 +280,9 @@ export function ensureLocalSchema(
     }
     db.exec(`CREATE TABLE IF NOT EXISTS _syncular_meta(
       key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    db.exec(
+      `INSERT OR IGNORE INTO _syncular_meta(key, value) VALUES ('localRevision', '0')`,
+    );
     db.exec(`CREATE TABLE IF NOT EXISTS _syncular_outbox(
       seq INTEGER PRIMARY KEY AUTOINCREMENT,
       client_commit_id TEXT NOT NULL UNIQUE,

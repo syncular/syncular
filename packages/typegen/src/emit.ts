@@ -163,6 +163,26 @@ function emitRowInterfaces(table: IrTable, naming: NamingMode): string {
   return lines.join('\n');
 }
 
+function emitTableDescriptor(table: IrTable, naming: NamingMode): string {
+  const type = pascalCase(table.name);
+  const primary = table.columns.find(
+    (column) => column.name === table.primaryKey,
+  );
+  if (primary === undefined)
+    throw new Error(`table ${table.name} lacks its primary key`);
+  const field =
+    naming === 'camel' ? snakeToCamel(table.primaryKey) : table.primaryKey;
+  const constant = `${naming === 'camel' ? snakeToCamel(table.name) : table.name}Table`;
+  return [
+    `/** Typed mutation/resource descriptor for ${quote(table.name)}. */`,
+    `export const ${constant}: SyncTable<${type}Row, ${type}Insert, ${type}Update, ${appTsType(primary)}> = {`,
+    `  name: ${quote(table.name)},`,
+    `  primaryKey: ${quote(field)},`,
+    `  physicalPrimaryKey: ${quote(table.primaryKey)},`,
+    '};',
+  ].join('\n');
+}
+
 function emitSubscription(sub: IrSubscription): string {
   const params: string[] = [];
   for (const scope of sub.scopes) {
@@ -218,9 +238,27 @@ export function emitModule(
       `// irHash: ${hash}`,
     ].join('\n'),
   );
+  parts.push(
+    [
+      '/** Structural descriptor consumed by renderer bindings; phantom type',
+      ' * fields make row/insert/update/id inference available without imports. */',
+      'export interface SyncTable<Row, Insert, Update, Id> {',
+      '  readonly name: string;',
+      '  /** Language-facing key used in generated row and mutation types. */',
+      '  readonly primaryKey: keyof Row & string;',
+      '  /** Physical SQLite/wire primary-key column. */',
+      '  readonly physicalPrimaryKey: string;',
+      '  readonly __row?: Row;',
+      '  readonly __insert?: Insert;',
+      '  readonly __update?: Update;',
+      '  readonly __id?: Id;',
+      '}',
+    ].join('\n'),
+  );
   parts.push(emitSchema(ir));
   for (const table of ir.tables) {
     parts.push(emitRowInterfaces(table, naming));
+    parts.push(emitTableDescriptor(table, naming));
   }
   for (const sub of ir.subscriptions) {
     parts.push(emitSubscription(sub));

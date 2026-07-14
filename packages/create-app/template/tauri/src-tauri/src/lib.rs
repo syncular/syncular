@@ -28,7 +28,6 @@ pub fn run() {
                 base_url: Some("http://localhost:8787".to_owned()),
                 db_path,
                 // Host-loop cadence with a little jitter (§8.4).
-                wake_jitter_ms: 250,
                 auto_sync: true,
                 ..Default::default()
             };

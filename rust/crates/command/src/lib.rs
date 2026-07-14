@@ -19,7 +19,9 @@ use ssp2::{
     decode_message, encode_message, parse_control, render_message, render_rows_segment,
     ControlMessage,
 };
-use syncular_client::{ClientLimits, Mutation, SyncClient, Transport, WindowBase};
+use syncular_client::{
+    ClientLimits, CommandEffects, Mutation, SyncClient, Transport, WindowBase, WindowCoverage,
+};
 
 // -- bytes <-> {"$bytes": hex} (the driver-protocol byte envelope) ----------
 
@@ -57,7 +59,12 @@ pub struct CreateEffects {
 }
 
 fn client_err(message: String) -> CommandError {
-    ("client.failed".to_owned(), message)
+    let code = message
+        .split_once(':')
+        .map(|(candidate, _)| candidate)
+        .filter(|candidate| candidate.starts_with("client."))
+        .unwrap_or("client.failed");
+    (code.to_owned(), message)
 }
 
 fn need_client(client: &mut Option<SyncClient>) -> Result<&mut SyncClient, CommandError> {
@@ -132,11 +139,12 @@ pub fn parse_mutations(value: Option<&Value>) -> Result<Vec<Mutation>, String> {
         let base_version = entry.get("baseVersion").and_then(Value::as_i64);
         match op {
             "upsert" => {
-                let values = entry
+                let mut values = entry
                     .get("values")
                     .and_then(Value::as_object)
                     .cloned()
                     .ok_or_else(|| "upsert missing values".to_owned())?;
+                decode_bigint_members(&mut values)?;
                 out.push(Mutation::Upsert {
                     table,
                     values,
@@ -159,6 +167,19 @@ pub fn parse_mutations(value: Option<&Value>) -> Result<Vec<Mutation>, String> {
         }
     }
     Ok(out)
+}
+
+fn decode_bigint_members(values: &mut serde_json::Map<String, Value>) -> Result<(), String> {
+    for value in values.values_mut() {
+        let Some(decimal) = value.get("$bigint").and_then(Value::as_str) else {
+            continue;
+        };
+        let integer = decimal
+            .parse::<i64>()
+            .map_err(|_| format!("bigint value {decimal:?} is outside SQLite's i64 range"))?;
+        *value = Value::from(integer);
+    }
+    Ok(())
 }
 
 fn scopes_from_params(value: Option<&Value>) -> Result<Vec<(String, Vec<String>)>, String> {
@@ -246,8 +267,7 @@ pub fn dispatch<T: Transport>(
             let client_id = params
                 .get("clientId")
                 .and_then(Value::as_str)
-                .ok_or_else(|| client_err("create missing clientId".to_owned()))?
-                .to_owned();
+                .map(str::to_owned);
             let schema = params
                 .get("schema")
                 .ok_or_else(|| client_err("create missing schema".to_owned()))?;
@@ -256,10 +276,11 @@ pub fn dispatch<T: Transport>(
             // native hosts (Tauri plugin, FFI file variant) persist across
             // restarts; absent it, the default in-memory core (the shim's mode).
             let mut instance = match params.get("dbPath").and_then(Value::as_str) {
-                Some(path) => {
-                    SyncClient::open_path(client_id, schema, limits, path).map_err(client_err)?
+                Some(path) => SyncClient::open_path_with_identity(client_id, schema, limits, path)
+                    .map_err(client_err)?,
+                None => {
+                    SyncClient::new_with_identity(client_id, schema, limits).map_err(client_err)?
                 }
-                None => SyncClient::new(client_id, schema, limits).map_err(client_err)?,
             };
             // Harness clock pin (§5.4 expiry runs on the virtual clock).
             if let Some(now_ms) = params.get("nowMs").and_then(Value::as_i64) {
@@ -320,10 +341,10 @@ pub fn dispatch<T: Transport>(
                         .collect()
                 })
                 .unwrap_or_default();
-            need_client(client)?
+            let command_effects = need_client(client)?
                 .set_window(&base, &units)
                 .map_err(client_err)?;
-            Ok(json!({}))
+            Ok(json!({ "effects": command_effects }))
         }
         "windowState" => {
             let base = window_base_from_params(params.get("base")).map_err(client_err)?;
@@ -333,7 +354,34 @@ pub fn dispatch<T: Transport>(
         "mutate" => {
             let mutations = parse_mutations(params.get("mutations")).map_err(client_err)?;
             let id = need_client(client)?.mutate(mutations).map_err(client_err)?;
-            Ok(json!({ "clientCommitId": id }))
+            Ok(json!({
+                "clientCommitId": id,
+                "effects": CommandEffects::interactive()
+            }))
+        }
+        "patch" => {
+            let table = params
+                .get("table")
+                .and_then(Value::as_str)
+                .ok_or_else(|| client_err("patch missing table".to_owned()))?;
+            let row_id = params
+                .get("rowId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| client_err("patch missing rowId".to_owned()))?;
+            let mut partial = params
+                .get("partial")
+                .and_then(Value::as_object)
+                .cloned()
+                .ok_or_else(|| client_err("patch missing partial object".to_owned()))?;
+            decode_bigint_members(&mut partial).map_err(client_err)?;
+            let base_version = params.get("baseVersion").and_then(Value::as_i64);
+            let id = need_client(client)?
+                .patch(table, row_id, partial, base_version)
+                .map_err(client_err)?;
+            Ok(json!({
+                "clientCommitId": id,
+                "effects": CommandEffects::interactive()
+            }))
         }
         "sync" => {
             let outcome = need_client(client)?.sync(transport);
@@ -371,6 +419,58 @@ pub fn dispatch<T: Transport>(
             let rows = need_client(client)?.query(sql, &bind).map_err(client_err)?;
             Ok(json!({ "rows": rows }))
         }
+        "querySnapshot" => {
+            let sql = params
+                .get("sql")
+                .and_then(Value::as_str)
+                .ok_or_else(|| client_err("querySnapshot missing sql".to_owned()))?;
+            let bind = match params.get("params") {
+                Some(Value::Array(list)) => list.clone(),
+                None | Some(Value::Null) => Vec::new(),
+                Some(_) => {
+                    return Err(client_err("querySnapshot params must be a list".to_owned()))
+                }
+            };
+            let mut coverage = Vec::new();
+            for entry in params
+                .get("coverage")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let base = window_base_from_params(entry.get("base")).map_err(client_err)?;
+                let units = entry
+                    .get("units")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                coverage.push(WindowCoverage { base, units });
+            }
+            let snapshot = need_client(client)?
+                .query_snapshot(sql, &bind, &coverage)
+                .map_err(client_err)?;
+            Ok(serde_json::to_value(snapshot).expect("snapshot serializes"))
+        }
+        "localRevision" => Ok(json!({
+            "revision": need_client(client)?.local_revision().to_string()
+        })),
+        "statusSnapshot" => Ok(serde_json::to_value(need_client(client)?.status_snapshot())
+            .expect("status serializes")),
+        // Conformance/debug drains. Production hosts normally drain these
+        // immediately after every command, but exposing the exact core output
+        // here lets both client implementations consume one observation
+        // vector catalog without bridge inference.
+        "drainChangeBatches" => Ok(json!({
+            "batches": need_client(client)?.drain_change_batches()
+        })),
+        "drainSyncIntents" => Ok(json!({
+            "intents": need_client(client)?.drain_sync_intents()
+        })),
         // -- §5.10.5 native CRDT (the `crdt-yjs` feature) -----------------------
         // Thin forwards to the client core's yrs helpers. The command surface
         // stays present-but-unavailable in a lean build: without the feature

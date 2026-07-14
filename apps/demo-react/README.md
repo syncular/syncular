@@ -12,12 +12,11 @@ It dogfoods the full hook surface:
 
 | Hook                                   | What it drives here                                             |
 | -------------------------------------- | -------------------------------------------------------------- |
-| `SyncProvider`                         | Supplies the worker-mode `SyncClientHandle` to the tree.       |
-| `useQuery`                             | The live todo list — a **generated named query** (`queries/list-todos.sql` → typed descriptor), read-only, exact table invalidation baked in by typegen. |
+| `SyncProvider`                         | Consumes a StrictMode-safe async client resource.              |
+| `useQuery`                             | The live todo list — generated scope dependencies, window coverage, row identity, and atomic phase/revision. |
 | `useRawSql`                            | The done/total header badge — a raw read-only aggregate with explicit `{tables}`. |
-| `useMutation`                          | Add / toggle / delete todos (writes go through the outbox).    |
+| `useMutation`                          | Typed add / patch / delete helpers through the outbox.         |
 | `useSyncStatus`                        | The `outbox N` badge + upgrading / schema-floor state.         |
-| `useWindow`                            | The **list-filter dropdown** — picking a list calls `setWindow([list])`, which bootstraps that list and evicts the others (W1 value-sharded windowing, visible). `isComplete(list)` renders the completeness oracle. |
 
 ## Run
 
@@ -32,13 +31,11 @@ meaningful: each list is a separate scope value, windowed in one at a time.
 
 ## What to try
 
-- **Typed live query**: the list re-renders the instant a todo changes — the
-  `useQuery` named query re-runs only when `todos` invalidates (its
-  dependency, resolved by typegen at generate time — no SQL text heuristic).
+- **Typed live query**: the list re-renders the instant a relevant todo
+  changes. Equal observers share a read and unchanged rows retain identity.
 - **Window switching (W1)**: change the list dropdown. The new list bootstraps
-  (a fresh image pull) and the previous one is evicted — "windowed-in: …"
-  tracks the live set. A list that is not fully windowed-in shows the honest
-  "data may be partial" note (I3).
+  from the query's generated coverage and the previous claim is released.
+  Rows and completeness come from one snapshot, so only `ready + []` is empty.
 - **Optimistic writes**: add a todo — it appears immediately and the `outbox`
   badge ticks up, then drains as the autoSync loop pushes it. Writes always go
   through `useMutation` → the outbox (never the read tiers).
@@ -48,11 +45,12 @@ meaningful: each list is a separate scope value, windowed in one at a time.
 - **Typed reads, `mutate` writes.** `useQuery` runs the generated named-query
   tier and `useRawSql` the guarded raw tier — both read-only (the core rejects
   writes in `query`). Writes stay on `useMutation` so they land in the outbox
-  and sync (SPEC §7.1).
+  and sync (SPEC §7.1). Updates use generated `patch` helpers instead of
+  spreading a full row.
 - **Schema and queries are typegen-generated** (B5 dogfood): `syncular.json` +
   `migrations/` + `queries/` → `bun run generate` →
-  `src/syncular.generated.ts` + `src/syncular.queries.ts` (the typed
-  `listTodosQuery` descriptor `useQuery` runs).
+  `src/syncular.generated.ts` + `src/syncular.queries.ts` + deterministic
+  `syncular.queries.ir.json`.
 - **Same server, different frontend.** Two `Bun.build` bundles at startup:
   `/app.js` (the React page) and `/worker.js` (the whole core); the sqlite-wasm
   bare specifier is rewritten to the vendor path in both because module

@@ -27,7 +27,7 @@ alike. The one gap is web: `dart:ffi` doesn't target it.
 ## Create a client
 
 `SyncularClient.create` loads the native library, spins up the core, sends
-the initial `create` command with your schema and client id, and kicks off
+the initial `create` command with your schema and optional explicit client id, and kicks off
 the event poll loop. The schema itself comes from typegen: point a `dart`
 output in `syncular.json` and `syncular generate` produces
 `syncular.generated.dart`, exporting a ready-made `syncularSchema` map along
@@ -38,7 +38,6 @@ with typed row classes and subscription helpers (see
 import 'package:syncular/syncular.dart';
 
 final client = SyncularClient.create(
-  clientId: 'device-a',                        // stable per-device id
   schema: syncularSchema,                      // from syncular.generated.dart
   config: SyncularConfig(
     baseUrl: 'https://your.server/sync',       // engages the native transport
@@ -96,12 +95,12 @@ final outcome = client.sync();       // one round; needs native-transport
 client.syncUntilIdle(maxRounds: 10); // drive to quiescence
 
 client.events.listen((e) {
-  if (e.type == 'sync-needed') client.sync();
+  if (e.type == 'sync-intent') client.sync();
 });
 ```
 
-Events (`sync-needed`, `conflict`, `rejection`, `presence`, `schema-floor`,
-`lease`) arrive on `client.events`, a **broadcast Stream** delivered on the
+Exact `change` batches, `sync-intent`, and `presence` arrive on
+`client.events`, a **broadcast Stream** delivered on the
 owning isolate's event loop, so listeners can touch UI state directly. Under
 the hood a `Timer.periodic` on the owning isolate drains the core's
 `poll_event` queue with non-blocking polls, so event delivery runs safely

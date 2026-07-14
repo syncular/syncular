@@ -63,7 +63,6 @@ import { SyncProvider } from '@syncular/react';
 import { schema } from './syncular.generated';
 
 const client = await createNativeSyncClient({
-  clientId: 'device-1',
   schema,
   baseUrl: 'https://your.server/sync', // engages the native transport
 });
@@ -90,15 +89,15 @@ pump + disconnect realtime — call from `AppState` `'background'`) and
 - **`bun test`** — two layers, no device:
   - *the JS bridge* with an **injected NativeModule double** (the
     `@syncular/tauri` pattern): the `SyncClientLike` contract, method →
-    command mapping, the `query` fast path, `{$bytes:hex}` round-trip, event
-    fanout to `onInvalidate`/`onPresence`, lifecycle (pause/resume/close driving
+    command mapping, atomic `querySnapshot`, typed `patch`, lossless bigint and
+    bytes round-trip, exact `onChange` fanout, lifecycle (pause/resume/close driving
     the native pump), and a **parity test against the React `normalizeClient`**
     (so a drift in `SyncClientLike` breaks this suite);
   - *the App integration render* (`test/app.test.tsx`): the example's **real
     `App.tsx`** rendered with `@testing-library/react` against a **stateful**
-    NativeModule double — the list renders the rows the native `query` returns,
-    and Add drives `useMutation` → `command('mutate')` → an `invalidate` event →
-    `useRawSql` re-run → the new row appears. This proves the
+    NativeModule double — the list renders the rows the native `querySnapshot`
+    returns, and Add drives `useMutation` → `command('mutate')` → an exact
+    revisioned `change` event → `useRawSql` re-run → the new row appears. This proves the
     `@syncular/react` hooks drive the native client end-to-end. `react-native`
     primitives are mocked to DOM tags by a bunfig preload (`test/setup-app.ts`) —
     the one thing bun can't resolve off-device.

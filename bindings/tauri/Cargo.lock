@@ -3121,7 +3121,7 @@ dependencies = [
 
 [[package]]
 name = "syncular-client"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "rusqlite",
  "serde",
@@ -3134,7 +3134,7 @@ dependencies = [
 
 [[package]]
 name = "syncular-command"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "serde_json",
  "syncular-client",
@@ -3143,9 +3143,17 @@ dependencies = [
 
 [[package]]
 name = "syncular-ssp2"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "serde_json",
+]
+
+[[package]]
+name = "syncular-tauri-bridge-harness"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "tauri-plugin-syncular",
 ]
 
 [[package]]
@@ -3370,7 +3378,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-syncular"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "serde",
  "serde_json",

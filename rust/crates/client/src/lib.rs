@@ -24,8 +24,10 @@ pub mod transport;
 pub mod values;
 
 pub use api::{
-    ClientLimits, ConflictRecord, Mutation, PresencePeer, RejectionRecord, RowState, SchemaFloor,
-    SubscriptionStateView, SyncOutcome, SyncReport, WindowBase, WindowState,
+    ClientChangeBatch, ClientLimits, CommandEffects, ConflictRecord, CoverageSnapshot, Mutation,
+    PresencePeer, QuerySnapshot, RejectionRecord, RowState, SchemaFloor, SubscriptionStateView,
+    SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange, WindowBase, WindowChange,
+    WindowCoverage, WindowState, WindowUnitRef,
 };
 pub use client::SyncClient;
 pub use schema::{compile_schema, parse_schema_json, ClientSchema};

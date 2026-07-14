@@ -1,6 +1,6 @@
 //! End-to-end exercise of the C-ABI surface from Rust (default build:
 //! client-local, no native transport). Proves the 5 functions marshal JSON,
-//! run the shared command router, derive events, and free cleanly.
+//! run the shared command router, forward exact core events, and free cleanly.
 
 use std::ffi::{CStr, CString};
 
@@ -22,6 +22,20 @@ fn command(handle: *mut crate::Handle, method: &str, params: Value) -> Value {
         .to_owned();
     syncular_free_string(reply_ptr);
     serde_json::from_str(&text).unwrap()
+}
+
+/// Poll one event and free its C string.
+fn poll_event(handle: *mut crate::Handle) -> Option<Value> {
+    let event_ptr = syncular_client_poll_event(handle, 0);
+    if event_ptr.is_null() {
+        return None;
+    }
+    let text = unsafe { CStr::from_ptr(event_ptr) }
+        .to_str()
+        .unwrap()
+        .to_owned();
+    syncular_free_string(event_ptr);
+    Some(serde_json::from_str(&text).unwrap())
 }
 
 fn simple_schema() -> Value {
@@ -121,6 +135,45 @@ fn poll_event_nonblocking_returns_null_when_empty() {
     // Non-blocking poll with no events queued → null.
     let ev = syncular_client_poll_event(handle, 0);
     assert!(ev.is_null());
+    syncular_client_close(handle);
+}
+
+#[test]
+fn poll_event_forwards_exact_change_batches_and_sync_intents() {
+    let config = CString::new("{}").unwrap();
+    let handle = syncular_client_new(config.as_ptr());
+    command(
+        handle,
+        "create",
+        json!({ "clientId": "c1", "schema": simple_schema() }),
+    );
+    command(
+        handle,
+        "mutate",
+        json!({ "mutations": [{
+            "op": "upsert",
+            "table": "todo",
+            "values": { "id": "t1", "title": "hello", "done": false }
+        }] }),
+    );
+
+    let mut events = Vec::new();
+    while let Some(event) = poll_event(handle) {
+        events.push(event);
+    }
+    let change = events
+        .iter()
+        .find(|event| event["type"] == "change")
+        .expect("mutation publishes a change batch");
+    assert!(change["batch"]["revision"].is_string());
+    assert_eq!(change["batch"]["tables"][0]["table"], "todo");
+    assert_eq!(change["batch"]["status"]["outbox"], 1);
+    let intent = events
+        .iter()
+        .find(|event| event["type"] == "sync-intent")
+        .expect("mutation publishes sync intent");
+    assert_eq!(intent["intent"]["kind"], "interactive");
+
     syncular_client_close(handle);
 }
 

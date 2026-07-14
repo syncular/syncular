@@ -8,7 +8,7 @@
 //! reference to the v1 Rust tree or the v2 TypeScript client.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
 use rusqlite::Connection;
@@ -23,8 +23,10 @@ use ssp2::{
 };
 
 use crate::api::{
-    ClientLimits, ConflictRecord, LeaseState, Mutation, PresencePeer, RejectionRecord, RowState,
-    SchemaFloor, SubscriptionStateView, SyncOutcome, SyncReport, WindowBase, WindowState,
+    ClientChangeBatch, ClientLimits, CommandEffects, ConflictRecord, CoverageSnapshot, LeaseState,
+    Mutation, PresencePeer, QuerySnapshot, RejectionRecord, RowState, SchemaFloor,
+    SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
+    WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
 };
 use crate::schema::{parse_schema_json, ClientSchema};
 use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
@@ -46,6 +48,10 @@ const ACCEPT_SIGNED_URLS: u8 = 1 << 3;
 
 /// §7.4.1 persisted local schema-version marker (`_syncular_meta` key).
 const LOCAL_SCHEMA_VERSION_KEY: &str = "localSchemaVersion";
+const LOCAL_REVISION_KEY: &str = "localRevision";
+const CLIENT_ID_KEY: &str = "clientId";
+const LEASE_STATE_KEY: &str = "leaseState";
+const SCHEMA_FLOOR_KEY: &str = "schemaFloor";
 /// §7.4.4 client-local code: a pending outbox commit cannot re-encode under
 /// the new schema after a bump. Never a wire code (§10.3).
 const OUTBOX_INCOMPATIBLE_CODE: &str = "sync.outbox_incompatible";
@@ -57,12 +63,123 @@ enum SubState {
     Failed,
 }
 
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn client() -> SyncClient {
+        SyncClient::new(
+            "retry-test".to_owned(),
+            &json!({
+                "version": 1,
+                "tables": [{
+                    "name": "tasks",
+                    "primaryKey": "id",
+                    "columns": [
+                        { "name": "id", "type": "string", "nullable": false },
+                        { "name": "project_id", "type": "string", "nullable": false }
+                    ],
+                    "scopes": [{ "pattern": "project:{project_id}" }]
+                }]
+            }),
+            ClientLimits::default(),
+        )
+        .expect("test client")
+    }
+
+    #[test]
+    fn background_retry_deadlines_back_off_and_reset() {
+        let mut client = client();
+        client.schedule_background_retry();
+        assert!(matches!(
+            client.drain_sync_intents().as_slice(),
+            [SyncIntent::Background { delay_ms: 250 }]
+        ));
+        client.schedule_background_retry();
+        assert!(matches!(
+            client.drain_sync_intents().as_slice(),
+            [SyncIntent::Background { delay_ms: 500 }]
+        ));
+        client.reset_background_retry();
+        client.schedule_background_retry();
+        assert!(matches!(
+            client.drain_sync_intents().as_slice(),
+            [SyncIntent::Background { delay_ms: 250 }]
+        ));
+    }
+
+    #[test]
+    fn reopening_active_subscriptions_emits_a_catch_up_intent() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-startup-intent-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "project_id", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "project:{project_id}" }]
+            }]
+        });
+
+        {
+            let mut first = SyncClient::open_path_with_identity(
+                None,
+                &schema,
+                ClientLimits::default(),
+                path.to_str().expect("UTF-8 temp path"),
+            )
+            .expect("first open");
+            first
+                .set_window(
+                    &WindowBase {
+                        table: "tasks".to_owned(),
+                        variable: "project_id".to_owned(),
+                        fixed_scopes: Vec::new(),
+                        params: None,
+                    },
+                    &["persisted".to_owned()],
+                )
+                .expect("persist window");
+        }
+
+        let mut reopened = SyncClient::open_path_with_identity(
+            None,
+            &schema,
+            ClientLimits::default(),
+            path.to_str().expect("UTF-8 temp path"),
+        )
+        .expect("reopen");
+        assert!(reopened.sync_needed());
+        assert!(matches!(
+            reopened.drain_sync_intents().as_slice(),
+            [SyncIntent::Interactive]
+        ));
+        drop(reopened);
+        std::fs::remove_file(path).expect("remove temp database");
+    }
+}
+
 impl SubState {
     fn name(self) -> &'static str {
         match self {
             SubState::Active => "active",
             SubState::Revoked => "revoked",
             SubState::Failed => "failed",
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        match value {
+            "revoked" => Self::Revoked,
+            "failed" => Self::Failed,
+            _ => Self::Active,
         }
     }
 }
@@ -120,6 +237,50 @@ struct RequestMeta {
     deferred_commits: usize,
 }
 
+#[derive(Default)]
+struct ChangeAccumulator {
+    /// None means table-wide; Some is the exact scoped domain.
+    tables: BTreeMap<String, Option<BTreeSet<String>>>,
+    windows: BTreeMap<(String, String), BTreeSet<String>>,
+    status: bool,
+    conflicts: bool,
+    rejections: bool,
+}
+
+impl ChangeAccumulator {
+    fn table(&mut self, table: &str) {
+        self.tables.insert(table.to_owned(), None);
+    }
+
+    fn scope(&mut self, table: &str, key: String) {
+        match self.tables.get_mut(table) {
+            Some(None) => {}
+            Some(Some(keys)) => {
+                keys.insert(key);
+            }
+            None => {
+                self.tables
+                    .insert(table.to_owned(), Some(BTreeSet::from([key])));
+            }
+        }
+    }
+
+    fn window(&mut self, base_key: &str, table: &str, unit: &str) {
+        self.windows
+            .entry((base_key.to_owned(), table.to_owned()))
+            .or_default()
+            .insert(unit.to_owned());
+    }
+
+    fn touched(&self) -> bool {
+        !self.tables.is_empty()
+            || !self.windows.is_empty()
+            || self.status
+            || self.conflicts
+            || self.rejections
+    }
+}
+
 /// §6.1: the server caps total operations per request (reference default
 /// 500) and rejects the whole batch with `sync.too_many_operations`; the
 /// client "splits and retries". Splitting happens at build time: commits are
@@ -165,6 +326,11 @@ pub struct SyncClient {
     /// diverged from the visible overlay since the last rebuild. Lets a
     /// no-op sync round skip the full base→visible copy.
     overlay_dirty: Cell<bool>,
+    /// Exact observer-transaction output drained by command/FFI hosts.
+    change_queue: VecDeque<ClientChangeBatch>,
+    sync_intent_queue: VecDeque<SyncIntent>,
+    /// Explicit exponential retry policy for transient transport failures.
+    retry_delay_ms: u64,
 }
 
 fn quote_ident(name: &str) -> String {
@@ -183,7 +349,7 @@ type PendingEvict = (String, String, Vec<(String, Vec<String>)>);
 
 fn window_base_key(base: &WindowBase) -> String {
     format!(
-        "{} {} {}",
+        "{}\0{}\0{}",
         base.table,
         base.variable,
         canonical_scope_json(&base.fixed_scopes)
@@ -338,7 +504,8 @@ fn sql_ref_to_json(column: &Column, value: rusqlite::types::ValueRef<'_>) -> Val
 }
 
 /// Bind a driver JSON value form as a rusqlite parameter for [`SyncClient::query`].
-/// Objects are only accepted in the `{"$bytes": hex}` byte-envelope form.
+/// Objects are accepted in lossless `{"$bytes": hex}` and
+/// `{"$bigint": decimal}` envelope forms.
 fn json_param_to_sql(value: &Value) -> Result<SqlValue, String> {
     Ok(match value {
         Value::Null => SqlValue::Null,
@@ -354,11 +521,18 @@ fn json_param_to_sql(value: &Value) -> Result<SqlValue, String> {
         }
         Value::String(s) => SqlValue::Text(s.clone()),
         Value::Object(_) => {
-            let hex = value
-                .get("$bytes")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "query object param must be a {\"$bytes\": hex} value".to_owned())?;
-            SqlValue::Blob(crate::values::hex_to_bytes(hex)?)
+            if let Some(hex) = value.get("$bytes").and_then(Value::as_str) {
+                SqlValue::Blob(crate::values::hex_to_bytes(hex)?)
+            } else if let Some(decimal) = value.get("$bigint").and_then(Value::as_str) {
+                SqlValue::Integer(decimal.parse::<i64>().map_err(|_| {
+                    format!("query bigint param {decimal:?} is outside SQLite's i64 range")
+                })?)
+            } else {
+                return Err(
+                    "query object param must be a {$bytes: hex} or {$bigint: decimal} value"
+                        .to_owned(),
+                );
+            }
         }
         Value::Array(_) => return Err("query array params are not supported".to_owned()),
     })
@@ -372,7 +546,19 @@ fn sql_ref_to_json_dynamic(value: rusqlite::types::ValueRef<'_>) -> Value {
     use rusqlite::types::ValueRef;
     match value {
         ValueRef::Null => Value::Null,
-        ValueRef::Integer(i) => Value::from(i),
+        ValueRef::Integer(i) => {
+            // JSON/Tauri IPC cannot represent every SQLite i64 exactly. Keep
+            // ordinary UI-sized integers ergonomic and envelope only values
+            // beyond JavaScript's safe range.
+            const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+            if (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&i) {
+                Value::from(i)
+            } else {
+                let mut map = Map::new();
+                map.insert("$bigint".to_owned(), Value::from(i.to_string()));
+                Value::Object(map)
+            }
+        }
         ValueRef::Real(f) => serde_json::Number::from_f64(f).map_or(Value::Null, Value::Number),
         ValueRef::Text(t) => Value::from(String::from_utf8_lossy(t).into_owned()),
         ValueRef::Blob(b) => {
@@ -384,6 +570,16 @@ fn sql_ref_to_json_dynamic(value: rusqlite::types::ValueRef<'_>) -> Value {
 }
 
 impl SyncClient {
+    pub fn new_with_identity(
+        client_id: Option<String>,
+        schema_json: &Value,
+        limits: ClientLimits,
+    ) -> Result<Self, String> {
+        let resolved = client_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+        Self::with_connection(resolved, schema_json, limits, conn)
+    }
+
     pub fn new(
         client_id: String,
         schema_json: &Value,
@@ -408,6 +604,39 @@ impl SyncClient {
         Self::with_connection(client_id, schema_json, limits, conn)
     }
 
+    pub fn open_path_with_identity(
+        client_id: Option<String>,
+        schema_json: &Value,
+        limits: ClientLimits,
+        path: &str,
+    ) -> Result<Self, String> {
+        let conn = Connection::open(path).map_err(|e| format!("open db {path:?}: {e}"))?;
+        let persisted = conn
+            .query_row(
+                "SELECT value FROM _syncular_meta WHERE key = 'clientId'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok();
+        let resolved = persisted
+            .clone()
+            .or(client_id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        if let (Some(existing), Some(requested)) = (persisted, client_id) {
+            if existing != requested {
+                return Err(format!(
+                    "client.identity_mismatch: this database belongs to {existing:?}; refusing to rebind it to {requested:?}"
+                ));
+            }
+        }
+        Self::with_connection(resolved, schema_json, limits, conn)
+    }
+
+    #[must_use]
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
+
     /// Build a client over a caller-supplied rusqlite connection — the seam a
     /// native host (Tauri plugin, FFI file-DB variant) uses to back the core
     /// with an on-disk database (`Connection::open(path)`) rather than the
@@ -421,7 +650,7 @@ impl SyncClient {
         conn: Connection,
     ) -> Result<Self, String> {
         let schema = parse_schema_json(schema_json)?;
-        let client = SyncClient {
+        let mut client = SyncClient {
             conn,
             schema,
             client_id,
@@ -441,6 +670,9 @@ impl SyncClient {
             encryption: crate::values::EncryptionConfig::default(),
             insert_sql: RefCell::new(HashMap::new()),
             overlay_dirty: Cell::new(false),
+            change_queue: VecDeque::new(),
+            sync_intent_queue: VecDeque::new(),
+            retry_delay_ms: 250,
         };
         // The row write path leans on the prepared-statement cache (two
         // insert statements per synced table, plus the bookkeeping
@@ -449,6 +681,34 @@ impl SyncClient {
             .conn
             .set_prepared_statement_cache_capacity(64.max(client.schema.tables.len() * 4));
         client.create_tables()?;
+        match client.get_meta(CLIENT_ID_KEY) {
+            Some(existing) if existing != client.client_id => {
+                return Err(format!(
+                    "client.identity_mismatch: this database belongs to {existing:?}; refusing to rebind it to {:?}",
+                    client.client_id
+                ));
+            }
+            None => client.set_meta(CLIENT_ID_KEY, &client.client_id),
+            _ => {}
+        }
+        client.restore_persisted_state()?;
+        let marker = client
+            .get_meta(LOCAL_SCHEMA_VERSION_KEY)
+            .and_then(|value| value.parse::<i32>().ok());
+        if marker != Some(client.schema.version) {
+            client.run_schema_reset()?;
+        } else if !client.outbox.is_empty() {
+            // Reconstruct the visible optimistic overlay from the durable base
+            // plus outbox instead of trusting a process-interrupted mirror.
+            client.overlay_dirty.set(true);
+            client.rebuild_overlay();
+        }
+        // Every persisted active subscription needs one catch-up pull on open:
+        // realtime only covers changes after connection, while an idempotent
+        // setWindow correctly creates no fresh command effect. Pending outbox
+        // work has the same restart requirement. The core owns this intent so
+        // native hosts never poll or require an application-issued sync().
+        client.enqueue_startup_sync_if_needed();
         Ok(client)
     }
 
@@ -498,6 +758,9 @@ impl SyncClient {
         // create (a fresh install is already at its generated version).
         if self.get_meta(LOCAL_SCHEMA_VERSION_KEY).is_none() {
             self.set_meta(LOCAL_SCHEMA_VERSION_KEY, &self.schema.version.to_string());
+        }
+        if self.get_meta(LOCAL_REVISION_KEY).is_none() {
+            self.set_meta(LOCAL_REVISION_KEY, "0");
         }
         // §5.9.7 blob cache + pending-upload queue (created only when the
         // schema declares blob_ref columns; harmless otherwise). IF NOT EXISTS
@@ -552,6 +815,392 @@ impl SyncClient {
         );
     }
 
+    fn delete_meta(&self, key: &str) {
+        let _ = self.conn.execute(
+            "DELETE FROM _syncular_meta WHERE key = ?1",
+            rusqlite::params![key],
+        );
+    }
+
+    fn restore_persisted_state(&mut self) -> Result<(), String> {
+        self.subs = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, tbl, state_json FROM _syncular_subscriptions ORDER BY id ASC")
+                .map_err(|error| error.to_string())?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|error| error.to_string())?;
+            let mut subscriptions = Vec::new();
+            for row in rows {
+                let (id, table, raw) = row.map_err(|error| error.to_string())?;
+                let state: Value = serde_json::from_str(&raw)
+                    .map_err(|error| format!("invalid persisted subscription {id:?}: {error}"))?;
+                let requested = json_to_scope_map(
+                    state.get("requested").unwrap_or(&Value::Object(Map::new())),
+                )?;
+                let effective = state
+                    .get("effectiveScopes")
+                    .filter(|value| !value.is_null())
+                    .map(json_to_scope_map)
+                    .transpose()?;
+                subscriptions.push(Subscription {
+                    id,
+                    table,
+                    requested,
+                    params: state
+                        .get("params")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    cursor: state.get("cursor").and_then(Value::as_i64).unwrap_or(-1),
+                    bootstrap_state: state
+                        .get("bootstrapState")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    state: SubState::parse(
+                        state
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .unwrap_or("active"),
+                    ),
+                    reason_code: state
+                        .get("reasonCode")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    effective,
+                    synced_once: state
+                        .get("syncedOnce")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                });
+            }
+            subscriptions
+        };
+
+        self.outbox = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT commit_id, ops_json FROM _syncular_outbox ORDER BY seq ASC")
+                .map_err(|error| error.to_string())?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|error| error.to_string())?;
+            let mut commits = Vec::new();
+            for row in rows {
+                let (client_commit_id, raw) = row.map_err(|error| error.to_string())?;
+                let entries: Vec<Value> = serde_json::from_str(&raw).map_err(|error| {
+                    format!("invalid persisted outbox {client_commit_id:?}: {error}")
+                })?;
+                let mut ops = Vec::with_capacity(entries.len());
+                for entry in entries {
+                    let op = entry.get("op").and_then(Value::as_str).unwrap_or("delete");
+                    ops.push(OutboxOp {
+                        upsert: op == "upsert",
+                        table: entry
+                            .get("table")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| "persisted outbox operation missing table".to_owned())?
+                            .to_owned(),
+                        row_id: entry
+                            .get("rowId")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| "persisted outbox operation missing rowId".to_owned())?
+                            .to_owned(),
+                        base_version: entry.get("baseVersion").and_then(Value::as_i64),
+                        values: entry.get("values").and_then(Value::as_object).cloned(),
+                    });
+                }
+                commits.push(OutboxCommit {
+                    client_commit_id,
+                    ops,
+                });
+            }
+            commits
+        };
+
+        self.lease_state = self
+            .get_meta(LEASE_STATE_KEY)
+            .map(|raw| serde_json::from_str(&raw))
+            .transpose()
+            .map_err(|error| format!("invalid persisted lease state: {error}"))?;
+        self.schema_floor = self
+            .get_meta(SCHEMA_FLOOR_KEY)
+            .map(|raw| serde_json::from_str(&raw))
+            .transpose()
+            .map_err(|error| format!("invalid persisted schema floor: {error}"))?;
+        self.stopped = self.schema_floor.is_some();
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn local_revision(&self) -> u64 {
+        self.get_meta(LOCAL_REVISION_KEY)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0)
+    }
+
+    #[must_use]
+    pub fn status_snapshot(&self) -> SyncStatusSnapshot {
+        SyncStatusSnapshot {
+            outbox: self.outbox.len(),
+            upgrading: self.upgrading,
+            lease_state: self.lease_state.clone(),
+            schema_floor: self.schema_floor.clone(),
+            sync_needed: self.sync_needed,
+        }
+    }
+
+    pub fn drain_change_batches(&mut self) -> Vec<ClientChangeBatch> {
+        self.change_queue.drain(..).collect()
+    }
+
+    pub fn drain_sync_intents(&mut self) -> Vec<SyncIntent> {
+        self.sync_intent_queue.drain(..).collect()
+    }
+
+    fn schedule_background_retry(&mut self) {
+        self.sync_intent_queue.push_back(SyncIntent::Background {
+            delay_ms: self.retry_delay_ms,
+        });
+        self.retry_delay_ms = (self.retry_delay_ms * 2).min(30_000);
+    }
+
+    fn reset_background_retry(&mut self) {
+        self.retry_delay_ms = 250;
+    }
+
+    fn retryable_transport_code(code: &str) -> bool {
+        code == "transport.failed" || code == "sync.transport_failed"
+    }
+
+    fn set_sync_needed(&mut self, value: bool, interactive: bool) {
+        if self.sync_needed != value {
+            if self.begin_observation("syncular_status").is_ok() {
+                self.sync_needed = value;
+                let batch = ChangeAccumulator {
+                    status: true,
+                    ..ChangeAccumulator::default()
+                };
+                if self.finish_observation("syncular_status", batch).is_err() {
+                    self.rollback_observation("syncular_status");
+                }
+            } else {
+                self.sync_needed = value;
+            }
+        }
+        if value && interactive {
+            self.sync_intent_queue.push_back(SyncIntent::Interactive);
+        }
+    }
+
+    fn begin_observation(&self, name: &str) -> Result<(), String> {
+        self.conn
+            .execute_batch(&format!("SAVEPOINT {name}"))
+            .map_err(|error| error.to_string())
+    }
+
+    fn rollback_observation(&self, name: &str) {
+        let _ = self
+            .conn
+            .execute_batch(&format!("ROLLBACK TO {name}; RELEASE {name}"));
+    }
+
+    fn finish_observation(&mut self, name: &str, batch: ChangeAccumulator) -> Result<(), String> {
+        if !batch.touched() {
+            self.conn
+                .execute_batch(&format!("RELEASE {name}"))
+                .map_err(|error| error.to_string())?;
+            return Ok(());
+        }
+        let revision = self
+            .local_revision()
+            .checked_add(1)
+            .ok_or_else(|| "local revision exhausted u64".to_owned())?;
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO _syncular_meta(key, value) VALUES (?1, ?2)",
+                rusqlite::params![LOCAL_REVISION_KEY, revision.to_string()],
+            )
+            .map_err(|error| error.to_string())?;
+        let status = batch.status.then(|| self.status_snapshot());
+        let event = ClientChangeBatch {
+            revision: revision.to_string(),
+            tables: batch
+                .tables
+                .into_iter()
+                .map(|(table, scope_keys)| TableChange {
+                    table,
+                    scope_keys: scope_keys.map(|keys| keys.into_iter().collect()),
+                })
+                .collect(),
+            windows: batch
+                .windows
+                .into_iter()
+                .map(|((base_key, table), units)| WindowChange {
+                    base_key,
+                    table,
+                    units: units.into_iter().collect(),
+                })
+                .collect(),
+            status,
+            conflicts_changed: batch.conflicts,
+            rejections_changed: batch.rejections,
+        };
+        self.conn
+            .execute_batch(&format!("RELEASE {name}"))
+            .map_err(|error| error.to_string())?;
+        self.change_queue.push_back(event);
+        Ok(())
+    }
+
+    fn record_scope_map(
+        &self,
+        batch: &mut ChangeAccumulator,
+        table_name: &str,
+        scopes: &[(String, Vec<String>)],
+    ) {
+        let Some(table) = self.schema.table(table_name) else {
+            return;
+        };
+        for (variable, values) in scopes {
+            let Some(scope) = table
+                .scope_variables
+                .iter()
+                .find(|scope| &scope.variable == variable)
+            else {
+                continue;
+            };
+            for value in values {
+                batch.scope(table_name, format!("{}:{value}", scope.prefix));
+            }
+        }
+    }
+
+    /// Record a row's current scope keys from the base or visible table.
+    fn record_row_scopes(
+        &self,
+        batch: &mut ChangeAccumulator,
+        table_name: &str,
+        row_id: &str,
+        base: bool,
+    ) -> bool {
+        let Some(table) = self.schema.table(table_name) else {
+            return false;
+        };
+        if table.scope_variables.is_empty() {
+            return false;
+        }
+        let columns = table
+            .scope_variables
+            .iter()
+            .map(|scope| quote_ident(&scope.column))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let full_table = if base {
+            base_table(table_name)
+        } else {
+            visible_table(table_name)
+        };
+        let sql = format!(
+            "SELECT {columns} FROM {full_table} WHERE CAST({} AS TEXT) = ?1 LIMIT 1",
+            quote_ident(&table.primary_key)
+        );
+        let Ok(mut stmt) = self.conn.prepare(&sql) else {
+            return false;
+        };
+        let values = stmt.query_row(rusqlite::params![row_id], |row| {
+            let mut values = Vec::with_capacity(table.scope_variables.len());
+            for index in 0..table.scope_variables.len() {
+                values.push(row.get::<_, Option<String>>(index)?);
+            }
+            Ok(values)
+        });
+        let Ok(values) = values else {
+            return false;
+        };
+        let mut recorded = false;
+        for (scope, value) in table.scope_variables.iter().zip(values) {
+            if let Some(value) = value {
+                batch.scope(table_name, format!("{}:{value}", scope.prefix));
+                recorded = true;
+            }
+        }
+        recorded
+    }
+
+    fn record_commit_changes(
+        &self,
+        batch: &mut ChangeAccumulator,
+        tables: &[String],
+        changes: &[ssp2::model::Change],
+    ) {
+        for change in changes {
+            let Some(table_name) = tables.get(change.table_index as usize) else {
+                continue;
+            };
+            let mut precise = self.record_row_scopes(batch, table_name, &change.row_id, true);
+            if let Some(table) = self.schema.table(table_name) {
+                for (variable, value) in &change.scopes {
+                    if let Some(scope) = table
+                        .scope_variables
+                        .iter()
+                        .find(|scope| &scope.variable == variable)
+                    {
+                        batch.scope(table_name, format!("{}:{value}", scope.prefix));
+                        precise = true;
+                    }
+                }
+            }
+            if !precise {
+                batch.table(table_name);
+            }
+        }
+    }
+
+    fn scoped_rows_exist(&self, table_name: &str, effective: &[(String, Vec<String>)]) -> bool {
+        if effective.is_empty() {
+            return false;
+        }
+        let Some(table) = self.schema.table(table_name) else {
+            return false;
+        };
+        let mut clauses = Vec::new();
+        let mut params = Vec::new();
+        for (variable, values) in effective {
+            let Some(column) = table.scope_column(variable) else {
+                return false;
+            };
+            if values.is_empty() {
+                return false;
+            }
+            let placeholders = values
+                .iter()
+                .map(|value| {
+                    params.push(SqlValue::Text(value.clone()));
+                    "?"
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            clauses.push(format!("{} IN ({placeholders})", quote_ident(column)));
+        }
+        let sql = format!(
+            "SELECT 1 FROM {} WHERE {} LIMIT 1",
+            base_table(table_name),
+            clauses.join(" AND ")
+        );
+        self.conn
+            .query_row(&sql, rusqlite::params_from_iter(params), |_| Ok(()))
+            .is_ok()
+    }
+
     /// §7.4.5: true while a schema-bump reset + first re-bootstrap runs.
     pub fn upgrading(&self) -> bool {
         self.upgrading
@@ -568,11 +1217,24 @@ impl SyncClient {
             .get_meta(LOCAL_SCHEMA_VERSION_KEY)
             .and_then(|v| v.parse().ok());
         self.schema = new_schema;
-        if marker == Some(self.schema.version) {
-            // No version change — nothing to reset.
-            return Ok(());
+        if marker != Some(self.schema.version) {
+            self.run_schema_reset()?;
         }
-        self.run_schema_reset()
+        // The conformance recreate is the in-memory equivalent of reopening a
+        // durable client. Apply the same startup catch-up contract even when
+        // the schema itself did not change.
+        self.enqueue_startup_sync_if_needed();
+        Ok(())
+    }
+
+    fn enqueue_startup_sync_if_needed(&mut self) {
+        let startup_work = !self.stopped
+            && (!self.outbox.is_empty()
+                || self.subs.iter().any(|sub| sub.state == SubState::Active));
+        if startup_work {
+            self.sync_needed = true;
+            self.sync_intent_queue.push_back(SyncIntent::Interactive);
+        }
     }
 
     /// §7.4.3 reset: whole-database local reset EXCEPT the outbox, clientId,
@@ -581,7 +1243,29 @@ impl SyncClient {
     /// the schema-floor stop state, rewrites the marker, drops outbox commits
     /// that cannot re-encode (§7.4.4), and replays the survivors on top.
     fn run_schema_reset(&mut self) -> Result<(), String> {
+        self.begin_observation("syncular_schema_reset")?;
+        let mut batch = ChangeAccumulator::default();
+        let result = self.run_schema_reset_observed(&mut batch);
+        if let Err(error) = result {
+            self.rollback_observation("syncular_schema_reset");
+            return Err(error);
+        }
+        if let Err(error) = self.finish_observation("syncular_schema_reset", batch) {
+            self.rollback_observation("syncular_schema_reset");
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn run_schema_reset_observed(&mut self, batch: &mut ChangeAccumulator) -> Result<(), String> {
         self.upgrading = true;
+        batch.status = true;
+        for table in &self.schema.tables {
+            batch.table(&table.name);
+        }
+        for (base_key, unit, table) in self.load_registered_window_units() {
+            batch.window(&base_key, &table, &unit);
+        }
         // The per-table insert SQL is derived from the OLD column lists.
         self.insert_sql.borrow_mut().clear();
         self.overlay_dirty.set(true);
@@ -602,6 +1286,13 @@ impl SyncClient {
                 .filter(|name| is_synced_table_name(name))
                 .collect()
         };
+        for name in &existing {
+            if let Some(table) = name.strip_prefix("_syncular_base_") {
+                batch.table(table);
+            } else if !name.starts_with("_syncular_") {
+                batch.table(name);
+            }
+        }
         for name in existing {
             let _ = self
                 .conn
@@ -625,12 +1316,16 @@ impl SyncClient {
         // The stop state is over: this client now ships a servable schema.
         self.stopped = false;
         self.schema_floor = None;
+        self.delete_meta(SCHEMA_FLOOR_KEY);
         // Rewrite the marker LAST so a crash mid-reset re-runs the reset.
         self.set_meta(LOCAL_SCHEMA_VERSION_KEY, &self.schema.version.to_string());
         // §7.4.4: drop outbox commits that cannot re-encode under the new
         // schema (a referenced column/table the bump removed), surfacing each
         // as a `sync.outbox_incompatible` rejection.
-        self.drop_incompatible_outbox();
+        if self.drop_incompatible_outbox() {
+            batch.rejections = true;
+            batch.status = true;
+        }
         // Re-apply the surviving outbox optimistically over the empty tables.
         self.rebuild_overlay();
         Ok(())
@@ -639,7 +1334,7 @@ impl SyncClient {
     /// §7.4.4: a persisted upsert whose values reference a column the current
     /// schema lacks (or a removed table) cannot be encoded. Drop the commit
     /// and raise a client-local `sync.outbox_incompatible` rejection.
-    fn drop_incompatible_outbox(&mut self) {
+    fn drop_incompatible_outbox(&mut self) -> bool {
         let schema = &self.schema;
         let mut incompatible: Vec<String> = Vec::new();
         self.outbox.retain(|commit| {
@@ -661,6 +1356,7 @@ impl SyncClient {
             }
             !bad
         });
+        let changed = !incompatible.is_empty();
         for client_commit_id in incompatible {
             self.persist_outbox_delete(&client_commit_id);
             self.rejections.push(RejectionRecord {
@@ -670,6 +1366,7 @@ impl SyncClient {
                 retryable: false,
             });
         }
+        changed
     }
 
     /// §7.4.3: (re)create the base + visible table pair for every synced
@@ -810,7 +1507,11 @@ impl SyncClient {
     /// (image-lane bootstrap on the next sync); removed units are
     /// unsubscribed and evicted, fused in one local transaction (E1–E4).
     /// Idempotent; re-entry cancels any deferred eviction.
-    pub fn set_window(&mut self, base: &WindowBase, units: &[String]) -> Result<(), String> {
+    pub fn set_window(
+        &mut self,
+        base: &WindowBase,
+        units: &[String],
+    ) -> Result<CommandEffects, String> {
         let table = self
             .schema
             .table(&base.table)
@@ -824,6 +1525,9 @@ impl SyncClient {
         let base_key = window_base_key(base);
         let wanted: std::collections::HashSet<&String> = units.iter().collect();
         let live = self.load_window_units(&base_key);
+        self.begin_observation("syncular_window")?;
+        let mut batch = ChangeAccumulator::default();
+        let mut changed = false;
 
         // Widen: units wanted but not live → fresh subscription + registry row.
         for unit in units {
@@ -839,6 +1543,8 @@ impl SyncClient {
                 unit_scopes(base, unit),
                 base.params.clone(),
             )?;
+            batch.window(&base_key, &base.table, unit);
+            changed = true;
         }
 
         // Shrink: units live but not wanted → unsubscribe fused with eviction.
@@ -846,9 +1552,26 @@ impl SyncClient {
             if wanted.contains(&unit) {
                 continue;
             }
+            let effective = self
+                .subs
+                .iter()
+                .find(|sub| sub.id == sub_id)
+                .and_then(|sub| sub.effective.clone())
+                .unwrap_or_else(|| unit_scopes(base, &unit));
+            self.record_scope_map(&mut batch, &base.table, &effective);
+            batch.window(&base_key, &base.table, &unit);
             self.evict_unit(&base_key, base, &unit, &sub_id);
+            changed = true;
         }
-        Ok(())
+        if let Err(error) = self.finish_observation("syncular_window", batch) {
+            self.rollback_observation("syncular_window");
+            return Err(error);
+        }
+        Ok(if changed {
+            CommandEffects::interactive()
+        } else {
+            CommandEffects::none()
+        })
     }
 
     /// §4.8 completeness oracle (I3): the windowed-in units for a base plus
@@ -860,7 +1583,9 @@ impl SyncClient {
         let mut pending = Vec::new();
         for (unit, sub_id) in self.load_window_units(&window_base_key(base)) {
             let is_pending = match self.subs.iter().find(|s| s.id == sub_id) {
-                Some(sub) => sub.cursor < 0 || sub.bootstrap_state.is_some(),
+                Some(sub) => {
+                    sub.state != SubState::Active || sub.cursor < 0 || sub.bootstrap_state.is_some()
+                }
                 None => true,
             };
             if is_pending {
@@ -886,6 +1611,40 @@ impl SyncClient {
             Ok(rows) => rows.filter_map(Result::ok).collect(),
             Err(_) => Vec::new(),
         }
+    }
+
+    fn load_registered_window_units(&self) -> Vec<(String, String, String)> {
+        let mut stmt = match self.conn.prepare(
+            "SELECT windows.base, windows.unit, subscriptions.tbl
+               FROM _syncular_windows AS windows
+               JOIN _syncular_subscriptions AS subscriptions
+                 ON subscriptions.id = windows.sub_id
+               ORDER BY windows.base, windows.unit",
+        ) {
+            Ok(stmt) => stmt,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        });
+        match rows {
+            Ok(rows) => rows.filter_map(Result::ok).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn window_unit_by_sub_id(&self, sub_id: &str) -> Option<(String, String)> {
+        self.conn
+            .query_row(
+                "SELECT base, unit FROM _syncular_windows WHERE sub_id = ?1 LIMIT 1",
+                rusqlite::params![sub_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok()
     }
 
     fn insert_window_unit(&self, base_key: &str, unit: &str, sub_id: &str) {
@@ -1156,12 +1915,69 @@ impl SyncClient {
             client_commit_id: uuid::Uuid::new_v4().to_string(),
             ops,
         };
+        self.begin_observation("syncular_mutation")?;
+        let mut batch = ChangeAccumulator::default();
+        for op in &commit.ops {
+            let mut precise = self.record_row_scopes(&mut batch, &op.table, &op.row_id, false);
+            if let Some(values) = &op.values {
+                if let Some(table) = self.schema.table(&op.table) {
+                    for scope in &table.scope_variables {
+                        if let Some(Value::String(value)) = values.get(&scope.column) {
+                            batch.scope(&op.table, format!("{}:{value}", scope.prefix));
+                            precise = true;
+                        }
+                    }
+                }
+            }
+            if !precise {
+                batch.table(&op.table);
+            }
+        }
         self.persist_outbox_insert(&commit);
         let id = commit.client_commit_id.clone();
         self.outbox.push(commit);
         self.overlay_dirty.set(true);
         self.rebuild_overlay();
+        batch.status = true;
+        if let Err(error) = self.finish_observation("syncular_mutation", batch) {
+            self.rollback_observation("syncular_mutation");
+            return Err(error);
+        }
         Ok(id)
+    }
+
+    /// Merge a partial update over the current visible local row, then record
+    /// the ordinary full-row upsert. This keeps patch semantics identical
+    /// across the TypeScript and native cores without weakening the wire's
+    /// full-row invariant.
+    pub fn patch(
+        &mut self,
+        table: &str,
+        row_id: &str,
+        partial: Map<String, Value>,
+        base_version: Option<i64>,
+    ) -> Result<String, String> {
+        let schema_table = self
+            .schema
+            .table(table)
+            .ok_or_else(|| format!("unknown table {table:?}"))?;
+        let partial = normalize_values_casing(schema_table, partial)?;
+        let mut values = self
+            .read_rows(table)?
+            .into_iter()
+            .find(|row| row.row_id == row_id)
+            .map(|row| row.values)
+            .ok_or_else(|| {
+                format!(
+                    "sync.invalid_request: table {table:?} has no local row with primary key {row_id:?} to patch"
+                )
+            })?;
+        values.extend(partial);
+        self.mutate(vec![Mutation::Upsert {
+            table: table.to_owned(),
+            values,
+            base_version,
+        }])
     }
 
     pub fn pending_commit_ids(&self) -> Vec<String> {
@@ -1196,7 +2012,79 @@ impl SyncClient {
         }
         let mut next = self.lease_state.clone().unwrap_or_default();
         next.error_code = Some(code.to_owned());
-        self.lease_state = Some(next);
+        self.set_lease_state(Some(next));
+    }
+
+    fn set_lease_state(&mut self, next: Option<LeaseState>) {
+        if self.lease_state == next {
+            return;
+        }
+        if self.begin_observation("syncular_lease").is_err() {
+            return;
+        }
+        self.lease_state = next;
+        if let Some(lease) = &self.lease_state {
+            if let Ok(json) = serde_json::to_string(lease) {
+                self.set_meta(LEASE_STATE_KEY, &json);
+            }
+        } else {
+            self.delete_meta(LEASE_STATE_KEY);
+        }
+        let batch = ChangeAccumulator {
+            status: true,
+            ..ChangeAccumulator::default()
+        };
+        if self.finish_observation("syncular_lease", batch).is_err() {
+            self.rollback_observation("syncular_lease");
+        }
+    }
+
+    fn set_schema_floor(&mut self, next: Option<SchemaFloor>) {
+        if self.schema_floor == next {
+            return;
+        }
+        if self.begin_observation("syncular_schema_floor").is_err() {
+            return;
+        }
+        self.schema_floor = next;
+        self.stopped = self.schema_floor.is_some();
+        if let Some(floor) = &self.schema_floor {
+            if let Ok(json) = serde_json::to_string(floor) {
+                self.set_meta(SCHEMA_FLOOR_KEY, &json);
+            }
+        } else {
+            self.delete_meta(SCHEMA_FLOOR_KEY);
+        }
+        let batch = ChangeAccumulator {
+            status: true,
+            ..ChangeAccumulator::default()
+        };
+        if self
+            .finish_observation("syncular_schema_floor", batch)
+            .is_err()
+        {
+            self.rollback_observation("syncular_schema_floor");
+        }
+    }
+
+    fn set_upgrading(&mut self, value: bool) {
+        if self.upgrading == value {
+            return;
+        }
+        if self.begin_observation("syncular_upgrading").is_err() {
+            return;
+        }
+        self.upgrading = value;
+        let batch = ChangeAccumulator {
+            status: true,
+            ..ChangeAccumulator::default()
+        };
+        if self
+            .finish_observation("syncular_upgrading", batch)
+            .is_err()
+        {
+            self.rollback_observation("syncular_upgrading");
+        }
     }
 
     pub fn sync_needed(&self) -> bool {
@@ -1464,6 +2352,62 @@ impl SyncClient {
         Ok(out)
     }
 
+    /// Rows, coverage, and local revision from one SQLite read snapshot.
+    pub fn query_snapshot(
+        &mut self,
+        sql: &str,
+        params: &[Value],
+        coverage: &[WindowCoverage],
+    ) -> Result<QuerySnapshot, String> {
+        self.conn
+            .execute_batch("SAVEPOINT syncular_read")
+            .map_err(|error| error.to_string())?;
+        let result = (|| {
+            let revision = self.local_revision();
+            let rows = self.query(sql, params)?;
+            let mut pending = Vec::new();
+            let mut missing = Vec::new();
+            for requested in coverage {
+                let base_key = window_base_key(&requested.base);
+                let state = self.window_state(&requested.base);
+                for unit in BTreeSet::from_iter(requested.units.iter().cloned()) {
+                    let reference = WindowUnitRef {
+                        base_key: base_key.clone(),
+                        unit: unit.clone(),
+                    };
+                    if !state.units.iter().any(|held| held == &unit) {
+                        missing.push(reference);
+                    } else if state.pending.iter().any(|held| held == &unit) {
+                        pending.push(reference);
+                    }
+                }
+            }
+            Ok(QuerySnapshot {
+                revision: revision.to_string(),
+                rows,
+                coverage: CoverageSnapshot {
+                    complete: pending.is_empty() && missing.is_empty(),
+                    pending,
+                    missing,
+                },
+            })
+        })();
+        match result {
+            Ok(snapshot) => {
+                self.conn
+                    .execute_batch("RELEASE syncular_read")
+                    .map_err(|error| error.to_string())?;
+                Ok(snapshot)
+            }
+            Err(error) => {
+                let _ = self
+                    .conn
+                    .execute_batch("ROLLBACK TO syncular_read; RELEASE syncular_read");
+                Err(error)
+            }
+        }
+    }
+
     // -- request building ---------------------------------------------------------
 
     fn build_request(&self, url_capable: bool) -> (Message, RequestMeta) {
@@ -1571,11 +2515,14 @@ impl SyncClient {
         }
         // §8.4: the coalesced sync-needed signal clears when a pull round
         // BEGINS, so a wake-up landing mid-round survives it.
-        self.sync_needed = false;
+        self.set_sync_needed(false, false);
         // §5.9.7 B4: upload pending blobs before pushing the referencing
         // rows, so the server-side existence check (§6.6) passes.
         if self.schema_has_blobs() {
             if let Err(TransportError { code, message }) = self.flush_blob_uploads(transport) {
+                if Self::retryable_transport_code(&code) {
+                    self.schedule_background_retry();
+                }
                 return SyncOutcome::Failed {
                     error_code: code,
                     message,
@@ -1598,6 +2545,9 @@ impl SyncClient {
                 // §7.3.5: a request-level lease code stops-and-surfaces —
                 // record it in leaseState (no local-data purge, §7.3.4).
                 self.record_lease_error(&code);
+                if Self::retryable_transport_code(&code) {
+                    self.schedule_background_retry();
+                }
                 return SyncOutcome::Failed {
                     error_code: code,
                     message,
@@ -1622,10 +2572,19 @@ impl SyncClient {
             };
         }
         let outcome = self.process_response(transport, response, &meta);
+        match &outcome {
+            SyncOutcome::Ok(_) => self.reset_background_retry(),
+            SyncOutcome::Failed { error_code, .. }
+                if Self::retryable_transport_code(error_code) =>
+            {
+                self.schedule_background_retry();
+            }
+            SyncOutcome::Failed { .. } => {}
+        }
         if meta.deferred_commits > 0 {
             // §6.1 splitBatch: commits past the operation cap wait for the
             // next round — keep the host's sync signal raised until then.
-            self.sync_needed = true;
+            self.set_sync_needed(true, true);
         }
         outcome
     }
@@ -1705,8 +2664,7 @@ impl SyncClient {
                         required_schema_version: Some(required),
                         latest_schema_version,
                     };
-                    self.schema_floor = Some(floor.clone());
-                    self.stopped = true;
+                    self.set_schema_floor(Some(floor.clone()));
                     report.schema_floor = Some(floor);
                     return SyncOutcome::Ok(report);
                 }
@@ -1781,11 +2739,11 @@ impl SyncClient {
                 } => {
                     // §7.3.5: persist the opaque lease; a fresh lease clears
                     // any prior lease error (the outage/revocation is over).
-                    self.lease_state = Some(LeaseState {
+                    self.set_lease_state(Some(LeaseState {
                         lease_id: Some(lease_id),
                         expires_at_ms: Some(expires_at_ms),
                         error_code: None,
-                    });
+                    }));
                 }
                 Frame::Error { code, message, .. } => {
                     // §1.6: the whole request failed; already-completed
@@ -1806,14 +2764,16 @@ impl SyncClient {
 
         // §7.1: reconciliation is outbox replay on top — whenever server
         // data has been applied, including a round that aborted mid-way.
-        // Both the rebuild and the refcount pass derive from base + outbox
-        // state, so a round that changed neither skips them.
         if self.overlay_dirty.get() {
             self.rebuild_overlay();
-            // §5.9.7 B1: refcounts follow live rows after every apply (benign
-            // — zero-ref bodies are retained as LRU entries, not deleted here).
-            self.reconcile_blob_refcounts(false);
         }
+        // §5.9.7 B1: refcounts follow the final visible rows at every response
+        // boundary. Push-result handling can rebuild the overlay (and clear
+        // `overlay_dirty`) before this point, so gating reconciliation on that
+        // flag can leave a newly referenced body at refcount zero and make it
+        // eligible for LRU eviction. The TypeScript core has the same
+        // unconditional response-boundary reconciliation.
+        self.reconcile_blob_refcounts(false);
 
         if let Some((error_code, message)) = failure {
             return SyncOutcome::Failed {
@@ -1828,7 +2788,7 @@ impl SyncClient {
         // §7.4.5: the reset is over once the first post-reset pull round
         // leaves no subscription mid-bootstrap — the tables are rebuilt.
         if self.upgrading && report.bootstrapping.is_empty() {
-            self.upgrading = false;
+            self.set_upgrading(false);
         }
         SyncOutcome::Ok(report)
     }
@@ -1849,6 +2809,11 @@ impl SyncClient {
         else {
             return;
         };
+        if self.begin_observation("syncular_push_result").is_err() {
+            return;
+        }
+        let mut batch = ChangeAccumulator::default();
+        let operations = self.outbox[index].ops.clone();
         // Every non-retryable outcome below removes the commit from the
         // outbox, so the optimistic overlay must be rebuilt.
         self.overlay_dirty.set(true);
@@ -1859,6 +2824,7 @@ impl SyncClient {
                 report.applied.push(client_commit_id.to_owned());
                 self.outbox.remove(index);
                 self.persist_outbox_delete(client_commit_id);
+                batch.status = true;
             }
             PushStatus::Rejected => {
                 let terminating = results
@@ -1906,10 +2872,12 @@ impl SyncClient {
                             server_version: *server_version,
                             server_row: server_row_json,
                         });
+                        batch.conflicts = true;
                         report.conflicts += 1;
                         report.rejected.push(client_commit_id.to_owned());
                         self.outbox.remove(index);
                         self.persist_outbox_delete(client_commit_id);
+                        batch.status = true;
                     }
                     Some(OpResult::Error {
                         op_index,
@@ -1928,18 +2896,35 @@ impl SyncClient {
                                 code: code.clone(),
                                 retryable: *retryable,
                             });
+                            batch.rejections = true;
                             report.rejected.push(client_commit_id.to_owned());
                             self.outbox.remove(index);
                             self.persist_outbox_delete(client_commit_id);
+                            batch.status = true;
                         }
                     }
                     _ => {
                         report.rejected.push(client_commit_id.to_owned());
                         self.outbox.remove(index);
                         self.persist_outbox_delete(client_commit_id);
+                        batch.status = true;
                     }
                 }
             }
+        }
+        if batch.status {
+            for operation in &operations {
+                if !self.record_row_scopes(&mut batch, &operation.table, &operation.row_id, false) {
+                    batch.table(&operation.table);
+                }
+            }
+            self.rebuild_overlay_if_dirty();
+        }
+        if self
+            .finish_observation("syncular_push_result", batch)
+            .is_err()
+        {
+            self.rollback_observation("syncular_push_result");
         }
     }
 
@@ -1964,15 +2949,20 @@ impl SyncClient {
         };
         match status {
             SubStatus::Revoked => {
+                self.begin_observation("syncular_revocation")
+                    .map_err(|message| SectionError::Abort("storage.failed".to_owned(), message))?;
+                let mut batch = ChangeAccumulator::default();
+                let registered = self.window_unit_by_sub_id(id);
                 // §3.3: stop pulling, purge exactly the last effective grant.
                 let (table, effective) = {
                     let sub = &self.subs[sub_index];
                     (sub.table.clone(), sub.effective.clone().unwrap_or_default())
                 };
                 let purged = self.purge_scope_rows(&table, &effective);
-                let sub = &mut self.subs[sub_index];
                 match purged {
                     Ok(()) => {
+                        self.record_scope_map(&mut batch, &table, &effective);
+                        let sub = &mut self.subs[sub_index];
                         sub.state = SubState::Revoked;
                         sub.reason_code = Some(if reason_code.is_empty() {
                             "sync.scope_revoked".to_owned()
@@ -1983,7 +2973,11 @@ impl SyncClient {
                         let doomed_effective = effective;
                         let sub_table = table;
                         self.persist_sub(&self.subs[sub_index].clone());
+                        let outbox_before = self.outbox.len();
                         self.drop_doomed_outbox(&sub_table, &doomed_effective);
+                        if self.outbox.len() != outbox_before {
+                            batch.status = true;
+                        }
                         // §5.9.7 B2: revocation deletes now-unauthorized blob
                         // bodies (evicted ≠ revoked).
                         self.reconcile_blob_refcounts(true);
@@ -1991,15 +2985,26 @@ impl SyncClient {
                     Err(()) => {
                         // §3.3 fail closed: no local mapping — never clear by
                         // approximation; fatal configuration error.
+                        let sub = &mut self.subs[sub_index];
                         sub.state = SubState::Failed;
                         sub.reason_code = Some("sync.scope_revoked".to_owned());
                         report.failed.push(id.to_owned());
                         self.persist_sub(&self.subs[sub_index].clone());
                     }
                 }
+                if let Some((base_key, unit)) = registered {
+                    batch.window(&base_key, &self.subs[sub_index].table, &unit);
+                }
+                self.rebuild_overlay_if_dirty();
+                self.finish_observation("syncular_revocation", batch)
+                    .map_err(|message| SectionError::Abort("storage.failed".to_owned(), message))?;
                 Ok(())
             }
             SubStatus::Reset => {
+                self.begin_observation("syncular_reset")
+                    .map_err(|message| SectionError::Abort("storage.failed".to_owned(), message))?;
+                let mut batch = ChangeAccumulator::default();
+                let registered = self.window_unit_by_sub_id(id);
                 // §4.6: discard cursor + bootstrap state, keep local rows —
                 // reset is a staleness signal, not a purge signal.
                 let sub = &mut self.subs[sub_index];
@@ -2007,6 +3012,11 @@ impl SyncClient {
                 sub.bootstrap_state = None;
                 report.resets.push(id.to_owned());
                 self.persist_sub(&self.subs[sub_index].clone());
+                if let Some((base_key, unit)) = registered {
+                    batch.window(&base_key, &self.subs[sub_index].table, &unit);
+                }
+                self.finish_observation("syncular_reset", batch)
+                    .map_err(|message| SectionError::Abort("storage.failed".to_owned(), message))?;
                 Ok(())
             }
             SubStatus::Active => {
@@ -2016,14 +3026,19 @@ impl SyncClient {
                     .find(|(fid, _)| fid == id)
                     .map(|(_, f)| *f)
                     .unwrap_or(false);
+                let was_pending = self.subs[sub_index].cursor < 0
+                    || self.subs[sub_index].bootstrap_state.is_some();
+                let registered = self.window_unit_by_sub_id(id);
                 // §3.3: each active echo replaces the persisted copy.
                 self.subs[sub_index].effective = Some(effective_scopes);
-                self.exec("SAVEPOINT syncular_section");
-                let outcome =
-                    self.apply_section_body(transport, sub_index, body, fresh, meta, report);
+                self.begin_observation("syncular_section")
+                    .map_err(|message| SectionError::Abort("storage.failed".to_owned(), message))?;
+                let mut batch = ChangeAccumulator::default();
+                let outcome = self.apply_section_body(
+                    transport, sub_index, body, fresh, meta, report, &mut batch,
+                );
                 match outcome {
                     Ok(()) => {
-                        self.exec("RELEASE syncular_section");
                         let sub = &mut self.subs[sub_index];
                         // §1.4: durable cursor/resume state persists only at
                         // SUB_END.
@@ -2033,26 +3048,48 @@ impl SyncClient {
                         if sub.bootstrap_state.is_some() {
                             report.bootstrapping.push(id.to_owned());
                         }
+                        let completed =
+                            was_pending && sub.cursor >= 0 && sub.bootstrap_state.is_none();
                         self.persist_sub(&self.subs[sub_index].clone());
+                        if completed {
+                            if let Some((base_key, unit)) = registered.clone() {
+                                batch.window(&base_key, &self.subs[sub_index].table, &unit);
+                            }
+                        }
+                        self.rebuild_overlay_if_dirty();
+                        self.finish_observation("syncular_section", batch)
+                            .map_err(|message| {
+                                SectionError::Abort("storage.failed".to_owned(), message)
+                            })?;
                         Ok(())
                     }
                     Err(SectionError::FailClosed) => {
                         // §5.6: subscription-local; the rest of the response
                         // still applies. SUB_END values are NOT persisted.
-                        self.exec("ROLLBACK TO syncular_section");
-                        self.exec("RELEASE syncular_section");
+                        self.rollback_observation("syncular_section");
+                        self.begin_observation("syncular_section_failure")
+                            .map_err(|message| {
+                                SectionError::Abort("storage.failed".to_owned(), message)
+                            })?;
+                        let mut failure_batch = ChangeAccumulator::default();
                         let sub = &mut self.subs[sub_index];
                         sub.state = SubState::Failed;
                         sub.reason_code = Some("sync.scope_revoked".to_owned());
                         report.failed.push(id.to_owned());
                         self.persist_sub(&self.subs[sub_index].clone());
+                        if let Some((base_key, unit)) = registered {
+                            failure_batch.window(&base_key, &self.subs[sub_index].table, &unit);
+                        }
+                        self.finish_observation("syncular_section_failure", failure_batch)
+                            .map_err(|message| {
+                                SectionError::Abort("storage.failed".to_owned(), message)
+                            })?;
                         Ok(())
                     }
                     Err(SectionError::Abort(code, message)) => {
                         // §1.4 rule 5: roll back the open subscription; do
                         // not persist its SUB_END values.
-                        self.exec("ROLLBACK TO syncular_section");
-                        self.exec("RELEASE syncular_section");
+                        self.rollback_observation("syncular_section");
                         Err(SectionError::Abort(code, message))
                     }
                 }
@@ -2060,6 +3097,10 @@ impl SyncClient {
         }
     }
 
+    // The section context and its transaction-owned change accumulator are
+    // deliberately explicit here: folding either into shared mutable state
+    // would weaken the atomic observation boundary.
+    #[allow(clippy::too_many_arguments)]
     fn apply_section_body(
         &mut self,
         transport: &mut dyn Transport,
@@ -2068,6 +3109,7 @@ impl SyncClient {
         fresh: bool,
         meta: &RequestMeta,
         report: &mut SyncReport,
+        batch: &mut ChangeAccumulator,
     ) -> Result<(), SectionError> {
         let mut saw_segment = false;
         for frame in body {
@@ -2075,6 +3117,7 @@ impl SyncClient {
                 Frame::Commit {
                     tables, changes, ..
                 } => {
+                    self.record_commit_changes(batch, &tables, &changes);
                     self.apply_commit_changes(&tables, &changes)
                         .map_err(|(c, m)| SectionError::Abort(c, m))?;
                     report.commits_applied += 1;
@@ -2084,7 +3127,13 @@ impl SyncClient {
                         .map_err(|e| SectionError::Abort(e.code.as_str().to_owned(), e.detail))?;
                     let first = !saw_segment;
                     saw_segment = true;
+                    let effective = self.subs[sub_index].effective.clone().unwrap_or_default();
+                    let cleared =
+                        fresh && first && self.scoped_rows_exist(&segment.table, &effective);
                     let applied = self.apply_segment(sub_index, &segment, fresh && first)?;
+                    if applied > 0 || cleared {
+                        batch.table(&segment.table);
+                    }
                     report.segment_rows_applied += applied;
                 }
                 Frame::SegmentRef {
@@ -2176,6 +3225,10 @@ impl SyncClient {
                         }
                         let first = !saw_segment;
                         saw_segment = true;
+                        let sub_table = self.subs[sub_index].table.clone();
+                        let effective = self.subs[sub_index].effective.clone().unwrap_or_default();
+                        let cleared =
+                            fresh && first && self.scoped_rows_exist(&sub_table, &effective);
                         let applied = self.apply_sqlite_segment(
                             sub_index,
                             &bytes,
@@ -2184,6 +3237,9 @@ impl SyncClient {
                             as_of_commit_seq,
                             &scope_digest,
                         )?;
+                        if applied > 0 || cleared {
+                            batch.table(&sub_table);
+                        }
                         report.segment_rows_applied += applied;
                     } else {
                         let segment = decode_rows_segment(&bytes).map_err(|e| {
@@ -2191,7 +3247,13 @@ impl SyncClient {
                         })?;
                         let first = row_cursor.is_none();
                         saw_segment = true;
+                        let effective = self.subs[sub_index].effective.clone().unwrap_or_default();
+                        let cleared =
+                            fresh && first && self.scoped_rows_exist(&segment.table, &effective);
                         let applied = self.apply_segment(sub_index, &segment, fresh && first)?;
+                        if applied > 0 || cleared {
+                            batch.table(&segment.table);
+                        }
                         report.segment_rows_applied += applied;
                     }
                 }
@@ -3199,7 +4261,7 @@ impl SyncClient {
             Ok(ControlMessage::Hello { requires_sync, .. }) => {
                 if requires_sync {
                     // §8.1: pull before trusting the socket for continuity.
-                    self.sync_needed = true;
+                    self.set_sync_needed(true, true);
                 }
             }
             Ok(ControlMessage::Presence {
@@ -3215,7 +4277,7 @@ impl SyncClient {
             }
             Ok(ControlMessage::Wake { .. }) => {
                 // §8.3: any wake-up means "run a pull soon", never data.
-                self.sync_needed = true;
+                self.set_sync_needed(true, true);
             }
             _ => {}
         }
@@ -3230,7 +4292,7 @@ impl SyncClient {
         let message = match decode_message(bytes) {
             Ok(m) if m.msg_kind == MsgKind::Response => m,
             _ => {
-                self.sync_needed = true;
+                self.set_sync_needed(true, true);
                 return;
             }
         };
@@ -3286,14 +4348,21 @@ impl SyncClient {
                 any_covered = true;
                 continue;
             }
+            let previous_effective = self.subs[sub_index].effective.clone();
+            let previous_cursor = self.subs[sub_index].cursor;
+            if self.begin_observation("syncular_delta").is_err() {
+                dropped = true;
+                continue;
+            }
             self.subs[sub_index].effective = Some(effective_scopes);
-            self.exec("SAVEPOINT syncular_delta");
+            let mut batch = ChangeAccumulator::default();
             let mut failed = false;
             for inner in body {
                 if let Frame::Commit {
                     tables, changes, ..
                 } = inner
                 {
+                    self.record_commit_changes(&mut batch, &tables, &changes);
                     if self.apply_commit_changes(&tables, &changes).is_err() {
                         failed = true;
                         break;
@@ -3301,26 +4370,37 @@ impl SyncClient {
                 }
             }
             if failed {
-                self.exec("ROLLBACK TO syncular_delta");
-                self.exec("RELEASE syncular_delta");
+                self.rollback_observation("syncular_delta");
+                self.subs[sub_index].effective = previous_effective;
+                self.subs[sub_index].cursor = previous_cursor;
+                self.overlay_dirty.set(true);
+                self.rebuild_overlay();
                 dropped = true;
                 continue;
             }
-            self.exec("RELEASE syncular_delta");
             let sub = &mut self.subs[sub_index];
             sub.cursor = next_cursor;
             self.persist_sub(&self.subs[sub_index].clone());
+            self.rebuild_overlay_if_dirty();
+            if self.finish_observation("syncular_delta", batch).is_err() {
+                self.rollback_observation("syncular_delta");
+                self.subs[sub_index].effective = previous_effective;
+                self.subs[sub_index].cursor = previous_cursor;
+                self.overlay_dirty.set(true);
+                self.rebuild_overlay();
+                dropped = true;
+                continue;
+            }
             applied_cursor = Some(applied_cursor.map_or(next_cursor, |c| c.max(next_cursor)));
         }
         if let Some(cursor) = applied_cursor {
-            self.rebuild_overlay();
             self.reconcile_blob_refcounts(false);
             // §8.2 ack point: the highest applied SUB_END.nextCursor.
             let ack = format!("{{\"type\":\"ack\",\"cursor\":{cursor}}}");
             let _ = transport.realtime_send(&ack);
         } else if !any_covered || dropped {
             // §8.2: a delta not applied at all is treated as a wake-up.
-            self.sync_needed = true;
+            self.set_sync_needed(true, true);
         }
     }
 

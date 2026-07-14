@@ -9,7 +9,7 @@
  *
  *   1. the list renders the rows the native `query` returns;
  *   2. typing + Add calls `useMutation.mutate` → the native `command('mutate')`;
- *   3. the resulting `invalidate` event re-runs `useRawSql` and the new row
+ *   3. the resulting revisioned `change` event re-runs `useRawSql` and the new row
  *      appears (the optimistic-write round trip, hooks end-to-end).
  *
  * The NativeModule double here is STATEFUL (a tiny todo store) so `query`
@@ -48,8 +48,8 @@ interface TodoRow {
 
 /**
  * A stateful NativeModule double backed by a todo store — `mutate` upserts /
- * deletes and fires an `invalidate`, `query` returns the current rows. This is
- * the native core's observable behavior (optimistic local write → invalidate →
+ * deletes and fires a `change`, `querySnapshot` returns the current rows. This is
+ * the native core's observable behavior (optimistic local write → change →
  * re-read), the substrate the hooks are meant to drive.
  */
 function makeStatefulNative(): {
@@ -58,8 +58,30 @@ function makeStatefulNative(): {
 } {
   const store = new Map<string, TodoRow>();
   const handlers = new Set<(payload: SyncularEvent) => void>();
-  const emitInvalidate = () => {
-    for (const h of handlers) h({ type: 'invalidate', tables: ['todos'] });
+  let revision = 0;
+  const rows = () =>
+    [...store.values()].sort(
+      (a, b) => a.position - b.position || a.id.localeCompare(b.id),
+    );
+  const emitChange = () => {
+    revision += 1;
+    for (const handler of handlers) {
+      handler({
+        type: 'change',
+        batch: {
+          revision: revision.toString(),
+          tables: [{ table: 'todos' }],
+          windows: [],
+          status: {
+            outbox: 1,
+            upgrading: false,
+            syncNeeded: false,
+          },
+          conflictsChanged: false,
+          rejectionsChanged: false,
+        },
+      });
+    }
   };
 
   const nativeModule: SyncularNativeModule = {
@@ -80,10 +102,22 @@ function makeStatefulNative(): {
             if (m.op === 'upsert' && m.values) store.set(m.values.id, m.values);
             else if (m.op === 'delete' && m.rowId) store.delete(m.rowId);
           }
-          // The native core fires the choke-point invalidation after apply.
-          queueMicrotask(emitInvalidate);
+          // The native core publishes one exact batch after the local commit.
+          queueMicrotask(emitChange);
           return JSON.stringify({ result: { clientCommitId: 'c-1' } });
         }
+        case 'querySnapshot':
+          return JSON.stringify({
+            result: {
+              revision: revision.toString(),
+              rows: rows(),
+              coverage: { complete: true, pending: [], missing: [] },
+            },
+          });
+        case 'statusSnapshot':
+          return JSON.stringify({
+            result: { outbox: 0, upgrading: false, syncNeeded: false },
+          });
         case 'pendingCommitIds':
           return JSON.stringify({ result: { ids: [] } });
         case 'upgrading':
@@ -99,10 +133,7 @@ function makeStatefulNative(): {
       }
     },
     query: async () => {
-      const rows = [...store.values()].sort(
-        (a, b) => a.position - b.position || a.id.localeCompare(b.id),
-      );
-      return JSON.stringify({ result: { rows } });
+      return JSON.stringify({ result: { rows: rows() } });
     },
     close: async () => {},
     startEvents: () => {},
@@ -152,7 +183,7 @@ describe('App over the native client (integration)', () => {
       fireEvent.click(addButton);
     });
 
-    // The invalidate re-ran useRawSql; the optimistic row is on screen.
+    // The exact change re-ran useRawSql; the optimistic row is on screen.
     await waitFor(() => expect(screen.getByText('buy milk')).toBeDefined());
   });
 

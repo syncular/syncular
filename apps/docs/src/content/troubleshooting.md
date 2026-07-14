@@ -62,25 +62,20 @@ Two fixes, both worth doing:
 
 ## Data is in the local database, the UI never updates
 
-Live queries in `@syncular/react` schedule their re-runs on
-`requestAnimationFrame`, and browsers suspend rAF while
-`document.visibilityState === 'hidden'` — background tabs, occluded
-webviews, headless embeds. Current releases fall back to a microtask while
-the document is hidden (plus a `visibilitychange` re-dispatch), so scheduled
-re-runs keep firing everywhere. If you see this symptom, upgrade
-`@syncular/react` to the latest release; if it persists on the latest,
-that's a bug — please report it.
+Reactive queries consume core-originated revisioned change batches and
+schedule store reads with microtasks; correctness does not depend on animation
+frames or document visibility. If a current client has committed local rows
+but an observed generated query does not advance revision, capture the change
+batch and query descriptor and report it as a parity/routing bug.
 
-## A list switch briefly reports `isComplete(unit) === false`
+## A list switch is briefly `loading` or `partial`
 
-That is the completeness oracle being honest, not a bug. Registration is
-not completeness (§4.8): between `setWindow` and the unit's bootstrap
-landing, the unit is **pending** — its local replica may be empty or
-partial — and `useWindow.isComplete` says so. Render a loading state for a
-pending unit instead of an empty list; the verdict flips to `true` on the
-invalidation that accompanies bootstrap completion, even for a unit with
-zero rows. `useWindow` exposes the `pending` subset directly if you want to
-badge it. See [Windowed sync](/concepts-windowing/).
+That is the completeness oracle being honest. Registration is not
+completeness (§4.8): a newly claimed unit is pending until bootstrap finishes.
+A generated `useQuery` reads rows and that verdict atomically, so render from
+its `phase`; only `phase === 'ready' && rows.length === 0` is a truthful empty
+list. Zero-row bootstrap completion advances the same snapshot to `ready`.
+See [Windowed sync](/concepts-windowing/).
 
 ## `sync.invalid_request` naming an `_sync_*` column
 

@@ -4,6 +4,7 @@
   "output": {
     "ir": "./syncular.ir.json",
     "module": "./src/syncular.generated.ts",
+    "queryIr": "./syncular.queries.ir.json",
     "queries": "./src/syncular.queries.ts"
   },
   "schemaVersions": [{ "version": 1, "through": "0001_initial" }],

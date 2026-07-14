@@ -48,6 +48,7 @@ import {
   type QueryDb,
   type QueryNamingOptions,
   type QueryParam,
+  type QueryReactiveMetadata,
   toPositionalSql,
   validateOverrideName,
 } from './query';
@@ -76,6 +77,22 @@ export interface SyqlLimit {
   readonly default?: number;
 }
 
+export interface SyqlDepends {
+  readonly table: string;
+  readonly variable: string;
+  readonly params: readonly string[];
+}
+
+export interface SyqlWindow {
+  readonly table: string;
+  readonly variable: string;
+  readonly units: readonly string[];
+  readonly fixedScopes: readonly {
+    readonly variable: string;
+    readonly param: string;
+  }[];
+}
+
 export interface SyqlFragmentDecl {
   readonly name: string;
   readonly params: readonly SyqlParamDecl[];
@@ -93,6 +110,11 @@ export interface SyqlQueryDecl {
   /** §7 opt-in: lower to 2^N enumerated statements (perfect index use)
    * instead of one neutralized statement. API-invisible. */
   readonly variants?: boolean;
+  /** Checked escape hatches for SQL shapes the conservative analyzer cannot
+   * prove. They live with the query, never in React application code. */
+  readonly depends?: readonly SyqlDepends[];
+  readonly windows?: readonly SyqlWindow[];
+  readonly keyBy?: readonly string[];
   /** The SQL-shaped body (may contain @fragment refs and if-guards). */
   readonly body: string;
   /** Source offset of the `query` keyword (editor tooling). */
@@ -296,16 +318,77 @@ function parseSignature(cur: Cursor, owner: string): SyqlParamDecl[] {
 function parseKnobs(
   cur: Cursor,
   owner: string,
-): { orderBy?: SyqlOrderBy; limit?: SyqlLimit; variants?: boolean } {
+): {
+  orderBy?: SyqlOrderBy;
+  limit?: SyqlLimit;
+  variants?: boolean;
+  depends?: readonly SyqlDepends[];
+  windows?: readonly SyqlWindow[];
+  keyBy?: readonly string[];
+} {
   let orderBy: SyqlOrderBy | undefined;
   let limit: SyqlLimit | undefined;
   let variants: boolean | undefined;
+  const depends: SyqlDepends[] = [];
+  const windows: SyqlWindow[] = [];
+  let keyBy: string[] | undefined;
+  const paramList = (label: string): string[] => {
+    const out = [cur.word(`${owner}: ${label} param`)];
+    while (cur.peekChar() === '|') {
+      cur.expect('|');
+      out.push(cur.word(`${owner}: ${label} param`));
+    }
+    return out;
+  };
   for (;;) {
     const word = cur.peekWord();
     if (word === 'variants') {
       if (variants === true) cur.fail(`${owner}: duplicate variants knob`);
       cur.word('variants');
       variants = true;
+    } else if (word === 'depends') {
+      cur.word('depends');
+      const table = cur.word(`${owner}: dependency table`);
+      const on = cur.word(`${owner}: dependency \`on\``);
+      if (on !== 'on')
+        cur.fail(
+          `${owner}: depends syntax is \`depends <table> on <scope> = <param>\``,
+        );
+      const variable = cur.word(`${owner}: dependency scope variable`);
+      cur.expect('=');
+      depends.push({ table, variable, params: paramList('dependency') });
+    } else if (word === 'window') {
+      cur.word('window');
+      const table = cur.word(`${owner}: window table`);
+      const by = cur.word(`${owner}: window \`by\``);
+      if (by !== 'by')
+        cur.fail(
+          `${owner}: window syntax is \`window <table> by <scope> = <param>\``,
+        );
+      const variable = cur.word(`${owner}: window scope variable`);
+      cur.expect('=');
+      const units = paramList('window unit');
+      const fixedScopes: Array<{ variable: string; param: string }> = [];
+      if (cur.peekWord() === 'fixed') {
+        cur.word('fixed');
+        for (;;) {
+          const fixedVariable = cur.word(`${owner}: fixed scope variable`);
+          cur.expect('=');
+          const param = cur.word(`${owner}: fixed scope param`);
+          fixedScopes.push({ variable: fixedVariable, param });
+          if (cur.peekChar() !== ',') break;
+          cur.expect(',');
+        }
+      }
+      windows.push({ table, variable, units, fixedScopes });
+    } else if (word === 'key') {
+      if (keyBy !== undefined)
+        cur.fail(`${owner}: duplicate key by declaration`);
+      cur.word('key');
+      const by = cur.word(`${owner}: key \`by\``);
+      if (by !== 'by')
+        cur.fail(`${owner}: key syntax is \`key by <result-column>\``);
+      keyBy = paramList('key column');
     } else if (word === 'orderBy') {
       if (orderBy !== undefined) cur.fail(`${owner}: duplicate orderBy knob`);
       cur.word('orderBy');
@@ -375,6 +458,9 @@ function parseKnobs(
         ...(orderBy !== undefined ? { orderBy } : {}),
         ...(limit !== undefined ? { limit } : {}),
         ...(variants !== undefined ? { variants } : {}),
+        ...(depends.length > 0 ? { depends } : {}),
+        ...(windows.length > 0 ? { windows } : {}),
+        ...(keyBy !== undefined ? { keyBy } : {}),
       };
     }
   }
@@ -876,6 +962,216 @@ export function lowerSyqlBody(
 // Analysis (parse → lower → the shared SQLite-check pipeline)
 // ---------------------------------------------------------------------------
 
+function checkedReactiveMetadata(
+  decl: SyqlQueryDecl,
+  base: AnalyzedQuery,
+  params: readonly QueryParam[],
+  ir: IrDocument,
+  location: string,
+): QueryReactiveMetadata {
+  if (
+    decl.depends === undefined &&
+    decl.windows === undefined &&
+    decl.keyBy === undefined
+  ) {
+    return base.reactive;
+  }
+  const paramByName = new Map(params.map((param) => [param.name, param]));
+  const explicitScopes = new Map<
+    string,
+    Map<string, { pattern: string; params: Set<string> }>
+  >();
+  const explicitTables = new Set<string>();
+
+  const tableAndScope = (tableName: string, variable: string) => {
+    if (!base.tables.includes(tableName)) {
+      throw new TypegenError(
+        location,
+        `reactive declaration names table ${JSON.stringify(tableName)}, but the query does not read it`,
+      );
+    }
+    const table = ir.tables.find((candidate) => candidate.name === tableName);
+    if (table === undefined) {
+      throw new TypegenError(
+        location,
+        `unknown reactive table ${JSON.stringify(tableName)}`,
+      );
+    }
+    const scope = table.scopes.find(
+      (candidate) => candidate.variable === variable,
+    );
+    if (scope === undefined) {
+      throw new TypegenError(
+        location,
+        `table ${tableName} has no scope variable ${JSON.stringify(variable)}`,
+      );
+    }
+    return { table, scope };
+  };
+  const checkedParam = (
+    tableName: string,
+    variable: string,
+    name: string,
+  ): QueryParam => {
+    const param = paramByName.get(name);
+    if (param === undefined) {
+      throw new TypegenError(
+        location,
+        `reactive declaration references undeclared param :${name}`,
+      );
+    }
+    if (param.optional === true) {
+      throw new TypegenError(
+        location,
+        `reactive scope ${tableName}.${variable} cannot use optional param :${name}; an absent value is not a window unit`,
+      );
+    }
+    const { table, scope } = tableAndScope(tableName, variable);
+    const column = table.columns.find(
+      (candidate) => candidate.name === scope.column,
+    );
+    if (column === undefined || column.type !== param.type) {
+      throw new TypegenError(
+        location,
+        `reactive param :${name} has type ${param.type}, incompatible with ${tableName}.${scope.column} (${column?.type ?? 'unknown'})`,
+      );
+    }
+    return param;
+  };
+  const addScope = (
+    table: string,
+    variable: string,
+    names: readonly string[],
+  ) => {
+    const { scope } = tableAndScope(table, variable);
+    explicitTables.add(table);
+    let byVariable = explicitScopes.get(table);
+    if (byVariable === undefined) {
+      byVariable = new Map();
+      explicitScopes.set(table, byVariable);
+    }
+    let binding = byVariable.get(variable);
+    if (binding === undefined) {
+      binding = { pattern: scope.pattern, params: new Set() };
+      byVariable.set(variable, binding);
+    }
+    for (const name of names) {
+      checkedParam(table, variable, name);
+      binding.params.add(name);
+    }
+  };
+
+  for (const dependency of decl.depends ?? []) {
+    addScope(dependency.table, dependency.variable, dependency.params);
+  }
+
+  const coverage: Array<QueryReactiveMetadata['coverage'][number]> = [];
+  const seenWindows = new Set<string>();
+  for (const window of decl.windows ?? []) {
+    const key = `${window.table}\0${window.variable}`;
+    if (seenWindows.has(key)) {
+      throw new TypegenError(
+        location,
+        `duplicate window declaration for ${window.table}.${window.variable}`,
+      );
+    }
+    seenWindows.add(key);
+    const { table } = tableAndScope(window.table, window.variable);
+    addScope(window.table, window.variable, window.units);
+    const fixedByVariable = new Map<string, string>();
+    for (const fixed of window.fixedScopes) {
+      if (fixed.variable === window.variable) {
+        throw new TypegenError(
+          location,
+          `window ${window.table}.${window.variable} repeats its unit scope as fixed`,
+        );
+      }
+      if (fixedByVariable.has(fixed.variable)) {
+        throw new TypegenError(
+          location,
+          `window ${window.table} repeats fixed scope ${fixed.variable}`,
+        );
+      }
+      checkedParam(window.table, fixed.variable, fixed.param);
+      fixedByVariable.set(fixed.variable, fixed.param);
+      addScope(window.table, fixed.variable, [fixed.param]);
+    }
+    const missing = table.scopes
+      .map((scope) => scope.variable)
+      .filter(
+        (variable) =>
+          variable !== window.variable && !fixedByVariable.has(variable),
+      );
+    if (missing.length > 0) {
+      throw new TypegenError(
+        location,
+        `window ${window.table}.${window.variable} must fix the remaining scope variables: ${missing.join(', ')}`,
+      );
+    }
+    coverage.push({
+      table: window.table,
+      variable: window.variable,
+      units: window.units,
+      fixedScopes: table.scopes
+        .filter((scope) => scope.variable !== window.variable)
+        .map((scope) => ({
+          variable: scope.variable,
+          params: [fixedByVariable.get(scope.variable) as string],
+        })),
+    });
+  }
+
+  const dependencies = base.reactive.dependencies.map((dependency) => {
+    if (!explicitTables.has(dependency.table)) return dependency;
+    const scopes = [...(explicitScopes.get(dependency.table)?.entries() ?? [])]
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([variable, binding]) => ({
+        table: dependency.table,
+        variable,
+        pattern: binding.pattern,
+        params: [...binding.params],
+      }));
+    return { table: dependency.table, scopes };
+  });
+
+  let rowKey = base.reactive.rowKey;
+  if (decl.keyBy !== undefined) {
+    const fields = decl.keyBy.map((name) => {
+      const column = base.columns.find(
+        (candidate) => candidate.name === name || candidate.langName === name,
+      );
+      if (column === undefined) {
+        throw new TypegenError(
+          location,
+          `key by column ${JSON.stringify(name)} is not projected by the query`,
+        );
+      }
+      return column.langName;
+    });
+    if (new Set(fields).size !== fields.length) {
+      throw new TypegenError(
+        location,
+        'key by contains a duplicate result column',
+      );
+    }
+    rowKey = fields;
+  }
+
+  return {
+    dependencies,
+    coverage:
+      decl.windows === undefined
+        ? base.reactive.coverage
+        : [
+            ...base.reactive.coverage.filter(
+              (item) => !seenWindows.has(`${item.table}\0${item.variable}`),
+            ),
+            ...coverage,
+          ],
+    ...(rowKey !== undefined ? { rowKey } : {}),
+  };
+}
+
 /** Analyze every query of one `.syql` file into `AnalyzedQuery` units —
  * byte-compatible with the `.sql` frontend's output (§1: nothing below the
  * IR knows the frontend). */
@@ -1000,6 +1296,8 @@ export function analyzeSyqlFile(
     const mode = naming?.naming ?? 'camel';
     const mapCol = (name: string): string =>
       mode === 'preserve' ? name : snakeToCamel(name);
+
+    const reactive = checkedReactiveMetadata(decl, base, params, ir, location);
 
     const orderBy =
       decl.orderBy === undefined
@@ -1158,6 +1456,7 @@ export function analyzeSyqlFile(
       sourceSql: decl.body.trim(),
       sql: exposedSql,
       params,
+      reactive,
       ...(orderBy !== undefined ? { orderBy } : {}),
       ...(decl.limit !== undefined ? { limit: decl.limit } : {}),
       ...(positionalSqlBase !== undefined ? { positionalSqlBase } : {}),

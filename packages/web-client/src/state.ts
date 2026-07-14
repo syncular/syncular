@@ -6,6 +6,10 @@
  */
 import type { ScopeMap } from '@syncular/core';
 import type { ClientDatabase } from './database';
+import type { LocalRevision } from './invalidation';
+
+export const LOCAL_REVISION_KEY = 'localRevision';
+const MAX_U64 = 18_446_744_073_709_551_615n;
 
 export type SubscriptionStatus = 'active' | 'revoked' | 'failed';
 
@@ -123,4 +127,32 @@ export function setMeta(db: ClientDatabase, key: string, value: string): void {
     key,
     value,
   ]);
+}
+
+/** Read the durable client-local observer revision (SPEC §7.5). */
+export function getLocalRevision(db: ClientDatabase): LocalRevision {
+  const raw = getMeta(db, LOCAL_REVISION_KEY);
+  if (raw === undefined) return 0n;
+  if (!/^(0|[1-9][0-9]*)$/.test(raw)) {
+    throw new Error(`invalid persisted local revision ${JSON.stringify(raw)}`);
+  }
+  const revision = BigInt(raw);
+  if (revision > MAX_U64) {
+    throw new Error(`persisted local revision exceeds u64: ${raw}`);
+  }
+  return revision;
+}
+
+/**
+ * Increment the durable revision. The caller MUST own the same transaction as
+ * the observer-visible writes represented by the corresponding change batch.
+ */
+export function bumpLocalRevision(db: ClientDatabase): LocalRevision {
+  const current = getLocalRevision(db);
+  if (current === MAX_U64) {
+    throw new Error('local revision exhausted u64');
+  }
+  const next = current + 1n;
+  setMeta(db, LOCAL_REVISION_KEY, next.toString());
+  return next;
 }

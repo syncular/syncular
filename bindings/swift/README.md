@@ -16,7 +16,6 @@ cargo gate. Its own gate is `./check.sh`.
 import Syncular
 
 let client = try SyncularClient(
-    clientId: "device-1",
     schema: schemaJSON,                 // JSONValue from your generated schema
     config: SyncularConfig(
         baseUrl: "https://your.server/sync",   // engages native transport
@@ -42,12 +41,11 @@ try client.crdtDeleteText(table: "notes", rowId: "n1", column: "doc", index: 0, 
 // Raw escape hatch for any method the conveniences don't cover:
 let result = try client.command(method: "leaseState", params: .object([:]))
 
-// Events (sync-needed / conflict / rejection / presence / schema-floor / lease)
-// arrive on the main queue:
+// Exact changes and explicit scheduling intents arrive on the main queue:
 client.onEvent = { event in
     switch event.type {
-    case "sync-needed": client.syncInBackground()
-    case "conflict":    reloadConflicts()
+    case "sync-intent": client.syncInBackground()
+    case "change":      refreshVisibleState()
     default:            break
     }
 }

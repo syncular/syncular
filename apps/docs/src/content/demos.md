@@ -51,21 +51,20 @@ Details: the [demo README](https://github.com/syncular/syncular/tree/main/apps/d
 
 The hooks counterpart: a single-pane todo app on `@syncular/react` against the
 same server core, with the whole client core in a Web Worker on persistent
-OPFS. It dogfoods the full hook surface: `SyncProvider`, `useQuery`
-(**typed named-query** reads from a generated `.sql` descriptor, read-only,
-exact table invalidation), `useRawSql` (the guarded raw tier), `useMutation`
-(writes through the outbox), `useSyncStatus` (the `outbox N` badge), and
-`useWindow`.
+OPFS. It dogfoods the full hook surface: an async client resource,
+`useQuery` with generated dependencies/window coverage/row identity,
+`useRawSql` as the guarded escape hatch, typed `useMutation` helpers, and
+`useSyncStatus`.
 
 ```sh
 bun run --cwd apps/demo-react dev   # http://localhost:8788 (PORT=… to override)
 ```
 
 Change a todo and the list re-renders instantly; the query re-runs only when
-its `todos` dependency invalidates. The three seed lists (`groceries`, `work`,
-`travel`) are separate scope values, so picking one in the dropdown calls
-`setWindow([list])`: the new list bootstraps, the previous one is evicted, and
-a list that is not fully windowed-in shows a "data may be partial" note
+its exact dependency changes. The three seed lists (`groceries`, `work`,
+`travel`) are separate scope values. Picking one changes query params; its
+generated coverage claims the new list and the atomic result phase prevents a
+pending or zero-row bootstrap from appearing as a false empty state
 ([windowed sync](/concepts-windowing/)). Adding a todo shows the optimistic
 path: it appears immediately, the `outbox` badge ticks up, then drains as the
 sync loop pushes it.

@@ -69,9 +69,9 @@ class _TodoPageState extends State<TodoPage> {
   void initState() {
     super.initState();
     _refresh();
-    // Auto-sync: the core signals sync-needed on local writes and server pushes.
+    // Auto-sync: the core emits an explicit intent for local/network work.
     _client.events.listen((event) {
-      if (event.type == 'sync-needed') _sync();
+      if (event.type == 'sync-intent') _sync();
     });
   }
 

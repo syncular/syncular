@@ -26,7 +26,8 @@
  *   final entry must cover the final migration.
  * - Subscription scope values are literals or whole-value `{param}`
  *   placeholders (partial templates are unsupported).
- * - `output.ir` / `output.module` are the always-emitted TS defaults.
+ * - `output.ir` / `output.module` are the always-emitted TS defaults;
+ *   `output.queryIr` opts into the deterministic analyzed-query document.
  *   `output.swift` / `output.kotlin` / `output.dart` are OPT-IN native
  *   emitters — a bare string is the output path; an object carries
  *   language-appropriate options (Kotlin `package`/`objectName`, Swift
@@ -105,6 +106,9 @@ export interface DartOutput {
 export interface ManifestOutput {
   readonly ir: string;
   readonly module: string;
+  /** Opt-in deterministic QueryIR JSON. This is also the source of the
+   * generated query-descriptor hash, so SQL-only changes rotate cache IDs. */
+  readonly queryIr?: string;
   /** Opt-in TS named-queries output path (a sibling `.ts` file). Undefined →
    * named queries are not generated for TS. */
   readonly queries?: string;
@@ -400,6 +404,7 @@ export function parseManifest(raw: unknown): Manifest {
   }
   let ir = './syncular.ir.json';
   let module = './syncular.generated.ts';
+  let queryIr: string | undefined;
   let queriesOut: string | undefined;
   let swift: SwiftOutput | undefined;
   let kotlin: KotlinOutput | undefined;
@@ -408,12 +413,15 @@ export function parseManifest(raw: unknown): Manifest {
     const output = asObject(obj.output, 'output');
     rejectUnknownKeys(
       output,
-      ['ir', 'module', 'queries', 'swift', 'kotlin', 'dart'],
+      ['ir', 'module', 'queryIr', 'queries', 'swift', 'kotlin', 'dart'],
       'output',
     );
     if (output.ir !== undefined) ir = asString(output.ir, 'output.ir');
     if (output.module !== undefined) {
       module = asString(output.module, 'output.module');
+    }
+    if (output.queryIr !== undefined) {
+      queryIr = asString(output.queryIr, 'output.queryIr');
     }
     if (output.queries !== undefined) {
       queriesOut = asString(output.queries, 'output.queries');
@@ -427,6 +435,7 @@ export function parseManifest(raw: unknown): Manifest {
   const outputSpec: ManifestOutput = {
     ir,
     module,
+    ...(queryIr !== undefined ? { queryIr } : {}),
     ...(queriesOut !== undefined ? { queries: queriesOut } : {}),
     ...(swift !== undefined ? { swift } : {}),
     ...(kotlin !== undefined ? { kotlin } : {}),

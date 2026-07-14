@@ -1,5 +1,5 @@
 {
-  "queryIrVersion": 1,
+  "queryIrVersion": 2,
   "queries": [
     {
       "name": "findDocByOrg",
@@ -20,19 +20,47 @@
           "langName": "id",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "id"
+          }
         },
         {
           "name": "body",
           "langName": "body",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "body"
+          }
         }
       ],
       "tables": [
         "docs"
-      ]
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "docs",
+            "scopes": [
+              {
+                "variable": "org_id",
+                "pattern": "org:{org_id}",
+                "params": [
+                  "orgId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [],
+        "rowKey": [
+          "id"
+        ]
+      }
     },
     {
       "name": "docWithBody",
@@ -53,27 +81,60 @@
           "langName": "docId",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "id"
+          }
         },
         {
           "name": "body",
           "langName": "body",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "body"
+          }
         },
         {
           "name": "task_title",
           "langName": "taskTitle",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "title"
+          }
         }
       ],
       "tables": [
         "docs",
         "tasks"
-      ]
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "docs",
+            "scopes": [
+              {
+                "variable": "org_id",
+                "pattern": "org:{org_id}",
+                "params": [
+                  "orgId"
+                ]
+              }
+            ]
+          },
+          {
+            "table": "tasks",
+            "scopes": []
+          }
+        ],
+        "coverage": []
+      }
     },
     {
       "name": "listProjectTasks",
@@ -94,40 +155,89 @@
           "langName": "id",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
         },
         {
           "name": "title",
           "langName": "title",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "title"
+          }
         },
         {
           "name": "done",
           "langName": "done",
           "type": "boolean",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "done"
+          }
         },
         {
           "name": "priority",
           "langName": "priority",
           "type": "integer",
           "nullable": true,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "priority"
+          }
         },
         {
           "name": "estimate",
           "langName": "estimate",
           "type": "float",
           "nullable": true,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "estimate"
+          }
         }
       ],
       "tables": [
         "tasks"
-      ]
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "tasks",
+            "scopes": [
+              {
+                "variable": "project_id",
+                "pattern": "project:{project_id}",
+                "params": [
+                  "projectId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "tasks",
+            "variable": "project_id",
+            "units": [
+              "projectId"
+            ],
+            "fixedScopes": []
+          }
+        ],
+        "rowKey": [
+          "id"
+        ]
+      }
     },
     {
       "name": "projectDocCount",
@@ -142,7 +252,11 @@
           "langName": "projectId",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "project_id"
+          }
         },
         {
           "name": "doc_count",
@@ -154,7 +268,16 @@
       ],
       "tables": [
         "docs"
-      ]
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "docs",
+            "scopes": []
+          }
+        ],
+        "coverage": []
+      }
     },
     {
       "name": "reportingTasksByPriority",
@@ -175,26 +298,50 @@
           "langName": "id",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
         },
         {
           "name": "title",
           "langName": "title",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "title"
+          }
         },
         {
           "name": "priority",
           "langName": "priority",
           "type": "integer",
           "nullable": true,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "priority"
+          }
         }
       ],
       "tables": [
         "tasks"
-      ]
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "tasks",
+            "scopes": []
+          }
+        ],
+        "coverage": [],
+        "rowKey": [
+          "id"
+        ]
+      }
     },
     {
       "name": "reportOpenTasks",
@@ -215,26 +362,67 @@
           "langName": "id",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
         },
         {
           "name": "title",
           "langName": "title",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "title"
+          }
         },
         {
           "name": "done",
           "langName": "done",
           "type": "boolean",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "done"
+          }
         }
       ],
       "tables": [
         "tasks"
-      ]
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "tasks",
+            "scopes": [
+              {
+                "variable": "project_id",
+                "pattern": "project:{project_id}",
+                "params": [
+                  "projectId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "tasks",
+            "variable": "project_id",
+            "units": [
+              "projectId"
+            ],
+            "fixedScopes": []
+          }
+        ],
+        "rowKey": [
+          "id"
+        ]
+      }
     },
     {
       "name": "reportDocScores",
@@ -255,26 +443,50 @@
           "langName": "id",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "id"
+          }
         },
         {
           "name": "org_id",
           "langName": "orgId",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "org_id"
+          }
         },
         {
           "name": "score",
           "langName": "score",
           "type": "float",
           "nullable": true,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "score"
+          }
         }
       ],
       "tables": [
         "docs"
-      ]
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "docs",
+            "scopes": []
+          }
+        ],
+        "coverage": [],
+        "rowKey": [
+          "id"
+        ]
+      }
     },
     {
       "name": "searchTasks",
@@ -320,40 +532,89 @@
           "langName": "id",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
         },
         {
           "name": "title",
           "langName": "title",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "title"
+          }
         },
         {
           "name": "done",
           "langName": "done",
           "type": "boolean",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "done"
+          }
         },
         {
           "name": "priority",
           "langName": "priority",
           "type": "integer",
           "nullable": true,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "priority"
+          }
         },
         {
           "name": "estimated_at",
           "langName": "estimatedAt",
           "type": "integer",
           "nullable": true,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "estimated_at"
+          }
         }
       ],
       "tables": [
         "tasks"
       ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "tasks",
+            "scopes": [
+              {
+                "variable": "project_id",
+                "pattern": "project:{project_id}",
+                "params": [
+                  "projectId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "tasks",
+            "variable": "project_id",
+            "units": [
+              "projectId"
+            ],
+            "fixedScopes": []
+          }
+        ],
+        "rowKey": [
+          "id"
+        ]
+      },
       "orderBy": {
         "allowed": [
           {
@@ -411,26 +672,67 @@
           "langName": "id",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
         },
         {
           "name": "title",
           "langName": "title",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "title"
+          }
         },
         {
           "name": "estimate",
           "langName": "estimate",
           "type": "float",
           "nullable": true,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "estimate"
+          }
         }
       ],
       "tables": [
         "tasks"
       ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "tasks",
+            "scopes": [
+              {
+                "variable": "project_id",
+                "pattern": "project:{project_id}",
+                "params": [
+                  "projectId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "tasks",
+            "variable": "project_id",
+            "units": [
+              "projectId"
+            ],
+            "fixedScopes": []
+          }
+        ],
+        "rowKey": [
+          "id"
+        ]
+      },
       "variantGroups": [
         {
           "key": "from",
@@ -477,19 +779,39 @@
           "langName": "id",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
         },
         {
           "name": "title",
           "langName": "title",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "title"
+          }
         }
       ],
       "tables": [
         "tasks"
-      ]
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "tasks",
+            "scopes": []
+          }
+        ],
+        "coverage": [],
+        "rowKey": [
+          "id"
+        ]
+      }
     },
     {
       "name": "tasksInProjects",
@@ -515,19 +837,58 @@
           "langName": "id",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
         },
         {
           "name": "title",
           "langName": "title",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "title"
+          }
         }
       ],
       "tables": [
         "tasks"
-      ]
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "tasks",
+            "scopes": [
+              {
+                "variable": "project_id",
+                "pattern": "project:{project_id}",
+                "params": [
+                  "first",
+                  "second"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "tasks",
+            "variable": "project_id",
+            "units": [
+              "first",
+              "second"
+            ],
+            "fixedScopes": []
+          }
+        ],
+        "rowKey": [
+          "id"
+        ]
+      }
     },
     {
       "name": "tasksSince",
@@ -548,19 +909,39 @@
           "langName": "id",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
         },
         {
           "name": "title",
           "langName": "title",
           "type": "string",
           "nullable": false,
-          "fidelity": "exact"
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "title"
+          }
         }
       ],
       "tables": [
         "tasks"
-      ]
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "tasks",
+            "scopes": []
+          }
+        ],
+        "coverage": [],
+        "rowKey": [
+          "id"
+        ]
+      }
     }
   ]
 }

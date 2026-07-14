@@ -58,11 +58,11 @@ hooks:
 
 ```tsx
 // The ONE Tauri line: the webview-side bridge to the native instance.
-const client = await createTauriSyncClient({ clientId: 'example-device', schema });
+const client = await createTauriSyncClient({ schema });
 
 // …then plain @syncular/react — identical to the browser demo:
 <SyncProvider client={client}>
-  <TodoApp />           // useSyncQuery (live read) + useMutation (writes) + useSyncStatus
+  <TodoApp />           // generated useQuery + typed mutations + useSyncStatus
 </SyncProvider>
 ```
 

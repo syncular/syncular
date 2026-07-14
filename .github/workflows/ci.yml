@@ -130,7 +130,7 @@ jobs:
             base="${{ github.event.pull_request.base.sha }}"
           fi
           if git diff --name-only "$base" HEAD 2>/dev/null \
-              | grep -qE '^bindings/tauri/|^\.github/workflows/ci\.yml$'; then
+              | grep -qE '^bindings/tauri/|^packages/(tauri|react|web-client)/|^rust/crates/(client|command)/|^\.github/workflows/ci\.yml$'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -158,6 +158,14 @@ jobs:
         if: steps.changed.outputs.run == 'true'
         with:
           components: rustfmt, clippy
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.changed.outputs.run == 'true'
+
+      - name: Install frontend workspace
+        if: steps.changed.outputs.run == 'true'
+        working-directory: .
+        run: bun install --frozen-lockfile
 
       - uses: Swatinem/rust-cache@v2
         if: steps.changed.outputs.run == 'true'
@@ -187,6 +195,13 @@ jobs:
       - name: cargo test
         if: steps.changed.outputs.run == 'true'
         run: cargo test
+
+      - name: Native core through TypeScript bridge and reactive store
+        if: steps.changed.outputs.run == 'true'
+        working-directory: .
+        run: |
+          cargo build --manifest-path bindings/tauri/Cargo.toml -p syncular-tauri-bridge-harness
+          SYNCULAR_TAURI_NATIVE_TEST=1 bun test packages/tauri/test/native-bridge.test.ts
 
       - name: Example compiles
         if: steps.changed.outputs.run == 'true'

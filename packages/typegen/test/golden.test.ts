@@ -31,6 +31,8 @@ describe('golden fixtures', () => {
     expect(first.irJson).toBe(second.irJson);
     expect(first.module).toBe(second.module);
     expect(first.hash).toBe(second.hash);
+    expect(first.queryIrJson).toBe(second.queryIrJson);
+    expect(first.queryHash).toBe(second.queryHash);
   });
 
   test('module header carries the IR hash', () => {

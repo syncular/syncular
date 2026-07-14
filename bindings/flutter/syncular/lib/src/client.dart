@@ -18,11 +18,11 @@ import 'dart:ffi';
 
 import 'ffi.dart';
 
-/// An event surfaced by the native core's `poll_event` — one of `sync-needed`,
-/// `conflict`, `rejection`, `presence`, `schema-floor`, `lease`. The full
+/// An event surfaced by the native core's `poll_event`: an exact revisioned
+/// `change` batch, explicit `sync-intent`, or ephemeral `presence`. The full
 /// decoded object is preserved in [payload]; [type] is lifted for switching.
 class SyncularEvent {
-  /// The event discriminator (`"sync-needed"`, `"conflict"`, …).
+  /// The event discriminator (`"change"`, `"sync-intent"`, …).
   final String type;
 
   /// The full decoded event object (includes any extra fields like `count`).
@@ -102,7 +102,7 @@ class SyncularConfig {
 }
 
 /// The idiomatic wrapper. Construct with [SyncularClient.create] (a schema +
-/// clientId, which issue the native `create`), then use the typed conveniences
+/// optional clientId, which issue the native `create`), then use the typed conveniences
 /// or the raw [command]. Listen to [events] for client-observable events.
 class SyncularClient {
   final SyncularFfi _ffi;
@@ -121,11 +121,11 @@ class SyncularClient {
   /// isolate's event loop, so listeners can touch UI state directly).
   Stream<SyncularEvent> get events => _eventController.stream;
 
-  /// Create the native core and issue `create` with the given schema/clientId,
+  /// Create the native core and issue `create` with the given schema,
   /// then start the event poll loop.
   ///
-  /// - [clientId]: stable per-device/actor id (reuse across launches so the
-  ///   persisted database matches).
+  /// - [clientId]: optional explicit stable id. When omitted, the core creates
+  ///   and persists one in the database.
   /// - [schema]: the generated schema JSON (from typegen) as a Dart Map.
   /// - [config]: transport + db-path configuration.
   /// - [limits]: optional §4.2 client limits, forwarded to `create`.
@@ -133,7 +133,7 @@ class SyncularClient {
   ///   core); null uses the per-platform default / `SYNCULAR_LIBRARY_PATH`.
   /// - [pollInterval]: how often the non-blocking poll runs (default 40 ms).
   static SyncularClient create({
-    required String clientId,
+    String? clientId,
     required Map<String, Object?> schema,
     SyncularConfig config = const SyncularConfig(),
     Map<String, Object?>? limits,
@@ -149,10 +149,8 @@ class SyncularClient {
       );
     }
     final client = SyncularClient._(ffi, handle, pollInterval);
-    final createParams = <String, Object?>{
-      'clientId': clientId,
-      'schema': schema,
-    };
+    final createParams = <String, Object?>{'schema': schema};
+    if (clientId != null) createParams['clientId'] = clientId;
     if (config.dbPath != null) createParams['dbPath'] = config.dbPath;
     if (limits != null) createParams['limits'] = limits;
     client.command('create', createParams);

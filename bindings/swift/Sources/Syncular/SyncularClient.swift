@@ -17,11 +17,11 @@
 import Foundation
 import CSyncularFFI
 
-/// An event surfaced by the native core's `poll_event` — one of `sync-needed`,
-/// `conflict`, `rejection`, `presence`, `schema-floor`, `lease`. The raw JSON
-/// is preserved for forward-compatibility; `type` is lifted for switching.
+/// An event surfaced by the native core's `poll_event`: exact revisioned
+/// `change` batches, explicit `sync-intent`, or ephemeral `presence`. The raw
+/// JSON is preserved for forward-compatibility; `type` is lifted for switching.
 public struct SyncularEvent: Sendable {
-    /// The event discriminator (`"sync-needed"`, `"conflict"`, …).
+    /// The event discriminator (`"change"`, `"sync-intent"`, …).
     public let type: String
     /// The full decoded event object (includes any extra fields like `count`).
     public let payload: [String: JSONValue]
@@ -91,8 +91,8 @@ public protocol SyncularClientDelegate: AnyObject {
     func syncularClient(_ client: SyncularClient, didReceive event: SyncularEvent)
 }
 
-/// The idiomatic wrapper. Construct with a schema + clientId (which issue the
-/// native `create`), then use the typed conveniences or the raw `command`.
+/// The idiomatic wrapper. Construct with a schema (and optionally an explicit
+/// clientId), then use the typed conveniences or the raw `command`.
 public final class SyncularClient {
     private var handle: OpaquePointer?
     /// Serializes ALL command dispatch (the core is thread-affine).
@@ -117,19 +117,19 @@ public final class SyncularClient {
 
     // MARK: - Construction
 
-    /// Create the native core and issue `create` with the given schema/clientId.
+    /// Create the native core and issue `create` with the given schema.
     /// Starts the background event poll loop. Throws if the core cannot be
     /// constructed or `create` fails.
     ///
     /// - Parameters:
-    ///   - clientId: stable per-device/actor id (reuse across launches so the
-    ///     persisted database matches).
+    ///   - clientId: optional explicit stable id. When nil, the core creates
+    ///     and persists one in the database.
     ///   - schema: the generated schema JSON (from typegen), as a `JSONValue`.
     ///   - config: transport + db path configuration.
     ///   - limits: optional §4.2 client limits, forwarded to `create`.
     ///   - deliveryQueue: where events are delivered (default `.main`).
     public init(
-        clientId: String,
+        clientId: String? = nil,
         schema: JSONValue,
         config: SyncularConfig = SyncularConfig(),
         limits: JSONValue? = nil,
@@ -145,10 +145,8 @@ public final class SyncularClient {
         }
         self.handle = OpaquePointer(created)
 
-        var createParams: [String: JSONValue] = [
-            "clientId": .string(clientId),
-            "schema": schema,
-        ]
+        var createParams: [String: JSONValue] = ["schema": schema]
+        if let clientId { createParams["clientId"] = .string(clientId) }
         if let dbPath = config.dbPath { createParams["dbPath"] = .string(dbPath) }
         if let limits { createParams["limits"] = limits }
         _ = try command(method: "create", params: .object(createParams))

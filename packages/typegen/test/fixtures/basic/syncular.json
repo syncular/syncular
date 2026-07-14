@@ -4,6 +4,7 @@
   "output": {
     "ir": "./syncular.ir.json",
     "module": "./syncular.generated.ts",
+    "queryIr": "./syncular.queries.ir.json",
     "queries": "./syncular.queries.ts",
     "swift": {
       "path": "./Syncular.generated.swift",

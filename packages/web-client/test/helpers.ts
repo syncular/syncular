@@ -13,6 +13,7 @@ import {
   SyncClient,
   type SyncClientConfig,
   type SyncClientLimits,
+  type SyncIntent,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
 import type { RowColumn, ScopeMap } from '@syncular/core';
@@ -194,6 +195,7 @@ export interface TestClient {
   readonly db: BunClientDatabase;
   readonly faults: ClientFaults;
   readonly wakes: Array<'hello' | string>;
+  readonly intents: SyncIntent[];
 }
 
 export interface MakeClientOptions {
@@ -215,6 +217,7 @@ export async function makeClient(
     corruptSegmentDownload: 0,
   };
   const wakes: Array<'hello' | string> = [];
+  const intents: SyncIntent[] = [];
   let segmentCalls = 0;
   const config: SyncClientConfig = {
     database: db,
@@ -269,10 +272,11 @@ export async function makeClient(
     onSyncNeeded: (reason) => {
       wakes.push(reason);
     },
+    onSyncIntent: (intent) => intents.push(intent),
   };
   const client = new SyncClient(config);
   await client.start();
-  return { client, db, faults, wakes };
+  return { client, db, faults, wakes, intents };
 }
 
 /** Readiness wait, never a sleep (test doctrine). */

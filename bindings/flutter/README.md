@@ -24,7 +24,6 @@ Like every binding here, this is its **own isolated build** — its gate is
 import 'package:syncular/syncular.dart';
 
 final client = SyncularClient.create(
-  clientId: 'device-a',                       // stable per-device id
   schema: todoSchema,                          // the generated schema JSON (Map)
   config: SyncularConfig(
     baseUrl: 'http://localhost:8787',          // omit → offline-only lean core
@@ -54,7 +53,7 @@ client.syncUntilIdle();
 
 // Client-observable events → a broadcast Stream.
 client.events.listen((e) {
-  if (e.type == 'sync-needed') client.sync();
+  if (e.type == 'sync-intent') client.sync();
 });
 
 client.pause();   // stop poll + disconnect realtime (e.g. app backgrounded)
@@ -73,8 +72,8 @@ reachable via the raw `command(method, params)`.
 
 ### Event delivery — the honest simple choice
 
-The core is **callback-free**: events (`sync-needed`, `conflict`, `rejection`,
-`presence`, `schema-floor`, `lease`) are drained via `poll_event`. This wrapper
+The core is **callback-free**: exact `change` batches, `sync-intent`, and
+`presence` are drained via `poll_event`. This wrapper
 runs a `Timer.periodic` on the **owning isolate** doing **non-blocking** polls
 (`timeout_ms = 0`) that drain everything currently queued, then return
 immediately. This is deliberate:

@@ -72,6 +72,7 @@ schema guide and suggests `syncular init`.
 | `queryBackend` | no (default `"neutralize"`) | `.syql` conditional lowering: `"neutralize"` (one guarded statement), `"variants"` (enumerate per provided-combination whenever eligible), `"auto"` (enumerate at ≤ 2 optional groups). The per-query `variants` knob always forces. |
 | `output.ir` | no (default `./syncular.ir.json`) | IR output path, relative to the manifest. |
 | `output.module` | no (default `./syncular.generated.ts`) | Generated TS module path, relative to the manifest. |
+| `output.queryIr` | no | Deterministic analyzed QueryIR JSON. Its hash keys generated reactive query descriptors, so SQL-only changes invalidate caches. |
 | `output.queries` | no | Opt-in TS named-queries output path (see §6). A sibling `.ts` file. |
 | `output.swift` | no | Opt-in Swift emitter (see §5). A path string, or `{ "path", "enumName", "queriesPath" }` (default `enumName` `SyncularSchema`; `queriesPath` opts into §6 Swift named queries). |
 | `output.kotlin` | no | Opt-in Kotlin emitter (see §5). A path string, or `{ "path", "package", "objectName", "queriesPath" }` (defaults `syncular.generated` / `SyncularSchema`). |
@@ -440,16 +441,44 @@ so the emitted SQL rewrites `:name` → `?` (repeats included) and each runner
 reorders the named params object into the positional array. Comments are
 stripped and whitespace collapsed to a clean one-line string.
 
-**The tables dependency set** (for React's exact invalidation). Each query
-emits a `tables` set — the FROM/JOIN tables it reads, resolved against the IR
-and *validated by the same SQLite `prepare()`* (an unknown table would have
-thrown). This feeds `useRawSql`'s `{tables}` option so a named query
-re-runs exactly when a depended-on table invalidates. **Boundary**:
+**Reactive metadata.** Each query emits a QueryIR-derived cache id, the
+FROM/JOIN table set, table-associated scope dependencies, provable window
+coverage, and a safe row identity when the primary key is projected by an
+unambiguous single-table query. React uses these facts to share one query per
+revision, route exact change batches, claim window coverage, and retain
+unchanged row objects. The cache id is derived from the query IR rather than
+the schema IR, so a SQL-only change cannot reuse old state. **Boundary**:
 `bun:sqlite` exposes no authorizer and no statement table-list, and EXPLAIN
 opcodes are fragile — so the set is derived by scanning every `FROM`/`JOIN`
 identifier and keeping those that name an IR table. This captures subquery /
 `WHERE EXISTS (…)` tables (they still appear under `FROM`/`JOIN`), and the
 prepare() still guarantees the SQL itself is correct.
+
+Inference is deliberately conservative around `OR`, joins, grouping, and
+computed identity. A `.syql` query can state the missing fact explicitly:
+
+```syql
+query compareLists(left, right)
+  depends tasks on project_id = left | right
+  window tasks by project_id = left | right
+  key by id
+{
+  select id, title from tasks
+  where project_id = :left or project_id = :right
+}
+```
+
+The declaration grammar is:
+
+- `depends <table> on <scope> = <param> | <param>`;
+- `window <table> by <scope> = <param> | <param>` with optional
+  `fixed <other_scope> = <param>, ...` for every other scope on that table;
+- `key by <result-column> | <result-column>`.
+
+These escape hatches are checked against the prepared query, schema, inferred
+param types, and result projection. They reject unread tables, unknown scopes
+or params, optional/incompatible coverage params, incomplete fixed scopes,
+duplicate declarations, and unprojected key fields.
 
 **Emitted shape, per language** (one query, five outputs — abbreviated):
 
@@ -467,11 +496,11 @@ the schema structs. `--check` gates every queries file byte-exactly, like the
 schema files; each carries the DO-NOT-EDIT header + IR hash.
 
 **React helper.** `@syncular/react` exports `useQuery(query, params?)`,
-which takes the TS `NamedQuery` descriptor and reuses `useRawSql`'s
-invalidation machinery with the descriptor's exact `tables` set:
+which takes the TS `NamedQuery` descriptor and observes the client-scoped
+revisioned store:
 
 ```ts
 import { listTodosQuery } from './syncular.queries';
-const { rows } = useQuery(listTodosQuery, { listId });
-//      ^ ListTodosRow[] — typed by the query's own projection
+const todos = useQuery(listTodosQuery, { listId });
+// todos.rows: ListTodosRow[]; todos.phase: loading | partial | ready | error
 ```

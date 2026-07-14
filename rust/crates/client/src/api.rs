@@ -3,7 +3,7 @@
 //! states, subscription states. Serialized as camelCase to cross the shim
 //! boundary unchanged.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// §4.8 window base: one table, the scope variable whose values are the
@@ -24,13 +24,115 @@ pub struct WindowBase {
 /// partial (its subscription still has `cursor: -1` or holds a resume
 /// token), and MUST NOT be rendered as complete. A unit with zero server
 /// rows still completes once its bootstrap round finishes.
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowState {
     /// Windowed-in units for this base, ordered by value.
     pub units: Vec<String>,
     /// Registered units whose bootstrap has not yet completed.
     pub pending: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableChange {
+    pub table: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_keys: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowChange {
+    pub base_key: String,
+    pub table: String,
+    pub units: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatusSnapshot {
+    pub outbox: usize,
+    pub upgrading: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_state: Option<LeaseState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_floor: Option<SchemaFloor>,
+    pub sync_needed: bool,
+}
+
+/// JSON bindings carry the u64 revision as a decimal string (§7.5).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientChangeBatch {
+    pub revision: String,
+    pub tables: Vec<TableChange>,
+    pub windows: Vec<WindowChange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<SyncStatusSnapshot>,
+    pub conflicts_changed: bool,
+    pub rejections_changed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SyncIntent {
+    None,
+    Interactive,
+    Background {
+        #[serde(rename = "delayMs")]
+        delay_ms: u64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CommandEffects {
+    pub sync: SyncIntent,
+}
+
+impl CommandEffects {
+    #[must_use]
+    pub fn none() -> Self {
+        Self {
+            sync: SyncIntent::None,
+        }
+    }
+
+    #[must_use]
+    pub fn interactive() -> Self {
+        Self {
+            sync: SyncIntent::Interactive,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WindowCoverage {
+    pub base: WindowBase,
+    pub units: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowUnitRef {
+    pub base_key: String,
+    pub unit: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverageSnapshot {
+    pub complete: bool,
+    pub pending: Vec<WindowUnitRef>,
+    pub missing: Vec<WindowUnitRef>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuerySnapshot {
+    pub revision: String,
+    pub rows: Vec<Map<String, Value>>,
+    pub coverage: CoverageSnapshot,
 }
 
 impl WindowState {
@@ -56,7 +158,7 @@ pub enum Mutation {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaFloor {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -68,7 +170,7 @@ pub struct SchemaFloor {
 /// §7.3.5: the client's opaque auth-lease state — `leaseId`/`expiresAtMs`
 /// from the last `LEASE` frame, and `errorCode` once a round was rejected
 /// with a request-level lease code (stop-and-surface; no data purge).
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LeaseState {
     #[serde(skip_serializing_if = "Option::is_none")]

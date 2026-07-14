@@ -54,10 +54,10 @@ conformance-locked: whatever the shim exercises, the plugin inherits.
   Collaborative text on a `crdt` column, byte-compatible with the web
   `@syncular/crdt-yjs` helper (a Tauri app and a browser edit the same doc).
   The example enables the feature; a lean plugin build omits `yrs`.
-- **`syncular://event`** — the derived client-observable events, mirroring the
-  FFI `poll_event` set: `invalidate` (live queries re-run), `presence`,
-  `sync-needed`, `conflict`, `rejection`, `schema-floor`, `lease`. Bytes ride as
-  `{ "$bytes": "<hex>" }` everywhere, the driver-protocol convention.
+- **`syncular://event`** — exact revisioned `change` batches plus ephemeral
+  `presence`. Table/scope/window/status/conflict/rejection facts stay in the
+  one committed batch instead of being re-inferred by the bridge. Bytes ride
+  as `{ "$bytes": "<hex>" }` everywhere, the driver-protocol convention.
 
 ## Thread-safety (honest)
 
@@ -65,9 +65,10 @@ conformance-locked: whatever the shim exercises, the plugin inherits.
 `Sync`. The plugin uses the shim/FFI pattern: exactly ONE owning thread holds
 the core, and every access arrives over a command **mailbox** (an mpsc channel).
 The Tauri commands post a request and await the reply; they never touch the
-client. The §8.4 background host loop (wake-driven `syncUntilIdle` with jitter)
-runs ON that same owning thread, interleaved with mailbox requests, so the
-connection is never accessed concurrently.
+client. The §8.4 host loop blocks on the mailbox or one explicit retry
+deadline. Interactive work preempts the deadline and an idle owner has zero
+periodic wakeups. It runs ON that same owning thread, so the connection is
+never accessed concurrently.
 
 ## Sync rounds over the socket (§8.7) — complete
 
@@ -87,6 +88,12 @@ in `ssp2::MessageStreamScanner`); the WS plumbing in
 end-to-end against a scripted §8.7 WebSocket server.
 
 ## Setup
+
+Install the webview bridge and its required Tauri API peer:
+
+```sh
+bun add @syncular/tauri @tauri-apps/api
+```
 
 `Cargo.toml`:
 
@@ -110,7 +117,6 @@ tauri::Builder::default()
         let config = SyncularConfig {
             base_url: Some("https://your.server".into()),
             db_path,
-            wake_jitter_ms: 250,
             auto_sync: true,
             ..Default::default()
         };
@@ -133,26 +139,29 @@ Webview:
 import { createTauriSyncClient } from '@syncular/tauri';
 import { schema } from './syncular.generated';
 
-const client = await createTauriSyncClient({ clientId: 'device-1', schema });
+const client = await createTauriSyncClient({ schema });
 // Pass to React: <SyncProvider client={client}> — every hook works unchanged.
 ```
 
+The core persists a generated client id in the configured database. Supplying
+an explicit id is optional and cannot rebind an existing database.
+
 ## IPC latency & pagination
 
-Every `useRawSql` run is **one IPC round trip** — fine at Tauri IPC latency
-for typical view queries. For very large result sets, the round-trip
-serialization dominates: paginate with `LIMIT`/`OFFSET` (or keyset pagination)
-in the SQL you pass, exactly as you would for any query API. The native core
-holds the whole database; the webview should pull windows of it, not the lot.
+Each unique reactive query performs **one atomic IPC round trip per relevant
+revision** for rows, completeness, and local revision. Equal observers share
+that read, and status/conflict-only changes issue no SQL. For very large result
+sets serialization dominates; use indexed keyset pagination and bounded
+windows.
 
 ## The example (`example/`)
 
 A minimal Tauri app proving syncular works end to end: `example/src-tauri`
 registers the plugin (with `native-transport`) and points its native instance at
-a local dev server; `example/src/frontend` is a **React** todo list on
-`@syncular/react` hooks (`useRawSql` + `useMutation` + `useSyncStatus`)
-over `createTauriSyncClient` — the exact hooks the browser demo uses, with the
-only Tauri-specific line being the client construction. See
+a local dev server; `example/src/frontend` is a **React** todo list over
+`createTauriSyncClient` using the same revisioned query/mutation/status hooks
+as the browser demo, with the only Tauri-specific line being client
+construction. See
 [`example/README.md`](example/README.md) for the full run recipe and the ~40
 lines of integration.
 

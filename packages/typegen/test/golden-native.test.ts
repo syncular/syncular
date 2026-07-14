@@ -58,6 +58,7 @@ describe('native emitter goldens', () => {
     expect(names).toEqual([
       'syncular.ir.json',
       'syncular.generated.ts',
+      'syncular.queries.ir.json',
       'syncular.queries.ts',
       NATIVE_FILES.swift,
       'Syncular.queries.swift',

@@ -135,6 +135,35 @@ export interface QueryColumn {
   /** `exact` = resolved to an IR column (plain ref); `fallback` = a computed
    * expression typed by the documented honest fallback. */
   readonly fidelity: 'exact' | 'fallback';
+  /** Proven physical origin for reactive row identity and diagnostics. */
+  readonly origin?: { readonly table: string; readonly column: string };
+}
+
+export interface QueryScopeBinding {
+  readonly table: string;
+  readonly variable: string;
+  readonly pattern: string;
+  readonly params: readonly string[];
+}
+
+export interface QueryCoverageBinding {
+  readonly table: string;
+  readonly variable: string;
+  readonly units: readonly string[];
+  readonly fixedScopes: readonly {
+    readonly variable: string;
+    readonly params: readonly string[];
+  }[];
+}
+
+export interface QueryReactiveMetadata {
+  readonly dependencies: readonly {
+    readonly table: string;
+    readonly scopes: readonly QueryScopeBinding[];
+  }[];
+  readonly coverage: readonly QueryCoverageBinding[];
+  /** Language-facing projection fields forming a proven unique row key. */
+  readonly rowKey?: readonly string[];
 }
 
 /** §7/§8 backend selection: neutralization (default), always-variants, or
@@ -174,6 +203,7 @@ export interface AnalyzedQuery {
   readonly columns: readonly QueryColumn[];
   /** IR tables this query reads (the useRawSql `{tables}` set), sorted. */
   readonly tables: readonly string[];
+  readonly reactive: QueryReactiveMetadata;
   /** §6 orderBy knob (`.syql` tier). When present, `sql`/`positionalSql`
    * carry the DEFAULT order-by tail and `positionalSqlBase` is the static
    * prefix emitters compose the selected column onto. */
@@ -480,15 +510,29 @@ function stripCommentsAndStrings(sql: string): string {
     const next = sql[i + 1];
     if (ch === '-' && next === '-') {
       const end = sql.indexOf('\n', i);
-      i = end === -1 ? sql.length : end;
+      const stop = end === -1 ? sql.length : end;
+      out += ' '.repeat(stop - i);
+      i = stop;
     } else if (ch === '/' && next === '*') {
       const end = sql.indexOf('*/', i + 2);
-      i = end === -1 ? sql.length : end + 2;
-      out += ' ';
+      const stop = end === -1 ? sql.length : end + 2;
+      out += sql.slice(i, stop).replace(/[^\n]/g, ' ');
+      i = stop;
     } else if (ch === "'") {
-      const end = sql.indexOf("'", i + 1);
-      i = end === -1 ? sql.length : end + 1;
-      out += ' ';
+      let stop = i + 1;
+      while (stop < sql.length) {
+        if (sql[stop] === "'" && sql[stop + 1] === "'") {
+          stop += 2;
+          continue;
+        }
+        if (sql[stop] === "'") {
+          stop += 1;
+          break;
+        }
+        stop += 1;
+      }
+      out += sql.slice(i, stop).replace(/[^\n]/g, ' ');
+      i = stop;
     } else {
       out += ch;
       i += 1;
@@ -691,6 +735,7 @@ function splitSelectList(sql: string): SelectItem[] | null {
 const PLAIN_REF_RE = new RegExp(`^(?:(${IDENT})\\.)?(${IDENT})$`);
 
 interface ResolvedSource {
+  readonly table: string;
   readonly column: IrTable['columns'][number];
 }
 
@@ -710,14 +755,14 @@ function resolveSource(
     if (ref === undefined) return null;
     const table = byName.get(ref.table);
     const col = table?.columns.find((c) => c.name === columnName);
-    return col === undefined ? null : { column: col };
+    return col === undefined ? null : { table: ref.table, column: col };
   }
   // Unqualified: search every FROM/JOIN table (SQLite already resolved
   // ambiguity; a single-table query is the common case).
   for (const ref of refs) {
     const table = byName.get(ref.table);
     const col = table?.columns.find((c) => c.name === columnName);
-    if (col !== undefined) return { column: col };
+    if (col !== undefined) return { table: ref.table, column: col };
   }
   return null;
 }
@@ -819,6 +864,156 @@ const AGG_RE = /\b(count|sum|total|avg|min|max)\s*\(/i;
 function fallbackColumnType(expr: string): IrColumnType {
   if (AGG_RE.test(expr) || /[+\-*/]/.test(expr)) return 'float';
   return 'string';
+}
+
+function inferReactiveMetadata(
+  sql: string,
+  refs: readonly TableRef[],
+  ir: IrDocument,
+  params: readonly QueryParam[],
+  columns: readonly QueryColumn[],
+): QueryReactiveMetadata {
+  const conservative = /\b(?:UNION|EXCEPT|INTERSECT)\b/i.test(
+    stripCommentsAndStrings(sql),
+  );
+  const requiredAt = (index: number): boolean => {
+    const cleaned = stripCommentsAndStrings(sql);
+    const where = /\bWHERE\b/i.exec(cleaned);
+    if (where === null || index < where.index + where[0].length) return false;
+    const matchStack: number[] = [];
+    for (
+      let cursor = where.index + where[0].length;
+      cursor < index;
+      cursor += 1
+    ) {
+      if (cleaned[cursor] === '(') matchStack.push(cursor);
+      else if (cleaned[cursor] === ')') matchStack.pop();
+    }
+    const stack: number[] = [];
+    for (
+      let cursor = where.index + where[0].length;
+      cursor < cleaned.length;
+      cursor += 1
+    ) {
+      const char = cleaned[cursor];
+      if (char === '(') stack.push(cursor);
+      else if (char === ')') stack.pop();
+      if (
+        cursor > index &&
+        /^(?:GROUP\s+BY|ORDER\s+BY|LIMIT|HAVING)\b/i.test(cleaned.slice(cursor))
+      ) {
+        break;
+      }
+      if (
+        /^OR\b/i.test(cleaned.slice(cursor)) &&
+        stack.every((open, stackIndex) => matchStack[stackIndex] === open)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const byParam = new Map(params.map((param) => [param.name, param] as const));
+  const dependencies: Array<{
+    table: string;
+    scopes: QueryScopeBinding[];
+  }> = [];
+  const coverage: QueryCoverageBinding[] = [];
+
+  for (const tableName of [...new Set(refs.map((ref) => ref.table))].sort()) {
+    const table = ir.tables.find((candidate) => candidate.name === tableName);
+    const tableRefs = refs.filter((ref) => ref.table === tableName);
+    const scopes: QueryScopeBinding[] = [];
+    if (table !== undefined && tableRefs.length === 1 && !conservative) {
+      const qualifier = tableRefs[0]?.alias;
+      for (const scope of table.scopes) {
+        const column = scope.column.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const qualified =
+          qualifier === undefined
+            ? `(?:${IDENT}\\.)?${column}`
+            : `(?:${qualifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.)?${column}`;
+        const found: string[] = [];
+        const equality = new RegExp(
+          `${qualified}\\s*(?:=|==|\\bIS\\b)\\s*:(${IDENT})\\b|:(${IDENT})\\b\\s*(?:=|==)\\s*${qualified}`,
+          'gi',
+        );
+        for (const match of sql.matchAll(equality)) {
+          if (!requiredAt(match.index)) continue;
+          const name = match[1] ?? match[2];
+          const param = name === undefined ? undefined : byParam.get(name);
+          if (
+            param !== undefined &&
+            param.optional !== true &&
+            param.flag !== true
+          ) {
+            found.push(param.name);
+          }
+        }
+        const inList = new RegExp(`${qualified}\\s+IN\\s*\\(([^)]*)\\)`, 'gi');
+        for (const match of sql.matchAll(inList)) {
+          if (!requiredAt(match.index)) continue;
+          for (const paramMatch of (match[1] ?? '').matchAll(
+            /:([A-Za-z_][A-Za-z0-9_]*)/g,
+          )) {
+            const param = byParam.get(paramMatch[1] as string);
+            if (
+              param !== undefined &&
+              param.optional !== true &&
+              param.flag !== true
+            ) {
+              found.push(param.name);
+            }
+          }
+        }
+        const unique = [...new Set(found)];
+        if (unique.length > 0) {
+          scopes.push({
+            table: tableName,
+            variable: scope.variable,
+            pattern: scope.pattern,
+            params: unique,
+          });
+        }
+      }
+      if (table.scopes.length > 0 && scopes.length === table.scopes.length) {
+        const variable = scopes[0] as QueryScopeBinding;
+        coverage.push({
+          table: tableName,
+          variable: variable.variable,
+          units: variable.params,
+          fixedScopes: scopes.slice(1).map((scope) => ({
+            variable: scope.variable,
+            params: scope.params,
+          })),
+        });
+      }
+    }
+    dependencies.push({ table: tableName, scopes });
+  }
+
+  let rowKey: readonly string[] | undefined;
+  const simpleSingleTable =
+    refs.length === 1 &&
+    !/\b(?:DISTINCT|GROUP\s+BY|UNION|EXCEPT|INTERSECT)\b/i.test(
+      stripCommentsAndStrings(sql),
+    );
+  if (simpleSingleTable) {
+    const table = ir.tables.find(
+      (candidate) => candidate.name === refs[0]?.table,
+    );
+    const primary = columns.find(
+      (column) =>
+        table !== undefined &&
+        column.origin?.table === table.name &&
+        column.origin?.column === table.primaryKey,
+    );
+    if (primary !== undefined) rowKey = [primary.langName];
+  }
+  return {
+    dependencies,
+    coverage,
+    ...(rowKey !== undefined ? { rowKey } : {}),
+  };
 }
 
 // -- public API ---------------------------------------------------------------
@@ -989,6 +1184,7 @@ export function analyzeStatement(
         type: source.column.type,
         nullable: source.column.nullable,
         fidelity: 'exact',
+        origin: { table: source.table, column: source.column.name },
       };
     }
     // Fallback: decltype affinity if present, else the expr-shape fallback.
@@ -1051,6 +1247,8 @@ export function analyzeStatement(
     }
   }
 
+  const reactive = inferReactiveMetadata(sql, refs, ir, params, columns);
+
   return {
     name,
     file,
@@ -1060,6 +1258,7 @@ export function analyzeStatement(
     params,
     columns,
     tables,
+    reactive,
   };
 }
 

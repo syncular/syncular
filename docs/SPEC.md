@@ -1157,14 +1157,15 @@ is held (mid-bootstrap; a §4.6 reset re-enters this state). A unit is
 that finishes with zero rows completes its unit — an empty replica is a
 truthful one (emptiness ≠ pendency). A query is answerable in full iff
 every scope value its predicate touches is complete; otherwise the
-result is partial and the client MUST be able to say so (never silently
-return partial data as complete). A client MAY expose the per-unit
-verdict to the host; it MUST NOT represent a windowed-out or
-still-pending unit's result as complete. Because the verdict can flip
-with no row changing (a zero-row bootstrap completing), a client that
-exposes a live-view invalidation seam MUST emit the subscription's
-table through its apply-path choke point when a bootstrap completes,
-exactly as eviction does — a live oracle re-reads, it is never polled.
+  result is partial and the client MUST be able to say so (never silently
+  return partial data as complete). A client MAY expose the per-unit
+  verdict to the host; it MUST NOT represent a windowed-out or
+  still-pending unit's result as complete. Because the verdict can flip
+  with no row changing (a zero-row bootstrap completing), a client that
+  exposes the local-observation seam (§7.5) MUST emit a **window-domain**
+  change for the subscription's base and unit when bootstrap completes.
+  It MUST NOT invent a row/table change for that transition. Coverage-aware
+  views re-read; unrelated table-only views do not, and no oracle is polled.
 
 **Server confirmation (no new rules).** A newly widened unit's
 subscription is bootstrapping and not yet synced-once, so it is excluded
@@ -2984,6 +2985,68 @@ and know when it is safe to render:
 The `upgrading` state is purely client-local; nothing about it crosses
 the wire. A server sees a post-reset client as an ordinary fresh
 bootstrapper at the new `schemaVersion`.
+
+### 7.5 Local observation revisions and atomic reactive reads
+
+This section specifies the client-local observation contract. It adds no
+SSP2 frame and no server behavior. A conforming client which exposes reactive
+local reads MUST implement this contract identically on every host binding.
+
+**Revision.** Each client database persists an unsigned 64-bit `localRevision`
+in durable bookkeeping state. It starts at zero and increases exactly once in
+the same SQLite transaction as each committed observer-visible change. Such a
+change includes materialized or optimistic rows, subscription/window
+registration or completeness, deferred eviction, outbox/status state exposed
+by the client, conflicts/rejections, auth-lease or schema-floor state, and
+schema-reset/upgrading state. A transaction which rolls back consumes no
+revision and emits no change. The revision survives restart and schema reset;
+it is destroyed only with the client database. JavaScript APIs expose it as
+`bigint`; JSON bindings encode it as a decimal string so no `u64` passes through
+an unsafe JSON number.
+
+**Atomic query snapshot.** A reactive local read returns its SQL rows, required
+window coverage, and `localRevision` from one SQLite read transaction. Coverage
+names each required window base/unit and classifies it complete, pending, or
+missing by the §4.8 registry and subscription state. A client MUST NOT compose
+rows from one read with coverage or revision from another. A result at revision
+`r` cannot be published as current after a matching change at revision `> r`;
+promise completion order, IPC order, frame scheduling, and render timing never
+override revision order.
+
+**Change batch.** After an observer transaction commits, the core emits exactly
+one batch carrying its revision and the domains changed by that transaction:
+
+- table changes associate every optional `prefix:value` scope key with its
+  table; an omitted scope-key set means honestly table-wide;
+- window changes identify canonical base, table, and changed unit(s);
+- status carries the complete post-commit client status when status changed;
+- conflict/rejection flags identify their collection domains.
+
+An empty scope-key set never means global. Scope-changing row updates record
+the union of the row's before and after scope keys; deletes record before keys
+and inserts record after keys. Bulk formats without row scope facts remain
+table-wide. A window completeness change may occur without a table change.
+Host bindings forward batches produced by the core; they MUST NOT reconstruct
+them from command names, outbox/conflict counts, polling, or another proxy.
+
+**Command sync intent.** A local command that creates network work reports one
+of `none`, `interactive`, or `background(delayMs)` to its owning host loop.
+Local mutations and window widening are interactive. Retry deadlines are
+background. An automatic host consumes interactive intent through an
+event-driven, coalescing wake and consumes background intent through one real
+deadline; it does not poll a fixed interval. Realtime reconnect/catch-up jitter
+required by §8.4 remains a background deadline. User-initiated local writes and
+window changes are not delayed by that jitter. Manual-sync hosts may expose but
+not consume the intent.
+
+**Persistent-open sync intent.** Opening a client on durable state with at
+least one active subscription or pending outbox commit MUST expose
+`syncNeeded = true` and one coalescible interactive intent. This guarantees a
+catch-up pull after process restart; realtime covers only changes after its
+connection, and an idempotent re-declaration of the same subscription/window
+does not manufacture command work. Automatic hosts consume the startup intent
+through the same owner loop as command effects. Manual-sync hosts preserve it
+for observability until the application runs sync.
 
 ---
 
