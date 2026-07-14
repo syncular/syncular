@@ -1,6 +1,6 @@
 {
   "name": "@syncular/testkit",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Syncular test kit: in-process loopback server + clients for integration scenarios",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

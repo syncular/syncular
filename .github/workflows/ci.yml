@@ -92,6 +92,10 @@ jobs:
         working-directory: rust
         run: cargo test
 
+      - name: Native transport socket rounds
+        working-directory: rust
+        run: cargo test -p syncular-ffi --features native-transport round_tests
+
       - name: Build conformance shim
         working-directory: rust
         run: cargo build -p conformance-shim

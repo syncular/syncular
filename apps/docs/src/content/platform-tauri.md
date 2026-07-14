@@ -131,8 +131,10 @@ conformance-locked.
   mutate, sync, syncUntilIdle, conflicts, presence, setPresence, …). The reply
   is `{ "result": ... }` or `{ "error": { "code", "message" } }`.
 - **`syncular_query(sql, params)`** — the raw read-only SQL fast path.
-- **`querySnapshot` through `syncular_command`** — one IPC read for rows,
-  window completeness, and exact local revision.
+- **`syncular_query_snapshot(sql, params, coverage)`** — one IPC read for rows,
+  window completeness, and exact local revision. A file-backed plugin serves
+  this from an independent read-only SQLite connection, so network work on the
+  mutable owner cannot stall reactive views.
 - **`syncular_set_headers(headers)`** — replace the native transport's
   request headers at runtime (see below).
 - **`syncular://event`** — exact revisioned `change` batches plus `presence`
@@ -165,14 +167,14 @@ socket immediately, call `disconnectRealtime()` followed by
 
 ## Threading
 
-`SyncClient` is synchronous, owns a rusqlite connection, and is not
-`Sync`. The plugin therefore keeps exactly one owning thread holding the
-core, and every access arrives over a command mailbox (an mpsc channel):
-the Tauri commands post a request and await the reply, and only the owning
-thread touches the client. The §8.4 host loop blocks on that mailbox or one
-explicit retry deadline. Interactive mutation/window/realtime intents preempt
-the deadline; idle clients have zero periodic wakeups. All access to the
-connection remains serialized.
+`SyncClient` is synchronous, owns a rusqlite connection, and is not `Sync`.
+Exactly one owning thread holds the mutable core; commands and the §8.4 host
+loop reach it over a mailbox. File-backed plugins add a second owner for a
+read-only SQLite connection used only by atomic query snapshots. SQLite WAL
+supplies the reader/writer snapshot boundary: network sync can block the
+mutable owner without blocking local views, while no second mutable client or
+writer exists. Interactive mutation/window/realtime intents preempt retry
+deadlines, and both owners idle with zero periodic wakeups.
 
 ## Native transport
 
@@ -184,10 +186,15 @@ is connected, each combined push+pull round runs over the socket in the
 round runs over `POST /sync`. One round is in flight per connection, and a
 mid-round socket drop fails the round immediately.
 
-Each unique live query is one atomic IPC round trip per relevant revision,
-shared by equal observers. Status/conflict-only changes do not rerun SQL. For
-large result sets serialization can dominate, so prefer indexed keyset
-pagination and bounded windows.
+FFI and Tauri re-export one transport implementation from `syncular-client`.
+The socket URL carries the persisted database client id (while retaining other
+configured query parameters), and the reader yields outside its short read
+lock quantum so a quiet socket cannot starve round or acknowledgement sends.
+
+Each unique live query is one atomic IPC round trip per relevant revision on
+the independent read owner, shared by equal observers. Status/conflict-only
+changes do not rerun SQL. For large result sets serialization can dominate, so
+prefer indexed keyset pagination and bounded windows.
 
 ## The example
 

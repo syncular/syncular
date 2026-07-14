@@ -1,6 +1,6 @@
 [package]
 name = "syncular-ffi"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "Syncular v2 Rust client core packaged as a C-ABI native library — the shipping native runtime for iOS/Android/JVM/desktop over the shared command surface"
 license = "Apache-2.0"
@@ -13,27 +13,9 @@ name = "syncular"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
-syncular-client = { path = "../client", version = "0.5.0" }
-syncular-command = { path = "../command", version = "0.5.0" }
+syncular-client = { path = "../client", version = "0.5.1" }
+syncular-command = { path = "../command", version = "0.5.1" }
 serde_json = "1"
-
-# The native transport lane — HTTP + WS owned by the Rust core. Feature-gated
-# so the conformance/dependency-lean build stays transport-inverted: the shim
-# proves the command surface with the harness holding the endpoints, and this
-# HTTP/WS stack (which never ships to JS users) is compiled only for native
-# app builds. ureq: minimal blocking HTTP, rustls, no async runtime.
-# tungstenite: the de-facto minimal sync WS implementation (hand-rolling WS
-# framing/masking/close is decidedly not minimal). Both are widely-used and
-# maintained; the sync/blocking pair matches the client's synchronous,
-# host-driven API with zero executor.
-[dependencies.ureq]
-version = "2"
-optional = true
-
-[dependencies.tungstenite]
-version = "0.24"
-optional = true
-features = ["rustls-tls-webpki-roots"]
 
 # The §8.7 round-over-socket tests spin a scripted in-test WS server
 # (tungstenite accept loop) and build responses with the ssp2 codec — the
@@ -45,7 +27,7 @@ tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 
 [features]
 default = []
-native-transport = ["dep:ureq", "dep:tungstenite"]
+native-transport = ["syncular-client/native-transport"]
 # §5.10.5 native CRDT commands. Off by default (lean-core builds skip yrs);
 # examples/demos that show collaborative text turn it on. Forwards to the
 # shared router's crdt-yjs feature — the FFI adds no code, the commands ride

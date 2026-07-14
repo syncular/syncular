@@ -149,7 +149,17 @@ pub trait Transport {
     }
     /// Realtime attach (§8.1). Inbound traffic is delivered by the host via
     /// `SyncClient::on_realtime_text` / `on_realtime_binary`.
+    /// Legacy host-configured realtime connection. Implementations which do
+    /// not bind identity at the URL layer may implement only this method.
     fn realtime_connect(&mut self) -> Result<(), TransportError>;
+    /// Open realtime for this exact persisted client identity. Native socket
+    /// servers bind registrations/cursors to the URL-level client id before
+    /// any protocol frame is exchanged, so client-owned hosts override this.
+    /// The default preserves compatibility with connectors that already close
+    /// over their identity.
+    fn realtime_connect_for_client(&mut self, _client_id: &str) -> Result<(), TransportError> {
+        self.realtime_connect()
+    }
     /// Client → server JSON control message (acks, §8.2).
     fn realtime_send(&mut self, text: &str) -> Result<(), TransportError>;
     fn realtime_close(&mut self) -> Result<(), TransportError>;
