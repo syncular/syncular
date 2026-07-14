@@ -128,9 +128,7 @@ export interface Manifest {
    * generated row types/params (queries lower with `AS` aliases); "preserve"
    * keeps SQL-truth names everywhere. */
   readonly naming: NamingMode;
-  /** §7 `.syql` backend: "neutralize" (default), "variants" (enumerate
-   * whenever eligible), or "auto" (enumerate at ≤ 2 optional groups). The
-   * per-query `variants` knob always forces enumeration. */
+  /** §7 `.syql` backend: "auto" (default), "neutralize", or "variants". */
   readonly queryBackend: ManifestQueryBackend;
   readonly output: ManifestOutput;
   readonly schemaVersions: readonly ManifestSchemaVersion[];
@@ -389,7 +387,7 @@ export function parseManifest(raw: unknown): Manifest {
     }
     naming = obj.naming;
   }
-  let queryBackend: ManifestQueryBackend = 'neutralize';
+  let queryBackend: ManifestQueryBackend = 'auto';
   if (obj.queryBackend !== undefined) {
     if (
       obj.queryBackend !== 'neutralize' &&

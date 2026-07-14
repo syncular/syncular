@@ -14,7 +14,7 @@ import type { AnalyzedQuery } from './query';
 /** Serialize analyzed queries as the deterministic QueryIR JSON document. */
 export function serializeQueryIr(queries: readonly AnalyzedQuery[]): string {
   const doc = {
-    queryIrVersion: 2,
+    queryIrVersion: 3,
     queries: queries.map((query) => ({
       name: query.name,
       file: query.file,
@@ -62,6 +62,58 @@ export function serializeQueryIr(queries: readonly AnalyzedQuery[]): string {
           ? { rowKey: query.reactive.rowKey }
           : {}),
       },
+      ...(query.syql === undefined
+        ? {}
+        : {
+            syql: {
+              revision: query.syql.revision,
+              inputs: query.syql.inputs.map((input) => {
+                if (input.kind === 'value') return { ...input };
+                if (input.kind === 'group') {
+                  return {
+                    kind: input.kind,
+                    name: input.name,
+                    langName: input.langName,
+                    members: input.members.map((member) => ({ ...member })),
+                  };
+                }
+                if (input.kind === 'sort') {
+                  return {
+                    kind: input.kind,
+                    name: input.name,
+                    langName: input.langName,
+                    defaultProfile: input.defaultProfile,
+                    profiles: input.profiles.map((profile) => ({ ...profile })),
+                  };
+                }
+                return { ...input };
+              }),
+              plan: {
+                backend: query.syql.plan.backend,
+                activationControls: query.syql.plan.activationControls,
+                conditions: query.syql.plan.conditions.map((condition) => ({
+                  controls: condition.controls,
+                  ...(condition.bind === undefined
+                    ? {}
+                    : { bind: condition.bind }),
+                })),
+                statements: query.syql.plan.statements.map((statement) => ({
+                  ...(statement.sortProfile === undefined
+                    ? {}
+                    : { sortProfile: statement.sortProfile }),
+                  ...(statement.activationMask === undefined
+                    ? {}
+                    : { activationMask: statement.activationMask }),
+                  sql: statement.sql,
+                  positionalSql: statement.positionalSql,
+                  binds: statement.binds.map((bind) => ({ ...bind })),
+                })),
+              },
+              ...(query.syql.identity === undefined
+                ? {}
+                : { identity: query.syql.identity }),
+            },
+          }),
       // §6 knob metadata — emitted only when declared.
       ...(query.orderBy !== undefined
         ? {
