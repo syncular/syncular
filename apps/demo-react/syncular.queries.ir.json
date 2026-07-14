@@ -1,23 +1,17 @@
 {
-  "queryIrVersion": 2,
+  "queryIrVersion": 3,
   "queries": [
     {
       "name": "listTodos",
-      "file": "list-todos.syql (query listTodos)",
-      "sourceSql": "select id, list_id, title, done, position, updated_at_ms, attachment\n  from todos\n  where list_id = :listId\n    and title like '%' || :q || '%'\n  order by position, id",
-      "sql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment from todos where list_id = :listId and (:q is null or (title like '%' || :q || '%')) order by position, id",
-      "positionalSql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment from todos where list_id = ?1 and (?2 is null or (title like '%' || ?2 || '%')) order by position, id",
+      "file": "list-todos.syql",
+      "sourceSql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment from todos\n    where (todos.list_id = :listId)\n      and 1\n    order by position, id",
+      "sql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment from todos\n    where (todos.list_id = :listId)\n      and 1\n    order by position, id",
+      "positionalSql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment from todos where (todos.list_id = ?) and 1 order by position, id",
       "params": [
         {
           "name": "listId",
           "langName": "listId",
           "type": "string"
-        },
-        {
-          "name": "q",
-          "langName": "q",
-          "type": "string",
-          "optional": true
         }
       ],
       "columns": [
@@ -117,17 +111,79 @@
             ]
           }
         ],
-        "coverage": [
+        "coverage": [],
+        "rowKey": [
+          "id"
+        ]
+      },
+      "syql": {
+        "revision": 1,
+        "inputs": [
           {
-            "table": "todos",
-            "variable": "list_id",
-            "units": [
-              "listId"
-            ],
-            "fixedScopes": []
+            "kind": "value",
+            "name": "listId",
+            "langName": "listId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          },
+          {
+            "kind": "value",
+            "name": "q",
+            "langName": "q",
+            "type": "string",
+            "nullable": false,
+            "required": false
           }
         ],
-        "rowKey": [
+        "plan": {
+          "backend": "variants",
+          "activationControls": [
+            "q"
+          ],
+          "conditions": [
+            {
+              "controls": [
+                "q"
+              ]
+            }
+          ],
+          "statements": [
+            {
+              "activationMask": 0,
+              "sql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment from todos\n    where (todos.list_id = :listId)\n      and 1\n    order by position, id",
+              "positionalSql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment from todos where (todos.list_id = ?) and 1 order by position, id",
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "listId",
+                  "type": "string",
+                  "input": "listId"
+                }
+              ]
+            },
+            {
+              "activationMask": 1,
+              "sql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment from todos\n    where (todos.list_id = :listId)\n      and ( title like '%' || :q || '%' )\n    order by position, id",
+              "positionalSql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs, attachment from todos where (todos.list_id = ?) and ( title like '%' || ? || '%' ) order by position, id",
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "listId",
+                  "type": "string",
+                  "input": "listId"
+                },
+                {
+                  "kind": "value",
+                  "name": "q",
+                  "type": "string",
+                  "input": "q"
+                }
+              ]
+            }
+          ]
+        },
+        "identity": [
           "id"
         ]
       }

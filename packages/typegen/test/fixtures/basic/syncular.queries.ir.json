@@ -489,284 +489,6 @@
       }
     },
     {
-      "name": "searchTasks",
-      "file": "task-search.syql (query searchTasks)",
-      "sourceSql": "select id, title, done, priority, estimated_at\n  from tasks\n  where @inProject(:projectId)\n    and @search(:q)\n    and priority >= :minPriority\n    and if (:openOnly) { done = 0 }",
-      "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (project_id = :projectId) and (:q is null or ((title like '%' || :q || '%'))) and (:minPriority is null or (priority >= :minPriority)) and (coalesce(:openOnly, 0) = 0 or (done = 0)) order by priority desc limit min(coalesce(:limit, 50), 200)",
-      "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (project_id = ?1) and (?2 is null or ((title like '%' || ?2 || '%'))) and (?3 is null or (priority >= ?3)) and (coalesce(?4, 0) = 0 or (done = 0)) order by priority desc limit min(coalesce(?5, 50), 200)",
-      "params": [
-        {
-          "name": "projectId",
-          "langName": "projectId",
-          "type": "string"
-        },
-        {
-          "name": "q",
-          "langName": "q",
-          "type": "string",
-          "optional": true
-        },
-        {
-          "name": "minPriority",
-          "langName": "minPriority",
-          "type": "integer",
-          "optional": true
-        },
-        {
-          "name": "openOnly",
-          "langName": "openOnly",
-          "type": "boolean",
-          "optional": true,
-          "flag": true
-        },
-        {
-          "name": "limit",
-          "langName": "limit",
-          "type": "integer",
-          "optional": true
-        }
-      ],
-      "columns": [
-        {
-          "name": "id",
-          "langName": "id",
-          "type": "string",
-          "nullable": false,
-          "fidelity": "exact",
-          "origin": {
-            "table": "tasks",
-            "column": "id"
-          }
-        },
-        {
-          "name": "title",
-          "langName": "title",
-          "type": "string",
-          "nullable": false,
-          "fidelity": "exact",
-          "origin": {
-            "table": "tasks",
-            "column": "title"
-          }
-        },
-        {
-          "name": "done",
-          "langName": "done",
-          "type": "boolean",
-          "nullable": false,
-          "fidelity": "exact",
-          "origin": {
-            "table": "tasks",
-            "column": "done"
-          }
-        },
-        {
-          "name": "priority",
-          "langName": "priority",
-          "type": "integer",
-          "nullable": true,
-          "fidelity": "exact",
-          "origin": {
-            "table": "tasks",
-            "column": "priority"
-          }
-        },
-        {
-          "name": "estimated_at",
-          "langName": "estimatedAt",
-          "type": "integer",
-          "nullable": true,
-          "fidelity": "exact",
-          "origin": {
-            "table": "tasks",
-            "column": "estimated_at"
-          }
-        }
-      ],
-      "tables": [
-        "tasks"
-      ],
-      "reactive": {
-        "dependencies": [
-          {
-            "table": "tasks",
-            "scopes": [
-              {
-                "variable": "project_id",
-                "pattern": "project:{project_id}",
-                "params": [
-                  "projectId"
-                ]
-              }
-            ]
-          }
-        ],
-        "coverage": [
-          {
-            "table": "tasks",
-            "variable": "project_id",
-            "units": [
-              "projectId"
-            ],
-            "fixedScopes": []
-          }
-        ],
-        "rowKey": [
-          "id"
-        ]
-      },
-      "orderBy": {
-        "allowed": [
-          {
-            "name": "priority",
-            "langName": "priority"
-          },
-          {
-            "name": "estimated_at",
-            "langName": "estimatedAt"
-          },
-          {
-            "name": "title",
-            "langName": "title"
-          }
-        ],
-        "defaultColumn": "priority",
-        "defaultDir": "desc"
-      },
-      "limit": {
-        "max": 200,
-        "default": 50
-      },
-      "positionalSqlBase": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (project_id = ?1) and (?2 is null or ((title like '%' || ?2 || '%'))) and (?3 is null or (priority >= ?3)) and (coalesce(?4, 0) = 0 or (done = 0))"
-    },
-    {
-      "name": "taskEstimateRange",
-      "file": "task-search.syql (query taskEstimateRange)",
-      "sourceSql": "select id, title, estimate\n  from tasks\n  where @inProject(:projectId)\n    and estimated_at between :from and :to",
-      "sql": "select id, title, estimate from tasks where (project_id = :projectId) and (:from is null or :to is null or (estimated_at between :from and :to))",
-      "positionalSql": "select id, title, estimate from tasks where (project_id = ?1) and (?2 is null or ?3 is null or (estimated_at between ?2 and ?3))",
-      "params": [
-        {
-          "name": "projectId",
-          "langName": "projectId",
-          "type": "string"
-        },
-        {
-          "name": "from",
-          "langName": "from",
-          "type": "integer",
-          "optional": true,
-          "group": "from"
-        },
-        {
-          "name": "to",
-          "langName": "to",
-          "type": "integer",
-          "optional": true,
-          "group": "from"
-        }
-      ],
-      "columns": [
-        {
-          "name": "id",
-          "langName": "id",
-          "type": "string",
-          "nullable": false,
-          "fidelity": "exact",
-          "origin": {
-            "table": "tasks",
-            "column": "id"
-          }
-        },
-        {
-          "name": "title",
-          "langName": "title",
-          "type": "string",
-          "nullable": false,
-          "fidelity": "exact",
-          "origin": {
-            "table": "tasks",
-            "column": "title"
-          }
-        },
-        {
-          "name": "estimate",
-          "langName": "estimate",
-          "type": "float",
-          "nullable": true,
-          "fidelity": "exact",
-          "origin": {
-            "table": "tasks",
-            "column": "estimate"
-          }
-        }
-      ],
-      "tables": [
-        "tasks"
-      ],
-      "reactive": {
-        "dependencies": [
-          {
-            "table": "tasks",
-            "scopes": [
-              {
-                "variable": "project_id",
-                "pattern": "project:{project_id}",
-                "params": [
-                  "projectId"
-                ]
-              }
-            ]
-          }
-        ],
-        "coverage": [
-          {
-            "table": "tasks",
-            "variable": "project_id",
-            "units": [
-              "projectId"
-            ],
-            "fixedScopes": []
-          }
-        ],
-        "rowKey": [
-          "id"
-        ]
-      },
-      "variantGroups": [
-        {
-          "key": "from",
-          "params": [
-            "from",
-            "to"
-          ],
-          "flag": false
-        }
-      ],
-      "variants": [
-        {
-          "when": [],
-          "sql": "select id, title, estimate from tasks where (project_id = :projectId)",
-          "positionalSql": "select id, title, estimate from tasks where (project_id = ?)",
-          "params": [
-            "projectId"
-          ]
-        },
-        {
-          "when": [
-            "from"
-          ],
-          "sql": "select id, title, estimate from tasks where (project_id = :projectId) and estimated_at between :from and :to",
-          "positionalSql": "select id, title, estimate from tasks where (project_id = ?) and estimated_at between ? and ?",
-          "params": [
-            "projectId",
-            "from",
-            "to"
-          ]
-        }
-      ]
-    },
-    {
       "name": "taskTitles",
       "file": "task-titles.sql",
       "sourceSql": "-- Projection subset (a narrow row), no params.\nSELECT id, title FROM tasks",
@@ -939,6 +661,747 @@
         ],
         "coverage": [],
         "rowKey": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "searchTasks",
+      "file": "task-search.syql",
+      "sourceSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n) ) end\n      and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority ) end\n      and case when :__syqlActive2 = 0 then 1 else ( done = 0 ) end order by priority desc, id desc limit min(coalesce(:__syqlPageSize, 50), 200)",
+      "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n) ) end\n      and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority ) end\n      and case when :__syqlActive2 = 0 then 1 else ( done = 0 ) end order by priority desc, id desc limit min(coalesce(:__syqlPageSize, 50), 200)",
+      "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (tasks.project_id = ?) and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' ) ) end and case when ? = 0 then 1 else ( priority >= ? ) end and case when ? = 0 then 1 else ( done = 0 ) end order by priority desc, id desc limit min(coalesce(?, 50), 200)",
+      "params": [
+        {
+          "name": "projectId",
+          "langName": "projectId",
+          "type": "string"
+        },
+        {
+          "name": "__syqlActive0",
+          "langName": "__syqlActive0",
+          "type": "boolean"
+        },
+        {
+          "name": "needle",
+          "langName": "needle",
+          "type": "string"
+        },
+        {
+          "name": "__syqlActive1",
+          "langName": "__syqlActive1",
+          "type": "boolean"
+        },
+        {
+          "name": "minPriority",
+          "langName": "minPriority",
+          "type": "integer"
+        },
+        {
+          "name": "__syqlActive2",
+          "langName": "__syqlActive2",
+          "type": "boolean"
+        },
+        {
+          "name": "__syqlPageSize",
+          "langName": "__syqlPageSize",
+          "type": "integer"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
+        },
+        {
+          "name": "title",
+          "langName": "title",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "title"
+          }
+        },
+        {
+          "name": "done",
+          "langName": "done",
+          "type": "boolean",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "done"
+          }
+        },
+        {
+          "name": "priority",
+          "langName": "priority",
+          "type": "integer",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "priority"
+          }
+        },
+        {
+          "name": "estimated_at",
+          "langName": "estimatedAt",
+          "type": "integer",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "estimated_at"
+          }
+        }
+      ],
+      "tables": [
+        "tasks"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "tasks",
+            "scopes": [
+              {
+                "variable": "project_id",
+                "pattern": "project:{project_id}",
+                "params": [
+                  "projectId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [],
+        "rowKey": [
+          "id"
+        ]
+      },
+      "syql": {
+        "revision": 1,
+        "inputs": [
+          {
+            "kind": "value",
+            "name": "projectId",
+            "langName": "projectId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          },
+          {
+            "kind": "value",
+            "name": "needle",
+            "langName": "needle",
+            "type": "string",
+            "nullable": false,
+            "required": false
+          },
+          {
+            "kind": "value",
+            "name": "minPriority",
+            "langName": "minPriority",
+            "type": "integer",
+            "nullable": false,
+            "required": false
+          },
+          {
+            "kind": "switch",
+            "name": "openOnly",
+            "langName": "openOnly",
+            "default": false
+          },
+          {
+            "kind": "sort",
+            "name": "sortBy",
+            "langName": "sortBy",
+            "defaultProfile": "priorityDesc",
+            "profiles": [
+              {
+                "name": "priorityAsc",
+                "langName": "priorityAsc"
+              },
+              {
+                "name": "priorityDesc",
+                "langName": "priorityDesc"
+              },
+              {
+                "name": "estimatedAtAsc",
+                "langName": "estimatedAtAsc"
+              },
+              {
+                "name": "estimatedAtDesc",
+                "langName": "estimatedAtDesc"
+              },
+              {
+                "name": "titleAsc",
+                "langName": "titleAsc"
+              },
+              {
+                "name": "titleDesc",
+                "langName": "titleDesc"
+              }
+            ]
+          },
+          {
+            "kind": "page",
+            "name": "pageSize",
+            "langName": "pageSize",
+            "defaultSize": 50,
+            "maxSize": 200
+          }
+        ],
+        "plan": {
+          "backend": "neutralize",
+          "activationControls": [
+            "needle",
+            "minPriority",
+            "openOnly"
+          ],
+          "conditions": [
+            {
+              "controls": [
+                "needle"
+              ],
+              "bind": "__syqlActive0"
+            },
+            {
+              "controls": [
+                "minPriority"
+              ],
+              "bind": "__syqlActive1"
+            },
+            {
+              "controls": [
+                "openOnly"
+              ],
+              "bind": "__syqlActive2"
+            }
+          ],
+          "statements": [
+            {
+              "sortProfile": "priorityAsc",
+              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n) ) end\n      and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority ) end\n      and case when :__syqlActive2 = 0 then 1 else ( done = 0 ) end order by priority asc, id asc limit min(coalesce(:__syqlPageSize, 50), 200)",
+              "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (tasks.project_id = ?) and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' ) ) end and case when ? = 0 then 1 else ( priority >= ? ) end and case when ? = 0 then 1 else ( done = 0 ) end order by priority asc, id asc limit min(coalesce(?, 50), 200)",
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "projectId",
+                  "type": "string",
+                  "input": "projectId"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive0",
+                  "type": "boolean",
+                  "condition": 0,
+                  "controls": [
+                    "needle"
+                  ]
+                },
+                {
+                  "kind": "value",
+                  "name": "needle",
+                  "type": "string",
+                  "input": "needle"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive1",
+                  "type": "boolean",
+                  "condition": 1,
+                  "controls": [
+                    "minPriority"
+                  ]
+                },
+                {
+                  "kind": "value",
+                  "name": "minPriority",
+                  "type": "integer",
+                  "input": "minPriority"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive2",
+                  "type": "boolean",
+                  "condition": 2,
+                  "controls": [
+                    "openOnly"
+                  ]
+                },
+                {
+                  "kind": "page",
+                  "name": "__syqlPageSize",
+                  "type": "integer",
+                  "input": "pageSize"
+                }
+              ]
+            },
+            {
+              "sortProfile": "priorityDesc",
+              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n) ) end\n      and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority ) end\n      and case when :__syqlActive2 = 0 then 1 else ( done = 0 ) end order by priority desc, id desc limit min(coalesce(:__syqlPageSize, 50), 200)",
+              "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (tasks.project_id = ?) and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' ) ) end and case when ? = 0 then 1 else ( priority >= ? ) end and case when ? = 0 then 1 else ( done = 0 ) end order by priority desc, id desc limit min(coalesce(?, 50), 200)",
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "projectId",
+                  "type": "string",
+                  "input": "projectId"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive0",
+                  "type": "boolean",
+                  "condition": 0,
+                  "controls": [
+                    "needle"
+                  ]
+                },
+                {
+                  "kind": "value",
+                  "name": "needle",
+                  "type": "string",
+                  "input": "needle"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive1",
+                  "type": "boolean",
+                  "condition": 1,
+                  "controls": [
+                    "minPriority"
+                  ]
+                },
+                {
+                  "kind": "value",
+                  "name": "minPriority",
+                  "type": "integer",
+                  "input": "minPriority"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive2",
+                  "type": "boolean",
+                  "condition": 2,
+                  "controls": [
+                    "openOnly"
+                  ]
+                },
+                {
+                  "kind": "page",
+                  "name": "__syqlPageSize",
+                  "type": "integer",
+                  "input": "pageSize"
+                }
+              ]
+            },
+            {
+              "sortProfile": "estimatedAtAsc",
+              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n) ) end\n      and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority ) end\n      and case when :__syqlActive2 = 0 then 1 else ( done = 0 ) end order by estimated_at asc, id asc limit min(coalesce(:__syqlPageSize, 50), 200)",
+              "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (tasks.project_id = ?) and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' ) ) end and case when ? = 0 then 1 else ( priority >= ? ) end and case when ? = 0 then 1 else ( done = 0 ) end order by estimated_at asc, id asc limit min(coalesce(?, 50), 200)",
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "projectId",
+                  "type": "string",
+                  "input": "projectId"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive0",
+                  "type": "boolean",
+                  "condition": 0,
+                  "controls": [
+                    "needle"
+                  ]
+                },
+                {
+                  "kind": "value",
+                  "name": "needle",
+                  "type": "string",
+                  "input": "needle"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive1",
+                  "type": "boolean",
+                  "condition": 1,
+                  "controls": [
+                    "minPriority"
+                  ]
+                },
+                {
+                  "kind": "value",
+                  "name": "minPriority",
+                  "type": "integer",
+                  "input": "minPriority"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive2",
+                  "type": "boolean",
+                  "condition": 2,
+                  "controls": [
+                    "openOnly"
+                  ]
+                },
+                {
+                  "kind": "page",
+                  "name": "__syqlPageSize",
+                  "type": "integer",
+                  "input": "pageSize"
+                }
+              ]
+            },
+            {
+              "sortProfile": "estimatedAtDesc",
+              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n) ) end\n      and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority ) end\n      and case when :__syqlActive2 = 0 then 1 else ( done = 0 ) end order by estimated_at desc, id desc limit min(coalesce(:__syqlPageSize, 50), 200)",
+              "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (tasks.project_id = ?) and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' ) ) end and case when ? = 0 then 1 else ( priority >= ? ) end and case when ? = 0 then 1 else ( done = 0 ) end order by estimated_at desc, id desc limit min(coalesce(?, 50), 200)",
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "projectId",
+                  "type": "string",
+                  "input": "projectId"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive0",
+                  "type": "boolean",
+                  "condition": 0,
+                  "controls": [
+                    "needle"
+                  ]
+                },
+                {
+                  "kind": "value",
+                  "name": "needle",
+                  "type": "string",
+                  "input": "needle"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive1",
+                  "type": "boolean",
+                  "condition": 1,
+                  "controls": [
+                    "minPriority"
+                  ]
+                },
+                {
+                  "kind": "value",
+                  "name": "minPriority",
+                  "type": "integer",
+                  "input": "minPriority"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive2",
+                  "type": "boolean",
+                  "condition": 2,
+                  "controls": [
+                    "openOnly"
+                  ]
+                },
+                {
+                  "kind": "page",
+                  "name": "__syqlPageSize",
+                  "type": "integer",
+                  "input": "pageSize"
+                }
+              ]
+            },
+            {
+              "sortProfile": "titleAsc",
+              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n) ) end\n      and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority ) end\n      and case when :__syqlActive2 = 0 then 1 else ( done = 0 ) end order by title asc, id asc limit min(coalesce(:__syqlPageSize, 50), 200)",
+              "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (tasks.project_id = ?) and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' ) ) end and case when ? = 0 then 1 else ( priority >= ? ) end and case when ? = 0 then 1 else ( done = 0 ) end order by title asc, id asc limit min(coalesce(?, 50), 200)",
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "projectId",
+                  "type": "string",
+                  "input": "projectId"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive0",
+                  "type": "boolean",
+                  "condition": 0,
+                  "controls": [
+                    "needle"
+                  ]
+                },
+                {
+                  "kind": "value",
+                  "name": "needle",
+                  "type": "string",
+                  "input": "needle"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive1",
+                  "type": "boolean",
+                  "condition": 1,
+                  "controls": [
+                    "minPriority"
+                  ]
+                },
+                {
+                  "kind": "value",
+                  "name": "minPriority",
+                  "type": "integer",
+                  "input": "minPriority"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive2",
+                  "type": "boolean",
+                  "condition": 2,
+                  "controls": [
+                    "openOnly"
+                  ]
+                },
+                {
+                  "kind": "page",
+                  "name": "__syqlPageSize",
+                  "type": "integer",
+                  "input": "pageSize"
+                }
+              ]
+            },
+            {
+              "sortProfile": "titleDesc",
+              "sql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks\n    where (tasks.project_id = :projectId)\n      and case when :__syqlActive0 = 0 then 1 else ( (\n  title like '%' || :needle || '%'\n) ) end\n      and case when :__syqlActive1 = 0 then 1 else ( priority >= :minPriority ) end\n      and case when :__syqlActive2 = 0 then 1 else ( done = 0 ) end order by title desc, id desc limit min(coalesce(:__syqlPageSize, 50), 200)",
+              "positionalSql": "select id, title, done, priority, estimated_at AS estimatedAt from tasks where (tasks.project_id = ?) and case when ? = 0 then 1 else ( ( title like '%' || ? || '%' ) ) end and case when ? = 0 then 1 else ( priority >= ? ) end and case when ? = 0 then 1 else ( done = 0 ) end order by title desc, id desc limit min(coalesce(?, 50), 200)",
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "projectId",
+                  "type": "string",
+                  "input": "projectId"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive0",
+                  "type": "boolean",
+                  "condition": 0,
+                  "controls": [
+                    "needle"
+                  ]
+                },
+                {
+                  "kind": "value",
+                  "name": "needle",
+                  "type": "string",
+                  "input": "needle"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive1",
+                  "type": "boolean",
+                  "condition": 1,
+                  "controls": [
+                    "minPriority"
+                  ]
+                },
+                {
+                  "kind": "value",
+                  "name": "minPriority",
+                  "type": "integer",
+                  "input": "minPriority"
+                },
+                {
+                  "kind": "condition-active",
+                  "name": "__syqlActive2",
+                  "type": "boolean",
+                  "condition": 2,
+                  "controls": [
+                    "openOnly"
+                  ]
+                },
+                {
+                  "kind": "page",
+                  "name": "__syqlPageSize",
+                  "type": "integer",
+                  "input": "pageSize"
+                }
+              ]
+            }
+          ]
+        },
+        "identity": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "taskEstimateRange",
+      "file": "task-search.syql",
+      "sourceSql": "select id, title, estimate\n    from tasks\n    where (tasks.project_id = :projectId)\n      and 1",
+      "sql": "select id, title, estimate\n    from tasks\n    where (tasks.project_id = :projectId)\n      and 1",
+      "positionalSql": "select id, title, estimate from tasks where (tasks.project_id = ?) and 1",
+      "params": [
+        {
+          "name": "projectId",
+          "langName": "projectId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
+        },
+        {
+          "name": "title",
+          "langName": "title",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "title"
+          }
+        },
+        {
+          "name": "estimate",
+          "langName": "estimate",
+          "type": "float",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "estimate"
+          }
+        }
+      ],
+      "tables": [
+        "tasks"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "tasks",
+            "scopes": [
+              {
+                "variable": "project_id",
+                "pattern": "project:{project_id}",
+                "params": [
+                  "projectId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [],
+        "rowKey": [
+          "id"
+        ]
+      },
+      "syql": {
+        "revision": 1,
+        "inputs": [
+          {
+            "kind": "value",
+            "name": "projectId",
+            "langName": "projectId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          },
+          {
+            "kind": "group",
+            "name": "range",
+            "langName": "range",
+            "members": [
+              {
+                "name": "start",
+                "langName": "start",
+                "type": "integer",
+                "nullable": false
+              },
+              {
+                "name": "end",
+                "langName": "end",
+                "type": "integer",
+                "nullable": false
+              }
+            ]
+          }
+        ],
+        "plan": {
+          "backend": "variants",
+          "activationControls": [
+            "range"
+          ],
+          "conditions": [
+            {
+              "controls": [
+                "range"
+              ]
+            }
+          ],
+          "statements": [
+            {
+              "activationMask": 0,
+              "sql": "select id, title, estimate\n    from tasks\n    where (tasks.project_id = :projectId)\n      and 1",
+              "positionalSql": "select id, title, estimate from tasks where (tasks.project_id = ?) and 1",
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "projectId",
+                  "type": "string",
+                  "input": "projectId"
+                }
+              ]
+            },
+            {
+              "activationMask": 1,
+              "sql": "select id, title, estimate\n    from tasks\n    where (tasks.project_id = :projectId)\n      and ( estimated_at between :start and :end )",
+              "positionalSql": "select id, title, estimate from tasks where (tasks.project_id = ?) and ( estimated_at between ? and ? )",
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "projectId",
+                  "type": "string",
+                  "input": "projectId"
+                },
+                {
+                  "kind": "group-member",
+                  "name": "start",
+                  "type": "integer",
+                  "input": "range",
+                  "member": "start"
+                },
+                {
+                  "kind": "group-member",
+                  "name": "end",
+                  "type": "integer",
+                  "input": "range",
+                  "member": "end"
+                }
+              ]
+            }
+          ]
+        },
+        "identity": [
           "id"
         ]
       }

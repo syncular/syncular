@@ -9,7 +9,13 @@
  */
 import type { IrColumnType } from './ir';
 import { snakeToCamel } from './naming';
-import type { AnalyzedQuery, QueryColumn, QueryParam } from './query';
+import type {
+  AnalyzedQuery,
+  QueryColumn,
+  QueryParam,
+  QuerySyqlPlanBind,
+  QuerySyqlPublicInput,
+} from './query';
 
 const DART_TYPE: Readonly<Record<IrColumnType, string>> = {
   string: 'String',
@@ -93,6 +99,177 @@ function isOptionalParam(query: AnalyzedQuery, p: QueryParam): boolean {
   );
 }
 
+function syqlInput(query: AnalyzedQuery, name: string): QuerySyqlPublicInput {
+  const input = query.syql?.inputs.find((candidate) => candidate.name === name);
+  if (input === undefined) throw new Error(`unknown SYQL input ${name}`);
+  return input;
+}
+
+function syqlDartType(type: IrColumnType, nullable: boolean): string {
+  return `${DART_TYPE[type]}${nullable ? '?' : ''}`;
+}
+
+function syqlControlActive(query: AnalyzedQuery, name: string): string {
+  const input = syqlInput(query, name);
+  const access = camelCase(input.langName);
+  if (input.kind === 'switch') return access;
+  if (input.kind === 'value' && input.nullable) return `${access}.isPresent`;
+  if (input.kind === 'value' || input.kind === 'group') {
+    return `${access} != null`;
+  }
+  throw new Error(`${name} is not an activation control`);
+}
+
+function syqlBindExpr(query: AnalyzedQuery, bind: QuerySyqlPlanBind): string {
+  if (bind.kind === 'condition-active') {
+    return bind.controls
+      .map((control) => syqlControlActive(query, control))
+      .join(' && ');
+  }
+  const input = syqlInput(query, bind.input);
+  const access = camelCase(input.langName);
+  if (bind.kind === 'page') return `effective${typeName(access)}`;
+  if (bind.kind === 'group-member') {
+    if (input.kind !== 'group') throw new Error('group bind/input mismatch');
+    const member = input.members.find(
+      (candidate) => candidate.name === bind.member,
+    );
+    if (member === undefined)
+      throw new Error(`unknown group member ${bind.member}`);
+    const memberAccess = `${access}.${camelCase(member.langName)}`;
+    const value = member.nullable
+      ? optionalParamValue(member.type, memberAccess)
+      : paramValue(member.type, memberAccess);
+    return `${access} == null ? null : ${value}`;
+  }
+  if (input.kind !== 'value') throw new Error('value bind/input mismatch');
+  if (input.required) {
+    return input.nullable
+      ? optionalParamValue(input.type, access)
+      : paramValue(input.type, access);
+  }
+  return input.nullable
+    ? `${access}.isPresent ? ${optionalParamValue(input.type, `${access}.value`)} : null`
+    : optionalParamValue(input.type, access);
+}
+
+function emitSyqlDartTypes(query: AnalyzedQuery): string[] {
+  const lines: string[] = [];
+  for (const input of query.syql?.inputs ?? []) {
+    if (input.kind === 'group') {
+      const name = `${typeName(query.name)}${typeName(input.langName)}`;
+      lines.push(`class ${name} {`);
+      for (const member of input.members) {
+        lines.push(
+          `  final ${syqlDartType(member.type, member.nullable)} ${camelCase(member.langName)};`,
+        );
+      }
+      const args = input.members
+        .map((member) => `required this.${camelCase(member.langName)}`)
+        .join(', ');
+      lines.push(`  const ${name}({${args}});`, '}', '');
+    } else if (input.kind === 'sort') {
+      const name = `${typeName(query.name)}${typeName(input.langName)}`;
+      lines.push(
+        `enum ${name} { ${input.profiles.map((profile) => camelCase(profile.langName)).join(', ')} }`,
+        '',
+      );
+    }
+  }
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
+function emitSyqlDartRunner(query: AnalyzedQuery): string[] {
+  const metadata = query.syql;
+  if (metadata === undefined) throw new Error('missing SYQL metadata');
+  const Row = `${typeName(query.name)}Row`;
+  const Pascal = pascalCase(query.name);
+  const lines: string[] = [];
+  lines.push(
+    `/// Tables the ${query.name} query reads (exact invalidation set).`,
+    `const List<String> syncular${Pascal}QueryTables = [${query.tables.map(quote).join(', ')}];`,
+    '',
+    `/// Run the ${query.name} revision-1 SYQL query.`,
+  );
+  const args: string[] = [];
+  for (const input of metadata.inputs) {
+    const name = camelCase(input.langName);
+    if (input.kind === 'value') {
+      const type = syqlDartType(input.type, input.nullable);
+      if (input.required) args.push(`required ${type} ${name}`);
+      else if (input.nullable) {
+        args.push(
+          `SyqlQueryPresence<${type}> ${name} = const SyqlQueryPresence.absent()`,
+        );
+      } else args.push(`${type}? ${name}`);
+    } else if (input.kind === 'group') {
+      args.push(`${typeName(query.name)}${typeName(input.langName)}? ${name}`);
+    } else if (input.kind === 'switch') {
+      args.push(`bool ${name} = false`);
+    } else if (input.kind === 'sort') {
+      const defaultCase =
+        input.profiles.find((profile) => profile.name === input.defaultProfile)
+          ?.langName ?? input.defaultProfile;
+      const type = `${typeName(query.name)}${typeName(input.langName)}`;
+      args.push(`${type} ${name} = ${type}.${camelCase(defaultCase)}`);
+    } else {
+      args.push(`int? ${name}`);
+    }
+  }
+  const argsClause = args.length > 0 ? `, {${args.join(', ')}}` : '';
+  lines.push(
+    `List<${Row}> syncular${Pascal}Query(SyncularClient client${argsClause}) {`,
+  );
+  const page = metadata.inputs.find((input) => input.kind === 'page');
+  if (page?.kind === 'page') {
+    const name = camelCase(page.langName);
+    lines.push(
+      `  final effective${typeName(name)} = ${name} ?? ${page.defaultSize};`,
+      `  if (effective${typeName(name)} < 1 || effective${typeName(name)} > ${page.maxSize}) {`,
+      `    throw SyqlQueryInputException('SYQL_RUNTIME_INVALID_PAGE', ${quote(`${query.name}: invalid page size`)});`,
+      '  }',
+    );
+  }
+  if (metadata.plan.backend === 'variants') {
+    lines.push('  var activationMask = 0;');
+    metadata.plan.activationControls.forEach((control, index) => {
+      lines.push(
+        `  if (${syqlControlActive(query, control)}) activationMask |= ${2 ** index};`,
+      );
+    });
+  }
+  const sort = metadata.inputs.find((input) => input.kind === 'sort');
+  const profileCount = sort?.kind === 'sort' ? sort.profiles.length : 1;
+  const sortIndex =
+    sort?.kind === 'sort' ? `${camelCase(sort.langName)}.index` : '0';
+  const index =
+    metadata.plan.backend === 'variants'
+      ? `activationMask * ${profileCount} + ${sortIndex}`
+      : sortIndex;
+  lines.push(
+    `  final statementIndex = ${index};`,
+    '  late final String sql;',
+    '  late final List<Object?> params;',
+    '  switch (statementIndex) {',
+  );
+  metadata.plan.statements.forEach((statement, statementIndex) => {
+    const binds = statement.binds
+      .map((bind) => syqlBindExpr(query, bind))
+      .join(', ');
+    lines.push(
+      `    case ${statementIndex}: sql = ${quote(statement.positionalSql)}; params = <Object?>[${binds}]; break;`,
+    );
+  });
+  lines.push(
+    "    default: throw StateError('invalid generated SYQL statement index');",
+    '  }',
+    `  return client.query(sql, params: params).map(${Row}.fromRow).whereType<${Row}>().toList();`,
+    '}',
+  );
+  return lines;
+}
+
 /** Per-query orderBy allowlist enum (column = the checked SQL column). */
 function emitOrderByEnum(query: AnalyzedQuery): string[] {
   if (query.orderBy === undefined) return [];
@@ -151,6 +328,7 @@ function emitClass(query: AnalyzedQuery): string[] {
 }
 
 function emitRunner(query: AnalyzedQuery): string[] {
+  if (query.syql !== undefined) return emitSyqlDartRunner(query);
   const Row = `${typeName(query.name)}Row`;
   const Pascal = pascalCase(query.name);
   const lines: string[] = [];
@@ -246,6 +424,27 @@ export function emitQueriesDartModule(
     ].join('\n'),
   );
 
+  if (queries.some((query) => query.syql !== undefined)) {
+    parts.push(
+      [
+        'class SyqlQueryPresence<T> {',
+        '  final bool isPresent;',
+        '  final T? value;',
+        '  const SyqlQueryPresence.absent() : isPresent = false, value = null;',
+        '  const SyqlQueryPresence.present(this.value) : isPresent = true;',
+        '}',
+        '',
+        'class SyqlQueryInputException implements Exception {',
+        '  final String code;',
+        '  final String message;',
+        '  const SyqlQueryInputException(this.code, this.message);',
+        '  @override',
+        "  String toString() => '$code: $message';",
+        '}',
+      ].join('\n'),
+    );
+  }
+
   parts.push(
     [
       '/// Lift a SQLite boolean: a real bool, or 0/1 as a number.',
@@ -284,6 +483,8 @@ export function emitQueriesDartModule(
   }
 
   for (const query of queries) {
+    const syqlTypes = emitSyqlDartTypes(query);
+    if (syqlTypes.length > 0) parts.push(syqlTypes.join('\n'));
     parts.push(emitClass(query).join('\n'));
     const orderByEnum = emitOrderByEnum(query);
     if (orderByEnum.length > 0) parts.push(orderByEnum.join('\n'));

@@ -50,7 +50,10 @@ import {
 } from './query';
 import { serializeQueryIr } from './query-ir';
 import { applyMigrationSql, type ParsedTable } from './sql';
-import { analyzeSyqlFile } from './syql';
+import { lowerSyqlQuery } from './syql-lowering';
+import { buildSyqlModuleGraph } from './syql-modules';
+import { analyzeSyqlSemantics } from './syql-semantics';
+import { validateSyqlProgram } from './syql-validator';
 
 export interface MigrationInput {
   /** Directory name, e.g. `0001_initial`. */
@@ -421,18 +424,48 @@ export function analyzeQueries(
   ir: IrDocument,
   queries: readonly QueryInput[],
   naming?: QueryNamingOptions,
+  queriesRoot = resolve('/__syncular_queries__'),
 ): AnalyzedQuery[] {
   if (queries.length === 0) return [];
   const { db, close } = makeQueryDb(ir);
   try {
-    // Each file may hold multiple statements; flatten in path order (stable).
-    // Frontends dispatch on extension; both produce the same AnalyzedQuery
-    // shape (§1 — nothing downstream knows the frontend).
-    const analyzed = queries.flatMap((q) =>
-      q.file.endsWith('.syql')
-        ? analyzeSyqlFile(q.file, q.sql, ir, db, naming)
-        : analyzeQueryFile(q.file, q.sql, ir, db, naming),
-    );
+    const plain = queries
+      .filter((query) => query.file.endsWith('.sql'))
+      .flatMap((query) =>
+        analyzeQueryFile(query.file, query.sql, ir, db, naming),
+      );
+    const syqlInputs = queries.filter((query) => query.file.endsWith('.syql'));
+    let syql: AnalyzedQuery[] = [];
+    if (syqlInputs.length > 0) {
+      const root = resolve(queriesRoot);
+      const sourceByFile = new Map(
+        syqlInputs.map((query) => [resolve(root, query.file), query.sql]),
+      );
+      const displayByFile = new Map(
+        syqlInputs.map((query) => [resolve(root, query.file), query.file]),
+      );
+      const graph = buildSyqlModuleGraph(
+        root,
+        syqlInputs.map((query) => query.file),
+        (file) => sourceByFile.get(file),
+      );
+      const validated = validateSyqlProgram(
+        analyzeSyqlSemantics(graph),
+        ir,
+        db,
+        naming,
+      );
+      syql = validated.queries
+        .map((query) => {
+          const lowered = lowerSyqlQuery(query, ir, db, naming).analysis;
+          return {
+            ...lowered,
+            file: displayByFile.get(query.logical.module.file) ?? lowered.file,
+          };
+        })
+        .sort((left, right) => left.file.localeCompare(right.file));
+    }
+    const analyzed = [...plain, ...syql];
     // Names must be unique across the whole manifest — the filesystem no longer
     // guarantees uniqueness once `-- name:` overrides exist. Report BOTH source
     // locations (file + statement position) on a collision.
@@ -552,6 +585,7 @@ export function generate(manifestDir: string): GenerateResult {
         ir,
         loadQueries(resolve(manifestDir, manifest.queries)),
         naming,
+        resolve(manifestDir, manifest.queries),
       )
     : [];
   if (wantsQueries && analyzedQueries.length === 0) {

@@ -425,7 +425,13 @@ function lowerStatement(
     candidate,
     ir,
     db,
-    naming,
+    {
+      ...naming,
+      internalParams: [
+        ...conditionBinds.keys(),
+        ...(validated.page === undefined ? [] : [PAGE_BIND]),
+      ],
+    },
   );
   const namedSql =
     headers.length === 0
