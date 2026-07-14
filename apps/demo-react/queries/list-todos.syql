@@ -1,11 +1,9 @@
--- The demo's live read, in the .syql DSL tier (DESIGN-queries.md §3):
--- the signature declares existence/optionality, the body is plain SQL.
--- `q?` is an auto-guarded optional — omit it and the search conjunct
--- is a no-op; pass it and the list filters live.
-query listTodos(listId, q?) {
-  select id, list_id, title, done, position, updated_at_ms, attachment
-  from todos
-  where list_id = :listId
-    and title like '%' || :q || '%'
-  order by position, id
+query listTodos(listId, q?: string) {
+  sql {
+    select id, list_id, title, done, position, updated_at_ms, attachment
+    from todos
+    where @scope(todos.list_id = :listId)
+      and when(q) { title like '%' || :q || '%' }
+    order by position, id
+  }
 }

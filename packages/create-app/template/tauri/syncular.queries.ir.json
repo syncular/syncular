@@ -1,12 +1,12 @@
 {
-  "queryIrVersion": 2,
+  "queryIrVersion": 3,
   "queries": [
     {
       "name": "listTodos",
-      "file": "list-todos.syql (query listTodos)",
-      "sourceSql": "select id, list_id, title, done, position, updated_at_ms\n  from todos\n  where list_id = :listId\n  order by position, id",
-      "sql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs from todos where list_id = :listId order by position, id",
-      "positionalSql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs from todos where list_id = ? order by position, id",
+      "file": "list-todos.syql",
+      "sourceSql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs from todos\n    where (todos.list_id = :listId)\n    order by position, id",
+      "sql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs from todos\n    where (todos.list_id = :listId)\n    order by position, id",
+      "positionalSql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs from todos where (todos.list_id = ?) order by position, id",
       "params": [
         {
           "name": "listId",
@@ -100,17 +100,44 @@
             ]
           }
         ],
-        "coverage": [
+        "coverage": [],
+        "rowKey": [
+          "id"
+        ]
+      },
+      "syql": {
+        "revision": 1,
+        "inputs": [
           {
-            "table": "todos",
-            "variable": "list_id",
-            "units": [
-              "listId"
-            ],
-            "fixedScopes": []
+            "kind": "value",
+            "name": "listId",
+            "langName": "listId",
+            "type": "string",
+            "nullable": false,
+            "required": true
           }
         ],
-        "rowKey": [
+        "plan": {
+          "backend": "variants",
+          "activationControls": [],
+          "conditions": [],
+          "statements": [
+            {
+              "activationMask": 0,
+              "sql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs from todos\n    where (todos.list_id = :listId)\n    order by position, id",
+              "positionalSql": "select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs from todos where (todos.list_id = ?) order by position, id",
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "listId",
+                  "type": "string",
+                  "input": "listId"
+                }
+              ]
+            }
+          ]
+        },
+        "identity": [
           "id"
         ]
       }

@@ -178,6 +178,9 @@ export interface QueryNamingOptions {
   readonly targets: readonly NamingTarget[];
   /** `.syql` conditional-lowering policy (default `auto`). */
   readonly backend?: QueryBackend;
+  /** Compiler-reserved physical binds. They retain their exact names and do
+   * not participate in public target-language keyword/private-name checks. */
+  readonly internalParams?: readonly string[];
 }
 
 const DEFAULT_NAMING: QueryNamingOptions = { naming: 'camel', targets: ['ts'] };
@@ -1394,16 +1397,20 @@ export function analyzeStatement(
       `internal: scanned ${paramNames.length} params (${paramNames.join(', ')}) but SQLite reports ${described.paramsCount}`,
     );
   }
-  const paramLangNames = buildNamingMap(
-    paramNames,
+  const internalParams = new Set(naming.internalParams ?? []);
+  const publicParamLangNames = buildNamingMap(
+    paramNames.filter((name) => !internalParams.has(name)),
     naming.naming,
     file,
     'params',
     naming.targets,
   );
+  const langNameByParam = new Map(
+    publicParamLangNames.map((mapping) => [mapping.sqlName, mapping.langName]),
+  );
   const commentByName = new Map(commentParams.map((p) => [p.name, p.type]));
-  const params: QueryParam[] = paramNames.map((paramName, index) => {
-    const langName = paramLangNames[index]?.langName ?? paramName;
+  const params: QueryParam[] = paramNames.map((paramName) => {
+    const langName = langNameByParam.get(paramName) ?? paramName;
     const commented = commentByName.get(paramName);
     if (commented !== undefined) {
       return { name: paramName, langName, type: commented, source: 'comment' };

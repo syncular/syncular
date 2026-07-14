@@ -13,7 +13,13 @@
  */
 import type { IrColumnType } from './ir';
 import { snakeToCamel } from './naming';
-import type { AnalyzedQuery, QueryColumn, QueryParam } from './query';
+import type {
+  AnalyzedQuery,
+  QueryColumn,
+  QueryParam,
+  QuerySyqlPlanBind,
+  QuerySyqlPublicInput,
+} from './query';
 
 const KOTLIN_TYPE: Readonly<Record<IrColumnType, string>> = {
   string: 'String',
@@ -97,6 +103,182 @@ function isOptionalParam(query: AnalyzedQuery, p: QueryParam): boolean {
   );
 }
 
+function syqlInput(query: AnalyzedQuery, name: string): QuerySyqlPublicInput {
+  const input = query.syql?.inputs.find((candidate) => candidate.name === name);
+  if (input === undefined) throw new Error(`unknown SYQL input ${name}`);
+  return input;
+}
+
+function syqlKotlinType(type: IrColumnType, nullable: boolean): string {
+  return `${KOTLIN_TYPE[type]}${nullable ? '?' : ''}`;
+}
+
+function syqlControlActive(query: AnalyzedQuery, name: string): string {
+  const input = syqlInput(query, name);
+  const access = camelCase(input.langName);
+  if (input.kind === 'switch') return access;
+  if (input.kind === 'value' && input.nullable) {
+    return `${access} is SyncularQueryPresence.Present`;
+  }
+  if (input.kind === 'value' || input.kind === 'group') {
+    return `${access} != null`;
+  }
+  throw new Error(`${name} is not an activation control`);
+}
+
+function syqlNullablePresenceBind(type: IrColumnType, access: string): string {
+  return `when (val presence = ${access}) { is SyncularQueryPresence.Present -> ${optionalParamValue(type, 'presence.value')}; SyncularQueryPresence.Absent -> JsonValue.Null }`;
+}
+
+function syqlBindExpr(query: AnalyzedQuery, bind: QuerySyqlPlanBind): string {
+  if (bind.kind === 'condition-active') {
+    const active = bind.controls
+      .map((control) => syqlControlActive(query, control))
+      .join(' && ');
+    return `JsonValue.of(${active})`;
+  }
+  const input = syqlInput(query, bind.input);
+  const access = camelCase(input.langName);
+  if (bind.kind === 'page')
+    return `JsonValue.of(effective${typeName(access)}.toDouble())`;
+  if (bind.kind === 'group-member') {
+    if (input.kind !== 'group') throw new Error('group bind/input mismatch');
+    const member = input.members.find(
+      (candidate) => candidate.name === bind.member,
+    );
+    if (member === undefined)
+      throw new Error(`unknown group member ${bind.member}`);
+    const memberName = camelCase(member.langName);
+    const present = member.nullable
+      ? optionalParamValue(member.type, `value.${memberName}`)
+      : paramValue(member.type, `value.${memberName}`);
+    return `${access}?.let { value -> ${present} } ?: JsonValue.Null`;
+  }
+  if (input.kind !== 'value') throw new Error('value bind/input mismatch');
+  if (input.required) {
+    return input.nullable
+      ? optionalParamValue(input.type, access)
+      : paramValue(input.type, access);
+  }
+  return input.nullable
+    ? syqlNullablePresenceBind(input.type, access)
+    : optionalParamValue(input.type, access);
+}
+
+function emitSyqlKotlinTypes(query: AnalyzedQuery): string[] {
+  const lines: string[] = [];
+  for (const input of query.syql?.inputs ?? []) {
+    if (input.kind === 'group') {
+      const name = `${typeName(query.name)}${typeName(input.langName)}`;
+      lines.push(`data class ${name}(`);
+      for (const member of input.members) {
+        lines.push(
+          `    val ${camelCase(member.langName)}: ${syqlKotlinType(member.type, member.nullable)},`,
+        );
+      }
+      lines.push(')', '');
+    } else if (input.kind === 'sort') {
+      const name = `${typeName(query.name)}${typeName(input.langName)}`;
+      lines.push(`enum class ${name}(val index: Int) {`);
+      lines.push(
+        `${input.profiles
+          .map(
+            (profile, index) => `    ${camelCase(profile.langName)}(${index})`,
+          )
+          .join(',\n')};`,
+      );
+      lines.push('}', '');
+    }
+  }
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
+function emitSyqlKotlinRunner(query: AnalyzedQuery): string[] {
+  const metadata = query.syql;
+  if (metadata === undefined) throw new Error('missing SYQL metadata');
+  const Row = `${typeName(query.name)}Row`;
+  const lines: string[] = [];
+  lines.push(
+    `        val ${query.name}Tables = listOf(${query.tables.map(quote).join(', ')})`,
+    '',
+    `        /** Run the ${query.name} revision-1 SYQL query. */`,
+  );
+  const args = ['client: SyncularClient'];
+  for (const input of metadata.inputs) {
+    const name = camelCase(input.langName);
+    if (input.kind === 'value') {
+      const type = syqlKotlinType(input.type, input.nullable);
+      if (input.required) args.push(`${name}: ${type}`);
+      else if (input.nullable) {
+        args.push(
+          `${name}: SyncularQueryPresence<${type}> = SyncularQueryPresence.Absent`,
+        );
+      } else args.push(`${name}: ${type}? = null`);
+    } else if (input.kind === 'group') {
+      args.push(
+        `${name}: ${typeName(query.name)}${typeName(input.langName)}? = null`,
+      );
+    } else if (input.kind === 'switch') {
+      args.push(`${name}: Boolean = false`);
+    } else if (input.kind === 'sort') {
+      const defaultCase =
+        input.profiles.find((profile) => profile.name === input.defaultProfile)
+          ?.langName ?? input.defaultProfile;
+      const type = `${typeName(query.name)}${typeName(input.langName)}`;
+      args.push(`${name}: ${type} = ${type}.${camelCase(defaultCase)}`);
+    } else {
+      args.push(`${name}: Long? = null`);
+    }
+  }
+  lines.push(`        fun ${query.name}(${args.join(', ')}): List<${Row}> {`);
+  const page = metadata.inputs.find((input) => input.kind === 'page');
+  if (page?.kind === 'page') {
+    const name = camelCase(page.langName);
+    lines.push(
+      `            val effective${typeName(name)} = ${name} ?: ${page.defaultSize}L`,
+      `            if (effective${typeName(name)} < 1L || effective${typeName(name)} > ${page.maxSize}L) {`,
+      `                throw SyncularQueryInputException("SYQL_RUNTIME_INVALID_PAGE", ${quote(`${query.name}: invalid page size`)})`,
+      '            }',
+    );
+  }
+  if (metadata.plan.backend === 'variants') {
+    lines.push('            var activationMask = 0');
+    metadata.plan.activationControls.forEach((control, index) => {
+      lines.push(
+        `            if (${syqlControlActive(query, control)}) activationMask = activationMask or ${2 ** index}`,
+      );
+    });
+  }
+  const sort = metadata.inputs.find((input) => input.kind === 'sort');
+  const profileCount = sort?.kind === 'sort' ? sort.profiles.length : 1;
+  const sortIndex =
+    sort?.kind === 'sort' ? `${camelCase(sort.langName)}.index` : '0';
+  const index =
+    metadata.plan.backend === 'variants'
+      ? `activationMask * ${profileCount} + ${sortIndex}`
+      : sortIndex;
+  lines.push(
+    `            val statementIndex = ${index}`,
+    '            val selected: Pair<String, List<JsonValue>> = when (statementIndex) {',
+  );
+  metadata.plan.statements.forEach((statement, statementIndex) => {
+    const binds = statement.binds
+      .map((bind) => syqlBindExpr(query, bind))
+      .join(', ');
+    lines.push(
+      `                ${statementIndex} -> Pair(${quote(statement.positionalSql)}, listOf(${binds}))`,
+    );
+  });
+  lines.push(
+    '                else -> error("invalid generated SYQL statement index")',
+    '            }',
+    `            return client.query(selected.first, selected.second).mapNotNull { ${Row}.fromRow(it) }`,
+    '        }',
+  );
+  return lines;
+}
+
 /** Per-query orderBy allowlist enum (column = the checked SQL column). */
 function emitOrderByEnum(query: AnalyzedQuery): string[] {
   if (query.orderBy === undefined) return [];
@@ -146,6 +328,7 @@ function emitDataClass(query: AnalyzedQuery): string[] {
 }
 
 function emitRunner(query: AnalyzedQuery): string[] {
+  if (query.syql !== undefined) return emitSyqlKotlinRunner(query);
   const Row = `${typeName(query.name)}Row`;
   const lines: string[] = [];
   lines.push(
@@ -241,6 +424,22 @@ export function emitQueriesKotlinModule(
     ].join('\n'),
   );
 
+  if (queries.some((query) => query.syql !== undefined)) {
+    parts.push(
+      [
+        'sealed class SyncularQueryPresence<out T> {',
+        '    object Absent : SyncularQueryPresence<Nothing>()',
+        '    data class Present<T>(val value: T) : SyncularQueryPresence<T>()',
+        '}',
+        '',
+        'class SyncularQueryInputException(',
+        '    val code: String,',
+        '    override val message: String,',
+        ') : IllegalArgumentException(message)',
+      ].join('\n'),
+    );
+  }
+
   // Row-decode + bind helpers (package-private; distinct names so they don't
   // clash with the schema file's rowBool/rowBytes in the same package).
   parts.push(
@@ -279,6 +478,8 @@ export function emitQueriesKotlinModule(
   }
 
   for (const query of queries) {
+    const syqlTypes = emitSyqlKotlinTypes(query);
+    if (syqlTypes.length > 0) parts.push(syqlTypes.join('\n'));
     parts.push(emitDataClass(query).join('\n'));
     const orderByEnum = emitOrderByEnum(query);
     if (orderByEnum.length > 0) parts.push(orderByEnum.join('\n'));

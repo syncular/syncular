@@ -4,6 +4,10 @@ import { resolve } from 'node:path';
 import {
   analyzeSyqlSemantics,
   buildSyqlModuleGraph,
+  emitQueriesDartModule,
+  emitQueriesKotlinModule,
+  emitQueriesModule,
+  emitQueriesSwiftModule,
   type IrDocument,
   lowerSyqlQuery,
   type QueryDb,
@@ -297,5 +301,46 @@ describe('revision-1 SYQL lowering', () => {
         pageSize: 2,
       }),
     ).toHaveLength(2);
+  });
+
+  test('every emitter consumes the same selected plan and public shape', () => {
+    const query = lowerSyqlQuery(validated(), IR, db, {
+      naming: 'camel',
+      targets: ['ts', 'swift', 'kotlin', 'dart'],
+      backend: 'neutralize',
+    }).analysis;
+    const ts = emitQueriesModule([query], 'sha256:test', 1);
+    const swift = emitQueriesSwiftModule(
+      [query],
+      'sha256:test',
+      1,
+      'TestSchema',
+    );
+    const kotlin = emitQueriesKotlinModule(
+      [query],
+      'sha256:test',
+      1,
+      'dev.syncular.test',
+      'TestSchema',
+    );
+    const dart = emitQueriesDartModule([query], 'sha256:test', 1);
+
+    expect(() =>
+      new Bun.Transpiler({ loader: 'ts' }).transformSync(ts),
+    ).not.toThrow();
+    expect(ts).toContain('status?: SyqlPresent<string | null>');
+    expect(ts).toContain('start: bigint');
+    expect(ts).toContain('SYQL_RUNTIME_INVALID_PAGE');
+    expect(swift).toContain('SyncularQueryPresence<String?>');
+    expect(swift).toContain('public let start: Int64');
+    expect(kotlin).toContain('SyncularQueryPresence<String?>');
+    expect(kotlin).toContain('val start: Long');
+    expect(dart).toContain('SyqlQueryPresence<String?>');
+    for (const output of [ts, swift, kotlin, dart]) {
+      expect(output).toContain(
+        query.syql?.plan.statements[0]?.positionalSql as string,
+      );
+      expect(output).toContain('invalid generated SYQL statement index');
+    }
   });
 });
