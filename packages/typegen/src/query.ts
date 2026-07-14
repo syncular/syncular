@@ -502,7 +502,7 @@ function parseCommentParams(file: string, raw: string): CommentParam[] {
 
 /** Strip `--` and block comments so identifier scans don't hit commented SQL,
  * and string literals so `':x'` inside a string isn't read as a param. */
-function stripCommentsAndStrings(sql: string): string {
+export function stripCommentsAndStrings(sql: string): string {
   let out = '';
   let i = 0;
   while (i < sql.length) {
@@ -638,7 +638,7 @@ export function toPositionalSql(sql: string): string {
 
 // -- FROM/JOIN table resolution ----------------------------------------------
 
-interface TableRef {
+export interface TableRef {
   readonly table: string;
   /** Alias (or the table name when un-aliased). */
   readonly alias: string;
@@ -668,7 +668,7 @@ const RESERVED_ALIAS = new Set([
   'having',
 ]);
 
-function scanTableRefs(sql: string, ir: IrDocument): TableRef[] {
+export function scanTableRefs(sql: string, ir: IrDocument): TableRef[] {
   const cleaned = stripCommentsAndStrings(sql);
   const known = new Map(ir.tables.map((t) => [t.name, t] as const));
   const refs: TableRef[] = [];
@@ -853,6 +853,78 @@ function inferParamType(
   const like = new RegExp(`\\bLIKE\\b[^()]*:${paramName}\\b`, 'i');
   if (like.test(cleaned)) return 'string';
   return null;
+}
+
+/**
+ * Return every revision-1 column/LIKE type constraint for one bind. Unlike
+ * `inferParamType` (the legacy first-match helper), SYQL uses the complete set
+ * so conflicting checked uses cannot be silently accepted.
+ */
+export function inferParamTypeEvidence(
+  paramName: string,
+  sql: string,
+  refs: readonly TableRef[],
+  ir: IrDocument,
+): readonly IrColumnType[] {
+  const cleaned = stripCommentsAndStrings(sql);
+  const byName = new Map(
+    ir.tables.map((table) => [table.name, table] as const),
+  );
+  const evidence: IrColumnType[] = [];
+  const add = (qualifier: string | undefined, column: string): void => {
+    if (qualifier !== undefined) {
+      const ref = refs.find((candidate) => candidate.alias === qualifier);
+      const table = ref === undefined ? undefined : byName.get(ref.table);
+      const type = table?.columns.find((item) => item.name === column)?.type;
+      if (type !== undefined) evidence.push(type);
+      return;
+    }
+    const matches = refs.flatMap((ref) => {
+      const table = byName.get(ref.table);
+      const type = table?.columns.find((item) => item.name === column)?.type;
+      return type === undefined ? [] : [type];
+    });
+    if (matches.length === 1) evidence.push(matches[0] as IrColumnType);
+  };
+
+  const comparison = new RegExp(
+    `(?:(${IDENT})\\.)?(${IDENT})\\s*(?:=|==|!=|<>|<=|>=|<|>|\\bLIKE\\b|\\bIS\\b)\\s*:${paramName}\\b`,
+    'gi',
+  );
+  for (const match of cleaned.matchAll(comparison)) {
+    add(match[1], match[2] as string);
+  }
+  const reversed = new RegExp(
+    `:${paramName}\\b\\s*(?:=|==|!=|<>|<=|>=|<|>)\\s*(?:(${IDENT})\\.)?(${IDENT})`,
+    'gi',
+  );
+  for (const match of cleaned.matchAll(reversed)) {
+    add(match[1], match[2] as string);
+  }
+  const inList = new RegExp(
+    `(?:(${IDENT})\\.)?(${IDENT})\\s+IN\\s*\\(([^)]*:${paramName}\\b[^)]*)\\)`,
+    'gi',
+  );
+  for (const match of cleaned.matchAll(inList)) {
+    add(match[1], match[2] as string);
+  }
+  const betweenLeft = new RegExp(
+    `(?:(${IDENT})\\.)?(${IDENT})\\s+BETWEEN\\s+:${paramName}\\b`,
+    'gi',
+  );
+  for (const match of cleaned.matchAll(betweenLeft)) {
+    add(match[1], match[2] as string);
+  }
+  const betweenRight = new RegExp(
+    `(?:(${IDENT})\\.)?(${IDENT})\\s+BETWEEN\\s+\\S+\\s+AND\\s+:${paramName}\\b`,
+    'gi',
+  );
+  for (const match of cleaned.matchAll(betweenRight)) {
+    add(match[1], match[2] as string);
+  }
+  const like = new RegExp(`\\bLIKE\\b[^()]*:${paramName}\\b`, 'gi');
+  if (like.test(cleaned)) evidence.push('string');
+  return evidence;
 }
 
 // -- fallback column typing (computed expressions) ----------------------------
