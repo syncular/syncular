@@ -1,0 +1,42 @@
+name: Docs
+
+# Keep syncular.dev aligned with the documentation on main. Release tags also
+# deploy from release.yml after publication; both workflows share one
+# concurrency group so Cloudflare Worker deployments cannot race.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/docs/**'
+      - 'package.json'
+      - '.github/workflows/docs.yml'
+
+concurrency:
+  group: docs-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Validate version source and build docs
+        run: |
+          bun run version:check
+          bun run --cwd apps/docs build
+      - name: Deploy docs to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 336bfd20ccb2f56e24ac0afeca6b4837
+          workingDirectory: apps/docs
+          command: deploy
