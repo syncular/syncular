@@ -1,6 +1,6 @@
 # RFC 0004 — SYQL: an explicit, hygienic, reactive-aware SQL language
 
-- **Status:** Accepted; implemented on `feats/syql-reworks`
+- **Status:** Implemented in Syncular 0.6.0
 - **Date:** 2026-07-14
 - **Scope:** `packages/typegen`, `editors/vscode-syql`, generated query
   emitters, query IR, demos, conformance fixtures, and query documentation
@@ -8,8 +8,7 @@
 - **Compatibility posture:** destructive replacement while Syncular is a
   prototype; no compatibility parser, source-version switch, deprecation
   window, or automatic preservation of the current grammar
-- **Implementation:** L0–L7 complete; L8 repository/native/release validation
-  is the remaining merge gate
+- **Implementation:** L0–L8 complete
 
 The implementation follows the destructive posture of this RFC. The prototype
 parser, implicit optional guards, fragments, unchecked reactive declarations,
@@ -616,7 +615,7 @@ pay migration cost once rather than preserve two accidental languages.
 | L5 | Complete | Update TS, Swift, Kotlin, and Dart emitters together | normative emitter vectors plus target goldens green |
 | L6 | Complete | Replace formatter, LSP, TextMate grammar, `--print`, and docs | formatter/LSP/editor/conformance suites green |
 | L7 | Complete | Rewrite repository `.syql`, demo, generated output, and goldens; delete prototype paths | no compatibility parser or legacy query IR/emitter path remains |
-| L8 | In progress | Run full repository, native, portability, demo/docs, and release checks | required before merge and release |
+| L8 | Complete | Run full repository, native, portability, demo/docs, and release checks | repository, native, package, and site release gates green |
 
 The cutover commit may be staged internally, but the mergeable end state does
 not contain both parsers. Unversioned `.syql` means the grammar in
