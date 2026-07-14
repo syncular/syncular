@@ -14,14 +14,28 @@
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use ssp2::model::{Frame, Message, MsgKind};
 use ssp2::{encode_message, MessageStreamScanner};
+use tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tungstenite::Message as WsMessage;
 
 use syncular_client::{Transport, REALTIME_TAG_DELTA, REALTIME_TAG_ROUND};
+
+#[allow(clippy::result_large_err)]
+fn assert_client_identity(
+    request: &Request,
+    response: Response,
+) -> Result<Response, ErrorResponse> {
+    assert_eq!(
+        request.uri().query(),
+        Some("transport=round&clientId=c1"),
+        "native realtime must retain host query params and replace the client identity"
+    );
+    Ok(response)
+}
 
 use crate::transport::{HostTransport, Inbound};
 
@@ -68,7 +82,7 @@ where
     let port = listener.local_addr().unwrap().port();
     thread::spawn(move || {
         let (stream, _) = listener.accept().expect("accept");
-        let mut ws = tungstenite::accept(stream).expect("ws accept");
+        let mut ws = tungstenite::accept_hdr(stream, assert_client_identity).expect("ws accept");
         script(&mut ws);
         // Give the client a moment to drain before we drop/close.
         let _ = ws.flush();
@@ -85,11 +99,53 @@ where
 fn connect_native(port: u16) -> HostTransport {
     let config = json!({
         "baseUrl": format!("http://127.0.0.1:{port}"),
-        "wsUrl": format!("ws://127.0.0.1:{port}"),
+        "wsUrl": format!("ws://127.0.0.1:{port}?transport=round&clientId=stale"),
     });
     let mut transport = HostTransport::from_config(&config).expect("native transport");
-    transport.realtime_connect().expect("realtime connect");
     transport
+        .realtime_connect_for_client("c1")
+        .expect("realtime connect");
+    transport
+}
+
+fn request_bytes() -> Vec<u8> {
+    encode_message(&Message {
+        msg_kind: MsgKind::Request,
+        frames: vec![Frame::ReqHeader {
+            client_id: "c1".to_owned(),
+            schema_version: 1,
+        }],
+    })
+}
+
+#[test]
+fn quiet_socket_reader_never_starves_round_sends() {
+    const ROUNDS: usize = 12;
+    let response = response_bytes();
+    let server_response = response.clone();
+    let port = spawn_ws_server(move |ws| {
+        for _ in 0..ROUNDS {
+            let _request = read_round_request(ws);
+            let mut framed = vec![REALTIME_TAG_ROUND];
+            framed.extend_from_slice(&server_response);
+            ws.send(WsMessage::Binary(framed)).unwrap();
+            ws.flush().unwrap();
+        }
+    });
+
+    let mut transport = connect_native(port);
+    let request = request_bytes();
+    let started = Instant::now();
+    for _ in 0..ROUNDS {
+        let got = transport.realtime_sync(&request).expect("round ok");
+        assert_eq!(got, response);
+    }
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(750),
+        "quiet-socket send fairness regressed: {ROUNDS} loopback rounds took {elapsed:?}"
+    );
+    transport.shutdown();
 }
 
 #[test]
@@ -106,13 +162,7 @@ fn round_single_chunk_response_round_trips() {
     });
 
     let mut transport = connect_native(port);
-    let request = encode_message(&Message {
-        msg_kind: MsgKind::Request,
-        frames: vec![Frame::ReqHeader {
-            client_id: "c1".to_owned(),
-            schema_version: 1,
-        }],
-    });
+    let request = request_bytes();
     let got = transport.realtime_sync(&request).expect("round ok");
     assert_eq!(got, response, "reassembled response matches the server's");
     transport.shutdown();

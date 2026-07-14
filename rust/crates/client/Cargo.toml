@@ -32,7 +32,23 @@ version = "0.6"
 features = ["getrandom"]
 optional = true
 
+# One native transport implementation shared by the FFI and Tauri hosts.
+# Keeping it behind a client feature preserves dependency-lean core builds.
+[dependencies.ureq]
+version = "2"
+optional = true
+
+[dependencies.tungstenite]
+version = "0.24"
+optional = true
+features = ["rustls-tls-webpki-roots"]
+
+[dependencies.url]
+version = "2"
+optional = true
+
 [features]
 default = []
 crdt-yjs = ["dep:yrs"]
 e2ee = ["ssp2/e2ee", "dep:rand_core"]
+native-transport = ["dep:ureq", "dep:tungstenite", "dep:url"]

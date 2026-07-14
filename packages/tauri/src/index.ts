@@ -13,8 +13,9 @@
  * Every method forwards to the plugin's `syncular_command` command (the whole
  * command surface in one JSON envelope — `{method, params}`), mirroring the FFI
  * and the conformance shim. `query` uses the dedicated `syncular_query` fast
- * path (one IPC round trip per live-query run — fine at Tauri IPC latency; see
- * the README's pagination note for very large result sets). Client-observable
+ * path; atomic reactive reads use `syncular_query_snapshot`, backed by an
+ * independent read-only SQLite connection so network sync cannot stall local
+ * UI reads. Client-observable
  * events (`change` / `presence`) arrive on
  * the `syncular://event` Tauri event and fan out to the registered listeners.
  *
@@ -320,11 +321,18 @@ export class TauriSyncClient {
   async querySnapshot<Row = SqlRow>(
     spec: QueryReadSpec,
   ): Promise<QuerySnapshot<Row>> {
-    const result = (await this.#command('querySnapshot', {
-      sql: spec.sql,
-      params: (spec.params ?? []).map(encodeParam),
-      coverage: spec.coverage ?? [],
-    })) as {
+    const reply = await this.#tauri.invoke<CommandReply>(
+      `${PLUGIN}syncular_query_snapshot`,
+      {
+        sql: spec.sql,
+        params: (spec.params ?? []).map(encodeParam),
+        coverage: spec.coverage ?? [],
+      },
+    );
+    if (reply.error !== undefined) {
+      throw new TauriSyncError(reply.error.code, reply.error.message);
+    }
+    const result = reply.result as {
       revision: string;
       rows: Record<string, unknown>[];
       coverage: QuerySnapshot['coverage'];

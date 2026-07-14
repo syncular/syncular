@@ -49,6 +49,13 @@ function defaultResponder(cmd: string, args: Record<string, unknown>): unknown {
       rows: [{ id: 't1', title: 'hello', blob: { $bytes: 'deadbeef' } }],
     });
   }
+  if (cmd === 'plugin:syncular|syncular_query_snapshot') {
+    return OK({
+      revision: '7',
+      rows: [],
+      coverage: { complete: true, pending: [], missing: [] },
+    });
+  }
   const command = args.command as
     | { method: string; params: Record<string, unknown> }
     | undefined;
@@ -168,8 +175,7 @@ describe('createTauriSyncClient', () => {
 
   test('querySnapshot is one IPC read for rows, coverage, and exact revision', async () => {
     const { tauri, calls } = makeTauri((cmd, args) => {
-      const method = (args.command as { method?: string } | undefined)?.method;
-      if (method === 'querySnapshot') {
+      if (cmd === 'plugin:syncular|syncular_query_snapshot') {
         return OK({
           revision: '42',
           rows: [{ id: 't1', payload: { $bytes: '0102' } }],
@@ -193,11 +199,19 @@ describe('createTauriSyncClient', () => {
     expect(snapshot.coverage.complete).toBe(true);
     expect(snapshot.rows[0]?.payload).toEqual(new Uint8Array([1, 2]));
     const callsForSnapshot = calls.filter(
-      (call) =>
-        (call.args.command as { method?: string } | undefined)?.method ===
-        'querySnapshot',
+      (call) => call.cmd === 'plugin:syncular|syncular_query_snapshot',
     );
     expect(callsForSnapshot).toHaveLength(1);
+    expect(callsForSnapshot[0]?.args).toEqual({
+      sql: 'SELECT * FROM tasks WHERE list_id = ?',
+      params: ['a'],
+      coverage: [
+        {
+          base: { table: 'tasks', variable: 'list_id' },
+          units: ['a'],
+        },
+      ],
+    });
   });
 
   test('mutate returns the clientCommitId', async () => {

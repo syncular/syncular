@@ -19,6 +19,8 @@
 //!   surface stays conformance-locked).
 //! - `syncular_query(sql, params)` — the React live-query fast path (arbitrary
 //!   read-only SQL); routed through the same `query` command.
+//! - `syncular_query_snapshot(sql, params, coverage)` — atomic reactive reads
+//!   on an independent read-only SQLite connection for file-backed clients.
 //! - `syncular://event` — exact revisioned `change` batches plus ephemeral
 //!   `presence`; command/realtime sync intents stay inside the event-driven
 //!   owner loop.
@@ -26,10 +28,11 @@
 //! ## Thread-safety, honestly
 //!
 //! [`core::SyncularCore`] owns a rusqlite connection and is NOT `Sync`. One
-//! owning thread holds it; every command arrives over a mailbox (mpsc). The
-//! background host loop (§8.4 wake-driven `syncUntilIdle` with deadlines) runs ON
-//! that same thread, interleaved with mailbox requests, so the connection is
-//! never touched concurrently — the same one-owning-thread pattern as the shim.
+//! owning thread holds the mutable client; every command arrives over a mailbox
+//! (mpsc). The background host loop (§8.4 wake-driven `syncUntilIdle` with
+//! deadlines) runs on that thread. File-backed clients add one read owner with
+//! an independent read-only SQLite connection for snapshots, so network work
+//! cannot block local views while the mutable client remains single-owned.
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Mutex;
@@ -43,6 +46,7 @@ pub mod core;
 pub mod transport;
 
 use core::SyncularCore;
+use syncular_client::{FileQuerySnapshotReader, WindowBase, WindowCoverage};
 
 /// The Tauri event name carrying derived client-observable events.
 pub const EVENT_NAME: &str = "syncular://event";
@@ -121,6 +125,24 @@ enum Request {
     },
     /// Native realtime reader wake; contains no data (the transport buffer does).
     TransportWake,
+    #[cfg(test)]
+    Block {
+        duration: Duration,
+        entered: Sender<()>,
+    },
+    Shutdown,
+}
+
+/// Latency-critical reads use a second, read-only SQLite connection. This
+/// mailbox is deliberately independent from [`Request`]: a network round on
+/// the mutable owner must never head-of-line-block a local UI snapshot.
+enum ReadRequest {
+    QuerySnapshot {
+        sql: String,
+        params: Vec<Value>,
+        coverage: Vec<WindowCoverage>,
+        reply: Sender<Value>,
+    },
     Shutdown,
 }
 
@@ -128,6 +150,7 @@ enum Request {
 /// in a `Mutex` only to be `Sync` for Tauri state (the `Sender` is `Send`).
 struct SyncularState {
     sender: Mutex<Sender<Request>>,
+    reader: Option<Mutex<Sender<ReadRequest>>>,
 }
 
 impl SyncularState {
@@ -137,6 +160,41 @@ impl SyncularState {
             .map_err(|_| "syncular mailbox poisoned".to_owned())?
             .send(request)
             .map_err(|_| "the syncular core thread has stopped".to_owned())
+    }
+
+    fn send_read(&self, request: ReadRequest) -> Result<(), String> {
+        let Some(reader) = &self.reader else {
+            return Err("this syncular client has no file snapshot reader".to_owned());
+        };
+        reader
+            .lock()
+            .map_err(|_| "syncular read mailbox poisoned".to_owned())?
+            .send(request)
+            .map_err(|_| "the syncular read thread has stopped".to_owned())?;
+        Ok(())
+    }
+}
+
+fn run_reader_thread(path: String, rx: Receiver<ReadRequest>) {
+    let mut reader = FileQuerySnapshotReader::new(path);
+    while let Ok(request) = rx.recv() {
+        match request {
+            ReadRequest::QuerySnapshot {
+                sql,
+                params,
+                coverage,
+                reply,
+            } => {
+                let value = match reader.query_snapshot(&sql, &params, &coverage) {
+                    Ok(snapshot) => json!({ "result": snapshot }),
+                    Err(message) => json!({
+                        "error": { "code": "client.failed", "message": message }
+                    }),
+                };
+                let _ = reply.send(value);
+            }
+            ReadRequest::Shutdown => return,
+        }
     }
 }
 
@@ -236,6 +294,11 @@ where
                 core.poll_transport();
                 pump_events(&mut core, &emit);
             }
+            #[cfg(test)]
+            Request::Block { duration, entered } => {
+                let _ = entered.send(());
+                std::thread::sleep(duration);
+            }
             Request::Shutdown => {
                 core.shutdown();
                 return;
@@ -263,6 +326,71 @@ fn inject_db_path(mut command: Value, config: &SyncularConfig) -> Value {
         obj.insert("params".to_owned(), json!({ "dbPath": db_path }));
     }
     command
+}
+
+fn client_error(message: impl Into<String>) -> Value {
+    json!({ "error": { "code": "client.failed", "message": message.into() } })
+}
+
+fn parse_window_base(value: Option<&Value>) -> Result<WindowBase, String> {
+    let object = value
+        .and_then(Value::as_object)
+        .ok_or_else(|| "querySnapshot coverage missing base object".to_owned())?;
+    let table = object
+        .get("table")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "window base missing table".to_owned())?
+        .to_owned();
+    let variable = object
+        .get("variable")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "window base missing variable".to_owned())?
+        .to_owned();
+    let fixed_scopes = match object.get("fixedScopes") {
+        Some(value) => syncular_client::values::json_to_scope_map(value)?,
+        None => Vec::new(),
+    };
+    let params = object
+        .get("params")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    Ok(WindowBase {
+        table,
+        variable,
+        fixed_scopes,
+        params,
+    })
+}
+
+fn parse_coverage(value: Option<&Value>) -> Result<Vec<WindowCoverage>, String> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    let entries = value
+        .as_array()
+        .ok_or_else(|| "querySnapshot coverage must be a list".to_owned())?;
+    entries
+        .iter()
+        .map(|entry| {
+            let units = entry
+                .get("units")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(WindowCoverage {
+                base: parse_window_base(entry.get("base"))?,
+                units,
+            })
+        })
+        .collect()
 }
 
 fn pump_events<F: Fn(&Value)>(core: &mut SyncularCore, emit: &F) {
@@ -327,6 +455,54 @@ async fn syncular_query<R: Runtime>(
         .map_err(|_| "the syncular core dropped the reply".to_owned())
 }
 
+/// Atomic rows + revision + window coverage on the independent read-only
+/// connection. In-memory configurations fall back to the core owner because
+/// SQLite cannot share an anonymous database across connections.
+#[tauri::command]
+async fn syncular_query_snapshot<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    sql: String,
+    params: Option<Value>,
+    coverage: Option<Value>,
+) -> Result<Value, String> {
+    let state = app.state::<SyncularState>();
+    let params_value = params.unwrap_or_else(|| Value::Array(Vec::new()));
+    let coverage_value = coverage.unwrap_or_else(|| Value::Array(Vec::new()));
+
+    if state.reader.is_some() {
+        let bind = match params_value.as_array() {
+            Some(values) => values.clone(),
+            None => return Ok(client_error("querySnapshot params must be a list")),
+        };
+        let parsed_coverage = match parse_coverage(Some(&coverage_value)) {
+            Ok(value) => value,
+            Err(message) => return Ok(client_error(message)),
+        };
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        state.send_read(ReadRequest::QuerySnapshot {
+            sql,
+            params: bind,
+            coverage: parsed_coverage,
+            reply: reply_tx,
+        })?;
+        return reply_rx
+            .recv()
+            .map_err(|_| "the syncular read thread dropped the reply".to_owned());
+    }
+
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    state.send(Request::Command {
+        command: json!({
+            "method": "querySnapshot",
+            "params": { "sql": sql, "params": params_value, "coverage": coverage_value }
+        }),
+        reply: reply_tx,
+    })?;
+    reply_rx
+        .recv()
+        .map_err(|_| "the syncular core dropped the reply".to_owned())
+}
+
 /// Initialize the plugin with a config. Register with
 /// `tauri::Builder::default().plugin(tauri_plugin_syncular::init(config))`.
 ///
@@ -339,12 +515,30 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
         .invoke_handler(tauri::generate_handler![
             syncular_command,
             syncular_query,
+            syncular_query_snapshot,
             syncular_set_headers
         ])
         .setup(move |app, _api| {
             let (tx, rx) = std::sync::mpsc::channel::<Request>();
+            let reader = match config
+                .db_path
+                .as_ref()
+                .filter(|path| path.as_str() != ":memory:")
+            {
+                Some(path) => {
+                    let (reader_tx, reader_rx) = std::sync::mpsc::channel::<ReadRequest>();
+                    let path = path.clone();
+                    std::thread::Builder::new()
+                        .name("syncular-read".to_owned())
+                        .spawn(move || run_reader_thread(path, reader_rx))
+                        .map_err(|e| format!("failed to spawn syncular read thread: {e}"))?;
+                    Some(Mutex::new(reader_tx))
+                }
+                None => None,
+            };
             app.manage(SyncularState {
                 sender: Mutex::new(tx.clone()),
+                reader,
             });
             let app_handle = app.clone();
             let emit = move |value: &Value| {
@@ -362,6 +556,9 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
             if let RunEvent::Exit = event {
                 if let Some(state) = app.try_state::<SyncularState>() {
                     let _ = state.send(Request::Shutdown);
+                    if state.reader.is_some() {
+                        let _ = state.send_read(ReadRequest::Shutdown);
+                    }
                 }
             }
         })
@@ -408,6 +605,33 @@ mod tests {
         // …and a non-create command is untouched.
         let mutate = inject_db_path(json!({ "method": "mutate", "params": {} }), &config);
         assert!(mutate["params"].get("dbPath").is_none());
+    }
+
+    #[test]
+    fn snapshot_coverage_parser_preserves_the_generated_window_descriptor() {
+        let parsed = parse_coverage(Some(&json!([{
+            "base": {
+                "table": "tasks",
+                "variable": "project_id",
+                "fixedScopes": { "tenant_id": ["one", "two"] },
+                "params": "opaque"
+            },
+            "units": ["a", "b"]
+        }])))
+        .expect("parse coverage");
+        assert_eq!(parsed.len(), 1);
+        let entry = &parsed[0];
+        assert_eq!(entry.base.table, "tasks");
+        assert_eq!(entry.base.variable, "project_id");
+        assert_eq!(
+            entry.base.fixed_scopes,
+            vec![(
+                "tenant_id".to_owned(),
+                vec!["one".to_owned(), "two".to_owned()]
+            )]
+        );
+        assert_eq!(entry.base.params.as_deref(), Some("opaque"));
+        assert_eq!(entry.units, vec!["a".to_owned(), "b".to_owned()]);
     }
 
     /// The owner-thread mailbox loop end-to-end, without any Tauri window: post
@@ -493,5 +717,69 @@ mod tests {
             .collect();
         // The local mutate emits the exact revisioned batch onto the channel.
         assert!(kinds.iter().any(|k| k == "change"), "kinds: {kinds:?}");
+    }
+
+    #[test]
+    fn snapshot_reader_is_not_blocked_by_the_network_owner_mailbox() {
+        use std::sync::mpsc::channel;
+
+        let path =
+            std::env::temp_dir().join(format!("syncular-tauri-sidecar-{}.db", std::process::id()));
+        let config = SyncularConfig {
+            db_path: Some(path.to_string_lossy().into_owned()),
+            auto_sync: false,
+            ..Default::default()
+        };
+        let (tx, rx) = channel::<Request>();
+        let owner_tx = tx.clone();
+        let owner = std::thread::spawn(move || run_owner_thread(config, owner_tx, rx, |_| {}));
+
+        let (create_tx, create_rx) = channel();
+        tx.send(Request::Command {
+            command: json!({
+                "method": "create",
+                "params": {
+                    "clientId": "sidecar-client",
+                    "schema": { "version": 1, "tables": [] },
+                    "dbPath": path.to_string_lossy()
+                }
+            }),
+            reply: create_tx,
+        })
+        .expect("post create");
+        assert_eq!(create_rx.recv().expect("create reply")["result"], json!({}));
+
+        let (read_tx, read_rx) = channel::<ReadRequest>();
+        let read_path = path.to_string_lossy().into_owned();
+        let reader = std::thread::spawn(move || run_reader_thread(read_path, read_rx));
+
+        // Model a slow HTTP/WS round on the mutable owner. The dedicated read
+        // mailbox must still return the durable local snapshot immediately.
+        let (entered_tx, entered_rx) = channel();
+        tx.send(Request::Block {
+            duration: Duration::from_millis(200),
+            entered: entered_tx,
+        })
+        .expect("block owner");
+        entered_rx.recv().expect("owner entered blocking round");
+        let (snapshot_tx, snapshot_rx) = channel();
+        read_tx
+            .send(ReadRequest::QuerySnapshot {
+                sql: "SELECT 1 AS value".to_owned(),
+                params: Vec::new(),
+                coverage: Vec::new(),
+                reply: snapshot_tx,
+            })
+            .expect("post snapshot");
+        let snapshot = snapshot_rx
+            .recv_timeout(Duration::from_millis(50))
+            .expect("local snapshot must not wait for the owner");
+        assert_eq!(snapshot["result"]["rows"][0]["value"], 1);
+
+        read_tx.send(ReadRequest::Shutdown).expect("stop reader");
+        reader.join().expect("join reader");
+        tx.send(Request::Shutdown).expect("stop owner");
+        owner.join().expect("join owner");
+        std::fs::remove_file(path).expect("remove temp database");
     }
 }
