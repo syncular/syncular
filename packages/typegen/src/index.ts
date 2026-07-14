@@ -27,4 +27,5 @@ export * from './syql-ast';
 export * from './syql-lexer';
 export * from './syql-modules';
 export * from './syql-parser';
+export * from './syql-semantics';
 export * from './syql-template-parser';
