@@ -53,7 +53,7 @@ function templates(file: SyqlSyntaxFile): readonly SyqlTemplate[] {
   return file.declarations.flatMap((declaration) => {
     if (declaration.kind === 'predicate') return [declaration.body];
     return [
-      declaration.sql.body,
+      declaration.statement,
       ...(declaration.sort?.profiles.map((profile) => profile.order) ?? []),
     ];
   });
@@ -268,6 +268,8 @@ function formatTokens(parsed: SyqlSyntaxFile): string {
   let justClosedImportList = false;
   let seenTopLevel = false;
   let pendingBetween = 0;
+  let inlineParameterRecord = false;
+  let justClosedInlineParameterRecord = false;
 
   let declarationParameters: DeclarationParameters | undefined;
   let awaitsDeclarationParameters = false;
@@ -279,15 +281,26 @@ function formatTokens(parsed: SyqlSyntaxFile): string {
     const topLevelDeclaration =
       braceDepth === 0 &&
       token.kind === 'identifier' &&
-      (lower === 'import' || lower === 'predicate' || lower === 'query');
+      (lower === 'import' ||
+        lower === 'predicate' ||
+        lower === 'query' ||
+        lower === 'sync') &&
+      !(lower === 'query' && previous?.text === 'sync');
     if (topLevelDeclaration) {
       if (seenTopLevel) writer.blankline();
       seenTopLevel = true;
       previous = undefined;
       awaitsDeclarationParameters = lower === 'predicate' || lower === 'query';
     } else if (
+      braceDepth === 0 &&
+      lower === 'query' &&
+      previous?.text === 'sync'
+    ) {
+      awaitsDeclarationParameters = true;
+    } else if (
       previous?.text === '}' &&
       !justClosedImportList &&
+      !justClosedInlineParameterRecord &&
       token.text !== ';' &&
       token.text !== ','
     ) {
@@ -326,6 +339,12 @@ function formatTokens(parsed: SyqlSyntaxFile): string {
       if (previous?.kind === 'identifier' && previous.text === 'import') {
         writer.write('{', true);
         importList = true;
+      } else if (
+        declarationParameters !== undefined &&
+        previous?.text === ':'
+      ) {
+        writer.write('{', true);
+        inlineParameterRecord = true;
       } else {
         writer.openBlock();
         braceDepth += 1;
@@ -334,7 +353,11 @@ function formatTokens(parsed: SyqlSyntaxFile): string {
       continue;
     }
     if (token.text === '}') {
-      if (importList && braceDepth === 0) {
+      if (inlineParameterRecord) {
+        writer.write('}', true);
+        inlineParameterRecord = false;
+        justClosedInlineParameterRecord = true;
+      } else if (importList && braceDepth === 0) {
         writer.write('}', true);
         importList = false;
         justClosedImportList = true;
@@ -345,6 +368,7 @@ function formatTokens(parsed: SyqlSyntaxFile): string {
       previous = token;
       continue;
     }
+    justClosedInlineParameterRecord = false;
     justClosedImportList = false;
 
     if (token.text === '(') {
@@ -365,7 +389,11 @@ function formatTokens(parsed: SyqlSyntaxFile): string {
       continue;
     }
 
-    if (token.text === ',' && declarationParameters?.depth === parenDepth) {
+    if (
+      token.text === ',' &&
+      declarationParameters?.depth === parenDepth &&
+      !inlineParameterRecord
+    ) {
       const next = tokens[index + 1];
       if (!(declarationParameters.multiline === false && next?.text === ')')) {
         writer.write(',', false);

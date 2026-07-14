@@ -3,15 +3,20 @@
   "revision": 1,
   "cases": [
     {
-      "name": "complete-container",
-      "source": "import { visible as canSee } from \"./shared.syql\";\n\npredicate matches(q: string) { title like :q }\n\nquery list(\n  listId,\n  status?: string | null,\n  range?(start: integer, end: integer),\n  unassigned?: switch,\n) {\n  sql {\n    select id, title from todos\n    where @cover(todos.list_id = :listId)\n      and @canSee()\n      and when(status) { @matches(:status) }\n      and when(range, unassigned) { created_at between :start and :end }\n  }\n  sort sortBy default newest {\n    newest { created_at desc, id desc }\n  }\n  page pageSize default 50 max 100;\n  identity by id;\n}",
+      "name": "sql-first-container",
+      "source": "import { visible } from \"./shared.syql\";\n\npredicate matches(q: string) { title like :q }\n\nsync query list(listId, status?: string | null, range?, unassigned: bool = false) {\n  select id, title, created_at from todos\n  where todos.list_id = :listId\n    and when(status) matches(:status)\n    and when(range) created_at between :range\n    and when(unassigned) assignee_id is null\n  order by sortBy default newest {\n    newest: created_at desc, id desc;\n  }\n  limit pageSize default 50 max 100;\n}",
       "ast": {
         "kind": "syql-file",
         "revision": 1,
         "imports": [
           {
             "path": "./shared.syql",
-            "items": [{ "imported": "visible", "local": "canSee" }]
+            "items": [
+              {
+                "imported": "visible",
+                "local": "visible"
+              }
+            ]
           }
         ],
         "declarations": [
@@ -21,7 +26,10 @@
             "parameters": [
               {
                 "name": "q",
-                "type": { "base": "string", "nullable": false }
+                "type": {
+                  "base": "string",
+                  "nullable": false
+                }
               }
             ],
             "body": {
@@ -30,9 +38,18 @@
                 {
                   "kind": "sql",
                   "tokens": [
-                    { "kind": "identifier", "text": "title" },
-                    { "kind": "identifier", "text": "like" },
-                    { "kind": "bind", "text": ":q" }
+                    {
+                      "kind": "identifier",
+                      "text": "title"
+                    },
+                    {
+                      "kind": "identifier",
+                      "text": "like"
+                    },
+                    {
+                      "kind": "bind",
+                      "text": ":q"
+                    }
                   ]
                 }
               ]
@@ -41,6 +58,7 @@
           {
             "kind": "query",
             "name": "list",
+            "sync": true,
             "parameters": [
               {
                 "kind": "value",
@@ -51,95 +69,183 @@
                 "kind": "value",
                 "name": "status",
                 "optional": true,
-                "type": { "base": "string", "nullable": true }
+                "type": {
+                  "base": "string",
+                  "nullable": true
+                }
               },
               {
-                "kind": "group",
+                "kind": "range",
                 "name": "range",
-                "optional": true,
-                "members": [
-                  {
-                    "name": "start",
-                    "type": { "base": "integer", "nullable": false }
-                  },
-                  {
-                    "name": "end",
-                    "type": { "base": "integer", "nullable": false }
-                  }
-                ]
+                "optional": true
               },
               {
-                "kind": "switch",
+                "kind": "value",
                 "name": "unassigned",
-                "optional": true
+                "optional": false,
+                "type": {
+                  "base": "boolean",
+                  "nullable": false
+                },
+                "default": false
               }
             ],
-            "sql": {
+            "statement": {
               "mode": "statement",
               "nodes": [
                 {
                   "kind": "sql",
                   "tokens": [
-                    { "kind": "identifier", "text": "select" },
-                    { "kind": "identifier", "text": "id" },
-                    { "kind": "punctuation", "text": "," },
-                    { "kind": "identifier", "text": "title" },
-                    { "kind": "identifier", "text": "from" },
-                    { "kind": "identifier", "text": "todos" },
-                    { "kind": "identifier", "text": "where" }
-                  ]
-                },
-                {
-                  "kind": "cover",
-                  "bindings": [
                     {
-                      "qualifier": "todos",
-                      "column": "list_id",
-                      "operator": "equal",
-                      "values": ["listId"]
+                      "kind": "identifier",
+                      "text": "select"
+                    },
+                    {
+                      "kind": "identifier",
+                      "text": "id"
+                    },
+                    {
+                      "kind": "punctuation",
+                      "text": ","
+                    },
+                    {
+                      "kind": "identifier",
+                      "text": "title"
+                    },
+                    {
+                      "kind": "punctuation",
+                      "text": ","
+                    },
+                    {
+                      "kind": "identifier",
+                      "text": "created_at"
+                    },
+                    {
+                      "kind": "identifier",
+                      "text": "from"
+                    },
+                    {
+                      "kind": "identifier",
+                      "text": "todos"
+                    },
+                    {
+                      "kind": "identifier",
+                      "text": "where"
+                    },
+                    {
+                      "kind": "identifier",
+                      "text": "todos"
+                    },
+                    {
+                      "kind": "punctuation",
+                      "text": "."
+                    },
+                    {
+                      "kind": "identifier",
+                      "text": "list_id"
+                    },
+                    {
+                      "kind": "operator",
+                      "text": "="
+                    },
+                    {
+                      "kind": "bind",
+                      "text": ":listId"
+                    },
+                    {
+                      "kind": "identifier",
+                      "text": "and"
                     }
                   ]
                 },
                 {
-                  "kind": "sql",
-                  "tokens": [{ "kind": "identifier", "text": "and" }]
-                },
-                {
-                  "kind": "predicate-call",
-                  "name": "canSee",
-                  "arguments": []
-                },
-                {
-                  "kind": "sql",
-                  "tokens": [{ "kind": "identifier", "text": "and" }]
-                },
-                {
                   "kind": "when",
-                  "controls": ["status"],
+                  "controls": [
+                    "status"
+                  ],
+                  "explicitPresence": [
+                    false
+                  ],
                   "body": [
                     {
                       "kind": "predicate-call",
                       "name": "matches",
-                      "arguments": ["status"]
+                      "arguments": [
+                        "status"
+                      ]
                     }
                   ]
                 },
                 {
                   "kind": "sql",
-                  "tokens": [{ "kind": "identifier", "text": "and" }]
+                  "tokens": [
+                    {
+                      "kind": "identifier",
+                      "text": "and"
+                    }
+                  ]
                 },
                 {
                   "kind": "when",
-                  "controls": ["range", "unassigned"],
+                  "controls": [
+                    "range"
+                  ],
+                  "explicitPresence": [
+                    false
+                  ],
                   "body": [
                     {
                       "kind": "sql",
                       "tokens": [
-                        { "kind": "identifier", "text": "created_at" },
-                        { "kind": "identifier", "text": "between" },
-                        { "kind": "bind", "text": ":start" },
-                        { "kind": "identifier", "text": "and" },
-                        { "kind": "bind", "text": ":end" }
+                        {
+                          "kind": "identifier",
+                          "text": "created_at"
+                        },
+                        {
+                          "kind": "identifier",
+                          "text": "between"
+                        },
+                        {
+                          "kind": "bind",
+                          "text": ":range"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "kind": "sql",
+                  "tokens": [
+                    {
+                      "kind": "identifier",
+                      "text": "and"
+                    }
+                  ]
+                },
+                {
+                  "kind": "when",
+                  "controls": [
+                    "unassigned"
+                  ],
+                  "explicitPresence": [
+                    false
+                  ],
+                  "body": [
+                    {
+                      "kind": "sql",
+                      "tokens": [
+                        {
+                          "kind": "identifier",
+                          "text": "assignee_id"
+                        },
+                        {
+                          "kind": "identifier",
+                          "text": "is"
+                        },
+                        {
+                          "kind": "identifier",
+                          "text": "null"
+                        }
                       ]
                     }
                   ]
@@ -158,11 +264,26 @@
                       {
                         "kind": "sql",
                         "tokens": [
-                          { "kind": "identifier", "text": "created_at" },
-                          { "kind": "identifier", "text": "desc" },
-                          { "kind": "punctuation", "text": "," },
-                          { "kind": "identifier", "text": "id" },
-                          { "kind": "identifier", "text": "desc" }
+                          {
+                            "kind": "identifier",
+                            "text": "created_at"
+                          },
+                          {
+                            "kind": "identifier",
+                            "text": "desc"
+                          },
+                          {
+                            "kind": "punctuation",
+                            "text": ","
+                          },
+                          {
+                            "kind": "identifier",
+                            "text": "id"
+                          },
+                          {
+                            "kind": "identifier",
+                            "text": "desc"
+                          }
                         ]
                       }
                     ]
@@ -170,12 +291,11 @@
                 }
               ]
             },
-            "page": {
+            "limit": {
               "control": "pageSize",
               "defaultSize": 50,
               "maxSize": 100
-            },
-            "identity": ["id"]
+            }
           }
         ]
       }
@@ -183,19 +303,27 @@
   ],
   "invalid": [
     {
-      "name": "old-grammar",
-      "source": "query old() { select 1 }",
+      "name": "removed-sql-block",
+      "source": "query q() { sql { select 1 } }",
       "diagnostic": {
-        "code": "SYQL2008_INVALID_MEMBER",
-        "start": { "offset": 14, "line": 1, "column": 15 }
+        "code": "SYQL2012_INVALID_QUERY_BODY",
+        "start": {
+          "offset": 29,
+          "line": 1,
+          "column": 30
+        }
       }
     },
     {
-      "name": "invalid-bind",
-      "source": "query q() { sql { select :snake_case } }",
+      "name": "removed-reactive-directive",
+      "source": "query q(id) { select id from todos where @scope(id = :id); }",
       "diagnostic": {
-        "code": "SYQL3002_INVALID_BIND",
-        "start": { "offset": 25, "line": 1, "column": 26 }
+        "code": "SYQL3006_FORBIDDEN_TEMPLATE_NODE",
+        "start": {
+          "offset": 41,
+          "line": 1,
+          "column": 42
+        }
       }
     }
   ]

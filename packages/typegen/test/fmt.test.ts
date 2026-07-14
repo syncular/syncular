@@ -3,7 +3,7 @@ import { formatSyql, parseSyqlSyntaxFile, toSyqlSemanticAst } from '../src';
 
 const MESSY = `-- lead
 import { visible as usable, matches } from "./predicates.syql";
-query listTodos( listId,status?: string,range?(start: integer,end: integer),openOnly?: switch ){sql{SELECT id,"odd name",title||'  x  ' AS label FROM todos WHERE @scope(todos.list_id=:listId) AND when(status){status IS :status} AND when(range,openOnly){created_at BETWEEN :start AND :end}}sort sortBy default newest{newest{created_at DESC,id DESC} oldest{created_at ASC,id ASC}}page pageSize default 50 max 200; identity by id;}
+query listTodos( listId,status?: string,range?: { start: integer,end: integer },openOnly: bool = false ){SELECT id,"odd name",title||'  x  ' AS label FROM todos WHERE todos.list_id=:listId AND when(status){status IS :status} AND when(range,openOnly){created_at BETWEEN :start AND :end}order by sortBy default newest {newest: created_at DESC,id DESC; oldest: created_at ASC,id ASC;}limit pageSize default 50 max 200;}
 predicate local(value: string){title = :value /* keep */}`;
 
 const CANONICAL = `-- lead
@@ -12,30 +12,23 @@ import { visible as usable, matches } from "./predicates.syql";
 query listTodos(
   listId,
   status?: string,
-  range?(start: integer, end: integer),
-  openOnly?: switch,
+  range?: { start: integer, end: integer },
+  openOnly: bool = false,
 ) {
-  sql {
-    select id, "odd name", title || '  x  ' as label
-    from todos
-    where @scope(todos.list_id = :listId)
-      and when(status) {
-        status is :status
-      }
-      and when(range, openOnly) {
-        created_at between :start and :end
-      }
-  }
-  sort sortBy default newest {
-    newest {
-      created_at desc, id desc
+  select id, "odd name", title || '  x  ' as label
+  from todos
+  where todos.list_id = :listId
+    and when(status) {
+      status is :status
     }
-    oldest {
-      created_at asc, id asc
+    and when(range, openOnly) {
+      created_at between :start and :end
     }
+  order by sortBy default newest {
+    newest: created_at desc, id desc;
+    oldest: created_at asc, id asc;
   }
-  page pageSize default 50 max 200;
-  identity by id;
+  limit pageSize default 50 max 200;
 }
 
 predicate local(value: string) {
@@ -65,8 +58,7 @@ describe('revision-1 formatSyql', () => {
     expect(after.declarations[0]).toMatchObject({
       kind: 'query',
       sort: { defaultProfile: 'newest' },
-      page: { control: 'pageSize', defaultSize: 50, maxSize: 200 },
-      identity: ['id'],
+      limit: { control: 'pageSize', defaultSize: 50, maxSize: 200 },
     });
     expect(formatted).toContain('"odd name"');
     expect(formatted).toContain("'  x  '");
@@ -83,7 +75,7 @@ describe('revision-1 formatSyql', () => {
   test('preserves every SQLite atomic operator and literal', () => {
     const out = formatSyql(
       'x.syql',
-      `query q(a, b) { sql { select id from todos where x >= :a and y <> 2 and z != 3 and w <= 4 and title like '%' || :b || '%' and payload = x'CAFE' } }`,
+      `query q(a, b) {  select id from todos where x >= :a and y <> 2 and z != 3 and w <= 4 and title like '%' || :b || '%' and payload = x'CAFE' ; }`,
     );
     for (const spelling of [
       'x >= :a',

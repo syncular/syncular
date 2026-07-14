@@ -4,13 +4,13 @@
   "cases": [
     {
       "name": "canonical-query",
-      "input": "query q(id){sql{SELECT id FROM todos WHERE id=:id}}",
-      "output": "query q(id) {\n  sql {\n    select id\n    from todos\n    where id = :id\n  }\n}\n"
+      "input": "query q(id){SELECT id FROM todos WHERE id=:id;}",
+      "output": "query q(id) {\n  select id\n  from todos\n  where id = :id;\n}\n"
     },
     {
       "name": "atomic-sql-and-comment",
-      "input": "-- retain\nquery q(label: string){sql{SELECT \"odd name\",'  x  '||:label AS value FROM todos}}",
-      "output": "-- retain\nquery q(label: string) {\n  sql {\n    select \"odd name\", '  x  ' || :label as value\n    from todos\n  }\n}\n"
+      "input": "-- retain\nquery q(label: string){SELECT \"odd name\",'  x  '||:label AS value FROM todos;}",
+      "output": "-- retain\nquery q(label: string) {\n  select \"odd name\", '  x  ' || :label as value\n  from todos;\n}\n"
     }
   ]
 }

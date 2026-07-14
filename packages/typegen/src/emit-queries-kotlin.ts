@@ -107,7 +107,7 @@ function syqlKotlinType(type: IrColumnType, nullable: boolean): string {
 function syqlControlActive(query: AnalyzedQuery, name: string): string {
   const input = syqlInput(query, name);
   const access = camelCase(input.langName);
-  if (input.kind === 'switch') return access;
+  if (input.kind === 'value' && input.default === false) return access;
   if (input.kind === 'value' && input.nullable) {
     return `${access} is SyncularQueryPresence.Present`;
   }
@@ -130,7 +130,7 @@ function syqlBindExpr(query: AnalyzedQuery, bind: QuerySyqlPlanBind): string {
   }
   const input = syqlInput(query, bind.input);
   const access = camelCase(input.langName);
-  if (bind.kind === 'page')
+  if (bind.kind === 'limit')
     return `JsonValue.of(effective${typeName(access)}.toDouble())`;
   if (bind.kind === 'group-member') {
     if (input.kind !== 'group') throw new Error('group bind/input mismatch');
@@ -146,6 +146,7 @@ function syqlBindExpr(query: AnalyzedQuery, bind: QuerySyqlPlanBind): string {
     return `${access}?.let { value -> ${present} } ?: JsonValue.Null`;
   }
   if (input.kind !== 'value') throw new Error('value bind/input mismatch');
+  if (input.default === false) return paramValue(input.type, access);
   if (input.required) {
     return input.nullable
       ? optionalParamValue(input.type, access)
@@ -201,6 +202,7 @@ function emitSyqlKotlinRunner(query: AnalyzedQuery): string[] {
     if (input.kind === 'value') {
       const type = syqlKotlinType(input.type, input.nullable);
       if (input.required) args.push(`${name}: ${type}`);
+      else if (input.default === false) args.push(`${name}: Boolean = false`);
       else if (input.nullable) {
         args.push(
           `${name}: SyncularQueryPresence<${type}> = SyncularQueryPresence.Absent`,
@@ -210,8 +212,6 @@ function emitSyqlKotlinRunner(query: AnalyzedQuery): string[] {
       args.push(
         `${name}: ${typeName(query.name)}${typeName(input.langName)}? = null`,
       );
-    } else if (input.kind === 'switch') {
-      args.push(`${name}: Boolean = false`);
     } else if (input.kind === 'sort') {
       const defaultCase =
         input.profiles.find((profile) => profile.name === input.defaultProfile)
@@ -223,13 +223,13 @@ function emitSyqlKotlinRunner(query: AnalyzedQuery): string[] {
     }
   }
   lines.push(`        fun ${query.name}(${args.join(', ')}): List<${Row}> {`);
-  const page = metadata.inputs.find((input) => input.kind === 'page');
-  if (page?.kind === 'page') {
+  const page = metadata.inputs.find((input) => input.kind === 'limit');
+  if (page?.kind === 'limit') {
     const name = camelCase(page.langName);
     lines.push(
       `            val effective${typeName(name)} = ${name} ?: ${page.defaultSize}L`,
       `            if (effective${typeName(name)} < 1L || effective${typeName(name)} > ${page.maxSize}L) {`,
-      `                throw SyncularQueryInputException("SYQL_RUNTIME_INVALID_PAGE", ${quote(`${query.name}: invalid page size`)})`,
+      `                throw SyncularQueryInputException("SYQL_RUNTIME_INVALID_LIMIT", ${quote(`${query.name}: invalid limit`)})`,
       '            }',
     );
   }

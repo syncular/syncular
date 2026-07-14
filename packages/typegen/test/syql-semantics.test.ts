@@ -45,12 +45,12 @@ describe('revision-1 SYQL semantic analysis', () => {
           predicate matches(value: string) {
             note = ':value' /* :value remains text */ and title = :value
           }
-          predicate visible(candidate: string) { @matches(:candidate) }
+          predicate visible(candidate: string) { matches(:candidate) }
         `,
         'main.syql': `
           import { visible as canSee } from "./shared.syql";
           query list(q: string) {
-            sql { select id from todos where @canSee(:q) }
+             select id from todos where canSee(:q) ;
           }
         `,
       },
@@ -71,11 +71,11 @@ describe('revision-1 SYQL semantic analysis', () => {
     const predicates = Array.from({ length: 16 }, (_, index) =>
       index === 0
         ? 'predicate p0(value) { id = :value }'
-        : `predicate p${index}(value) { @p${index - 1}(:value) }`,
+        : `predicate p${index}(value) { p${index - 1}(:value) }`,
     ).join('\n');
     const analyzed = program({
       'deep.syql': `${predicates}
-        query deep(id) { sql { select id from todos where @p15(:id) } }`,
+        query deep(id) {  select id from todos where p15(:id) ; }`,
     });
     expect(analyzed.predicates).toHaveLength(16);
     expect(
@@ -83,20 +83,20 @@ describe('revision-1 SYQL semantic analysis', () => {
     ).toContain('id = :id');
   });
 
-  test('reports unknown calls, arity mismatches, and complete call cycles', () => {
-    const unknown = frontendError(() =>
-      program({
-        'bad.syql':
-          'query q(id) { sql { select id from todos where @missing(:id) } }',
-      }),
-    );
-    expect(unknown.code).toBe('SYQL5001_UNKNOWN_PREDICATE');
+  test('leaves unknown SQL calls intact and reports predicate arity and cycles', () => {
+    const unknown = program({
+      'unknown.syql':
+        'query q(id) { select id from todos where missing(:id); }',
+    });
+    expect(
+      renderSyqlLogicalTemplate(unknown.queries[0]?.template ?? []),
+    ).toContain('missing(:id)');
 
     const arity = frontendError(() =>
       program({
         'bad.syql': `
           predicate exact(id) { todos.id = :id }
-          query q(id) { sql { select id from todos where @exact() } }
+          query q(id) {  select id from todos where exact() ; }
         `,
       }),
     );
@@ -105,10 +105,10 @@ describe('revision-1 SYQL semantic analysis', () => {
     const cycle = frontendError(() =>
       program({
         'bad.syql': `
-          predicate first(id) { @second(:id) }
-          predicate second(id) { @third(:id) }
-          predicate third(id) { @first(:id) }
-          query q(id) { sql { select id from todos where @first(:id) } }
+          predicate first(id) { second(:id) }
+          predicate second(id) { third(:id) }
+          predicate third(id) { first(:id) }
+          query q(id) {  select id from todos where first(:id) ; }
         `,
       }),
     );
@@ -123,7 +123,7 @@ describe('revision-1 SYQL semantic analysis', () => {
       program({
         'bad.syql': `
           predicate bad(id) { id = :ghost }
-          query q(id) { sql { select id from todos where @bad(:id) } }
+          query q(id) {  select id from todos where bad(:id) ; }
         `,
       }),
     );
@@ -133,7 +133,7 @@ describe('revision-1 SYQL semantic analysis', () => {
       program({
         'bad.syql': `
           predicate ignored(value) { id = 1 }
-          query q(id) { sql { select id from todos where @ignored(:id) } }
+          query q(id) {  select id from todos where ignored(:id) ; }
         `,
       }),
     );
@@ -143,15 +143,14 @@ describe('revision-1 SYQL semantic analysis', () => {
   test('enforces authoritative binds and optional dominance', () => {
     const undeclared = frontendError(() =>
       program({
-        'bad.syql':
-          'query q(id) { sql { select id from todos where id = :ghost } }',
+        'bad.syql': 'query q(id) {  select id from todos where id = :ghost ; }',
       }),
     );
     expect(undeclared.code).toBe('SYQL5006_UNDECLARED_BIND');
 
     const requiredUnused = frontendError(() =>
       program({
-        'bad.syql': 'query q(id) { sql { select id from todos } }',
+        'bad.syql': 'query q(id) {  select id from todos ; }',
       }),
     );
     expect(requiredUnused.code).toBe('SYQL5007_UNUSED_INPUT');
@@ -159,7 +158,7 @@ describe('revision-1 SYQL semantic analysis', () => {
     const undominated = frontendError(() =>
       program({
         'bad.syql': `query q(status?) {
-          sql { select id from todos where status = :status }
+           select id from todos where status = :status ;
         }`,
       }),
     );
@@ -168,7 +167,7 @@ describe('revision-1 SYQL semantic analysis', () => {
     const requiredControl = frontendError(() =>
       program({
         'bad.syql': `query q(status) {
-          sql { select id from todos where when(status) { status = :status } }
+           select id from todos where when(status) { status = :status } ;
         }`,
       }),
     );
@@ -177,25 +176,25 @@ describe('revision-1 SYQL semantic analysis', () => {
     const unusedControl = frontendError(() =>
       program({
         'bad.syql': `query q(status?) {
-          sql { select id from todos where when(status) { id > 0 } }
+           select id from todos where when(status) { id > 0 } ;
         }`,
       }),
     );
     expect(unusedControl.code).toBe('SYQL5010_UNUSED_CONTROL');
   });
 
-  test('preserves atomic groups and switch activation as logical controls', () => {
+  test('preserves atomic groups and default-false bool activation as controls', () => {
     const analyzed = program({
       'groups.syql': `query ranged(
-        range?(start: integer, end: integer),
-        includeArchived?: switch,
+        range?: { start: integer, end: integer },
+        includeArchived: bool = false,
       ) {
-        sql {
+
           select id from todos
           where when(range, includeArchived) {
             created_at between :start and :end
           }
-        }
+        ;
       }`,
     });
     expect(analyzed.queries[0]?.conditions).toHaveLength(1);
@@ -210,8 +209,8 @@ describe('revision-1 SYQL semantic analysis', () => {
 
     const partial = frontendError(() =>
       program({
-        'bad.syql': `query ranged(range?(start, end)) {
-          sql { select id from todos where when(range) { created_at >= :start } }
+        'bad.syql': `query ranged(range?: { start, end }) {
+           select id from todos where when(range) { created_at >= :start } ;
         }`,
       }),
     );
@@ -223,7 +222,7 @@ describe('revision-1 SYQL semantic analysis', () => {
     const inferred = program({
       'types.syql': `
         predicate byTitle(value: string) { title = :value }
-        query q(title) { sql { select id from todos where @byTitle(:title) } }
+        query q(title) {  select id from todos where byTitle(:title) ; }
       `,
     });
     expect(inferred.queries[0]?.inputs[0]?.type).toMatchObject({
@@ -236,7 +235,7 @@ describe('revision-1 SYQL semantic analysis', () => {
         'bad.syql': `
           predicate byTitle(value: string) { title = :value }
           query q(title: integer) {
-            sql { select id from todos where @byTitle(:title) }
+             select id from todos where byTitle(:title) ;
           }
         `,
       }),
@@ -248,7 +247,7 @@ describe('revision-1 SYQL semantic analysis', () => {
         'bad.syql': `
           predicate byTitle(value: string) { title = :value }
           query q(title: string | null) {
-            sql { select id from todos where @byTitle(:title) }
+             select id from todos where byTitle(:title) ;
           }
         `,
       }),
@@ -261,7 +260,7 @@ describe('revision-1 SYQL semantic analysis', () => {
           predicate asText(value: string) { title = :value }
           predicate asNumber(value: integer) { priority = :value }
           query q(value) {
-            sql { select id from todos where @asText(:value) and @asNumber(:value) }
+             select id from todos where asText(:value) and asNumber(:value) ;
           }
         `,
       }),
@@ -272,7 +271,7 @@ describe('revision-1 SYQL semantic analysis', () => {
       program({
         'bad.syql': `
           predicate asText(value: string) { title = :value }
-          predicate broken(value: integer) { @asText(:value) }
+          predicate broken(value: integer) { asText(:value) }
         `,
       }),
     );

@@ -3,21 +3,38 @@
   "revision": 1,
   "cases": [
     {
-      "name": "tri-state-controls-sort-and-page",
-      "source": "query list(listId: string, status?: string | null, unassigned?: switch) {\n  sql {\n    select id, status, created_at from todos\n    where @cover(todos.list_id = :listId)\n      and when(status) { status is :status }\n      and when(unassigned) { assignee_id is null }\n  }\n  sort sortBy default newest {\n    newest { created_at desc, id desc }\n    oldest { created_at asc, id asc }\n  }\n  page pageSize default 2 max 4;\n  identity by id;\n}",
+      "name": "presence-bool-sort-and-limit",
+      "source": "sync query list(listId: string, status?: string | null, unassigned: bool = false) {\n  select id, status, created_at from todos\n  where todos.list_id = :listId\n    and when(status) status is :status\n    and when(unassigned) assignee_id is null\n  order by sortBy default newest {\n    newest: created_at desc, id desc;\n    oldest: created_at asc, id asc;\n  }\n  limit pageSize default 2 max 4;\n}",
       "selectedBackend": "variants",
-      "activationControls": ["status", "unassigned"],
+      "activationControls": [
+        "status",
+        "unassigned"
+      ],
       "neutralizedStatements": 2,
       "enumeratedStatements": 8,
       "queryIrVersion": 3,
-      "publicInputKinds": ["value", "value", "switch", "sort", "page"],
-      "identity": ["id"],
+      "publicInputKinds": [
+        "value",
+        "value",
+        "value",
+        "sort",
+        "limit"
+      ],
+      "identity": [
+        "id"
+      ],
       "coverage": [
-        { "table": "todos", "variable": "list_id", "units": ["listId"] }
+        {
+          "table": "todos",
+          "variable": "list_id",
+          "units": [
+            "listId"
+          ]
+        }
       ],
       "requiredSql": [
         "order by created_at desc, id desc",
-        "limit min(coalesce(:__syqlPageSize, 2), 4)"
+        "limit min(coalesce(:__syqlLimit, 2), 4)"
       ],
       "forbiddenSql": [
         ":status is null or",
@@ -27,34 +44,63 @@
         {
           "name": "all-oldest",
           "active": [],
-          "values": { "listId": "l1" },
+          "values": {
+            "listId": "l1"
+          },
           "sort": "oldest",
-          "page": 4,
-          "ids": ["t1", "t2", "t3", "t4"]
+          "limit": 4,
+          "ids": [
+            "t1",
+            "t2",
+            "t3",
+            "t4"
+          ]
         },
         {
           "name": "present-null",
-          "active": ["status"],
-          "values": { "listId": "l1", "status": null },
+          "active": [
+            "status"
+          ],
+          "values": {
+            "listId": "l1",
+            "status": null
+          },
           "sort": "oldest",
-          "page": 4,
-          "ids": ["t1"]
+          "limit": 4,
+          "ids": [
+            "t1"
+          ]
         },
         {
           "name": "present-value",
-          "active": ["status"],
-          "values": { "listId": "l1", "status": "open" },
+          "active": [
+            "status"
+          ],
+          "values": {
+            "listId": "l1",
+            "status": "open"
+          },
           "sort": "newest",
-          "page": 4,
-          "ids": ["t4", "t2"]
+          "limit": 4,
+          "ids": [
+            "t4",
+            "t2"
+          ]
         },
         {
-          "name": "switch",
-          "active": ["unassigned"],
-          "values": { "listId": "l1" },
+          "name": "bool-flag",
+          "active": [
+            "unassigned"
+          ],
+          "values": {
+            "listId": "l1"
+          },
           "sort": "newest",
-          "page": 4,
-          "ids": ["t3", "t1"]
+          "limit": 4,
+          "ids": [
+            "t3",
+            "t1"
+          ]
         }
       ]
     }
@@ -62,27 +108,17 @@
   "invalid": [
     {
       "name": "nested-limit-without-proof",
-      "source": "query unstable() { sql { select id from todos where id in (select id from todos order by id limit 1) } }",
+      "source": "query unstable() { select id from todos where id in (select id from todos order by id limit 1); }",
       "code": "SYQL6003_NONDETERMINISTIC_SQL"
     },
     {
       "name": "window-without-proof",
-      "source": "query unstable() { sql { select id, row_number() over (order by id) as rank from todos } }",
+      "source": "query unstable() { select id, row_number() over (order by id) as rank from todos; }",
       "code": "SYQL6003_NONDETERMINISTIC_SQL"
     },
     {
-      "name": "post-floor-function",
-      "source": "query postFloor() { sql { select id, unistr('\\u0041') as value from todos } }",
-      "code": "SYQL6002_INVALID_SQL"
-    },
-    {
       "name": "compile-option-function",
-      "source": "query extensionFunction() { sql { select id, sqrt(created_at) as value from todos } }",
-      "code": "SYQL6002_INVALID_SQL"
-    },
-    {
-      "name": "post-floor-iif-arity",
-      "source": "query postFloorArity() { sql { select id, iif(status is null, 'none') as value from todos } }",
+      "source": "query extensionFunction() { select id, sqrt(created_at) as value from todos; }",
       "code": "SYQL6002_INVALID_SQL"
     }
   ]

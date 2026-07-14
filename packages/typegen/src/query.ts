@@ -161,9 +161,8 @@ export interface QueryNamingOptions {
 
 const DEFAULT_NAMING: QueryNamingOptions = { naming: 'camel', targets: ['ts'] };
 
-/** Revision-1 SYQL public inputs. These are deliberately separate from SQL
- * binds: groups and switches are public values without corresponding SQLite
- * parameters, while compiler-generated parameters are never public. */
+/** SYQL public inputs. These are deliberately separate from SQL binds: groups
+ * and compiler-generated parameters have distinct public/runtime shapes. */
 export type QuerySyqlPublicInput =
   | {
       readonly kind: 'value';
@@ -172,6 +171,7 @@ export type QuerySyqlPublicInput =
       readonly type: QueryParamType;
       readonly nullable: boolean;
       readonly required: boolean;
+      readonly default?: false;
     }
   | {
       readonly kind: 'group';
@@ -185,12 +185,6 @@ export type QuerySyqlPublicInput =
       }[];
     }
   | {
-      readonly kind: 'switch';
-      readonly name: string;
-      readonly langName: string;
-      readonly default: false;
-    }
-  | {
       readonly kind: 'sort';
       readonly name: string;
       readonly langName: string;
@@ -201,7 +195,7 @@ export type QuerySyqlPublicInput =
       }[];
     }
   | {
-      readonly kind: 'page';
+      readonly kind: 'limit';
       readonly name: string;
       readonly langName: string;
       readonly defaultSize: number;
@@ -231,7 +225,7 @@ export type QuerySyqlPlanBind =
       readonly controls: readonly string[];
     }
   | {
-      readonly kind: 'page';
+      readonly kind: 'limit';
       readonly name: string;
       readonly type: 'integer';
       readonly input: string;
@@ -250,7 +244,7 @@ export interface QuerySyqlStatement {
 /** The target-neutral physical plan every emitter must implement exactly. */
 export interface QuerySyqlExecutionPlan {
   readonly backend: Exclude<QueryBackend, 'auto'>;
-  /** One bit per optional scalar/group/switch, in declaration order. */
+  /** One bit per conditional activation control, in declaration order. */
   readonly activationControls: readonly string[];
   readonly conditions: readonly {
     readonly controls: readonly string[];

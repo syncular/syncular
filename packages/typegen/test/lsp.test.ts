@@ -13,12 +13,12 @@ const IMPORTED_URI = pathToFileURL(
 const GOOD = `import { searchTitle } from "./task-search.syql";
 
 query probeTasks(projectId, needle?: string, minPriority?) {
-  sql {
+
     select id, title, priority from tasks
-    where @scope(tasks.project_id = :projectId)
-      and when(needle) { @searchTitle(:needle) }
+    where tasks.project_id = :projectId
+      and when(needle) { searchTitle(:needle) }
       and when(minPriority) { priority >= :minPriority }
-  }
+  ;
 }
 `;
 
@@ -91,14 +91,14 @@ describe('revision-1 SyqlLanguageServer', () => {
 
     const [parseNotification] = open(
       new SyqlLanguageServer(),
-      'query broken(a) { sql { select id from tasks }',
+      'query broken(a) {  select id from tasks ;',
     );
     const parseDiagnostic = (
       parseNotification?.params as {
         diagnostics: Array<{ code?: string; range: { start: Position } }>;
       }
     ).diagnostics[0];
-    expect(parseDiagnostic?.code).toBe('SYQL2008_INVALID_MEMBER');
+    expect(parseDiagnostic?.code).toBe('SYQL2001_EXPECTED_TOKEN');
     expect(parseDiagnostic?.range.start.character).toBeGreaterThan(0);
   });
 
@@ -143,13 +143,12 @@ describe('revision-1 SyqlLanguageServer', () => {
     expect(hover('probeTasks')).toContain('backend: **variants** (4 checked');
     expect(hover('probeTasks')).toContain('tables: tasks');
     expect(hover('minPriority')).toContain('optional input');
-    expect(hover('@scope')).toContain('reactive dependency');
   });
 
   test('imported predicate hover, definition, and references resolve hygienically', () => {
     const server = new SyqlLanguageServer();
     open(server, GOOD);
-    const position = positionOf(GOOD, '@searchTitle');
+    const position = positionOf(GOOD, 'searchTitle');
     const [hover] = server.handle({
       jsonrpc: '2.0',
       id: 2,

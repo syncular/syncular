@@ -148,19 +148,19 @@ function spanRange(text: string, span: SyqlSourceSpan): Range {
 function typeText(type: SyqlValueType | undefined): string {
   return type === undefined
     ? 'inferred'
-    : `${type.base}${type.nullable ? ' | null' : ''}`;
+    : `${type.base === 'boolean' ? 'bool' : type.base}${type.nullable ? ' | null' : ''}`;
 }
 
 function parameterHover(parameter: SyqlQueryParameter): string {
-  if (parameter.kind === 'switch') {
-    return `switch \`${parameter.name}\` — false/absent or true`;
+  if (parameter.kind === 'range') {
+    return `${parameter.optional ? 'optional' : 'required'} inclusive range \`${parameter.name}: range<${typeText(parameter.type)}>\``;
   }
   if (parameter.kind === 'group') {
     return `optional group \`${parameter.name}\`\n\n${parameter.members
       .map((member) => `- \`${member.name}: ${typeText(member.type)}\``)
       .join('\n')}`;
   }
-  return `${parameter.optional ? 'optional' : 'required'} input \`${parameter.name}: ${typeText(parameter.type)}\``;
+  return `${parameter.optional ? 'optional' : parameter.default === false ? 'default-false' : 'required'} input \`${parameter.name}: ${typeText(parameter.type)}\``;
 }
 
 export class SyqlLanguageServer {
@@ -432,22 +432,10 @@ export class SyqlLanguageServer {
     const request = this.#request(params);
     if (request === null) return null;
     const { found, view, offset } = request;
-    if (found.word === '@scope' || found.word === '@cover') {
-      return {
-        contents: {
-          kind: 'markdown',
-          value:
-            found.word === '@scope'
-              ? '`@scope` constructs exact reactive dependency keys and the same SQL predicate.'
-              : '`@cover` constructs exact dependencies plus checked window coverage.',
-        },
-      };
-    }
-    if (found.word.startsWith('@')) {
-      const predicate = view.semantic.predicateScopes
-        .get(view.file)
-        ?.get(found.word.slice(1));
-      if (predicate === undefined) return null;
+    const predicate = view.semantic.predicateScopes
+      .get(view.file)
+      ?.get(found.word);
+    if (predicate !== undefined) {
       return {
         contents: {
           kind: 'markdown',
@@ -488,11 +476,11 @@ export class SyqlLanguageServer {
           },
         };
       }
-      if (query.page?.control === found.word) {
+      if (query.limit?.control === found.word) {
         return {
           contents: {
             kind: 'markdown',
-            value: `page control \`${found.word}\`: default ${query.page.defaultSize}, maximum ${query.page.maxSize}`,
+            value: `limit control \`${found.word}\`: default ${query.limit.defaultSize}, maximum ${query.limit.maxSize}`,
           },
         };
       }
@@ -529,10 +517,10 @@ export class SyqlLanguageServer {
 
   #definition(params: unknown): unknown {
     const request = this.#request(params);
-    if (request === null || !request.found.word.startsWith('@')) return null;
+    if (request === null) return null;
     const predicate = request.view.semantic.predicateScopes
       .get(request.view.file)
-      ?.get(request.found.word.slice(1));
+      ?.get(request.found.word);
     if (predicate === undefined) return null;
     const text =
       this.#openText(predicate.module.file) ?? predicate.module.source;
@@ -544,17 +532,17 @@ export class SyqlLanguageServer {
 
   #references(params: unknown): unknown {
     const request = this.#request(params);
-    if (request === null || !request.found.word.startsWith('@')) return [];
+    if (request === null) return [];
     const target = request.view.semantic.predicateScopes
       .get(request.view.file)
-      ?.get(request.found.word.slice(1));
+      ?.get(request.found.word);
     if (target === undefined) return [];
     const locations: unknown[] = [];
     for (const module of request.view.semantic.graph.modules) {
       const scope = request.view.semantic.predicateScopes.get(module.file);
       for (const token of module.tokens) {
-        if (token.kind !== 'at-identifier') continue;
-        const resolved = scope?.get(token.text.slice(1));
+        if (token.kind !== 'identifier') continue;
+        const resolved = scope?.get(token.text);
         if (resolved?.id !== target.id) continue;
         locations.push({
           uri: pathToFileURL(module.file).href,

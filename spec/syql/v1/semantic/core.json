@@ -3,11 +3,11 @@
   "revision": 1,
   "cases": [
     {
-      "name": "imports-controls-groups-and-types",
+      "name": "imports-controls-ranges-and-types",
       "entry": "main.syql",
       "sources": {
         "shared.syql": "predicate byStatus(value: string | null) { status is :value }",
-        "main.syql": "import { byStatus as matchesStatus } from \"./shared.syql\";\nquery list(listId: string, status?: string | null, range?(start: integer, end: integer), includeArchived?: switch) {\n  sql {\n    select id from todos\n    where list_id = :listId\n      and when(status) { @matchesStatus(:status) }\n      and when(range, includeArchived) { created_at between :start and :end }\n  }\n}"
+        "main.syql": "import { byStatus as matchesStatus } from \"./shared.syql\";\nquery list(listId: string, status?: string | null, range?, includeArchived: bool = false) {\n  select id from todos\n  where list_id = :listId\n    and when(status) matchesStatus(:status)\n    and when(range, includeArchived) created_at between :range;\n}"
       },
       "queries": [
         {
@@ -17,40 +17,48 @@
               "kind": "value",
               "name": "listId",
               "optional": false,
-              "type": { "base": "string", "nullable": false }
+              "type": {
+                "base": "string",
+                "nullable": false
+              }
             },
             {
               "kind": "value",
               "name": "status",
               "optional": true,
-              "type": { "base": "string", "nullable": true }
+              "type": {
+                "base": "string",
+                "nullable": true
+              }
             },
             {
-              "kind": "group",
+              "kind": "range",
               "name": "range",
-              "optional": true,
-              "members": [
-                {
-                  "name": "start",
-                  "type": { "base": "integer", "nullable": false }
-                },
-                {
-                  "name": "end",
-                  "type": { "base": "integer", "nullable": false }
-                }
-              ]
+              "optional": true
             },
             {
-              "kind": "switch",
+              "kind": "value",
               "name": "includeArchived",
-              "optional": true
+              "optional": false,
+              "type": {
+                "base": "boolean",
+                "nullable": false
+              }
             }
           ],
-          "conditions": [["status"], ["range", "includeArchived"]],
+          "conditions": [
+            [
+              "status"
+            ],
+            [
+              "range",
+              "includeArchived"
+            ]
+          ],
           "renderedSqlContains": [
             "list_id = :listId",
             "status is :status",
-            "created_at between :start and :end"
+            "created_at between :__syqlRangeStart_range and :__syqlRangeEnd_range"
           ]
         }
       ]
@@ -61,19 +69,27 @@
       "name": "undeclared-bind",
       "entry": "bad.syql",
       "sources": {
-        "bad.syql": "query bad(id) { sql { select id from todos where id = :missing } }"
+        "bad.syql": "query bad(id) { select id from todos where id = :missing; }"
       },
       "code": "SYQL5006_UNDECLARED_BIND",
-      "start": { "offset": 54, "line": 1, "column": 55 }
+      "start": {
+        "offset": 48,
+        "line": 1,
+        "column": 49
+      }
     },
     {
       "name": "optional-bind-without-dominance",
       "entry": "bad.syql",
       "sources": {
-        "bad.syql": "query bad(status?) { sql { select id from todos where status = :status } }"
+        "bad.syql": "query bad(status?) { select id from todos where status = :status; }"
       },
       "code": "SYQL5009_MISSING_DOMINANCE",
-      "start": { "offset": 63, "line": 1, "column": 64 }
+      "start": {
+        "offset": 57,
+        "line": 1,
+        "column": 58
+      }
     }
   ]
 }

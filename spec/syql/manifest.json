@@ -2,7 +2,7 @@
   "$schema": "./schema/manifest.schema.json",
   "language": "SYQL",
   "revision": 1,
-  "fixtureSchemaRevision": 2,
+  "fixtureSchemaRevision": 3,
   "sqliteProfile": "3.46.0",
   "families": [
     {

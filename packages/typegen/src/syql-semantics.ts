@@ -15,6 +15,7 @@ import type {
   SyqlPredicateDeclaration,
   SyqlQueryDeclaration,
   SyqlQueryParameter,
+  SyqlRangeParameter,
   SyqlSyntaxFile,
   SyqlValueType,
 } from './syql-parser';
@@ -22,7 +23,6 @@ import type {
   SyqlEmbeddedNode,
   SyqlEmbeddedTemplate,
   SyqlPredicateCall,
-  SyqlReactiveDirective,
 } from './syql-template-parser';
 
 export type SyqlSemanticErrorCode =
@@ -72,22 +72,16 @@ export interface SyqlLogicalPredicateNode {
 export interface SyqlLogicalWhenNode {
   readonly kind: 'when';
   readonly controls: readonly string[];
+  readonly explicitPresence: readonly boolean[];
   readonly controlSpans: readonly SyqlSourceSpan[];
   readonly body: readonly SyqlLogicalTemplateNode[];
-  readonly span: SyqlSourceSpan;
-}
-
-export interface SyqlLogicalReactiveNode {
-  readonly kind: 'scope' | 'cover';
-  readonly directive: SyqlReactiveDirective;
   readonly span: SyqlSourceSpan;
 }
 
 export type SyqlLogicalTemplateNode =
   | SyqlLogicalSqlNode
   | SyqlLogicalPredicateNode
-  | SyqlLogicalWhenNode
-  | SyqlLogicalReactiveNode;
+  | SyqlLogicalWhenNode;
 
 export interface SyqlLogicalInput {
   readonly parameter: SyqlQueryParameter;
@@ -131,7 +125,16 @@ interface QueryBindSymbol {
 
 interface ExpansionContext {
   readonly queryBinds?: ReadonlyMap<string, QueryBindSymbol>;
+  readonly ranges?: ReadonlyMap<string, SyqlRangeParameter>;
   readonly requirements?: Map<string, SyqlValueType[]>;
+}
+
+export function syqlRangeStartBind(name: string): string {
+  return `__syqlRangeStart_${name}`;
+}
+
+export function syqlRangeEndBind(name: string): string {
+  return `__syqlRangeEnd_${name}`;
 }
 
 function predicateId(file: string, name: string): string {
@@ -213,11 +216,8 @@ class SemanticAnalyzer {
       const calls: SyqlResolvedPredicate[] = [];
       for (const node of predicate.declaration.body.tree.nodes) {
         if (node.kind !== 'predicate-call') continue;
-        const target = this.#resolveCall(
-          predicate.module,
-          node.name,
-          node.span,
-        );
+        const target = this.#lookupCall(predicate.module, node.name);
+        if (target === undefined) continue;
         this.#checkArity(node.arguments.length, target, node.span);
         calls.push(target);
       }
@@ -270,6 +270,7 @@ class SemanticAnalyzer {
             }
           }
         } else if (node.kind === 'predicate-call') {
+          const target = this.#lookupCall(predicate.module, node.name);
           for (const argument of node.arguments) {
             if (!declared.has(argument.name)) {
               this.#fail(
@@ -279,6 +280,7 @@ class SemanticAnalyzer {
               );
             }
           }
+          if (target === undefined) continue;
         }
       }
     }
@@ -299,7 +301,11 @@ class SemanticAnalyzer {
             if (token.kind === 'bind') used.add(bindName(token));
           }
         } else if (node.kind === 'predicate-call') {
-          const target = scope.get(node.name) as SyqlResolvedPredicate;
+          const target = scope.get(node.name);
+          if (target === undefined) {
+            for (const argument of node.arguments) used.add(argument.name);
+            continue;
+          }
           const targetUsed = computeUsed(target);
           target.declaration.parameters.forEach((formal, index) => {
             if (targetUsed.has(formal.name)) {
@@ -350,7 +356,8 @@ class SemanticAnalyzer {
       >;
       for (const node of predicate.declaration.body.tree.nodes) {
         if (node.kind !== 'predicate-call') continue;
-        const target = scope.get(node.name) as SyqlResolvedPredicate;
+        const target = scope.get(node.name);
+        if (target === undefined) continue;
         const targetConstraints = constraintsFor(target);
         target.declaration.parameters.forEach((formal, index) => {
           const actual = node.arguments[index];
@@ -402,12 +409,19 @@ class SemanticAnalyzer {
     query: SyqlQueryDeclaration,
   ): SyqlLogicalQuery {
     const bindSymbols = this.#queryBindSymbols(query);
+    const ranges = new Map(
+      query.parameters.flatMap((parameter) =>
+        parameter.kind === 'range'
+          ? [[parameter.name, parameter] as const]
+          : [],
+      ),
+    );
     const requirements = new Map<string, SyqlValueType[]>();
     const template = this.#expandTemplate(
       module,
-      query.sql.body.tree,
+      query.statement.tree,
       new Map(),
-      { queryBinds: bindSymbols, requirements },
+      { queryBinds: bindSymbols, ranges, requirements },
     );
     const conditions: SyqlLogicalWhenNode[] = [];
     this.#collectConditions(template, conditions);
@@ -435,8 +449,20 @@ class SemanticAnalyzer {
   ): ReadonlyMap<string, QueryBindSymbol> {
     const symbols = new Map<string, QueryBindSymbol>();
     for (const parameter of query.parameters) {
-      if (parameter.kind === 'switch') continue;
-      if (parameter.kind === 'group') {
+      if (parameter.kind === 'range') {
+        for (const name of [
+          syqlRangeStartBind(parameter.name),
+          syqlRangeEndBind(parameter.name),
+        ]) {
+          symbols.set(name, {
+            name,
+            parameter,
+            ...(parameter.optional ? { controller: parameter.name } : {}),
+            ...(parameter.type === undefined ? {} : { type: parameter.type }),
+            span: parameter.nameSpan,
+          });
+        }
+      } else if (parameter.kind === 'group') {
         for (const member of parameter.members) {
           symbols.set(member.name, {
             name: member.name,
@@ -477,48 +503,31 @@ class SemanticAnalyzer {
     context: ExpansionContext,
   ): SyqlLogicalTemplateNode {
     if (node.kind === 'raw') {
-      const parts: SyqlSqlPart[] = [];
-      for (const token of node.tokens) {
-        if (token.kind !== 'bind') {
-          const previous = parts[parts.length - 1];
-          if (previous?.kind === 'text') {
-            parts[parts.length - 1] = {
-              kind: 'text',
-              text: previous.text + token.text,
-            };
-          } else {
-            parts.push({ kind: 'text', text: token.text });
-          }
-          continue;
-        }
-        const authored = bindName(token);
-        const substituted = substitution.get(authored);
-        parts.push({
-          kind: 'bind',
-          name: substituted?.name ?? authored,
-          span: token.span,
-          origins:
-            substituted === undefined
-              ? [token.span]
-              : [...substituted.origins, token.span],
-        });
-      }
-      return { kind: 'sql', parts, span: node.span };
+      return {
+        kind: 'sql',
+        parts: this.#expandSqlTokens(node.tokens, substitution, context),
+        span: node.span,
+      };
     }
     if (node.kind === 'when') {
       return {
         kind: 'when',
         controls: node.controls,
+        explicitPresence: node.explicitPresence,
         controlSpans: node.controlSpans,
         body: this.#expandTemplate(module, node.body, substitution, context),
         span: node.span,
       };
     }
-    if (node.kind === 'scope' || node.kind === 'cover') {
-      return { kind: node.kind, directive: node, span: node.span };
-    }
     const call = node as SyqlPredicateCall;
-    const target = this.#resolveCall(module, call.name, call.span);
+    const target = this.#lookupCall(module, call.name);
+    if (target === undefined) {
+      return {
+        kind: 'sql',
+        parts: this.#expandSqlTokens(call.tokens, substitution, context),
+        span: call.span,
+      };
+    }
     this.#checkArity(call.arguments.length, target, call.span);
     const targetSubstitution = new Map<string, ActualBind>();
     target.declaration.parameters.forEach((formal, index) => {
@@ -549,6 +558,56 @@ class SemanticAnalyzer {
     };
   }
 
+  #expandSqlTokens(
+    tokens: readonly SyqlToken[],
+    substitution: ReadonlyMap<string, ActualBind>,
+    context: ExpansionContext,
+  ): readonly SyqlSqlPart[] {
+    const parts: SyqlSqlPart[] = [];
+    const pushText = (text: string): void => {
+      const previous = parts[parts.length - 1];
+      if (previous?.kind === 'text') {
+        parts[parts.length - 1] = { kind: 'text', text: previous.text + text };
+      } else parts.push({ kind: 'text', text });
+    };
+    const pushBind = (
+      name: string,
+      token: SyqlToken,
+      origins: readonly SyqlSourceSpan[],
+    ): void => {
+      parts.push({ kind: 'bind', name, span: token.span, origins });
+    };
+    for (const token of tokens) {
+      if (token.kind !== 'bind') {
+        pushText(token.text);
+        continue;
+      }
+      const authored = bindName(token);
+      const substituted = substitution.get(authored);
+      if (substituted !== undefined) {
+        const parameter = context.ranges?.get(substituted.name);
+        if (parameter !== undefined) {
+          this.#fail(
+            'SYQL5011_TYPE_CONFLICT',
+            token.span,
+            `range input ${parameter.name} cannot be passed to a predicate`,
+          );
+        }
+        pushBind(substituted.name, token, [...substituted.origins, token.span]);
+        continue;
+      }
+      const range = context.ranges?.get(authored);
+      if (range !== undefined) {
+        pushBind(syqlRangeStartBind(range.name), token, [token.span]);
+        pushText(' and ');
+        pushBind(syqlRangeEndBind(range.name), token, [token.span]);
+      } else {
+        pushBind(authored, token, [token.span]);
+      }
+    }
+    return parts;
+  }
+
   #collectConditions(
     nodes: readonly SyqlLogicalTemplateNode[],
     out: SyqlLogicalWhenNode[],
@@ -575,11 +634,25 @@ class SemanticAnalyzer {
             `unknown when control ${JSON.stringify(name)}`,
           );
         }
-        if (parameter.kind === 'value' && !parameter.optional) {
+        if (condition.explicitPresence[index] && !parameter.optional) {
           this.#fail(
             'SYQL5008_INVALID_CONTROL',
             condition.controlSpans[index] as SyqlSourceSpan,
-            `required scalar ${name} cannot control when; only optional values, groups, and switches can`,
+            `present(${name}) requires an optional input`,
+          );
+        }
+        if (
+          !parameter.optional &&
+          !(
+            parameter.kind === 'value' &&
+            parameter.type?.base === 'boolean' &&
+            parameter.default === false
+          )
+        ) {
+          this.#fail(
+            'SYQL5008_INVALID_CONTROL',
+            condition.controlSpans[index] as SyqlSourceSpan,
+            `required input ${name} cannot control when; use an optional input or a bool defaulted to false`,
           );
         }
       });
@@ -644,20 +717,6 @@ class SemanticAnalyzer {
             next.add(control);
           }
           walk(node.body, next);
-        } else {
-          for (const binding of node.directive.bindings) {
-            for (const value of binding.values) {
-              record(
-                {
-                  kind: 'bind',
-                  name: value.name,
-                  span: value.span,
-                  origins: [value.span],
-                },
-                active,
-              );
-            }
-          }
         }
       }
     };
@@ -679,7 +738,11 @@ class SemanticAnalyzer {
         const parameter = query.parameters.find(
           (item) => item.name === control,
         );
-        if (parameter?.kind === 'value' && !conditionUses.has(control)) {
+        if (
+          parameter?.kind === 'value' &&
+          parameter.default === undefined &&
+          !conditionUses.has(control)
+        ) {
           this.#fail(
             'SYQL5010_UNUSED_CONTROL',
             condition.controlSpans[index] as SyqlSourceSpan,
@@ -696,12 +759,27 @@ class SemanticAnalyzer {
             `when(${control}) does not use a member of group ${control}`,
           );
         }
+        if (
+          parameter?.kind === 'range' &&
+          !conditionUses.has(syqlRangeStartBind(parameter.name))
+        ) {
+          this.#fail(
+            'SYQL5010_UNUSED_CONTROL',
+            condition.controlSpans[index] as SyqlSourceSpan,
+            `when(${control}) does not use range :${control}`,
+          );
+        }
       });
     }
 
     for (const parameter of query.parameters) {
-      if (parameter.kind === 'switch') {
-        if (!usedControls.has(parameter.name)) {
+      if (parameter.kind === 'range') {
+        if (parameter.optional && !usedControls.has(parameter.name)) {
+          this.#unusedInput(parameter.nameSpan, parameter.name);
+        }
+        const start = syqlRangeStartBind(parameter.name);
+        const end = syqlRangeEndBind(parameter.name);
+        if (!allUses.has(start) || !allUses.has(end)) {
           this.#unusedInput(parameter.nameSpan, parameter.name);
         }
       } else if (parameter.kind === 'group') {
@@ -717,7 +795,10 @@ class SemanticAnalyzer {
         if (!usedControls.has(parameter.name) || !allUses.has(parameter.name)) {
           this.#unusedInput(parameter.nameSpan, parameter.name);
         }
-      } else if (!allUses.has(parameter.name)) {
+      } else if (
+        !allUses.has(parameter.name) &&
+        !(parameter.default !== undefined && usedControls.has(parameter.name))
+      ) {
         this.#unusedInput(parameter.nameSpan, parameter.name);
       }
     }
@@ -772,8 +853,7 @@ class SemanticAnalyzer {
     parameter: SyqlQueryParameter,
     resolved: ReadonlyMap<string, SyqlValueType>,
   ): SyqlValueType | undefined {
-    if (parameter.kind === 'switch') return undefined;
-    if (parameter.kind === 'group') {
+    if (parameter.kind === 'range' || parameter.kind === 'group') {
       // Group members carry their own types; the logical input itself has no
       // scalar type. L3 consumes the per-member resolved map directly.
       return undefined;
@@ -781,20 +861,11 @@ class SemanticAnalyzer {
     return parameter.type ?? resolved.get(parameter.name);
   }
 
-  #resolveCall(
+  #lookupCall(
     module: SyqlSyntaxFile,
     name: string,
-    span: SyqlSourceSpan,
-  ): SyqlResolvedPredicate {
-    const target = this.#scopes.get(module.file)?.get(name);
-    if (target === undefined) {
-      this.#fail(
-        'SYQL5001_UNKNOWN_PREDICATE',
-        span,
-        `unknown predicate @${name} in ${module.file}`,
-      );
-    }
-    return target;
+  ): SyqlResolvedPredicate | undefined {
+    return this.#scopes.get(module.file)?.get(name);
   }
 
   #checkArity(
@@ -807,7 +878,7 @@ class SemanticAnalyzer {
       this.#fail(
         'SYQL5003_PREDICATE_ARITY',
         span,
-        `@${target.declaration.name} expects ${expected} argument(s), got ${actual}`,
+        `${target.declaration.name} expects ${expected} argument(s), got ${actual}`,
       );
     }
   }
@@ -853,7 +924,7 @@ export function renderSyqlLogicalTemplate(
       if (node.kind === 'when') {
         return `when(${node.controls.join(', ')}) {${renderSyqlLogicalTemplate(node.body)}}`;
       }
-      return node.directive.tokens.map((token) => token.text).join('');
+      throw new Error('unknown SYQL logical template node');
     })
     .join('');
 }

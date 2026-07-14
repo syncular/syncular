@@ -67,7 +67,8 @@ function reactiveParam(query: AnalyzedQuery, name: string): string {
     );
     if (input?.kind !== 'value')
       throw new Error(`unknown reactive input ${name}`);
-    return `String(params.${propertyKey(input.langName)})`;
+    const access = `params.${propertyKey(input.langName)}`;
+    return `String(${input.default === false ? `${access} ?? false` : access})`;
   }
   const param = query.params.find((candidate) => candidate.name === name);
   if (param === undefined) throw new Error(`unknown reactive param ${name}`);
@@ -117,7 +118,8 @@ function syqlControlActive(
 ): string {
   const input = syqlInput(query, control);
   const access = `${params}.${propertyKey(input.langName)}`;
-  if (input.kind === 'switch') return `${access} === true`;
+  if (input.kind === 'value' && input.default === false)
+    return `${access} === true`;
   if (input.kind === 'value' || input.kind === 'group') {
     return `${access} !== undefined`;
   }
@@ -136,8 +138,8 @@ function syqlBindExpr(
   }
   const input = syqlInput(query, bind.input);
   const access = `${params}.${propertyKey(input.langName)}`;
-  if (bind.kind === 'page') {
-    if (input.kind !== 'page') throw new Error('page bind/input mismatch');
+  if (bind.kind === 'limit') {
+    if (input.kind !== 'limit') throw new Error('limit bind/input mismatch');
     return `${access} ?? ${input.defaultSize}`;
   }
   if (bind.kind === 'group-member') {
@@ -150,6 +152,7 @@ function syqlBindExpr(
     return `${access}?.${propertyKey(member.langName)} ?? null`;
   }
   if (input.kind !== 'value') throw new Error('value bind/input mismatch');
+  if (input.default === false) return `${access} ?? false`;
   if (input.required) return access;
   return input.nullable ? `${access}?.value ?? null` : `${access} ?? null`;
 }
@@ -197,17 +200,13 @@ function emitSyqlValidation(query: AnalyzedQuery, Params: string): string[] {
         );
       }
       lines.push('  }');
-    } else if (input.kind === 'switch') {
-      lines.push(
-        `  if (${access} !== undefined && typeof ${access} !== 'boolean') throw new SyqlInputError('SYQL_RUNTIME_INVALID_INPUT', ${quote(`${query.name}: invalid switch ${input.name}`)});`,
-      );
     } else if (input.kind === 'sort') {
       lines.push(
         `  if (${access} !== undefined && ![${input.profiles.map((profile) => quote(profile.langName)).join(', ')}].includes(${access})) throw new SyqlInputError('SYQL_RUNTIME_INVALID_SORT', ${quote(`${query.name}: invalid sort profile`)});`,
       );
     } else {
       lines.push(
-        `  if (${access} !== undefined && (!Number.isSafeInteger(${access}) || ${access} < 1 || ${access} > ${input.maxSize})) throw new SyqlInputError('SYQL_RUNTIME_INVALID_PAGE', ${quote(`${query.name}: page size must be an integer from 1 through ${input.maxSize}`)});`,
+        `  if (${access} !== undefined && (!Number.isSafeInteger(${access}) || ${access} < 1 || ${access} > ${input.maxSize})) throw new SyqlInputError('SYQL_RUNTIME_INVALID_LIMIT', ${quote(`${query.name}: limit must be an integer from 1 through ${input.maxSize}`)});`,
       );
     }
   }
@@ -267,8 +266,6 @@ function emitSyqlQuery(query: AnalyzedQuery, hash: string): string {
         lines.push(
           `  ${key}?: ${pascalCase(query.name)}${pascalCase(input.langName)};`,
         );
-      } else if (input.kind === 'switch') {
-        lines.push(`  ${key}?: boolean;`);
       } else if (input.kind === 'sort') {
         lines.push(
           `  ${key}?: ${input.profiles.map((profile) => quote(profile.langName)).join(' | ')};`,
@@ -580,7 +577,7 @@ export function emitQueriesModule(
         "  | 'SYQL_RUNTIME_INVALID_INPUT'",
         "  | 'SYQL_RUNTIME_INVALID_GROUP'",
         "  | 'SYQL_RUNTIME_INVALID_SORT'",
-        "  | 'SYQL_RUNTIME_INVALID_PAGE';",
+        "  | 'SYQL_RUNTIME_INVALID_LIMIT';",
         '',
         'export class SyqlInputError extends Error {',
         "  readonly name = 'SyqlInputError';",

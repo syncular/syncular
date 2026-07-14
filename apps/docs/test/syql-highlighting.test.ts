@@ -2,8 +2,8 @@ import { expect, test } from 'bun:test';
 import sqlGrammar from '@shikijs/langs/sql';
 import { createHighlighter, type LanguageRegistration } from 'shiki';
 
-const source = `query listTodos() {
-  sql {
+const source = `query listTodos(first?, second?: { start, end }) {
+
     select id from todos
     where when(first) {
       id = :first
@@ -11,13 +11,12 @@ const source = `query listTodos() {
       and when(second) {
         id between :start and :end
       }
-  }
 
-  sort sortBy default newest {
-    newest { id desc }
+
+  order by sortBy default newest {
+    newest: id desc ;
   }
-  page pageSize default 50 max 200;
-  identity by id;
+  limit pageSize default 50 max 200;
 }`;
 
 test('keeps highlighting after a nested SYQL block closes', async () => {
@@ -64,13 +63,10 @@ test('keeps highlighting after a nested SYQL block closes', async () => {
     expect(scopesFor('when(second)', 'when')).toContain(
       'keyword.control.conditional.syql',
     );
-    expect(scopesFor('sort sortBy', 'sort')).toContain(
+    expect(scopesFor('order by sortBy default', 'default')).toContain(
       'keyword.other.member.syql',
     );
-    expect(scopesFor('page pageSize', 'page')).toContain(
-      'keyword.other.member.syql',
-    );
-    expect(scopesFor('identity by', 'identity')).toContain(
+    expect(scopesFor('limit pageSize default 50 max', 'max')).toContain(
       'keyword.other.member.syql',
     );
   } finally {

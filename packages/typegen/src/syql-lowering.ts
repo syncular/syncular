@@ -18,10 +18,10 @@ import {
 import { lexSyqlSqlSource } from './syql-lexer';
 import type {
   SyqlLogicalQuery,
-  SyqlLogicalReactiveNode,
   SyqlLogicalTemplateNode,
   SyqlLogicalWhenNode,
 } from './syql-semantics';
+import { syqlRangeEndBind, syqlRangeStartBind } from './syql-semantics';
 import type { SyqlValidatedQuery } from './syql-validator';
 
 export type SyqlLoweringErrorCode =
@@ -50,7 +50,7 @@ const DEFAULT_NAMING: QueryNamingOptions = {
   backend: 'auto',
 };
 const DEFAULT_ENUMERATION_LIMIT = 256;
-const PAGE_BIND = '__syqlPageSize';
+const LIMIT_BIND = '__syqlLimit';
 
 interface ValueOwner {
   readonly kind: 'value' | 'group-member';
@@ -70,17 +70,6 @@ function fail(
   );
 }
 
-function renderDirective(node: SyqlLogicalReactiveNode): string {
-  const predicates = node.directive.bindings.map((binding) => {
-    const column = `${binding.column.qualifier}.${binding.column.name}`;
-    const values = binding.values.map((value) => `:${value.name}`);
-    return binding.operator === 'equal'
-      ? `${column} = ${values[0]}`
-      : `${column} in (${values.join(', ')})`;
-  });
-  return `(${predicates.join(' and ')})`;
-}
-
 function renderTemplate(
   nodes: readonly SyqlLogicalTemplateNode[],
   conditions: ReadonlyMap<SyqlLogicalWhenNode, number>,
@@ -97,9 +86,6 @@ function renderTemplate(
       }
       if (node.kind === 'predicate') {
         return `(${renderTemplate(node.body, conditions, mode)})`;
-      }
-      if (node.kind === 'scope' || node.kind === 'cover') {
-        return renderDirective(node);
       }
       if (node.kind !== 'when') {
         throw new Error('revision-1 lowering found an unknown logical node');
@@ -148,7 +134,7 @@ function composeControls(
   sql: string,
   file: string,
   sortSql: string | undefined,
-  page: SyqlValidatedQuery['page'],
+  limit: SyqlValidatedQuery['limit'],
 ): string {
   let out = sql.trim();
   if (sortSql !== undefined) {
@@ -157,10 +143,10 @@ function composeControls(
       .slice(insertion)
       .trimStart()}`.trim();
   }
-  if (page !== undefined) {
+  if (limit !== undefined) {
     // `coalesce` gives the generator's metadata-only execution a valid value;
     // runtimes still validate and bind the effective size before execution.
-    out = `${out.trimEnd()} limit min(coalesce(:${PAGE_BIND}, ${page.defaultSize}), ${page.maxSize})`;
+    out = `${out.trimEnd()} limit min(coalesce(:${LIMIT_BIND}, ${limit.defaultSize}), ${limit.maxSize})`;
   }
   return out;
 }
@@ -179,7 +165,7 @@ function headersFor(
   names: readonly string[],
   valueOwners: ReadonlyMap<string, ValueOwner>,
   conditionBinds: ReadonlyMap<string, number>,
-  page: SyqlValidatedQuery['page'],
+  limit: SyqlValidatedQuery['limit'],
   query: SyqlLogicalQuery,
 ): string {
   return names
@@ -187,7 +173,7 @@ function headersFor(
       const value = valueOwners.get(name);
       if (value !== undefined) return `-- param :${name} ${value.type}`;
       if (conditionBinds.has(name)) return `-- param :${name} boolean`;
-      if (name === PAGE_BIND && page !== undefined)
+      if (name === LIMIT_BIND && limit !== undefined)
         return `-- param :${name} integer`;
       return fail(
         'SYQL7002_INTERNAL_LOWERING',
@@ -203,7 +189,7 @@ function planBind(
   valueOwners: ReadonlyMap<string, ValueOwner>,
   conditionBinds: ReadonlyMap<string, number>,
   conditions: readonly SyqlLogicalWhenNode[],
-  page: SyqlValidatedQuery['page'],
+  limit: SyqlValidatedQuery['limit'],
   query: SyqlLogicalQuery,
 ): QuerySyqlPlanBind {
   const value = valueOwners.get(name);
@@ -229,12 +215,12 @@ function planBind(
       controls: (conditions[condition] as SyqlLogicalWhenNode).controls,
     };
   }
-  if (name === PAGE_BIND && page !== undefined) {
+  if (name === LIMIT_BIND && limit !== undefined) {
     return {
-      kind: 'page',
+      kind: 'limit',
       name,
       type: 'integer',
-      input: page.control,
+      input: limit.control,
     };
   }
   return fail(
@@ -253,7 +239,7 @@ function publicInputs(
   const publicNames = [
     ...declaration.parameters.map((parameter) => parameter.name),
     ...(declaration.sort === undefined ? [] : [declaration.sort.control]),
-    ...(declaration.page === undefined ? [] : [declaration.page.control]),
+    ...(declaration.limit === undefined ? [] : [declaration.limit.control]),
   ];
   const mapped = new Map(
     buildNamingMap(
@@ -267,12 +253,35 @@ function publicInputs(
   const result: QuerySyqlPublicInput[] = declaration.parameters.map(
     (parameter) => {
       const langName = mapped.get(parameter.name) as string;
-      if (parameter.kind === 'switch') {
+      if (parameter.kind === 'range') {
+        const type = validated.bindTypes.get(
+          syqlRangeStartBind(parameter.name),
+        );
+        if (type === undefined) {
+          return fail(
+            'SYQL7002_INTERNAL_LOWERING',
+            query,
+            `range ${parameter.name} has no resolved element type`,
+          );
+        }
         return {
-          kind: 'switch',
+          kind: 'group',
           name: parameter.name,
           langName,
-          default: false,
+          members: [
+            {
+              name: 'start',
+              langName: 'start',
+              type: type.base,
+              nullable: type.nullable,
+            },
+            {
+              name: 'end',
+              langName: 'end',
+              type: type.base,
+              nullable: type.nullable,
+            },
+          ],
         };
       }
       if (parameter.kind === 'group') {
@@ -320,7 +329,10 @@ function publicInputs(
         langName,
         type: type.base,
         nullable: type.nullable,
-        required: !parameter.optional,
+        required: !parameter.optional && parameter.default === undefined,
+        ...(parameter.default === undefined
+          ? {}
+          : { default: parameter.default }),
       };
     },
   );
@@ -343,13 +355,13 @@ function publicInputs(
       })),
     });
   }
-  if (validated.page !== undefined) {
+  if (validated.limit !== undefined) {
     result.push({
-      kind: 'page',
-      name: validated.page.control,
-      langName: mapped.get(validated.page.control) as string,
-      defaultSize: validated.page.defaultSize,
-      maxSize: validated.page.maxSize,
+      kind: 'limit',
+      name: validated.limit.control,
+      langName: mapped.get(validated.limit.control) as string,
+      defaultSize: validated.limit.defaultSize,
+      maxSize: validated.limit.maxSize,
     });
   }
   return result;
@@ -360,8 +372,21 @@ function valueOwners(
 ): ReadonlyMap<string, ValueOwner> {
   const owners = new Map<string, ValueOwner>();
   for (const parameter of validated.logical.declaration.parameters) {
-    if (parameter.kind === 'switch') continue;
-    if (parameter.kind === 'group') {
+    if (parameter.kind === 'range') {
+      for (const [name, member] of [
+        [syqlRangeStartBind(parameter.name), 'start'],
+        [syqlRangeEndBind(parameter.name), 'end'],
+      ] as const) {
+        const type = validated.bindTypes.get(name);
+        if (type === undefined) continue;
+        owners.set(name, {
+          kind: 'group-member',
+          input: parameter.name,
+          member,
+          type: type.base,
+        });
+      }
+    } else if (parameter.kind === 'group') {
       for (const member of parameter.members) {
         const type = validated.bindTypes.get(member.name);
         if (type === undefined) continue;
@@ -415,7 +440,7 @@ function lowerStatement(
     names,
     owners,
     conditionBinds,
-    validated.page,
+    validated.limit,
     query,
   );
   const candidate = headers.length === 0 ? sql : `${headers}\n${sql}`;
@@ -429,7 +454,8 @@ function lowerStatement(
       ...naming,
       internalParams: [
         ...conditionBinds.keys(),
-        ...(validated.page === undefined ? [] : [PAGE_BIND]),
+        ...(validated.limit === undefined ? [] : [LIMIT_BIND]),
+        ...[...owners.keys()].filter((name) => name.startsWith('__syqlRange')),
       ],
     },
   );
@@ -450,7 +476,7 @@ function lowerStatement(
           owners,
           conditionBinds,
           query.conditions,
-          validated.page,
+          validated.limit,
           query,
         ),
       ),
@@ -500,7 +526,7 @@ export function lowerSyqlQuery(
       body,
       logical.module.file,
       profile.sql,
-      validated.page,
+      validated.limit,
     );
     const lowered = lowerStatement(
       validated,
@@ -555,7 +581,7 @@ export function lowerSyqlQuery(
           body,
           logical.module.file,
           profile.sql,
-          validated.page,
+          validated.limit,
         );
         const lowered = lowerStatement(
           validated,

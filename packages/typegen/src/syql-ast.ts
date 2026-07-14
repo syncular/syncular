@@ -33,16 +33,8 @@ export type SyqlSemanticTemplateNode =
   | {
       readonly kind: 'when';
       readonly controls: readonly string[];
+      readonly explicitPresence: readonly boolean[];
       readonly body: readonly SyqlSemanticTemplateNode[];
-    }
-  | {
-      readonly kind: 'scope' | 'cover';
-      readonly bindings: readonly {
-        readonly qualifier: string;
-        readonly column: string;
-        readonly operator: 'equal' | 'in';
-        readonly values: readonly string[];
-      }[];
     };
 
 export interface SyqlSemanticTemplate {
@@ -56,11 +48,13 @@ export type SyqlSemanticQueryParameter =
       readonly name: string;
       readonly optional: boolean;
       readonly type?: SyqlSemanticType;
+      readonly default?: false;
     }
   | {
-      readonly kind: 'switch';
+      readonly kind: 'range';
       readonly name: string;
-      readonly optional: true;
+      readonly optional: boolean;
+      readonly type?: SyqlSemanticType;
     }
   | {
       readonly kind: 'group';
@@ -85,8 +79,13 @@ export type SyqlSemanticDeclaration =
   | {
       readonly kind: 'query';
       readonly name: string;
+      readonly sync: boolean;
+      readonly syncBy?: {
+        readonly qualifier: string;
+        readonly column: string;
+      };
       readonly parameters: readonly SyqlSemanticQueryParameter[];
-      readonly sql: SyqlSemanticTemplate;
+      readonly statement: SyqlSemanticTemplate;
       readonly sort?: {
         readonly control: string;
         readonly defaultProfile: string;
@@ -95,12 +94,11 @@ export type SyqlSemanticDeclaration =
           readonly order: SyqlSemanticTemplate;
         }[];
       };
-      readonly page?: {
+      readonly limit?: {
         readonly control: string;
         readonly defaultSize: number;
         readonly maxSize: number;
       };
-      readonly identity?: readonly string[];
     };
 
 export interface SyqlSemanticFile {
@@ -135,8 +133,14 @@ function semanticMember(member: SyqlGroupMember): {
 function semanticParameter(
   parameter: SyqlQueryParameter,
 ): SyqlSemanticQueryParameter {
-  if (parameter.kind === 'switch') {
-    return { kind: 'switch', name: parameter.name, optional: true };
+  if (parameter.kind === 'range') {
+    const type = semanticType(parameter.type);
+    return {
+      kind: 'range',
+      name: parameter.name,
+      optional: parameter.optional,
+      ...(type === undefined ? {} : { type }),
+    };
   }
   if (parameter.kind === 'group') {
     return {
@@ -152,6 +156,7 @@ function semanticParameter(
     name: parameter.name,
     optional: parameter.optional,
     ...(type === undefined ? {} : { type }),
+    ...(parameter.default === undefined ? {} : { default: parameter.default }),
   };
 }
 
@@ -181,18 +186,11 @@ function semanticNode(
     return {
       kind: 'when',
       controls: node.controls,
+      explicitPresence: node.explicitPresence,
       body: semanticNodes(node.body.nodes),
     };
   }
-  return {
-    kind: node.kind,
-    bindings: node.bindings.map((binding) => ({
-      qualifier: binding.column.qualifier,
-      column: binding.column.name,
-      operator: binding.operator,
-      values: binding.values.map((value) => value.name),
-    })),
-  };
+  return undefined;
 }
 
 function semanticNodes(
@@ -231,8 +229,17 @@ function semanticDeclaration(
   return {
     kind: 'query',
     name: declaration.name,
+    sync: declaration.sync,
+    ...(declaration.syncBy === undefined
+      ? {}
+      : {
+          syncBy: {
+            qualifier: declaration.syncBy.qualifier,
+            column: declaration.syncBy.column,
+          },
+        }),
     parameters: declaration.parameters.map(semanticParameter),
-    sql: semanticTemplate(declaration.sql.body),
+    statement: semanticTemplate(declaration.statement),
     ...(declaration.sort === undefined
       ? {}
       : {
@@ -245,18 +252,15 @@ function semanticDeclaration(
             })),
           },
         }),
-    ...(declaration.page === undefined
+    ...(declaration.limit === undefined
       ? {}
       : {
-          page: {
-            control: declaration.page.control,
-            defaultSize: declaration.page.defaultSize,
-            maxSize: declaration.page.maxSize,
+          limit: {
+            control: declaration.limit.control,
+            defaultSize: declaration.limit.defaultSize,
+            maxSize: declaration.limit.maxSize,
           },
         }),
-    ...(declaration.identity === undefined
-      ? {}
-      : { identity: declaration.identity.fields }),
   };
 }
 
