@@ -24,6 +24,10 @@
     {
       "kind": "formatter",
       "path": "v1/formatter/core.json"
+    },
+    {
+      "kind": "emitter",
+      "path": "v1/emitter/core.json"
     }
   ]
 }

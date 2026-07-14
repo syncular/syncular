@@ -68,8 +68,8 @@ schema guide and suggests `syncular init`.
 | `manifestVersion` | yes | Must be `1`. Format growth happens by bumping this, not by tolerating unknown keys. |
 | `migrations` | no (default `./migrations`) | Directory of `NNNN_name/up.sql` migrations, relative to the manifest. |
 | `queries` | no (default `./queries`) | Directory of `.sql` / `.syql` named-query files (see §6). Only read when some output requests a queries file. |
-| `naming` | no (default `"camel"`) | §5-of-DESIGN-queries casing: `"camel"` maps snake_case SQL names to camelCase in generated row types/params (projections lower with `AS` aliases so runtime keys match); `"preserve"` keeps SQL-truth names. Collisions/keyword hazards are generate-time errors. |
-| `queryBackend` | no (default `"neutralize"`) | `.syql` conditional lowering: `"neutralize"` (one guarded statement), `"variants"` (enumerate per provided-combination whenever eligible), `"auto"` (enumerate at ≤ 2 optional groups). The per-query `variants` knob always forces. |
+| `naming` | no (default `"camel"`) | `"camel"` maps snake_case SQL names to camelCase in generated row types/params (projections lower with `AS` aliases so runtime keys match); `"preserve"` keeps SQL-truth names. Collisions/keyword hazards are generate-time errors. |
+| `queryBackend` | no (default `"auto"`) | Advanced revision-1 SYQL lowering override: `"neutralize"` emits guarded statements, `"variants"` enumerates activation states, and `"auto"` deterministically enumerates at ≤ 2 activation controls. This never changes source meaning or the public API. |
 | `output.ir` | no (default `./syncular.ir.json`) | IR output path, relative to the manifest. |
 | `output.module` | no (default `./syncular.generated.ts`) | Generated TS module path, relative to the manifest. |
 | `output.queryIr` | no | Deterministic analyzed QueryIR JSON. Its hash keys generated reactive query descriptors, so SQL-only changes invalidate caches. |
@@ -326,18 +326,65 @@ function on every platform — killing query↔type drift *by construction*. It 
 the type-safe **read** tier; raw `query(sql, params)` — guarded read-only —
 stays the escape hatch for queries built at runtime.
 
-Two frontends feed one pipeline (DESIGN-queries.md is the design of record):
-**`.sql`** — plain SQL + `:params`, the compatibility floor, documented in
-this section — and **`.syql`** — the DSL container (declared optional params
-with auto-guarded conjuncts, `from+to?` groups, `?: flag` guards with
-`if (…) { … }`, file-scoped `@fragments`, `orderBy`/`limit` knobs, and the
-opt-in `variants` enumeration backend), which lowers at generate time to the
-same checked plain SQL. Tooling: `syncular generate --print <name>` (the
-lowered SQL), `syncular fmt` (canonical `.syql` style), `syncular lsp`
-(diagnostics/hover/definition over stdio). Casing follows the manifest
-`naming` mode (§1): generated rows/params are camelCase and projections are
-`AS`-aliased so runtime keys match; `mutate` accepts camel and snake keys
-both.
+Two frontends feed one QueryIR pipeline. **`.sql`** is plain SQL plus
+`:params`, the compatibility floor documented below. **`.syql`** is the
+revision-1 structured frontend: authoritative typed inputs, explicit
+`when(...)` conjuncts, atomic optional groups, imported hygienic predicates,
+constructive `@scope`/`@cover` facts, complete sort profiles, bounded pages,
+and proven identity. Its complete normative definition is
+[`../../docs/SYQL.md`](../../docs/SYQL.md); the rationale and implementation
+record are [`../../docs/rfcs/0004-syql-language.md`](../../docs/rfcs/0004-syql-language.md).
+
+Tooling: `syncular generate --print <name>` prints every selected checked
+statement and bind, `syncular fmt` is the semantic-preserving canonical
+formatter, and `syncular lsp` provides project-aware diagnostics, hover,
+definitions, references, symbols, and formatting. Casing follows the manifest
+`naming` mode (§1): generated rows/inputs are camelCase and projections are
+`AS`-aliased so runtime keys match.
+
+```syql
+import { matchesTitle } from "./predicates.syql";
+
+query listTodos(
+  listId,
+  status?: string | null,
+  range?(start: integer, end: integer),
+  q?: string,
+  unassigned?: switch,
+) {
+  sql {
+    select id, title, status, created_at
+    from todos
+    where @cover(todos.list_id = :listId)
+      and when(status) {
+        status is :status
+      }
+      and when(range) {
+        created_at between :start and :end
+      }
+      and when(unassigned) {
+        assignee_id is null
+      }
+      and when(q) {
+        @matchesTitle(:q)
+      }
+  }
+  sort sortBy default newest {
+    newest { created_at desc, id desc }
+    oldest { created_at asc, id asc }
+  }
+  page pageSize default 50 max 200;
+  identity by id;
+}
+```
+
+Optional nullable scalars use a generated presence wrapper so absent,
+present-null, and present-value remain distinct. A group is one optional host
+object whose members are all required. A switch defaults false. Sort is a
+generated enum/union of complete checked profiles; page is validated as a
+positive bounded integer before execution. `integer` inputs are exact signed
+64-bit values in the SYQL API (`bigint` in TypeScript, `Int64`/`Long`/`int` on
+native targets).
 
 **File & naming convention.** Named queries live in a `queries/` directory
 next to `migrations/` (override with the top-level `"queries"` manifest key).
@@ -455,30 +502,25 @@ identifier and keeping those that name an IR table. This captures subquery /
 prepare() still guarantees the SQL itself is correct.
 
 Inference is deliberately conservative around `OR`, joins, grouping, and
-computed identity. A `.syql` query can state the missing fact explicitly:
+computed identity. A `.syql` query constructs exact reactive facts in the same
+node that restricts the SQL:
 
 ```syql
-query compareLists(left, right)
-  depends tasks on project_id = left | right
-  window tasks by project_id = left | right
-  key by id
-{
-  select id, title from tasks
-  where project_id = :left or project_id = :right
+query compareLists(left, right) {
+  sql {
+    select id, title from tasks
+    where @cover(tasks.project_id in (:left, :right))
+  }
+  identity by id;
 }
 ```
 
-The declaration grammar is:
-
-- `depends <table> on <scope> = <param> | <param>`;
-- `window <table> by <scope> = <param> | <param>` with optional
-  `fixed <other_scope> = <param>, ...` for every other scope on that table;
-- `key by <result-column> | <result-column>`.
-
-These escape hatches are checked against the prepared query, schema, inferred
-param types, and result projection. They reject unread tables, unknown scopes
-or params, optional/incompatible coverage params, incomplete fixed scopes,
-duplicate declarations, and unprojected key fields.
+`@scope` emits a real predicate plus exact dependency keys. `@cover` emits the
+same dependency facts plus proven window coverage and must bind every declared
+scope of that table instance. Only required, exactly typed binds are allowed.
+`identity by ...` is accepted only when the projected fields are proven unique;
+it is not an unchecked assertion. Without constructive proof the compiler
+falls back to table-wide dependency, no coverage, and/or unkeyed reconciliation.
 
 **Emitted shape, per language** (one query, five outputs — abbreviated):
 

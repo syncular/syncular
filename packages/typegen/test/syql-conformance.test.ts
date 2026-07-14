@@ -5,6 +5,10 @@ import { dirname, resolve } from 'node:path';
 import {
   analyzeSyqlSemantics,
   buildSyqlModuleGraph,
+  emitQueriesDartModule,
+  emitQueriesKotlinModule,
+  emitQueriesModule,
+  emitQueriesSwiftModule,
   formatSyql,
   type IrDocument,
   lexSyqlSource,
@@ -32,7 +36,13 @@ interface DiagnosticFixture {
   readonly start: Position;
 }
 
-type FamilyKind = 'lexical' | 'syntax' | 'semantic' | 'lowering' | 'formatter';
+type FamilyKind =
+  | 'lexical'
+  | 'syntax'
+  | 'semantic'
+  | 'lowering'
+  | 'formatter'
+  | 'emitter';
 
 interface Manifest {
   readonly $schema: string;
@@ -114,6 +124,7 @@ interface SemanticFixture {
     readonly entry: string;
     readonly sources: Readonly<Record<string, string>>;
     readonly code: string;
+    readonly start: Position;
   }[];
 }
 
@@ -137,6 +148,13 @@ interface LoweringFixture {
     readonly neutralizedStatements: number;
     readonly enumeratedStatements: number;
     readonly queryIrVersion: 3;
+    readonly publicInputKinds: readonly string[];
+    readonly identity: readonly string[];
+    readonly coverage: readonly {
+      readonly table: string;
+      readonly variable: string;
+      readonly units: readonly string[];
+    }[];
     readonly requiredSql: readonly string[];
     readonly forbiddenSql: readonly string[];
     readonly executions: readonly LoweringExecution[];
@@ -155,6 +173,18 @@ interface FormatterFixture {
     readonly name: string;
     readonly input: string;
     readonly output: string;
+  }[];
+}
+
+interface EmitterFixture {
+  readonly $schema: string;
+  readonly revision: 1;
+  readonly cases: readonly {
+    readonly name: string;
+    readonly source: string;
+    readonly required: Readonly<
+      Record<'ts' | 'swift' | 'kotlin' | 'dart', readonly string[]>
+    >;
   }[];
 }
 
@@ -329,6 +359,7 @@ describe('normative SYQL revision-1 conformance fixtures', () => {
       'semantic',
       'lowering',
       'formatter',
+      'emitter',
     ]);
     expect(existsSync(resolve(root, 'schema/query-ir.schema.json'))).toBe(true);
 
@@ -456,6 +487,7 @@ describe('normative SYQL revision-1 conformance fixtures', () => {
         ),
       );
       expect(error.code).toBe(item.code);
+      expect(error.span.start).toEqual(item.start);
     }
   });
 
@@ -506,6 +538,17 @@ describe('normative SYQL revision-1 conformance fixtures', () => {
           readonly queryIrVersion: number;
         };
         expect(queryIr.queryIrVersion).toBe(item.queryIrVersion);
+        expect(
+          lowered.analysis.syql?.inputs.map((input) => input.kind) as unknown,
+        ).toEqual(item.publicInputKinds);
+        expect(lowered.analysis.syql?.identity).toEqual(item.identity);
+        expect(
+          lowered.analysis.reactive.coverage.map((coverage) => ({
+            table: coverage.table,
+            variable: coverage.variable,
+            units: coverage.units,
+          })) as unknown,
+        ).toEqual(item.coverage);
 
         if (lowered.enumerated === undefined) {
           throw new Error('fixture enumeration unavailable');
@@ -552,6 +595,62 @@ describe('normative SYQL revision-1 conformance fixtures', () => {
       expect(formatSyql(file, output)).toBe(output);
       // formatSyql performs its own AST-equivalence check before returning.
       expect(() => parseSyqlSyntaxFile(file, output)).not.toThrow();
+    }
+  });
+
+  test('emitter vectors pin equivalent revision-1 public contracts', () => {
+    const fixture = readJson<EmitterFixture>(family('emitter'));
+    expect(fixture.revision).toBe(1);
+    for (const item of fixture.cases) {
+      const { sqlite, db } = fixtureDatabase();
+      try {
+        const semantic = program(
+          resolve('/virtual/syql-conformance', item.name),
+          'query.syql',
+          { 'query.syql': item.source },
+        );
+        const validated = validateSyqlProgram(semantic, IR, db, {
+          naming: 'camel',
+          targets: ['ts', 'swift', 'kotlin', 'dart'],
+          backend: 'auto',
+        }).queries[0];
+        if (validated === undefined) throw new Error('fixture query missing');
+        const query = lowerSyqlQuery(validated, IR, db, {
+          naming: 'camel',
+          targets: ['ts', 'swift', 'kotlin', 'dart'],
+          backend: 'auto',
+        }).analysis;
+        const outputs = {
+          ts: emitQueriesModule([query], 'sha256:fixture', 1),
+          swift: emitQueriesSwiftModule(
+            [query],
+            'sha256:fixture',
+            1,
+            'FixtureSchema',
+          ),
+          kotlin: emitQueriesKotlinModule(
+            [query],
+            'sha256:fixture',
+            1,
+            'dev.syncular.fixture',
+            'FixtureSchema',
+          ),
+          dart: emitQueriesDartModule([query], 'sha256:fixture', 1),
+        };
+        expect(() =>
+          new Bun.Transpiler({ loader: 'ts' }).transformSync(outputs.ts),
+        ).not.toThrow();
+        for (const target of ['ts', 'swift', 'kotlin', 'dart'] as const) {
+          for (const snippet of item.required[target]) {
+            expect(outputs[target]).toContain(snippet);
+          }
+          expect(outputs[target]).toContain(
+            query.syql?.plan.statements[0]?.positionalSql as string,
+          );
+        }
+      } finally {
+        sqlite.close();
+      }
     }
   });
 });

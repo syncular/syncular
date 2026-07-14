@@ -5,7 +5,7 @@ This directory is normative for SYQL revision 1 together with
 point. Every listed family declares its JSON Schema and is executed by the
 typegen conformance tests.
 
-Fixture data has five deliberately separate representations:
+Fixture data has six deliberately separate representations:
 
 - lexical vectors pin every token's kind, exact spelling, UTF-16 offset, line,
   and Unicode-scalar column, including trivia and EOF;
@@ -16,7 +16,10 @@ Fixture data has five deliberately separate representations:
 - lowering vectors pin the selected physical backend, QueryIR v3, generated
   SQL invariants, and execute both backends against the same environments;
 - formatter vectors pin exact canonical output, semantic equivalence, and byte
-  idempotence. Invalid lexical/syntax/semantic vectors pin stable diagnostics.
+  idempotence;
+- emitter vectors pin equivalent public types, presence, exact integers,
+  groups, controls, and runtime validation across all four targets. Invalid
+  lexical/syntax/semantic/lowering vectors pin stable diagnostics.
 
 `schema/query-ir.schema.json` is the normative JSON Schema for the revision-1
 SYQL-to-QueryIR v3 compiler boundary consumed by every target emitter.

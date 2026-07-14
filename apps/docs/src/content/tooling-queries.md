@@ -1,277 +1,213 @@
-# Named queries
+# Named queries and SYQL
 
-Write a query file, get a **typed function on every platform**. The
-named-query tier is syncular's cross-platform answer to sqlc / SQLDelight:
-typegen type-checks each query against your real SQLite schema at generate
-time and emits it as a typed function for TypeScript, Swift, Kotlin, and
-Dart, so a query and its row types can never drift apart.
+Write a read query once and generate a checked function for TypeScript, Swift,
+Kotlin, and Dart. Typegen prepares every executable SQL statement against the
+schema built from your migrations, derives its row shape, and emits the same
+public query contract on every selected target.
 
-There are two frontends, one pipeline:
+There are two source frontends:
 
-- **`.sql`** — the compatibility floor. Plain SQL + `:params`; every SQL
-  editor, formatter, and LLM understands the file with zero context.
-- **`.syql`** — the DSL tier. A thin, GraphQL-style *container* around SQL
-  expressions: declared optional params, reusable fragments, and safe
-  `orderBy`/`limit` knobs, all composed at generate time into one plain,
-  SQLite-checked statement.
+- `.sql` is plain SQLite with named `:params`;
+- `.syql` revision 1 adds typed operation boundaries, explicit conditional
+  predicates, reusable imported predicates, reactive scope facts, finite sort
+  profiles, bounded pages, and proven row identity.
 
-This page is the workflow. The authoritative contract (naming rules, typing
-fidelity, error catalog) is
-[typegen README §6](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md);
-the design of record is `DESIGN-queries.md` in the repo.
+Both lower into QueryIR v3 and the same target emitters. The normative language
+definition is the [SYQL specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md).
 
-## Write a query (.sql)
+## Plain `.sql`
 
-Named queries live in a `queries/` directory next to `migrations/`
-(override with the `"queries"` manifest key; subfolders are pure
-organization). Each `.sql` file holds one or more `SELECT` statements:
+Named queries live in `queries/` next to `migrations/`. Subfolders are only
+organization. A single-statement file receives a camel-cased name from its
+relative path:
 
 ```sql
--- queries/list-todos.sql
--- A list's todos, position-then-id ordered.
--- :listId infers to TEXT (compared against the todos.list_id column).
-SELECT id, list_id, title, done, position, updated_at_ms
+-- queries/list-todos.sql -> listTodos
+SELECT id, list_id, title, done, position
 FROM todos
 WHERE list_id = :listId
 ORDER BY position, id
 ```
 
-A query's default name is its path relative to the queries root, camelCased:
-`list-todos.sql` → `listTodos`, `billing/invoices/list.sql` →
-`billingInvoicesList`. Path segments and filename stems must be lowercase
-kebab-case; anything else fails generation with an error naming the
-offending segment.
+`list-todos.sql` becomes `listTodos`; `billing/invoices/list.sql` becomes
+`billingInvoicesList`. Every path segment must be lowercase kebab-case.
 
-## One or many statements per file
-
-A file with a single statement may rely on the path-derived name. A file
-with multiple statements (split on top-level `;`) requires a
-`-- name: identifier` marker on every statement:
+A file may contain multiple top-level statements when every statement has an
+explicit name:
 
 ```sql
--- queries/task-reports.sql
-
 -- name: reportOpenTasks
-SELECT id, title, done
-FROM tasks
-WHERE project_id = :projectId AND done = 0
-ORDER BY id;
+SELECT id, title FROM tasks
+WHERE project_id = :projectId AND done = 0;
 
--- name: reportDocScores
--- param :minScore float
-SELECT id, org_id, score
-FROM docs
-WHERE score > :minScore * 1.0
-ORDER BY id
+-- name: reportScores
+-- param :minimum float
+SELECT id, score FROM docs
+WHERE score > :minimum * 1.0;
 ```
 
-`-- name:` and `-- param` comments are scoped to the statement they directly
-precede. Only the marker form can name a query, so a prose comment can
-never rename one by accident. Duplicate names anywhere in the manifest fail
-generation with an error listing both source locations.
+Parameter types are inferred from checked column comparisons. Use
+`-- param :name type` only when the SQL does not provide enough evidence.
+Writes are rejected: named queries are the read tier, while writes continue
+through `mutate()` and the outbox.
 
-## SQL stays snake_case; your code gets camelCase
+## SYQL revision 1
 
-Column names are SQL truth: schema, `.sql`, and `.syql` bodies are authored
-against the real snake_case names. **Casing is an emitter concern**: the
-generated row types, params, and native struct fields are camelCase
-(`created_at` → `createdAt`), and the projection is lowered with `AS`
-aliases so the *runtime* result keys are the camelCase names too. There is
-no runtime mapping step, and `generate --print` shows the lowered SQL.
-
-- Author-written aliases are respected and convention-mapped like any
-  column (`AS doc_count` → `docCount`).
-- Collisions (`col_2` + `col2`), target-language keywords, and leading
-  underscores on the Dart target are generate-time **errors**.
-- `client.mutate` accepts value keys in both casings (the canonical
-  camelCase of the generated row types and the SQL-truth snake_case),
-  resolved with one map lookup per key.
-- The raw tier is raw: `client.query` / `useRawSql` return whatever SQLite
-  returns. Alias in SQL if you want camel keys there.
-- Opt out with `"naming": "preserve"` in `syncular.json`.
-
-## The `.syql` DSL tier
-
-When a screen needs *optional* filters, reusable predicates, or a
-user-selectable sort, plain SQL gets verbose. `.syql` files declare that
-structure in the signature and keep every predicate real SQL:
+Use `.syql` when a query needs conditional inputs, reusable predicates,
+reactive coverage, or user-selectable ordering. SQL remains the expression
+language; SYQL supplies a structured compiler boundary around it.
 
 ```syql
-fragment visibleIn(listId) {
-  list_id = :listId and archived_at is null
-}
+import { matchesTitle } from "./todo-predicates.syql";
 
-fragment search(q?) {
-  title like '%' || :q || '%'
-}
-
-query listTodos(listId, status?, from+to?, unassigned?: flag)
-  orderBy position | created_at | title default position
-  limit max 200 default 50
-{
-  select id, title, done, created_at
-  from todos
-  where @visibleIn(:listId)
-    and @search(:q)
-    and status = :status
-    and created_at between :from and :to
-    and if (:unassigned) { assignee_id is null }
+query listTodos(
+  listId,
+  status?: string | null,
+  range?(start: integer, end: integer),
+  q?: string,
+  unassigned?: switch,
+) {
+  sql {
+    select id, title, status, created_at
+    from todos
+    where @cover(todos.list_id = :listId)
+      and when(status) {
+        status is :status
+      }
+      and when(range) {
+        created_at between :start and :end
+      }
+      and when(q) {
+        @matchesTitle(:q)
+      }
+      and when(unassigned) {
+        assignee_id is null
+      }
+  }
+  sort sortBy default newest {
+    newest { created_at desc, id desc }
+    oldest { created_at asc, id asc }
+    title { title collate nocase asc, id asc }
+  }
+  page pageSize default 50 max 200;
+  identity by id;
 }
 ```
 
-What each piece means:
-
-- **`status?` — auto-guarded optionals.** A top-level `where` conjunct that
-  mentions an optional param applies **only when it is provided**. Omit
-  `status` at the call site and `and status = :status` is a no-op; pass it
-  and it filters. The signature's `?` is the entire conditional syntax.
-- **`from+to?` — groups.** Both params apply together: the `between`
-  conjunct runs only when *both* are provided.
-- **`unassigned?: flag` — boolean guards.** A flag gates a predicate
-  through the explicit primitive and stays out of the SQL itself:
-  `if (:unassigned) { assignee_id is null }` applies its predicate only
-  when the flag is passed as `true`. (`if (:a, :b) { … }` is also how you
-  guard a predicate on params it doesn't mention.)
-- **`@visibleIn(:listId)` — fragments.** First-class, file-scoped, spliced
-  at generate time. A fragment's own optional params propagate: using
-  `@search(:q)` adds `q?` to `listTodos`' generated signature.
-- **`orderBy … default …` — the identifier knob.** Column names cannot
-  bind, so the allowlist is baked into the generated code: the function
-  takes `orderBy?: 'position' | 'createdAt' | 'title'` + `dir?: 'asc' |
-  'desc'`, user input only ever *selects* from the checked list, and every
-  allowed column is prepared against the schema at generate time.
-- **`limit max 200 default 50` — the value knob.** Limits bind as ordinary
-  params; the default and clamp live in the SQL
-  (`limit min(coalesce(:limit, 50), 200)`), so an absent value is a no-op.
-
-Everything lowers to one plain SQL statement (optional conjuncts become
-`(:p is null or (…))` guards), checked by SQLite like any `.sql` query.
-Optional params outside a top-level `where` conjunct (under an `OR`,
-inside a subquery, in the projection) are generate-time errors telling
-you to use `if (…) { … }` or make the param required.
-
-### Keyset pagination
-
-There is no `offset` knob: offset pagination over *live* local queries
-drifts as synced writes shift rows. The right pattern falls out of optional
-params with zero new syntax:
+The imported predicate is an ordinary declaration in another `.syql` module:
 
 ```syql
-query todosPage(listId, before?)
-  limit max 100 default 50
-{
-  select id, title, created_at from todos
-  where list_id = :listId
-    and created_at < :before
-  order by created_at desc
+predicate matchesTitle(needle: string) {
+  title like '%' || :needle || '%'
 }
 ```
 
-First call: no `before`, newest page. Next call: pass the last row's
-`createdAt`. Stable under live updates and index-friendly.
+### Inputs and presence
 
-### The variants backend
+- `listId` is required. Its type is inferred from the schema comparison in
+  `@cover`.
+- `status?: string | null` is optional and nullable. Generated APIs preserve
+  three states: absent, present null, and present value.
+- `range?(start, end)` is one optional object/struct. Callers cannot provide a
+  partial range.
+- `unassigned?: switch` is a guard-only boolean control which defaults false.
+- Every optional SQL bind is dominated by an explicit `when(...)` conjunct.
+  Merely mentioning an optional input never changes SQL meaning.
 
-By default a `.syql` query is one neutralized statement. Add the `variants`
-knob (or set `"queryBackend": "variants" | "auto"` in the manifest — `auto`
-enumerates at ≤ 2 optional groups) and typegen instead emits one checked
-statement per combination of provided optional groups, with the generated
-function dispatching on provided-ness: perfect index use with the same
-semantics and the same API. More than 8 groups is an error; a query with
-nine independent optional filters needs a redesign.
+TypeScript represents an optional nullable value with `SyqlPresent<T>` and the
+`syqlPresent(value)` helper. Native emitters use their equivalent generated
+presence type. SYQL integers are exact signed 64-bit values: TypeScript accepts
+`bigint`, Swift uses `Int64`, Kotlin uses `Long`, and Dart uses `int`.
 
-### Checked reactive declarations
+### Constructive reactive facts
 
-Typegen infers reactive metadata conservatively. When a valid SQL shape is too
-complex to prove—an `OR`, a multi-table join, or a computed composite
-identity—put the missing fact on the `.syql` query itself:
+`@scope` and `@cover` are real SQL predicate nodes, not unchecked annotations:
 
 ```syql
-query compareLists(left, right)
-  depends todos on list_id = left | right
-  window todos by list_id = left | right
-  key by id
-{
-  select id, title
-  from todos
-  where list_id = :left or list_id = :right
-}
+@scope(todos.list_id = :listId)
+@cover(todos.list_id in (:left, :right))
 ```
 
-- `depends <table> on <scope> = <param> | …` supplies exact scope routing.
-- `window <table> by <scope> = <param> | …` supplies required coverage.
-  On a table with multiple scope variables, append
-  `fixed <other_scope> = <param>, …` for every remaining scope.
-- `key by <result-column> | …` supplies stable row identity, including a
-  composite identity for joins.
+Both produce the written restriction and exact invalidation keys from the same
+AST node. `@cover` additionally proves window coverage and must bind every
+declared scope of that table instance. When proof is unavailable, typegen falls
+back safely to table-wide dependency and no coverage.
 
-These are checked declarations, not trust-me hints. The table must be read by
-the query; scopes and params must exist and have compatible types; coverage
-params must be required; every fixed scope must be present; and key columns
-must appear in the result. Invalid declarations fail generation.
+`identity by id;` is also checked. It is accepted only when the named projected,
+non-null fields are proven unique for the outer query. Otherwise generation
+fails or safe unkeyed reconciliation is used when identity is omitted.
 
-## Type-checked against the real schema
+### Sort and page
 
-At generate time, typegen synthesizes your schema's DDL from the IR, builds
-an in-memory SQLite database, and `prepare()`s each query (and every knob
-variant), so SQLite itself is the correctness authority. A bad table or
-column reference fails `syncular generate` with SQLite's own message, long
-before the query reaches a device.
+A sort profile is a complete checked `ORDER BY` list. There is no free runtime
+direction or identifier interpolation. For bounded queries every profile must
+end with the proven identity as a unique tie-breaker, such as `id asc` or
+`id desc` above.
 
-- A plain column reference (`title`, `t.title`, `title AS x`) resolves to
-  the exact IR column type and nullability.
-- A computed expression (`count(*)`, `done + 1`) falls back to number or
-  string, always nullable — alias it to a plain ref if you want an exact type.
-- Parameters use `:name`. A param compared against a column
-  (`WHERE list_id = :listId`), a `BETWEEN` endpoint, or a `LIKE` operand
-  infers its type; anything ambiguous needs a `-- param :name type` comment
-  (`.sql` tier), and missing both is a generate-time error naming the param
-  and the fix.
+`page pageSize default 50 max 200;` adds one optional public input. Every
+emitter rejects non-integral, negative, zero, or over-maximum values before
+calling the client. Page is a bounded outer limit, not offset or cursor
+pagination.
 
-Named queries are **reads**. Any write statement is a hard error at
-generate time, pointing at `mutate()`; writes go through the outbox. A
-`WITH` is allowed when its main statement is a `SELECT` (SQLite also allows
-`WITH … DELETE`; both the generator and the core's raw-query guard reject
-those).
+Revision 1 rejects window expressions and nested `LIMIT`/`OFFSET`, because it
+does not define a local identity/total-order proof for those shapes. External
+state such as clocks or random seeds must be required inputs; wall-clock,
+random, connection-local, and SQLite-version functions are rejected.
 
-## Turn on the outputs you need
+### Physical backends
 
-Each language's queries file is a separate, opt-in output, so schema-only
-consumers never churn when a query changes:
+The compiler may select a neutralized plan or a finite statement matrix. This
+is not SYQL source syntax and does not change the generated API. `queryBackend`
+in `syncular.json` is an advanced diagnostic/performance override; its default
+is `auto`. Every selected statement is prepared, serialized in QueryIR, and
+implemented by all four emitters.
+
+## Outputs
+
+Enable only the query files your project needs:
 
 ```json
 {
   "output": {
     "module": "./src/syncular.generated.ts",
+    "queryIr": "./syncular.queries.ir.json",
     "queries": "./src/syncular.queries.ts",
-    "swift": { "path": "./Syncular.generated.swift", "queriesPath": "./Syncular.queries.swift" },
-    "kotlin": { "path": "./Syncular.generated.kt", "queriesPath": "./Syncular.queries.kt" },
-    "dart": { "path": "./syncular.generated.dart", "queriesPath": "./syncular.queries.dart" }
+    "swift": {
+      "path": "./Syncular.generated.swift",
+      "queriesPath": "./Syncular.queries.swift"
+    },
+    "kotlin": {
+      "path": "./Syncular.generated.kt",
+      "queriesPath": "./Syncular.queries.kt"
+    },
+    "dart": {
+      "path": "./syncular.generated.dart",
+      "queriesPath": "./syncular.queries.dart"
+    }
   }
 }
 ```
 
-Then run `syncular generate`, the same command as the schema (see
-[Schema & typegen](/guide-schema/)). Every queries file carries the
-DO-NOT-EDIT header and IR hash, and `syncular generate --check` gates it
-byte-exactly in CI.
+Run `syncular generate`. `syncular generate --check` is the byte-exact CI
+freshness gate for QueryIR and every generated target.
 
-## Calling a query, per platform
+## Calling generated queries
 
-For `list-todos.sql` above, each platform gets the projection's own row type
-(exactly what the SELECT returns) plus a typed function. TypeScript:
+TypeScript:
 
 ```ts
-import { listTodos } from './syncular.queries';
+import { listTodos, syqlPresent } from './syncular.queries';
 
-const rows = await listTodos(client, { listId: 'demo' });
-// rows: ListTodosRow[] — { id, listId, title, done, position, updatedAtMs }
+const rows = await listTodos(client, {
+  listId: 'demo',
+  status: syqlPresent(null),
+  range: { start: 100n, end: 500n },
+  sortBy: 'newest',
+  pageSize: 25,
+});
 ```
 
-`client` is anything with `query(sql, params)` — a direct `SyncClient`, a
-worker handle, or the Tauri / React Native bridges. React gets a live hook:
-`useQuery` from `@syncular/react` takes the generated descriptor and
-re-runs exactly when a depended-on table changes:
+React consumes the generated descriptor:
 
 ```tsx
 import { useQuery } from '@syncular/react';
@@ -280,75 +216,59 @@ import { listTodosQuery } from './syncular.queries';
 const todos = useQuery(listTodosQuery, { listId });
 ```
 
-Optional `.syql` params are optional keys (`status?: string | null`); knobs
-add `orderBy?` / `dir?` / `limit?`. Swift (throws on failure, rows decode to
-the generated struct):
+Swift:
 
 ```swift
-let rows = try SyncularSchemaQueries.listTodos(client: client, listId: "demo")
+let rows = try SyncularSchemaQueries.listTodos(
+    client: client,
+    listId: "demo",
+    sortBy: .newest
+)
 ```
 
 Kotlin:
 
 ```kotlin
-val rows = SyncularSchemaQueries.listTodos(client, listId = "demo")
+val rows = SyncularSchemaQueries.listTodos(
+    client,
+    listId = "demo",
+    sortBy = ListTodosSortBy.newest,
+)
 ```
 
 Dart:
 
 ```dart
-final rows = syncularListTodosQuery(client, listId: 'demo');
+final rows = syncularListTodosQuery(
+  client,
+  listId: 'demo',
+  sortBy: ListTodosSortBy.newest,
+);
 ```
 
-Native rows decode through the same rules as the schema structs: SQLite's
-`0`/`1` booleans become real `Bool`/`Boolean`/`bool`, and bytes columns
-decode from the core's hex marshaling. Optional params default to
-`nil`/`null`; orderBy allowlists are per-query enums.
-
-## Reactive descriptors
-
-Each query emits a descriptor with a QueryIR-derived cache id, exact
-table/scope dependencies, provable window coverage, and a safe row key when
-the projection proves one. On React, `useQuery` claims the coverage and reads
-rows, completeness, and local revision atomically. A zero-row bootstrap can
-therefore transition from `loading` to an honestly empty `ready` without a
-separate window read.
-
-Set `output.queryIr` to keep the deterministic analyzed QueryIR JSON beside
-generated code. Its hash is the descriptor identity, so changing only SQL or
-reactive declarations invalidates old cache entries.
+Names in the abbreviated native examples follow the manifest's configured
+namespace/package. Generated source is the exact API authority.
 
 ## Tooling
 
-- **`syncular generate --print <name>`** — dump one query's lowered,
-  checked SQL (params, tables, knob variants). "What does this actually
-  run" is always one command away.
-- **`syncular fmt`** — the canonical `.syql` formatter (one style, no
-  options): lowercase keywords, one clause per line, and-prefixed WHERE
-  conjuncts. `--check` for CI. `.sql` files are left to the ecosystem's
-  formatters.
-- **`syncular lsp`** — a zero-dependency language server over stdio:
-  generate-time diagnostics as you type, hover shows the lowered SQL,
-  go-to-definition on `@fragment` refs.
-- **VS Code** — `editors/vscode-syql` in the repo highlights the container
-  grammar with embedded SQL regions.
+- `syncular generate --print <name>` prints public inputs, the selected
+  backend, statement selectors, checked SQL, and physical binds.
+- `syncular fmt [files...]` formats revision-1 SYQL canonically and refuses any
+  rewrite whose normalized AST or comment order changes. Use `--check` in CI.
+- `syncular lsp` runs the project-aware language server. It reports parser,
+  module, schema, SQLite, and target-naming errors with exact spans and supports
+  hover, imported predicate definition/references, symbols, and formatting.
+- `editors/vscode-syql` provides revision-1 TextMate highlighting and an LSP
+  client configuration.
 
-## Why this is the recommended read tier
-
-- **Cross-platform**: one query file, four language outputs. It is the only
-  typed read tier that covers Swift, Kotlin, and Dart as well as TypeScript.
-- **Checked at generate time**: schema drift surfaces as a build failure.
-- **Boring by design**: the SQL you ship is the SQL you wrote: comments
-  stripped, `:name` rewritten to positional placeholders, camel aliases and
-  optional-param guards visible via `--print`, nothing else.
-
-Raw `client.query(sql, params)` (and React's `useRawSql`) covers queries
-built at runtime. The core guards it read-only: one statement,
-`SELECT`/`WITH`/`EXPLAIN`/`PRAGMA`/`VALUES` only (a `WITH` must resolve to
-a read). Writes always go through `client.mutate()`.
+The normative fixtures and JSON Schemas live in
+[`spec/syql`](https://github.com/syncular/syncular/tree/main/spec/syql). They
+pin lexical tokens, semantic ASTs, imports and controls, diagnostics, lowering,
+backend execution equivalence, QueryIR v3, and formatter output.
 
 ## Where to go next
 
-- [Schema & typegen](/guide-schema/) — the manifest, migrations, and generate workflow this builds on.
-- [React](/platform-react/) — `useQuery`, `useRawSql`, and the rest of the hooks.
-- [typegen README §6](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md) — the authoritative named-query contract.
+- [Schema and typegen](/guide-schema/)
+- [React](/platform-react/)
+- [SYQL language specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md)
+- [RFC 0004](https://github.com/syncular/syncular/blob/main/docs/rfcs/0004-syql-language.md)

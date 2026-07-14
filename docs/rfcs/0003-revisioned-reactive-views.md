@@ -479,19 +479,19 @@ Typegen extends query analysis with column origin and predicate facts. It emits
 a table-specific scope key only when all paths that read that table are proven
 to be restricted to the corresponding scope value. Equality and checked `IN`
 predicates over scope columns are the first supported forms. Optional groups,
-variants, aliases, and fragments are evaluated in the lowered query IR, not by
-regex over emitted SQL.
+backend variants, aliases, and imported predicates are evaluated in revision-1
+SYQL QueryIR, not by regex over emitted SQL.
 
 Coverage is emitted when the complete predicate footprint maps to a declared
 value-sharded subscription/window base. Fixed scope literals and parameterized
 units are included. A query which can read outside the proven units gets
 table-wide dependencies and no automatic coverage.
 
-If the SQL shape is semantically clear to the author but cannot be proven by
-the analyzer, `.syql` gains an explicit checked `window`/`depends` declaration.
-Generation validates its table, scope variable, parameter types, and
-subscription compatibility. It is metadata in the query source, not duplicate
-React code.
+Revision-1 SYQL uses constructive `@scope(...)` and `@cover(...)` predicate
+nodes. Generation derives dependency and coverage facts from the same checked
+node that restricts the SQL. A shape that cannot be constructed and proven
+falls back table-wide and uncovered; there is no unchecked metadata escape
+hatch.
 
 Typegen never guesses coverage from a similarly named parameter.
 
@@ -499,9 +499,10 @@ Typegen never guesses coverage from a similarly named parameter.
 
 Typegen emits `rowKey` only when the projection is proven to contain a unique
 key for each result row. A simple single-table query projecting its primary key
-qualifies. Joins, grouping, `DISTINCT`, unions, or projections which can
-duplicate that key require an explicit checked composite `key by (...)`
-declaration or omit the key.
+qualifies. Revision-1 `identity by ...;` is accepted only when the projected,
+non-null fields satisfy the compiler's conservative uniqueness proof. Joins,
+grouping, `DISTINCT`, unions, or projections which can duplicate the key omit
+identity unless that proof succeeds.
 
 Development builds detect duplicate emitted keys and report the query id and
 key. Correctness falls back to value comparison; it never reuses an object
