@@ -1,8 +1,33 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.6.0** (`v0.6.0`). All artifacts use Apache-2.0, except
+current release is **0.7.0** (`v0.7.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.7.0 release notes
+
+0.7.0 completes the breaking SQL-first SYQL cutover that landed after the
+0.6.0 tag. Prototype `.syql` files must be migrated before upgrading: queries
+now contain SQL directly, ordinary predicates replace `@cover(...)`,
+`sync query` explicitly claims synchronization coverage, and result identity
+is inferred instead of declared with `identity by`.
+
+The release includes:
+
+- the finalized revision-1 SYQL grammar, compiler, formatter, LSP, docs,
+  examples, and cross-language emitters built around one checked QueryIR;
+- inferred scope dependencies, explicit `sync query` coverage, conservative
+  table-wide fallback, inferred identity, finite sort profiles, and bounded
+  limit controls;
+- an opt-in, explicitly aliased `_sync_version` named-query projection with an
+  exact, non-null integer type, allowing applications to pass the observed
+  server version into optimistic-concurrency mutations without raw SQL or
+  handwritten result types;
+- root-authoritative release versioning that materializes package and crate
+  versions only in disposable release checkouts and validates packed internal
+  dependency pins before publication;
+- docs/demo builds on normal `main` changes while production deployment remains
+  attached to the trusted release workflow.
 
 ## 0.6.0 release notes
 
@@ -99,12 +124,15 @@ bash bindings/tauri/check.sh
 Run the binding-specific checks when their toolchains are available:
 
 ```sh
-bun run --cwd bindings/react-native typecheck
-bun test bindings/react-native/test
+bash bindings/react-native/check.sh
 bash bindings/swift/check.sh
 bash bindings/kotlin/check.sh
 bash bindings/flutter/check.sh
 ```
+
+Run the React Native gate through its package script so Bun loads the binding's
+local `bunfig.toml` preload. Running its test paths from the repository root
+resolves React Native's Flow source before the off-device mock is installed.
 
 For the release performance contract, run the worker and real native bridge
 lanes with strict thresholds:
