@@ -448,6 +448,27 @@ boundary):
 | **plain column ref** (`title`, `t.title`, `title AS x`) | resolved to the IR column (decltype confirms) — exact IR type, incl. `json`/`blob_ref`/`crdt` | the IR column's `NOT NULL` | **exact** |
 | **computed expression** (`count(*)`, `done + 1`, `:p AS l`) | decltype is null → documented fallback: aggregate/arithmetic → number, else string | always nullable (an expression's nullability is not knowable from decltype) | **fallback** |
 
+Every local synced table also has the protocol-owned `_sync_version` column.
+Named queries may project it with an explicit public alias when an application
+needs the observed server version for optimistic concurrency:
+
+```syql
+query getTodo(listId, todoId) {
+  select id, title, _sync_version as server_version
+  from todos
+  where todos.list_id = :listId and todos.id = :todoId;
+}
+```
+
+The generated `serverVersion` field is an exact, non-null `integer`. The
+physical name is intentionally not a public result name: project it with an
+alias such as `server_version`. `_sync_version` is query-only, is excluded from
+schema and mutation types, and is not added by `select *`; this prevents client
+code from writing engine-owned concurrency state. Pass a positive observed
+value as a mutation `baseVersion`. Locally-created or still-unacknowledged rows
+can carry a non-positive sentinel and should omit the base version until the
+server assigns one.
+
 `bun:sqlite` exposes `columnNames`, `declaredTypes` (once executed once — we
 run the statement against the empty DB), and `paramsCount`. It does **not**
 expose column origin (table/column), param **names**, or `NOT NULL` flags — so
