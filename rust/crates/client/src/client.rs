@@ -168,6 +168,58 @@ mod observation_tests {
     }
 
     #[test]
+    fn migrates_pre_envelope_outcome_journal_additively() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-outcome-migration-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let conn = Connection::open(&path).expect("open legacy database");
+        conn.execute_batch(
+            "CREATE TABLE _syncular_commit_outcomes (
+               seq INTEGER PRIMARY KEY AUTOINCREMENT,
+               client_commit_id TEXT NOT NULL UNIQUE,
+               status TEXT NOT NULL,
+               recorded_at_ms INTEGER NOT NULL,
+               results_json TEXT NOT NULL,
+               resolution TEXT NOT NULL DEFAULT 'active',
+               resolved_at_ms INTEGER,
+               replacement_client_commit_id TEXT);",
+        )
+        .expect("create legacy outcome journal");
+        drop(conn);
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "project_id", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "project:{project_id}" }]
+            }]
+        });
+        let client = SyncClient::open_path(
+            "migration-native".to_owned(),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().expect("UTF-8 temp path"),
+        )
+        .expect("migrate database");
+        let has_operations = client
+            .conn
+            .prepare("PRAGMA table_info(_syncular_commit_outcomes)")
+            .expect("prepare table info")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query table info")
+            .filter_map(Result::ok)
+            .any(|column| column == "operations_json");
+        assert!(has_operations);
+        drop(client);
+        std::fs::remove_file(path).expect("remove temp database");
+    }
+
+    #[test]
     fn durable_conflict_outcome_and_resolution_survive_reopen() {
         let path = std::env::temp_dir().join(format!(
             "syncular-durable-outcome-{}.db",
@@ -203,6 +255,24 @@ mod observation_tests {
                 changed_fields: None,
             }),
         };
+        let failed_operations = vec![
+            OutboxOp {
+                upsert: true,
+                table: "tasks".to_owned(),
+                row_id: "t1".to_owned(),
+                base_version: Some(1),
+                values: None,
+                changed_fields: None,
+            },
+            OutboxOp {
+                upsert: true,
+                table: "tasks".to_owned(),
+                row_id: "status-event-1".to_owned(),
+                base_version: Some(0),
+                values: None,
+                changed_fields: None,
+            },
+        ];
 
         {
             let mut first = SyncClient::open_path(
@@ -222,6 +292,7 @@ mod observation_tests {
                     &[CommitOperationOutcome::Conflict {
                         conflict: conflict.clone(),
                     }],
+                    Some(&failed_operations),
                 )
                 .expect("persist outcome");
             first.conflicts.push(conflict);
@@ -246,14 +317,14 @@ mod observation_tests {
             )
             .expect("reopen");
             assert_eq!(reopened.conflicts().len(), 1);
-            assert_eq!(
-                reopened
-                    .commit_outcome("losing-commit")
-                    .expect("read outcome")
-                    .expect("outcome")
-                    .status,
-                CommitOutcomeStatus::Conflict
-            );
+            let outcome = reopened
+                .commit_outcome("losing-commit")
+                .expect("read outcome")
+                .expect("outcome");
+            assert_eq!(outcome.status, CommitOutcomeStatus::Conflict);
+            let operations = outcome.operations.expect("aggregate envelope");
+            assert_eq!(operations.len(), 2);
+            assert_eq!(operations[1].row_id, "status-event-1");
             let resolved = reopened
                 .resolve_commit_outcome(ResolveCommitOutcomeInput {
                     client_commit_id: "losing-commit".to_owned(),
@@ -434,6 +505,18 @@ impl From<&OutboxOp> for CommitOperation {
 struct OutboxCommit {
     client_commit_id: String,
     ops: Vec<OutboxOp>,
+}
+
+struct StoredCommitOutcomeRow {
+    sequence: i64,
+    client_commit_id: String,
+    status: String,
+    recorded_at_ms: i64,
+    results_json: String,
+    operations_json: Option<String>,
+    resolution: String,
+    resolved_at_ms: Option<i64>,
+    replacement_client_commit_id: Option<String>,
 }
 
 /// Section outcome distinguishing the §5.6 subscription-local fail-closed
@@ -1151,6 +1234,7 @@ impl SyncClient {
                    status TEXT NOT NULL CHECK(status IN ('applied', 'cached', 'conflict', 'rejected')),
                    recorded_at_ms INTEGER NOT NULL,
                    results_json TEXT NOT NULL,
+                   operations_json TEXT,
                    resolution TEXT NOT NULL DEFAULT 'active'
                      CHECK(resolution IN ('active', 'resolved_keep_server', 'superseded', 'dismissed')),
                    resolved_at_ms INTEGER,
@@ -1169,6 +1253,11 @@ impl SyncClient {
                    effective_scopes TEXT NOT NULL);",
             )
             .map_err(|e| e.to_string())?;
+        // Migrate an outcome journal created before failed aggregate
+        // envelopes were retained. Historical rows intentionally stay NULL.
+        let _ = self
+            .conn
+            .execute_batch("ALTER TABLE _syncular_commit_outcomes ADD COLUMN operations_json TEXT");
         // §7.4.1: seed the persisted local schema-version marker on first
         // create (a fresh install is already at its generated version).
         if self.get_meta(LOCAL_SCHEMA_VERSION_KEY).is_none() {
@@ -1832,6 +1921,7 @@ impl SyncClient {
                 &commit.client_commit_id,
                 CommitOutcomeStatus::Rejected,
                 &results,
+                Some(&commit.ops),
             )?;
             self.delete_outbox_persisted(&commit.client_commit_id)?;
         }
@@ -1985,46 +2075,45 @@ impl SyncClient {
         client_commit_id: &str,
         status: CommitOutcomeStatus,
         results: &[CommitOperationOutcome],
+        operations: Option<&[OutboxOp]>,
     ) -> Result<(), String> {
         let results_json = serde_json::to_string(results).map_err(|error| error.to_string())?;
+        let operations_json = operations
+            .map(|items| {
+                serde_json::to_string(&items.iter().map(CommitOperation::from).collect::<Vec<_>>())
+            })
+            .transpose()
+            .map_err(|error| error.to_string())?;
         self.conn
             .execute(
                 "INSERT INTO _syncular_commit_outcomes (
-                   client_commit_id, status, recorded_at_ms, results_json, resolution
-                 ) VALUES (?1, ?2, ?3, ?4, 'active')",
+                   client_commit_id, status, recorded_at_ms, results_json,
+                   operations_json, resolution
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'active')",
                 rusqlite::params![
                     client_commit_id,
                     Self::outcome_status_name(status),
                     self.clock_now_ms(),
-                    results_json
+                    results_json,
+                    operations_json
                 ],
             )
             .map(|_| ())
             .map_err(|error| error.to_string())
     }
 
-    fn outcome_from_tuple(
-        row: (
-            i64,
-            String,
-            String,
-            i64,
-            String,
-            String,
-            Option<i64>,
-            Option<String>,
-        ),
-    ) -> Result<CommitOutcome, String> {
-        let (
+    fn outcome_from_row(row: StoredCommitOutcomeRow) -> Result<CommitOutcome, String> {
+        let StoredCommitOutcomeRow {
             sequence,
             client_commit_id,
             status,
             recorded_at_ms,
             results_json,
+            operations_json,
             resolution,
             resolved_at_ms,
             replacement_client_commit_id,
-        ) = row;
+        } = row;
         Ok(CommitOutcome {
             sequence,
             client_commit_id,
@@ -2032,6 +2121,13 @@ impl SyncClient {
             recorded_at_ms,
             results: serde_json::from_str(&results_json)
                 .map_err(|error| format!("invalid persisted commit outcome results: {error}"))?,
+            operations: operations_json
+                .map(|value| {
+                    serde_json::from_str(&value).map_err(|error| {
+                        format!("invalid persisted commit outcome operations: {error}")
+                    })
+                })
+                .transpose()?,
             resolution: Self::parse_outcome_resolution(&resolution)?,
             resolved_at_ms,
             replacement_client_commit_id,
@@ -2042,26 +2138,27 @@ impl SyncClient {
         let row = self
             .conn
             .query_row(
-                "SELECT seq, client_commit_id, status, recorded_at_ms, results_json,
+                "SELECT seq, client_commit_id, status, recorded_at_ms, results_json, operations_json,
                         resolution, resolved_at_ms, replacement_client_commit_id
                    FROM _syncular_commit_outcomes WHERE client_commit_id = ?1",
                 rusqlite::params![client_commit_id],
                 |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                        row.get(7)?,
-                    ))
+                    Ok(StoredCommitOutcomeRow {
+                        sequence: row.get(0)?,
+                        client_commit_id: row.get(1)?,
+                        status: row.get(2)?,
+                        recorded_at_ms: row.get(3)?,
+                        results_json: row.get(4)?,
+                        operations_json: row.get(5)?,
+                        resolution: row.get(6)?,
+                        resolved_at_ms: row.get(7)?,
+                        replacement_client_commit_id: row.get(8)?,
+                    })
                 },
             )
             .optional()
             .map_err(|error| error.to_string())?;
-        row.map(Self::outcome_from_tuple).transpose()
+        row.map(Self::outcome_from_row).transpose()
     }
 
     pub fn commit_outcomes(&self, query: CommitOutcomeQuery) -> Result<Vec<CommitOutcome>, String> {
@@ -2069,7 +2166,7 @@ impl SyncClient {
             return Err("sync.invalid_request: commit outcome limit must be positive".to_owned());
         }
         let mut sql = String::from(
-            "SELECT seq, client_commit_id, status, recorded_at_ms, results_json,
+            "SELECT seq, client_commit_id, status, recorded_at_ms, results_json, operations_json,
                     resolution, resolved_at_ms, replacement_client_commit_id
                FROM _syncular_commit_outcomes",
         );
@@ -2083,21 +2180,22 @@ impl SyncClient {
         let mut stmt = self.conn.prepare(&sql).map_err(|error| error.to_string())?;
         let rows = stmt
             .query_map([], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                    row.get(7)?,
-                ))
+                Ok(StoredCommitOutcomeRow {
+                    sequence: row.get(0)?,
+                    client_commit_id: row.get(1)?,
+                    status: row.get(2)?,
+                    recorded_at_ms: row.get(3)?,
+                    results_json: row.get(4)?,
+                    operations_json: row.get(5)?,
+                    resolution: row.get(6)?,
+                    resolved_at_ms: row.get(7)?,
+                    replacement_client_commit_id: row.get(8)?,
+                })
             })
             .map_err(|error| error.to_string())?;
         let mut outcomes = Vec::new();
         for row in rows {
-            outcomes.push(Self::outcome_from_tuple(
+            outcomes.push(Self::outcome_from_row(
                 row.map_err(|error| error.to_string())?,
             )?);
         }
@@ -3604,7 +3702,12 @@ impl SyncClient {
                     CommitOutcomeStatus::Cached
                 };
                 if self
-                    .persist_commit_outcome(client_commit_id, outcome_status, &journal_results)
+                    .persist_commit_outcome(
+                        client_commit_id,
+                        outcome_status,
+                        &journal_results,
+                        None,
+                    )
                     .and_then(|()| self.delete_outbox_persisted(client_commit_id))
                     .and_then(|()| self.prune_commit_outcomes())
                     .is_err()
@@ -3732,7 +3835,12 @@ impl SyncClient {
                     CommitOutcomeStatus::Conflict
                 };
                 if self
-                    .persist_commit_outcome(client_commit_id, outcome_status, &journal_results)
+                    .persist_commit_outcome(
+                        client_commit_id,
+                        outcome_status,
+                        &journal_results,
+                        Some(&operations),
+                    )
                     .and_then(|()| self.delete_outbox_persisted(client_commit_id))
                     .and_then(|()| self.prune_commit_outcomes())
                     .is_err()
@@ -4593,6 +4701,7 @@ impl SyncClient {
                 &commit.client_commit_id,
                 CommitOutcomeStatus::Rejected,
                 &results,
+                Some(&commit.ops),
             )?;
             self.delete_outbox_persisted(&commit.client_commit_id)?;
         }

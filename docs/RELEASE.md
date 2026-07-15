@@ -1,8 +1,26 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.10.0** (`v0.10.0`). All artifacts use Apache-2.0, except
+current release is **0.11.0** (`v0.11.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.11.0 release notes
+
+0.11.0 makes failed multi-operation commits recoverable as atomic aggregates
+after their outbox entry has drained.
+
+The release includes:
+
+- the complete schema-agnostic local operation envelope on conflict and
+  rejection outcomes, alongside the terminating operation result;
+- protected SQLite persistence in the same transaction that records the final
+  outcome and drains the outbox, including additive migration of 0.10 client
+  databases;
+- matching TypeScript and Rust/native APIs plus direct, restart, worker,
+  Tauri, and React Native compatibility;
+- an explicit privacy boundary: failed sibling values remain local-only in the
+  protected client database, never enter protocol frames, ordinary app
+  preferences, or telemetry, and follow existing outcome retention rules.
 
 ## 0.10.0 release notes
 

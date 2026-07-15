@@ -30,6 +30,26 @@ import {
 const compiled = compileClientSchema(CLIENT_SCHEMA);
 
 describe('schema-agnostic persistence (§0 outbox rule)', () => {
+  test('migrates a pre-envelope outcome journal additively', () => {
+    const db = new BunClientDatabase();
+    db.exec(`CREATE TABLE _syncular_commit_outcomes(
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_commit_id TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL,
+      recorded_at_ms INTEGER NOT NULL,
+      results TEXT NOT NULL,
+      resolution TEXT NOT NULL DEFAULT 'active',
+      resolved_at_ms INTEGER,
+      replacement_client_commit_id TEXT)`);
+    ensureLocalSchema(db, compiled);
+    expect(
+      db
+        .query('PRAGMA table_info(_syncular_commit_outcomes)')
+        .map((column) => column.name),
+    ).toContain('operations');
+    db.close();
+  });
+
   test('mutations are stored as JSON values, not encoded bytes', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });

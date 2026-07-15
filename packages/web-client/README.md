@@ -117,6 +117,11 @@ the same SQLite transaction that drains their outbox commit. Conflict entries
 retain the losing operation plus `serverVersion`/`serverRow`; active failures
 restore after restart and are never removed by retention. Configure the
 history cap with `limits.outcomeRetentionMaxEntries` (default 1,000).
+Failed outcomes additionally retain the complete ordered local commit envelope
+as `outcome.operations`, so a domain recovery flow can reconstruct siblings
+that rolled back with the terminating operation. It stays in the protected
+client database and is never added to the wire protocol, preferences, or
+telemetry; successful and historical outcomes may omit it.
 
 Use `patch(table, rowId, partial, { baseVersion? })` for editor-style partial
 updates. The wire still carries a full row, but the durable local operation
