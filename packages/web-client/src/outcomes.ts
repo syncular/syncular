@@ -70,6 +70,12 @@ export interface CommitOutcome {
   readonly status: CommitOutcomeStatus;
   readonly recordedAtMs: number;
   readonly results: readonly CommitOperationOutcome[];
+  /**
+   * Complete local failed-commit envelope, retained after outbox drain so an
+   * authorized application can reconstruct atomic aggregate intent. Absent
+   * for successful and historical outcomes. Never sent over the wire.
+   */
+  readonly operations?: readonly OutboxOperation[];
   readonly resolution: CommitOutcomeResolution;
   readonly resolvedAtMs?: number;
   readonly replacementClientCommitId?: string;
@@ -142,6 +148,9 @@ function parseOutcome(row: Readonly<Record<string, unknown>>): CommitOutcome {
     status: row.status as CommitOutcomeStatus,
     recordedAtMs: row.recorded_at_ms as number,
     results: decodeResults(row.results as string),
+    ...(typeof row.operations === 'string'
+      ? { operations: JSON.parse(row.operations) as OutboxOperation[] }
+      : {}),
     resolution: row.resolution as CommitOutcomeResolution,
     ...(typeof row.resolved_at_ms === 'number'
       ? { resolvedAtMs: row.resolved_at_ms }
@@ -158,13 +167,16 @@ export function recordCommitOutcome(
 ): CommitOutcome {
   db.exec(
     `INSERT INTO _syncular_commit_outcomes(
-       client_commit_id, status, recorded_at_ms, results, resolution
-     ) VALUES (?, ?, ?, ?, 'active')`,
+       client_commit_id, status, recorded_at_ms, results, operations, resolution
+     ) VALUES (?, ?, ?, ?, ?, 'active')`,
     [
       outcome.clientCommitId,
       outcome.status,
       outcome.recordedAtMs,
       encodeResults(outcome.results),
+      outcome.operations === undefined
+        ? null
+        : JSON.stringify(outcome.operations),
     ],
   );
   return commitOutcome(db, outcome.clientCommitId) as CommitOutcome;
@@ -175,7 +187,7 @@ export function commitOutcome(
   clientCommitId: string,
 ): CommitOutcome | undefined {
   const row = db.query(
-    `SELECT seq, client_commit_id, status, recorded_at_ms, results,
+    `SELECT seq, client_commit_id, status, recorded_at_ms, results, operations,
             resolution, resolved_at_ms, replacement_client_commit_id
        FROM _syncular_commit_outcomes WHERE client_commit_id = ?`,
     [clientCommitId],
@@ -198,7 +210,7 @@ export function listCommitOutcomes(
     ? "WHERE resolution = 'active' AND status IN ('conflict', 'rejected')"
     : '';
   const rows = db.query(
-    `SELECT seq, client_commit_id, status, recorded_at_ms, results,
+    `SELECT seq, client_commit_id, status, recorded_at_ms, results, operations,
             resolution, resolved_at_ms, replacement_client_commit_id
        FROM _syncular_commit_outcomes ${where}
       ORDER BY seq DESC${limit === undefined ? '' : ' LIMIT ?'}`,

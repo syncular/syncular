@@ -500,6 +500,89 @@ describe('durable commit outcomes', () => {
     loser.db.close();
   });
 
+  test('retains the complete failed aggregate envelope across restart', async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), 'syncular-aggregate-outcome-'),
+    );
+    const databasePath = join(directory, 'loser.db');
+    const server = makeServer();
+    try {
+      const winner = await makeClient(server, { clientId: 'aggregate-winner' });
+      const loser = await makeClient(server, {
+        clientId: 'aggregate-loser',
+        databasePath,
+      });
+      for (const entry of [winner, loser]) {
+        entry.client.subscribe({
+          id: 's1',
+          table: 'tasks',
+          scopes: { project_id: ['aggregate'] },
+        });
+      }
+      winner.client.mutate([
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: taskValues('aggregate-root', 'aggregate', 'base'),
+        },
+      ]);
+      await winner.client.syncUntilIdle();
+      await loser.client.syncUntilIdle();
+      winner.client.mutate([
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: taskValues('aggregate-root', 'aggregate', 'winner'),
+          baseVersion: 1,
+        },
+      ]);
+      await winner.client.syncUntilIdle();
+
+      const losingCommitId = loser.client.mutate([
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: taskValues('aggregate-root', 'aggregate', 'loser'),
+          baseVersion: 1,
+        },
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: taskValues('aggregate-child', 'aggregate', 'sibling intent'),
+          baseVersion: 0,
+        },
+      ]);
+      await loser.client.syncUntilIdle();
+      expect(loser.client.commitOutcome(losingCommitId)).toMatchObject({
+        status: 'conflict',
+        results: [{ status: 'conflict' }],
+        operations: [
+          { rowId: 'aggregate-root', baseVersion: 1 },
+          { rowId: 'aggregate-child', baseVersion: 0 },
+        ],
+      });
+      await loser.client.close();
+      loser.db.close();
+
+      const reopened = await makeClient(server, {
+        clientId: 'aggregate-loser',
+        databasePath,
+      });
+      expect(
+        reopened.client.commitOutcome(losingCommitId)?.operations,
+      ).toMatchObject([
+        { table: 'tasks', rowId: 'aggregate-root', op: 'upsert' },
+        { table: 'tasks', rowId: 'aggregate-child', op: 'upsert' },
+      ]);
+      await reopened.client.close();
+      reopened.db.close();
+      await winner.client.close();
+      winner.db.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test('structured rejection details and patch intent survive restart', async () => {
     const directory = mkdtempSync(
       join(tmpdir(), 'syncular-rejection-details-'),

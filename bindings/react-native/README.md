@@ -85,6 +85,9 @@ pump + disconnect realtime — call from `AppState` `'background'`) and
 Final commit outcomes use the same native SQLite journal as Tauri. Call
 `commitOutcome`, `commitOutcomes`, and `resolveCommitOutcome`; active
 conflicts/rejections and their losing operations survive app restarts.
+Failed aggregate outcomes also carry the complete ordered local operation
+envelope; it remains protected native SQLite payload and never enters the wire
+protocol or ordinary application preferences.
 
 ## Verification bar
 

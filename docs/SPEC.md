@@ -2835,9 +2835,23 @@ newest-first local sequence, final status, and every operation result. A
 conflict retains its stable code and message, `serverVersion`, decoded
 `serverRow`, and the losing schema-agnostic local operation. An error retains
 its stable code, message, retryability, accepted §6.3.1 details when present,
-and local operation. The same rule
-applies to client-local terminal drops such as `sync.outbox_incompatible` and
-an outbox commit proven to be inside a revoked effective scope.
+and local operation. For a final `conflict` or `rejected` result, the entry also
+retains the complete ordered schema-agnostic local operation envelope from the
+failed commit. The envelope is required because the server reports only the
+terminating operation while every sibling rolled back; without it an
+application cannot safely reconstruct atomic aggregate intent after the
+outbox drains or the process restarts. Historical entries and successful
+outcomes MAY omit the envelope. The same rule applies to client-local terminal
+drops such as `sync.outbox_incompatible` and an outbox commit proven to be
+inside a revoked effective scope.
+
+The complete failed envelope is protected local payload. It MUST NOT be added
+to protocol frames, copied into ordinary application preferences or telemetry,
+or exposed in generic diagnostics. It follows the same active-failure-safe
+retention and explicit resolution lifecycle as the rest of the outcome entry.
+An application may inspect it only inside an authorized, domain-specific
+recovery surface; presence of the envelope does not make full-row edit intent
+known or authorize an automatic merge.
 
 The operation journal also preserves **local edit intent** for an upsert made
 through the client's partial-update API: `changedFields` is the normalized,
