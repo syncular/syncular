@@ -71,14 +71,23 @@ export const validatorScenarios: readonly Scenario[] = [
       ]);
       const a = await bootstrapped(ctx, 'actor-a', 'client-a');
 
-      // One commit: a too-long title (rejected by the validator) plus a
-      // sibling insert. §6.4 rolls the WHOLE commit back.
+      await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'tasks',
+          values: task('existing', 'p1', 'accepted'),
+        },
+      ]);
+      await syncOk(a);
+
+      // One commit: a too-long update of a confirmed row (rejected by the
+      // validator) plus a sibling insert. §6.4 rolls the WHOLE commit back.
       const commit = await a.api.mutate([
         {
           op: 'upsert',
           table: 'tasks',
           values: task(
-            'too-long',
+            'existing',
             'p1',
             'this title is definitely over ten chars',
           ),
@@ -115,11 +124,22 @@ export const validatorScenarios: readonly Scenario[] = [
       );
 
       // §6.4: NOTHING from the commit reached storage — the sibling insert
-      // rolled back with the rejected operation.
+      // rolled back and the prior row stayed accepted.
       checkEqual(
-        (await ctx.server.readRows('tasks')).length,
-        0,
-        'the whole commit rolled back atomically — sibling insert did not land',
+        (await ctx.server.readRows('tasks')).map((row) => ({
+          rowId: row.rowId,
+          title: row.values.title,
+        })),
+        [{ rowId: 'existing', title: 'accepted' }],
+        'the whole commit rolled back atomically on the server',
+      );
+      checkEqual(
+        (await a.api.readRows('tasks')).map((row) => ({
+          rowId: row.rowId,
+          title: row.values.title,
+        })),
+        [{ rowId: 'existing', title: 'accepted' }],
+        'the rejected optimistic update and sibling disappear locally immediately (§7.2)',
       );
     },
   },

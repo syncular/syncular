@@ -93,11 +93,17 @@ const WORKLOAD = {
  * - `propagationP95CeilingMs` 20 ms: local in-process p95 is 0.2 ms. A
  *   100× allowance absorbs runner noise; breaching 20 ms in-process means
  *   a sleep/poll crept into the sync/realtime loop.
- * - `ownJsRawCeilingBytes` 95 KB: syncular's own JS (core + codec) is
- *   89.4 KB raw today. Bundle bytes are deterministic — no runner noise —
- *   so this stays tight (~6% headroom: enough that a one-KB innocent
+ * - `ownJsRawCeilingBytes` 102 KB: syncular's own JS (core + codec) is
+ *   96.8 KB raw today. Bundle bytes are deterministic — no runner noise —
+ *   so this stays tight (~5% headroom: enough that a one-KB innocent
  *   change doesn't trip, small enough to catch real bloat). RAISED from
- *   88 KB
+ *   95 KB (2026-07-15, SPEC §7.2): restart-safe rejection rollback added
+ *   protected per-outbox before-images, exact update/delete/aggregate
+ *   restoration, and downstream overlay rebasing. This is correctness state
+ *   the TypeScript client needs because it materializes optimistic rows in
+ *   the visible tables; the Rust base-plus-overlay client already carried the
+ *   equivalent behavior. The total-gzip payload gate remains unchanged.
+ *   RAISED from 88 KB
  *   (2026-07-15, SPEC §7.2.1): durable final commit outcomes added 6,542
  *   raw bytes (85,010 → 91,552) for the atomic local journal, exact
  *   conflict/rejection evidence, restart restoration, protected retention,
@@ -143,7 +149,7 @@ const BUDGETS = {
   bootstrapRowsPerSecFloor: 90_000,
   imageBootstrapRowsPerSecFloor: 300_000,
   propagationP95CeilingMs: 20,
-  ownJsRawCeilingBytes: 95 * 1024,
+  ownJsRawCeilingBytes: 102 * 1024,
   totalGzipCeilingBytes: 600 * 1024,
 } as const;
 

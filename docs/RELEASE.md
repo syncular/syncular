@@ -1,8 +1,32 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.12.0** (`v0.12.0`). All artifacts use Apache-2.0, except
+current release is **0.13.0** (`v0.13.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.13.0 release notes
+
+0.13.0 makes TypeScript optimistic rollback truthful immediately after a
+server rejection, including when no server row is delivered in the pull half.
+
+The release includes:
+
+- protected per-commit before-images captured atomically with every TypeScript
+  outbox append and retained across process restarts;
+- immediate restoration of rejected updates, inserts, deletes, and atomic
+  sibling operations, followed by FIFO replay of later pending edits;
+- rebased before-images for downstream commits touching the same rows, so a
+  later rejection still restores the correct confirmed base;
+- an explicit privacy boundary: rollback images never enter protocol frames,
+  public pending/outcome envelopes, preferences, telemetry, or generic
+  diagnostics;
+- additive local-schema migration and restart/aggregate regression coverage,
+  matching the Rust client's existing durable base-plus-overlay behavior.
+
+Upgrade note: pending TypeScript outbox entries created before 0.13.0 do not
+contain reconstructible before-images. They retain the prior fail-closed
+rollback behavior and converge on the next server delivery or re-bootstrap;
+every mutation recorded after the upgrade uses immediate durable restoration.
 
 ## 0.12.0 release notes
 

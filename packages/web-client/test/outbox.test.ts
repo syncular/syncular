@@ -30,7 +30,7 @@ import {
 const compiled = compileClientSchema(CLIENT_SCHEMA);
 
 describe('schema-agnostic persistence (§0 outbox rule)', () => {
-  test('migrates a pre-envelope outcome journal additively', () => {
+  test('migrates protected outcome and rollback bookkeeping additively', () => {
     const db = new BunClientDatabase();
     db.exec(`CREATE TABLE _syncular_commit_outcomes(
       seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,6 +47,17 @@ describe('schema-agnostic persistence (§0 outbox rule)', () => {
         .query('PRAGMA table_info(_syncular_commit_outcomes)')
         .map((column) => column.name),
     ).toContain('operations');
+    expect(
+      db
+        .query('PRAGMA table_info(_syncular_outbox_before_images)')
+        .map((column) => column.name),
+    ).toEqual([
+      'client_commit_id',
+      'op_index',
+      'existed',
+      'sync_version',
+      'values_json',
+    ]);
     db.close();
   });
 

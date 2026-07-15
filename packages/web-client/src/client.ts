@@ -86,9 +86,12 @@ import {
   dropOutboxCommitsInScope,
   encodeOutboxCommit,
   listOutbox,
+  listOutboxBeforeImages,
+  type OutboxBeforeImage,
   type OutboxCommit,
   OutboxEncodeError,
   type OutboxOperation,
+  replaceOutboxBeforeImages,
 } from './outbox';
 import {
   activeFailureRecords,
@@ -1551,7 +1554,13 @@ export class SyncClient {
     });
     this.#applyBatch((batch) => {
       this.#db.transaction(() => {
-        appendOutboxCommit(this.#db, clientCommitId, operations, this.#now());
+        appendOutboxCommit(
+          this.#db,
+          clientCommitId,
+          operations,
+          this.#now(),
+          this.#captureBeforeImages(operations),
+        );
         this.#applyOperationsLocally(operations, batch);
         batch.status();
       });
@@ -1705,22 +1714,7 @@ export class SyncClient {
    */
   #dropIncompatibleCommit(commit: OutboxCommit, message: string): void {
     this.#applyBatch((batch) => {
-      deleteOutboxCommit(this.#db, commit.clientCommitId);
-      for (const operation of commit.operations) {
-        if (operation.op !== 'upsert') continue;
-        const table = this.#schema.tables.get(operation.table);
-        if (table === undefined) continue;
-        const row = this.#db.query(
-          `SELECT ${quoteIdent(SYNC_VERSION_COLUMN)} AS v FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
-          [operation.rowId],
-        )[0];
-        if (row !== undefined && row.v === OPTIMISTIC_VERSION) {
-          if (!this.#recordStoredRowScopes(batch, table, operation.rowId)) {
-            batch.table(table.name);
-          }
-          deleteLocalRow(this.#db, table, operation.rowId);
-        }
-      }
+      this.#rollbackFailedCommit(commit, batch);
       const rejection: RejectionRecord = {
         clientCommitId: commit.clientCommitId,
         opIndex: 0,
@@ -2548,27 +2542,11 @@ export class SyncClient {
     });
     pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
     batch.outcomes();
-    // §7.2: stop optimistic display and decide about dependents — the
-    // commit leaves the outbox; rows it created that the server never
-    // confirmed are undone here, rows it overwrote reconcile via the pull
-    // half (the conflict record carries the server row for the app).
+    // §7.2: remove the rejected optimistic layer. Before-images restore
+    // validator-rejected updates even when the server emitted no new COMMIT;
+    // later pending overlays are then replayed with rebased before-images.
     this.#db.transaction(() => {
-      deleteOutboxCommit(this.#db, frame.clientCommitId);
-      for (const operation of commit.operations) {
-        if (operation.op !== 'upsert') continue;
-        const table = this.#schema.tables.get(operation.table);
-        if (table === undefined) continue;
-        const row = this.#db.query(
-          `SELECT ${quoteIdent(SYNC_VERSION_COLUMN)} AS v FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
-          [operation.rowId],
-        )[0];
-        if (row !== undefined && row.v === OPTIMISTIC_VERSION) {
-          if (!this.#recordStoredRowScopes(batch, table, operation.rowId)) {
-            batch.table(table.name);
-          }
-          deleteLocalRow(this.#db, table, operation.rowId);
-        }
-      }
+      this.#rollbackFailedCommit(commit, batch);
     });
     batch.status();
     summary.rejected.push(frame.clientCommitId);
@@ -2944,6 +2922,134 @@ export class SyncClient {
   }
 
   // -- optimistic state ----------------------------------------------------------
+
+  #captureBeforeImage(
+    operation: OutboxOperation,
+    opIndex: number,
+  ): OutboxBeforeImage {
+    const table = this.#schema.tables.get(operation.table);
+    if (table === undefined) return { opIndex, existed: false };
+    const columns = [
+      ...table.columns.map((column) => quoteIdent(column.name)),
+      quoteIdent(SYNC_VERSION_COLUMN),
+    ];
+    const row = this.#db.query(
+      `SELECT ${columns.join(', ')} FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
+      [operation.rowId],
+    )[0];
+    if (row === undefined) return { opIndex, existed: false };
+    const values: Record<string, ReturnType<typeof rowValueToJson>> = {};
+    for (const column of table.columns) {
+      values[column.name] = rowValueToJson(
+        fromSqlValue(column, row[column.name] ?? null),
+      );
+    }
+    const syncVersion = row[SYNC_VERSION_COLUMN];
+    if (typeof syncVersion !== 'number') {
+      throw new ClientSyncError(
+        'sync.local_corrupt',
+        `local row ${operation.table}/${operation.rowId} has no sync version`,
+      );
+    }
+    return { opIndex, existed: true, syncVersion, values };
+  }
+
+  #captureBeforeImages(
+    operations: readonly OutboxOperation[],
+    onlyKeys?: ReadonlySet<string>,
+  ): OutboxBeforeImage[] {
+    return operations.flatMap((operation, opIndex) =>
+      onlyKeys && !onlyKeys.has(`${operation.table}\u0000${operation.rowId}`)
+        ? []
+        : [this.#captureBeforeImage(operation, opIndex)],
+    );
+  }
+
+  #restoreBeforeImage(
+    operation: OutboxOperation,
+    image: OutboxBeforeImage,
+    batch: ChangeAccumulator,
+  ): void {
+    const table = this.#schema.tables.get(operation.table);
+    if (table === undefined) return;
+    batch.table(table.name);
+    if (!image.existed) {
+      deleteLocalRow(this.#db, table, operation.rowId);
+      return;
+    }
+    if (image.values === undefined || image.syncVersion === undefined) {
+      throw new ClientSyncError(
+        'sync.local_corrupt',
+        `rollback image for ${operation.table}/${operation.rowId} is incomplete`,
+      );
+    }
+    const values = table.columns.map((column) =>
+      jsonToRowValue(image.values?.[column.name] ?? null),
+    );
+    upsertLocalRow(this.#db, table, values, image.syncVersion);
+  }
+
+  #legacyUndoOptimisticRows(
+    commit: OutboxCommit,
+    batch: ChangeAccumulator,
+  ): void {
+    for (const operation of commit.operations) {
+      if (operation.op !== 'upsert') continue;
+      const table = this.#schema.tables.get(operation.table);
+      if (table === undefined) continue;
+      const row = this.#db.query(
+        `SELECT ${quoteIdent(SYNC_VERSION_COLUMN)} AS v FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = ?`,
+        [operation.rowId],
+      )[0];
+      if (row !== undefined && row.v === OPTIMISTIC_VERSION) {
+        batch.table(table.name);
+        deleteLocalRow(this.#db, table, operation.rowId);
+      }
+    }
+  }
+
+  #rollbackFailedCommit(commit: OutboxCommit, batch: ChangeAccumulator): void {
+    const images = listOutboxBeforeImages(this.#db, commit.clientCommitId);
+    const imageByIndex = new Map(images.map((image) => [image.opIndex, image]));
+    const complete = commit.operations.every((_, index) =>
+      imageByIndex.has(index),
+    );
+    const affectedKeys = new Set(
+      commit.operations.map(
+        (operation) => `${operation.table}\u0000${operation.rowId}`,
+      ),
+    );
+    if (complete) {
+      const restored = new Set<string>();
+      commit.operations.forEach((operation, index) => {
+        const key = `${operation.table}\u0000${operation.rowId}`;
+        if (restored.has(key)) return;
+        const image = imageByIndex.get(index);
+        if (image) this.#restoreBeforeImage(operation, image, batch);
+        restored.add(key);
+      });
+    } else {
+      // Pending commits written by older clients have no before-images.
+      // Preserve the old fail-closed behavior rather than guessing a base.
+      this.#legacyUndoOptimisticRows(commit, batch);
+    }
+    deleteOutboxCommit(this.#db, commit.clientCommitId);
+
+    if (!complete) return;
+    for (const later of listOutbox(this.#db)) {
+      if (later.seq <= commit.seq) continue;
+      const affectedOperations = later.operations.filter((operation) =>
+        affectedKeys.has(`${operation.table}\u0000${operation.rowId}`),
+      );
+      if (affectedOperations.length === 0) continue;
+      replaceOutboxBeforeImages(
+        this.#db,
+        later.clientCommitId,
+        this.#captureBeforeImages(later.operations, affectedKeys),
+      );
+      this.#applyOperationsLocally(affectedOperations, batch);
+    }
+  }
 
   #applyOperationsLocally(
     operations: readonly OutboxOperation[],
