@@ -6,6 +6,7 @@
 import type { Scenario } from '../scenario';
 import { blobScenarios } from './blobs';
 import { bootstrapScenarios } from './bootstrap';
+import { commitValidatorScenarios } from './commit-validators';
 import { conflictScenarios } from './conflict';
 import { convergenceScenarios } from './convergence';
 import { crdtScenarios } from './crdt';
@@ -48,6 +49,7 @@ export const CATALOG: readonly Scenario[] = [
   ...reconnectStormScenarios,
   ...windowScenarios,
   ...validatorScenarios,
+  ...commitValidatorScenarios,
   ...errorScenarios,
   ...vectorScenarios,
 ];

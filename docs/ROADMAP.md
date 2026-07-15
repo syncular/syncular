@@ -509,6 +509,12 @@ INDEX in the migration subset. (S3 blob store + GC sweep **landed
       SPEC §6.7 pins it (order, merged-CRDT-value, reserved host-code
       prefixes). Runtime hook only — the IR extensions slot stays the noted
       home for future declarative metadata, no codegen this rung.
+- [x] **Whole-commit validation hooks** (LANDED 2026-07-15): a distinct
+      transaction-scoped host seam for aggregate invariants, with final
+      candidate-state reads and mandatory per-partition serialization. This
+      closes the gap between row validation and privileged commands without
+      pretending validation grants authority; D1 fails closed unless writes
+      are externally serialized by a per-partition coordinator. SPEC §6.8.
 - [ ] **App-developer test kit**: an exported testing package (in-memory
       server, N clients, virtual clock, offline/fault toggles) — mostly
       re-exporting what the conformance harness already has. S-M, a

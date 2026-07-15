@@ -10,6 +10,7 @@
 
 import { type ClientSchema, compileClientSchema } from '@syncular/client';
 import {
+  type CommitValidator,
   createRealtimeHub,
   MemorySegmentStore,
   type RealtimeHub,
@@ -53,6 +54,8 @@ export interface TestServerOptions {
   readonly resolveScopes?: ResolveScopes;
   /** Optional §6.7 validators, shared by HTTP-like and socket rounds. */
   readonly validators?: ValidatorRegistry;
+  /** Optional §6.8 whole-commit validator, shared by both transports. */
+  readonly commitValidator?: CommitValidator;
 }
 
 /**
@@ -85,6 +88,9 @@ export function createTestServer(options: TestServerOptions): TestServer {
     ...(options.validators !== undefined
       ? { validators: options.validators }
       : {}),
+    ...(options.commitValidator !== undefined
+      ? { commitValidator: options.commitValidator }
+      : {}),
   });
   return {
     storage,
@@ -100,6 +106,9 @@ export function createTestServer(options: TestServerOptions): TestServer {
       resolveScopes,
       ...(options.validators !== undefined
         ? { validators: options.validators }
+        : {}),
+      ...(options.commitValidator !== undefined
+        ? { commitValidator: options.commitValidator }
         : {}),
       clock: clockFn,
       realtime: hub,

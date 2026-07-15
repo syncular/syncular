@@ -105,9 +105,73 @@ UI. Unknown members, free-form tokens, malformed paths, and over-limit data
 fail at construction. Diagnostic prose stays in `message`; apps should map
 the stable code/details to localized copy instead of displaying that message.
 
-Validators are per-operation. They do not make multi-row or multi-table
-invariants atomic; those require a server-authoritative command or a future
-whole-commit validation seam. A validator must not mutate the row it receives.
+Validators are per-operation. A validator must not mutate the row it receives.
+
+For a multi-row or multi-table invariant, install `commitValidator`. It runs
+once after every operation is staged in the same transaction, and can inspect
+both the decoded sibling operations and final candidate state:
+
+```ts
+import {
+  CommitValidationRejection,
+  type SyncServerConfig,
+} from '@syncular/server';
+
+const config: SyncServerConfig = {
+  schema,
+  storage,
+  segments,
+  resolveScopes,
+  commitValidator: ({ operations }) => {
+    const transition = operations.find(
+      (operation) =>
+        operation.table === 'surgeries' &&
+        operation.row !== undefined &&
+        operation.stored !== undefined &&
+        operation.row.status !== operation.stored.status,
+    );
+    if (transition === undefined) return;
+
+    const hasEvent = operations.some(
+      (operation) =>
+        operation.table === 'surgery_status_events' &&
+        operation.row?.surgery_id === transition.rowId &&
+        operation.row?.status === transition.row?.status,
+    );
+    if (!hasEvent) {
+      throw new CommitValidationRejection(
+        transition.opIndex,
+        'surgery.status_event_required',
+        'diagnostic only',
+        {
+          fieldPaths: ['status'],
+          reason: 'missing_sibling_operation',
+          requiredAction: 'repair_aggregate',
+        },
+      );
+    }
+  },
+};
+```
+
+The callback also receives `read.getRow()` and bounded `read.scanRows()` APIs.
+Those reads see the final candidate state, including staged sibling upserts and
+deletes. Syncular serializes the partition before any operation read so two
+aggregate validators cannot both accept mutually invalid candidates. It also
+re-checks idempotency after taking that lock and persists a rejected outcome
+while the lock is retained, so overlapping duplicate deliveries cannot rerun
+the callback.
+
+SQLite and PostgreSQL provide that serialization directly. D1 does not expose
+an interactive lock: `D1ServerStorage` fails closed unless it is constructed
+inside an external per-partition coordinator with
+`{ commitValidationSerialized: true }` (normally one Durable Object per
+partition). Do not set that assertion on a stateless Worker. Custom storages
+must implement both the transaction lock and candidate scan seam.
+
+Whole-commit validation checks a client-proposed commit; it does not grant
+authority. Privileged operations such as connecting facilities still belong in
+explicit server-authoritative commands.
 
 ## Structured events (the ops seam)
 

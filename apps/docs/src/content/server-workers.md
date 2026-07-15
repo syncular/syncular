@@ -99,6 +99,15 @@ concurrent same-partition writes should front them with a coordinating
 primitive (a DO or a Queue). This mirrors Postgres's per-partition row
 lock, achieved by placement rather than a lock D1 does not expose.
 
+Whole-commit validation makes this constraint fail-closed. With
+`commitValidator` configured, a plain `new D1ServerStorage(env.DB)` rejects the
+push because D1 cannot lock an interactive candidate transaction. The storage
+inside `SyncularRealtimeHost` opts in automatically: that host is already one
+single-threaded Durable Object per partition. A custom coordinated host may
+pass `{ commitValidationSerialized: true }`, but a stateless HTTP Worker must
+not. `durableObjectRealtimeNotifier` only wakes sockets after an HTTP commit;
+it does not serialize that HTTP write.
+
 ## Realtime: the Durable Object
 
 Realtime on Workers runs through `SyncularRealtimeHost`: one Durable Object

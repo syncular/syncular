@@ -51,6 +51,16 @@ verification; push is Benjamin's alone).
       both cores, accept-applies-and-converges, off-is-unchanged,
       sees-stored-row-on-update) + 11 server unit tests (incl. the load-bearing
       merged-CRDT-value assertion). Gates green.
+- [x] **Whole-commit validation hooks** (LANDED 2026-07-15): optional
+      transaction-scoped `commitValidator` after every decoded/authorized/
+      post-merge operation is staged; final candidate-state `getRow` and
+      bounded scope scan; per-partition serialization before operation reads;
+      atomic host-coded rejection attributed with
+      `CommitValidationRejection`; cached replay never reruns the callback.
+      SQLite/Postgres lock natively; D1 requires an explicit externally
+      serialized coordinator assertion and otherwise fails closed. SPEC §6.8,
+      storage contracts, both client conformance cores, testkit loopback/socket
+      parity, and host docs pin the contract.
 - [x] **App-developer test kit**: `@syncular/testkit` — `createTestSync
       ({schema})` → in-memory `@…/server` + N real `SyncClient`s on
       bun:sqlite through the loopback seam (no HTTP), per-client
