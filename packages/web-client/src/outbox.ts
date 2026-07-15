@@ -43,11 +43,20 @@ export interface OutboxCommit {
   readonly operations: readonly OutboxOperation[];
 }
 
+/** Protected local rollback image; never encoded or exposed in outcomes. */
+export interface OutboxBeforeImage {
+  readonly opIndex: number;
+  readonly existed: boolean;
+  readonly syncVersion?: number;
+  readonly values?: Readonly<Record<string, JsonRowValue>>;
+}
+
 export function appendOutboxCommit(
   db: ClientDatabase,
   clientCommitId: string,
   operations: readonly OutboxOperation[],
   nowMs: number,
+  beforeImages: readonly OutboxBeforeImage[] = [],
 ): void {
   if (operations.length === 0) {
     throw new ClientSyncError(
@@ -60,6 +69,20 @@ export function appendOutboxCommit(
      VALUES (?, ?, ?)`,
     [clientCommitId, nowMs, JSON.stringify(operations)],
   );
+  for (const image of beforeImages) {
+    db.exec(
+      `INSERT INTO _syncular_outbox_before_images(
+         client_commit_id, op_index, existed, sync_version, values_json
+       ) VALUES (?, ?, ?, ?, ?)`,
+      [
+        clientCommitId,
+        image.opIndex,
+        image.existed ? 1 : 0,
+        image.syncVersion ?? null,
+        image.values === undefined ? null : JSON.stringify(image.values),
+      ],
+    );
+  }
 }
 
 /** Pending commits in FIFO creation order (§7.1). */
@@ -81,9 +104,66 @@ export function deleteOutboxCommit(
   db: ClientDatabase,
   clientCommitId: string,
 ): void {
+  db.exec(
+    'DELETE FROM _syncular_outbox_before_images WHERE client_commit_id = ?',
+    [clientCommitId],
+  );
   db.exec('DELETE FROM _syncular_outbox WHERE client_commit_id = ?', [
     clientCommitId,
   ]);
+}
+
+export function listOutboxBeforeImages(
+  db: ClientDatabase,
+  clientCommitId: string,
+): OutboxBeforeImage[] {
+  return db
+    .query(
+      `SELECT op_index, existed, sync_version, values_json
+         FROM _syncular_outbox_before_images
+        WHERE client_commit_id = ? ORDER BY op_index`,
+      [clientCommitId],
+    )
+    .map((row) => ({
+      opIndex: row.op_index as number,
+      existed: row.existed === 1,
+      ...(typeof row.sync_version === 'number'
+        ? { syncVersion: row.sync_version }
+        : {}),
+      ...(typeof row.values_json === 'string'
+        ? {
+            values: JSON.parse(row.values_json) as Readonly<
+              Record<string, JsonRowValue>
+            >,
+          }
+        : {}),
+    }));
+}
+
+export function replaceOutboxBeforeImages(
+  db: ClientDatabase,
+  clientCommitId: string,
+  replacements: readonly OutboxBeforeImage[],
+): void {
+  for (const image of replacements) {
+    db.exec(
+      `DELETE FROM _syncular_outbox_before_images
+        WHERE client_commit_id = ? AND op_index = ?`,
+      [clientCommitId, image.opIndex],
+    );
+    db.exec(
+      `INSERT INTO _syncular_outbox_before_images(
+         client_commit_id, op_index, existed, sync_version, values_json
+       ) VALUES (?, ?, ?, ?, ?)`,
+      [
+        clientCommitId,
+        image.opIndex,
+        image.existed ? 1 : 0,
+        image.syncVersion ?? null,
+        image.values === undefined ? null : JSON.stringify(image.values),
+      ],
+    );
+  }
 }
 
 /**
