@@ -59,7 +59,14 @@ const SCHEMA: ServerSchema = {
       columns: TASK_COLUMNS,
       primaryKey: 'id',
       scopes: ['project:{project_id}'],
-      indexes: [{ name: 'tasks_by_title', columns: ['title'] }],
+      indexes: [
+        { name: 'tasks_by_title', columns: ['title'] },
+        {
+          name: 'tasks_by_project_title',
+          columns: ['project_id', 'title'],
+          unique: true,
+        },
+      ],
     },
     {
       name: 'projects',
@@ -115,7 +122,7 @@ async function sqliteStorage(): Promise<SqliteServerStorage> {
 }
 
 async function upsert(
-  storage: SqliteServerStorage | PostgresServerStorage,
+  storage: SqliteServerStorage | PostgresServerStorage | D1ServerStorage,
   partition: string,
   table: string,
   row: StoredRow,
@@ -241,6 +248,48 @@ describe('relational tables (sqlite)', () => {
       )
       .all('tasks');
     expect(indexes.map((i) => i.name)).toContain('tasks_by_title');
+  });
+
+  test('a secondary unique collision never replaces the existing server row', async () => {
+    const storage = await sqliteStorage();
+    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'original'));
+    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'updated'));
+    await upsert(storage, PARTITION, 'tasks', taskRow('t2', 'p1', 'original'));
+
+    await expect(
+      upsert(storage, PARTITION, 'tasks', taskRow('t3', 'p1', 'original')),
+    ).rejects.toThrow();
+    const rows = storage.db
+      .query<{ id: string; title: string }, []>(
+        'SELECT id, title FROM tasks ORDER BY id',
+      )
+      .all();
+    expect(rows).toEqual([
+      { id: 't1', title: 'updated' },
+      { id: 't2', title: 'original' },
+    ]);
+  });
+});
+
+describe('relational tables (D1)', () => {
+  test('a secondary unique collision never replaces the existing server row', async () => {
+    const db = new D1DatabaseDouble();
+    const storage = new D1ServerStorage(db);
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'original'));
+    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'updated'));
+    await upsert(storage, PARTITION, 'tasks', taskRow('t2', 'p1', 'original'));
+
+    await expect(
+      upsert(storage, PARTITION, 'tasks', taskRow('t3', 'p1', 'original')),
+    ).rejects.toThrow();
+    const { results } = await db
+      .prepare('SELECT id, title FROM tasks ORDER BY id')
+      .all<{ id: string; title: string }>();
+    expect(results).toEqual([
+      { id: 't1', title: 'updated' },
+      { id: 't2', title: 'original' },
+    ]);
   });
 });
 

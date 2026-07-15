@@ -1,8 +1,30 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.13.0** (`v0.13.0`). All artifacts use Apache-2.0, except
+current release is **0.14.0** (`v0.14.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.14.0 release notes
+
+0.14.0 makes application-row upserts safe in the presence of secondary
+unique indexes on SQLite-family clients and servers.
+
+The release includes:
+
+- primary-key-targeted `ON CONFLICT ... DO UPDATE` writes for the TypeScript
+  SQLite client, SQLite-image bootstrap path, Rust client, SQLite server, and
+  D1 server;
+- removal of application-row `INSERT OR REPLACE` behavior that could delete
+  an existing row when a different row collided with a secondary unique
+  index;
+- atomic failure semantics matching PostgreSQL: the colliding write fails and
+  the previously stored row remains intact;
+- direct regression coverage for ordinary client apply, SQLite-image apply,
+  native apply, SQLite server storage, and D1 storage.
+
+No wire or schema change is required. Existing databases and generated code
+remain compatible; applications using unique indexes should upgrade every
+SQLite-family client and server runtime together.
 
 ## 0.13.0 release notes
 
