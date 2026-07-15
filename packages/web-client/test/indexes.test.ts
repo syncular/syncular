@@ -6,6 +6,8 @@
  * the same declared indexes created on the relational per-app row tables —
  * is covered by packages/server/test/relational-rows.test.ts.
  */
+
+import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
 import {
   type ClientSchema,
@@ -14,6 +16,7 @@ import {
   ensureLocalSchema,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
+import { applySqliteSegment, upsertLocalRow } from '../src/apply';
 
 const SCHEMA: ClientSchema = {
   version: 1,
@@ -56,6 +59,45 @@ function indexNames(db: BunClientDatabase): string[] {
     )
     .map((r) => String(r.name))
     .sort();
+}
+
+function sqliteImageBytes(
+  rows: ReadonlyArray<{
+    id: string;
+    projectId: string;
+    title: string;
+    version: number;
+  }>,
+): Uint8Array {
+  const image = new Database(':memory:');
+  try {
+    image.exec(`
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        _syncular_version INTEGER NOT NULL
+      );
+      CREATE TABLE _syncular_segment (
+        format INTEGER NOT NULL,
+        "table" TEXT NOT NULL,
+        "schemaVersion" INTEGER NOT NULL,
+        "asOfCommitSeq" INTEGER NOT NULL,
+        "scopeDigest" TEXT NOT NULL,
+        "rowCount" INTEGER NOT NULL
+      );
+    `);
+    image
+      .query('INSERT INTO _syncular_segment VALUES (1, ?, 1, 7, ?, ?)')
+      .run('tasks', 'digest', rows.length);
+    const insert = image.query('INSERT INTO tasks VALUES (?, ?, ?, ?)');
+    for (const row of rows) {
+      insert.run(row.id, row.projectId, row.title, row.version);
+    }
+    return new Uint8Array(image.serialize());
+  } finally {
+    image.close();
+  }
 }
 
 describe('CREATE INDEX subset — client local DDL', () => {
@@ -104,6 +146,89 @@ describe('CREATE INDEX subset — client local DDL', () => {
         `INSERT INTO "tasks" ("id","project_id","title") VALUES ('t3','p1','b')`,
       ),
     ).not.toThrow();
+  });
+
+  test('a secondary unique collision never replaces the existing synced row', () => {
+    const db = new BunClientDatabase();
+    const compiled = compileClientSchema(SCHEMA);
+    const table = compiled.tables.get('tasks');
+    if (table === undefined) throw new Error('compiled tasks table missing');
+    ensureLocalSchema(db, compiled);
+
+    upsertLocalRow(db, table, ['t1', 'p1', 'a'], 1);
+    upsertLocalRow(db, table, ['t1', 'p1', 'renamed'], 2);
+    expect(db.query('SELECT * FROM tasks')).toEqual([
+      { id: 't1', project_id: 'p1', title: 'renamed', _sync_version: 2 },
+    ]);
+
+    upsertLocalRow(db, table, ['t2', 'p1', 'a'], 1);
+    expect(() => upsertLocalRow(db, table, ['t3', 'p1', 'a'], 2)).toThrow();
+    expect(
+      db.query(
+        'SELECT id, project_id, title, _sync_version FROM tasks ORDER BY id',
+      ),
+    ).toEqual([
+      { id: 't1', project_id: 'p1', title: 'renamed', _sync_version: 2 },
+      { id: 't2', project_id: 'p1', title: 'a', _sync_version: 1 },
+    ]);
+  });
+
+  test('sqlite-image primary-key upserts preserve rows on a secondary unique collision', () => {
+    const db = new BunClientDatabase();
+    const compiled = compileClientSchema(SCHEMA);
+    const table = compiled.tables.get('tasks');
+    if (table === undefined) throw new Error('compiled tasks table missing');
+    ensureLocalSchema(db, compiled);
+    upsertLocalRow(db, table, ['t1', 'p1', 'original'], 1);
+
+    const descriptor = {
+      table: 'tasks',
+      rowCount: 1,
+      asOfCommitSeq: 7,
+      scopeDigest: 'digest',
+    } as const;
+    expect(
+      applySqliteSegment(
+        db,
+        compiled,
+        table,
+        sqliteImageBytes([
+          {
+            id: 't1',
+            projectId: 'p1',
+            title: 'updated',
+            version: 2,
+          },
+        ]),
+        descriptor,
+        { clearFirst: false, effective: { project_id: ['p1'] } },
+      ),
+    ).toBe(1);
+    upsertLocalRow(db, table, ['t2', 'p1', 'original'], 1);
+
+    expect(() =>
+      applySqliteSegment(
+        db,
+        compiled,
+        table,
+        sqliteImageBytes([
+          {
+            id: 't3',
+            projectId: 'p1',
+            title: 'original',
+            version: 3,
+          },
+        ]),
+        descriptor,
+        { clearFirst: false, effective: { project_id: ['p1'] } },
+      ),
+    ).toThrow();
+    expect(
+      db.query('SELECT id, title, _sync_version FROM tasks ORDER BY id'),
+    ).toEqual([
+      { id: 't1', title: 'updated', _sync_version: 2 },
+      { id: 't2', title: 'original', _sync_version: 1 },
+    ]);
   });
 
   test('the §7.4.3 drop-and-recreate reset restores the indexes', () => {

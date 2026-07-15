@@ -261,13 +261,9 @@ export function upsertSql(
   const names = tableColumnNames(table);
   const quoted = names.map((name) => quoteIdent(name)).join(', ');
   const values = placeholderList(names.length, dialect);
-  if (dialect === 'sqlite') {
-    // INSERT OR REPLACE keys on the (_sync_partition, _sync_row_id) PK.
-    return `INSERT OR REPLACE INTO ${quoteIdent(table.name)} (${quoted}) VALUES (${values})`;
-  }
   const updates = names
     .slice(2) // partition + row id are the conflict key
-    .map((name) => `${quoteIdent(name)}=EXCLUDED.${quoteIdent(name)}`)
+    .map((name) => `${quoteIdent(name)}=excluded.${quoteIdent(name)}`)
     .join(', ');
   return `INSERT INTO ${quoteIdent(table.name)} (${quoted}) VALUES (${values})
      ON CONFLICT (${quoteIdent(SYNC_PARTITION_COLUMN)}, ${quoteIdent(SYNC_ROW_ID_COLUMN)}) DO UPDATE SET ${updates}`;

@@ -112,6 +112,70 @@ mod observation_tests {
     }
 
     #[test]
+    fn secondary_unique_collision_preserves_existing_synced_row() {
+        let client = SyncClient::new(
+            "unique-upsert-test".to_owned(),
+            &json!({
+                "version": 1,
+                "tables": [{
+                    "name": "tasks",
+                    "primaryKey": "id",
+                    "columns": [
+                        { "name": "id", "type": "string", "nullable": false },
+                        { "name": "project_id", "type": "string", "nullable": false },
+                        { "name": "title", "type": "string", "nullable": false }
+                    ],
+                    "scopes": [{ "pattern": "project:{project_id}" }],
+                    "indexes": [{
+                        "name": "tasks_by_project_title",
+                        "columns": ["project_id", "title"],
+                        "unique": true
+                    }]
+                }]
+            }),
+            ClientLimits::default(),
+        )
+        .expect("test client");
+        let table = client.schema.table("tasks").expect("tasks table");
+        let sql = client.insert_row_sql(&base_table("tasks"), table);
+
+        client
+            .conn
+            .execute(&sql, rusqlite::params!["t1", "p1", "original", 1])
+            .expect("insert first row");
+        client
+            .conn
+            .execute(&sql, rusqlite::params!["t1", "p1", "updated", 2])
+            .expect("update same primary key");
+        client
+            .conn
+            .execute(&sql, rusqlite::params!["t2", "p1", "original", 1])
+            .expect("insert second row");
+        assert!(client
+            .conn
+            .execute(&sql, rusqlite::params!["t3", "p1", "original", 2])
+            .is_err());
+
+        let rows = client
+            .conn
+            .prepare("SELECT id, title FROM _syncular_base_tasks ORDER BY id")
+            .expect("prepare rows")
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect rows");
+        assert_eq!(
+            rows,
+            vec![
+                ("t1".to_owned(), "updated".to_owned()),
+                ("t2".to_owned(), "original".to_owned())
+            ]
+        );
+    }
+
+    #[test]
     fn reopening_active_subscriptions_emits_a_catch_up_intent() {
         let path = std::env::temp_dir().join(format!(
             "syncular-startup-intent-{}.db",
@@ -619,7 +683,7 @@ pub struct SyncClient {
     /// off. The encrypt/decrypt seam (`values.rs`) is compiled only under the
     /// `e2ee` feature; without it, a schema with encrypted columns fails loud.
     encryption: crate::values::EncryptionConfig,
-    /// Per-table `INSERT OR REPLACE` SQL, built once per (full table name) —
+    /// Per-table primary-key upsert SQL, built once per (full table name) —
     /// the row write path runs per row during bootstrap (§5.6), so the SQL
     /// string (and, via `prepare_cached`, its compiled statement) is reused
     /// instead of being rebuilt and re-prepared per row. Cleared on a §7.4.3
@@ -4500,14 +4564,15 @@ impl SyncClient {
         // image side; every cell is validated against the declared column
         // type and bound BORROWED (no per-cell allocation, no per-row
         // statement re-preparation) — the Rust analogue of the TS client's
-        // single `INSERT OR REPLACE … SELECT` bulk copy.
+        // one prepared primary-key upsert per imported row.
         self.overlay_dirty.set(true);
         // A fresh whole-table load pays secondary-index maintenance per row;
         // dropping the base half's NON-unique indexes for the load and
         // recreating them after replaces that with one bulk sort per index.
-        // Unique indexes stay in place — `INSERT OR REPLACE` clobbers
-        // through them, so they are semantics, not just speed. The DDL rides
-        // the open section savepoint (§1.4): an abort rolls the drop back.
+        // Unique indexes stay in place because they are semantics, not just
+        // speed. A collision outside the primary key aborts the section and
+        // preserves the existing row. The DDL rides the open section
+        // savepoint (§1.4): an abort rolls the drop back.
         let bulk_indexes: Vec<&crate::schema::IndexSchema> = if first_fresh_page {
             table.indexes.iter().filter(|i| !i.unique).collect()
         } else {
@@ -5036,7 +5101,7 @@ impl SyncClient {
 
     // -- local row storage ----------------------------------------------------------
 
-    /// The cached per-table `INSERT OR REPLACE` SQL for `full_table` (see
+    /// The cached per-table primary-key upsert SQL for `full_table` (see
     /// the `insert_sql` field: built once, reused per row).
     fn insert_row_sql(&self, full_table: &str, table: &crate::schema::TableSchema) -> String {
         if let Some(sql) = self.insert_sql.borrow().get(full_table) {
@@ -5045,8 +5110,15 @@ impl SyncClient {
         let mut columns: Vec<String> = table.columns.iter().map(|c| quote_ident(&c.name)).collect();
         columns.push(quote_ident("_syncular_version"));
         let placeholders: Vec<&str> = columns.iter().map(|_| "?").collect();
+        let primary_key = quote_ident(&table.primary_key);
+        let updates = columns
+            .iter()
+            .filter(|column| **column != primary_key)
+            .map(|column| format!("{column}=excluded.{column}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let sql = format!(
-            "INSERT OR REPLACE INTO {full_table} ({}) VALUES ({})",
+            "INSERT INTO {full_table} ({}) VALUES ({}) ON CONFLICT ({primary_key}) DO UPDATE SET {updates}",
             columns.join(", "),
             placeholders.join(", ")
         );
