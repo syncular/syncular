@@ -2,8 +2,8 @@
  * Shared SQLite dialect for the two SQLite-family storages: `bun:sqlite`
  * (synchronous, `SqliteServerStorage`) and Cloudflare D1 (async,
  * `D1ServerStorage`). D1 *is* SQLite — same DDL, same statement grammar,
- * same `?` positional placeholders, same `INSERT OR REPLACE` / `INSERT OR
- * IGNORE` upsert idioms — so the schema and the value (de)serialization are
+ * same `?` positional placeholders, same `INSERT ... ON CONFLICT` / `INSERT
+ * OR IGNORE` upsert idioms — so the schema and the value (de)serialization are
  * genuinely common ground and live here.
  *
  * What is NOT shared: statement *execution*. `bun:sqlite` is sync

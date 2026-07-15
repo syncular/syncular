@@ -126,7 +126,9 @@ for long enough, dropping `_sync_payload` is a cheap follow-up migration
 - `upsertRow`: `decodeRow(columns, payload)` → typed values →
   `INSERT … ON CONFLICT(_sync_partition, pk) DO UPDATE`, writing the typed
   columns, `_sync_server_version`, `_sync_scopes`, and `_sync_payload` in
-  one statement.
+  one statement. The conflict target is the row primary key only: a
+  secondary unique-index collision fails the statement and preserves the
+  existing row; replace-style writes are forbidden for application rows.
 - `getRow` / `scanRows` / `readCommitWindow`'s current-row reads: `SELECT
   _sync_payload, _sync_server_version, _sync_scopes …` — byte-verbatim,
   same as today. Typed columns are never read on the sync serve path.

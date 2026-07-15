@@ -31,7 +31,12 @@ function upsertSql(table: CompiledClientTable): string {
     quoteIdent(SYNC_VERSION_COLUMN),
   ];
   const placeholders = names.map(() => '?').join(', ');
-  return `INSERT OR REPLACE INTO ${quoteIdent(table.name)} (${names.join(', ')}) VALUES (${placeholders})`;
+  const updates = names
+    .filter((name) => name !== quoteIdent(table.primaryKey))
+    .map((name) => `${name}=excluded.${name}`)
+    .join(', ');
+  return `INSERT INTO ${quoteIdent(table.name)} (${names.join(', ')}) VALUES (${placeholders})
+    ON CONFLICT (${quoteIdent(table.primaryKey)}) DO UPDATE SET ${updates}`;
 }
 
 export function upsertLocalRow(
@@ -285,7 +290,7 @@ function imageInvalid(detail: string): never {
  * the in-file metadata against the descriptor, validate the data table's
  * column names/order against the generated schema, run the §5.6
  * first-page clear when fresh, then copy every row with a single
- * `INSERT OR REPLACE … SELECT` — `_syncular_version` lands in
+ * one primary-key upsert — `_syncular_version` lands in
  * `_sync_version` exactly like a rows segment's per-row `serverVersion`.
  */
 export function applySqliteSegment(
@@ -365,17 +370,24 @@ export function applySqliteSegment(
       );
     }
 
-    // 3. One transaction: fresh-bootstrap clear, then replace-or-upsert.
+    // 3. One transaction: fresh-bootstrap clear, then primary-key upsert.
     const names = table.columns.map((column) => quoteIdent(column.name));
+    const insertNames = [...names, quoteIdent(SYNC_VERSION_COLUMN)];
+    const updates = insertNames
+      .filter((name) => name !== quoteIdent(table.primaryKey))
+      .map((name) => `${name}=excluded.${name}`)
+      .join(', ');
     return (options.transaction ?? ((fn) => db.transaction(fn)))(() => {
       if (options.clearFirst) {
         deleteScopedRows(db, table, options.effective);
       }
       db.exec(
-        `INSERT OR REPLACE INTO ${quoteIdent(table.name)}
-           (${[...names, quoteIdent(SYNC_VERSION_COLUMN)].join(', ')})
+        `INSERT INTO ${quoteIdent(table.name)}
+           (${insertNames.join(', ')})
          SELECT ${[...names, quoteIdent('_syncular_version')].join(', ')}
-         FROM ${IMAGE_ALIAS}.${quoteIdent(table.name)}`,
+         FROM ${IMAGE_ALIAS}.${quoteIdent(table.name)}
+         WHERE true
+         ON CONFLICT (${quoteIdent(table.primaryKey)}) DO UPDATE SET ${updates}`,
       );
       const counted = db.query(
         `SELECT count(*) AS n FROM ${IMAGE_ALIAS}.${quoteIdent(table.name)}`,
