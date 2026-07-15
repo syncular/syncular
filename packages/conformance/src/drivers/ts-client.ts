@@ -419,6 +419,7 @@ class TsClientInstance implements ClientInstance {
         : {}),
       conflictsChanged: batch.conflictsChanged,
       rejectionsChanged: batch.rejectionsChanged,
+      outcomesChanged: batch.outcomesChanged,
     }));
   }
 

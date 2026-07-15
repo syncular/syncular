@@ -13,6 +13,11 @@ local Tauri views remain responsive while the native client is syncing over
 HTTP/WebSocket. Mutations, sync, and all durable writes remain serialized on
 the single mutable core owner.
 
+The bridge includes the native core's durable commit-outcome journal:
+`commitOutcome`, `commitOutcomes`, and `resolveCommitOutcome`. Final results
+and explicit conflict resolutions survive process restarts; active failures
+are never silently removed by retention.
+
 Part of [Syncular](https://syncular.dev) — an offline-first sync framework.
 See the [Syncular repository](https://github.com/syncular/syncular) for docs.
 

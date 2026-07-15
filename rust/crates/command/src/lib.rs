@@ -20,7 +20,8 @@ use ssp2::{
     ControlMessage,
 };
 use syncular_client::{
-    ClientLimits, CommandEffects, Mutation, SyncClient, Transport, WindowBase, WindowCoverage,
+    ClientLimits, CommandEffects, CommitOutcomeQuery, Mutation, ResolveCommitOutcomeInput,
+    SyncClient, Transport, WindowBase, WindowCoverage,
 };
 
 // -- bytes <-> {"$bytes": hex} (the driver-protocol byte envelope) ----------
@@ -62,7 +63,7 @@ fn client_err(message: String) -> CommandError {
     let code = message
         .split_once(':')
         .map(|(candidate, _)| candidate)
-        .filter(|candidate| candidate.starts_with("client."))
+        .filter(|candidate| candidate.starts_with("client.") || candidate.starts_with("sync."))
         .unwrap_or("client.failed");
     (code.to_owned(), message)
 }
@@ -95,6 +96,10 @@ pub fn parse_limits(value: Option<&Value>) -> ClientLimits {
         .and_then(Value::as_u64)
         .map(|v| v as u8);
     limits.blob_cache_max_bytes = object.get("blobCacheMaxBytes").and_then(Value::as_i64);
+    limits.outcome_retention_max_entries = object
+        .get("outcomeRetentionMaxEntries")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
     limits
 }
 
@@ -567,6 +572,52 @@ pub fn dispatch<T: Transport>(
         "rejections" => {
             let rejections = need_client(client)?.rejections().to_vec();
             Ok(json!({ "rejections": rejections }))
+        }
+        "commitOutcome" => {
+            let client_commit_id = params
+                .get("clientCommitId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    client_err(
+                        "sync.invalid_request: commitOutcome missing clientCommitId".to_owned(),
+                    )
+                })?;
+            let outcome = need_client(client)?
+                .commit_outcome(client_commit_id)
+                .map_err(client_err)?;
+            Ok(json!({ "outcome": outcome }))
+        }
+        "commitOutcomes" => {
+            let query = serde_json::from_value::<CommitOutcomeQuery>(
+                params.get("query").cloned().unwrap_or_else(|| json!({})),
+            )
+            .map_err(|error| {
+                client_err(format!(
+                    "sync.invalid_request: invalid commit outcome query: {error}"
+                ))
+            })?;
+            let outcomes = need_client(client)?
+                .commit_outcomes(query)
+                .map_err(client_err)?;
+            Ok(json!({ "outcomes": outcomes }))
+        }
+        "resolveCommitOutcome" => {
+            let input = serde_json::from_value::<ResolveCommitOutcomeInput>(
+                params.get("input").cloned().ok_or_else(|| {
+                    client_err(
+                        "sync.invalid_request: resolveCommitOutcome missing input".to_owned(),
+                    )
+                })?,
+            )
+            .map_err(|error| {
+                client_err(format!(
+                    "sync.invalid_request: invalid outcome resolution: {error}"
+                ))
+            })?;
+            let outcome = need_client(client)?
+                .resolve_commit_outcome(input)
+                .map_err(client_err)?;
+            Ok(json!({ "outcome": outcome }))
         }
         "pendingCommitIds" => {
             let ids = need_client(client)?.pending_commit_ids();

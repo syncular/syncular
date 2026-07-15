@@ -33,6 +33,8 @@
 import type {
   ClientChangeBatch,
   ClientChangeListener,
+  CommitOutcome,
+  CommitOutcomeQuery,
   ConflictRecord,
   InvalidationEvent,
   InvalidationListener,
@@ -42,6 +44,7 @@ import type {
   QueryReadSpec,
   QuerySnapshot,
   RejectionRecord,
+  ResolveCommitOutcomeInput,
   SchemaFloor,
   SqlRow,
   SqlValue,
@@ -528,6 +531,33 @@ export class TauriSyncClient {
     return result.rejections;
   }
 
+  async commitOutcome(
+    clientCommitId: string,
+  ): Promise<CommitOutcome | undefined> {
+    const result = (await this.#command('commitOutcome', {
+      clientCommitId,
+    })) as { outcome?: CommitOutcome };
+    return result.outcome;
+  }
+
+  async commitOutcomes(
+    query: CommitOutcomeQuery = {},
+  ): Promise<readonly CommitOutcome[]> {
+    const result = (await this.#command('commitOutcomes', { query })) as {
+      outcomes: CommitOutcome[];
+    };
+    return result.outcomes;
+  }
+
+  async resolveCommitOutcome(
+    input: ResolveCommitOutcomeInput,
+  ): Promise<CommitOutcome> {
+    const result = (await this.#command('resolveCommitOutcome', {
+      input,
+    })) as { outcome: CommitOutcome };
+    return result.outcome;
+  }
+
   async schemaFloor(): Promise<SchemaFloor | undefined> {
     const result = (await this.#command('schemaFloor', {})) as {
       floor?: SchemaFloor;
@@ -659,6 +689,7 @@ function decodeChangeBatch(value: unknown): ClientChangeBatch | undefined {
       : {}),
     conflictsChanged: raw.conflictsChanged === true,
     rejectionsChanged: raw.rejectionsChanged === true,
+    outcomesChanged: raw.outcomesChanged === true,
   };
 }
 

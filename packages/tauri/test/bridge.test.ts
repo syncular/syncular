@@ -85,6 +85,31 @@ function defaultResponder(cmd: string, args: Record<string, unknown>): unknown {
       return OK({ conflicts: [] });
     case 'rejections':
       return OK({ rejections: [] });
+    case 'commitOutcome':
+      return OK({
+        outcome: {
+          sequence: 1,
+          clientCommitId: 'commit-1',
+          status: 'applied',
+          recordedAtMs: 1,
+          results: [{ status: 'applied', opIndex: 0 }],
+          resolution: 'active',
+        },
+      });
+    case 'commitOutcomes':
+      return OK({ outcomes: [] });
+    case 'resolveCommitOutcome':
+      return OK({
+        outcome: {
+          sequence: 1,
+          clientCommitId: 'commit-1',
+          status: 'applied',
+          recordedAtMs: 1,
+          results: [{ status: 'applied', opIndex: 0 }],
+          resolution: 'dismissed',
+          resolvedAtMs: 2,
+        },
+      });
     case 'schemaFloor':
       return OK({ floor: undefined });
     case 'leaseState':
@@ -254,6 +279,16 @@ describe('createTauriSyncClient', () => {
     expect(await client.syncNeeded()).toBe(true);
     expect(await client.upgrading()).toBe(false);
     expect(await client.conflicts()).toEqual([]);
+    expect(await client.commitOutcome('commit-1')).toMatchObject({
+      status: 'applied',
+    });
+    expect(await client.commitOutcomes({ activeOnly: true })).toEqual([]);
+    expect(
+      await client.resolveCommitOutcome({
+        clientCommitId: 'commit-1',
+        resolution: 'dismissed',
+      }),
+    ).toMatchObject({ resolution: 'dismissed' });
     expect(await client.pendingCommits()).toEqual(['commit-1']);
     expect(await client.schemaFloor()).toBeUndefined();
   });
@@ -386,6 +421,16 @@ describe('SyncClientLike parity', () => {
     );
     expect(await normalized.conflicts()).toEqual([]);
     expect(await normalized.rejections()).toEqual([]);
+    expect(await normalized.commitOutcome('commit-1')).toMatchObject({
+      status: 'applied',
+    });
+    expect(await normalized.commitOutcomes()).toEqual([]);
+    expect(
+      await normalized.resolveCommitOutcome({
+        clientCommitId: 'commit-1',
+        resolution: 'dismissed',
+      }),
+    ).toMatchObject({ resolution: 'dismissed' });
     expect(await normalized.schemaFloor()).toBeUndefined();
     expect(await normalized.leaseState()).toBeUndefined();
     expect(await normalized.upgrading()).toBe(false);

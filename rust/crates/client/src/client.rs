@@ -11,7 +11,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use ssp2::model::{Frame, MediaType, Message, MsgKind, Op, OpResult, PushStatus, SubStatus};
@@ -23,10 +23,12 @@ use ssp2::{
 };
 
 use crate::api::{
-    ClientChangeBatch, ClientLimits, CommandEffects, ConflictRecord, CoverageSnapshot, LeaseState,
-    Mutation, PresencePeer, QuerySnapshot, RejectionRecord, RowState, SchemaFloor,
-    SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
-    WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
+    ClientChangeBatch, ClientLimits, CommandEffects, CommitOperation, CommitOperationOutcome,
+    CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution, CommitOutcomeStatus,
+    ConflictRecord, CoverageSnapshot, LeaseState, Mutation, PresencePeer, QuerySnapshot,
+    RejectionRecord, ResolveCommitOutcomeInput, RowState, SchemaFloor, SubscriptionStateView,
+    SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange, WindowBase, WindowChange,
+    WindowCoverage, WindowState, WindowUnitRef,
 };
 use crate::schema::{parse_schema_json, ClientSchema};
 use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
@@ -166,6 +168,126 @@ mod observation_tests {
     }
 
     #[test]
+    fn durable_conflict_outcome_and_resolution_survive_reopen() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-durable-outcome-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "project_id", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "project:{project_id}" }]
+            }]
+        });
+        let conflict = ConflictRecord {
+            client_commit_id: "losing-commit".to_owned(),
+            op_index: 0,
+            table: "tasks".to_owned(),
+            row_id: "t1".to_owned(),
+            code: "sync.version_conflict".to_owned(),
+            message: "stale base version".to_owned(),
+            server_version: 2,
+            server_row: Map::from_iter([("id".to_owned(), json!("t1"))]),
+            operation: Some(CommitOperation {
+                table: "tasks".to_owned(),
+                row_id: "t1".to_owned(),
+                op: "upsert".to_owned(),
+                base_version: Some(1),
+                values: None,
+            }),
+        };
+
+        {
+            let mut first = SyncClient::open_path(
+                "durable-native".to_owned(),
+                &schema,
+                ClientLimits::default(),
+                path.to_str().expect("UTF-8 temp path"),
+            )
+            .expect("first open");
+            first
+                .begin_observation("test_outcome")
+                .expect("begin outcome");
+            first
+                .persist_commit_outcome(
+                    "losing-commit",
+                    CommitOutcomeStatus::Conflict,
+                    &[CommitOperationOutcome::Conflict {
+                        conflict: conflict.clone(),
+                    }],
+                )
+                .expect("persist outcome");
+            first.conflicts.push(conflict);
+            first
+                .finish_observation(
+                    "test_outcome",
+                    ChangeAccumulator {
+                        conflicts: true,
+                        outcomes: true,
+                        ..ChangeAccumulator::default()
+                    },
+                )
+                .expect("commit outcome");
+        }
+
+        {
+            let mut reopened = SyncClient::open_path(
+                "durable-native".to_owned(),
+                &schema,
+                ClientLimits::default(),
+                path.to_str().expect("UTF-8 temp path"),
+            )
+            .expect("reopen");
+            assert_eq!(reopened.conflicts().len(), 1);
+            assert_eq!(
+                reopened
+                    .commit_outcome("losing-commit")
+                    .expect("read outcome")
+                    .expect("outcome")
+                    .status,
+                CommitOutcomeStatus::Conflict
+            );
+            let resolved = reopened
+                .resolve_commit_outcome(ResolveCommitOutcomeInput {
+                    client_commit_id: "losing-commit".to_owned(),
+                    resolution: CommitOutcomeResolution::ResolvedKeepServer,
+                    replacement_client_commit_id: None,
+                })
+                .expect("resolve");
+            assert_eq!(
+                resolved.resolution,
+                CommitOutcomeResolution::ResolvedKeepServer
+            );
+            assert!(reopened.conflicts().is_empty());
+        }
+
+        let reopened = SyncClient::open_path(
+            "durable-native".to_owned(),
+            &schema,
+            ClientLimits::default(),
+            path.to_str().expect("UTF-8 temp path"),
+        )
+        .expect("second reopen");
+        assert!(reopened.conflicts().is_empty());
+        assert_eq!(
+            reopened
+                .commit_outcome("losing-commit")
+                .expect("read outcome")
+                .expect("outcome")
+                .resolution,
+            CommitOutcomeResolution::ResolvedKeepServer
+        );
+        drop(reopened);
+        std::fs::remove_file(path).expect("remove temp database");
+    }
+
+    #[test]
     fn file_snapshot_reader_matches_owner_rows_revision_and_coverage() {
         let path =
             std::env::temp_dir().join(format!("syncular-read-sidecar-{}.db", uuid::Uuid::new_v4()));
@@ -292,6 +414,18 @@ struct OutboxOp {
     values: Option<Map<String, Value>>,
 }
 
+impl From<&OutboxOp> for CommitOperation {
+    fn from(operation: &OutboxOp) -> Self {
+        Self {
+            table: operation.table.clone(),
+            row_id: operation.row_id.clone(),
+            op: if operation.upsert { "upsert" } else { "delete" }.to_owned(),
+            base_version: operation.base_version,
+            values: operation.values.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct OutboxCommit {
     client_commit_id: String,
@@ -325,6 +459,7 @@ struct ChangeAccumulator {
     status: bool,
     conflicts: bool,
     rejections: bool,
+    outcomes: bool,
 }
 
 impl ChangeAccumulator {
@@ -358,6 +493,7 @@ impl ChangeAccumulator {
             || self.status
             || self.conflicts
             || self.rejections
+            || self.outcomes
     }
 }
 
@@ -907,6 +1043,11 @@ impl SyncClient {
         limits: ClientLimits,
         conn: Connection,
     ) -> Result<Self, String> {
+        if limits.outcome_retention_max_entries == Some(0) {
+            return Err(
+                "sync.invalid_request: outcomeRetentionMaxEntries must be positive".to_owned(),
+            );
+        }
         let schema = parse_schema_json(schema_json)?;
         let mut client = SyncClient {
             conn,
@@ -1000,6 +1141,18 @@ impl SyncClient {
                 "CREATE TABLE IF NOT EXISTS _syncular_outbox (
                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
                    commit_id TEXT NOT NULL UNIQUE, ops_json TEXT NOT NULL);
+                 CREATE TABLE IF NOT EXISTS _syncular_commit_outcomes (
+                   seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                   client_commit_id TEXT NOT NULL UNIQUE,
+                   status TEXT NOT NULL CHECK(status IN ('applied', 'cached', 'conflict', 'rejected')),
+                   recorded_at_ms INTEGER NOT NULL,
+                   results_json TEXT NOT NULL,
+                   resolution TEXT NOT NULL DEFAULT 'active'
+                     CHECK(resolution IN ('active', 'resolved_keep_server', 'superseded', 'dismissed')),
+                   resolved_at_ms INTEGER,
+                   replacement_client_commit_id TEXT);
+                 CREATE INDEX IF NOT EXISTS _syncular_commit_outcomes_resolution_seq
+                   ON _syncular_commit_outcomes(resolution, seq);
                  CREATE TABLE IF NOT EXISTS _syncular_subscriptions (
                    id TEXT PRIMARY KEY, tbl TEXT NOT NULL, state_json TEXT NOT NULL);
                  CREATE TABLE IF NOT EXISTS _syncular_meta (
@@ -1184,6 +1337,28 @@ impl SyncClient {
             commits
         };
 
+        self.prune_commit_outcomes()?;
+        let active = self.commit_outcomes(CommitOutcomeQuery {
+            active_only: true,
+            ..CommitOutcomeQuery::default()
+        })?;
+        self.conflicts = active
+            .iter()
+            .flat_map(|outcome| outcome.results.iter())
+            .filter_map(|result| match result {
+                CommitOperationOutcome::Conflict { conflict } => Some(conflict.clone()),
+                _ => None,
+            })
+            .collect();
+        self.rejections = active
+            .iter()
+            .flat_map(|outcome| outcome.results.iter())
+            .filter_map(|result| match result {
+                CommitOperationOutcome::Error { rejection } => Some(rejection.clone()),
+                _ => None,
+            })
+            .collect();
+
         self.lease_state = self
             .get_meta(LEASE_STATE_KEY)
             .map(|raw| serde_json::from_str(&raw))
@@ -1311,6 +1486,7 @@ impl SyncClient {
             status,
             conflicts_changed: batch.conflicts,
             rejections_changed: batch.rejections,
+            outcomes_changed: batch.outcomes,
         };
         self.conn
             .execute_batch(&format!("RELEASE {name}"))
@@ -1580,9 +1756,10 @@ impl SyncClient {
         // §7.4.4: drop outbox commits that cannot re-encode under the new
         // schema (a referenced column/table the bump removed), surfacing each
         // as a `sync.outbox_incompatible` rejection.
-        if self.drop_incompatible_outbox() {
+        if self.drop_incompatible_outbox()? {
             batch.rejections = true;
             batch.status = true;
+            batch.outcomes = true;
         }
         // Re-apply the surviving outbox optimistically over the empty tables.
         self.rebuild_overlay();
@@ -1592,39 +1769,67 @@ impl SyncClient {
     /// §7.4.4: a persisted upsert whose values reference a column the current
     /// schema lacks (or a removed table) cannot be encoded. Drop the commit
     /// and raise a client-local `sync.outbox_incompatible` rejection.
-    fn drop_incompatible_outbox(&mut self) -> bool {
+    fn drop_incompatible_outbox(&mut self) -> Result<bool, String> {
         let schema = &self.schema;
-        let mut incompatible: Vec<String> = Vec::new();
-        self.outbox.retain(|commit| {
-            let bad = commit.ops.iter().any(|op| {
-                if !op.upsert {
-                    return false;
-                }
-                match schema.table(&op.table) {
-                    None => true,
-                    Some(table) => op.values.as_ref().is_some_and(|values| {
-                        values
-                            .keys()
-                            .any(|key| !table.columns.iter().any(|c| &c.name == key))
-                    }),
-                }
-            });
-            if bad {
-                incompatible.push(commit.client_commit_id.clone());
-            }
-            !bad
-        });
-        let changed = !incompatible.is_empty();
-        for client_commit_id in incompatible {
-            self.persist_outbox_delete(&client_commit_id);
-            self.rejections.push(RejectionRecord {
-                client_commit_id,
-                op_index: 0,
-                code: OUTBOX_INCOMPATIBLE_CODE.to_owned(),
-                retryable: false,
-            });
+        let incompatible = self
+            .outbox
+            .iter()
+            .filter(|commit| {
+                commit.ops.iter().any(|op| {
+                    if !op.upsert {
+                        return false;
+                    }
+                    match schema.table(&op.table) {
+                        None => true,
+                        Some(table) => op.values.as_ref().is_some_and(|values| {
+                            values
+                                .keys()
+                                .any(|key| !table.columns.iter().any(|c| &c.name == key))
+                        }),
+                    }
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if incompatible.is_empty() {
+            return Ok(false);
         }
-        changed
+        let mut rejections = Vec::new();
+        for commit in &incompatible {
+            let results = commit
+                .ops
+                .iter()
+                .enumerate()
+                .map(|(op_index, operation)| {
+                    let rejection = RejectionRecord {
+                        client_commit_id: commit.client_commit_id.clone(),
+                        op_index: op_index as i32,
+                        code: OUTBOX_INCOMPATIBLE_CODE.to_owned(),
+                        message: "the persisted commit cannot encode under the current schema"
+                            .to_owned(),
+                        retryable: false,
+                        operation: Some(CommitOperation::from(operation)),
+                    };
+                    rejections.push(rejection.clone());
+                    CommitOperationOutcome::Error { rejection }
+                })
+                .collect::<Vec<_>>();
+            self.persist_commit_outcome(
+                &commit.client_commit_id,
+                CommitOutcomeStatus::Rejected,
+                &results,
+            )?;
+            self.delete_outbox_persisted(&commit.client_commit_id)?;
+        }
+        self.prune_commit_outcomes()?;
+        let incompatible_ids = incompatible
+            .iter()
+            .map(|commit| commit.client_commit_id.as_str())
+            .collect::<BTreeSet<_>>();
+        self.outbox
+            .retain(|commit| !incompatible_ids.contains(commit.client_commit_id.as_str()));
+        self.rejections.extend(rejections);
+        Ok(true)
     }
 
     /// §7.4.3: (re)create the base + visible table pair for every synced
@@ -1710,11 +1915,218 @@ impl SyncClient {
         );
     }
 
-    fn persist_outbox_delete(&self, client_commit_id: &str) {
-        let _ = self.conn.execute(
-            "DELETE FROM _syncular_outbox WHERE commit_id = ?1",
-            rusqlite::params![client_commit_id],
+    fn delete_outbox_persisted(&self, client_commit_id: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "DELETE FROM _syncular_outbox WHERE commit_id = ?1",
+                rusqlite::params![client_commit_id],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn outcome_status_name(status: CommitOutcomeStatus) -> &'static str {
+        match status {
+            CommitOutcomeStatus::Applied => "applied",
+            CommitOutcomeStatus::Cached => "cached",
+            CommitOutcomeStatus::Conflict => "conflict",
+            CommitOutcomeStatus::Rejected => "rejected",
+        }
+    }
+
+    fn outcome_resolution_name(resolution: CommitOutcomeResolution) -> &'static str {
+        match resolution {
+            CommitOutcomeResolution::Active => "active",
+            CommitOutcomeResolution::ResolvedKeepServer => "resolved_keep_server",
+            CommitOutcomeResolution::Superseded => "superseded",
+            CommitOutcomeResolution::Dismissed => "dismissed",
+        }
+    }
+
+    fn parse_outcome_status(value: &str) -> Result<CommitOutcomeStatus, String> {
+        match value {
+            "applied" => Ok(CommitOutcomeStatus::Applied),
+            "cached" => Ok(CommitOutcomeStatus::Cached),
+            "conflict" => Ok(CommitOutcomeStatus::Conflict),
+            "rejected" => Ok(CommitOutcomeStatus::Rejected),
+            _ => Err(format!("invalid persisted commit outcome status {value:?}")),
+        }
+    }
+
+    fn parse_outcome_resolution(value: &str) -> Result<CommitOutcomeResolution, String> {
+        match value {
+            "active" => Ok(CommitOutcomeResolution::Active),
+            "resolved_keep_server" => Ok(CommitOutcomeResolution::ResolvedKeepServer),
+            "superseded" => Ok(CommitOutcomeResolution::Superseded),
+            "dismissed" => Ok(CommitOutcomeResolution::Dismissed),
+            _ => Err(format!(
+                "invalid persisted commit outcome resolution {value:?}"
+            )),
+        }
+    }
+
+    fn persist_commit_outcome(
+        &self,
+        client_commit_id: &str,
+        status: CommitOutcomeStatus,
+        results: &[CommitOperationOutcome],
+    ) -> Result<(), String> {
+        let results_json = serde_json::to_string(results).map_err(|error| error.to_string())?;
+        self.conn
+            .execute(
+                "INSERT INTO _syncular_commit_outcomes (
+                   client_commit_id, status, recorded_at_ms, results_json, resolution
+                 ) VALUES (?1, ?2, ?3, ?4, 'active')",
+                rusqlite::params![
+                    client_commit_id,
+                    Self::outcome_status_name(status),
+                    self.clock_now_ms(),
+                    results_json
+                ],
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn outcome_from_tuple(
+        row: (
+            i64,
+            String,
+            String,
+            i64,
+            String,
+            String,
+            Option<i64>,
+            Option<String>,
+        ),
+    ) -> Result<CommitOutcome, String> {
+        let (
+            sequence,
+            client_commit_id,
+            status,
+            recorded_at_ms,
+            results_json,
+            resolution,
+            resolved_at_ms,
+            replacement_client_commit_id,
+        ) = row;
+        Ok(CommitOutcome {
+            sequence,
+            client_commit_id,
+            status: Self::parse_outcome_status(&status)?,
+            recorded_at_ms,
+            results: serde_json::from_str(&results_json)
+                .map_err(|error| format!("invalid persisted commit outcome results: {error}"))?,
+            resolution: Self::parse_outcome_resolution(&resolution)?,
+            resolved_at_ms,
+            replacement_client_commit_id,
+        })
+    }
+
+    pub fn commit_outcome(&self, client_commit_id: &str) -> Result<Option<CommitOutcome>, String> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT seq, client_commit_id, status, recorded_at_ms, results_json,
+                        resolution, resolved_at_ms, replacement_client_commit_id
+                   FROM _syncular_commit_outcomes WHERE client_commit_id = ?1",
+                rusqlite::params![client_commit_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        row.map(Self::outcome_from_tuple).transpose()
+    }
+
+    pub fn commit_outcomes(&self, query: CommitOutcomeQuery) -> Result<Vec<CommitOutcome>, String> {
+        if query.limit == Some(0) {
+            return Err("sync.invalid_request: commit outcome limit must be positive".to_owned());
+        }
+        let mut sql = String::from(
+            "SELECT seq, client_commit_id, status, recorded_at_ms, results_json,
+                    resolution, resolved_at_ms, replacement_client_commit_id
+               FROM _syncular_commit_outcomes",
         );
+        if query.active_only {
+            sql.push_str(" WHERE resolution = 'active' AND status IN ('conflict', 'rejected')");
+        }
+        sql.push_str(" ORDER BY seq DESC");
+        if let Some(limit) = query.limit {
+            sql.push_str(&format!(" LIMIT {limit}"));
+        }
+        let mut stmt = self.conn.prepare(&sql).map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?;
+        let mut outcomes = Vec::new();
+        for row in rows {
+            outcomes.push(Self::outcome_from_tuple(
+                row.map_err(|error| error.to_string())?,
+            )?);
+        }
+        Ok(outcomes)
+    }
+
+    fn prune_commit_outcomes(&self) -> Result<(), String> {
+        let max_entries = self.limits.outcome_retention_max_entries.unwrap_or(1_000);
+        let count = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM _syncular_commit_outcomes",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| error.to_string())? as usize;
+        let excess = count.saturating_sub(max_entries);
+        if excess == 0 {
+            return Ok(());
+        }
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT seq FROM _syncular_commit_outcomes
+                  WHERE status IN ('applied', 'cached') OR resolution != 'active'
+                  ORDER BY seq ASC LIMIT ?1",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![excess as i64], |row| row.get::<_, i64>(0))
+            .map_err(|error| error.to_string())?;
+        let sequences = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        drop(stmt);
+        for sequence in sequences {
+            self.conn
+                .execute(
+                    "DELETE FROM _syncular_commit_outcomes WHERE seq = ?1",
+                    rusqlite::params![sequence],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     // -- driver surface ---------------------------------------------------------
@@ -2251,6 +2663,109 @@ impl SyncClient {
 
     pub fn rejections(&self) -> &[RejectionRecord] {
         &self.rejections
+    }
+
+    pub fn resolve_commit_outcome(
+        &mut self,
+        input: ResolveCommitOutcomeInput,
+    ) -> Result<CommitOutcome, String> {
+        let current = self
+            .commit_outcome(&input.client_commit_id)?
+            .ok_or_else(|| {
+                format!(
+                    "sync.outcome_not_found: no durable outcome exists for {:?}",
+                    input.client_commit_id
+                )
+            })?;
+        if current.resolution != CommitOutcomeResolution::Active {
+            return Ok(current);
+        }
+        if input.resolution == CommitOutcomeResolution::Active {
+            return Err("sync.invalid_request: resolution must leave active state".to_owned());
+        }
+        match input.resolution {
+            CommitOutcomeResolution::Superseded => {
+                let replacement = input
+                    .replacement_client_commit_id
+                    .as_deref()
+                    .filter(|value| !value.is_empty() && *value != input.client_commit_id)
+                    .ok_or_else(|| {
+                        "sync.invalid_request: superseded outcomes require a distinct replacementClientCommitId"
+                            .to_owned()
+                    })?;
+                let _ = replacement;
+            }
+            _ if input.replacement_client_commit_id.is_some() => {
+                return Err(
+                    "sync.invalid_request: replacementClientCommitId is valid only for superseded outcomes"
+                        .to_owned(),
+                );
+            }
+            _ => {}
+        }
+        let allowed = match current.status {
+            CommitOutcomeStatus::Conflict => matches!(
+                input.resolution,
+                CommitOutcomeResolution::ResolvedKeepServer | CommitOutcomeResolution::Superseded
+            ),
+            CommitOutcomeStatus::Rejected => {
+                input.resolution == CommitOutcomeResolution::Superseded
+            }
+            CommitOutcomeStatus::Applied | CommitOutcomeStatus::Cached => {
+                input.resolution == CommitOutcomeResolution::Dismissed
+            }
+        };
+        if !allowed {
+            return Err(format!(
+                "sync.invalid_request: resolution {:?} is invalid for {:?} outcome",
+                input.resolution, current.status
+            ));
+        }
+
+        self.begin_observation("syncular_outcome_resolution")?;
+        let result = (|| {
+            self.conn
+                .execute(
+                    "UPDATE _syncular_commit_outcomes
+                        SET resolution = ?1, resolved_at_ms = ?2,
+                            replacement_client_commit_id = ?3
+                      WHERE client_commit_id = ?4 AND resolution = 'active'",
+                    rusqlite::params![
+                        Self::outcome_resolution_name(input.resolution),
+                        self.clock_now_ms(),
+                        input.replacement_client_commit_id,
+                        input.client_commit_id
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+            let resolved = self
+                .commit_outcome(&current.client_commit_id)?
+                .ok_or_else(|| "sync.outcome_not_found: outcome disappeared".to_owned())?;
+            self.prune_commit_outcomes()?;
+            Ok(resolved)
+        })();
+        let resolved = match result {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.rollback_observation("syncular_outcome_resolution");
+                return Err(error);
+            }
+        };
+        self.conflicts
+            .retain(|record| record.client_commit_id != current.client_commit_id);
+        self.rejections
+            .retain(|record| record.client_commit_id != current.client_commit_id);
+        let batch = ChangeAccumulator {
+            conflicts: current.status == CommitOutcomeStatus::Conflict,
+            rejections: current.status == CommitOutcomeStatus::Rejected,
+            outcomes: true,
+            ..ChangeAccumulator::default()
+        };
+        if let Err(error) = self.finish_observation("syncular_outcome_resolution", batch) {
+            self.rollback_observation("syncular_outcome_resolution");
+            return Err(error);
+        }
+        Ok(resolved)
     }
 
     pub fn schema_floor(&self) -> Option<&SchemaFloor> {
@@ -3004,102 +3519,170 @@ impl SyncClient {
         }
         let mut batch = ChangeAccumulator::default();
         let operations = self.outbox[index].ops.clone();
-        // Every non-retryable outcome below removes the commit from the
-        // outbox, so the optimistic overlay must be rebuilt.
-        self.overlay_dirty.set(true);
         match status {
             PushStatus::Applied | PushStatus::Cached => {
                 // §7.2: a lost ack replays as `cached` — proceed as if the
                 // ack had arrived.
+                let journal_results = results
+                    .iter()
+                    .map(|result| {
+                        let op_index = match result {
+                            OpResult::Applied { op_index }
+                            | OpResult::Conflict { op_index, .. }
+                            | OpResult::Error { op_index, .. } => *op_index,
+                        };
+                        CommitOperationOutcome::Applied { op_index }
+                    })
+                    .collect::<Vec<_>>();
+                let outcome_status = if status == PushStatus::Applied {
+                    CommitOutcomeStatus::Applied
+                } else {
+                    CommitOutcomeStatus::Cached
+                };
+                if self
+                    .persist_commit_outcome(client_commit_id, outcome_status, &journal_results)
+                    .and_then(|()| self.delete_outbox_persisted(client_commit_id))
+                    .and_then(|()| self.prune_commit_outcomes())
+                    .is_err()
+                {
+                    self.rollback_observation("syncular_push_result");
+                    return;
+                }
                 report.applied.push(client_commit_id.to_owned());
                 self.outbox.remove(index);
-                self.persist_outbox_delete(client_commit_id);
+                self.overlay_dirty.set(true);
                 batch.status = true;
+                batch.outcomes = true;
             }
             PushStatus::Rejected => {
-                let terminating = results
-                    .iter()
-                    .find(|r| !matches!(r, OpResult::Applied { .. }));
-                match terminating {
-                    Some(OpResult::Conflict {
-                        op_index,
-                        code,
-                        message: _,
-                        server_version,
-                        server_row,
-                    }) => {
-                        let commit = &self.outbox[index];
-                        let (table, row_id) = commit
-                            .ops
-                            .get(*op_index as usize)
-                            .map(|op| (op.table.clone(), op.row_id.clone()))
-                            .unwrap_or_default();
-                        let server_row_json = self
-                            .schema
-                            .table(&table)
-                            .and_then(|t| {
-                                decode_row_bytes(t, server_row, &self.encryption)
-                                    .ok()
-                                    .map(|row| (t, row))
-                            })
-                            .map(|(t, row)| {
-                                let mut map = Map::new();
-                                for (i, column) in t.columns.iter().enumerate() {
-                                    map.insert(
-                                        column.name.clone(),
-                                        column_value_to_json(row.get(i).unwrap_or(&None)),
-                                    );
-                                }
-                                map
-                            })
-                            .unwrap_or_default();
-                        self.conflicts.push(ConflictRecord {
-                            client_commit_id: client_commit_id.to_owned(),
-                            op_index: *op_index,
-                            table,
-                            row_id,
-                            code: code.clone(),
-                            server_version: *server_version,
-                            server_row: server_row_json,
-                        });
-                        batch.conflicts = true;
-                        report.conflicts += 1;
-                        report.rejected.push(client_commit_id.to_owned());
-                        self.outbox.remove(index);
-                        self.persist_outbox_delete(client_commit_id);
-                        batch.status = true;
+                if results.iter().any(|result| {
+                    matches!(
+                        result,
+                        OpResult::Error {
+                            code,
+                            retryable: true,
+                            ..
+                        } if code == "sync.idempotency_cache_miss"
+                    )
+                }) {
+                    // §6.3/§7.2: a serving failure, not an outcome — keep the
+                    // exact commit queued for an identical retry.
+                    report.retryable.push(client_commit_id.to_owned());
+                    if self
+                        .finish_observation("syncular_push_result", batch)
+                        .is_err()
+                    {
+                        self.rollback_observation("syncular_push_result");
                     }
-                    Some(OpResult::Error {
-                        op_index,
-                        code,
-                        message: _,
-                        retryable,
-                    }) => {
-                        if code == "sync.idempotency_cache_miss" {
-                            // §6.3/§7.2: a serving failure, not an outcome —
-                            // the commit stays queued for an identical retry.
-                            report.retryable.push(client_commit_id.to_owned());
-                        } else {
-                            self.rejections.push(RejectionRecord {
+                    return;
+                }
+
+                let mut journal_results = Vec::with_capacity(results.len());
+                let mut conflicts = Vec::new();
+                let mut rejections = Vec::new();
+                for result in results {
+                    match result {
+                        OpResult::Applied { op_index } => {
+                            journal_results.push(CommitOperationOutcome::Applied {
+                                op_index: *op_index,
+                            });
+                        }
+                        OpResult::Conflict {
+                            op_index,
+                            code,
+                            message,
+                            server_version,
+                            server_row,
+                        } => {
+                            let operation = operations
+                                .get(*op_index as usize)
+                                .map(CommitOperation::from);
+                            let (table, row_id) = operation
+                                .as_ref()
+                                .map(|op| (op.table.clone(), op.row_id.clone()))
+                                .unwrap_or_default();
+                            let server_row_json = self
+                                .schema
+                                .table(&table)
+                                .and_then(|t| {
+                                    decode_row_bytes(t, server_row, &self.encryption)
+                                        .ok()
+                                        .map(|row| (t, row))
+                                })
+                                .map(|(t, row)| {
+                                    let mut map = Map::new();
+                                    for (i, column) in t.columns.iter().enumerate() {
+                                        map.insert(
+                                            column.name.clone(),
+                                            column_value_to_json(row.get(i).unwrap_or(&None)),
+                                        );
+                                    }
+                                    map
+                                })
+                                .unwrap_or_default();
+                            let conflict = ConflictRecord {
+                                client_commit_id: client_commit_id.to_owned(),
+                                op_index: *op_index,
+                                table,
+                                row_id,
+                                code: code.clone(),
+                                message: message.clone(),
+                                server_version: *server_version,
+                                server_row: server_row_json,
+                                operation,
+                            };
+                            journal_results.push(CommitOperationOutcome::Conflict {
+                                conflict: conflict.clone(),
+                            });
+                            conflicts.push(conflict);
+                        }
+                        OpResult::Error {
+                            op_index,
+                            code,
+                            message,
+                            retryable,
+                        } => {
+                            let rejection = RejectionRecord {
                                 client_commit_id: client_commit_id.to_owned(),
                                 op_index: *op_index,
                                 code: code.clone(),
+                                message: message.clone(),
                                 retryable: *retryable,
+                                operation: operations
+                                    .get(*op_index as usize)
+                                    .map(CommitOperation::from),
+                            };
+                            journal_results.push(CommitOperationOutcome::Error {
+                                rejection: rejection.clone(),
                             });
-                            batch.rejections = true;
-                            report.rejected.push(client_commit_id.to_owned());
-                            self.outbox.remove(index);
-                            self.persist_outbox_delete(client_commit_id);
-                            batch.status = true;
+                            rejections.push(rejection);
                         }
                     }
-                    _ => {
-                        report.rejected.push(client_commit_id.to_owned());
-                        self.outbox.remove(index);
-                        self.persist_outbox_delete(client_commit_id);
-                        batch.status = true;
-                    }
                 }
+                let outcome_status = if conflicts.is_empty() {
+                    CommitOutcomeStatus::Rejected
+                } else {
+                    CommitOutcomeStatus::Conflict
+                };
+                if self
+                    .persist_commit_outcome(client_commit_id, outcome_status, &journal_results)
+                    .and_then(|()| self.delete_outbox_persisted(client_commit_id))
+                    .and_then(|()| self.prune_commit_outcomes())
+                    .is_err()
+                {
+                    self.rollback_observation("syncular_push_result");
+                    return;
+                }
+                report.conflicts += conflicts.len() as u32;
+                report.rejected.push(client_commit_id.to_owned());
+                batch.conflicts = !conflicts.is_empty();
+                batch.rejections = !rejections.is_empty();
+                batch.status = true;
+                batch.outcomes = true;
+                self.conflicts.extend(conflicts);
+                self.rejections.extend(rejections);
+                self.outbox.remove(index);
+                self.overlay_dirty.set(true);
             }
         }
         if batch.status {
@@ -3163,10 +3746,15 @@ impl SyncClient {
                         let doomed_effective = effective;
                         let sub_table = table;
                         self.persist_sub(&self.subs[sub_index].clone());
-                        let outbox_before = self.outbox.len();
-                        self.drop_doomed_outbox(&sub_table, &doomed_effective);
-                        if self.outbox.len() != outbox_before {
+                        let dropped = self
+                            .drop_doomed_outbox(&sub_table, &doomed_effective)
+                            .map_err(|message| {
+                                SectionError::Abort("storage.failed".to_owned(), message)
+                            })?;
+                        if dropped {
                             batch.status = true;
+                            batch.rejections = true;
+                            batch.outcomes = true;
                         }
                         // §5.9.7 B2: revocation deletes now-unauthorized blob
                         // bodies (evicted ≠ revoked).
@@ -3872,21 +4460,25 @@ impl SyncClient {
 
     /// §3.3: drop pending commits whose upserts provably land in the
     /// revoked effective scopes — whole-commit, never per-operation.
-    fn drop_doomed_outbox(&mut self, table_name: &str, effective: &[(String, Vec<String>)]) {
+    fn drop_doomed_outbox(
+        &mut self,
+        table_name: &str,
+        effective: &[(String, Vec<String>)],
+    ) -> Result<bool, String> {
         if effective.is_empty() {
-            return;
+            return Ok(false);
         }
         let Some(table) = self.schema.table(table_name).cloned() else {
-            return;
+            return Ok(false);
         };
         let mut mappings: Vec<(&str, &Vec<String>)> = Vec::new();
         for (variable, values) in effective {
             match table.scope_column(variable) {
                 Some(column) => mappings.push((column, values)),
-                None => return, // not provable without a mapping
+                None => return Ok(false), // not provable without a mapping
             }
         }
-        let doomed: Vec<String> = self
+        let doomed: Vec<OutboxCommit> = self
             .outbox
             .iter()
             .filter(|commit| {
@@ -3904,13 +4496,48 @@ impl SyncClient {
                         })
                 })
             })
-            .map(|c| c.client_commit_id.clone())
+            .cloned()
             .collect();
-        for id in doomed {
-            self.overlay_dirty.set(true);
-            self.outbox.retain(|c| c.client_commit_id != id);
-            self.persist_outbox_delete(&id);
+        if doomed.is_empty() {
+            return Ok(false);
         }
+        let mut rejections = Vec::new();
+        for commit in &doomed {
+            let results = commit
+                .ops
+                .iter()
+                .enumerate()
+                .map(|(op_index, operation)| {
+                    let rejection = RejectionRecord {
+                        client_commit_id: commit.client_commit_id.clone(),
+                        op_index: op_index as i32,
+                        code: "sync.scope_revoked".to_owned(),
+                        message: "the commit was dropped because its effective scope was revoked"
+                            .to_owned(),
+                        retryable: false,
+                        operation: Some(CommitOperation::from(operation)),
+                    };
+                    rejections.push(rejection.clone());
+                    CommitOperationOutcome::Error { rejection }
+                })
+                .collect::<Vec<_>>();
+            self.persist_commit_outcome(
+                &commit.client_commit_id,
+                CommitOutcomeStatus::Rejected,
+                &results,
+            )?;
+            self.delete_outbox_persisted(&commit.client_commit_id)?;
+        }
+        self.prune_commit_outcomes()?;
+        let doomed_ids = doomed
+            .iter()
+            .map(|commit| commit.client_commit_id.as_str())
+            .collect::<BTreeSet<_>>();
+        self.outbox
+            .retain(|commit| !doomed_ids.contains(commit.client_commit_id.as_str()));
+        self.rejections.extend(rejections);
+        self.overlay_dirty.set(true);
+        Ok(true)
     }
 
     // -- blobs (§5.9) ----------------------------------------------------------------

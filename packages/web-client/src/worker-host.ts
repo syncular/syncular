@@ -64,6 +64,11 @@ import {
   newTabId,
 } from './multi-tab';
 import type { OutboxCommit } from './outbox';
+import type {
+  CommitOutcome,
+  CommitOutcomeQuery,
+  ResolveCommitOutcomeInput,
+} from './outcomes';
 import type { ClientSchema } from './schema';
 import type { SubscriptionRecord } from './state';
 import type { WindowBase } from './window';
@@ -383,6 +388,22 @@ export class SyncClientHandle {
 
   rejections(): Promise<readonly RejectionRecord[]> {
     return this.#call('rejections', []);
+  }
+
+  commitOutcome(clientCommitId: string): Promise<CommitOutcome | undefined> {
+    return this.#call('commitOutcome', [clientCommitId]);
+  }
+
+  commitOutcomes(
+    query: CommitOutcomeQuery = {},
+  ): Promise<readonly CommitOutcome[]> {
+    return this.#call('commitOutcomes', [query]);
+  }
+
+  resolveCommitOutcome(
+    input: ResolveCommitOutcomeInput,
+  ): Promise<CommitOutcome> {
+    return this.#call('resolveCommitOutcome', [input]);
   }
 
   schemaFloor(): Promise<SchemaFloor | undefined> {

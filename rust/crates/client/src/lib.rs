@@ -28,9 +28,11 @@ pub mod transport;
 pub mod values;
 
 pub use api::{
-    ClientChangeBatch, ClientLimits, CommandEffects, ConflictRecord, CoverageSnapshot, Mutation,
-    PresencePeer, QuerySnapshot, RejectionRecord, RowState, SchemaFloor, SubscriptionStateView,
-    SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange, WindowBase, WindowChange,
+    ClientChangeBatch, ClientLimits, CommandEffects, CommitOperation, CommitOperationOutcome,
+    CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution, CommitOutcomeStatus,
+    ConflictRecord, CoverageSnapshot, Mutation, PresencePeer, QuerySnapshot, RejectionRecord,
+    ResolveCommitOutcomeInput, RowState, SchemaFloor, SubscriptionStateView, SyncIntent,
+    SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange, WindowBase, WindowChange,
     WindowCoverage, WindowState, WindowUnitRef,
 };
 pub use client::{FileQuerySnapshotReader, SyncClient};

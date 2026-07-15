@@ -9,6 +9,8 @@
 import type {
   ClientChangeBatch,
   ClientChangeListener,
+  CommitOutcome,
+  CommitOutcomeQuery,
   ConflictRecord,
   InvalidationEvent,
   InvalidationListener,
@@ -18,6 +20,7 @@ import type {
   QueryReadSpec,
   QuerySnapshot,
   RejectionRecord,
+  ResolveCommitOutcomeInput,
   SchemaFloor,
   SqlRow,
   SyncStatusSnapshot,
@@ -35,6 +38,7 @@ export class FakeClient implements SyncClientLike {
   #presence = new Map<string, PresencePeer[]>();
   #conflicts: ConflictRecord[] = [];
   #rejections: RejectionRecord[] = [];
+  #outcomes: CommitOutcome[] = [];
   #pending: unknown[] = [];
   #upgrading = false;
   #leaseState: LeaseState | undefined;
@@ -58,6 +62,10 @@ export class FakeClient implements SyncClientLike {
 
   setConflicts(conflicts: ConflictRecord[]): void {
     this.#conflicts = conflicts;
+  }
+
+  setOutcomes(outcomes: CommitOutcome[]): void {
+    this.#outcomes = outcomes;
   }
 
   setUpgrading(value: boolean): void {
@@ -109,10 +117,24 @@ export class FakeClient implements SyncClientLike {
     });
   }
 
-  #emitChange(batch: Omit<ClientChangeBatch, 'revision'>): void {
+  emitOutcomes(): void {
+    this.#emitChange({
+      tables: [],
+      windows: [],
+      conflictsChanged: false,
+      rejectionsChanged: false,
+      outcomesChanged: true,
+    });
+  }
+
+  #emitChange(
+    batch: Omit<ClientChangeBatch, 'revision' | 'outcomesChanged'> &
+      Partial<Pick<ClientChangeBatch, 'outcomesChanged'>>,
+  ): void {
     this.#revision += 1n;
     const revisioned: ClientChangeBatch = {
       revision: this.#revision,
+      outcomesChanged: false,
       ...batch,
     };
     for (const listener of this.#changes) listener(revisioned);
@@ -273,6 +295,44 @@ export class FakeClient implements SyncClientLike {
 
   get rejections(): readonly RejectionRecord[] {
     return this.#rejections;
+  }
+
+  commitOutcome(clientCommitId: string): CommitOutcome | undefined {
+    return this.#outcomes.find(
+      (outcome) => outcome.clientCommitId === clientCommitId,
+    );
+  }
+
+  commitOutcomes(query: CommitOutcomeQuery = {}): readonly CommitOutcome[] {
+    const outcomes = query.activeOnly
+      ? this.#outcomes.filter(
+          (outcome) =>
+            outcome.resolution === 'active' &&
+            (outcome.status === 'conflict' || outcome.status === 'rejected'),
+        )
+      : this.#outcomes;
+    return query.limit === undefined
+      ? outcomes
+      : outcomes.slice(0, query.limit);
+  }
+
+  resolveCommitOutcome(input: ResolveCommitOutcomeInput): CommitOutcome {
+    const index = this.#outcomes.findIndex(
+      (outcome) => outcome.clientCommitId === input.clientCommitId,
+    );
+    if (index < 0) throw new Error('missing fake outcome');
+    const current = this.#outcomes[index] as CommitOutcome;
+    const resolved: CommitOutcome = {
+      ...current,
+      resolution: input.resolution,
+      resolvedAtMs: 1,
+      ...(input.replacementClientCommitId !== undefined
+        ? { replacementClientCommitId: input.replacementClientCommitId }
+        : {}),
+    };
+    this.#outcomes[index] = resolved;
+    this.emitOutcomes();
+    return resolved;
   }
 
   get schemaFloor(): SchemaFloor | undefined {

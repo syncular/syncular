@@ -1,8 +1,30 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.7.0** (`v0.7.0`). All artifacts use Apache-2.0, except
+current release is **0.8.0** (`v0.8.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.8.0 release notes
+
+0.8.0 makes final client commit outcomes durable. Applications no longer need
+to infer whether a missing outbox item applied or failed, or mirror conflict
+state into preferences to survive a restart.
+
+The release includes:
+
+- an atomic local final-outcome journal: the outcome insert and outbox drain
+  share one SQLite transaction in both TypeScript and Rust clients;
+- `applied`, `cached`, `conflict`, and `rejected` history with per-operation
+  results, stable error metadata, and the losing operation plus current server
+  row/version for conflict recovery;
+- restart restoration of active failures, explicit one-way resolution states,
+  and replacement-commit linkage for keep-local/custom-merge workflows;
+- configurable retention which never silently purges unresolved failures;
+- direct, worker/follower, React, Tauri, and React Native API/event parity,
+  including the reactive `useCommitOutcomes()` hook;
+- cross-host tests covering restart survival, worker RPC, React invalidation,
+  native persistence, Tauri/React Native bridges, and the complete Rust
+  conformance catalog.
 
 ## 0.7.0 release notes
 

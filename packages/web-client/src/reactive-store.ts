@@ -1,4 +1,5 @@
 import type {
+  CommitOutcome,
   QueryReadSpec,
   QuerySnapshot,
   WindowCoverage,
@@ -49,6 +50,9 @@ export interface ReactiveQueryClient {
   readonly rejections:
     | readonly unknown[]
     | (() => readonly unknown[] | Promise<readonly unknown[]>);
+  commitOutcomes():
+    | readonly CommitOutcome[]
+    | Promise<readonly CommitOutcome[]>;
   setWindow(base: WindowBase, units: readonly string[]): void | Promise<void>;
   windowState(base: WindowBase): WindowState | Promise<WindowState>;
 }
@@ -78,6 +82,12 @@ export interface ConflictStoreSnapshot<
 > {
   readonly conflicts: readonly Conflict[];
   readonly rejections: readonly Rejection[];
+  readonly error: Error | undefined;
+  readonly isLoading: boolean;
+}
+
+export interface OutcomeStoreSnapshot {
+  readonly outcomes: readonly CommitOutcome[];
   readonly error: Error | undefined;
   readonly isLoading: boolean;
 }
@@ -497,6 +507,7 @@ export class ReactiveClientStore {
   #offChange: (() => void) | undefined;
   readonly status: ExternalStoreEntry<StatusStoreSnapshot>;
   readonly conflicts: ExternalStoreEntry<ConflictStoreSnapshot>;
+  readonly outcomes: ExternalStoreEntry<OutcomeStoreSnapshot>;
 
   constructor(readonly client: ReactiveQueryClient) {
     const status = new ValueEntry<StatusStoreSnapshot>(
@@ -537,10 +548,26 @@ export class ReactiveClientStore {
         }
       },
     );
+    const outcomes = new ValueEntry<OutcomeStoreSnapshot>(
+      { outcomes: [], error: undefined, isLoading: true },
+      async () => {
+        try {
+          return {
+            outcomes: await client.commitOutcomes(),
+            error: undefined,
+            isLoading: false,
+          };
+        } catch (error) {
+          return { outcomes: [], error: errorOf(error), isLoading: false };
+        }
+      },
+    );
     this.status = status;
     this.conflicts = conflicts;
+    this.outcomes = outcomes;
     status.refresh();
     conflicts.refresh();
+    outcomes.refresh();
     this.start();
   }
 
@@ -681,6 +708,7 @@ export class ReactiveClientStore {
       if (batch.conflictsChanged || batch.rejectionsChanged) {
         this.conflicts.refresh();
       }
+      if (batch.outcomesChanged) this.outcomes.refresh();
     });
   }
 

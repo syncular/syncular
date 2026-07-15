@@ -605,6 +605,7 @@ export interface DriverChangeBatch {
   };
   readonly conflictsChanged: boolean;
   readonly rejectionsChanged: boolean;
+  readonly outcomesChanged: boolean;
 }
 
 export type DriverSyncIntent =
