@@ -87,6 +87,9 @@ const DECLTYPE_MAP: Readonly<Record<string, IrColumnType>> = {
   CRDT: 'crdt',
 };
 
+/** Local client protocol column; query-only and never part of schema IR. */
+const SYNC_VERSION_COLUMN = '_sync_version';
+
 /** A param type is one of the §2.4 types (the columns params compare to). */
 export type QueryParamType = IrColumnType;
 
@@ -813,6 +816,20 @@ function resolveSource(
   return null;
 }
 
+/** Resolve the one supported query-only protocol column. SQLite still proves
+ * qualifier/ambiguity against the synthesized local tables. */
+function isSyncVersionSource(
+  item: SelectItem,
+  refs: readonly TableRef[],
+): boolean {
+  const match = PLAIN_REF_RE.exec(item.expr);
+  if (match === null || match[2] !== SYNC_VERSION_COLUMN) return false;
+  const qualifier = match[1];
+  return qualifier === undefined
+    ? refs.length === 1
+    : refs.some((ref) => ref.alias === qualifier);
+}
+
 // -- param type inference -----------------------------------------------------
 //
 // Infer a param's type from `col <op> :name` or `col IN (:name, …)` where `col`
@@ -1162,6 +1179,10 @@ export function synthesizeDdl(ir: IrDocument): string {
       const pk = c.name === table.primaryKey ? ' PRIMARY KEY' : '';
       return `  ${c.name} ${SQL_TYPE[c.type]}${pk}${notNull}`;
     });
+    // The materialized local client table always carries this hidden protocol
+    // token. It is absent from IR mutation types but may be explicitly aliased
+    // by a named read query for optimistic concurrency.
+    cols.push(`  ${SYNC_VERSION_COLUMN} INTEGER NOT NULL DEFAULT -1`);
     lines.push(`CREATE TABLE ${table.name} (\n${cols.join(',\n')}\n);`);
     // Create the declared indexes too — harmless for prepare()/decltype, and
     // keeps the type-check DB's shape honest with what the client materializes.
@@ -1285,6 +1306,21 @@ export function analyzeStatement(
     const source = item !== undefined ? resolveSource(item, refs, ir) : null;
     const sqlName = sqlNames[index] ?? colName;
     const langName = langNames[index] ?? colName;
+    if (item !== undefined && isSyncVersionSource(item, refs)) {
+      if (sqlName === SYNC_VERSION_COLUMN) {
+        throw new TypegenError(
+          file,
+          `${SYNC_VERSION_COLUMN} is stripped from app-facing query rows unless explicitly aliased (for example \`${SYNC_VERSION_COLUMN} AS server_version\`)`,
+        );
+      }
+      return {
+        name: sqlName,
+        langName,
+        type: 'integer',
+        nullable: false,
+        fidelity: 'exact',
+      };
+    }
     if (source !== null) {
       // Exact: IR column type + IR nullability. (decltype agrees; we prefer
       // the IR type so blob_ref/crdt/json semantic types survive.)

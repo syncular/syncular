@@ -154,6 +154,25 @@ sync query messages(roomId, left, right) by messages.thread_id {
 
 There are no `@scope` or `@cover` directives.
 
+## Reading the server version
+
+Syncular owns a local `_sync_version` column for every synced row. Project it
+with an explicit alias when a mutation needs optimistic-concurrency evidence:
+
+```syql
+query getTodo(listId, todoId) {
+  select id, title, _sync_version as server_version
+  from todos
+  where todos.list_id = :listId and todos.id = :todoId;
+}
+```
+
+Typegen emits `serverVersion` as an exact, non-null integer. The physical
+column remains query-only: it is excluded from schema and mutation types and
+from `select *`, so applications cannot accidentally write engine-owned state.
+Use a positive observed value as the mutation `baseVersion`; omit it for a
+local row that has not yet received a server version.
+
 ## Sort and limit
 
 Dynamic sorting is a closed enum, not arbitrary runtime SQL:

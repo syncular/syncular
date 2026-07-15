@@ -459,6 +459,19 @@ describe('SYQL schema/SQL validation', () => {
     expect(noPrimary?.identity).toBeUndefined();
   });
 
+  test('types an explicitly aliased local server version for concurrency', () => {
+    const query = validate(
+      'query q() { select id, _sync_version as server_version from todos; }',
+    ).queries[0];
+    expect(query?.analysis.columns[1]).toMatchObject({
+      name: 'server_version',
+      langName: 'serverVersion',
+      type: 'integer',
+      nullable: false,
+      fidelity: 'exact',
+    });
+  });
+
   test('wraps SQLite reference failures in stable SYQL diagnostics', () => {
     const error = frontendError(() =>
       validate('query q() {  select missing from todos ; }'),

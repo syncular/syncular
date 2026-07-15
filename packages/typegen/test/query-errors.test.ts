@@ -243,6 +243,42 @@ describe('column fidelity', () => {
     const q = analyze('q.sql', 'SELECT done FROM todos');
     expect(q.columns[0]).toMatchObject({ type: 'boolean', fidelity: 'exact' });
   });
+  test('an explicitly aliased local server version is exact and non-null', () => {
+    const q = analyze(
+      'q.sql',
+      'SELECT id, _sync_version AS server_version FROM todos',
+    );
+    expect(q.columns[1]).toMatchObject({
+      name: 'server_version',
+      langName: 'serverVersion',
+      type: 'integer',
+      nullable: false,
+      fidelity: 'exact',
+    });
+    expect(q.sql).toContain('_sync_version AS serverVersion');
+  });
+  test('requires a public alias for the hidden physical name', () => {
+    expect(() =>
+      analyze('q.sql', 'SELECT id, _sync_version FROM todos'),
+    ).toThrow(/explicitly aliased/);
+  });
+  test('the hidden version remains absent from star projections', () => {
+    const q = analyze('q.sql', 'SELECT * FROM todos');
+    expect(q.columns.some((column) => column.name === '_sync_version')).toBe(
+      false,
+    );
+  });
+  test('the synthetic query database defaults direct fixture rows to optimistic', () => {
+    const sqlite = new Database(':memory:');
+    sqlite.run(synthesizeDdl(IR));
+    sqlite.run(
+      "INSERT INTO todos (id, list_id, title, done) VALUES ('t1', 'l1', 'Todo', 0)",
+    );
+    expect(
+      sqlite.query('SELECT _sync_version AS version FROM todos').get(),
+    ).toEqual({ version: -1 });
+    sqlite.close();
+  });
 });
 
 const analyzeFile = (file: string, sql: string) =>
