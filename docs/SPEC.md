@@ -2801,21 +2801,23 @@ write. Those remain explicit server-authoritative functions.
   Mechanically, "stop optimistic display" is: the commit leaves the
   outbox (exception: the `sync.idempotency_cache_miss` result of §6.3
   is a serving failure, not an outcome — the commit stays queued and
-  retries); rows its upserts targeted that exist **only optimistically**
-  (created by local writes, never confirmed by any server-delivered row
-  or segment) MUST be deleted — the §7.1 replay re-establishes any that
-  later pending commits still write. Rows the commit merely overwrote
-  SHOULD keep their stale-optimistic content until the pull half
-  delivers the server row; a client whose optimistic overlay is
-  **rebuilt from the last server-delivered base** (base plus replay of
-  still-pending commits, so the rejected commit's effect disappears
-  immediately) is equally conformant — both models converge identically
-  once the server row arrives, and the difference is unobservable to
-  the protocol. For a conflict, the record's `serverRow` (§6.3) lets the
-  app resolve without waiting. A rejected `delete` leaves the row
-  locally absent until the server re-delivers it (a later change or a
-  re-bootstrap): surfacing the rejection is the client's job; restoring
-  the row is app policy.
+  retries). The visible state MUST then be rebuilt from the last
+  server-delivered base plus every later still-pending commit, in FIFO order,
+  so the rejected commit's effect disappears immediately while independent
+  later offline work remains visible. Consequently a rejected optimistic
+  insert disappears, a rejected update restores the last confirmed row, and a
+  rejected delete restores the last confirmed row. For a conflict, the
+  record's `serverRow` (§6.3) remains the authoritative resolution input.
+
+  A client that materializes optimistic values directly into its visible
+  tables MUST durably retain enough protected base state to perform that
+  rebuild after a process restart. Per-commit before-images are sufficient:
+  capture them atomically with the outbox append, remove them atomically with
+  the outbox drain, restore the failed commit's images, rebase the images of
+  later commits that touch the same rows, and replay those later operations.
+  These images are client-internal protected data. They MUST NOT enter
+  `PUSH_COMMIT`, durable public outcome envelopes, ordinary application
+  preferences, telemetry, or generic diagnostics.
 - Push and pull SHOULD ride the same combined request (§1.5): a replaying
   client gets its own changes back in the pull half, converging in one
   round-trip.

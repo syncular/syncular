@@ -667,6 +667,180 @@ describe('durable commit outcomes', () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  test('validator rejection restores updates, deletes, aggregate siblings, and downstream overlays', async () => {
+    const server = makeServer(CLIENT_SCHEMA, {
+      validators: {
+        tasks: (operation) => {
+          if (
+            operation.op === 'delete' ||
+            String(operation.row?.title ?? '').startsWith('invalid')
+          ) {
+            throw new ValidationRejection(
+              'app.invalid_change',
+              'diagnostic only',
+            );
+          }
+        },
+      },
+    });
+    const client = await makeClient(server, { clientId: 'rollback-client' });
+    client.client.subscribe({
+      id: 'rollback-tasks',
+      table: 'tasks',
+      scopes: { project_id: ['rollback'] },
+    });
+    client.client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('rollback-root', 'rollback', 'accepted'),
+      },
+    ]);
+    await client.client.syncUntilIdle();
+
+    const firstRejected = client.client.patch(
+      'tasks',
+      'rollback-root',
+      { title: 'invalid-first' },
+      { baseVersion: 1 },
+    );
+    const secondRejected = client.client.patch(
+      'tasks',
+      'rollback-root',
+      { title: 'invalid-second' },
+      { baseVersion: 1 },
+    );
+    expect(tableRows(client.db, 'tasks')[0]?.title).toBe('invalid-second');
+    await client.client.syncUntilIdle();
+    expect(client.client.commitOutcome(firstRejected)?.status).toBe('rejected');
+    expect(client.client.commitOutcome(secondRejected)?.status).toBe(
+      'rejected',
+    );
+    expect(tableRows(client.db, 'tasks')[0]).toMatchObject({
+      title: 'accepted',
+      _sync_version: 1,
+    });
+
+    const aggregateRejected = client.client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('rollback-sibling', 'rollback', 'sibling'),
+        baseVersion: 0,
+      },
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('rollback-root', 'rollback', 'invalid-aggregate'),
+        baseVersion: 1,
+      },
+    ]);
+    await client.client.syncUntilIdle();
+    expect(client.client.commitOutcome(aggregateRejected)).toMatchObject({
+      status: 'rejected',
+      operations: [{ rowId: 'rollback-sibling' }, { rowId: 'rollback-root' }],
+    });
+    expect(tableRows(client.db, 'tasks').map((row) => row.id)).toEqual([
+      'rollback-root',
+    ]);
+    expect(tableRows(client.db, 'tasks')[0]?.title).toBe('accepted');
+
+    const deleteRejected = client.client.mutate([
+      {
+        table: 'tasks',
+        op: 'delete',
+        rowId: 'rollback-root',
+        baseVersion: 1,
+      },
+    ]);
+    expect(tableRows(client.db, 'tasks')).toHaveLength(0);
+    await client.client.syncUntilIdle();
+    expect(client.client.commitOutcome(deleteRejected)?.status).toBe(
+      'rejected',
+    );
+    expect(tableRows(client.db, 'tasks')[0]).toMatchObject({
+      id: 'rollback-root',
+      title: 'accepted',
+      _sync_version: 1,
+    });
+    expect(
+      client.db.query('SELECT * FROM _syncular_outbox_before_images'),
+    ).toHaveLength(0);
+  });
+
+  test('rollback before-images survive restart without entering the public failed envelope', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'syncular-rollback-image-'));
+    const databasePath = join(directory, 'client.db');
+    const server = makeServer(CLIENT_SCHEMA, {
+      validators: {
+        tasks: (operation) => {
+          if (operation.row?.title === 'invalid-after-restart') {
+            throw new ValidationRejection(
+              'app.invalid_change',
+              'diagnostic only',
+            );
+          }
+        },
+      },
+    });
+    try {
+      const first = await makeClient(server, {
+        clientId: 'restart-rollback-client',
+        databasePath,
+      });
+      first.client.subscribe({
+        id: 'restart-rollback-tasks',
+        table: 'tasks',
+        scopes: { project_id: ['restart-rollback'] },
+      });
+      first.client.mutate([
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: taskValues('restart-root', 'restart-rollback', 'accepted'),
+        },
+      ]);
+      await first.client.syncUntilIdle();
+      const rejectedId = first.client.patch(
+        'tasks',
+        'restart-root',
+        { title: 'invalid-after-restart' },
+        { baseVersion: 1 },
+      );
+      expect(
+        first.db.query('SELECT * FROM _syncular_outbox_before_images'),
+      ).toHaveLength(1);
+      await first.client.close();
+      first.db.close();
+
+      const reopened = await makeClient(server, {
+        clientId: 'restart-rollback-client',
+        databasePath,
+      });
+      await reopened.client.syncUntilIdle();
+      expect(tableRows(reopened.db, 'tasks')[0]).toMatchObject({
+        title: 'accepted',
+        _sync_version: 1,
+      });
+      expect(reopened.client.commitOutcome(rejectedId)).toMatchObject({
+        status: 'rejected',
+        operations: [
+          {
+            rowId: 'restart-root',
+            values: { title: 'invalid-after-restart' },
+          },
+        ],
+      });
+      expect(
+        JSON.stringify(reopened.client.commitOutcome(rejectedId)),
+      ).not.toContain('values_json');
+      await reopened.client.close();
+      reopened.db.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('offline outbox (§7)', () => {
