@@ -193,6 +193,12 @@ production. A `ValidationRejection` with structured details reaches
 tests can assert field focus and correction routing without displaying server
 diagnostics.
 
+Pass `commitValidator` to test aggregate invariants with the same
+transaction-scoped candidate view as production. Throw
+`CommitValidationRejection` to select the operation that correction UI should
+focus. The test server uses real SQLite transaction serialization and shares
+the callback across loopback and socket rounds.
+
 ## React
 
 `@syncular/react`'s `SyncProvider` already takes any `SyncClient`, so

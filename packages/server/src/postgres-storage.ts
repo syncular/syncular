@@ -396,6 +396,7 @@ class PostgresTransaction implements StorageTransaction {
   #partition: string;
   #resolveTable: (name: string) => CompiledTable;
   #open = true;
+  #commitValidationSavepoint = false;
   /** Resolves/rejects the `transaction(fn)` wrapper (see `begin`). */
   #resolve: () => void;
   #reject: (error: unknown) => void;
@@ -426,6 +427,81 @@ class PostgresTransaction implements StorageTransaction {
       this.#partition,
       rowId,
     );
+  }
+
+  async scanRows(query: RowScanQuery): Promise<StoredRow[]> {
+    this.#assertOpen();
+    const variables = Object.keys(query.scopeFilter).sort();
+    const firstVariable = variables[0];
+    if (firstVariable === undefined) return [];
+    const firstValues = query.scopeFilter[firstVariable] ?? [];
+    if (firstValues.length === 0) return [];
+    const sql = scanRowPageSql(
+      this.#resolveTable(query.table),
+      firstValues.length,
+      'postgres',
+    );
+    const rows: StoredRow[] = [];
+    let afterRowId = query.afterRowId ?? '';
+    const batchSize = Math.max(64, query.limit);
+    while (rows.length < query.limit) {
+      const { rows: records } = await this.#client.query<RowRecord>(sql, [
+        this.#partition,
+        query.table,
+        firstVariable,
+        ...firstValues,
+        afterRowId,
+        batchSize,
+      ]);
+      if (records.length === 0) break;
+      for (const record of records) {
+        afterRowId = record.row_id;
+        if (record.payload === null || record.payload === undefined) continue;
+        const stored = toStoredRow(record);
+        if (!matchesEffective(stored.scopes, query.scopeFilter)) continue;
+        rows.push(stored);
+        if (rows.length >= query.limit) break;
+      }
+      if (records.length < batchSize) break;
+    }
+    return rows;
+  }
+
+  async lockPartitionForCommitValidation(): Promise<void> {
+    this.#assertOpen();
+    await this.#client.query(
+      `INSERT INTO sync_partitions(partition, max_commit_seq) VALUES ($1, 0)
+       ON CONFLICT (partition) DO NOTHING`,
+      [this.#partition],
+    );
+    await this.#client.query(
+      'SELECT max_commit_seq FROM sync_partitions WHERE partition=$1 FOR UPDATE',
+      [this.#partition],
+    );
+    await this.#client.query('SAVEPOINT syncular_commit_validation_candidate');
+    this.#commitValidationSavepoint = true;
+  }
+
+  async commitRejectedPushResult(
+    clientId: string,
+    clientCommitId: string,
+    result: StoredPushResult,
+  ): Promise<void> {
+    this.#assertOpen();
+    if (!this.#commitValidationSavepoint) {
+      throw new Error(
+        'whole-commit rejection requires its validation savepoint',
+      );
+    }
+    await this.#client.query(
+      'ROLLBACK TO SAVEPOINT syncular_commit_validation_candidate',
+    );
+    await this.#client.query(
+      'RELEASE SAVEPOINT syncular_commit_validation_candidate',
+    );
+    this.#commitValidationSavepoint = false;
+    await this.putPushResult(clientId, clientCommitId, result);
+    await this.commit();
   }
 
   async upsertRow(table: string, row: StoredRow): Promise<void> {

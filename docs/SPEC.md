@@ -2652,13 +2652,118 @@ the rejection already flows through the one seam.
 **Non-goals.** A validator MUST NOT mutate the row (the server writes the
 row it validated; a mutation would desync the persisted bytes from the
 validated ones and from the client's optimistic copy). Cross-row or
-cross-table invariants that need to read other rows are the host's own
-concern via its storage — §6.7 scopes one operation's row, not a
-transaction-wide assertion engine. This is the deliberate small surface:
+cross-table invariants use the distinct whole-commit seam in §6.8 — §6.7
+remains one operation's row, not a transaction-wide assertion engine. This is
+the deliberate small surface:
 the reserved IR `extensions` slot (the typegen document/table passthrough)
 is where a future rung MAY carry declarative validation metadata to
 generate a validator skeleton, but §6.7 ships the runtime hook only — no
 codegen wiring this rung.
+
+### 6.8 Whole-commit validation hooks
+
+Some server-authoritative invariants are aggregates rather than row rules: a
+Surgery lifecycle transition and its immutable status-event append must land
+together; deleting a parent may require deleting or reassigning its children;
+a set of allocations may have a bounded total. A per-table §6.7 callback
+cannot prove these safely because it sees only one operation. A host MAY
+therefore configure one transaction-scoped **whole-commit validator**.
+
+**Host seam, off by default.** `commitValidator` is a host callback, not a wire
+feature and not generated schema metadata. With no callback configured the
+server performs no extra validation lock, candidate scan, or callback. The
+callback MUST NOT mutate storage or its inputs; it accepts by returning (or
+resolving) and rejects by throwing a deliberate validation rejection.
+
+**Fixed order.** The server first performs the ordinary optimistic idempotency
+lookup (§6.3). For an apparently uncached commit with a whole-commit validator
+it then acquires the storage's per-partition validation serialization primitive
+**before reading or staging any operation** and re-checks the idempotency record
+under that lock. The second lookup closes a concurrent duplicate-request race;
+if it finds a result, the callback does not run. Each new operation then
+proceeds through the ordinary §6.1–§6.7 path,
+including conflicts, authorization, CRDT merge, and per-row validation. If an
+operation terminates, the whole-commit callback does not run. Otherwise every
+operation is staged in the same storage transaction, and the callback runs
+exactly once, after the final staged operation but before `appendCommit`, the
+idempotency result, or transaction commit:
+
+`optimistic idempotency → partition serialization → locked idempotency →
+decode/auth/row validation/write × N → whole-commit validation → append
+log/idempotency → commit`
+
+Consequently the callback observes the final candidate state, including all
+sibling operations regardless of their order in the pushed commit, and a
+rejection rolls all staged writes back under §6.4. The storage MUST discard the
+candidate writes and persist the rejected idempotency outcome **while retaining
+the same serialization lock**, then finish the transaction. There is no unlock
+gap between candidate rollback and rejection persistence. Replaying a commit
+whose result was persisted returns the cached result and MUST NOT rerun the
+callback, including when duplicate deliveries overlap in time.
+
+**Operation evidence.** The callback receives `clientId`, `clientCommitId`,
+ambient `actorId` and `partition`, plus an ordered `operations` array. Every
+entry carries its original `opIndex`, `op`, `table`, `rowId`, the final `row`
+(`undefined` for delete), the pre-operation `stored` row when present, and
+`storedServerVersion` / `nextServerVersion` when defined. Rows use decoded
+column-name keys and upserts contain the same post-scope-strip,
+post-CRDT-merge value §6.7 validates. An idempotent delete of an absent row is
+still operation evidence, with no stored/final row and no next version, even
+though it stages no change.
+
+**Candidate-state reader.** The callback receives a read-only transaction
+reader:
+
+- `getRow(table, rowId)` returns the final candidate row and server version,
+  including a sibling's staged upsert or delete.
+- `scanRows({ table, scopeFilter, afterRowId?, limit? })` returns final
+  candidate rows in ascending `rowId` order. `scopeFilter` is required;
+  `afterRowId` is an exclusive keyset cursor; `limit` defaults to 100 and MUST
+  be an integer from 1 through 1,000.
+
+The reader is a server-host capability inside the already authenticated
+partition, not client-derived authorization. A host MUST request only the
+tables and scope values its invariant requires. Unknown tables, invalid bounds,
+or a storage without candidate scans fail loudly; Syncular never substitutes a
+stale out-of-transaction read.
+
+**Serialization is mandatory.** Candidate-state validation is correct only if
+two commits in the same partition cannot both validate against states that
+exclude one another. A storage that exposes this feature MUST serialize the
+partition from the pre-operation lock through commit/rollback:
+
+- SQLite's write transaction already provides the serialization point.
+- PostgreSQL locks the partition registry row (`FOR UPDATE`) before any row
+  read or write.
+- D1 has no interactive transaction lock. It may enable the feature only when
+  every write for the partition is externally serialized by one Durable Object
+  (or an equivalent coordinator). `D1ServerStorage` therefore requires an
+  explicit `commitValidationSerialized: true` assertion from that coordinator;
+  its default fails closed when §6.8 is configured.
+- A custom storage MUST implement the equivalent transaction lock,
+  candidate-state scan, and atomic rejected-result finalization contract.
+  Missing support fails the commit loudly; it MUST NOT silently weaken the
+  invariant.
+
+This is deliberately partition-wide rather than row-lock inference: the host
+callback may read arbitrary aggregate members, so Syncular cannot know a
+smaller safe lock set in advance. Applications SHOULD keep partitions bounded
+and callbacks/queries indexed and short.
+
+**Rejection attribution.** Throw
+`CommitValidationRejection(opIndex, code, message?, details?)` to attribute the
+aggregate failure to a chosen operation. `opIndex` MUST name an operation in
+the commit. The code namespace, bounded `RejectionDetails`, event behavior,
+privacy rules, client persistence, and atomic rollback are exactly §6.7 and
+§6.3.1. Throwing a plain `ValidationRejection` attributes the failure to the
+first operation. Any other throw becomes `sync.constraint_violation`; an
+invalid operation index is also a host bug reported with that generic code.
+
+**Server-authoritative commands remain distinct.** §6.8 validates a commit a
+client is already authorized to propose. It does not grant authority, connect
+partitions/facilities, allocate globally unique resources, run privileged
+workflows, or replace commands whose server must choose or transform the
+write. Those remain explicit server-authoritative functions.
 
 ---
 

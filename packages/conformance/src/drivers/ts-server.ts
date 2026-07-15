@@ -15,6 +15,8 @@ import {
   type BlobPresignConfig,
   type BlobStore,
   type BlobUploadPresignConfig,
+  CommitValidationRejection,
+  type CommitValidator,
   createRealtimeHub,
   handleBlobDownload,
   handleBlobUpload,
@@ -43,6 +45,7 @@ import type {
   BlobDownloadResult,
   BlobUploadGrantResult,
   BytesResult,
+  CommitValidatorInstallSpec,
   DriverError,
   DriverRow,
   DriverRowValue,
@@ -134,6 +137,38 @@ function compileValidatorRule(spec: ValidatorInstallSpec): Validator {
   };
 }
 
+/** §6.8: compile the catalog's aggregate rule into the host callback. */
+function compileCommitValidatorRule(
+  spec: CommitValidatorInstallSpec,
+): CommitValidator {
+  return ({ operations }) => {
+    const trigger = operations.find(
+      (operation) =>
+        operation.table === spec.table &&
+        operation.row?.[spec.column] === spec.equals,
+    );
+    if (
+      trigger !== undefined &&
+      !operations.some(
+        (operation) =>
+          operation.table === spec.table &&
+          operation.rowId === `${trigger.rowId}${spec.siblingRowIdSuffix}`,
+      )
+    ) {
+      throw new CommitValidationRejection(
+        trigger.opIndex,
+        spec.code,
+        'aggregate requires a sibling operation (§6.8)',
+        {
+          fieldPaths: [spec.column],
+          reason: 'missing_sibling_operation',
+          requiredAction: 'repair_aggregate',
+        },
+      );
+    }
+  };
+}
+
 /** §5.4 native scheme fixtures — the harness plays both signer and CDN. */
 const SIGNED_URL_KEY = 'conformance-signing-key';
 const SIGNED_URL_BASE = 'https://cdn.conformance.test/segments';
@@ -199,6 +234,8 @@ class TsServerInstance implements ServerInstance {
   #failNextIdempotencyLookup = false;
   /** §6.7: installed per-table write validators (absent ⇒ feature off). */
   #validators: ValidatorRegistry | undefined;
+  /** §6.8: installed transaction-scoped whole-commit validator. */
+  #commitValidator: CommitValidator | undefined;
   readonly #signedUrls: SegmentUrlConfig | undefined;
   #signedUrlTtlSeconds: number;
   /** §5.9.3/§5.9.5 blob-presign toggle (default off; scenarios flip it). */
@@ -280,6 +317,9 @@ class TsServerInstance implements ServerInstance {
         ? { signedUrls: this.#signedUrls }
         : {}),
       ...(this.#leases !== undefined ? { leases: this.#leases } : {}),
+      // The conformance driver installs validators after construction. Keep a
+      // live indirection so socket rounds observe the currently installed rule.
+      commitValidator: (input) => this.#commitValidator?.(input),
       ...(options.limits?.maxDeltaBytes !== undefined
         ? { maxDeltaBytes: options.limits.maxDeltaBytes }
         : {}),
@@ -360,6 +400,9 @@ class TsServerInstance implements ServerInstance {
       // §6.7: pass the installed validators (undefined ⇒ feature off).
       ...(this.#validators !== undefined
         ? { validators: this.#validators }
+        : {}),
+      ...(this.#commitValidator !== undefined
+        ? { commitValidator: this.#commitValidator }
         : {}),
       realtime: this.#hub,
     };
@@ -647,6 +690,13 @@ class TsServerInstance implements ServerInstance {
     this.#validators = registry;
   }
 
+  async installCommitValidator(
+    spec?: CommitValidatorInstallSpec,
+  ): Promise<void> {
+    this.#commitValidator =
+      spec === undefined ? undefined : compileCommitValidatorRule(spec);
+  }
+
   async setResolverFailing(failing: boolean): Promise<void> {
     this.#resolverFailing = failing;
   }
@@ -741,6 +791,7 @@ export const tsServerDriver: ServerDriver = {
     'crdt',
     'leases',
     'validators',
+    'commit-validators',
   ],
   async create(options: ServerCreateOptions): Promise<ServerInstance> {
     return new TsServerInstance(options);

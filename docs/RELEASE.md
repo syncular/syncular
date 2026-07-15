@@ -1,8 +1,27 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.9.0** (`v0.9.0`). All artifacts use Apache-2.0, except
+current release is **0.10.0** (`v0.10.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.10.0 release notes
+
+0.10.0 adds a transaction-scoped whole-commit validation seam for
+server-authoritative aggregate invariants.
+
+The release includes:
+
+- one optional `commitValidator` over every decoded, authorized,
+  post-CRDT-merge operation after sibling writes are staged;
+- read-only `getRow` and bounded scope-indexed `scanRows` APIs that observe the
+  final candidate state inside the same storage transaction;
+- per-partition serialization before any operation read/write on SQLite and
+  PostgreSQL, with fail-closed external-serialization requirements for D1;
+- `CommitValidationRejection` for stable host codes, operation attribution,
+  bounded correction details, atomic rollback, and duplicate-safe durable
+  idempotent replay finalized under the same serialization lock;
+- matching HTTP/WebSocket test-kit coverage, TypeScript/Rust client
+  conformance, storage contracts, host documentation, and normative SPEC §6.8.
 
 ## 0.9.0 release notes
 
