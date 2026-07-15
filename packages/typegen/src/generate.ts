@@ -263,8 +263,14 @@ export function buildIr(
     throw new TypegenError(MANIFEST_FILENAME, 'no migrations found');
   }
   const parsedTables = new Map<string, ParsedTable>();
+  const droppedTables = new Set<string>();
   for (const migration of migrations) {
-    applyMigrationSql(parsedTables, migration.sql, `${migration.name}/up.sql`);
+    applyMigrationSql(
+      parsedTables,
+      migration.sql,
+      `${migration.name}/up.sql`,
+      droppedTables,
+    );
   }
   const schemaVersions = buildSchemaVersions(manifest, migrations);
   const tables = manifest.tables.map((manifestTable) => {

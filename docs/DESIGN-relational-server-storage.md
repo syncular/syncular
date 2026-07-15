@@ -70,7 +70,8 @@ bounds the motivation and the bench-harness expectations.
 6. **Two dialects, three backends**: sqlite + d1 share `sqlite-dialect`;
    postgres is its own.
 7. **The migration subset is small**: CREATE TABLE / ADD COLUMN /
-   CREATE INDEX. Note: this subset exists **client-side only** today —
+   CREATE INDEX / DROP TABLE. Note: this subset existed **client-side only**
+   before relational server storage —
    v2 has no server-side DDL-application machinery at all
    (web-client/test/indexes.test.ts states this explicitly). P3 is
    greenfield, bounded by the subset, not a revival of existing code.
@@ -160,12 +161,17 @@ for incremental deltas — both hand the wire the same bytes as today.
 
 ### Server-side schema migration (the genuinely new burden)
 
-The server must create tables on first use and `ALTER` on a schemaVersion
-bump (add column, add index — exactly the migration subset). This is
+The server must create tables on first use and evolve them on a schemaVersion
+bump (add column, add index, retire table — exactly the migration subset). This is
 **new code** (v2 has no server DDL machinery; see constraint 7), bounded
-by the subset: CREATE TABLE / ADD COLUMN / CREATE INDEX only. The
+by the subset: CREATE TABLE / ADD COLUMN / CREATE INDEX / DROP TABLE only. The
 schema-floor response (§1.6) already gates unsupported client versions;
 server migration runs at schema load / version bump.
+
+A retired table is detected from the persisted prior layouts and removed from
+the relational current-row store together with its `sync_row_scopes` entries.
+The append-only commit log remains under the ordinary retention policy; schema
+retirement is deliberately not presented as a compliance erasure primitive.
 
 On D1 (stateless Workers, per-request instantiation) a schema-version
 marker table gates the DDL check so cold starts don't re-run `CREATE TABLE
@@ -340,7 +346,7 @@ P3 grew slightly (honest greenfield framing); net unchanged.
   written in the same statement/transaction from the same source bytes,
   and the contract tests assert agreement.
 - **Migration correctness under version bump** — bounded by the migration
-  subset (CREATE TABLE / ADD COLUMN / CREATE INDEX); server migration
+  subset (CREATE TABLE / ADD COLUMN / CREATE INDEX / DROP TABLE); server migration
   mirrors the client's DDL derivation. Genuinely new code — the largest
   unknown in the plan.
 - **D1 projection fidelity** — i64 > 2⁵³ imprecise in typed columns

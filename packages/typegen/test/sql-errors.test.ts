@@ -1,7 +1,7 @@
 /**
  * The SQL subset is a fence: everything outside CREATE TABLE (typed
- * columns + single primary key) and ALTER TABLE ADD COLUMN is a hard
- * error naming the unsupported construct.
+ * columns + single primary key), ALTER TABLE ADD COLUMN, CREATE INDEX, and
+ * DROP TABLE is a hard error naming the unsupported construct.
  */
 import { describe, expect, test } from 'bun:test';
 import { applyMigrationSql, type ParsedTable, TypegenError } from '../src';
@@ -82,6 +82,24 @@ describe('supported subset', () => {
     const tables = parse('CREATE TABLE t (id TEXT PRIMARY KEY)');
     expect(tables.get('t')?.indexes).toEqual([]);
   });
+
+  test('DROP TABLE removes a table and its indexes from the head schema', () => {
+    const tables = parse(`
+      CREATE TABLE retired (id TEXT PRIMARY KEY, title TEXT);
+      CREATE INDEX retired_by_title ON retired (title);
+      CREATE TABLE kept (id TEXT PRIMARY KEY);
+      DROP TABLE retired;
+    `);
+    expect([...tables.keys()]).toEqual(['kept']);
+  });
+
+  test('DROP TABLE IF EXISTS is a no-op for an absent table', () => {
+    const tables = parse(`
+      DROP TABLE IF EXISTS absent;
+      CREATE TABLE kept (id TEXT PRIMARY KEY);
+    `);
+    expect([...tables.keys()]).toEqual(['kept']);
+  });
 });
 
 describe('CREATE INDEX subset — hard errors naming the construct', () => {
@@ -153,7 +171,7 @@ function expectError(sql: string, pattern: RegExp): void {
 
 describe('unsupported constructs are hard errors that name the construct', () => {
   test('other statements', () => {
-    expectError('DROP TABLE t', /unsupported SQL statement.*"DROP"/);
+    expectError('DROP INDEX idx', /expected TABLE after DROP/);
     expectError(
       'CREATE TRIGGER trg AFTER INSERT ON t BEGIN SELECT 1; END',
       /unsupported CREATE statement.*found "TRIGGER"/,
@@ -161,6 +179,21 @@ describe('unsupported constructs are hard errors that name the construct', () =>
     expectError(
       "INSERT INTO t VALUES ('x')",
       /unsupported SQL statement.*"INSERT"/,
+    );
+  });
+
+  test('DROP TABLE rejects unsafe or ambiguous evolution', () => {
+    expectError(
+      'DROP TABLE missing',
+      /DROP TABLE missing: table does not exist at this point/,
+    );
+    expectError(
+      'CREATE TABLE t (id TEXT PRIMARY KEY); DROP TABLE t CASCADE',
+      /unsupported trailing SQL "CASCADE"/,
+    );
+    expectError(
+      'CREATE TABLE t (id TEXT PRIMARY KEY); DROP TABLE t; CREATE TABLE t (id TEXT PRIMARY KEY)',
+      /cannot be re-created after DROP TABLE/,
     );
   });
 
