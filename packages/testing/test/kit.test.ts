@@ -6,6 +6,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import type { ClientSchema } from '@syncular/client';
+import { ValidationRejection } from '@syncular/server';
 import { createTestSync, TransportFault } from '../src/index';
 
 /** A minimal one-table app schema: notes scoped by list. */
@@ -219,6 +220,58 @@ describe('createTestSync — realtime deltas', () => {
       expect(b.api.query('SELECT id, body FROM notes ORDER BY id')).toEqual([
         { id: 'n1', body: 'live' },
       ]);
+    } finally {
+      await sync.dispose();
+    }
+  });
+});
+
+describe('createTestSync — write validation', () => {
+  test('validators and structured recovery details also apply to socket sync rounds', async () => {
+    const sync = await createTestSync({
+      schema: SCHEMA,
+      validators: {
+        notes: ({ row }) => {
+          if (row?.body === 'blocked') {
+            throw new ValidationRejection(
+              'app.body_blocked',
+              'diagnostic only',
+              {
+                fieldPaths: ['body'],
+                reason: 'reserved_term',
+                requiredAction: 'edit_fields',
+              },
+            );
+          }
+        },
+      },
+    });
+    try {
+      const a = await sync.client('a');
+      a.api.subscribe(SUB);
+      await a.sync();
+      a.api.mutate([
+        {
+          table: 'notes',
+          op: 'upsert',
+          values: note('n1', 'welcome', 'allowed'),
+        },
+      ]);
+      await a.sync();
+      await a.connectRealtime();
+
+      a.api.patch('notes', 'n1', {
+        body: 'blocked',
+      });
+      await a.sync();
+
+      expect(a.api.rejections).toHaveLength(1);
+      expect(a.api.rejections[0]?.details).toEqual({
+        fieldPaths: ['body'],
+        reason: 'reserved_term',
+        requiredAction: 'edit_fields',
+      });
+      expect(a.api.rejections[0]?.operation?.changedFields).toEqual(['body']);
     } finally {
       await sync.dispose();
     }

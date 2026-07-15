@@ -165,6 +165,7 @@ interface SerializedResult {
   serverVersion?: number;
   serverRow?: string;
   retryable?: boolean;
+  details?: import('@syncular/core').RejectionDetails;
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -201,6 +202,7 @@ function serializePushResult(result: StoredPushResult): unknown {
           code: record.code,
           message: record.message,
           retryable: record.retryable,
+          ...(record.details !== undefined ? { details: record.details } : {}),
         };
       }
       return { opIndex: record.opIndex, status: record.status };
@@ -232,6 +234,7 @@ function deserializePushResult(value: unknown): StoredPushResult {
         code: record.code ?? '',
         message: record.message ?? '',
         retryable: record.retryable ?? false,
+        ...(record.details !== undefined ? { details: record.details } : {}),
       };
     }
     return { opIndex: record.opIndex, status: 'applied' };

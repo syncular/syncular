@@ -13,7 +13,12 @@
  * path pays only an `undefined` check per operation and builds no context
  * object — zero cost, the events-seam discipline.
  */
-import type { RowColumn, RowValue } from '@syncular/core';
+import {
+  normalizeRejectionDetails,
+  type RejectionDetails,
+  type RowColumn,
+  type RowValue,
+} from '@syncular/core';
 
 /**
  * §6.7 reserved code prefixes. A host validator code MUST NOT start with
@@ -93,8 +98,13 @@ export type ValidatorRegistry = Readonly<Record<string, Validator>>;
 export class ValidationRejection extends Error {
   override readonly name = 'ValidationRejection';
   readonly code: string;
+  /**
+   * Bounded code-like metadata explicitly safe to replicate to authorized
+   * clients. Never place diagnostic prose, secrets, or clinical values here.
+   */
+  readonly details: RejectionDetails | undefined;
 
-  constructor(code: string, message?: string) {
+  constructor(code: string, message?: string, details?: RejectionDetails) {
     super(message ?? code);
     if (code.length === 0) {
       throw new Error('ValidationRejection code must be non-empty (§6.7)');
@@ -107,6 +117,8 @@ export class ValidationRejection extends Error {
       }
     }
     this.code = code;
+    this.details =
+      details === undefined ? undefined : normalizeRejectionDetails(details);
   }
 }
 

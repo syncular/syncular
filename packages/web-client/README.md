@@ -118,6 +118,17 @@ retain the losing operation plus `serverVersion`/`serverRow`; active failures
 restore after restart and are never removed by retention. Configure the
 history cap with `limits.outcomeRetentionMaxEntries` (default 1,000).
 
+Use `patch(table, rowId, partial, { baseVersion? })` for editor-style partial
+updates. The wire still carries a full row, but the durable local operation
+records a sorted `changedFields` list so conflict and rejection UI knows which
+fields the user intended to touch. That intent is local-only and never enters
+`PUSH_COMMIT`; full-row `mutate` operations omit it.
+
+Validator rejections may include bounded `details` (`fieldPaths`, `reason`,
+`requiredAction`, and explicitly safe `references`). The details persist with
+the rejection. Treat every value as a machine hint: map known values to
+localized app UI and never render the diagnostic `message` directly.
+
 Resolution is explicit and one-way: conflicts can keep the server result or
 link to a replacement commit, rejections can link to a replacement, and
 successful history may be dismissed. See SPEC §7.2.1.

@@ -14,6 +14,7 @@ import {
   decodeMessage,
   type PullHeaderFrame,
   type PushCommitFrame,
+  type PushResultDetailsFrame,
   type PushResultFrame,
   type ReqHeaderFrame,
   type RequestMessage,
@@ -316,6 +317,23 @@ interface RequestReport {
   errorCode?: string;
 }
 
+function pushResultDetailsFrame(
+  frame: PushResultFrame,
+): PushResultDetailsFrame | undefined {
+  const entries = frame.results.flatMap((result) =>
+    result.status === 'error' && result.details !== undefined
+      ? [{ opIndex: result.opIndex, details: result.details }]
+      : [],
+  );
+  return entries.length === 0
+    ? undefined
+    : {
+        type: 'PUSH_RESULT_DETAILS',
+        clientCommitId: frame.clientCommitId,
+        entries,
+      };
+}
+
 function emitPushEvent(
   events: SyncularServerEvents,
   ctx: SyncRequestContext,
@@ -416,6 +434,8 @@ async function* streamResponse(
         emitPushEvent(events, ctx, plan.header.clientId, push, frame);
       }
       yield encodeResponseFrame(frame);
+      const details = pushResultDetailsFrame(frame);
+      if (details !== undefined) yield encodeResponseFrame(details);
     }
 
     // Pull half (§4): subscriptions echoed in request order.

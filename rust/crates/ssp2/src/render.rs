@@ -157,6 +157,27 @@ fn render_frame(frame: &Frame) -> Value {
                 Value::Array(results.iter().map(render_result).collect()),
             ));
         }
+        Frame::PushResultDetails {
+            client_commit_id,
+            entries: details_entries,
+        } => {
+            entries.push(("type", Value::from("PUSH_RESULT_DETAILS")));
+            entries.push(("clientCommitId", Value::from(client_commit_id.clone())));
+            entries.push((
+                "entries",
+                Value::Array(
+                    details_entries
+                        .iter()
+                        .map(|entry| {
+                            obj(vec![
+                                ("opIndex", Value::from(entry.op_index)),
+                                ("details", entry.details.parse()),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ));
+        }
         Frame::SubStart {
             id,
             status,

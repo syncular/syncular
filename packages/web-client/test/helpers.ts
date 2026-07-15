@@ -28,6 +28,7 @@ import {
   SqliteServerStorage,
   SyncError,
   type SyncRequestContext,
+  type ValidatorRegistry,
 } from '@syncular/server';
 
 export const PARTITION = 'part-1';
@@ -128,7 +129,10 @@ function wrapStorage(
   };
 }
 
-export function makeServer(schema: ServerSchema = SERVER_SCHEMA): TestServer {
+export function makeServer(
+  schema: ServerSchema = SERVER_SCHEMA,
+  options: { readonly validators?: ValidatorRegistry } = {},
+): TestServer {
   const storage = new SqliteServerStorage();
   const segments = new MemorySegmentStore();
   const allowed: Record<string, ScopeMap> = {};
@@ -158,6 +162,9 @@ export function makeServer(schema: ServerSchema = SERVER_SCHEMA): TestServer {
     // the HTTP binding (one handler, two framings).
     segments,
     limits,
+    ...(options.validators !== undefined
+      ? { validators: options.validators }
+      : {}),
   });
   const server: TestServer = {
     storage,
@@ -177,6 +184,9 @@ export function makeServer(schema: ServerSchema = SERVER_SCHEMA): TestServer {
       resolveScopes,
       clock: () => now.ms,
       limits,
+      ...(options.validators !== undefined
+        ? { validators: options.validators }
+        : {}),
       realtime: hub,
     }),
   };

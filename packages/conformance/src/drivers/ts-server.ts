@@ -106,6 +106,11 @@ function compileValidatorRule(spec: ValidatorInstallSpec): Validator {
         throw new ValidationRejection(
           rule.code,
           `${rule.column} exceeds ${rule.max} chars (§6.7)`,
+          {
+            fieldPaths: [rule.column],
+            reason: 'max_length_exceeded',
+            requiredAction: 'edit_fields',
+          },
         );
       }
     };
@@ -119,6 +124,11 @@ function compileValidatorRule(spec: ValidatorInstallSpec): Validator {
       throw new ValidationRejection(
         rule.code,
         `${rule.column} is immutable while ${rule.guardColumn}=${String(rule.guardValue)} (§6.7)`,
+        {
+          fieldPaths: [rule.column],
+          reason: 'immutable_state',
+          requiredAction: 'keep_server',
+        },
       );
     }
   };

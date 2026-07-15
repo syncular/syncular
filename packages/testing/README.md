@@ -16,15 +16,10 @@ green test here is real sync behaviour, not a fake.
 
 ## Install
 
-Workspace-internal only:
+Install it as a development dependency:
 
-```jsonc
-// package.json
-{
-  "devDependencies": {
-    "@syncular/testkit": "workspace:*"
-  }
-}
+```bash
+bun add --dev @syncular/testkit
 ```
 
 Requires the Bun runtime (the in-memory client backend is `bun:sqlite`). The
@@ -71,6 +66,7 @@ adds the test-only controls below.
 | `partition`     | `"test"`               | the §1.1 partition every client lives in                      |
 | `actorId`       | `"test-actor"`         | default actor a client authenticates as                       |
 | `resolveScopes` | grant-all              | host authorization (§3.2); omit to grant `'*'` for every var  |
+| `validators`    | off                    | real per-table write validators (§6.7), including structured rejection details |
 | `startMs`       | `1_750_000_000_000`    | epoch ms the shared virtual clock starts at                   |
 
 `TestSync`:
@@ -167,6 +163,35 @@ await a.sync();                     // the hub fans the commit to b as a delta
 ```
 
 `goOffline()` also drops the socket; reconnect with `connectRealtime()`.
+
+### Multi-client conflicts and correction metadata
+
+Create the common server row, let both clients pull it, then make their edits
+from the same observed version. Push one client first so the second write is a
+deterministic conflict—no timers or transport mocks are needed:
+
+```ts
+await sync.syncAll();
+const [{ version }] = a.api.query(
+  'SELECT _sync_version AS version FROM notes WHERE id = ?',
+  ['n1'],
+) as Array<{ version: number }>;
+
+a.api.patch('notes', 'n1', { body: 'A' }, { baseVersion: version });
+b.api.patch('notes', 'n1', { body: 'B' }, { baseVersion: version });
+
+await a.sync(); // wins version + 1
+await b.sync(); // loses against the stale base
+
+expect(b.api.conflicts[0]?.serverRow.body).toBe('A');
+expect(b.api.conflicts[0]?.operation?.changedFields).toEqual(['body']);
+```
+
+Pass `validators` to `createTestSync` to exercise the same business rules as
+production. A `ValidationRejection` with structured details reaches
+`client.api.rejections` through both loopback and socket sync rounds, so app
+tests can assert field focus and correction routing without displaying server
+diagnostics.
 
 ## React
 

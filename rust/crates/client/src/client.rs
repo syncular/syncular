@@ -26,9 +26,9 @@ use crate::api::{
     ClientChangeBatch, ClientLimits, CommandEffects, CommitOperation, CommitOperationOutcome,
     CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution, CommitOutcomeStatus,
     ConflictRecord, CoverageSnapshot, LeaseState, Mutation, PresencePeer, QuerySnapshot,
-    RejectionRecord, ResolveCommitOutcomeInput, RowState, SchemaFloor, SubscriptionStateView,
-    SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange, WindowBase, WindowChange,
-    WindowCoverage, WindowState, WindowUnitRef,
+    RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RowState, SchemaFloor,
+    SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
+    WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
 };
 use crate::schema::{parse_schema_json, ClientSchema};
 use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
@@ -200,6 +200,7 @@ mod observation_tests {
                 op: "upsert".to_owned(),
                 base_version: Some(1),
                 values: None,
+                changed_fields: None,
             }),
         };
 
@@ -412,6 +413,8 @@ struct OutboxOp {
     /// Schema-agnostic local form (§0): driver JSON values, encoded with
     /// the current codec at send time.
     values: Option<Map<String, Value>>,
+    /// Local-only patch intent; never encoded into SSP2 PUSH_COMMIT.
+    changed_fields: Option<Vec<String>>,
 }
 
 impl From<&OutboxOp> for CommitOperation {
@@ -422,6 +425,7 @@ impl From<&OutboxOp> for CommitOperation {
             op: if operation.upsert { "upsert" } else { "delete" }.to_owned(),
             base_version: operation.base_version,
             values: operation.values.clone(),
+            changed_fields: operation.changed_fields.clone(),
         }
     }
 }
@@ -1327,6 +1331,15 @@ impl SyncClient {
                             .to_owned(),
                         base_version: entry.get("baseVersion").and_then(Value::as_i64),
                         values: entry.get("values").and_then(Value::as_object).cloned(),
+                        changed_fields: entry.get("changedFields").and_then(Value::as_array).map(
+                            |values| {
+                                values
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::to_owned)
+                                    .collect()
+                            },
+                        ),
                     });
                 }
                 commits.push(OutboxCommit {
@@ -1808,6 +1821,7 @@ impl SyncClient {
                         message: "the persisted commit cannot encode under the current schema"
                             .to_owned(),
                         retryable: false,
+                        details: None,
                         operation: Some(CommitOperation::from(operation)),
                     };
                     rejections.push(rejection.clone());
@@ -1906,6 +1920,7 @@ impl SyncClient {
                     "rowId": op.row_id,
                     "baseVersion": op.base_version,
                     "values": op.values.clone().map(Value::Object),
+                    "changedFields": op.changed_fields,
                 })
             })
             .collect();
@@ -2561,6 +2576,7 @@ impl SyncClient {
                         row_id,
                         base_version,
                         values: Some(values),
+                        changed_fields: None,
                     });
                 }
                 Mutation::Delete {
@@ -2577,10 +2593,15 @@ impl SyncClient {
                         row_id,
                         base_version,
                         values: None,
+                        changed_fields: None,
                     });
                 }
             }
         }
+        self.record_outbox_commit(ops)
+    }
+
+    fn record_outbox_commit(&mut self, ops: Vec<OutboxOp>) -> Result<String, String> {
         let commit = OutboxCommit {
             client_commit_id: uuid::Uuid::new_v4().to_string(),
             ops,
@@ -2642,11 +2663,21 @@ impl SyncClient {
                     "sync.invalid_request: table {table:?} has no local row with primary key {row_id:?} to patch"
                 )
             })?;
+        let mut changed_fields = partial.keys().cloned().collect::<Vec<_>>();
+        changed_fields.sort();
         values.extend(partial);
-        self.mutate(vec![Mutation::Upsert {
+        let row_id_from_values = render_row_id_json(values.get(&schema_table.primary_key))?;
+        if row_id_from_values != row_id {
+            return Err("sync.invalid_request: patch cannot change the primary key".to_owned());
+        }
+        encode_row_json(schema_table, row_id, &values, &self.encryption)?;
+        self.record_outbox_commit(vec![OutboxOp {
+            upsert: true,
             table: table.to_owned(),
-            values,
+            row_id: row_id.to_owned(),
             base_version,
+            values: Some(values),
+            changed_fields: Some(changed_fields),
         }])
     }
 
@@ -3356,6 +3387,31 @@ impl SyncClient {
             pushed: meta.pushed_ids.len() as u32,
             ..SyncReport::default()
         };
+        let mut rejection_details_by_commit: HashMap<String, BTreeMap<i32, RejectionDetails>> =
+            HashMap::new();
+        for frame in &response.frames {
+            if let Frame::PushResultDetails {
+                client_commit_id,
+                entries,
+            } = frame
+            {
+                let details = rejection_details_by_commit
+                    .entry(client_commit_id.clone())
+                    .or_default();
+                for entry in entries {
+                    let parsed = match RejectionDetails::parse(&entry.details.0) {
+                        Ok(value) => value,
+                        Err(message) => {
+                            return SyncOutcome::Failed {
+                                error_code: "sync.invalid_request".to_owned(),
+                                message,
+                            };
+                        }
+                    };
+                    details.insert(entry.op_index, parsed);
+                }
+            }
+        }
         let mut frames = response.frames.into_iter();
         match frames.next() {
             Some(Frame::RespHeader {
@@ -3391,8 +3447,15 @@ impl SyncClient {
                     commit_seq: _,
                     results,
                 } => {
-                    self.handle_push_result(&client_commit_id, status, &results, &mut report);
+                    self.handle_push_result(
+                        &client_commit_id,
+                        status,
+                        &results,
+                        rejection_details_by_commit.get(&client_commit_id),
+                        &mut report,
+                    );
                 }
+                Frame::PushResultDetails { .. } => {}
                 Frame::SubStart {
                     id,
                     status,
@@ -3505,6 +3568,7 @@ impl SyncClient {
         client_commit_id: &str,
         status: PushStatus,
         results: &[OpResult],
+        rejection_details: Option<&BTreeMap<i32, RejectionDetails>>,
         report: &mut SyncReport,
     ) {
         let Some(index) = self
@@ -3648,6 +3712,9 @@ impl SyncClient {
                                 code: code.clone(),
                                 message: message.clone(),
                                 retryable: *retryable,
+                                details: rejection_details
+                                    .and_then(|details| details.get(op_index))
+                                    .cloned(),
                                 operation: operations
                                     .get(*op_index as usize)
                                     .map(CommitOperation::from),
@@ -4515,6 +4582,7 @@ impl SyncClient {
                         message: "the commit was dropped because its effective scope was revoked"
                             .to_owned(),
                         retryable: false,
+                        details: None,
                         operation: Some(CommitOperation::from(operation)),
                     };
                     rejections.push(rejection.clone());

@@ -50,6 +50,7 @@ describe('schema-agnostic persistence (§0 outbox rule)', () => {
       priority: 7,
       meta: '{"k":1}',
     });
+    expect(op?.changedFields).toBeUndefined();
     // The persisted form is JSON-serializable — no binary in the outbox.
     expect(() => JSON.stringify(op)).not.toThrow();
   });
@@ -157,6 +158,26 @@ describe('encode-at-send (§6.1)', () => {
       second,
       third,
     ]);
+  });
+
+  test('patch records normalized field intent locally without changing the wire', async () => {
+    const server = makeServer();
+    const a = await makeClient(server, { clientId: 'patch-intent' });
+    a.client.mutate([
+      { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
+    ]);
+    await a.client.syncUntilIdle();
+    a.client.patch('tasks', 't1', { title: 'changed', projectId: 'p1' });
+    const commit = a.client.pendingCommits()[0];
+    expect(commit?.operations[0]?.changedFields).toEqual([
+      'project_id',
+      'title',
+    ]);
+    const frame = await encodeOutboxCommit(
+      compiled,
+      commit as NonNullable<typeof commit>,
+    );
+    expect(frame.operations[0]).not.toHaveProperty('changedFields');
   });
 });
 

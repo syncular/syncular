@@ -13,6 +13,7 @@ export const FrameType = {
   SEGMENT_INLINE: 0x15,
   SUB_END: 0x16,
   LEASE: 0x19,
+  PUSH_RESULT_DETAILS: 0x1b,
   ERROR: 0x1f,
 } as const;
 
@@ -36,6 +37,7 @@ export const RESPONSE_FRAME_TYPES: ReadonlySet<number> = new Set([
   FrameType.SEGMENT_INLINE,
   FrameType.SUB_END,
   FrameType.LEASE,
+  FrameType.PUSH_RESULT_DETAILS,
   FrameType.ERROR,
 ]);
 

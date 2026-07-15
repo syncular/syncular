@@ -330,6 +330,26 @@ class TsClientInstance implements ClientInstance {
     return result.value;
   }
 
+  async patch(
+    table: string,
+    rowId: string,
+    partial: DriverRow,
+    baseVersion?: number,
+  ): Promise<string> {
+    const values: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(partial)) {
+      values[key] = toRowValue(value);
+    }
+    const result = this.#client.patchCommand(
+      table,
+      rowId,
+      values,
+      baseVersion !== undefined ? { baseVersion } : undefined,
+    );
+    this.#intents.push(result.effects.sync);
+    return result.value;
+  }
+
   async localRevision(): Promise<string> {
     return this.#client.localRevision.toString();
   }
@@ -482,6 +502,15 @@ class TsClientInstance implements ClientInstance {
         code: conflict.code,
         serverVersion: conflict.serverVersion,
         serverRow: serverRow as DriverRow,
+        ...(conflict.operation !== undefined
+          ? {
+              operation: {
+                ...(conflict.operation.changedFields !== undefined
+                  ? { changedFields: conflict.operation.changedFields }
+                  : {}),
+              },
+            }
+          : {}),
       };
     });
   }
@@ -492,6 +521,18 @@ class TsClientInstance implements ClientInstance {
       opIndex: rejection.opIndex,
       code: rejection.code,
       retryable: rejection.retryable,
+      ...(rejection.details !== undefined
+        ? { details: rejection.details }
+        : {}),
+      ...(rejection.operation !== undefined
+        ? {
+            operation: {
+              ...(rejection.operation.changedFields !== undefined
+                ? { changedFields: rejection.operation.changedFields }
+                : {}),
+            },
+          }
+        : {}),
     }));
   }
 

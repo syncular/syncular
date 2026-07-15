@@ -60,6 +60,22 @@ client.conflicts; // readonly ConflictRecord[]
 Without a `baseVersion`, upserts are last-write-wins on the server; conflicts
 only arise when you opt into version checking.
 
+For an edit form, prefer `patch` after reading the row locally. It still sends
+the full row required by the wire protocol, but records the fields the user
+actually changed in local durable metadata:
+
+```ts
+client.patch('notes', 'n1', { body: 'revised' }, { baseVersion: 3 });
+
+const [conflict] = client.conflicts;
+conflict.operation?.changedFields; // ['body']
+```
+
+`changedFields` survives restart and is available on both conflict and
+rejection records. It is never sent to or trusted by the server. A full-row
+`mutate` intentionally omits it because Syncular cannot safely infer user
+intent by diffing against a changing local base.
+
 ## Rejections vs conflicts
 
 A rejected commit that is not a version conflict (e.g. `sync.forbidden` from a
@@ -67,3 +83,51 @@ scope check, or a serving hiccup that is retryable) surfaces as a
 **rejection** instead, with its own list (`client.rejections`) and retry
 semantics driven by the error's `retryable` flag. The
 [error catalog](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#10-errors) is normative.
+
+## Safe, structured validation recovery
+
+A server write validator can attach a small, strictly bounded recovery object
+to a deliberate host rejection:
+
+```ts
+import { ValidationRejection } from '@syncular/server';
+
+const validators = {
+  notes: ({ row }) => {
+    if (typeof row?.body === 'string' && row.body.length > 500) {
+      throw new ValidationRejection('notes.body_too_long', 'diagnostic only', {
+        fieldPaths: ['body'],
+        reason: 'max_length_exceeded',
+        requiredAction: 'edit_fields',
+        references: { limit: '500' },
+      });
+    }
+  },
+};
+```
+
+After sync, the client persists that object with the durable rejection:
+
+```ts
+const [rejection] = client.rejections;
+rejection.code;                         // 'notes.body_too_long'
+rejection.details?.fieldPaths;          // ['body']
+rejection.details?.requiredAction;      // 'edit_fields'
+rejection.operation?.changedFields;     // the local patch intent, if known
+```
+
+Only put non-sensitive, explicitly approved machine values in `details`.
+Syncular rejects unknown keys, free-form values, malformed paths, and data over
+the protocol limits. Map known codes and tokens to localized app copy; do not
+render the server's diagnostic `message` directly to an end user. Older
+clients ignore the additive details frame and still process the ordinary
+rejection, while newer clients also accept older servers that omit details.
+
+## Durable correction flow
+
+Final outcomes are journaled in the same local transaction that drains the
+outbox. Use `commitOutcome(id)` or `commitOutcomes({ activeOnly: true })` to
+restore recovery UI after restart. Once the user keeps the server value or
+creates a corrected replacement commit, call `resolveCommitOutcome(...)`;
+resolution is explicit and one-way, so the app never silently loses evidence
+of an offline write that did not land.

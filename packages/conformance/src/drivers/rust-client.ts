@@ -38,6 +38,7 @@ import type {
   CodecDriver,
   CodecRoundtrip,
   DriverChangeBatch,
+  DriverRow,
   DriverRowValue,
   DriverSchema,
   DriverSyncIntent,
@@ -595,6 +596,30 @@ class RustClientInstance implements ClientInstance {
     );
     if (typeof result.clientCommitId !== 'string') {
       throw new Error('mutate: shim returned no clientCommitId');
+    }
+    const intent = (result.effects as { sync?: DriverSyncIntent } | undefined)
+      ?.sync;
+    if (intent !== undefined) this.#intents.push(intent);
+    return result.clientCommitId;
+  }
+
+  async patch(
+    table: string,
+    rowId: string,
+    partial: DriverRow,
+    baseVersion?: number,
+  ): Promise<string> {
+    const result = asObject(
+      await this.#shim.call('patch', {
+        table,
+        rowId,
+        partial: partial as JsonValue,
+        ...(baseVersion !== undefined ? { baseVersion } : {}),
+      }),
+      'patch',
+    );
+    if (typeof result.clientCommitId !== 'string') {
+      throw new Error('patch: shim returned no clientCommitId');
     }
     const intent = (result.effects as { sync?: DriverSyncIntent } | undefined)
       ?.sync;

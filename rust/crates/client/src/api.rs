@@ -3,6 +3,8 @@
 //! states, subscription states. Serialized as camelCase to cross the shim
 //! boundary unchanged.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -260,6 +262,106 @@ pub struct ConflictRecord {
     pub operation: Option<CommitOperation>,
 }
 
+/// Bounded code-like metadata explicitly declared safe for authorized client
+/// recovery UI. Diagnostic prose remains in `RejectionRecord.message`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RejectionDetails {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field_paths: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub references: Option<BTreeMap<String, String>>,
+}
+
+impl RejectionDetails {
+    pub(crate) fn parse(raw: &str) -> Result<Self, String> {
+        if raw.len() > 4_096 {
+            return Err("rejection details exceed 4096 encoded bytes".to_owned());
+        }
+        let details: Self = serde_json::from_str(raw)
+            .map_err(|error| format!("invalid rejection details: {error}"))?;
+        details.validate()?;
+        Ok(details)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        let mut members = 0;
+        if let Some(paths) = &self.field_paths {
+            members += 1;
+            if paths.is_empty() || paths.len() > 32 {
+                return Err("fieldPaths must contain 1-32 paths".to_owned());
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            for path in paths {
+                if path.len() > 160 || !path.split('.').all(valid_identifier) || !seen.insert(path)
+                {
+                    return Err("fieldPaths contains an invalid or duplicate path".to_owned());
+                }
+            }
+        }
+        if let Some(reason) = &self.reason {
+            members += 1;
+            if !valid_token(reason, 96) {
+                return Err("reason must be a lowercase stable token".to_owned());
+            }
+        }
+        if let Some(action) = &self.required_action {
+            members += 1;
+            if !valid_token(action, 96) {
+                return Err("requiredAction must be a lowercase stable token".to_owned());
+            }
+        }
+        if let Some(references) = &self.references {
+            members += 1;
+            if references.is_empty() || references.len() > 16 {
+                return Err("references must contain 1-16 entries".to_owned());
+            }
+            for (key, value) in references {
+                if !valid_token(key, 64)
+                    || value.is_empty()
+                    || value.len() > 256
+                    || value.trim() != value
+                    || value.chars().any(char::is_control)
+                {
+                    return Err("references contains an invalid key or value".to_owned());
+                }
+            }
+        }
+        if members == 0 {
+            return Err("rejection details must not be empty".to_owned());
+        }
+        Ok(())
+    }
+}
+
+fn valid_identifier(segment: &str) -> bool {
+    let mut chars = segment.chars();
+    matches!(chars.next(), Some(first) if first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
+fn valid_token(token: &str, max: usize) -> bool {
+    if token.is_empty() || token.len() > max || !token.starts_with(|c: char| c.is_ascii_lowercase())
+    {
+        return false;
+    }
+    let mut previous_separator = false;
+    for character in token.chars() {
+        if character.is_ascii_lowercase() || character.is_ascii_digit() {
+            previous_separator = false;
+        } else if matches!(character, '.' | '_' | '-') && !previous_separator {
+            previous_separator = true;
+        } else {
+            return false;
+        }
+    }
+    !previous_separator
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RejectionRecord {
@@ -268,6 +370,8 @@ pub struct RejectionRecord {
     pub code: String,
     pub message: String,
     pub retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<RejectionDetails>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operation: Option<CommitOperation>,
 }
@@ -283,6 +387,10 @@ pub struct CommitOperation {
     pub base_version: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub values: Option<Map<String, Value>>,
+    /// Normalized columns intentionally supplied to `patch()`; absent for a
+    /// full-row mutate/upsert because intent is unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed_fields: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

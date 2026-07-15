@@ -16,7 +16,7 @@
  */
 
 import type { ClientSchema, SyncClientConfig } from '@syncular/client';
-import type { ResolveScopes } from '@syncular/server';
+import type { ResolveScopes, ValidatorRegistry } from '@syncular/server';
 import { buildTestClient, type TestClient } from './client';
 import { createVirtualClock, type VirtualClock } from './clock';
 import {
@@ -44,6 +44,8 @@ export interface CreateTestSyncOptions {
    * in the server exactly as it would in production.
    */
   readonly resolveScopes?: ResolveScopes;
+  /** Optional §6.7 write validators, executed by the real test server. */
+  readonly validators?: ValidatorRegistry;
   /** Epoch ms the shared virtual clock starts at (default 1_750_000_000_000). */
   readonly startMs?: number;
 }
@@ -97,6 +99,9 @@ export async function createTestSync(
     partition,
     ...(options.resolveScopes !== undefined
       ? { resolveScopes: options.resolveScopes }
+      : {}),
+    ...(options.validators !== undefined
+      ? { validators: options.validators }
       : {}),
   });
 

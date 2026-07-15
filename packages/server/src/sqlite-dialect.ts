@@ -126,6 +126,7 @@ interface SerializedResult {
   serverVersion?: number;
   serverRow?: string;
   retryable?: boolean;
+  details?: import('@syncular/core').RejectionDetails;
 }
 
 /** Serialize a push result to the JSON `TEXT` stored in `sync_push_results`. */
@@ -151,6 +152,7 @@ export function serializePushResult(result: StoredPushResult): string {
           code: record.code,
           message: record.message,
           retryable: record.retryable,
+          ...(record.details !== undefined ? { details: record.details } : {}),
         };
       }
       return { opIndex: record.opIndex, status: record.status };
@@ -182,6 +184,7 @@ export function deserializePushResult(text: string): StoredPushResult {
         code: record.code ?? '',
         message: record.message ?? '',
         retryable: record.retryable ?? false,
+        ...(record.details !== undefined ? { details: record.details } : {}),
       };
     }
     return { opIndex: record.opIndex, status: 'applied' };
