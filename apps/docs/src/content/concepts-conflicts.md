@@ -177,3 +177,9 @@ restore recovery UI after restart. Once the user keeps the server value or
 creates a corrected replacement commit, call `resolveCommitOutcome(...)`;
 resolution is explicit and one-way, so the app never silently loses evidence
 of an offline write that did not land.
+
+For a failed multi-operation commit, `outcome.operations` contains the complete
+ordered local envelope even though the server result names only the operation
+that terminated the atomic commit. Use it only in an authorized,
+domain-specific aggregate repair flow. The envelope is protected local payload,
+does not make full-row intent safe to infer, and never crosses the wire.

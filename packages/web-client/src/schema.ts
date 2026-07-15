@@ -294,10 +294,20 @@ export function ensureLocalSchema(
       status TEXT NOT NULL CHECK(status IN ('applied', 'cached', 'conflict', 'rejected')),
       recorded_at_ms INTEGER NOT NULL,
       results TEXT NOT NULL,
+      operations TEXT,
       resolution TEXT NOT NULL DEFAULT 'active'
         CHECK(resolution IN ('active', 'resolved_keep_server', 'superseded', 'dismissed')),
       resolved_at_ms INTEGER,
       replacement_client_commit_id TEXT)`);
+    // Outcomes created before durable aggregate recovery retain no commit
+    // envelope. New failed outcomes store it in the protected client DB.
+    try {
+      db.exec(
+        'ALTER TABLE _syncular_commit_outcomes ADD COLUMN operations TEXT',
+      );
+    } catch {
+      // column already exists — the CREATE above included it
+    }
     db.exec(`CREATE INDEX IF NOT EXISTS _syncular_commit_outcomes_resolution_seq
       ON _syncular_commit_outcomes(resolution, seq)`);
     db.exec(`CREATE TABLE IF NOT EXISTS _syncular_subscriptions(

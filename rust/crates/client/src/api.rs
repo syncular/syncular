@@ -434,6 +434,10 @@ pub struct CommitOutcome {
     pub status: CommitOutcomeStatus,
     pub recorded_at_ms: i64,
     pub results: Vec<CommitOperationOutcome>,
+    /// Complete local failed-commit envelope retained after outbox drain.
+    /// Absent for successful and historical outcomes; never sent over wire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operations: Option<Vec<CommitOperation>>,
     pub resolution: CommitOutcomeResolution,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_at_ms: Option<i64>,
