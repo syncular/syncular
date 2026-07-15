@@ -1497,8 +1497,12 @@ for clients without signed-URL support.
 
 ### 5.6 Segment application contract (client)
 
-- Segments for a table replace-or-upsert: the client applies rows by
-  primary key (`INSERT OR REPLACE` semantics). On the **first page** of
+- Segments for a table upsert by primary key: an existing row with the same
+  primary key is updated and an absent row is inserted. Constraints outside
+  the primary key retain their ordinary database semantics. In particular, a
+  client MUST NOT use replace-style conflict handling that can delete a
+  different row after a secondary unique-index collision; the colliding
+  segment application aborts and preserves the existing row. On the **first page** of
   a table in a **fresh** bootstrap, the client MUST first delete local
   rows for the subscription's scope (same matching rule as the purge
   contract, §3.3, against the `SUB_START` effective-scope echo) so
