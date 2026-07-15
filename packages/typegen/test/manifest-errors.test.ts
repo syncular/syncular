@@ -147,6 +147,48 @@ describe('buildIr cross-checks', () => {
     );
   });
 
+  test('a table retired by the head migration is omitted from the manifest and IR', () => {
+    const ir = buildIr(
+      manifest({
+        schemaVersions: [
+          { version: 1, through: '0001_initial' },
+          { version: 2, through: '0002_retire_hidden' },
+        ],
+      }),
+      [
+        {
+          name: '0001_initial',
+          sql: `${MIGRATIONS[0]?.sql}; CREATE TABLE hidden (id TEXT PRIMARY KEY)`,
+        },
+        { name: '0002_retire_hidden', sql: 'DROP TABLE hidden' },
+      ],
+    );
+    expect(ir.schemaVersion).toBe(2);
+    expect(ir.tables.map((table) => table.name)).toEqual(['tasks']);
+  });
+
+  test('a dropped table name cannot be reused by a later migration', () => {
+    expectFail(
+      () =>
+        buildIr(
+          manifest({
+            schemaVersions: [
+              { version: 1, through: '0001_initial' },
+              { version: 2, through: '0002_recreate' },
+            ],
+          }),
+          [
+            MIGRATIONS[0]!,
+            {
+              name: '0002_recreate',
+              sql: 'DROP TABLE tasks; CREATE TABLE tasks (id TEXT PRIMARY KEY, project_id TEXT NOT NULL)',
+            },
+          ],
+        ),
+      /cannot be re-created after DROP TABLE/,
+    );
+  });
+
   test('scope pattern must reference an existing column', () => {
     expectFail(
       () =>

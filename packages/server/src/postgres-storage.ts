@@ -46,9 +46,11 @@ import {
 import {
   commitWindowPageSql,
   deleteRowSql,
+  dropTableDdl,
   layoutsOf,
   migratePayload,
   parseLayouts,
+  retiredTableNames,
   rewritePlan,
   rewriteRowSql,
   rewriteValues,
@@ -721,6 +723,7 @@ export class PostgresServerStorage implements ServerStorage {
           ? marker.rows[0].layouts
           : undefined,
       );
+      const retiredTables = retiredTableNames(schema, layouts);
       await this.#exec.transaction(async (client) => {
         const existing = new Map<string, ReadonlySet<string>>();
         for (const table of schema.tables.values()) {
@@ -732,6 +735,12 @@ export class PostgresServerStorage implements ServerStorage {
           if (rows.length > 0) {
             existing.set(table.name, new Set(rows.map((r) => r.column_name)));
           }
+        }
+        for (const tableName of retiredTables) {
+          await client.query('DELETE FROM sync_row_scopes WHERE tbl=$1', [
+            tableName,
+          ]);
+          await client.query(dropTableDdl(tableName));
         }
         for (const statement of schemaDdl(schema, existing, 'postgres')) {
           await client.query(statement);
