@@ -123,6 +123,52 @@ render the server's diagnostic `message` directly to an end user. Older
 clients ignore the additive details frame and still process the ordinary
 rejection, while newer clients also accept older servers that omit details.
 
+## Atomic aggregate validation
+
+Use the server's `commitValidator` when one user action must carry multiple
+rows together. It sees every decoded, post-merge operation after the rows are
+staged and can read the final candidate state in the same transaction:
+
+```ts
+import { CommitValidationRejection } from '@syncular/server';
+
+const commitValidator = ({ operations }) => {
+  const transition = operations.find(
+    (op) =>
+      op.table === 'surgeries' &&
+      op.row !== undefined &&
+      op.stored !== undefined &&
+      op.row.status !== op.stored.status,
+  );
+  if (
+    transition !== undefined &&
+    !operations.some(
+      (op) =>
+        op.table === 'surgery_status_events' &&
+        op.row?.surgery_id === transition.rowId,
+    )
+  ) {
+    throw new CommitValidationRejection(
+      transition.opIndex,
+      'surgery.status_event_required',
+      'diagnostic only',
+      {
+        fieldPaths: ['status'],
+        reason: 'missing_sibling_operation',
+        requiredAction: 'repair_aggregate',
+      },
+    );
+  }
+};
+```
+
+The server serializes each partition before candidate reads, so concurrent
+commits cannot both validate against mutually incomplete states. D1 requires
+an external per-partition Durable Object (or equivalent coordinator) and fails
+closed unless that serialization is explicitly asserted. This hook validates
+an authorized proposal; privileged operations that choose or transform data
+remain server-authoritative commands.
+
 ## Durable correction flow
 
 Final outcomes are journaled in the same local transaction that drains the

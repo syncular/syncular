@@ -136,6 +136,17 @@ writes with a coordinating primitive (a DO or a Queue). This mirrors
 Postgres's per-partition row lock, achieved by placement rather than a lock
 D1 does not expose. Cross-partition pushes never contend.
 
+**Whole-commit validation fails closed without that coordinator.** SPEC §6.8
+must hold serialization from before candidate reads through commit. A plain
+`new D1ServerStorage(env.DB)` therefore rejects a push whenever
+`commitValidator` is configured. The storage created inside
+`SyncularRealtimeHost` opts in because that host is already one
+single-threaded DO per partition. A custom coordinated host may construct
+`new D1ServerStorage(env.DB, { commitValidationSerialized: true })`, but MUST
+never set that assertion in a stateless HTTP Worker. A realtime notifier wakes
+sockets after an HTTP commit; it does not serialize that HTTP write and is not
+sufficient for §6.8 by itself.
+
 ## Workers realtime — the Durable Object
 
 The realtime channel (§8) needs a durable, stateful WebSocket host. On Workers

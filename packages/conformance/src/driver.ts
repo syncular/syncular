@@ -210,7 +210,8 @@ export type ServerCapability =
   | 'blob-presign'
   | 'crdt'
   | 'leases'
-  | 'validators';
+  | 'validators'
+  | 'commit-validators';
 
 /**
  * §6.7 declarative write-validation rule (JSON-able so it crosses the
@@ -246,6 +247,20 @@ export type ValidatorRuleSpec =
 export interface ValidatorInstallSpec {
   readonly table: string;
   readonly rule: ValidatorRuleSpec;
+}
+
+/**
+ * §6.8 declarative whole-commit validation rule. The conformance seam keeps
+ * this JSON-able while exercising the same transaction-scoped callback a host
+ * installs in production.
+ */
+export interface CommitValidatorInstallSpec {
+  readonly kind: 'requireSiblingWhen';
+  readonly table: string;
+  readonly column: string;
+  readonly equals: DriverRowValue;
+  readonly siblingRowIdSuffix: string;
+  readonly code: string;
 }
 
 export interface ServerInstance {
@@ -339,6 +354,11 @@ export interface ServerInstance {
    * when the server driver advertises the `validators` capability.
    */
   installValidators?(specs: readonly ValidatorInstallSpec[]): Promise<void>;
+  /**
+   * `commit-validators`: install or clear the §6.8 whole-commit validator.
+   * The validator observes all staged operations and candidate-state reads.
+   */
+  installCommitValidator?(spec?: CommitValidatorInstallSpec): Promise<void>;
   /** Make `resolveScopes` throw for every actor (fail-loud paths). */
   setResolverFailing(failing: boolean): Promise<void>;
 

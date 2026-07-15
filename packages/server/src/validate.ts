@@ -18,6 +18,7 @@ import {
   type RejectionDetails,
   type RowColumn,
   type RowValue,
+  type ScopeMap,
 } from '@syncular/core';
 
 /**
@@ -63,6 +64,63 @@ export interface ValidateOperation {
   /** The currently-stored row (update/delete), keyed by column name; undefined on insert. */
   readonly stored: ValidateRow | undefined;
 }
+
+/**
+ * One authorized, decoded operation presented to the whole-commit validator.
+ * `row` is the final candidate row after scope stripping and CRDT merge;
+ * `stored` is the state observed immediately before this operation. Multiple
+ * operations targeting one row therefore retain their sequential evidence.
+ */
+export interface ValidateCommitOperation extends ValidateOperation {
+  readonly opIndex: number;
+  readonly storedServerVersion?: number;
+  readonly nextServerVersion?: number;
+}
+
+/** One candidate-state row read from inside the still-open commit transaction. */
+export interface CommitValidationRow {
+  readonly row: ValidateRow;
+  readonly serverVersion: number;
+}
+
+export interface CommitValidationScanInput {
+  readonly table: string;
+  /** Exact scope filter, using the same AND-across-keys semantics as sync. */
+  readonly scopeFilter: ScopeMap;
+  readonly afterRowId?: string | null;
+  /** Bounded per call by the server to 1..1,000; defaults to 100. */
+  readonly limit?: number;
+}
+
+/**
+ * Candidate-state reads bound to the same storage transaction as the commit.
+ * Reads observe every staged sibling operation and no uncommitted competing
+ * transaction when the storage's commit-validation lock contract is honored.
+ */
+export interface CommitValidationReader {
+  getRow(
+    table: string,
+    rowId: string,
+  ): Promise<CommitValidationRow | undefined>;
+  scanRows(input: CommitValidationScanInput): Promise<CommitValidationRow[]>;
+}
+
+export interface ValidateCommitInput {
+  readonly clientId: string;
+  readonly clientCommitId: string;
+  readonly actorId: string;
+  readonly partition: string;
+  readonly operations: readonly ValidateCommitOperation[];
+  readonly read: CommitValidationReader;
+}
+
+/**
+ * Runs once after every operation passed protocol/scope/row validation and was
+ * staged, but before commit-log/idempotency append and transaction commit.
+ */
+export type CommitValidator = (
+  input: ValidateCommitInput,
+) => void | Promise<void>;
 
 /** Ambient context a validator may consult (§6.7). */
 export interface ValidateContext {
@@ -119,6 +177,27 @@ export class ValidationRejection extends Error {
     this.code = code;
     this.details =
       details === undefined ? undefined : normalizeRejectionDetails(details);
+  }
+}
+
+/**
+ * A whole-commit rejection attributed to one operation for the existing
+ * per-operation PUSH_RESULT envelope. The validator may still describe
+ * multiple affected fields in `details.fieldPaths`.
+ */
+export class CommitValidationRejection extends ValidationRejection {
+  constructor(
+    readonly opIndex: number,
+    code: string,
+    message?: string,
+    details?: RejectionDetails,
+  ) {
+    super(code, message, details);
+    if (!Number.isSafeInteger(opIndex) || opIndex < 0) {
+      throw new Error(
+        'CommitValidationRejection opIndex must be a non-negative safe integer',
+      );
+    }
   }
 }
 

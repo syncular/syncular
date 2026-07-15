@@ -50,7 +50,7 @@ import {
 import type { SegmentStore } from './segment-store';
 import type { SegmentUrlConfig } from './signed-url';
 import type { ServerStorage, StoredCommit } from './storage';
-import type { ValidatorRegistry } from './validate';
+import type { CommitValidator, ValidatorRegistry } from './validate';
 
 export interface RealtimeHubConfig {
   readonly schema: ServerSchema;
@@ -58,6 +58,8 @@ export interface RealtimeHubConfig {
   readonly resolveScopes: ResolveScopes;
   /** §6.7 validators used by sync rounds carried over this socket. */
   readonly validators?: ValidatorRegistry;
+  /** §6.8 whole-commit validator shared with HTTP sync rounds. */
+  readonly commitValidator?: CommitValidator;
   readonly clock?: () => number;
   /** Deltas larger than this become `delta-too-large` wake-ups (§8.2). */
   readonly maxDeltaBytes?: number;
@@ -931,6 +933,9 @@ export class RealtimeHub {
       resolveScopes: this.#config.resolveScopes,
       ...(this.#config.validators !== undefined
         ? { validators: this.#config.validators }
+        : {}),
+      ...(this.#config.commitValidator !== undefined
+        ? { commitValidator: this.#config.commitValidator }
         : {}),
       ...(this.#config.clock !== undefined
         ? { clock: this.#config.clock }

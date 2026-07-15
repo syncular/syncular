@@ -60,6 +60,7 @@ class SqliteTransaction implements StorageTransaction {
   #storage: SqliteServerStorage;
   #partition: string;
   #open = true;
+  #commitValidationSavepoint = false;
 
   constructor(storage: SqliteServerStorage, partition: string) {
     this.#storage = storage;
@@ -74,6 +75,40 @@ class SqliteTransaction implements StorageTransaction {
   getRow(table: string, rowId: string): Promise<StoredRow | undefined> {
     this.#assertOpen();
     return this.#storage.getRow(this.#partition, table, rowId);
+  }
+
+  scanRows(query: RowScanQuery): Promise<StoredRow[]> {
+    this.#assertOpen();
+    return this.#storage.scanRows(this.#partition, query);
+  }
+
+  async lockPartitionForCommitValidation(): Promise<void> {
+    this.#assertOpen();
+    // BEGIN IMMEDIATE in the constructor already owns SQLite's writer lock.
+    this.#storage.db.exec('SAVEPOINT syncular_commit_validation_candidate');
+    this.#commitValidationSavepoint = true;
+  }
+
+  async commitRejectedPushResult(
+    clientId: string,
+    clientCommitId: string,
+    result: StoredPushResult,
+  ): Promise<void> {
+    this.#assertOpen();
+    if (!this.#commitValidationSavepoint) {
+      throw new Error(
+        'whole-commit rejection requires its validation savepoint',
+      );
+    }
+    this.#storage.db.exec(
+      'ROLLBACK TO SAVEPOINT syncular_commit_validation_candidate',
+    );
+    this.#storage.db.exec(
+      'RELEASE SAVEPOINT syncular_commit_validation_candidate',
+    );
+    this.#commitValidationSavepoint = false;
+    await this.putPushResult(clientId, clientCommitId, result);
+    await this.commit();
   }
 
   async upsertRow(table: string, row: StoredRow): Promise<void> {

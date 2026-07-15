@@ -6,7 +6,10 @@
  */
 import { describe, expect, test } from 'bun:test';
 import type { ClientSchema } from '@syncular/client';
-import { ValidationRejection } from '@syncular/server';
+import {
+  CommitValidationRejection,
+  ValidationRejection,
+} from '@syncular/server';
 import { createTestSync, TransportFault } from '../src/index';
 
 /** A minimal one-table app schema: notes scoped by list. */
@@ -272,6 +275,92 @@ describe('createTestSync — write validation', () => {
         requiredAction: 'edit_fields',
       });
       expect(a.api.rejections[0]?.operation?.changedFields).toEqual(['body']);
+    } finally {
+      await sync.dispose();
+    }
+  });
+
+  test('whole-commit validators see sibling operations during socket sync rounds', async () => {
+    const sync = await createTestSync({
+      schema: SCHEMA,
+      commitValidator: ({ operations }) => {
+        const requiringAudit = operations.find(
+          (operation) => operation.row?.body === 'requires-audit',
+        );
+        if (
+          requiringAudit !== undefined &&
+          !operations.some(
+            (operation) => operation.rowId === `${requiringAudit.rowId}-audit`,
+          )
+        ) {
+          throw new CommitValidationRejection(
+            requiringAudit.opIndex,
+            'app.audit_required',
+            undefined,
+            {
+              fieldPaths: ['body'],
+              reason: 'missing_sibling_operation',
+              requiredAction: 'repair_aggregate',
+            },
+          );
+        }
+      },
+    });
+    try {
+      const a = await sync.client('a');
+      a.api.subscribe(SUB);
+      await a.sync();
+      await a.connectRealtime();
+
+      a.api.mutate([
+        {
+          table: 'notes',
+          op: 'upsert',
+          values: note('n1', 'welcome', 'requires-audit'),
+        },
+      ]);
+      await a.sync();
+
+      expect(a.api.rejections).toHaveLength(1);
+      expect(a.api.rejections[0]).toMatchObject({
+        code: 'app.audit_required',
+        opIndex: 0,
+        retryable: false,
+        details: {
+          fieldPaths: ['body'],
+          reason: 'missing_sibling_operation',
+          requiredAction: 'repair_aggregate',
+        },
+      });
+      expect(
+        await sync.server.storage.getRow('test', 'notes', 'n1'),
+      ).toBeUndefined();
+
+      const b = await sync.client('b');
+      b.api.subscribe(SUB);
+      await b.sync();
+      await b.connectRealtime();
+      b.api.mutate([
+        {
+          table: 'notes',
+          op: 'upsert',
+          values: note('n2', 'welcome', 'requires-audit'),
+        },
+        {
+          table: 'notes',
+          op: 'upsert',
+          values: note('n2-audit', 'welcome', 'audit'),
+        },
+      ]);
+      await b.sync();
+
+      expect(b.api.rejections).toHaveLength(0);
+      expect(
+        await sync.server.storage.getRow('test', 'notes', 'n2'),
+      ).toBeDefined();
+      expect(
+        await sync.server.storage.getRow('test', 'notes', 'n2-audit'),
+      ).toBeDefined();
     } finally {
       await sync.dispose();
     }

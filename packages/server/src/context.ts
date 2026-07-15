@@ -18,7 +18,7 @@ import type {
 } from './signed-url';
 import type { SqliteImageBuilder } from './sqlite-image';
 import type { ServerStorage, StoredCommit } from './storage';
-import type { ValidatorRegistry } from './validate';
+import type { CommitValidator, ValidatorRegistry } from './validate';
 
 /** SSP2 body content type (§1.1). */
 export const SSP2_CONTENT_TYPE = 'application/vnd.syncular.sync.v2';
@@ -112,6 +112,13 @@ export interface SyncServerConfig {
    * process, never on the wire.
    */
   readonly validators?: ValidatorRegistry;
+  /**
+   * §6.8 whole-commit validator. When present, the storage serializes this
+   * partition before operation reads/writes, then invokes the callback once
+   * over every staged decoded operation and candidate-state reader before
+   * commit-log/idempotency append. A throw rolls back the complete commit.
+   */
+  readonly commitValidator?: CommitValidator;
   readonly resolveScopes: ResolveScopes;
   /**
    * §7.3 auth leases. Absent ⇒ the feature is off: no `LEASE` frame is
