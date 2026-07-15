@@ -11,9 +11,11 @@ import { syncError } from './errors';
 import {
   commitWindowPageSql,
   deleteRowSql,
+  dropTableDdl,
   layoutsOf,
   migratePayload,
   parseLayouts,
+  retiredTableNames,
   rewritePlan,
   rewriteRowSql,
   rewriteValues,
@@ -273,6 +275,7 @@ export class SqliteServerStorage implements ServerStorage {
       // projection backfill for flipped-on materialization). One
       // transaction: a failed bump leaves no half-state.
       const layouts = parseLayouts(marker?.layouts);
+      const retiredTables = retiredTableNames(schema, layouts);
       const existing = new Map<string, ReadonlySet<string>>();
       for (const table of schema.tables.values()) {
         const columns = this.db
@@ -286,6 +289,12 @@ export class SqliteServerStorage implements ServerStorage {
       }
       this.db.exec('BEGIN IMMEDIATE');
       try {
+        for (const tableName of retiredTables) {
+          this.db
+            .query('DELETE FROM sync_row_scopes WHERE tbl=?')
+            .run(tableName);
+          this.db.exec(dropTableDdl(tableName));
+        }
         for (const statement of schemaDdl(schema, existing, 'sqlite')) {
           this.db.exec(statement);
         }

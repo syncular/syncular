@@ -454,6 +454,25 @@ export function parseLayouts(json: string | null | undefined): StoredLayouts {
 }
 
 /**
+ * Tables present in the stored layout but absent from the configured head
+ * schema. A schema-version bump retires their relational current-row tables;
+ * append-only commit history remains governed by the normal retention policy.
+ */
+export function retiredTableNames(
+  schema: CompiledSchema,
+  storedLayouts: StoredLayouts,
+): string[] {
+  return Object.keys(storedLayouts)
+    .filter((name) => !schema.tables.has(name))
+    .sort();
+}
+
+/** Idempotent DDL for one retired relational current-row table. */
+export function dropTableDdl(tableName: string): string {
+  return `DROP TABLE IF EXISTS ${quoteIdent(tableName)}`;
+}
+
+/**
  * Enforce the migration subset on a table's column list: the old layout
  * must be an exact prefix (same name, type, nullability) of the new one,
  * and appended columns must be nullable (there is no default to backfill).

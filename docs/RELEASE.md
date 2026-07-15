@@ -1,8 +1,26 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.11.0** (`v0.11.0`). All artifacts use Apache-2.0, except
+current release is **0.12.0** (`v0.12.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.12.0 release notes
+
+0.12.0 adds safe table retirement to SQL migration type generation and the
+relational server schema-bump path.
+
+The release includes:
+
+- strict `DROP TABLE name` and `DROP TABLE IF EXISTS name` parsing, with
+  unknown tables, trailing clauses, and dropped-name reuse rejected;
+- head-schema generation that permits historically created, subsequently
+  retired tables to be omitted from the manifest and generated APIs;
+- SQLite, PostgreSQL, and D1 schema bumps that remove retired relational
+  current-row tables and their live scope-index entries;
+- an explicit retention boundary: append-only commit history remains governed
+  by ordinary retention, so schema retirement is not an erasure API;
+- generator, manifest, and three-dialect server migration coverage plus
+  updated schema documentation.
 
 ## 0.11.0 release notes
 

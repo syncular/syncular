@@ -7,6 +7,7 @@
  *   [WITHOUT ROWID]`
  * - `ALTER TABLE name ADD [COLUMN] coldef`
  * - `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table (col [, col…])`
+ * - `DROP TABLE [IF EXISTS] name`
  * - column defs: `name TYPE [PRIMARY KEY] [NOT NULL] [NULL]
  *   [DEFAULT literal]`
  * - `--` and C-style comments
@@ -290,10 +291,11 @@ function parseColumnDef(cursor: Cursor, allowPrimaryKey: boolean): ColumnDef {
 function parseCreate(
   cursor: Cursor,
   tables: Map<string, ParsedTable>,
+  droppedTables: ReadonlySet<string>,
   source: string,
 ): void {
   if (cursor.eatWord('TABLE')) {
-    parseCreateTable(cursor, tables, source);
+    parseCreateTable(cursor, tables, droppedTables, source);
     return;
   }
   if (cursor.eatWord('UNIQUE')) {
@@ -314,6 +316,7 @@ function parseCreate(
 function parseCreateTable(
   cursor: Cursor,
   tables: Map<string, ParsedTable>,
+  droppedTables: ReadonlySet<string>,
   source: string,
 ): void {
   if (cursor.eatWord('IF')) {
@@ -321,6 +324,11 @@ function parseCreateTable(
     cursor.expectWord('EXISTS', 'after IF NOT');
   }
   const name = cursor.identifier('a table name');
+  if (droppedTables.has(name)) {
+    cursor.fail(
+      `table ${name} cannot be re-created after DROP TABLE — table-name reuse is unsupported`,
+    );
+  }
   if (tables.has(name)) {
     cursor.fail(`table ${name} is created twice`);
   }
@@ -506,6 +514,28 @@ function parseAlterTable(
   table.columns.push(def.column);
 }
 
+/** `DROP TABLE [IF EXISTS] name`; table-name reuse remains unsupported. */
+function parseDropTable(
+  cursor: Cursor,
+  tables: Map<string, ParsedTable>,
+  droppedTables: Set<string>,
+): void {
+  cursor.expectWord('TABLE', 'after DROP');
+  let ifExists = false;
+  if (cursor.eatWord('IF')) {
+    cursor.expectWord('EXISTS', 'after IF');
+    ifExists = true;
+  }
+  const name = cursor.identifier('a table name');
+  cursor.expectEnd();
+  if (!tables.has(name)) {
+    if (ifExists) return;
+    cursor.fail(`DROP TABLE ${name}: table does not exist at this point`);
+  }
+  tables.delete(name);
+  droppedTables.add(name);
+}
+
 /**
  * Apply one migration file's SQL to the accumulated table map. Columns
  * accumulate in declaration order — the §2.4 row-codec positional order.
@@ -514,19 +544,22 @@ export function applyMigrationSql(
   tables: Map<string, ParsedTable>,
   sql: string,
   source: string,
+  droppedTables: Set<string> = new Set<string>(),
 ): void {
   for (const tokens of tokenizeStatements(sql, source)) {
     const cursor = new Cursor(tokens, source);
     const head = cursor.next();
     const word = head.kind === 'word' ? head.text.toUpperCase() : '';
     if (word === 'CREATE') {
-      parseCreate(cursor, tables, source);
+      parseCreate(cursor, tables, droppedTables, source);
     } else if (word === 'ALTER') {
       parseAlterTable(cursor, tables);
+    } else if (word === 'DROP') {
+      parseDropTable(cursor, tables, droppedTables);
     } else {
       throw new TypegenError(
         source,
-        `unsupported SQL statement starting with ${JSON.stringify(head.text)} (only CREATE TABLE, CREATE [UNIQUE] INDEX, and ALTER TABLE … ADD COLUMN)`,
+        `unsupported SQL statement starting with ${JSON.stringify(head.text)} (only CREATE TABLE, CREATE [UNIQUE] INDEX, ALTER TABLE … ADD COLUMN, and DROP TABLE)`,
       );
     }
   }

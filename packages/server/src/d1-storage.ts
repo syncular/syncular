@@ -43,9 +43,11 @@ import { syncError } from './errors';
 import {
   commitWindowPageSql,
   deleteRowSql,
+  dropTableDdl,
   layoutsOf,
   migratePayload,
   parseLayouts,
+  retiredTableNames,
   rewritePlan,
   rewriteRowSql,
   rewriteValues,
@@ -489,6 +491,7 @@ export class D1ServerStorage implements ServerStorage {
     if (marker === null || marker.schema_version < schema.version) {
       await this.migrate();
       const layouts = parseLayouts(marker?.layouts);
+      const retiredTables = retiredTableNames(schema, layouts);
       const existing = new Map<string, ReadonlySet<string>>();
       for (const table of schema.tables.values()) {
         const { results } = await this.#db
@@ -511,6 +514,20 @@ export class D1ServerStorage implements ServerStorage {
         const plan = rewritePlan(table, oldLayout, existing.get(table.name));
         if (!plan.migrate && !plan.backfill) continue;
         await this.#rewriteRows(table, plan.migrate ? oldLayout : undefined);
+      }
+      // Retire tables only after the additive DDL and rewrites succeed. D1
+      // cannot wrap the whole bump in an interactive transaction, but this
+      // ordering avoids destructive work before every fallible preparatory
+      // step and the batch keeps table + live-scope cleanup atomic.
+      if (retiredTables.length > 0) {
+        await this.#db.batch(
+          retiredTables.flatMap((tableName) => [
+            this.#db
+              .prepare('DELETE FROM sync_row_scopes WHERE tbl=?')
+              .bind(tableName),
+            this.#db.prepare(dropTableDdl(tableName)),
+          ]),
+        );
       }
       await this.#db
         .prepare(
