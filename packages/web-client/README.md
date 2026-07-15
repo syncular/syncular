@@ -123,6 +123,14 @@ that rolled back with the terminating operation. It stays in the protected
 client database and is never added to the wire protocol, preferences, or
 telemetry; successful and historical outcomes may omit it.
 
+Rejected optimistic state is removed immediately, even when a validator emits
+no server row in the pull half. The TypeScript client stores protected,
+restart-safe before-images beside each pending outbox commit, restores the last
+confirmed rows (including rejected deletes and atomic siblings), and then
+replays later pending edits. These before-images are internal rollback state:
+they are never encoded on the wire or exposed through pending commits, outcome
+envelopes, diagnostics, preferences, or telemetry.
+
 Use `patch(table, rowId, partial, { baseVersion? })` for editor-style partial
 updates. The wire still carries a full row, but the durable local operation
 records a sorted `changedFields` list so conflict and rejection UI knows which

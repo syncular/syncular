@@ -288,6 +288,13 @@ export function ensureLocalSchema(
       client_commit_id TEXT NOT NULL UNIQUE,
       created_at_ms INTEGER NOT NULL,
       operations TEXT NOT NULL)`);
+    db.exec(`CREATE TABLE IF NOT EXISTS _syncular_outbox_before_images(
+      client_commit_id TEXT NOT NULL,
+      op_index INTEGER NOT NULL,
+      existed INTEGER NOT NULL CHECK(existed IN (0, 1)),
+      sync_version INTEGER,
+      values_json TEXT,
+      PRIMARY KEY(client_commit_id, op_index))`);
     db.exec(`CREATE TABLE IF NOT EXISTS _syncular_commit_outcomes(
       seq INTEGER PRIMARY KEY AUTOINCREMENT,
       client_commit_id TEXT NOT NULL UNIQUE,
