@@ -29,6 +29,11 @@ export interface OutboxOperation {
   readonly baseVersion?: number;
   /** Full-row values keyed by column name; present iff `op` is `upsert`. */
   readonly values?: Readonly<Record<string, JsonRowValue>>;
+  /**
+   * Local-only normalized columns intentionally supplied to `patch()`.
+   * Absent for full-row mutate/upsert because intent is then unknown.
+   */
+  readonly changedFields?: readonly string[];
 }
 
 export interface OutboxCommit {

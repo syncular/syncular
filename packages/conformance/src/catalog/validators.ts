@@ -104,6 +104,15 @@ export const validatorScenarios: readonly Scenario[] = [
         false,
         'a validation rejection is not retryable',
       );
+      checkEqual(
+        rejection?.details,
+        {
+          fieldPaths: ['title'],
+          reason: 'max_length_exceeded',
+          requiredAction: 'edit_fields',
+        },
+        'bounded structured correction details round-trip on both client cores',
+      );
 
       // §6.4: NOTHING from the commit reached storage — the sibling insert
       // rolled back with the rejected operation.

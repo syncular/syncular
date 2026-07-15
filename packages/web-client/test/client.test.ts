@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type ClientSchema, ClientSyncError } from '@syncular/client';
+import { ValidationRejection } from '@syncular/server';
 import {
   CLIENT_SCHEMA,
   makeClient,
@@ -352,14 +353,12 @@ describe('durable commit outcomes', () => {
         },
       ]);
       await winner.client.syncUntilIdle();
-      const losingCommitId = loser.client.mutate([
-        {
-          table: 'tasks',
-          op: 'upsert',
-          values: taskValues('conflict-1', 'conflict', 'loser'),
-          baseVersion: 1,
-        },
-      ]);
+      const losingCommitId = loser.client.patch(
+        'tasks',
+        'conflict-1',
+        { title: 'loser' },
+        { baseVersion: 1 },
+      );
       await loser.client.syncUntilIdle();
 
       const outcome = loser.client.commitOutcome(losingCommitId);
@@ -381,6 +380,7 @@ describe('durable commit outcomes', () => {
                 op: 'upsert',
                 rowId: 'conflict-1',
                 baseVersion: 1,
+                changedFields: ['title'],
               },
             },
           },
@@ -395,6 +395,9 @@ describe('durable commit outcomes', () => {
       });
       expect(reopened.client.conflicts).toHaveLength(1);
       expect(reopened.client.conflicts[0]?.serverRow.title).toBe('winner');
+      expect(reopened.client.conflicts[0]?.operation?.changedFields).toEqual([
+        'title',
+      ]);
       const resolved = reopened.client.resolveCommitOutcome({
         clientCommitId: losingCommitId,
         resolution: 'resolved_keep_server',
@@ -495,6 +498,91 @@ describe('durable commit outcomes', () => {
     winner.db.close();
     await loser.client.close();
     loser.db.close();
+  });
+
+  test('structured rejection details and patch intent survive restart', async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), 'syncular-rejection-details-'),
+    );
+    const databasePath = join(directory, 'client.db');
+    const server = makeServer(CLIENT_SCHEMA, {
+      validators: {
+        tasks: (operation) => {
+          if (operation.row?.title === 'invalid') {
+            throw new ValidationRejection(
+              'app.invalid_title',
+              'diagnostic only',
+              {
+                fieldPaths: ['title'],
+                reason: 'invalid_value',
+                requiredAction: 'edit_fields',
+                references: { task_id: operation.rowId },
+              },
+            );
+          }
+        },
+      },
+    });
+    try {
+      const first = await makeClient(server, {
+        clientId: 'rejection-details',
+        databasePath,
+      });
+      first.client.subscribe({
+        id: 's1',
+        table: 'tasks',
+        scopes: { project_id: ['details'] },
+      });
+      first.client.mutate([
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: taskValues('details-1', 'details', 'valid'),
+        },
+      ]);
+      await first.client.syncUntilIdle();
+      const rejectedId = first.client.patch(
+        'tasks',
+        'details-1',
+        { title: 'invalid' },
+        { baseVersion: 1 },
+      );
+      await first.client.syncUntilIdle();
+      expect(first.client.commitOutcome(rejectedId)).toMatchObject({
+        status: 'rejected',
+        results: [
+          {
+            status: 'error',
+            rejection: {
+              code: 'app.invalid_title',
+              details: {
+                fieldPaths: ['title'],
+                reason: 'invalid_value',
+                requiredAction: 'edit_fields',
+                references: { task_id: 'details-1' },
+              },
+              operation: { changedFields: ['title'] },
+            },
+          },
+        ],
+      });
+      await first.client.close();
+      first.db.close();
+
+      const reopened = await makeClient(server, {
+        clientId: 'rejection-details',
+        databasePath,
+      });
+      expect(reopened.client.rejections[0]).toMatchObject({
+        clientCommitId: rejectedId,
+        details: { fieldPaths: ['title'], requiredAction: 'edit_fields' },
+        operation: { changedFields: ['title'] },
+      });
+      await reopened.client.close();
+      reopened.db.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 

@@ -6,7 +6,7 @@
  * restart can never turn "rejected" into an inferred success. Conflict payloads
  * deliberately stay local; retention never deletes an unresolved failure.
  */
-import type { RowValue } from '@syncular/core';
+import type { RejectionDetails, RowValue } from '@syncular/core';
 import type { ClientDatabase } from './database';
 import { ClientSyncError } from './errors';
 import type { OutboxOperation } from './outbox';
@@ -32,6 +32,8 @@ export interface RejectionRecord {
   readonly code: string;
   readonly message: string;
   readonly retryable: boolean;
+  /** Bounded host-declared metadata safe for authorized recovery UI. */
+  readonly details?: RejectionDetails;
   readonly operation?: OutboxOperation;
 }
 

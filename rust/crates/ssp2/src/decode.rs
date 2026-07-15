@@ -189,6 +189,8 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
     let mut sub_seen_commit = false;
     let mut sub_seen_segment = false;
     let mut error_seen = false;
+    let mut last_push_result: Option<(String, bool, Vec<i32>)> = None;
+    let mut last_push_result_has_details = false;
 
     while let Some((ty, payload)) = next_frame(r)? {
         if error_seen {
@@ -243,7 +245,70 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                         "PUSH_RESULT after a SUB_START (out of grammar order)",
                     ));
                 }
-                frames.push(decode_push_result(payload)?);
+                let frame = decode_push_result(payload)?;
+                if let Frame::PushResult {
+                    client_commit_id,
+                    status,
+                    results,
+                    ..
+                } = &frame
+                {
+                    let error_indexes = results
+                        .iter()
+                        .filter_map(|result| match result {
+                            OpResult::Error { op_index, .. } => Some(*op_index),
+                            _ => None,
+                        })
+                        .collect();
+                    last_push_result = Some((
+                        client_commit_id.clone(),
+                        *status == PushStatus::Rejected,
+                        error_indexes,
+                    ));
+                    last_push_result_has_details = false;
+                }
+                frames.push(frame);
+                seen_body = true;
+            }
+            ft::PUSH_RESULT_DETAILS => {
+                if past_results {
+                    return Err(DecodeError::invalid(
+                        "PUSH_RESULT_DETAILS after a SUB_START (out of grammar order)",
+                    ));
+                }
+                let frame = decode_push_result_details(payload)?;
+                let Some((result_commit_id, result_rejected, error_indexes)) = &last_push_result
+                else {
+                    return Err(DecodeError::invalid(
+                        "PUSH_RESULT_DETAILS without a preceding PUSH_RESULT",
+                    ));
+                };
+                if last_push_result_has_details {
+                    return Err(DecodeError::invalid(
+                        "duplicate PUSH_RESULT_DETAILS companion",
+                    ));
+                }
+                if let Frame::PushResultDetails {
+                    client_commit_id,
+                    entries,
+                } = &frame
+                {
+                    if !*result_rejected || client_commit_id != result_commit_id {
+                        return Err(DecodeError::invalid(
+                            "PUSH_RESULT_DETAILS does not match its rejected PUSH_RESULT",
+                        ));
+                    }
+                    if entries
+                        .iter()
+                        .any(|entry| !error_indexes.contains(&entry.op_index))
+                    {
+                        return Err(DecodeError::invalid(
+                            "PUSH_RESULT_DETAILS entry does not match an error result",
+                        ));
+                    }
+                }
+                last_push_result_has_details = true;
+                frames.push(frame);
                 seen_body = true;
             }
             ft::SUB_START => {
@@ -572,6 +637,41 @@ fn decode_push_result(payload: &[u8]) -> Result<Frame> {
             status,
             commit_seq,
             results,
+        })
+    })
+}
+
+fn decode_push_result_details(payload: &[u8]) -> Result<Frame> {
+    frame_payload(payload, "PUSH_RESULT_DETAILS", |r| {
+        let client_commit_id = r.str("clientCommitId")?;
+        if client_commit_id.is_empty() {
+            return Err(DecodeError::invalid(
+                "PUSH_RESULT_DETAILS.clientCommitId must be non-empty",
+            ));
+        }
+        let count = r.u32("entries count")? as usize;
+        if count == 0 {
+            return Err(DecodeError::invalid(
+                "PUSH_RESULT_DETAILS must carry at least one entry",
+            ));
+        }
+        let mut entries = Vec::with_capacity(count.min(64));
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..count {
+            let op_index = r.i32("opIndex")?;
+            if op_index < 0 || !seen.insert(op_index) {
+                return Err(DecodeError::invalid(
+                    "PUSH_RESULT_DETAILS opIndex values must be unique and non-negative",
+                ));
+            }
+            entries.push(crate::model::PushResultDetail {
+                op_index,
+                details: r.json("details")?,
+            });
+        }
+        Ok(Frame::PushResultDetails {
+            client_commit_id,
+            entries,
         })
     })
 }

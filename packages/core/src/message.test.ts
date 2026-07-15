@@ -5,6 +5,8 @@ import {
   decodeMessage,
   encodeMessage,
   FrameType,
+  type PushResultDetailsFrame,
+  type PushResultFrame,
   type RequestMessage,
   type ResponseMessage,
   utf8Encode,
@@ -165,6 +167,148 @@ describe('SSP2 envelope (SPEC.md §1.2)', () => {
       'PULL_HEADER',
     ]);
     expect(encodeMessage(message)).toEqual(bytes);
+  });
+});
+
+describe('PUSH_RESULT_DETAILS additive companion', () => {
+  it('round-trips bounded structured rejection metadata', () => {
+    const message: ResponseMessage = {
+      wireVersion: 1,
+      msgKind: 'response',
+      frames: [
+        { type: 'RESP_HEADER' },
+        {
+          type: 'PUSH_RESULT',
+          clientCommitId: 'commit-1',
+          status: 'rejected',
+          results: [
+            {
+              opIndex: 0,
+              status: 'error',
+              code: 'app.invalid_duration',
+              message: 'diagnostic only',
+              retryable: false,
+            },
+          ],
+        },
+        {
+          type: 'PUSH_RESULT_DETAILS',
+          clientCommitId: 'commit-1',
+          entries: [
+            {
+              opIndex: 0,
+              details: {
+                fieldPaths: ['duration_minutes'],
+                reason: 'outside_allowed_range',
+                requiredAction: 'edit_fields',
+                references: { surgery_id: 'surgery-1' },
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const encoded = encodeMessage(message);
+    expect(decodeMessage(encoded)).toEqual(message);
+  });
+
+  it('rejects free-form and over-broad metadata', () => {
+    const message: ResponseMessage = {
+      wireVersion: 1,
+      msgKind: 'response',
+      frames: [
+        { type: 'RESP_HEADER' },
+        {
+          type: 'PUSH_RESULT',
+          clientCommitId: 'commit-1',
+          status: 'rejected',
+          results: [
+            {
+              opIndex: 0,
+              status: 'error',
+              code: 'app.invalid',
+              message: 'diagnostic only',
+              retryable: false,
+            },
+          ],
+        },
+        {
+          type: 'PUSH_RESULT_DETAILS',
+          clientCommitId: 'commit-1',
+          entries: [
+            {
+              opIndex: 0,
+              details: {
+                requiredAction: 'Show this arbitrary sentence',
+              },
+            },
+          ],
+        },
+      ],
+    };
+    expect(() => encodeMessage(message)).toThrow('lowercase stable token');
+  });
+
+  it('rejects orphaned, duplicated, and mismatched companions', () => {
+    const result: PushResultFrame = {
+      type: 'PUSH_RESULT',
+      clientCommitId: 'commit-1',
+      status: 'rejected',
+      results: [
+        {
+          opIndex: 0,
+          status: 'error',
+          code: 'app.invalid',
+          message: 'diagnostic only',
+          retryable: false,
+        },
+      ],
+    };
+    const details: PushResultDetailsFrame = {
+      type: 'PUSH_RESULT_DETAILS',
+      clientCommitId: 'commit-1',
+      entries: [{ opIndex: 0, details: { reason: 'invalid_value' } }],
+    };
+
+    expect(() =>
+      encodeMessage({
+        wireVersion: 1,
+        msgKind: 'response',
+        frames: [{ type: 'RESP_HEADER' }, details],
+      }),
+    ).toThrow('without a preceding PUSH_RESULT');
+    expect(() =>
+      encodeMessage({
+        wireVersion: 1,
+        msgKind: 'response',
+        frames: [{ type: 'RESP_HEADER' }, result, details, details],
+      }),
+    ).toThrow('duplicate PUSH_RESULT_DETAILS');
+    expect(() =>
+      encodeMessage({
+        wireVersion: 1,
+        msgKind: 'response',
+        frames: [
+          { type: 'RESP_HEADER' },
+          result,
+          { ...details, clientCommitId: 'other-commit' },
+        ],
+      }),
+    ).toThrow('does not match its rejected PUSH_RESULT');
+    expect(() =>
+      encodeMessage({
+        wireVersion: 1,
+        msgKind: 'response',
+        frames: [
+          { type: 'RESP_HEADER' },
+          result,
+          {
+            ...details,
+            entries: [{ opIndex: 1, details: { reason: 'invalid_value' } }],
+          },
+        ],
+      }),
+    ).toThrow('does not match an error result');
   });
 });
 

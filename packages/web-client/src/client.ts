@@ -22,6 +22,7 @@ import {
   parseRealtimeServerEvent,
   REALTIME_TAG_DELTA,
   REALTIME_TAG_ROUND,
+  type RejectionDetails,
   type RequestFrame,
   type ResponseMessage,
   type RowColumn,
@@ -1502,9 +1503,16 @@ export class SyncClient {
    * Returns the generated `clientCommitId`.
    */
   mutate(mutations: readonly MutationInput[]): string {
+    return this.#recordMutations(mutations);
+  }
+
+  #recordMutations(
+    mutations: readonly MutationInput[],
+    changedFieldsByIndex: readonly (readonly string[] | undefined)[] = [],
+  ): string {
     this.#requireStarted();
     const clientCommitId = crypto.randomUUID();
-    const operations: OutboxOperation[] = mutations.map((mutation) => {
+    const operations: OutboxOperation[] = mutations.map((mutation, index) => {
       const table = this.#table(mutation.table);
       if (mutation.op === 'delete') {
         return {
@@ -1536,6 +1544,9 @@ export class SyncClient {
           ? { baseVersion: mutation.baseVersion }
           : {}),
         values: json,
+        ...(changedFieldsByIndex[index] !== undefined
+          ? { changedFields: [...(changedFieldsByIndex[index] ?? [])] }
+          : {}),
       };
     });
     this.#applyBatch((batch) => {
@@ -1588,19 +1599,23 @@ export class SyncClient {
     for (const column of compiled.columns as readonly RowColumn[]) {
       record[column.name] = fromSqlValue(column, row[column.name] ?? null);
     }
-    for (const [name, value] of normalizeRecordKeys(compiled, partial)) {
+    const normalizedPartial = normalizeRecordKeys(compiled, partial);
+    for (const [name, value] of normalizedPartial) {
       record[name] = value;
     }
-    return this.mutate([
-      {
-        table,
-        op: 'upsert',
-        values: record,
-        ...(options?.baseVersion !== undefined
-          ? { baseVersion: options.baseVersion }
-          : {}),
-      },
-    ]);
+    return this.#recordMutations(
+      [
+        {
+          table,
+          op: 'upsert',
+          values: record,
+          ...(options?.baseVersion !== undefined
+            ? { baseVersion: options.baseVersion }
+            : {}),
+        },
+      ],
+      [[...normalizedPartial.keys()].sort()],
+    );
   }
 
   /** Host-facing patch result with explicit network work intent (§7.5). */
@@ -2150,6 +2165,17 @@ export class SyncClient {
     const subsById = new Map(
       (sentSubs ?? loadSubscriptions(this.#db)).map((sub) => [sub.id, sub]),
     );
+    const rejectionDetailsByCommit = new Map<
+      string,
+      ReadonlyMap<number, RejectionDetails>
+    >();
+    for (const frame of message.frames) {
+      if (frame.type !== 'PUSH_RESULT_DETAILS') continue;
+      rejectionDetailsByCommit.set(
+        frame.clientCommitId,
+        new Map(frame.entries.map((entry) => [entry.opIndex, entry.details])),
+      );
+    }
 
     const header = message.frames[0];
     if (header?.type !== 'RESP_HEADER') {
@@ -2198,8 +2224,17 @@ export class SyncClient {
             break;
           case 'PUSH_RESULT':
             this.#applyBatch((batch) =>
-              this.#handlePushResult(frame, commitsById, summary, batch),
+              this.#handlePushResult(
+                frame,
+                commitsById,
+                summary,
+                batch,
+                rejectionDetailsByCommit.get(frame.clientCommitId),
+              ),
             );
+            break;
+          case 'PUSH_RESULT_DETAILS':
+            // Pre-indexed above so companion ordering remains wire-additive.
             break;
           case 'SUB_START': {
             const sub = subsById.get(frame.id);
@@ -2427,6 +2462,7 @@ export class SyncClient {
     commitsById: ReadonlyMap<string, OutboxCommit>,
     summary: MutableSummary,
     batch: ChangeAccumulator,
+    rejectionDetails: ReadonlyMap<number, RejectionDetails> | undefined,
   ): void {
     const commit = commitsById.get(frame.clientCommitId);
     if (commit === undefined) return;
@@ -2483,12 +2519,14 @@ export class SyncClient {
         summary.conflicts.push(conflict);
         this.#config.onConflict?.(conflict);
       } else if (result.status === 'error') {
+        const details = rejectionDetails?.get(result.opIndex);
         const rejection: RejectionRecord = {
           clientCommitId: frame.clientCommitId,
           opIndex: result.opIndex,
           code: result.code,
           message: result.message,
           retryable: result.retryable,
+          ...(details !== undefined ? { details } : {}),
           ...(operation !== undefined ? { operation } : {}),
         };
         this.#rejections.push(rejection);
