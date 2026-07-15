@@ -13,9 +13,10 @@
 # No registry tokens are stored anywhere; both jobs authenticate via the
 # GitHub OIDC token (`id-token: write`).
 #
-# Trigger: push a version tag (`v<version>`). Root package.json is the only
-# authored version; release jobs verify the tag and materialize child metadata
-# in their ephemeral checkouts before publishing.
+# Trigger: push a version tag (`v<version>`), or manually resume a partially
+# failed tag release. Root package.json is the only authored version; release
+# jobs verify the selected tag and materialize child metadata in their
+# ephemeral checkouts before publishing.
 
 name: release
 
@@ -23,16 +24,27 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing version tag to resume (for example v0.7.0)
+        required: true
+        type: string
 
 permissions:
   contents: read
   id-token: write
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
 
 jobs:
   npm:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -45,7 +57,7 @@ jobs:
       - name: validate source version and release tag
         run: |
           bun run version:check
-          bun scripts/version.ts assert-tag "$GITHUB_REF_NAME"
+          bun scripts/version.ts assert-tag "$RELEASE_TAG"
       - name: materialize release metadata
         run: |
           bun run version:materialize
@@ -96,6 +108,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -103,7 +117,7 @@ jobs:
       - name: validate and materialize release metadata
         run: |
           bun run version:check
-          bun scripts/version.ts assert-tag "$GITHUB_REF_NAME"
+          bun scripts/version.ts assert-tag "$RELEASE_TAG"
           bun run version:materialize
           bun scripts/version.ts check --materialized
       # The Tauri plugin's verify build compiles tauri on Linux, which needs
@@ -152,7 +166,10 @@ jobs:
               return 0
             fi
             echo "── publishing $1@$VERSION"
-            cargo publish -p "$1"
+            # version:materialize intentionally updates authored workspace
+            # manifests in this ephemeral checkout. Those exact generated
+            # manifests are what we verify and publish.
+            cargo publish --allow-dirty -p "$1"
           }
           cd rust
           publish syncular-ssp2
@@ -175,6 +192,8 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -182,7 +201,7 @@ jobs:
       - name: validate tag and build versioned docs
         run: |
           bun run version:check
-          bun scripts/version.ts assert-tag "$GITHUB_REF_NAME"
+          bun scripts/version.ts assert-tag "$RELEASE_TAG"
           bun run --cwd apps/docs build
       - name: deploy docs to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
@@ -201,6 +220,8 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -208,7 +229,7 @@ jobs:
       - name: validate tag and build versioned demo
         run: |
           bun run version:check
-          bun scripts/version.ts assert-tag "$GITHUB_REF_NAME"
+          bun scripts/version.ts assert-tag "$RELEASE_TAG"
           bun run --cwd apps/demo build:static
       - name: deploy demo to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
