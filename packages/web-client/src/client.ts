@@ -1737,6 +1737,7 @@ export class SyncClient {
         status: 'rejected',
         recordedAtMs: this.#now(),
         results: [{ status: 'error', rejection }],
+        operations: commit.operations,
       });
       pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
       batch.status();
@@ -2543,6 +2544,7 @@ export class SyncClient {
         : 'rejected',
       recordedAtMs: this.#now(),
       results: outcomeResults,
+      operations: commit.operations,
     });
     pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
     batch.outcomes();
@@ -2900,6 +2902,7 @@ export class SyncClient {
                 status: 'rejected',
                 recordedAtMs: this.#now(),
                 results,
+                operations: commit.operations,
               });
             }
             pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
