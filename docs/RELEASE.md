@@ -1,8 +1,31 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.8.0** (`v0.8.0`). All artifacts use Apache-2.0, except
+current release is **0.9.0** (`v0.9.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.9.0 release notes
+
+0.9.0 makes offline correction UI precise without putting application edit
+intent or arbitrary server diagnostics on the wire.
+
+The release includes:
+
+- bounded, privacy-safe `RejectionDetails` for deliberate write-validator
+  failures: field paths, stable reason/action tokens, and explicitly approved
+  non-sensitive references;
+- an additive `PUSH_RESULT_DETAILS` companion frame on `0x1B`, preserving
+  compatibility with older clients and older servers while keeping the legacy
+  `PUSH_RESULT` record unchanged;
+- idempotent server persistence and durable TypeScript/Rust client persistence
+  of structured details, including restart recovery;
+- local-only `changedFields` intent for `patch` operations, retained through
+  conflicts, rejections, final-outcome journaling, and restart without entering
+  `PUSH_COMMIT` or becoming server-trusted data;
+- matching TypeScript/Rust conformance scenarios, strict companion-frame
+  validation, WebSocket/HTTP validator parity, and app-facing test-kit coverage;
+- expanded conflict, validator, correction, and multi-client test guidance,
+  plus corrected published `@syncular/testkit` installation instructions.
 
 ## 0.8.0 release notes
 

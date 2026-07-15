@@ -11,6 +11,7 @@
 import {
   encodeMessage,
   PROTOCOL_WIRE_VERSION,
+  type PushResultFrame,
   type RespHeaderFrame,
   type ResponseFrame,
   type SubEndFrame,
@@ -54,6 +55,21 @@ function wrapperFor(frame: ResponseFrame): {
     case 'ERROR':
     case 'UNKNOWN':
       return { frames: [STUB_HEADER, frame], index: 1 };
+    case 'PUSH_RESULT_DETAILS': {
+      const result: PushResultFrame = {
+        type: 'PUSH_RESULT',
+        clientCommitId: frame.clientCommitId,
+        status: 'rejected',
+        results: frame.entries.map((entry) => ({
+          opIndex: entry.opIndex,
+          status: 'error',
+          code: 'sync.constraint_violation',
+          message: '',
+          retryable: false,
+        })),
+      };
+      return { frames: [STUB_HEADER, result, frame], index: 2 };
+    }
     case 'SUB_START':
       return { frames: [STUB_HEADER, frame, STUB_SUB_END], index: 1 };
     case 'SUB_END':

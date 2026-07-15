@@ -35,6 +35,7 @@ pub mod frame_type {
     pub const SEGMENT_INLINE: u8 = 0x15;
     pub const SUB_END: u8 = 0x16;
     pub const LEASE: u8 = 0x19;
+    pub const PUSH_RESULT_DETAILS: u8 = 0x1B;
     pub const ERROR: u8 = 0x1F;
 
     pub const REQUEST_TYPES: &[u8] = &[REQ_HEADER, PUSH_COMMIT, PULL_HEADER, SUBSCRIPTION];
@@ -47,6 +48,7 @@ pub mod frame_type {
         SEGMENT_INLINE,
         SUB_END,
         LEASE,
+        PUSH_RESULT_DETAILS,
         ERROR,
     ];
 }
@@ -159,6 +161,12 @@ pub enum OpResult {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushResultDetail {
+    pub op_index: i32,
+    pub details: RawJson,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Frame {
     ReqHeader {
@@ -197,6 +205,12 @@ pub enum Frame {
         status: PushStatus,
         commit_seq: Option<i64>,
         results: Vec<OpResult>,
+    },
+    /// Additive host-safe metadata for rejection records. Older clients skip
+    /// this frame under the unknown-frame rule and still process PUSH_RESULT.
+    PushResultDetails {
+        client_commit_id: String,
+        entries: Vec<PushResultDetail>,
     },
     SubStart {
         id: String,

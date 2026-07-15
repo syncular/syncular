@@ -303,7 +303,7 @@ Rules:
    *either* message kind: a frame type registered for the other message
    kind (e.g. `SUB_START` in a request) is not unknown — it is a decode
    error. Registry entries that are *reserved* without a message kind
-   (`0x17`, `0x18`, `0x1A`, `0x20`–`0x2F`) have no layout in wire version 1 and
+   (`0x17`, `0x18`, `0x1A`, `0x1C`–`0x1E`, `0x20`–`0x2F`) have no layout in wire version 1 and
    are therefore unknown — skippable, not errors — until a future
    version assigns them one. Preservation is the **only** source of
    unknown frames on the encode side: an encoder MUST NOT emit an
@@ -341,6 +341,7 @@ Frame type registry (wire version 1):
 | `0x18` | *reserved* (CRDT state vectors) | — | §0 |
 | `0x19` | `LEASE` | response | 7.3.2 |
 | `0x1A` | *reserved* (request-side lease assertion) | — | §7.3.2 |
+| `0x1B` | `PUSH_RESULT_DETAILS` | response | 6.3.1 |
 | `0x1F` | `ERROR` | response | 1.6 |
 | `0x20`–`0x2F` | *reserved* (realtime extensions, presence) | — | §8.6 |
 
@@ -422,7 +423,9 @@ envelope codec rejects a no-content request as a **decode error** under
 ```
 RESP_HEADER                     exactly once, first
 LEASE                           0 or 1 (§7.3.2), immediately after RESP_HEADER
-PUSH_RESULT × N                 one per PUSH_COMMIT, in request order
+(PUSH_RESULT [PUSH_RESULT_DETAILS]) × N
+                                one result per PUSH_COMMIT, in request order;
+                                optional details immediately follow their result
 per subscription, in request order:
   SUB_START
   COMMIT × k                    incremental changes (§4.5)
@@ -2454,6 +2457,55 @@ Semantics:
   subsequent occurrences return the persisted result per the replay rule
   (§2.3): `cached` if it applied, `rejected` if it rejected.
 
+#### 6.3.1 `PUSH_RESULT_DETAILS` additive companion frame
+
+A server MAY emit one `PUSH_RESULT_DETAILS` immediately after a rejected
+`PUSH_RESULT` when at least one terminating error carries host-approved
+recovery metadata. This is a new frame rather than an extension of the
+`PUSH_RESULT` record so a client that predates this section treats it as an
+unknown frame, preserves or skips it under §1.2, and still processes the
+legacy result unchanged. A client that understands this frame MUST continue
+to accept a response which omits it.
+
+| Field | Type | Semantics |
+|---|---|---|
+| `clientCommitId` | `str` | Matches the immediately preceding rejected `PUSH_RESULT` |
+| `entries` | `u32` count × detail entry | Non-empty; at most one entry for each terminating error operation |
+
+Detail entry:
+
+| Field | Type | Semantics |
+|---|---|---|
+| `opIndex` | `i32` | Unique, non-negative index of an `error` record in the companion result |
+| `detailsJson` | `str` | UTF-8 JSON object conforming to the bounded shape below |
+
+The normalized `detailsJson` object has only these optional members and MUST
+contain at least one of them:
+
+| Member | Shape | Semantics |
+|---|---|---|
+| `fieldPaths` | 1–32 unique schema paths | Fields the app may focus or explain; each path is at most 160 characters and matches `identifier(.identifier)*` |
+| `reason` | stable token | Machine reason, at most 96 characters |
+| `requiredAction` | stable token | Machine recovery action, at most 96 characters |
+| `references` | 1–16 string entries | Explicitly approved, non-sensitive recovery identifiers; keys are stable tokens ≤ 64 characters and trimmed values contain no control characters and are ≤ 256 UTF-8 bytes |
+
+`reason`, `requiredAction`, and reference keys use lowercase code-like tokens:
+`[a-z][a-z0-9]*([._-][a-z0-9]+)*`. The encoded normalized JSON object MUST
+not exceed 4,096 bytes. Unknown members, duplicates, empty members, malformed
+paths or tokens, and over-limit values are decode errors. The details frame
+MUST NOT carry diagnostic prose, stack traces, arbitrary host values, row
+contents, protected health information, or authorization data. A host opts
+every reference into replication and is responsible for classifying it as
+safe for the already-authorized client.
+
+The server persists these details with the idempotency outcome, so a replayed
+rejection emits the identical companion. The client persists accepted details
+with its durable rejection journal (§7.2.1). Details are recovery hints, not
+trusted display copy: an app SHOULD map known codes, paths, reasons, actions,
+and references to its own localized UI and MUST ignore unknown values. The
+legacy `message` remains diagnostic and MUST NOT be rendered directly to end
+users.
+
 ### 6.4 Atomicity and ordering
 
 - Commits in a request are processed **sequentially in frame order**. A
@@ -2569,6 +2621,15 @@ opaque to the client runtime, which applies the generic rejection
 handling (drop the commit from the outbox; the app decides whether to
 re-push a corrected write).
 
+A deliberate host rejection MAY additionally attach the bounded
+`RejectionDetails` object of §6.3.1. The server validates and normalizes it at
+`ValidationRejection` construction time, persists it with the idempotent
+result, and emits it only through the additive companion frame. Invalid or
+over-limit details fail loudly as a host programming error; the server never
+falls back to replicating arbitrary exception data. Details do not broaden
+authorization and MUST contain only identifiers the host has explicitly
+classified as safe for the actor that already passed the row write gate.
+
 **Host codes MUST be distinguishable from protocol codes.** A host
 validation code **MUST NOT** begin with any reserved protocol-family
 prefix: **`sync.`**, **`blob.`**, **`presence.`**, or **`client.`**. These
@@ -2668,9 +2729,21 @@ Each journal entry contains the `clientCommitId`, local recording time,
 newest-first local sequence, final status, and every operation result. A
 conflict retains its stable code and message, `serverVersion`, decoded
 `serverRow`, and the losing schema-agnostic local operation. An error retains
-its stable code, message, retryability, and local operation. The same rule
+its stable code, message, retryability, accepted §6.3.1 details when present,
+and local operation. The same rule
 applies to client-local terminal drops such as `sync.outbox_incompatible` and
 an outbox commit proven to be inside a revoked effective scope.
+
+The operation journal also preserves **local edit intent** for an upsert made
+through the client's partial-update API: `changedFields` is the normalized,
+sorted set of non-primary-key fields supplied to `patch`. It survives restart
+and appears on conflict and rejection records so recovery UI can distinguish
+the fields the user meant to change from the rest of the full row payload.
+This metadata is deliberately local-only: it is stored beside the
+schema-agnostic outbox operation and MUST NOT be encoded into `PUSH_COMMIT` or
+trusted by the server. A full-row `mutate` has unknown intent and therefore
+omits `changedFields`; clients MUST NOT infer it by diffing against a mutable
+local base.
 
 The client exposes `commitOutcome(clientCommitId)` and
 `commitOutcomes({ limit?, activeOnly? })`. Active conflict/rejection entries

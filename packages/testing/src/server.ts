@@ -17,6 +17,7 @@ import {
   type ServerSchema,
   SqliteServerStorage,
   type SyncRequestContext,
+  type ValidatorRegistry,
 } from '@syncular/server';
 import type { VirtualClock } from './clock';
 
@@ -50,6 +51,8 @@ export interface TestServerOptions {
   readonly partition: string;
   /** Defaults to {@link allowAllScopes}. */
   readonly resolveScopes?: ResolveScopes;
+  /** Optional §6.7 validators, shared by HTTP-like and socket rounds. */
+  readonly validators?: ValidatorRegistry;
 }
 
 /**
@@ -79,6 +82,9 @@ export function createTestServer(options: TestServerOptions): TestServer {
     resolveScopes,
     clock: clockFn,
     segments,
+    ...(options.validators !== undefined
+      ? { validators: options.validators }
+      : {}),
   });
   return {
     storage,
@@ -92,6 +98,9 @@ export function createTestServer(options: TestServerOptions): TestServer {
       storage,
       segments,
       resolveScopes,
+      ...(options.validators !== undefined
+        ? { validators: options.validators }
+        : {}),
       clock: clockFn,
       realtime: hub,
     }),

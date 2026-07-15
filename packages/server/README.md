@@ -60,6 +60,55 @@ done by a binding of the core or by in-database fanout — a relay would add a
 hop, a second protocol surface, and a managed dependency for zero capability
 the core lacks.
 
+## Write validators and recovery metadata
+
+`validators` is the server-authoritative seam for row business rules that
+scope grants cannot express. A validator runs after row decode and scope
+authorization, inside the commit transaction, for HTTP and WebSocket sync
+rounds alike. Throw `ValidationRejection` for a deliberate host rejection:
+
+```ts
+import {
+  ValidationRejection,
+  type SyncServerConfig,
+} from '@syncular/server';
+
+const config: SyncServerConfig = {
+  schema,
+  storage,
+  segments,
+  resolveScopes,
+  validators: {
+    surgeries: ({ row }) => {
+      if (typeof row?.duration_minutes === 'number' && row.duration_minutes < 5) {
+        throw new ValidationRejection(
+          'surgery.duration_too_short',
+          'diagnostic only',
+          {
+            fieldPaths: ['duration_minutes'],
+            reason: 'below_minimum',
+            requiredAction: 'edit_fields',
+            references: { minimum_minutes: '5' },
+          },
+        );
+      }
+    },
+  },
+};
+```
+
+The third argument is optional. When supplied, Syncular validates and
+normalizes a bounded `RejectionDetails` object and persists it with the
+idempotency result. Its values replicate to the authorized client, so include
+only non-sensitive identifiers that the host explicitly approves for recovery
+UI. Unknown members, free-form tokens, malformed paths, and over-limit data
+fail at construction. Diagnostic prose stays in `message`; apps should map
+the stable code/details to localized copy instead of displaying that message.
+
+Validators are per-operation. They do not make multi-row or multi-table
+invariants atomic; those require a server-authoritative command or a future
+whole-commit validation seam. A validator must not mutate the row it receives.
+
 ## Structured events (the ops seam)
 
 One optional interface, `SyncularServerEvents`, carries every

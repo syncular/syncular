@@ -25,6 +25,7 @@ import {
   type PushOperationResult,
   type PushResultFrame,
   parseBlobRef,
+  type RejectionDetails,
   type RowValue,
 } from '@syncular/core';
 import type { BlobStore } from './blob-store';
@@ -70,10 +71,18 @@ function errorRecord(
   code: string,
   message: string,
   retryable = false,
+  details?: RejectionDetails,
 ): OperationOutcome {
   return {
     kind: 'terminate',
-    record: { opIndex, status: 'error', code, message, retryable },
+    record: {
+      opIndex,
+      status: 'error',
+      code,
+      message,
+      retryable,
+      ...(details !== undefined ? { details } : {}),
+    },
   };
 }
 
@@ -141,7 +150,13 @@ async function runValidator(
     );
   } catch (error) {
     if (error instanceof ValidationRejection) {
-      return errorRecord(opIndex, error.code, error.message);
+      return errorRecord(
+        opIndex,
+        error.code,
+        error.message,
+        false,
+        error.details,
+      );
     }
     // §6.7: a non-ValidationRejection throw is still a rejection, mapped to
     // the generic server-side constraint code (§10.2) — the validator's
