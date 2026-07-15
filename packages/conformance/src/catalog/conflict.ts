@@ -47,14 +47,7 @@ export const conflictScenarios: readonly Scenario[] = [
       await syncIdle(a);
 
       // B pushes from the same stale base: conflict, not silent overwrite.
-      const mLoser = await b.api.mutate([
-        {
-          op: 'upsert',
-          table: 'tasks',
-          values: task('t1', 'p1', 'b-stale'),
-          baseVersion: 1,
-        },
-      ]);
+      const mLoser = await b.api.patch('tasks', 't1', { title: 'b-stale' }, 1);
       const report = await syncOk(b);
       checkEqual(report.rejected, [mLoser], 'the losing commit was rejected');
       checkEqual(report.conflicts, 1, 'exactly one conflict surfaced');
@@ -67,6 +60,11 @@ export const conflictScenarios: readonly Scenario[] = [
         conflict?.serverRow.title,
         'a-wins',
         'the server row rides the conflict record — no extra round-trip (§6.3)',
+      );
+      checkEqual(
+        conflict?.operation?.changedFields,
+        ['title'],
+        'patch intent survives the outbox and identifies the intentional field',
       );
 
       // keep-server: apply nothing, just pull — local state equals server.

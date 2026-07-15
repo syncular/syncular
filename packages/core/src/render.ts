@@ -192,6 +192,28 @@ function renderFrame(frame: RequestFrame | ResponseFrame): JsonValue {
           : {}),
         results: frame.results.map(renderResult),
       };
+    case 'PUSH_RESULT_DETAILS':
+      return {
+        type: 'PUSH_RESULT_DETAILS',
+        clientCommitId: frame.clientCommitId,
+        entries: frame.entries.map((entry) => ({
+          opIndex: entry.opIndex,
+          details: {
+            ...(entry.details.fieldPaths !== undefined
+              ? { fieldPaths: [...entry.details.fieldPaths] }
+              : {}),
+            ...(entry.details.reason !== undefined
+              ? { reason: entry.details.reason }
+              : {}),
+            ...(entry.details.requiredAction !== undefined
+              ? { requiredAction: entry.details.requiredAction }
+              : {}),
+            ...(entry.details.references !== undefined
+              ? { references: { ...entry.details.references } }
+              : {}),
+          },
+        })),
+      };
     case 'SUB_START':
       return {
         type: 'SUB_START',

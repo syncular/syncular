@@ -160,6 +160,18 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
             }
             ft::PUSH_RESULT
         }
+        Frame::PushResultDetails {
+            client_commit_id,
+            entries,
+        } => {
+            w.str(client_commit_id);
+            w.u32(entries.len() as u32);
+            for entry in entries {
+                w.i32(entry.op_index);
+                w.str(&entry.details.0);
+            }
+            ft::PUSH_RESULT_DETAILS
+        }
         Frame::SubStart {
             id,
             status,

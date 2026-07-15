@@ -42,6 +42,31 @@ describe('ValidationRejection reserved-prefix guard (§6.7)', () => {
   test('an empty code throws', () => {
     expect(() => new ValidationRejection('')).toThrow();
   });
+
+  test('structured details are bounded and code-like', () => {
+    const rejection = new ValidationRejection(
+      'app.invalid_duration',
+      'diagnostic',
+      {
+        fieldPaths: ['duration_minutes'],
+        reason: 'outside_allowed_range',
+        requiredAction: 'edit_fields',
+        references: { surgery_id: 'surgery-1' },
+      },
+    );
+    expect(rejection.details).toEqual({
+      fieldPaths: ['duration_minutes'],
+      reason: 'outside_allowed_range',
+      requiredAction: 'edit_fields',
+      references: { surgery_id: 'surgery-1' },
+    });
+    expect(
+      () =>
+        new ValidationRejection('app.invalid', 'diagnostic', {
+          requiredAction: 'Render arbitrary prose',
+        }),
+    ).toThrow('lowercase stable token');
+  });
 });
 
 /** A validator rejecting a title longer than `max`. */
@@ -64,6 +89,50 @@ function capture(): Captured {
 }
 
 describe('write validation apply (§6.7)', () => {
+  test('emits and idempotently replays a privacy-safe details companion', async () => {
+    const t = makeContext({
+      validators: {
+        tasks: () => {
+          throw new ValidationRejection(
+            'app.invalid_title',
+            'diagnostic only',
+            {
+              fieldPaths: ['title'],
+              reason: 'invalid_value',
+              requiredAction: 'edit_fields',
+              references: { task_id: 't1' },
+            },
+          );
+        },
+      },
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const message = await sync(t, [
+        pushCommit('structured-c1', [
+          upsert('tasks', 't1', taskRow('t1', 'p1', 'invalid')),
+        ]),
+      ]);
+      expect(pushResults(message)[0]?.status).toBe('rejected');
+      expect(
+        message.frames.find((frame) => frame.type === 'PUSH_RESULT_DETAILS'),
+      ).toEqual({
+        type: 'PUSH_RESULT_DETAILS',
+        clientCommitId: 'structured-c1',
+        entries: [
+          {
+            opIndex: 0,
+            details: {
+              fieldPaths: ['title'],
+              reason: 'invalid_value',
+              requiredAction: 'edit_fields',
+              references: { task_id: 't1' },
+            },
+          },
+        ],
+      });
+    }
+  });
+
   test('a rejecting validator rolls the whole commit back atomically', async () => {
     const cap = capture();
     const t = makeContext({

@@ -28,6 +28,10 @@ import {
   REQUEST_FRAME_TYPES,
   RESPONSE_FRAME_TYPES,
 } from './frames';
+import {
+  normalizeRejectionDetails,
+  type RejectionDetails,
+} from './rejection-details';
 import { decodeRowsSegment } from './segment';
 
 const MAGIC_BYTES = utf8Encode(SYNC_PACK_MAGIC);
@@ -119,6 +123,11 @@ export type PushOperationResult =
       code: string;
       message: string;
       retryable: boolean;
+      /**
+       * Host-safe structured metadata. It is emitted on the wire through the
+       * additive PUSH_RESULT_DETAILS companion frame, not the legacy record.
+       */
+      details?: RejectionDetails;
     };
 
 export interface PushResultFrame {
@@ -128,6 +137,16 @@ export interface PushResultFrame {
   /** Present iff `status` is `applied` or `cached` (§6.3). */
   commitSeq?: number;
   results: PushOperationResult[];
+}
+
+/**
+ * Additive companion metadata for host validation errors. Older clients see
+ * this as an unknown frame and continue processing the normative PUSH_RESULT.
+ */
+export interface PushResultDetailsFrame {
+  type: 'PUSH_RESULT_DETAILS';
+  clientCommitId: string;
+  entries: Array<{ opIndex: number; details: RejectionDetails }>;
 }
 
 export interface SubStartFrame {
@@ -202,6 +221,7 @@ export type ResponseFrame =
   | RespHeaderFrame
   | LeaseFrame
   | PushResultFrame
+  | PushResultDetailsFrame
   | SubStartFrame
   | CommitFrame
   | SegmentRefFrame
@@ -397,6 +417,36 @@ function decodePushResult(r: ByteReader): PushResultFrame {
   };
 }
 
+function decodePushResultDetails(r: ByteReader): PushResultDetailsFrame {
+  const clientCommitId = r.str();
+  if (clientCommitId.length === 0) {
+    invalid('PUSH_RESULT_DETAILS.clientCommitId must be non-empty');
+  }
+  const count = r.u32();
+  if (count === 0) invalid('PUSH_RESULT_DETAILS must carry at least one entry');
+  const entries: PushResultDetailsFrame['entries'] = [];
+  const seen = new Set<number>();
+  for (let index = 0; index < count; index++) {
+    const opIndex = r.i32();
+    if (opIndex < 0 || seen.has(opIndex)) {
+      invalid(
+        'PUSH_RESULT_DETAILS opIndex values must be unique and non-negative',
+      );
+    }
+    seen.add(opIndex);
+    let details: RejectionDetails;
+    try {
+      details = normalizeRejectionDetails(JSON.parse(r.str()) as unknown);
+    } catch (error) {
+      invalid(
+        `invalid PUSH_RESULT_DETAILS.details: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    entries.push({ opIndex, details });
+  }
+  return { type: 'PUSH_RESULT_DETAILS', clientCommitId, entries };
+}
+
 function decodeSubStart(r: ByteReader): SubStartFrame {
   const id = r.str();
   const statusByte = r.u8();
@@ -581,6 +631,9 @@ function decodeResponseFrame(
     case FrameType.PUSH_RESULT:
       frame = decodePushResult(r);
       break;
+    case FrameType.PUSH_RESULT_DETAILS:
+      frame = decodePushResultDetails(r);
+      break;
     case FrameType.SUB_START:
       frame = decodeSubStart(r);
       break;
@@ -659,6 +712,8 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
   let subscriptionHasCommits = false;
   let subscriptionHasSegments = false;
   let errorSeen = false;
+  let lastPushResult: PushResultFrame | undefined;
+  let lastPushResultHasDetails = false;
   for (const frame of frames.slice(1)) {
     if (errorSeen) invalid('frames after ERROR (the next frame must be END)');
     switch (frame.type) {
@@ -674,8 +729,40 @@ function validateResponseSequence(frames: readonly ResponseFrame[]): void {
         break;
       case 'PUSH_RESULT':
         if (sawSubscription) invalid('PUSH_RESULT frame after SUB_START');
+        lastPushResult = frame;
+        lastPushResultHasDetails = false;
         sawBody = true;
         break;
+      case 'PUSH_RESULT_DETAILS': {
+        if (sawSubscription) {
+          invalid('PUSH_RESULT_DETAILS frame after SUB_START');
+        }
+        if (lastPushResult === undefined) {
+          invalid('PUSH_RESULT_DETAILS without a preceding PUSH_RESULT');
+        }
+        if (lastPushResultHasDetails) {
+          invalid('duplicate PUSH_RESULT_DETAILS companion');
+        }
+        if (
+          lastPushResult.clientCommitId !== frame.clientCommitId ||
+          lastPushResult.status !== 'rejected'
+        ) {
+          invalid(
+            'PUSH_RESULT_DETAILS does not match its rejected PUSH_RESULT',
+          );
+        }
+        const errorIndexes = new Set(
+          lastPushResult.results.flatMap((result) =>
+            result.status === 'error' ? [result.opIndex] : [],
+          ),
+        );
+        if (frame.entries.some((entry) => !errorIndexes.has(entry.opIndex))) {
+          invalid('PUSH_RESULT_DETAILS entry does not match an error result');
+        }
+        lastPushResultHasDetails = true;
+        sawBody = true;
+        break;
+      }
       case 'SUB_START':
         if (inSubscription) invalid('nested SUB_START frame');
         inSubscription = true;
@@ -837,6 +924,32 @@ function encodeFrame(frame: RequestFrame | ResponseFrame): {
         }
       }
       return { frameType: FrameType.PUSH_RESULT, payload: w.finish() };
+    }
+    case 'PUSH_RESULT_DETAILS': {
+      if (frame.clientCommitId.length === 0) {
+        throw new Error('PUSH_RESULT_DETAILS.clientCommitId must be non-empty');
+      }
+      if (frame.entries.length === 0) {
+        throw new Error('PUSH_RESULT_DETAILS must carry at least one entry');
+      }
+      const seen = new Set<number>();
+      w.str(frame.clientCommitId);
+      w.u32(frame.entries.length);
+      for (const entry of frame.entries) {
+        if (!Number.isInteger(entry.opIndex) || entry.opIndex < 0) {
+          throw new Error('PUSH_RESULT_DETAILS.opIndex must be non-negative');
+        }
+        if (seen.has(entry.opIndex)) {
+          throw new Error('PUSH_RESULT_DETAILS.opIndex must be unique');
+        }
+        seen.add(entry.opIndex);
+        w.i32(entry.opIndex);
+        w.str(JSON.stringify(normalizeRejectionDetails(entry.details)));
+      }
+      return {
+        frameType: FrameType.PUSH_RESULT_DETAILS,
+        payload: w.finish(),
+      };
     }
     case 'SUB_START': {
       w.str(frame.id);

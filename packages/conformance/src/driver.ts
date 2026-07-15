@@ -517,6 +517,9 @@ export interface ClientConflict {
   readonly code: string;
   readonly serverVersion: number;
   readonly serverRow: DriverRow;
+  readonly operation?: {
+    readonly changedFields?: readonly string[];
+  };
 }
 
 export interface ClientRejection {
@@ -524,6 +527,15 @@ export interface ClientRejection {
   readonly opIndex: number;
   readonly code: string;
   readonly retryable: boolean;
+  readonly details?: {
+    readonly fieldPaths?: readonly string[];
+    readonly reason?: string;
+    readonly requiredAction?: string;
+    readonly references?: Readonly<Record<string, string>>;
+  };
+  readonly operation?: {
+    readonly changedFields?: readonly string[];
+  };
 }
 
 export interface ClientRowState {
@@ -672,6 +684,12 @@ export interface ClientInstance {
 
   /** Record one atomic local commit (§7.1); returns its clientCommitId. */
   mutate(mutations: readonly ClientMutation[]): Promise<string>;
+  patch(
+    table: string,
+    rowId: string,
+    partial: DriverRow,
+    baseVersion?: number,
+  ): Promise<string>;
 
   /** One combined push+pull round (§1.5, §7.2). Never throws: transport
    * and protocol failures come back as `{ ok: false }`. */
