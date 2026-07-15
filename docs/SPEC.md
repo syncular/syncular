@@ -2654,6 +2654,40 @@ codegen wiring this rung.
   client gets its own changes back in the pull half, converging in one
   round-trip.
 
+#### 7.2.1 Durable final-outcome journal
+
+A client which exposes conflict or rejection recovery MUST persist every
+final commit result in protected local bookkeeping. The journal write and the
+removal of that commit from the durable outbox occur in the **same local SQLite
+transaction**. A process crash therefore cannot leave an absent outbox item
+without durable evidence explaining whether it was `applied`, `cached`,
+`conflict`, or `rejected`. The retryable `sync.idempotency_cache_miss` serving
+failure is not final and creates no journal entry.
+
+Each journal entry contains the `clientCommitId`, local recording time,
+newest-first local sequence, final status, and every operation result. A
+conflict retains its stable code and message, `serverVersion`, decoded
+`serverRow`, and the losing schema-agnostic local operation. An error retains
+its stable code, message, retryability, and local operation. The same rule
+applies to client-local terminal drops such as `sync.outbox_incompatible` and
+an outbox commit proven to be inside a revoked effective scope.
+
+The client exposes `commitOutcome(clientCommitId)` and
+`commitOutcomes({ limit?, activeOnly? })`. Active conflict/rejection entries
+are restored into the conflict surfaces on restart. Resolution is explicit,
+durable, and one-way:
+
+- a conflict becomes `resolved_keep_server` or `superseded`;
+- a rejection becomes `superseded`;
+- an applied/cached history entry may become `dismissed`;
+- `superseded` requires a distinct `replacementClientCommitId`.
+
+Resolved evidence is retained until ordinary journal retention removes it.
+Retention prunes old applied/cached or resolved entries first and MUST NEVER
+silently delete an active conflict or rejection; active failures may therefore
+temporarily exceed the configured cap. The default cap is 1,000 entries and
+clients expose it as `outcomeRetentionMaxEntries`.
+
 ### 7.3 Auth leases
 
 An **auth lease** is a server-issued, time-bounded grant recording the
@@ -2997,7 +3031,7 @@ in durable bookkeeping state. It starts at zero and increases exactly once in
 the same SQLite transaction as each committed observer-visible change. Such a
 change includes materialized or optimistic rows, subscription/window
 registration or completeness, deferred eviction, outbox/status state exposed
-by the client, conflicts/rejections, auth-lease or schema-floor state, and
+by the client, conflicts/rejections/outcome-resolution state, auth-lease or schema-floor state, and
 schema-reset/upgrading state. A transaction which rolls back consumes no
 revision and emits no change. The revision survives restart and schema reset;
 it is destroyed only with the client database. JavaScript APIs expose it as
@@ -3020,7 +3054,9 @@ one batch carrying its revision and the domains changed by that transaction:
   table; an omitted scope-key set means honestly table-wide;
 - window changes identify canonical base, table, and changed unit(s);
 - status carries the complete post-commit client status when status changed;
-- conflict/rejection flags identify their collection domains.
+- conflict/rejection flags identify their collection domains;
+- `outcomesChanged` identifies durable journal insertion, resolution, or
+  retention changes.
 
 An empty scope-key set never means global. Scope-changing row updates record
 the union of the row's before and after scope keys; deletes record before keys
@@ -3650,7 +3686,9 @@ for `blob.not_found`, as a push operation-result `error` record.
 ### 10.3 Reserved and out-of-scope codes
 
 Outside the wire catalog: all client-local codes
-(`sync.offline`, `sync.transport_failed`, `sync.outbox_incompatible`
+(`sync.offline`, `sync.transport_failed`, `sync.outcome_not_found`
+[§7.2.1 — an explicit resolution named no retained journal entry],
+`sync.outbox_incompatible`
 [§7.4.4 — a pending commit cannot re-encode under the new schema after a
 bump], `client.decrypt_failed` [§5.11 — an encrypted column failed to
 decrypt on apply: unknown envelope version, unknown `keyId`, GCM

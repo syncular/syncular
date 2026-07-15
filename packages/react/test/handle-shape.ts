@@ -29,6 +29,11 @@ export function handleShapeOf(client: SyncClient): SyncClientLike {
     // Getters on SyncClient become async methods on the handle.
     conflicts: () => Promise.resolve(client.conflicts),
     rejections: () => Promise.resolve(client.rejections),
+    commitOutcome: (clientCommitId) =>
+      Promise.resolve(client.commitOutcome(clientCommitId)),
+    commitOutcomes: (query) => Promise.resolve(client.commitOutcomes(query)),
+    resolveCommitOutcome: (input) =>
+      Promise.resolve(client.resolveCommitOutcome(input)),
     schemaFloor: () => Promise.resolve(client.schemaFloor),
     leaseState: () => Promise.resolve(client.leaseState),
     upgrading: () => Promise.resolve(client.upgrading),

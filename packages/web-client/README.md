@@ -108,6 +108,20 @@ With `multiTab` off (the default) the single-tab contract is unchanged: a
 losing tab is an `isLeader === false` handle whose calls reject with
 `client.not_leader`.
 
+## Durable commit outcomes
+
+`SyncClient` and every host bridge expose `commitOutcome(id)`,
+`commitOutcomes({ limit?, activeOnly? })`, and `resolveCommitOutcome(input)`.
+Final `applied`, `cached`, `conflict`, and `rejected` results are journaled in
+the same SQLite transaction that drains their outbox commit. Conflict entries
+retain the losing operation plus `serverVersion`/`serverRow`; active failures
+restore after restart and are never removed by retention. Configure the
+history cap with `limits.outcomeRetentionMaxEntries` (default 1,000).
+
+Resolution is explicit and one-way: conflicts can keep the server result or
+link to a replacement commit, rejections can link to a replacement, and
+successful history may be dismissed. See SPEC §7.2.1.
+
 ## The support floor (no fallback ladder)
 
 - Persistence is **OPFS via `opfs-sahpool`, only**. No COOP/COEP headers

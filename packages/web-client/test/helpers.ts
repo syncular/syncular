@@ -200,6 +200,8 @@ export interface TestClient {
 
 export interface MakeClientOptions {
   readonly clientId: string;
+  /** Re-openable local SQLite path; defaults to an isolated in-memory DB. */
+  readonly databasePath?: string;
   readonly actorId?: string;
   readonly schema?: ClientSchema;
   readonly limits?: SyncClientLimits;
@@ -210,7 +212,7 @@ export async function makeClient(
   server: TestServer,
   options: MakeClientOptions,
 ): Promise<TestClient> {
-  const db = new BunClientDatabase();
+  const db = new BunClientDatabase(options.databasePath);
   const actorId = options.actorId ?? 'actor-1';
   const faults: ClientFaults = {
     dropResponseOnce: false,

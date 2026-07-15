@@ -5,6 +5,9 @@
  * rejection handling (§6.3), and the schema-floor stop state (§1.6).
  */
 import { describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { type ClientSchema, ClientSyncError } from '@syncular/client';
 import {
   CLIENT_SCHEMA,
@@ -262,6 +265,236 @@ describe('conflict surfacing (§6.2, §6.5)', () => {
     await a.client.syncUntilIdle();
     expect(tableRows(a.db, 'tasks').map((r) => r.id)).toEqual(['t1']);
     expect(tableRows(b.db, 'tasks').map((r) => r.id)).toEqual(['t1']);
+  });
+});
+
+describe('durable commit outcomes', () => {
+  test('journals the final result atomically with outbox drain and survives restart', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'syncular-outcomes-'));
+    const databasePath = join(directory, 'client.db');
+    const server = makeServer();
+    try {
+      const first = await makeClient(server, {
+        clientId: 'durable-client',
+        databasePath,
+      });
+      first.client.subscribe({
+        id: 's1',
+        table: 'tasks',
+        scopes: { project_id: ['durable'] },
+      });
+      const clientCommitId = first.client.mutate([
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: taskValues('durable-1', 'durable', 'persisted'),
+        },
+      ]);
+      await first.client.syncUntilIdle();
+      expect(first.client.pendingCommits()).toHaveLength(0);
+      expect(first.client.commitOutcome(clientCommitId)).toMatchObject({
+        clientCommitId,
+        status: 'applied',
+        resolution: 'active',
+        results: [{ status: 'applied', opIndex: 0 }],
+      });
+      await first.client.close();
+      first.db.close();
+
+      const reopened = await makeClient(server, {
+        clientId: 'durable-client',
+        databasePath,
+      });
+      expect(reopened.client.pendingCommits()).toHaveLength(0);
+      expect(reopened.client.commitOutcome(clientCommitId)).toMatchObject({
+        status: 'applied',
+        results: [{ status: 'applied', opIndex: 0 }],
+      });
+      await reopened.client.close();
+      reopened.db.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('restores exact conflict evidence and its one-way resolution lifecycle', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'syncular-conflict-'));
+    const databasePath = join(directory, 'loser.db');
+    const server = makeServer();
+    try {
+      const winner = await makeClient(server, { clientId: 'winner' });
+      const loser = await makeClient(server, {
+        clientId: 'loser',
+        databasePath,
+      });
+      for (const entry of [winner, loser]) {
+        entry.client.subscribe({
+          id: 's1',
+          table: 'tasks',
+          scopes: { project_id: ['conflict'] },
+        });
+      }
+      winner.client.mutate([
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: taskValues('conflict-1', 'conflict', 'base'),
+        },
+      ]);
+      await winner.client.syncUntilIdle();
+      await loser.client.syncUntilIdle();
+      winner.client.mutate([
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: taskValues('conflict-1', 'conflict', 'winner'),
+          baseVersion: 1,
+        },
+      ]);
+      await winner.client.syncUntilIdle();
+      const losingCommitId = loser.client.mutate([
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: taskValues('conflict-1', 'conflict', 'loser'),
+          baseVersion: 1,
+        },
+      ]);
+      await loser.client.syncUntilIdle();
+
+      const outcome = loser.client.commitOutcome(losingCommitId);
+      expect(outcome).toMatchObject({
+        status: 'conflict',
+        resolution: 'active',
+        results: [
+          {
+            status: 'conflict',
+            conflict: {
+              clientCommitId: losingCommitId,
+              opIndex: 0,
+              table: 'tasks',
+              rowId: 'conflict-1',
+              code: 'sync.version_conflict',
+              serverVersion: 2,
+              serverRow: { title: 'winner' },
+              operation: {
+                op: 'upsert',
+                rowId: 'conflict-1',
+                baseVersion: 1,
+              },
+            },
+          },
+        ],
+      });
+      await loser.client.close();
+      loser.db.close();
+
+      const reopened = await makeClient(server, {
+        clientId: 'loser',
+        databasePath,
+      });
+      expect(reopened.client.conflicts).toHaveLength(1);
+      expect(reopened.client.conflicts[0]?.serverRow.title).toBe('winner');
+      const resolved = reopened.client.resolveCommitOutcome({
+        clientCommitId: losingCommitId,
+        resolution: 'resolved_keep_server',
+      });
+      expect(resolved.resolution).toBe('resolved_keep_server');
+      expect(reopened.client.conflicts).toHaveLength(0);
+      // Resolution is one-way and idempotent; a later choice cannot rewrite it.
+      expect(
+        reopened.client.resolveCommitOutcome({
+          clientCommitId: losingCommitId,
+          resolution: 'superseded',
+          replacementClientCommitId: 'replacement',
+        }),
+      ).toEqual(resolved);
+      await reopened.client.close();
+      reopened.db.close();
+
+      const twice = await makeClient(server, {
+        clientId: 'loser',
+        databasePath,
+      });
+      expect(twice.client.conflicts).toHaveLength(0);
+      expect(twice.client.commitOutcome(losingCommitId)?.resolution).toBe(
+        'resolved_keep_server',
+      );
+      await twice.client.close();
+      twice.db.close();
+      await winner.client.close();
+      winner.db.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('retention never purges unresolved failures and records replacement links', async () => {
+    const server = makeServer();
+    const winner = await makeClient(server, { clientId: 'retention-winner' });
+    const loser = await makeClient(server, {
+      clientId: 'retention-loser',
+      limits: { outcomeRetentionMaxEntries: 1 },
+    });
+    for (const entry of [winner, loser]) {
+      entry.client.subscribe({
+        id: 's1',
+        table: 'tasks',
+        scopes: { project_id: ['retention'] },
+      });
+    }
+    winner.client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('retention-1', 'retention', 'base'),
+      },
+    ]);
+    await winner.client.syncUntilIdle();
+    await loser.client.syncUntilIdle();
+    winner.client.patch(
+      'tasks',
+      'retention-1',
+      { title: 'winner' },
+      {
+        baseVersion: 1,
+      },
+    );
+    await winner.client.syncUntilIdle();
+    const conflictId = loser.client.patch(
+      'tasks',
+      'retention-1',
+      { title: 'loser' },
+      { baseVersion: 1 },
+    );
+    await loser.client.syncUntilIdle();
+    const appliedId = loser.client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('retention-2', 'retention', 'applied'),
+      },
+    ]);
+    await loser.client.syncUntilIdle();
+    expect(loser.client.commitOutcome(conflictId)?.status).toBe('conflict');
+    expect(loser.client.commitOutcome(appliedId)).toBeUndefined();
+
+    const replacementId = loser.client.patch(
+      'tasks',
+      'retention-1',
+      { title: 'replacement' },
+      { baseVersion: 2 },
+    );
+    const resolved = loser.client.resolveCommitOutcome({
+      clientCommitId: conflictId,
+      resolution: 'superseded',
+      replacementClientCommitId: replacementId,
+    });
+    expect(resolved.replacementClientCommitId).toBe(replacementId);
+    await winner.client.close();
+    winner.db.close();
+    await loser.client.close();
+    loser.db.close();
   });
 });
 
