@@ -190,7 +190,11 @@ export class SyncularRealtimeHost {
     config: RealtimeDOConfig,
   ) {
     this.#state = state;
-    this.#storage = new D1ServerStorage(db);
+    this.#storage = new D1ServerStorage(db, {
+      // This host is one Durable Object per partition, so the §6.8 storage
+      // precondition is true for socket rounds handled inside the object.
+      commitValidationSerialized: true,
+    });
     this.#config = config;
   }
 

@@ -5,6 +5,8 @@
  * docker). The two run identical assertions so the Postgres path matches the
  * reference key-for-key (index-first fanout, dense commitSeq, §4.6 horizon).
  */
+
+import { expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
 import {
   D1ServerStorage,
@@ -28,7 +30,19 @@ runStorageContract('postgres/pglite', async () => {
 // (test/d1-double.ts documents its fidelity limits). Same contract, so the
 // D1 path is held to the reference behavior key-for-key.
 runStorageContract('d1/double', async () => {
-  const storage = new D1ServerStorage(new D1DatabaseDouble());
+  const storage = new D1ServerStorage(new D1DatabaseDouble(), {
+    commitValidationSerialized: true,
+  });
   await storage.migrate();
   return storage;
+});
+
+test('D1 whole-commit validation fails closed without external serialization', async () => {
+  const storage = new D1ServerStorage(new D1DatabaseDouble());
+  await storage.migrate();
+  const tx = await storage.begin('partition');
+  await expect(tx.lockPartitionForCommitValidation?.()).rejects.toThrow(
+    'requires externally serialized partition writes',
+  );
+  await tx.rollback();
 });

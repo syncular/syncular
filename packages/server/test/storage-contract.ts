@@ -231,6 +231,68 @@ export function runStorageContract(
       expect(await storage.getRow(PARTITION, 'tasks', 'r1')).toBeUndefined();
     });
 
+    test('commit-validation reads see the candidate state inside the transaction', async () => {
+      const storage = await make();
+      const seed = await storage.begin(PARTITION);
+      await seed.upsertRow('tasks', taskRow('r1', 'p1'));
+      await seed.upsertRow('tasks', taskRow('r2', 'p2'));
+      await seed.commit();
+
+      const tx = await storage.begin(PARTITION);
+      expect(tx.lockPartitionForCommitValidation).toBeDefined();
+      expect(tx.scanRows).toBeDefined();
+      await tx.lockPartitionForCommitValidation?.();
+      await tx.deleteRow('tasks', 'r1');
+      await tx.upsertRow('tasks', taskRow('r3', 'p1'));
+      const rows = await tx.scanRows?.({
+        table: 'tasks',
+        scopeFilter: { project_id: ['p1'] },
+        afterRowId: null,
+        limit: 10,
+      });
+      expect(rows?.map((row) => row.rowId)).toEqual(['r3']);
+      await tx.rollback();
+    });
+
+    test('commit-validation rejection discards candidates and persists its outcome under one lock', async () => {
+      const storage = await make();
+      const tx = await storage.begin(PARTITION);
+      expect(tx.lockPartitionForCommitValidation).toBeDefined();
+      expect(tx.commitRejectedPushResult).toBeDefined();
+      await tx.lockPartitionForCommitValidation?.();
+      await tx.upsertRow('tasks', taskRow('candidate', 'p1'));
+      await tx.commitRejectedPushResult?.('c1', 'rejected-aggregate', {
+        status: 'rejected',
+        results: [
+          {
+            opIndex: 0,
+            status: 'error',
+            code: 'app.aggregate_rejected',
+            message: 'diagnostic only',
+            retryable: false,
+          },
+        ],
+      });
+
+      expect(
+        await storage.getRow(PARTITION, 'tasks', 'candidate'),
+      ).toBeUndefined();
+      expect(
+        await storage.getPushResult(PARTITION, 'c1', 'rejected-aggregate'),
+      ).toEqual({
+        status: 'rejected',
+        results: [
+          {
+            opIndex: 0,
+            status: 'error',
+            code: 'app.aggregate_rejected',
+            message: 'diagnostic only',
+            retryable: false,
+          },
+        ],
+      });
+    });
+
     test('idempotency result persists and reads back', async () => {
       const storage = await make();
       const tx = await storage.begin(PARTITION);

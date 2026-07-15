@@ -26,6 +26,8 @@ import {
   type SubStartFrame,
 } from '@syncular/core';
 import {
+  CommitValidationRejection,
+  type CommitValidator,
   MemorySegmentStore,
   type ServerSchema,
   SSP2_CONTENT_TYPE,
@@ -84,12 +86,13 @@ class TrackedPair extends FakeWebSocketPair {
   }
 }
 
-function realtimeConfig(): RealtimeDOConfig {
+function realtimeConfig(commitValidator?: CommitValidator): RealtimeDOConfig {
   return {
     hubConfig: () => ({
       schema: SCHEMA,
       resolveScopes: () => ({ list_id: ['*'] }),
       segments: new MemorySegmentStore(),
+      ...(commitValidator !== undefined ? { commitValidator } : {}),
     }),
   };
 }
@@ -272,6 +275,66 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
     );
     expect(result?.status).toBe('applied');
     expect(result?.commitSeq).toBe(1);
+  });
+
+  test('whole-commit validation runs under the DO partition serializer (§6.8)', async () => {
+    const db = await makeDb();
+    const ns = new FakeDurableObjectNamespace(
+      db,
+      realtimeConfig(({ operations }) => {
+        const trigger = operations.find(
+          (operation) => operation.row?.title === 'needs-audit',
+        );
+        if (
+          trigger !== undefined &&
+          !operations.some(
+            (operation) => operation.rowId === `${trigger.rowId}-audit`,
+          )
+        ) {
+          throw new CommitValidationRejection(
+            trigger.opIndex,
+            'app.audit_required',
+          );
+        }
+      }),
+    );
+    const { do_, server } = await connect(ns, 'validated-client');
+    await sendRound(
+      do_,
+      server,
+      [
+        {
+          type: 'PUSH_COMMIT',
+          clientCommitId: 'aggregate-c1',
+          operations: [
+            {
+              table: 'tasks',
+              rowId: 't1',
+              op: 'upsert',
+              payload: taskRow('t1', 'L', 'needs-audit'),
+            },
+          ],
+        },
+      ],
+      'validated-client',
+    );
+
+    const response = decodeRoundResponse(server.sent);
+    if (response.msgKind !== 'response') throw new Error('expected response');
+    const result = response.frames.find(
+      (frame): frame is PushResultFrame => frame.type === 'PUSH_RESULT',
+    );
+    expect(result).toMatchObject({
+      status: 'rejected',
+      results: [
+        {
+          opIndex: 0,
+          status: 'error',
+          code: 'app.audit_required',
+          retryable: false,
+        },
+      ],
+    });
   });
 
   test('a commit fans out as a delta to a subscribed socket (§8.2)', async () => {

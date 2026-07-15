@@ -42,8 +42,18 @@ import type {
   StoredCommit,
   StoredPushResult,
 } from './storage';
-import type { ValidateOpKind, ValidatorRegistry } from './validate';
-import { toValidateRow, ValidationRejection } from './validate';
+import type {
+  CommitValidationReader,
+  CommitValidator,
+  ValidateCommitOperation,
+  ValidateOpKind,
+  ValidatorRegistry,
+} from './validate';
+import {
+  CommitValidationRejection,
+  toValidateRow,
+  ValidationRejection,
+} from './validate';
 
 /**
  * Extract the blobIds a decoded row references through its `blob_ref`
@@ -63,7 +73,11 @@ function blobIdsInRow(
 }
 
 type OperationOutcome =
-  | { readonly kind: 'applied'; readonly change: NewChange | undefined }
+  | {
+      readonly kind: 'applied';
+      readonly change: NewChange | undefined;
+      readonly operation: ValidateCommitOperation;
+    }
   | { readonly kind: 'terminate'; readonly record: PushOperationResult };
 
 function errorRecord(
@@ -252,7 +266,18 @@ async function applyOperation(
   if (op.op === 'delete') {
     if (stored === undefined) {
       // Deleting an absent row is applied (idempotent, §6.2); no change.
-      return { kind: 'applied', change: undefined };
+      return {
+        kind: 'applied',
+        change: undefined,
+        operation: {
+          opIndex,
+          op: 'delete',
+          table: table.name,
+          rowId: op.rowId,
+          row: undefined,
+          stored: undefined,
+        },
+      };
     }
     if (!authorizeWrite(table, stored.scopes, resolved)) {
       return errorRecord(
@@ -272,13 +297,14 @@ async function applyOperation(
     // §6.7: validate the delete against the stored row (row = undefined,
     // stored = the row about to be removed). Only reached for an existing
     // row — an absent-row delete is an idempotent no-op above.
+    const storedValues = decodeRow(table.columns, stored.payload);
     const deleteReject = await runValidator(
       validators,
       table,
       'delete',
       op.rowId,
       undefined,
-      decodeRow(table.columns, stored.payload),
+      storedValues,
       opIndex,
       partition,
       actorId,
@@ -292,6 +318,15 @@ async function applyOperation(
         rowId: op.rowId,
         op: 'delete',
         scopes: stored.scopes,
+      },
+      operation: {
+        opIndex,
+        op: 'delete',
+        table: table.name,
+        rowId: op.rowId,
+        row: undefined,
+        stored: toValidateRow(table.columns, storedValues),
+        storedServerVersion: stored.serverVersion,
       },
     };
   }
@@ -411,6 +446,16 @@ async function applyOperation(
         scopes: stored.scopes,
         payload: newPayload,
       },
+      operation: {
+        opIndex,
+        op: 'upsert',
+        table: table.name,
+        rowId: op.rowId,
+        row: toValidateRow(table.columns, values),
+        stored: toValidateRow(table.columns, storedValues),
+        storedServerVersion: stored.serverVersion,
+        nextServerVersion: newVersion,
+      },
     };
   }
 
@@ -506,6 +551,15 @@ async function applyOperation(
       scopes: extracted.scopes,
       payload: insertPayload,
     },
+    operation: {
+      opIndex,
+      op: 'upsert',
+      table: table.name,
+      rowId: op.rowId,
+      row: toValidateRow(table.columns, values),
+      stored: undefined,
+      nextServerVersion: 1,
+    },
   };
 }
 
@@ -562,6 +616,121 @@ function missingScopeVariable(
   return undefined;
 }
 
+function commitValidationReader(
+  tx: StorageTransaction,
+  schema: CompiledSchema,
+): CommitValidationReader {
+  const tableFor = (name: string): CompiledTable => {
+    const table = schema.tables.get(name);
+    if (table === undefined) {
+      throw new Error(
+        `commit validator requested unknown table ${JSON.stringify(name)}`,
+      );
+    }
+    return table;
+  };
+  return {
+    getRow: async (tableName, rowId) => {
+      const table = tableFor(tableName);
+      const stored = await tx.getRow(tableName, rowId);
+      if (stored === undefined) return undefined;
+      return {
+        row: toValidateRow(
+          table.columns,
+          decodeRow(table.columns, stored.payload),
+        ),
+        serverVersion: stored.serverVersion,
+      };
+    },
+    scanRows: async ({
+      table: tableName,
+      scopeFilter,
+      afterRowId = null,
+      limit = 100,
+    }) => {
+      const table = tableFor(tableName);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+        throw new Error(
+          'commit validator scan limit must be an integer from 1 to 1,000',
+        );
+      }
+      if (tx.scanRows === undefined) {
+        throw new Error(
+          'storage transaction does not support commit-validator scans',
+        );
+      }
+      const rows = await tx.scanRows({
+        table: tableName,
+        scopeFilter,
+        afterRowId,
+        limit,
+      });
+      return rows.map((stored) => ({
+        row: toValidateRow(
+          table.columns,
+          decodeRow(table.columns, stored.payload),
+        ),
+        serverVersion: stored.serverVersion,
+      }));
+    },
+  };
+}
+
+async function runCommitValidator(
+  validator: CommitValidator | undefined,
+  tx: StorageTransaction,
+  schema: CompiledSchema,
+  clientId: string,
+  clientCommitId: string,
+  actorId: string,
+  partition: string,
+  operations: readonly ValidateCommitOperation[],
+): Promise<OperationOutcome | undefined> {
+  if (validator === undefined) return undefined;
+  try {
+    await validator({
+      clientId,
+      clientCommitId,
+      actorId,
+      partition,
+      operations,
+      read: commitValidationReader(tx, schema),
+    });
+  } catch (error) {
+    if (error instanceof CommitValidationRejection) {
+      if (error.opIndex >= operations.length) {
+        return errorRecord(
+          0,
+          'sync.constraint_violation',
+          `commit validator rejection names unavailable opIndex ${error.opIndex}`,
+        );
+      }
+      return errorRecord(
+        error.opIndex,
+        error.code,
+        error.message,
+        false,
+        error.details,
+      );
+    }
+    if (error instanceof ValidationRejection) {
+      return errorRecord(
+        operations[0]?.opIndex ?? 0,
+        error.code,
+        error.message,
+        false,
+        error.details,
+      );
+    }
+    return errorRecord(
+      operations[0]?.opIndex ?? 0,
+      'sync.constraint_violation',
+      `whole-commit validator threw: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return undefined;
+}
+
 function resultFrame(
   clientCommitId: string,
   stored: StoredPushResult,
@@ -577,6 +746,26 @@ function resultFrame(
       ? { commitSeq: stored.commitSeq }
       : {}),
     results: [...stored.results],
+  };
+}
+
+function idempotencyCacheMissFrame(
+  clientCommitId: string,
+  error: SyncError,
+): PushResultFrame {
+  return {
+    type: 'PUSH_RESULT',
+    clientCommitId,
+    status: 'rejected',
+    results: [
+      {
+        opIndex: 0,
+        status: 'error',
+        code: 'sync.idempotency_cache_miss',
+        message: error.message,
+        retryable: true,
+      },
+    ],
   };
 }
 
@@ -610,20 +799,7 @@ export async function processPushCommit(
     ) {
       // §6.3: answer the retryable cache-miss for this commit rather than
       // re-applying. Not persisted — a retry may find a readable record.
-      return {
-        type: 'PUSH_RESULT',
-        clientCommitId: frame.clientCommitId,
-        status: 'rejected',
-        results: [
-          {
-            opIndex: 0,
-            status: 'error',
-            code: 'sync.idempotency_cache_miss',
-            message: error.message,
-            retryable: true,
-          },
-        ],
-      };
+      return idempotencyCacheMissFrame(frame.clientCommitId, error);
     }
     throw error;
   }
@@ -635,10 +811,47 @@ export async function processPushCommit(
   const blobCtx: BlobApplyContext = { store: ctx.blobs, partition };
   const crdtMergers = ctx.crdtMergers;
   const validators = ctx.validators;
+  const commitValidator = ctx.commitValidator;
   const tx = await storage.begin(partition);
+  const commitRejectedPushResult = tx.commitRejectedPushResult?.bind(tx);
   try {
+    if (commitValidator !== undefined) {
+      if (
+        tx.lockPartitionForCommitValidation === undefined ||
+        commitRejectedPushResult === undefined
+      ) {
+        throw new Error(
+          'storage transaction does not support atomic whole-commit validation finalization',
+        );
+      }
+      await tx.lockPartitionForCommitValidation();
+      // The optimistic lookup above may have raced another request for the
+      // same idempotency key. Re-check after acquiring partition serialization
+      // so a concurrent duplicate never reruns the aggregate validator.
+      try {
+        const serializedPersisted = await storage.getPushResult(
+          partition,
+          clientId,
+          frame.clientCommitId,
+        );
+        if (serializedPersisted !== undefined) {
+          await tx.rollback();
+          return resultFrame(frame.clientCommitId, serializedPersisted, true);
+        }
+      } catch (error) {
+        if (
+          error instanceof SyncError &&
+          error.code === 'sync.idempotency_cache_miss'
+        ) {
+          await tx.rollback();
+          return idempotencyCacheMissFrame(frame.clientCommitId, error);
+        }
+        throw error;
+      }
+    }
     const results: PushOperationResult[] = [];
     const changes: NewChange[] = [];
+    const validatedOperations: ValidateCommitOperation[] = [];
     let terminated: PushOperationResult | undefined;
     for (let opIndex = 0; opIndex < frame.operations.length; opIndex++) {
       const op = frame.operations[opIndex];
@@ -660,24 +873,57 @@ export async function processPushCommit(
         break;
       }
       results.push({ opIndex, status: 'applied' });
+      validatedOperations.push(outcome.operation);
       if (outcome.change !== undefined) changes.push(outcome.change);
+    }
+
+    if (terminated === undefined) {
+      const commitReject = await runCommitValidator(
+        commitValidator,
+        tx,
+        schema,
+        clientId,
+        frame.clientCommitId,
+        ctx.actorId,
+        partition,
+        validatedOperations,
+      );
+      if (commitReject?.kind === 'terminate') {
+        terminated = commitReject.record;
+      }
     }
 
     if (terminated !== undefined) {
       // §6.3 rejected: only the terminating operation's record; §6.4:
       // every write of the commit rolls back.
-      await tx.rollback();
       const stored: StoredPushResult = {
         status: 'rejected',
         results: [terminated],
       };
-      const rejectionTx = await storage.begin(partition);
-      try {
-        await rejectionTx.putPushResult(clientId, frame.clientCommitId, stored);
-        await rejectionTx.commit();
-      } catch (error) {
-        await rejectionTx.rollback();
-        throw error;
+      if (commitValidator !== undefined) {
+        // Discard candidate rows and persist the rejection while retaining the
+        // same partition lock. This closes the duplicate-request race between
+        // rollback and the durable idempotency outcome.
+        if (commitRejectedPushResult === undefined) {
+          throw new Error(
+            'storage transaction lost whole-commit rejection finalization support',
+          );
+        }
+        await commitRejectedPushResult(clientId, frame.clientCommitId, stored);
+      } else {
+        await tx.rollback();
+        const rejectionTx = await storage.begin(partition);
+        try {
+          await rejectionTx.putPushResult(
+            clientId,
+            frame.clientCommitId,
+            stored,
+          );
+          await rejectionTx.commit();
+        } catch (error) {
+          await rejectionTx.rollback();
+          throw error;
+        }
       }
       return resultFrame(frame.clientCommitId, stored, false);
     }

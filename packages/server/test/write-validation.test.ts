@@ -7,6 +7,8 @@
 import { describe, expect, test } from 'bun:test';
 import { decodeRow, encodeRow, type RowColumn } from '@syncular/core';
 import {
+  CommitValidationRejection,
+  type CommitValidator,
   type CrdtMergerRegistry,
   RESERVED_VALIDATION_CODE_PREFIXES,
   type ServerSchema,
@@ -276,6 +278,166 @@ describe('write validation apply (§6.7)', () => {
     ]);
     expect(pushResults(message)[0]?.status).toBe('applied');
     expect(ran).toBe(false);
+  });
+});
+
+describe('whole-commit validation (§6.8)', () => {
+  test('rejects a missing sibling operation and rolls every staged row back', async () => {
+    const requireAudit: CommitValidator = ({ operations }) => {
+      const completed = operations.find(
+        (operation) => operation.row?.done === true,
+      );
+      if (
+        completed &&
+        !operations.some(
+          (operation) => operation.rowId === `${completed.rowId}-audit`,
+        )
+      ) {
+        throw new CommitValidationRejection(
+          completed.opIndex,
+          'app.missing_completion_audit',
+          'completed task requires its audit sibling',
+          {
+            fieldPaths: ['tasks.done'],
+            reason: 'missing_sibling_operation',
+            requiredAction: 'repair_aggregate',
+          },
+        );
+      }
+    };
+    const t = makeContext({ commitValidator: requireAudit });
+    const rejected = await sync(t, [
+      pushCommit('aggregate-rejected', [
+        upsert('tasks', 't1', taskRow('t1', 'p1', 'done', true)),
+        upsert('tasks', 't2', taskRow('t2', 'p1', 'ordinary', false)),
+      ]),
+    ]);
+    const record = pushResults(rejected)[0]?.results[0];
+    expect(record).toMatchObject({
+      opIndex: 0,
+      status: 'error',
+      code: 'app.missing_completion_audit',
+    });
+    expect(
+      rejected.frames.find((frame) => frame.type === 'PUSH_RESULT_DETAILS'),
+    ).toEqual({
+      type: 'PUSH_RESULT_DETAILS',
+      clientCommitId: 'aggregate-rejected',
+      entries: [
+        {
+          opIndex: 0,
+          details: {
+            fieldPaths: ['tasks.done'],
+            reason: 'missing_sibling_operation',
+            requiredAction: 'repair_aggregate',
+          },
+        },
+      ],
+    });
+    expect(await t.storage.getRow('part-1', 'tasks', 't1')).toBeUndefined();
+    expect(await t.storage.getRow('part-1', 'tasks', 't2')).toBeUndefined();
+
+    const accepted = await sync(t, [
+      pushCommit('aggregate-accepted', [
+        upsert('tasks', 't1', taskRow('t1', 'p1', 'done', true)),
+        upsert('tasks', 't1-audit', taskRow('t1-audit', 'p1', 'audit', false)),
+      ]),
+    ]);
+    expect(pushResults(accepted)[0]?.status).toBe('applied');
+  });
+
+  test('reads the final candidate state and operation version evidence', async () => {
+    let seen: unknown;
+    const inspect: CommitValidator = async ({ operations, read }) => {
+      const exact = await read.getRow('tasks', 't2');
+      const rows = await read.scanRows({
+        table: 'tasks',
+        scopeFilter: { project_id: ['p1'] },
+      });
+      seen = {
+        operations: operations.map((operation) => ({
+          rowId: operation.rowId,
+          storedServerVersion: operation.storedServerVersion,
+          nextServerVersion: operation.nextServerVersion,
+        })),
+        exact: exact?.row.title,
+        scan: rows.map((row) => row.row.id),
+      };
+    };
+    const t = makeContext({ commitValidator: inspect });
+    await sync(t, [
+      pushCommit('candidate-state', [
+        upsert('tasks', 't1', taskRow('t1', 'p1', 'one')),
+        upsert('tasks', 't2', taskRow('t2', 'p1', 'two')),
+      ]),
+    ]);
+    expect(seen).toEqual({
+      operations: [
+        { rowId: 't1', storedServerVersion: undefined, nextServerVersion: 1 },
+        { rowId: 't2', storedServerVersion: undefined, nextServerVersion: 1 },
+      ],
+      exact: 'two',
+      scan: ['t1', 't2'],
+    });
+  });
+
+  test('runs once for an idempotently replayed commit', async () => {
+    let calls = 0;
+    const t = makeContext({
+      commitValidator: () => {
+        calls += 1;
+      },
+    });
+    const commit = pushCommit('whole-idempotent', [
+      upsert('tasks', 't1', taskRow('t1', 'p1')),
+    ]);
+    await sync(t, [commit]);
+    await sync(t, [commit]);
+    expect(calls).toBe(1);
+  });
+
+  test('rechecks idempotency after partition serialization before validation', async () => {
+    let validatorCalls = 0;
+    const base = makeContext({
+      commitValidator: () => {
+        validatorCalls += 1;
+      },
+    });
+    const seed = await base.storage.begin('part-1');
+    await seed.putPushResult('client-1', 'serialized-replay', {
+      status: 'applied',
+      commitSeq: 42,
+      results: [{ opIndex: 0, status: 'applied' }],
+    });
+    await seed.commit();
+
+    let reads = 0;
+    const storage = new Proxy(base.storage, {
+      get(target, property) {
+        if (property === 'getPushResult') {
+          return async (...args: [string, string, string]) => {
+            reads += 1;
+            if (reads === 1) return undefined;
+            return target.getPushResult(...args);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const t = { ...base, ctx: { ...base.ctx, storage } };
+    const message = await sync(t, [
+      pushCommit('serialized-replay', [
+        upsert('tasks', 'must-not-apply', taskRow('must-not-apply', 'p1')),
+      ]),
+    ]);
+
+    expect(pushResults(message)[0]?.status).toBe('cached');
+    expect(reads).toBe(2);
+    expect(validatorCalls).toBe(0);
+    expect(
+      await base.storage.getRow('part-1', 'tasks', 'must-not-apply'),
+    ).toBeUndefined();
   });
 });
 

@@ -166,6 +166,28 @@ export interface ScopeActivityQuery {
  */
 export interface StorageTransaction {
   getRow(table: string, rowId: string): Promise<StoredRow | undefined>;
+  /**
+   * Optional candidate-state scan used only by whole-commit validation.
+   * In-tree SQLite/Postgres/D1 backends implement it with read-your-own-writes
+   * semantics. A custom backend may omit it until `commitValidator` is used.
+   */
+  scanRows?(query: RowScanQuery): Promise<StoredRow[]>;
+  /**
+   * Serialize candidate-state validation for this partition before any row
+   * read/write. Required at runtime when `commitValidator` is configured.
+   */
+  lockPartitionForCommitValidation?(): Promise<void>;
+  /**
+   * §6.8 rejection finalization while the validation serialization lock is
+   * still held: discard every candidate write, persist the rejected
+   * idempotency result, and finish the transaction atomically. Required when
+   * `commitValidator` is configured so a concurrent duplicate cannot rerun it.
+   */
+  commitRejectedPushResult?(
+    clientId: string,
+    clientCommitId: string,
+    result: StoredPushResult,
+  ): Promise<void>;
   upsertRow(table: string, row: StoredRow): Promise<void>;
   deleteRow(table: string, rowId: string): Promise<void>;
   /** Allocates the next per-partition commitSeq and appends the commit. */
