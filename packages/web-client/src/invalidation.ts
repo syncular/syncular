@@ -38,6 +38,7 @@ export interface ClientChangeBatch {
   readonly status?: SyncStatusSnapshot;
   readonly conflictsChanged: boolean;
   readonly rejectionsChanged: boolean;
+  readonly outcomesChanged: boolean;
 }
 
 export type ClientChangeListener = (batch: ClientChangeBatch) => void;
@@ -81,6 +82,7 @@ export class ChangeAccumulator {
   #status = false;
   #conflicts = false;
   #rejections = false;
+  #outcomes = false;
 
   /** Mark a whole table dirty, discarding any weaker scope-only facts. */
   table(name: string): void {
@@ -126,6 +128,10 @@ export class ChangeAccumulator {
     this.#rejections = true;
   }
 
+  outcomes(): void {
+    this.#outcomes = true;
+  }
+
   /** Add precise keys for a requested/effective scope map. */
   scopeMap(table: CompiledClientTable, scopes: ScopeMap): void {
     for (const [variable, values] of Object.entries(scopes)) {
@@ -154,7 +160,8 @@ export class ChangeAccumulator {
       this.#windows.size > 0 ||
       this.#status ||
       this.#conflicts ||
-      this.#rejections
+      this.#rejections ||
+      this.#outcomes
     );
   }
 
@@ -192,6 +199,7 @@ export class ChangeAccumulator {
       ...(this.#status ? { status: status as SyncStatusSnapshot } : {}),
       conflictsChanged: this.#conflicts,
       rejectionsChanged: this.#rejections,
+      outcomesChanged: this.#outcomes,
     };
   }
 }

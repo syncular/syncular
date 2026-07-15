@@ -110,6 +110,31 @@ function defaultResponder(
       return OK({ conflicts: [] });
     case 'rejections':
       return OK({ rejections: [] });
+    case 'commitOutcome':
+      return OK({
+        outcome: {
+          sequence: 1,
+          clientCommitId: 'commit-1',
+          status: 'applied',
+          recordedAtMs: 1,
+          results: [{ status: 'applied', opIndex: 0 }],
+          resolution: 'active',
+        },
+      });
+    case 'commitOutcomes':
+      return OK({ outcomes: [] });
+    case 'resolveCommitOutcome':
+      return OK({
+        outcome: {
+          sequence: 1,
+          clientCommitId: 'commit-1',
+          status: 'applied',
+          recordedAtMs: 1,
+          results: [{ status: 'applied', opIndex: 0 }],
+          resolution: 'dismissed',
+          resolvedAtMs: 2,
+        },
+      });
     case 'schemaFloor':
       return OK({ floor: undefined });
     case 'leaseState':
@@ -346,6 +371,16 @@ describe('SyncClientLike parity', () => {
     expect((await normalized.statusSnapshot()).outbox).toBe(1);
     expect(await normalized.conflicts()).toEqual([]);
     expect(await normalized.rejections()).toEqual([]);
+    expect(await normalized.commitOutcome('commit-1')).toMatchObject({
+      status: 'applied',
+    });
+    expect(await normalized.commitOutcomes()).toEqual([]);
+    expect(
+      await normalized.resolveCommitOutcome({
+        clientCommitId: 'commit-1',
+        resolution: 'dismissed',
+      }),
+    ).toMatchObject({ resolution: 'dismissed' });
     expect(await normalized.schemaFloor()).toBeUndefined();
     expect(await normalized.leaseState()).toBeUndefined();
     expect(await normalized.upgrading()).toBe(false);

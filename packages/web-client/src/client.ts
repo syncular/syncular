@@ -89,6 +89,20 @@ import {
   OutboxEncodeError,
   type OutboxOperation,
 } from './outbox';
+import {
+  activeFailureRecords,
+  type CommitOperationOutcome,
+  type CommitOutcome,
+  type CommitOutcomeQuery,
+  type ConflictRecord,
+  listCommitOutcomes,
+  persistCommitOutcomeResolution,
+  pruneCommitOutcomes,
+  type RejectionRecord,
+  type ResolveCommitOutcomeInput,
+  commitOutcome as readCommitOutcome,
+  recordCommitOutcome,
+} from './outcomes';
 import { assertReadOnlyQuery } from './query-guard';
 import {
   type ClientSchema,
@@ -159,30 +173,14 @@ export type MutationInput =
       readonly baseVersion?: number;
     };
 
-/** A §6.3 conflict result, surfaced to the app — never auto-resolved. */
-export interface ConflictRecord {
-  readonly clientCommitId: string;
-  readonly opIndex: number;
-  readonly table: string;
-  readonly rowId: string;
-  readonly code: string;
-  readonly message: string;
-  readonly serverVersion: number;
-  /** The current server row, decoded — resolve without a round-trip. */
-  readonly serverRow: Readonly<Record<string, RowValue>>;
-  /** The losing local operation (absent only for malformed op indexes). */
-  readonly operation?: OutboxOperation;
-}
-
-/** A non-conflict `error` result from a rejected commit (§6.3). */
-export interface RejectionRecord {
-  readonly clientCommitId: string;
-  readonly opIndex: number;
-  readonly code: string;
-  readonly message: string;
-  readonly retryable: boolean;
-  readonly operation?: OutboxOperation;
-}
+export type {
+  CommitOperationOutcome,
+  CommitOutcome,
+  CommitOutcomeQuery,
+  ConflictRecord,
+  RejectionRecord,
+  ResolveCommitOutcomeInput,
+} from './outcomes';
 
 export interface SchemaFloor {
   readonly requiredSchemaVersion?: number;
@@ -246,6 +244,12 @@ export interface SyncClientLimits {
    * `withSqliteImage` and a segment downloader is configured (§5.3).
    */
   readonly accept?: number;
+  /**
+   * Maximum retained durable commit outcomes. Old applied/cached or resolved
+   * entries are pruned first; unresolved conflicts/rejections are never
+   * deleted to satisfy this cap. Defaults to 1,000.
+   */
+  readonly outcomeRetentionMaxEntries?: number;
 }
 
 export interface SyncClientConfig {
@@ -454,6 +458,7 @@ export class SyncClient {
   /** §5.11 client-side encryption config; undefined ⇒ E2EE off. */
   readonly #encryption: EncryptionConfig | undefined;
   readonly #now: () => number;
+  readonly #outcomeRetentionMaxEntries: number;
   #started = false;
   #lease: LeaderLease | undefined;
   #clientId = '';
@@ -511,6 +516,18 @@ export class SyncClient {
     this.#schema = compileClientSchema(config.schema);
     this.#encryption = config.encryption;
     this.#now = config.now ?? Date.now;
+    const outcomeRetentionMaxEntries =
+      config.limits?.outcomeRetentionMaxEntries ?? 1_000;
+    if (
+      !Number.isSafeInteger(outcomeRetentionMaxEntries) ||
+      outcomeRetentionMaxEntries < 1
+    ) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        'outcomeRetentionMaxEntries must be a positive safe integer',
+      );
+    }
+    this.#outcomeRetentionMaxEntries = outcomeRetentionMaxEntries;
     this.#hasBlobs = schemaHasBlobs(this.#schema);
   }
 
@@ -525,6 +542,14 @@ export class SyncClient {
     );
     ensureLocalSchema(this.#db, this.#schema);
     if (this.#hasBlobs) ensureBlobSchema(this.#db);
+    this.#db.transaction(() => {
+      pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
+    });
+    const activeFailures = activeFailureRecords(
+      listCommitOutcomes(this.#db, { activeOnly: true }),
+    );
+    this.#conflicts = activeFailures.conflicts;
+    this.#rejections = activeFailures.rejections;
     const persisted = getMeta(this.#db, 'clientId');
     if (
       persisted !== undefined &&
@@ -1035,6 +1060,92 @@ export class SyncClient {
 
   get rejections(): readonly RejectionRecord[] {
     return this.#rejections;
+  }
+
+  /** One durable final outcome by the originating client commit id. */
+  commitOutcome(clientCommitId: string): CommitOutcome | undefined {
+    this.#requireStarted();
+    return readCommitOutcome(this.#db, clientCommitId);
+  }
+
+  /** Newest-first durable outcome journal. */
+  commitOutcomes(query: CommitOutcomeQuery = {}): readonly CommitOutcome[] {
+    this.#requireStarted();
+    return listCommitOutcomes(this.#db, query);
+  }
+
+  /**
+   * Mark a durable failure handled without deleting its evidence. Conflicts
+   * may keep the server row or link to a replacement commit; rejections may
+   * only be superseded by a named replacement. Applied/cached history may be
+   * dismissed. The transition is one-way and survives restart.
+   */
+  resolveCommitOutcome(input: ResolveCommitOutcomeInput): CommitOutcome {
+    this.#requireStarted();
+    const current = readCommitOutcome(this.#db, input.clientCommitId);
+    if (current === undefined) {
+      throw new ClientSyncError(
+        'sync.outcome_not_found',
+        `no durable outcome exists for ${JSON.stringify(input.clientCommitId)}`,
+      );
+    }
+    if (current.resolution !== 'active') return current;
+    const replacement = input.replacementClientCommitId;
+    if (input.resolution === 'superseded') {
+      if (
+        replacement === undefined ||
+        replacement.length === 0 ||
+        replacement === input.clientCommitId
+      ) {
+        throw new ClientSyncError(
+          'sync.invalid_request',
+          'superseded outcomes require a distinct replacementClientCommitId',
+        );
+      }
+    } else if (replacement !== undefined) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        'replacementClientCommitId is valid only for superseded outcomes',
+      );
+    }
+    const allowed =
+      (current.status === 'conflict' &&
+        (input.resolution === 'resolved_keep_server' ||
+          input.resolution === 'superseded')) ||
+      (current.status === 'rejected' && input.resolution === 'superseded') ||
+      ((current.status === 'applied' || current.status === 'cached') &&
+        input.resolution === 'dismissed');
+    if (!allowed) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        `resolution ${input.resolution} is invalid for ${current.status} outcome`,
+      );
+    }
+
+    return this.#applyBatch((batch) => {
+      const resolved = persistCommitOutcomeResolution(
+        this.#db,
+        input,
+        this.#now(),
+      );
+      if (resolved === undefined) {
+        throw new ClientSyncError(
+          'sync.outcome_not_found',
+          `no durable outcome exists for ${JSON.stringify(input.clientCommitId)}`,
+        );
+      }
+      this.#conflicts = this.#conflicts.filter(
+        (record) => record.clientCommitId !== input.clientCommitId,
+      );
+      this.#rejections = this.#rejections.filter(
+        (record) => record.clientCommitId !== input.clientCommitId,
+      );
+      pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
+      batch.outcomes();
+      if (current.status === 'conflict') batch.conflicts();
+      if (current.status === 'rejected') batch.rejections();
+      return resolved;
+    });
   }
 
   /** Non-undefined once the server declared a schema floor (§1.6). */
@@ -1595,7 +1706,7 @@ export class SyncClient {
           deleteLocalRow(this.#db, table, operation.rowId);
         }
       }
-      this.#rejections.push({
+      const rejection: RejectionRecord = {
         clientCommitId: commit.clientCommitId,
         opIndex: 0,
         code: OUTBOX_INCOMPATIBLE_CODE,
@@ -1604,9 +1715,18 @@ export class SyncClient {
         ...(commit.operations[0] !== undefined
           ? { operation: commit.operations[0] }
           : {}),
+      };
+      this.#rejections.push(rejection);
+      recordCommitOutcome(this.#db, {
+        clientCommitId: commit.clientCommitId,
+        status: 'rejected',
+        recordedAtMs: this.#now(),
+        results: [{ status: 'error', rejection }],
       });
+      pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
       batch.status();
       batch.rejections();
+      batch.outcomes();
     });
   }
 
@@ -2313,8 +2433,19 @@ export class SyncClient {
     if (frame.status === 'applied' || frame.status === 'cached') {
       // §6.3: applied and cached both drain the outbox — cached means
       // "already applied, you may have missed the ack".
+      recordCommitOutcome(this.#db, {
+        clientCommitId: frame.clientCommitId,
+        status: frame.status,
+        recordedAtMs: this.#now(),
+        results: frame.results.map((result) => ({
+          status: 'applied' as const,
+          opIndex: result.opIndex,
+        })),
+      });
       deleteOutboxCommit(this.#db, frame.clientCommitId);
+      pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
       batch.status();
+      batch.outcomes();
       summary.applied.push(frame.clientCommitId);
       return;
     }
@@ -2331,6 +2462,7 @@ export class SyncClient {
       summary.retryable.push(frame.clientCommitId);
       return;
     }
+    const outcomeResults: CommitOperationOutcome[] = [];
     for (const result of frame.results) {
       const operation = commit.operations[result.opIndex];
       if (result.status === 'conflict') {
@@ -2346,21 +2478,36 @@ export class SyncClient {
           ...(operation !== undefined ? { operation } : {}),
         };
         this.#conflicts.push(conflict);
+        outcomeResults.push({ status: 'conflict', conflict });
         batch.conflicts();
         summary.conflicts.push(conflict);
         this.#config.onConflict?.(conflict);
       } else if (result.status === 'error') {
-        this.#rejections.push({
+        const rejection: RejectionRecord = {
           clientCommitId: frame.clientCommitId,
           opIndex: result.opIndex,
           code: result.code,
           message: result.message,
           retryable: result.retryable,
           ...(operation !== undefined ? { operation } : {}),
-        });
+        };
+        this.#rejections.push(rejection);
+        outcomeResults.push({ status: 'error', rejection });
         batch.rejections();
+      } else {
+        outcomeResults.push({ status: 'applied', opIndex: result.opIndex });
       }
     }
+    recordCommitOutcome(this.#db, {
+      clientCommitId: frame.clientCommitId,
+      status: outcomeResults.some((result) => result.status === 'conflict')
+        ? 'conflict'
+        : 'rejected',
+      recordedAtMs: this.#now(),
+      results: outcomeResults,
+    });
+    pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
+    batch.outcomes();
     // §7.2: stop optimistic display and decide about dependents — the
     // commit leaves the outbox; rows it created that the server never
     // confirmed are undone here, rows it overwrote reconcile via the pull
@@ -2680,10 +2827,47 @@ export class SyncClient {
         try {
           deleteScopedRows(this.#db, table, lastEffective);
           batch.scopeMap(table, lastEffective);
-          if (
-            dropOutboxCommitsInScope(this.#db, table, lastEffective).length > 0
-          ) {
+          const pendingById = new Map(
+            listOutbox(this.#db).map((commit) => [
+              commit.clientCommitId,
+              commit,
+            ]),
+          );
+          const droppedIds = dropOutboxCommitsInScope(
+            this.#db,
+            table,
+            lastEffective,
+          );
+          if (droppedIds.length > 0) {
+            for (const clientCommitId of droppedIds) {
+              const commit = pendingById.get(clientCommitId);
+              if (commit === undefined) continue;
+              const results: CommitOperationOutcome[] = commit.operations.map(
+                (operation, opIndex) => {
+                  const rejection: RejectionRecord = {
+                    clientCommitId,
+                    opIndex,
+                    code: 'sync.scope_revoked',
+                    message:
+                      'the commit was dropped because its effective scope was revoked',
+                    retryable: false,
+                    operation,
+                  };
+                  this.#rejections.push(rejection);
+                  return { status: 'error', rejection };
+                },
+              );
+              recordCommitOutcome(this.#db, {
+                clientCommitId,
+                status: 'rejected',
+                recordedAtMs: this.#now(),
+                results,
+              });
+            }
+            pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
             batch.status();
+            batch.rejections();
+            batch.outcomes();
           }
           this.#reconcileBlobs(true);
         } catch (error) {

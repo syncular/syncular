@@ -13,6 +13,8 @@
  */
 import type {
   ClientChangeListener,
+  CommitOutcome,
+  CommitOutcomeQuery,
   ConflictRecord,
   InvalidationListener,
   LeaseState,
@@ -21,6 +23,7 @@ import type {
   QueryReadSpec,
   QuerySnapshot,
   RejectionRecord,
+  ResolveCommitOutcomeInput,
   SchemaFloor,
   SqlRow,
   SqlValue,
@@ -60,6 +63,15 @@ export interface SyncClientLike {
   rejections:
     | readonly RejectionRecord[]
     | (() => readonly RejectionRecord[] | Promise<readonly RejectionRecord[]>);
+  commitOutcome(
+    clientCommitId: string,
+  ): CommitOutcome | undefined | Promise<CommitOutcome | undefined>;
+  commitOutcomes(
+    query?: CommitOutcomeQuery,
+  ): readonly CommitOutcome[] | Promise<readonly CommitOutcome[]>;
+  resolveCommitOutcome(
+    input: ResolveCommitOutcomeInput,
+  ): CommitOutcome | Promise<CommitOutcome>;
   schemaFloor:
     | SchemaFloor
     | undefined
@@ -118,6 +130,11 @@ export interface NormalizedClient {
   statusSnapshot(): Promise<SyncStatusSnapshot>;
   conflicts(): Promise<readonly ConflictRecord[]>;
   rejections(): Promise<readonly RejectionRecord[]>;
+  commitOutcome(clientCommitId: string): Promise<CommitOutcome | undefined>;
+  commitOutcomes(query?: CommitOutcomeQuery): Promise<readonly CommitOutcome[]>;
+  resolveCommitOutcome(
+    input: ResolveCommitOutcomeInput,
+  ): Promise<CommitOutcome>;
   schemaFloor(): Promise<SchemaFloor | undefined>;
   leaseState(): Promise<LeaseState | undefined>;
   upgrading(): Promise<boolean>;
@@ -145,6 +162,11 @@ export function normalizeClient(client: SyncClientLike): NormalizedClient {
     statusSnapshot: () => Promise.resolve(client.statusSnapshot()),
     conflicts: () => resolveMember(client, 'conflicts'),
     rejections: () => resolveMember(client, 'rejections'),
+    commitOutcome: (clientCommitId) =>
+      Promise.resolve(client.commitOutcome(clientCommitId)),
+    commitOutcomes: (query) => Promise.resolve(client.commitOutcomes(query)),
+    resolveCommitOutcome: (input) =>
+      Promise.resolve(client.resolveCommitOutcome(input)),
     schemaFloor: () => resolveMember(client, 'schemaFloor'),
     leaseState: () => resolveMember(client, 'leaseState'),
     upgrading: () => resolveMember(client, 'upgrading'),

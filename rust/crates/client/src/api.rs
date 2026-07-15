@@ -72,6 +72,7 @@ pub struct ClientChangeBatch {
     pub status: Option<SyncStatusSnapshot>,
     pub conflicts_changed: bool,
     pub rejections_changed: bool,
+    pub outcomes_changed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -242,7 +243,7 @@ impl SyncOutcome {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConflictRecord {
     pub client_commit_id: String,
@@ -250,19 +251,102 @@ pub struct ConflictRecord {
     pub table: String,
     pub row_id: String,
     pub code: String,
+    pub message: String,
     pub server_version: i64,
     /// Driver row (bytes as `{"$bytes": hex}`), decoded from the conflict
     /// record's `serverRow` (§6.3).
     pub server_row: Map<String, Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation: Option<CommitOperation>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RejectionRecord {
     pub client_commit_id: String,
     pub op_index: i32,
     pub code: String,
+    pub message: String,
     pub retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation: Option<CommitOperation>,
+}
+
+/// Schema-agnostic local operation retained with a failed final outcome.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitOperation {
+    pub table: String,
+    pub row_id: String,
+    pub op: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_version: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub values: Option<Map<String, Value>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitOutcomeStatus {
+    Applied,
+    Cached,
+    Conflict,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitOutcomeResolution {
+    Active,
+    ResolvedKeepServer,
+    Superseded,
+    Dismissed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CommitOperationOutcome {
+    Applied {
+        #[serde(rename = "opIndex")]
+        op_index: i32,
+    },
+    Conflict {
+        conflict: ConflictRecord,
+    },
+    Error {
+        rejection: RejectionRecord,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitOutcome {
+    pub sequence: i64,
+    pub client_commit_id: String,
+    pub status: CommitOutcomeStatus,
+    pub recorded_at_ms: i64,
+    pub results: Vec<CommitOperationOutcome>,
+    pub resolution: CommitOutcomeResolution,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replacement_client_commit_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitOutcomeQuery {
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub active_only: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveCommitOutcomeInput {
+    pub client_commit_id: String,
+    pub resolution: CommitOutcomeResolution,
+    pub replacement_client_commit_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -303,4 +387,7 @@ pub struct ClientLimits {
     /// body sizes exceeds it, zero-ref, non-pinned bodies are evicted LRU-first
     /// after each cache write. `None` ⇒ retain until storage pressure (default).
     pub blob_cache_max_bytes: Option<i64>,
+    /// Maximum durable final outcomes. Active conflicts/rejections are never
+    /// pruned to satisfy the cap. Defaults to 1,000.
+    pub outcome_retention_max_entries: Option<usize>,
 }
