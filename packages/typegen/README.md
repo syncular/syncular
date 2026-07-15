@@ -184,6 +184,7 @@ duplicate ordinals are errors). The parser accepts exactly:
 - `CREATE TABLE [IF NOT EXISTS] name ( column-defs…, [PRIMARY KEY (col)] ) [WITHOUT ROWID]`
 - `ALTER TABLE name ADD [COLUMN] column-def`
 - `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table ( col [, col…] )`
+- `DROP TABLE [IF EXISTS] name`
 - column-def: `name TYPE [PRIMARY KEY] [NOT NULL] [NULL] [DEFAULT literal]`
 - `--` line comments and `/* … */` block comments
 
@@ -206,21 +207,27 @@ inline or table-level.
 secondary indexes on an already-created table: `CREATE INDEX name ON table
 (col)`, a compound `… (a, b)` (order preserved), the `UNIQUE` variant, and
 `IF NOT EXISTS`. Each index becomes an `Ir​Table.indexes` entry
-(`{ name, columns, unique }`, declaration order) and is materialized as a real
-SQLite index by the **clients** (the TS web-client mirror + the Rust core's
-base/visible table pair) and by typegen's own named-query type-check DB. Index
-columns must exist on the table; index names must be unique across the schema;
-a column must not repeat within one index. **Indexes are client-side only**:
-the server stores rows in a generic `sync_rows` table with an opaque payload
-(no per-user-table SQL columns exist server-side), so a user-column index has
-nothing to attach to there — the scope inverted-index already covers server
-reads. The column list is bare column names: **ASC/DESC**, **expression**
-columns (`lower(a)`), and **partial** (`WHERE …`) indexes are hard errors (the
-IR models column names only, so accepting a direction/expression would silently
-drop it).
+(`{ name, columns, unique }`, declaration order) and is materialized by the
+clients (the TS web-client mirror + the Rust core's base/visible table pair),
+typegen's named-query type-check DB, and the server's relational app-table
+projection. Index columns must exist on the table; index names must be unique
+across the schema; a column must not repeat within one index. The column list
+is bare column names: **ASC/DESC**, **expression** columns (`lower(a)`), and
+**partial** (`WHERE …`) indexes are hard errors (the IR models column names
+only, so accepting a direction/expression would silently drop it).
+
+**Table retirement** (`DROP TABLE`). A table created earlier in migration
+history and dropped before the head version is absent from the IR and must be
+omitted from the manifest's `tables` list. `IF EXISTS` is supported. Reusing a
+dropped table name is rejected: the head-only IR cannot distinguish a new
+table from an incompatible in-place rewrite on an upgrading server. On a
+schema-version bump, clients wipe and re-bootstrap their synced tables; the
+reference relational server drops the retired current-row table and its live
+scope index. Append-only commit history follows the configured retention
+policy—`DROP TABLE` is schema retirement, not a compliance erasure API.
 
 **Hard errors** (each names the construct and source file): any other
-statement (`CREATE TRIGGER/VIEW`, `DROP`, DML, `ALTER … RENAME`, …); unknown
+statement (`CREATE TRIGGER/VIEW`, `DROP INDEX`, DML, `ALTER … RENAME`, …); unknown
 or parameterized types (`VARCHAR(36)`); quoted identifiers
 (`"t"`, `` `t` ``, `[t]`); table constraints (`FOREIGN KEY`, `UNIQUE`,
 `CHECK`, `CONSTRAINT`); column constraints beyond the list above

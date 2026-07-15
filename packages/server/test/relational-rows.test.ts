@@ -9,7 +9,7 @@
  *   4. the serve path is byte-verbatim (`_sync_payload` round-trips), with
  *      the row-codec round-trip invariant asserted per column type;
  *   5. schema version bumps apply the migration subset (ADD COLUMN /
- *      CREATE INDEX) and the version marker gates re-runs;
+ *      CREATE INDEX / DROP TABLE) and the version marker gates re-runs;
  *   6. reserved identifiers are rejected at schema compile.
  */
 import { describe, expect, test } from 'bun:test';
@@ -343,6 +343,76 @@ describe('server-side schema migration (the subset)', () => {
     const decoded = decodeRow(v2Columns, stored!.payload);
     expect(decoded[2]).toBe('v1 row');
     expect(decoded[v2Columns.length - 1]).toBeNull();
+  });
+
+  test('a version bump retires current rows and scope indexes for a removed table', async () => {
+    const storage = new SqliteServerStorage();
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'retired'));
+    await upsert(storage, PARTITION, 'projects', projectRow('p1', 'kept'));
+
+    const v2: ServerSchema = {
+      version: 2,
+      tables: [SCHEMA.tables[1]!],
+    };
+    await storage.ensureSchema(compileSchema(v2));
+
+    const retired = storage.db
+      .query<{ name: string }, []>(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'",
+      )
+      .get();
+    expect(retired).toBeNull();
+    const staleScopes = storage.db
+      .query<{ n: number }, [string]>(
+        'SELECT count(*) AS n FROM sync_row_scopes WHERE tbl=?',
+      )
+      .get('tasks');
+    expect(staleScopes?.n).toBe(0);
+    expect(await storage.getRow(PARTITION, 'projects', 'p1')).toBeDefined();
+  });
+
+  test('postgres retires the relational current-row table atomically', async () => {
+    const db = await PGlite.create();
+    const storage = new PostgresServerStorage(pgliteExecutor(db));
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'retired'));
+    await storage.ensureSchema(
+      compileSchema({ version: 2, tables: [SCHEMA.tables[1]!] }),
+    );
+
+    const table = await db.query<{ name: string | null }>(
+      "SELECT to_regclass('tasks')::text AS name",
+    );
+    expect(table.rows[0]?.name).toBeNull();
+    const scopes = await db.query<{ n: number | string }>(
+      "SELECT count(*) AS n FROM sync_row_scopes WHERE tbl='tasks'",
+    );
+    expect(Number(scopes.rows[0]?.n)).toBe(0);
+  });
+
+  test('D1 retires the relational current-row table idempotently', async () => {
+    const db = new D1DatabaseDouble();
+    const storage = new D1ServerStorage(db);
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    const tx = await storage.begin(PARTITION);
+    await tx.upsertRow('tasks', taskRow('t1', 'p1', 'retired'));
+    await tx.commit();
+    await storage.ensureSchema(
+      compileSchema({ version: 2, tables: [SCHEMA.tables[1]!] }),
+    );
+
+    const table = await db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'",
+      )
+      .first<{ name: string }>();
+    expect(table).toBeNull();
+    const scopes = await db
+      .prepare('SELECT count(*) AS n FROM sync_row_scopes WHERE tbl=?')
+      .bind('tasks')
+      .first<{ n: number }>();
+    expect(scopes?.n).toBe(0);
   });
 
   test('an older server refuses a newer database', async () => {

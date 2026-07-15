@@ -11,10 +11,11 @@ The authoritative contract for the manifest, the IR, and the SQL subset is the
 ## The two inputs
 
 **Migrations** (`migrations/NNNN_name/up.sql`) declare table shape. typegen
-parses a strict SQL subset (`CREATE TABLE` / `ALTER TABLE ADD COLUMN`, the
-six column types, one single-column primary key per table) and reads only
-the table shape. It never runs your migrations: your host does that, and
-the server manages its own internal tables.
+parses a strict SQL subset (`CREATE TABLE`, `ALTER TABLE ADD COLUMN`,
+`CREATE INDEX`, and `DROP TABLE`, plus the supported column types and one
+single-column primary key per table) and reads only the head table shape. It
+never runs your migrations: your host does that, and the server manages its
+own internal tables.
 
 **The manifest** (`syncular.json`) names the synced tables, their scope
 patterns, subscription templates, and the schema-version history:
@@ -32,8 +33,16 @@ patterns, subscription templates, and the schema-version history:
 }
 ```
 
-Table array order is the bootstrap order (parents before children). Every
-migrated table must be listed; unknown manifest keys are hard errors.
+Table array order is the bootstrap order (parents before children). Every table
+present at the head of migration history must be listed; a table retired by
+`DROP TABLE` is omitted. Unknown manifest keys are hard errors.
+
+`DROP TABLE IF EXISTS name` is also accepted. A dropped table name cannot be
+reused later: the generated head schema cannot safely distinguish that from an
+incompatible in-place rewrite on an upgrading server. The reference server
+drops the retired relational current-row table and its live scope index during
+the schema bump. Historical commit-log rows remain subject to normal retention,
+so table retirement is not a compliance erasure operation.
 
 ## Generate
 
@@ -112,11 +121,11 @@ in schema-agnostic form and encoded at send time with the current codec
 The server never accepts a retired encoding, and pending offline writes stay
 visible across the bump.
 
-### Dropped columns
+### Dropped columns and tables
 
-Re-encoding fails when a pending commit references a column the new schema no
-longer has: the value has nowhere to go, and there is no migration to fill or
-drop it. This surfaces as a rejection with the client-local code
+Re-encoding fails when a pending commit references a column or table the new
+schema no longer has: the value or operation has nowhere to go. This surfaces
+as a rejection with the client-local code
 `sync.outbox_incompatible` (§7.4.4). The un-encodable commit leaves the outbox
 and its purely-optimistic rows are undone, exactly like a server rejection.
 Later outbox commits that *do* encode keep replaying, so the queue keeps
