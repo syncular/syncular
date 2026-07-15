@@ -93,11 +93,17 @@ const WORKLOAD = {
  * - `propagationP95CeilingMs` 20 ms: local in-process p95 is 0.2 ms. A
  *   100× allowance absorbs runner noise; breaching 20 ms in-process means
  *   a sleep/poll crept into the sync/realtime loop.
- * - `ownJsRawCeilingBytes` 88 KB: syncular's own JS (core + codec) is
- *   83.0 KB raw today. Bundle bytes are deterministic — no runner noise —
+ * - `ownJsRawCeilingBytes` 95 KB: syncular's own JS (core + codec) is
+ *   89.4 KB raw today. Bundle bytes are deterministic — no runner noise —
  *   so this stays tight (~6% headroom: enough that a one-KB innocent
  *   change doesn't trip, small enough to catch real bloat). RAISED from
- *   82 KB
+ *   88 KB
+ *   (2026-07-15, SPEC §7.2.1): durable final commit outcomes added 6,542
+ *   raw bytes (85,010 → 91,552) for the atomic local journal, exact
+ *   conflict/rejection evidence, restart restoration, protected retention,
+ *   and explicit one-way resolution. 95 KB restores the standing ~6%
+ *   headroom over the shipped feature; the total-gzip payload gate remains
+ *   unchanged. RAISED from 82 KB
  *   (2026-07-14, RFC 0003): revisioned reactive views added 5,677 raw
  *   bytes / 1,853 gzip bytes (79,333 → 85,010 raw) for the durable local
  *   revision, exact change batches, atomic query/status snapshots, and
@@ -137,7 +143,7 @@ const BUDGETS = {
   bootstrapRowsPerSecFloor: 90_000,
   imageBootstrapRowsPerSecFloor: 300_000,
   propagationP95CeilingMs: 20,
-  ownJsRawCeilingBytes: 88 * 1024,
+  ownJsRawCeilingBytes: 95 * 1024,
   totalGzipCeilingBytes: 600 * 1024,
 } as const;
 
