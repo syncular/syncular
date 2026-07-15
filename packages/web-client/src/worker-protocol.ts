@@ -39,6 +39,11 @@ import type {
   SyncStatusSnapshot,
 } from './invalidation';
 import type { OutboxCommit } from './outbox';
+import type {
+  CommitOutcome,
+  CommitOutcomeQuery,
+  ResolveCommitOutcomeInput,
+} from './outcomes';
 import type { ClientSchema } from './schema';
 import type { SubscriptionRecord } from './state';
 import type { WindowBase } from './window';
@@ -133,6 +138,9 @@ export interface WorkerApi {
   statusSnapshot(): SyncStatusSnapshot;
   conflicts(): readonly ConflictRecord[];
   rejections(): readonly RejectionRecord[];
+  commitOutcome(clientCommitId: string): CommitOutcome | undefined;
+  commitOutcomes(query?: CommitOutcomeQuery): readonly CommitOutcome[];
+  resolveCommitOutcome(input: ResolveCommitOutcomeInput): CommitOutcome;
   schemaFloor(): SchemaFloor | undefined;
   /** §7.3.5: the opaque auth-lease state, or undefined. */
   leaseState(): LeaseState | undefined;

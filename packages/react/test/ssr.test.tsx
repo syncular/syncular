@@ -9,6 +9,7 @@ import { createElement, type ReactNode } from 'react';
 import { renderToString } from 'react-dom/server';
 import {
   SyncProvider,
+  useCommitOutcomes,
   useConflicts,
   useRawSql,
   useSyncStatus,
@@ -19,10 +20,11 @@ function App(): ReactNode {
   const { rows, isLoading } = useRawSql('SELECT * FROM tasks');
   const status = useSyncStatus();
   const { conflicts } = useConflicts();
+  const { outcomes } = useCommitOutcomes();
   return createElement(
     'div',
     null,
-    `rows=${rows.length} loading=${isLoading} outbox=${status.outbox} conflicts=${conflicts.length}`,
+    `rows=${rows.length} loading=${isLoading} outbox=${status.outbox} conflicts=${conflicts.length} outcomes=${outcomes.length}`,
   );
 }
 
@@ -37,5 +39,6 @@ describe('SSR safety', () => {
     expect(html).toContain('loading=true');
     expect(html).toContain('outbox=0');
     expect(html).toContain('conflicts=0');
+    expect(html).toContain('outcomes=0');
   });
 });

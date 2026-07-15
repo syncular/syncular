@@ -16,6 +16,7 @@ import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { type ReactNode, StrictMode } from 'react';
 import {
   SyncProvider,
+  useCommitOutcomes,
   useConflicts,
   usePresence,
   useRawSql,
@@ -213,6 +214,29 @@ describe('useConflicts', () => {
     ]);
     act(() => client.emitConflicts());
     await waitFor(() => expect(result.current.conflicts).toHaveLength(1));
+  });
+});
+
+describe('useCommitOutcomes', () => {
+  test('surfaces durable history and re-reads only on outcome batches', async () => {
+    const client = new FakeClient();
+    const { result } = renderHook(() => useCommitOutcomes(), {
+      wrapper: wrapper(client),
+    });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    client.setOutcomes([
+      {
+        sequence: 1,
+        clientCommitId: 'c1',
+        status: 'applied',
+        recordedAtMs: 1,
+        results: [{ status: 'applied', opIndex: 0 }],
+        resolution: 'active',
+      },
+    ]);
+    act(() => client.emitOutcomes());
+    await waitFor(() => expect(result.current.outcomes).toHaveLength(1));
+    expect(result.current.outcomes[0]?.clientCommitId).toBe('c1');
   });
 });
 

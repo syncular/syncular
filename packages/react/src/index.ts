@@ -29,6 +29,10 @@ export {
   type SyncClientResourceSnapshot,
 } from './resource';
 export { useReactiveStore, useSyncClient } from './use-client';
+export {
+  type UseCommitOutcomesResult,
+  useCommitOutcomes,
+} from './use-commit-outcomes';
 export { type UseConflictsResult, useConflicts } from './use-conflicts';
 export {
   type SyncTableDescriptor,

@@ -125,6 +125,13 @@ test('boot → subscribe → mutate → sync → query, all over the RPC', async
   expect(summary.applied).toEqual([commitId]);
   await handle.syncUntilIdle();
   expect((await handle.pendingCommits()).length).toBe(0);
+  expect(await handle.commitOutcome(commitId)).toMatchObject({
+    status: 'applied',
+    results: [{ status: 'applied', opIndex: 0 }],
+  });
+  expect(
+    (await handle.commitOutcomes()).map((outcome) => outcome.clientCommitId),
+  ).toContain(commitId);
 
   const rows = await handle.query(
     'SELECT id, title, done FROM tasks ORDER BY id',
@@ -239,7 +246,7 @@ test('conflicts surface as RPC events and via conflicts()', async () => {
     },
   ]);
   await b.syncUntilIdle();
-  await a.mutate([
+  const losingCommitId = await a.mutate([
     {
       table: 'tasks',
       op: 'upsert',
@@ -256,6 +263,18 @@ test('conflicts surface as RPC events and via conflicts()', async () => {
   expect(conflicts.length).toBe(1);
   expect(conflicts[0]?.rowId).toBe('t3');
   expect(conflicts[0]?.serverRow.title).toBe('b wins');
+  expect(await a.commitOutcome(losingCommitId)).toMatchObject({
+    status: 'conflict',
+    resolution: 'active',
+  });
+  expect(await a.commitOutcomes({ activeOnly: true })).toHaveLength(1);
+  const resolved = await a.resolveCommitOutcome({
+    clientCommitId: losingCommitId,
+    resolution: 'resolved_keep_server',
+  });
+  expect(resolved.resolution).toBe('resolved_keep_server');
+  expect(await a.conflicts()).toHaveLength(0);
+  expect(await a.commitOutcomes({ activeOnly: true })).toHaveLength(0);
   await waitFor(() => events.conflicts === 1, 'conflict event delivery');
 
   // The losing pane converges to the server row.

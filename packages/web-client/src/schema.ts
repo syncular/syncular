@@ -288,6 +288,18 @@ export function ensureLocalSchema(
       client_commit_id TEXT NOT NULL UNIQUE,
       created_at_ms INTEGER NOT NULL,
       operations TEXT NOT NULL)`);
+    db.exec(`CREATE TABLE IF NOT EXISTS _syncular_commit_outcomes(
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_commit_id TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL CHECK(status IN ('applied', 'cached', 'conflict', 'rejected')),
+      recorded_at_ms INTEGER NOT NULL,
+      results TEXT NOT NULL,
+      resolution TEXT NOT NULL DEFAULT 'active'
+        CHECK(resolution IN ('active', 'resolved_keep_server', 'superseded', 'dismissed')),
+      resolved_at_ms INTEGER,
+      replacement_client_commit_id TEXT)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS _syncular_commit_outcomes_resolution_seq
+      ON _syncular_commit_outcomes(resolution, seq)`);
     db.exec(`CREATE TABLE IF NOT EXISTS _syncular_subscriptions(
       id TEXT PRIMARY KEY,
       tbl TEXT NOT NULL,

@@ -82,6 +82,10 @@ shims marshal only strings. Lifecycle: `client.pause()` (stop the native event
 pump + disconnect realtime — call from `AppState` `'background'`) and
 `client.resume()`; `client.close()` releases the native core.
 
+Final commit outcomes use the same native SQLite journal as Tauri. Call
+`commitOutcome`, `commitOutcomes`, and `resolveCommitOutcome`; active
+conflicts/rejections and their losing operations survive app restarts.
+
 ## Verification bar
 
 `./check.sh` runs the automated gate:

@@ -164,6 +164,9 @@ not need a custom retention effect.
   means an inbound pull/catch-up signal.
 - `useConflicts()` observes conflicts and rejections only when that domain
   changes.
+- `useCommitOutcomes()` observes the durable newest-first final-outcome journal
+  from exact `outcomesChanged` batches. Resolve entries through
+  `useSyncClient().resolveCommitOutcome(...)`.
 - `usePresence(scopeKey)` observes ephemeral realtime peers.
 - `useSyncClient()` and `useReactiveStore()` expose the normalized low-level
   surfaces for integrations.

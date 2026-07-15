@@ -39,6 +39,7 @@ function batch(
     windows: [],
     conflictsChanged: false,
     rejectionsChanged: false,
+    outcomesChanged: false,
     ...overrides,
   };
 }
@@ -105,6 +106,10 @@ class FakeReactiveClient implements ReactiveQueryClient {
 
   rejections(): readonly unknown[] {
     this.rejectionCalls += 1;
+    return [];
+  }
+
+  commitOutcomes(): readonly never[] {
     return [];
   }
 

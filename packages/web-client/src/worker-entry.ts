@@ -378,6 +378,11 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     statusSnapshot: () => requireClient().statusSnapshot(),
     conflicts: () => requireClient().conflicts,
     rejections: () => requireClient().rejections,
+    commitOutcome: (clientCommitId) =>
+      requireClient().commitOutcome(clientCommitId),
+    commitOutcomes: (query) => requireClient().commitOutcomes(query),
+    resolveCommitOutcome: (input) =>
+      requireClient().resolveCommitOutcome(input),
     schemaFloor: () => requireClient().schemaFloor,
     leaseState: () => requireClient().leaseState,
     upgrading: () => requireClient().upgrading,
