@@ -136,7 +136,7 @@ jobs:
           cargo test --manifest-path rust/Cargo.toml \
             -p syncular-ffi --features native-transport round_tests
           cargo test --manifest-path bindings/tauri/Cargo.toml \
-            -p tauri-plugin-syncular --features native-transport
+            -p tauri-plugin-syncular --features native-transport,e2ee
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
       - name: publish (dependency order)

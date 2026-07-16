@@ -11,6 +11,95 @@
 //! Engine-internal reads use the connection directly and never route here.
 
 const READ_ONLY_VERBS: [&str; 5] = ["select", "with", "explain", "pragma", "values"];
+const PUBLIC_SYNC_VERSION: &str = "_sync_version";
+const NATIVE_SYNC_VERSION: &str = "_syncular_version";
+
+/// Lower the app-facing row-version pseudo-column to the Rust client's private
+/// physical column. The TypeScript client stores `_sync_version` directly;
+/// Rust keeps `_syncular_version` for SSP2 SQLite-image parity, but both query
+/// surfaces must accept the same authored SQL.
+///
+/// Only SQL identifiers are rewritten. Single-quoted values and comments are
+/// copied byte-for-byte so application data cannot be changed by lowering.
+pub(crate) fn lower_public_query_sql(sql: &str) -> String {
+    let bytes = sql.as_bytes();
+    let mut output = String::with_capacity(sql.len());
+    let mut copied_through = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                i = sql[i..]
+                    .find('\n')
+                    .map_or(bytes.len(), |offset| i + offset + 1);
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i = sql[i + 2..]
+                    .find("*/")
+                    .map_or(bytes.len(), |offset| i + 2 + offset + 2);
+            }
+            b'\'' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\'' {
+                        if bytes.get(i + 1) == Some(&b'\'') {
+                            i += 2;
+                        } else {
+                            i += 1;
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            quote @ (b'"' | b'`') => {
+                let content_start = i + 1;
+                let mut end = content_start;
+                while end < bytes.len() && bytes[end] != quote {
+                    end += 1;
+                }
+                if end < bytes.len()
+                    && sql[content_start..end].eq_ignore_ascii_case(PUBLIC_SYNC_VERSION)
+                {
+                    output.push_str(&sql[copied_through..content_start]);
+                    output.push_str(NATIVE_SYNC_VERSION);
+                    copied_through = end;
+                }
+                i = (end + 1).min(bytes.len());
+            }
+            b'[' => {
+                let content_start = i + 1;
+                let end = sql[content_start..]
+                    .find(']')
+                    .map_or(bytes.len(), |offset| content_start + offset);
+                if end < bytes.len()
+                    && sql[content_start..end].eq_ignore_ascii_case(PUBLIC_SYNC_VERSION)
+                {
+                    output.push_str(&sql[copied_through..content_start]);
+                    output.push_str(NATIVE_SYNC_VERSION);
+                    copied_through = end;
+                }
+                i = (end + 1).min(bytes.len());
+            }
+            byte if byte.is_ascii_alphabetic() || byte == b'_' => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                if sql[start..i].eq_ignore_ascii_case(PUBLIC_SYNC_VERSION) {
+                    output.push_str(&sql[copied_through..start]);
+                    output.push_str(NATIVE_SYNC_VERSION);
+                    copied_through = i;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    output.push_str(&sql[copied_through..]);
+    output
+}
 
 /// Assert `sql` is one read-only statement; `Err(message)` otherwise.
 pub fn assert_read_only_query(sql: &str) -> Result<(), String> {
@@ -246,5 +335,18 @@ mod tests {
         ] {
             assert!(assert_read_only_query(sql).is_err(), "should reject: {sql}");
         }
+    }
+
+    #[test]
+    fn lowers_only_app_facing_sync_version_identifiers() {
+        let sql = "SELECT t._sync_version AS server_version, \"_sync_version\" AS quoted \
+                   FROM tasks t WHERE note = '_sync_version' /* _sync_version */ \
+                   -- _sync_version\nORDER BY t.id";
+        let lowered = lower_public_query_sql(sql);
+        assert!(lowered.contains("t._syncular_version AS server_version"));
+        assert!(lowered.contains("\"_syncular_version\" AS quoted"));
+        assert!(lowered.contains("note = '_sync_version'"));
+        assert!(lowered.contains("/* _sync_version */"));
+        assert!(lowered.contains("-- _sync_version"));
     }
 }

@@ -666,6 +666,17 @@ that would create a durable plaintext copy outside the encryption boundary.
 Named-query invalidation maps an FTS projection back to its owning synced
 table; the projection never claims independent scope coverage.
 
+**App-facing row versions.** Every client query surface MUST expose the
+protocol-owned per-row version through the public pseudo-column
+`_sync_version`. Implementations MAY use a different private physical column
+name, but `query` and atomic query-snapshot preparation MUST lower an authored
+`_sync_version` identifier to that physical storage column before SQLite
+prepares the statement. The lowering is identifier-aware: string literals and
+comments are unchanged. An explicit non-reserved alias is returned as ordinary
+query data; an unaliased reserved version column remains engine-internal. This
+query-only column never enters schema IR, mutation values, wire rows, or
+application-table star projections.
+
 ---
 
 ## 3. Scopes and authorization

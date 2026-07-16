@@ -472,7 +472,7 @@ mod observation_tests {
         }];
         let owner = client
             .query_snapshot(
-                "SELECT id, project_id FROM tasks ORDER BY id",
+                "SELECT id, project_id, _sync_version AS server_version FROM tasks ORDER BY id",
                 &[],
                 &coverage,
             )
@@ -480,7 +480,7 @@ mod observation_tests {
         let mut reader = FileQuerySnapshotReader::new(path.to_string_lossy());
         let sidecar = reader
             .query_snapshot(
-                "SELECT id, project_id FROM tasks ORDER BY id",
+                "SELECT id, project_id, _sync_version AS server_version FROM tasks ORDER BY id",
                 &[],
                 &coverage,
             )
@@ -494,6 +494,7 @@ mod observation_tests {
         );
         assert_eq!(sidecar.revision, "2");
         assert_eq!(sidecar.rows[0]["id"], "t1");
+        assert_eq!(sidecar.rows[0]["server_version"], -1);
         assert!(!sidecar.coverage.complete);
         assert_eq!(sidecar.coverage.pending.len(), 1);
         assert_eq!(sidecar.coverage.missing.len(), 1);
@@ -1015,11 +1016,12 @@ fn query_connection(
     params: &[Value],
 ) -> Result<Vec<Map<String, Value>>, String> {
     crate::query_guard::assert_read_only_query(sql)?;
+    let lowered_sql = crate::query_guard::lower_public_query_sql(sql);
     let bound: Vec<SqlValue> = params
         .iter()
         .map(json_param_to_sql)
         .collect::<Result<_, _>>()?;
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&lowered_sql).map_err(|e| e.to_string())?;
     let column_names: Vec<String> = stmt.column_names().into_iter().map(str::to_owned).collect();
     let bound_refs: Vec<&dyn rusqlite::ToSql> =
         bound.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
