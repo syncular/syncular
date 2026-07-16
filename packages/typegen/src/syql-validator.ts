@@ -1364,11 +1364,18 @@ class Validator {
     const inferred: string[] = [];
     for (const ref of refs) {
       const table = this.#ir.tables.find((item) => item.name === ref.table);
+      const primaryKey =
+        table?.primaryKey ??
+        (this.#ir.tables.some((item) =>
+          item.ftsIndexes.some((index) => index.name === ref.table),
+        )
+          ? '_syncular_source_id'
+          : undefined);
       const column = analysis.columns.find(
         (candidate) =>
-          table !== undefined &&
-          candidate.origin?.table === table.name &&
-          candidate.origin.column === table.primaryKey &&
+          primaryKey !== undefined &&
+          candidate.origin?.table === ref.table &&
+          candidate.origin.column === primaryKey &&
           !candidate.nullable,
       );
       if (column === undefined) return undefined;

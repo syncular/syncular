@@ -126,15 +126,23 @@ Applications join the private source identity to the content table when they
 need scope filtering, hierarchy metadata, or a generated row key:
 
 ```sql
-SELECT c.id, c.code, c.title, bm25(catalogue_codes_fts) AS rank
+SELECT catalogue_codes_fts._syncular_source_id AS fts_source_id,
+       c.id, c.code, c.title, bm25(catalogue_codes_fts) AS rank
 FROM catalogue_codes_fts
 JOIN catalogue_codes c
   ON CAST(c.id AS TEXT) = catalogue_codes_fts._syncular_source_id
 WHERE catalogue_codes_fts MATCH :query
   AND c.release_id = :releaseId
-ORDER BY rank, c.code
+ORDER BY rank,
+         catalogue_codes_fts._syncular_source_id ASC,
+         c.id ASC
 LIMIT :limit;
 ```
+
+For bounded named queries, projecting and ordering by both identities lets
+typegen prove a stable composite row key without trusting an authored identity
+override. The private FTS source identity is exact, non-null text only for a
+schema-declared FTS projection; it remains absent from mutations and sync.
 
 ### Authority and security
 

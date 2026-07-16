@@ -367,21 +367,36 @@ describe('SYQL schema/SQL validation', () => {
 
   test('allows FTS5 auxiliary functions only with a declared FTS projection', () => {
     const accepted = validate(`query searchTodos() {
-      select t.id,
+      select todos_fts._syncular_source_id as source_id, t.id,
         bm25(todos_fts) as rank,
         highlight(todos_fts, 0, '<mark>', '</mark>') as highlighted,
         snippet(todos_fts, 0, '<mark>', '</mark>', ' … ', 12) as excerpt
       from todos_fts
       join todos t on t.id = todos_fts._syncular_source_id
       where 0
-      order by rank, t.id asc;
+      order by rank, todos_fts._syncular_source_id asc, t.id asc
+      limit 25;
     }`).queries[0];
     expect(accepted?.analysis.columns.map((column) => column.name)).toEqual([
+      'source_id',
       'id',
       'rank',
       'highlighted',
       'excerpt',
     ]);
+    expect(accepted?.identity).toEqual(['sourceId', 'id']);
+
+    const missingFtsIdentity = frontendError(() =>
+      validate(`query searchTodos() {
+        select t.id, bm25(todos_fts) as rank
+        from todos_fts
+        join todos t on t.id = todos_fts._syncular_source_id
+        where 0
+        order by rank, t.id asc
+        limit 25;
+      }`),
+    );
+    expect(missingFtsIdentity.code).toBe('SYQL6006_INVALID_SORT');
 
     const rejected = frontendError(() =>
       validate(`query q() {
