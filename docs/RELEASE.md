@@ -1,8 +1,17 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.0** (`v0.15.0`). All artifacts use Apache-2.0, except
+current release is **0.15.1** (`v0.15.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.1 release notes
+
+0.15.1 fixes the SYQL portable-profile gate for the FTS5 query contract added
+in 0.15.0. Named queries that reference a schema-declared FTS projection may
+now use the deterministic `bm25`, `highlight`, and `snippet` auxiliary
+functions promised by RFC 0005. Those functions remain rejected when no
+declared FTS projection is present, and arbitrary extension functions remain
+outside the portable SQLite profile.
 
 ## 0.15.0 release notes
 

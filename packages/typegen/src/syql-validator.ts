@@ -221,6 +221,16 @@ const SQLITE_346_PORTABLE_FUNCTIONS = new Set([
   'jsonb_replace',
   'jsonb_set',
 ]);
+/**
+ * Deterministic FTS5 auxiliary functions available only when the query reads
+ * a schema-declared FTS projection. FTS5 is an explicit Syncular client
+ * requirement in that case, not an arbitrary host extension.
+ */
+const SQLITE_FTS5_AUXILIARY_FUNCTIONS = new Set([
+  'bm25',
+  'highlight',
+  'snippet',
+]);
 const SQL_PAREN_KEYWORDS = new Set([
   'and',
   'as',
@@ -376,12 +386,13 @@ class Validator {
       location,
     );
     this.#validateDeterminism(activeSql, logical.declaration.statement.span);
+    const refs = scanTableRefs(activeSql, this.#ir);
     this.#validatePortableProfile(
       activeSql,
       logical.declaration.statement.span,
+      refs,
     );
 
-    const refs = scanTableRefs(activeSql, this.#ir);
     const bindSymbols = this.#bindSymbols(logical.declaration);
     const bindTypes = this.#resolveBindTypes(
       logical,
@@ -792,8 +803,21 @@ class Validator {
     }
   }
 
-  #validatePortableProfile(sql: string, span: SyqlSourceSpan): void {
+  #validatePortableProfile(
+    sql: string,
+    span: SyqlSourceSpan,
+    refs?: readonly TableRef[],
+  ): void {
     const tokens = significant(lexSyqlSqlSource(span.file, sql));
+    const declaredFtsTables = new Set(
+      this.#ir.tables.flatMap((table) =>
+        table.ftsIndexes.map((index) => index.name),
+      ),
+    );
+    const queryRefs = refs ?? scanTableRefs(sql, this.#ir);
+    const readsDeclaredFts = queryRefs.some((ref) =>
+      declaredFtsTables.has(ref.table),
+    );
     for (let index = 0; index < tokens.length; index += 1) {
       const token = tokens[index] as SyqlToken;
       const lower = tokenLower(token);
@@ -828,11 +852,16 @@ class Validator {
       ) {
         continue;
       }
-      if (!SQLITE_346_PORTABLE_FUNCTIONS.has(lower ?? '')) {
+      const allowedFtsAuxiliary =
+        readsDeclaredFts && SQLITE_FTS5_AUXILIARY_FUNCTIONS.has(lower ?? '');
+      if (
+        !SQLITE_346_PORTABLE_FUNCTIONS.has(lower ?? '') &&
+        !allowedFtsAuxiliary
+      ) {
         this.#fail(
           'SYQL6002_INVALID_SQL',
           token.span,
-          `${token.text}() is not a core built-in in the portable SQLite 3.46.0 profile`,
+          `${token.text}() is not a core built-in in the portable SQLite 3.46.0 profile or an auxiliary function of a referenced schema-declared FTS5 projection`,
         );
       }
 

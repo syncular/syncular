@@ -114,8 +114,11 @@ search results.
 ### Query and invalidation
 
 Named SYQL may use `MATCH`, `bm25`, `highlight`, and `snippet` through SQLite's
-FTS5 surface. The FTS projection maps to its synced content table for reactive
-dependency metadata, so changes to the content table invalidate FTS queries.
+FTS5 surface. The three auxiliary functions are admitted by the portable SQL
+profile only when the query references a schema-declared FTS projection;
+arbitrary extension functions remain rejected. The FTS projection maps to its
+synced content table for reactive dependency metadata, so changes to the
+content table invalidate FTS queries.
 Coverage remains derived only from scope predicates on the synced content
 table; the local projection never claims independent completeness.
 
