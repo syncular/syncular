@@ -1,8 +1,24 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.3** (`v0.15.3`). All artifacts use Apache-2.0, except
+current release is **0.15.4** (`v0.15.4`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.4 release notes
+
+0.15.4 aligns native application queries and encrypted Tauri schemas with the
+public Syncular client contract.
+
+The release includes:
+
+- `_sync_version` support in Rust/native `query` and atomic query-snapshot
+  reads, with identifier-aware lowering to the private physical version column
+  while preserving string literals and comments;
+- an opt-in `e2ee` feature on `tauri-plugin-syncular` that forwards encryption
+  support to the native client and shared command router, so applications with
+  encrypted schema columns can complete native bootstraps;
+- native query and file-backed sidecar regression coverage for the public row
+  version projection.
 
 ## 0.15.3 release notes
 

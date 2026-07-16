@@ -38,6 +38,10 @@ tauri = { version = "2", features = ["test"] }
 # sync/segments/blobs/realtime.
 default = []
 native-transport = ["syncular-client/native-transport"]
+# §5.11 client-side encryption. Native apps opt in explicitly; forwarding the
+# feature through the plugin keeps encrypted schemas usable without reaching
+# into the plugin's transitive crate graph.
+e2ee = ["syncular-client/e2ee", "syncular-command/e2ee"]
 # §5.10.5 native CRDT commands (crdtText/crdtInsertText/crdtDeleteText/
 # crdtApplyUpdate). Off by default so a lean plugin build skips yrs; the
 # example enables it so the demo can show collaborative text. Forwards to the
