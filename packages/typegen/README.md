@@ -470,8 +470,10 @@ For FTS-backed named queries the synthesized type-check database creates the
 same declared columns plus `_syncular_source_id UNINDEXED`. `MATCH :query`
 infers a string parameter, and the FTS table reference is folded into its
 owning synced table for dependency and scope-coverage metadata. `bm25`,
-`highlight`, and `snippet` remain SQLite expressions and therefore use the
-normal computed-expression fidelity rules.
+`highlight`, and `snippet` are accepted deterministic FTS5 auxiliary
+functions only when the query references a schema-declared FTS projection;
+they use the normal computed-expression fidelity rules. Arbitrary extension
+functions remain outside the portable profile.
 
 **Typing fidelity** (what `bun:sqlite` actually exposes, and its honest
 boundary):

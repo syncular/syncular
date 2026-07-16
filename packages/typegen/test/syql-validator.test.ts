@@ -32,7 +32,9 @@ const IR: IrDocument = {
         { pattern: 'list:{list_id}', variable: 'list_id', column: 'list_id' },
       ],
       indexes: [],
-      ftsIndexes: [],
+      ftsIndexes: [
+        { name: 'todos_fts', columns: ['title'], tokenize: 'unicode61' },
+      ],
       extensions: {},
     },
     {
@@ -361,6 +363,33 @@ describe('SYQL schema/SQL validation', () => {
       }`),
     );
     expect(collation.code).toBe('SYQL6002_INVALID_SQL');
+  });
+
+  test('allows FTS5 auxiliary functions only with a declared FTS projection', () => {
+    const accepted = validate(`query searchTodos() {
+      select t.id,
+        bm25(todos_fts) as rank,
+        highlight(todos_fts, 0, '<mark>', '</mark>') as highlighted,
+        snippet(todos_fts, 0, '<mark>', '</mark>', ' … ', 12) as excerpt
+      from todos_fts
+      join todos t on t.id = todos_fts._syncular_source_id
+      where 0
+      order by rank, t.id asc;
+    }`).queries[0];
+    expect(accepted?.analysis.columns.map((column) => column.name)).toEqual([
+      'id',
+      'rank',
+      'highlighted',
+      'excerpt',
+    ]);
+
+    const rejected = frontendError(() =>
+      validate(`query q() {
+        select id, bm25(todos) as rank from todos order by id asc;
+      }`),
+    );
+    expect(rejected.code).toBe('SYQL6002_INVALID_SQL');
+    expect(rejected.message).toContain('schema-declared FTS5 projection');
   });
 
   test('uses all SQL evidence for types and accepts explicit uninferrable types', () => {
