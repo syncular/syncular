@@ -40,7 +40,7 @@ sync query listTodos(
 }
 ```
 
-The body is SQL directly—there is no `sql {}` wrapper. The final semicolon
+Write the SQLite statement directly in the query body. The final semicolon
 terminates the complete query.
 
 ## Inputs
@@ -196,9 +196,9 @@ every generated runtime.
 
 ## Identity and types
 
-Result identity is inferred from schema primary keys, SQL lineage, and
-projection aliases. There is no `identity by` declaration. When proof is not
-possible, the generated query uses unkeyed reconciliation.
+The compiler infers result identity from schema primary keys, SQL lineage, and
+projection aliases. When proof is not possible, the generated query uses
+unkeyed reconciliation.
 
 Unannotated input types are inferred from all SQL and predicate uses. Add a
 type when SQL provides no evidence. Conflicting evidence is a compile error.

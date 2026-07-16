@@ -192,6 +192,10 @@ There is a single support floor and a single persistence path:
   `openPersistentWasmDatabase` throws immediately on them.
 - OPFS is the only persistence path. The client does not touch IndexedDB, and
   a wa-sqlite/absurd-sql style fallback is not planned.
+- A temporarily occupied SAH pool fails with retryable
+  `client.storage_busy`; missing/obsolete OPFS APIs fail with non-retryable
+  `client.storage_unavailable`. Never wipe a database merely because its live
+  owner has not released it yet; retry after the owner closes.
 
 ## Where to go next
 

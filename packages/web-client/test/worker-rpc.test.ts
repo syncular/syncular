@@ -13,6 +13,7 @@ import {
   type LeaderLease,
   type LeaderLock,
   NOT_LEADER_CODE,
+  STORAGE_BUSY_CODE,
   type SyncClientHandle,
   type SyncClientHandleConfig,
   WORKER_FAILED_CODE,
@@ -393,6 +394,39 @@ test('worker init failure rejects the handle cleanly', async () => {
     }),
     WORKER_FAILED_CODE,
   );
+});
+
+test('retryable storage ownership failure crosses worker RPC and releases leadership', async () => {
+  const lockName = 'rpc-test-storage-busy';
+  let caught: unknown;
+  try {
+    await createSyncClientHandle({
+      worker: () => new Worker(WORKER_URL),
+      schema: CLIENT_SCHEMA,
+      database: { mode: 'custom', options: 'storage-busy' },
+      endpoints: { syncUrl: http.syncUrl },
+      lockName,
+    });
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(ClientSyncError);
+  expect(caught).toMatchObject({
+    code: STORAGE_BUSY_CODE,
+    retryable: true,
+  });
+
+  // The failed worker released its leader lease, so the same factory can be
+  // attempted again instead of leaving this origin permanently wedged.
+  const recovered = await createSyncClientHandle({
+    worker: () => new Worker(WORKER_URL),
+    schema: CLIENT_SCHEMA,
+    database: { mode: 'custom' },
+    endpoints: { syncUrl: http.syncUrl },
+    lockName,
+  });
+  expect(recovered.isLeader).toBe(true);
+  await recovered.close();
 });
 
 test('close terminates the worker and rejects later calls', async () => {

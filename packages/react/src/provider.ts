@@ -33,7 +33,10 @@ export interface SyncProviderProps {
   readonly client: SyncClientLike | SyncClientResource;
   readonly children?: ReactNode;
   readonly fallback?: ReactNode;
-  readonly renderError?: (error: Error) => ReactNode;
+  readonly renderError?: (
+    error: Error,
+    retry: () => Promise<void>,
+  ) => ReactNode;
 }
 
 interface ClientRecord {
@@ -106,8 +109,8 @@ export function SyncProvider(props: SyncProviderProps): ReactNode {
   );
   if (snapshot.phase === 'pending') return props.fallback ?? null;
   if (snapshot.phase === 'error') {
-    if (props.renderError !== undefined)
-      return props.renderError(snapshot.error);
+    if (props.renderError !== undefined && resource !== undefined)
+      return props.renderError(snapshot.error, resource.retry);
     throw snapshot.error;
   }
   return createElement(

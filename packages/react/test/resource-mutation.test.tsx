@@ -89,6 +89,63 @@ describe('client resources', () => {
     expect(resource.getSnapshot()).toEqual({ phase: 'pending' });
     expect(closeCalls).toBe(1);
   });
+
+  test('a failed resource can retry without being replaced', async () => {
+    const client = new FakeClient();
+    const snapshots: string[] = [];
+    let factoryCalls = 0;
+    const resource = createSyncClientResource(() => {
+      factoryCalls += 1;
+      if (factoryCalls === 1) throw new Error('storage is busy');
+      return client;
+    });
+    resource.subscribe(() => snapshots.push(resource.getSnapshot().phase));
+
+    await waitFor(() => expect(resource.getSnapshot().phase).toBe('error'));
+    const firstRetry = resource.retry();
+    const duplicateRetry = resource.retry();
+    expect(firstRetry).toBe(duplicateRetry);
+    await firstRetry;
+
+    expect(factoryCalls).toBe(2);
+    expect(resource.getSnapshot()).toEqual({ phase: 'ready', client });
+    expect(snapshots).toEqual(['error', 'pending', 'ready']);
+    await resource.dispose();
+  });
+
+  test('SyncProvider gives its error surface a retry action', async () => {
+    const client = new FakeClient();
+    let factoryCalls = 0;
+    const resource = createSyncClientResource(() => {
+      factoryCalls += 1;
+      if (factoryCalls === 1) throw new Error('opening failed');
+      return client;
+    });
+
+    function Child() {
+      const query = useRawSql('SELECT * FROM tasks');
+      return <span>rows={query.rows.length}</span>;
+    }
+    const view = render(
+      <SyncProvider
+        client={resource}
+        fallback={<span>opening</span>}
+        renderError={(error, retry) => (
+          <button type="button" onClick={() => void retry()}>
+            Retry {error.message}
+          </button>
+        )}
+      >
+        <Child />
+      </SyncProvider>,
+    );
+
+    const retryButton = await view.findByText('Retry opening failed');
+    act(() => retryButton.click());
+    await waitFor(() => expect(view.getByText('rows=0')).toBeDefined());
+    expect(factoryCalls).toBe(2);
+    await resource.dispose();
+  });
 });
 
 describe('mutation ergonomics', () => {

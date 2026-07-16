@@ -22,7 +22,8 @@ Pass an already-started client directly:
 ```
 
 For an asynchronous engine, create a resource outside render. This is stable
-through React StrictMode initialization:
+through React StrictMode initialization and can retry a failed startup without
+replacing the provider:
 
 ```tsx
 import { createSyncClientResource, SyncProvider } from '@syncular/react';
@@ -32,14 +33,18 @@ const clientResource = createSyncClientResource(() => createClient());
 <SyncProvider
   client={clientResource}
   fallback={<p>Starting local database…</p>}
-  renderError={(error) => <p>{error.message}</p>}
+  renderError={(error, retry) => (
+    <button onClick={() => void retry()}>Try again: {error.message}</button>
+  )}
 >
   <App />
 </SyncProvider>
 ```
 
 The application lifecycle owner calls `clientResource.dispose()` when the
-engine is truly no longer needed.
+engine is truly no longer needed. A resource survives React remounts, but not
+automatic module replacement: preserve it in your bundler's HMR data or dispose
+the previous resource before constructing another persistent worker.
 
 ## Generated live queries
 
