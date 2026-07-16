@@ -15,6 +15,7 @@ import {
   makeClient,
   makeServer,
   PARTITION,
+  TASK_COLUMNS,
   tableRows,
   taskValues,
 } from './helpers';
@@ -959,6 +960,66 @@ describe('offline outbox (§7)', () => {
 });
 
 describe('schema floor (§1.6)', () => {
+  test('a schema bump adds an indexed column before any new index DDL runs', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'syncular-indexed-column-bump-'));
+    const databasePath = join(dir, 'client.sqlite');
+    const server = makeServer();
+    try {
+      const first = await makeClient(server, {
+        clientId: 'schema-bump-client',
+        databasePath,
+      });
+      await first.client.close();
+      first.db.close();
+
+      const upgradedSchema: ClientSchema = {
+        version: 2,
+        tables: CLIENT_SCHEMA.tables.map((table) =>
+          table.name === 'tasks'
+            ? {
+                ...table,
+                columns: [
+                  ...TASK_COLUMNS,
+                  {
+                    name: 'facility_membership_id',
+                    type: 'string' as const,
+                    nullable: true,
+                  },
+                ],
+                indexes: [
+                  {
+                    name: 'tasks_by_membership',
+                    columns: ['project_id', 'facility_membership_id'],
+                    unique: false,
+                  },
+                ],
+              }
+            : table,
+        ),
+      };
+      const reopened = await makeClient(server, {
+        clientId: 'schema-bump-client',
+        databasePath,
+        schema: upgradedSchema,
+      });
+      expect(
+        reopened.db
+          .query('PRAGMA table_info("tasks")')
+          .map((column) => column.name),
+      ).toContain('facility_membership_id');
+      expect(
+        reopened.db.query(
+          `SELECT name FROM sqlite_master
+             WHERE type = 'index' AND name = 'tasks_by_membership'`,
+        ),
+      ).toEqual([{ name: 'tasks_by_membership' }]);
+      await reopened.client.close();
+      reopened.db.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('requiredSchemaVersion stops syncing and surfaces the floor', async () => {
     const server = makeServer();
     const futureSchema: ClientSchema = { ...CLIENT_SCHEMA, version: 2 };

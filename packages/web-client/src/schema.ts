@@ -395,10 +395,12 @@ function createFtsProjection(
 }
 
 /**
- * Create the synced tables plus client bookkeeping tables (outbox,
- * subscription state, meta). Idempotent.
+ * Create only the application-owned synced tables, indexes, and FTS
+ * projections. Callers opening an existing database must compare the
+ * persisted schema version before invoking this: a new index may reference a
+ * column that does not exist until the schema-bump reset recreates the table.
  */
-export function ensureLocalSchema(
+export function ensureLocalSyncedSchema(
   db: ClientDatabase,
   schema: CompiledClientSchema,
 ): void {
@@ -411,6 +413,16 @@ export function ensureLocalSchema(
         createFtsProjection(db, table, index);
       }
     }
+  });
+}
+
+/**
+ * Create the protected Syncular bookkeeping tables without touching the
+ * application schema. This makes the persisted schema-version marker
+ * readable before any new application index or FTS projection is applied.
+ */
+export function ensureLocalBookkeepingSchema(db: ClientDatabase): void {
+  db.transaction(() => {
     db.exec(`CREATE TABLE IF NOT EXISTS _syncular_meta(
       key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
     db.exec(
@@ -475,6 +487,15 @@ export function ensureLocalSchema(
       tbl TEXT NOT NULL,
       effective_scopes TEXT NOT NULL)`);
   });
+}
+
+/** Create both application and protected bookkeeping tables. */
+export function ensureLocalSchema(
+  db: ClientDatabase,
+  schema: CompiledClientSchema,
+): void {
+  ensureLocalBookkeepingSchema(db);
+  ensureLocalSyncedSchema(db, schema);
 }
 
 /** Bookkeeping tables the schema-bump reset (§7.4.3) MUST NOT drop. */
