@@ -115,6 +115,29 @@ export function resetSubscriptionsForBump(db: ClientDatabase): void {
   );
 }
 
+/**
+ * Remove registrations whose table no longer exists in the running schema.
+ * Keeping one would make every subsequent pull fail with
+ * `sync.unknown_table`. Window bookkeeping belongs to the registration and
+ * is removed with it.
+ */
+export function pruneUnknownSubscriptions(
+  db: ClientDatabase,
+  tableNames: ReadonlySet<string>,
+): void {
+  const staleIds = db
+    .query('SELECT id, tbl FROM _syncular_subscriptions')
+    .filter((row) => !tableNames.has(String(row.tbl)))
+    .map((row) => String(row.id));
+  for (const id of staleIds) {
+    db.exec('DELETE FROM _syncular_windows WHERE sub_id = ?', [id]);
+    db.exec('DELETE FROM _syncular_window_pending_evict WHERE sub_id = ?', [
+      id,
+    ]);
+    db.exec('DELETE FROM _syncular_subscriptions WHERE id = ?', [id]);
+  }
+}
+
 export function getMeta(db: ClientDatabase, key: string): string | undefined {
   const row = db.query('SELECT value FROM _syncular_meta WHERE key = ?', [
     key,

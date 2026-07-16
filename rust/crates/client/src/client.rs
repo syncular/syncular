@@ -232,6 +232,101 @@ mod observation_tests {
     }
 
     #[test]
+    fn schema_bump_precedes_index_ddl_and_prunes_removed_subscriptions() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-indexed-column-bump-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let old_schema = json!({
+            "version": 1,
+            "tables": [
+                {
+                    "name": "tasks",
+                    "primaryKey": "id",
+                    "columns": [
+                        { "name": "id", "type": "string", "nullable": false },
+                        { "name": "project_id", "type": "string", "nullable": false }
+                    ],
+                    "scopes": [{ "pattern": "project:{project_id}" }]
+                },
+                {
+                    "name": "legacy",
+                    "primaryKey": "id",
+                    "columns": [
+                        { "name": "id", "type": "string", "nullable": false },
+                        { "name": "project_id", "type": "string", "nullable": false }
+                    ],
+                    "scopes": [{ "pattern": "project:{project_id}" }]
+                }
+            ]
+        });
+        {
+            let mut first = SyncClient::open_path_with_identity(
+                None,
+                &old_schema,
+                ClientLimits::default(),
+                path.to_str().expect("UTF-8 temp path"),
+            )
+            .expect("open old schema");
+            first
+                .subscribe(
+                    "legacy-sub".to_owned(),
+                    "legacy".to_owned(),
+                    vec![("project_id".to_owned(), vec!["p1".to_owned()])],
+                    None,
+                )
+                .expect("persist legacy subscription");
+        }
+
+        let new_schema = json!({
+            "version": 2,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "project_id", "type": "string", "nullable": false },
+                    { "name": "facility_membership_id", "type": "string", "nullable": true }
+                ],
+                "scopes": [{ "pattern": "project:{project_id}" }],
+                "indexes": [{
+                    "name": "tasks_by_membership",
+                    "columns": ["project_id", "facility_membership_id"],
+                    "unique": false
+                }]
+            }]
+        });
+        let upgraded = SyncClient::open_path_with_identity(
+            None,
+            &new_schema,
+            ClientLimits::default(),
+            path.to_str().expect("UTF-8 temp path"),
+        )
+        .expect("open upgraded schema");
+        let columns = upgraded
+            .conn
+            .prepare("PRAGMA table_info(tasks)")
+            .expect("prepare columns")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query columns")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect columns");
+        assert!(columns.contains(&"facility_membership_id".to_owned()));
+        let index_count: i64 = upgraded
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'tasks_by_membership'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query index");
+        assert_eq!(index_count, 1);
+        assert!(upgraded.subscription_state("legacy-sub").is_none());
+        drop(upgraded);
+        std::fs::remove_file(path).expect("remove temp database");
+    }
+
+    #[test]
     fn migrates_pre_envelope_outcome_journal_additively() {
         let path = std::env::temp_dir().join(format!(
             "syncular-outcome-migration-{}.db",
@@ -1305,7 +1400,10 @@ impl SyncClient {
         client
             .conn
             .set_prepared_statement_cache_capacity(64.max(client.schema.tables.len() * 4));
-        client.create_tables()?;
+        // Protected bookkeeping must exist before inspecting the persisted
+        // schema marker. New app indexes may reference columns that only
+        // exist after a version-bump reset.
+        client.create_bookkeeping_tables()?;
         match client.get_meta(CLIENT_ID_KEY) {
             Some(existing) if existing != client.client_id => {
                 return Err(format!(
@@ -1320,9 +1418,18 @@ impl SyncClient {
         let marker = client
             .get_meta(LOCAL_SCHEMA_VERSION_KEY)
             .and_then(|value| value.parse::<i32>().ok());
-        if marker != Some(client.schema.version) {
-            client.run_schema_reset()?;
-        } else if !client.outbox.is_empty() {
+        match marker {
+            None => {
+                client.create_synced_tables()?;
+                client.set_meta(LOCAL_SCHEMA_VERSION_KEY, &client.schema.version.to_string());
+            }
+            Some(version) if version == client.schema.version => {
+                client.create_synced_tables()?;
+            }
+            Some(_) => client.run_schema_reset()?,
+        }
+        client.prune_unknown_subscriptions()?;
+        if marker == Some(client.schema.version) && !client.outbox.is_empty() {
             // Reconstruct the visible optimistic overlay from the durable base
             // plus outbox instead of trusting a process-interrupted mirror.
             client.overlay_dirty.set(true);
@@ -1359,8 +1466,7 @@ impl SyncClient {
         })
     }
 
-    fn create_tables(&self) -> Result<(), String> {
-        self.create_synced_tables()?;
+    fn create_bookkeeping_tables(&self) -> Result<(), String> {
         // Durable client bookkeeping (outbox + subscription + meta).
         self.conn
             .execute_batch(
@@ -1397,11 +1503,6 @@ impl SyncClient {
         let _ = self
             .conn
             .execute_batch("ALTER TABLE _syncular_commit_outcomes ADD COLUMN operations_json TEXT");
-        // §7.4.1: seed the persisted local schema-version marker on first
-        // create (a fresh install is already at its generated version).
-        if self.get_meta(LOCAL_SCHEMA_VERSION_KEY).is_none() {
-            self.set_meta(LOCAL_SCHEMA_VERSION_KEY, &self.schema.version.to_string());
-        }
         if self.get_meta(LOCAL_REVISION_KEY).is_none() {
             self.set_meta(LOCAL_REVISION_KEY, "0");
         }
@@ -1611,6 +1712,45 @@ impl SyncClient {
             .transpose()
             .map_err(|error| format!("invalid persisted schema floor: {error}"))?;
         self.stopped = self.schema_floor.is_some();
+        Ok(())
+    }
+
+    /// Remove registrations for tables the running schema no longer knows.
+    /// Otherwise the server rejects every pull with `sync.unknown_table`.
+    fn prune_unknown_subscriptions(&mut self) -> Result<(), String> {
+        let valid_tables: BTreeSet<String> = self
+            .schema
+            .tables
+            .iter()
+            .map(|table| table.name.clone())
+            .collect();
+        let stale_ids: Vec<String> = self
+            .subs
+            .iter()
+            .filter(|sub| !valid_tables.contains(&sub.table))
+            .map(|sub| sub.id.clone())
+            .collect();
+        for id in &stale_ids {
+            self.conn
+                .execute(
+                    "DELETE FROM _syncular_windows WHERE sub_id = ?1",
+                    rusqlite::params![id],
+                )
+                .map_err(|error| error.to_string())?;
+            self.conn
+                .execute(
+                    "DELETE FROM _syncular_window_pending_evict WHERE sub_id = ?1",
+                    rusqlite::params![id],
+                )
+                .map_err(|error| error.to_string())?;
+            self.conn
+                .execute(
+                    "DELETE FROM _syncular_subscriptions WHERE id = ?1",
+                    rusqlite::params![id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        self.subs.retain(|sub| valid_tables.contains(&sub.table));
         Ok(())
     }
 
@@ -1895,6 +2035,7 @@ impl SyncClient {
         if marker != Some(self.schema.version) {
             self.run_schema_reset()?;
         }
+        self.prune_unknown_subscriptions()?;
         // The conformance recreate is the in-memory equivalent of reopening a
         // durable client. Apply the same startup catch-up contract even when
         // the schema itself did not change.

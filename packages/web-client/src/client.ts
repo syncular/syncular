@@ -134,6 +134,7 @@ import {
   getMeta,
   getSubscription,
   loadSubscriptions,
+  pruneUnknownSubscriptions,
   resetSubscriptionsForBump,
   type SubscriptionRecord,
   saveSubscription,
@@ -585,6 +586,11 @@ export class SyncClient {
     // before the first sync round. A fresh install (no marker) is treated as
     // already at the generated version.
     this.#detectAndResetSchema();
+    // A registration remains app intent only while its table exists in the
+    // running schema. Removed-table registrations would poison every pull.
+    this.#db.transaction(() => {
+      pruneUnknownSubscriptions(this.#db, new Set(this.#schema.tables.keys()));
+    });
     this.#started = true;
     // A persisted active subscription needs one catch-up round on every open:
     // realtime only covers changes after the socket connects, and an
