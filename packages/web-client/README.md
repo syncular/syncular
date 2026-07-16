@@ -3,6 +3,17 @@
 The TypeScript client protocol core (SPEC.md §§3–8, client side) plus its
 browser platform bindings.
 
+## Client-local FTS5 projections
+
+Generated schemas may attach `ftsIndexes` to a synced table (RFC 0005). The
+client materializes each as a contentful local FTS5 table with a private stable
+source identity and insert/update/delete triggers. Existing visible rows are
+bulk-indexed on first creation; schema reset recreates the projection. The FTS
+table is a read-only application query surface: it is never synced, subscribed,
+or mutated. A missing FTS5 build fails schema setup explicitly—Syncular does
+not substitute an unbounded `LIKE` scan. Indexed fields must be non-encrypted
+strings.
+
 ## Browser modes — there are exactly two
 
 **Persistent worker mode is THE mode** (REVISE Direction decision 2,

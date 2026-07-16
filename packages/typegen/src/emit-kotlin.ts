@@ -92,6 +92,18 @@ function emitSchemaValue(ir: IrDocument, indent: string): string[] {
       );
     }
     lines.push(`${i}      )),`);
+    if (table.ftsIndexes.length > 0) {
+      lines.push(`${i}      "ftsIndexes" to JsonValue.arr(listOf(`);
+      for (const index of table.ftsIndexes) {
+        const columns = index.columns
+          .map((column) => `JsonValue.of(${quote(column)})`)
+          .join(', ');
+        lines.push(
+          `${i}        JsonValue.obj("name" to JsonValue.of(${quote(index.name)}), "columns" to JsonValue.arr(listOf(${columns})), "tokenize" to JsonValue.of(${quote(index.tokenize)})),`,
+        );
+      }
+      lines.push(`${i}      )),`);
+    }
     lines.push(`${i}    ),`);
   }
   lines.push(`${i}  )),`);

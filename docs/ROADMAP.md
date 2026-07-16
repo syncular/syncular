@@ -537,8 +537,11 @@ INDEX in the migration subset. (S3 blob store + GC sweep **landed
       docs only). S each, high adoption value.
 - [ ] Client devtools: a debug surface (local DB / outbox / rounds /
       invalidation introspection) + docs page. M.
-- [ ] FTS5 local search: needs migration-subset support for virtual
-      tables — pairs with a future "migration subset v2". M, demand-gated.
+- [x] FTS5 local search (LANDED 2026-07-16): narrow migration-subset v2
+      `CREATE VIRTUAL TABLE … USING fts5` syntax; generated cross-language
+      schema metadata; contentful local projections with stable primary-key
+      identity in TypeScript and Rust; MATCH query typing and owner-table
+      invalidation; no fallback. Triggered by Diego's offline catalogue.
 - [ ] Safari/Firefox support-floor verification (human hands, pre-launch)
       and a scheduled `load:smoke` run (nightly candidate). S each.
 

@@ -650,6 +650,22 @@ server that cannot codec a table for the client's `schemaVersion` MUST
 answer with `requiredSchemaVersion` — the schema-floor response of
 §1.6, which processes nothing — never with a degraded encoding.
 
+**Client-local FTS5 projections (RFC 0005).** The schema IR MAY attach an
+`ftsIndexes` array to a synced table. Each entry names a local FTS5 virtual
+table, 1–32 non-encrypted string columns, and an allowlisted built-in
+tokenizer. This metadata is client-only: it MUST NOT create a server table,
+wire table, scope, codec column, subscription target, or mutation target.
+Reference clients materialize the same contentful FTS5 projection over the
+visible table with an internal `_syncular_source_id UNINDEXED` column equal to
+the string form of the application primary key. They MUST keep it
+transactionally current across insert/update/delete, optimistic overlay
+rebuild, purge, and schema reset. If FTS5 is unavailable, local schema creation
+MUST fail loudly; a client MUST NOT silently omit the projection or replace
+`MATCH` with a `LIKE` scan. An encrypted column MUST NOT be indexed because
+that would create a durable plaintext copy outside the encryption boundary.
+Named-query invalidation maps an FTS projection back to its owning synced
+table; the projection never claims independent scope coverage.
+
 ---
 
 ## 3. Scopes and authorization

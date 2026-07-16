@@ -91,6 +91,16 @@ function emitSchemaValue(ir: IrDocument, indent: string): string[] {
       );
     }
     lines.push(`${i}      ],`);
+    if (table.ftsIndexes.length > 0) {
+      lines.push(`${i}      'ftsIndexes': [`);
+      for (const index of table.ftsIndexes) {
+        const columns = index.columns.map((column) => quote(column)).join(', ');
+        lines.push(
+          `${i}        {'name': ${quote(index.name)}, 'columns': [${columns}], 'tokenize': ${quote(index.tokenize)}},`,
+        );
+      }
+      lines.push(`${i}      ],`);
+    }
     lines.push(`${i}    },`);
   }
   lines.push(`${i}  ],`);

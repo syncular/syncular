@@ -172,8 +172,11 @@ verification; push is Benjamin's alone).
 - [ ] **Client devtools** (local DB / outbox / rounds / invalidation
       introspection surface + docs) — *trigger: first debugging session
       that hurts*.
-- [ ] **FTS5 local search** — needs virtual-table support in a
-      "migration subset v2" — *trigger: first search-shaped app*.
+- [x] **FTS5 local search** (LANDED 2026-07-16) — migration-subset v2
+      accepts a narrow `CREATE VIRTUAL TABLE … USING fts5` ownership form;
+      TypeScript and Rust clients materialize the same local-only,
+      primary-key-stable projection with no `LIKE` fallback. Triggered by
+      Diego's offline medical catalogue.
 - [ ] **Undo/redo docs recipe** (pattern over `mutate()`, NOT core API —
       see non-goals) — *at the next docs pass*.
 - [ ] **Safari/Firefox support-floor verification** (human hands) and a

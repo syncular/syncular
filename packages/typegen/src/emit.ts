@@ -108,6 +108,16 @@ function emitSchema(ir: IrDocument): string {
       }
       lines.push('      ],');
     }
+    if (table.ftsIndexes.length > 0) {
+      lines.push('      ftsIndexes: [');
+      for (const index of table.ftsIndexes) {
+        const cols = index.columns.map((column) => quote(column)).join(', ');
+        lines.push(
+          `        { name: ${quote(index.name)}, columns: [${cols}], tokenize: ${quote(index.tokenize)} },`,
+        );
+      }
+      lines.push('      ],');
+    }
     lines.push('    },');
   }
   lines.push('  ],');

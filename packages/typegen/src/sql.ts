@@ -8,6 +8,8 @@
  * - `ALTER TABLE name ADD [COLUMN] coldef`
  * - `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table (col [, col…])`
  * - `DROP TABLE [IF EXISTS] name`
+ * - `CREATE VIRTUAL TABLE name USING fts5(cols…, content=table,
+ *   [tokenize='allowlisted tokenizer'])` (RFC 0005 local projection)
  * - column defs: `name TYPE [PRIMARY KEY] [NOT NULL] [NULL]
  *   [DEFAULT literal]`
  * - `--` and C-style comments
@@ -18,7 +20,7 @@
  * indexes — is a hard error naming the unsupported construct.
  */
 import { TypegenError } from './errors';
-import type { IrColumn, IrColumnType, IrIndex } from './ir';
+import type { IrColumn, IrColumnType, IrFtsIndex, IrIndex } from './ir';
 
 /** SQL type keyword → the §2.4 column types. Case-insensitive. */
 const TYPE_MAP: Readonly<Record<string, IrColumnType>> = {
@@ -56,6 +58,8 @@ export interface ParsedTable {
   readonly columns: IrColumn[];
   /** Local secondary indexes, in declaration order (CREATE INDEX subset). */
   readonly indexes: IrIndex[];
+  /** Client-local contentful FTS5 projections. */
+  readonly ftsIndexes: IrFtsIndex[];
 }
 
 interface Token {
@@ -122,7 +126,7 @@ function tokenizeStatements(sql: string, source: string): Token[][] {
       while (end < sql.length && /[0-9.]/.test(sql[end] as string)) end += 1;
       current.push({ kind: 'number', text: sql.slice(i, end) });
       i = end;
-    } else if (ch === '(' || ch === ')' || ch === ',') {
+    } else if (ch === '(' || ch === ')' || ch === ',' || ch === '=') {
       current.push({ kind: 'punct', text: ch });
       i += 1;
     } else {
@@ -294,6 +298,10 @@ function parseCreate(
   droppedTables: ReadonlySet<string>,
   source: string,
 ): void {
+  if (cursor.eatWord('VIRTUAL')) {
+    parseCreateVirtualTable(cursor, tables);
+    return;
+  }
   if (cursor.eatWord('TABLE')) {
     parseCreateTable(cursor, tables, droppedTables, source);
     return;
@@ -309,8 +317,138 @@ function parseCreate(
   }
   const token = cursor.peek();
   cursor.fail(
-    `unsupported CREATE statement (only CREATE TABLE and CREATE [UNIQUE] INDEX), found ${JSON.stringify(token?.text ?? '')}`,
+    `unsupported CREATE statement (only CREATE TABLE, CREATE [UNIQUE] INDEX, and CREATE VIRTUAL TABLE … USING fts5), found ${JSON.stringify(token?.text ?? '')}`,
   );
+}
+
+const ALLOWED_FTS_TOKENIZERS = new Set([
+  'unicode61',
+  'unicode61 remove_diacritics 0',
+  'unicode61 remove_diacritics 1',
+  'unicode61 remove_diacritics 2',
+  'porter unicode61',
+  'trigram',
+]);
+
+/** Parse the deliberately narrow migration-subset v2 FTS5 form documented in
+ * RFC 0005. The virtual table is attached to its owning synced
+ * table and is not itself a synced table. */
+function parseCreateVirtualTable(
+  cursor: Cursor,
+  tables: Map<string, ParsedTable>,
+): void {
+  cursor.expectWord('TABLE', 'after CREATE VIRTUAL');
+  if (cursor.eatWord('IF')) {
+    cursor.expectWord('NOT', 'after IF');
+    cursor.expectWord('EXISTS', 'after IF NOT');
+  }
+  const name = cursor.identifier('an FTS virtual-table name');
+  if (tables.has(name)) {
+    cursor.fail(`FTS virtual table ${name} conflicts with a synced table`);
+  }
+  for (const table of tables.values()) {
+    if (
+      table.indexes.some((index) => index.name === name) ||
+      table.ftsIndexes.some((index) => index.name === name)
+    ) {
+      cursor.fail(
+        `FTS virtual table ${name} is created twice or conflicts with an index`,
+      );
+    }
+  }
+  cursor.expectWord('USING', `after CREATE VIRTUAL TABLE ${name}`);
+  cursor.expectWord('FTS5', `as the module for ${name}`);
+  cursor.expectPunct('(', `after USING fts5 for ${name}`);
+  const columns: string[] = [];
+  let content: string | undefined;
+  let tokenize = 'unicode61';
+  let tokenizeDeclared = false;
+  let sawOption = false;
+  for (;;) {
+    const field = cursor.identifier(`an FTS5 column or option for ${name}`);
+    if (cursor.peek()?.text === '=') {
+      sawOption = true;
+      cursor.next();
+      const value = cursor.next();
+      if (value.kind !== 'word' && value.kind !== 'string') {
+        cursor.fail(
+          `FTS virtual table ${name}: ${field} needs a literal value`,
+        );
+      }
+      if (field.toUpperCase() === 'CONTENT') {
+        if (content !== undefined) {
+          cursor.fail(`FTS virtual table ${name}: content is declared twice`);
+        }
+        content = value.text;
+      } else if (field.toUpperCase() === 'TOKENIZE') {
+        if (tokenizeDeclared) {
+          cursor.fail(`FTS virtual table ${name}: tokenize is declared twice`);
+        }
+        if (!ALLOWED_FTS_TOKENIZERS.has(value.text)) {
+          cursor.fail(
+            `FTS virtual table ${name}: tokenizer ${JSON.stringify(value.text)} is not allowlisted`,
+          );
+        }
+        tokenize = value.text;
+        tokenizeDeclared = true;
+      } else {
+        cursor.fail(
+          `FTS virtual table ${name}: unsupported FTS5 option ${JSON.stringify(field)}`,
+        );
+      }
+    } else {
+      if (sawOption) {
+        cursor.fail(
+          `FTS virtual table ${name}: indexed columns must precede FTS5 options`,
+        );
+      }
+      if (columns.includes(field)) {
+        cursor.fail(
+          `FTS virtual table ${name}: column ${JSON.stringify(field)} appears twice`,
+        );
+      }
+      columns.push(field);
+    }
+    const separator = cursor.next();
+    if (separator.kind === 'punct' && separator.text === ',') continue;
+    if (separator.kind === 'punct' && separator.text === ')') break;
+    cursor.fail(
+      `FTS virtual table ${name}: expected "," or ")", found ${JSON.stringify(separator.text)}`,
+    );
+  }
+  cursor.expectEnd();
+  if (content === undefined) {
+    cursor.fail(
+      `FTS virtual table ${name}: content = synced_table is required`,
+    );
+  }
+  const table = tables.get(content);
+  if (table === undefined) {
+    cursor.fail(
+      `FTS virtual table ${name}: content table ${JSON.stringify(content)} does not exist at this point`,
+    );
+  }
+  if (columns.length === 0 || columns.length > 32) {
+    cursor.fail(
+      `FTS virtual table ${name}: between 1 and 32 columns are required`,
+    );
+  }
+  for (const columnName of columns) {
+    const column = table.columns.find(
+      (candidate) => candidate.name === columnName,
+    );
+    if (column === undefined) {
+      cursor.fail(
+        `FTS virtual table ${name}: column ${JSON.stringify(columnName)} does not exist on table ${content}`,
+      );
+    }
+    if (column.type !== 'string') {
+      cursor.fail(
+        `FTS virtual table ${name}: column ${JSON.stringify(columnName)} must have TEXT/string type`,
+      );
+    }
+  }
+  table.ftsIndexes.push({ name, columns, tokenize });
 }
 
 function parseCreateTable(
@@ -331,6 +469,14 @@ function parseCreateTable(
   }
   if (tables.has(name)) {
     cursor.fail(`table ${name} is created twice`);
+  }
+  for (const table of tables.values()) {
+    if (
+      table.indexes.some((index) => index.name === name) ||
+      table.ftsIndexes.some((index) => index.name === name)
+    ) {
+      cursor.fail(`table ${name} conflicts with an index or FTS virtual table`);
+    }
   }
   cursor.expectPunct('(', `after CREATE TABLE ${name}`);
   const columns: IrColumn[] = [];
@@ -401,7 +547,13 @@ function parseCreateTable(
   const finalColumns = columns.map((c) =>
     c.name === primaryKey ? { ...c, nullable: false } : c,
   );
-  tables.set(name, { name, primaryKey, columns: finalColumns, indexes: [] });
+  tables.set(name, {
+    name,
+    primaryKey,
+    columns: finalColumns,
+    indexes: [],
+    ftsIndexes: [],
+  });
 }
 
 /**
@@ -423,9 +575,17 @@ function parseCreateIndex(
     cursor.expectWord('EXISTS', 'after IF NOT');
   }
   const name = cursor.identifier('an index name');
+  if (tables.has(name)) {
+    cursor.fail(`index ${name} conflicts with a synced table`);
+  }
   for (const table of tables.values()) {
-    if (table.indexes.some((i) => i.name === name)) {
-      cursor.fail(`index ${name} is created twice`);
+    if (
+      table.indexes.some((i) => i.name === name) ||
+      table.ftsIndexes.some((i) => i.name === name)
+    ) {
+      cursor.fail(
+        `index ${name} is created twice or conflicts with an FTS virtual table`,
+      );
     }
   }
   cursor.expectWord('ON', `after CREATE INDEX ${name}`);
@@ -559,7 +719,7 @@ export function applyMigrationSql(
     } else {
       throw new TypegenError(
         source,
-        `unsupported SQL statement starting with ${JSON.stringify(head.text)} (only CREATE TABLE, CREATE [UNIQUE] INDEX, ALTER TABLE … ADD COLUMN, and DROP TABLE)`,
+        `unsupported SQL statement starting with ${JSON.stringify(head.text)} (only CREATE TABLE, CREATE [UNIQUE] INDEX, CREATE VIRTUAL TABLE … USING fts5, ALTER TABLE … ADD COLUMN, and DROP TABLE)`,
       );
     }
   }

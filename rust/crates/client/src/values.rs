@@ -558,6 +558,7 @@ mod naming_tests {
             pk_index: 0,
             scope_variables: Vec::new(),
             indexes: Vec::new(),
+            fts_indexes: Vec::new(),
             encrypted_columns: Vec::new(),
         }
     }

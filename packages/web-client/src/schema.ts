@@ -19,6 +19,13 @@ export interface ClientIndexSpec {
   readonly unique: boolean;
 }
 
+/** One client-local contentful FTS5 projection (RFC 0005). */
+export interface ClientFtsIndexSpec {
+  readonly name: string;
+  readonly columns: readonly string[];
+  readonly tokenize: string;
+}
+
 export interface ClientTableSchema {
   readonly name: string;
   /** Columns in schema-IR declaration order (the row-codec order, §2.4). */
@@ -29,6 +36,8 @@ export interface ClientTableSchema {
   /** Local secondary indexes; absent in the generated schema when a table
    * declares none (typegen omits the key for index-free tables). */
   readonly indexes?: readonly ClientIndexSpec[];
+  /** Local FTS5 search projections; omitted when a table declares none. */
+  readonly ftsIndexes?: readonly ClientFtsIndexSpec[];
 }
 
 export interface ClientSchema {
@@ -60,6 +69,8 @@ export interface CompiledClientTable {
   /** Local secondary indexes to create on the mirror table (declaration
    * order); empty when the table declares none. */
   readonly indexes: readonly ClientIndexSpec[];
+  /** Client-local FTS5 projections, in declaration order. */
+  readonly ftsIndexes: readonly ClientFtsIndexSpec[];
   /** §5.11: true when any column is `encrypted`. Drives the encrypt/decrypt
    * seam (skipped entirely when false) and the local-plaintext DDL. */
   readonly hasEncryptedColumns: boolean;
@@ -71,15 +82,30 @@ export interface CompiledClientSchema {
 }
 
 const PATTERN_RE = /^([^{}]+):\{([^{}:]+)\}$/;
+const ALLOWED_FTS_TOKENIZERS = new Set([
+  'unicode61',
+  'unicode61 remove_diacritics 0',
+  'unicode61 remove_diacritics 1',
+  'unicode61 remove_diacritics 2',
+  'porter unicode61',
+  'trigram',
+]);
 
 export function compileClientSchema(
   schema: ClientSchema,
 ): CompiledClientSchema {
   const tables = new Map<string, CompiledClientTable>();
+  const schemaObjectNames = new Set<string>();
   for (const table of schema.tables) {
     if (tables.has(table.name)) {
       throw new Error(`duplicate table ${JSON.stringify(table.name)}`);
     }
+    if (schemaObjectNames.has(table.name)) {
+      throw new Error(
+        `table ${JSON.stringify(table.name)} conflicts with an index or FTS projection`,
+      );
+    }
+    schemaObjectNames.add(table.name);
     const columnIndex = new Map<string, number>();
     table.columns.forEach((column, index) => {
       if (columnIndex.has(column.name)) {
@@ -142,12 +168,64 @@ export function compileClientSchema(
     for (const alias of ambiguous) columnIndexByCamel.delete(alias);
     const indexes = table.indexes ?? [];
     for (const index of indexes) {
+      if (schemaObjectNames.has(index.name)) {
+        throw new Error(
+          `table ${table.name}: index ${JSON.stringify(index.name)} conflicts with another schema object`,
+        );
+      }
+      schemaObjectNames.add(index.name);
       for (const column of index.columns) {
         if (!columnIndex.has(column)) {
           throw new Error(
             `table ${table.name}: index ${JSON.stringify(index.name)} names unknown column ${JSON.stringify(column)}`,
           );
         }
+      }
+    }
+    const ftsIndexes = table.ftsIndexes ?? [];
+    for (const index of ftsIndexes) {
+      if (schemaObjectNames.has(index.name)) {
+        throw new Error(
+          `table ${table.name}: FTS projection ${JSON.stringify(index.name)} conflicts with another schema object`,
+        );
+      }
+      schemaObjectNames.add(index.name);
+      if (index.columns.length === 0 || index.columns.length > 32) {
+        throw new Error(
+          `table ${table.name}: FTS projection ${JSON.stringify(index.name)} needs between 1 and 32 columns`,
+        );
+      }
+      const seenColumns = new Set<string>();
+      for (const columnName of index.columns) {
+        if (seenColumns.has(columnName)) {
+          throw new Error(
+            `table ${table.name}: FTS projection ${JSON.stringify(index.name)} repeats column ${JSON.stringify(columnName)}`,
+          );
+        }
+        seenColumns.add(columnName);
+        const column = table.columns.find(
+          (candidate) => candidate.name === columnName,
+        );
+        if (column === undefined) {
+          throw new Error(
+            `table ${table.name}: FTS projection ${JSON.stringify(index.name)} names unknown column ${JSON.stringify(columnName)}`,
+          );
+        }
+        if (localColumnType(column) !== 'string') {
+          throw new Error(
+            `table ${table.name}: FTS projection ${JSON.stringify(index.name)} column ${JSON.stringify(columnName)} must have string type`,
+          );
+        }
+        if (column.encrypted === true) {
+          throw new Error(
+            `table ${table.name}: FTS projection ${JSON.stringify(index.name)} cannot index encrypted column ${JSON.stringify(columnName)}`,
+          );
+        }
+      }
+      if (!ALLOWED_FTS_TOKENIZERS.has(index.tokenize)) {
+        throw new Error(
+          `table ${table.name}: FTS projection ${JSON.stringify(index.name)} tokenizer ${JSON.stringify(index.tokenize)} is not allowlisted`,
+        );
       }
     }
     tables.set(table.name, {
@@ -160,6 +238,7 @@ export function compileClientSchema(
       scopeColumnByVariable,
       scopePrefixByVariable,
       indexes,
+      ftsIndexes,
       hasEncryptedColumns: table.columns.some((c) => c.encrypted === true),
     });
   }
@@ -266,6 +345,55 @@ function createSyncedTable(
   }
 }
 
+const FTS_SOURCE_ID_COLUMN = '_syncular_source_id';
+
+function createFtsProjection(
+  db: ClientDatabase,
+  table: CompiledClientTable,
+  index: ClientFtsIndexSpec,
+): void {
+  const existed =
+    db.query(
+      "SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name=?",
+      [index.name],
+    ).length > 0;
+  const indexedColumns = index.columns.map(quoteIdent);
+  const tokenizer = index.tokenize.replaceAll("'", "''");
+  db.exec(
+    `CREATE VIRTUAL TABLE IF NOT EXISTS ${quoteIdent(index.name)} USING fts5(${quoteIdent(FTS_SOURCE_ID_COLUMN)} UNINDEXED, ${indexedColumns.join(', ')}, tokenize='${tokenizer}')`,
+  );
+
+  const sourceId = `CAST(${quoteIdent(table.primaryKey)} AS TEXT)`;
+  const newSourceId = `CAST(new.${quoteIdent(table.primaryKey)} AS TEXT)`;
+  const oldSourceId = `CAST(old.${quoteIdent(table.primaryKey)} AS TEXT)`;
+  const projectionColumns = [
+    quoteIdent(FTS_SOURCE_ID_COLUMN),
+    ...indexedColumns,
+  ].join(', ');
+  const newValues = [
+    newSourceId,
+    ...index.columns.map((column) => `new.${quoteIdent(column)}`),
+  ].join(', ');
+  const deleteFor = (value: string) =>
+    `DELETE FROM ${quoteIdent(index.name)} WHERE ${quoteIdent(FTS_SOURCE_ID_COLUMN)} = ${value}`;
+
+  db.exec(
+    `CREATE TRIGGER IF NOT EXISTS ${quoteIdent(`${index.name}_ai`)} AFTER INSERT ON ${quoteIdent(table.name)} BEGIN ${deleteFor(newSourceId)}; INSERT INTO ${quoteIdent(index.name)} (${projectionColumns}) VALUES (${newValues}); END`,
+  );
+  db.exec(
+    `CREATE TRIGGER IF NOT EXISTS ${quoteIdent(`${index.name}_ad`)} AFTER DELETE ON ${quoteIdent(table.name)} BEGIN ${deleteFor(oldSourceId)}; END`,
+  );
+  db.exec(
+    `CREATE TRIGGER IF NOT EXISTS ${quoteIdent(`${index.name}_au`)} AFTER UPDATE ON ${quoteIdent(table.name)} BEGIN ${deleteFor(oldSourceId)}; ${deleteFor(newSourceId)}; INSERT INTO ${quoteIdent(index.name)} (${projectionColumns}) VALUES (${newValues}); END`,
+  );
+
+  if (!existed) {
+    db.exec(
+      `INSERT INTO ${quoteIdent(index.name)} (${projectionColumns}) SELECT ${sourceId}, ${indexedColumns.join(', ')} FROM ${quoteIdent(table.name)}`,
+    );
+  }
+}
+
 /**
  * Create the synced tables plus client bookkeeping tables (outbox,
  * subscription state, meta). Idempotent.
@@ -277,6 +405,11 @@ export function ensureLocalSchema(
   db.transaction(() => {
     for (const table of schema.tables.values()) {
       createSyncedTable(db, table);
+    }
+    for (const table of schema.tables.values()) {
+      for (const index of table.ftsIndexes) {
+        createFtsProjection(db, table, index);
+      }
     }
     db.exec(`CREATE TABLE IF NOT EXISTS _syncular_meta(
       key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
@@ -359,6 +492,16 @@ export function dropAndRecreateSyncedTables(
   db: ClientDatabase,
   schema: CompiledClientSchema,
 ): void {
+  // Drop virtual tables first. SQLite then removes their shadow tables as one
+  // unit, so the generic discovery below never tears an FTS5 projection apart.
+  const virtualTables = db.query(
+    `SELECT name FROM sqlite_master WHERE type = 'table'
+       AND sql LIKE 'CREATE VIRTUAL TABLE%'
+       AND name NOT LIKE '${RESERVED_TABLE_PREFIX}%'`,
+  );
+  for (const row of virtualTables) {
+    db.exec(`DROP TABLE IF EXISTS ${quoteIdent(String(row.name))}`);
+  }
   const existing = db.query(
     `SELECT name FROM sqlite_master WHERE type = 'table'
        AND name NOT LIKE '${RESERVED_TABLE_PREFIX}%'
@@ -369,6 +512,11 @@ export function dropAndRecreateSyncedTables(
   }
   for (const table of schema.tables.values()) {
     createSyncedTable(db, table);
+  }
+  for (const table of schema.tables.values()) {
+    for (const index of table.ftsIndexes) {
+      createFtsProjection(db, table, index);
+    }
   }
 }
 

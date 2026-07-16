@@ -185,6 +185,7 @@ duplicate ordinals are errors). The parser accepts exactly:
 - `ALTER TABLE name ADD [COLUMN] column-def`
 - `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table ( col [, col…] )`
 - `DROP TABLE [IF EXISTS] name`
+- `CREATE VIRTUAL TABLE [IF NOT EXISTS] name USING fts5( text-col [, text-col…], content = table [, tokenize = 'allowlisted tokenizer'] )`
 - column-def: `name TYPE [PRIMARY KEY] [NOT NULL] [NULL] [DEFAULT literal]`
 - `--` line comments and `/* … */` block comments
 
@@ -226,6 +227,22 @@ reference relational server drops the retired current-row table and its live
 scope index. Append-only commit history follows the configured retention
 policy—`DROP TABLE` is schema retirement, not a compliance erasure API.
 
+**Local FTS5 projections** (`CREATE VIRTUAL TABLE … USING fts5`). The authored
+`content = table` option declares which already-created synced table owns the
+projection; it is not passed through as SQLite external-content mode. Typegen
+attaches `{ name, columns, tokenize }` to that table's `ftsIndexes` array and
+emits it in TypeScript, Swift, Kotlin, and Dart schema values. The TypeScript
+and Rust clients create a contentful FTS table with a private stable source-ID
+column and deterministic maintenance triggers. FTS is local-only: it is not a
+wire/server table, cannot be subscribed or mutated, and maps back to its owner
+for named-query invalidation. Columns must precede options, be distinct
+non-encrypted strings, and number 1–32. `content` is required. Supported
+tokenizers are `unicode61` (default), its `remove_diacritics 0|1|2` variants,
+`porter unicode61`, and `trigram`. Other modules/options/tokenizers, encrypted
+columns, or schema-object name collisions fail generation. There is no
+automatic `LIKE` fallback when FTS5 is unavailable; local schema creation
+fails loudly.
+
 **Hard errors** (each names the construct and source file): any other
 statement (`CREATE TRIGGER/VIEW`, `DROP INDEX`, DML, `ALTER … RENAME`, …); unknown
 or parameterized types (`VARCHAR(36)`); quoted identifiers
@@ -234,7 +251,9 @@ or parameterized types (`VARCHAR(36)`); quoted identifiers
 (`REFERENCES`, `CHECK`, `COLLATE`, …); `DEFAULT (expression)`; composite
 or missing primary keys; `PRIMARY KEY` on `ADD COLUMN`; duplicate
 tables/columns; ASC/DESC, expression, or partial (`WHERE`) index columns; a
-duplicate or unknown-column index; trailing clauses (`STRICT`).
+duplicate or unknown-column index; unsupported virtual-table modules or FTS5
+options; an FTS projection without an owner or with invalid/encrypted columns;
+trailing clauses (`STRICT`).
 
 **`DEFAULT` literals are accepted and ignored**: typegen extracts the
 schema *shape*; executing migrations (where defaults matter) is the
@@ -446,6 +465,13 @@ database, and `prepare()`s each query. **SQLite is the correctness authority**:
 a bad table/column reference or a syntax error throws with SQLite's own
 message. The prepared statement then yields the result column names +
 `declaredTypes` (SQLite's `sqlite3_column_decltype`).
+
+For FTS-backed named queries the synthesized type-check database creates the
+same declared columns plus `_syncular_source_id UNINDEXED`. `MATCH :query`
+infers a string parameter, and the FTS table reference is folded into its
+owning synced table for dependency and scope-coverage metadata. `bm25`,
+`highlight`, and `snippet` remain SQLite expressions and therefore use the
+normal computed-expression fidelity rules.
 
 **Typing fidelity** (what `bun:sqlite` actually exposes, and its honest
 boundary):
