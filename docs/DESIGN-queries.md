@@ -37,15 +37,14 @@ queries/**/*.syql ─ lexer/parser/modules/semantics ──┼─> AnalyzedQuery
                                      TypeScript        Swift/Kotlin       Dart
 ```
 
-The `.sql` frontend is the escape hatch and compatibility floor: one or more
-named read statements, named `:params`, optional `-- param` type evidence, and
-no conditional or reactive language syntax.
+The `.sql` frontend handles fixed reads: one or more named statements, named
+`:params`, and optional `-- param` type evidence. Conditional and reactive
+language features belong to the `.syql` frontend.
 
-The `.syql` frontend is revision 1 only. It has a lossless lexer, a container
-AST around SQL token templates, an explicit module graph, hygienic predicate
-expansion, static input/presence semantics, schema-aware validation, and
-logical-to-physical lowering. There is no compatibility parser for the removed
-prototype grammar.
+The `.syql` frontend has a lossless lexer, a container AST around SQL token
+templates, an explicit module graph, hygienic predicate expansion, static
+input/presence semantics, schema-aware validation, and logical-to-physical
+lowering.
 
 Both frontends produce `AnalyzedQuery`. Revision-1 queries attach `syql`
 metadata containing public inputs, proven identity, and the selected physical
@@ -88,10 +87,10 @@ Lowering may use either of two equivalent strategies:
   profile.
 
 Hidden activation binds preserve absent versus present-null. Optional groups
-have one activation bit and generate one optional host value. Switches activate
-on `true`. Page size remains a validated bound value. Sort choices select only
-complete checked profiles; no identifier or direction is interpolated from an
-untrusted string.
+have one activation bit and generate one optional host value. Default-false
+booleans activate on `true`. Page size remains a validated bound value. Sort
+choices select only complete checked profiles; no identifier or direction is
+interpolated from an untrusted string.
 
 `queryBackend` is an advanced manifest override with `auto` as the default.
 The current deterministic heuristic enumerates up to two activation controls
@@ -141,7 +140,7 @@ All emitters expose the same logical inputs:
 - optional non-null scalar;
 - optional nullable scalar with explicit presence;
 - optional atomic group with required members;
-- switch defaulting false;
+- boolean defaulting false;
 - finite sort profile enum/union;
 - bounded optional page size.
 
@@ -176,7 +175,3 @@ Changing SYQL syntax or meaning requires one change set to update:
 5. all four emitters and generated fixtures when the public/physical contract
    changes;
 6. this architecture document and user-facing docs.
-
-The prototype parser, implicit optional guards, fragments, free-direction
-sorting, source-level backend knob, and unchecked reactive declarations have
-been deleted. They are not compatibility surface.

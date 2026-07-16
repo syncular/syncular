@@ -42,10 +42,8 @@ const handle = await createSyncClientHandle({
   },
 });
 if (handle.role === 'follower') {
-  // Another tab owns the core for this origin. With `multiTab: true`
-  // (below) this handle transparently proxies to that leader; without it,
-  // every call rejects with `client.not_leader` (a clear state, not a
-  // broken client).
+  // Another tab owns the core for this origin. The default multi-tab mode
+  // transparently proxies this handle to that leader.
 }
 await handle.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['l1'] } });
 await handle.syncUntilIdle();
@@ -66,14 +64,13 @@ persists, on purpose, and that is the only main-thread mode.
 
 ## Multi-tab followers (TODO 3.2, REVISE B3)
 
-Pass `multiTab: true` and every tab of the same origin shares ONE core:
+By default, every tab of the same origin shares ONE core:
 one sync loop, one WebSocket, one OPFS database, N tabs.
 
 ```ts
 const handle = await createSyncClientHandle({
   worker: () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }),
   schema, database: { mode: 'persistent', name: 'app' }, endpoints,
-  multiTab: true,
   onRoleChange: (role) => console.log('now', role), // 'follower' → 'leader'
 });
 // handle.role is 'leader' or 'follower'; the API is identical either way.
@@ -115,9 +112,8 @@ forwards to the leader's single publisher; there is no per-tab presence
 peer. This is the honest model — the wire only ever sees one connection per
 device.
 
-With `multiTab` off (the default) the single-tab contract is unchanged: a
-losing tab is an `isLeader === false` handle whose calls reject with
-`client.not_leader`.
+Set `multiTab: false` to opt out. A losing tab then becomes an
+`isLeader === false` handle whose calls reject with `client.not_leader`.
 
 ## Durable commit outcomes
 
@@ -168,6 +164,30 @@ successful history may be dismissed. See SPEC §7.2.1.
   and none is planned.
 - `openPersistentWasmDatabase` refuses to run on the main thread — not a
   sahpool limitation, an enforcement of whole-core-in-a-worker.
+
+### OPFS ownership and startup recovery
+
+An OPFS SAH pool has exactly one live owner per storage directory. Syncular's
+default multi-tab mode prevents ordinary same-origin tabs from opening a second
+pool: followers proxy the one leader over `BroadcastChannel`. A collision can
+still happen during rapid hot-module replacement, or in an embedded/test host
+that shares OPFS data without sharing the same Web Locks and BroadcastChannel
+coordination domain.
+
+Pool acquisition failures surface as `ClientSyncError` with code
+`client.storage_busy` and `retryable === true`. Treat that as a startup state:
+close the competing instance or let it finish shutting down, then create the
+handle again. **Do not delete, rename, or silently replace the database with an
+in-memory one**; the local database and pending outbox may be perfectly healthy.
+Missing or obsolete OPFS APIs instead use the non-retryable
+`client.storage_unavailable` code.
+
+When using `@syncular/react`, `createSyncClientResource()` exposes `retry()` and
+passes the same action as the second argument to `SyncProvider.renderError`.
+Applications may use a small bounded backoff for errors whose `retryable` flag
+is true, followed by a visible manual retry. Preserve the resource across HMR
+or dispose the previous resource before replacing it so development reloads do
+not manufacture a second owner.
 
 ## Blob attachments (§5.9) — the client storage model
 

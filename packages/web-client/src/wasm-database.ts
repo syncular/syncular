@@ -27,7 +27,11 @@ import {
   type SqlRow,
   type SqlValue,
 } from './database';
-import { ClientSyncError } from './errors';
+import {
+  ClientSyncError,
+  STORAGE_BUSY_CODE,
+  STORAGE_UNAVAILABLE_CODE,
+} from './errors';
 
 /** Structural view of the sqlite3 oo1 surface this binding uses. */
 interface Oo1Database {
@@ -69,6 +73,7 @@ interface Sqlite3Static {
     name?: string;
     directory?: string;
     initialCapacity?: number;
+    forceReinitIfPreviouslyFailed?: boolean;
   }): Promise<SahPoolUtil>;
 }
 
@@ -209,6 +214,29 @@ function inWorkerContext(): boolean {
 /** One registered VFS per pool directory, reused across opens. */
 const sahPools = new Map<string, Promise<SahPoolUtil>>();
 
+function opfsSahPoolError(error: unknown, directory: string): ClientSyncError {
+  const detail = error instanceof Error ? error.message : String(error);
+  const normalized = detail.toLowerCase();
+  if (
+    normalized.includes('missing required opfs apis') ||
+    normalized.includes('opfs api is too old')
+  ) {
+    return new ClientSyncError(
+      STORAGE_UNAVAILABLE_CODE,
+      `Persistent OPFS storage is unavailable: ${detail}`,
+    );
+  }
+  return new ClientSyncError(
+    STORAGE_BUSY_CODE,
+    'Could not acquire the persistent OPFS storage directory ' +
+      `${JSON.stringify(directory)}. Another live engine may still own its ` +
+      'SAH pool, or the browser may still be releasing it after a reload. ' +
+      'Close the other instance or retry after a short delay; do not delete ' +
+      `or rename the directory. Underlying error: ${detail}`,
+    true,
+  );
+}
+
 /**
  * THE persistent browser mode: a named database on OPFS via the
  * `opfs-sahpool` VFS. Worker-context only — not because SAHPool requires
@@ -243,7 +271,7 @@ export async function openPersistentWasmDatabase(
   ).navigator?.storage;
   if (typeof storage?.getDirectory !== 'function') {
     throw new ClientSyncError(
-      'sync.invalid_request',
+      STORAGE_UNAVAILABLE_CODE,
       'OPFS is unavailable in this browser — the syncular support floor ' +
         'requires OPFS (~2023+ browsers). There is no IndexedDB or ' +
         'in-memory fallback for persistent mode.',
@@ -258,19 +286,17 @@ export async function openPersistentWasmDatabase(
         // VFS registration names must be unique per directory.
         name: `syncular-sahpool-${directory.replace(/[^A-Za-z0-9]+/g, '-')}`,
         directory,
+        // sqlite-wasm caches a rejected initialization promise by VFS name.
+        // Syncular removes its own rejected entry below, so allow a later
+        // open in the same worker to make a real attempt as well.
+        forceReinitIfPreviouslyFailed: true,
         ...(options?.initialCapacity !== undefined
           ? { initialCapacity: options.initialCapacity }
           : {}),
       })
       .catch((error: unknown) => {
         sahPools.delete(directory);
-        throw new ClientSyncError(
-          'sync.invalid_request',
-          'opfs-sahpool VFS failed to initialize (is OPFS available, and ' +
-            `is another live instance using directory ${JSON.stringify(
-              directory,
-            )}?): ${String(error)}`,
-        );
+        throw opfsSahPoolError(error, directory);
       });
     sahPools.set(directory, pool);
   }

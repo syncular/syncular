@@ -79,6 +79,30 @@ const client = await createSyncClientHandle({
 The relative endpoint URLs ride the dev proxy in development and your
 reverse proxy in production, so nothing changes between the two.
 
+## Keep one persistent owner during HMR
+
+React remounts do not duplicate a `createSyncClientResource`, but Vite may
+replace the module that created it while its old worker is still alive. Keep the
+resource in Vite's hot-module data so the replacement tree adopts the same
+owner:
+
+```ts
+import { createSyncClientResource } from '@syncular/react';
+
+const clientResource =
+  import.meta.hot?.data.syncularClientResource ??
+  createSyncClientResource(createClient);
+
+if (import.meta.hot) {
+  import.meta.hot.data.syncularClientResource = clientResource;
+}
+```
+
+Without that handoff, two workers can briefly compete for one OPFS SAH pool.
+Current Syncular versions report this as retryable `client.storage_busy`; it is
+not a reason to wipe the local database. See [Troubleshooting](/troubleshooting/)
+for the recovery surface.
+
 ## Headers
 
 The persistent OPFS mode (`opfs-sahpool`) uses `FileSystemSyncAccessHandle`

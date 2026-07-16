@@ -1,8 +1,35 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.4** (`v0.15.4`). All artifacts use Apache-2.0, except
+current release is **0.15.5** (`v0.15.5`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.5 release notes
+
+0.15.5 makes transient browser storage ownership failures recoverable without
+risking a healthy offline database, and tightens the documentation of the
+existing SYQL revision-1 language.
+
+The release includes:
+
+- stable client-local `client.storage_busy` and
+  `client.storage_unavailable` errors for OPFS startup, with ownership
+  collisions marked retryable instead of being misclassified as terminal
+  `sync.invalid_request` failures;
+- a real follow-up SAH-pool initialization attempt after sqlite-wasm has cached
+  a failed VFS promise, while preserving the existing no-fallback persistence
+  boundary;
+- `SyncClientResource.retry()` and a retry action on
+  `SyncProvider.renderError`, allowing an error → pending → ready transition
+  without replacing the provider or deleting local data;
+- worker-RPC coverage proving retry metadata survives the boundary and failed
+  startup releases leadership for a later attempt, plus React retry and
+  deduplication tests;
+- web, React, Vite/HMR, and troubleshooting guidance covering the one-owner
+  OPFS invariant, resource preservation, and safe bounded/manual recovery;
+- editorial SYQL specification, RFC, design, release-note, and docs-site
+  cleanup that describes revision 1 as the current canonical language rather
+  than defining it through removed prototype forms.
 
 ## 0.15.4 release notes
 
@@ -250,10 +277,8 @@ The release includes:
 
 ## 0.6.0 release notes
 
-0.6.0 ships RFC 0004 and the destructive SYQL revision-1 cutover. Syncular is
-still in prototype phase, so this release intentionally provides no parser,
-IR, or generated-API compatibility with the old `.syql` language. Regenerate
-and rewrite prototype queries before upgrading.
+0.6.0 ships RFC 0004 and SYQL revision 1: a SQL-first language for typed,
+reactive reads and explicit synchronization coverage.
 
 The release includes:
 
@@ -272,9 +297,8 @@ The release includes:
 - a closed SQLite 3.46.0 language profile which rejects extension functions,
   post-floor functions/arities, implicit clocks, randomness, unproven nested
   bounds, and window expressions;
-- migrated repository queries, demos, native examples, docs, VS Code grammar,
-  and generated outputs, with all prototype parser and legacy emitter paths
-  deleted;
+- aligned repository queries, demos, native examples, docs, VS Code grammar,
+  and generated outputs around the same language definition;
 - CI gates that now run every native binding whenever the shared type
   generator changes.
 
@@ -417,7 +441,8 @@ materializes all distributable metadata, runs the npm and native gates, builds
 packages, validates packed dependency pins, and publishes in dependency order
 with trusted OIDC publishing. After both registries succeed, the same tagged
 checkout builds and deploys the versioned docs/landing page and public demo.
-Normal `main` pushes build those sites in CI but never deploy production.
+Changes to `apps/docs` on `main` also build and deploy the docs/landing site
+through `.github/workflows/docs.yml`. The public demo deploys from release tags.
 
 The npm publish order is:
 

@@ -105,6 +105,35 @@ leader closes. Remove the `multiTab: false` opt-out, or keep it and render
 the not-leader state deliberately ("already open in another tab"). Details
 in [Web (browser)](/platform-web/).
 
+## `client.storage_busy` while opening the app
+
+The OPFS SAH pool is still owned by another live engine, or a recently closed
+worker has not released it yet. This is a retryable startup state, not evidence
+of a corrupt database. Close the competing app/tab or wait briefly, then retry
+the same client resource:
+
+```tsx
+<SyncProvider
+  client={clientResource}
+  fallback={<p>Opening local database…</p>}
+  renderError={(error, retry) => (
+    <button onClick={() => void retry()}>Try again: {error.message}</button>
+  )}
+>
+  <App />
+</SyncProvider>
+```
+
+Ordinary same-origin tabs are coordinated by Syncular's default multi-tab
+mode. Collisions are most often caused by rapid hot-module replacement or by
+embedded/test hosts that share OPFS without sharing the same Web Locks and
+BroadcastChannel domain. Preserve a single `createSyncClientResource()` across
+HMR, or dispose the old resource before creating the replacement.
+
+Do **not** wipe or rename the OPFS directory for this error: it may contain the
+healthy local replica and unsynced outbox. Missing/obsolete browser APIs use
+the separate, non-retryable `client.storage_unavailable` code.
+
 ## Wiping OPFS for a clean test
 
 The persistent worker database lives in the origin's OPFS. To reset a dev

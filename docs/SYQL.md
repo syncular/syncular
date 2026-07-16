@@ -21,8 +21,6 @@ single fixed statement:
 - exact reactive dependency inference and explicit synchronization intent;
 - portable generated APIs and execution plans.
 
-Revision 1 intentionally has no compatibility mode for prototype syntax.
-
 ## 1. Conformance terminology
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**,
@@ -197,8 +195,6 @@ generated API may omit the argument, in which case its effective value is
 `false`. It is active as a `when` control only when its effective value is
 `true`.
 
-No `switch` type exists.
-
 ### 6.2 Optional records
 
 An optional record is atomic:
@@ -244,8 +240,8 @@ SQLite's ordinary two-expression `BETWEEN lower AND upper` form.
 
 ## 8. SQL statement
 
-A query body contains one read-only SQLite `SELECT` or `WITH ... SELECT`
-statement directly. There is no `sql {}` wrapper.
+A query body directly contains one read-only SQLite `SELECT` or
+`WITH ... SELECT` statement.
 
 The reference realization, in which every conditional is active and default
 sort/limit controls are selected, MUST prepare successfully against the schema.
@@ -372,8 +368,6 @@ predicates under `when`, `OR`, or an ambiguous table reference do not. If any
 instance of a read table cannot be scoped safely, that table falls back to
 table-wide invalidation.
 
-There are no `@scope` or `@cover` directives.
-
 ### 13.1 Ordinary query
 
 `query` is a reactive local read. It declares dependencies but never claims
@@ -414,16 +408,14 @@ by the selected instance and one of its declared scope columns.
 
 ## 14. Result identity
 
-Authors do not declare result identity. The compiler infers it conservatively
-from schema primary keys, table references, joins, aliases, and projected result
-names. A simple projection containing a base table's primary key commonly
-produces that projected column as the row key.
+The compiler infers result identity conservatively from schema primary keys,
+table references, joins, aliases, and projected result names. A simple
+projection containing a base table's primary key commonly produces that
+projected column as the row key.
 
 When identity cannot be proved, it is omitted and consumers use unkeyed
 reconciliation. A stable identity is required when another feature, such as a
 bounded dynamic sort, depends on it.
-
-There is no `identity by` syntax.
 
 ## 15. Lowering and execution
 
@@ -504,22 +496,3 @@ sync query listTodos(
   limit pageSize default 50 max 200;
 }
 ```
-
-## 19. Removed prototype forms
-
-These forms are deliberately rejected:
-
-| Removed | Replacement |
-| --- | --- |
-| `sql { select ... }` | write `select ...` directly |
-| `@scope(predicate)` | ordinary required scope predicate |
-| `@cover(predicate)` | `sync query` plus ordinary scope predicate |
-| `@predicate(:x)` | `predicate(:x)` |
-| `x?: switch` | `x: bool = false` |
-| `range?(start, end)` | `range?` with `BETWEEN :range`, or `range?: { start, end }` |
-| `sort ... { newest { ... } }` | `order by ... { newest: ...; }` |
-| `page size default ...` | `limit size default ...` |
-| `identity by id` | compiler inference |
-
-Because revision 1 was adopted during prototyping, implementations MUST NOT
-select a legacy grammar heuristically.

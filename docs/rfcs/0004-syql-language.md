@@ -8,45 +8,22 @@
 
 ## Summary
 
-Replace the prototype SYQL container with a SQL-first language. A query now
-contains its `SELECT` directly. Ordinary SQL predicates drive reactive scope
-inference, `sync query` expresses coverage intent, row identity is inferred,
-predicate calls use normal call syntax, and dynamic order/limit controls appear
-where their SQL clauses would appear.
-
-This is a destructive prototype change. There is no legacy parser and no
-migration mode.
+Define SYQL as a SQL-first language. A query contains its `SELECT` directly.
+Ordinary SQL predicates drive reactive scope inference, `sync query` expresses
+coverage intent, row identity is inferred, predicate calls use normal call
+syntax, and dynamic order/limit controls appear where their SQL clauses would
+appear.
 
 ## Motivation
 
-The earlier design proved the compiler architecture but made simple reads feel
-like a configuration format wrapped around SQL:
+SYQL exists to make complex, typed, reactive SQLite reads easier to author.
+SQLite should remain visually central, while the language supplies only the
+structure needed for optional inputs, synchronization intent, reusable
+predicates, safe dynamic ordering, bounded limits, and generated APIs.
 
-```syql
-query listTodos(listId) {
-  sql {
-    select id, title from todos
-    where @cover(todos.list_id = :listId)
-  }
-  identity by id;
-}
-```
-
-Three declarations described facts already present in the statement:
-
-- `sql {}` said that the central body was SQL;
-- `@cover(...)` duplicated an ordinary filtering predicate while combining
-  dependency inference and download intent;
-- `identity by id` repeated a primary key the schema and projection already
-  exposed.
-
-Optional inputs also accumulated syntax that was internally consistent but
-unfamiliar to SQL and application developers: callable-looking groups,
-`switch`, braces around every `when`, separate `sort`/`page` sections, and an
-`@` sigil on reusable predicates.
-
-The result was capable but too ceremonial for the intended purpose: make
-complex, typed, reactive SQLite reads easier to author.
+Schema and SQL analysis already contain many facts needed by the reactive
+runtime. The language should infer those facts where proof is possible and ask
+the author only for intent or information that cannot be derived safely.
 
 ## Design principles
 
@@ -57,7 +34,7 @@ complex, typed, reactive SQLite reads easier to author.
    coverage behavior.
 5. Dynamic SQL structure must remain finite and compiler checked.
 6. Presence and `NULL` must remain distinct.
-7. The language has one grammar during prototyping.
+7. The language has one unambiguous grammar.
 
 ## Accepted syntax
 
@@ -91,8 +68,8 @@ sync query listTodos(
 ### Direct SQL body
 
 The query's body is one `SELECT` or `WITH ... SELECT`. The final semicolon
-terminates the complete query. Removing `sql {}` saves indentation and makes
-the file read like SQLite with a few recognizable extensions.
+terminates the complete query. This keeps the file visually close to SQLite
+with a few recognizable extensions.
 
 Rejected alternative: a triple-quoted SQL string. It would weaken source
 spans, editor embedding, structural validation, and formatting.
@@ -105,8 +82,8 @@ keys, but it never claims that those keys are downloaded.
 A `sync query` explicitly claims coverage. The compiler accepts it only when
 the covered table has one SQL instance and all of its declared scopes are
 proven from required, non-null outer predicates. Predicates under `OR`,
-negation, conditionals, or nested queries do not qualify. This separates two
-concepts that `@cover` had conflated:
+negation, conditionals, or nested queries do not qualify. This keeps two
+concepts separate:
 
 - which changes invalidate a read;
 - which remote units the read is authorized to request and regard as covered.
@@ -123,7 +100,7 @@ Required equality and `IN` predicates over schema scope columns are already
 constructive facts. The compiler extracts them when they are unconditional and
 unambiguous. Otherwise it safely falls back to table-wide invalidation.
 
-This removes `@scope` without losing precision.
+This preserves precise invalidation while keeping predicates as ordinary SQL.
 
 ### Infer row identity
 
@@ -131,15 +108,13 @@ The schema owns primary keys, SQLite analysis owns table lineage, and the
 projection owns output aliases. The compiler combines those facts to infer a
 result key. It omits identity when proof is not possible.
 
-Rejected alternative: keep `identity by` as an override. An unchecked override
-could make keyed reconciliation unsound; a checked override is redundant when
-the proof already exists.
+Rejected alternative: allow an authored identity override. An unchecked
+override could make keyed reconciliation unsound; a checked override is
+redundant when the proof already exists.
 
-### `bool`, not `switch`
+### Boolean flags
 
-`switch` described activation mechanics rather than a value type and looked
-foreign beside `string` and `integer`. The accepted form is a normal boolean
-with an explicit omission default:
+A conditional flag is a normal boolean with an explicit omission default:
 
 ```syql
 unassigned: bool = false
@@ -148,9 +123,8 @@ unassigned: bool = false
 `when(unassigned)` means the effective value is true. This also makes the
 generated APIs ordinary booleans on every target.
 
-The source spelling is `bool`, matching common application languages and
-avoiding the longer prototype `boolean`. The target-neutral IR continues to
-call the type `boolean`.
+The source spelling is `bool`, matching common application languages. The
+target-neutral IR calls the type `boolean`.
 
 ### Presence is the default `when` meaning
 
@@ -169,9 +143,8 @@ General atomic groups use an inline record:
 bounds?: { start: integer, end: integer }
 ```
 
-The previous `bounds?(start, end)` looked like a function declaration and made
-the optional marker hard to interpret. Records make the public API shape
-visible.
+Records make the public API shape visible and keep the optional marker on the
+input itself.
 
 ### Inclusive range shorthand
 
@@ -206,10 +179,10 @@ and neutralized execution equivalent.
 
 ### Normal predicate calls
 
-Reusable predicates now use `matchesTitle(:q)`, not `@matchesTitle(:q)`. A
-name that resolves in the local/imported predicate scope expands hygienically;
-an unresolved function-shaped expression stays SQLite and is checked against
-the portability profile.
+Reusable predicates use `matchesTitle(:q)`. A name that resolves in the
+local/imported predicate scope expands hygienically; an unresolved
+function-shaped expression stays SQLite and is checked against the portability
+profile.
 
 This resolution rule is the main tradeoff. A newly imported predicate can
 shadow a same-named SQLite function call in that module. We accept that cost
@@ -232,8 +205,7 @@ runtime SQL remains forbidden.
 
 ### Dynamic limit at `LIMIT`
 
-The old `page` name implied pagination strategy although it only bounded a
-limit. The accepted form is:
+The bounded limit form is:
 
 ```syql
 limit pageSize default 50 max 200;
@@ -241,10 +213,9 @@ limit pageSize default 50 max 200;
 
 It retains runtime validation and internal bind lowering.
 
-## Other issues carried into the redesign
+## Correctness requirements
 
-The syntax change does not relax compiler correctness requirements found in
-the original review:
+The compiler and every generated target must preserve these properties:
 
 - Optional nullable values still require tri-state target APIs.
 - Record/range inputs remain atomic and reject partial values.
@@ -263,31 +234,6 @@ the original review:
 - The formatter must prove semantic equivalence and idempotence.
 - Diagnostics and conformance vectors remain part of the language contract.
 
-## Destructive migration
-
-The implementation rejects all prototype forms. Repository queries, examples,
-fixtures, generated artifacts, formatter tests, editor grammar, LSP behavior,
-the language specification, and conformance schemas/vectors are updated in one
-change.
-
-Mechanical mapping:
-
-| Prototype | Revision 1 |
-| --- | --- |
-| `sql { ... }` | direct SQL |
-| `@scope(p)` | `p` |
-| `@cover(p)` | `sync query` plus `p` |
-| `@predicate(:x)` | `predicate(:x)` |
-| `x?: switch` | `x: bool = false` |
-| `g?(a, b)` | `g?: { a, b }` |
-| range record + two binds | `range?` + `BETWEEN :range` |
-| `sort name ...` | `order by name ...` |
-| `page size ...` | `limit size ...` |
-| `identity by ...` | inferred |
-
-No runtime compatibility burden exists because the project is still in the
-prototype phase.
-
 ## Consequences
 
 Benefits:
@@ -305,8 +251,7 @@ Costs:
 - normal predicate calls require name-resolution before deciding whether a
   call is SYQL or SQLite;
 - exact reactive inference is conservative and may fall back table-wide;
-- range shorthand requires context-sensitive promotion and synthetic binds;
-- all prototype sources break immediately.
+- range shorthand requires context-sensitive promotion and synthetic binds.
 
 These costs are accepted because they live in the compiler and remove repeated
 complexity from every query author.

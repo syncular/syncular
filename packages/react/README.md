@@ -67,8 +67,9 @@ A ready client can be passed directly:
 ```
 
 For async engines, create one resource outside React render. It owns one
-initialization attempt across StrictMode remounts and closes the client exactly
-once when explicitly disposed:
+initialization attempt across StrictMode remounts, can retry a failed startup
+without replacing the provider, and closes the client exactly once when
+explicitly disposed:
 
 ```tsx
 import { createSyncClientResource, SyncProvider } from '@syncular/react';
@@ -78,7 +79,12 @@ const clientResource = createSyncClientResource(() => createClient());
 <SyncProvider
   client={clientResource}
   fallback={<p>Starting local database…</p>}
-  renderError={(error) => <p>{error.message}</p>}
+  renderError={(error, retry) => (
+    <div>
+      <p>{error.message}</p>
+      <button onClick={() => void retry()}>Try again</button>
+    </div>
+  )}
 >
   <App />
 </SyncProvider>
@@ -86,6 +92,12 @@ const clientResource = createSyncClientResource(() => createClient());
 
 Call `await clientResource.dispose()` from the application's real lifecycle
 owner, not from a StrictMode-sensitive child effect.
+
+The resource is stable across React remounts, not JavaScript module replacement.
+During development, preserve it in the bundler's hot-module data or dispose the
+old resource before creating another one. Otherwise the old worker and the new
+worker can briefly compete for the same persistent OPFS directory. Never wipe
+or rename the database in response to a retryable startup error.
 
 ## `useMutation`
 
