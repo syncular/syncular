@@ -969,32 +969,39 @@ describe('schema floor (§1.6)', () => {
         clientId: 'schema-bump-client',
         databasePath,
       });
+      first.client.subscribe({
+        id: 'removed-table-registration',
+        table: 'docs',
+        scopes: { org_id: ['legacy-org'], projectId: ['legacy-project'] },
+      });
       await first.client.close();
       first.db.close();
 
       const upgradedSchema: ClientSchema = {
         version: 2,
-        tables: CLIENT_SCHEMA.tables.map((table) =>
-          table.name === 'tasks'
-            ? {
-                ...table,
-                columns: [
-                  ...TASK_COLUMNS,
-                  {
-                    name: 'facility_membership_id',
-                    type: 'string' as const,
-                    nullable: true,
-                  },
-                ],
-                indexes: [
-                  {
-                    name: 'tasks_by_membership',
-                    columns: ['project_id', 'facility_membership_id'],
-                    unique: false,
-                  },
-                ],
-              }
-            : table,
+        tables: CLIENT_SCHEMA.tables.flatMap((table) =>
+          table.name === 'docs'
+            ? []
+            : table.name === 'tasks'
+              ? {
+                  ...table,
+                  columns: [
+                    ...TASK_COLUMNS,
+                    {
+                      name: 'facility_membership_id',
+                      type: 'string' as const,
+                      nullable: true,
+                    },
+                  ],
+                  indexes: [
+                    {
+                      name: 'tasks_by_membership',
+                      columns: ['project_id', 'facility_membership_id'],
+                      unique: false,
+                    },
+                  ],
+                }
+              : table,
         ),
       };
       const reopened = await makeClient(server, {
@@ -1013,6 +1020,11 @@ describe('schema floor (§1.6)', () => {
              WHERE type = 'index' AND name = 'tasks_by_membership'`,
         ),
       ).toEqual([{ name: 'tasks_by_membership' }]);
+      expect(
+        reopened.client
+          .subscriptions()
+          .some((subscription) => subscription.table === 'docs'),
+      ).toBe(false);
       await reopened.client.close();
       reopened.db.close();
     } finally {
