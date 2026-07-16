@@ -1,8 +1,17 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.1** (`v0.15.1`). All artifacts use Apache-2.0, except
+current release is **0.15.2** (`v0.15.2`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.2 release notes
+
+0.15.2 completes the bounded named-query contract for the client-local FTS5
+surface. Typegen now treats a projected `_syncular_source_id` from a
+schema-declared FTS projection as an exact, non-null identity field. An FTS
+join can therefore prove its composite identity and total-order suffix while
+ordinary virtual tables, missing identity projections, and unstable bounded
+queries remain rejected.
 
 ## 0.15.1 release notes
 

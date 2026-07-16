@@ -89,6 +89,8 @@ const DECLTYPE_MAP: Readonly<Record<string, IrColumnType>> = {
 
 /** Local client protocol column; query-only and never part of schema IR. */
 const SYNC_VERSION_COLUMN = '_sync_version';
+/** Stable private identity shared by every declared local FTS5 projection. */
+const FTS_SOURCE_ID_COLUMN = '_syncular_source_id';
 
 /** A param type is one of the §2.4 types (the columns params compare to). */
 export type QueryParamType = IrColumnType;
@@ -793,6 +795,18 @@ interface ResolvedSource {
   readonly column: IrTable['columns'][number];
 }
 
+function declaredFtsProjection(ir: IrDocument, tableName: string): boolean {
+  return ir.tables.some((table) =>
+    table.ftsIndexes.some((index) => index.name === tableName),
+  );
+}
+
+const FTS_SOURCE_ID_IR_COLUMN: IrTable['columns'][number] = {
+  name: FTS_SOURCE_ID_COLUMN,
+  type: 'string',
+  nullable: false,
+};
+
 /** Resolve a SELECT item's expression to an IR column, if it is a plain ref. */
 function resolveSource(
   item: SelectItem,
@@ -809,7 +823,14 @@ function resolveSource(
     if (ref === undefined) return null;
     const table = byName.get(ref.table);
     const col = table?.columns.find((c) => c.name === columnName);
-    return col === undefined ? null : { table: ref.table, column: col };
+    if (col !== undefined) return { table: ref.table, column: col };
+    if (
+      columnName === FTS_SOURCE_ID_COLUMN &&
+      declaredFtsProjection(ir, ref.table)
+    ) {
+      return { table: ref.table, column: FTS_SOURCE_ID_IR_COLUMN };
+    }
+    return null;
   }
   // Unqualified: search every FROM/JOIN table (SQLite already resolved
   // ambiguity; a single-table query is the common case).
@@ -817,6 +838,12 @@ function resolveSource(
     const table = byName.get(ref.table);
     const col = table?.columns.find((c) => c.name === columnName);
     if (col !== undefined) return { table: ref.table, column: col };
+    if (
+      columnName === FTS_SOURCE_ID_COLUMN &&
+      declaredFtsProjection(ir, ref.table)
+    ) {
+      return { table: ref.table, column: FTS_SOURCE_ID_IR_COLUMN };
+    }
   }
   return null;
 }
@@ -1211,7 +1238,7 @@ export function synthesizeDdl(ir: IrDocument): string {
     for (const index of table.ftsIndexes) {
       const tokenize = index.tokenize.replaceAll("'", "''");
       lines.push(
-        `CREATE VIRTUAL TABLE ${index.name} USING fts5(_syncular_source_id UNINDEXED, ${index.columns.join(', ')}, tokenize='${tokenize}');`,
+        `CREATE VIRTUAL TABLE ${index.name} USING fts5(${FTS_SOURCE_ID_COLUMN} UNINDEXED, ${index.columns.join(', ')}, tokenize='${tokenize}');`,
       );
     }
   }

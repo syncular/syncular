@@ -473,7 +473,10 @@ owning synced table for dependency and scope-coverage metadata. `bm25`,
 `highlight`, and `snippet` are accepted deterministic FTS5 auxiliary
 functions only when the query references a schema-declared FTS projection;
 they use the normal computed-expression fidelity rules. Arbitrary extension
-functions remain outside the portable profile.
+functions remain outside the portable profile. A bounded FTS join must project
+the FTS table's `_syncular_source_id` as well as every joined table's primary
+key and end its total order in those identity fields. Typegen then proves the
+composite row key instead of weakening bounded-query stability rules.
 
 **Typing fidelity** (what `bun:sqlite` actually exposes, and its honest
 boundary):
