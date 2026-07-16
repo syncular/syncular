@@ -1,8 +1,16 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.2** (`v0.15.2`). All artifacts use Apache-2.0, except
+current release is **0.15.3** (`v0.15.3`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.3 release notes
+
+0.15.3 completes RFC 0005 reactive metadata in the SYQL revision-1 frontend.
+A declared local FTS projection is now folded into its synced owner table
+before dependencies are emitted. Queries no longer expose a non-synced virtual
+table as an invalidation dependency, while scope evidence from an explicitly
+joined owner table remains exact.
 
 ## 0.15.2 release notes
 

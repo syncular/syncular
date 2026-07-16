@@ -385,6 +385,9 @@ describe('SYQL schema/SQL validation', () => {
       'excerpt',
     ]);
     expect(accepted?.identity).toEqual(['sourceId', 'id']);
+    expect(accepted?.reactive.dependencies).toEqual([
+      { table: 'todos', scopes: [] },
+    ]);
 
     const missingFtsIdentity = frontendError(() =>
       validate(`query searchTodos() {

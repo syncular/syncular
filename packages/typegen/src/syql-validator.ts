@@ -1149,7 +1149,14 @@ class Validator {
       candidates.push({ ref, scopes: inferred });
     }
 
-    const dependencies = [...new Set(refs.map((ref) => ref.table))]
+    const ftsOwners = new Map(
+      this.#ir.tables.flatMap((table) =>
+        table.ftsIndexes.map((index) => [index.name, table.name] as const),
+      ),
+    );
+    const dependencies = [
+      ...new Set(refs.map((ref) => ftsOwners.get(ref.table) ?? ref.table)),
+    ]
       .sort()
       .map((table) => {
         const instances = candidates.filter((item) => item.ref.table === table);
