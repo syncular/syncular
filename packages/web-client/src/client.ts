@@ -114,7 +114,8 @@ import {
   type CompiledClientTable,
   compileClientSchema,
   dropAndRecreateSyncedTables,
-  ensureLocalSchema,
+  ensureLocalBookkeepingSchema,
+  ensureLocalSyncedSchema,
   fromSqlValue,
   jsonToRowValue,
   LOCAL_SCHEMA_VERSION_KEY,
@@ -544,7 +545,10 @@ export class SyncClient {
     this.#lease = await lock.acquire(
       this.#config.lockName ?? 'syncular-leader',
     );
-    ensureLocalSchema(this.#db, this.#schema);
+    // Bookkeeping must exist before we inspect the persisted schema marker.
+    // Do not materialize new app indexes/FTS projections yet: on a version
+    // bump they may reference columns that only exist after the reset.
+    ensureLocalBookkeepingSchema(this.#db);
     if (this.#hasBlobs) ensureBlobSchema(this.#db);
     this.#db.transaction(() => {
       pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
@@ -622,11 +626,16 @@ export class SyncClient {
     const markerJson = getMeta(this.#db, LOCAL_SCHEMA_VERSION_KEY);
     if (markerJson === undefined) {
       // Fresh install: the tables just created match the running code.
+      ensureLocalSyncedSchema(this.#db, this.#schema);
       setMeta(this.#db, LOCAL_SCHEMA_VERSION_KEY, String(this.#schema.version));
       return;
     }
     const marker = Number(markerJson);
-    if (marker === this.#schema.version) return;
+    if (marker === this.#schema.version) {
+      // Same-version opens remain self-healing for absent tables/indexes.
+      ensureLocalSyncedSchema(this.#db, this.#schema);
+      return;
+    }
     this.#runSchemaReset();
   }
 
