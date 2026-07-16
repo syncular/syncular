@@ -92,6 +92,28 @@ describe('§5.11 encryptedColumns → IR', () => {
     ]);
   });
 
+  test('encrypted declared strings remain eligible for client-local FTS', () => {
+    const migrations: MigrationInput[] = [
+      {
+        ...MIGRATIONS[0]!,
+        sql: `${MIGRATIONS[0]!.sql};
+          CREATE VIRTUAL TABLE notes_fts USING fts5(
+            body,
+            content=notes,
+            tokenize='unicode61 remove_diacritics 2'
+          )`,
+      },
+    ];
+    const ir = buildIr(manifest(['body']), migrations);
+    expect(ir.tables[0]?.ftsIndexes).toEqual([
+      {
+        name: 'notes_fts',
+        columns: ['body'],
+        tokenize: 'unicode61 remove_diacritics 2',
+      },
+    ]);
+  });
+
   test('hard error: unknown column', () => {
     expectFail(
       () => buildIr(manifest(['nope']), MIGRATIONS),

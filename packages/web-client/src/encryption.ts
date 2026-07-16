@@ -30,13 +30,84 @@ import type { CompiledClientTable } from './schema';
 export interface EncryptionConfig {
   /** `keyId → 32-byte key`, or `undefined` if unknown (decrypt fails loud). */
   readonly keyProvider: (keyId: string) => Uint8Array | undefined;
-  /** Choose the key-id for an encrypt. Default: per-table (`table`). */
-  readonly keyIdFor?: (table: string, rowId: string) => string;
+  /**
+   * Choose the key-id for an encrypt. The plaintext positional row is supplied
+   * so direct clients can select a Facility/workspace/key-grant key without
+   * deriving privacy-sensitive state from an opaque row id. Default: the
+   * configured `keyIdColumns[table]`, then the table name.
+   */
+  readonly keyIdFor?: (
+    table: string,
+    rowId: string,
+    values: readonly RowValue[],
+  ) => string;
+  /**
+   * Portable declarative selector used by Worker/Tauri hosts. Each value names
+   * a non-encrypted string column whose row value is the active key id.
+   */
+  readonly keyIdColumns?: Readonly<Record<string, string>>;
   /**
    * Nonce source (§5.11). Production omits this (secure RNG). ONLY the crypto
    * golden-vector generator injects a fixed nonce — never a production path.
    */
   readonly nonceSource?: NonceSource;
+}
+
+/** Structured-clone/JSON-safe keyring accepted by Worker and Tauri hosts. */
+export interface EncryptionKeyringConfig {
+  readonly keys: Readonly<Record<string, Uint8Array>>;
+  readonly keyIdColumns?: Readonly<Record<string, string>>;
+}
+
+/** Convert a portable keyring into the direct-client encryption contract. */
+export function encryptionConfigFromKeyring(
+  keyring: EncryptionKeyringConfig,
+): EncryptionConfig {
+  return {
+    keyProvider: (keyId) => keyring.keys[keyId],
+    ...(keyring.keyIdColumns !== undefined
+      ? { keyIdColumns: keyring.keyIdColumns }
+      : {}),
+  };
+}
+
+function encryptionKeyId(
+  config: EncryptionConfig,
+  table: CompiledClientTable,
+  rowId: string,
+  values: readonly RowValue[],
+): string {
+  if (config.keyIdFor !== undefined) {
+    const selected = config.keyIdFor(table.name, rowId, values);
+    if (selected.length === 0) {
+      throw new DecryptError(
+        `empty encryption key id selected for table ${JSON.stringify(table.name)}`,
+      );
+    }
+    return selected;
+  }
+  const selectorColumn = config.keyIdColumns?.[table.name];
+  if (selectorColumn === undefined) return table.name;
+  const index = table.columns.findIndex(
+    (column) => column.name === selectorColumn,
+  );
+  if (index < 0) {
+    throw new DecryptError(
+      `encryption key-id column ${JSON.stringify(selectorColumn)} is not present on table ${JSON.stringify(table.name)}`,
+    );
+  }
+  if (table.columns[index]?.encrypted === true) {
+    throw new DecryptError(
+      `encryption key-id column ${JSON.stringify(selectorColumn)} on table ${JSON.stringify(table.name)} must not be encrypted`,
+    );
+  }
+  const selected = values[index];
+  if (typeof selected !== 'string' || selected.length === 0) {
+    throw new DecryptError(
+      `encryption key-id column ${JSON.stringify(selectorColumn)} on table ${JSON.stringify(table.name)} must contain a non-empty string`,
+    );
+  }
+  return selected;
 }
 
 function declaredTypeOf(column: RowColumn): DeclaredType {
@@ -59,14 +130,13 @@ export async function encryptRowValues(
   values: readonly RowValue[],
 ): Promise<RowValue[]> {
   if (!table.hasEncryptedColumns) return values.slice();
-  const keyIdFor = config.keyIdFor ?? ((t: string) => t);
   const out = values.slice();
+  const keyId = encryptionKeyId(config, table, rowId, values);
   for (let i = 0; i < table.columns.length; i++) {
     const column = table.columns[i];
     if (column === undefined || !column.encrypted) continue;
     const value = out[i];
     if (value === null || value === undefined) continue; // NULL stays NULL
-    const keyId = keyIdFor(table.name, rowId);
     const key = config.keyProvider(keyId);
     if (key === undefined) {
       throw new DecryptError(

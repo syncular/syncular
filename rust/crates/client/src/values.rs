@@ -18,6 +18,9 @@ use crate::schema::TableSchema;
 #[derive(Debug, Clone, Default)]
 pub struct EncryptionConfig {
     pub keys: HashMap<String, Vec<u8>>,
+    /// Portable per-table selector: the named non-encrypted string column in
+    /// each plaintext row contains the key id used for new envelopes.
+    pub key_id_columns: HashMap<String, String>,
 }
 
 impl EncryptionConfig {
@@ -25,9 +28,38 @@ impl EncryptionConfig {
         self.keys.is_empty()
     }
 
-    /// §5.11 default key selection: per-table (`keyId = table`).
-    pub fn key_id_for(&self, table: &str, _row_id: &str) -> String {
-        table.to_owned()
+    /// §5.11 portable key selection: configured row column, then table name.
+    pub fn key_id_for(&self, table: &TableSchema, row: &Row) -> Result<String, String> {
+        let Some(column_name) = self.key_id_columns.get(&table.name) else {
+            return Ok(table.name.clone());
+        };
+        let Some(index) = table
+            .columns
+            .iter()
+            .position(|column| &column.name == column_name)
+        else {
+            return Err(format!(
+                "client.decrypt_failed: encryption key-id column {column_name:?} is not present on table {:?}",
+                table.name
+            ));
+        };
+        if table
+            .encrypted_columns
+            .iter()
+            .any(|column| column.index == index)
+        {
+            return Err(format!(
+                "client.decrypt_failed: encryption key-id column {column_name:?} on table {:?} must not be encrypted",
+                table.name
+            ));
+        }
+        match row.get(index).and_then(|value| value.as_ref()) {
+            Some(ColumnValue::String(key_id)) if !key_id.is_empty() => Ok(key_id.clone()),
+            _ => Err(format!(
+                "client.decrypt_failed: encryption key-id column {column_name:?} on table {:?} must contain a non-empty string",
+                table.name
+            )),
+        }
     }
 }
 
@@ -292,7 +324,7 @@ pub fn decrypt_segment_row(
 #[cfg(feature = "e2ee")]
 fn encrypt_row(
     table: &TableSchema,
-    row_id: &str,
+    _row_id: &str,
     row: &mut Row,
     encryption: &EncryptionConfig,
 ) -> Result<(), String> {
@@ -303,7 +335,7 @@ fn encrypt_row(
             continue; // NULL stays NULL (§5.11)
         };
         let plain = column_value_to_plain(value)?;
-        let key_id = encryption.key_id_for(&table.name, row_id);
+        let key_id = encryption.key_id_for(table, row)?;
         let key = encryption
             .keys
             .get(&key_id)
@@ -515,10 +547,10 @@ pub fn json_to_scope_map(value: &Value) -> Result<Vec<(String, Vec<String>)>, St
 #[cfg(test)]
 mod naming_tests {
     use serde_json::{json, Map, Value};
-    use ssp2::segment::{Column, ColumnType};
+    use ssp2::segment::{Column, ColumnType, ColumnValue, Row};
 
-    use super::{normalize_values_casing, snake_to_camel};
-    use crate::schema::TableSchema;
+    use super::{normalize_values_casing, snake_to_camel, EncryptionConfig};
+    use crate::schema::{EncryptedColumn, TableSchema};
 
     #[test]
     fn snake_to_camel_pinned_vectors() {
@@ -539,6 +571,54 @@ mod naming_tests {
         ] {
             assert_eq!(snake_to_camel(input), expected, "input {input:?}");
         }
+    }
+
+    #[test]
+    fn portable_key_selector_reads_a_non_encrypted_string_column() {
+        let columns = vec![
+            Column {
+                name: "id".to_owned(),
+                ty: ColumnType::String,
+                nullable: false,
+            },
+            Column {
+                name: "encryption_key_id".to_owned(),
+                ty: ColumnType::String,
+                nullable: false,
+            },
+            Column {
+                name: "note".to_owned(),
+                ty: ColumnType::String,
+                nullable: false,
+            },
+        ];
+        let table = TableSchema {
+            name: "patients".to_owned(),
+            columns: columns.clone(),
+            wire_columns: columns,
+            primary_key: "id".to_owned(),
+            pk_index: 0,
+            scope_variables: Vec::new(),
+            indexes: Vec::new(),
+            fts_indexes: Vec::new(),
+            encrypted_columns: vec![EncryptedColumn {
+                index: 2,
+                declared_type: "string".to_owned(),
+            }],
+        };
+        let mut config = EncryptionConfig::default();
+        config
+            .key_id_columns
+            .insert("patients".to_owned(), "encryption_key_id".to_owned());
+        let row: Row = vec![
+            Some(ColumnValue::String("patient-1".to_owned())),
+            Some(ColumnValue::String("practice-key-v1".to_owned())),
+            Some(ColumnValue::String("Identity".to_owned())),
+        ];
+        assert_eq!(
+            config.key_id_for(&table, &row).expect("selects key"),
+            "practice-key-v1"
+        );
     }
 
     fn table(names: &[&str]) -> TableSchema {

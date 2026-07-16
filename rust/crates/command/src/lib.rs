@@ -103,8 +103,9 @@ pub fn parse_limits(value: Option<&Value>) -> ClientLimits {
     limits
 }
 
-/// §5.11: parse the `encryption` config into the client's key map. Shape:
-/// `{ keys: { "<keyId>": {"$bytes": "<hex>"} } }`. Keys are 32 bytes.
+/// §5.11: parse the `encryption` config into the client's portable keyring.
+/// Shape: `{ keys: { "<keyId>": {"$bytes": "<hex>"} },
+/// keyIdColumns: { "<table>": "<column>" } }`. Keys are 32 bytes.
 pub fn parse_encryption(
     value: &Value,
 ) -> Result<syncular_client::values::EncryptionConfig, String> {
@@ -122,6 +123,24 @@ pub fn parse_encryption(
             ));
         }
         config.keys.insert(key_id.clone(), bytes);
+    }
+    if let Some(columns) = value.get("keyIdColumns") {
+        let columns = columns
+            .as_object()
+            .ok_or_else(|| "encryption keyIdColumns must be an object".to_owned())?;
+        for (table, column) in columns {
+            let column = column.as_str().ok_or_else(|| {
+                format!("encryption keyIdColumns entry for {table:?} must be a string")
+            })?;
+            if column.is_empty() {
+                return Err(format!(
+                    "encryption keyIdColumns entry for {table:?} must not be empty"
+                ));
+            }
+            config
+                .key_id_columns
+                .insert(table.clone(), column.to_owned());
+        }
     }
     Ok(config)
 }
@@ -298,7 +317,8 @@ pub fn dispatch<T: Transport>(
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             // §5.11: install client-side encryption keys. Shape:
-            // { encryption: { keys: { "<keyId>": {"$bytes": "<hex>"} } } }.
+            // { encryption: { keys: { "<keyId>": {"$bytes": "<hex>"} },
+            //                 keyIdColumns: { "<table>": "<column>" } } }.
             if let Some(enc) = params.get("encryption") {
                 let config = parse_encryption(enc).map_err(client_err)?;
                 instance.set_encryption(config);
@@ -735,5 +755,34 @@ pub fn dispatch<T: Transport>(
         }
 
         other => Err(client_err(format!("unknown method {other:?}"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::parse_encryption;
+
+    #[test]
+    fn parses_portable_encryption_keyring_and_key_id_columns() {
+        let key_hex = "2a".repeat(32);
+        let config = parse_encryption(&json!({
+            "keys": { "practice-key-v1": { "$bytes": key_hex } },
+            "keyIdColumns": { "patients": "encryption_key_id" }
+        }))
+        .expect("portable keyring parses");
+        assert_eq!(config.keys["practice-key-v1"], vec![0x2a; 32]);
+        assert_eq!(config.key_id_columns["patients"], "encryption_key_id");
+    }
+
+    #[test]
+    fn rejects_non_string_key_id_columns() {
+        let error = parse_encryption(&json!({
+            "keys": {},
+            "keyIdColumns": { "patients": 7 }
+        }))
+        .expect_err("invalid selector must fail");
+        assert!(error.contains("must be a string"), "{error}");
     }
 }

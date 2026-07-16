@@ -236,12 +236,14 @@ and Rust clients create a contentful FTS table with a private stable source-ID
 column and deterministic maintenance triggers. FTS is local-only: it is not a
 wire/server table, cannot be subscribed or mutated, and maps back to its owner
 for named-query invalidation. Columns must precede options, be distinct
-non-encrypted strings, and number 1–32. `content` is required. Supported
-tokenizers are `unicode61` (default), its `remove_diacritics 0|1|2` variants,
-`porter unicode61`, and `trigram`. Other modules/options/tokenizers, encrypted
-columns, or schema-object name collisions fail generation. There is no
-automatic `LIKE` fallback when FTS5 is unavailable; local schema creation
-fails loudly.
+declared strings, and number 1–32. Encrypted declared-string columns are
+allowed because the projection is built only from the decrypted local mirror;
+ciphertext remains the only wire and server representation. `content` is
+required. Supported tokenizers are `unicode61` (default), its
+`remove_diacritics 0|1|2` variants, `porter unicode61`, and `trigram`. Other
+modules/options/tokenizers or schema-object name collisions fail generation.
+There is no automatic `LIKE` fallback when FTS5 is unavailable; local schema
+creation fails loudly.
 
 **Hard errors** (each names the construct and source file): any other
 statement (`CREATE TRIGGER/VIEW`, `DROP INDEX`, DML, `ALTER … RENAME`, …); unknown
@@ -252,7 +254,7 @@ or parameterized types (`VARCHAR(36)`); quoted identifiers
 or missing primary keys; `PRIMARY KEY` on `ADD COLUMN`; duplicate
 tables/columns; ASC/DESC, expression, or partial (`WHERE`) index columns; a
 duplicate or unknown-column index; unsupported virtual-table modules or FTS5
-options; an FTS projection without an owner or with invalid/encrypted columns;
+options; an FTS projection without an owner or with invalid columns;
 trailing clauses (`STRICT`).
 
 **`DEFAULT` literals are accepted and ignored**: typegen extracts the

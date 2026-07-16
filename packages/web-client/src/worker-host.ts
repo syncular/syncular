@@ -39,6 +39,7 @@ import type {
 } from './client';
 import type { SqlRow, SqlValue } from './database';
 import { registerDevtools } from './devtools';
+import type { EncryptionKeyringConfig } from './encryption';
 import { ClientSyncError } from './errors';
 import {
   ChangeEmitter,
@@ -100,6 +101,8 @@ export interface SyncClientHandleConfig {
   readonly schema: ClientSchema;
   readonly database: WorkerDatabaseInit;
   readonly endpoints: WorkerEndpoints;
+  /** Structured-clone-safe E2EE keyring installed only in the leader worker. */
+  readonly encryption?: EncryptionKeyringConfig;
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
   /** Worker-side host loop (§8.4); default true. */
@@ -624,6 +627,9 @@ function buildInitConfig(config: SyncClientHandleConfig): WorkerInitConfig {
     schema: config.schema,
     database: config.database,
     endpoints: config.endpoints,
+    ...(config.encryption !== undefined
+      ? { encryption: config.encryption }
+      : {}),
     ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
     ...(config.limits !== undefined ? { limits: config.limits } : {}),
     ...(config.autoSync !== undefined ? { autoSync: config.autoSync } : {}),
