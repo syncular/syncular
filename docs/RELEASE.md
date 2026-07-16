@@ -1,8 +1,18 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.5** (`v0.15.5`). All artifacts use Apache-2.0, except
+current release is **0.15.8** (`v0.15.8`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.8 release notes
+
+0.15.8 fixes the application type of encrypted columns projected by generated
+named queries. The local mirror is plaintext by contract, but query inference
+previously reused the IR's ciphertext `bytes` wire type. Generated TypeScript,
+Swift, Kotlin, and Dart rows now use the column's pre-wire `declaredType` and
+original nullability, matching runtime values and generated table mutation
+types. Schema IR, wire encoding, server storage, and encryption remain
+unchanged.
 
 ## 0.15.5 release notes
 

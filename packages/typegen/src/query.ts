@@ -1378,12 +1378,18 @@ export function analyzeStatement(
       };
     }
     if (source !== null) {
-      // Exact: IR column type + IR nullability. (decltype agrees; we prefer
-      // the IR type so blob_ref/crdt/json semantic types survive.)
+      // Exact: app-facing queries read the decrypted local mirror. Encrypted
+      // columns therefore expose their pre-wire declaredType, while the schema
+      // IR and mutation codec continue to carry the bytes wire type.
+      const sourceType =
+        source.column.encrypted === true &&
+        source.column.declaredType !== undefined
+          ? source.column.declaredType
+          : source.column.type;
       return {
         name: sqlName,
         langName,
-        type: source.column.type,
+        type: sourceType,
         nullable: source.column.nullable,
         fidelity: 'exact',
         origin: { table: source.table, column: source.column.name },
