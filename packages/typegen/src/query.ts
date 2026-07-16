@@ -696,11 +696,6 @@ export interface TableRef {
 const IDENT = '[A-Za-z_][A-Za-z0-9_]*';
 // `FROM tbl [AS] a`, `JOIN tbl [AS] a`. We only need the referenced base
 // tables that exist in the IR; SQLite has already proven every reference.
-const TABLE_REF_RE = new RegExp(
-  `\\b(?:FROM|JOIN)\\s+(${IDENT})(?:\\s+(?:AS\\s+)?(${IDENT}))?`,
-  'gi',
-);
-
 const RESERVED_ALIAS = new Set([
   'on',
   'where',
@@ -716,10 +711,20 @@ const RESERVED_ALIAS = new Set([
   'limit',
   'having',
 ]);
+const RESERVED_ALIAS_PATTERN = [...RESERVED_ALIAS].join('|');
+const TABLE_REF_RE = new RegExp(
+  `\\b(?:FROM|JOIN)\\s+(${IDENT})(?:\\s+(?:AS\\s+)?((?!(?:${RESERVED_ALIAS_PATTERN})\\b)${IDENT}))?`,
+  'gi',
+);
 
 export function scanTableRefs(sql: string, ir: IrDocument): TableRef[] {
   const cleaned = stripCommentsAndStrings(sql);
-  const known = new Map(ir.tables.map((t) => [t.name, t] as const));
+  const known = new Set(
+    ir.tables.flatMap((table) => [
+      table.name,
+      ...table.ftsIndexes.map((index) => index.name),
+    ]),
+  );
   const refs: TableRef[] = [];
   for (const m of cleaned.matchAll(TABLE_REF_RE)) {
     const table = m[1] as string;
@@ -915,6 +920,8 @@ function inferParamType(
   // shape).
   const like = new RegExp(`\\bLIKE\\b[^()]*:${paramName}\\b`, 'i');
   if (like.test(cleaned)) return 'string';
+  const match = new RegExp(`\\bMATCH\\b\\s*:${paramName}\\b`, 'i');
+  if (match.test(cleaned)) return 'string';
   return null;
 }
 
@@ -987,6 +994,8 @@ export function inferParamTypeEvidence(
   }
   const like = new RegExp(`\\bLIKE\\b[^()]*:${paramName}\\b`, 'gi');
   if (like.test(cleaned)) evidence.push('string');
+  const match = new RegExp(`\\bMATCH\\b\\s*:${paramName}\\b`, 'gi');
+  if (match.test(cleaned)) evidence.push('string');
   return evidence;
 }
 
@@ -1054,8 +1063,15 @@ function inferReactiveMetadata(
     scopes: QueryScopeBinding[];
   }> = [];
   const coverage: QueryCoverageBinding[] = [];
+  const ftsOwner = new Map(
+    ir.tables.flatMap((table) =>
+      table.ftsIndexes.map((index) => [index.name, table.name] as const),
+    ),
+  );
 
-  for (const tableName of [...new Set(refs.map((ref) => ref.table))].sort()) {
+  for (const tableName of [
+    ...new Set(refs.map((ref) => ftsOwner.get(ref.table) ?? ref.table)),
+  ].sort()) {
     const table = ir.tables.find((candidate) => candidate.name === tableName);
     const tableRefs = refs.filter((ref) => ref.table === tableName);
     const scopes: QueryScopeBinding[] = [];
@@ -1192,6 +1208,12 @@ export function synthesizeDdl(ir: IrDocument): string {
         `CREATE ${unique}INDEX ${index.name} ON ${table.name} (${index.columns.join(', ')});`,
       );
     }
+    for (const index of table.ftsIndexes) {
+      const tokenize = index.tokenize.replaceAll("'", "''");
+      lines.push(
+        `CREATE VIRTUAL TABLE ${index.name} USING fts5(_syncular_source_id UNINDEXED, ${index.columns.join(', ')}, tokenize='${tokenize}');`,
+      );
+    }
   }
   return lines.join('\n');
 }
@@ -1252,7 +1274,14 @@ export function analyzeStatement(
   let described = analyze(sourceSql);
 
   const refs = scanTableRefs(sourceSql, ir);
-  const tableSet = new Set(refs.map((r) => r.table));
+  const ftsOwner = new Map(
+    ir.tables.flatMap((table) =>
+      table.ftsIndexes.map((index) => [index.name, table.name] as const),
+    ),
+  );
+  const tableSet = new Set(
+    refs.map((ref) => ftsOwner.get(ref.table) ?? ref.table),
+  );
   const tables = [...tableSet].sort();
   if (tables.length === 0) {
     throw new TypegenError(

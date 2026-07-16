@@ -100,6 +100,95 @@ describe('supported subset', () => {
     `);
     expect([...tables.keys()]).toEqual(['kept']);
   });
+
+  test('CREATE VIRTUAL TABLE fts5 attaches a local projection to its owner', () => {
+    const tables = parse(`
+      CREATE TABLE catalogue_codes (
+        id TEXT PRIMARY KEY, release_id TEXT NOT NULL,
+        code TEXT NOT NULL, title TEXT NOT NULL
+      );
+      CREATE VIRTUAL TABLE catalogue_codes_fts USING fts5(
+        code, title,
+        content = catalogue_codes,
+        tokenize = 'unicode61 remove_diacritics 2'
+      );
+    `);
+    expect(tables.get('catalogue_codes')?.ftsIndexes).toEqual([
+      {
+        name: 'catalogue_codes_fts',
+        columns: ['code', 'title'],
+        tokenize: 'unicode61 remove_diacritics 2',
+      },
+    ]);
+    expect(tables.has('catalogue_codes_fts')).toBe(false);
+  });
+
+  test('FTS5 defaults to the deterministic unicode61 tokenizer', () => {
+    const tables = parse(`
+      CREATE TABLE docs (id TEXT PRIMARY KEY, body TEXT);
+      CREATE VIRTUAL TABLE docs_fts USING fts5(body, content=docs);
+    `);
+    expect(tables.get('docs')?.ftsIndexes[0]?.tokenize).toBe('unicode61');
+  });
+});
+
+describe('CREATE VIRTUAL TABLE fts5 subset — hard errors', () => {
+  const base =
+    'CREATE TABLE docs (id TEXT PRIMARY KEY, body TEXT, score INT); ';
+  test('requires a known owning content table', () => {
+    expectError(
+      'CREATE VIRTUAL TABLE docs_fts USING fts5(body, content=docs)',
+      /content table "docs" does not exist at this point/,
+    );
+  });
+  test('requires existing string columns', () => {
+    expectError(
+      `${base}CREATE VIRTUAL TABLE docs_fts USING fts5(nope, content=docs)`,
+      /column "nope" does not exist/,
+    );
+    expectError(
+      `${base}CREATE VIRTUAL TABLE docs_fts USING fts5(score, content=docs)`,
+      /column "score" must have TEXT\/string type/,
+    );
+  });
+  test('rejects duplicate columns/options and columns after options', () => {
+    expectError(
+      `${base}CREATE VIRTUAL TABLE docs_fts USING fts5(body, body, content=docs)`,
+      /column "body" appears twice/,
+    );
+    expectError(
+      `${base}CREATE VIRTUAL TABLE docs_fts USING fts5(body, tokenize='unicode61', tokenize='unicode61', content=docs)`,
+      /tokenize is declared twice/,
+    );
+    expectError(
+      `${base}CREATE VIRTUAL TABLE docs_fts USING fts5(content=docs, body)`,
+      /indexed columns must precede FTS5 options/,
+    );
+  });
+  test('rejects passthrough options, modules, and unallowlisted tokenizers', () => {
+    expectError(
+      `${base}CREATE VIRTUAL TABLE docs_fts USING fts5(body, content=docs, prefix='2 3')`,
+      /unsupported FTS5 option "prefix"/,
+    );
+    expectError(
+      `${base}CREATE VIRTUAL TABLE docs_fts USING fts5(body, content=docs, tokenize='custom')`,
+      /tokenizer "custom" is not allowlisted/,
+    );
+    expectError(
+      `${base}CREATE VIRTUAL TABLE docs_fts USING rtree(body)`,
+      /expected FTS5/,
+    );
+  });
+  test('names are globally unique across tables, indexes, and FTS', () => {
+    expectError(
+      `${base}CREATE INDEX docs_fts ON docs(body); CREATE VIRTUAL TABLE docs_fts USING fts5(body, content=docs)`,
+      /conflicts with an index/,
+    );
+    expectError(
+      `${base}CREATE VIRTUAL TABLE docs_fts USING fts5(body, content=docs); CREATE TABLE docs_fts (id TEXT PRIMARY KEY)`,
+      /conflicts with an index or FTS virtual table/,
+    );
+  });
 });
 
 describe('CREATE INDEX subset — hard errors naming the construct', () => {

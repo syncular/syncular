@@ -30,7 +30,7 @@ use crate::api::{
     SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
     WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
 };
-use crate::schema::{parse_schema_json, ClientSchema};
+use crate::schema::{parse_schema_json, ClientSchema, FtsIndexSchema, TableSchema};
 use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 use crate::values::{
     bytes_to_hex, canonical_scope_json, column_value_to_json, decode_row_bytes, encode_row_json,
@@ -502,6 +502,77 @@ mod observation_tests {
         drop(client);
         std::fs::remove_file(path).expect("remove temp database");
     }
+
+    #[test]
+    fn local_fts_projection_tracks_optimistic_overlay_rebuilds() {
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "catalogue_codes",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "release_id", "type": "string", "nullable": false },
+                    { "name": "code", "type": "string", "nullable": false },
+                    { "name": "title", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "release:{release_id}" }],
+                "ftsIndexes": [{
+                    "name": "catalogue_codes_fts",
+                    "columns": ["code", "title"],
+                    "tokenize": "unicode61 remove_diacritics 2"
+                }]
+            }]
+        });
+        let mut client = SyncClient::new("fts-test".to_owned(), &schema, ClientLimits::default())
+            .expect("FTS5 client");
+        let search = |client: &SyncClient, query: &str| {
+            client
+                .query(
+                    "SELECT c.id FROM catalogue_codes_fts f JOIN catalogue_codes c ON CAST(c.id AS TEXT) = f._syncular_source_id WHERE catalogue_codes_fts MATCH ?1 ORDER BY c.id",
+                    &[Value::from(query)],
+                )
+                .expect("FTS query")
+        };
+
+        client
+            .mutate(vec![Mutation::Upsert {
+                table: "catalogue_codes".to_owned(),
+                values: Map::from_iter([
+                    ("id".to_owned(), Value::from("c1")),
+                    ("release_id".to_owned(), Value::from("r1")),
+                    ("code".to_owned(), Value::from("A01")),
+                    ("title".to_owned(), Value::from("Cholera")),
+                ]),
+                base_version: None,
+            }])
+            .expect("insert code");
+        assert_eq!(search(&client, "cholera").len(), 1);
+
+        client
+            .mutate(vec![Mutation::Upsert {
+                table: "catalogue_codes".to_owned(),
+                values: Map::from_iter([
+                    ("id".to_owned(), Value::from("c1")),
+                    ("release_id".to_owned(), Value::from("r1")),
+                    ("code".to_owned(), Value::from("A01")),
+                    ("title".to_owned(), Value::from("Enteric infection")),
+                ]),
+                base_version: None,
+            }])
+            .expect("update code");
+        assert!(search(&client, "cholera").is_empty());
+        assert_eq!(search(&client, "enteric").len(), 1);
+
+        client
+            .mutate(vec![Mutation::Delete {
+                table: "catalogue_codes".to_owned(),
+                row_id: "c1".to_owned(),
+                base_version: None,
+            }])
+            .expect("delete code");
+        assert!(search(&client, "enteric").is_empty());
+    }
 }
 
 impl SubState {
@@ -744,6 +815,8 @@ fn derive_sub_id(base: &WindowBase, unit: &str) -> String {
 fn visible_table(name: &str) -> String {
     quote_ident(name)
 }
+
+const FTS_SOURCE_ID_COLUMN: &str = "_syncular_source_id";
 
 /// §7.4.3: is a `sqlite_master` table name a synced table (visible or base),
 /// i.e. NOT one of the durable bookkeeping tables the reset preserves?
@@ -1874,6 +1947,27 @@ impl SyncClient {
         // handled. Bookkeeping tables (`_syncular_outbox/_subscriptions/_meta`
         // and the blob cache) are preserved; base tables are `_syncular_base_*`
         // so they are matched explicitly, not by the bookkeeping filter.
+        // Drop virtual tables first so SQLite removes every FTS shadow table
+        // atomically instead of the generic discovery tearing it apart.
+        let virtual_tables: Vec<String> = {
+            let mut stmt = self
+                .conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE%'",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(Result::ok)
+                .filter(|name| is_synced_table_name(name))
+                .collect()
+        };
+        for name in virtual_tables {
+            self.conn
+                .execute(&format!("DROP TABLE IF EXISTS {}", quote_ident(&name)), [])
+                .map_err(|e| e.to_string())?;
+        }
         let existing: Vec<String> = {
             let mut stmt = self
                 .conn
@@ -1894,9 +1988,9 @@ impl SyncClient {
             }
         }
         for name in existing {
-            let _ = self
-                .conn
-                .execute(&format!("DROP TABLE IF EXISTS {}", quote_ident(&name)), []);
+            self.conn
+                .execute(&format!("DROP TABLE IF EXISTS {}", quote_ident(&name)), [])
+                .map_err(|e| e.to_string())?;
         }
         // Recreate the synced tables from the NEW schema.
         self.create_synced_tables()?;
@@ -2040,6 +2134,132 @@ impl SyncClient {
                         .map_err(|e| e.to_string())?;
                 }
             }
+        }
+        // FTS exists only on the visible half. It is a local search
+        // projection, never a synced/base table or a wire-schema member.
+        for table in &self.schema.tables {
+            for index in &table.fts_indexes {
+                self.create_fts_projection(table, index)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn fts_projection_exists(&self, index: &FtsIndexSchema) -> Result<bool, String> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                rusqlite::params![index.name],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(count > 0)
+    }
+
+    fn drop_fts_triggers(&self, index: &FtsIndexSchema) -> Result<(), String> {
+        for suffix in ["ai", "ad", "au"] {
+            self.conn
+                .execute(
+                    &format!(
+                        "DROP TRIGGER IF EXISTS {}",
+                        quote_ident(&format!("{}_{suffix}", index.name))
+                    ),
+                    [],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn create_fts_triggers(
+        &self,
+        table: &TableSchema,
+        index: &FtsIndexSchema,
+    ) -> Result<(), String> {
+        let fts = quote_ident(&index.name);
+        let source = visible_table(&table.name);
+        let source_id = quote_ident(FTS_SOURCE_ID_COLUMN);
+        let pk = quote_ident(&table.primary_key);
+        let projection_columns = std::iter::once(source_id.clone())
+            .chain(index.columns.iter().map(|column| quote_ident(column)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let new_values = std::iter::once(format!("CAST(new.{pk} AS TEXT)"))
+            .chain(
+                index
+                    .columns
+                    .iter()
+                    .map(|column| format!("new.{}", quote_ident(column))),
+            )
+            .collect::<Vec<_>>()
+            .join(", ");
+        let delete_new = format!("DELETE FROM {fts} WHERE {source_id} = CAST(new.{pk} AS TEXT)");
+        let delete_old = format!("DELETE FROM {fts} WHERE {source_id} = CAST(old.{pk} AS TEXT)");
+        let insert_new = format!("INSERT INTO {fts} ({projection_columns}) VALUES ({new_values})");
+        let sql = format!(
+            "CREATE TRIGGER IF NOT EXISTS {ai} AFTER INSERT ON {source} BEGIN {delete_new}; {insert_new}; END;
+             CREATE TRIGGER IF NOT EXISTS {ad} AFTER DELETE ON {source} BEGIN {delete_old}; END;
+             CREATE TRIGGER IF NOT EXISTS {au} AFTER UPDATE ON {source} BEGIN {delete_old}; {delete_new}; {insert_new}; END;",
+            ai = quote_ident(&format!("{}_ai", index.name)),
+            ad = quote_ident(&format!("{}_ad", index.name)),
+            au = quote_ident(&format!("{}_au", index.name)),
+        );
+        self.conn.execute_batch(&sql).map_err(|e| e.to_string())
+    }
+
+    fn rebuild_fts_projection(
+        &self,
+        table: &TableSchema,
+        index: &FtsIndexSchema,
+    ) -> Result<(), String> {
+        let fts = quote_ident(&index.name);
+        let source_id = quote_ident(FTS_SOURCE_ID_COLUMN);
+        let pk = quote_ident(&table.primary_key);
+        let indexed_columns = index
+            .columns
+            .iter()
+            .map(|column| quote_ident(column))
+            .collect::<Vec<_>>();
+        let projection_columns = std::iter::once(source_id)
+            .chain(indexed_columns.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "DELETE FROM {fts}; INSERT INTO {fts} ({projection_columns}) SELECT CAST({pk} AS TEXT), {columns} FROM {source};",
+            columns = indexed_columns.join(", "),
+            source = visible_table(&table.name),
+        );
+        self.conn.execute_batch(&sql).map_err(|e| e.to_string())
+    }
+
+    fn create_fts_projection(
+        &self,
+        table: &TableSchema,
+        index: &FtsIndexSchema,
+    ) -> Result<(), String> {
+        let existed = self.fts_projection_exists(index)?;
+        let tokenizer = index.tokenize.replace('\'', "''");
+        let columns = index
+            .columns
+            .iter()
+            .map(|column| quote_ident(column))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS {fts} USING fts5({source_id} UNINDEXED, {columns}, tokenize='{tokenizer}')",
+            fts = quote_ident(&index.name),
+            source_id = quote_ident(FTS_SOURCE_ID_COLUMN),
+        );
+        self.conn.execute(&sql, []).map_err(|error| {
+            format!(
+                "cannot create local FTS5 projection {:?}: {error}",
+                index.name
+            )
+        })?;
+        self.create_fts_triggers(table, index)?;
+        if !existed {
+            self.rebuild_fts_projection(table, index)?;
         }
         Ok(())
     }
@@ -5186,6 +5406,9 @@ impl SyncClient {
     fn rebuild_overlay(&mut self) {
         self.exec("SAVEPOINT syncular_overlay");
         for table in self.schema.tables.clone() {
+            for index in &table.fts_indexes {
+                let _ = self.drop_fts_triggers(index);
+            }
             let visible = visible_table(&table.name);
             let base = base_table(&table.name);
             self.exec(&format!("DELETE FROM {visible}"));
@@ -5222,6 +5445,12 @@ impl SyncClient {
                     );
                     let _ = self.conn.execute(&sql, rusqlite::params![op.row_id]);
                 }
+            }
+        }
+        for table in self.schema.tables.clone() {
+            for index in &table.fts_indexes {
+                let _ = self.rebuild_fts_projection(&table, index);
+                let _ = self.create_fts_triggers(&table, index);
             }
         }
         self.exec("RELEASE syncular_overlay");

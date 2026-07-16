@@ -37,6 +37,7 @@ const IR: IrDocument = {
         { pattern: 'list:{list_id}', variable: 'list_id', column: 'list_id' },
       ],
       indexes: [],
+      ftsIndexes: [],
       extensions: {},
     },
   ],

@@ -113,6 +113,17 @@ function buildTable(
     scopes,
     manifestTable.encryptedColumns,
   );
+  for (const ftsIndex of parsed.ftsIndexes) {
+    for (const columnName of ftsIndex.columns) {
+      const column = columns.find((candidate) => candidate.name === columnName);
+      if (column?.encrypted === true) {
+        throw new TypegenError(
+          MANIFEST_FILENAME,
+          `table ${parsed.name}: FTS index ${JSON.stringify(ftsIndex.name)} cannot index encrypted column ${JSON.stringify(columnName)}`,
+        );
+      }
+    }
+  }
   return {
     name: parsed.name,
     primaryKey: parsed.primaryKey,
@@ -121,6 +132,7 @@ function buildTable(
     // Indexes flow through from the migration parser (already validated:
     // columns exist, names unique per schema) in declaration order.
     indexes: parsed.indexes,
+    ftsIndexes: parsed.ftsIndexes,
     extensions: canonicalizeExtensions(manifestTable.extensions) as Record<
       string,
       unknown
@@ -410,12 +422,22 @@ export function makeQueryDb(ir: IrDocument): {
       try {
         const columnNames = stmt.columnNames;
         // Execute once against the empty DB to populate decltype; result is [].
-        (stmt as unknown as { all: () => unknown[] }).all();
+        const paramsCount = (stmt as unknown as { paramsCount: number })
+          .paramsCount;
+        // An unbound FTS5 MATCH parameter is treated as the empty query and
+        // fails parsing. A numeric probe is valid for MATCH and LIMIT alike,
+        // while the empty database still guarantees no result rows.
+        const probe = /\bMATCH\b/i.test(sql)
+          ? Array.from({ length: paramsCount }, () => 1)
+          : [];
+        (
+          stmt as unknown as {
+            all: (...params: readonly number[]) => unknown[];
+          }
+        ).all(...probe);
         const declaredTypes = (
           stmt as unknown as { declaredTypes: (string | null)[] }
         ).declaredTypes;
-        const paramsCount = (stmt as unknown as { paramsCount: number })
-          .paramsCount;
         return { columnNames, declaredTypes, paramsCount };
       } finally {
         stmt.finalize();

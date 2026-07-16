@@ -64,6 +64,15 @@ export interface IrIndex {
   readonly unique: boolean;
 }
 
+/** One client-local contentful FTS5 projection. It is owned by the
+ * synced table in whose `ftsIndexes` array it appears and never enters the
+ * row codec, server schema, scopes, or mutation surface. */
+export interface IrFtsIndex {
+  readonly name: string;
+  readonly columns: readonly string[];
+  readonly tokenize: string;
+}
+
 export interface IrTable {
   readonly name: string;
   readonly primaryKey: string;
@@ -73,6 +82,8 @@ export interface IrTable {
   /** Local secondary indexes (§migration subset), in declaration order.
    * Additive under irVersion 1: absent/empty for tables that declare none. */
   readonly indexes: readonly IrIndex[];
+  /** Client-local FTS5 projections, in migration declaration order. */
+  readonly ftsIndexes: readonly IrFtsIndex[];
   /** Reserved per-table hook slot (WP-49); empty object for now. */
   readonly extensions: Readonly<Record<string, unknown>>;
 }
@@ -173,6 +184,15 @@ export function serializeIr(ir: IrDocument): string {
               name: index.name,
               columns: index.columns,
               unique: index.unique,
+            })),
+          }
+        : {}),
+      ...(table.ftsIndexes.length > 0
+        ? {
+            ftsIndexes: table.ftsIndexes.map((index) => ({
+              name: index.name,
+              columns: index.columns,
+              tokenize: index.tokenize,
             })),
           }
         : {}),
