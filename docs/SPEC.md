@@ -2244,6 +2244,13 @@ the codec and local storage carry the ciphertext/plaintext per that type.
 Columns without `encrypted` are byte-identical in the IR to before this
 rung.
 
+Named-query result inference follows the same application boundary. A direct
+projection of an encrypted column is typed as its `declaredType` (including
+nullability), because every supported query host reads the decrypted local
+mirror. It MUST NOT expose the IR's `bytes` wire type in TypeScript, Swift,
+Kotlin, or Dart query rows; ciphertext exists only across the wire and in
+server storage.
+
 **Hard generate-time errors (fail loud, §typegen).** A generated client
 **MUST** reject at generate time:
 

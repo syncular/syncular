@@ -128,6 +128,22 @@ Either document that pattern as *the* seeding recipe, or ship
 `@syncular/server` / `@syncular/testing`. Every test suite and demo needs
 this on day one.
 
+### 2.6 Encrypted named-query results must use the local plaintext type
+
+The schema IR correctly flips an encrypted column to the `bytes` wire type and
+retains its pre-wire `declaredType`. Generated table rows already expose that
+application type, but named-query inference previously reused `bytes` for a
+direct projection. Runtime queries read the decrypted local mirror, so a
+nullable encrypted `TEXT` value arrived as `string | null` while generated
+TypeScript claimed `Uint8Array | null`. The mismatch encouraged applications
+to clear or block unrelated encrypted values when assembling a full-row atomic
+commit.
+
+The query analyzer must use `declaredType` and original nullability for direct
+encrypted-column projections in every language emitter. This is a typegen-only
+correction: IR, wire ciphertext, server storage, and encryption boundaries stay
+unchanged.
+
 ## 3. Developer experience
 
 ### 3.1 A "Vite" docs page (or a tiny preset)

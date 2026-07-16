@@ -5,6 +5,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
+  analyzeQueries,
   buildIr,
   type Manifest,
   type MigrationInput,
@@ -74,6 +75,21 @@ describe('§5.11 encryptedColumns → IR', () => {
     expect(body?.type).toBe('string');
     expect(body?.encrypted).toBeUndefined();
     expect(body?.declaredType).toBeUndefined();
+  });
+
+  test('named queries expose decrypted app types instead of ciphertext bytes', () => {
+    const ir = buildIr(manifest(['body', 'amount']), MIGRATIONS);
+    const [query] = analyzeQueries(ir, [
+      {
+        file: 'encrypted-note.sql',
+        sql: 'SELECT id, body, amount FROM notes WHERE id = :id',
+      },
+    ]);
+    expect(query?.columns).toMatchObject([
+      { name: 'id', type: 'string', nullable: false, fidelity: 'exact' },
+      { name: 'body', type: 'string', nullable: false, fidelity: 'exact' },
+      { name: 'amount', type: 'integer', nullable: true, fidelity: 'exact' },
+    ]);
   });
 
   test('hard error: unknown column', () => {
