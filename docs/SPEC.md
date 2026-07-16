@@ -652,8 +652,11 @@ answer with `requiredSchemaVersion` — the schema-floor response of
 
 **Client-local FTS5 projections (RFC 0005).** The schema IR MAY attach an
 `ftsIndexes` array to a synced table. Each entry names a local FTS5 virtual
-table, 1–32 non-encrypted string columns, and an allowlisted built-in
-tokenizer. This metadata is client-only: it MUST NOT create a server table,
+table, 1–32 local string columns, and an allowlisted built-in tokenizer. An
+encrypted column is eligible only when its `declaredType` is `string`: apply
+decrypts it before the local base-table write, so the projection indexes the
+same plaintext already present in the protected local mirror and never the
+ciphertext envelope. This metadata is client-only: it MUST NOT create a server table,
 wire table, scope, codec column, subscription target, or mutation target.
 Reference clients materialize the same contentful FTS5 projection over the
 visible table with an internal `_syncular_source_id UNINDEXED` column equal to
@@ -661,8 +664,8 @@ the string form of the application primary key. They MUST keep it
 transactionally current across insert/update/delete, optimistic overlay
 rebuild, purge, and schema reset. If FTS5 is unavailable, local schema creation
 MUST fail loudly; a client MUST NOT silently omit the projection or replace
-`MATCH` with a `LIKE` scan. An encrypted column MUST NOT be indexed because
-that would create a durable plaintext copy outside the encryption boundary.
+`MATCH` with a `LIKE` scan. Purge, revocation, schema reset, and protected local
+database deletion MUST remove the base plaintext and its FTS copy together.
 Named-query invalidation maps an FTS projection back to its owning synced
 table; the projection never claims independent scope coverage.
 
@@ -2306,14 +2309,27 @@ the row codec would, §2.4); a parse failure is `client.decrypt_failed`.
 
 **Key selection — `keyId` and the `keyProvider`.** The client is configured
 with a **key provider**: `keyId → 32-byte key`, plus a **`keyIdFor(table,
-rowId) → keyId`** hook that names the key for a given write (default:
-**per-table**, `keyId = table`). On encode the client resolves `keyId` via
-`keyIdFor`, embeds it in the envelope, and encrypts with
+rowId, plaintextRow) → keyId`** hook that names the key for a given write.
+Portable Worker and native/Tauri hosts additionally accept `keyIdColumns`, a
+map from table name to one non-encrypted string column whose row value is the
+active `keyId`. This supports per-Practice/per-Facility keys and rotation via an
+explicit plaintext key-grant identifier without deriving it from an opaque row
+id. The selection order is custom `keyIdFor`, configured `keyIdColumns`, then
+the default **per-table** `keyId = table`. A missing, encrypted, empty, or
+non-string selector column fails locally; it never falls back to another key.
+On encode the client resolves `keyId`, embeds it in the envelope, and encrypts with
 `keyProvider(keyId)`. On apply the client reads `keyId` **from the
 envelope** and decrypts with `keyProvider(keyId)` — so key rotation and
 per-scope keys work without a schema change: the envelope is
 self-describing. A `keyId` the provider does not know, or a wrong key
 (GCM tag mismatch), is `client.decrypt_failed`.
+
+Worker-hosted clients accept a structured-clone-safe `{ keys, keyIdColumns }`
+keyring and install the provider inside the leader worker. Tauri clients accept
+the same public shape; the JavaScript bridge encodes raw keys into the local IPC
+command and the Rust core installs them before opening encrypted rows. Keys are
+client-local configuration and MUST NOT enter SSP2 requests, server logs, or
+application telemetry.
 
 **`client.decrypt_failed` (client-local, §10.3).** Decrypt failures —
 unknown envelope version, unknown `keyId`, GCM authentication failure,

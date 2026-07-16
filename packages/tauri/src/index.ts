@@ -36,6 +36,7 @@ import type {
   CommitOutcome,
   CommitOutcomeQuery,
   ConflictRecord,
+  EncryptionKeyringConfig,
   InvalidationEvent,
   InvalidationListener,
   LeaseState,
@@ -91,6 +92,11 @@ export interface TauriSyncClientConfig {
   readonly clientId?: string;
   /** §4.2 client limits, forwarded to the native `create`. */
   readonly limits?: Record<string, unknown>;
+  /**
+   * Portable E2EE keys and declarative per-row key-id columns. Raw keys are
+   * encoded into the native command envelope and never sent to the server.
+   */
+  readonly encryption?: EncryptionKeyringConfig;
   /**
    * The Tauri primitives. Omit in a real Tauri webview to auto-resolve from
    * `@tauri-apps/api` (peer dep) or the ambient `window.__TAURI__`; inject in
@@ -155,6 +161,20 @@ function encodeJsonValue(value: unknown): unknown {
     return encoded;
   }
   return value;
+}
+
+function encodeEncryption(config: EncryptionKeyringConfig): unknown {
+  return {
+    keys: Object.fromEntries(
+      Object.entries(config.keys).map(([keyId, key]) => [
+        keyId,
+        { $bytes: bytesToHex(key) },
+      ]),
+    ),
+    ...(config.keyIdColumns !== undefined
+      ? { keyIdColumns: config.keyIdColumns }
+      : {}),
+  };
 }
 
 /** Decode one query-result cell back to an `SqlValue` (`{$bytes}` → bytes). */
@@ -752,6 +772,9 @@ export async function createTauriSyncClient(
         ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
         schema: config.schema,
         ...(config.limits !== undefined ? { limits: config.limits } : {}),
+        ...(config.encryption !== undefined
+          ? { encryption: encodeEncryption(config.encryption) }
+          : {}),
       },
     },
   });

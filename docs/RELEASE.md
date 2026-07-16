@@ -1,8 +1,25 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.8** (`v0.15.8`). All artifacts use Apache-2.0, except
+current release is **0.15.9** (`v0.15.9`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.9 release notes
+
+0.15.9 makes non-null E2EE usable through the same production hosts as the
+direct client. `createSyncClientHandle` and `createTauriSyncClient` now accept a
+portable `{ keys, keyIdColumns }` keyring. Worker leaders install the provider
+inside the worker core; the Tauri bridge forwards byte-exact keys and row-key
+selection to the existing Rust encryption command. A non-encrypted string key-id
+column can select a different active key per Practice/Facility row, while the
+envelope remains self-describing for old-key decryption and rotation.
+
+Client-local FTS5 projections may now include encrypted columns whose declared
+application type is `string`. Encryption still occurs only on the wire: the
+projection indexes the decrypted value already held in the protected local
+mirror, remains absent from server schema/storage, and is removed with the same
+transactional purge/reset lifecycle as its owner table. Worker ciphertext and
+native/portable key-selection regressions cover the new path.
 
 ## 0.15.8 release notes
 
@@ -93,7 +110,7 @@ The release includes:
 
 - narrow migration-subset v2 syntax for
   `CREATE VIRTUAL TABLE … USING fts5`, with a required synced-table owner,
-  non-encrypted string columns, deterministic built-in tokenizers, and hard
+  local string columns, deterministic built-in tokenizers, and hard
   errors for arbitrary modules or options;
 - `ftsIndexes` in the neutral IR and every generated TypeScript, Swift,
   Kotlin, and Dart schema value, while index-free generated output remains

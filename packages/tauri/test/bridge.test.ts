@@ -156,6 +156,42 @@ describe('createTauriSyncClient', () => {
     ).toBe('c1');
   });
 
+  test('forwards portable encryption keys and row key-id columns on create', async () => {
+    const { tauri, calls } = makeTauri(defaultResponder);
+    await createTauriSyncClient({
+      schema: { version: 1, tables: [] },
+      encryption: {
+        keys: { 'practice-key-v1': new Uint8Array(32).fill(0x2a) },
+        keyIdColumns: { patients: 'encryption_key_id' },
+      },
+      tauri,
+    });
+    const create = calls.find(
+      (call) =>
+        call.cmd === 'plugin:syncular|syncular_command' &&
+        (call.args.command as { method: string }).method === 'create',
+    );
+    expect(
+      (
+        create?.args.command as {
+          params: {
+            encryption: {
+              keys: Record<string, unknown>;
+              keyIdColumns: Record<string, string>;
+            };
+          };
+        }
+      ).params.encryption,
+    ).toEqual({
+      keys: {
+        'practice-key-v1': {
+          $bytes: '2a'.repeat(32),
+        },
+      },
+      keyIdColumns: { patients: 'encryption_key_id' },
+    });
+  });
+
   test('query uses the syncular_query fast path and decodes bytes', async () => {
     const { client, calls } = await build();
     const rows = await client.query('SELECT * FROM todo WHERE id = ?', ['t1']);

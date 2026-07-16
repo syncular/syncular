@@ -15,6 +15,7 @@
  */
 import { SyncClient } from './client';
 import type { ClientDatabase } from './database';
+import { encryptionConfigFromKeyring } from './encryption';
 import { ClientSyncError } from './errors';
 import {
   httpBlobTransport,
@@ -299,6 +300,9 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       },
       ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
       ...(config.limits !== undefined ? { limits: config.limits } : {}),
+      ...(config.encryption !== undefined
+        ? { encryption: encryptionConfigFromKeyring(config.encryption) }
+        : {}),
       onSyncNeeded: (reason) => {
         post({ t: 'event', event: { kind: 'sync-needed', reason } });
         consumeSyncIntent({ kind: 'interactive' });

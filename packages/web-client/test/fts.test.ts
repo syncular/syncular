@@ -97,23 +97,9 @@ describe('RFC 0005 local FTS5 projections', () => {
     expect(search(db, 'typhoid')).toEqual(['c2']);
   });
 
-  test('compile fails loudly for unsafe or unsupported definitions', () => {
+  test('encrypted declared-string columns feed only the local plaintext projection', () => {
     const table = SCHEMA.tables[0];
     if (table === undefined) throw new Error('fixture table missing');
-    const withFts = (ftsIndexes: NonNullable<typeof table.ftsIndexes>) =>
-      compileClientSchema({
-        version: 1,
-        tables: [{ ...table, ftsIndexes }],
-      });
-    expect(() =>
-      withFts([
-        { name: 'bad', columns: ['release_id', 'nope'], tokenize: 'unicode61' },
-      ]),
-    ).toThrow(/unknown column "nope"/);
-    expect(() =>
-      withFts([{ name: 'bad', columns: ['title'], tokenize: 'custom' }]),
-    ).toThrow(/not allowlisted/);
-
     const encrypted: ClientSchema = {
       version: 1,
       tables: [
@@ -132,8 +118,29 @@ describe('RFC 0005 local FTS5 projections', () => {
         },
       ],
     };
-    expect(() => compileClientSchema(encrypted)).toThrow(
-      /cannot index encrypted/,
+    const db = new BunClientDatabase();
+    ensureLocalSchema(db, compileClientSchema(encrypted));
+    db.exec(
+      `INSERT INTO catalogue_codes(id, release_id, code, title) VALUES ('c1', 'r1', 'A01', 'Encrypted local identity')`,
     );
+    expect(search(db, 'identity')).toEqual(['c1']);
+  });
+
+  test('compile fails loudly for unsafe or unsupported definitions', () => {
+    const table = SCHEMA.tables[0];
+    if (table === undefined) throw new Error('fixture table missing');
+    const withFts = (ftsIndexes: NonNullable<typeof table.ftsIndexes>) =>
+      compileClientSchema({
+        version: 1,
+        tables: [{ ...table, ftsIndexes }],
+      });
+    expect(() =>
+      withFts([
+        { name: 'bad', columns: ['release_id', 'nope'], tokenize: 'unicode61' },
+      ]),
+    ).toThrow(/unknown column "nope"/);
+    expect(() =>
+      withFts([{ name: 'bad', columns: ['title'], tokenize: 'custom' }]),
+    ).toThrow(/not allowlisted/);
   });
 });

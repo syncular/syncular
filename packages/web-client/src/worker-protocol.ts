@@ -33,6 +33,7 @@ import type {
   WindowState,
 } from './client';
 import type { SqlRow, SqlValue } from './database';
+import type { EncryptionKeyringConfig } from './encryption';
 import type {
   ClientChangeBatch,
   LocalRevision,
@@ -96,6 +97,8 @@ export interface WorkerInitConfig {
   readonly schema: ClientSchema;
   readonly database: WorkerDatabaseInit;
   readonly endpoints: WorkerEndpoints;
+  /** Portable raw keyring installed inside the worker-owned client core. */
+  readonly encryption?: EncryptionKeyringConfig;
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
   /**

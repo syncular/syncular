@@ -299,7 +299,7 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
                         table.name, index.name, column_name
                     ));
                 }
-                let Some((column_index, column)) = columns
+                let Some((_column_index, column)) = columns
                     .iter()
                     .enumerate()
                     .find(|(_, candidate)| &candidate.name == column_name)
@@ -312,15 +312,6 @@ pub fn compile_schema(ir: &SchemaIr) -> Result<ClientSchema, String> {
                 if !matches!(column.ty, ColumnType::String) {
                     return Err(format!(
                         "table {:?}: FTS projection {:?} column {:?} must have string type",
-                        table.name, index.name, column_name
-                    ));
-                }
-                if encrypted_columns
-                    .iter()
-                    .any(|encrypted| encrypted.index == column_index)
-                {
-                    return Err(format!(
-                        "table {:?}: FTS projection {:?} cannot index encrypted column {:?}",
                         table.name, index.name, column_name
                     ));
                 }
@@ -406,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_encrypted_non_string_and_unknown_tokenizer_fts_definitions() {
+    fn accepts_encrypted_declared_strings_and_rejects_other_fts_definitions() {
         let encrypted = schema_with_fts(
             json!({
                 "name": "body", "type": "bytes", "nullable": false,
@@ -414,9 +405,7 @@ mod tests {
             }),
             "unicode61",
         );
-        assert!(parse_schema_json(&encrypted)
-            .expect_err("encrypted FTS must fail")
-            .contains("cannot index encrypted"));
+        parse_schema_json(&encrypted).expect("local plaintext FTS accepts encrypted strings");
 
         let non_string = schema_with_fts(
             json!({ "name": "body", "type": "integer", "nullable": false }),

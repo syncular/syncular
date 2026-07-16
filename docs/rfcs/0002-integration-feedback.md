@@ -210,6 +210,18 @@ limited to the currently windowed-in units (it should be), and what does a
 bump cost at N rows on the image lane. If the answers are good — and the
 benchmarks suggest they are — saying so out loud is pure upside.
 
+### 4.3 Keep E2EE configuration at host parity
+
+A production application normally uses the OPFS worker on web and the native
+Rust core under Tauri. Direct-client-only encryption configuration is therefore
+not a usable product boundary: it either blocks non-null encrypted data or
+encourages a plaintext host fallback. Syncular 0.15.9 closes that gap with one
+portable raw-key/key-id-column shape on Worker and Tauri hosts, backed by the
+same encrypt-on-wire/decrypt-on-local-mirror contract. The integration also
+confirmed that encrypted declared-string fields need client-local FTS for
+offline Patient lookup; that projection is safe only because it shares the
+protected local database and exact purge/reset lifecycle of its owner table.
+
 ## Priority order (one line each)
 
 | # | Item | Effort | Impact |
@@ -225,6 +237,7 @@ benchmarks suggest they are — saying so out loud is pure upside.
 | 2.4 | `multiTab` default flip (or rationale) | small | second-tab surprise |
 | 3.2 | `window.__SYNCULAR__` dev registry | medium | debugging velocity |
 | 4.1 | Tauri template + web+desktop guide | medium | flagship demo |
+| 4.3 | Worker/Tauri E2EE keyring parity | shipped in 0.15.9 | encrypted production data |
 | 1.2 | crates.io publish | medium/heavy | Tauri adoption exists at all |
 | 4.2 | Schema-bump cost docs | small | evaluator confidence |
 

@@ -113,17 +113,6 @@ function buildTable(
     scopes,
     manifestTable.encryptedColumns,
   );
-  for (const ftsIndex of parsed.ftsIndexes) {
-    for (const columnName of ftsIndex.columns) {
-      const column = columns.find((candidate) => candidate.name === columnName);
-      if (column?.encrypted === true) {
-        throw new TypegenError(
-          MANIFEST_FILENAME,
-          `table ${parsed.name}: FTS index ${JSON.stringify(ftsIndex.name)} cannot index encrypted column ${JSON.stringify(columnName)}`,
-        );
-      }
-    }
-  }
   return {
     name: parsed.name,
     primaryKey: parsed.primaryKey,

@@ -216,11 +216,6 @@ export function compileClientSchema(
             `table ${table.name}: FTS projection ${JSON.stringify(index.name)} column ${JSON.stringify(columnName)} must have string type`,
           );
         }
-        if (column.encrypted === true) {
-          throw new Error(
-            `table ${table.name}: FTS projection ${JSON.stringify(index.name)} cannot index encrypted column ${JSON.stringify(columnName)}`,
-          );
-        }
       }
       if (!ALLOWED_FTS_TOKENIZERS.has(index.tokenize)) {
         throw new Error(
