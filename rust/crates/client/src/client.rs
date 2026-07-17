@@ -233,6 +233,125 @@ mod observation_tests {
     }
 
     #[test]
+    fn reopening_clears_a_schema_floor_the_running_app_already_satisfies() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-satisfied-schema-floor-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let schema = json!({
+            "version": 23,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "project_id", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "project:{project_id}" }]
+            }]
+        });
+
+        {
+            let mut first = SyncClient::open_path_with_identity(
+                None,
+                &schema,
+                ClientLimits::default(),
+                path.to_str().expect("UTF-8 temp path"),
+            )
+            .expect("first open");
+            first
+                .subscribe(
+                    "tasks".to_owned(),
+                    "tasks".to_owned(),
+                    vec![("project_id".to_owned(), vec!["p1".to_owned()])],
+                    None,
+                )
+                .expect("persist subscription");
+            first.set_schema_floor(Some(SchemaFloor {
+                required_schema_version: Some(22),
+                latest_schema_version: Some(22),
+            }));
+        }
+
+        let mut reopened = SyncClient::open_path_with_identity(
+            None,
+            &schema,
+            ClientLimits::default(),
+            path.to_str().expect("UTF-8 temp path"),
+        )
+        .expect("reopen");
+        assert!(reopened.schema_floor().is_none());
+        assert!(reopened.get_meta(SCHEMA_FLOOR_KEY).is_none());
+        assert!(reopened.sync_needed());
+        assert!(matches!(
+            reopened.drain_sync_intents().as_slice(),
+            [SyncIntent::Interactive]
+        ));
+        drop(reopened);
+        std::fs::remove_file(path).expect("remove temp database");
+    }
+
+    #[test]
+    fn reopening_keeps_an_unsatisfied_schema_floor_stopped() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-unsatisfied-schema-floor-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "project_id", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "project:{project_id}" }]
+            }]
+        });
+
+        {
+            let mut first = SyncClient::open_path_with_identity(
+                None,
+                &schema,
+                ClientLimits::default(),
+                path.to_str().expect("UTF-8 temp path"),
+            )
+            .expect("first open");
+            first
+                .subscribe(
+                    "tasks".to_owned(),
+                    "tasks".to_owned(),
+                    vec![("project_id".to_owned(), vec!["p1".to_owned()])],
+                    None,
+                )
+                .expect("persist subscription");
+            first.set_schema_floor(Some(SchemaFloor {
+                required_schema_version: Some(2),
+                latest_schema_version: Some(2),
+            }));
+        }
+
+        let reopened = SyncClient::open_path_with_identity(
+            None,
+            &schema,
+            ClientLimits::default(),
+            path.to_str().expect("UTF-8 temp path"),
+        )
+        .expect("reopen");
+        assert_eq!(
+            reopened.schema_floor(),
+            Some(&SchemaFloor {
+                required_schema_version: Some(2),
+                latest_schema_version: Some(2),
+            })
+        );
+        assert!(!reopened.sync_needed());
+        drop(reopened);
+        std::fs::remove_file(path).expect("remove temp database");
+    }
+
+    #[test]
     fn schema_bump_precedes_index_ddl_and_prunes_removed_subscriptions() {
         let path = std::env::temp_dir().join(format!(
             "syncular-indexed-column-bump-{}.db",
@@ -1588,6 +1707,7 @@ impl SyncClient {
             }
             Some(_) => client.run_schema_reset()?,
         }
+        client.clear_satisfied_persisted_schema_floor();
         client.prune_unknown_subscriptions()?;
         if marker == Some(client.schema.version) && !client.outbox.is_empty() {
             // Reconstruct the visible optimistic overlay from the durable base
@@ -2211,6 +2331,26 @@ impl SyncClient {
             self.sync_needed = true;
             self.sync_intent_queue.push_back(SyncIntent::Interactive);
         }
+    }
+
+    /// A native client persists schema-floor stops across process restarts.
+    /// Once the running app already satisfies that floor, the persisted stop
+    /// is only stale evidence from an older server round (for example, the
+    /// server was restarted after catching up to an app that was ahead).
+    /// Clear it and let the normal startup pull re-negotiate. If the server is
+    /// still incompatible it will return the floor again in that first round.
+    fn clear_satisfied_persisted_schema_floor(&mut self) {
+        let satisfied = self
+            .schema_floor
+            .as_ref()
+            .and_then(|floor| floor.required_schema_version)
+            .is_some_and(|required| self.schema.version >= required);
+        if !satisfied {
+            return;
+        }
+        self.schema_floor = None;
+        self.stopped = false;
+        self.delete_meta(SCHEMA_FLOOR_KEY);
     }
 
     /// §7.4.3 reset: whole-database local reset EXCEPT the outbox, clientId,

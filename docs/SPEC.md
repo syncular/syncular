@@ -3166,6 +3166,16 @@ converge on the identical wipe-re-bootstrap-replay:
    runs the reset. The floor and the boot trigger thus converge through
    the app update, not through a floor-driven reset.
 
+   Native clients MAY persist the stop so it survives process death. On a
+   later open, when the running generated version already satisfies the
+   persisted `requiredSchemaVersion`, the client MUST discard that stale stop
+   and schedule its ordinary startup pull without resetting local data. This
+   covers an app that was ahead of a temporarily lagging server: once the
+   server deployment catches up, reopening re-negotiates and resumes. If the
+   server remains incompatible it simply returns the floor again. A persisted
+   floor whose required version is still newer than the running generated
+   version remains stopped.
+
 Both triggers are local decisions keyed on versions the client already
 holds; neither adds a wire field. `requiredSchemaVersion` /
 `latestSchemaVersion` (§1.6) are unchanged.
