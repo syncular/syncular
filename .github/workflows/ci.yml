@@ -26,6 +26,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Audit dependencies
+        run: bun run audit
+
       - name: Check (typecheck + lint + test)
         run: bun run check
 

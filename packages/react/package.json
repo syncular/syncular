@@ -54,7 +54,7 @@
     "react": ">=18.0.0"
   },
   "devDependencies": {
-    "@happy-dom/global-registrator": "^15.11.0",
+    "@happy-dom/global-registrator": "^20.0.0",
     "@syncular/core": "workspace:*",
     "@syncular/server": "workspace:*",
     "@testing-library/react": "^16.1.0",
