@@ -203,6 +203,42 @@ unkeyed reconciliation.
 Unannotated input types are inferred from all SQL and predicate uses. Add a
 type when SQL provides no evidence. Conflicting evidence is a compile error.
 
+## Generated targets
+
+One QueryIR drives TypeScript, Swift, Kotlin, Dart, and Rust named-query
+outputs. Every target receives the same public inputs, selected physical SQL,
+bind order, reactive dependencies, synchronization coverage, and proven row
+identity.
+
+Rust is enabled explicitly:
+
+```json
+{
+  "output": {
+    "rust": {
+      "queriesPath": "./src/syncular_queries.rs"
+    }
+  }
+}
+```
+
+The output uses one snake-case module per query:
+
+```rust
+mod syncular_queries;
+
+let params = syncular_queries::list_todos::Params::new(list_id);
+let rows = syncular_queries::list_todos::run(&client, &params)?;
+let snapshot = syncular_queries::list_todos::snapshot(&mut client, &params)?;
+```
+
+Rust maps exact integers to `i64`, optional nullable inputs to
+`SyqlPresence<Option<T>>`, groups to generated structs, and sorts to closed
+enums. Row decoding is strict: malformed or missing dynamic values return a
+query/column-specific error. `DESCRIPTOR` exposes dependencies, coverage, and
+row identity for hosts that build a reactive observer over change batches;
+there is no framework-specific Rust hook.
+
 ## Tooling
 
 ```bash

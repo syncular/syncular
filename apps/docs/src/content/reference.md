@@ -49,7 +49,7 @@ All published under the `@syncular/*` scope (plus the unscoped scaffolder):
 | `@syncular/react` | React bindings: `SyncProvider` + hooks over fine-grained invalidation | [packages/react](https://github.com/syncular/syncular/tree/main/packages/react) |
 | `@syncular/crypto` | Client-side E2EE primitives (symmetric + asymmetric); see [Encryption](/concepts-encryption/) | [packages/crypto](https://github.com/syncular/syncular/tree/main/packages/crypto) |
 | `@syncular/crdt-yjs` | The Yjs `crdt`-column merger (server) + `YjsColumn` client helper; see [CRDT columns](/concepts-crdt/) | [packages/crdt-yjs](https://github.com/syncular/syncular/tree/main/packages/crdt-yjs) |
-| `@syncular/typegen` | Migrations + manifest → schema IR → generated modules (TS, Swift, Kotlin, Dart) + named queries; ships the `syncular` CLI | [packages/typegen](https://github.com/syncular/syncular/tree/main/packages/typegen) |
+| `@syncular/typegen` | Migrations + manifest → neutral schema/query IR → generated schema modules and typed named queries for TypeScript, Swift, Kotlin, Dart, and Rust; ships the `syncular` CLI | [packages/typegen](https://github.com/syncular/syncular/tree/main/packages/typegen) |
 | `@syncular/tauri` | `createTauriSyncClient()`, a `SyncClientLike` over Tauri IPC, paired with the `tauri-plugin-syncular` Rust plugin | [packages/tauri](https://github.com/syncular/syncular/tree/main/packages/tauri) |
 | `@syncular/testkit` | App-developer test kit: in-memory server + N real clients in one test file | [packages/testing](https://github.com/syncular/syncular/tree/main/packages/testing) |
 | `create-syncular-app` | Scaffolder: `bun create syncular-app my-app` (`minimal` / `web` / `tauri` templates) | [packages/create-app](https://github.com/syncular/syncular/tree/main/packages/create-app) |
@@ -68,7 +68,7 @@ The Rust side, published in dependency order:
 | Crate | What it is | Source |
 |---|---|---|
 | `syncular-ssp2` | The SSP2 wire codec, implemented from SPEC.md alone | [rust/crates/ssp2](https://github.com/syncular/syncular/tree/main/rust/crates/ssp2) |
-| `syncular-client` | The Rust client core on rusqlite, the native runtime the bindings host | [rust/crates/client](https://github.com/syncular/syncular/tree/main/rust/crates/client) |
+| `syncular-client` | The Rust client core on rusqlite, the native runtime the bindings host and the execution boundary for generated Rust named queries | [rust/crates/client](https://github.com/syncular/syncular/tree/main/rust/crates/client) |
 | `syncular-command` | The shared JSON command router over the client core, used by the conformance shim, the FFI core, and the Tauri plugin | [rust/crates/command](https://github.com/syncular/syncular/tree/main/rust/crates/command) |
 | `syncular-ffi` | The client core packaged as a C-ABI native library (`rust/ffi.h`); the shipping runtime for iOS/Android/JVM/desktop | [rust/crates/ffi](https://github.com/syncular/syncular/tree/main/rust/crates/ffi) |
 

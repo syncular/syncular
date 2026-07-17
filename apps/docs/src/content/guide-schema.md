@@ -1,9 +1,12 @@
 # Schema & typegen
 
 Your schema is authored once, as SQL migrations plus one manifest, and
-compiled to a neutral **schema IR** and a generated TypeScript module. The
-module exports the `schema` object both server and client use, plus per-table
-row types. It has zero imports, so pulling it in adds no dependency edge.
+compiled to a neutral **schema IR** plus the language outputs you request. The
+default TypeScript module exports the `schema` object both server and client
+use, plus per-table row types. Swift, Kotlin, and Dart can receive native schema
+modules; TypeScript, Swift, Kotlin, Dart, and Rust can receive generated named
+queries. Rust loads the neutral schema IR directly. Generated schema modules
+have zero imports, so pulling one in adds no dependency edge.
 
 The authoritative contract for the manifest, the IR, and the SQL subset is the
 [typegen README](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md); this is the workflow.
@@ -24,7 +27,12 @@ patterns, subscription templates, and the schema-version history:
 {
   "manifestVersion": 1,
   "migrations": "./migrations",
-  "output": { "ir": "./syncular.ir.json", "module": "./src/syncular.generated.ts" },
+  "queries": "./queries",
+  "output": {
+    "ir": "./syncular.ir.json",
+    "module": "./src/syncular.generated.ts",
+    "rust": { "queriesPath": "./src/syncular_queries.rs" }
+  },
   "schemaVersions": [{ "version": 1, "through": "0001_initial" }],
   "tables": [{ "name": "notes", "scopes": ["list:{list_id}"] }],
   "subscriptions": [
@@ -62,8 +70,9 @@ query pattern, and lifecycle.
 syncular generate --manifest-dir .
 ```
 
-This writes the IR JSON and the TS module. **Commit both.** The generated
-module carries the IR hash in its header, so freshness is verifiable:
+This writes the IR JSON and every configured schema or named-query output.
+**Commit all generated outputs.** Each generated file carries the IR hash in
+its header, so freshness is verifiable:
 
 ```sh
 syncular generate --check     # exits non-zero unless on-disk files are byte-exact
@@ -83,6 +92,13 @@ For a table `notes`, the module exports:
 
 For a subscription `notesInList`, a `notesInListSubscription` with a
 `scopes(params)` builder and a typed `params` interface.
+
+Configured `.sql` and `.syql` named queries add typed inputs, projection rows,
+physical-plan selection, and proven reactive metadata. TypeScript, Swift,
+Kotlin, Dart, and Rust consume the same QueryIR rather than independently
+parsing or lowering the query. The Rust output additionally exposes typed
+`run` and atomic `snapshot` functions over `syncular-client`; see
+[Named queries](/tooling-queries/) and [Rust](/platform-rust/).
 
 ## Schema bumps and client upgrades
 
