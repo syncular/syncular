@@ -100,6 +100,12 @@ function defaultResponder(
     case 'mutate':
     case 'patch':
       return OK({ clientCommitId: 'commit-1' });
+    case 'purgeLocalData':
+      return OK({
+        alreadyApplied: false,
+        purgedRows: 2,
+        droppedCommits: 1,
+      });
     case 'statusSnapshot':
       return OK({
         outbox: 1,
@@ -240,6 +246,33 @@ describe('createNativeSyncClient', () => {
     });
   });
 
+  test('purgeLocalData forwards the exact bounded plan', async () => {
+    const { client, calls } = await build();
+    const input = {
+      purgeId: 'purge-001',
+      targets: [
+        {
+          table: 'patient_notes',
+          selectors: { encryption_key_id: ['key-revoked'] },
+        },
+      ],
+    } as const;
+    expect(await client.purgeLocalData(input)).toEqual({
+      alreadyApplied: false,
+      purgedRows: 2,
+      droppedCommits: 1,
+    });
+    const command = calls.findLast(
+      (call) =>
+        call.fn === 'command' &&
+        (call.arg as { method: string }).method === 'purgeLocalData',
+    );
+    expect(command?.arg).toEqual({
+      method: 'purgeLocalData',
+      params: { input },
+    });
+  });
+
   test('accessor methods unwrap their command replies', async () => {
     const { client } = await build();
     expect(await client.syncNeeded()).toBe(true);
@@ -368,6 +401,21 @@ describe('SyncClientLike parity', () => {
     expect(await normalized.patch('todo', 't1', { done: true })).toBe(
       'commit-1',
     );
+    expect(
+      await normalized.purgeLocalData({
+        purgeId: 'purge-parity',
+        targets: [
+          {
+            table: 'patient_notes',
+            selectors: { encryption_key_id: ['key-revoked'] },
+          },
+        ],
+      }),
+    ).toEqual({
+      alreadyApplied: false,
+      purgedRows: 2,
+      droppedCommits: 1,
+    });
     expect((await normalized.statusSnapshot()).outbox).toBe(1);
     expect(await normalized.conflicts()).toEqual([]);
     expect(await normalized.rejections()).toEqual([]);

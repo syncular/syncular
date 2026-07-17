@@ -119,23 +119,35 @@ export function resetSubscriptionsForBump(db: ClientDatabase): void {
  * Remove registrations whose table no longer exists in the running schema.
  * Keeping one would make every subsequent pull fail with
  * `sync.unknown_table`. Window bookkeeping belongs to the registration and
- * is removed with it.
+ * is removed with it. The caller supplies its startup subscription snapshot
+ * so pruning and startup-work detection stay a single read.
  */
 export function pruneUnknownSubscriptions(
   db: ClientDatabase,
+  subscriptions: readonly SubscriptionRecord[],
   tableNames: ReadonlySet<string>,
-): void {
-  const staleIds = db
-    .query('SELECT id, tbl FROM _syncular_subscriptions')
-    .filter((row) => !tableNames.has(String(row.tbl)))
-    .map((row) => String(row.id));
-  for (const id of staleIds) {
-    db.exec('DELETE FROM _syncular_windows WHERE sub_id = ?', [id]);
-    db.exec('DELETE FROM _syncular_window_pending_evict WHERE sub_id = ?', [
-      id,
-    ]);
-    db.exec('DELETE FROM _syncular_subscriptions WHERE id = ?', [id]);
-  }
+): SubscriptionRecord[] {
+  const retained = subscriptions.filter((record) =>
+    tableNames.has(record.table),
+  );
+  const staleIds = subscriptions
+    .filter((record) => !tableNames.has(record.table))
+    .map((record) => record.id);
+  // A redundant subscription scan plus an empty write transaction cut the
+  // fresh-client bootstrap lane by more than half on bun:sqlite. The supplied
+  // snapshot and this branch are synchronous, so no application work can
+  // interleave before a real pruning transaction begins.
+  if (staleIds.length === 0) return retained;
+  db.transaction(() => {
+    for (const id of staleIds) {
+      db.exec('DELETE FROM _syncular_windows WHERE sub_id = ?', [id]);
+      db.exec('DELETE FROM _syncular_window_pending_evict WHERE sub_id = ?', [
+        id,
+      ]);
+      db.exec('DELETE FROM _syncular_subscriptions WHERE id = ?', [id]);
+    }
+  });
+  return retained;
 }
 
 export function getMeta(db: ClientDatabase, key: string): string | undefined {

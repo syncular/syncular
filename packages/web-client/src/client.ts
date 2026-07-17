@@ -597,9 +597,11 @@ export class SyncClient {
     this.#detectAndResetSchema();
     // A registration remains app intent only while its table exists in the
     // running schema. Removed-table registrations would poison every pull.
-    this.#db.transaction(() => {
-      pruneUnknownSubscriptions(this.#db, new Set(this.#schema.tables.keys()));
-    });
+    const subscriptions = pruneUnknownSubscriptions(
+      this.#db,
+      loadSubscriptions(this.#db),
+      new Set(this.#schema.tables.keys()),
+    );
     this.#started = true;
     // A persisted active subscription needs one catch-up round on every open:
     // realtime only covers changes after the socket connects, and an
@@ -610,7 +612,7 @@ export class SyncClient {
     const startupWork =
       this.#schemaFloor === undefined &&
       (listOutbox(this.#db).length > 0 ||
-        loadSubscriptions(this.#db).some((sub) => sub.status === 'active'));
+        subscriptions.some((sub) => sub.status === 'active'));
     if (startupWork) {
       this.#needsPull = true;
       this.#config.onSyncNeeded?.('startup');
