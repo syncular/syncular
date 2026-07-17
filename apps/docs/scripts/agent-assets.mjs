@@ -6,7 +6,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   reflectReleaseVersion,
@@ -44,20 +44,26 @@ const navItems = [...navSource.matchAll(/slug: '([^']+)', title: '([^']+)'/g)]
   .map((match) => ({ slug: match[1], title: match[2] }))
   .filter((item) => item.slug && item.title);
 
-const contentFiles = readdirSync(contentDir)
-  .filter((name) => name.endsWith('.md'))
-  .map((name) => {
-    const path = join(contentDir, name);
-    const slug = basename(name, '.md');
-    const body = reflectReleaseVersion(readFileSync(path, 'utf8'));
-    return {
-      slug,
-      path,
-      body,
-      title: readTitle(body, slug),
-      lastmod: statSync(path).mtime.toISOString().slice(0, 10),
-    };
+const findMarkdownFiles = (directory) =>
+  readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return findMarkdownFiles(path);
+    return entry.isFile() && entry.name.endsWith('.md') ? [path] : [];
   });
+
+const contentFiles = findMarkdownFiles(contentDir).map((path) => {
+  const slug = relative(contentDir, path)
+    .replaceAll('\\', '/')
+    .replace(/\.md$/, '');
+  const body = reflectReleaseVersion(readFileSync(path, 'utf8'));
+  return {
+    slug,
+    path,
+    body,
+    title: readTitle(body, slug),
+    lastmod: statSync(path).mtime.toISOString().slice(0, 10),
+  };
+});
 
 const bySlug = new Map(contentFiles.map((page) => [page.slug, page]));
 const orderedPages = [
@@ -69,6 +75,10 @@ const orderedPages = [
     .filter((page) => !navItems.some((item) => item.slug === page.slug))
     .sort((a, b) => a.slug.localeCompare(b.slug)),
 ];
+const blogPosts = contentFiles
+  .filter((page) => page.slug.startsWith('blog/'))
+  .sort((a, b) => b.lastmod.localeCompare(a.lastmod));
+const blogLastmod = blogPosts.map((page) => page.lastmod).sort().at(-1);
 
 const landingMarkdown = `# syncular
 
@@ -83,6 +93,7 @@ Published release: **v${releaseVersion}**.
 - [Quickstart](${site}/quickstart/)
 - [What is syncular](${site}/what-is/)
 - [Live demos](${site}/demos/)
+- [Blog](${site}/blog/)
 - [Spec and package map](${site}/reference/)
 
 ## Core ideas
@@ -91,11 +102,26 @@ Published release: **v${releaseVersion}**.
 - The server commit log orders, validates, scopes, and fans out every change.
 - TypeScript and Rust cores are held together by golden vectors and the same
   conformance scenarios.
+- One checked SQL or SYQL plan generates typed query APIs for TypeScript,
+  Swift, Kotlin, Dart, and Rust.
 - Web, React, Swift, Kotlin, Flutter, React Native, Tauri, Rust, and C FFI
   bindings share one protocol.
 `;
 
 ensureWrite(join(distDir, 'index.md'), landingMarkdown);
+
+ensureWrite(
+  join(distDir, 'blog.md'),
+  `# Syncular blog
+
+Field notes on offline-first writes, protocol design, local SQLite, and the
+engineering decisions behind Syncular.
+
+${blogPosts
+  .map((post) => `- [${post.title}](${site}/${post.slug}/)`)
+  .join('\n')}
+`,
+);
 
 for (const page of orderedPages) {
   ensureWrite(
@@ -111,6 +137,7 @@ const latestLastmod = orderedPages
 
 const sitemapUrls = [
   { loc: `${site}/`, lastmod: latestLastmod },
+  { loc: `${site}/blog/`, lastmod: blogLastmod ?? latestLastmod },
   ...orderedPages.map((page) => ({
     loc: `${site}/${page.slug}/`,
     lastmod: page.lastmod,
@@ -146,6 +173,11 @@ const docsIndex = {
       title: 'syncular',
       path: '/',
       markdown: `${site}/index.md`,
+    },
+    {
+      title: 'Syncular blog',
+      path: '/blog/',
+      markdown: `${site}/blog.md`,
     },
     ...orderedPages.map((page) => ({
       title: page.title,
@@ -531,5 +563,5 @@ for (const path of [
 }
 
 console.log(
-  `generated agent discovery assets for ${orderedPages.length + 1} pages`,
+  `generated agent discovery assets for ${docsIndex.pages.length} pages`,
 );

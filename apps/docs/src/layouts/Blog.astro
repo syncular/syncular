@@ -1,0 +1,103 @@
+---
+// Blog shell: the landing page's teletype header/footer around a focused,
+// readable article column. Blog posts remain plain Markdown sources.
+import rootPkg from '../../../../package.json';
+
+interface Props {
+  title: string;
+  description: string;
+  canonicalPath: string;
+  author?: string;
+  publishedAt?: string;
+  readingMinutes?: number;
+  index?: boolean;
+}
+
+const {
+  title,
+  description,
+  canonicalPath,
+  author,
+  publishedAt,
+  readingMinutes,
+  index = false,
+} = Astro.props;
+const canonicalUrl = new URL(canonicalPath, Astro.site ?? 'https://syncular.dev');
+const formattedDate = publishedAt
+  ? new Intl.DateTimeFormat('en', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      timeZone: 'UTC',
+    }).format(new Date(`${publishedAt}T00:00:00Z`))
+  : undefined;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title} — syncular</title>
+    <meta name="description" content={description} />
+    <meta property="og:type" content={index ? 'website' : 'article'} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonicalUrl} />
+    <meta property="og:site_name" content="syncular" />
+    {publishedAt ? <meta property="article:published_time" content={publishedAt} /> : null}
+    {author ? <meta name="author" content={author} /> : null}
+    <link rel="canonical" href={canonicalUrl} />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="alternate" type="text/markdown" href={index ? '/blog.md' : `${canonicalPath.replace(/\/$/, '')}.md`} />
+    <link rel="api-catalog" href="/.well-known/api-catalog" />
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/webmcp.js" defer></script>
+  </head>
+  <body class="landing-body">
+    <div class="wrap">
+      <div class="statusbar">
+        <span>SYNCULAR v{rootPkg.version} // FIELD NOTES</span>
+        <span>CHANNEL: <span class="ok">BLOG</span> · LINK: <span class="ok">LIVE</span></span>
+      </div>
+      <header class="topnav">
+        <a class="brand" href="/">SYNCULAR<span class="blink">_</span></a>
+        <nav>
+          <a href="/what-is/">DOCS</a>
+          <a class="accent" href="/blog/">BLOG</a>
+          <a href="/demos/">DEMOS</a>
+          <a href="https://github.com/syncular/syncular">GITHUB</a>
+          <a href="/quickstart/">QUICKSTART</a>
+        </nav>
+      </header>
+      <div class="rule" aria-hidden="true">{'='.repeat(160)}</div>
+
+      <main class="blog-main">
+        {!index ? <a class="blog-back" href="/blog/">← ALL TRANSMISSIONS</a> : null}
+        {publishedAt ? (
+          <div class="blog-meta">
+            <span>{formattedDate}</span>
+            {author ? <span>BY {author.toUpperCase()}</span> : null}
+            {readingMinutes ? <span>{readingMinutes} MIN READ</span> : null}
+          </div>
+        ) : null}
+        <article class={index ? 'blog-index' : 'blog-post'}>
+          <slot />
+        </article>
+      </main>
+
+      <footer class="footer">
+        <div class="rule" aria-hidden="true">{'='.repeat(160)}</div>
+        <div class="row">
+          <nav>
+            <a href="/blog/">BLOG</a>
+            <a href="/what-is/">DOCS</a>
+            <a href="https://github.com/syncular/syncular">GITHUB</a>
+            <a href="https://www.npmjs.com/org/syncular">NPM</a>
+          </nav>
+          <span class="end">SYNCULAR v{rootPkg.version} · APACHE-2.0 · END OF TRANSMISSION <span class="sq">■</span></span>
+        </div>
+      </footer>
+    </div>
+  </body>
+</html>

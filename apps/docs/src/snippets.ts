@@ -164,6 +164,7 @@ client.events.listen((e) {
     label: 'RUST',
     lang: 'rust',
     code: `use syncular_client::{ClientLimits, Mutation, SyncClient};
+use syncular_queries::list_todos;
 
 let mut client = SyncClient::open_path(
     "device-1".into(), &schema_json, ClientLimits::default(), "todos.db")?;
@@ -182,6 +183,7 @@ client.mutate(vec![Mutation::Upsert {
 
 client.sync_until_idle(&mut transport, None);
 
-let rows = client.query("SELECT * FROM todos WHERE done = 0", &[])?;`,
+let params = list_todos::Params::new("inbox".into());
+let rows: Vec<list_todos::Row> = list_todos::run(&client, &params)?;`,
   },
 ];

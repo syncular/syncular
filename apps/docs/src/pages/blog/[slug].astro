@@ -1,0 +1,45 @@
+---
+import type { MarkdownInstance } from 'astro';
+import Blog from '../../layouts/Blog.astro';
+
+interface BlogFrontmatter {
+  title: string;
+  description: string;
+  author: string;
+  publishedAt: string;
+}
+
+export async function getStaticPaths() {
+  const modules = import.meta.glob<MarkdownInstance<BlogFrontmatter>>(
+    '../../content/blog/*.md',
+    { eager: true },
+  );
+
+  return Object.entries(modules).map(([path, mod]) => ({
+    params: { slug: path.split('/').pop()?.replace(/\.md$/, '') ?? '' },
+    props: { mod },
+  }));
+}
+
+interface Props {
+  mod: MarkdownInstance<BlogFrontmatter>;
+}
+
+const { mod } = Astro.props;
+const { slug } = Astro.params;
+const { title, description, author, publishedAt } = mod.frontmatter;
+const words = mod.rawContent().trim().match(/\S+/g)?.length ?? 0;
+const readingMinutes = Math.max(1, Math.ceil(words / 220));
+const Content = mod.Content;
+---
+
+<Blog
+  title={title}
+  description={description}
+  canonicalPath={`/blog/${slug}/`}
+  author={author}
+  publishedAt={publishedAt}
+  readingMinutes={readingMinutes}
+>
+  <Content />
+</Blog>
