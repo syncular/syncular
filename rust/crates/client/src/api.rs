@@ -59,6 +59,7 @@ pub struct WindowChange {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncStatusSnapshot {
+    pub current_schema_version: i32,
     pub outbox: usize,
     pub upgrading: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

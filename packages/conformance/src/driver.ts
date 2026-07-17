@@ -631,6 +631,7 @@ export interface DriverChangeBatch {
     readonly units: readonly string[];
   }[];
   readonly status?: {
+    readonly currentSchemaVersion: number;
     readonly outbox: number;
     readonly upgrading: boolean;
     readonly syncNeeded: boolean;
@@ -673,6 +674,7 @@ export interface ClientInstance {
   /** RFC 0003 observation/conformance surface. */
   localRevision?(): Promise<string>;
   statusSnapshot?(): Promise<{
+    readonly currentSchemaVersion: number;
     readonly outbox: number;
     readonly upgrading: boolean;
     readonly syncNeeded: boolean;

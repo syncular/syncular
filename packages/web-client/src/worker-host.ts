@@ -62,6 +62,7 @@ import {
   type CrossTabChannel,
   FollowerLink,
   LeaderBridge,
+  type LeadershipState,
   multiTabChannelName,
   newTabId,
 } from './multi-tab';
@@ -91,6 +92,41 @@ import {
 
 export type HandleRole = 'leader' | 'follower';
 
+export type BrowserReplicaMode =
+  | { readonly mode: 'shared' }
+  | { readonly mode: 'isolated'; readonly id: string };
+
+export interface IsolatedReplicaNames {
+  readonly databaseName: string;
+  readonly databaseDirectory: string;
+  readonly lockName: string;
+  readonly channelName: string;
+}
+
+/** Derive the complete ownership tuple for an independently owned replica. */
+export function isolatedReplicaNames(options: {
+  readonly databaseName: string;
+  readonly databaseDirectory?: string;
+  readonly lockName?: string;
+  readonly replicaId: string;
+}): IsolatedReplicaNames {
+  if (!/^[A-Za-z0-9._-]+$/.test(options.replicaId)) {
+    throw new ClientSyncError(
+      'sync.invalid_request',
+      'an isolated replica id must contain only letters, numbers, dot, underscore, or dash',
+    );
+  }
+  const suffix = `--replica-${options.replicaId}`;
+  const databaseName = `${options.databaseName}${suffix}`;
+  const lockName = `${options.lockName ?? 'syncular-leader'}${suffix}`;
+  return {
+    databaseName,
+    databaseDirectory: `${options.databaseDirectory ?? `.syncular/${options.databaseName}`}${suffix}`,
+    lockName,
+    channelName: multiTabChannelName(lockName),
+  };
+}
+
 export interface SyncClientHandleConfig {
   /**
    * Spawns the worker running `startSyncWorker()` (a factory so bundlers
@@ -111,6 +147,8 @@ export interface SyncClientHandleConfig {
   /** Default: Web Locks when available, else single-owner. */
   readonly leaderLock?: LeaderLock;
   readonly lockName?: string;
+  /** Shared by default; isolated derives the database/lock/channel tuple. */
+  readonly replica?: BrowserReplicaMode;
   /**
    * Multi-tab followers (TODO 3.2). On by default: a tab that loses the
    * leader election becomes a FOLLOWER that proxies to the leader over a
@@ -125,6 +163,8 @@ export interface SyncClientHandleConfig {
   readonly followerCallTimeoutMs?: number;
   /** Fires when this handle's role changes (follower → leader on promotion). */
   readonly onRoleChange?: (role: HandleRole) => void;
+  /** Fires when reachability or ownership changes without replacing the handle. */
+  readonly onLeadershipChange?: (state: LeadershipState) => void;
   readonly onSyncNeeded?: (reason: 'startup' | 'hello' | WakeReason) => void;
   readonly onConflict?: (conflict: ConflictRecord) => void;
   /** A worker-side autoSync round finished (or failed). */
@@ -183,15 +223,28 @@ export class SyncClientHandle {
   get clientId(): string {
     return this.#clientId;
   }
+  get currentSchemaVersion(): number {
+    return this.#currentSchemaVersion;
+  }
+  get leadership(): LeadershipState {
+    return this.#leadership;
+  }
+
+  leadershipSnapshot(): LeadershipState {
+    return this.#leadership;
+  }
 
   #role: HandleRole;
   #clientId: string;
+  readonly #currentSchemaVersion: number;
+  #leadership: LeadershipState;
   #core: LeaderCore | undefined;
   #follower: FollowerLink | undefined;
   readonly #invalidation: InvalidationEmitter;
   readonly #changes: ChangeEmitter;
   readonly #presence: Set<(scopeKey: string) => void>;
   readonly #roleListeners: Set<(role: HandleRole) => void>;
+  readonly #leadershipListeners: Set<(state: LeadershipState) => void>;
   readonly #devtoolsUnregister: () => void;
   #closed = false;
 
@@ -199,21 +252,36 @@ export class SyncClientHandle {
   constructor(internals: {
     role: HandleRole;
     clientId: string;
+    currentSchemaVersion: number;
     core?: LeaderCore;
     follower?: FollowerLink;
     invalidation: InvalidationEmitter;
     changes: ChangeEmitter;
     presence: Set<(scopeKey: string) => void>;
     roleListeners?: Set<(role: HandleRole) => void>;
+    leadershipListeners?: Set<(state: LeadershipState) => void>;
+    leadership?: LeadershipState;
   }) {
     this.#role = internals.role;
     this.#clientId = internals.clientId;
+    this.#currentSchemaVersion = internals.currentSchemaVersion;
+    this.#leadership =
+      internals.leadership ??
+      (internals.role === 'leader'
+        ? { state: 'leader', clientId: internals.clientId }
+        : (internals.follower?.leadershipState ?? {
+            state: 'blocked',
+            reason: 'leader-unreachable',
+            code: 'client.follower_timeout',
+            retryable: true,
+          }));
     this.#core = internals.core;
     this.#follower = internals.follower;
     this.#invalidation = internals.invalidation;
     this.#changes = internals.changes;
     this.#presence = internals.presence;
     this.#roleListeners = internals.roleListeners ?? new Set();
+    this.#leadershipListeners = internals.leadershipListeners ?? new Set();
     // RFC 0002 §3.2: console introspection — a no-op outside a dev page.
     this.#devtoolsUnregister = registerDevtools({
       kind: 'handle',
@@ -237,11 +305,25 @@ export class SyncClientHandle {
     this.#core = core;
     this.#clientId = core.clientId;
     this.#role = 'leader';
+    this.__setLeadership({ state: 'leader', clientId: core.clientId });
     for (const listener of this.#roleListeners) {
       try {
         listener('leader');
       } catch {
         /* a UI listener must never break promotion */
+      }
+    }
+  }
+
+  /** @internal — apply a follower reachability snapshot in place. */
+  __setLeadership(state: LeadershipState): void {
+    this.#leadership = state;
+    if (state.state === 'follower') this.#clientId = state.leaderClientId;
+    for (const listener of this.#leadershipListeners) {
+      try {
+        listener(state);
+      } catch {
+        /* a UI listener must never break leadership transitions */
       }
     }
   }
@@ -293,6 +375,13 @@ export class SyncClientHandle {
     this.#roleListeners.add(listener);
     return () => {
       this.#roleListeners.delete(listener);
+    };
+  }
+
+  onLeadershipChange(listener: (state: LeadershipState) => void): () => void {
+    this.#leadershipListeners.add(listener);
+    return () => {
+      this.#leadershipListeners.delete(listener);
     };
   }
 
@@ -672,13 +761,19 @@ function fireConfigCallbacks(
 export async function createSyncClientHandle(
   config: SyncClientHandleConfig,
 ): Promise<SyncClientHandle> {
-  const lock = config.leaderLock ?? defaultLeaderLock();
-  const lockName = config.lockName ?? 'syncular-leader';
+  const resolvedConfig = resolveReplicaConfig(config);
+  const lock = resolvedConfig.leaderLock ?? defaultLeaderLock();
+  const lockName = resolvedConfig.lockName ?? 'syncular-leader';
   const invalidation = new InvalidationEmitter();
   const changes = new ChangeEmitter();
   const presence = new Set<(scopeKey: string) => void>();
   const roleListeners = new Set<(role: HandleRole) => void>();
-  if (config.onRoleChange !== undefined) roleListeners.add(config.onRoleChange);
+  if (resolvedConfig.onRoleChange !== undefined)
+    roleListeners.add(resolvedConfig.onRoleChange);
+  const leadershipListeners = new Set<(state: LeadershipState) => void>();
+  if (resolvedConfig.onLeadershipChange !== undefined) {
+    leadershipListeners.add(resolvedConfig.onLeadershipChange);
+  }
 
   // Leadership BEFORE the worker exists: one core per origin, and a losing
   // tab never boots a database it must not own.
@@ -692,34 +787,38 @@ export async function createSyncClientHandle(
     // Epoch derivation for a fresh boot: epoch 0. A promoter (below) reads
     // the highest epoch it has seen and adds one, so leaders monotonically
     // increase it across handovers.
-    return await bootLeader(config, lockName, lease, {
+    return await bootLeader(resolvedConfig, lockName, lease, {
       epoch: 0,
       invalidation,
       changes,
       presence,
       roleListeners,
+      leadershipListeners,
     });
   }
 
   // ---- Lost the election. ----
-  if (config.multiTab === false) {
+  if (resolvedConfig.multiTab === false) {
     // Opted-out single-tab contract: a dead not-leader handle.
     return new SyncClientHandle({
       role: 'follower',
       clientId: '',
+      currentSchemaVersion: resolvedConfig.schema.version,
       invalidation,
       changes,
       presence,
       roleListeners,
+      leadershipListeners,
     });
   }
 
   // ---- Follower: proxy to the leader; contest + promote on its close. ----
-  return await bootFollower(config, lockName, lock, {
+  return await bootFollower(resolvedConfig, lockName, lock, {
     invalidation,
     changes,
     presence,
     roleListeners,
+    leadershipListeners,
   });
 }
 
@@ -729,6 +828,7 @@ interface HandleParts {
   changes: ChangeEmitter;
   presence: Set<(scopeKey: string) => void>;
   roleListeners: Set<(role: HandleRole) => void>;
+  leadershipListeners: Set<(state: LeadershipState) => void>;
 }
 
 /** Boot (or promote to) a leader: spawn the worker, wire the bridge. */
@@ -761,6 +861,10 @@ async function bootLeader(
             epoch: parts.epoch ?? 0,
             clientId,
             invoke,
+            heartbeatMs: Math.max(
+              10,
+              Math.floor((config.followerCallTimeoutMs ?? 10_000) / 3),
+            ),
           });
         }
       : undefined;
@@ -776,11 +880,13 @@ async function bootLeader(
   const handle = new SyncClientHandle({
     role: 'leader',
     clientId: core.clientId,
+    currentSchemaVersion: config.schema.version,
     core,
     invalidation: parts.invalidation,
     changes: parts.changes,
     presence: parts.presence,
     roleListeners: parts.roleListeners,
+    leadershipListeners: parts.leadershipListeners,
   });
   handleRef.handle = handle;
   return handle;
@@ -811,6 +917,7 @@ async function bootFollower(
       // it after binding). Nothing else to do — calls already flush.
       void clientId;
     },
+    onStateChange: (state) => handleRef.handle?.__setLeadership(state),
     ...(config.followerCallTimeoutMs !== undefined
       ? { callTimeoutMs: config.followerCallTimeoutMs }
       : {}),
@@ -855,6 +962,10 @@ async function bootFollower(
                   epoch: nextEpoch,
                   clientId,
                   invoke,
+                  heartbeatMs: Math.max(
+                    10,
+                    Math.floor((config.followerCallTimeoutMs ?? 10_000) / 3),
+                  ),
                 });
               },
             }
@@ -874,11 +985,13 @@ async function bootFollower(
     // leave '' until promotion (the shared id is the leader's — hooks that
     // need it read it after a round). Followers rarely need clientId directly.
     clientId: '',
+    currentSchemaVersion: config.schema.version,
     follower,
     invalidation: parts.invalidation,
     changes: parts.changes,
     presence: parts.presence,
     roleListeners: parts.roleListeners,
+    leadershipListeners: parts.leadershipListeners,
   });
   handleRef.handle = handle;
   // Do not hand back a follower until its link has bound to the leader (the
@@ -895,4 +1008,33 @@ async function bootFollower(
     /* bind timed out — return the (degraded but functional) handle anyway */
   }
   return handle;
+}
+
+function resolveReplicaConfig(
+  config: SyncClientHandleConfig,
+): SyncClientHandleConfig {
+  if (config.replica?.mode !== 'isolated') return config;
+  if (config.database.mode !== 'persistent') {
+    throw new ClientSyncError(
+      'sync.invalid_request',
+      'isolated browser replicas require a named persistent database',
+    );
+  }
+  const names = isolatedReplicaNames({
+    databaseName: config.database.name,
+    ...(config.database.directory !== undefined
+      ? { databaseDirectory: config.database.directory }
+      : {}),
+    ...(config.lockName !== undefined ? { lockName: config.lockName } : {}),
+    replicaId: config.replica.id,
+  });
+  return {
+    ...config,
+    lockName: names.lockName,
+    database: {
+      ...config.database,
+      name: names.databaseName,
+      directory: names.databaseDirectory,
+    },
+  };
 }

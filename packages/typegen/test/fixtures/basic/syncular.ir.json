@@ -53,6 +53,11 @@
           "nullable": false
         },
         {
+          "name": "reviewed",
+          "type": "boolean",
+          "nullable": true
+        },
+        {
           "name": "priority",
           "type": "integer",
           "nullable": true

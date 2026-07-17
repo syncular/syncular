@@ -9,14 +9,19 @@
 import { afterEach, beforeAll, expect, test } from 'bun:test';
 import {
   ClientSyncError,
+  type CrossTabChannel,
   createSyncClientHandle,
   FOLLOWER_TIMEOUT_CODE,
+  isolatedReplicaNames,
   type LeaderLease,
   type LeaderLock,
+  type MultiTabMessage,
   NOT_LEADER_CODE,
   type SyncClientHandle,
   type SyncClientHandleConfig,
+  type WorkerInitConfig,
 } from '@syncular/client';
+import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
 import {
   CLIENT_SCHEMA,
   makeServer,
@@ -60,6 +65,103 @@ function makeSharedLock(): LeaderLock {
     tryAcquire: () =>
       Promise.resolve(holder === undefined ? grant() : undefined),
   };
+}
+
+class ChannelPartition {
+  readonly #channels = new Map<string, Set<CrossTabChannel>>();
+  readonly sent: Array<{
+    readonly name: string;
+    readonly message: MultiTabMessage;
+  }> = [];
+
+  readonly factory = (name: string): CrossTabChannel => {
+    const listeners = new Set<(event: { data: MultiTabMessage }) => void>();
+    const channel: CrossTabChannel = {
+      postMessage: (message) => {
+        this.sent.push({ name, message });
+        for (const peer of this.#channels.get(name) ?? []) {
+          if (peer === channel) continue;
+          queueMicrotask(() =>
+            (
+              peer as CrossTabChannel & {
+                deliver?: (message: MultiTabMessage) => void;
+              }
+            ).deliver?.(message),
+          );
+        }
+      },
+      addEventListener: (_type, listener) => listeners.add(listener),
+      removeEventListener: (_type, listener) => listeners.delete(listener),
+      close: () => this.#channels.get(name)?.delete(channel),
+    };
+    (
+      channel as CrossTabChannel & {
+        deliver: (message: MultiTabMessage) => void;
+      }
+    ).deliver = (message) => {
+      for (const listener of listeners) listener({ data: message });
+    };
+    let named = this.#channels.get(name);
+    if (named === undefined) {
+      named = new Set();
+      this.#channels.set(name, named);
+    }
+    named.add(channel);
+    return channel;
+  };
+
+  deliver(name: string, message: MultiTabMessage): void {
+    for (const channel of this.#channels.get(name) ?? []) {
+      (
+        channel as CrossTabChannel & {
+          deliver?: (message: MultiTabMessage) => void;
+        }
+      ).deliver?.(message);
+    }
+  }
+}
+
+function fakeReadyWorker(
+  clientId: string,
+  initConfigs: WorkerInitConfig[],
+): Worker {
+  const messageListeners = new Set<(event: MessageEvent) => void>();
+  let readyScheduled = false;
+  const emit = (data: unknown): void => {
+    for (const listener of messageListeners) {
+      listener({ data } as MessageEvent);
+    }
+  };
+  return {
+    addEventListener: (
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+    ) => {
+      if (type !== 'message' || typeof listener !== 'function') return;
+      messageListeners.add(listener as (event: MessageEvent) => void);
+      if (!readyScheduled) {
+        readyScheduled = true;
+        queueMicrotask(() => emit({ t: 'ready' }));
+      }
+    },
+    postMessage: (message: {
+      t: string;
+      id?: number;
+      config?: WorkerInitConfig;
+    }) => {
+      if (message.t === 'init' && message.config !== undefined) {
+        initConfigs.push(message.config);
+        queueMicrotask(() =>
+          emit({ t: 'result', id: message.id, value: { clientId } }),
+        );
+      } else if (message.t === 'call') {
+        queueMicrotask(() =>
+          emit({ t: 'result', id: message.id, value: undefined }),
+        );
+      }
+    },
+    terminate: noop,
+  } as unknown as Worker;
 }
 
 async function waitFor(
@@ -180,6 +282,9 @@ test('leader + follower: follower proxies the full API to the one core', async (
     ['mt1'],
   );
   expect(viaFollower).toEqual([{ id: 'mt1', title: 'hi' }]);
+  expect(await hostBoolean(follower, { projectId: 'mp1' })).toEqual([
+    { id: 'mt1', done: false },
+  ]);
 
   // Byte columns survive structured-clone across the channel.
   const bytesRow = await follower.query("SELECT x'0102ff' AS b");
@@ -409,6 +514,158 @@ test('a follower call times out loudly when no leader answers', async () => {
   // No announce ever arrives → queued → deadline fires loudly (no hang).
   await expectRejectsWithCode(link.call('query', ['x']), FOLLOWER_TIMEOUT_CODE);
   link.close();
+});
+
+test('partitioned channels block visibly without opening a second database', async () => {
+  const lock = makeSharedLock();
+  const lockName = `mt-partitioned-${lockSeq++}`;
+  const leaderPartition = new ChannelPartition();
+  const followerPartition = new ChannelPartition();
+  const secondFollowerPartition = new ChannelPartition();
+  const leader = await createSyncClientHandle({
+    worker: () => new Worker(WORKER_URL),
+    schema: CLIENT_SCHEMA,
+    database: { mode: 'custom' },
+    endpoints: { syncUrl: http.syncUrl },
+    autoSync: false,
+    leaderLock: lock,
+    lockName,
+    channelFactory: leaderPartition.factory,
+    clientId: 'partitioned-leader',
+    followerCallTimeoutMs: 45,
+  });
+  open.push(leader);
+
+  let followerWorkerStarts = 0;
+  const makePartitionedFollower = async (
+    partition: ChannelPartition,
+  ): Promise<SyncClientHandle> => {
+    const handle = await createSyncClientHandle({
+      worker: () => {
+        followerWorkerStarts += 1;
+        return new Worker(WORKER_URL);
+      },
+      schema: CLIENT_SCHEMA,
+      database: { mode: 'custom' },
+      endpoints: { syncUrl: http.syncUrl },
+      autoSync: false,
+      leaderLock: lock,
+      lockName,
+      channelFactory: partition.factory,
+      followerCallTimeoutMs: 45,
+    });
+    open.push(handle);
+    return handle;
+  };
+  const follower = await makePartitionedFollower(followerPartition);
+  const secondFollower = await makePartitionedFollower(secondFollowerPartition);
+  expect(follower.leadership).toEqual({
+    state: 'blocked',
+    reason: 'leader-unreachable',
+    code: FOLLOWER_TIMEOUT_CODE,
+    retryable: true,
+  });
+  expect(secondFollower.leadership.state).toBe('blocked');
+  expect(followerWorkerStarts).toBe(0);
+
+  const startedAt = performance.now();
+  await expectRejectsWithCode(
+    follower.query('SELECT 1'),
+    FOLLOWER_TIMEOUT_CODE,
+  );
+  expect(performance.now() - startedAt).toBeLessThan(20);
+
+  const announce = leaderPartition.sent.findLast(
+    (entry) => entry.message.t === 'announce',
+  );
+  expect(announce).toBeDefined();
+  if (announce !== undefined) {
+    followerPartition.deliver(announce.name, announce.message);
+  }
+  await waitFor(
+    () => follower.leadership.state === 'follower',
+    'blocked follower rebind',
+  );
+  expect(follower.leadership).toMatchObject({
+    state: 'follower',
+    leaderClientId: 'partitioned-leader',
+  });
+
+  await leader.close();
+  await waitFor(() => follower.role === 'leader', 'partitioned promotion');
+  expect(followerWorkerStarts).toBe(1);
+  expect(secondFollower.role).toBe('follower');
+});
+
+test('isolated replicas derive and open distinct ownership tuples', async () => {
+  const alpha = isolatedReplicaNames({
+    databaseName: 'medical',
+    lockName: 'medical-owner',
+    replicaId: 'preview-a',
+  });
+  const beta = isolatedReplicaNames({
+    databaseName: 'medical',
+    lockName: 'medical-owner',
+    replicaId: 'preview-b',
+  });
+  expect(alpha.databaseName).not.toBe(beta.databaseName);
+  expect(alpha.databaseDirectory).not.toBe(beta.databaseDirectory);
+  expect(alpha.lockName).not.toBe(beta.lockName);
+  expect(alpha.channelName).not.toBe(beta.channelName);
+
+  const acquired: string[] = [];
+  const lock: LeaderLock = {
+    acquire: async (name) => {
+      acquired.push(name);
+      return { release: noop };
+    },
+    tryAcquire: async (name) => {
+      acquired.push(name);
+      return { release: noop };
+    },
+  };
+  const channels: string[] = [];
+  const channelFactory = (name: string): CrossTabChannel => {
+    channels.push(name);
+    return {
+      postMessage: noop,
+      addEventListener: noop,
+      removeEventListener: noop,
+      close: noop,
+    };
+  };
+  const initConfigs: WorkerInitConfig[] = [];
+  for (const [id, clientId] of [
+    ['preview-a', 'isolated-a'],
+    ['preview-b', 'isolated-b'],
+  ] as const) {
+    const handle = await createSyncClientHandle({
+      worker: () => fakeReadyWorker(clientId, initConfigs),
+      schema: CLIENT_SCHEMA,
+      database: { mode: 'persistent', name: 'medical' },
+      endpoints: { syncUrl: http.syncUrl },
+      leaderLock: lock,
+      lockName: 'medical-owner',
+      channelFactory,
+      replica: { mode: 'isolated', id },
+    });
+    open.push(handle);
+  }
+  expect(new Set(acquired).size).toBe(2);
+  expect(new Set(channels).size).toBe(2);
+  const databases = initConfigs.map((config) => config.database);
+  expect(databases).toEqual([
+    {
+      mode: 'persistent',
+      name: alpha.databaseName,
+      directory: alpha.databaseDirectory,
+    },
+    {
+      mode: 'persistent',
+      name: beta.databaseName,
+      directory: beta.databaseDirectory,
+    },
+  ]);
 });
 
 test('single-tab opt-out: multiTab false keeps the not-leader contract', async () => {

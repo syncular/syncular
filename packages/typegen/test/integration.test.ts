@@ -72,6 +72,7 @@ describe('generated schema against the B2 server', () => {
       projectId: 'p1',
       title: 'generated end to end',
       done: false,
+      reviewed: null,
       priority: 3,
       meta: null,
       estimate: 1.5,

@@ -835,6 +835,7 @@ export class SyncClient {
 
   #statusSnapshot(): SyncStatusSnapshot {
     return {
+      currentSchemaVersion: this.#config.schema.version,
       outbox: listOutbox(this.#db).length,
       upgrading: this.#upgrading,
       leaseState: this.#leaseState,

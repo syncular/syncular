@@ -14,6 +14,7 @@ import type {
   ConflictRecord,
   InvalidationEvent,
   InvalidationListener,
+  LeadershipState,
   LeaseState,
   LocalDataPurgeInput,
   LocalDataPurgeResult,
@@ -36,6 +37,7 @@ export class FakeClient implements SyncClientLike {
   #changes = new Set<ClientChangeListener>();
   #invalidation = new Set<InvalidationListener>();
   #presenceListeners = new Set<(scopeKey: string) => void>();
+  #leadershipListeners = new Set<(state: LeadershipState) => void>();
   #rows = new Map<string, SqlRow[]>();
   #presence = new Map<string, PresencePeer[]>();
   #conflicts: ConflictRecord[] = [];
@@ -46,6 +48,8 @@ export class FakeClient implements SyncClientLike {
   #leaseState: LeaseState | undefined;
   #schemaFloor: SchemaFloor | undefined;
   #syncNeeded = false;
+  #currentSchemaVersion = 1;
+  #leadership: LeadershipState | undefined;
   /** Count query invocations to assert re-runs (I4). */
   queryCount = 0;
   #revision = 0n;
@@ -80,6 +84,15 @@ export class FakeClient implements SyncClientLike {
 
   setSchemaFloor(value: SchemaFloor | undefined): void {
     this.#schemaFloor = value;
+  }
+
+  setCurrentSchemaVersion(value: number): void {
+    this.#currentSchemaVersion = value;
+  }
+
+  setLeadership(value: LeadershipState): void {
+    this.#leadership = value;
+    for (const listener of this.#leadershipListeners) listener(value);
   }
 
   /** Fire an apply-batch invalidation to every listener (the choke point). */
@@ -212,12 +225,22 @@ export class FakeClient implements SyncClientLike {
 
   statusSnapshot(): SyncStatusSnapshot {
     return {
+      currentSchemaVersion: this.#currentSchemaVersion,
       outbox: this.#pending.length,
       upgrading: this.#upgrading,
       leaseState: this.#leaseState,
       schemaFloor: this.#schemaFloor,
       syncNeeded: this.#syncNeeded,
     };
+  }
+
+  leadershipSnapshot(): LeadershipState | undefined {
+    return this.#leadership;
+  }
+
+  onLeadershipChange(listener: (state: LeadershipState) => void): () => void {
+    this.#leadershipListeners.add(listener);
+    return () => this.#leadershipListeners.delete(listener);
   }
 
   presence(scopeKey: string): readonly PresencePeer[] {

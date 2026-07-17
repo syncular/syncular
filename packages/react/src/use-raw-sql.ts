@@ -4,6 +4,7 @@ import {
   type QueryDependency,
   type SqlRow,
   type SqlValue,
+  type SyncAvailability,
   type WindowCoverage,
 } from '@syncular/client';
 import { useCallback, useMemo, useSyncExternalStore } from 'react';
@@ -17,6 +18,8 @@ export interface UseRawSqlOptions<Row = SqlRow> {
   readonly scopeKeys?: readonly string[];
   readonly dependencies?: readonly QueryDependency[];
   readonly coverage?: readonly WindowCoverage[];
+  /** Optional semantic row decoder. Generated named queries provide this. */
+  readonly mapRow?: (row: Readonly<SqlRow>) => Row;
   readonly rowKey?: (row: Row) => readonly SqlValue[];
   /** Generated coverage claims its windows by default. */
   readonly claimCoverage?: boolean;
@@ -32,6 +35,7 @@ export interface UseRawSqlResult<Row> {
   readonly isLoading: boolean;
   readonly isRefreshing: boolean;
   readonly error: Error | undefined;
+  readonly availability: SyncAvailability;
   readonly refresh: () => void;
 }
 
@@ -41,6 +45,7 @@ const DISABLED = {
   revision: undefined,
   error: undefined,
   isRefreshing: false,
+  availability: { state: 'ready' },
 } as const;
 
 const noSubscribe = (): (() => void) => () => {};
@@ -71,7 +76,7 @@ export function useRawSql<Row = SqlRow>(
   });
   // `identity` canonically contains every value-shaped input. Depending on
   // the caller's array/object references would defeat value-stable query
-  // identity; executable rowKey intentionally follows function identity.
+  // identity; executable decoders and row keys follow function identity.
   // biome-ignore lint/correctness/useExhaustiveDependencies: canonical value identity is the dependency
   const entry = useMemo(
     () =>
@@ -81,10 +86,11 @@ export function useRawSql<Row = SqlRow>(
         ...(params !== undefined ? { params } : {}),
         dependencies,
         ...(coverage.length > 0 ? { coverage } : {}),
+        ...(options?.mapRow !== undefined ? { mapRow: options.mapRow } : {}),
         ...(options?.rowKey !== undefined ? { rowKey: options.rowKey } : {}),
         claimCoverage: options?.claimCoverage ?? true,
       }),
-    [store, identity, options?.rowKey],
+    [store, identity, options?.mapRow, options?.rowKey],
   );
   const snapshot = useSyncExternalStore(
     enabled ? entry.subscribe : noSubscribe,
@@ -101,6 +107,7 @@ export function useRawSql<Row = SqlRow>(
     isLoading: snapshot.phase === 'loading',
     isRefreshing: snapshot.isRefreshing,
     error: snapshot.error,
+    availability: snapshot.availability,
     refresh,
   };
 }

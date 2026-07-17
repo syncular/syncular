@@ -76,7 +76,11 @@ await handle.mutate([
 
 For typed reads (generated `.sql` queries) see
 [Named queries](/tooling-queries/). For React live queries see
-[React](/platform-react/).
+[React](/platform-react/). During development, use the
+[schema-aware Vite owner recipe](/guide-vite/#keep-one-schema-correct-persistent-owner-during-hmr)
+so query HMR cannot outpace the worker's generated schema; the
+[official React example](https://github.com/syncular/syncular/blob/main/apps/demo-react/src/frontend/main.tsx)
+uses that exact record.
 
 Schema-declared [local FTS5 projections](/tooling-local-search/) are ordinary
 local read targets too. They are built and maintained inside the worker-owned

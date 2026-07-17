@@ -188,10 +188,18 @@ export interface StorageTransaction {
     clientCommitId: string,
     result: StoredPushResult,
   ): Promise<void>;
-  upsertRow(table: string, row: StoredRow): Promise<void>;
+  upsertRow(
+    table: string,
+    row: StoredRow,
+    context?: { readonly opIndex: number },
+  ): Promise<void>;
   deleteRow(table: string, rowId: string): Promise<void>;
   /** Allocates the next per-partition commitSeq and appends the commit. */
   appendCommit(commit: NewCommit): Promise<number>;
+  /**
+   * Persist an idempotency outcome only when the key is still absent. The
+   * first writer wins; callers read the canonical value after commit.
+   */
   putPushResult(
     clientId: string,
     clientCommitId: string,

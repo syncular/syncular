@@ -17,7 +17,7 @@
 
 import { createSyncClientHandle } from '@syncular/client';
 import {
-  createSyncClientResource,
+  retainViteSyncClientResource,
   SyncProvider,
   useMutation,
   useQuery,
@@ -191,7 +191,7 @@ function TodoApp() {
   );
 }
 
-const clientResource = createSyncClientResource(async () => {
+async function createClient() {
   const handle = await createSyncClientHandle({
     worker: () => new Worker('/worker.js', { type: 'module' }),
     schema,
@@ -212,15 +212,47 @@ const clientResource = createSyncClientResource(async () => {
     // HTTP sync still works without the socket.
   }
   return handle;
-});
+}
+
+interface ViteHotContext {
+  readonly data: Record<string, unknown>;
+  invalidate(message?: string): void;
+}
+
+// Capture the number during this module evaluation. Never compare an old
+// resource against the later value of a hot-updated ESM schema binding.
+const capturedSchemaVersion = schema.version;
+const hot = (import.meta as ImportMeta & { readonly hot?: ViteHotContext }).hot;
+const retainedClient = await retainViteSyncClientResource(
+  hot?.data,
+  capturedSchemaVersion,
+  createClient,
+);
+const clientResource = retainedClient.resource;
+
+if (
+  hot !== undefined &&
+  retainedClient.schemaChanged &&
+  retainedClient.disposalError === undefined
+) {
+  hot.invalidate('Syncular generated schema changed');
+}
 
 function Root() {
   return (
     <SyncProvider
       client={clientResource}
-      fallback={<div className="empty">starting client core…</div>}
-      renderError={(error) => (
-        <div className="empty">failed to start: {error.message}</div>
+      renderBoundary={(state, actions) => (
+        <div className="empty">
+          sync unavailable: {state.state}
+          {'reason' in state ? ` (${state.reason})` : ''}
+          {state.state === 'startup-error' ? `: ${state.error.message}` : ''}
+          {actions.retry !== undefined ? (
+            <button type="button" onClick={() => void actions.retry?.()}>
+              retry
+            </button>
+          ) : null}
+        </div>
       )}
     >
       <TodoApp />

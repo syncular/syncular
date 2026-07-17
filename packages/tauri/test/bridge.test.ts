@@ -8,6 +8,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { normalizeClient, type SyncClientLike } from '@syncular/react';
+import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
 import { createTauriSyncClient, type TauriApi } from '../src/index';
 
 /** A recording invoke/listen double. Commands answer from a scripted table. */
@@ -45,6 +46,9 @@ const OK = (result: unknown) => ({ result });
 /** A responder that answers create + the accessor commands with fixtures. */
 function defaultResponder(cmd: string, args: Record<string, unknown>): unknown {
   if (cmd === 'plugin:syncular|syncular_query') {
+    if (String(args.sql).includes('SELECT id, done FROM tasks')) {
+      return OK({ rows: [{ id: 't1', done: 0 }] });
+    }
     return OK({
       rows: [{ id: 't1', title: 'hello', blob: { $bytes: 'deadbeef' } }],
     });
@@ -83,6 +87,7 @@ function defaultResponder(cmd: string, args: Record<string, unknown>): unknown {
       return OK({ revision: '7' });
     case 'statusSnapshot':
       return OK({
+        currentSchemaVersion: 1,
         outbox: 0,
         upgrading: false,
         syncNeeded: false,
@@ -212,6 +217,13 @@ describe('createTauriSyncClient', () => {
       0xde, 0xad, 0xbe, 0xef,
     ]);
     expect(rows[0]?.title).toBe('hello');
+  });
+
+  test('generated query decodes SQLite booleans on the Tauri surface', async () => {
+    const { client } = await build();
+    expect(await hostBoolean(client, { projectId: 'p1' })).toEqual([
+      { id: 't1', done: false },
+    ]);
   });
 
   test('query encodes Uint8Array params as {$bytes: hex}', async () => {
@@ -486,7 +498,10 @@ describe('SyncClientLike parity', () => {
     expect((await normalized.querySnapshot({ sql: 'SELECT 1' })).revision).toBe(
       7n,
     );
-    expect((await normalized.statusSnapshot()).outbox).toBe(0);
+    expect(await normalized.statusSnapshot()).toMatchObject({
+      currentSchemaVersion: 1,
+      outbox: 0,
+    });
     expect(await normalized.mutate([])).toBe('commit-1');
     expect(await normalized.patch('todo', 't1', { title: 'next' })).toBe(
       'patch-1',

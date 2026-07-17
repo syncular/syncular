@@ -18,6 +18,11 @@ import {
   loadQueries,
   serializeQueryIr,
 } from '../src';
+import {
+  booleanResults,
+  booleanResultsMapRow,
+  QueryResultDecodeError,
+} from './fixtures/basic/syncular.queries';
 
 const FIXTURE = join(import.meta.dir, 'fixtures', 'basic');
 
@@ -85,6 +90,29 @@ describe('named-query emitter goldens', () => {
     expect(
       result.outputs.find((output) => output.path.endsWith('.ir.json')),
     ).toBeDefined();
+  });
+
+  test('the generated direct runner decodes boolean result values', async () => {
+    const rows = await booleanResults({
+      query: () => [
+        { id: 'zero', isDone: 0, maybeDone: null },
+        { id: 'one', isDone: 1, maybeDone: -2 },
+        { id: 'false', isDone: false, maybeDone: 0 },
+        { id: 'true', isDone: true, maybeDone: true },
+      ],
+    });
+    expect(rows).toEqual([
+      { id: 'zero', isDone: false, maybeDone: null },
+      { id: 'one', isDone: true, maybeDone: true },
+      { id: 'false', isDone: false, maybeDone: false },
+      { id: 'true', isDone: true, maybeDone: true },
+    ]);
+  });
+
+  test('the generated result decoder rejects non-SQLite boolean values', () => {
+    expect(() =>
+      booleanResultsMapRow({ id: 'bad', isDone: 'yes', maybeDone: null }),
+    ).toThrow(QueryResultDecodeError);
   });
 });
 

@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   project_id TEXT NOT NULL,
   title TEXT NOT NULL,
   done BOOLEAN NOT NULL DEFAULT FALSE,
+  reviewed BOOLEAN,
   priority BIGINT,
   meta JSON
 );

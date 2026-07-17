@@ -17,6 +17,7 @@ import type {
   CommitOutcomeQuery,
   ConflictRecord,
   InvalidationListener,
+  LeadershipState,
   LeaseState,
   LocalDataPurgeInput,
   LocalDataPurgeResult,
@@ -41,9 +42,12 @@ import type {
  * never reach past this surface.
  */
 export interface SyncClientLike {
+  readonly currentSchemaVersion?: number;
   onChange(listener: ClientChangeListener): () => void;
   onInvalidate(listener: InvalidationListener): () => void;
   onPresence(listener: (scopeKey: string) => void): () => void;
+  onLeadershipChange?(listener: (state: LeadershipState) => void): () => void;
+  leadershipSnapshot?(): LeadershipState | undefined;
   query(
     sql: string,
     params?: readonly SqlValue[],
@@ -120,9 +124,12 @@ function resolveMember<T>(
 
 /** The uniform async facade the hooks actually call. */
 export interface NormalizedClient {
+  readonly currentSchemaVersion?: number;
   onChange(listener: ClientChangeListener): () => void;
   onInvalidate(listener: InvalidationListener): () => void;
   onPresence(listener: (scopeKey: string) => void): () => void;
+  onLeadershipChange(listener: (state: LeadershipState) => void): () => void;
+  leadershipSnapshot(): LeadershipState | undefined;
   query(sql: string, params?: readonly SqlValue[]): Promise<SqlRow[]>;
   mutate(mutations: readonly MutationInput[]): Promise<string>;
   patch(
@@ -157,9 +164,15 @@ export interface NormalizedClient {
 
 export function normalizeClient(client: SyncClientLike): NormalizedClient {
   return {
+    ...(client.currentSchemaVersion !== undefined
+      ? { currentSchemaVersion: client.currentSchemaVersion }
+      : {}),
     onChange: (listener) => client.onChange(listener),
     onInvalidate: (listener) => client.onInvalidate(listener),
     onPresence: (listener) => client.onPresence(listener),
+    onLeadershipChange: (listener) =>
+      client.onLeadershipChange?.(listener) ?? (() => {}),
+    leadershipSnapshot: () => client.leadershipSnapshot?.(),
     query: (sql, params) => Promise.resolve(client.query(sql, params)),
     mutate: (mutations) => Promise.resolve(client.mutate(mutations)),
     patch: (table, rowId, partial, options) =>

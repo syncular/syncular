@@ -57,6 +57,10 @@ import type {
   StoredPushResult,
   StoredRow,
 } from './storage';
+import {
+  isSqliteConstraintError,
+  StorageConstraintError,
+} from './storage-errors';
 
 class SqliteTransaction implements StorageTransaction {
   #storage: SqliteServerStorage;
@@ -113,9 +117,20 @@ class SqliteTransaction implements StorageTransaction {
     await this.commit();
   }
 
-  async upsertRow(table: string, row: StoredRow): Promise<void> {
+  async upsertRow(
+    table: string,
+    row: StoredRow,
+    context?: { readonly opIndex: number },
+  ): Promise<void> {
     this.#assertOpen();
-    this.#storage.writeRow(this.#partition, table, row);
+    try {
+      this.#storage.writeRow(this.#partition, table, row);
+    } catch (error) {
+      if (isSqliteConstraintError(error)) {
+        throw new StorageConstraintError(error, context?.opIndex);
+      }
+      throw error;
+    }
   }
 
   async deleteRow(table: string, rowId: string): Promise<void> {
@@ -209,7 +224,7 @@ class SqliteTransaction implements StorageTransaction {
     this.#assertOpen();
     this.#storage.db
       .query(
-        'INSERT OR REPLACE INTO sync_push_results(partition, client_id, client_commit_id, result) VALUES (?,?,?,?)',
+        'INSERT OR IGNORE INTO sync_push_results(partition, client_id, client_commit_id, result) VALUES (?,?,?,?)',
       )
       .run(
         this.#partition,

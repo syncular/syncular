@@ -42,6 +42,7 @@ import type {
   StoredCommit,
   StoredPushResult,
 } from './storage';
+import { StorageConstraintError } from './storage-errors';
 import type {
   CommitValidationReader,
   CommitValidator,
@@ -435,7 +436,7 @@ async function applyOperation(
       scopes: stored.scopes,
       payload: newPayload,
     };
-    await tx.upsertRow(op.table, newRow);
+    await tx.upsertRow(op.table, newRow, { opIndex });
     return {
       kind: 'applied',
       change: {
@@ -540,7 +541,7 @@ async function applyOperation(
     scopes: extracted.scopes,
     payload: insertPayload,
   };
-  await tx.upsertRow(op.table, newRow);
+  await tx.upsertRow(op.table, newRow, { opIndex });
   return {
     kind: 'applied',
     change: {
@@ -769,6 +770,32 @@ function idempotencyCacheMissFrame(
   };
 }
 
+async function persistRejectedPushResult(
+  storage: SyncRequestContext['storage'],
+  partition: string,
+  clientId: string,
+  clientCommitId: string,
+  stored: StoredPushResult,
+): Promise<StoredPushResult> {
+  const rejectionTx = await storage.begin(partition);
+  try {
+    await rejectionTx.putPushResult(clientId, clientCommitId, stored);
+    await rejectionTx.commit();
+  } catch (error) {
+    await rejectionTx.rollback();
+    throw error;
+  }
+  const canonical = await storage.getPushResult(
+    partition,
+    clientId,
+    clientCommitId,
+  );
+  if (canonical === undefined) {
+    throw new Error('push rejection finalization did not persist an outcome');
+  }
+  return canonical;
+}
+
 export interface AppliedCommitEvent {
   readonly commit: StoredCommit;
 }
@@ -912,18 +939,18 @@ export async function processPushCommit(
         await commitRejectedPushResult(clientId, frame.clientCommitId, stored);
       } else {
         await tx.rollback();
-        const rejectionTx = await storage.begin(partition);
-        try {
-          await rejectionTx.putPushResult(
-            clientId,
-            frame.clientCommitId,
-            stored,
-          );
-          await rejectionTx.commit();
-        } catch (error) {
-          await rejectionTx.rollback();
-          throw error;
-        }
+        const canonical = await persistRejectedPushResult(
+          storage,
+          partition,
+          clientId,
+          frame.clientCommitId,
+          stored,
+        );
+        return resultFrame(
+          frame.clientCommitId,
+          canonical,
+          canonical !== stored,
+        );
       }
       return resultFrame(frame.clientCommitId, stored, false);
     }
@@ -949,6 +976,28 @@ export async function processPushCommit(
     return resultFrame(frame.clientCommitId, stored, false);
   } catch (error) {
     await tx.rollback();
+    if (error instanceof StorageConstraintError) {
+      const stored: StoredPushResult = {
+        status: 'rejected',
+        results: [
+          {
+            opIndex: error.opIndex ?? 0,
+            status: 'error',
+            code: 'sync.constraint_violation',
+            message: 'write violates a relational constraint',
+            retryable: false,
+          },
+        ],
+      };
+      const canonical = await persistRejectedPushResult(
+        storage,
+        partition,
+        clientId,
+        frame.clientCommitId,
+        stored,
+      );
+      return resultFrame(frame.clientCommitId, canonical, canonical !== stored);
+    }
     throw error;
   }
 }

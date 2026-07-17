@@ -7,6 +7,8 @@ resolve.
 
 Normative detail: [SPEC.md §6](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#6-push-and-commit-application) and
 [§7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#7-the-client-outbox).
+For the complete generated-query, React, aggregate-repair, acknowledgement,
+and restart flow, use [Concurrency and conflict correction](/guide-concurrency-correction/).
 
 ## The optimistic outbox
 

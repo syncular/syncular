@@ -46,6 +46,24 @@ export const DEFAULT_FOLLOWER_CALL_TIMEOUT_MS = 10_000;
 /** Max follower calls queued across a handover before we fail loudly. */
 export const DEFAULT_FOLLOWER_QUEUE_LIMIT = 256;
 
+export type LeadershipState =
+  | { readonly state: 'leader'; readonly clientId: string }
+  | {
+      readonly state: 'follower';
+      readonly leaderClientId: string;
+      readonly epoch: number;
+    }
+  | {
+      readonly state: 'waiting';
+      readonly reason: 'handover' | 'leader-announcement';
+    }
+  | {
+      readonly state: 'blocked';
+      readonly reason: 'leader-unreachable';
+      readonly code: typeof FOLLOWER_TIMEOUT_CODE;
+      readonly retryable: true;
+    };
+
 // ---------------------------------------------------------------------------
 // Wire messages
 // ---------------------------------------------------------------------------
@@ -60,6 +78,11 @@ interface HelloMessage {
 
 interface ByeMessage {
   readonly t: 'bye';
+  readonly fromId: string;
+}
+
+interface BoundMessage {
+  readonly t: 'bound';
   readonly fromId: string;
 }
 
@@ -96,6 +119,7 @@ interface EventMessage {
 export type MultiTabMessage =
   | HelloMessage
   | ByeMessage
+  | BoundMessage
   | ReqMessage
   | AnnounceMessage
   | ResMessage
@@ -157,6 +181,9 @@ export class LeaderBridge {
     args: readonly unknown[],
   ) => Promise<unknown>;
   readonly #onMessage: (event: { data: MultiTabMessage }) => void;
+  readonly #heartbeatMs: number;
+  readonly #followers = new Set<string>();
+  #heartbeat: ReturnType<typeof setInterval> | undefined;
   #closed = false;
 
   constructor(options: {
@@ -164,11 +191,15 @@ export class LeaderBridge {
     epoch: number;
     clientId: string;
     invoke: (method: string, args: readonly unknown[]) => Promise<unknown>;
+    heartbeatMs?: number;
   }) {
     this.#channel = options.channel;
     this.#epoch = options.epoch;
     this.#clientId = options.clientId;
     this.#invoke = options.invoke;
+    this.#heartbeatMs =
+      options.heartbeatMs ??
+      Math.max(50, Math.floor(DEFAULT_FOLLOWER_CALL_TIMEOUT_MS / 3));
     this.#onMessage = (event) => this.#handle(event.data);
     this.#channel.addEventListener('message', this.#onMessage);
     this.announce();
@@ -194,7 +225,20 @@ export class LeaderBridge {
     if (this.#closed) return;
     if (message.t === 'hello') {
       // A follower joined (or is contesting) — tell it who leads.
+      this.#trackFollower(message.fromId);
       this.announce();
+      return;
+    }
+    if (message.t === 'bound') {
+      this.#trackFollower(message.fromId);
+      return;
+    }
+    if (message.t === 'bye') {
+      this.#followers.delete(message.fromId);
+      if (this.#followers.size === 0 && this.#heartbeat !== undefined) {
+        clearInterval(this.#heartbeat);
+        this.#heartbeat = undefined;
+      }
       return;
     }
     if (message.t !== 'req') return;
@@ -237,10 +281,19 @@ export class LeaderBridge {
     );
   }
 
+  #trackFollower(fromId: string): void {
+    this.#followers.add(fromId);
+    if (this.#heartbeat !== undefined) return;
+    this.#heartbeat = setInterval(() => this.announce(), this.#heartbeatMs);
+  }
+
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    if (this.#heartbeat !== undefined) clearInterval(this.#heartbeat);
+    this.#heartbeat = undefined;
     this.#channel.removeEventListener('message', this.#onMessage);
+    this.#channel.close();
   }
 }
 
@@ -274,6 +327,7 @@ export class FollowerLink {
   readonly #fromId: string;
   readonly #onEvent: (event: SyncWorkerEvent) => void;
   readonly #onLeaderChange: (clientId: string) => void;
+  readonly #onStateChange: (state: LeadershipState) => void;
   readonly #callTimeoutMs: number;
   readonly #queueLimit: number;
   readonly #onMessage: (event: { data: MultiTabMessage }) => void;
@@ -287,6 +341,12 @@ export class FollowerLink {
   readonly #inFlight = new Map<number, InFlight>();
   #queue: QueuedCall[] = [];
   #closed = false;
+  #state: LeadershipState = {
+    state: 'waiting',
+    reason: 'leader-announcement',
+  };
+  #waitingTimer: ReturnType<typeof setTimeout> | undefined;
+  #blockedTimer: ReturnType<typeof setTimeout> | undefined;
   /** Resolvers waiting for the first `announce` to bind a leader. */
   #bindWaiters: Array<() => void> = [];
 
@@ -295,6 +355,7 @@ export class FollowerLink {
     fromId: string;
     onEvent: (event: SyncWorkerEvent) => void;
     onLeaderChange: (clientId: string) => void;
+    onStateChange?: (state: LeadershipState) => void;
     callTimeoutMs?: number;
     queueLimit?: number;
   }) {
@@ -302,6 +363,7 @@ export class FollowerLink {
     this.#fromId = options.fromId;
     this.#onEvent = options.onEvent;
     this.#onLeaderChange = options.onLeaderChange;
+    this.#onStateChange = options.onStateChange ?? (() => {});
     this.#callTimeoutMs =
       options.callTimeoutMs ?? DEFAULT_FOLLOWER_CALL_TIMEOUT_MS;
     this.#queueLimit = options.queueLimit ?? DEFAULT_FOLLOWER_QUEUE_LIMIT;
@@ -309,6 +371,7 @@ export class FollowerLink {
     this.#channel.addEventListener('message', this.#onMessage);
     // Ask the current leader to announce itself.
     this.#channel.postMessage({ t: 'hello', fromId: this.#fromId });
+    this.#armUnboundDeadline();
   }
 
   get epoch(): number {
@@ -321,6 +384,10 @@ export class FollowerLink {
 
   get leaderClientId(): string {
     return this.#leaderClientId;
+  }
+
+  get leadershipState(): LeadershipState {
+    return this.#state;
   }
 
   /** Whether a leader is currently bound (an announce has been heard). */
@@ -348,10 +415,12 @@ export class FollowerLink {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#dropBindWaiter(settle);
+        this.#setBlocked();
         reject(
           new ClientSyncError(
             FOLLOWER_TIMEOUT_CODE,
             'no leader announced within the follower bind timeout',
+            true,
           ),
         );
       }, timeoutMs);
@@ -382,6 +451,15 @@ export class FollowerLink {
         new ClientSyncError(WORKER_FAILED_CODE, 'the follower link is closed'),
       );
     }
+    if (this.#state.state === 'blocked') {
+      return Promise.reject(
+        new ClientSyncError(
+          FOLLOWER_TIMEOUT_CODE,
+          'the follower cannot reach the tab that owns the database',
+          true,
+        ),
+      );
+    }
     return new Promise((resolve, reject) => {
       const queued: QueuedCall = {
         method,
@@ -393,20 +471,24 @@ export class FollowerLink {
       if (this.#epoch < 0) {
         // No leader bound yet — queue with a deadline so we never hang.
         if (this.#queue.length >= this.#queueLimit) {
+          this.#setBlocked();
           reject(
             new ClientSyncError(
               FOLLOWER_TIMEOUT_CODE,
               'follower call queue overflow while awaiting a leader',
+              true,
             ),
           );
           return;
         }
         queued.timer = setTimeout(() => {
           this.#dropQueued(queued);
+          this.#setBlocked();
           reject(
             new ClientSyncError(
               FOLLOWER_TIMEOUT_CODE,
               'no leader answered within the follower call timeout',
+              true,
             ),
           );
         }, this.#callTimeoutMs);
@@ -424,10 +506,12 @@ export class FollowerLink {
       reject: queued.reject,
       timer: setTimeout(() => {
         this.#inFlight.delete(reqId);
+        this.#setBlocked();
         queued.reject(
           new ClientSyncError(
             FOLLOWER_TIMEOUT_CODE,
             'the leader did not answer within the follower call timeout',
+            true,
           ),
         );
       }, this.#callTimeoutMs),
@@ -462,6 +546,15 @@ export class FollowerLink {
       this.#epoch = message.epoch;
       this.#leaderClientId = message.clientId;
       if (changed) this.#onLeaderChange(message.clientId);
+      this.#setState({
+        state: 'follower',
+        leaderClientId: message.clientId,
+        epoch: message.epoch,
+      });
+      this.#armBoundDeadline();
+      if (changed) {
+        this.#channel.postMessage({ t: 'bound', fromId: this.#fromId });
+      }
       this.#resolveBindWaiters();
       this.#flushQueue();
       return;
@@ -516,6 +609,8 @@ export class FollowerLink {
     if (this.#closed) return;
     this.#epoch = -1;
     this.#leaderClientId = '';
+    this.#setState({ state: 'waiting', reason: 'handover' });
+    this.#armUnboundDeadline();
     this.#channel.postMessage({
       t: 'hello',
       fromId: this.#fromId,
@@ -526,6 +621,7 @@ export class FollowerLink {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#clearReachabilityTimers();
     this.#channel.removeEventListener('message', this.#onMessage);
     this.#channel.postMessage({ t: 'bye', fromId: this.#fromId });
     const closedError = new ClientSyncError(
@@ -546,5 +642,67 @@ export class FollowerLink {
     // awaiting boot path settle promptly instead of hanging until that timeout.
     this.#resolveBindWaiters();
     this.#channel.close();
+  }
+
+  #setState(state: LeadershipState): void {
+    const previous = this.#state;
+    if (
+      previous.state === state.state &&
+      (state.state === 'blocked' ||
+        (state.state === 'waiting' &&
+          previous.state === 'waiting' &&
+          previous.reason === state.reason) ||
+        (state.state === 'follower' &&
+          previous.state === 'follower' &&
+          previous.epoch === state.epoch &&
+          previous.leaderClientId === state.leaderClientId))
+    ) {
+      return;
+    }
+    this.#state = state;
+    try {
+      this.#onStateChange(state);
+    } catch {
+      // A status listener must never break cross-tab coordination.
+    }
+  }
+
+  #setBlocked(): void {
+    this.#clearReachabilityTimers();
+    this.#setState({
+      state: 'blocked',
+      reason: 'leader-unreachable',
+      code: FOLLOWER_TIMEOUT_CODE,
+      retryable: true,
+    });
+  }
+
+  #armUnboundDeadline(): void {
+    this.#clearReachabilityTimers();
+    this.#blockedTimer = setTimeout(
+      () => this.#setBlocked(),
+      this.#callTimeoutMs,
+    );
+  }
+
+  #armBoundDeadline(): void {
+    this.#clearReachabilityTimers();
+    this.#waitingTimer = setTimeout(
+      () => {
+        this.#setState({ state: 'waiting', reason: 'leader-announcement' });
+      },
+      Math.max(1, Math.floor((this.#callTimeoutMs * 2) / 3)),
+    );
+    this.#blockedTimer = setTimeout(
+      () => this.#setBlocked(),
+      this.#callTimeoutMs,
+    );
+  }
+
+  #clearReachabilityTimers(): void {
+    if (this.#waitingTimer !== undefined) clearTimeout(this.#waitingTimer);
+    if (this.#blockedTimer !== undefined) clearTimeout(this.#blockedTimer);
+    this.#waitingTimer = undefined;
+    this.#blockedTimer = undefined;
   }
 }

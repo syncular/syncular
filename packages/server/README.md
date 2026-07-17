@@ -173,6 +173,10 @@ Whole-commit validation checks a client-proposed commit; it does not grant
 authority. Privileged operations such as connecting facilities still belong in
 explicit server-authoritative commands.
 
+The task-oriented [concurrency and conflict-correction guide](https://syncular.dev/guide-concurrency-correction/)
+shows version projection, aggregate rollback, corrected replacement commits,
+explicit acknowledgement, and restart-safe recovery UI together.
+
 ## Structured events (the ops seam)
 
 One optional interface, `SyncularServerEvents`, carries every
