@@ -1,10 +1,31 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.13** (`v0.15.13`). All artifacts use Apache-2.0, except
+current release is **0.15.14** (`v0.15.14`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.14 release notes
+
+0.15.14 hardens the boundaries used by generated applications across server
+storage, browser ownership, reactive availability, native hosts, and Vite
+development.
+
+The release includes:
+
+- durable, privacy-safe relational-constraint rejection across SQLite,
+  PostgreSQL, and D1, with whole-commit rollback and idempotent replay;
+- strict generated TypeScript boolean result decoding shared by direct,
+  worker/follower, Tauri, React Native, and React query paths;
+- observable browser leader/follower state, bounded partition failure, safe
+  promotion, and explicit isolated-replica ownership;
+- one canonical schema-and-leadership availability classifier plus React
+  provider/query boundaries that retain safe rows and recover automatically;
+- schema-aware Vite HMR resource retention that closes the old database owner
+  before constructing a replacement; and
+- an end-to-end concurrency-correction guide covering version conflicts,
+  domain rejection, durable correction inboxes, and aggregate replacement.
 
 The React query phase union now includes `blocked`. Exhaustive consumers must
 handle it separately from `loading`: `isLoading` is false, the typed
