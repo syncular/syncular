@@ -7,6 +7,7 @@ import {
   emitQueriesDartModule,
   emitQueriesKotlinModule,
   emitQueriesModule,
+  emitQueriesRustModule,
   emitQueriesSwiftModule,
   type IrDocument,
   lowerSyqlQuery,
@@ -307,7 +308,7 @@ describe('revision-1 SYQL lowering', () => {
   test('every emitter consumes the same selected plan and public shape', () => {
     const query = lowerSyqlQuery(validated(), IR, db, {
       naming: 'camel',
-      targets: ['ts', 'swift', 'kotlin', 'dart'],
+      targets: ['ts', 'swift', 'kotlin', 'dart', 'rust'],
       backend: 'neutralize',
     }).analysis;
     const ts = emitQueriesModule([query], 'sha256:test', 1);
@@ -325,6 +326,7 @@ describe('revision-1 SYQL lowering', () => {
       'TestSchema',
     );
     const dart = emitQueriesDartModule([query], 'sha256:test', 1);
+    const rust = emitQueriesRustModule([query], 'sha256:test', 1);
 
     expect(() =>
       new Bun.Transpiler({ loader: 'ts' }).transformSync(ts),
@@ -337,11 +339,29 @@ describe('revision-1 SYQL lowering', () => {
     expect(kotlin).toContain('SyncularQueryPresence<String?>');
     expect(kotlin).toContain('val start: Long');
     expect(dart).toContain('SyqlQueryPresence<String?>');
-    for (const output of [ts, swift, kotlin, dart]) {
+    expect(rust).toContain('pub status: SyqlPresence<Option<String>>');
+    expect(rust).toContain('pub start: i64');
+    for (const output of [ts, swift, kotlin, dart, rust]) {
       expect(output).toContain(
         query.syql?.plan.statements[0]?.positionalSql as string,
       );
       expect(output).toContain('invalid generated SYQL statement index');
+    }
+  });
+
+  test('the Rust emitter renders every forced-variants statement', () => {
+    const query = lowerSyqlQuery(
+      validated(),
+      IR,
+      db,
+      { naming: 'camel', targets: ['rust'] },
+      { backend: 'variants' },
+    ).analysis;
+    const rust = emitQueriesRustModule([query], 'sha256:variants', 1);
+    expect(rust).toContain('let mut activation_mask = 0usize;');
+    expect(rust).toContain('activation_mask * 2 + sort_index');
+    for (const statement of query.syql?.plan.statements ?? []) {
+      expect(rust).toContain(statement.positionalSql);
     }
   });
 });

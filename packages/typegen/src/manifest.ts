@@ -28,20 +28,21 @@
  *   placeholders (partial templates are unsupported).
  * - `output.ir` / `output.module` are the always-emitted TS defaults;
  *   `output.queryIr` opts into the deterministic analyzed-query document.
- *   `output.swift` / `output.kotlin` / `output.dart` are OPT-IN native
+ *   `output.swift` / `output.kotlin` / `output.dart` are OPT-IN native schema
  *   emitters — a bare string is the output path; an object carries
  *   language-appropriate options (Kotlin `package`/`objectName`, Swift
  *   `enumName`; Dart takes `path` only). This is additive within the `output`
  *   object (the same forward-extension shape `output.ir`/`output.module`
  *   already use); no `manifestVersion` bump — new *recognized* keys, not
  *   tolerated-unknown ones. Absent → that language is not generated (TS
- *   stays the default).
+ *   stays the default). `output.rust.queriesPath` opts into Rust named-query
+ *   source over the neutral schema IR consumed by `syncular-client`.
  * - Unknown keys are hard errors everywhere (fail loud; growth happens by
  *   bumping `manifestVersion`), except inside `extensions`, the reserved
  *   WP-49 passthrough slot copied verbatim into the IR.
  */
 import { TypegenError } from './errors';
-import type { NamingMode } from './naming';
+import { isRustKeyword, type NamingMode } from './naming';
 
 /** §7/§8 `.syql` conditional-lowering backend selection. */
 export type ManifestQueryBackend = 'neutralize' | 'variants' | 'auto';
@@ -103,6 +104,14 @@ export interface DartOutput {
   readonly queriesPath?: string;
 }
 
+/** Rust named-query output. Rust consumes neutral schema IR at runtime, so
+ * revision 1 has no separate generated schema source path. */
+export interface RustOutput {
+  readonly queriesPath: string;
+  /** Rust module identifier for the `syncular-client` Cargo dependency. */
+  readonly clientCrate: string;
+}
+
 export interface ManifestOutput {
   readonly ir: string;
   readonly module: string;
@@ -116,6 +125,7 @@ export interface ManifestOutput {
   readonly swift?: SwiftOutput;
   readonly kotlin?: KotlinOutput;
   readonly dart?: DartOutput;
+  readonly rust?: RustOutput;
 }
 
 export interface Manifest {
@@ -251,6 +261,26 @@ function parseDartOutput(value: unknown): DartOutput {
     ...(obj.queriesPath !== undefined
       ? { queriesPath: asString(obj.queriesPath, 'output.dart.queriesPath') }
       : {}),
+  };
+}
+
+const RUST_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function parseRustOutput(value: unknown): RustOutput {
+  const obj = asObject(value, 'output.rust');
+  rejectUnknownKeys(obj, ['queriesPath', 'clientCrate'], 'output.rust');
+  const clientCrate =
+    obj.clientCrate === undefined
+      ? 'syncular_client'
+      : asString(obj.clientCrate, 'output.rust.clientCrate');
+  if (!RUST_IDENTIFIER_RE.test(clientCrate) || isRustKeyword(clientCrate)) {
+    fail(
+      `output.rust.clientCrate must be one Rust identifier, got ${JSON.stringify(clientCrate)}`,
+    );
+  }
+  return {
+    queriesPath: asString(obj.queriesPath, 'output.rust.queriesPath'),
+    clientCrate,
   };
 }
 
@@ -407,11 +437,12 @@ export function parseManifest(raw: unknown): Manifest {
   let swift: SwiftOutput | undefined;
   let kotlin: KotlinOutput | undefined;
   let dart: DartOutput | undefined;
+  let rust: RustOutput | undefined;
   if (obj.output !== undefined) {
     const output = asObject(obj.output, 'output');
     rejectUnknownKeys(
       output,
-      ['ir', 'module', 'queryIr', 'queries', 'swift', 'kotlin', 'dart'],
+      ['ir', 'module', 'queryIr', 'queries', 'swift', 'kotlin', 'dart', 'rust'],
       'output',
     );
     if (output.ir !== undefined) ir = asString(output.ir, 'output.ir');
@@ -427,6 +458,7 @@ export function parseManifest(raw: unknown): Manifest {
     if (output.swift !== undefined) swift = parseSwiftOutput(output.swift);
     if (output.kotlin !== undefined) kotlin = parseKotlinOutput(output.kotlin);
     if (output.dart !== undefined) dart = parseDartOutput(output.dart);
+    if (output.rust !== undefined) rust = parseRustOutput(output.rust);
   }
   // Build `output` with only the keys that are set — `exactOptionalPropertyTypes`
   // forbids explicit `undefined` on optional properties.
@@ -438,6 +470,7 @@ export function parseManifest(raw: unknown): Manifest {
     ...(swift !== undefined ? { swift } : {}),
     ...(kotlin !== undefined ? { kotlin } : {}),
     ...(dart !== undefined ? { dart } : {}),
+    ...(rust !== undefined ? { rust } : {}),
   };
   if (!Array.isArray(obj.schemaVersions) || obj.schemaVersions.length === 0) {
     fail('schemaVersions must be a non-empty array (§1.5 version history)');

@@ -438,7 +438,9 @@ malformed presence wrappers, partial records/ranges, invalid enum cases, and
 out-of-range limits before querying.
 
 Exact integers remain exact: TypeScript SYQL APIs use `bigint`; Swift uses
-`Int64`; Kotlin uses `Long`; Dart uses `int`.
+`Int64`; Kotlin uses `Long`; Dart uses `int`; Rust uses `i64`. Generated Rust
+also accepts the core's lossless `$bigint` result envelope without passing the
+value through a JSON double.
 
 ## 16. Formatter
 

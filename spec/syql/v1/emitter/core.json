@@ -37,6 +37,14 @@
           "bool unassigned = false",
           "EmitterContractSortBy sortBy = EmitterContractSortBy.newest",
           "SYQL_RUNTIME_INVALID_LIMIT"
+        ],
+        "rust": [
+          "pub status: SyqlPresence<Option<String>>",
+          "pub range: Option<Range>",
+          "pub start: i64",
+          "pub unassigned: bool",
+          "pub sort_by: SortBy",
+          "SYQL_RUNTIME_INVALID_LIMIT"
         ]
       }
     }

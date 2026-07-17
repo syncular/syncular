@@ -269,6 +269,7 @@ export class SyqlLanguageServer {
       if (manifest.output.swift !== undefined) targets.push('swift');
       if (manifest.output.kotlin !== undefined) targets.push('kotlin');
       if (manifest.output.dart !== undefined) targets.push('dart');
+      if (manifest.output.rust !== undefined) targets.push('rust');
       const lookup: ProjectLookup = {
         kind: 'ready',
         context: {

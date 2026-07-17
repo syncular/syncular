@@ -66,6 +66,7 @@ describe('native emitter goldens', () => {
       'Syncular.queries.kt',
       NATIVE_FILES.dart,
       'syncular.queries.dart',
+      'syncular.queries.rs',
     ]);
   });
 

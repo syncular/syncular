@@ -8,6 +8,7 @@ import {
   emitQueriesDartModule,
   emitQueriesKotlinModule,
   emitQueriesModule,
+  emitQueriesRustModule,
   emitQueriesSwiftModule,
   formatSyql,
   type IrDocument,
@@ -183,7 +184,7 @@ interface EmitterFixture {
     readonly name: string;
     readonly source: string;
     readonly required: Readonly<
-      Record<'ts' | 'swift' | 'kotlin' | 'dart', readonly string[]>
+      Record<'ts' | 'swift' | 'kotlin' | 'dart' | 'rust', readonly string[]>
     >;
   }[];
 }
@@ -618,13 +619,13 @@ describe('normative SYQL revision-1 conformance fixtures', () => {
         );
         const validated = validateSyqlProgram(semantic, IR, db, {
           naming: 'camel',
-          targets: ['ts', 'swift', 'kotlin', 'dart'],
+          targets: ['ts', 'swift', 'kotlin', 'dart', 'rust'],
           backend: 'auto',
         }).queries[0];
         if (validated === undefined) throw new Error('fixture query missing');
         const query = lowerSyqlQuery(validated, IR, db, {
           naming: 'camel',
-          targets: ['ts', 'swift', 'kotlin', 'dart'],
+          targets: ['ts', 'swift', 'kotlin', 'dart', 'rust'],
           backend: 'auto',
         }).analysis;
         const outputs = {
@@ -643,11 +644,18 @@ describe('normative SYQL revision-1 conformance fixtures', () => {
             'FixtureSchema',
           ),
           dart: emitQueriesDartModule([query], 'sha256:fixture', 1),
+          rust: emitQueriesRustModule([query], 'sha256:fixture', 1),
         };
         expect(() =>
           new Bun.Transpiler({ loader: 'ts' }).transformSync(outputs.ts),
         ).not.toThrow();
-        for (const target of ['ts', 'swift', 'kotlin', 'dart'] as const) {
+        for (const target of [
+          'ts',
+          'swift',
+          'kotlin',
+          'dart',
+          'rust',
+        ] as const) {
           for (const snippet of item.required[target]) {
             expect(outputs[target]).toContain(snippet);
           }

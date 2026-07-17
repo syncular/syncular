@@ -20,12 +20,16 @@
     "dart": {
       "path": "./syncular.generated.dart",
       "queriesPath": "./syncular.queries.dart"
+    },
+    "rust": {
+      "queriesPath": "./syncular.queries.rs"
     }
   },
   "schemaVersions": [
     { "version": 1, "through": "0001_initial" },
     { "version": 2, "through": "0002_add_task_estimate" },
-    { "version": 3, "through": "0003_add_doc_crdt" }
+    { "version": 3, "through": "0003_add_doc_crdt" },
+    { "version": 4, "through": "0004_add_doc_blob_ref" }
   ],
   "tables": [
     { "name": "tasks", "scopes": ["project:{project_id}"] },

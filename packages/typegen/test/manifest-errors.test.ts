@@ -64,7 +64,7 @@ describe('parseManifest', () => {
         }),
       /unknown key "typo"/,
     );
-    // `output.swift`/`kotlin`/`dart` are now recognized native-emitter keys;
+    // `output.swift`/`kotlin`/`dart`/`rust` are recognized emitter keys;
     // an unrelated typo in `output` is still rejected.
     expectFail(
       () => manifest({ output: { typo: './x' } }),
@@ -74,6 +74,42 @@ describe('parseManifest', () => {
     expectFail(
       () => manifest({ output: { kotlin: { path: './x', bogus: 1 } } }),
       /output\.kotlin has unknown key "bogus"/,
+    );
+  });
+
+  test('Rust output is object-only with a required path and validated crate alias', () => {
+    const parsed = manifest({
+      output: { rust: { queriesPath: './src/syncular_queries.rs' } },
+    });
+    expect(parsed.output.rust).toEqual({
+      queriesPath: './src/syncular_queries.rs',
+      clientCrate: 'syncular_client',
+    });
+    expectFail(
+      () => manifest({ output: { rust: './queries.rs' } }),
+      /output\.rust must be an object/,
+    );
+    expectFail(
+      () => manifest({ output: { rust: {} } }),
+      /output\.rust\.queriesPath must be a non-empty string/,
+    );
+    expectFail(
+      () =>
+        manifest({
+          output: {
+            rust: { queriesPath: './queries.rs', clientCrate: 'crate::client' },
+          },
+        }),
+      /must be one Rust identifier/,
+    );
+    expectFail(
+      () =>
+        manifest({
+          output: {
+            rust: { queriesPath: './queries.rs', clientCrate: 'type' },
+          },
+        }),
+      /must be one Rust identifier/,
     );
   });
 
