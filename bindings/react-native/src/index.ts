@@ -32,6 +32,8 @@ import type {
   InvalidationEvent,
   InvalidationListener,
   LeaseState,
+  LocalDataPurgeInput,
+  LocalDataPurgeResult,
   MutationInput,
   PresencePeer,
   QueryReadSpec,
@@ -474,6 +476,14 @@ export class NativeSyncClient {
         : {}),
     })) as { clientCommitId: string };
     return result.clientCommitId;
+  }
+
+  async purgeLocalData(
+    input: LocalDataPurgeInput,
+  ): Promise<LocalDataPurgeResult> {
+    return (await this.#command('purgeLocalData', {
+      input,
+    })) as LocalDataPurgeResult;
   }
 
   // -- Native CRDT (SPEC.md §5.10.5; needs the FFI `crdt-yjs` feature) ---------
