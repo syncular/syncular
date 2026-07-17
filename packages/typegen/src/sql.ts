@@ -7,6 +7,7 @@
  *   [WITHOUT ROWID]`
  * - `ALTER TABLE name ADD [COLUMN] coldef`
  * - `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table (col [, col…])`
+ * - `DROP INDEX [IF EXISTS] name`
  * - `DROP TABLE [IF EXISTS] name`
  * - `CREATE VIRTUAL TABLE name USING fts5(cols…, content=table,
  *   [tokenize='allowlisted tokenizer'])` (RFC 0005 local projection)
@@ -680,7 +681,6 @@ function parseDropTable(
   tables: Map<string, ParsedTable>,
   droppedTables: Set<string>,
 ): void {
-  cursor.expectWord('TABLE', 'after DROP');
   let ifExists = false;
   if (cursor.eatWord('IF')) {
     cursor.expectWord('EXISTS', 'after IF');
@@ -694,6 +694,50 @@ function parseDropTable(
   }
   tables.delete(name);
   droppedTables.add(name);
+}
+
+/** Remove one declared secondary index from the accumulated head schema. */
+function parseDropIndex(
+  cursor: Cursor,
+  tables: Map<string, ParsedTable>,
+): void {
+  let ifExists = false;
+  if (cursor.eatWord('IF')) {
+    cursor.expectWord('EXISTS', 'after IF');
+    ifExists = true;
+  }
+  const name = cursor.identifier('an index name');
+  cursor.expectEnd();
+  for (const table of tables.values()) {
+    const index = table.indexes.findIndex(
+      (candidate) => candidate.name === name,
+    );
+    if (index < 0) continue;
+    table.indexes.splice(index, 1);
+    return;
+  }
+  if (!ifExists) {
+    cursor.fail(`DROP INDEX ${name}: index does not exist at this point`);
+  }
+}
+
+function parseDrop(
+  cursor: Cursor,
+  tables: Map<string, ParsedTable>,
+  droppedTables: Set<string>,
+): void {
+  if (cursor.eatWord('TABLE')) {
+    parseDropTable(cursor, tables, droppedTables);
+    return;
+  }
+  if (cursor.eatWord('INDEX')) {
+    parseDropIndex(cursor, tables);
+    return;
+  }
+  const token = cursor.peek();
+  cursor.fail(
+    `unsupported DROP statement (only DROP TABLE and DROP INDEX), found ${JSON.stringify(token?.text ?? '')}`,
+  );
 }
 
 /**
@@ -715,11 +759,11 @@ export function applyMigrationSql(
     } else if (word === 'ALTER') {
       parseAlterTable(cursor, tables);
     } else if (word === 'DROP') {
-      parseDropTable(cursor, tables, droppedTables);
+      parseDrop(cursor, tables, droppedTables);
     } else {
       throw new TypegenError(
         source,
-        `unsupported SQL statement starting with ${JSON.stringify(head.text)} (only CREATE TABLE, CREATE [UNIQUE] INDEX, CREATE VIRTUAL TABLE … USING fts5, ALTER TABLE … ADD COLUMN, and DROP TABLE)`,
+        `unsupported SQL statement starting with ${JSON.stringify(head.text)} (only CREATE TABLE, CREATE [UNIQUE] INDEX, CREATE VIRTUAL TABLE … USING fts5, ALTER TABLE … ADD COLUMN, DROP INDEX, and DROP TABLE)`,
       );
     }
   }

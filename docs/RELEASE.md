@@ -1,8 +1,26 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.11** (`v0.15.11`). All artifacts use Apache-2.0, except
+current release is **0.15.12** (`v0.15.12`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.12 release notes
+
+0.15.12 makes secondary-index replacement a supported schema evolution instead
+of forcing applications to preserve obsolete uniqueness constraints forever.
+
+The release includes:
+
+- strict `DROP INDEX name` and `DROP INDEX IF EXISTS name` migration parsing;
+- head-schema removal and same-name `CREATE INDEX` replacement with updated
+  uniqueness or columns;
+- server schema-bump reconciliation that rebuilds declared application indexes
+  on SQLite, PostgreSQL, and D1 relational projections before advancing the
+  schema marker;
+- unchanged client safety: application tables and their indexes continue to be
+  recreated during the existing wipe/re-bootstrap flow on version changes;
+- parser, three-dialect server migration, documentation, typecheck, lint, and
+  full-suite regression coverage.
 
 ## 0.15.11 release notes
 

@@ -188,6 +188,11 @@ export function createIndexDdl(table: CompiledTable): string[] {
   });
 }
 
+/** Idempotent removal of one Syncular-owned relational projection index. */
+export function dropIndexDdl(indexName: string): string {
+  return `DROP INDEX IF EXISTS ${quoteIdent(indexName)}`;
+}
+
 /**
  * Convert one decoded row value to its SQL bind value.
  * - boolean → 0/1 on sqlite (INTEGER affinity), native on postgres;
@@ -481,7 +486,7 @@ export function assertAppendOnlyMigration(
 ): boolean {
   if (oldLayout.length > table.columns.length) {
     throw new Error(
-      `table ${JSON.stringify(tableName)}: the schema removed columns — only CREATE TABLE / ADD COLUMN / CREATE INDEX migrations are supported`,
+      `table ${JSON.stringify(tableName)}: the schema removed columns — only appending nullable columns is supported; indexes may be created, replaced, or dropped independently`,
     );
   }
   for (let i = 0; i < oldLayout.length; i++) {
@@ -624,15 +629,17 @@ export function rewritePlan(
 }
 
 /**
- * Every DDL statement to bring a database from `existingColumnsByTable`
- * (introspected; a missing key = table absent) to `schema`: CREATE TABLE
- * for absent tables, ADD COLUMN for missing columns, CREATE INDEX for the
- * declared user indexes — exactly the migration subset.
+ * Every DDL statement to bring a database from the introspected relational
+ * projections to `schema`: CREATE TABLE for absent tables, ADD COLUMN for
+ * missing columns, and rebuild declared secondary indexes. Rebuilding during
+ * a version bump supports DROP INDEX and same-name index replacement without
+ * requiring historical index definitions in the stored column-layout marker.
  */
 export function schemaDdl(
   schema: CompiledSchema,
   existingColumnsByTable: ReadonlyMap<string, ReadonlySet<string>>,
   dialect: RelationalDialect,
+  existingIndexesByTable: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
 ): string[] {
   const out: string[] = [];
   for (const table of schema.tables.values()) {
@@ -640,6 +647,9 @@ export function schemaDdl(
     if (existing === undefined) {
       out.push(createTableDdl(table, dialect));
     } else {
+      for (const indexName of existingIndexesByTable.get(table.name) ?? []) {
+        out.push(dropIndexDdl(indexName));
+      }
       out.push(...addColumnDdl(table, existing, dialect));
     }
     out.push(...createIndexDdl(table));

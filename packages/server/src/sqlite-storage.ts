@@ -270,21 +270,33 @@ export class SqliteServerStorage implements ServerStorage {
     }
     if (marker === null || marker.schema_version < schema.version) {
       // Introspect existing app tables, then apply the migration subset
-      // (CREATE TABLE / ADD COLUMN / CREATE INDEX) to reach `schema`, then
+      // (CREATE TABLE / ADD COLUMN / rebuild indexes) to reach `schema`, then
       // rewrite stored rows (payload re-encode for layout changes, and/or
       // projection backfill for flipped-on materialization). One
       // transaction: a failed bump leaves no half-state.
       const layouts = parseLayouts(marker?.layouts);
       const retiredTables = retiredTableNames(schema, layouts);
       const existing = new Map<string, ReadonlySet<string>>();
+      const existingIndexes = new Map<string, ReadonlySet<string>>();
       for (const table of schema.tables.values()) {
+        const escapedTableName = table.name.replaceAll('"', '""');
         const columns = this.db
           .query<{ name: string }, []>(
-            `PRAGMA table_info("${table.name.replaceAll('"', '""')}")`,
+            `PRAGMA table_info("${escapedTableName}")`,
           )
           .all();
         if (columns.length > 0) {
           existing.set(table.name, new Set(columns.map((c) => c.name)));
+          const indexes = this.db
+            .query<{ name: string; origin: string }, []>(
+              `PRAGMA index_list("${escapedTableName}")`,
+            )
+            .all()
+            .filter((index) => index.origin === 'c');
+          existingIndexes.set(
+            table.name,
+            new Set(indexes.map((index) => index.name)),
+          );
         }
       }
       this.db.exec('BEGIN IMMEDIATE');
@@ -295,7 +307,12 @@ export class SqliteServerStorage implements ServerStorage {
             .run(tableName);
           this.db.exec(dropTableDdl(tableName));
         }
-        for (const statement of schemaDdl(schema, existing, 'sqlite')) {
+        for (const statement of schemaDdl(
+          schema,
+          existing,
+          'sqlite',
+          existingIndexes,
+        )) {
           this.db.exec(statement);
         }
         for (const table of schema.tables.values()) {

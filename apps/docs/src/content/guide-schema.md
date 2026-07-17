@@ -12,7 +12,7 @@ The authoritative contract for the manifest, the IR, and the SQL subset is the
 
 **Migrations** (`migrations/NNNN_name/up.sql`) declare table shape. typegen
 parses a strict SQL subset (`CREATE TABLE`, `ALTER TABLE ADD COLUMN`,
-`CREATE INDEX`, and `DROP TABLE`, plus the supported column types and one
+`CREATE INDEX`, `DROP INDEX`, and `DROP TABLE`, plus the supported column types and one
 single-column primary key per table) and reads only the head table shape. It
 never runs your migrations: your host does that, and the server manages its
 own internal tables.
@@ -43,6 +43,12 @@ incompatible in-place rewrite on an upgrading server. The reference server
 drops the retired relational current-row table and its live scope index during
 the schema bump. Historical commit-log rows remain subject to normal retention,
 so table retirement is not a compliance erasure operation.
+
+`DROP INDEX [IF EXISTS] name` removes a previously declared secondary index
+from the generated head schema. You may recreate the same name later with a
+new column or uniqueness definition. On a server schema bump, Syncular
+rebuilds the declared secondary indexes on its relational projection tables;
+clients recreate their application tables during their normal re-bootstrap.
 
 ## Generate
 

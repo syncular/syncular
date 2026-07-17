@@ -184,6 +184,7 @@ duplicate ordinals are errors). The parser accepts exactly:
 - `CREATE TABLE [IF NOT EXISTS] name ( column-defs…, [PRIMARY KEY (col)] ) [WITHOUT ROWID]`
 - `ALTER TABLE name ADD [COLUMN] column-def`
 - `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table ( col [, col…] )`
+- `DROP INDEX [IF EXISTS] name`
 - `DROP TABLE [IF EXISTS] name`
 - `CREATE VIRTUAL TABLE [IF NOT EXISTS] name USING fts5( text-col [, text-col…], content = table [, tokenize = 'allowlisted tokenizer'] )`
 - column-def: `name TYPE [PRIMARY KEY] [NOT NULL] [NULL] [DEFAULT literal]`
@@ -217,6 +218,15 @@ is bare column names: **ASC/DESC**, **expression** columns (`lower(a)`), and
 **partial** (`WHERE …`) indexes are hard errors (the IR models column names
 only, so accepting a direction/expression would silently drop it).
 
+**Index replacement** (`DROP INDEX`). A previously declared secondary index
+may be removed with `DROP INDEX name` or conditionally with `IF EXISTS`.
+Generation removes it from the head IR; a later `CREATE INDEX` may reuse the
+name with a different uniqueness or column definition. On a server schema
+bump, Syncular rebuilds the declared secondary indexes for its owned
+relational projection tables before advancing the version marker. Client
+mirrors already wipe and re-bootstrap application tables on every schema
+version change.
+
 **Table retirement** (`DROP TABLE`). A table created earlier in migration
 history and dropped before the head version is absent from the IR and must be
 omitted from the manifest's `tables` list. `IF EXISTS` is supported. Reusing a
@@ -246,7 +256,7 @@ There is no automatic `LIKE` fallback when FTS5 is unavailable; local schema
 creation fails loudly.
 
 **Hard errors** (each names the construct and source file): any other
-statement (`CREATE TRIGGER/VIEW`, `DROP INDEX`, DML, `ALTER … RENAME`, …); unknown
+statement (`CREATE TRIGGER/VIEW`, DML, `ALTER … RENAME`, …); unknown
 or parameterized types (`VARCHAR(36)`); quoted identifiers
 (`"t"`, `` `t` ``, `[t]`); table constraints (`FOREIGN KEY`, `UNIQUE`,
 `CHECK`, `CONSTRAINT`); column constraints beyond the list above

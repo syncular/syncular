@@ -9,7 +9,7 @@
  *   4. the serve path is byte-verbatim (`_sync_payload` round-trips), with
  *      the row-codec round-trip invariant asserted per column type;
  *   5. schema version bumps apply the migration subset (ADD COLUMN /
- *      CREATE INDEX / DROP TABLE) and the version marker gates re-runs;
+ *      CREATE/DROP INDEX / DROP TABLE) and the version marker gates re-runs;
  *   6. reserved identifiers are rejected at schema compile.
  */
 import { describe, expect, test } from 'bun:test';
@@ -74,6 +74,23 @@ const SCHEMA: ServerSchema = {
       primaryKey: 'id',
       scopes: ['project:{project_id}'],
     },
+  ],
+};
+
+const INDEX_REPLACEMENT_SCHEMA: ServerSchema = {
+  version: 2,
+  tables: [
+    {
+      ...SCHEMA.tables[0]!,
+      indexes: [
+        {
+          name: 'tasks_by_title',
+          columns: ['project_id', 'title'],
+          unique: true,
+        },
+      ],
+    },
+    SCHEMA.tables[1]!,
   ],
 };
 
@@ -371,6 +388,7 @@ describe('server-side schema migration (the subset)', () => {
       .all('tasks')
       .map((i) => i.name);
     expect(indexes).toContain('tasks_by_assignee');
+    expect(indexes).not.toContain('tasks_by_project_title');
     const marker = storage.db
       .query<{ schema_version: number }, []>(
         'SELECT schema_version FROM sync_schema_meta WHERE id=1',
@@ -392,6 +410,63 @@ describe('server-side schema migration (the subset)', () => {
     const decoded = decodeRow(v2Columns, stored!.payload);
     expect(decoded[2]).toBe('v1 row');
     expect(decoded[v2Columns.length - 1]).toBeNull();
+  });
+
+  test('a version bump replaces declared indexes on SQLite', async () => {
+    const storage = new SqliteServerStorage();
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    await storage.ensureSchema(compileSchema(INDEX_REPLACEMENT_SCHEMA));
+
+    const indexes = storage.db
+      .query<{ name: string; unique: number; origin: string }, []>(
+        'PRAGMA index_list("tasks")',
+      )
+      .all()
+      .filter((index) => index.origin === 'c');
+    expect(indexes).toEqual([
+      expect.objectContaining({ name: 'tasks_by_title', unique: 1 }),
+    ]);
+    const columns = storage.db
+      .query<{ name: string }, []>('PRAGMA index_info("tasks_by_title")')
+      .all()
+      .map((column) => column.name);
+    expect(columns).toEqual(['project_id', 'title']);
+  });
+
+  test('a version bump replaces declared indexes on Postgres', async () => {
+    const db = await PGlite.create();
+    const storage = new PostgresServerStorage(pgliteExecutor(db));
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    await storage.ensureSchema(compileSchema(INDEX_REPLACEMENT_SCHEMA));
+
+    const indexes = await db.query<{ indexname: string; indexdef: string }>(
+      "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname=current_schema() AND tablename='tasks' AND indexname <> 'tasks_pkey' ORDER BY indexname",
+    );
+    expect(indexes.rows).toHaveLength(1);
+    expect(indexes.rows[0]?.indexname).toBe('tasks_by_title');
+    expect(indexes.rows[0]?.indexdef).toContain('UNIQUE INDEX tasks_by_title');
+    expect(indexes.rows[0]?.indexdef).toContain('(project_id, title)');
+  });
+
+  test('a version bump replaces declared indexes on D1', async () => {
+    const db = new D1DatabaseDouble();
+    const storage = new D1ServerStorage(db);
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    await storage.ensureSchema(compileSchema(INDEX_REPLACEMENT_SCHEMA));
+
+    const indexes = await db
+      .prepare('PRAGMA index_list("tasks")')
+      .all<{ name: string; unique: number; origin: string }>();
+    expect(indexes.results.filter((index) => index.origin === 'c')).toEqual([
+      expect.objectContaining({ name: 'tasks_by_title', unique: 1 }),
+    ]);
+    const columns = await db
+      .prepare('PRAGMA index_info("tasks_by_title")')
+      .all<{ name: string }>();
+    expect(columns.results.map((column) => column.name)).toEqual([
+      'project_id',
+      'title',
+    ]);
   });
 
   test('a version bump retires current rows and scope indexes for a removed table', async () => {
