@@ -54,8 +54,27 @@ export interface SeedTarget {
   readonly commitId?: string;
 }
 
-function camelToSnake(name: string): string {
-  return name.replace(/[A-Z]/g, (ch) => `_${ch.toLowerCase()}`);
+const MAPPABLE_RE = /^_*[A-Za-z][A-Za-z0-9_]*$/;
+
+/** Pinned §12 schema alias used by generated row types and every client host. */
+function snakeToCamel(name: string): string {
+  if (!MAPPABLE_RE.test(name)) return name;
+  const lead = /^_*/.exec(name)?.[0] ?? '';
+  const bare = name.slice(lead.length);
+  const trail = /_*$/.exec(bare)?.[0] ?? '';
+  const middle = bare.slice(0, bare.length - trail.length);
+  const segments = middle.split('_').filter((segment) => segment.length > 0);
+  if (segments.length === 0) return name;
+  const first = segments[0] as string;
+  return (
+    lead +
+    first +
+    segments
+      .slice(1)
+      .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+      .join('') +
+    trail
+  );
 }
 
 /**
@@ -85,15 +104,17 @@ export async function seedMutations(
     // the two casings the client tier accepts).
     const byColumn = new Map<string, unknown>();
     for (const [key, value] of Object.entries(mutation.values)) {
-      const name = table.columns.some((c) => c.name === key)
-        ? key
-        : camelToSnake(key);
-      if (!table.columns.some((c) => c.name === name)) {
+      const column = table.columns.find(
+        (candidate) =>
+          candidate.name === key || snakeToCamel(candidate.name) === key,
+      );
+      if (column === undefined) {
         throw new SyncError(
           'sync.invalid_request',
           `seedMutations: table ${table.name}: unknown column ${JSON.stringify(key)}`,
         );
       }
+      const name = column.name;
       if (byColumn.has(name)) {
         throw new SyncError(
           'sync.invalid_request',

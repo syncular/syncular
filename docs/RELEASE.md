@@ -1,8 +1,23 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.9** (`v0.15.9`). All artifacts use Apache-2.0, except
+current release is **0.15.10** (`v0.15.10`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.10 release notes
+
+0.15.10 closes two generated-application naming/type gaps found by the first
+encrypted Patient aggregate. Named-query parameters compared to encrypted
+columns now use the decrypted application `declaredType`, just like result rows
+and local runtime values; an encrypted local string therefore binds as `string`,
+not ciphertext `Uint8Array`. This applies to both plain named-query inference
+and the complete SYQL type-evidence pass.
+
+`seedMutations` now resolves camelCase keys by applying the pinned §12
+snake-to-camel schema mapping to each physical column. This keeps server seeds
+in lockstep with generated row types and every client host, including digit
+segments such as `address_line_1 → addressLine1`; the prior reverse-regex
+shortcut incorrectly produced `address_line1`.
 
 ## 0.15.9 release notes
 

@@ -92,6 +92,20 @@ describe('§5.11 encryptedColumns → IR', () => {
     ]);
   });
 
+  test('binds compared to encrypted columns use decrypted application types', () => {
+    const ir = buildIr(manifest(['body', 'amount']), MIGRATIONS);
+    const [query] = analyzeQueries(ir, [
+      {
+        file: 'encrypted-note-lookup.sql',
+        sql: 'SELECT id FROM notes WHERE body = :body AND amount = :amount',
+      },
+    ]);
+    expect(query?.params).toMatchObject([
+      { name: 'body', type: 'string', source: 'inferred' },
+      { name: 'amount', type: 'integer', source: 'inferred' },
+    ]);
+  });
+
   test('encrypted declared strings remain eligible for client-local FTS', () => {
     const migrations: MigrationInput[] = [
       {
