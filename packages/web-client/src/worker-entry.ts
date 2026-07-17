@@ -368,6 +368,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       consumeEffects(result.effects);
       return result.value;
     },
+    purgeLocalData: (input) => requireClient().purgeLocalData(input),
     sync: () => {
       const running = requireClient();
       return serializedSync(() => running.sync());

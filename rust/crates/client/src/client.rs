@@ -25,10 +25,11 @@ use ssp2::{
 use crate::api::{
     ClientChangeBatch, ClientLimits, CommandEffects, CommitOperation, CommitOperationOutcome,
     CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution, CommitOutcomeStatus,
-    ConflictRecord, CoverageSnapshot, LeaseState, Mutation, PresencePeer, QuerySnapshot,
-    RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RowState, SchemaFloor,
-    SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
-    WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
+    ConflictRecord, CoverageSnapshot, LeaseState, LocalDataPurgeInput, LocalDataPurgeResult,
+    LocalDataPurgeTarget, Mutation, PresencePeer, QuerySnapshot, RejectionDetails, RejectionRecord,
+    ResolveCommitOutcomeInput, RowState, SchemaFloor, SubscriptionStateView, SyncIntent,
+    SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange, WindowBase, WindowChange,
+    WindowCoverage, WindowState, WindowUnitRef,
 };
 use crate::schema::{parse_schema_json, ClientSchema, FtsIndexSchema, TableSchema};
 use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
@@ -669,6 +670,147 @@ mod observation_tests {
             .expect("delete code");
         assert!(search(&client, "enteric").is_empty());
     }
+
+    #[test]
+    fn application_authorized_local_purge_is_exact_atomic_and_idempotent() {
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "patient_notes",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "practice_id", "type": "string", "nullable": false },
+                    { "name": "encryption_key_id", "type": "string", "nullable": false },
+                    { "name": "title", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "practice:{practice_id}" }],
+                "ftsIndexes": [{
+                    "name": "patient_notes_fts",
+                    "columns": ["title"],
+                    "tokenize": "unicode61 remove_diacritics 2"
+                }]
+            }]
+        });
+        let mut client = SyncClient::new(
+            "local-purge-test".to_owned(),
+            &schema,
+            ClientLimits::default(),
+        )
+        .expect("local purge client");
+        client
+            .conn
+            .execute(
+                "INSERT INTO _syncular_base_patient_notes(id, practice_id, encryption_key_id, title, _syncular_version) VALUES
+                 ('target', 'practice-1', 'key-revoked', 'Target original', 1),
+                 ('unrelated', 'practice-1', 'key-held', 'Unrelated original', 1)",
+                [],
+            )
+            .expect("seed base rows");
+        client.overlay_dirty.set(true);
+        client.rebuild_overlay_if_dirty();
+
+        let note = |id: &str, key_id: &str, title: &str| {
+            Map::from_iter([
+                ("id".to_owned(), Value::from(id)),
+                ("practice_id".to_owned(), Value::from("practice-1")),
+                ("encryption_key_id".to_owned(), Value::from(key_id)),
+                ("title".to_owned(), Value::from(title)),
+            ])
+        };
+        let doomed = client
+            .mutate(vec![
+                Mutation::Upsert {
+                    table: "patient_notes".to_owned(),
+                    values: note("target", "key-revoked", "Target changed"),
+                    base_version: None,
+                },
+                Mutation::Upsert {
+                    table: "patient_notes".to_owned(),
+                    values: note("unrelated", "key-held", "Unrelated changed"),
+                    base_version: None,
+                },
+            ])
+            .expect("doomed commit");
+        let kept = client
+            .mutate(vec![Mutation::Upsert {
+                table: "patient_notes".to_owned(),
+                values: note("kept", "key-held", "Kept optimistic"),
+                base_version: None,
+            }])
+            .expect("kept commit");
+        client.drain_change_batches();
+
+        let input = LocalDataPurgeInput {
+            purge_id: "purge-001".to_owned(),
+            targets: vec![LocalDataPurgeTarget {
+                table: "patient_notes".to_owned(),
+                selectors: BTreeMap::from([(
+                    "encryption_key_id".to_owned(),
+                    vec!["key-revoked".to_owned()],
+                )]),
+            }],
+        };
+        assert_eq!(
+            client.purge_local_data(&input).expect("apply purge"),
+            LocalDataPurgeResult {
+                already_applied: false,
+                purged_rows: 1,
+                dropped_commits: 1,
+            }
+        );
+        let rows = client
+            .query("SELECT id, title FROM patient_notes ORDER BY id", &[])
+            .expect("visible rows");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["id"], "kept");
+        assert_eq!(rows[1]["id"], "unrelated");
+        assert_eq!(rows[1]["title"], "Unrelated original");
+        let fts = client
+            .query(
+                "SELECT n.id FROM patient_notes_fts f JOIN patient_notes n ON CAST(n.id AS TEXT) = f._syncular_source_id WHERE patient_notes_fts MATCH 'target'",
+                &[],
+            )
+            .expect("fts query");
+        assert!(fts.is_empty());
+        assert_eq!(client.outbox.len(), 1);
+        assert_eq!(client.outbox[0].client_commit_id, kept);
+        let outcome = client
+            .commit_outcome(&doomed)
+            .expect("read doomed outcome")
+            .expect("doomed outcome");
+        assert_eq!(outcome.status, CommitOutcomeStatus::Rejected);
+        match &outcome.results[0] {
+            CommitOperationOutcome::Error { rejection } => {
+                assert_eq!(rejection.code, "client.local_data_purged");
+                assert_eq!(rejection.client_commit_id, doomed);
+            }
+            other => panic!("expected local purge rejection, got {other:?}"),
+        }
+        assert_eq!(client.drain_change_batches().len(), 1);
+        assert_eq!(
+            client.purge_local_data(&input).expect("retry purge"),
+            LocalDataPurgeResult {
+                already_applied: true,
+                purged_rows: 0,
+                dropped_commits: 0,
+            }
+        );
+        let conflicting = LocalDataPurgeInput {
+            purge_id: input.purge_id.clone(),
+            targets: vec![LocalDataPurgeTarget {
+                table: "patient_notes".to_owned(),
+                selectors: BTreeMap::from([(
+                    "encryption_key_id".to_owned(),
+                    vec!["key-held".to_owned()],
+                )]),
+            }],
+        };
+        assert!(client
+            .purge_local_data(&conflicting)
+            .expect_err("id collision must fail")
+            .contains("already used with a different plan"));
+    }
 }
 
 impl SubState {
@@ -736,6 +878,12 @@ impl From<&OutboxOp> for CommitOperation {
 struct OutboxCommit {
     client_commit_id: String,
     ops: Vec<OutboxOp>,
+}
+
+#[derive(Debug, Clone)]
+struct CompiledLocalDataPurgeTarget {
+    table: String,
+    selectors: Vec<(String, Vec<String>)>,
 }
 
 struct StoredCommitOutcomeRow {
@@ -821,6 +969,10 @@ impl ChangeAccumulator {
 /// included IN ORDER until the operation budget is spent, the rest wait for
 /// the next round.
 const PUSH_OPS_PER_REQUEST: usize = 500;
+const MAX_LOCAL_PURGE_TARGETS: usize = 64;
+const MAX_LOCAL_PURGE_SELECTORS: usize = 8;
+const MAX_LOCAL_PURGE_VALUES: usize = 128;
+const MAX_LOCAL_PURGE_VALUE_LENGTH: usize = 256;
 
 pub struct SyncClient {
     conn: Connection,
@@ -869,6 +1021,14 @@ pub struct SyncClient {
 
 fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+fn is_local_purge_code_like(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b':' | b'-'))
 }
 
 fn base_table(name: &str) -> String {
@@ -5017,6 +5177,330 @@ impl SyncClient {
             )));
         }
         Ok(applied)
+    }
+
+    // -- application-authorized local purge ---------------------------------------
+
+    fn compile_local_data_purge(
+        &self,
+        input: &LocalDataPurgeInput,
+    ) -> Result<(Vec<CompiledLocalDataPurgeTarget>, String), String> {
+        let invalid = |message: String| format!("sync.invalid_request: {message}");
+        if input.purge_id.is_empty()
+            || input.purge_id.len() > 128
+            || !is_local_purge_code_like(&input.purge_id)
+        {
+            return Err(invalid(
+                "local purge purgeId must be a 1–128 character code-like identifier".to_owned(),
+            ));
+        }
+        if input.targets.is_empty() || input.targets.len() > MAX_LOCAL_PURGE_TARGETS {
+            return Err(invalid(format!(
+                "local purge needs between 1 and {MAX_LOCAL_PURGE_TARGETS} targets"
+            )));
+        }
+
+        let mut deduplicated: BTreeMap<
+            String,
+            (CompiledLocalDataPurgeTarget, LocalDataPurgeTarget),
+        > = BTreeMap::new();
+        for target in &input.targets {
+            let table = self.schema.table(&target.table).ok_or_else(|| {
+                invalid(format!(
+                    "local purge names unknown table {:?}",
+                    target.table
+                ))
+            })?;
+            if target.selectors.is_empty() || target.selectors.len() > MAX_LOCAL_PURGE_SELECTORS {
+                return Err(invalid(format!(
+                    "local purge target {:?} needs between 1 and {MAX_LOCAL_PURGE_SELECTORS} selectors",
+                    target.table
+                )));
+            }
+            let mut selectors = Vec::with_capacity(target.selectors.len());
+            let mut canonical_selectors = BTreeMap::new();
+            for (column_name, raw_values) in &target.selectors {
+                let Some((column_index, column)) = table
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .find(|(_, column)| column.name == *column_name)
+                else {
+                    return Err(invalid(format!(
+                        "local purge target {:?} names unknown column {:?}",
+                        target.table, column_name
+                    )));
+                };
+                let encrypted = table
+                    .encrypted_columns
+                    .iter()
+                    .any(|candidate| candidate.index == column_index);
+                if column.ty != ColumnType::String || encrypted {
+                    return Err(invalid(format!(
+                        "local purge selector {:?}.{:?} must be a plaintext string column",
+                        target.table, column_name
+                    )));
+                }
+                if raw_values.is_empty() || raw_values.len() > MAX_LOCAL_PURGE_VALUES {
+                    return Err(invalid(format!(
+                        "local purge selector {:?}.{:?} needs between 1 and {MAX_LOCAL_PURGE_VALUES} values",
+                        target.table, column_name
+                    )));
+                }
+                let mut values = raw_values.clone();
+                values.sort();
+                values.dedup();
+                if values.iter().any(|value| {
+                    value.is_empty()
+                        || value.len() > MAX_LOCAL_PURGE_VALUE_LENGTH
+                        || !is_local_purge_code_like(value)
+                }) {
+                    return Err(invalid(format!(
+                        "local purge selector values must be 1–{MAX_LOCAL_PURGE_VALUE_LENGTH} character code-like identifiers"
+                    )));
+                }
+                selectors.push((column_name.clone(), values.clone()));
+                canonical_selectors.insert(column_name.clone(), values);
+            }
+            let canonical = LocalDataPurgeTarget {
+                table: target.table.clone(),
+                selectors: canonical_selectors,
+            };
+            let key = serde_json::to_string(&canonical).map_err(|error| error.to_string())?;
+            deduplicated.insert(
+                key,
+                (
+                    CompiledLocalDataPurgeTarget {
+                        table: target.table.clone(),
+                        selectors,
+                    },
+                    canonical,
+                ),
+            );
+        }
+        let targets = deduplicated
+            .values()
+            .map(|(compiled, _)| compiled.clone())
+            .collect::<Vec<_>>();
+        let canonical = deduplicated
+            .values()
+            .map(|(_, target)| target.clone())
+            .collect::<Vec<_>>();
+        let canonical_plan =
+            serde_json::to_string(&canonical).map_err(|error| error.to_string())?;
+        Ok((targets, canonical_plan))
+    }
+
+    fn local_purge_base_row_ids(
+        &self,
+        targets: &[CompiledLocalDataPurgeTarget],
+    ) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+        let mut by_table: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for target in targets {
+            let table = self
+                .schema
+                .table(&target.table)
+                .ok_or_else(|| format!("sync.invalid_request: unknown table {:?}", target.table))?;
+            let mut clauses = Vec::with_capacity(target.selectors.len());
+            let mut params = Vec::new();
+            for (column, values) in &target.selectors {
+                clauses.push(format!(
+                    "{} IN ({})",
+                    quote_ident(column),
+                    values.iter().map(|_| "?").collect::<Vec<_>>().join(", ")
+                ));
+                params.extend(values.iter().cloned().map(SqlValue::Text));
+            }
+            let sql = format!(
+                "SELECT CAST({} AS TEXT) FROM {} WHERE {}",
+                quote_ident(&table.primary_key),
+                base_table(&target.table),
+                clauses.join(" AND ")
+            );
+            let mut statement = self.conn.prepare(&sql).map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map(rusqlite::params_from_iter(params), |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|error| error.to_string())?;
+            let ids = by_table.entry(target.table.clone()).or_default();
+            for row in rows {
+                ids.insert(row.map_err(|error| error.to_string())?);
+            }
+        }
+        Ok(by_table)
+    }
+
+    fn local_purge_values_match(
+        target: &CompiledLocalDataPurgeTarget,
+        values: &Map<String, Value>,
+    ) -> bool {
+        target.selectors.iter().all(|(column, allowed)| {
+            values
+                .get(column)
+                .and_then(Value::as_str)
+                .is_some_and(|value| allowed.iter().any(|candidate| candidate == value))
+        })
+    }
+
+    /// Apply one host-authorized local security purge. The host MUST gate the
+    /// corresponding subscriptions first; this primitive owns local SQLite
+    /// cleanup and never grants/revokes server authority by itself.
+    pub fn purge_local_data(
+        &mut self,
+        input: &LocalDataPurgeInput,
+    ) -> Result<LocalDataPurgeResult, String> {
+        let (targets, canonical_plan) = self.compile_local_data_purge(input)?;
+        let meta_key = format!("localPurge:{}", input.purge_id);
+        let applied_plan = self
+            .conn
+            .query_row(
+                "SELECT value FROM _syncular_meta WHERE key = ?1",
+                rusqlite::params![meta_key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if let Some(applied_plan) = applied_plan {
+            if applied_plan != canonical_plan {
+                return Err(format!(
+                    "sync.invalid_request: local purge id {:?} was already used with a different plan",
+                    input.purge_id
+                ));
+            }
+            return Ok(LocalDataPurgeResult {
+                already_applied: true,
+                purged_rows: 0,
+                dropped_commits: 0,
+            });
+        }
+
+        let prior_outbox = self.outbox.clone();
+        let prior_rejection_count = self.rejections.len();
+        let prior_overlay_dirty = self.overlay_dirty.get();
+        self.begin_observation("syncular_local_purge")?;
+        let applied = (|| -> Result<(ChangeAccumulator, LocalDataPurgeResult), String> {
+            let row_ids = self.local_purge_base_row_ids(&targets)?;
+            let doomed = self
+                .outbox
+                .iter()
+                .filter(|commit| {
+                    commit.ops.iter().any(|operation| {
+                        let matching_targets = targets
+                            .iter()
+                            .filter(|target| target.table == operation.table)
+                            .collect::<Vec<_>>();
+                        if matching_targets.is_empty() {
+                            return false;
+                        }
+                        if row_ids
+                            .get(&operation.table)
+                            .is_some_and(|ids| ids.contains(&operation.row_id))
+                        {
+                            return true;
+                        }
+                        operation.values.as_ref().is_some_and(|values| {
+                            matching_targets
+                                .iter()
+                                .any(|target| Self::local_purge_values_match(target, values))
+                        })
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let doomed_ids = doomed
+                .iter()
+                .map(|commit| commit.client_commit_id.clone())
+                .collect::<BTreeSet<_>>();
+            let mut batch = ChangeAccumulator::default();
+            let mut rejections = Vec::new();
+            for commit in &doomed {
+                for operation in &commit.ops {
+                    batch.table(&operation.table);
+                }
+                let results = commit
+                    .ops
+                    .iter()
+                    .enumerate()
+                    .map(|(op_index, operation)| {
+                        let rejection = RejectionRecord {
+                            client_commit_id: commit.client_commit_id.clone(),
+                            op_index: op_index as i32,
+                            code: "client.local_data_purged".to_owned(),
+                            message: "the commit was dropped by an application-authorized local data purge".to_owned(),
+                            retryable: false,
+                            details: None,
+                            operation: Some(CommitOperation::from(operation)),
+                        };
+                        rejections.push(rejection.clone());
+                        CommitOperationOutcome::Error { rejection }
+                    })
+                    .collect::<Vec<_>>();
+                self.persist_commit_outcome(
+                    &commit.client_commit_id,
+                    CommitOutcomeStatus::Rejected,
+                    &results,
+                    Some(&commit.ops),
+                )?;
+                self.delete_outbox_persisted(&commit.client_commit_id)?;
+            }
+            if !doomed.is_empty() {
+                self.outbox
+                    .retain(|commit| !doomed_ids.contains(&commit.client_commit_id));
+                self.rejections.extend(rejections);
+                self.prune_commit_outcomes()?;
+                self.overlay_dirty.set(true);
+                batch.status = true;
+                batch.rejections = true;
+                batch.outcomes = true;
+            }
+
+            let mut purged_rows = 0usize;
+            for (table, ids) in &row_ids {
+                if ids.is_empty() {
+                    continue;
+                }
+                batch.table(table);
+                for row_id in ids {
+                    self.delete_base_row(table, row_id)?;
+                    purged_rows += 1;
+                }
+            }
+            self.rebuild_overlay_if_dirty();
+            self.reconcile_blob_refcounts(true);
+            self.conn
+                .execute(
+                    "INSERT INTO _syncular_meta(key, value) VALUES (?1, ?2)",
+                    rusqlite::params![meta_key, canonical_plan],
+                )
+                .map_err(|error| error.to_string())?;
+            Ok((
+                batch,
+                LocalDataPurgeResult {
+                    already_applied: false,
+                    purged_rows,
+                    dropped_commits: doomed.len(),
+                },
+            ))
+        })();
+        let (batch, result) = match applied {
+            Ok(value) => value,
+            Err(error) => {
+                self.rollback_observation("syncular_local_purge");
+                self.outbox = prior_outbox;
+                self.rejections.truncate(prior_rejection_count);
+                self.overlay_dirty.set(prior_overlay_dirty);
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.finish_observation("syncular_local_purge", batch) {
+            self.rollback_observation("syncular_local_purge");
+            self.outbox = prior_outbox;
+            self.rejections.truncate(prior_rejection_count);
+            self.overlay_dirty.set(prior_overlay_dirty);
+            return Err(error);
+        }
+        Ok(result)
     }
 
     // -- scope purge + doomed outbox (§3.3) ----------------------------------------

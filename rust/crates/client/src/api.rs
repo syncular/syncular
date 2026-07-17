@@ -486,6 +486,34 @@ pub struct SubscriptionStateView {
     pub reason_code: Option<String>,
 }
 
+/// One AND-combined application-authorized local purge target. Targets in
+/// one input are OR-combined. Selector columns must compile to plaintext
+/// strings; values are bounded code-like routing identifiers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalDataPurgeTarget {
+    pub table: String,
+    pub selectors: BTreeMap<String, Vec<String>>,
+}
+
+/// Durable local idempotency key plus exact routing targets. The host owns
+/// directive authenticity and subscription gating; the client owns SQLite.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalDataPurgeInput {
+    pub purge_id: String,
+    pub targets: Vec<LocalDataPurgeTarget>,
+}
+
+/// Privacy-safe local purge acknowledgement; row ids never cross the bridge.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDataPurgeResult {
+    pub already_applied: bool,
+    pub purged_rows: usize,
+    pub dropped_commits: usize,
+}
+
 /// Client limits (§4.2 request knobs).
 #[derive(Debug, Clone, Default)]
 pub struct ClientLimits {

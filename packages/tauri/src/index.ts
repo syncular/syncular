@@ -40,6 +40,8 @@ import type {
   InvalidationEvent,
   InvalidationListener,
   LeaseState,
+  LocalDataPurgeInput,
+  LocalDataPurgeResult,
   MutationInput,
   PresencePeer,
   QueryReadSpec,
@@ -400,6 +402,14 @@ export class TauriSyncClient {
         : {}),
     })) as { clientCommitId: string };
     return result.clientCommitId;
+  }
+
+  async purgeLocalData(
+    input: LocalDataPurgeInput,
+  ): Promise<LocalDataPurgeResult> {
+    return (await this.#command('purgeLocalData', {
+      input,
+    })) as LocalDataPurgeResult;
   }
 
   /**

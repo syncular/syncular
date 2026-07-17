@@ -15,6 +15,8 @@ import type {
   InvalidationEvent,
   InvalidationListener,
   LeaseState,
+  LocalDataPurgeInput,
+  LocalDataPurgeResult,
   MutationInput,
   PresencePeer,
   QueryReadSpec,
@@ -177,6 +179,10 @@ export class FakeClient implements SyncClientLike {
 
   patch(): string {
     return 'commit-id';
+  }
+
+  purgeLocalData(_input: LocalDataPurgeInput): LocalDataPurgeResult {
+    return { alreadyApplied: false, purgedRows: 0, droppedCommits: 0 };
   }
 
   querySnapshot<Row = SqlRow>(spec: QueryReadSpec): QuerySnapshot<Row> {

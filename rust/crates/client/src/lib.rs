@@ -30,7 +30,8 @@ pub mod values;
 pub use api::{
     ClientChangeBatch, ClientLimits, CommandEffects, CommitOperation, CommitOperationOutcome,
     CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution, CommitOutcomeStatus,
-    ConflictRecord, CoverageSnapshot, Mutation, PresencePeer, QuerySnapshot, RejectionRecord,
+    ConflictRecord, CoverageSnapshot, LocalDataPurgeInput, LocalDataPurgeResult,
+    LocalDataPurgeTarget, Mutation, PresencePeer, QuerySnapshot, RejectionRecord,
     ResolveCommitOutcomeInput, RowState, SchemaFloor, SubscriptionStateView, SyncIntent,
     SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange, WindowBase, WindowChange,
     WindowCoverage, WindowState, WindowUnitRef,

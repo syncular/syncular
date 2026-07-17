@@ -24,6 +24,7 @@ export function handleShapeOf(client: SyncClient): SyncClientLike {
     mutate: (mutations) => Promise.resolve(client.mutate(mutations)),
     patch: (table, rowId, partial, options) =>
       Promise.resolve(client.patch(table, rowId, partial, options)),
+    purgeLocalData: (input) => Promise.resolve(client.purgeLocalData(input)),
     querySnapshot: (spec) => Promise.resolve(client.querySnapshot(spec)),
     statusSnapshot: () => Promise.resolve(client.statusSnapshot()),
     // Getters on SyncClient become async methods on the handle.

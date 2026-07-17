@@ -67,6 +67,12 @@ function defaultResponder(cmd: string, args: Record<string, unknown>): unknown {
       return OK({ clientCommitId: 'commit-1' });
     case 'patch':
       return OK({ clientCommitId: 'patch-1' });
+    case 'purgeLocalData':
+      return OK({
+        alreadyApplied: false,
+        purgedRows: 2,
+        droppedCommits: 1,
+      });
     case 'querySnapshot':
       return OK({
         revision: '7',
@@ -283,6 +289,36 @@ describe('createTauriSyncClient', () => {
     expect(id).toBe('commit-1');
   });
 
+  test('purgeLocalData forwards the exact bounded plan over the command bridge', async () => {
+    const { client, calls } = await build();
+    const input = {
+      purgeId: 'purge-001',
+      targets: [
+        {
+          table: 'patient_notes',
+          selectors: { encryption_key_id: ['key-revoked'] },
+        },
+      ],
+    } as const;
+    expect(await client.purgeLocalData(input)).toEqual({
+      alreadyApplied: false,
+      purgedRows: 2,
+      droppedCommits: 1,
+    });
+    const call = calls.findLast(
+      (candidate) =>
+        (
+          candidate.args.command as
+            | { method?: string; params?: unknown }
+            | undefined
+        )?.method === 'purgeLocalData',
+    );
+    expect(call?.args.command).toEqual({
+      method: 'purgeLocalData',
+      params: { input },
+    });
+  });
+
   test('query strips reserved _sync_* columns (RFC 0002 §2.1)', async () => {
     const { tauri } = makeTauri((cmd, args) => {
       if (cmd === 'plugin:syncular|syncular_query') {
@@ -455,6 +491,21 @@ describe('SyncClientLike parity', () => {
     expect(await normalized.patch('todo', 't1', { title: 'next' })).toBe(
       'patch-1',
     );
+    expect(
+      await normalized.purgeLocalData({
+        purgeId: 'purge-001',
+        targets: [
+          {
+            table: 'todo',
+            selectors: { project_id: ['project-1'] },
+          },
+        ],
+      }),
+    ).toEqual({
+      alreadyApplied: false,
+      purgedRows: 2,
+      droppedCommits: 1,
+    });
     expect(await normalized.conflicts()).toEqual([]);
     expect(await normalized.rejections()).toEqual([]);
     expect(await normalized.commitOutcome('commit-1')).toMatchObject({

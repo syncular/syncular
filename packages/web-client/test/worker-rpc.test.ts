@@ -146,6 +146,71 @@ test('boot → subscribe → mutate → sync → query, all over the RPC', async
   expect(await handle.syncNeeded()).toBe(false);
 });
 
+test('application-authorized local purge crosses the worker RPC atomically', async () => {
+  const { handle } = await makeHandle({
+    clientId: 'rpc-local-purge',
+    autoSync: false,
+  });
+  const doomed = await handle.mutate([
+    {
+      table: 'tasks',
+      op: 'upsert',
+      values: taskValues('target', 'purged-project', 'purge me'),
+    },
+    {
+      table: 'tasks',
+      op: 'upsert',
+      values: taskValues('same-commit', 'held-project', 'rollback me too'),
+    },
+  ]);
+  const kept = await handle.mutate([
+    {
+      table: 'tasks',
+      op: 'upsert',
+      values: taskValues('kept', 'held-project', 'keep me'),
+    },
+  ]);
+  const input = {
+    purgeId: 'rpc-purge-001',
+    targets: [
+      {
+        table: 'tasks',
+        selectors: { project_id: ['purged-project'] },
+      },
+    ],
+  } as const;
+
+  expect(await handle.purgeLocalData(input)).toEqual({
+    alreadyApplied: false,
+    purgedRows: 0,
+    droppedCommits: 1,
+  });
+  expect(await handle.query('SELECT id FROM tasks ORDER BY id')).toEqual([
+    { id: 'kept' },
+  ]);
+  expect(
+    (await handle.pendingCommits()).map((commit) => commit.clientCommitId),
+  ).toEqual([kept]);
+  expect(await handle.commitOutcome(doomed)).toMatchObject({
+    status: 'rejected',
+    results: [
+      {
+        status: 'error',
+        rejection: { code: 'client.local_data_purged' },
+      },
+      {
+        status: 'error',
+        rejection: { code: 'client.local_data_purged' },
+      },
+    ],
+  });
+  expect(await handle.purgeLocalData(input)).toEqual({
+    alreadyApplied: true,
+    purgedRows: 0,
+    droppedCommits: 0,
+  });
+});
+
 test('query results carry blobs across the boundary (transfer path)', async () => {
   const { handle } = await makeHandle({
     clientId: 'rpc-blob',

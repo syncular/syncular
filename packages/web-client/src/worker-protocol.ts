@@ -39,6 +39,7 @@ import type {
   LocalRevision,
   SyncStatusSnapshot,
 } from './invalidation';
+import type { LocalDataPurgeInput, LocalDataPurgeResult } from './local-purge';
 import type { OutboxCommit } from './outbox';
 import type {
   CommitOutcome,
@@ -133,6 +134,8 @@ export interface WorkerApi {
     partial: Readonly<Record<string, unknown>>,
     options?: { readonly baseVersion?: number },
   ): string;
+  /** Application-authorized, idempotent local security purge. */
+  purgeLocalData(input: LocalDataPurgeInput): LocalDataPurgeResult;
   sync(): Promise<SyncSummary>;
   syncUntilIdle(maxRounds?: number): Promise<SyncSummary>;
   query(sql: string, params?: readonly SqlValue[]): SqlRow[];

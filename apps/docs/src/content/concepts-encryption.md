@@ -147,6 +147,38 @@ and writes a `key_grants` row. It syncs like any other row. The newcomer reads
 their grant, `unwrapKey`s it with their private key, and feeds the recovered
 key to their `keyProvider`. The server only ever stores the wrapped bytes.
 
+## Revoking a key on one device
+
+Key revocation is an application authority workflow, not something the sync
+protocol can infer from ciphertext. The safe order is:
+
+1. validate a fresh, server-authoritative revocation/purge directive and its
+   exact device and key version;
+2. quarantine the protected feature and gate/remove subscriptions that could
+   re-download those rows;
+3. call `purgeLocalData()` with plaintext routing columns such as
+   `encryption_key_id`;
+4. purge app-owned drafts/files outside Syncular and remove the raw key from
+   the OS secure store;
+5. acknowledge the directive only after every local stage succeeds.
+
+```ts
+await client.purgeLocalData({
+  purgeId: directive.id,
+  targets: [{
+    table: 'patient_notes',
+    selectors: { encryption_key_id: [directive.keyVersionId] },
+  }],
+});
+```
+
+The local engine performs exact row/FTS cleanup, rejects any whole pending
+commit that touches the target, replays safe later edits, reconciles cached
+blob references, and durably records the purge id in one SQLite transaction.
+Retries are no-ops; an id reused with a different plan fails closed. This API
+does **not** authenticate the directive or revoke server access, and a powered-
+off device remains unconfirmed—it has not been remotely erased.
+
 ## What the server can and cannot see: threat model
 
 Be honest about the boundary. With an encrypted column, the server:
