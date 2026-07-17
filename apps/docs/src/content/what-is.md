@@ -15,6 +15,11 @@ aggregates, and indexes work locally without a network round trip. Writes
 apply locally at once and queue in a durable **outbox**; when the network is
 there, they push to the server as idempotent **commits**.
 
+Reads can remain raw SQL or become checked named queries. One SQL or SYQL
+source is lowered to a target-neutral QueryIR and generates typed APIs for
+TypeScript, Swift, Kotlin, Dart, and Rust, including the reactive dependencies
+and synchronization coverage the compiler can prove.
+
 The server is authoritative. It validates every commit against your **scopes**
 (one `resolveScopes(actor)` function that lives in *your* backend, next to your
 auth), appends it to an ordered commit log, and delivers it to every subscribed
@@ -81,6 +86,7 @@ toolchain overhead. Syncular spends its whole budget on boring-ness:
 |---|---|
 | A written protocol ([SPEC.md](https://github.com/syncular/syncular/blob/main/docs/SPEC.md)) | A third implementation plugs in against the spec and its golden vectors. Divergence is a bug you can point at. |
 | Two cores, one protocol | The web core is small, debuggable TypeScript that builds without the Rust toolchain; the Rust core ships native. Parity between them is a CI gate. |
+| One query plan, five targets | TypeScript, Swift, Kotlin, Dart, and Rust generated queries share inputs, selected SQL, bind order, dependencies, coverage, and row identity. |
 | One path per concern | One sync loop over WebSocket, one persistent browser mode (OPFS), one preferred bootstrap format. An unsupported environment produces a clear error. |
 | Scopes run in *your* backend | `resolveScopes(actor)` lives next to your auth, so sync reuses the authorization you already have. |
 | One command to a running app | `bun create syncular-app my-app` scaffolds a working server and client with the typed schema already wired up. |

@@ -67,8 +67,43 @@ bunx @syncular/typegen fmt --check queries
 ```
 
 Generation emits the target-neutral query IR plus configured TypeScript,
-Swift, Kotlin, and Dart APIs. All targets consume the same physical plan and
-runtime validation rules.
+Swift, Kotlin, Dart, and Rust APIs. All targets consume the same physical plan,
+bind order, input-presence semantics, reactive facts, and runtime validation
+rules.
+
+## Rust output
+
+Rust named queries are opt-in because Rust loads the neutral schema IR directly
+rather than needing a generated schema source file:
+
+```json
+{
+  "output": {
+    "ir": "./syncular.ir.json",
+    "rust": {
+      "queriesPath": "./src/syncular_queries.rs"
+    }
+  }
+}
+```
+
+Each query becomes a snake-case module with typed `Params` and `Row` values,
+an inspectable `select` function, one-shot `run`, atomic `snapshot`, and a
+`DESCRIPTOR` containing its QueryIR identity, dependencies, coverage, and any
+proven row key:
+
+```rust
+mod syncular_queries;
+
+let params = syncular_queries::list_todos::Params::new(list_id);
+let rows = syncular_queries::list_todos::run(&client, &params)?;
+let view = syncular_queries::list_todos::snapshot(&mut client, &params)?;
+```
+
+Exact integers remain `i64`, optional nullable values preserve absent versus
+present `NULL`, and row decoding is strict. The generated module uses the
+`syncular-client` query boundary and requires no direct `serde_json`
+dependency. See [Rust](/platform-rust/) for the complete client workflow.
 
 For production-scale offline text search, declare a client-local FTS5
 projection and query it through the same generated surface. See

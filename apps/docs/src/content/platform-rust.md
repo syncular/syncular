@@ -130,6 +130,55 @@ For a validated device or key-revocation directive,
 the web and native bridges. Gate the affected subscriptions first; see
 [Authorized local purge](/concepts-local-data-purge/).
 
+## Generated named queries
+
+Raw `query` remains available, but applications can generate typed Rust reads
+from the same `.sql` and `.syql` files as the other clients. Add the Rust
+output to `syncular.json`:
+
+```json
+{
+  "output": {
+    "ir": "./syncular.ir.json",
+    "rust": {
+      "queriesPath": "./src/syncular_queries.rs",
+      "clientCrate": "syncular_client"
+    }
+  }
+}
+```
+
+`clientCrate` is optional. Set it only when Cargo aliases the
+`syncular-client` dependency. Then include the generated module and use the
+query-specific API:
+
+```rust
+mod syncular_queries;
+
+use syncular_queries::list_todos;
+
+let mut params = list_todos::Params::new("groceries".to_owned());
+params.page_size = Some(100);
+
+let rows: Vec<list_todos::Row> = list_todos::run(&client, &params)?;
+let view = list_todos::snapshot(&mut client, &params)?;
+println!("revision={}, complete={}", view.revision, view.coverage.complete);
+```
+
+The generated `select` function exposes the exact compiler-checked SQL and
+positional values for diagnostics. `DESCRIPTOR` additionally carries the
+QueryIR-hash identity, table and scope dependencies, `WindowCoverage`, and an
+optional proven row-key function. A Rust host can combine those facts with
+`drain_change_batches()` to build its own observer; codegen does not impose an
+async runtime or UI framework.
+
+SYQL `integer` is `i64`. Optional nullable inputs use
+`SyqlPresence<Option<T>>`, preserving absent versus present `NULL`. Result
+decoding accepts the core's lossless `$bigint` and `$bytes` envelopes and
+returns a column-specific `QueryError` instead of dropping a malformed row.
+Both the generated schema IR and `.rs` file are byte-gated by
+`syncular generate --check`.
+
 ## The sync loop
 
 `sync()` runs one combined push+pull round; `sync_until_idle()` repeats
