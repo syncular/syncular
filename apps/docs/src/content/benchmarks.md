@@ -60,10 +60,10 @@ is an external asset fetched at runtime, measured as shipped by
 
 | Artifact | Raw | Gzip | Whose bytes |
 |---|---|---|---|
-| syncular client code (core + codec) | 65.4 KB | 19.6 KB | ours |
-| sqlite-wasm JS glue | 214.3 KB | 65.2 KB | vendor (SQLite) |
+| syncular client code (core + codec) | 105.2 KB | 31.3 KB | ours |
+| sqlite-wasm JS glue | 214.9 KB | 65.3 KB | vendor (SQLite) |
 | sqlite3.wasm (external asset) | 844.5 KB | 396.1 KB | vendor (SQLite) |
-| **Total** | **1124.1 KB** | **480.9 KB** | |
+| **Total** | **1164.5 KB** | **492.7 KB** | |
 
 The size gate covers **our** bytes only: every wasm-SQLite product ships the
 stock SQLite distribution, so vendor engine bytes don't gate.

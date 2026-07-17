@@ -10,15 +10,18 @@ import rootPkg from '../../../../package.json';
 const FEATURES = [
   { title: 'scopes-as-code', body: 'one resolveScopes(actor) in your backend gates every read and write', href: '/concepts-scopes/' },
   { title: 'offline outbox', body: 'writes queue while out of range, replay in order on reconnect', href: '/concepts-conflicts/' },
-  { title: 'honest conflicts', body: 'surfaced with the server row attached; your app decides the merge', href: '/concepts-conflicts/' },
+  { title: 'durable recovery', body: 'structured rejections and losing writes survive restart until your app resolves them', href: '/concepts-conflicts/' },
   { title: 'realtime', body: 'verified deltas pushed over a single WebSocket loop', href: '/concepts-realtime/' },
   { title: 'fast bootstrap', body: 'precomputed sqlite-image segments; 100k rows in ~30 ms', href: '/concepts-bootstrap/' },
+  { title: 'offline FTS5', body: 'generated full-text projections stay current with the local SQLite mirror', href: '/tooling-local-search/' },
   { title: 'CRDT columns', body: 'collaborative text per column, byte-identical across both cores', href: '/concepts-crdt/' },
   { title: 'blobs', body: 'content-addressed attachments on S3/R2, re-authorized per download', href: '/concepts-blobs/' },
-  { title: 'optional E2EE', body: 'per-column AES-256-GCM; the well stays blind to your matter', href: '/concepts-encryption/' },
+  { title: 'optional E2EE', body: 'portable per-column AES-256-GCM keyrings with authorized local revocation', href: '/concepts-encryption/' },
   { title: 'windowed sync', body: 'partial replicas with atomic eviction and a completeness oracle', href: '/concepts-windowing/' },
   { title: 'testkit', body: 'in-process server, fault injection, and a virtual clock drive the real engine', href: '/tooling-testing/' },
 ] as const;
+
+const CONFORMANCE_SCENARIOS = 93;
 
 const PLATFORM_LINKS = [
   { label: 'WEB', href: '/platform-web/' },
@@ -102,8 +105,8 @@ const RULE_DASH = '-'.repeat(160);
           <p class="kicker">TELEMETRY — MEASURED NUMBERS</p>
           <div class="receipt"><pre>BOOTSTRAP 100,000 ROWS ..................... <span class="v">30 ms</span>
 REALTIME PROPAGATION (p95) ................. <span class="v">0.2 ms</span>
-WEB CLIENT, GZIPPED ........................ <span class="v">19.6 KB</span>
-CONFORMANCE SCENARIOS ...................... <span class="v">74 × 2 cores</span></pre></div>
+WEB CLIENT, GZIPPED ........................ <span class="v">31.3 KB</span>
+CONFORMANCE SCENARIOS ...................... <span class="v">{CONFORMANCE_SCENARIOS} × 2 cores</span></pre></div>
           <p class="lead">Methodology and caveats in the <a href="/benchmarks/">benchmarks</a>.</p>
         </section>
 
@@ -193,7 +196,7 @@ CONFORMANCE SCENARIOS ...................... <span class="v">74 × 2 cores</span
           <p class="lead">
             One <a href="https://github.com/syncular/syncular/blob/main/docs/SPEC.md">written protocol</a>
             is the law. Two independent cores obey it, held identical by golden
-            byte-level vectors and 74 conformance scenarios run against both in
+            byte-level vectors and {CONFORMANCE_SCENARIOS} conformance scenarios run against both in
             CI. Divergence is a bug you can point at, and a third
             implementation joins by reading the
             <a href="/guide-conformance/">spec</a>.
@@ -201,7 +204,7 @@ CONFORMANCE SCENARIOS ...................... <span class="v">74 × 2 cores</span
           <div class="cores">
             <div class="core">
               <p class="t">CORE A — TYPESCRIPT</p>
-              <p class="d">Web (worker + OPFS sqlite-wasm) · React · 19.6 KB gzipped of its own code</p>
+              <p class="d">Web (worker + OPFS sqlite-wasm) · React · 31.3 KB gzipped of its own code</p>
             </div>
             <div class="core">
               <p class="t">CORE B — RUST <span style="font-weight:400">(C FFI)</span></p>

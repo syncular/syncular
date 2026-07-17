@@ -147,7 +147,7 @@ const WORKLOAD = {
  *   gate; own-JS raw is the anti-bloat tripwire, and the feature trips it by
  *   design intent, not accident.
  * - `totalGzipCeilingBytes` 600 KB: total shipped payload (own JS +
- *   sqlite-wasm glue + sqlite3.wasm) is 474.2 KB gzip today. Also
+ *   sqlite-wasm glue + sqlite3.wasm) is 492.7 KB gzip today. Also
  *   deterministic; ~25% headroom covers a vendor SQLite bump without
  *   letting the payload drift unbounded.
  */

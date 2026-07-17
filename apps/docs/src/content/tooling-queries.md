@@ -69,3 +69,7 @@ bunx @syncular/typegen fmt --check queries
 Generation emits the target-neutral query IR plus configured TypeScript,
 Swift, Kotlin, and Dart APIs. All targets consume the same physical plan and
 runtime validation rules.
+
+For production-scale offline text search, declare a client-local FTS5
+projection and query it through the same generated surface. See
+[Local full-text search](/tooling-local-search/).

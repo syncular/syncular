@@ -108,7 +108,7 @@ import { schema } from './syncular.generated';
 
 const client = await createTauriSyncClient({ schema });
 // Every hook works unchanged:
-// <SyncProvider client={client}> … useQuery / useRawSql / useMutation / usePresence
+// <SyncProvider client={client}> … useQuery / useMutation / useCommitOutcomes / usePresence
 ```
 
 The JS side supplies the schema and optional `limits`; the native side owns
@@ -120,12 +120,34 @@ rebinding identity. The bridge resolves
 `@tauri-apps/api` automatically (or the ambient `window.__TAURI__` when
 `withGlobalTauri` is enabled); tests inject `invoke`/`listen` doubles.
 
+For encrypted schemas, build the plugin with its `e2ee` feature and pass the
+portable keyring accepted by the browser worker too:
+
+```ts
+const client = await createTauriSyncClient({
+  schema,
+  encryption: {
+    keys: { 'key-2026-07': activeKey, 'key-2026-06': previousKey },
+    keyIdColumns: { patient_notes: 'encryption_key_id' },
+  },
+});
+```
+
+Raw keys cross only into the native command core and are never sent to the
+server. See [Client-side encryption](/concepts-encryption/).
+
+The bridge exposes the native durable outcome journal through `commitOutcome`,
+`commitOutcomes`, and `resolveCommitOutcome`; React observes it with
+`useCommitOutcomes()`.
+
 `purgeLocalData({ purgeId, targets })` crosses the same command bridge to the
 native core. It applies exact plaintext-selector row and FTS cleanup, whole-
 commit outbox rejection, optimistic replay, blob reconciliation, and durable
 idempotency in one SQLite transaction. Validate the authority directive and
 gate protected subscriptions before calling it; app-owned files and OS secure-
 store keys remain the app's responsibility.
+See [Authorized local purge](/concepts-local-data-purge/) for the complete
+authority and subscription-gating workflow.
 
 ## The command and event surface
 

@@ -131,8 +131,17 @@ ordinary generated query.
 - `useSyncStatus()` observes outbox/upgrading/lease/schema/pull state.
   `syncNeeded` means inbound pull/catch-up; `outbox` is pending local push work.
 - `useConflicts()` observes conflict and rejection changes.
+- `useCommitOutcomes()` observes the durable newest-first final-outcome journal
+  and resolution transitions. Resolve an entry with
+  `useSyncClient().resolveCommitOutcome(...)`.
 - `usePresence(scopeKey)` observes ephemeral realtime peers.
 - `useSyncClient()` and `useReactiveStore()` expose integration-level access.
+
+The normalized client also exposes
+`useSyncClient().purgeLocalData({ purgeId, targets })` on every host that
+implements the shared surface. This is an application-authorized security
+operation, not a UI convenience; follow the subscription-gating workflow in
+[Authorized local purge](/concepts-local-data-purge/).
 
 See [Named queries](/tooling-queries/), [Windowing](/concepts-windowing/), and
 the [package README](https://github.com/syncular/syncular/tree/main/packages/react).

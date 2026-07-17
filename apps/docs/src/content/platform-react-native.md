@@ -77,7 +77,7 @@ The config keys:
 
 Pass the client to `<SyncProvider>` and the entire
 [`@syncular/react`](/platform-react/) surface (`useQuery`, `useRawSql`,
-`useMutation`, `useSyncStatus`, `usePresence`) behaves exactly as it does
+`useMutation`, `useSyncStatus`, `useCommitOutcomes`, `usePresence`) behaves exactly as it does
 against the browser client. From the example app's real `App.tsx`:
 
 ```tsx
@@ -107,6 +107,21 @@ Native CRDT text (needs the FFI `crdt-yjs` feature) is exposed as typed
 methods on the client (`crdtText`, `crdtInsertText`, `crdtDeleteText`,
 `crdtApplyUpdate`), byte-compatible with the web `@syncular/crdt-yjs` helper.
 See [CRDT columns](/concepts-crdt/).
+
+## Durable recovery and local purge
+
+Final commit outcomes use the native SQLite journal. `commitOutcome`,
+`commitOutcomes`, and `resolveCommitOutcome` survive process restarts; failed
+aggregate outcomes retain the complete ordered local operation envelope for an
+authorized repair flow. React applications normally observe that journal with
+`useCommitOutcomes()`.
+
+`client.purgeLocalData({ purgeId, targets })` forwards the same bounded plan to
+the Rust core as Tauri and the C FFI. It atomically removes matching rows and
+FTS documents, rejects whole affected pending commits, replays safe optimistic
+work, reconciles blob references, and returns counts only. Validate the
+directive and gate subscriptions first; see
+[Authorized local purge](/concepts-local-data-purge/).
 
 ## Events and lifecycle
 
@@ -154,3 +169,5 @@ Lifecycle is explicit and battery-aware:
   — the runnable todo app, with the per-platform device-build recipe.
 - **[Realtime](/concepts-realtime/)** — how the socket, deltas, and
   invalidations work.
+- **[Authorized local purge](/concepts-local-data-purge/)** — device and key
+  revocation without pretending an offline device was remotely erased.

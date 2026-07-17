@@ -51,7 +51,7 @@ spec/vectors/
 
 ## Coverage
 
-The authoritative vector list (19 cases + invalid set) is
+The authoritative vector list (23 valid cases + 16 invalid cases) is
 SPEC.md Appendix A. Summary of what it covers:
 
 - requests: minimal pull, bootstrap pull (accept bits, resume token),

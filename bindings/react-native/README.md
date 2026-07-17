@@ -89,6 +89,13 @@ Failed aggregate outcomes also carry the complete ordered local operation
 envelope; it remains protected native SQLite payload and never enters the wire
 protocol or ordinary application preferences.
 
+`purgeLocalData({ purgeId, targets })` forwards an application-authorized,
+bounded local purge to the native core. It removes exact synced rows and FTS
+documents, rejects whole affected pending commits, replays safe optimistic
+work, reconciles blob references, and returns counts only. The app must first
+validate the directive and gate subscriptions, then separately remove
+app-owned files and OS-secure-store keys.
+
 ## Verification bar
 
 `./check.sh` runs the automated gate:

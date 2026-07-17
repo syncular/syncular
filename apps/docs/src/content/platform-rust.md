@@ -121,6 +121,15 @@ the outbox; it works fully offline. `Mutation` has two arms: `Upsert
 Divergence surfaces through `conflicts()`, `rejections()`, and
 `pending_commit_ids()`.
 
+Final results are also journaled durably. `commit_outcome`, `commit_outcomes`,
+and `resolve_commit_outcome` restore correction UI after restart and keep
+active conflicts/rejections until the application explicitly resolves them.
+
+For a validated device or key-revocation directive,
+`purge_local_data(&input)` applies the same bounded, idempotent local cleanup as
+the web and native bridges. Gate the affected subscriptions first; see
+[Authorized local purge](/concepts-local-data-purge/).
+
 ## The sync loop
 
 `sync()` runs one combined push+pull round; `sync_until_idle()` repeats
