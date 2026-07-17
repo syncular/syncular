@@ -157,7 +157,8 @@ await seedMutations(config, { partition: 'demo', actorId: 'seed-user' }, [
   {
     table: 'todos',
     op: 'upsert',
-    // snake_case or camelCase keys; missing nullable columns become NULL.
+    // SQL snake_case or the exact generated camelCase alias; missing nullable
+    // columns become NULL (`address_line_1` maps to `addressLine1`).
     values: { id: 'seed-1', listId: 'welcome', title: 'Hello', done: false },
   },
 ]);

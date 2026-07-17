@@ -4,7 +4,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { seedMutations } from '@syncular/server';
-import { makeContext } from './helpers';
+import { makeContext, TEST_SCHEMA } from './helpers';
 
 describe('seedMutations', () => {
   test('seeds rows through the real push path, idempotently', async () => {
@@ -74,6 +74,44 @@ describe('seedMutations', () => {
         },
       ]),
     ).rejects.toThrow(/unknown column/);
+  });
+
+  test('accepts the pinned generated alias for underscore-separated digit segments', async () => {
+    const schema = {
+      ...TEST_SCHEMA,
+      tables: [
+        ...TEST_SCHEMA.tables,
+        {
+          name: 'addresses',
+          columns: [
+            { name: 'id', type: 'string' as const, nullable: false },
+            { name: 'project_id', type: 'string' as const, nullable: false },
+            {
+              name: 'address_line_1',
+              type: 'string' as const,
+              nullable: false,
+            },
+          ],
+          primaryKey: 'id',
+          scopes: ['project:{project_id}'],
+        },
+      ],
+    };
+    const { ctx, storage } = makeContext({ schema });
+    await seedMutations(ctx, { partition: 'part-1', actorId: 'actor-1' }, [
+      {
+        table: 'addresses',
+        op: 'upsert',
+        values: {
+          id: 'address-1',
+          projectId: 'p1',
+          addressLine1: 'First line',
+        },
+      },
+    ]);
+    expect(
+      await storage.getRow('part-1', 'addresses', 'address-1'),
+    ).toBeDefined();
   });
 
   test('a rejected push surfaces the operation error', async () => {

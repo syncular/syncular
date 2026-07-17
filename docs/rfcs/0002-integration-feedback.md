@@ -222,6 +222,16 @@ confirmed that encrypted declared-string fields need client-local FTS for
 offline Patient lookup; that projection is safe only because it shares the
 protected local database and exact purge/reset lifecycle of its owner table.
 
+### 4.4 Keep encrypted local query types and generated aliases end to end
+
+The first encrypted Patient relationship query exposed that result projection
+typing had been corrected in 0.15.8, but bind inference still used the wire
+`bytes` type. The same integration also exposed that server seeding accepted
+camelCase through a reverse-regex shortcut rather than the pinned §12 naming
+map, breaking digit segments. Syncular 0.15.10 makes both paths consume the
+application declared type and exact schema-derived alias respectively, so
+generated types, runtime values, clients, and supported server seeds agree.
+
 ## Priority order (one line each)
 
 | # | Item | Effort | Impact |
@@ -238,6 +248,7 @@ protected local database and exact purge/reset lifecycle of its owner table.
 | 3.2 | `window.__SYNCULAR__` dev registry | medium | debugging velocity |
 | 4.1 | Tauri template + web+desktop guide | medium | flagship demo |
 | 4.3 | Worker/Tauri E2EE keyring parity | shipped in 0.15.9 | encrypted production data |
+| 4.4 | encrypted bind + seed naming parity | shipped in 0.15.10 | encrypted aggregate adoption |
 | 1.2 | crates.io publish | medium/heavy | Tauri adoption exists at all |
 | 4.2 | Schema-bump cost docs | small | evaluator confidence |
 

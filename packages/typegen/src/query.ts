@@ -61,7 +61,7 @@
  * for the query shapes this tier supports.
  */
 import { TypegenError } from './errors';
-import type { IrColumnType, IrDocument, IrTable } from './ir';
+import type { IrColumn, IrColumnType, IrDocument, IrTable } from './ir';
 import { lowerProjection, mainVerbAfterWith } from './lower';
 import { buildNamingMap, type NamingMode, type NamingTarget } from './naming';
 
@@ -868,6 +868,12 @@ function isSyncVersionSource(
 // is a plain ref to an IR column. Equality/comparison/IN only — anything else
 // needs the `-- param` comment (kept deliberately simple and honest).
 
+function applicationColumnType(column: IrColumn): IrColumnType {
+  return column.encrypted === true && column.declaredType !== undefined
+    ? column.declaredType
+    : column.type;
+}
+
 function inferParamType(
   paramName: string,
   sql: string,
@@ -883,12 +889,13 @@ function inferParamType(
     if (qualifier !== undefined) {
       const ref = refs.find((r) => r.alias === qualifier);
       const table = ref && byName.get(ref.table);
-      return table?.columns.find((c) => c.name === column)?.type ?? null;
+      const resolved = table?.columns.find((c) => c.name === column);
+      return resolved === undefined ? null : applicationColumnType(resolved);
     }
     for (const ref of refs) {
       const table = byName.get(ref.table);
       const col = table?.columns.find((c) => c.name === column);
-      if (col !== undefined) return col.type;
+      if (col !== undefined) return applicationColumnType(col);
     }
     return null;
   };
@@ -972,13 +979,19 @@ export function inferParamTypeEvidence(
     if (qualifier !== undefined) {
       const ref = refs.find((candidate) => candidate.alias === qualifier);
       const table = ref === undefined ? undefined : byName.get(ref.table);
-      const type = table?.columns.find((item) => item.name === column)?.type;
+      const item = table?.columns.find(
+        (candidate) => candidate.name === column,
+      );
+      const type = item === undefined ? undefined : applicationColumnType(item);
       if (type !== undefined) evidence.push(type);
       return;
     }
     const matches = refs.flatMap((ref) => {
       const table = byName.get(ref.table);
-      const type = table?.columns.find((item) => item.name === column)?.type;
+      const item = table?.columns.find(
+        (candidate) => candidate.name === column,
+      );
+      const type = item === undefined ? undefined : applicationColumnType(item);
       return type === undefined ? [] : [type];
     });
     if (matches.length === 1) evidence.push(matches[0] as IrColumnType);

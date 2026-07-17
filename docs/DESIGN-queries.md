@@ -51,6 +51,13 @@ metadata containing public inputs, proven identity, and the selected physical
 plan. Emitters consume that metadata rather than reverse-engineering optional
 semantics from SQLite binds.
 
+Result columns and inferred binds describe the application-facing local
+database. For an encrypted column this means its pre-wire `declaredType`, not
+the ciphertext `bytes` type recorded in schema IR. A comparison such as
+`encrypted_patient_id = :patientId` therefore generates a string bind when the
+declared column was `TEXT`; ciphertext conversion remains exclusively at the
+Syncular wire boundary.
+
 ## 3. QueryIR v3
 
 QueryIR is the deterministic serialization boundary between analysis and code
