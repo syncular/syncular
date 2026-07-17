@@ -28,6 +28,29 @@ for validating the server-authoritative directive, gating subscriptions before
 the purge, deleting app-owned drafts/files, and removing the corresponding key
 from the OS secure store after SQLite cleanup succeeds.
 
+## React availability guard
+
+The Tauri bridge carries `currentSchemaVersion`, `schemaFloor`, and migration
+status through the same public React boundary as the browser worker. Guard the
+application once instead of parsing native error strings:
+
+```tsx
+<SyncProvider
+  client={clientResource}
+  renderBoundary={(state, actions) => (
+    <SyncBlockedScreen state={state} onRetry={actions.retry} />
+  )}
+>
+  <App />
+</SyncProvider>
+```
+
+The state is a discriminated union covering startup, migration,
+`client-upgrade-required`, `server-behind`, and `incompatible-schema`.
+Compatibility recovery automatically restores the provider's children. Live
+queries report `phase === 'blocked'` with `isLoading === false` while retaining
+previously safe rows for an explicitly read-only view.
+
 Part of [Syncular](https://syncular.dev) — an offline-first sync framework.
 See the [Syncular repository](https://github.com/syncular/syncular) for docs.
 

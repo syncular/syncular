@@ -26,6 +26,10 @@ time.
 
 Use plain SQL whenever the statement shape is fixed.
 
+When a write needs compare-and-set semantics, explicitly project
+`_sync_version AS server_version`; see the complete
+[concurrency and correction guide](/guide-concurrency-correction/).
+
 ## `.syql`
 
 ```syql

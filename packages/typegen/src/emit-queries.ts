@@ -49,6 +49,29 @@ function propertyKey(name: string): string {
   return IDENTIFIER_RE.test(name) ? name : quote(name);
 }
 
+function emitResultMapper(query: AnalyzedQuery, Row: string): string[] {
+  const booleans = query.columns.filter((column) => column.type === 'boolean');
+  const lines = [
+    `/** Decode one storage-shaped result row for ${quote(query.name)}. */`,
+    `export function ${query.name}MapRow(row: Readonly<Record<string, unknown>>): ${Row} {`,
+  ];
+  if (booleans.length === 0) {
+    lines.push(`  return row as unknown as ${Row};`);
+  } else {
+    lines.push('  return {', '    ...row,');
+    for (const column of booleans) {
+      const access = `row[${quote(column.langName)}]`;
+      const decoded = `decodeQueryBoolean(${access}, ${quote(query.name)}, ${quote(column.langName)})`;
+      lines.push(
+        `    ${propertyKey(column.langName)}: ${column.nullable ? `${access} === null ? null : ${decoded}` : decoded},`,
+      );
+    }
+    lines.push(`  } as unknown as ${Row};`);
+  }
+  lines.push('}');
+  return lines;
+}
+
 /** A named-query param value is the SqlValue subset its type maps to. */
 const PARAM_TS_TYPE: Readonly<Record<IrColumnType, string>> = TS_TYPE;
 const SYQL_PARAM_TS_TYPE: Readonly<Record<IrColumnType, string>> = {
@@ -235,6 +258,7 @@ function emitSyqlQuery(query: AnalyzedQuery, hash: string): string {
     );
   }
   lines.push('}', '');
+  lines.push(...emitResultMapper(query, Row), '');
 
   for (const input of inputs) {
     if (input.kind === 'group') {
@@ -349,7 +373,7 @@ function emitSyqlQuery(query: AnalyzedQuery, hash: string): string {
     `export async function ${query.name}(client: QueryClient${runnerParam}): Promise<${Row}[]> {`,
     `  const selected = ${query.name}Select(${hasParams ? 'params' : ''});`,
     '  const rows = await client.query(selected.sql, selected.bind);',
-    `  return rows as unknown as ${Row}[];`,
+    `  return rows.map((row) => ${query.name}MapRow(row as Readonly<Record<string, unknown>>));`,
     '}',
     '',
   );
@@ -367,6 +391,7 @@ function emitSyqlQuery(query: AnalyzedQuery, hash: string): string {
     `  id: ${quote(`${hash}/${query.name}`)},`,
     `  hasParams: ${hasParams},`,
     `  sql: ${quote(defaultStatement?.positionalSql ?? query.positionalSql)},`,
+    `  mapRow: ${query.name}MapRow,`,
   );
   if (hasParams) {
     lines.push(
@@ -452,6 +477,8 @@ function emitQuery(query: AnalyzedQuery, hash: string): string {
   }
   lines.push('}');
   lines.push('');
+  lines.push(...emitResultMapper(query, Row));
+  lines.push('');
 
   const hasParams = query.params.length > 0;
   if (hasParams) {
@@ -492,7 +519,9 @@ function emitQuery(query: AnalyzedQuery, hash: string): string {
   } else {
     lines.push(`  const rows = await client.query(${sqlConst});`);
   }
-  lines.push(`  return rows as unknown as ${Row}[];`);
+  lines.push(
+    `  return rows.map((row) => ${query.name}MapRow(row as Readonly<Record<string, unknown>>));`,
+  );
   lines.push('}');
   lines.push('');
 
@@ -506,6 +535,7 @@ function emitQuery(query: AnalyzedQuery, hash: string): string {
   lines.push(`  id: ${quote(`${hash}/${query.name}`)},`);
   lines.push(`  hasParams: ${hasParams},`);
   lines.push(`  sql: ${sqlConst},`);
+  lines.push(`  mapRow: ${query.name}MapRow,`);
   lines.push(`  tables: ${query.name}Tables,`);
   const reactiveUsesParams = query.reactive.dependencies.some((dependency) =>
     dependency.scopes.some((scope) => scope.params.length > 0),
@@ -597,6 +627,30 @@ export function emitQueriesModule(
       ].join('\n'),
     );
   }
+  if (
+    queries.some((query) =>
+      query.columns.some((column) => column.type === 'boolean'),
+    )
+  ) {
+    parts.push(
+      [
+        '/** A generated named-query row did not match its analyzed result type. */',
+        'export class QueryResultDecodeError extends TypeError {',
+        "  readonly name = 'QueryResultDecodeError';",
+        '  constructor(readonly query: string, readonly column: string) {',
+        "    super(query + ': result column ' + column + ' is not a SQLite boolean');",
+        '  }',
+        '}',
+        '',
+        '/** Lift a SQLite boolean: preserve booleans, map 0 to false and finite non-zero numbers to true. */',
+        'function decodeQueryBoolean(value: unknown, query: string, column: string): boolean {',
+        "  if (typeof value === 'boolean') return value;",
+        "  if (typeof value === 'number' && Number.isFinite(value)) return value !== 0;",
+        '  throw new QueryResultDecodeError(query, column);',
+        '}',
+      ].join('\n'),
+    );
+  }
   parts.push(
     [
       "/** A bindable SQL param/row value (the wrapper's SqlValue subset). */",
@@ -627,6 +681,7 @@ export function emitQueriesModule(
       '  readonly id: string;',
       '  readonly hasParams: boolean;',
       '  readonly sql: string;',
+      '  readonly mapRow: (row: Readonly<Record<string, unknown>>) => Row;',
       '  readonly tables: readonly string[];',
       '  readonly bind: (params: Params) => readonly QueryValue[];',
       '  readonly sqlFor?: (params: Params) => string;',

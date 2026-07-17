@@ -2,6 +2,66 @@
   "queryIrVersion": 3,
   "queries": [
     {
+      "name": "booleanResults",
+      "file": "boolean-results.sql",
+      "sourceSql": "-- Joined boolean projections cover an aliased exact value and a nullable\n-- computed value. TypeScript must lift SQLite's numeric representation for\n-- both while the native emitters keep their existing fromRow behavior.\nSELECT t.id, t.done AS is_done, t.reviewed AS maybe_done\nFROM tasks t\nJOIN docs d ON d.project_id = t.project_id\nORDER BY t.id",
+      "sql": "-- Joined boolean projections cover an aliased exact value and a nullable\n-- computed value. TypeScript must lift SQLite's numeric representation for\n-- both while the native emitters keep their existing fromRow behavior.\nSELECT t.id, t.done AS isDone, t.reviewed AS maybeDone FROM tasks t\nJOIN docs d ON d.project_id = t.project_id\nORDER BY t.id",
+      "positionalSql": "SELECT t.id, t.done AS isDone, t.reviewed AS maybeDone FROM tasks t JOIN docs d ON d.project_id = t.project_id ORDER BY t.id",
+      "params": [],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
+        },
+        {
+          "name": "is_done",
+          "langName": "isDone",
+          "type": "boolean",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "done"
+          }
+        },
+        {
+          "name": "maybe_done",
+          "langName": "maybeDone",
+          "type": "boolean",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "reviewed"
+          }
+        }
+      ],
+      "tables": [
+        "docs",
+        "tasks"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "docs",
+            "scopes": []
+          },
+          {
+            "table": "tasks",
+            "scopes": []
+          }
+        ],
+        "coverage": []
+      }
+    },
+    {
       "name": "findDocByOrg",
       "file": "doc-lookup.sql",
       "sourceSql": "-- Single-statement file with a `-- name:` override: the path default would be\n-- docLookup, but the marker renames it verbatim to findDocByOrg.\n-- name: findDocByOrg\nSELECT id, body\nFROM docs\nWHERE org_id = :orgId\nORDER BY id",
@@ -293,6 +353,76 @@
                 ]
               }
             ]
+          }
+        ],
+        "rowKey": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "hostBoolean",
+      "file": "host-boolean.sql",
+      "sourceSql": "-- A minimal projection shared by direct, worker/follower, Tauri, and React\n-- Native host-parity tests. Each host returns SQLite-shaped 0/1 storage values;\n-- the generated runner must return declared JavaScript booleans.\nSELECT id, done\nFROM tasks\nWHERE project_id = :projectId\nORDER BY id",
+      "sql": "-- A minimal projection shared by direct, worker/follower, Tauri, and React\n-- Native host-parity tests. Each host returns SQLite-shaped 0/1 storage values;\n-- the generated runner must return declared JavaScript booleans.\nSELECT id, done\nFROM tasks\nWHERE project_id = :projectId\nORDER BY id",
+      "positionalSql": "SELECT id, done FROM tasks WHERE project_id = ? ORDER BY id",
+      "params": [
+        {
+          "name": "projectId",
+          "langName": "projectId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
+        },
+        {
+          "name": "done",
+          "langName": "done",
+          "type": "boolean",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "done"
+          }
+        }
+      ],
+      "tables": [
+        "tasks"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "tasks",
+            "scopes": [
+              {
+                "variable": "project_id",
+                "pattern": "project:{project_id}",
+                "params": [
+                  "projectId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "tasks",
+            "variable": "project_id",
+            "units": [
+              "projectId"
+            ],
+            "fixedScopes": []
           }
         ],
         "rowKey": [

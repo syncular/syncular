@@ -39,6 +39,7 @@
  * This mirrors PostgreSQL's per-partition row lock, achieved by placement
  * rather than a lock D1 does not expose.
  */
+import { decodeRow, type RowValue } from '@syncular/core';
 import { syncError } from './errors';
 import {
   commitWindowPageSql,
@@ -47,6 +48,7 @@ import {
   layoutsOf,
   migratePayload,
   parseLayouts,
+  quoteIdent,
   retiredTableNames,
   rewritePlan,
   rewriteRowSql,
@@ -59,6 +61,7 @@ import {
   selectRowSql,
   selectRowsForRewriteSql,
   tableColumnNames,
+  toSqlValue,
   upsertSql,
   upsertValues,
 } from './relational-rows';
@@ -91,6 +94,7 @@ import type {
   StoredPushResult,
   StoredRow,
 } from './storage';
+import { isD1ConstraintError, StorageConstraintError } from './storage-errors';
 
 // -- The subset of the D1 API this storage uses (structural typing) ---------
 // Declared locally so the package takes no `@cloudflare/workers-types`
@@ -115,6 +119,16 @@ interface BufferedStatement {
   readonly params: readonly unknown[];
 }
 
+function relationalValuesEqual(left: RowValue, right: RowValue): boolean {
+  if (left instanceof Uint8Array && right instanceof Uint8Array) {
+    return (
+      left.length === right.length &&
+      left.every((value, index) => value === right[index])
+    );
+  }
+  return Object.is(left, right);
+}
+
 /** Read-your-own-writes overlay entry: a buffered upsert, or a deletion. */
 type PendingRow =
   | { readonly kind: 'row'; readonly row: StoredRow }
@@ -132,6 +146,7 @@ class D1Transaction implements StorageTransaction {
   /** Live snapshot of `max_commit_seq`, advanced within this transaction. */
   #maxCommitSeq: number | undefined;
   #commitValidationCheckpoint: number | undefined;
+  #lastApplicationOpIndex: number | undefined;
   /**
    * Read-your-own-writes overlay (§6.2 needs `getRow` to see buffered writes
    * of the same commit — e.g. two ops touching the same row): keyed
@@ -270,14 +285,98 @@ class D1Transaction implements StorageTransaction {
     await this.commit();
   }
 
-  async upsertRow(table: string, row: StoredRow): Promise<void> {
+  async #assertNoUniqueCollision(
+    table: CompiledTable,
+    row: StoredRow,
+    opIndex: number | undefined,
+  ): Promise<void> {
+    if (!table.materialize) return;
+    const uniqueIndexes = table.indexes.filter(
+      (index) => index.unique === true,
+    );
+    if (uniqueIndexes.length === 0) return;
+    const incoming = decodeRow(table.columns, row.payload);
+
+    for (const index of uniqueIndexes) {
+      const indices = index.columns.map((column) => {
+        const resolved = table.columnIndex.get(column);
+        if (resolved === undefined) {
+          throw new Error(`compiled unique index references unknown column`);
+        }
+        return resolved;
+      });
+      const values = indices.map((position) => incoming[position] ?? null);
+      // SQLite UNIQUE permits multiple rows when any indexed value is NULL.
+      if (values.some((value) => value === null)) continue;
+
+      for (const [key, pending] of this.#pending) {
+        if (!key.startsWith(`${table.name}\u0000`) || pending.kind !== 'row') {
+          continue;
+        }
+        if (pending.row.rowId === row.rowId) continue;
+        const candidate = decodeRow(table.columns, pending.row.payload);
+        if (
+          indices.every((position, valueIndex) =>
+            relationalValuesEqual(
+              candidate[position] ?? null,
+              values[valueIndex] ?? null,
+            ),
+          )
+        ) {
+          throw new StorageConstraintError(undefined, opIndex);
+        }
+      }
+
+      const predicates = index.columns
+        .map((column) => `${quoteIdent(column)}=?`)
+        .join(' AND ');
+      const sql = `SELECT ${quoteIdent('_sync_row_id')} AS row_id FROM ${quoteIdent(table.name)} WHERE ${quoteIdent('_sync_partition')}=? AND ${predicates} AND ${quoteIdent('_sync_row_id')}<>? LIMIT 1`;
+      const bind = indices.map((position, valueIndex) => {
+        const schemaColumn =
+          position === undefined ? undefined : table.columns[position];
+        if (schemaColumn === undefined) {
+          throw new Error(`compiled unique index references unknown column`);
+        }
+        return toSqlValue(schemaColumn, values[valueIndex] ?? null, 'sqlite');
+      });
+      const persisted = await this.#db
+        .prepare(sql)
+        .bind(this.#partition, ...bind, row.rowId)
+        .first<{ row_id: string }>();
+      if (persisted === null) continue;
+
+      const pending = this.#pending.get(
+        D1Transaction.#key(table.name, persisted.row_id),
+      );
+      if (pending?.kind === 'deleted') continue;
+      if (pending?.kind === 'row') {
+        const candidate = decodeRow(table.columns, pending.row.payload);
+        const stillCollides = indices.every((position, valueIndex) =>
+          relationalValuesEqual(
+            candidate[position] ?? null,
+            values[valueIndex] ?? null,
+          ),
+        );
+        if (!stillCollides) continue;
+      }
+      throw new StorageConstraintError(undefined, opIndex);
+    }
+  }
+
+  async upsertRow(
+    table: string,
+    row: StoredRow,
+    context?: { readonly opIndex: number },
+  ): Promise<void> {
     this.#assertOpen();
+    const compiled = this.#resolveTable(table);
+    await this.#assertNoUniqueCollision(compiled, row, context?.opIndex);
+    this.#lastApplicationOpIndex = context?.opIndex;
     this.#pending.set(D1Transaction.#key(table, row.rowId), {
       kind: 'row',
       row,
     });
     const p = this.#partition;
-    const compiled = this.#resolveTable(table);
     this.#buffer_(
       upsertSql(compiled, 'sqlite'),
       upsertValues(compiled, p, row, 'sqlite'),
@@ -394,7 +493,7 @@ class D1Transaction implements StorageTransaction {
   ): Promise<void> {
     this.#assertOpen();
     this.#buffer_(
-      'INSERT OR REPLACE INTO sync_push_results(partition, client_id, client_commit_id, result) VALUES (?,?,?,?)',
+      'INSERT OR IGNORE INTO sync_push_results(partition, client_id, client_commit_id, result) VALUES (?,?,?,?)',
       [this.#partition, clientId, clientCommitId, serializePushResult(result)],
     );
   }
@@ -407,7 +506,14 @@ class D1Transaction implements StorageTransaction {
       this.#db.prepare(entry.sql).bind(...entry.params),
     );
     // One atomic D1 batch — the §6.4 all-or-nothing commit.
-    await this.#db.batch(statements);
+    try {
+      await this.#db.batch(statements);
+    } catch (error) {
+      if (isD1ConstraintError(error)) {
+        throw new StorageConstraintError(error, this.#lastApplicationOpIndex);
+      }
+      throw error;
+    }
   }
 
   async rollback(): Promise<void> {

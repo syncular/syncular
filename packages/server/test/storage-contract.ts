@@ -18,6 +18,7 @@ import {
   compileSchema,
   type ServerSchema,
   type ServerStorage,
+  type StoredPushResult,
   type StoredRow,
 } from '@syncular/server';
 
@@ -309,6 +310,37 @@ export function runStorageContract(
       expect(
         await storage.getPushResult(PARTITION, 'c1', 'missing'),
       ).toBeUndefined();
+    });
+
+    test('idempotency results are first-writer-safe', async () => {
+      const storage = await make();
+      const first: StoredPushResult = {
+        status: 'rejected',
+        results: [
+          {
+            opIndex: 1,
+            status: 'error',
+            code: 'app.first',
+            message: 'first outcome',
+            retryable: false,
+          },
+        ],
+      };
+      const second: StoredPushResult = {
+        status: 'applied',
+        commitSeq: 99,
+        results: [{ opIndex: 0, status: 'applied' }],
+      };
+      const firstTx = await storage.begin(PARTITION);
+      await firstTx.putPushResult('c1', 'first-writer', first);
+      await firstTx.commit();
+      const secondTx = await storage.begin(PARTITION);
+      await secondTx.putPushResult('c1', 'first-writer', second);
+      await secondTx.commit();
+
+      expect(
+        await storage.getPushResult(PARTITION, 'c1', 'first-writer'),
+      ).toEqual(first);
     });
 
     test('conflict push-result bytes round-trip', async () => {

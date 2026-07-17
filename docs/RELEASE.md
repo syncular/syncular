@@ -4,6 +4,18 @@ Syncular publishes every public npm package and Rust crate in lockstep. The
 current release is **0.15.13** (`v0.15.13`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
+## Unreleased
+
+The React query phase union now includes `blocked`. Exhaustive consumers must
+handle it separately from `loading`: `isLoading` is false, the typed
+`availability.reason` explains the schema or browser-leadership boundary, and
+previously safe rows may remain available for deliberate read-only UI.
+
+`SyncProvider.renderBoundary` adds one typed guard for resource startup,
+retryable startup errors, migration, schema compatibility, and unreachable
+browser leadership. Status snapshots now carry `currentSchemaVersion` on the
+TypeScript, Rust, worker, Tauri, and React Native surfaces.
+
 ## 0.15.13 release notes
 
 0.15.13 fixes native clients remaining permanently stopped after a server that

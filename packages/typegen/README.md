@@ -618,6 +618,14 @@ the local revision, and coverage from one SQLite read snapshot. The generated
 coverage, plan selector, and optional proven row-key function. It deliberately
 does not prescribe a Rust UI observer.
 
+TypeScript named queries also emit one `mapRow` decoder per projection. The
+direct async runner and the React descriptor share that decoder, so a boolean
+field is always a JavaScript boolean on the first read and every reactive
+re-read (`0` → false, finite non-zero → true, an existing boolean is
+preserved, and nullable booleans preserve `null`). A value that does not match
+the analyzed result type throws `QueryResultDecodeError`; raw `client.query()`
+and `useRawSql()` remain storage-shaped unless the caller supplies a mapper.
+
 **React helper.** `@syncular/react` exports `useQuery(query, params?)`,
 which takes the TS `NamedQuery` descriptor and observes the client-scoped
 revisioned store:

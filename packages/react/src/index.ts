@@ -17,6 +17,8 @@ export type {
 export { normalizeClient } from './client';
 export { inferTables } from './infer-tables';
 export {
+  type SyncBoundaryActions,
+  type SyncBoundaryState,
   SyncContext,
   SyncProvider,
   type SyncProviderProps,
@@ -58,3 +60,8 @@ export {
   useRetainedWindow,
   useWindow,
 } from './use-window';
+export {
+  type RetainedSyncularResource,
+  retainViteSyncClientResource,
+  type ViteSyncClientResourceResult,
+} from './vite-hmr';

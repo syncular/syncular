@@ -26,6 +26,21 @@ export function syqlPresent<T>(value: T): SyqlPresent<T> {
   return { present: true, value };
 }
 
+/** A generated named-query row did not match its analyzed result type. */
+export class QueryResultDecodeError extends TypeError {
+  readonly name = 'QueryResultDecodeError';
+  constructor(readonly query: string, readonly column: string) {
+    super(query + ': result column ' + column + ' is not a SQLite boolean');
+  }
+}
+
+/** Lift a SQLite boolean: preserve booleans, map 0 to false and finite non-zero numbers to true. */
+function decodeQueryBoolean(value: unknown, query: string, column: string): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value !== 0;
+  throw new QueryResultDecodeError(query, column);
+}
+
 /** A bindable SQL param/row value (the wrapper's SqlValue subset). */
 export type QueryValue =
   | string
@@ -54,6 +69,7 @@ export interface NamedQuery<Row, Params = undefined> {
   readonly id: string;
   readonly hasParams: boolean;
   readonly sql: string;
+  readonly mapRow: (row: Readonly<Record<string, unknown>>) => Row;
   readonly tables: readonly string[];
   readonly bind: (params: Params) => readonly QueryValue[];
   readonly sqlFor?: (params: Params) => string;
@@ -87,6 +103,14 @@ export interface ListTodosRow {
   done: boolean;
   position: number;
   updatedAtMs: number;
+}
+
+/** Decode one storage-shaped result row for 'listTodos'. */
+export function listTodosMapRow(row: Readonly<Record<string, unknown>>): ListTodosRow {
+  return {
+    ...row,
+    done: decodeQueryBoolean(row['done'], 'listTodos', 'done'),
+  } as unknown as ListTodosRow;
 }
 
 /** Public revision-1 SYQL inputs for 'listTodos'. */
@@ -123,7 +147,7 @@ function listTodosSelect(raw: ListTodosParams): { sql: string; bind: QueryValue[
 export async function listTodos(client: QueryClient, params: ListTodosParams): Promise<ListTodosRow[]> {
   const selected = listTodosSelect(params);
   const rows = await client.query(selected.sql, selected.bind);
-  return rows as unknown as ListTodosRow[];
+  return rows.map((row) => listTodosMapRow(row as Readonly<Record<string, unknown>>));
 }
 
 /** Revisioned reactive descriptor for `useQuery(listTodosQuery, params)`. */
@@ -131,6 +155,7 @@ export const listTodosQuery: NamedQuery<ListTodosRow, ListTodosParams> = {
   id: 'sha256:7c07edc88f5e6f4b6da196da47e08abe4c7cb304d257a429da6950024f02fa85/listTodos',
   hasParams: true,
   sql: 'select id, list_id AS listId, title, done, position, updated_at_ms AS updatedAtMs from todos where todos.list_id = ? order by position, id',
+  mapRow: listTodosMapRow,
   sqlFor: (params: ListTodosParams) => listTodosSelect(params).sql,
   tables: listTodosTables,
   dependencies: (params) => [

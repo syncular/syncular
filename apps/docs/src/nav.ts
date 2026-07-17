@@ -42,6 +42,10 @@ export const nav: readonly NavSection[] = [
       { slug: 'concepts-bootstrap', title: 'Bootstrap & segments' },
       { slug: 'concepts-realtime', title: 'Realtime & the WS loop' },
       { slug: 'concepts-conflicts', title: 'Conflicts & optimistic writes' },
+      {
+        slug: 'guide-concurrency-correction',
+        title: 'Concurrency & correction',
+      },
       { slug: 'concepts-crdt', title: 'CRDT columns' },
       { slug: 'concepts-blobs', title: 'Blobs' },
       { slug: 'concepts-encryption', title: 'Client-side encryption' },

@@ -355,12 +355,14 @@ class TsClientInstance implements ClientInstance {
   }
 
   async statusSnapshot(): Promise<{
+    readonly currentSchemaVersion: number;
     readonly outbox: number;
     readonly upgrading: boolean;
     readonly syncNeeded: boolean;
   }> {
     const status = this.#client.statusSnapshot();
     return {
+      currentSchemaVersion: status.currentSchemaVersion,
       outbox: status.outbox,
       upgrading: status.upgrading,
       syncNeeded: status.syncNeeded,
@@ -431,6 +433,7 @@ class TsClientInstance implements ClientInstance {
       ...(batch.status !== undefined
         ? {
             status: {
+              currentSchemaVersion: batch.status.currentSchemaVersion,
               outbox: batch.status.outbox,
               upgrading: batch.status.upgrading,
               syncNeeded: batch.status.syncNeeded,

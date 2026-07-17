@@ -1,3 +1,7 @@
+import {
+  classifySyncAvailability,
+  type SyncAvailability,
+} from './availability';
 import type {
   CommitOutcome,
   QueryReadSpec,
@@ -11,6 +15,7 @@ import type {
   ClientChangeListener,
   SyncStatusSnapshot,
 } from './invalidation';
+import type { LeadershipState } from './multi-tab';
 import { type WindowBase, windowBaseKey } from './window';
 
 export interface QueryDependency {
@@ -24,11 +29,17 @@ export interface ReactiveQuerySpec<Row> {
   readonly params?: readonly SqlValue[];
   readonly dependencies: readonly QueryDependency[];
   readonly coverage?: readonly WindowCoverage[];
+  readonly mapRow?: (row: Readonly<Record<string, SqlValue>>) => Row;
   readonly rowKey?: (row: Row) => readonly SqlValue[];
   readonly claimCoverage?: boolean;
 }
 
-export type LiveQueryPhase = 'loading' | 'partial' | 'ready' | 'error';
+export type LiveQueryPhase =
+  | 'loading'
+  | 'partial'
+  | 'ready'
+  | 'blocked'
+  | 'error';
 
 export interface LiveQueryResult<Row> {
   readonly rows: readonly Row[];
@@ -36,14 +47,18 @@ export interface LiveQueryResult<Row> {
   readonly revision: bigint | undefined;
   readonly error: Error | undefined;
   readonly isRefreshing: boolean;
+  readonly availability: SyncAvailability;
 }
 
 export interface ReactiveQueryClient {
+  readonly currentSchemaVersion?: number;
   onChange(listener: ClientChangeListener): () => void;
   querySnapshot<Row = Record<string, SqlValue>>(
     spec: QueryReadSpec,
   ): QuerySnapshot<Row> | Promise<QuerySnapshot<Row>>;
   statusSnapshot(): SyncStatusSnapshot | Promise<SyncStatusSnapshot>;
+  leadershipSnapshot?(): LeadershipState | undefined;
+  onLeadershipChange?(listener: (state: LeadershipState) => void): () => void;
   readonly conflicts:
     | readonly unknown[]
     | (() => readonly unknown[] | Promise<readonly unknown[]>);
@@ -72,6 +87,7 @@ export interface WindowRetention {
 
 export interface StatusStoreSnapshot {
   readonly status: SyncStatusSnapshot | undefined;
+  readonly leadership: LeadershipState | undefined;
   readonly error: Error | undefined;
   readonly isLoading: boolean;
 }
@@ -160,6 +176,25 @@ function encodeCanonical(value: unknown, stack: Set<object>): string {
 /** Lossless deterministic identity for query params, bytes, and row keys. */
 export function canonicalValue(value: unknown): string {
   return encodeCanonical(value, new Set());
+}
+
+const reactiveFunctionIds = new WeakMap<
+  (...args: never[]) => unknown,
+  number
+>();
+let nextReactiveFunctionId = 1;
+
+function reactiveFunctionId(
+  fn: ((...args: never[]) => unknown) | undefined,
+): number | undefined {
+  if (fn === undefined) return undefined;
+  let id = reactiveFunctionIds.get(fn);
+  if (id === undefined) {
+    id = nextReactiveFunctionId;
+    nextReactiveFunctionId += 1;
+    reactiveFunctionIds.set(fn, id);
+  }
+  return id;
 }
 
 function scheduleMicrotask(task: () => void): void {
@@ -277,6 +312,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     revision: undefined,
     error: undefined,
     isRefreshing: false,
+    availability: { state: 'ready' },
   };
   #subscribers = 0;
   #scheduled = false;
@@ -284,6 +320,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   #requested = false;
   #desiredRevision = 0n;
   #claimReady: Promise<void> = Promise.resolve();
+  #offStatus: (() => void) | undefined;
 
   constructor(
     readonly store: ReactiveClientStore,
@@ -296,6 +333,10 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     this.#listeners.add(listener);
     this.#subscribers += 1;
     if (this.#subscribers === 1) {
+      this.#offStatus = this.store.status.subscribe(() =>
+        this.#onAvailabilityChange(),
+      );
+      this.#onAvailabilityChange();
       if (this.spec.claimCoverage !== false) {
         const claims: Promise<void>[] = [];
         for (const coverage of this.spec.coverage ?? []) {
@@ -314,7 +355,11 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     return () => {
       if (!this.#listeners.delete(listener)) return;
       this.#subscribers -= 1;
-      if (this.#subscribers === 0) this.store.releaseWindowClaims(this.#owner);
+      if (this.#subscribers === 0) {
+        this.#offStatus?.();
+        this.#offStatus = undefined;
+        this.store.releaseWindowClaims(this.#owner);
+      }
     };
   };
 
@@ -333,7 +378,9 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
       next.rows === this.#state.rows &&
       next.phase === this.#state.phase &&
       next.error === this.#state.error &&
-      next.isRefreshing === this.#state.isRefreshing
+      next.isRefreshing === this.#state.isRefreshing &&
+      canonicalValue(next.availability) ===
+        canonicalValue(this.#state.availability)
     ) {
       return;
     }
@@ -358,14 +405,41 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     });
   }
 
+  #onAvailabilityChange(): void {
+    const availability = this.store.availabilitySnapshot();
+    if (availability.state === 'blocked') {
+      this.#publish({
+        ...this.#state,
+        phase: 'blocked',
+        availability,
+        isRefreshing: false,
+      });
+      return;
+    }
+    const wasBlocked = this.#state.phase === 'blocked';
+    this.#publish({
+      ...this.#state,
+      phase: wasBlocked
+        ? this.#state.rows.length > 0
+          ? 'partial'
+          : 'loading'
+        : this.#state.phase,
+      availability,
+    });
+    if (wasBlocked) this.#requestRead();
+  }
+
   async #readLoop(): Promise<void> {
     if (this.#running || this.#subscribers === 0) return;
     this.#running = true;
     try {
       do {
         this.#requested = false;
+        if (this.store.availabilitySnapshot().state === 'blocked') break;
         await this.#claimReady;
-        const snapshot = await this.store.client.querySnapshot<Row>({
+        const snapshot = await this.store.client.querySnapshot<
+          Record<string, SqlValue>
+        >({
           sql: this.spec.sql,
           ...(this.spec.params !== undefined
             ? { params: this.spec.params }
@@ -374,13 +448,27 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
             ? { coverage: this.spec.coverage }
             : {}),
         });
+        const availability = this.store.availabilitySnapshot();
+        if (availability.state === 'blocked') {
+          this.#publish({
+            ...this.#state,
+            phase: 'blocked',
+            availability,
+            isRefreshing: false,
+          });
+          break;
+        }
         if (snapshot.revision < this.#desiredRevision) {
           this.#requested = true;
           continue;
         }
+        const mappedRows =
+          this.spec.mapRow === undefined
+            ? (snapshot.rows as readonly Row[])
+            : snapshot.rows.map(this.spec.mapRow);
         const rows = reconcileRows(
           this.#state.rows,
-          snapshot.rows,
+          mappedRows,
           this.spec.rowKey,
         );
         const phase: LiveQueryPhase = snapshot.coverage.complete
@@ -394,6 +482,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
           revision: snapshot.revision,
           error: undefined,
           isRefreshing: false,
+          availability,
         });
       } while (this.#requested && this.#subscribers > 0);
     } catch (error) {
@@ -403,6 +492,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
         phase: this.#state.revision === undefined ? 'error' : this.#state.phase,
         error: wrapped,
         isRefreshing: false,
+        availability: this.store.availabilitySnapshot(),
       });
     } finally {
       this.#running = false;
@@ -505,22 +595,34 @@ export class ReactiveClientStore {
   readonly #windows = new Map<string, WindowEntry>();
   readonly #windowClaims = new Map<string, WindowClaimGroup>();
   #offChange: (() => void) | undefined;
+  #offLeadership: (() => void) | undefined;
   readonly status: ExternalStoreEntry<StatusStoreSnapshot>;
   readonly conflicts: ExternalStoreEntry<ConflictStoreSnapshot>;
   readonly outcomes: ExternalStoreEntry<OutcomeStoreSnapshot>;
 
   constructor(readonly client: ReactiveQueryClient) {
     const status = new ValueEntry<StatusStoreSnapshot>(
-      { status: undefined, error: undefined, isLoading: true },
+      {
+        status: undefined,
+        leadership: client.leadershipSnapshot?.(),
+        error: undefined,
+        isLoading: true,
+      },
       async () => {
         try {
           return {
             status: await client.statusSnapshot(),
+            leadership: client.leadershipSnapshot?.(),
             error: undefined,
             isLoading: false,
           };
         } catch (error) {
-          return { status: undefined, error: errorOf(error), isLoading: false };
+          return {
+            status: undefined,
+            leadership: client.leadershipSnapshot?.(),
+            error: errorOf(error),
+            isLoading: false,
+          };
         }
       },
     );
@@ -584,6 +686,9 @@ export class ReactiveClientStore {
       baseKey: windowBaseKey(item.base),
       units: [...new Set(item.units)].sort(),
     }));
+    const mapRowId = reactiveFunctionId(
+      spec.mapRow as ((...args: never[]) => unknown) | undefined,
+    );
     const key = canonicalValue({
       id: spec.id,
       sql: spec.sql,
@@ -591,6 +696,7 @@ export class ReactiveClientStore {
       dependencies,
       coverage,
       claimCoverage: spec.claimCoverage !== false,
+      ...(mapRowId === undefined ? {} : { mapRow: mapRowId }),
     });
     let entry = this.#queries.get(key) as QueryEntry<Row> | undefined;
     if (entry === undefined) {
@@ -598,6 +704,21 @@ export class ReactiveClientStore {
       this.#queries.set(key, entry as QueryEntry<unknown>);
     }
     return entry;
+  }
+
+  availabilitySnapshot(): SyncAvailability {
+    const snapshot = this.status.getSnapshot();
+    if (snapshot.status === undefined) {
+      return snapshot.leadership?.state === 'blocked'
+        ? {
+            state: 'blocked',
+            reason: 'leader-unreachable',
+            currentSchemaVersion: this.client.currentSchemaVersion ?? 0,
+            retryable: true,
+          }
+        : { state: 'ready' };
+    }
+    return classifySyncAvailability(snapshot.status, snapshot.leadership);
   }
 
   /** Retain a composable window working set outside React. The returned
@@ -701,6 +822,7 @@ export class ReactiveClientStore {
       if (batch.status !== undefined) {
         (this.status as ValueEntry<StatusStoreSnapshot>).set({
           status: batch.status,
+          leadership: this.client.leadershipSnapshot?.(),
           error: undefined,
           isLoading: false,
         });
@@ -710,11 +832,20 @@ export class ReactiveClientStore {
       }
       if (batch.outcomesChanged) this.outcomes.refresh();
     });
+    this.#offLeadership = this.client.onLeadershipChange?.((leadership) => {
+      const previous = this.status.getSnapshot();
+      (this.status as ValueEntry<StatusStoreSnapshot>).set({
+        ...previous,
+        leadership,
+      });
+    });
   }
 
   dispose(): void {
     this.#offChange?.();
     this.#offChange = undefined;
+    this.#offLeadership?.();
+    this.#offLeadership = undefined;
     for (const group of this.#windowClaims.values()) {
       void Promise.resolve(this.client.setWindow(group.base, []));
     }

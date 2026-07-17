@@ -2044,6 +2044,7 @@ impl SyncClient {
     #[must_use]
     pub fn status_snapshot(&self) -> SyncStatusSnapshot {
         SyncStatusSnapshot {
+            current_schema_version: self.schema.version,
             outbox: self.outbox.len(),
             upgrading: self.upgrading,
             lease_state: self.lease_state.clone(),

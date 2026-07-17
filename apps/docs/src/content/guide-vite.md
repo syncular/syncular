@@ -79,29 +79,66 @@ const client = await createSyncClientHandle({
 The relative endpoint URLs ride the dev proxy in development and your
 reverse proxy in production, so nothing changes between the two.
 
-## Keep one persistent owner during HMR
+## Keep one schema-correct persistent owner during HMR
 
 React remounts do not duplicate a `createSyncClientResource`, but Vite may
-replace the module that created it while its old worker is still alive. Keep the
-resource in Vite's hot-module data so the replacement tree adopts the same
-owner:
+replace the module that created it while its old worker is still alive. A
+same-schema component or query edit should reuse that owner. A generated-schema
+change must instead close it before a replacement worker starts:
 
 ```ts
-import { createSyncClientResource } from '@syncular/react';
+import {
+  retainViteSyncClientResource,
+  type RetainedSyncularResource,
+} from '@syncular/react';
+import { schema } from './syncular.generated';
 
-const clientResource =
-  import.meta.hot?.data.syncularClientResource ??
-  createSyncClientResource(createClient);
+// Capture this evaluation's number. Do not read a live ESM binding later and
+// assign it to a resource created by an older module evaluation.
+const capturedSchemaVersion = schema.version;
+const retained = await retainViteSyncClientResource(
+  import.meta.hot?.data,
+  capturedSchemaVersion,
+  createClient,
+);
+const clientResource = retained.resource;
 
-if (import.meta.hot) {
-  import.meta.hot.data.syncularClientResource = clientResource;
+if (
+  import.meta.hot &&
+  retained.schemaChanged &&
+  retained.disposalError === undefined
+) {
+  import.meta.hot.invalidate('Syncular generated schema changed');
 }
 ```
 
-Without that handoff, two workers can briefly compete for one OPFS SAH pool.
+The helper stores exactly this record in
+`import.meta.hot.data.syncularClientResource`:
+
+```ts
+interface RetainedSyncularResource {
+  readonly schemaVersion: number;
+  readonly resource: SyncClientResource;
+}
+```
+
+On ordinary HMR the captured version matches and the resource is reused. On a
+schema bump, disposal finishes before the replacement resource is constructed;
+only then does the module request invalidation so the page, worker, generated
+schema, and query modules advance together. If disposal fails, the replacement
+worker is never opened and the returned resource reports the close failure
+through `SyncProvider.renderBoundary` as a startup error.
+
+Retaining a worker on a new schema is unsafe even if a hot query module appears
+to work: the page can adopt new SQL immediately while the running worker still
+owns the old local schema. Boot-time schema recovery only runs in the
+replacement worker.
+
+Without this handoff, two workers can briefly compete for one OPFS SAH pool.
 Current Syncular versions report this as retryable `client.storage_busy`; it is
-not a reason to wipe the local database. See [Troubleshooting](/troubleshooting/)
-for the recovery surface.
+not a reason to wipe the local database. See the
+[official React example](https://github.com/syncular/syncular/blob/main/apps/demo-react/src/frontend/main.tsx)
+and [Troubleshooting](/troubleshooting/) for the complete boundary.
 
 ## Headers
 

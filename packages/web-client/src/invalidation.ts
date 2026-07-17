@@ -24,6 +24,7 @@ export interface WindowChange {
 }
 
 export interface SyncStatusSnapshot {
+  readonly currentSchemaVersion: number;
   readonly outbox: number;
   readonly upgrading: boolean;
   readonly leaseState: LeaseState | undefined;

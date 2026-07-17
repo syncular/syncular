@@ -73,6 +73,7 @@ function makeStatefulNative(): {
           tables: [{ table: 'todos' }],
           windows: [],
           status: {
+            currentSchemaVersion: 1,
             outbox: 1,
             upgrading: false,
             syncNeeded: false,
@@ -116,7 +117,12 @@ function makeStatefulNative(): {
           });
         case 'statusSnapshot':
           return JSON.stringify({
-            result: { outbox: 0, upgrading: false, syncNeeded: false },
+            result: {
+              currentSchemaVersion: 1,
+              outbox: 0,
+              upgrading: false,
+              syncNeeded: false,
+            },
           });
         case 'pendingCommitIds':
           return JSON.stringify({ result: { ids: [] } });

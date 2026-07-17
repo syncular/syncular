@@ -636,11 +636,13 @@ class RustClientInstance implements ClientInstance {
   }
 
   async statusSnapshot(): Promise<{
+    readonly currentSchemaVersion: number;
     readonly outbox: number;
     readonly upgrading: boolean;
     readonly syncNeeded: boolean;
   }> {
     return (await this.#shim.call('statusSnapshot', {})) as unknown as {
+      readonly currentSchemaVersion: number;
       readonly outbox: number;
       readonly upgrading: boolean;
       readonly syncNeeded: boolean;

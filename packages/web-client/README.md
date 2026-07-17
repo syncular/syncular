@@ -73,7 +73,9 @@ const handle = await createSyncClientHandle({
   schema, database: { mode: 'persistent', name: 'app' }, endpoints,
   onRoleChange: (role) => console.log('now', role), // 'follower' → 'leader'
 });
-// handle.role is 'leader' or 'follower'; the API is identical either way.
+// Compatibility: handle.role is 'leader' or 'follower'.
+// Detailed state: handle.leadership / handle.leadershipSnapshot().
+handle.onLeadershipChange((state) => renderConnectionState(state));
 ```
 
 **Topology.** The tab that wins the Web Locks election is the **leader**:
@@ -105,6 +107,15 @@ flushed to the new leader on its announce; past the deadline they fail
 loudly with `client.follower_timeout` (never a silent hang), and an
 overflowing queue rejects rather than growing unbounded.
 
+Leader announcements continue as heartbeats while followers are attached. If
+a tab can acquire neither a response nor a new lock grant before the configured
+`followerCallTimeoutMs`, `handle.leadership` becomes
+`{ state: 'blocked', reason: 'leader-unreachable', code:
+'client.follower_timeout', retryable: true }`. Calls then reject immediately.
+A later announcement rebinds the same handle; a granted Web Lock promotes it.
+An unreachable `BroadcastChannel` is never treated as evidence that the lock
+owner is stale, so it never authorizes a second worker or database owner.
+
 **Presence semantics — one device, one peer.** All tabs share the leader's
 single connection, so a device is exactly ONE presence peer collectively:
 identity is `(actorId, leaderClientId)`. A follower's `setPresence`
@@ -112,8 +123,61 @@ forwards to the leader's single publisher; there is no per-tab presence
 peer. This is the honest model — the wire only ever sees one connection per
 device.
 
+The default is a **shared replica**: same-origin tabs must use the same
+persistent database name, lock name, and derived channel name. For an embed,
+preview, or history entry that is intentionally independent, derive the whole
+ownership tuple from one stable identity:
+
+```ts
+const preview = await createSyncClientHandle({
+  worker,
+  schema,
+  database: { mode: 'persistent', name: 'medical' },
+  endpoints,
+  replica: { mode: 'isolated', id: 'preview-42' },
+});
+```
+
+This derives a distinct database name and pool directory, Web Lock name, and
+`BroadcastChannel` name together. `isolatedReplicaNames()` exposes the same
+deterministic tuple for diagnostics and host integration. Replica IDs are
+stable code-like values (`A-Z`, `a-z`, `0-9`, dot, underscore, dash).
+
+During Vite development, retain the React client resource only while its
+captured generated schema version matches. The
+[schema-aware Vite guide](https://syncular.dev/guide-vite/) uses
+`retainViteSyncClientResource` to close the old worker before constructing a
+schema-bump replacement; hot-reloading query code alone does not migrate the
+worker-owned database.
+
 Set `multiTab: false` to opt out. A losing tab then becomes an
-`isLeader === false` handle whose calls reject with `client.not_leader`.
+`isLeader === false` handle whose calls reject with `client.not_leader`. This
+does not solve a coordination-partition mismatch by itself: an independent
+instance must also use an isolated database and lock identity. Changing only
+the channel, lock, or database name is unsafe or ineffective.
+
+## React availability guard
+
+The worker handle's schema and leadership snapshots feed the same public React
+boundary as native clients. Guard the application once instead of parsing
+errors or inspecting generated schema modules:
+
+```tsx
+<SyncProvider
+  client={clientResource}
+  renderBoundary={(state, actions) => (
+    <SyncBlockedScreen state={state} onRetry={actions.retry} />
+  )}
+>
+  <App />
+</SyncProvider>
+```
+
+The state is a discriminated union covering startup, migration,
+`client-upgrade-required`, `server-behind`, `incompatible-schema`, and
+`leader-unreachable`. Recovery changes the same handle/provider back to its
+children; a blocked live query has `phase === 'blocked'`, never an indefinite
+loading state.
 
 ## Durable commit outcomes
 

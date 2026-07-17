@@ -12,6 +12,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { normalizeClient, type SyncClientLike } from '@syncular/react';
+import { hostBoolean } from '../../../packages/typegen/test/fixtures/basic/syncular.queries';
 import {
   createNativeSyncClient,
   type SyncularEvent,
@@ -80,10 +81,13 @@ const OK = (result: unknown) => ({ result });
 /** A responder answering create + the accessor commands with fixtures. */
 function defaultResponder(
   method: string,
-  _params: Record<string, unknown>,
+  params: Record<string, unknown>,
 ): unknown {
   switch (method) {
     case 'query':
+      if (String(params.sql).includes('SELECT id, done FROM tasks')) {
+        return OK({ rows: [{ id: 't1', done: 0 }] });
+      }
       return OK({
         rows: [{ id: 't1', title: 'hello', blob: { $bytes: 'deadbeef' } }],
       });
@@ -108,6 +112,7 @@ function defaultResponder(
       });
     case 'statusSnapshot':
       return OK({
+        currentSchemaVersion: 1,
         outbox: 1,
         upgrading: false,
         syncNeeded: false,
@@ -197,6 +202,13 @@ describe('createNativeSyncClient', () => {
       0xde, 0xad, 0xbe, 0xef,
     ]);
     expect(rows[0]?.title).toBe('hello');
+  });
+
+  test('generated query decodes SQLite booleans on the native surface', async () => {
+    const { client } = await build();
+    expect(await hostBoolean(client, { projectId: 'p1' })).toEqual([
+      { id: 't1', done: false },
+    ]);
   });
 
   test('query encodes Uint8Array params as {$bytes:hex}', async () => {
@@ -416,7 +428,10 @@ describe('SyncClientLike parity', () => {
       purgedRows: 2,
       droppedCommits: 1,
     });
-    expect((await normalized.statusSnapshot()).outbox).toBe(1);
+    expect(await normalized.statusSnapshot()).toMatchObject({
+      currentSchemaVersion: 1,
+      outbox: 1,
+    });
     expect(await normalized.conflicts()).toEqual([]);
     expect(await normalized.rejections()).toEqual([]);
     expect(await normalized.commitOutcome('commit-1')).toMatchObject({

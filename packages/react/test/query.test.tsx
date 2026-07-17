@@ -29,6 +29,10 @@ interface TodoRow {
 interface ListTodosParams {
   listId: string;
 }
+interface BooleanTodoRow {
+  id: string;
+  done: boolean;
+}
 
 const listTodosQuery: NamedQueryDescriptor<TodoRow, ListTodosParams> = {
   id: 'test/listTodos',
@@ -62,6 +66,27 @@ const joinedQuery: NamedQueryDescriptor<TodoRow, undefined> = {
   bind: () => [],
   dependencies: () => [{ table: 'todos' }, { table: 'lists' }],
   coverage: () => [],
+};
+
+const booleanTodosQuery: NamedQueryDescriptor<BooleanTodoRow, undefined> = {
+  id: 'test/booleanTodos',
+  hasParams: false,
+  sql: 'SELECT id, done FROM todos',
+  tables: ['todos'],
+  mapRow: (row) => {
+    const value = row.done;
+    if (typeof value !== 'boolean' && typeof value !== 'number') {
+      throw new TypeError('invalid boolean fixture value');
+    }
+    return {
+      id: String(row.id),
+      done: typeof value === 'boolean' ? value : value !== 0,
+    };
+  },
+  bind: () => [],
+  dependencies: () => [{ table: 'todos' }],
+  coverage: () => [],
+  rowKey: (row) => [row.id],
 };
 
 function wrapper(client: FakeClient) {
@@ -170,5 +195,24 @@ describe('useQuery', () => {
     // The joined `lists` table invalidating must re-run the query.
     act(() => client.emitInvalidate(['lists']));
     await waitFor(() => expect(client.queryCount).toBe(before + 1));
+  });
+
+  test('maps initial and invalidated rows before identity reconciliation', async () => {
+    const client = new FakeClient();
+    client.setRows('todos', [{ id: 't1', done: 1 }]);
+    const { result } = renderHook(() => useQuery(booleanTodosQuery), {
+      wrapper: wrapper(client),
+    });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.rows[0]?.done).toBe(true);
+    const initial = result.current.rows[0];
+    const before = client.queryCount;
+
+    client.setRows('todos', [{ id: 't1', done: true }]);
+    act(() => client.emitInvalidate(['todos']));
+    await waitFor(() => expect(client.queryCount).toBe(before + 1));
+
+    expect(result.current.rows[0]?.done).toBe(true);
+    expect(result.current.rows[0]).toBe(initial);
   });
 });

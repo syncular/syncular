@@ -5,7 +5,11 @@
  * package typechecks under the repo's `.ts`-only root tsconfig with no jsx
  * setting — the bindings are plain function components either way.
  */
-import { ReactiveClientStore } from '@syncular/client';
+import {
+  ClientSyncError,
+  ReactiveClientStore,
+  type SyncAvailability,
+} from '@syncular/client';
 import {
   createContext,
   createElement,
@@ -37,6 +41,23 @@ export interface SyncProviderProps {
     error: Error,
     retry: () => Promise<void>,
   ) => ReactNode;
+  readonly renderBoundary?: (
+    state: SyncBoundaryState,
+    actions: SyncBoundaryActions,
+  ) => ReactNode;
+}
+
+export type SyncBoundaryState =
+  | { readonly state: 'starting' }
+  | {
+      readonly state: 'startup-error';
+      readonly error: Error;
+      readonly retryable: boolean;
+    }
+  | Exclude<SyncAvailability, { readonly state: 'ready' }>;
+
+export interface SyncBoundaryActions {
+  readonly retry?: () => Promise<void>;
 }
 
 interface ClientRecord {
@@ -65,11 +86,18 @@ function recordFor(client: SyncClientLike): ClientRecord {
 interface ReadySyncProviderProps {
   readonly client: SyncClientLike;
   readonly children?: ReactNode;
+  readonly renderBoundary?: SyncProviderProps['renderBoundary'];
+  readonly retry?: () => Promise<void>;
 }
 
 function ReadySyncProvider(props: ReadySyncProviderProps): ReactNode {
   const record = useMemo(() => recordFor(props.client), [props.client]);
   const { normalized, store } = record;
+  const status = useSyncExternalStore(
+    store.status.subscribe,
+    store.status.getSnapshot,
+    store.status.getSnapshot,
+  );
   useEffect(() => {
     record.refs += 1;
     store.start();
@@ -80,6 +108,21 @@ function ReadySyncProvider(props: ReadySyncProviderProps): ReactNode {
       });
     };
   }, [record, store]);
+  if (props.renderBoundary !== undefined) {
+    if (status.isLoading) {
+      return props.renderBoundary(
+        { state: 'starting' },
+        props.retry === undefined ? {} : { retry: props.retry },
+      );
+    }
+    const availability = store.availabilitySnapshot();
+    if (availability.state !== 'ready') {
+      return props.renderBoundary(
+        availability,
+        props.retry === undefined ? {} : { retry: props.retry },
+      );
+    }
+  }
   return createElement(
     SyncContext.Provider,
     { value: normalized },
@@ -107,15 +150,42 @@ export function SyncProvider(props: SyncProviderProps): ReactNode {
     resource?.getSnapshot ??
       (() => readySnapshot as NonNullable<typeof readySnapshot>),
   );
-  if (snapshot.phase === 'pending') return props.fallback ?? null;
+  if (snapshot.phase === 'pending') {
+    if (props.renderBoundary !== undefined) {
+      return props.renderBoundary(
+        { state: 'starting' },
+        resource === undefined ? {} : { retry: resource.retry },
+      );
+    }
+    return props.fallback ?? null;
+  }
   if (snapshot.phase === 'error') {
+    if (props.renderBoundary !== undefined) {
+      return props.renderBoundary(
+        {
+          state: 'startup-error',
+          error: snapshot.error,
+          retryable:
+            snapshot.error instanceof ClientSyncError
+              ? snapshot.error.retryable
+              : false,
+        },
+        resource === undefined ? {} : { retry: resource.retry },
+      );
+    }
     if (props.renderError !== undefined && resource !== undefined)
       return props.renderError(snapshot.error, resource.retry);
     throw snapshot.error;
   }
   return createElement(
     ReadySyncProvider,
-    { client: snapshot.client },
+    {
+      client: snapshot.client,
+      ...(props.renderBoundary !== undefined
+        ? { renderBoundary: props.renderBoundary }
+        : {}),
+      ...(resource !== undefined ? { retry: resource.retry } : {}),
+    },
     props.children,
   );
 }

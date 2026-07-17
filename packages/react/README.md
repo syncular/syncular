@@ -24,6 +24,9 @@ function Tasks({ projectId }: { projectId: string }) {
   const mutation = useMutation(tasksTable);
 
   if (tasks.phase === 'loading') return <p>Loading…</p>;
+  if (tasks.phase === 'blocked') {
+    return <p>Sync unavailable: {tasks.availability.reason}</p>;
+  }
   if (tasks.phase === 'error') return <p>{tasks.error?.message}</p>;
   if (tasks.phase === 'ready' && tasks.rows.length === 0) return <p>Empty</p>;
 
@@ -49,12 +52,17 @@ Typegen puts these facts on the descriptor:
 - a stable row key when the projection proves one.
 
 `useQuery` returns `{ rows, phase, revision, isLoading, isRefreshing, error,
-refresh }`. `phase` is:
+availability, refresh }`. `availability` is the typed `ready`, `migrating`, or
+`blocked` state shared by every client host. `phase` is:
 
 - `loading`: there is not yet a complete answer and there are no partial rows;
 - `partial`: rows exist, but some required window coverage is incomplete;
 - `ready`: the atomic snapshot says the answer is complete, including an
   honestly empty result;
+- `blocked`: sync cannot safely serve a fresh result because the generated
+  schema is incompatible or the browser leader is unreachable. `isLoading`
+  is `false`; previously read rows remain available for deliberate read-only
+  UI, and `availability.reason` identifies the boundary;
 - `error`: the initial read failed. A later refresh error keeps existing rows
   and phase visible through `error`/`isRefreshing`.
 
@@ -93,11 +101,40 @@ const clientResource = createSyncClientResource(() => createClient());
 Call `await clientResource.dispose()` from the application's real lifecycle
 owner, not from a StrictMode-sensitive child effect.
 
+Use `renderBoundary` as the canonical application guard across browser and
+native hosts. It covers resource startup/errors, migration, client upgrade,
+server-behind, incompatible-schema, and unreachable-leader states. The
+provider restores its children automatically when the public status becomes
+ready again:
+
+```tsx
+<SyncProvider
+  client={clientResource}
+  renderBoundary={(state, actions) => (
+    <SyncBlockedScreen state={state} onRetry={actions.retry} />
+  )}
+>
+  <App />
+</SyncProvider>
+```
+
+`fallback` and `renderError` retain their existing behavior when
+`renderBoundary` is absent. `useSyncStatus()` exposes the same classified
+`availability` plus `currentSchemaVersion`, `schemaFloor`, and the raw status
+fields for status chrome outside the provider guard.
+
 The resource is stable across React remounts, not JavaScript module replacement.
 During development, preserve it in the bundler's hot-module data or dispose the
 old resource before creating another one. Otherwise the old worker and the new
 worker can briefly compete for the same persistent OPFS directory. Never wipe
 or rename the database in response to a retryable startup error.
+
+For Vite, use `retainViteSyncClientResource(hot.data, schema.version,
+createClient)`. It retains a `{ schemaVersion, resource }` record, reuses it for
+same-schema HMR, and awaits old-resource disposal before creating a schema-bump
+replacement. Request `hot.invalidate()` only when its `schemaChanged` result is
+true and `disposalError` is absent; the official example and full explanation
+are in the [Vite guide](https://syncular.dev/guide-vite/).
 
 ## `useMutation`
 
@@ -172,8 +209,9 @@ not need a custom retention effect.
 ## Other hooks
 
 - `useSyncStatus()` observes the status domain without a follow-up read after
-  every row change. `outbox` is local push work; `syncNeeded` specifically
-  means an inbound pull/catch-up signal.
+  every row change. It includes `availability` and `currentSchemaVersion`;
+  `outbox` is local push work, while `syncNeeded` specifically means an inbound
+  pull/catch-up signal.
 - `useConflicts()` observes conflicts and rejections only when that domain
   changes.
 - `useCommitOutcomes()` observes the durable newest-first final-outcome journal

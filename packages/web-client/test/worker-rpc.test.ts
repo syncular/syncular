@@ -19,6 +19,7 @@ import {
   WORKER_FAILED_CODE,
   type WorkerErrorShape,
 } from '@syncular/client';
+import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
 import {
   CLIENT_SCHEMA,
   makeServer,
@@ -138,8 +139,14 @@ test('boot → subscribe → mutate → sync → query, all over the RPC', async
     'SELECT id, title, done FROM tasks ORDER BY id',
   );
   expect(rows).toEqual([{ id: 't1', title: 'hello', done: 0 }]);
+  expect(await hostBoolean(handle, { projectId: 'p1' })).toEqual([
+    { id: 't1', done: false },
+  ]);
 
   // State surfaces cross the boundary with sane defaults.
+  expect((await handle.statusSnapshot()).currentSchemaVersion).toBe(
+    CLIENT_SCHEMA.version,
+  );
   expect(await handle.conflicts()).toEqual([]);
   expect(await handle.rejections()).toEqual([]);
   expect(await handle.schemaFloor()).toBeUndefined();

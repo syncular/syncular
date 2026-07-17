@@ -127,8 +127,12 @@ the same client resource:
 Ordinary same-origin tabs are coordinated by Syncular's default multi-tab
 mode. Collisions are most often caused by rapid hot-module replacement or by
 embedded/test hosts that share OPFS without sharing the same Web Locks and
-BroadcastChannel domain. Preserve a single `createSyncClientResource()` across
-HMR, or dispose the old resource before creating the replacement.
+BroadcastChannel domain. Use the
+[schema-aware Vite resource recipe](/guide-vite/#keep-one-schema-correct-persistent-owner-during-hmr):
+it preserves one resource for ordinary HMR but disposes it before constructing
+a replacement when the captured generated-schema version changes. The
+[official React example](https://github.com/syncular/syncular/blob/main/apps/demo-react/src/frontend/main.tsx)
+uses the same record and startup boundary.
 
 Do **not** wipe or rename the OPFS directory for this error: it may contain the
 healthy local replica and unsynced outbox. Missing/obsolete browser APIs use

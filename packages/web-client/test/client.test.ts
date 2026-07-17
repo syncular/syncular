@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type ClientSchema, ClientSyncError } from '@syncular/client';
 import { ValidationRejection } from '@syncular/server';
+import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
 import {
   CLIENT_SCHEMA,
   makeClient,
@@ -43,6 +44,9 @@ describe('two clients, one server (tripwire)', () => {
     ]);
     // Optimistic local read before any network round (§7.1).
     expect(tableRows(a.db, 'tasks')).toHaveLength(1);
+    expect(await hostBoolean(a.client, { projectId: 'p1' })).toEqual([
+      { id: 't1', done: false },
+    ]);
 
     const summary = await a.client.sync();
     expect(summary.applied).toHaveLength(1);

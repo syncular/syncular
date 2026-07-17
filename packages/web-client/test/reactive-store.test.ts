@@ -19,6 +19,7 @@ interface Row {
 }
 
 const STATUS: SyncStatusSnapshot = {
+  currentSchemaVersion: 1,
   outbox: 0,
   upgrading: false,
   leaseState: undefined,

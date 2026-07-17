@@ -35,6 +35,7 @@ export interface NamedQueryDescriptor<Row, Params> {
   readonly hasParams: boolean;
   readonly sql: string;
   readonly tables: readonly string[];
+  readonly mapRow?: (row: Readonly<Record<string, unknown>>) => Row;
   readonly bind: (params: Params) => readonly SqlValue[];
   /** §6 orderBy knob: composes the statement for the CHOSEN order from a
    * generate-time-checked allowlist (identifiers never come from runtime
@@ -49,7 +50,13 @@ export interface NamedQueryDescriptor<Row, Params> {
 
 type NamedQueryOptions<Row> = Omit<
   UseRawSqlOptions<Row>,
-  'tables' | 'scopeKeys' | 'dependencies' | 'coverage' | 'rowKey' | 'id'
+  | 'tables'
+  | 'scopeKeys'
+  | 'dependencies'
+  | 'coverage'
+  | 'mapRow'
+  | 'rowKey'
+  | 'id'
 >;
 
 /** Run a param-less named query live. */
@@ -85,6 +92,7 @@ export function useQuery<Row, Params>(
     id: query.id,
     dependencies,
     coverage,
+    ...(query.mapRow !== undefined ? { mapRow: query.mapRow } : {}),
     ...(query.rowKey !== undefined ? { rowKey: query.rowKey } : {}),
   });
 }

@@ -84,6 +84,10 @@ import type {
   StoredPushResult,
   StoredRow,
 } from './storage';
+import {
+  isPostgresConstraintError,
+  StorageConstraintError,
+} from './storage-errors';
 
 /**
  * Schema DDL. Applied by `PostgresServerStorage.migrate()` (idempotent).
@@ -506,14 +510,25 @@ class PostgresTransaction implements StorageTransaction {
     await this.commit();
   }
 
-  async upsertRow(table: string, row: StoredRow): Promise<void> {
+  async upsertRow(
+    table: string,
+    row: StoredRow,
+    context?: { readonly opIndex: number },
+  ): Promise<void> {
     this.#assertOpen();
-    await writeRowOn(
-      this.#client,
-      this.#resolveTable(table),
-      this.#partition,
-      row,
-    );
+    try {
+      await writeRowOn(
+        this.#client,
+        this.#resolveTable(table),
+        this.#partition,
+        row,
+      );
+    } catch (error) {
+      if (isPostgresConstraintError(error)) {
+        throw new StorageConstraintError(error, context?.opIndex);
+      }
+      throw error;
+    }
   }
 
   async deleteRow(table: string, rowId: string): Promise<void> {
@@ -618,8 +633,7 @@ class PostgresTransaction implements StorageTransaction {
     await this.#client.query(
       `INSERT INTO sync_push_results(partition, client_id, client_commit_id, result)
        VALUES ($1,$2,$3,$4)
-       ON CONFLICT (partition, client_id, client_commit_id) DO UPDATE
-         SET result=EXCLUDED.result`,
+       ON CONFLICT (partition, client_id, client_commit_id) DO NOTHING`,
       [
         this.#partition,
         clientId,
