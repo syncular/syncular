@@ -326,7 +326,7 @@ By this point the design no longer felt like a menu of independent features. The
 
 The shortest accurate description of Syncular is:
 
-**local SQLite + a server-authoritative commit log + scopes.**
+**local SQLite + a server-authoritative commit log + [scopes](/concepts-scopes/).**
 
 Every client has a real SQLite database. Reads are local SQL. Mutations update local rows immediately and append the same operation to a durable outbox in one transaction. The server authorizes and validates commits, assigns their order, stores relational current state, and sends scoped changes to other clients.
 
@@ -354,9 +354,9 @@ Each step is observable and repeatable.
 
 The browser client runs sqlite-wasm over OPFS inside a Web Worker. Native clients use SQLite through the Rust core. Application queries never need a network round-trip.
 
-The recommended read path is generated SQL or SYQL. Typegen checks queries against the schema and emits typed APIs for TypeScript, Swift, Kotlin, Dart, and Rust. All five targets consume the same target-neutral QueryIR: the same public inputs, selected physical statement, positional bind order, reactive dependencies, synchronization coverage, and proven row identity. There is no second Rust query compiler quietly making different decisions.
+The recommended read path is [generated SQL](/tooling-queries/) or [SYQL](/syql/). [Typegen](/guide-schema/) checks queries against the schema and emits typed APIs for TypeScript, Swift, Kotlin, Dart, and Rust. All five targets consume the same target-neutral QueryIR: the same public inputs, selected physical statement, positional bind order, reactive dependencies, synchronization coverage, and proven row identity. There is no second Rust query compiler quietly making different decisions.
 
-The generated Rust surface is deliberately complete rather than a typed-row wrapper. Each query gets `Params` and `Row` types, an inspectable `select` function, `run`, an atomic `snapshot`, and a descriptor carrying dependencies and coverage. Integers stay exact `i64`; absent optional values remain distinct from present `NULL`; malformed dynamic rows fail with query-and-column context instead of being partially accepted. That is the kind of unglamorous cross-platform fidelity an offline system needs: local reads must mean the same thing everywhere before synchronization can make them converge.
+The [generated Rust surface](/platform-rust/) is deliberately complete rather than a typed-row wrapper. Each query gets `Params` and `Row` types, an inspectable `select` function, `run`, an atomic `snapshot`, and a descriptor carrying dependencies and coverage. Integers stay exact `i64`; absent optional values remain distinct from present `NULL`; malformed dynamic rows fail with query-and-column context instead of being partially accepted. That is the kind of unglamorous cross-platform fidelity an offline system needs: local reads must mean the same thing everywhere before synchronization can make them converge.
 
 ```tsx
 import { useQuery } from '@syncular/react';
@@ -372,7 +372,7 @@ if (todos.phase === 'partial') {
 return <TodoList rows={todos.rows} />;
 ```
 
-The `partial` state prevents an incomplete local replica from presenting an empty result as complete. Every required scope unit must finish bootstrap first. Query rows and completeness are read from the same SQLite snapshot.
+The [`partial` state](/concepts-windowing/) prevents an incomplete local replica from presenting an empty result as complete. Every required scope unit must finish [bootstrap](/concepts-bootstrap/) first. Query rows and completeness are read from the same SQLite snapshot.
 
 Guarded raw SQL remains available for dynamic reads. Raw writes are rejected because they would bypass the outbox; inserts, updates, and deletes go through the mutation API.
 
@@ -412,13 +412,13 @@ The client requests concrete values through generated subscription helpers or ex
 
 Writes use the same authority. Updates are authorized against the row currently stored on the server rather than scope values supplied by the client. Scope columns are immutable in client-originated updates, so a client cannot move a row into a scope it controls.
 
-If a requested grant disappears, the subscription is revoked as a unit. Its rows are purged locally, its realtime registration is removed, and pending writes into the revoked grant cannot land on the server.
+If a requested grant disappears, the [subscription is revoked as a unit](/concepts-scopes/). Its rows are purged locally, its realtime registration is removed, and pending writes into the revoked grant cannot land on the server.
 
 An offline device cannot learn about revocation while physically disconnected. No sync protocol can fix that. The guarantee begins at reconnection: the server refuses unauthorized writes and the client removes data it is no longer allowed to hold.
 
 ### A durable outbox includes durable failure evidence
 
-Applying the optimistic row and appending its outbox commit happen in the same SQLite transaction. The process cannot stop between them and leave the UI showing work that the sync engine forgot.
+Applying the optimistic row and appending its [outbox commit](/concepts-conflicts/) happen in the same SQLite transaction. The process cannot stop between them and leave the UI showing work that the sync engine forgot.
 
 ```ts
 const commitId = client.mutate([
@@ -435,7 +435,7 @@ const commitId = client.mutate([
 ]);
 ```
 
-The outbox stores schema-agnostic values and encodes them into SSP2 only when sending. After an app upgrade, compatible pending commits can be re-encoded with the new schema. If a commit references a removed column or table, Syncular surfaces `sync.outbox_incompatible`, rolls back its optimistic state, and continues with later compatible work rather than silently dropping it.
+The outbox stores schema-agnostic values and encodes them into SSP2 only when sending. After an app upgrade, compatible pending commits can be re-encoded with the [new schema](/guide-schema/). If a commit references a removed column or table, Syncular surfaces `sync.outbox_incompatible`, rolls back its optimistic state, and continues with later compatible work rather than silently dropping it.
 
 Every final result is stored in a durable outcome journal in the same transaction that drains the outbox:
 
@@ -494,11 +494,11 @@ Ordinary upserts use last-write-wins when `baseVersion` is absent. The applicati
 
 An ordered log is ideal for incremental sync and debugging. A fresh client needs a snapshot of current state.
 
-Syncular bootstraps current authorized rows through content-addressed snapshot artifacts called segments. The required rows format contains encoded row blocks. A faster SQLite-image format can be attached and copied directly into the local database. Segments are resumable, scope-bound, pinned to a commit sequence, and verified by hash.
+Syncular [bootstraps current authorized rows through content-addressed snapshot segments](/concepts-bootstrap/). The required rows format contains encoded row blocks. A faster SQLite-image format can be attached and copied directly into the local database. Segments are resumable, scope-bound, pinned to a commit sequence, and verified by hash.
 
-Large segments use HTTP so operators can put them in S3 or R2, issue signed URLs, and serve them through a CDN. In the repository’s in-process benchmark, a warm 100,000-row SQLite-image bootstrap is about 30 ms, compared with roughly 363 ms through the row-decoding lane. These are best-case in-process measurements; a real deployment adds network and serialization costs.
+Large segments use HTTP so operators can put them in [S3 or R2, issue signed URLs, and serve them through a CDN](/server-storage/). In the repository’s in-process benchmark, a warm 100,000-row SQLite-image bootstrap is about 30 ms, compared with roughly 363 ms through the row-decoding lane. These are best-case in-process measurements; a real deployment adds network and serialization costs.
 
-The host schedules commit-log pruning. Active client cursors constrain the horizon subject to retention floors. A client returning behind the horizon receives `sync.cursor_expired`, drops the obsolete cursor, takes a fresh scoped snapshot, and resumes incrementally.
+The host schedules [commit-log pruning](/server-operations/). Active client cursors constrain the horizon subject to retention floors. A client returning behind the horizon receives `sync.cursor_expired`, drops the obsolete cursor, takes a fresh scoped snapshot, and resumes incrementally.
 
 ```text
 incremental log while current
@@ -514,7 +514,7 @@ The operator-facing implementation is pruning plus re-bootstrap. The protocol le
 
 ### Schema is part of the protocol
 
-Applications author ordinary SQL migrations plus a `syncular.json` manifest. Typegen compiles them into a neutral schema IR, row codecs, scope metadata, subscription helpers, relational server projections, mutation types, and query APIs for TypeScript, Swift, Kotlin, Dart, and Rust.
+Applications author ordinary SQL migrations plus a `syncular.json` manifest. [Typegen](/guide-schema/) compiles them into a neutral schema IR, row codecs, scope metadata, subscription helpers, relational server projections, mutation types, and query APIs for TypeScript, Swift, Kotlin, Dart, and Rust.
 
 Both client cores and the server consume the same generated contract. Runtime inference does not decide the wire format.
 
@@ -524,7 +524,7 @@ Schema upgrades deliberately reuse the bootstrap path. The client preserves its 
 
 The web core is TypeScript. The native core is Rust, exposed through thin Swift, Kotlin, Flutter, Tauri, React Native, and C bindings.
 
-Both implement the written [SSP2 protocol](https://github.com/syncular/syncular/blob/main/docs/SPEC.md). Both consume the same generated schema contract. Both run the same implementation-agnostic conformance scenarios and golden byte vectors.
+Both implement the written [SSP2 protocol](https://github.com/syncular/syncular/blob/main/docs/SPEC.md). Both consume the same generated schema contract. Both run the same implementation-agnostic [conformance scenarios and golden byte vectors](/guide-conformance/).
 
 At the time of writing, the catalog contains 93 scenarios covering convergence, offline replay, lost acknowledgements, conflicts, scopes, revocation, bootstrap interruption, blobs, encryption, CRDTs, schema upgrades, realtime, presence, windowing, validation, and pruning. The repository gate passes more than 1,200 tests across the TypeScript and Rust paths.
 
