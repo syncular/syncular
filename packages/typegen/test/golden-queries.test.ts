@@ -1,5 +1,5 @@
 /**
- * Golden-file tests for the named-query emitters (TS/Swift/Kotlin/Dart),
+ * Golden-file tests for the named-query emitters (TS/Swift/Kotlin/Dart/Rust),
  * mirroring the schema goldens: the committed `*.queries.*` fixtures are the
  * snapshots; regeneration must reproduce them byte-exactly + deterministically,
  * each carries the DO-NOT-EDIT header + IR hash, and `--check` covers them.
@@ -26,6 +26,7 @@ const QUERY_FILES = {
   swift: 'Syncular.queries.swift',
   kotlin: 'Syncular.queries.kt',
   dart: 'syncular.queries.dart',
+  rust: 'syncular.queries.rs',
 } as const;
 
 function outputFor(basename: string): string {
@@ -57,13 +58,14 @@ describe('named-query emitter goldens', () => {
     });
   }
 
-  test('all four query files appear in outputs after the schema files', () => {
+  test('all five query files appear in outputs after the schema files', () => {
     const names = generate(FIXTURE).outputs.map((o) => o.path.split('/').pop());
     // schema outputs then query outputs, one queries file per emitter.
     expect(names).toContain(QUERY_FILES.ts);
     expect(names).toContain(QUERY_FILES.swift);
     expect(names).toContain(QUERY_FILES.kotlin);
     expect(names).toContain(QUERY_FILES.dart);
+    expect(names).toContain(QUERY_FILES.rust);
   });
 
   test('checkOutputs covers the query files (no drift on committed)', () => {

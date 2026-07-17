@@ -26,10 +26,10 @@ use crate::api::{
     ClientChangeBatch, ClientLimits, CommandEffects, CommitOperation, CommitOperationOutcome,
     CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution, CommitOutcomeStatus,
     ConflictRecord, CoverageSnapshot, LeaseState, LocalDataPurgeInput, LocalDataPurgeResult,
-    LocalDataPurgeTarget, Mutation, PresencePeer, QuerySnapshot, RejectionDetails, RejectionRecord,
-    ResolveCommitOutcomeInput, RowState, SchemaFloor, SubscriptionStateView, SyncIntent,
-    SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange, WindowBase, WindowChange,
-    WindowCoverage, WindowState, WindowUnitRef,
+    LocalDataPurgeTarget, Mutation, PresencePeer, QueryRow, QuerySnapshot, QueryValue,
+    RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RowState, SchemaFloor,
+    SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
+    WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
 };
 use crate::schema::{parse_schema_json, ClientSchema, FtsIndexSchema, TableSchema};
 use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
@@ -1387,8 +1387,8 @@ fn sql_ref_to_json_dynamic(value: rusqlite::types::ValueRef<'_>) -> Value {
 fn query_connection(
     conn: &Connection,
     sql: &str,
-    params: &[Value],
-) -> Result<Vec<Map<String, Value>>, String> {
+    params: &[QueryValue],
+) -> Result<Vec<QueryRow>, String> {
     crate::query_guard::assert_read_only_query(sql)?;
     let lowered_sql = crate::query_guard::lower_public_query_sql(sql);
     let bound: Vec<SqlValue> = params
@@ -3955,7 +3955,7 @@ impl SyncClient {
     /// The result column typing is dynamic (SQLite's stored affinity), because
     /// arbitrary SQL can alias, join, and compute — there is no schema column
     /// to consult per output cell, unlike [`read_rows`].
-    pub fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Map<String, Value>>, String> {
+    pub fn query(&self, sql: &str, params: &[QueryValue]) -> Result<Vec<QueryRow>, String> {
         query_connection(&self.conn, sql, params)
     }
 
@@ -3963,7 +3963,7 @@ impl SyncClient {
     pub fn query_snapshot(
         &mut self,
         sql: &str,
-        params: &[Value],
+        params: &[QueryValue],
         coverage: &[WindowCoverage],
     ) -> Result<QuerySnapshot, String> {
         snapshot_connection(&self.conn, sql, params, coverage)

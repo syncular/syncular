@@ -9,6 +9,7 @@ export * from './emit-kotlin';
 export * from './emit-queries';
 export * from './emit-queries-dart';
 export * from './emit-queries-kotlin';
+export * from './emit-queries-rust';
 export * from './emit-queries-swift';
 export * from './emit-swift';
 export * from './errors';

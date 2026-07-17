@@ -20,12 +20,13 @@
           "required": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["ts", "swift", "kotlin", "dart"],
+            "required": ["ts", "swift", "kotlin", "dart", "rust"],
             "properties": {
               "ts": { "$ref": "#/$defs/snippets" },
               "swift": { "$ref": "#/$defs/snippets" },
               "kotlin": { "$ref": "#/$defs/snippets" },
-              "dart": { "$ref": "#/$defs/snippets" }
+              "dart": { "$ref": "#/$defs/snippets" },
+              "rust": { "$ref": "#/$defs/snippets" }
             }
           }
         }

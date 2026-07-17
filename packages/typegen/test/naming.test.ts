@@ -10,8 +10,11 @@ import { describe, expect, test } from 'bun:test';
 import {
   analyzeQuery,
   buildNamingMap,
+  buildRustNamingMap,
   type IrDocument,
   type QueryDb,
+  rustPascalCase,
+  rustSnakeCase,
   serializeQueryIr,
   snakeToCamel,
   synthesizeDdl,
@@ -39,6 +42,43 @@ describe('snakeToCamel — the pinned §12 algorithm', () => {
       expect(snakeToCamel(input)).toBe(expected);
     });
   }
+});
+
+describe('Rust naming — RFC 0006', () => {
+  const VECTORS: readonly [string, string][] = [
+    ['createdAt', 'created_at'],
+    ['URLValue', 'url_value'],
+    ['idURL', 'id_url'],
+    ['col2Value', 'col2_value'],
+    ['already_snake', 'already_snake'],
+    ['a__b', 'a_b'],
+    ['__leadAndTrail_', '__lead_and_trail_'],
+  ];
+  for (const [input, expected] of VECTORS) {
+    test(`${input} -> ${expected}`, () => {
+      expect(rustSnakeCase(input)).toBe(expected);
+    });
+  }
+
+  test('generates UpperCamelCase type names', () => {
+    expect(rustPascalCase('listTodos')).toBe('ListTodos');
+    expect(rustPascalCase('URLValue')).toBe('UrlValue');
+  });
+
+  test('rejects Rust keywords and post-conversion collisions', () => {
+    expect(() => buildRustNamingMap(['type'], 'q.sql', 'projection')).toThrow(
+      /reserved word on the rust target/,
+    );
+    expect(() =>
+      buildRustNamingMap(['fooBar', 'foo_bar'], 'q.sql', 'projection'),
+    ).toThrow(/both map to "foo_bar"/);
+  });
+
+  test('rejects expression-shaped projection names', () => {
+    expect(() =>
+      buildRustNamingMap(['count(*)'], 'q.sql', 'projection'),
+    ).toThrow(/cannot be emitted as a Rust identifier/);
+  });
 });
 
 describe('buildNamingMap — §12 hard errors', () => {

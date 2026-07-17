@@ -1,0 +1,7 @@
+query taskMetaFilter(projectId, meta?: json | null) {
+  select id, meta
+  from tasks
+  where tasks.project_id = :projectId
+    and when(meta) meta is :meta
+  order by id;
+}

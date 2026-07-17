@@ -8,6 +8,11 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+/// Stable dynamic value boundary used by generated named queries.
+pub type QueryValue = Value;
+/// One dynamic query result row, keyed by QueryIR runtime projection name.
+pub type QueryRow = Map<String, QueryValue>;
+
 /// §4.8 window base: one table, the scope variable whose values are the
 /// window units, any fixed scopes shared by every unit, and host-opaque
 /// `params` carried onto each unit's subscription.
@@ -134,7 +139,7 @@ pub struct CoverageSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct QuerySnapshot {
     pub revision: String,
-    pub rows: Vec<Map<String, Value>>,
+    pub rows: Vec<QueryRow>,
     pub coverage: CoverageSnapshot,
 }
 

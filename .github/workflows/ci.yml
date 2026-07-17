@@ -97,6 +97,9 @@ jobs:
         working-directory: rust
         run: cargo fmt --check
 
+      - name: generated Rust query format
+        run: rustfmt --check packages/typegen/test/fixtures/basic/syncular.queries.rs
+
       - name: cargo clippy
         working-directory: rust
         run: cargo clippy --all-targets -- -D warnings

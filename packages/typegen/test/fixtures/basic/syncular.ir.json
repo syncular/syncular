@@ -1,6 +1,6 @@
 {
   "irVersion": 1,
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "schemaVersions": [
     {
       "version": 1,
@@ -18,6 +18,12 @@
       "version": 3,
       "migrations": [
         "0003_add_doc_crdt"
+      ]
+    },
+    {
+      "version": 4,
+      "migrations": [
+        "0004_add_doc_blob_ref"
       ]
     }
   ],
@@ -132,6 +138,11 @@
           "type": "crdt",
           "nullable": true,
           "crdtType": "yjs-doc"
+        },
+        {
+          "name": "remote_blob",
+          "type": "blob_ref",
+          "nullable": true
         }
       ],
       "scopes": [

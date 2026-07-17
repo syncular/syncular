@@ -77,6 +77,7 @@ schema guide and suggests `syncular init`.
 | `output.swift` | no | Opt-in Swift emitter (see §5). A path string, or `{ "path", "enumName", "queriesPath" }` (default `enumName` `SyncularSchema`; `queriesPath` opts into §6 Swift named queries). |
 | `output.kotlin` | no | Opt-in Kotlin emitter (see §5). A path string, or `{ "path", "package", "objectName", "queriesPath" }` (defaults `syncular.generated` / `SyncularSchema`). |
 | `output.dart` | no | Opt-in Dart emitter (see §5). A path string, or `{ "path", "queriesPath" }`. |
+| `output.rust` | no | Opt-in Rust named-query emitter (see §6). An object `{ "queriesPath", "clientCrate"? }`; `clientCrate` defaults to `syncular_client`. Rust consumes neutral schema IR rather than a generated schema source file. |
 | `schemaVersions` | yes, non-empty | The §1.5 version history. See below. |
 | `tables` | yes, non-empty | Synced tables. **Array order is the handler-declared bootstrap order (§4.7)** and flows unchanged into the IR and `schema.tables`. |
 | `tables[].name` | yes | Must be created by a migration. |
@@ -410,14 +411,15 @@ present-null, and present-value remain distinct. A group is one optional host
 object whose members are all required. A `bool = false` flag activates on
 true. Sort is a generated enum/union of complete checked profiles; limit is validated as a
 positive bounded integer before execution. `integer` inputs are exact signed
-64-bit values in the SYQL API (`bigint` in TypeScript, `Int64`/`Long`/`int` on
-native targets).
+64-bit values in the SYQL API (`bigint` in TypeScript,
+`Int64`/`Long`/`int` on Swift/Kotlin/Dart, and `i64` on Rust).
 
 **File & naming convention.** Named queries live in a `queries/` directory
 next to `migrations/` (override with the top-level `"queries"` manifest key).
 The directory is **walked recursively** — subfolders are pure organization.
 Each language's queries file is a **separate output** (`output.queries` for TS,
-and `queriesPath` on `output.swift`/`output.kotlin`/`output.dart`), so
+and `queriesPath` on `output.swift`/`output.kotlin`/`output.dart` plus
+`output.rust.queriesPath`), so
 schema-only consumers never churn when a query changes. A queries output is
 opt-in per language; when none is requested the `queries/` dir is not even
 read.
@@ -577,7 +579,7 @@ required, non-null, exactly typed binds are allowed. Result identity is inferred
 from schema keys and the projection. Without constructive proof the compiler
 falls back to table-wide dependency, no coverage, and/or unkeyed reconciliation.
 
-**Emitted shape, per language** (one query, five outputs — abbreviated):
+**Emitted shape, per language** (abbreviated):
 
 | | Output |
 |---|---|
@@ -585,12 +587,36 @@ falls back to table-wide dependency, no coverage, and/or unkeyed reconciliation.
 | Swift | `struct ListTodosRow` + `init?(row:)` and `<Enum>Queries.listTodos(client:listId:) throws -> [ListTodosRow]` + `listTodosTables` |
 | Kotlin | `data class ListTodosRow` + `fromRow` and `<Object>Queries.listTodos(client, listId): List<ListTodosRow>` + `listTodosTables` |
 | Dart | `class ListTodosRow` + `fromRow` and `syncularListTodosQuery(client, listId): List<ListTodosRow>` + `syncularListTodosQueryTables` |
+| Rust | `list_todos::{Row, Params, DESCRIPTOR, select, run, snapshot}` with strict decoding, `i64` fidelity, reactive dependencies, `WindowCoverage`, and proven `row_key` |
 
 Each projection row is its **own** generated type per query (the drift-kill:
-the row shape is exactly what the SELECT returns). Native rows decode through
-the same `fromRow` mapping rules (0/1 booleans, `{"$bytes":"<hex>"}` bytes) as
-the schema structs. `--check` gates every queries file byte-exactly, like the
+the row shape is exactly what the SELECT returns). Swift/Kotlin/Dart rows use
+their wrapper `fromRow` mapping. Rust returns a query/column-specific error for
+missing or malformed values and accepts the client's lossless `$bigint` and
+`$bytes` envelopes. `--check` gates every queries file byte-exactly, like the
 schema files; each carries the DO-NOT-EDIT header + IR hash.
+
+Rust is object-only in the manifest:
+
+```json
+{
+  "output": {
+    "rust": {
+      "queriesPath": "./src/syncular_queries.rs",
+      "clientCrate": "syncular_client"
+    }
+  }
+}
+```
+
+Each query is a snake-case module. Required inputs go through `Params::new`;
+optional nullable inputs use `SyqlPresence<Option<T>>`; sort profiles are
+closed enums; and `select(&params)` exposes the exact checked SQL and binds for
+diagnostics. `run` executes a typed local read. `snapshot` returns typed rows,
+the local revision, and coverage from one SQLite read snapshot. The generated
+`DESCRIPTOR` contains the QueryIR hash identity, tables, dependencies,
+coverage, plan selector, and optional proven row-key function. It deliberately
+does not prescribe a Rust UI observer.
 
 **React helper.** `@syncular/react` exports `useQuery(query, params?)`,
 which takes the TS `NamedQuery` descriptor and observes the client-scoped

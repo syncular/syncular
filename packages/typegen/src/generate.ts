@@ -18,6 +18,7 @@ import { emitKotlinModule } from './emit-kotlin';
 import { emitQueriesModule } from './emit-queries';
 import { emitQueriesDartModule } from './emit-queries-dart';
 import { emitQueriesKotlinModule } from './emit-queries-kotlin';
+import { emitQueriesRustModule } from './emit-queries-rust';
 import { emitQueriesSwiftModule } from './emit-queries-swift';
 import { emitSwiftModule } from './emit-swift';
 import { TypegenError } from './errors';
@@ -555,6 +556,7 @@ export function generate(manifestDir: string): GenerateResult {
   if (manifest.output.swift !== undefined) targets.push('swift');
   if (manifest.output.kotlin !== undefined) targets.push('kotlin');
   if (manifest.output.dart !== undefined) targets.push('dart');
+  if (manifest.output.rust !== undefined) targets.push('rust');
   const naming: QueryNamingOptions = {
     naming: manifest.naming,
     targets,
@@ -586,6 +588,7 @@ export function generate(manifestDir: string): GenerateResult {
     swift,
     kotlin,
     dart,
+    rust,
   } = manifest.output;
 
   // Named queries: analyzed once (SELECT-only, typed against the IR via
@@ -596,7 +599,8 @@ export function generate(manifestDir: string): GenerateResult {
     tsQueriesPath !== undefined ||
     swift?.queriesPath !== undefined ||
     kotlin?.queriesPath !== undefined ||
-    dart?.queriesPath !== undefined;
+    dart?.queriesPath !== undefined ||
+    rust?.queriesPath !== undefined;
   const analyzedQueries = wantsQueries
     ? analyzeQueries(
         ir,
@@ -677,6 +681,17 @@ export function generate(manifestDir: string): GenerateResult {
         ),
       });
     }
+  }
+  if (rust !== undefined) {
+    outputs.push({
+      path: resolve(manifestDir, rust.queriesPath),
+      content: emitQueriesRustModule(
+        analyzedQueries,
+        queryHash,
+        ir.irVersion,
+        rust.clientCrate,
+      ),
+    });
   }
   return {
     ir,

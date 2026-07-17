@@ -10,6 +10,7 @@ use ssp2::segment::{Column, ColumnType};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SchemaIr {
+    #[serde(alias = "schemaVersion")]
     pub version: i32,
     pub tables: Vec<TableIr>,
 }

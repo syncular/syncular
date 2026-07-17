@@ -32,9 +32,9 @@ queries/**/*.syql ─ lexer/parser/modules/semantics ──┼─> AnalyzedQuery
                          └─ validation + lowering ────┘       v
                                                         QueryIR v3
                                                             │
-                                          ┌─────────────────┼──────────────┐
-                                          v                 v              v
-                                     TypeScript        Swift/Kotlin       Dart
+                                   ┌──────────────┬──────────┼──────────┬─────────┐
+                                   v              v          v          v         v
+                              TypeScript       Swift      Kotlin      Dart      Rust
 ```
 
 The `.sql` frontend handles fixed reads: one or more named statements, named
@@ -136,7 +136,8 @@ portable lexical/function surface and every executable plan against shipped
 engines; generator acceptance alone is not sufficient evidence of portability.
 
 SYQL `integer` means exact signed 64-bit. TypeScript uses `bigint` for public
-SYQL inputs, Swift uses `Int64`, Kotlin uses `Long`, and Dart uses `int`.
+SYQL inputs, Swift uses `Int64`, Kotlin uses `Long`, Dart uses `int`, and Rust
+uses `i64`.
 Bridges must not route these inputs through an inexact JSON double.
 
 ## 7. Generated APIs
@@ -153,8 +154,11 @@ All emitters expose the same logical inputs:
 
 Every emitter validates public input shape and page bounds before execution,
 selects the QueryIR statement deterministically, derives positional binds, and
-uses a stable runtime error code for invalid input. TypeScript additionally
-emits a `NamedQuery` descriptor for React's revisioned query store.
+uses a stable runtime error code for invalid input. TypeScript emits a
+`NamedQuery` descriptor for React's revisioned query store. Rust emits a
+framework-neutral `QueryDescriptor`, strict typed `run`, and atomic typed
+`snapshot`; a Rust host can combine the descriptor with `ClientChangeBatch`
+without restating dependencies or coverage.
 
 ## 8. Tool ownership
 
@@ -179,6 +183,6 @@ Changing SYQL syntax or meaning requires one change set to update:
 2. relevant JSON Schemas and normative vectors under `spec/syql`;
 3. parser/semantic/validator/lowering tests;
 4. formatter, LSP, and editor grammar when affected;
-5. all four emitters and generated fixtures when the public/physical contract
+5. all five emitters and generated fixtures when the public/physical contract
    changes;
 6. this architecture document and user-facing docs.

@@ -63,6 +63,81 @@
       }
     },
     {
+      "name": "docValueTypes",
+      "file": "doc-value-types.sql",
+      "sourceSql": "-- Native/Rust query-codegen fidelity for bytes, CRDT, and blob references.\nSELECT id, attachment, body_doc, remote_blob\nFROM docs\nWHERE id = :id",
+      "sql": "-- Native/Rust query-codegen fidelity for bytes, CRDT, and blob references.\nSELECT id, attachment, body_doc AS bodyDoc, remote_blob AS remoteBlob FROM docs\nWHERE id = :id",
+      "positionalSql": "SELECT id, attachment, body_doc AS bodyDoc, remote_blob AS remoteBlob FROM docs WHERE id = ?",
+      "params": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "id"
+          }
+        },
+        {
+          "name": "attachment",
+          "langName": "attachment",
+          "type": "bytes",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "attachment"
+          }
+        },
+        {
+          "name": "body_doc",
+          "langName": "bodyDoc",
+          "type": "crdt",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "body_doc"
+          }
+        },
+        {
+          "name": "remote_blob",
+          "langName": "remoteBlob",
+          "type": "blob_ref",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "remote_blob"
+          }
+        }
+      ],
+      "tables": [
+        "docs"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "docs",
+            "scopes": []
+          }
+        ],
+        "coverage": [],
+        "rowKey": [
+          "id"
+        ]
+      }
+    },
+    {
       "name": "docWithBody",
       "file": "doc-with-body.sql",
       "sourceSql": "-- Join across docs+tasks (same project); projection mixes both tables.\nSELECT d.id AS doc_id, d.body, t.title AS task_title\nFROM docs d\nJOIN tasks t ON t.project_id = d.project_id\nWHERE d.org_id = :orgId",
@@ -134,6 +209,95 @@
           }
         ],
         "coverage": []
+      }
+    },
+    {
+      "name": "docsInProject",
+      "file": "docs-in-project.sql",
+      "sourceSql": "SELECT id, body\nFROM docs\nWHERE org_id = :orgId AND project_id = :projectId\nORDER BY id",
+      "sql": "SELECT id, body\nFROM docs\nWHERE org_id = :orgId AND project_id = :projectId\nORDER BY id",
+      "positionalSql": "SELECT id, body FROM docs WHERE org_id = ? AND project_id = ? ORDER BY id",
+      "params": [
+        {
+          "name": "orgId",
+          "langName": "orgId",
+          "type": "string"
+        },
+        {
+          "name": "projectId",
+          "langName": "projectId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "id"
+          }
+        },
+        {
+          "name": "body",
+          "langName": "body",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "body"
+          }
+        }
+      ],
+      "tables": [
+        "docs"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "docs",
+            "scopes": [
+              {
+                "variable": "org_id",
+                "pattern": "org:{org_id}",
+                "params": [
+                  "orgId"
+                ]
+              },
+              {
+                "variable": "projectId",
+                "pattern": "project:{projectId}",
+                "params": [
+                  "projectId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "docs",
+            "variable": "org_id",
+            "units": [
+              "orgId"
+            ],
+            "fixedScopes": [
+              {
+                "variable": "projectId",
+                "params": [
+                  "projectId"
+                ]
+              }
+            ]
+          }
+        ],
+        "rowKey": [
+          "id"
+        ]
       }
     },
     {
@@ -536,6 +700,92 @@
       }
     },
     {
+      "name": "taskValueTypes",
+      "file": "task-value-types.sql",
+      "sourceSql": "-- Native/Rust query-codegen fidelity for bool, exact i64, float, and JSON.\nSELECT id, done, priority, estimate, meta\nFROM tasks\nWHERE id = :id",
+      "sql": "-- Native/Rust query-codegen fidelity for bool, exact i64, float, and JSON.\nSELECT id, done, priority, estimate, meta\nFROM tasks\nWHERE id = :id",
+      "positionalSql": "SELECT id, done, priority, estimate, meta FROM tasks WHERE id = ?",
+      "params": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
+        },
+        {
+          "name": "done",
+          "langName": "done",
+          "type": "boolean",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "done"
+          }
+        },
+        {
+          "name": "priority",
+          "langName": "priority",
+          "type": "integer",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "priority"
+          }
+        },
+        {
+          "name": "estimate",
+          "langName": "estimate",
+          "type": "float",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "estimate"
+          }
+        },
+        {
+          "name": "meta",
+          "langName": "meta",
+          "type": "json",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "meta"
+          }
+        }
+      ],
+      "tables": [
+        "tasks"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "tasks",
+            "scopes": []
+          }
+        ],
+        "coverage": [],
+        "rowKey": [
+          "id"
+        ]
+      }
+    },
+    {
       "name": "tasksInProjects",
       "file": "tasks-in-projects.sql",
       "sourceSql": "-- IN-clause param inference: both params type to project_id (TEXT).\nSELECT id, title FROM tasks WHERE project_id IN (:first, :second)",
@@ -661,6 +911,138 @@
         ],
         "coverage": [],
         "rowKey": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "taskMetaFilter",
+      "file": "task-meta-filter.syql",
+      "sourceSql": "select id, meta\n  from tasks\n  where tasks.project_id = :projectId\n    and 1\n  order by id",
+      "sql": "select id, meta\n  from tasks\n  where tasks.project_id = :projectId\n    and 1\n  order by id",
+      "positionalSql": "select id, meta from tasks where tasks.project_id = ? and 1 order by id",
+      "params": [
+        {
+          "name": "projectId",
+          "langName": "projectId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "langName": "id",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
+        },
+        {
+          "name": "meta",
+          "langName": "meta",
+          "type": "json",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "meta"
+          }
+        }
+      ],
+      "tables": [
+        "tasks"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "tasks",
+            "scopes": [
+              {
+                "variable": "project_id",
+                "pattern": "project:{project_id}",
+                "params": [
+                  "projectId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [],
+        "rowKey": [
+          "id"
+        ]
+      },
+      "syql": {
+        "revision": 1,
+        "inputs": [
+          {
+            "kind": "value",
+            "name": "projectId",
+            "langName": "projectId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          },
+          {
+            "kind": "value",
+            "name": "meta",
+            "langName": "meta",
+            "type": "json",
+            "nullable": true,
+            "required": false
+          }
+        ],
+        "plan": {
+          "backend": "variants",
+          "activationControls": [
+            "meta"
+          ],
+          "conditions": [
+            {
+              "controls": [
+                "meta"
+              ]
+            }
+          ],
+          "statements": [
+            {
+              "activationMask": 0,
+              "sql": "select id, meta\n  from tasks\n  where tasks.project_id = :projectId\n    and 1\n  order by id",
+              "positionalSql": "select id, meta from tasks where tasks.project_id = ? and 1 order by id",
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "projectId",
+                  "type": "string",
+                  "input": "projectId"
+                }
+              ]
+            },
+            {
+              "activationMask": 1,
+              "sql": "select id, meta\n  from tasks\n  where tasks.project_id = :projectId\n    and ( meta is :meta)\n  order by id",
+              "positionalSql": "select id, meta from tasks where tasks.project_id = ? and ( meta is ?) order by id",
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "projectId",
+                  "type": "string",
+                  "input": "projectId"
+                },
+                {
+                  "kind": "value",
+                  "name": "meta",
+                  "type": "json",
+                  "input": "meta"
+                }
+              ]
+            }
+          ]
+        },
+        "identity": [
           "id"
         ]
       }

@@ -47,7 +47,7 @@ export function snakeToCamel(name: string): string {
 /** The emitter targets whose keyword sets we police. `ts` is included for
  * completeness (its emitters can quote any property, so its list is the
  * small set that breaks generated FUNCTION/const identifiers). */
-export type NamingTarget = 'ts' | 'swift' | 'kotlin' | 'dart';
+export type NamingTarget = 'ts' | 'swift' | 'kotlin' | 'dart' | 'rust';
 
 /** Reserved words that cannot be a generated field/property name on each
  * target. Deliberately the core keyword lists — mechanical and predictable
@@ -211,7 +211,156 @@ const TARGET_KEYWORDS: Readonly<Record<NamingTarget, ReadonlySet<string>>> = {
     'while',
     'with',
   ]),
+  rust: new Set([
+    'abstract',
+    'as',
+    'async',
+    'await',
+    'become',
+    'box',
+    'break',
+    'const',
+    'continue',
+    'crate',
+    'do',
+    'dyn',
+    'else',
+    'enum',
+    'extern',
+    'false',
+    'final',
+    'fn',
+    'for',
+    'gen',
+    'if',
+    'impl',
+    'in',
+    'let',
+    'loop',
+    'macro',
+    'match',
+    'mod',
+    'move',
+    'mut',
+    'override',
+    'priv',
+    'pub',
+    'ref',
+    'return',
+    'self',
+    'static',
+    'struct',
+    'super',
+    'trait',
+    'true',
+    'try',
+    'type',
+    'typeof',
+    'unsafe',
+    'unsized',
+    'use',
+    'virtual',
+    'where',
+    'while',
+    'yield',
+  ]),
 };
+
+export function isRustKeyword(name: string): boolean {
+  return TARGET_KEYWORDS.rust.has(name);
+}
+
+/** Pinned Rust identifier conversion from RFC 0006. */
+export function rustSnakeCase(name: string): string {
+  if (!/^_*[A-Za-z][A-Za-z0-9_]*$/.test(name)) return name;
+  const lead = /^_*/.exec(name)?.[0] ?? '';
+  const withoutLead = name.slice(lead.length);
+  const trail = /_*$/.exec(withoutLead)?.[0] ?? '';
+  const middle = withoutLead.slice(0, withoutLead.length - trail.length);
+  const out: string[] = [];
+  for (let index = 0; index < middle.length; index++) {
+    const char = middle[index] as string;
+    if (char === '_') {
+      if (out.length > 0 && out[out.length - 1] !== '_') out.push('_');
+      continue;
+    }
+    const previous = index > 0 ? middle[index - 1] : undefined;
+    const next = index + 1 < middle.length ? middle[index + 1] : undefined;
+    const uppercase = char >= 'A' && char <= 'Z';
+    const previousLowerOrDigit =
+      previous !== undefined && /[a-z0-9]/.test(previous);
+    const acronymBoundary =
+      uppercase &&
+      previous !== undefined &&
+      /[A-Z]/.test(previous) &&
+      next !== undefined &&
+      /[a-z]/.test(next);
+    if (
+      uppercase &&
+      (previousLowerOrDigit || acronymBoundary) &&
+      out.length > 0 &&
+      out[out.length - 1] !== '_'
+    ) {
+      out.push('_');
+    }
+    out.push(char.toLowerCase());
+  }
+  return lead + out.join('') + trail;
+}
+
+export function rustPascalCase(name: string): string {
+  const snake = rustSnakeCase(name);
+  const lead = /^_*/.exec(snake)?.[0] ?? '';
+  const bare = snake.slice(lead.length).replace(/_*$/, '');
+  const suffix = snake.slice(lead.length + bare.length);
+  return (
+    lead +
+    bare
+      .split('_')
+      .filter((part) => part.length > 0)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join('') +
+    suffix
+  );
+}
+
+export interface RustNameMapping {
+  readonly langName: string;
+  readonly rustName: string;
+}
+
+/** Validate and map QueryIR runtime names to emitted Rust identifiers. */
+export function buildRustNamingMap(
+  langNames: readonly string[],
+  context: string,
+  scope: string,
+): RustNameMapping[] {
+  const seen = new Map<string, string>();
+  return langNames.map((langName) => {
+    const rustName = rustSnakeCase(langName);
+    if (!/^_*[a-z][a-z0-9_]*$/.test(rustName)) {
+      throw new TypegenError(
+        context,
+        `${scope}: ${JSON.stringify(langName)} cannot be emitted as a Rust identifier — alias it in SQL (AS)`,
+      );
+    }
+    if (TARGET_KEYWORDS.rust.has(rustName)) {
+      throw new TypegenError(
+        context,
+        `${scope}: ${JSON.stringify(langName)} maps to ${JSON.stringify(rustName)}, a reserved word on the rust target — alias it in SQL (AS)`,
+      );
+    }
+    const clash = seen.get(rustName);
+    if (clash !== undefined && clash !== langName) {
+      throw new TypegenError(
+        context,
+        `${scope}: ${JSON.stringify(clash)} and ${JSON.stringify(langName)} both map to ${JSON.stringify(rustName)} on the rust target — alias one in SQL (AS)`,
+      );
+    }
+    seen.set(rustName, langName);
+    return { langName, rustName };
+  });
+}
 
 /** One naming-map entry: the SQL-truth name and its language-facing name. */
 export interface NameMapping {
@@ -248,10 +397,11 @@ export function buildNamingMap(
       );
     }
     for (const target of targets) {
-      if (TARGET_KEYWORDS[target].has(langName)) {
+      const targetName = target === 'rust' ? rustSnakeCase(langName) : langName;
+      if (TARGET_KEYWORDS[target].has(targetName)) {
         throw new TypegenError(
           context,
-          `${scope}: ${JSON.stringify(sqlName)} maps to ${JSON.stringify(langName)}, a reserved word on the ${target} target — rename it, alias it in SQL (AS), or set "naming": "preserve" in syncular.json`,
+          `${scope}: ${JSON.stringify(sqlName)} maps to ${JSON.stringify(targetName)}, a reserved word on the ${target} target — rename it, alias it in SQL (AS), or set "naming": "preserve" in syncular.json`,
         );
       }
       if (target === 'dart' && langName.startsWith('_')) {
