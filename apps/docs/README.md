@@ -1,21 +1,22 @@
 # @syncular/docs
 
-The documentation site — an **Astro** static site. Markdown pages in
-`src/content/` plus the `src/nav.ts` manifest render through
-`src/pages/[slug].astro` into the teletype layout; the landing page is
-`src/pages/index.astro`. Syntax highlighting is Shiki at build time
-(`css-variables` theme, colored by the palette in `public/style.css`), so the
-published site ships no highlighter JavaScript.
+The documentation site — an **Astro** static site. Documentation Markdown in
+`src/content/` plus the `src/nav.ts` manifest renders through
+`src/pages/[slug].astro` into the teletype layout. Blog Markdown lives in
+`src/content/blog/`, with an index at `/blog/` and one static page per post;
+the landing page is `src/pages/index.astro`. Syntax highlighting is Shiki at
+build time (`css-variables` theme, colored by the palette in
+`public/style.css`), so the published site ships no highlighter JavaScript.
 
-The build also generates agent-discovery assets from the docs tree:
-`sitemap.xml`, `robots.txt`, `llms.txt`, Markdown page copies, an RFC 9727 API
-catalog, an OpenAPI description for public discovery endpoints, Auth.md notes,
-OAuth authorization-server and protected-resource metadata for anonymous public
-docs access, and an Agent Skills index. `src/worker.ts` fronts the static
-assets on Workers so homepage responses get discovery `Link` headers,
-`Accept: text/markdown` returns the generated Markdown variant, and the public
-docs auth endpoints can answer simple POST requests. `public/webmcp.js`
-registers browser WebMCP tools when `navigator.modelContext` is available.
+The build also generates agent-discovery assets from the complete docs and blog
+tree: `sitemap.xml`, `robots.txt`, `llms.txt`, Markdown page copies, an RFC 9727
+API catalog, an OpenAPI description for public discovery endpoints, Auth.md
+notes, OAuth authorization-server and protected-resource metadata for anonymous
+public docs access, and an Agent Skills index. `src/worker.ts` fronts the static
+assets on Workers so homepage responses get discovery `Link` headers, `Accept:
+text/markdown` returns the generated Markdown variant, and the public docs auth
+endpoints can answer simple POST requests. `public/webmcp.js` registers browser
+WebMCP tools when `navigator.modelContext` is available.
 
 ## Local build / dev
 

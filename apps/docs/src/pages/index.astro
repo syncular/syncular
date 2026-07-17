@@ -14,6 +14,7 @@ const FEATURES = [
   { title: 'realtime', body: 'verified deltas pushed over a single WebSocket loop', href: '/concepts-realtime/' },
   { title: 'fast bootstrap', body: 'precomputed sqlite-image segments; 100k rows in ~30 ms', href: '/concepts-bootstrap/' },
   { title: 'offline FTS5', body: 'generated full-text projections stay current with the local SQLite mirror', href: '/tooling-local-search/' },
+  { title: 'typed SQL / SYQL', body: 'one checked query plan generates TypeScript, Swift, Kotlin, Dart, and Rust APIs', href: '/tooling-queries/' },
   { title: 'CRDT columns', body: 'collaborative text per column, byte-identical across both cores', href: '/concepts-crdt/' },
   { title: 'blobs', body: 'content-addressed attachments on S3/R2, re-authorized per download', href: '/concepts-blobs/' },
   { title: 'optional E2EE', body: 'portable per-column AES-256-GCM keyrings with authorized local revocation', href: '/concepts-encryption/' },
@@ -65,6 +66,7 @@ const RULE_DASH = '-'.repeat(160);
         <a class="brand" href="/">SYNCULAR<span class="blink">_</span></a>
         <nav>
           <a href="/what-is/">DOCS</a>
+          <a href="/blog/">BLOG</a>
           <a href="/demos/">DEMOS</a>
           <a href="https://github.com/syncular/syncular">GITHUB</a>
           <a class="accent" href="/quickstart/">QUICKSTART</a>
@@ -118,7 +120,9 @@ CONFORMANCE SCENARIOS ...................... <span class="v">{CONFORMANCE_SCENAR
             The same flow everywhere — create a client, subscribe to a scope,
             write locally, sync. Web clients run the TypeScript core; everything
             else runs the Rust core. Both implement one written protocol and
-            pass the same conformance suite.
+            pass the same conformance suite. Typegen carries that parity into
+            application reads: one checked SQL or SYQL source becomes typed
+            query APIs for TypeScript, Swift, Kotlin, Dart, and Rust.
           </p>
           <div class="tabs">
             {TABS.map((tab, i) => (
@@ -235,6 +239,7 @@ CONFORMANCE SCENARIOS ...................... <span class="v">{CONFORMANCE_SCENAR
         <div class="rule" aria-hidden="true">{RULE_EQ}</div>
         <div class="row">
           <nav>
+            <a href="/blog/">BLOG</a>
             <a href="https://github.com/syncular/syncular">GITHUB</a>
             <a href="https://www.npmjs.com/org/syncular">NPM</a>
             <a href="https://crates.io/crates/syncular-client">CRATES.IO</a>

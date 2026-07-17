@@ -1,0 +1,59 @@
+---
+import type { MarkdownInstance } from 'astro';
+import Blog from '../../layouts/Blog.astro';
+
+interface BlogFrontmatter {
+  title: string;
+  description: string;
+  author: string;
+  publishedAt: string;
+}
+
+const modules = import.meta.glob<MarkdownInstance<BlogFrontmatter>>(
+  '../../content/blog/*.md',
+  { eager: true },
+);
+
+const posts = Object.entries(modules)
+  .map(([path, mod]) => ({
+    slug: path.split('/').pop()?.replace(/\.md$/, '') ?? '',
+    ...mod.frontmatter,
+  }))
+  .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
+
+const formatDate = (value: string) =>
+  new Intl.DateTimeFormat('en', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  }).format(new Date(`${value}T00:00:00Z`));
+---
+
+<Blog
+  title="Blog"
+  description="Field notes on offline-first writes, sync protocols, local SQLite, and building Syncular."
+  canonicalPath="/blog/"
+  index
+>
+  <p class="kicker">TRANSMISSIONS FROM THE COMMIT LOG</p>
+  <h1>Blog</h1>
+  <p>
+    Field notes on offline-first writes, protocol design, local SQLite, and
+    the engineering decisions behind Syncular.
+  </p>
+
+  <div class="blog-list">
+    {posts.map((post) => (
+      <a class="blog-card" href={`/blog/${post.slug}/`}>
+        <div class="blog-card-meta">
+          <time datetime={post.publishedAt}>{formatDate(post.publishedAt)}</time>
+          <span>{post.author}</span>
+        </div>
+        <h2>{post.title}</h2>
+        <p>{post.description}</p>
+        <span class="blog-card-link">READ TRANSMISSION →</span>
+      </a>
+    ))}
+  </div>
+</Blog>

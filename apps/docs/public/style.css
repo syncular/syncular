@@ -565,6 +565,82 @@ main.landing { display: block; padding: 0; }
 .footer a:hover { background: var(--ink); color: #000; }
 .footer .end .sq { color: var(--amber); }
 
+/* ---------- Blog ---------- */
+main.blog-main { padding-top: 2.4rem; }
+.blog-post { max-width: 47rem; }
+.blog-index { max-width: 56rem; }
+.blog-back,
+.blog-meta {
+  width: 100%;
+  max-width: 47rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.blog-back {
+  margin-bottom: 1rem;
+  color: var(--dim);
+  text-decoration: none;
+}
+.blog-back:hover { color: var(--amber); }
+.blog-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.4rem;
+  margin-bottom: 1.6rem;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--faint);
+}
+.blog-meta span + span::before {
+  content: '/ ';
+  color: var(--amber);
+}
+.blog-list {
+  margin-top: 2rem;
+  border-top: 1px solid var(--border);
+}
+article a.blog-card {
+  display: block;
+  padding: 1.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--ink);
+  text-decoration: none;
+}
+article a.blog-card:hover {
+  background: var(--panel);
+  color: var(--ink);
+}
+.blog-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.35rem 1rem;
+  color: var(--faint);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+article .blog-card h2 {
+  margin: 0.7rem 0 0.45rem;
+  padding: 0;
+  border: none;
+  color: var(--ink);
+  font-size: 1.2rem;
+  line-height: 1.35;
+}
+article .blog-card:hover h2 { color: var(--amber); }
+article .blog-card p {
+  margin: 0.45rem 0 0.8rem;
+  color: var(--dim);
+}
+.blog-card-link {
+  color: var(--amber);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
 /* ---------- Responsive ---------- */
 @media (max-width: 640px) {
   .hero h1 br { display: none; }
@@ -581,6 +657,7 @@ main.landing { display: block; padding: 0; }
     padding-bottom: 1rem;
   }
   main { padding: 1.6rem 1.1rem 4rem; }
+  main.blog-main { padding-top: 1.6rem; }
   .feature-list, .cores { grid-template-columns: 1fr; }
   .landing section { padding: 2rem 0 1.7rem; }
   .tab-panel pre { min-height: 0; }
