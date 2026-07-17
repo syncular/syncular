@@ -1,8 +1,20 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.12** (`v0.15.12`). All artifacts use Apache-2.0, except
+current release is **0.15.13** (`v0.15.13`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.13 release notes
+
+0.15.13 fixes native clients remaining permanently stopped after a server that
+lagged behind the app schema catches up.
+
+The Rust client now clears a persisted schema-floor stop during reopen when
+the running generated schema already satisfies the recorded required version,
+then schedules the normal startup pull to re-negotiate with the server. An
+actually incompatible server returns the floor again, while a caught-up server
+bootstraps immediately. Unsatisfied floors remain durable and stopped. The
+release includes focused reopen regression coverage for both cases.
 
 ## 0.15.12 release notes
 
