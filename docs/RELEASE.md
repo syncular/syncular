@@ -22,6 +22,10 @@ The release includes:
 - parser, three-dialect server migration, documentation, typecheck, lint, and
   full-suite regression coverage.
 
+The 0.15.12 release head also restores `SyncClientLike` parity for
+`purgeLocalData` on the React Native bridge, including direct bridge and
+normalized React-client coverage.
+
 ## 0.15.11 release notes
 
 0.15.11 adds the narrow local-storage primitive needed by applications with
@@ -94,6 +98,23 @@ Swift, Kotlin, and Dart rows now use the column's pre-wire `declaredType` and
 original nullability, matching runtime values and generated table mutation
 types. Schema IR, wire encoding, server storage, and encryption remain
 unchanged.
+
+## 0.15.7 release notes
+
+0.15.7 completes safe table retirement at client startup. After a schema bump,
+the TypeScript and Rust clients now remove persisted subscription registrations
+whose table no longer exists, together with their window bookkeeping. A stale
+registration can no longer poison every subsequent pull with
+`sync.unknown_table`; registrations for tables still present remain durable and
+re-bootstrap normally.
+
+## 0.15.6 release notes
+
+0.15.6 fixes TypeScript client startup when a schema bump adds an indexed
+column. The client now creates protected bookkeeping first, reads the persisted
+schema marker, performs the wipe/recreate reset, and only then materializes the
+new application indexes and FTS projections. Same-version opens remain
+self-healing for missing local tables or indexes.
 
 ## 0.15.5 release notes
 

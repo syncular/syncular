@@ -56,8 +56,9 @@ Rules:
   projections;
 - `content` is required and names a synced table created earlier in migration
   order;
-- every indexed column exists on the content table, is non-encrypted, and has
-  declared string type;
+- every indexed column exists on the content table and has declared string
+  type; encrypted declared-string columns are allowed because only the
+  decrypted local mirror is indexed;
 - at least one and at most 32 distinct columns are required;
 - `content_rowid`, prefix indexes, column weights, custom tokenizers, arbitrary
   FTS options, and hand-written triggers are not accepted in this revision;
@@ -146,11 +147,12 @@ schema-declared FTS projection; it remains absent from mutations and sync.
 
 ### Authority and security
 
-FTS contains only local plaintext already present in the content table. An
-encrypted column cannot be indexed by this feature: doing so would create a
-new durable plaintext copy outside the reviewed encrypted-data boundary.
-Search projections inherit the content table's local lifetime and are removed
-on scope purge, schema reset, or local database reset.
+FTS contains only local plaintext already present in the protected content
+table. An encrypted declared-string column may be indexed: ciphertext remains
+the only wire and server representation, while the projection follows the
+same local SQLite lifetime as the decrypted mirror. Search projections are
+removed on scope purge, authorized local purge, schema reset, or local database
+reset.
 
 ## Non-goals
 

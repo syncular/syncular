@@ -64,13 +64,15 @@ the server share. Sampled at ~2 ms.
 binary is external (fetched at runtime), measured as shipped by
 `@sqlite.org/sqlite-wasm`.
 
+Bundle bytes refreshed on 2026-07-17 with the same deterministic build command.
+
 | Artifact | Raw | Gzip | Whose bytes |
 |---|---|---|---|
-| syncular client code (core + codec) | 65.4 KB | 19.6 KB | **ours** |
-| sqlite-wasm JS glue | 214.3 KB | 65.2 KB | vendor (SQLite) |
+| syncular client code (core + codec) | 105.2 KB | 31.3 KB | **ours** |
+| sqlite-wasm JS glue | 214.9 KB | 65.3 KB | vendor (SQLite) |
 | sqlite3.wasm (external asset) | 844.5 KB | 396.1 KB | vendor (SQLite) |
-| **Total** | **1124.1 KB** | **480.9 KB** | |
+| **Total** | **1164.5 KB** | **492.7 KB** | |
 
 The size budget gates OUR bytes (decision 2026-07-03): vendor engine
 bytes don't gate — every wasm-SQLite product ships the stock SQLite
-distribution. Total reported for context: 1124.1 KB raw / 480.9 KB gzip.
+distribution. Total reported for context: 1164.5 KB raw / 492.7 KB gzip.

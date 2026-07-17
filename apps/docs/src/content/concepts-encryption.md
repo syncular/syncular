@@ -94,6 +94,37 @@ surfaces as `client.decrypt_failed` (local to the client, non-retryable) at
 the apply seam. The app decides whether to skip the row, halt, or prompt for a
 re-key.
 
+### Worker and Tauri keyrings
+
+Functions do not cross a Web Worker or native command bridge, so worker and
+Tauri hosts accept the portable equivalent: raw keys plus an optional mapping
+from table to a plaintext string column containing the active key id.
+
+```ts
+const encryption = {
+  keys: {
+    'key-2026-07': activeKey,
+    'key-2026-06': previousKey, // retained while old envelopes remain
+  },
+  keyIdColumns: {
+    patient_notes: 'encryption_key_id',
+  },
+};
+
+const web = await createSyncClientHandle({
+  // …worker, database, schema, endpoints…
+  encryption,
+});
+
+const desktop = await createTauriSyncClient({ schema, encryption });
+```
+
+`keyIdColumns.patient_notes` must name a non-encrypted string column. Its value
+selects the write key for each row; the envelope's own key id still selects the
+correct key while decrypting older data. Raw keys are installed inside the
+worker/native core and are never sent to the server. The Tauri plugin must be
+built with its `e2ee` feature.
+
 ## The envelope
 
 Each encrypted value is a self-describing blob (byte-exact across the TS and
@@ -177,7 +208,9 @@ commit that touches the target, replays safe later edits, reconciles cached
 blob references, and durably records the purge id in one SQLite transaction.
 Retries are no-ops; an id reused with a different plan fails closed. This API
 does **not** authenticate the directive or revoke server access, and a powered-
-off device remains unconfirmed—it has not been remotely erased.
+off device remains unconfirmed—it has not been remotely erased. See
+[Authorized local purge](/concepts-local-data-purge/) for selector rules,
+host coverage, and the complete authority workflow.
 
 ## What the server can and cannot see: threat model
 

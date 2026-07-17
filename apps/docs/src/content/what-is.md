@@ -29,13 +29,13 @@ Syncular is a **written protocol** ([SPEC.md](https://github.com/syncular/syncul
 with two independent, conformance-locked implementations:
 
 - A **TypeScript core** for the web. The whole client runs in a Web Worker on
-  OPFS-backed sqlite-wasm, 19.6 KB gzip of syncular's own code.
+  OPFS-backed sqlite-wasm, 31.3 KB gzip of syncular's own code.
 - A **Rust core** for everything else: rusqlite on the device filesystem,
   shipped through a five-function C FFI.
 
-Both pass the same golden byte-level vectors and the same conformance catalog
-(74 scenarios, run against both cores in CI). The platform bindings are thin
-marshaling over the shared Rust core, so protocol behavior is identical
+Both pass the same golden byte-level vectors and the same 93-scenario
+conformance catalog, run against both cores in CI. The platform bindings are
+thin marshaling over the shared Rust core, so protocol behavior is identical
 everywhere:
 
 | Platform | What you use | Guide |
@@ -90,10 +90,10 @@ toolchain overhead. Syncular spends its whole budget on boring-ness:
 - **30 ms** to bootstrap a 100k-row image on a fresh client (the rows lane is
   365 ms). See [benchmarks](/benchmarks/).
 - **0.2 ms p95** realtime propagation between two live clients.
-- **19.6 KB gzip** of syncular's own client JavaScript; the rest of the browser
+- **31.3 KB gzip** of syncular's own client JavaScript; the rest of the browser
   payload is the stock sqlite-wasm distribution every wasm-SQLite product ships.
-- **764 tests, 74 conformance scenarios × 2 cores, 19 golden vector cases**,
-  all CI-blocking.
+- The complete conformance catalog, protocol vectors, package suite, and
+  platform-native gates are CI-blocking.
 
 > These docs describe what is in the tree today. Roadmap items are labeled as
 > roadmap where they appear.

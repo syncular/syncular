@@ -78,6 +78,10 @@ For typed reads (generated `.sql` queries) see
 [Named queries](/tooling-queries/). For React live queries see
 [React](/platform-react/).
 
+Schema-declared [local FTS5 projections](/tooling-local-search/) are ordinary
+local read targets too. They are built and maintained inside the worker-owned
+SQLite database and invalidate through their synced owner table.
+
 ## Ephemeral mode (explicit, in-memory)
 
 The only main-thread mode is ephemeral: `openWasmDatabase()` returns an
@@ -162,6 +166,15 @@ what leaves, with a completeness oracle (`windowState`) that flags a query
 over un-held data as partial. See
 [Windowed sync](/concepts-windowing/).
 
+## Authorized local purge
+
+Direct clients and worker/multi-tab handles expose
+`purgeLocalData({ purgeId, targets })`. Use it only after validating a
+server-authoritative revocation directive and gating subscriptions that could
+download the rows again. The client removes matching rows, FTS documents,
+unsafe pending commits, and blob references atomically. See
+[Authorized local purge](/concepts-local-data-purge/).
+
 ## Node and Bun backends
 
 The same core runs outside the browser (a CLI, a plain Node service, an
@@ -202,4 +215,5 @@ There is a single support floor and a single persistence path:
 - [React](/platform-react/) — live queries and the hook surface over this client.
 - [Realtime](/concepts-realtime/) — the connect-then-sync boot order and wake-ups.
 - [Named queries](/tooling-queries/) — typed `.sql` reads on every platform.
+- [Local full-text search](/tooling-local-search/) — offline FTS5 over synced rows.
 - [`@syncular/client` README](https://github.com/syncular/syncular/tree/main/packages/web-client) — the full API reference, including blob caching and the RPC protocol.

@@ -83,13 +83,19 @@ routes:
 | --- | --- |
 | Lifecycle | `create`, `recreateWithSchema`, `upgrading` |
 | Subscriptions | `subscribe`, `unsubscribe`, `subscriptionState`, `setWindow`, `windowState` |
-| Writes & reads | `mutate`, `readRows`, `query`, `pendingCommitIds` |
+| Writes & reads | `mutate`, `patch`, `readRows`, `query`, `querySnapshot`, `pendingCommitIds` |
+| Authorized local purge | `purgeLocalData` |
 | Sync | `sync`, `syncUntilIdle`, `syncNeeded` |
-| Divergence | `conflicts`, `rejections`, `schemaFloor`, `leaseState` |
+| Observation | `localRevision`, `statusSnapshot`, `drainChangeBatches`, `drainSyncIntents` |
+| Divergence & outcomes | `conflicts`, `rejections`, `commitOutcome`, `commitOutcomes`, `resolveCommitOutcome`, `schemaFloor`, `leaseState` |
 | Realtime & presence | `connectRealtime`, `disconnectRealtime`, `setPresence`, `presence` |
 | Blobs | `uploadBlob`, `fetchBlob` |
 | CRDT (`crdt-yjs` feature) | `crdtText`, `crdtInsertText`, `crdtDeleteText`, `crdtApplyUpdate` |
 | Conformance helpers | `messageRoundtrip`, `segmentRoundtrip`, `realtimeKnown` |
+
+`purgeLocalData` is a local security primitive, not an authority decision. A
+binding must validate the directive and gate affected subscriptions before
+forwarding it. See [Authorized local purge](/concepts-local-data-purge/).
 
 ## Events
 

@@ -50,6 +50,12 @@ new column or uniqueness definition. On a server schema bump, Syncular
 rebuilds the declared secondary indexes on its relational projection tables;
 clients recreate their application tables during their normal re-bootstrap.
 
+`CREATE VIRTUAL TABLE … USING fts5` declares a client-local full-text
+projection owned by an existing synced table. It is emitted into every client
+schema but never enters the wire or server schema. See
+[Local full-text search](/tooling-local-search/) for the accepted syntax,
+query pattern, and lifecycle.
+
 ## Generate
 
 ```sh
@@ -117,9 +123,14 @@ The reset touches the whole local database except three things:
 
 | Preserved | Wiped & rebuilt |
 | --- | --- |
-| the outbox (schema-agnostic by design, §0/§7.1) | every synced table |
+| the outbox (schema-agnostic by design, §0/§7.1) | every synced table, secondary index, and FTS projection |
 | the client identity (`clientId`) | subscription cursors, resume tokens, effective-scope state |
-| the auth lease (`leaseState`) | (subscription *registrations* are kept and re-bootstrapped) |
+| the auth lease (`leaseState`) | retired-table registrations and their window bookkeeping |
+
+Subscription registrations for tables that still exist are kept and
+re-bootstrapped. Registrations for a retired table are pruned on open, together
+with their window bookkeeping; retaining one would make every later pull fail
+with `sync.unknown_table`.
 
 The outbox replays on top of the fresh bootstrap. Outbox entries are stored
 in schema-agnostic form and encoded at send time with the current codec

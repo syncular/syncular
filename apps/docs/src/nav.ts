@@ -44,6 +44,7 @@ export const nav: readonly NavSection[] = [
       { slug: 'concepts-crdt', title: 'CRDT columns' },
       { slug: 'concepts-blobs', title: 'Blobs' },
       { slug: 'concepts-encryption', title: 'Client-side encryption' },
+      { slug: 'concepts-local-data-purge', title: 'Authorized local purge' },
       { slug: 'concepts-windowing', title: 'Windowed sync' },
     ],
   },
@@ -61,6 +62,7 @@ export const nav: readonly NavSection[] = [
     items: [
       { slug: 'guide-schema', title: 'Schema & typegen' },
       { slug: 'tooling-queries', title: 'Named queries' },
+      { slug: 'tooling-local-search', title: 'Local full-text search' },
       { slug: 'syql', title: 'SYQL language' },
       { slug: 'tooling-testing', title: 'Testing your app' },
     ],
