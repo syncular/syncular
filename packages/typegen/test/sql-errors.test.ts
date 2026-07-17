@@ -260,7 +260,10 @@ function expectError(sql: string, pattern: RegExp): void {
 
 describe('unsupported constructs are hard errors that name the construct', () => {
   test('other statements', () => {
-    expectError('DROP INDEX idx', /expected TABLE after DROP/);
+    expectError(
+      'DROP INDEX idx',
+      /DROP INDEX idx: index does not exist at this point/,
+    );
     expectError(
       'CREATE TRIGGER trg AFTER INSERT ON t BEGIN SELECT 1; END',
       /unsupported CREATE statement.*found "TRIGGER"/,
@@ -268,6 +271,27 @@ describe('unsupported constructs are hard errors that name the construct', () =>
     expectError(
       "INSERT INTO t VALUES ('x')",
       /unsupported SQL statement.*"INSERT"/,
+    );
+  });
+
+  test('DROP INDEX removes or replaces one declared index', () => {
+    const tables = parse(`
+      CREATE TABLE t (id TEXT PRIMARY KEY, a TEXT, b TEXT);
+      CREATE UNIQUE INDEX by_value ON t (a);
+      DROP INDEX by_value;
+      CREATE INDEX by_value ON t (b);
+      DROP INDEX IF EXISTS absent;
+    `);
+    expect(tables.get('t')?.indexes).toEqual([
+      { name: 'by_value', columns: ['b'], unique: false },
+    ]);
+    expectError(
+      'CREATE TABLE t (id TEXT PRIMARY KEY); DROP INDEX missing trailing',
+      /unsupported trailing SQL "trailing"/,
+    );
+    expectError(
+      'CREATE TABLE t (id TEXT PRIMARY KEY); DROP VIEW nope',
+      /unsupported DROP statement.*"VIEW"/,
     );
   });
 

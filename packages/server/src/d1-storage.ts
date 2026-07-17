@@ -493,15 +493,33 @@ export class D1ServerStorage implements ServerStorage {
       const layouts = parseLayouts(marker?.layouts);
       const retiredTables = retiredTableNames(schema, layouts);
       const existing = new Map<string, ReadonlySet<string>>();
+      const existingIndexes = new Map<string, ReadonlySet<string>>();
       for (const table of schema.tables.values()) {
+        const escapedTableName = table.name.replaceAll('"', '""');
         const { results } = await this.#db
-          .prepare(`PRAGMA table_info("${table.name.replaceAll('"', '""')}")`)
+          .prepare(`PRAGMA table_info("${escapedTableName}")`)
           .all<{ name: string }>();
         if (results.length > 0) {
           existing.set(table.name, new Set(results.map((c) => c.name)));
+          const indexes = await this.#db
+            .prepare(`PRAGMA index_list("${escapedTableName}")`)
+            .all<{ name: string; origin: string }>();
+          existingIndexes.set(
+            table.name,
+            new Set(
+              indexes.results
+                .filter((index) => index.origin === 'c')
+                .map((index) => index.name),
+            ),
+          );
         }
       }
-      for (const statement of schemaDdl(schema, existing, 'sqlite')) {
+      for (const statement of schemaDdl(
+        schema,
+        existing,
+        'sqlite',
+        existingIndexes,
+      )) {
         await this.#db.exec(`${statement.replace(/\s+/g, ' ')};`);
       }
       // Migration rewrite: payload re-encode on layout change and/or

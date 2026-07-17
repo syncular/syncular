@@ -713,7 +713,7 @@ export class PostgresServerStorage implements ServerStorage {
     }
     if (stored === undefined || stored < schema.version) {
       // Introspect existing app tables, apply the migration subset
-      // (CREATE TABLE / ADD COLUMN / CREATE INDEX), then rewrite stored
+      // (CREATE TABLE / ADD COLUMN / rebuild indexes), then rewrite stored
       // rows (payload re-encode for layout changes and/or projection
       // backfill for flipped-on materialization) — all inside one
       // transaction (Postgres DDL is transactional — a failed bump leaves
@@ -726,6 +726,7 @@ export class PostgresServerStorage implements ServerStorage {
       const retiredTables = retiredTableNames(schema, layouts);
       await this.#exec.transaction(async (client) => {
         const existing = new Map<string, ReadonlySet<string>>();
+        const existingIndexes = new Map<string, ReadonlySet<string>>();
         for (const table of schema.tables.values()) {
           const { rows } = await client.query<{ column_name: string }>(
             `SELECT column_name FROM information_schema.columns
@@ -734,6 +735,24 @@ export class PostgresServerStorage implements ServerStorage {
           );
           if (rows.length > 0) {
             existing.set(table.name, new Set(rows.map((r) => r.column_name)));
+            const indexes = await client.query<{ index_name: string }>(
+              `SELECT index_class.relname AS index_name
+                 FROM pg_catalog.pg_class AS table_class
+                 JOIN pg_catalog.pg_namespace AS namespace
+                   ON namespace.oid = table_class.relnamespace
+                 JOIN pg_catalog.pg_index AS index_meta
+                   ON index_meta.indrelid = table_class.oid
+                 JOIN pg_catalog.pg_class AS index_class
+                   ON index_class.oid = index_meta.indexrelid
+                WHERE namespace.nspname = current_schema()
+                  AND table_class.relname = $1
+                  AND NOT index_meta.indisprimary`,
+              [table.name],
+            );
+            existingIndexes.set(
+              table.name,
+              new Set(indexes.rows.map((index) => index.index_name)),
+            );
           }
         }
         for (const tableName of retiredTables) {
@@ -742,7 +761,12 @@ export class PostgresServerStorage implements ServerStorage {
           ]);
           await client.query(dropTableDdl(tableName));
         }
-        for (const statement of schemaDdl(schema, existing, 'postgres')) {
+        for (const statement of schemaDdl(
+          schema,
+          existing,
+          'postgres',
+          existingIndexes,
+        )) {
           await client.query(statement);
         }
         for (const table of schema.tables.values()) {
