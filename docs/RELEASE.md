@@ -1,8 +1,39 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.10** (`v0.15.10`). All artifacts use Apache-2.0, except
+current release is **0.15.11** (`v0.15.11`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.11 release notes
+
+0.15.11 adds the narrow local-storage primitive needed by applications with
+server-authoritative device, membership, or encryption-key revocation.
+`purgeLocalData({ purgeId, targets })` is available on the direct TypeScript
+client, worker/multi-tab handle, normalized React client, Tauri bridge, Rust
+client, and shared native command router.
+
+The release includes:
+
+- bounded, non-empty exact selectors over plaintext string schema columns,
+  with AND semantics inside a target and OR semantics across targets;
+- durable purge-id idempotency: an exact retry is a no-op and a reused id with
+  a different canonical plan fails closed;
+- one local SQLite transaction covering synced-row deletion, generated FTS
+  cleanup, whole-commit outbox rejection, protected optimistic rollback/replay,
+  blob-reference reconciliation, outcome journaling, and one revisioned change
+  batch;
+- privacy-safe counts-only acknowledgements and the stable local rejection code
+  `client.local_data_purged`;
+- matching TypeScript/Rust behavior plus worker RPC, mocked Tauri, real native
+  Tauri, FTS, hidden optimistic delete, sibling rollback, and validation tests;
+- explicit documentation that the host must validate the authority directive
+  and gate subscriptions before purging, while app-owned files and OS secure-
+  store key deletion remain outside Syncular.
+
+There is intentionally no full-table mode and no wire/server-authority change.
+The API cannot remotely erase an offline device and does not prevent a still-
+active subscription from downloading rows again; those are application control-
+plane responsibilities.
 
 ## 0.15.10 release notes
 

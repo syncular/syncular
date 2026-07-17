@@ -20,6 +20,14 @@ are never silently removed by retention. Failed outcomes retain their complete
 ordered local operation envelope for authorized aggregate recovery with the
 same protected-storage and retention contract as the core client.
 
+The bridge also exposes `purgeLocalData({ purgeId, targets })` with the same
+idempotent transaction as the browser worker: exact synced-row and generated
+FTS deletion, whole-commit outbox rejection, optimistic replay, blob-reference
+reconciliation, and counts-only acknowledgement. The app remains responsible
+for validating the server-authoritative directive, gating subscriptions before
+the purge, deleting app-owned drafts/files, and removing the corresponding key
+from the OS secure store after SQLite cleanup succeeds.
+
 Part of [Syncular](https://syncular.dev) — an offline-first sync framework.
 See the [Syncular repository](https://github.com/syncular/syncular) for docs.
 

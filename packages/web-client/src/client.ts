@@ -81,6 +81,15 @@ import {
   singleOwnerLock,
 } from './leader-lock';
 import {
+  type CompiledLocalDataPurge,
+  type CompiledLocalDataPurgeTarget,
+  compileLocalDataPurge,
+  type LocalDataPurgeInput,
+  type LocalDataPurgeResult,
+  localDataPurgeMetaKey,
+  localDataPurgeTargetMatches,
+} from './local-purge';
+import {
   appendOutboxCommit,
   deleteOutboxCommit,
   dropOutboxCommitsInScope,
@@ -1640,6 +1649,178 @@ export class SyncClient {
       ],
       [[...normalizedPartial.keys()].sort()],
     );
+  }
+
+  /**
+   * Apply one host-authorized local security purge. The host must stop/gate
+   * protected subscriptions before calling this method; this operation owns
+   * local SQLite cleanup only and intentionally cannot revoke server access.
+   *
+   * Selector columns are validated as bounded plaintext strings. Targets are
+   * OR-combined and each target's selectors are AND-combined. `purgeId` is
+   * persisted with the canonical plan, making exact retries no-ops while a
+   * reused id with different selectors fails closed.
+   */
+  purgeLocalData(input: LocalDataPurgeInput): LocalDataPurgeResult {
+    this.#requireStarted();
+    const purge = compileLocalDataPurge(this.#schema, input);
+    const metaKey = localDataPurgeMetaKey(purge.purgeId);
+    const appliedPlan = getMeta(this.#db, metaKey);
+    if (appliedPlan !== undefined) {
+      if (appliedPlan !== purge.canonicalPlan) {
+        throw new ClientSyncError(
+          'sync.invalid_request',
+          `local purge id ${JSON.stringify(purge.purgeId)} was already used with a different plan`,
+        );
+      }
+      return { alreadyApplied: true, purgedRows: 0, droppedCommits: 0 };
+    }
+
+    const rejectionCount = this.#rejections.length;
+    try {
+      return this.#applyBatch((batch) => {
+        const initialRowIds = this.#localPurgeRowIds(purge);
+        const targetsByTable = this.#localPurgeTargetsByTable(purge);
+        const doomed = listOutbox(this.#db)
+          .filter((commit) => {
+            const images = new Map(
+              listOutboxBeforeImages(this.#db, commit.clientCommitId).map(
+                (image) => [image.opIndex, image],
+              ),
+            );
+            return commit.operations.some((operation, opIndex) => {
+              const targets = targetsByTable.get(operation.table);
+              if (targets === undefined) return false;
+              if (
+                initialRowIds.get(operation.table)?.has(operation.rowId) ===
+                true
+              ) {
+                return true;
+              }
+              if (
+                operation.values !== undefined &&
+                targets.some((target) =>
+                  localDataPurgeTargetMatches(target, operation.values ?? {}),
+                )
+              ) {
+                return true;
+              }
+              const beforeValues = images.get(opIndex)?.values;
+              return (
+                beforeValues !== undefined &&
+                targets.some((target) =>
+                  localDataPurgeTargetMatches(target, beforeValues),
+                )
+              );
+            });
+          })
+          // Reverse order is essential: each rollback restores its before-image;
+          // removing newest-first prevents an older doomed write reappearing.
+          .sort((a, b) => b.seq - a.seq);
+
+        for (const commit of doomed) {
+          this.#rollbackFailedCommit(commit, batch);
+        }
+
+        // Rollback may reveal a target row hidden by an optimistic delete or
+        // move, so select the final base/visible set only after doomed commits
+        // have been removed.
+        const rowIds = this.#localPurgeRowIds(purge);
+        let purgedRows = 0;
+        for (const [tableName, ids] of rowIds) {
+          if (ids.size === 0) continue;
+          const table = this.#table(tableName);
+          const values = [...ids];
+          purgedRows += values.length;
+          batch.table(tableName);
+          for (let offset = 0; offset < values.length; offset += 400) {
+            const chunk = values.slice(offset, offset + 400);
+            this.#db.exec(
+              `DELETE FROM ${quoteIdent(tableName)} WHERE ${quoteIdent(table.primaryKey)} IN (${chunk.map(() => '?').join(', ')})`,
+              chunk,
+            );
+          }
+        }
+
+        if (doomed.length > 0) {
+          for (const commit of doomed) {
+            const results: CommitOperationOutcome[] = commit.operations.map(
+              (operation, opIndex) => {
+                const rejection: RejectionRecord = {
+                  clientCommitId: commit.clientCommitId,
+                  opIndex,
+                  code: 'client.local_data_purged',
+                  message:
+                    'the commit was dropped by an application-authorized local data purge',
+                  retryable: false,
+                  operation,
+                };
+                this.#rejections.push(rejection);
+                return { status: 'error', rejection };
+              },
+            );
+            recordCommitOutcome(this.#db, {
+              clientCommitId: commit.clientCommitId,
+              status: 'rejected',
+              recordedAtMs: this.#now(),
+              results,
+              operations: commit.operations,
+            });
+          }
+          pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
+          batch.status();
+          batch.rejections();
+          batch.outcomes();
+        }
+        this.#reconcileBlobs(true);
+        setMeta(this.#db, metaKey, purge.canonicalPlan);
+        return {
+          alreadyApplied: false,
+          purgedRows,
+          droppedCommits: doomed.length,
+        };
+      });
+    } catch (error) {
+      // SQLite rolls back through #applyBatch; mirror that rollback for the
+      // in-memory rejection cache before surfacing the storage failure.
+      this.#rejections.length = rejectionCount;
+      throw error;
+    }
+  }
+
+  #localPurgeTargetsByTable(
+    purge: CompiledLocalDataPurge,
+  ): Map<string, CompiledLocalDataPurgeTarget[]> {
+    const byTable = new Map<string, CompiledLocalDataPurgeTarget[]>();
+    for (const target of purge.targets) {
+      const targets = byTable.get(target.table.name) ?? [];
+      targets.push(target);
+      byTable.set(target.table.name, targets);
+    }
+    return byTable;
+  }
+
+  #localPurgeRowIds(purge: CompiledLocalDataPurge): Map<string, Set<string>> {
+    const byTable = new Map<string, Set<string>>();
+    for (const target of purge.targets) {
+      const ids = byTable.get(target.table.name) ?? new Set<string>();
+      const clauses: string[] = [];
+      const params: string[] = [];
+      for (const selector of target.selectors) {
+        clauses.push(
+          `${quoteIdent(selector.column)} IN (${selector.values.map(() => '?').join(', ')})`,
+        );
+        params.push(...selector.values);
+      }
+      for (const row of this.#db.query(
+        `SELECT CAST(${quoteIdent(target.table.primaryKey)} AS TEXT) AS id FROM ${quoteIdent(target.table.name)} WHERE ${clauses.join(' AND ')}`,
+        params,
+      )) {
+        if (typeof row.id === 'string') ids.add(row.id);
+      }
+      byTable.set(target.table.name, ids);
+    }
+    return byTable;
   }
 
   /** Host-facing patch result with explicit network work intent (§7.5). */

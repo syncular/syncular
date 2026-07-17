@@ -56,6 +56,7 @@ import {
   singleOwnerLock,
   webLocksLeaderLock,
 } from './leader-lock';
+import type { LocalDataPurgeInput, LocalDataPurgeResult } from './local-purge';
 import {
   broadcastChannelFactory,
   type CrossTabChannel,
@@ -357,6 +358,10 @@ export class SyncClientHandle {
     options?: { readonly baseVersion?: number },
   ): Promise<string> {
     return this.#call('patch', [table, rowId, partial, options]);
+  }
+
+  purgeLocalData(input: LocalDataPurgeInput): Promise<LocalDataPurgeResult> {
+    return this.#call('purgeLocalData', [input]);
   }
 
   sync(): Promise<SyncSummary> {

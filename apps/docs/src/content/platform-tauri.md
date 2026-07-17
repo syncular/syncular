@@ -120,6 +120,13 @@ rebinding identity. The bridge resolves
 `@tauri-apps/api` automatically (or the ambient `window.__TAURI__` when
 `withGlobalTauri` is enabled); tests inject `invoke`/`listen` doubles.
 
+`purgeLocalData({ purgeId, targets })` crosses the same command bridge to the
+native core. It applies exact plaintext-selector row and FTS cleanup, whole-
+commit outbox rejection, optimistic replay, blob reconciliation, and durable
+idempotency in one SQLite transaction. Validate the authority directive and
+gate protected subscriptions before calling it; app-owned files and OS secure-
+store keys remain the app's responsibility.
+
 ## The command and event surface
 
 The plugin dispatches through the shared `syncular-command` router — the same

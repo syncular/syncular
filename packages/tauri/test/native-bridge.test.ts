@@ -225,6 +225,68 @@ if (!available) {
       }
     });
 
+    test('real native purge rejects a whole doomed commit and preserves the safe outbox', async () => {
+      const host = nativeTauri();
+      try {
+        const client = await createTauriSyncClient({ schema, tauri: host.api });
+        const doomed = await client.mutate([
+          {
+            op: 'upsert',
+            table: 'todos',
+            values: { id: 'target', listId: 'purged', title: 'purge me' },
+          },
+          {
+            op: 'upsert',
+            table: 'todos',
+            values: { id: 'sibling', listId: 'held', title: 'rollback me' },
+          },
+        ]);
+        const kept = await client.mutate([
+          {
+            op: 'upsert',
+            table: 'todos',
+            values: { id: 'kept', listId: 'held', title: 'keep me' },
+          },
+        ]);
+
+        expect(
+          await client.purgeLocalData({
+            purgeId: 'native-purge-001',
+            targets: [
+              {
+                table: 'todos',
+                selectors: { list_id: ['purged'] },
+              },
+            ],
+          }),
+        ).toEqual({
+          alreadyApplied: false,
+          purgedRows: 0,
+          droppedCommits: 1,
+        });
+        expect(await client.query('SELECT id FROM todos ORDER BY id')).toEqual([
+          { id: 'kept' },
+        ]);
+        expect(await client.pendingCommits()).toEqual([kept]);
+        expect(await client.commitOutcome(doomed)).toMatchObject({
+          status: 'rejected',
+          results: [
+            {
+              status: 'error',
+              rejection: { code: 'client.local_data_purged' },
+            },
+            {
+              status: 'error',
+              rejection: { code: 'client.local_data_purged' },
+            },
+          ],
+        });
+        await client.close();
+      } finally {
+        await host.close();
+      }
+    });
+
     test('warm native querySnapshot round trips meet the local-view budget', async () => {
       const host = nativeTauri();
       try {

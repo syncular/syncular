@@ -144,6 +144,40 @@ records a sorted `changedFields` list so conflict and rejection UI knows which
 fields the user intended to touch. That intent is local-only and never enters
 `PUSH_COMMIT`; full-row `mutate` operations omit it.
 
+## Application-authorized local security purge
+
+`purgeLocalData({ purgeId, targets })` is the narrow local-storage primitive
+for an application that has already validated a server-authoritative device,
+membership, or key-revocation directive. It is available on direct clients,
+worker handles, the normalized React client, and the Tauri bridge.
+
+```ts
+const result = await client.purgeLocalData({
+  purgeId: directive.id,
+  targets: [
+    {
+      table: 'patient_notes',
+      selectors: { encryption_key_id: [directive.keyVersionId] },
+    },
+  ],
+});
+```
+
+The host MUST first quarantine the affected feature and gate/remove any
+subscription that could download the protected rows again. This method does
+not authenticate a directive, revoke server authority, delete app-owned files,
+or remove a key from the OS secure store.
+
+Within one local SQLite transaction the engine deletes exactly the matching
+synced rows, lets generated FTS triggers remove their projections, drops every
+whole pending commit with a matching operation, restores/replays unrelated
+optimistic state, reconciles blob references, persists the `purgeId`, and emits
+one revisioned change batch. A retry with the same canonical plan returns
+`alreadyApplied: true`; reusing an id with different selectors fails closed.
+Only bounded, non-empty, code-like values on plaintext string schema columns
+are accepted. There is intentionally no full-table mode. The result exposes
+counts only—never row ids or selector values.
+
 Validator rejections may include bounded `details` (`fieldPaths`, `reason`,
 `requiredAction`, and explicitly safe `references`). The details persist with
 the rejection. Treat every value as a machine hint: map known values to

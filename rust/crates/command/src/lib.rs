@@ -20,8 +20,8 @@ use ssp2::{
     ControlMessage,
 };
 use syncular_client::{
-    ClientLimits, CommandEffects, CommitOutcomeQuery, Mutation, ResolveCommitOutcomeInput,
-    SyncClient, Transport, WindowBase, WindowCoverage,
+    ClientLimits, CommandEffects, CommitOutcomeQuery, LocalDataPurgeInput, Mutation,
+    ResolveCommitOutcomeInput, SyncClient, Transport, WindowBase, WindowCoverage,
 };
 
 // -- bytes <-> {"$bytes": hex} (the driver-protocol byte envelope) ----------
@@ -407,6 +407,21 @@ pub fn dispatch<T: Transport>(
                 "clientCommitId": id,
                 "effects": CommandEffects::interactive()
             }))
+        }
+        "purgeLocalData" => {
+            let input: LocalDataPurgeInput =
+                serde_json::from_value(params.get("input").cloned().ok_or_else(|| {
+                    client_err("sync.invalid_request: purgeLocalData missing input".to_owned())
+                })?)
+                .map_err(|error| {
+                    client_err(format!(
+                        "sync.invalid_request: invalid purgeLocalData input: {error}"
+                    ))
+                })?;
+            let result = need_client(client)?
+                .purge_local_data(&input)
+                .map_err(client_err)?;
+            serde_json::to_value(result).map_err(|error| client_err(error.to_string()))
         }
         "sync" => {
             let outcome = need_client(client)?.sync(transport);
