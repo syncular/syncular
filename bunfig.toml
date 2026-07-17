@@ -1,0 +1,3 @@
+[install]
+# Delay newly published package versions to reduce exposure to supply-chain attacks.
+minimumReleaseAge = 259200 # 3 days in seconds
