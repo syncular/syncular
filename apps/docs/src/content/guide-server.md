@@ -18,6 +18,7 @@ segment store, and a resolver, wrapped by the Hono adapter.
 
 ```ts
 import {
+  ensureSyncServerReady,
   MemorySegmentStore,
   SqliteServerStorage,
   type SyncServerConfig,
@@ -40,6 +41,7 @@ const app = createSyncularHono({
   },
 });
 
+await ensureSyncServerReady(config);
 Bun.serve({ port: 8787, fetch: app.fetch });
 ```
 
@@ -48,6 +50,15 @@ backend: `authenticate` maps a request to `{ actorId, partition }` (or
 `null` for a 401), and `resolveScopes` maps that identity to the scope
 values it may read and write. See
 [Scopes & authorization](/concepts-scopes/).
+
+Run `ensureSyncServerReady(config)` before binding a port. It accepts the
+generated `ServerSchema`, compiles it, and applies the storage projection
+migration. Failure throws `SyncServerReadinessError` with the stable code
+`sync.schema_not_ready`, a `phase` (`schema_compile` or `storage_migration`),
+and the schema version. Log its cause for operators and stop startup; do not
+catch a schema-readiness failure inside authentication or translate it into a
+401. Lazy schema checks in request handling remain defensive, not the startup
+contract.
 
 ## The route surface
 

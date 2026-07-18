@@ -67,6 +67,27 @@ function appendNullableMigration(dir: string): void {
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 }
 
+function appendRequiredMigration(dir: string): void {
+  const migrationDir = join(dir, 'migrations', '0005_add_task_reviewer');
+  cpSync(join(dir, 'migrations', '0004_add_doc_blob_ref'), migrationDir, {
+    recursive: true,
+  });
+  writeFileSync(
+    join(migrationDir, 'up.sql'),
+    "ALTER TABLE tasks ADD COLUMN reviewer TEXT NOT NULL DEFAULT 'unassigned';\n",
+    'utf8',
+  );
+  const manifestPath = join(dir, 'syncular.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+    schemaVersions: Array<{ version: number; through: string }>;
+  };
+  manifest.schemaVersions.push({
+    version: 5,
+    through: '0005_add_task_reviewer',
+  });
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+}
+
 interface CliRun {
   exitCode: number;
   stdout: string;
@@ -273,6 +294,37 @@ describe('immutable migration history', () => {
         'utf8',
       ),
     );
+  });
+
+  test('a required appended column fails generation and a fresh baseline before runtime', () => {
+    const upgradeDir = freshDir();
+    appendRequiredMigration(upgradeDir);
+    for (const args of [
+      ['generate', '--manifest-dir', upgradeDir],
+      ['migrations', 'check', '--manifest-dir', upgradeDir],
+    ]) {
+      const run = runCli(args);
+      expect(run.exitCode).toBe(1);
+      expect(run.stderr).toContain('0005_add_task_reviewer/up.sql');
+      expect(run.stderr).toContain('added column "reviewer" must be nullable');
+      expect(run.stderr).toContain('SQL defaults do not backfill');
+      expect(run.stderr).not.toContain(upgradeDir);
+    }
+
+    const baselineDir = freshDir();
+    appendRequiredMigration(baselineDir);
+    unlinkSync(join(baselineDir, 'syncular.migrations.lock.json'));
+    const baseline = runCli([
+      'migrations',
+      'baseline',
+      '--manifest-dir',
+      baselineDir,
+    ]);
+    expect(baseline.exitCode).toBe(1);
+    expect(baseline.stderr).toContain(
+      'added column "reviewer" must be nullable',
+    );
+    expect(baseline.stderr).not.toContain(baselineDir);
   });
 
   test('a format-1 lock stays valid and upgrades only through the explicit command', () => {

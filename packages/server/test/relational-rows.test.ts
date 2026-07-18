@@ -94,6 +94,28 @@ const INDEX_REPLACEMENT_SCHEMA: ServerSchema = {
   ],
 };
 
+function nullableAppendSchema(): ServerSchema {
+  return {
+    version: 2,
+    tables: [
+      {
+        name: 'tasks',
+        columns: [
+          ...TASK_COLUMNS,
+          { name: 'assignee', type: 'string', nullable: true },
+        ],
+        primaryKey: 'id',
+        scopes: ['project:{project_id}'],
+        indexes: [
+          { name: 'tasks_by_title', columns: ['title'] },
+          { name: 'tasks_by_assignee', columns: ['assignee'] },
+        ],
+      },
+      ...SCHEMA.tables.slice(1),
+    ],
+  };
+}
+
 function taskRow(
   rowId: string,
   project: string,
@@ -355,25 +377,7 @@ describe('server-side schema migration (the subset)', () => {
     await storage.ensureSchema(compileSchema(SCHEMA));
     await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'v1 row'));
 
-    const v2: ServerSchema = {
-      version: 2,
-      tables: [
-        {
-          name: 'tasks',
-          columns: [
-            ...TASK_COLUMNS,
-            { name: 'assignee', type: 'string', nullable: true },
-          ],
-          primaryKey: 'id',
-          scopes: ['project:{project_id}'],
-          indexes: [
-            { name: 'tasks_by_title', columns: ['title'] },
-            { name: 'tasks_by_assignee', columns: ['assignee'] },
-          ],
-        },
-        ...SCHEMA.tables.slice(1),
-      ],
-    };
+    const v2 = nullableAppendSchema();
     await storage.ensureSchema(compileSchema(v2));
 
     const columns = storage.db
@@ -410,6 +414,38 @@ describe('server-side schema migration (the subset)', () => {
     const decoded = decodeRow(v2Columns, stored!.payload);
     expect(decoded[2]).toBe('v1 row');
     expect(decoded[v2Columns.length - 1]).toBeNull();
+  });
+
+  test('Postgres preserves existing rows across a nullable column append', async () => {
+    const db = await PGlite.create();
+    const storage = new PostgresServerStorage(pgliteExecutor(db));
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'v1 row'));
+
+    const v2 = nullableAppendSchema();
+    await storage.ensureSchema(compileSchema(v2));
+    const stored = await storage.getRow(PARTITION, 'tasks', 't1');
+    expect(decodeRow(v2.tables[0]!.columns, stored!.payload).at(-1)).toBeNull();
+    const projected = await db.query<{ assignee: string | null }>(
+      "SELECT assignee FROM tasks WHERE id='t1'",
+    );
+    expect(projected.rows).toEqual([{ assignee: null }]);
+  });
+
+  test('D1 preserves existing rows across a nullable column append', async () => {
+    const db = new D1DatabaseDouble();
+    const storage = new D1ServerStorage(db);
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'v1 row'));
+
+    const v2 = nullableAppendSchema();
+    await storage.ensureSchema(compileSchema(v2));
+    const stored = await storage.getRow(PARTITION, 'tasks', 't1');
+    expect(decodeRow(v2.tables[0]!.columns, stored!.payload).at(-1)).toBeNull();
+    const projected = await db
+      .prepare("SELECT assignee FROM tasks WHERE id='t1'")
+      .first<{ assignee: string | null }>();
+    expect(projected).toEqual({ assignee: null });
   });
 
   test('a version bump replaces declared indexes on SQLite', async () => {

@@ -19,6 +19,7 @@ import {
   composeEvents,
   consoleJsonEvents,
   createRealtimeHub,
+  ensureSyncServerReady,
   MemorySegmentStore,
   type RealtimeSession,
   RingBufferEvents,
@@ -225,6 +226,7 @@ interface SocketData {
   session?: RealtimeSession;
 }
 
+await ensureSyncServerReady(config);
 await seed();
 
 const server = Bun.serve<SocketData, never>({

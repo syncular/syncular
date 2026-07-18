@@ -75,7 +75,16 @@ The baseline command refuses overwrite. Once deployed, restore any accidentally
 edited migration and add a new migration for the repair. Do not delete and
 re-baseline the lock. Existing-table additions must be trailing nullable
 columns; changing names, order, types, or nullability in locked history is not
-an upgrade.
+an upgrade. A SQL `DEFAULT` does not backfill existing Syncular row payloads,
+so a required appended column is rejected even when it has a literal default.
+
+Roll such a change out in four explicit steps:
+
+1. Add the trailing column as nullable and deploy the schema.
+2. Backfill existing rows with versioned, server-authoritative writes under a
+   new idempotency key.
+3. Enforce the required value in host validation for future writes.
+4. Keep the synced column nullable; do not tighten its SQL nullability later.
 
 Existing format-1 locks remain valid and are not silently rewritten by
 generation. Compact one only through the explicit, reviewable transition:
