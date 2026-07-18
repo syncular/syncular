@@ -34,14 +34,6 @@ verification; push is Benjamin's alone).
 
 ## 2. Wave 2 (approved, launches as wave 1 lands)
 
-- [ ] **Overlapping push first-result-wins hardening** (implementation under
-      release verification 2026-07-18): serialize every push by partition
-      before operation reads, re-check idempotency under that boundary, retain
-      it through terminal-result commit, route D1 HTTP/socket rounds through an
-      explicit DO FIFO, and keep one canonical HTTP/realtime capability config.
-      Remove this item only after the release, cross-storage overlap tests, and
-      downstream POC host matrix are green.
-
 - [x] **Server-side write-validation hooks** (LANDED 2026-07-05): per-table
       `validators` on the server config — a host callback run after decode +
       §3.4 scope authz, INSIDE the commit transaction, per operation; a throw
