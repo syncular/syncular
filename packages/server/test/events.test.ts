@@ -479,6 +479,7 @@ describe('realtime events', () => {
     const hub = createRealtimeHub({
       schema: TEST_SCHEMA,
       storage: t.storage,
+      segments: t.segments,
       resolveScopes: t.ctx.resolveScopes,
       clock: () => t.now.ms,
       events: cap.sink,
@@ -549,6 +550,7 @@ describe('realtime events', () => {
     const hub = createRealtimeHub({
       schema: TEST_SCHEMA,
       storage: t.storage,
+      segments: t.segments,
       resolveScopes: t.ctx.resolveScopes,
       clock: () => t.now.ms,
       events: cap.sink,

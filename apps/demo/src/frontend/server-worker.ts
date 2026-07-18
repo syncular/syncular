@@ -109,7 +109,12 @@ interface EmbeddedServerParts {
 async function bootServer(): Promise<EmbeddedServerParts> {
   const sqlite3 = await sqlite3InitModule();
   const db = new sqlite3.oo1.DB(':memory:', 'c') as unknown as WasmDb;
-  const storage = new D1ServerStorage(d1OverWasm(db));
+  // Every sync round using this adapter enters `serializeSyncRound` below.
+  // That explicit worker-local FIFO is the embedded-demo equivalent of the
+  // per-partition Durable Object required by production D1 deployments.
+  const storage = new D1ServerStorage(d1OverWasm(db), {
+    pushApplySerialized: true,
+  });
   const segments = new MemorySegmentStore();
   const blobs = new MemoryBlobStore();
   const resolveScopes = () => ({ list_id: ['*'] });
@@ -212,6 +217,17 @@ const scope = self as unknown as {
 
 const sessions = new Map<number, RealtimeSession>();
 
+let syncRoundTail: Promise<void> = Promise.resolve();
+
+function serializeSyncRound<T>(operation: () => Promise<T>): Promise<T> {
+  const result = syncRoundTail.then(operation, operation);
+  syncRoundTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
 const booted = bootServer().then(async (parts) => {
   await seed(parts.config);
   scope.postMessage({ kind: 'ready' });
@@ -238,7 +254,9 @@ scope.onmessage = (event: MessageEvent) => {
       switch (msg.kind) {
         case 'sync': {
           if (msg.bytes === undefined) throw new Error('sync without bytes');
-          const out = await handleSyncRequest(msg.bytes, ctx);
+          const out = await serializeSyncRound(() =>
+            handleSyncRequest(msg.bytes as Uint8Array, ctx),
+          );
           reply({ kind: 'result', ok: true, bytes: out }, [out.buffer]);
           break;
         }
@@ -299,7 +317,12 @@ scope.onmessage = (event: MessageEvent) => {
         }
         case 'rt-bytes': {
           if (msg.channel === undefined || msg.bytes === undefined) break;
-          sessions.get(msg.channel)?.handleBinary(msg.bytes);
+          const session = sessions.get(msg.channel);
+          if (session !== undefined) {
+            await serializeSyncRound(async () => {
+              await session.handleBinary(msg.bytes as Uint8Array);
+            });
+          }
           break;
         }
         case 'rt-close': {

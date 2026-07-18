@@ -31,11 +31,11 @@
  * reading `max_commit_seq` live and buffering the `+1` write. Under a single
  * Worker request this is exact. Two concurrent pushes to one partition need an
  * external serialization point (normally a per-partition Durable Object); a
- * realtime notifier alone does not serialize HTTP writes. A stateless
- * HTTP-only deployment SHOULD front same-partition writes with a coordinating
- * primitive (a DO or a Queue). For §6.8 whole-commit validation this becomes
- * mandatory and fail-closed: the coordinator must explicitly set
- * `commitValidationSerialized`, because D1 cannot provide the required lock.
+ * realtime notifier alone does not serialize HTTP writes. Every deployment
+ * that accepts D1 pushes MUST front same-partition sync rounds with a
+ * coordinating primitive (a DO or a Queue). The adapter fails closed unless
+ * that coordinator explicitly sets `pushApplySerialized`, because D1 cannot
+ * provide the required pre-operation lock.
  * This mirrors PostgreSQL's per-partition row lock, achieved by placement
  * rather than a lock D1 does not expose.
  */
@@ -143,12 +143,12 @@ class D1Transaction implements StorageTransaction {
   readonly #db: D1Database;
   readonly #partition: string;
   readonly #resolveTable: (name: string) => CompiledTable;
-  readonly #commitValidationSerialized: boolean;
+  readonly #pushApplySerialized: boolean;
   readonly #buffer: BufferedStatement[] = [];
   #open = true;
   /** Live snapshot of `max_commit_seq`, advanced within this transaction. */
   #maxCommitSeq: number | undefined;
-  #commitValidationCheckpoint: number | undefined;
+  #pushApplyCheckpoint: number | undefined;
   #lastApplicationOpIndex: number | undefined;
   /**
    * Read-your-own-writes overlay (§6.2 needs `getRow` to see buffered writes
@@ -161,12 +161,12 @@ class D1Transaction implements StorageTransaction {
     db: D1Database,
     partition: string,
     resolveTable: (name: string) => CompiledTable,
-    commitValidationSerialized: boolean,
+    pushApplySerialized: boolean,
   ) {
     this.#db = db;
     this.#partition = partition;
     this.#resolveTable = resolveTable;
-    this.#commitValidationSerialized = commitValidationSerialized;
+    this.#pushApplySerialized = pushApplySerialized;
   }
 
   #assertOpen(): void {
@@ -312,16 +312,16 @@ class D1Transaction implements StorageTransaction {
       .slice(0, query.limit);
   }
 
-  async lockPartitionForCommitValidation(): Promise<void> {
+  async lockPartitionForPush(): Promise<void> {
     this.#assertOpen();
-    if (!this.#commitValidationSerialized) {
+    if (!this.#pushApplySerialized) {
       throw new Error(
-        'D1 whole-commit validation requires externally serialized partition writes',
+        'D1 push apply requires externally serialized partition writes',
       );
     }
     // D1 has no interactive lock. The caller explicitly asserted that every
     // write for this partition is already serialized (normally by its DO).
-    this.#commitValidationCheckpoint = this.#buffer.length;
+    this.#pushApplyCheckpoint = this.#buffer.length;
   }
 
   async commitRejectedPushResult(
@@ -330,11 +330,9 @@ class D1Transaction implements StorageTransaction {
     result: StoredPushResult,
   ): Promise<void> {
     this.#assertOpen();
-    const checkpoint = this.#commitValidationCheckpoint;
+    const checkpoint = this.#pushApplyCheckpoint;
     if (checkpoint === undefined) {
-      throw new Error(
-        'whole-commit rejection requires its validation checkpoint',
-      );
+      throw new Error('push rejection requires its apply checkpoint');
     }
     this.#buffer.length = checkpoint;
     this.#pending.clear();
@@ -558,16 +556,22 @@ class D1Transaction implements StorageTransaction {
 
   async commit(): Promise<void> {
     this.#assertOpen();
-    this.#open = false;
-    if (this.#buffer.length === 0) return;
+    if (this.#buffer.length === 0) {
+      this.#open = false;
+      return;
+    }
     const statements = this.#buffer.map((entry) =>
       this.#db.prepare(entry.sql).bind(...entry.params),
     );
     // One atomic D1 batch — the §6.4 all-or-nothing commit.
     try {
       await this.#db.batch(statements);
+      this.#open = false;
     } catch (error) {
       if (isD1ConstraintError(error)) {
+        // D1 batches are atomic. Keep this logical transaction open so the
+        // push layer can discard its buffered candidates and persist the
+        // terminal rejection while the external partition queue is retained.
         throw new StorageConstraintError(error, this.#lastApplicationOpIndex);
       }
       throw error;
@@ -590,23 +594,30 @@ const D1_MAX_BIND_PARAMS = 100;
 export interface D1ServerStorageOptions {
   /**
    * Assert that all writes for a partition reach this storage serially.
-   * Required for §6.8 because D1 exposes no interactive transaction lock.
-   * Set this only inside a per-partition Durable Object or equivalent
-   * coordinator; the default fails closed when a commit validator is used.
+   * Required for every push because D1 exposes no interactive transaction
+   * lock. Set this only inside an explicit per-partition request queue,
+   * Durable Object, or equivalent coordinator; the default fails closed.
+   */
+  readonly pushApplySerialized?: boolean;
+  /**
+   * @deprecated Use `pushApplySerialized`. This alias remains valid only
+   * because the old assertion already promised that every partition write,
+   * not merely validator callbacks, was externally serialized.
    */
   readonly commitValidationSerialized?: boolean;
 }
 
 export class D1ServerStorage implements ServerStorage {
   readonly #db: D1Database;
-  readonly #commitValidationSerialized: boolean;
+  readonly #pushApplySerialized: boolean;
   /** Set by `ensureSchema`: app-table lookup for the relational row store. */
   #tables: ReadonlyMap<string, CompiledTable> | undefined;
   #schemaVersion: number | undefined;
 
   constructor(db: D1Database, options: D1ServerStorageOptions = {}) {
     this.#db = db;
-    this.#commitValidationSerialized =
+    this.#pushApplySerialized =
+      options.pushApplySerialized === true ||
       options.commitValidationSerialized === true;
   }
 
@@ -769,7 +780,7 @@ export class D1ServerStorage implements ServerStorage {
       this.#db,
       partition,
       (name) => this.table(name),
-      this.#commitValidationSerialized,
+      this.#pushApplySerialized,
     );
   }
 

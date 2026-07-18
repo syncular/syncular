@@ -23,6 +23,7 @@ import {
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
 import { D1DatabaseDouble } from './d1-double';
+import { overlapAfterTwoOptimisticMisses } from './helpers';
 
 const COLUMNS: readonly RowColumn[] = [
   { name: 'id', type: 'string', nullable: false },
@@ -138,7 +139,9 @@ const fixtures: ReadonlyArray<{
   {
     name: 'D1',
     open: async () => ({
-      storage: new D1ServerStorage(new D1DatabaseDouble()),
+      storage: new D1ServerStorage(new D1DatabaseDouble(), {
+        pushApplySerialized: true,
+      }),
       close: async () => {},
     }),
   },
@@ -227,4 +230,43 @@ describe('durable relational constraint rejection', () => {
       }
     });
   }
+
+  test('overlapping duplicate constraint failures persist one byte-equivalent rejection', async () => {
+    const storage = new SqliteServerStorage();
+    const existingPayload = row(
+      'overlap-existing',
+      'w1',
+      'overlap-surgery',
+      'original',
+    );
+    expect(
+      pushResult(
+        await push(storage, [
+          commit('overlap-seed', [upsert('overlap-existing', existingPayload)]),
+        ]),
+      ).status,
+    ).toBe('applied');
+    const overlapStorage = overlapAfterTwoOptimisticMisses(storage);
+    const rejectedCommit = commit('overlap-constraint', [
+      upsert(
+        'overlap-sibling',
+        row('overlap-sibling', 'w1', 'free-surgery', 'must roll back'),
+      ),
+      upsert(
+        'overlap-collision',
+        row('overlap-collision', 'w1', 'overlap-surgery', 'must reject'),
+      ),
+    ]);
+
+    const [left, right] = await Promise.all([
+      push(overlapStorage, [rejectedCommit]),
+      push(overlapStorage, [rejectedCommit]),
+    ]);
+    expect(pushResult(left)).toEqual(pushResult(right));
+    expect(pushResult(left).status).toBe('rejected');
+    expect(
+      await storage.getRow('workspace-partition', 'reports', 'overlap-sibling'),
+    ).toBeUndefined();
+    expect(await storage.getMaxCommitSeq('workspace-partition')).toBe(1);
+  });
 });

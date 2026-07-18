@@ -12,15 +12,28 @@
  *     bun test packages/server/test/postgres-fanout.integration.test.ts
  */
 import { afterAll, describe, expect, test } from 'bun:test';
-import type { WakeReason } from '@syncular/core';
 import {
+  decodeMessage,
+  encodeMessage,
+  encodeRow,
+  PROTOCOL_WIRE_VERSION,
+  type PushResultFrame,
+  type RowColumn,
+  type WakeReason,
+} from '@syncular/core';
+import {
+  compileSchema,
   FANOUT_CHANNEL,
   type FanoutWakeTarget,
+  handleSyncRequest,
+  MemorySegmentStore,
   type PgExecutor,
   type PgNotificationConnection,
   type PgQueryable,
   PostgresFanout,
   PostgresServerStorage,
+  type ServerSchema,
+  type ServerStorage,
 } from '@syncular/server';
 
 const PG_URL = process.env.SYNCULAR_PG_URL;
@@ -30,6 +43,24 @@ const BunSQL = (Bun as any).SQL as undefined | (new (url: string) => any);
 
 const gate =
   PG_URL !== undefined && BunSQL !== undefined ? describe : describe.skip;
+
+const TASK_COLUMNS: readonly RowColumn[] = [
+  { name: 'id', type: 'string', nullable: false },
+  { name: 'project_id', type: 'string', nullable: false },
+  { name: 'title', type: 'string', nullable: false },
+];
+
+const SYNC_SCHEMA: ServerSchema = {
+  version: 1,
+  tables: [
+    {
+      name: 'tasks',
+      columns: TASK_COLUMNS,
+      primaryKey: 'id',
+      scopes: ['project:{project_id}'],
+    },
+  ],
+};
 
 // biome-ignore lint/suspicious/noExplicitAny: driver handle is dynamic.
 function queryableOver(handle: any): PgQueryable {
@@ -103,6 +134,113 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
       limitChanges: 10,
     });
     expect(window[0]?.changes[0]?.payload).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  test('two real connections apply an overlapping duplicate exactly once', async () => {
+    const leftSql = new (BunSQL as new (url: string) => unknown)(
+      PG_URL as string,
+    );
+    const rightSql = new (BunSQL as new (url: string) => unknown)(
+      PG_URL as string,
+    );
+    handles.push(leftSql, rightSql);
+    const leftStorage = new PostgresServerStorage(bunSqlExecutor(leftSql));
+    const rightStorage = new PostgresServerStorage(bunSqlExecutor(rightSql));
+    await leftStorage.migrate();
+    await leftStorage.ensureSchema(compileSchema(SYNC_SCHEMA));
+    await rightStorage.ensureSchema(compileSchema(SYNC_SCHEMA));
+
+    let optimisticArrivals = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pauseFirstLookup = (storage: ServerStorage): ServerStorage =>
+      new Proxy(storage, {
+        get(target, property) {
+          if (property === 'getPushResult') {
+            return async (...args: [string, string, string]) => {
+              optimisticArrivals += 1;
+              if (optimisticArrivals <= 2) {
+                if (optimisticArrivals === 2) release();
+                await gate;
+              }
+              return target.getPushResult(...args);
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+
+    const partition = `overlap-${crypto.randomUUID()}`;
+    const bytes = encodeMessage({
+      wireVersion: PROTOCOL_WIRE_VERSION,
+      msgKind: 'request',
+      frames: [
+        {
+          type: 'REQ_HEADER',
+          clientId: 'overlap-client',
+          schemaVersion: 1,
+        },
+        {
+          type: 'PUSH_COMMIT',
+          clientCommitId: 'overlap-commit',
+          operations: [
+            {
+              table: 'tasks',
+              rowId: 'overlap-row',
+              op: 'upsert',
+              payload: encodeRow(TASK_COLUMNS, ['overlap-row', 'p1', 'once']),
+            },
+          ],
+        },
+      ],
+    });
+    let validatorCalls = 0;
+    let notifications = 0;
+    const request = (storage: ServerStorage) =>
+      handleSyncRequest(bytes, {
+        partition,
+        actorId: 'actor',
+        schema: SYNC_SCHEMA,
+        storage,
+        segments: new MemorySegmentStore(),
+        resolveScopes: () => ({ project_id: ['p1'] }),
+        validators: {
+          tasks: () => {
+            validatorCalls += 1;
+          },
+        },
+        realtime: {
+          notifyCommit: () => {
+            notifications += 1;
+          },
+        },
+      });
+
+    const [left, right] = await Promise.all([
+      request(pauseFirstLookup(leftStorage)),
+      request(pauseFirstLookup(rightStorage)),
+    ]);
+    const statusOf = (response: Uint8Array) => {
+      const message = decodeMessage(response);
+      if (message.msgKind !== 'response') throw new Error('expected response');
+      return message.frames.find(
+        (frame): frame is PushResultFrame => frame.type === 'PUSH_RESULT',
+      )?.status;
+    };
+    expect([statusOf(left), statusOf(right)].sort()).toEqual([
+      'applied',
+      'cached',
+    ]);
+    expect(validatorCalls).toBe(1);
+    expect(notifications).toBe(1);
+    expect(
+      (await leftStorage.getRow(partition, 'tasks', 'overlap-row'))
+        ?.serverVersion,
+    ).toBe(1);
+    expect(await leftStorage.getMaxCommitSeq(partition)).toBe(1);
   });
 
   test('NOTIFY on one connection wakes a LISTEN on another', async () => {

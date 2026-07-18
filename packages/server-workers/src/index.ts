@@ -21,16 +21,17 @@
  * `SyncularRealtimeDO` (`realtime-do.ts`): one DO per partition hosting the
  * `RealtimeHub`, WebSocket hibernation driving the existing `RealtimeSession`,
  * in-DO commit fan-out, storage over the same D1 binding. Pass a
- * `realtime` option to `createWorkersFetchHandler` to mount the `/realtime`
- * upgrade route + the HTTP-push wake path; omit it for an HTTP-only
- * deployment (still fully conformant per §1.1 — clients sync over `POST
- * /sync`, identical semantics). No fallback is implied either way: HTTP-only
- * is a smaller complete deployment, not a degraded one.
+ * `realtime` option to mount `/realtime`; its namespace also coordinates D1
+ * `/sync`. An HTTP-only D1 deployment uses the `coordinator` option instead:
+ * WebSockets are optional, the per-partition push queue is not.
  */
 import {
   type D1Database,
   D1ServerStorage,
+  errorBody,
+  SSP2_CONTENT_TYPE,
   type StoredCommit,
+  SyncError,
   type SyncServerConfig,
 } from '@syncular/server';
 import {
@@ -41,7 +42,9 @@ import {
   REALTIME_DO_UPGRADE_PATH,
   REALTIME_DO_WAKE_PATH,
   type RealtimeUpgradeIdentity,
+  SYNC_DO_REQUEST_PATH,
   writeIdentityHeaders,
+  writeRequestIdentityHeaders,
 } from './realtime-do';
 
 export { type D1Database, D1ServerStorage } from '@syncular/server';
@@ -84,10 +87,8 @@ export interface DurableObjectIdLike {
 
 /**
  * Realtime wiring for `createWorkersFetchHandler`. Supplying it mounts the
- * `GET <mount>/realtime` upgrade route and the HTTP-push wake path (the
- * `RealtimeNotifier` returned by `durableObjectRealtimeNotifier`, which the
- * host spreads into its `SyncServerConfig.realtime` so a push landing in the
- * plain isolate wakes the partition's DO).
+ * `GET <mount>/realtime` upgrade route and uses the same namespace as the D1
+ * `/sync` coordinator.
  */
 export interface WorkersRealtimeOptions {
   /** The DO namespace binding (wrangler `[[durable_objects.bindings]]`). */
@@ -114,9 +115,25 @@ export type WorkersRealtimeFactory<Env = unknown> = (
   ctx: ExecutionContextLike,
 ) => WorkersRealtimeOptions | Promise<WorkersRealtimeOptions>;
 
+/** Per-partition Durable Object boundary for D1 sync rounds without WS. */
+export interface WorkersCoordinatorOptions {
+  readonly namespace: DurableObjectNamespaceLike;
+}
+
+export type WorkersCoordinatorFactory<Env = unknown> = (
+  env: Env,
+  ctx: ExecutionContextLike,
+) => WorkersCoordinatorOptions | Promise<WorkersCoordinatorOptions>;
+
 export interface WorkersFetchHandlerOptions<Env = unknown> {
   /** Build the HTTP handler config + auth per request (see the type doc). */
   readonly config: WorkersConfigFactory<Env>;
+  /**
+   * Serialize D1 `/sync` rounds through one Durable Object per partition.
+   * Required for D1 pushes when `realtime` is omitted. If `realtime` is
+   * present its namespace is the coordinator automatically.
+   */
+  readonly coordinator?: WorkersCoordinatorFactory<Env>;
   /**
    * Realtime (§8) over a Durable Object. Omit for an HTTP-only deployment
    * (still fully conformant — clients sync over `POST /sync`).
@@ -178,15 +195,58 @@ export function createWorkersFetchHandler<Env = unknown>(
       : factoryOrOptions;
   return async (request, env, ctx) => {
     // §8 upgrade: GET <mount>/realtime → forward to the partition's DO.
+    let realtime: WorkersRealtimeOptions | undefined;
     if (options.realtime !== undefined) {
-      const realtime = await options.realtime(env, ctx);
+      realtime = await options.realtime(env, ctx);
       const upgraded = await handleRealtimeUpgrade(request, realtime);
       if (upgraded !== undefined) return upgraded;
     }
     const honoOptions = await options.config(env, ctx);
+    const coordinator =
+      options.coordinator !== undefined
+        ? await options.coordinator(env, ctx)
+        : realtime;
+    if (coordinator !== undefined && isSyncPost(request)) {
+      const auth = await honoOptions.authenticate(request);
+      if (auth === null) {
+        const error = new SyncError('sync.auth_required');
+        return Response.json(errorBody(error), { status: error.httpStatus });
+      }
+      return forwardSyncRequest(request, coordinator.namespace, auth);
+    }
     const app = createSyncularHono(honoOptions);
     return app.fetch(request);
   };
+}
+
+function isSyncPost(request: Request): boolean {
+  if (request.method !== 'POST') return false;
+  const contentType = request.headers
+    .get('content-type')
+    ?.split(';')[0]
+    ?.trim();
+  if (contentType !== SSP2_CONTENT_TYPE) return false;
+  const pathname = new URL(request.url).pathname;
+  return pathname === '/sync' || pathname.endsWith('/sync');
+}
+
+/**
+ * Forward an authenticated HTTP sync round to the partition's Durable Object.
+ * Pulls and pushes share this path so client-record updates and push apply use
+ * one ordered partition boundary. Other HTTP routes remain direct.
+ */
+export function forwardSyncRequest(
+  request: Request,
+  namespace: DurableObjectNamespaceLike,
+  identity: { readonly partition: string; readonly actorId: string },
+): Promise<Response> {
+  const stub = namespace.get(namespace.idFromName(identity.partition));
+  const forwarded = new Request(
+    new URL(SYNC_DO_REQUEST_PATH, request.url),
+    request,
+  );
+  writeRequestIdentityHeaders(forwarded.headers, identity);
+  return stub.fetch(forwarded);
 }
 
 /**
@@ -233,13 +293,14 @@ export function forwardRealtimeUpgrade(
 }
 
 /**
- * A `RealtimeNotifier` (§8.2) that wakes the partition's DO after a push lands
- * via the plain HTTP handler (a stateless isolate with no sockets). The DO
+ * A `RealtimeNotifier` (§8.2) for an external authoritative command host that
+ * already serializes its D1 writes and must wake the partition's DO. The DO
  * calls `hub.wake(partition, 'catchup-required')` and its sockets re-pull the
  * delta from the shared D1 (§8.3) — the Workers in-platform analogue of the
  * Postgres LISTEN/NOTIFY fan-out. A wake, not a byte re-broadcast.
  *
- * Spread this into `SyncServerConfig.realtime`. The wake is fire-and-forget:
+ * Ordinary Workers `/sync` does not need this: it already lands on the DO and
+ * fans out in-process. This wake is fire-and-forget:
  * a DO fetch failure never fails the push (the commit is already durable in
  * D1; the client's next pull or reconnect self-heals).
  */

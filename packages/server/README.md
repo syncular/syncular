@@ -19,7 +19,7 @@ The supported set, and what deliberately does **not** get an adapter:
 | Runtime | Adapter | Transport | Storage | Status |
 | --- | --- | --- | --- | --- |
 | **Bun / Node** | `@syncular/server-hono` | HTTP (`POST /sync`, segments, blobs) **+ WS realtime** (§8, host-driven upgrade) | any: `SqliteServerStorage`, `PostgresServerStorage`, memory | **Supported now** — the reference deployment; runs the full conformance catalog on both bindings. |
-| **Cloudflare Workers** | `@syncular/server-workers` | HTTP binding via Hono (Workers-native) **+ WS realtime** (§8, Durable Object host with hibernation) | `D1ServerStorage` (D1); R2-as-S3 for segments/blobs (§5.4 delegated presign) | **Supported now** — this rung. Realtime rides a **Durable Object** (`SyncularRealtimeDO`), opt-in; HTTP-only is also fully conformant (below). |
+| **Cloudflare Workers** | `@syncular/server-workers` | HTTP binding via Hono (Workers-native) **+ optional WS realtime** (§8) | `D1ServerStorage` behind one per-partition Durable Object queue; R2-as-S3 for segments/blobs | **Supported now** — D1 sync writes always traverse the DO; WebSocket upgrades remain optional. |
 | Raw Deno / edge-misc | — | — | — | **Not adapted** (policy below). |
 
 **The policy for "not adapted".** Untested ≠ unsupported forever. The core
@@ -30,23 +30,20 @@ HTTP via the fetch-handler round-trip tests), and we do not claim runtimes we
 do not test. Deno is a plausible future adapter the day someone runs the
 catalog on it; until then it is neutral-core-friendly, not supported.
 
-**Workers realtime — the Durable Object.** SPEC §1.1's two bindings are two
-framings of one handler; an **HTTP-only deployment is fully conformant**
-(clients that cannot open the socket sync over `POST /sync`, identical
-semantics — a smaller complete deployment, not a degraded one), so realtime on
-Workers is opt-in. When enabled it rides a **Durable Object**
-(`SyncularRealtimeDO`): one DO per partition hosting the `RealtimeHub` (the DO
-id derived from the partition, so a partition's sockets and its commit fan-out
-are co-located and single-threaded — also the natural per-partition write
-serialization point the D1 storage wants); WebSocket **hibernation** so idle
-sockets don't bill wall time (the existing `RealtimeSession` is the
+**Workers coordination and realtime — the Durable Object.** HTTP-only is fully
+conformant at the protocol level, but D1 still requires a per-partition Durable
+Object queue for every `/sync` round that may push. WebSocket upgrades are
+optional; the write coordinator is not. `SyncularRealtimeDO` hosts that FIFO
+and, when realtime is enabled, the `RealtimeHub`. The DO id derives from the
+partition, so unrelated partitions remain concurrent. WebSocket
+**hibernation** keeps idle sockets from billing wall time (the existing
+`RealtimeSession` is the
 per-connection state machine, driven from the hibernation callbacks and
 rehydrated from a minimal socket attachment + the D1 client record on wake);
 storage via the same **D1** binding so realtime rounds and `POST /sync` rounds
 share one commit log and one segment store; commit fan-out (§8.2) runs in-DO
-(no LISTEN/NOTIFY needed — writes and sockets are co-located), and an HTTP push
-landing in a plain isolate wakes the partition's DO (the in-platform
-LISTEN/NOTIFY analogue). Full shape, wiring, hibernation semantics, and the
+(no LISTEN/NOTIFY needed — writes and sockets are co-located). Full shape,
+wiring, hibernation semantics, and the
 manual real-workerd smoke recipe in `@syncular/server-workers/README.md`.
 
 **No relay (decision).** There is deliberately no *relay* — no bridge that
@@ -162,12 +159,13 @@ re-checks idempotency after taking that lock and persists a rejected outcome
 while the lock is retained, so overlapping duplicate deliveries cannot rerun
 the callback.
 
-SQLite and PostgreSQL provide that serialization directly. D1 does not expose
-an interactive lock: `D1ServerStorage` fails closed unless it is constructed
-inside an external per-partition coordinator with
-`{ commitValidationSerialized: true }` (normally one Durable Object per
-partition). Do not set that assertion on a stateless Worker. Custom storages
-must implement both the transaction lock and candidate scan seam.
+SQLite and PostgreSQL provide that serialization directly for every push. D1
+does not expose an interactive lock: `D1ServerStorage` fails closed unless it
+is constructed inside an explicit per-partition coordinator with
+`{ pushApplySerialized: true }` (normally the packaged Durable Object FIFO).
+Do not set that assertion on a stateless Worker. Custom storages must implement
+the pre-operation partition lock, locked idempotency re-check, atomic rejection
+finalization, and—when `commitValidator` is used—candidate scans.
 
 Whole-commit validation checks a client-proposed commit; it does not grant
 authority. Privileged operations such as connecting facilities still belong in

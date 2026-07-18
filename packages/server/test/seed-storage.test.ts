@@ -43,7 +43,11 @@ const fixtures: readonly StorageFixture[] = [
   {
     name: 'D1',
     open: async () => ({
-      storage: new D1ServerStorage(new D1DatabaseDouble()),
+      // The fixture runs seed calls sequentially, which supplies the same
+      // external serialization that a production D1 host gets from its DO.
+      storage: new D1ServerStorage(new D1DatabaseDouble(), {
+        pushApplySerialized: true,
+      }),
       close: async () => {},
     }),
   },

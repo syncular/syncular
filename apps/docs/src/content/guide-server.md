@@ -77,15 +77,30 @@ connected sockets.
 
 `createRealtimeHub` builds the transport-agnostic hub; passing it as
 `config.realtime` makes every applied commit fan out to connected sockets.
-Give the hub the **same** storage and segment store as the HTTP path: the
-socket carries full sync rounds through the same handler.
+Build both from one canonical sync capability object—not just the same storage,
+but the same segments, blobs, CRDT mergers, validators, limits, leases, signed
+delivery, clock, and events. The type inherits `SyncServerConfig` specifically
+to prevent socket rounds from becoming a narrower handler.
 
 ```ts
-import { createRealtimeHub, type RealtimeSession } from '@syncular/server';
+import {
+  createRealtimeHub,
+  type RealtimeHubConfig,
+  type RealtimeSession,
+} from '@syncular/server';
 
-const hub = createRealtimeHub({ schema, storage, resolveScopes, segments });
+const syncCapabilities = {
+  schema,
+  storage,
+  segments,
+  blobs,
+  crdtMergers,
+  validators,
+  resolveScopes,
+} satisfies RealtimeHubConfig;
+const hub = createRealtimeHub(syncCapabilities);
 const config: SyncServerConfig = {
-  schema, storage, segments, resolveScopes,
+  ...syncCapabilities,
   realtime: hub,
 };
 ```

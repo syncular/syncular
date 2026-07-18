@@ -22,13 +22,11 @@ The HTTP binding (SPEC §1.1):
 | `<mount>/blobs/{id}` | PUT | Blob upload, content-address verified (§5.9.3) |
 | `<mount>/blobs/{id}` | GET | Blob download, row-derived re-auth (§5.9.5) |
 
-**Realtime (`GET <mount>/realtime`, §8) is supported** via a Durable Object —
-see "Workers realtime — the Durable Object" below. It is opt-in: pass a
-`realtime` option to `createWorkersFetchHandler` and add the DO binding to
-`wrangler.toml`. Omit it for an HTTP-only deployment — per SPEC §1.1 that is
-fully conformant: reference clients that cannot open the socket sync over
-`POST /sync`, which carries identical semantics. This is a smaller, complete
-deployment, not a degraded one — no fallback is implied.
+**Every D1 `/sync` round that may push traverses a per-partition Durable
+Object queue.** Pass `coordinator` for HTTP-only transport, or `realtime` to
+reuse the same namespace while also mounting `GET <mount>/realtime` (§8).
+WebSockets are optional; D1 write coordination is not. A plain stateless D1
+writer fails closed before app-row mutation.
 
 ## Usage
 
@@ -47,6 +45,7 @@ import { schema } from './syncular.generated'; // typegen output
 
 interface Env {
   DB: D1Database; // wrangler.toml [[d1_databases]] binding = "DB"
+  SYNC_COORDINATOR: DurableObjectNamespace<SyncularRealtimeDO>;
   R2_ACCOUNT_ID: string;
   R2_ACCESS_KEY_ID: string;
   R2_SECRET_ACCESS_KEY: string;
@@ -76,23 +75,27 @@ function syncConfig(env: Env): SyncServerConfig {
     blobSignedUrls: s3PresignedBlobUrls(blobs, { ttlSeconds: 900 }),
     resolveScopes: (args) => resolveScopes(args, env),
     // No `sqliteImageBuilder`: Workers has no SQLite engine, so bit-2
-    // clients are served the rows lane (§5.3 support floor). No `realtime`:
-    // the DO follow-up.
+    // clients are served the rows lane (§5.3 support floor).
   };
 }
 
 export default {
-  fetch: createWorkersFetchHandler<Env>((env) => ({
-    config: syncConfig(env),
-    authenticate: (request) => authenticate(request, env),
-  })),
+  fetch: createWorkersFetchHandler<Env>({
+    config: (env) => ({
+      config: syncConfig(env),
+      authenticate: (request) => authenticate(request, env),
+    }),
+    coordinator: (env) => ({ namespace: env.SYNC_COORDINATOR }),
+  }),
 };
 ```
 
 `createWorkersFetchHandler(factory)` builds the Hono app once per request from
 the factory and delegates. Building per request keeps the handler stateless
 (no module-global mutable server) — the Workers-correct posture, since each
-invocation may run on a fresh isolate.
+invocation may run on a fresh isolate. The coordinator forwards authenticated
+`/sync` bodies to the partition DO; segments and blob endpoints remain direct.
+The complete DO class and canonical config factory are shown under "Wiring".
 
 See `wrangler.toml.example` for the binding config.
 
@@ -126,26 +129,18 @@ immediately (autocommit) and **buffers** writes, flushing them as one atomic
 rolls back by never flushing). A read-your-own-writes overlay makes `getRow`
 see buffered writes of the same commit.
 
-**Concurrency posture.** The dense per-partition `commitSeq` (§2.1) is
-allocated by reading `max_commit_seq` live and buffering the `+1`. Under one
-Worker request this is exact. For two concurrent pushes to the *same
-partition*, serialize the writes: the DO realtime host (the follow-up) is the
-natural per-partition serialization point; a stateless HTTP-only deployment
-that expects concurrent same-partition writes SHOULD front D1 per-partition
-writes with a coordinating primitive (a DO or a Queue). This mirrors
-Postgres's per-partition row lock, achieved by placement rather than a lock
-D1 does not expose. Cross-partition pushes never contend.
+**Concurrency posture.** Every push, not only whole-commit validation, must
+serialize before operation reads and re-check idempotency under that boundary.
+`createWorkersFetchHandler` forwards `/sync` to one DO per authenticated
+partition; the host uses an explicit FIFO because Durable Object events can
+interleave at `await`. Cross-partition pushes still use different DOs.
 
-**Whole-commit validation fails closed without that coordinator.** SPEC §6.8
-must hold serialization from before candidate reads through commit. A plain
-`new D1ServerStorage(env.DB)` therefore rejects a push whenever
-`commitValidator` is configured. The storage created inside
-`SyncularRealtimeHost` opts in because that host is already one
-single-threaded DO per partition. A custom coordinated host may construct
-`new D1ServerStorage(env.DB, { commitValidationSerialized: true })`, but MUST
-never set that assertion in a stateless HTTP Worker. A realtime notifier wakes
-sockets after an HTTP commit; it does not serialize that HTTP write and is not
-sufficient for §6.8 by itself.
+A plain `new D1ServerStorage(env.DB)` fails closed before every push. Only an
+actual coordinator may construct
+`new D1ServerStorage(env.DB, { pushApplySerialized: true })`; never set that
+assertion in a stateless Worker. The deprecated
+`commitValidationSerialized` alias exists only for coordinated hosts upgrading
+from an older release and has the same every-push meaning.
 
 ## Workers realtime — the Durable Object
 
@@ -157,9 +152,10 @@ hosts the `RealtimeHub`, uses WebSocket hibernation to drive the existing
 ### Sharding: one DO per partition
 
 The DO id is `idFromName(partition)`, so **all of a partition's sockets and
-its commit fan-out live in one single-threaded DO** — which is also the
-per-partition write-serialization point the D1 storage wants (see "Concurrency
-posture"). Because the hub is the `RealtimeNotifier` (§8.2) *inside* the DO, a
+its commit fan-out live in one DO with an explicit sync-round FIFO** — which is
+also the per-partition write-serialization point the D1 storage wants (see
+"Concurrency posture"). Because the hub is the `RealtimeNotifier` (§8.2)
+*inside* the DO, a
 sync round landing over the socket fans its full delta to the partition's
 other sockets with **no LISTEN/NOTIFY** — writes and sockets are co-located.
 
@@ -198,18 +194,14 @@ So the serialized attachment is deliberately minimal — the three identity
 fields `connect` needs. Everything else is re-derived from D1, which is
 authoritative.
 
-### The wake path (HTTP push → DO)
+### HTTP sync and fanout
 
-A push landing via the *plain* HTTP handler (a stateless isolate with no
-sockets) wakes the partition's DO. Wire `durableObjectRealtimeNotifier(env.
-REALTIME)` into `SyncServerConfig.realtime`; after a commit lands it
-`stub.fetch`es the DO's internal wake path, and the DO calls `hub.wake(
-partition, 'catchup-required')` — its sockets re-pull the delta from the shared
-D1 (§8.3). This is the Workers in-platform equivalent of Postgres LISTEN/NOTIFY:
-a wake, not a byte re-broadcast, so remote sessions pay one re-pull. The wake
-is fire-and-forget — a DO fetch failure never fails the push (the commit is
-already durable; the client's next pull self-heals). A round landing *on the
-DO itself* skips this entirely: the hub fans the full delta out in-process.
+Authenticated HTTP `/sync` rounds are forwarded into the same partition DO as
+socket rounds. Applied commits therefore fan out through the in-DO hub without
+a post-commit wake race. `durableObjectRealtimeNotifier` remains available for
+an external authoritative command host that already provides equally strong
+partition serialization and needs to wake the DO after its own commit; it is
+not a substitute for the `/sync` coordinator.
 
 ### Wiring
 
@@ -220,13 +212,12 @@ DO itself* skips this entirely: the hub fans the full delta out in-process.
 // src/worker.ts
 import {
   createWorkersFetchHandler,
-  durableObjectRealtimeNotifier,
   D1ServerStorage,
   SyncularRealtimeHost,
   type RealtimeDOConfig,
 } from '@syncular/server-workers';
 import { DurableObject } from 'cloudflare:workers';
-import { MemorySegmentStore } from '@syncular/server';
+import type { RealtimeHubConfig } from '@syncular/server';
 import { schema } from './syncular.generated';
 
 interface Env {
@@ -234,14 +225,21 @@ interface Env {
   REALTIME: DurableObjectNamespace<SyncularRealtimeDO>;
 }
 
-const realtimeDOConfig = (env: Env): RealtimeDOConfig => ({
-  hubConfig: () => ({
+const canonicalSyncConfig = (
+  env: Env,
+  storage: D1ServerStorage,
+) => ({
     schema,
+    storage,
     resolveScopes: (args) => resolveScopes(args, env),
-    // §8.7: the socket carries sync rounds through the SAME handler + segment
-    // store as POST /sync — pass the same segment store the HTTP path uses.
     segments: makeSegments(env),
-  }),
+    blobs: makeBlobs(env),
+    crdtMergers: makeCrdtMergers(env),
+  } satisfies RealtimeHubConfig);
+
+const realtimeDOConfig = (env: Env): RealtimeDOConfig => ({
+  // One factory owns HTTP-forwarded and socket-round sync capabilities.
+  syncConfig: (storage) => canonicalSyncConfig(env, storage),
 });
 
 // The DO class the runtime instantiates. It delegates to SyncularRealtimeHost;
@@ -261,18 +259,14 @@ export default {
   fetch: createWorkersFetchHandler<Env>({
     config: (env) => ({
       config: {
-        schema,
-        storage: new D1ServerStorage(env.DB),
-        segments: makeSegments(env),
-        resolveScopes: (args) => resolveScopes(args, env),
-        // HTTP pushes wake the partition's DO (the LISTEN/NOTIFY analogue).
-        realtime: durableObjectRealtimeNotifier(env.REALTIME),
+        ...canonicalSyncConfig(env, new D1ServerStorage(env.DB)),
       },
       authenticate: (request) => authenticate(request, env),
     }),
     realtime: (env) => ({
       namespace: env.REALTIME,
-      // The realtime-channel auth seam (analogue of `authenticate`): resolve
+      // This namespace also coordinates authenticated HTTP /sync rounds.
+      // The realtime-channel auth seam resolves
       // the §8 upgrade identity; the `partition` selects the DO. Return
       // undefined to reject with a 401.
       authenticate: (request) => authenticateRealtime(request, env),
@@ -296,7 +290,7 @@ The hermetic tests (`test/realtime-do.test.ts`) drive the **real**
 `RealtimeSession`/`RealtimeHub`/`D1ServerStorage` code through the real DO class
 over a DO double + the D1 double + the reference codec — connect → hello →
 round-over-socket → delta-on-commit → ack, hibernation rehydration, the
-HTTP-push wake fan-out, and presence. Because the DO is a *deployment adapter*
+HTTP-forwarded push fan-out, and presence. Because the DO is a *deployment adapter*
 (same wire, same handler), that is the conformance bar.
 
 An automated `wrangler dev` smoke was **deliberately not added**: `wrangler` as

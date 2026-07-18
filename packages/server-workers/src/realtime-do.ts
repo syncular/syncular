@@ -7,9 +7,9 @@
  *
  * One DO instance hosts **one `RealtimeHub`** and serves **one partition**
  * (the DO id is `idFromName(partition)`, see `realtimeStubFor`). All of a
- * partition's sockets and its commit fan-out live in that single-threaded DO —
- * which is also the per-partition write-serialization point the D1 storage
- * wants (see `d1-storage.ts` "Concurrency posture"). Because the hub is the
+ * partition's sync rounds, sockets, and commit fan-out live behind its
+ * explicit FIFO — the per-partition serialization point D1 requires. Because
+ * the hub is the
  * `RealtimeNotifier` (§8.2) *inside* the DO, a sync round that lands over the
  * socket fans its full delta out to the partition's other sockets with no
  * LISTEN/NOTIFY — writes and sockets are co-located.
@@ -60,23 +60,23 @@
  * fields `connect` needs. Everything else (`cursor`, `registrations`,
  * `lastKnownSeq`) is re-derived from D1 by `connect`, which is authoritative.
  *
- * ## The wake path (HTTP-push fan-out, the LISTEN/NOTIFY analogue)
+ * ## The wake path (external-command fan-out)
  *
- * A push landing via the *plain* Workers `fetch` handler (a stateless isolate,
- * not the DO) has applied a commit to D1 but has no in-memory sockets. It
- * wakes the partition's DO by `stub.fetch`-ing the internal `/__wake` endpoint
- * with the partition + commitSeq; the DO calls `hub.wake(partition,
- * 'catchup-required')` and its sockets re-pull the delta from the shared D1
- * (§8.3). This is the Workers in-platform equivalent of Postgres LISTEN/NOTIFY
- * — a wake, not a byte re-broadcast, so remote sessions pay one re-pull. See
- * `durableObjectRealtimeNotifier` in `index.ts` for the caller side.
+ * Ordinary HTTP `/sync` is forwarded into this DO and fans out in-process. An
+ * external authoritative command host that already provides equivalent D1
+ * partition serialization may call `/__wake` after its own commit so sockets
+ * re-pull. See `durableObjectRealtimeNotifier` for that caller side.
  */
 import {
   createRealtimeHub,
   D1ServerStorage,
+  errorBody,
+  handleSyncRequest,
   type RealtimeHub,
   type RealtimeHubConfig,
   type RealtimeSession,
+  SSP2_CONTENT_TYPE,
+  SyncError,
 } from '@syncular/server';
 
 // -- The Durable Object platform surface this class uses (structural) -------
@@ -103,17 +103,26 @@ export type WebSocketPairLike = { 0: WebSocketLike; 1: WebSocketLike };
 /**
  * The host env a `SyncularRealtimeDO` reads. Supplied by the DO runtime via
  * the class constructor's second arg. `DB` is the D1 binding (the same one the
- * plain HTTP handler uses); `configFactory` builds the hub config from `env`.
+ * outer Worker config uses); `configFactory` builds the hub config from `env`.
  */
-export interface RealtimeDOConfig {
-  /**
-   * Build the realtime hub config for this DO from its D1 storage. Mirrors the
-   * HTTP handler's config: same schema, same `resolveScopes`, same segment
-   * store (§8.7 socket rounds need it) — so a socket round and a `POST /sync`
-   * round are the SAME handler over the SAME storage.
-   */
-  hubConfig(storage: D1ServerStorage): RealtimeHubConfigInput;
-}
+export type RealtimeDOConfig =
+  | {
+      /**
+       * Preferred: build the complete canonical sync config around the DO's
+       * coordinated D1 storage. Reuse this factory for the outer HTTP adapter
+       * so HTTP-forwarded and socket rounds cannot drift by capability.
+       */
+      syncConfig(storage: D1ServerStorage): RealtimeHubConfig;
+      readonly hubConfig?: never;
+    }
+  | {
+      /**
+       * @deprecated Use `syncConfig`. This compatibility shape predates the
+       * canonical HTTP/realtime capability contract.
+       */
+      hubConfig(storage: D1ServerStorage): RealtimeHubConfigInput;
+      readonly syncConfig?: never;
+    };
 
 /**
  * The subset of `RealtimeHubConfig` the DO host supplies (storage is wired by
@@ -148,6 +157,7 @@ export interface RealtimeUpgradeIdentity {
 /** Internal control-request paths on the DO stub (never client-facing). */
 export const REALTIME_DO_WAKE_PATH = '/__syncular_realtime/wake';
 export const REALTIME_DO_UPGRADE_PATH = '/__syncular_realtime/upgrade';
+export const SYNC_DO_REQUEST_PATH = '/__syncular_realtime/sync';
 
 /**
  * The base `SyncularRealtimeDO`. A host subclasses (or instantiates) it with a
@@ -183,6 +193,8 @@ export class SyncularRealtimeHost {
   /** Sockets whose rehydration `hello` must be swallowed (already greeted at
    * the real upgrade — rehydration is transparent to the client). */
   readonly #swallowHello = new Set<WebSocketLike>();
+  /** Explicit FIFO: Durable Object events may interleave at `await`. */
+  #partitionTail: Promise<void> = Promise.resolve();
 
   constructor(
     state: DurableObjectStateLike,
@@ -191,19 +203,28 @@ export class SyncularRealtimeHost {
   ) {
     this.#state = state;
     this.#storage = new D1ServerStorage(db, {
-      // This host is one Durable Object per partition, so the §6.8 storage
-      // precondition is true for socket rounds handled inside the object.
-      commitValidationSerialized: true,
+      // Every HTTP/socket sync round enters #serializePartition before this
+      // storage is used. One DO is selected per partition.
+      pushApplySerialized: true,
     });
     this.#config = config;
   }
 
   #getHub(): RealtimeHub {
     if (this.#hub === undefined) {
-      this.#hub = createRealtimeHub({
-        ...this.#config.hubConfig(this.#storage),
-        storage: this.#storage,
-      });
+      const config =
+        this.#config.syncConfig !== undefined
+          ? this.#config.syncConfig(this.#storage)
+          : {
+              ...this.#config.hubConfig(this.#storage),
+              storage: this.#storage,
+            };
+      if (config.storage !== this.#storage) {
+        throw new Error(
+          'RealtimeDOConfig.syncConfig must use the coordinated storage argument',
+        );
+      }
+      this.#hub = createRealtimeHub(config);
     }
     return this.#hub;
   }
@@ -212,10 +233,13 @@ export class SyncularRealtimeHost {
    * The DO `fetch` handler: routes the internal upgrade + wake control paths.
    * The Worker forwards `GET <mount>/realtime` here as an upgrade with the
    * resolved identity in headers (see `forwardRealtimeUpgrade` in `index.ts`),
-   * and forwards HTTP-push wakes to `/__syncular_realtime/wake`.
+   * and accepts external-command wakes at `/__syncular_realtime/wake`.
    */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === SYNC_DO_REQUEST_PATH) {
+      return this.#serializePartition(() => this.#handleSync(request));
+    }
     if (url.pathname === REALTIME_DO_WAKE_PATH) {
       return this.#handleWake(request);
     }
@@ -225,7 +249,52 @@ export class SyncularRealtimeHost {
     return new Response('not found', { status: 404 });
   }
 
-  /** §8.3 wake: an HTTP push landed in a plain isolate; re-pull the delta. */
+  #serializePartition<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.#partitionTail.then(operation, operation);
+    this.#partitionTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  async #handleSync(request: Request): Promise<Response> {
+    const contentType = request.headers
+      .get('content-type')
+      ?.split(';')[0]
+      ?.trim();
+    if (contentType !== SSP2_CONTENT_TYPE) {
+      const error = new SyncError(
+        'sync.invalid_request',
+        'unsupported content type',
+      );
+      return Response.json(errorBody(error), { status: 415 });
+    }
+    const identity = readRequestIdentityHeaders(request);
+    if (identity === undefined) {
+      const error = new SyncError('sync.auth_required');
+      return Response.json(errorBody(error), { status: error.httpStatus });
+    }
+    try {
+      const bytes = new Uint8Array(await request.arrayBuffer());
+      const out = await handleSyncRequest(
+        bytes,
+        this.#getHub().requestContextFor(identity),
+      );
+      return new Response(out.slice().buffer as ArrayBuffer, {
+        status: 200,
+        headers: { 'content-type': SSP2_CONTENT_TYPE },
+      });
+    } catch (error) {
+      const sync =
+        error instanceof SyncError
+          ? error
+          : new SyncError('sync.invalid_request', String(error));
+      return Response.json(errorBody(sync), { status: sync.httpStatus });
+    }
+  }
+
+  /** §8.3 wake: an external coordinated command landed; re-pull the delta. */
   async #handleWake(request: Request): Promise<Response> {
     const body = (await request.json().catch(() => null)) as {
       partition?: unknown;
@@ -321,14 +390,16 @@ export class SyncularRealtimeHost {
     ws: WebSocketLike,
     message: ArrayBuffer | string,
   ): Promise<void> {
-    const session = await this.#sessionFor(ws);
-    if (session === undefined) return;
-    if (typeof message === 'string') {
-      session.handleMessage(message);
-    } else {
-      // §8.7: tagged binary — sync-round request chunks / acks.
-      session.handleBinary(new Uint8Array(message));
-    }
+    await this.#serializePartition(async () => {
+      const session = await this.#sessionFor(ws);
+      if (session === undefined) return;
+      if (typeof message === 'string') {
+        await session.handleMessage(message);
+      } else {
+        // §8.7: tagged binary — sync-round request chunks / acks.
+        await session.handleBinary(new Uint8Array(message));
+      }
+    });
   }
 
   /** Hibernation callback: the socket closed. */
@@ -414,6 +485,14 @@ const REALTIME_ID_HEADER = {
   clientId: 'x-syncular-client',
 } as const;
 
+export function writeRequestIdentityHeaders(
+  headers: Headers,
+  identity: { readonly partition: string; readonly actorId: string },
+): void {
+  headers.set(REALTIME_ID_HEADER.partition, identity.partition);
+  headers.set(REALTIME_ID_HEADER.actorId, identity.actorId);
+}
+
 /** Write the resolved identity onto an upgrade request's headers (Worker side). */
 export function writeIdentityHeaders(
   headers: Headers,
@@ -440,6 +519,22 @@ function readIdentityHeaders(
     return undefined;
   }
   return { partition, actorId, clientId };
+}
+
+function readRequestIdentityHeaders(
+  request: Request,
+): { readonly partition: string; readonly actorId: string } | undefined {
+  const partition = request.headers.get(REALTIME_ID_HEADER.partition);
+  const actorId = request.headers.get(REALTIME_ID_HEADER.actorId);
+  if (
+    partition === null ||
+    partition === '' ||
+    actorId === null ||
+    actorId === ''
+  ) {
+    return undefined;
+  }
+  return { partition, actorId };
 }
 
 // -- Minimal ambient types (structural; not the real workers-types) ---------

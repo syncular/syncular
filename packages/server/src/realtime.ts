@@ -30,53 +30,26 @@ import {
   type ScopeMap,
   type WakeReason,
 } from '@syncular/core';
-import type {
-  LeaseConfig,
-  ResolveScopes,
-  ServerLimits,
-  SyncRequestContext,
-} from './context';
+import type { SyncRequestContext, SyncServerConfig } from './context';
 import { RESOLVER_OUTAGE } from './context';
 import { SyncError, syncError } from './errors';
 import { emitEvent, type SyncularServerEvents } from './events';
 import { createSyncResponseStream } from './handler';
-import type { ServerSchema } from './schema';
 import { type CompiledSchema, compileSchema } from './schema';
 import {
   computeEffective,
   matchesEffective,
   type ResolvedScopes,
 } from './scopes';
-import type { SegmentStore } from './segment-store';
-import type { SegmentUrlConfig } from './signed-url';
 import type { ServerStorage, StoredCommit } from './storage';
-import type { CommitValidator, ValidatorRegistry } from './validate';
 
-export interface RealtimeHubConfig {
-  readonly schema: ServerSchema;
-  readonly storage: ServerStorage;
-  readonly resolveScopes: ResolveScopes;
-  /** §6.7 validators used by sync rounds carried over this socket. */
-  readonly validators?: ValidatorRegistry;
-  /** §6.8 whole-commit validator shared with HTTP sync rounds. */
-  readonly commitValidator?: CommitValidator;
-  readonly clock?: () => number;
+/**
+ * Realtime adds fanout/presence tuning to the canonical sync-server config;
+ * socket rounds must never have a narrower push/pull capability set than HTTP.
+ */
+export interface RealtimeHubConfig extends Omit<SyncServerConfig, 'realtime'> {
   /** Deltas larger than this become `delta-too-large` wake-ups (§8.2). */
   readonly maxDeltaBytes?: number;
-  /** Optional structured-events sink (`realtime.*` events). */
-  readonly events?: SyncularServerEvents;
-  /**
-   * Segment store for sync rounds over the socket (§8.7). Without it a
-   * socket round fails loudly with an in-band ERROR — provide the same
-   * store the HTTP binding uses (one handler, two framings).
-   */
-  readonly segments?: SegmentStore;
-  /** Request limits for socket rounds; defaults match the HTTP binding. */
-  readonly limits?: Partial<ServerLimits>;
-  readonly signedUrls?: SegmentUrlConfig;
-  /** §7.3 auth leases for socket sync rounds (§8.7) — same config the
-   * HTTP binding uses, so rounds over the socket are lease-aware too. */
-  readonly leases?: LeaseConfig;
   /**
    * §8.6 presence: cap on the serialized size (bytes) of a published
    * presence document. An over-cap publish is rejected loudly to the
@@ -494,9 +467,11 @@ export class RealtimeSession {
    * round's request byte stream (§8.7). Synchronous entry — assembly and
    * violation detection happen inline so a pipelined chunk arriving
    * while a response streams is caught deterministically; the round
-   * itself runs async once the request is complete.
+   * itself runs async once the request is complete. The returned promise, when
+   * present, resolves only after response streaming and registration refresh;
+   * coordinated hosts await it to retain their partition FIFO through commit.
    */
-  handleBinary(bytes: Uint8Array): void {
+  handleBinary(bytes: Uint8Array): Promise<void> | undefined {
     if (bytes.length === 0) return;
     if (bytes[0] !== REALTIME_TAG_ROUND) {
       // §8.7: client→server tags other than 0x01 — a broken client.
@@ -531,7 +506,7 @@ export class RealtimeSession {
     }
     const token = Symbol('round');
     this.#activeRound = token;
-    void this.#runRound(done.message.slice(), token);
+    return this.#runRound(done.message.slice(), token);
   }
 
   /** Drive the shared handler and stream the response back (§8.7). */
@@ -914,7 +889,10 @@ export class RealtimeHub {
    * the same shape the HTTP adapter builds, so the round drives the
    * SAME handler with zero semantic divergence.
    */
-  requestContext(session: RealtimeSession): SyncRequestContext {
+  requestContextFor(identity: {
+    readonly partition: string;
+    readonly actorId: string;
+  }): SyncRequestContext {
     const segments = this.#config.segments;
     if (segments === undefined) {
       // Fail loud (§8.7): a hub serving socket rounds needs the same
@@ -925,12 +903,21 @@ export class RealtimeHub {
       );
     }
     return {
-      partition: session.partition,
-      actorId: session.actorId,
+      partition: identity.partition,
+      actorId: identity.actorId,
       schema: this.#config.schema,
       storage: this.#config.storage,
       segments,
       resolveScopes: this.#config.resolveScopes,
+      ...(this.#config.blobs !== undefined
+        ? { blobs: this.#config.blobs }
+        : {}),
+      ...(this.#config.maxBlobBytes !== undefined
+        ? { maxBlobBytes: this.#config.maxBlobBytes }
+        : {}),
+      ...(this.#config.crdtMergers !== undefined
+        ? { crdtMergers: this.#config.crdtMergers }
+        : {}),
       ...(this.#config.validators !== undefined
         ? { validators: this.#config.validators }
         : {}),
@@ -946,6 +933,15 @@ export class RealtimeHub {
       ...(this.#config.signedUrls !== undefined
         ? { signedUrls: this.#config.signedUrls }
         : {}),
+      ...(this.#config.blobSignedUrls !== undefined
+        ? { blobSignedUrls: this.#config.blobSignedUrls }
+        : {}),
+      ...(this.#config.blobUploadUrls !== undefined
+        ? { blobUploadUrls: this.#config.blobUploadUrls }
+        : {}),
+      ...(this.#config.sqliteImageBuilder !== undefined
+        ? { sqliteImageBuilder: this.#config.sqliteImageBuilder }
+        : {}),
       ...(this.#config.leases !== undefined
         ? { leases: this.#config.leases }
         : {}),
@@ -954,6 +950,10 @@ export class RealtimeHub {
         : {}),
       realtime: this,
     };
+  }
+
+  requestContext(session: RealtimeSession): SyncRequestContext {
+    return this.requestContextFor(session);
   }
 
   /**

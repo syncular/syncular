@@ -26,10 +26,60 @@ import {
   handleSyncRequest,
   MemorySegmentStore,
   type ServerSchema,
+  type ServerStorage,
   SqliteServerStorage,
+  type StorageTransaction,
   SyncError,
   type SyncRequestContext,
 } from '@syncular/server';
+
+/**
+ * Deterministically pause two deliveries after both optimistic idempotency
+ * lookups have started. Their locked rechecks then decide the one true apply.
+ */
+export function overlapAfterTwoOptimisticMisses(
+  storage: ServerStorage,
+  onOperationRead?: () => void,
+): ServerStorage {
+  let arrivals = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return new Proxy(storage, {
+    get(target, property) {
+      if (property === 'getPushResult') {
+        return async (...args: [string, string, string]) => {
+          arrivals += 1;
+          if (arrivals <= 2) {
+            if (arrivals === 2) release();
+            await gate;
+          }
+          return target.getPushResult(...args);
+        };
+      }
+      if (property === 'begin' && onOperationRead !== undefined) {
+        return async (partition: string): Promise<StorageTransaction> => {
+          const tx = await target.begin(partition);
+          return new Proxy(tx, {
+            get(txTarget, txProperty) {
+              if (txProperty === 'getRow') {
+                return (...args: [string, string]) => {
+                  onOperationRead();
+                  return txTarget.getRow(...args);
+                };
+              }
+              const value = Reflect.get(txTarget, txProperty, txTarget);
+              return typeof value === 'function' ? value.bind(txTarget) : value;
+            },
+          });
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
 
 export const TASK_COLUMNS: readonly RowColumn[] = [
   { name: 'id', type: 'string', nullable: false },

@@ -439,7 +439,7 @@ class PostgresTransaction implements StorageTransaction {
   #partition: string;
   #resolveTable: (name: string) => CompiledTable;
   #open = true;
-  #commitValidationSavepoint = false;
+  #pushApplySavepoint = false;
   /** Resolves/rejects the `transaction(fn)` wrapper (see `begin`). */
   #resolve: () => void;
   #reject: (error: unknown) => void;
@@ -521,7 +521,7 @@ class PostgresTransaction implements StorageTransaction {
     );
   }
 
-  async lockPartitionForCommitValidation(): Promise<void> {
+  async lockPartitionForPush(): Promise<void> {
     this.#assertOpen();
     await this.#client.query(
       `INSERT INTO sync_partitions(partition, max_commit_seq) VALUES ($1, 0)
@@ -532,8 +532,8 @@ class PostgresTransaction implements StorageTransaction {
       'SELECT max_commit_seq FROM sync_partitions WHERE partition=$1 FOR UPDATE',
       [this.#partition],
     );
-    await this.#client.query('SAVEPOINT syncular_commit_validation_candidate');
-    this.#commitValidationSavepoint = true;
+    await this.#client.query('SAVEPOINT syncular_push_candidate');
+    this.#pushApplySavepoint = true;
   }
 
   async commitRejectedPushResult(
@@ -542,18 +542,12 @@ class PostgresTransaction implements StorageTransaction {
     result: StoredPushResult,
   ): Promise<void> {
     this.#assertOpen();
-    if (!this.#commitValidationSavepoint) {
-      throw new Error(
-        'whole-commit rejection requires its validation savepoint',
-      );
+    if (!this.#pushApplySavepoint) {
+      throw new Error('push rejection requires its apply savepoint');
     }
-    await this.#client.query(
-      'ROLLBACK TO SAVEPOINT syncular_commit_validation_candidate',
-    );
-    await this.#client.query(
-      'RELEASE SAVEPOINT syncular_commit_validation_candidate',
-    );
-    this.#commitValidationSavepoint = false;
+    await this.#client.query('ROLLBACK TO SAVEPOINT syncular_push_candidate');
+    await this.#client.query('RELEASE SAVEPOINT syncular_push_candidate');
+    this.#pushApplySavepoint = false;
     await this.putPushResult(clientId, clientCommitId, result);
     await this.commit();
   }

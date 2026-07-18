@@ -4,11 +4,16 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { decodeRow } from '@syncular/core';
-import { handleSyncRequest } from '@syncular/server';
+import {
+  CommitValidationRejection,
+  handleSyncRequest,
+  ValidationRejection,
+} from '@syncular/server';
 import {
   del,
   expectSyncError,
   makeContext,
+  overlapAfterTwoOptimisticMisses,
   pushCommit,
   pushResults,
   requestBytes,
@@ -208,6 +213,126 @@ describe('idempotent replay (§2.3, §6.3)', () => {
     expect(results[1]?.commitSeq).toBe(results[0]?.commitSeq);
     const row = await t.storage.getRow('part-1', 'tasks', 't1');
     expect(row?.serverVersion).toBe(1);
+  });
+
+  test('overlapping applied deliveries cross the same locked recheck exactly once', async () => {
+    let validatorCalls = 0;
+    let notifications = 0;
+    const base = makeContext({
+      validators: {
+        tasks: () => {
+          validatorCalls += 1;
+        },
+      },
+      realtime: {
+        notifyCommit: () => {
+          notifications += 1;
+        },
+      },
+    });
+    const storage = overlapAfterTwoOptimisticMisses(base.storage);
+    const t = { ...base, ctx: { ...base.ctx, storage } };
+    const commit = pushCommit('overlap-applied', [
+      upsert('tasks', 'overlap-row', taskRow('overlap-row', 'p1')),
+    ]);
+
+    const [left, right] = await Promise.all([
+      sync(t, [commit]),
+      sync(t, [commit]),
+    ]);
+    const statuses = [
+      pushResults(left)[0]?.status,
+      pushResults(right)[0]?.status,
+    ].sort();
+    expect(statuses).toEqual(['applied', 'cached']);
+    expect(validatorCalls).toBe(1);
+    expect(notifications).toBe(1);
+    expect(
+      (await base.storage.getRow('part-1', 'tasks', 'overlap-row'))
+        ?.serverVersion,
+    ).toBe(1);
+    expect(await base.storage.getMaxCommitSeq('part-1')).toBe(1);
+  });
+
+  test('overlapping conflict deliveries read the row once and replay byte-equivalent evidence', async () => {
+    const base = makeContext();
+    await seedTask(base, 'conflict-seed', 'conflict-row', 'p1');
+    let operationReads = 0;
+    const storage = overlapAfterTwoOptimisticMisses(base.storage, () => {
+      operationReads += 1;
+    });
+    const t = { ...base, ctx: { ...base.ctx, storage } };
+    const commit = pushCommit('overlap-conflict', [
+      upsert(
+        'tasks',
+        'conflict-row',
+        taskRow('conflict-row', 'p1', 'stale'),
+        99,
+      ),
+    ]);
+
+    const [left, right] = await Promise.all([
+      sync(t, [commit]),
+      sync(t, [commit]),
+    ]);
+    const leftResult = pushResults(left)[0];
+    const rightResult = pushResults(right)[0];
+    expect(leftResult).toEqual(rightResult);
+    expect(leftResult?.status).toBe('rejected');
+    expect(operationReads).toBe(1);
+    expect(await base.storage.getMaxCommitSeq('part-1')).toBe(1);
+  });
+
+  test('overlapping row-validator rejections execute the host callback once', async () => {
+    let validatorCalls = 0;
+    const base = makeContext({
+      validators: {
+        tasks: () => {
+          validatorCalls += 1;
+          throw new ValidationRejection('tasks.rejected');
+        },
+      },
+    });
+    const storage = overlapAfterTwoOptimisticMisses(base.storage);
+    const t = { ...base, ctx: { ...base.ctx, storage } };
+    const commit = pushCommit('overlap-row-rejection', [
+      upsert('tasks', 'rejected-row', taskRow('rejected-row', 'p1')),
+    ]);
+
+    const [left, right] = await Promise.all([
+      sync(t, [commit]),
+      sync(t, [commit]),
+    ]);
+    expect(pushResults(left)[0]).toEqual(pushResults(right)[0]);
+    expect(validatorCalls).toBe(1);
+    expect(
+      await base.storage.getRow('part-1', 'tasks', 'rejected-row'),
+    ).toBeUndefined();
+  });
+
+  test('overlapping whole-commit rejections execute the aggregate callback once', async () => {
+    let validatorCalls = 0;
+    const base = makeContext({
+      commitValidator: () => {
+        validatorCalls += 1;
+        throw new CommitValidationRejection(0, 'tasks.aggregate_rejected');
+      },
+    });
+    const storage = overlapAfterTwoOptimisticMisses(base.storage);
+    const t = { ...base, ctx: { ...base.ctx, storage } };
+    const commit = pushCommit('overlap-aggregate-rejection', [
+      upsert('tasks', 'aggregate-row', taskRow('aggregate-row', 'p1')),
+    ]);
+
+    const [left, right] = await Promise.all([
+      sync(t, [commit]),
+      sync(t, [commit]),
+    ]);
+    expect(pushResults(left)[0]).toEqual(pushResults(right)[0]);
+    expect(validatorCalls).toBe(1);
+    expect(
+      await base.storage.getRow('part-1', 'tasks', 'aggregate-row'),
+    ).toBeUndefined();
   });
 });
 

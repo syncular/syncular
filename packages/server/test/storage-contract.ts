@@ -278,9 +278,9 @@ export function runStorageContract(
       await seed.commit();
 
       const tx = await storage.begin(PARTITION);
-      expect(tx.lockPartitionForCommitValidation).toBeDefined();
+      expect(tx.lockPartitionForPush).toBeDefined();
       expect(tx.scanRows).toBeDefined();
-      await tx.lockPartitionForCommitValidation?.();
+      await tx.lockPartitionForPush?.();
       await tx.deleteRow('tasks', 'r1');
       await tx.upsertRow('tasks', taskRow('r3', 'p1'));
       const rows = await tx.scanRows?.({
@@ -296,9 +296,9 @@ export function runStorageContract(
     test('commit-validation rejection discards candidates and persists its outcome under one lock', async () => {
       const storage = await make();
       const tx = await storage.begin(PARTITION);
-      expect(tx.lockPartitionForCommitValidation).toBeDefined();
+      expect(tx.lockPartitionForPush).toBeDefined();
       expect(tx.commitRejectedPushResult).toBeDefined();
-      await tx.lockPartitionForCommitValidation?.();
+      await tx.lockPartitionForPush?.();
       await tx.upsertRow('tasks', taskRow('candidate', 'p1'));
       await tx.commitRejectedPushResult?.('c1', 'rejected-aggregate', {
         status: 'rejected',
