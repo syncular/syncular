@@ -1,10 +1,23 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.25** (`v0.15.25`). All artifacts use Apache-2.0, except
+current release is **0.15.26** (`v0.15.26`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.26 release notes
+
+0.15.26 makes React window cleanup safe when a client resource closes before
+provider-effect teardown. This supported ordering occurs during schema-aware
+Vite HMR and other engine replacement: releasing subscription windows is
+best-effort cleanup and no longer escapes as an unhandled closed-handle
+rejection. Live clients still receive exact empty-window release, repeated
+store disposal remains idempotent, and resource-close failures continue to
+block a competing persistent owner and surface through the startup boundary.
+
+The React README and Vite guide now state that applications do not need to
+force a provider unmount before disposing or replacing its owned resource.
 
 ## 0.15.25 release notes
 

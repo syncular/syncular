@@ -99,7 +99,10 @@ const clientResource = createSyncClientResource(() => createClient());
 ```
 
 Call `await clientResource.dispose()` from the application's real lifecycle
-owner, not from a StrictMode-sensitive child effect.
+owner, not from a StrictMode-sensitive child effect. Resource disposal and
+provider-effect cleanup are safe in either order: provider teardown treats
+window release as best effort when the owned client has already closed. Callers
+do not need to stage a provider unmount before disposing its resource.
 
 If the application requires authentication or signed quarantine processing
 before protected data is visible, complete the concrete client's security
@@ -155,7 +158,10 @@ createClient)`. It retains a `{ schemaVersion, resource }` record, reuses it for
 same-schema HMR, and awaits old-resource disposal before creating a schema-bump
 replacement. Request `hot.invalidate()` only when its `schemaChanged` result is
 true and `disposalError` is absent; the official example and full explanation
-are in the [Vite guide](https://syncular.dev/guide-vite/).
+are in the [Vite guide](https://syncular.dev/guide-vite/). The helper may close
+the retained client before React runs cleanup for the old provider; Syncular
+absorbs that teardown-only window-release race while still surfacing failures
+from closing the resource itself.
 
 ## `useMutation`
 

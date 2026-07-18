@@ -847,7 +847,13 @@ export class ReactiveClientStore {
     this.#offLeadership?.();
     this.#offLeadership = undefined;
     for (const group of this.#windowClaims.values()) {
-      void Promise.resolve(this.client.setWindow(group.base, []));
+      // Releasing a window is best-effort teardown. A resource owner may have
+      // already closed the underlying worker/native handle before React effect
+      // cleanup runs (notably during schema-changing HMR). Do not let that
+      // harmless ordering race escape as an unhandled rejection.
+      void Promise.resolve(this.client.setWindow(group.base, [])).catch(
+        () => undefined,
+      );
     }
     this.#windowClaims.clear();
   }
