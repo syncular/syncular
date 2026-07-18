@@ -871,6 +871,16 @@ request — duplicates fail the request with `sync.invalid_subscription`),
 host snapshot function), and a `cursor`. Subscription ids are echoed, not
 interpreted, by the server.
 
+Within one durable client replica, the tuple `(table, canonical requested
+scopes, params)` is immutable for a registered `id`. Re-declaring the same
+tuple is idempotent and MUST retain its cursor, bootstrap state, effective
+scopes, status, and reason. Reusing that id for a different table, scope map,
+or params fails locally with `client.subscription_intent_mismatch` before the
+registration changes; it MUST NOT inherit or reset the prior tuple's progress.
+Hosts that need a different query use a distinct deterministic id, or explicitly
+unsubscribe the old registration and apply the relevant eviction policy before
+registering another. This is a client safety rule, not a new wire error.
+
 **Omission is unregistration.** A pull's subscription list replaces the
 persisted registration list (§8.1) and, for socket rounds, the live
 connection's registrations (§8.7). A subscription present in an earlier
@@ -4050,7 +4060,9 @@ bump], `client.decrypt_failed` [§5.11 — an encrypted column failed to
 decrypt on apply: unknown envelope version, unknown `keyId`, GCM
 authentication failure (wrong key), a malformed envelope, or a post-decrypt
 value-parse failure; category `crypto`, non-retryable, raised at the apply
-seam, never on the wire], `storage.*`, `worker.*`, `runtime.*`) — client
+seam, never on the wire], `client.subscription_intent_mismatch` [§4.1 — one
+registered subscription id was re-declared with a different table, canonical
+scope map, or params], `storage.*`, `worker.*`, `runtime.*`) — client
 SDKs may keep such codes internally but they are not protocol. Reserved
 without a producer: `sync.integrity_rejected`,
 `sync.websocket_not_configured`, and `sync.unsupported_operation` (no

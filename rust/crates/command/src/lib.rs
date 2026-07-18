@@ -926,6 +926,75 @@ mod tests {
     }
 
     #[test]
+    fn native_command_hosts_reject_subscription_identity_rebinds() {
+        let mut transport = NoNetwork;
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema() }),
+        )
+        .expect("create client");
+
+        let original = json!({
+            "id": "stable-subscription",
+            "table": "todos",
+            "scopes": { "list_id": ["list-2", "list-1"] },
+            "params": "{\"view\":\"v1\"}"
+        });
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "subscribe",
+            &original,
+        )
+        .expect("register subscription");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "subscribe",
+            &json!({
+                "id": "stable-subscription",
+                "table": "todos",
+                "scopes": { "list_id": ["list-1", "list-2", "list-1"] },
+                "params": "{\"view\":\"v1\"}"
+            }),
+        )
+        .expect("canonical re-declaration is idempotent");
+
+        let error = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "subscribe",
+            &json!({
+                "id": "stable-subscription",
+                "table": "todos",
+                "scopes": { "list_id": ["list-2"] },
+                "params": "{\"view\":\"v1\"}"
+            }),
+        )
+        .expect_err("changed native query identity must fail");
+        assert_eq!(error.0, "client.subscription_intent_mismatch");
+
+        let state = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "subscriptionState",
+            &json!({ "id": "stable-subscription" }),
+        )
+        .expect("subscription state");
+        assert_eq!(state["state"]["cursor"], -1);
+        assert_eq!(state["state"]["table"], "todos");
+    }
+
+    #[test]
     fn security_preflight_is_fail_closed_until_exact_activation() {
         let mut transport = NoNetwork;
         let mut client: Option<SyncClient> = None;
