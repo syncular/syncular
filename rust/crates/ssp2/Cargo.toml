@@ -17,7 +17,7 @@ serde_json = "1"
 
 # §5.11 client-side encryption (E2EE). Behind the `e2ee` feature so lean
 # builds skip the crypto crates entirely; the conformance shim enables it.
-aes-gcm = { version = "0.10", optional = true }
+aes-gcm = { version = "0.11", optional = true }
 x25519-dalek = { version = "2", features = ["static_secrets"], optional = true }
 hkdf = { version = "0.12", optional = true }
 sha2 = { version = "0.10", optional = true }
