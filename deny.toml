@@ -1,0 +1,44 @@
+[graph]
+all-features = true
+
+[advisories]
+# Vulnerabilities, unsoundness notices, and direct unmaintained dependencies fail.
+yanked = "deny"
+unmaintained = "workspace"
+unused-ignored-advisory = "allow"
+ignore = [
+  { id = "RUSTSEC-2024-0429", reason = "Tauri 2's supported Linux webview stack pins gtk-rs 0.18; Syncular does not use glib::VariantStrIter" },
+]
+
+[licenses]
+confidence-threshold = 0.8
+unused-allowed-license = "allow"
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Zlib",
+]
+
+[licenses.private]
+ignore = true
+
+[[licenses.exceptions]]
+name = "webpki-roots"
+allow = ["CDLA-Permissive-2.0"]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
