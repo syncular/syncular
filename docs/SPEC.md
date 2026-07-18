@@ -762,6 +762,20 @@ A pull for an active subscription returns exactly the changes whose
 stored scopes match the effective scopes: for every effective key, the
 change's stored value for that key is in the effective value list.
 
+**Scope variables are independent dimensions, not correlated tuples.**
+An allowed map such as `{ workspace_id: ['w1', 'w2'], surgery_id: ['s1',
+'s2'] }` authorizes every row whose `workspace_id` is in the first list
+and whose `surgery_id` is in the second. It does not encode only the pairs
+`(w1, s1)` and `(w2, s2)`. A host that needs parent/child authorization
+MUST therefore do one of the following: declare and request the parent
+scope on every child table as well as the child scope, while validating
+the parent reference server-side; enumerate the exact authorized child
+values; or perform the operation behind a server-authoritative command.
+Granting `'*'` for a child variable is safe only while another declared
+scope independently fences every read and write path for that child. A
+later table that declares only the child variable does not inherit the
+parent fence and MUST be treated as a new authorization decision.
+
 ### 3.3 Revocation and the purge contract
 
 When `SUB_START.status = revoked`:

@@ -57,6 +57,53 @@ Return `{ list_id: ['*'] }` to grant every value of a variable (the quickstart
 does this for its single demo user). If the resolver throws, syncular fences:
 no data leaks on an authorization error.
 
+## Multiple variables are not correlated tuples
+
+Each key in an allowed-scope map is checked independently. For example:
+
+```ts
+return {
+  workspace_id: ['workspace-a', 'workspace-b'],
+  surgery_id: ['surgery-1', 'surgery-2'],
+};
+```
+
+This permits rows whose two values form any of the four Cartesian
+combinations. It does **not** mean only `(workspace-a, surgery-1)` and
+`(workspace-b, surgery-2)`. Syncular cannot infer a parent/child relation from
+the values or their ordering.
+
+For a child such as a Surgery, choose one of these explicit designs:
+
+1. Put both `workspace_id` and `surgery_id` scope patterns on every
+   Surgery-owned table and request both variables in every subscription. Keep
+   the parent reference valid with a server-side validator.
+2. Enumerate the exact Surgery IDs the actor may access instead of granting a
+   wildcard.
+3. Resolve the relationship inside a server-authoritative command when it is
+   not suitable for client synchronization.
+
+A child wildcard can be safe in the first design:
+
+```ts
+return {
+  workspace_id: ['workspace-a'],
+  surgery_id: ['*'],
+};
+```
+
+A row for `(workspace-a, surgery-1)` passes, while
+`(workspace-b, surgery-1)` fails because the table and subscription also carry
+the Workspace fence. But a future `surgery_notes` table scoped only by
+`surgery_id` would make the same wildcard authorize notes for every Surgery.
+Adding or changing a table's scope patterns is therefore an authorization
+review, not merely a schema change.
+
+Test isolation with at least two parents and representative child IDs. Prove
+that an in-parent row is readable and writable, an out-of-parent row with an
+otherwise allowed child value is neither readable nor writable, and revocation,
+realtime, segments, and future child-only projections preserve that boundary.
+
 ## Write-path authorization
 
 The same resolver guards writes ([SPEC §3.4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#34-write-path-authorization)),
