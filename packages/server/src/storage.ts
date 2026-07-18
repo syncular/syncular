@@ -16,7 +16,7 @@
  * The interface is async throughout so a Postgres implementation slots in
  * without touching the core. All methods are partition-local (§2.1).
  */
-import type { PushOperationResult, ScopeMap } from '@syncular/core';
+import type { PushOperationResult, RowValue, ScopeMap } from '@syncular/core';
 import type { CompiledSchema } from './schema';
 
 /** The current stored state of a synced row. */
@@ -113,6 +113,26 @@ export interface RowScanQuery {
   readonly limit: number;
 }
 
+/**
+ * Exact server-host lookup through one declared relational index.
+ *
+ * This is deliberately NOT a Syncular scope or client query. It is available
+ * only to trusted server code that already owns a `ServerStorage` or
+ * `StorageTransaction` capability. Every declared index column must have one
+ * exact value, so adapters can keep the lookup bounded and deterministic.
+ */
+export interface IndexRowScanQuery {
+  readonly table: string;
+  /** `TableSchema.indexes[].name`; never exposed as a client subscription. */
+  readonly index: string;
+  /** Exact values in the index declaration's column order. */
+  readonly values: readonly RowValue[];
+  /** Resume after this rowId (exclusive); `null` = start of the match set. */
+  readonly afterRowId?: string | null;
+  /** Integer from 1 through 1,000. */
+  readonly limit: number;
+}
+
 export interface ClientCursorInfo {
   readonly clientId: string;
   readonly cursor: number;
@@ -172,6 +192,12 @@ export interface StorageTransaction {
    * semantics. A custom backend may omit it until `commitValidator` is used.
    */
   scanRows?(query: RowScanQuery): Promise<StoredRow[]>;
+  /**
+   * Optional additive capability for trusted authoritative commands. In-tree
+   * SQLite/PostgreSQL/D1 adapters implement it with transaction-local
+   * read-your-own-writes semantics. It is not reachable from SSP2 requests.
+   */
+  scanRowsByIndex?(query: IndexRowScanQuery): Promise<StoredRow[]>;
   /**
    * Serialize candidate-state validation for this partition before any row
    * read/write. Required at runtime when `commitValidator` is configured.
@@ -278,6 +304,16 @@ export interface ServerStorage {
 
   /** Scope-filtered snapshot scan, ordered by rowId (bootstrap paging). */
   scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]>;
+
+  /**
+   * Optional trusted-host exact lookup through a declared relational index.
+   * This capability is outside client scope/subscription authorization and
+   * MUST NOT be re-exported as a client-controlled endpoint.
+   */
+  scanRowsByIndex?(
+    partition: string,
+    query: IndexRowScanQuery,
+  ): Promise<StoredRow[]>;
 
   getClientRecord(
     partition: string,

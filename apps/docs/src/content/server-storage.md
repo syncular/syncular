@@ -59,6 +59,117 @@ projection:
 The storage layout, scope index, and serve path are identical in both
 modes; the flag only decides whether the typed projection is populated.
 
+## Choosing the right row lookup
+
+Syncular has four deliberately different lookup shapes. Do not turn a server
+search need into a client scope unless clients genuinely need to subscribe by
+that dimension.
+
+| Need | API / pattern | Authorization meaning |
+|---|---|---|
+| One known row | `getRow(table, rowId)` | Trusted partition-local primary-key read |
+| Rows in a client delivery scope | `scanRows({ scopeFilter, ... })` | Syncular scope-index scan; at least one variable is mandatory |
+| Exact authoritative lookup by app columns | `scanRowsByIndex({ index, values, ... })` | Trusted server-host relational-index scan; never a client scope |
+| Ordered/range work queue or derived topology | Atomically maintained reverse-index/queue rows | Explicit application projection with its own completeness invariant |
+
+An empty or omitted `scopeFilter` is never an “all rows” request. All shipped
+adapters throw `StorageQueryError` with
+`code: 'sync.storage.scan_requires_scope'`; an empty result therefore cannot
+hide an unsupported administrative scan. A relational index also does not
+make its columns available to `scanRows`—scope indexes and SQL indexes solve
+different problems.
+
+### Trusted alternate lookup
+
+Suppose encryption-key grants sync only to their exact user, but disconnecting
+a Workspace must revoke every grant in that Workspace. Keep the client scope
+small and declare an ordinary relational index for the authoritative lookup:
+
+```ts
+const schema: ServerSchema = {
+  version: 12,
+  tables: [{
+    name: 'device_encryption_key_grants',
+    columns: [
+      { name: 'id', type: 'string', nullable: false },
+      { name: 'user_id', type: 'string', nullable: false },
+      { name: 'workspace_id', type: 'string', nullable: false },
+      { name: 'wrapped_key', type: 'bytes', nullable: false },
+    ],
+    primaryKey: 'id',
+    scopes: ['user:{user_id}'],
+    indexes: [{
+      name: 'device_key_grants_by_workspace',
+      columns: ['workspace_id'],
+    }],
+  }],
+};
+```
+
+The index does not enter `declaredVariables`, named-query scope coverage, a
+subscription descriptor, or `resolveScopes`. A client can request only
+`user_id`; knowing the Workspace ID or index name grants nothing. Trusted host
+code can use the exact index inside the same authoritative transaction:
+
+```ts
+const tx = await storage.begin(partition);
+if (tx.scanRowsByIndex === undefined) {
+  throw new Error('storage adapter lacks trusted relational-index scans');
+}
+
+let afterRowId: string | null = null;
+for (;;) {
+  const page = await tx.scanRowsByIndex({
+    table: 'device_encryption_key_grants',
+    index: 'device_key_grants_by_workspace',
+    values: [workspaceId], // one exact value per declared index column
+    afterRowId,
+    limit: 250,            // required integer, 1..1,000
+  });
+  for (const grant of page) {
+    await tx.deleteRow('device_encryption_key_grants', grant.rowId);
+  }
+  if (page.length < 250) break;
+  afterRowId = page.at(-1)?.rowId ?? null;
+}
+await tx.commit();
+```
+
+SQLite, PostgreSQL, and D1 implement ordered keyset pagination and
+transaction-local read-your-own-writes. The table must be materialized, the
+named index must exist, and every index column receives one exact value.
+Failures use privacy-safe `StorageQueryError.code` values. The API exists only
+on `@syncular/server` storage capabilities and is not reachable through SSP2;
+never wrap it in a route that accepts table, index, or value choices from an
+untrusted client. Custom storage adapters may omit this additive capability
+and should fail the command closed, as above.
+
+This is also the right shape for a provider webhook: declare, for example,
+`facilities_by_workos_organization` over `workos_organization_id`, resolve the
+exact Facility, then use another declared index or known primary key to find
+its private Workspace. The external tenant identifier never becomes an actor
+scope.
+
+### When a reverse-index row is still correct
+
+`scanRowsByIndex` is intentionally exact; it is not an arbitrary SQL or range
+query escape hatch. A time-ordered expiry worker, a custom adapter without the
+capability, or a derived relationship that is not a column on the target row
+still needs an application projection. Model a small reverse-index/queue table
+whose row ID begins with the lookup or sortable timestamp, give it a dedicated
+server scope that `resolveScopes` never grants to application actors, and
+create/delete that projection in the same authoritative transaction as the
+domain change. Validate the projection's target row and rebuild it with an
+idempotent repair job. Tests must prove both completeness (every live target
+has the expected index row) and isolation (an application actor cannot
+subscribe even when it knows IDs).
+
+This differs from correlated scopes: multiple scope variables are independent
+authorization dimensions, not alternate indexes or paired tuples. Use a
+parent-and-child scope only when both values are real client delivery fences;
+use the trusted relational lookup for an exact server command; use a reverse
+projection when the lookup is derived, ordered, or ranged.
+
 ## SQLite (`SqliteServerStorage`)
 
 `new SqliteServerStorage('./data.db')` (or `':memory:'`) over bun:sqlite is

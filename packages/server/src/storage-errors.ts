@@ -13,6 +13,42 @@ export class StorageConstraintError extends Error {
   }
 }
 
+/** Stable, privacy-safe failures for trusted server storage queries. */
+export type StorageQueryErrorCode =
+  | 'sync.storage.scan_requires_scope'
+  | 'sync.storage.index_not_found'
+  | 'sync.storage.index_not_materialized'
+  | 'sync.storage.index_value_count_mismatch'
+  | 'sync.storage.invalid_limit';
+
+const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
+  {
+    'sync.storage.scan_requires_scope':
+      'scope-indexed row scans require at least one scope variable',
+    'sync.storage.index_not_found':
+      'trusted row lookup requires a declared relational index',
+    'sync.storage.index_not_materialized':
+      'trusted row lookup requires a materialized relational table',
+    'sync.storage.index_value_count_mismatch':
+      'trusted row lookup requires one exact value per index column',
+    'sync.storage.invalid_limit':
+      'trusted row lookup limit must be an integer from 1 through 1,000',
+  };
+
+/**
+ * Host-only query error. Messages never include identifiers, values, SQL,
+ * paths, or row data; callers branch on `code`, never message text.
+ */
+export class StorageQueryError extends Error {
+  override readonly name = 'StorageQueryError';
+  readonly code: StorageQueryErrorCode;
+
+  constructor(code: StorageQueryErrorCode) {
+    super(STORAGE_QUERY_MESSAGES[code]);
+    this.code = code;
+  }
+}
+
 interface DriverError {
   readonly code?: unknown;
   readonly errno?: unknown;

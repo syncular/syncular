@@ -816,7 +816,7 @@ describe('optional materialization (DESIGN "optional materialization")', () => {
 
 // --- 6. identifier rules at schema compile ----------------------------------
 
-describe('reserved identifiers are rejected at schema compile', () => {
+describe('invalid identifiers and indexes are rejected at schema compile', () => {
   const table = (overrides: Record<string, unknown>) =>
     compileSchema({
       version: 1,
@@ -854,6 +854,12 @@ describe('reserved identifiers are rejected at schema compile', () => {
     expect(() =>
       table({ indexes: [{ name: 'bad_idx', columns: ['missing'] }] }),
     ).toThrow(/unknown column/);
+  });
+
+  test('index naming no columns', () => {
+    expect(() =>
+      table({ indexes: [{ name: 'empty_idx', columns: [] }] }),
+    ).toThrow('table ok: index "empty_idx" must name at least one column');
   });
 });
 

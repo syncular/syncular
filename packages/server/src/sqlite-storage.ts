@@ -12,6 +12,7 @@ import {
   commitWindowPageSql,
   deleteRowSql,
   dropTableDdl,
+  indexRowPageStatement,
   layoutsOf,
   migratePayload,
   parseLayouts,
@@ -47,6 +48,7 @@ import type {
   CommitMetadata,
   CommitMetadataQuery,
   CommitWindowQuery,
+  IndexRowScanQuery,
   NewCommit,
   RowScanQuery,
   ScopeActivityQuery,
@@ -61,6 +63,7 @@ import {
   isSqliteConstraintError,
   StorageConstraintError,
 } from './storage-errors';
+import { assertScopeIndexedScan, resolveIndexRowScan } from './storage-query';
 
 class SqliteTransaction implements StorageTransaction {
   #storage: SqliteServerStorage;
@@ -86,6 +89,11 @@ class SqliteTransaction implements StorageTransaction {
   scanRows(query: RowScanQuery): Promise<StoredRow[]> {
     this.#assertOpen();
     return this.#storage.scanRows(this.#partition, query);
+  }
+
+  scanRowsByIndex(query: IndexRowScanQuery): Promise<StoredRow[]> {
+    this.#assertOpen();
+    return this.#storage.scanRowsByIndex(this.#partition, query);
   }
 
   async lockPartitionForCommitValidation(): Promise<void> {
@@ -564,6 +572,7 @@ export class SqliteServerStorage implements ServerStorage {
   }
 
   async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
+    assertScopeIndexedScan(query);
     const variables = Object.keys(query.scopeFilter).sort();
     const firstVariable = variables[0];
     if (firstVariable === undefined) return [];
@@ -609,6 +618,35 @@ export class SqliteServerStorage implements ServerStorage {
       if (records.length < batchSize) break;
     }
     return rows;
+  }
+
+  async scanRowsByIndex(
+    partition: string,
+    query: IndexRowScanQuery,
+  ): Promise<StoredRow[]> {
+    const table = this.table(query.table);
+    const index = resolveIndexRowScan(table, query);
+    const statement = indexRowPageStatement(
+      table,
+      index,
+      query.values,
+      partition,
+      query.afterRowId,
+      query.limit,
+      'sqlite',
+    );
+    const params = statement.params as readonly (
+      | string
+      | number
+      | Uint8Array
+      | null
+    )[];
+    const records = this.db
+      .query<SqliteRowRecord, (string | number | Uint8Array | null)[]>(
+        statement.sql,
+      )
+      .all(...params);
+    return records.map(toStoredRow);
   }
 
   async getClientRecord(

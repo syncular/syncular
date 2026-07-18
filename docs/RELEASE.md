@@ -1,10 +1,27 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.21** (`v0.15.21`). All artifacts use Apache-2.0, except
+current release is **0.15.22** (`v0.15.22`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.22 release notes
+
+0.15.22 adds trusted, exact, keyset-paginated `scanRowsByIndex` server-storage
+and transaction capabilities over declared relational indexes. They do not add
+client-visible scopes or query-coverage obligations; SQLite, PostgreSQL, and D1
+share read-your-own-writes conformance, and PostgreSQL pins index use with
+`EXPLAIN`.
+
+Empty or omitted `scanRows.scopeFilter` now fails explicitly with
+`StorageQueryError.code === 'sync.storage.scan_requires_scope'` instead of
+returning a misleading empty result. Public guidance now distinguishes
+primary-key reads, scope indexes, trusted relational indexes, correlated
+scopes, and atomic reverse-index/work-queue projections.
+
+Schema compile now rejects relational index declarations with no columns,
+before an adapter can render invalid database-specific DDL or lookup SQL.
 
 ## 0.15.21 release notes
 
