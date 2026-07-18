@@ -1,7 +1,28 @@
 #!/usr/bin/env bash
-# Pre-push gate: the root check (typecheck + lint + tests incl. the isolated
-# multi-tab lane). Cargo/bindings/bench gates run in CI (ci.yml).
+# Pre-push gate: dependency security plus the root check (typecheck + lint +
+# tests incl. the isolated multi-tab lane). Broader Cargo/bindings/bench gates
+# still run in CI (ci.yml).
 set -euo pipefail
+
+for tool in cargo-audit cargo-deny; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "[pre-push] Missing $tool. Install the Rust security tools with:"
+    echo "  cargo install --locked cargo-audit cargo-deny"
+    exit 1
+  fi
+done
+
+echo "[pre-push] Auditing Bun dependencies..."
+bun run audit
+
+for workspace in rust bindings/tauri; do
+  echo "[pre-push] cargo audit ($workspace)..."
+  cargo audit --file "$workspace/Cargo.lock"
+
+  echo "[pre-push] cargo deny ($workspace)..."
+  cargo deny --manifest-path "$workspace/Cargo.toml" --locked check
+done
+
 echo "[pre-push] bun run check..."
 bun run check
 echo "[pre-push] All checks passed."
