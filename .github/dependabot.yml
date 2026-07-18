@@ -1,0 +1,20 @@
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /rust
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+      include:
+        - '*'
+
+  - package-ecosystem: cargo
+    directory: /bindings/tauri
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+      include:
+        - '*'
