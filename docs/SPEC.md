@@ -2349,6 +2349,9 @@ keyring in the same call. During preflight the host MAY inspect
 `securityLifecycle`, `statusSnapshot`, and `localRevision`; it MAY execute the
 bounded, application-authorized `purgeLocalData` primitive (§7.3.4); and it MAY
 close/shut down the client. No other application-data operation is permitted.
+In particular, runtime transport-header replacement is an active-session
+operation; native bridges MUST gate it independently rather than relying only
+on a JavaScript wrapper.
 The host installs the accepted keyring and releases the gate only through
 `activateSecurity({ encryption? })`.
 

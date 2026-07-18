@@ -219,6 +219,14 @@ describe('createTauriSyncClient', () => {
     expect(calls.some((call) => call.cmd.endsWith('syncular_query'))).toBe(
       false,
     );
+    await expect(
+      client.setHeaders({ authorization: 'Bearer must-not-enter-native' }),
+    ).rejects.toMatchObject({
+      code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+    });
+    expect(
+      calls.some((call) => call.cmd.endsWith('syncular_set_headers')),
+    ).toBe(false);
     await client.purgeLocalData({
       purgeId: 'directive-1',
       targets: [{ table: 'todo', selectors: { list_id: ['list-1'] } }],

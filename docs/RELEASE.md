@@ -1,10 +1,19 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.15** (`v0.15.15`). All artifacts use Apache-2.0, except
+current release is **0.15.16** (`v0.15.16`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.16 release notes
+
+0.15.16 closes a Tauri security-preflight parity gap. Runtime
+`setHeaders()` now fails with `client.security_preflight_required` at both the
+public JavaScript client and native plugin command boundaries. An in-flight
+header replacement participates in the native security barrier, so
+`beginSecurityPreflight()` cannot resolve before the transport mutation has
+settled. Active-session token rotation remains unchanged.
 
 ## 0.15.15 release notes
 

@@ -509,6 +509,7 @@ export class TauriSyncClient {
    * the realtime socket applies it on its next (re)connect.
    */
   async setHeaders(headers: Readonly<Record<string, string>>): Promise<void> {
+    this.#requireActive();
     const reply = await this.#tauri.invoke<CommandReply>(
       `${PLUGIN}syncular_set_headers`,
       { headers },
