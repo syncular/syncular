@@ -44,6 +44,59 @@ export const scopeScenarios: readonly Scenario[] = [
   },
 
   {
+    name: 'scopes/paired-parent-scope-fences-child-wildcard',
+    specRefs: ['§3.2', '§3.4'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { org_id: ['o1'], projectId: ['*'] },
+      });
+      await seedRows(ctx, 'docs', [
+        doc('inside', 'o1', 'p1', 'inside parent'),
+        doc('outside-same-child', 'o2', 'p1', 'outside parent'),
+        doc('inside-other-child', 'o1', 'p2', 'other child'),
+      ]);
+      await a.api.subscribe({
+        id: 'docs',
+        table: 'docs',
+        scopes: { org_id: ['o1'], projectId: ['p1', 'p2'] },
+      });
+      await syncIdle(a);
+      checkEqual(
+        (await a.api.readRows('docs')).map((row) => row.rowId),
+        ['inside', 'inside-other-child'],
+        'the parent scope excludes an out-of-parent row even when its child value is wildcard-authorized',
+      );
+
+      const outside = await a.api.mutate([
+        {
+          op: 'upsert',
+          table: 'docs',
+          values: doc('outside-write', 'o2', 'p1', 'must reject'),
+        },
+      ]);
+      const denied = await syncOk(a);
+      checkEqual(
+        denied.rejected,
+        [outside],
+        'the same paired scope denies an out-of-parent write',
+      );
+      checkEqual(
+        (await a.api.rejections())[0]?.code,
+        'sync.forbidden',
+        'the paired-scope write denial is explicit',
+      );
+      check(
+        !(await ctx.server.readRows('docs')).some(
+          (row) => row.rowId === 'outside-write',
+        ),
+        'the denied cross-parent row never reaches authoritative storage',
+      );
+    },
+  },
+
+  {
     name: 'scopes/revocation-purges-exactly-the-grant',
     specRefs: ['§3.3', '§3.4', 'B.4'],
     async run(ctx) {

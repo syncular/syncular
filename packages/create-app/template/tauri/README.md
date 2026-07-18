@@ -77,7 +77,11 @@ On desktop, the plugin owns the database path and the transport — see
 
 1. **`src/server.ts` → `resolveScopes`** — the whole authorization story. The
    starter returns `['*']`; a real one returns the scope values the
-   authenticated actor may see.
+   authenticated actor may see. Multiple variables are independent, not
+   correlated parent/child tuples: test isolation with at least two parents and
+   child IDs, and carry the parent scope on every child table before using a
+   child wildcard. See
+   [Scopes & authorization](https://syncular.dev/concepts-scopes/).
 2. **`src/server.ts` → `authenticate`** — plug in your real session/token
    check; return `{ actorId, partition }` or `null` for a 401.
 3. **`src-tauri/src/lib.rs` → `base_url`** — point the native core at your

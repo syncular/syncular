@@ -1,10 +1,26 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.20** (`v0.15.20`). All artifacts use Apache-2.0, except
+current release is **0.15.21** (`v0.15.21`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.21 release notes
+
+0.15.21 makes the authorization meaning of multi-variable scope maps explicit:
+allowed values are independent dimensions, not correlated parent/child tuples.
+The normative specification and public scope guide now show the Cartesian
+combinations, safe paired-parent patterns, the risk of child wildcards under
+future child-only tables, and alternatives based on exact child enumeration or
+server-authoritative commands. All maintained starters tell hosts to test
+isolation with at least two parents and child IDs.
+
+The shared TypeScript/Rust conformance catalog now proves that a parent scope
+fences reads and writes even when the child variable is wildcard-authorized.
+This release changes no wire encoding or existing scope evaluation; it makes
+the existing security contract difficult to misinterpret and pins it across
+both reference clients.
 
 ## 0.15.20 release notes
 
