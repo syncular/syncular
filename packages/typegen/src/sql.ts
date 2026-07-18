@@ -12,7 +12,8 @@
  * - `CREATE VIRTUAL TABLE name USING fts5(cols…, content=table,
  *   [tokenize='allowlisted tokenizer'])` (RFC 0005 local projection)
  * - column defs: `name TYPE [PRIMARY KEY] [NOT NULL] [NULL]
- *   [DEFAULT literal]`
+ *   [DEFAULT literal]`; `ALTER TABLE … ADD COLUMN` is restricted to nullable
+ *   columns because Syncular does not execute SQL-default backfills
  * - `--` and C-style comments
  *
  * Anything else — other statements, table constraints, parameterized or
@@ -667,6 +668,11 @@ function parseAlterTable(
   cursor.eatWord('COLUMN');
   const def = parseColumnDef(cursor, false);
   cursor.expectEnd();
+  if (!def.column.nullable) {
+    cursor.fail(
+      `ALTER TABLE ${name}: added column ${JSON.stringify(def.column.name)} must be nullable — SQL defaults do not backfill Syncular row payloads; add the column nullable, backfill it through versioned server-authoritative writes, and enforce required values in application validation`,
+    );
+  }
   if (table.columns.some((c) => c.name === def.column.name)) {
     cursor.fail(
       `ALTER TABLE ${name}: duplicate column ${JSON.stringify(def.column.name)}`,

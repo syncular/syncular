@@ -57,6 +57,37 @@ done by a binding of the core or by in-database fanout — a relay would add a
 hop, a second protocol surface, and a managed dependency for zero capability
 the core lacks.
 
+## Startup schema readiness
+
+Fail startup before accepting traffic when the generated schema cannot compile
+or the storage projection cannot migrate:
+
+```ts
+import {
+  ensureSyncServerReady,
+  SqliteServerStorage,
+  type SyncServerConfig,
+} from '@syncular/server';
+
+const config: SyncServerConfig = {
+  schema,
+  storage: new SqliteServerStorage('./sync.db'),
+  segments,
+  resolveScopes,
+};
+
+await ensureSyncServerReady(config);
+Bun.serve({ fetch: app.fetch });
+```
+
+The helper accepts the generated `ServerSchema`, compiles it, and calls the
+storage backend's low-level `ensureSchema(CompiledSchema)`. A failure is a
+`SyncServerReadinessError` with stable code `sync.schema_not_ready`, a `phase`
+of `schema_compile` or `storage_migration`, and the generated schema version.
+Log the cause for operators and stop startup. Do not catch readiness errors in
+authentication or convert them to a 401; request-time schema checks are only a
+defensive fallback.
+
 ## Write validators and recovery metadata
 
 `validators` is the server-authoritative seam for row business rules that

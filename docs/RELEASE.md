@@ -1,10 +1,29 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.26** (`v0.15.26`). All artifacts use Apache-2.0, except
+current release is **0.15.27** (`v0.15.27`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.27 release notes
+
+0.15.27 rejects unsafe required-column appends before runtime. Typegen now
+fails `ALTER TABLE … ADD COLUMN … NOT NULL` during baseline, migration check,
+and generation even when SQL supplies a literal default: existing Syncular row
+payloads remain authoritative and are not silently backfilled by storage
+defaults. Diagnostics and docs prescribe the portable nullable-expand,
+versioned server-authoritative backfill, and host-validation rollout.
+
+Servers gain `ensureSyncServerReady(config)` for an explicit pre-listen schema
+gate. It accepts the generated schema directly, compiles it, applies the
+storage projection migration, and classifies failures with stable
+`sync.schema_not_ready` code and separate compile/migration phases instead of
+letting a lazy request-time failure masquerade as authentication. Quickstarts,
+demos, and every maintained create-app template run the gate before binding.
+
+Existing-row nullable appends are pinned across SQLite, PostgreSQL/PGlite, and
+D1, including the materialized projection and authoritative payload.
 
 ## 0.15.26 release notes
 

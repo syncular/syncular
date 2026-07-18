@@ -13,6 +13,7 @@
 import { dirname, join } from 'node:path';
 import {
   createRealtimeHub,
+  ensureSyncServerReady,
   MemorySegmentStore,
   type RealtimeSession,
   type SeedMutation,
@@ -161,6 +162,7 @@ interface SocketData {
   session?: RealtimeSession;
 }
 
+await ensureSyncServerReady(config);
 await seed();
 
 const server = Bun.serve<SocketData, never>({

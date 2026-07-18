@@ -142,7 +142,18 @@ After that, a deployed migration is immutable. Restore an accidentally edited
 migration and express the repair in a new `NNNN_name/up.sql`; do not delete and
 re-baseline the lock. Existing table layouts are append-only and added columns
 must be nullable so stored payloads and every server backend can upgrade
-safely. `generate` appends a valid new migration to the lock, while
+safely. A SQL `DEFAULT` does not make a required append safe: existing
+Syncular row payloads remain the source of truth, and no storage backend may
+silently invent a value for them. `baseline`, `migrations check`, and
+`generate` therefore reject `ALTER TABLE … ADD COLUMN … NOT NULL`, including
+one with a literal default.
+
+Use an expand/backfill/validate rollout instead: add the trailing column as
+nullable; deploy that schema; fill existing rows with versioned,
+server-authoritative writes under a new idempotency key; then enforce the
+required value in host validation. Do not tighten the synced column's
+nullability in a later migration. `generate` appends a valid new migration to
+the lock, while
 `generate --check` fails until that updated lock and generated outputs are
 committed. Drift diagnostics name the locked migration and the first affected
 table/column without printing SQL or local paths.
@@ -316,10 +327,11 @@ duplicate or unknown-column index; unsupported virtual-table modules or FTS5
 options; an FTS projection without an owner or with invalid columns;
 trailing clauses (`STRICT`).
 
-**`DEFAULT` literals are accepted and ignored**: typegen extracts the
-schema *shape*; executing migrations (where defaults matter) is the
-host's job. Rejecting them would make real-world migrations unusable
-as input; recording them is not needed by any emitter today.
+**`DEFAULT` literals on `CREATE TABLE` are accepted and ignored**: typegen
+extracts the schema *shape*; executing migrations (where defaults matter) is
+the host's job. Recording them is not needed by any emitter today. On
+`ALTER TABLE … ADD COLUMN`, a literal default does not make a non-null append
+safe and is rejected as described in the migration-lock section above.
 
 ## 4. Generated-module contract
 

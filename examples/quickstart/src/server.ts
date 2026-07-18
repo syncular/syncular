@@ -13,6 +13,7 @@
  * lists the authenticated user belongs to.
  */
 import {
+  ensureSyncServerReady,
   MemorySegmentStore,
   SqliteServerStorage,
   type SyncServerConfig,
@@ -34,5 +35,6 @@ const app = createSyncularHono({
 });
 
 const port = Number(process.env.PORT ?? 8787);
+await ensureSyncServerReady(config);
 Bun.serve({ port, fetch: app.fetch });
 console.log(`syncular quickstart server: http://localhost:${port}`);

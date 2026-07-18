@@ -269,6 +269,11 @@ export interface ServerStorage {
    * INDEX). The handler calls this before serving; hosts that drive
    * storage directly (tests, admin tooling) call it once up front. Row
    * operations for tables not covered by an `ensureSchema` call throw.
+   *
+   * This low-level storage seam accepts a `CompiledSchema`. Application hosts
+   * should call `ensureSyncServerReady(config)` with their generated schema
+   * before binding a public port; protocol handlers still call this method
+   * lazily as a defensive backstop.
    */
   ensureSchema(schema: CompiledSchema): Promise<void>;
 

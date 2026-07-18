@@ -78,6 +78,22 @@ describe('supported subset', () => {
     ]);
   });
 
+  test('ALTER TABLE rejects required additions even when SQL declares a default', () => {
+    for (const suffix of [
+      'NOT NULL',
+      "NOT NULL DEFAULT 'participant_summary_only_v1'",
+    ]) {
+      expect(() =>
+        parse(`
+          CREATE TABLE t (id TEXT PRIMARY KEY);
+          ALTER TABLE t ADD COLUMN retained_history_policy TEXT ${suffix};
+        `),
+      ).toThrow(
+        'added column "retained_history_policy" must be nullable — SQL defaults do not backfill Syncular row payloads',
+      );
+    }
+  });
+
   test('a table with no index has an empty indexes list', () => {
     const tables = parse('CREATE TABLE t (id TEXT PRIMARY KEY)');
     expect(tables.get('t')?.indexes).toEqual([]);

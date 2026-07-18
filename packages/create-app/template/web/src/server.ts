@@ -16,6 +16,7 @@
 import { dirname, join } from 'node:path';
 import {
   createRealtimeHub,
+  ensureSyncServerReady,
   MemorySegmentStore,
   type RealtimeSession,
   SqliteServerStorage,
@@ -44,6 +45,7 @@ const config: SyncServerConfig = {
   resolveScopes,
   realtime: hub,
 };
+await ensureSyncServerReady(config);
 const hono = createSyncularHono({
   config,
   // Replace with your real auth: return { actorId, partition } or null (401).

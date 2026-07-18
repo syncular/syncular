@@ -39,8 +39,10 @@ and analytics against synced data right in your server database, and
 indexes declared in your migrations are created here as well. The sync
 serve path (pull, bootstrap, segments) reads `_sync_payload`, the verbatim
 wire bytes, so server-side querying and the protocol stay decoupled.
-`ensureSchema` creates and migrates these tables on first contact and on
-schema-version bumps.
+The low-level `storage.ensureSchema` method accepts a compiled schema. App
+hosts should instead call `ensureSyncServerReady(config)` with the generated
+schema before binding a port; it compiles the schema and creates or migrates
+these tables. Request-time checks remain a defensive fallback.
 
 A per-table `materialize` flag on the server schema controls the
 projection:
