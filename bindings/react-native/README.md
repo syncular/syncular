@@ -96,6 +96,15 @@ work, reconciles blob references, and returns counts only. The app must first
 validate the directive and gate subscriptions, then separately remove
 app-owned files and OS-secure-store keys.
 
+For authentication/quarantine-before-data, construct with
+`securityPreflight: true`, apply the exact local purge, then call
+`activateSecurity({ encryption: acceptedKeyring })`. React Native now accepts
+the same portable `{ keys, keyIdColumns }` keyring as Worker and Tauri. Before
+activation, protected operations and automatic sync intents fail closed with
+`client.security_preflight_required`; lifecycle, status, local revision, and
+the bounded purge remain available. `beginSecurityPreflight()` provides the
+live rotation/revocation barrier, while `close()` releases the entire FFI core.
+
 ## Verification bar
 
 `./check.sh` runs the automated gate:

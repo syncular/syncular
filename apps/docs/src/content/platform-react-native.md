@@ -123,6 +123,13 @@ work, reconciles blob references, and returns counts only. Validate the
 directive and gate subscriptions first; see
 [Authorized local purge](/concepts-local-data-purge/).
 
+React Native accepts the same portable `{ keys, keyIdColumns }` encryption
+config as Worker and Tauri. For authentication/quarantine-before-data, create
+with `securityPreflight: true`, apply the validated local purge, and then call
+`activateSecurity({ encryption })`. Protected operations and automatic sync
+intents fail with `client.security_preflight_required` until activation;
+`beginSecurityPreflight()` provides the live revocation barrier.
+
 ## Events and lifecycle
 
 The client core has no callbacks: the native shims pump

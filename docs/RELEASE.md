@@ -1,10 +1,42 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.14** (`v0.15.14`). All artifacts use Apache-2.0, except
+current release is **0.15.15** (`v0.15.15`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.15 release notes
+
+0.15.15 adds an explicit two-phase security lifecycle for applications that
+must inspect server-authoritative device or membership state before opening a
+protected local mirror.
+
+The release includes:
+
+- `securityPreflight: true`, `beginSecurityPreflight()`, and
+  `activateSecurity()` across the direct TypeScript client, worker and
+  multi-tab hosts, normalized React surface, Tauri/Rust bridge, and React
+  Native bridge;
+- the stable `client.security_preflight_required` error and a deliberately
+  narrow preflight surface limited to lifecycle/status inspection, local
+  revision, bounded local purge, and shutdown;
+- barriers that synchronously stop new protected work, wait for in-flight
+  operations and native read sidecars, suppress startup/retry intents, and
+  prevent activation from overtaking the preflight drain;
+- portable React Native encryption-key activation, matching the browser and
+  Tauri hosts, plus one startup intent after successful activation when
+  persisted work exists;
+- browser follower-to-leader preflight propagation, native Tauri shutdown,
+  and best-effort overwriting of native key buffers on replacement or drop;
+- direct, worker RPC, multi-tab, mocked bridge, real native bridge, React
+  Native, Rust command, and native concurrency regression coverage.
+
+Applications still own the authority decision, secure-store/keychain access,
+key enrollment and revocation, and any required bounded purge. Syncular now
+provides the race-free host boundary for performing that work before ordinary
+queries, mutations, subscriptions, networking, realtime, presence, outbox, or
+blob activity can begin.
 
 ## 0.15.14 release notes
 

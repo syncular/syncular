@@ -94,11 +94,12 @@ surfaces as `client.decrypt_failed` (local to the client, non-retryable) at
 the apply seam. The app decides whether to skip the row, halt, or prompt for a
 re-key.
 
-### Worker and Tauri keyrings
+### Worker, Tauri, and React Native keyrings
 
-Functions do not cross a Web Worker or native command bridge, so worker and
-Tauri hosts accept the portable equivalent: raw keys plus an optional mapping
-from table to a plaintext string column containing the active key id.
+Functions do not cross a Web Worker or native command bridge, so Worker,
+Tauri, and React Native hosts accept the portable equivalent: raw keys plus an
+optional mapping from table to a plaintext string column containing the active
+key id.
 
 ```ts
 const encryption = {
@@ -117,6 +118,7 @@ const web = await createSyncClientHandle({
 });
 
 const desktop = await createTauriSyncClient({ schema, encryption });
+const mobile = await createNativeSyncClient({ schema, encryption });
 ```
 
 `keyIdColumns.patient_notes` must name a non-encrypted string column. Its value
@@ -124,6 +126,13 @@ selects the write key for each row; the envelope's own key id still selects the
 correct key while decrypting older data. Raw keys are installed inside the
 worker/native core and are never sent to the server. The Tauri plugin must be
 built with its `e2ee` feature.
+
+When authentication or a signed revocation must run first, create with
+`securityPreflight: true` instead of supplying `encryption`, apply the exact
+authorized local purge, then install the accepted keyring through
+`activateSecurity({ encryption })`. Protected work fails closed with
+`client.security_preflight_required` until activation. Use
+`beginSecurityPreflight()` for live key rotation/removal.
 
 ## The envelope
 

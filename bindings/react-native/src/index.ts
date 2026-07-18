@@ -29,6 +29,7 @@ import type {
   CommitOutcome,
   CommitOutcomeQuery,
   ConflictRecord,
+  EncryptionKeyringConfig,
   InvalidationEvent,
   InvalidationListener,
   LeaseState,
@@ -41,12 +42,14 @@ import type {
   RejectionRecord,
   ResolveCommitOutcomeInput,
   SchemaFloor,
+  SecurityLifecycle,
   SqlRow,
   SqlValue,
   SyncStatusSnapshot,
   WindowBase,
   WindowState,
 } from '@syncular/client';
+import { SECURITY_PREFLIGHT_REQUIRED_CODE } from '@syncular/client';
 
 /** A driver-protocol reply: `{result}` on success or `{error}` on failure. */
 interface CommandReply {
@@ -96,6 +99,10 @@ export interface NativeSyncClientConfig {
   readonly clientId?: string;
   /** §4.2 client limits, forwarded to the native `create`. */
   readonly limits?: Record<string, unknown>;
+  /** Portable E2EE keyring installed in the Rust core. */
+  readonly encryption?: EncryptionKeyringConfig;
+  /** Open the native replica behind the fail-closed security gate. */
+  readonly securityPreflight?: boolean;
   /** Base URL of the sync server mount (engages the native transport). */
   readonly baseUrl?: string;
   /** On-disk SQLite path; the native side may override with an app-data path. */
@@ -167,6 +174,20 @@ function encodeJsonValue(value: unknown): unknown {
     return encoded;
   }
   return value;
+}
+
+function encodeEncryption(config: EncryptionKeyringConfig): unknown {
+  return {
+    keys: Object.fromEntries(
+      Object.entries(config.keys).map(([keyId, key]) => [
+        keyId,
+        { $bytes: bytesToHex(key) },
+      ]),
+    ),
+    ...(config.keyIdColumns !== undefined
+      ? { keyIdColumns: config.keyIdColumns }
+      : {}),
+  };
 }
 
 /** Decode one query-result cell back to an `SqlValue` (`{$bytes}` → bytes). */
@@ -261,16 +282,20 @@ export class NativeSyncClient {
   #syncAgain = false;
   #retryAt: number | undefined;
   #retryTimer: ReturnType<typeof setTimeout> | undefined;
+  #securityLifecycle: SecurityLifecycle;
+  #preflightBarrier: Promise<void> | undefined;
 
   /** @internal — use {@link createNativeSyncClient}. */
   constructor(
     native: SyncularNativeModule,
     subscription: { remove(): void },
     autoSync: boolean,
+    securityLifecycle: SecurityLifecycle = 'active',
   ) {
     this.#native = native;
     this.#subscription = subscription;
     this.#autoSync = autoSync;
+    this.#securityLifecycle = securityLifecycle;
   }
 
   /** Dispatch a `command` and unwrap `{result}` / throw on `{error}`. */
@@ -278,6 +303,25 @@ export class NativeSyncClient {
     method: string,
     params: Record<string, unknown>,
   ): Promise<unknown> {
+    if (this.#closed) {
+      throw new NativeSyncError(
+        'client.closed',
+        'the native sync client is closed',
+      );
+    }
+    if (
+      this.#securityLifecycle === 'preflight' &&
+      ![
+        'securityLifecycle',
+        'beginSecurityPreflight',
+        'activateSecurity',
+        'purgeLocalData',
+        'localRevision',
+        'statusSnapshot',
+      ].includes(method)
+    ) {
+      this.#throwSecurityPreflight();
+    }
     const replyJson = await this.#native.command(
       JSON.stringify({ method, params }),
     );
@@ -286,6 +330,17 @@ export class NativeSyncClient {
       throw new NativeSyncError(reply.error.code, reply.error.message);
     }
     return reply.result;
+  }
+
+  #throwSecurityPreflight(): never {
+    throw new NativeSyncError(
+      SECURITY_PREFLIGHT_REQUIRED_CODE,
+      'the local replica is in security preflight; complete quarantine checks and call activateSecurity before accessing protected data',
+    );
+  }
+
+  #requireActive(): void {
+    if (this.#securityLifecycle === 'preflight') this.#throwSecurityPreflight();
   }
 
   /** @internal — fan an incoming native event out to the local listeners. */
@@ -348,7 +403,13 @@ export class NativeSyncClient {
   }
 
   #requestAutoSync(): void {
-    if (this.#closed || this.#paused) return;
+    if (
+      this.#closed ||
+      this.#paused ||
+      this.#securityLifecycle === 'preflight'
+    ) {
+      return;
+    }
     if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
     this.#retryTimer = undefined;
     this.#retryAt = undefined;
@@ -365,7 +426,13 @@ export class NativeSyncClient {
   }
 
   #requestBackgroundSync(delayMs: number): void {
-    if (this.#closed || this.#paused) return;
+    if (
+      this.#closed ||
+      this.#paused ||
+      this.#securityLifecycle === 'preflight'
+    ) {
+      return;
+    }
     const deadline = Date.now() + delayMs;
     if (this.#retryAt !== undefined && this.#retryAt <= deadline) return;
     if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
@@ -396,6 +463,59 @@ export class NativeSyncClient {
 
   // -- SyncClientLike ---------------------------------------------------------
 
+  securityLifecycle(): Promise<SecurityLifecycle> {
+    return Promise.resolve(this.#securityLifecycle);
+  }
+
+  beginSecurityPreflight(): Promise<void> {
+    if (this.#closed) {
+      return Promise.reject(
+        new NativeSyncError(
+          'client.closed',
+          'the native sync client is closed',
+        ),
+      );
+    }
+    if (this.#preflightBarrier !== undefined) return this.#preflightBarrier;
+    this.#securityLifecycle = 'preflight';
+    if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
+    this.#retryTimer = undefined;
+    this.#retryAt = undefined;
+    this.#syncScheduled = false;
+    this.#syncAgain = false;
+    const barrier = this.#command('beginSecurityPreflight', {}).then(() => {});
+    this.#preflightBarrier = barrier;
+    void barrier.then(
+      () => {
+        if (this.#preflightBarrier === barrier)
+          this.#preflightBarrier = undefined;
+      },
+      () => {
+        if (this.#preflightBarrier === barrier)
+          this.#preflightBarrier = undefined;
+      },
+    );
+    return barrier;
+  }
+
+  async activateSecurity(
+    options: { readonly encryption?: EncryptionKeyringConfig } = {},
+  ): Promise<void> {
+    if (this.#securityLifecycle === 'active') {
+      throw new NativeSyncError(
+        'sync.invalid_request',
+        'activateSecurity requires the client to be in security preflight',
+      );
+    }
+    await this.#preflightBarrier;
+    await this.#command('activateSecurity', {
+      ...(options.encryption !== undefined
+        ? { encryption: encodeEncryption(options.encryption) }
+        : {}),
+    });
+    this.#securityLifecycle = 'active';
+  }
+
   onInvalidate(listener: InvalidationListener): () => void {
     this.#invalidationListeners.add(listener);
     return () => this.#invalidationListeners.delete(listener);
@@ -412,6 +532,7 @@ export class NativeSyncClient {
   }
 
   async query(sql: string, params?: readonly SqlValue[]): Promise<SqlRow[]> {
+    this.#requireActive();
     const replyJson = await this.#native.query(
       sql,
       JSON.stringify((params ?? []).map(encodeParam)),
@@ -860,6 +981,7 @@ export async function createNativeSyncClient(
     nativeModule,
     subscription,
     config.autoSync ?? true,
+    config.securityPreflight === true ? 'preflight' : 'active',
   );
   clientRef.client = client;
 
@@ -871,6 +993,19 @@ export async function createNativeSyncClient(
   if (config.clientId !== undefined) createParams.clientId = config.clientId;
   if (config.limits !== undefined) createParams.limits = config.limits;
   if (config.dbPath !== undefined) createParams.dbPath = config.dbPath;
+  if (config.securityPreflight === true && config.encryption !== undefined) {
+    subscription.remove();
+    throw new NativeSyncError(
+      'sync.invalid_request',
+      'securityPreflight and encryption are mutually exclusive; install keys with activateSecurity after preflight',
+    );
+  }
+  if (config.encryption !== undefined) {
+    createParams.encryption = encodeEncryption(config.encryption);
+  }
+  if (config.securityPreflight !== undefined) {
+    createParams.securityPreflight = config.securityPreflight;
+  }
 
   const replyJson = await nativeModule.create(
     JSON.stringify(transportConfig),

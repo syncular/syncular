@@ -179,6 +179,14 @@ download the rows again. The client removes matching rows, FTS documents,
 unsafe pending commits, and blob references atomically. See
 [Authorized local purge](/concepts-local-data-purge/).
 
+For quarantine-before-data, create the direct client or Worker handle with
+`securityPreflight: true`, apply the validated purge, then call
+`activateSecurity({ encryption })`. Protected work and automatic host-loop
+sync fail with `client.security_preflight_required` until activation.
+`beginSecurityPreflight()` gates new work immediately and drains in-flight
+database/network work before releasing the old keyring. A follower request
+applies to the one shared origin leader.
+
 ## Node and Bun backends
 
 The same core runs outside the browser (a CLI, a plain Node service, an

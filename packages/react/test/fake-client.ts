@@ -25,6 +25,7 @@ import type {
   RejectionRecord,
   ResolveCommitOutcomeInput,
   SchemaFloor,
+  SecurityLifecycle,
   SqlRow,
   SyncStatusSnapshot,
   WindowBase,
@@ -34,6 +35,7 @@ import { windowBaseKey } from '@syncular/client';
 import type { SyncClientLike } from '../src/client';
 
 export class FakeClient implements SyncClientLike {
+  securityLifecycle: SecurityLifecycle = 'active';
   #changes = new Set<ClientChangeListener>();
   #invalidation = new Set<InvalidationListener>();
   #presenceListeners = new Set<(scopeKey: string) => void>();
@@ -161,6 +163,14 @@ export class FakeClient implements SyncClientLike {
   }
 
   // -- SyncClientLike --------------------------------------------------------
+
+  beginSecurityPreflight(): void {
+    this.securityLifecycle = 'preflight';
+  }
+
+  activateSecurity(): void {
+    this.securityLifecycle = 'active';
+  }
 
   onInvalidate(listener: InvalidationListener): () => void {
     this.#invalidation.add(listener);

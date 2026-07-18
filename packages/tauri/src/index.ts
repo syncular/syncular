@@ -27,9 +27,6 @@
  * `window.__TAURI__`, or via injected doubles (tests).
  */
 
-// -- Types the bridge speaks (structurally the web-client's) -----------------
-// Imported as types only, so the bridge has no runtime dependency on
-// @syncular/client (the app already carries it via @syncular/react).
 import type {
   ClientChangeBatch,
   ClientChangeListener,
@@ -49,12 +46,17 @@ import type {
   RejectionRecord,
   ResolveCommitOutcomeInput,
   SchemaFloor,
+  SecurityLifecycle,
   SqlRow,
   SqlValue,
   SyncStatusSnapshot,
   WindowBase,
   WindowState,
 } from '@syncular/client';
+// -- Types the bridge speaks (structurally the web-client's) -----------------
+// Most imports stay type-only; the stable preflight error code is shared at
+// runtime so every host surfaces byte-identical policy evidence.
+import { SECURITY_PREFLIGHT_REQUIRED_CODE } from '@syncular/client';
 
 /** A driver-protocol reply: `{result}` on success or `{error}` on failure. */
 interface CommandReply {
@@ -99,6 +101,8 @@ export interface TauriSyncClientConfig {
    * encoded into the native command envelope and never sent to the server.
    */
   readonly encryption?: EncryptionKeyringConfig;
+  /** Open the native replica behind the fail-closed security gate. */
+  readonly securityPreflight?: boolean;
   /**
    * The Tauri primitives. Omit in a real Tauri webview to auto-resolve from
    * `@tauri-apps/api` (peer dep) or the ambient `window.__TAURI__`; inject in
@@ -249,11 +253,18 @@ export class TauriSyncClient {
   readonly #presenceListeners = new Set<(scopeKey: string) => void>();
   #unlisten: (() => void) | undefined;
   #closed = false;
+  #securityLifecycle: SecurityLifecycle;
+  #preflightBarrier: Promise<void> | undefined;
 
   /** @internal — use {@link createTauriSyncClient}. */
-  constructor(tauri: TauriApi, unlisten: () => void) {
+  constructor(
+    tauri: TauriApi,
+    unlisten: () => void,
+    securityLifecycle: SecurityLifecycle = 'active',
+  ) {
     this.#tauri = tauri;
     this.#unlisten = unlisten;
+    this.#securityLifecycle = securityLifecycle;
   }
 
   /** Dispatch a `syncular_command` and unwrap `{result}` / throw on `{error}`. */
@@ -261,6 +272,26 @@ export class TauriSyncClient {
     method: string,
     params: Record<string, unknown>,
   ): Promise<unknown> {
+    if (this.#closed) {
+      throw new TauriSyncError(
+        'client.closed',
+        'the Tauri sync client is closed',
+      );
+    }
+    if (
+      this.#securityLifecycle === 'preflight' &&
+      ![
+        'securityLifecycle',
+        'beginSecurityPreflight',
+        'activateSecurity',
+        'purgeLocalData',
+        'localRevision',
+        'statusSnapshot',
+        'shutdown',
+      ].includes(method)
+    ) {
+      this.#throwSecurityPreflight();
+    }
     const reply = await this.#tauri.invoke<CommandReply>(
       `${PLUGIN}syncular_command`,
       { command: { method, params } },
@@ -269,6 +300,17 @@ export class TauriSyncClient {
       throw new TauriSyncError(reply.error.code, reply.error.message);
     }
     return reply.result;
+  }
+
+  #throwSecurityPreflight(): never {
+    throw new TauriSyncError(
+      SECURITY_PREFLIGHT_REQUIRED_CODE,
+      'the local replica is in security preflight; complete quarantine checks and call activateSecurity before accessing protected data',
+    );
+  }
+
+  #requireActive(): void {
+    if (this.#securityLifecycle === 'preflight') this.#throwSecurityPreflight();
   }
 
   /** @internal — fan an incoming plugin event out to the local listeners. */
@@ -316,6 +358,52 @@ export class TauriSyncClient {
 
   // -- SyncClientLike --------------------------------------------------------
 
+  securityLifecycle(): Promise<SecurityLifecycle> {
+    return Promise.resolve(this.#securityLifecycle);
+  }
+
+  beginSecurityPreflight(): Promise<void> {
+    if (this.#closed) {
+      return Promise.reject(
+        new TauriSyncError('client.closed', 'the Tauri sync client is closed'),
+      );
+    }
+    if (this.#preflightBarrier !== undefined) return this.#preflightBarrier;
+    // Flip synchronously so a same-webview query cannot race the IPC barrier.
+    this.#securityLifecycle = 'preflight';
+    const barrier = this.#command('beginSecurityPreflight', {}).then(() => {});
+    this.#preflightBarrier = barrier;
+    void barrier.then(
+      () => {
+        if (this.#preflightBarrier === barrier)
+          this.#preflightBarrier = undefined;
+      },
+      () => {
+        if (this.#preflightBarrier === barrier)
+          this.#preflightBarrier = undefined;
+      },
+    );
+    return barrier;
+  }
+
+  async activateSecurity(
+    options: { readonly encryption?: EncryptionKeyringConfig } = {},
+  ): Promise<void> {
+    if (this.#securityLifecycle === 'active') {
+      throw new TauriSyncError(
+        'sync.invalid_request',
+        'activateSecurity requires the client to be in security preflight',
+      );
+    }
+    await this.#preflightBarrier;
+    await this.#command('activateSecurity', {
+      ...(options.encryption !== undefined
+        ? { encryption: encodeEncryption(options.encryption) }
+        : {}),
+    });
+    this.#securityLifecycle = 'active';
+  }
+
   onInvalidate(listener: InvalidationListener): () => void {
     this.#invalidationListeners.add(listener);
     return () => this.#invalidationListeners.delete(listener);
@@ -332,6 +420,7 @@ export class TauriSyncClient {
   }
 
   async query(sql: string, params?: readonly SqlValue[]): Promise<SqlRow[]> {
+    this.#requireActive();
     const reply = await this.#tauri.invoke<CommandReply>(
       `${PLUGIN}syncular_query`,
       { sql, params: (params ?? []).map(encodeParam) },
@@ -346,6 +435,7 @@ export class TauriSyncClient {
   async querySnapshot<Row = SqlRow>(
     spec: QueryReadSpec,
   ): Promise<QuerySnapshot<Row>> {
+    this.#requireActive();
     const reply = await this.#tauri.invoke<CommandReply>(
       `${PLUGIN}syncular_query_snapshot`,
       {
@@ -643,10 +733,14 @@ export class TauriSyncClient {
     await this.#command('disconnectRealtime', {});
   }
 
-  /** Detach the event listener; the native core keeps running (host process). */
+  /** Shut down the native core, release its keyring, then detach listeners. */
   async close(): Promise<void> {
     if (this.#closed) return;
-    this.#closed = true;
+    try {
+      await this.#command('shutdown', {});
+    } finally {
+      this.#closed = true;
+    }
     this.#unlisten?.();
     this.#unlisten = undefined;
     this.#invalidationListeners.clear();
@@ -770,7 +864,19 @@ export async function createTauriSyncClient(
     },
   );
 
-  const client = new TauriSyncClient(tauri, unlisten);
+  if (config.securityPreflight === true && config.encryption !== undefined) {
+    unlisten();
+    throw new TauriSyncError(
+      'sync.invalid_request',
+      'securityPreflight and encryption are mutually exclusive; install keys with activateSecurity after preflight',
+    );
+  }
+
+  const client = new TauriSyncClient(
+    tauri,
+    unlisten,
+    config.securityPreflight === true ? 'preflight' : 'active',
+  );
   clientRef.client = client;
 
   // The native side owns the db path (plugin config); the JS side supplies the
@@ -784,6 +890,9 @@ export async function createTauriSyncClient(
         ...(config.limits !== undefined ? { limits: config.limits } : {}),
         ...(config.encryption !== undefined
           ? { encryption: encodeEncryption(config.encryption) }
+          : {}),
+        ...(config.securityPreflight !== undefined
+          ? { securityPreflight: config.securityPreflight }
           : {}),
       },
     },

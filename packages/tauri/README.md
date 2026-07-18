@@ -28,6 +28,32 @@ for validating the server-authoritative directive, gating subscriptions before
 the purge, deleting app-owned drafts/files, and removing the corresponding key
 from the OS secure store after SQLite cleanup succeeds.
 
+## Secure preflight and native disposal
+
+Create with `securityPreflight: true` when authentication, signed device
+quarantine, or crash-resumed cleanup must finish before clinical data is
+available. The native database opens and migrates, but query/snapshot, mutation,
+subscription, sync, realtime, presence, blob, and automatic retry work fails
+with `client.security_preflight_required`. Status, local revision, lifecycle,
+and `purgeLocalData` remain available.
+
+```ts
+const client = await createTauriSyncClient({
+  schema,
+  securityPreflight: true,
+});
+
+await client.purgeLocalData(directive.plan);
+await client.activateSecurity({ encryption: acceptedKeyring });
+```
+
+`beginSecurityPreflight()` closes the JavaScript gate synchronously, waits for
+the mutable owner and independent SQLite snapshot reader, disconnects realtime,
+and removes the Rust keyring. `close()` now issues native shutdown before
+detaching listeners, so disposing a resource does not leave a key-bearing core
+behind. The Rust core overwrites owned key buffers on replacement/drop; the app
+still owns OS secure-store deletion and any key buffers it supplied.
+
 ## React availability guard
 
 The Tauri bridge carries `currentSchemaVersion`, `schemaFloor`, and migration

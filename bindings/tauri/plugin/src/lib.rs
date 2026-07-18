@@ -35,7 +35,7 @@
 //! cannot block local views while the mutable client remains single-owned.
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -151,6 +151,81 @@ enum ReadRequest {
 struct SyncularState {
     sender: Mutex<Sender<Request>>,
     reader: Option<Mutex<Sender<ReadRequest>>>,
+    security_gate: SecurityGate,
+}
+
+struct SecurityGateState {
+    preflight: bool,
+    active_reads: usize,
+}
+
+struct SecurityGate {
+    state: Mutex<SecurityGateState>,
+    idle: Condvar,
+}
+
+struct SecurityReadGuard<'a> {
+    gate: &'a SecurityGate,
+}
+
+impl SecurityGate {
+    fn new_preflight() -> Self {
+        Self {
+            state: Mutex::new(SecurityGateState {
+                preflight: true,
+                active_reads: 0,
+            }),
+            idle: Condvar::new(),
+        }
+    }
+
+    fn begin_preflight(&self) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "syncular security gate poisoned".to_owned())?;
+        state.preflight = true;
+        while state.active_reads > 0 {
+            state = self
+                .idle
+                .wait(state)
+                .map_err(|_| "syncular security gate poisoned".to_owned())?;
+        }
+        Ok(())
+    }
+
+    fn activate(&self) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "syncular security gate poisoned".to_owned())?;
+        state.preflight = false;
+        Ok(())
+    }
+
+    fn enter_read(&self) -> Result<SecurityReadGuard<'_>, Value> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| client_error("syncular security gate poisoned"))?;
+        if state.preflight {
+            return Err(security_preflight_error());
+        }
+        state.active_reads += 1;
+        Ok(SecurityReadGuard { gate: self })
+    }
+}
+
+impl Drop for SecurityReadGuard<'_> {
+    fn drop(&mut self) {
+        let Ok(mut state) = self.gate.state.lock() else {
+            return;
+        };
+        state.active_reads = state.active_reads.saturating_sub(1);
+        if state.active_reads == 0 {
+            self.gate.idle.notify_all();
+        }
+    }
 }
 
 impl SyncularState {
@@ -332,6 +407,15 @@ fn client_error(message: impl Into<String>) -> Value {
     json!({ "error": { "code": "client.failed", "message": message.into() } })
 }
 
+fn security_preflight_error() -> Value {
+    json!({
+        "error": {
+            "code": syncular_client::SECURITY_PREFLIGHT_REQUIRED_CODE,
+            "message": "the local replica is in security preflight; complete quarantine checks and call activateSecurity before accessing protected data"
+        }
+    })
+}
+
 fn parse_window_base(value: Option<&Value>) -> Result<WindowBase, String> {
     let object = value
         .and_then(Value::as_object)
@@ -407,14 +491,38 @@ async fn syncular_command<R: Runtime>(
     command: Value,
 ) -> Result<Value, String> {
     let state = app.state::<SyncularState>();
+    let method = command
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    if method == "create" || method == "beginSecurityPreflight" || method == "shutdown" {
+        // Gate fast reads and wait for already-started sidecar snapshots before
+        // the owner-thread barrier is enqueued.
+        state.security_gate.begin_preflight()?;
+    }
+    let create_preflight = method == "create"
+        && command
+            .pointer("/params/securityPreflight")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     state.send(Request::Command {
         command,
         reply: reply_tx,
     })?;
-    reply_rx
+    let reply = reply_rx
         .recv()
-        .map_err(|_| "the syncular core dropped the reply".to_owned())
+        .map_err(|_| "the syncular core dropped the reply".to_owned())?;
+    let succeeded = reply.get("error").is_none();
+    if succeeded && method == "create" {
+        if !create_preflight {
+            state.security_gate.activate()?;
+        }
+    } else if succeeded && method == "activateSecurity" {
+        state.security_gate.activate()?;
+    }
+    Ok(reply)
 }
 
 /// Replace the native transport's request headers at runtime — the auth
@@ -444,6 +552,10 @@ async fn syncular_query<R: Runtime>(
     params: Option<Value>,
 ) -> Result<Value, String> {
     let state = app.state::<SyncularState>();
+    let _read_guard = match state.security_gate.enter_read() {
+        Ok(guard) => guard,
+        Err(reply) => return Ok(reply),
+    };
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     state.send(Request::Query {
         sql,
@@ -466,6 +578,10 @@ async fn syncular_query_snapshot<R: Runtime>(
     coverage: Option<Value>,
 ) -> Result<Value, String> {
     let state = app.state::<SyncularState>();
+    let _read_guard = match state.security_gate.enter_read() {
+        Ok(guard) => guard,
+        Err(reply) => return Ok(reply),
+    };
     let params_value = params.unwrap_or_else(|| Value::Array(Vec::new()));
     let coverage_value = coverage.unwrap_or_else(|| Value::Array(Vec::new()));
 
@@ -539,6 +655,9 @@ pub fn init<R: Runtime>(config: SyncularConfig) -> TauriPlugin<R> {
             app.manage(SyncularState {
                 sender: Mutex::new(tx.clone()),
                 reader,
+                // Fail closed until the first successful `create` declares
+                // whether this process starts active or in preflight.
+                security_gate: SecurityGate::new_preflight(),
             });
             let app_handle = app.clone();
             let emit = move |value: &Value| {
@@ -579,6 +698,27 @@ mod tests {
         let json = config.to_transport_json();
         assert_eq!(json["baseUrl"], "https://api.example.com");
         assert_eq!(json["headers"]["authorization"], "Bearer x");
+    }
+
+    #[test]
+    fn security_gate_blocks_new_reads_and_waits_for_in_flight_snapshots() {
+        let gate = std::sync::Arc::new(SecurityGate::new_preflight());
+        gate.activate().expect("activate test gate");
+        let read = gate.enter_read().expect("active read");
+        let gate_for_barrier = std::sync::Arc::clone(&gate);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let barrier = std::thread::spawn(move || {
+            gate_for_barrier.begin_preflight().expect("enter preflight");
+            done_tx.send(()).expect("barrier reply");
+        });
+
+        assert!(done_rx.recv_timeout(Duration::from_millis(20)).is_err());
+        drop(read);
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("barrier drains after the read");
+        barrier.join().expect("barrier thread");
+        assert!(gate.enter_read().is_err());
     }
 
     #[test]

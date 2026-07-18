@@ -36,7 +36,7 @@ pub use api::{
     SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange, WindowBase, WindowChange,
     WindowCoverage, WindowState, WindowUnitRef,
 };
-pub use client::{FileQuerySnapshotReader, SyncClient};
+pub use client::{FileQuerySnapshotReader, SyncClient, SECURITY_PREFLIGHT_REQUIRED_CODE};
 pub use schema::{compile_schema, parse_schema_json, ClientSchema};
 pub use transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
 

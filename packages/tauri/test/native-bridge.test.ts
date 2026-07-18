@@ -5,7 +5,10 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { ReactiveClientStore } from '@syncular/client';
+import {
+  ReactiveClientStore,
+  SECURITY_PREFLIGHT_REQUIRED_CODE,
+} from '@syncular/client';
 import { normalizeClient } from '@syncular/react';
 import { createTauriSyncClient, type TauriApi } from '../src/index';
 
@@ -281,6 +284,38 @@ if (!available) {
             },
           ],
         });
+        await client.close();
+      } finally {
+        await host.close();
+      }
+    });
+
+    test('real Rust preflight purges before protected reads and activates in place', async () => {
+      const host = nativeTauri();
+      try {
+        const client = await createTauriSyncClient({
+          schema,
+          securityPreflight: true,
+          tauri: host.api,
+        });
+        expect(await client.securityLifecycle()).toBe('preflight');
+        await expect(
+          client.query('SELECT id FROM todos'),
+        ).rejects.toMatchObject({ code: SECURITY_PREFLIGHT_REQUIRED_CODE });
+        expect(
+          await client.purgeLocalData({
+            purgeId: 'native-preflight-directive',
+            targets: [{ table: 'todos', selectors: { list_id: ['revoked'] } }],
+          }),
+        ).toEqual({
+          alreadyApplied: false,
+          purgedRows: 0,
+          droppedCommits: 0,
+        });
+
+        await client.activateSecurity();
+        expect(await client.securityLifecycle()).toBe('active');
+        expect(await client.query('SELECT id FROM todos')).toEqual([]);
         await client.close();
       } finally {
         await host.close();

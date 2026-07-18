@@ -17,6 +17,7 @@ import {
   type LeaderLock,
   type MultiTabMessage,
   NOT_LEADER_CODE,
+  SECURITY_PREFLIGHT_REQUIRED_CODE,
   type SyncClientHandle,
   type SyncClientHandleConfig,
   type WorkerInitConfig,
@@ -294,6 +295,25 @@ test('leader + follower: follower proxies the full API to the one core', async (
   // State surfaces cross the channel.
   expect(await follower.conflicts()).toEqual([]);
   expect(await follower.schemaFloor()).toBeUndefined();
+});
+
+test('a follower preflight request gates the already-running shared leader', async () => {
+  const group = makeGroup();
+  const leader = await group.make({ clientId: 'mt-security-lead' });
+  expect(await leader.securityLifecycle()).toBe('active');
+
+  const follower = await group.make({ securityPreflight: true });
+  expect(follower.role).toBe('follower');
+  expect(await follower.securityLifecycle()).toBe('preflight');
+  expect(await leader.securityLifecycle()).toBe('preflight');
+  await expectRejectsWithCode(
+    leader.query('SELECT id FROM tasks'),
+    SECURITY_PREFLIGHT_REQUIRED_CODE,
+  );
+
+  await follower.activateSecurity();
+  expect(await leader.securityLifecycle()).toBe('active');
+  expect(await leader.query('SELECT id FROM tasks')).toEqual([]);
 });
 
 test('events fan out from the leader to two followers', async () => {

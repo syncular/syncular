@@ -2325,11 +2325,50 @@ self-describing. A `keyId` the provider does not know, or a wrong key
 (GCM tag mismatch), is `client.decrypt_failed`.
 
 Worker-hosted clients accept a structured-clone-safe `{ keys, keyIdColumns }`
-keyring and install the provider inside the leader worker. Tauri clients accept
-the same public shape; the JavaScript bridge encodes raw keys into the local IPC
-command and the Rust core installs them before opening encrypted rows. Keys are
-client-local configuration and MUST NOT enter SSP2 requests, server logs, or
-application telemetry.
+keyring and install the provider inside the leader worker. Tauri and React
+Native clients accept the same public shape; their JavaScript bridges encode
+raw keys into local IPC/FFI commands and the Rust core installs them before
+encrypted rows are accessed. Keys are client-local configuration and MUST NOT
+enter SSP2 requests, server logs, or application telemetry.
+
+**Security preflight and key lifecycle.** A host that must authenticate the
+device, evaluate a signed quarantine/revocation directive, or recover an
+interrupted purge **MUST** be able to open the persistent replica without
+exposing or transporting protected application data. Every shipped client host
+therefore implements the same two-state lifecycle:
+
+- `preflight`: local bookkeeping/schema open and migration are complete, but
+  protected queries, mutations, subscriptions/windows, outbox inspection,
+  sync, realtime/presence, blobs, and automatic host-loop work fail with the
+  stable client-local code `client.security_preflight_required`;
+- `active`: the accepted keyring is installed and the ordinary client surface
+  and host loop are available.
+
+Construction with `securityPreflight: true` MUST NOT accept an `encryption`
+keyring in the same call. During preflight the host MAY inspect
+`securityLifecycle`, `statusSnapshot`, and `localRevision`; it MAY execute the
+bounded, application-authorized `purgeLocalData` primitive (§7.3.4); and it MAY
+close/shut down the client. No other application-data operation is permitted.
+The host installs the accepted keyring and releases the gate only through
+`activateSecurity({ encryption? })`.
+
+`beginSecurityPreflight()` closes the gate synchronously for new calls, closes
+realtime, waits for already-started serialized/network/read-sidecar work to
+settle, and releases the core's keyring reference before resolving. Activation
+MUST NOT overtake that barrier. Entering preflight clears pending automatic
+sync/retry intents; activation emits one startup intent when persisted active
+subscriptions or outbox work exist. A Worker follower requesting preflight
+applies it to the one shared origin leader, not merely to its local proxy.
+
+Native key buffers MUST be overwritten before replacement/drop where the
+runtime permits deterministic memory ownership. JavaScript hosts release every
+core-owned reference; the application remains responsible for zeroing/removing
+its own key buffers and OS-secure-store entries. Tauri `close()` MUST dispose
+the native client and keyring rather than only detaching a JavaScript listener.
+React Native `close()` continues to release the FFI handle. The local SQLite
+mirror remains plaintext by architecture, so platform storage encryption,
+device lock policy, secure key storage, and the exact purge protocol remain
+mandatory application responsibilities.
 
 **`client.decrypt_failed` (client-local, §10.3).** Decrypt failures —
 unknown envelope version, unknown `keyId`, GCM authentication failure,

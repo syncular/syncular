@@ -1092,6 +1092,7 @@ const MAX_LOCAL_PURGE_TARGETS: usize = 64;
 const MAX_LOCAL_PURGE_SELECTORS: usize = 8;
 const MAX_LOCAL_PURGE_VALUES: usize = 128;
 const MAX_LOCAL_PURGE_VALUE_LENGTH: usize = 256;
+pub const SECURITY_PREFLIGHT_REQUIRED_CODE: &str = "client.security_preflight_required";
 
 pub struct SyncClient {
     conn: Connection,
@@ -1121,6 +1122,9 @@ pub struct SyncClient {
     /// off. The encrypt/decrypt seam (`values.rs`) is compiled only under the
     /// `e2ee` feature; without it, a schema with encrypted columns fails loud.
     encryption: crate::values::EncryptionConfig,
+    /// Fail-closed host bootstrap gate. While set, command hosts permit only
+    /// status/lifecycle inspection and an exact authorized local purge.
+    security_preflight: bool,
     /// Per-table primary-key upsert SQL, built once per (full table name) —
     /// the row write path runs per row during bootstrap (§5.6), so the SQL
     /// string (and, via `prepare_cached`, its compiled statement) is reused
@@ -1667,6 +1671,7 @@ impl SyncClient {
             presence: HashMap::new(),
             now_ms: None,
             encryption: crate::values::EncryptionConfig::default(),
+            security_preflight: false,
             insert_sql: RefCell::new(HashMap::new()),
             overlay_dirty: Cell::new(false),
             change_queue: VecDeque::new(),
@@ -1735,6 +1740,43 @@ impl SyncClient {
     /// `encryption` config (keys as `{$bytes: hex}`).
     pub fn set_encryption(&mut self, encryption: crate::values::EncryptionConfig) {
         self.encryption = encryption;
+    }
+
+    #[must_use]
+    pub fn security_lifecycle(&self) -> &'static str {
+        if self.security_preflight {
+            "preflight"
+        } else {
+            "active"
+        }
+    }
+
+    #[must_use]
+    pub fn security_preflight(&self) -> bool {
+        self.security_preflight
+    }
+
+    /// Enter the fail-closed gate and release all core-owned key material.
+    pub fn begin_security_preflight(&mut self) {
+        self.security_preflight = true;
+        self.encryption = crate::values::EncryptionConfig::default();
+        self.sync_intent_queue.clear();
+    }
+
+    /// Install the post-authentication keyring and release the host loop.
+    pub fn activate_security(
+        &mut self,
+        encryption: crate::values::EncryptionConfig,
+    ) -> Result<(), String> {
+        if !self.security_preflight {
+            return Err(
+                "sync.invalid_request: activateSecurity requires security preflight".to_owned(),
+            );
+        }
+        self.encryption = encryption;
+        self.security_preflight = false;
+        self.enqueue_startup_sync_if_needed();
+        Ok(())
     }
 
     fn clock_now_ms(&self) -> i64 {

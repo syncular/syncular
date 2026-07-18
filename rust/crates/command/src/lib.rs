@@ -286,6 +286,28 @@ pub fn dispatch<T: Transport>(
     method: &str,
     params: &Value,
 ) -> Result<Value, CommandError> {
+    if method != "create" {
+        let allowed_during_preflight = matches!(
+            method,
+            "securityLifecycle"
+                | "beginSecurityPreflight"
+                | "activateSecurity"
+                | "purgeLocalData"
+                | "localRevision"
+                | "statusSnapshot"
+                | "shutdown"
+        );
+        if client
+            .as_ref()
+            .is_some_and(|running| running.security_preflight())
+            && !allowed_during_preflight
+        {
+            return Err((
+                syncular_client::SECURITY_PREFLIGHT_REQUIRED_CODE.to_owned(),
+                "the local replica is in security preflight; complete quarantine checks and call activateSecurity before accessing protected data".to_owned(),
+            ));
+        }
+    }
     match method {
         "create" => {
             let client_id = params
@@ -319,11 +341,51 @@ pub fn dispatch<T: Transport>(
             // §5.11: install client-side encryption keys. Shape:
             // { encryption: { keys: { "<keyId>": {"$bytes": "<hex>"} },
             //                 keyIdColumns: { "<table>": "<column>" } } }.
+            let security_preflight = params
+                .get("securityPreflight")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if security_preflight && params.get("encryption").is_some() {
+                return Err(client_err(
+                    "sync.invalid_request: securityPreflight and encryption are mutually exclusive; install keys with activateSecurity after preflight"
+                        .to_owned(),
+                ));
+            }
             if let Some(enc) = params.get("encryption") {
                 let config = parse_encryption(enc).map_err(client_err)?;
                 instance.set_encryption(config);
             }
+            if security_preflight {
+                instance.begin_security_preflight();
+            }
             *client = Some(instance);
+            Ok(json!({}))
+        }
+        "securityLifecycle" => Ok(json!({
+            "state": need_client(client)?.security_lifecycle()
+        })),
+        "beginSecurityPreflight" => {
+            let running = need_client(client)?;
+            running.disconnect_realtime(transport);
+            running.begin_security_preflight();
+            Ok(json!({}))
+        }
+        "activateSecurity" => {
+            let encryption = match params.get("encryption") {
+                Some(value) => parse_encryption(value).map_err(client_err)?,
+                None => syncular_client::values::EncryptionConfig::default(),
+            };
+            need_client(client)?
+                .activate_security(encryption)
+                .map_err(client_err)?;
+            Ok(json!({}))
+        }
+        "shutdown" => {
+            if let Some(running) = client.as_mut() {
+                running.disconnect_realtime(transport);
+                running.begin_security_preflight();
+            }
+            *client = None;
             Ok(json!({}))
         }
         "subscribe" => {
@@ -775,9 +837,58 @@ pub fn dispatch<T: Transport>(
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{json, Value};
+    use syncular_client::{
+        SegmentRequest, SyncClient, Transport, TransportError, SECURITY_PREFLIGHT_REQUIRED_CODE,
+    };
 
-    use super::parse_encryption;
+    use super::{dispatch, parse_encryption, CreateEffects};
+
+    struct NoNetwork;
+
+    impl Transport for NoNetwork {
+        fn sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("sync.transport_failed", "offline"))
+        }
+
+        fn realtime_sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("sync.transport_failed", "offline"))
+        }
+
+        fn download_segment(
+            &mut self,
+            _request: &SegmentRequest,
+        ) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("sync.transport_failed", "offline"))
+        }
+
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_send(&mut self, _text: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    fn schema() -> Value {
+        json!({
+            "version": 1,
+            "tables": [{
+                "name": "todos",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "list_id", "type": "string", "nullable": false }
+                ],
+                "primaryKey": "id",
+                "scopes": [{ "pattern": "list:{list_id}", "column": "list_id" }]
+            }]
+        })
+    }
 
     #[test]
     fn parses_portable_encryption_keyring_and_key_id_columns() {
@@ -799,5 +910,93 @@ mod tests {
         }))
         .expect_err("invalid selector must fail");
         assert!(error.contains("must be a string"), "{error}");
+    }
+
+    #[test]
+    fn security_preflight_is_fail_closed_until_exact_activation() {
+        let mut transport = NoNetwork;
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema(), "securityPreflight": true }),
+        )
+        .expect("preflight create");
+
+        let lifecycle = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "securityLifecycle",
+            &json!({}),
+        )
+        .expect("lifecycle");
+        assert_eq!(lifecycle, json!({ "state": "preflight" }));
+
+        let query_error = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "query",
+            &json!({ "sql": "SELECT id FROM todos", "params": [] }),
+        )
+        .expect_err("protected query must fail");
+        assert_eq!(query_error.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "purgeLocalData",
+            &json!({
+                "input": {
+                    "purgeId": "directive-1",
+                    "targets": [{
+                        "table": "todos",
+                        "selectors": { "list_id": ["list-1"] }
+                    }]
+                }
+            }),
+        )
+        .expect("authorized local purge remains available");
+
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "activateSecurity",
+            &json!({}),
+        )
+        .expect("activation");
+        let rows = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "query",
+            &json!({ "sql": "SELECT id FROM todos", "params": [] }),
+        )
+        .expect("active query");
+        assert_eq!(rows, json!({ "rows": [] }));
+
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "beginSecurityPreflight",
+            &json!({}),
+        )
+        .expect("re-enter preflight");
+        let blocked = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "mutate",
+            &json!({ "mutations": [] }),
+        )
+        .expect_err("mutation must be gated");
+        assert_eq!(blocked.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
     }
 }

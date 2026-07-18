@@ -23,6 +23,16 @@ pub struct EncryptionConfig {
     pub key_id_columns: HashMap<String, String>,
 }
 
+impl Drop for EncryptionConfig {
+    fn drop(&mut self) {
+        // Best-effort native key hygiene: replacement, preflight entry, and
+        // client shutdown overwrite every owned key buffer before release.
+        for key in self.keys.values_mut() {
+            key.fill(0);
+        }
+    }
+}
+
 impl EncryptionConfig {
     pub fn is_empty(&self) -> bool {
         self.keys.is_empty()
