@@ -1,10 +1,24 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.24** (`v0.15.24`). All artifacts use Apache-2.0, except
+current release is **0.15.25** (`v0.15.25`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.25 release notes
+
+0.15.25 adds compact migration-lock format 2. It retains every
+immutable migration name and normalized SQL checksum but stores one canonical
+head-schema snapshot for privacy-safe drift diagnostics instead of repeating
+the cumulative schema in every entry. A 100-migration cumulative fixture pins
+linear growth and a material size reduction relative to format 1.
+
+Existing format-1 locks continue to validate and extend unchanged. The new
+`syncular migrations upgrade-lock` command first validates the immutable
+prefix, then performs the explicit reviewable format transition; ordinary
+generation never upgrades a lock implicitly. Edit, removal, reorder, type, and
+nullability drift diagnostics remain covered across both formats.
 
 ## 0.15.24 release notes
 

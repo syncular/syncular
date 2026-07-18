@@ -43,10 +43,11 @@ import {
 } from './manifest';
 import {
   buildMigrationLock,
+  LEGACY_MIGRATION_LOCK_FORMAT_VERSION,
   MIGRATION_LOCK_FILENAME,
   readMigrationLock,
   serializeMigrationLock,
-  validateMigrationLock,
+  updateMigrationLock,
 } from './migration-lock';
 import { buildNamingMap, type NamingTarget } from './naming';
 import {
@@ -578,11 +579,36 @@ export function baselineMigrationHistory(manifestDir: string): GeneratedOutput {
   };
 }
 
+/**
+ * Validate and explicitly compact a version-1 migration lock to version 2.
+ * The caller owns the in-place write so the CLI can make the format transition
+ * visible and reviewable.
+ */
+export function upgradeMigrationHistory(manifestDir: string): GeneratedOutput {
+  const { manifest, migrations } = loadProjectInputs(manifestDir);
+  const locked = readMigrationLock(manifestDir);
+  if (locked.formatVersion !== LEGACY_MIGRATION_LOCK_FORMAT_VERSION) {
+    throw new TypegenError(
+      MIGRATION_LOCK_FILENAME,
+      'already uses the current compact migration-lock format',
+    );
+  }
+  // Validate the immutable prefix before replacing its representation.
+  updateMigrationLock(locked, migrations);
+  buildIr(manifest, migrations);
+  return {
+    path: resolve(manifestDir, MIGRATION_LOCK_FILENAME),
+    content: serializeMigrationLock(buildMigrationLock(migrations)),
+  };
+}
+
 /** Fast CI check for migration history without emitting/query analysis. */
 export function checkMigrationHistory(manifestDir: string): string[] {
   const { manifest, migrations } = loadProjectInputs(manifestDir);
-  const current = buildMigrationLock(migrations);
-  validateMigrationLock(readMigrationLock(manifestDir), current);
+  const current = updateMigrationLock(
+    readMigrationLock(manifestDir),
+    migrations,
+  );
   buildIr(manifest, migrations);
   const output = {
     path: resolve(manifestDir, MIGRATION_LOCK_FILENAME),
@@ -599,8 +625,10 @@ export function checkMigrationHistory(manifestDir: string): string[] {
 /** Read `syncular.json` + migrations under `manifestDir`; build outputs. */
 export function generate(manifestDir: string): GenerateResult {
   const { manifest, migrations } = loadProjectInputs(manifestDir);
-  const migrationLock = buildMigrationLock(migrations);
-  validateMigrationLock(readMigrationLock(manifestDir), migrationLock);
+  const migrationLock = updateMigrationLock(
+    readMigrationLock(manifestDir),
+    migrations,
+  );
   const ir = buildIr(manifest, migrations);
 
   // §5/§12 naming: the emitter targets this run generates (keyword hazards

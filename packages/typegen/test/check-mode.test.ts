@@ -246,6 +246,10 @@ describe('immutable migration history', () => {
 
   test('a new nullable migration extends the lock and matches a fresh baseline', () => {
     const upgradeDir = freshDir();
+    expect(
+      runCli(['migrations', 'upgrade-lock', '--manifest-dir', upgradeDir])
+        .exitCode,
+    ).toBe(0);
     appendNullableMigration(upgradeDir);
     const generated = runCli(['generate', '--manifest-dir', upgradeDir]);
     expect(generated.exitCode).toBe(0);
@@ -269,5 +273,75 @@ describe('immutable migration history', () => {
         'utf8',
       ),
     );
+  });
+
+  test('a format-1 lock stays valid and upgrades only through the explicit command', () => {
+    const dir = freshDir();
+    const lockPath = join(dir, 'syncular.migrations.lock.json');
+    const before = readFileSync(lockPath, 'utf8');
+    expect(JSON.parse(before).formatVersion).toBe(1);
+    expect(
+      runCli(['migrations', 'check', '--manifest-dir', dir]).exitCode,
+    ).toBe(0);
+
+    // Ordinary generation preserves the committed representation.
+    expect(runCli(['generate', '--manifest-dir', dir]).exitCode).toBe(0);
+    expect(readFileSync(lockPath, 'utf8')).toBe(before);
+
+    const upgrade = runCli([
+      'migrations',
+      'upgrade-lock',
+      '--manifest-dir',
+      dir,
+    ]);
+    expect(upgrade.exitCode).toBe(0);
+    expect(upgrade.stdout).toContain('compact format 2');
+    const compact = readFileSync(lockPath, 'utf8');
+    expect(JSON.parse(compact).formatVersion).toBe(2);
+    expect(compact.length).toBeLessThan(before.length);
+    expect(
+      runCli(['migrations', 'check', '--manifest-dir', dir]).exitCode,
+    ).toBe(0);
+
+    const repeated = runCli([
+      'migrations',
+      'upgrade-lock',
+      '--manifest-dir',
+      dir,
+    ]);
+    expect(repeated.exitCode).toBe(1);
+    expect(repeated.stderr).toContain('already uses the current compact');
+
+    replaceInFile(
+      join(dir, 'migrations', '0001_initial', 'up.sql'),
+      '  project_id TEXT NOT NULL,\n  title TEXT NOT NULL,',
+      '  project_id TEXT NOT NULL,\n  device_id TEXT NOT NULL,\n  title TEXT NOT NULL,',
+    );
+    const drift = runCli(['migrations', 'check', '--manifest-dir', dir]);
+    expect(drift.exitCode).toBe(1);
+    expect(drift.stderr).toContain('migration "0001_initial"');
+    expect(drift.stderr).toContain('table "tasks", column 3');
+    expect(drift.stderr).toContain('"device_id" was inserted');
+    expect(drift.stderr).not.toContain(dir);
+  });
+
+  test('format upgrade refuses drift and leaves the version-1 lock byte-exact', () => {
+    const dir = freshDir();
+    const lockPath = join(dir, 'syncular.migrations.lock.json');
+    const before = readFileSync(lockPath, 'utf8');
+    appendFileSync(
+      join(dir, 'migrations', '0002_add_task_estimate', 'up.sql'),
+      '\n-- changed before upgrade\n',
+    );
+
+    const upgrade = runCli([
+      'migrations',
+      'upgrade-lock',
+      '--manifest-dir',
+      dir,
+    ]);
+    expect(upgrade.exitCode).toBe(1);
+    expect(upgrade.stderr).toContain('history drift');
+    expect(readFileSync(lockPath, 'utf8')).toBe(before);
   });
 });
