@@ -54,6 +54,11 @@ detaching listeners, so disposing a resource does not leave a key-bearing core
 behind. The Rust core overwrites owned key buffers on replacement/drop; the app
 still owns OS secure-store deletion and any key buffers it supplied.
 
+Runtime `setHeaders()` is an active-session operation and is rejected during
+preflight at both the JavaScript and native command boundaries. Supply bootstrap
+headers through trusted plugin configuration; rotate them only after successful
+activation.
+
 ## React availability guard
 
 The Tauri bridge carries `currentSchemaVersion`, `schemaFloor`, and migration

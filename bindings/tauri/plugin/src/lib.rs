@@ -535,6 +535,13 @@ async fn syncular_set_headers<R: Runtime>(
     headers: std::collections::BTreeMap<String, String>,
 ) -> Result<Value, String> {
     let state = app.state::<SyncularState>();
+    // Runtime bearer replacement is an active-session operation. Hold the
+    // same gate as fast reads so beginSecurityPreflight both rejects new
+    // replacements and waits for an already-started mailbox update.
+    let _active_guard = match state.security_gate.enter_read() {
+        Ok(guard) => guard,
+        Err(reply) => return Ok(reply),
+    };
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     state.send(Request::SetHeaders {
         headers: headers.into_iter().collect(),
@@ -701,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn security_gate_blocks_new_reads_and_waits_for_in_flight_snapshots() {
+    fn security_gate_blocks_new_operations_and_waits_for_in_flight_work() {
         let gate = std::sync::Arc::new(SecurityGate::new_preflight());
         gate.activate().expect("activate test gate");
         let read = gate.enter_read().expect("active read");
@@ -719,6 +726,50 @@ mod tests {
             .expect("barrier drains after the read");
         barrier.join().expect("barrier thread");
         assert!(gate.enter_read().is_err());
+    }
+
+    #[test]
+    fn direct_set_headers_command_respects_the_native_preflight_gate() {
+        use std::collections::BTreeMap;
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder()
+            .plugin(init(SyncularConfig {
+                auto_sync: false,
+                ..Default::default()
+            }))
+            .build(mock_context(noop_assets()))
+            .expect("build mock app");
+
+        let blocked = tauri::async_runtime::block_on(syncular_set_headers(
+            app.handle().clone(),
+            BTreeMap::from([("authorization".to_owned(), "Bearer blocked".to_owned())]),
+        ))
+        .expect("preflight reply");
+        assert_eq!(
+            blocked["error"]["code"],
+            Value::from("client.security_preflight_required")
+        );
+
+        let created = tauri::async_runtime::block_on(syncular_command(
+            app.handle().clone(),
+            json!({
+                "method": "create",
+                "params": {
+                    "clientId": "native-header-gate",
+                    "schema": { "version": 1, "tables": [] }
+                }
+            }),
+        ))
+        .expect("create reply");
+        assert!(created.get("error").is_none(), "{created}");
+
+        let active = tauri::async_runtime::block_on(syncular_set_headers(
+            app.handle().clone(),
+            BTreeMap::from([("authorization".to_owned(), "Bearer active".to_owned())]),
+        ))
+        .expect("active reply");
+        assert_eq!(active["result"], Value::Null);
     }
 
     #[test]
