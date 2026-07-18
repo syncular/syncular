@@ -8,7 +8,7 @@
 //! reference to the v1 Rust tree or the v2 TypeScript client.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
@@ -75,6 +75,7 @@ enum SubState {
 #[cfg(test)]
 mod observation_tests {
     use super::*;
+    use crate::native_transport::HostTransport;
     use serde_json::json;
 
     fn client() -> SyncClient {
@@ -116,6 +117,148 @@ mod observation_tests {
             client.drain_sync_intents().as_slice(),
             [SyncIntent::Background { delay_ms: 250 }]
         ));
+    }
+
+    #[test]
+    fn batched_push_acknowledgements_rebuild_overlay_once_per_response() {
+        let mut client = client();
+        const COMMIT_COUNT: usize = 32;
+
+        for index in 0..COMMIT_COUNT {
+            client
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".to_owned(),
+                    values: Map::from_iter([
+                        ("id".to_owned(), Value::from(format!("task-{index}"))),
+                        ("project_id".to_owned(), Value::from("project-1")),
+                    ]),
+                    base_version: None,
+                }])
+                .expect("queue commit");
+        }
+
+        let (_, request_meta) = client.build_request(false);
+        assert_eq!(request_meta.pushed_ids.len(), COMMIT_COUNT);
+        let mut frames = vec![Frame::RespHeader {
+            required_schema_version: None,
+            latest_schema_version: None,
+        }];
+        frames.extend(request_meta.pushed_ids.iter().enumerate().map(
+            |(index, client_commit_id)| Frame::PushResult {
+                client_commit_id: client_commit_id.clone(),
+                status: PushStatus::Applied,
+                commit_seq: Some(index as i64 + 1),
+                results: vec![OpResult::Applied { op_index: 0 }],
+            },
+        ));
+        let response = Message {
+            msg_kind: MsgKind::Response,
+            frames,
+        };
+        let mut transport =
+            HostTransport::new_from_config(&json!({})).expect("no-network host transport");
+
+        client.overlay_rebuild_count.set(0);
+        client.outcome_prune_count.set(0);
+        let outcome = client.process_response(&mut transport, response, &request_meta);
+        assert!(matches!(outcome, SyncOutcome::Ok(_)));
+        assert!(client.pending_commit_ids().is_empty());
+        assert_eq!(
+            client.overlay_rebuild_count.get(),
+            1,
+            "one response must reconcile its acknowledged commits with one overlay rebuild"
+        );
+        assert_eq!(
+            client.outcome_prune_count.get(),
+            1,
+            "one response must enforce outcome retention once"
+        );
+    }
+
+    #[test]
+    fn mixed_push_results_reconcile_and_prune_once_per_response() {
+        let mut client = client();
+        for index in 0..4 {
+            client
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".to_owned(),
+                    values: Map::from_iter([
+                        ("id".to_owned(), Value::from(format!("task-{index}"))),
+                        ("project_id".to_owned(), Value::from("project-1")),
+                    ]),
+                    base_version: None,
+                }])
+                .expect("queue commit");
+        }
+
+        let (_, request_meta) = client.build_request(false);
+        let ids = &request_meta.pushed_ids;
+        assert_eq!(ids.len(), 4);
+        let response = Message {
+            msg_kind: MsgKind::Response,
+            frames: vec![
+                Frame::RespHeader {
+                    required_schema_version: None,
+                    latest_schema_version: None,
+                },
+                Frame::PushResult {
+                    client_commit_id: ids[0].clone(),
+                    status: PushStatus::Applied,
+                    commit_seq: Some(1),
+                    results: vec![OpResult::Applied { op_index: 0 }],
+                },
+                Frame::PushResult {
+                    client_commit_id: ids[1].clone(),
+                    status: PushStatus::Cached,
+                    commit_seq: Some(2),
+                    results: vec![OpResult::Applied { op_index: 0 }],
+                },
+                Frame::PushResult {
+                    client_commit_id: ids[2].clone(),
+                    status: PushStatus::Rejected,
+                    commit_seq: None,
+                    results: vec![OpResult::Error {
+                        op_index: 0,
+                        code: "sync.validation_failed".to_owned(),
+                        message: "rejected".to_owned(),
+                        retryable: false,
+                    }],
+                },
+                Frame::PushResult {
+                    client_commit_id: ids[3].clone(),
+                    status: PushStatus::Rejected,
+                    commit_seq: None,
+                    results: vec![OpResult::Error {
+                        op_index: 0,
+                        code: "sync.idempotency_cache_miss".to_owned(),
+                        message: "retry".to_owned(),
+                        retryable: true,
+                    }],
+                },
+            ],
+        };
+        let mut transport =
+            HostTransport::new_from_config(&json!({})).expect("no-network host transport");
+
+        client.overlay_rebuild_count.set(0);
+        client.outcome_prune_count.set(0);
+        let outcome = client.process_response(&mut transport, response, &request_meta);
+        let SyncOutcome::Ok(report) = outcome else {
+            panic!("mixed push-result response failed");
+        };
+
+        assert_eq!(report.applied, ids[..2]);
+        assert_eq!(report.rejected, ids[2..3]);
+        assert_eq!(report.retryable, ids[3..4]);
+        assert_eq!(client.pending_commit_ids(), ids[3..4]);
+        assert_eq!(
+            client
+                .query("SELECT id FROM tasks ORDER BY id", &[])
+                .expect("query visible overlay"),
+            vec![Map::from_iter([("id".to_owned(), Value::from("task-3"))])]
+        );
+        assert_eq!(client.overlay_rebuild_count.get(), 1);
+        assert_eq!(client.outcome_prune_count.get(), 1);
     }
 
     #[test]
@@ -1141,6 +1284,14 @@ pub struct SyncClient {
     /// diverged from the visible overlay since the last rebuild. Lets a
     /// no-op sync round skip the full base→visible copy.
     overlay_dirty: Cell<bool>,
+    /// Test-only structural performance signal: response processing must not
+    /// turn a batch of acknowledgements into one full overlay rebuild each.
+    #[cfg(test)]
+    overlay_rebuild_count: Cell<usize>,
+    /// Test-only structural performance signal: outcome retention is enforced
+    /// once per response rather than once per acknowledgement.
+    #[cfg(test)]
+    outcome_prune_count: Cell<usize>,
     /// Exact observer-transaction output drained by command/FFI hosts.
     change_queue: VecDeque<ClientChangeBatch>,
     sync_intent_queue: VecDeque<SyncIntent>,
@@ -1682,6 +1833,10 @@ impl SyncClient {
             security_preflight: false,
             insert_sql: RefCell::new(HashMap::new()),
             overlay_dirty: Cell::new(false),
+            #[cfg(test)]
+            overlay_rebuild_count: Cell::new(0),
+            #[cfg(test)]
+            outcome_prune_count: Cell::new(0),
             change_queue: VecDeque::new(),
             sync_intent_queue: VecDeque::new(),
             retry_delay_ms: 250,
@@ -3256,6 +3411,9 @@ impl SyncClient {
     }
 
     fn prune_commit_outcomes(&self) -> Result<(), String> {
+        #[cfg(test)]
+        self.outcome_prune_count
+            .set(self.outcome_prune_count.get() + 1);
         let max_entries = self.limits.outcome_retention_max_entries.unwrap_or(1_000);
         let count = self
             .conn
@@ -4582,27 +4740,45 @@ impl SyncClient {
         };
         let mut rejection_details_by_commit: HashMap<String, BTreeMap<i32, RejectionDetails>> =
             HashMap::new();
+        let pushed_ids = meta
+            .pushed_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let mut last_final_push_result_id: Option<String> = None;
         for frame in &response.frames {
-            if let Frame::PushResultDetails {
-                client_commit_id,
-                entries,
-            } = frame
-            {
-                let details = rejection_details_by_commit
-                    .entry(client_commit_id.clone())
-                    .or_default();
-                for entry in entries {
-                    let parsed = match RejectionDetails::parse(&entry.details.0) {
-                        Ok(value) => value,
-                        Err(message) => {
-                            return SyncOutcome::Failed {
-                                error_code: "sync.invalid_request".to_owned(),
-                                message,
-                            };
-                        }
-                    };
-                    details.insert(entry.op_index, parsed);
+            match frame {
+                Frame::PushResultDetails {
+                    client_commit_id,
+                    entries,
+                } => {
+                    let details = rejection_details_by_commit
+                        .entry(client_commit_id.clone())
+                        .or_default();
+                    for entry in entries {
+                        let parsed = match RejectionDetails::parse(&entry.details.0) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                return SyncOutcome::Failed {
+                                    error_code: "sync.invalid_request".to_owned(),
+                                    message,
+                                };
+                            }
+                        };
+                        details.insert(entry.op_index, parsed);
+                    }
                 }
+                Frame::PushResult {
+                    client_commit_id,
+                    status,
+                    results,
+                    ..
+                } if pushed_ids.contains(client_commit_id.as_str())
+                    && Self::push_result_is_final(*status, results) =>
+                {
+                    last_final_push_result_id = Some(client_commit_id.clone());
+                }
+                _ => {}
             }
         }
         let mut frames = response.frames.into_iter();
@@ -4640,12 +4816,15 @@ impl SyncClient {
                     commit_seq: _,
                     results,
                 } => {
+                    let prune_outcomes =
+                        last_final_push_result_id.as_deref() == Some(&client_commit_id);
                     self.handle_push_result(
                         &client_commit_id,
                         status,
                         &results,
                         rejection_details_by_commit.get(&client_commit_id),
                         &mut report,
+                        prune_outcomes,
                     );
                 }
                 Frame::PushResultDetails { .. } => {}
@@ -4723,13 +4902,15 @@ impl SyncClient {
             }
         }
 
-        // §7.1: reconciliation is outbox replay on top — whenever server
-        // data has been applied, including a round that aborted mid-way.
+        // §7.1: reconcile the visible overlay once at the response boundary
+        // after all outbox acknowledgements and server data applied so a
+        // batch of PUSH_RESULT frames cannot trigger repeated full-table
+        // rebuilds. This also covers a round that aborted mid-way.
         if self.overlay_dirty.get() {
             self.rebuild_overlay();
         }
         // §5.9.7 B1: refcounts follow the final visible rows at every response
-        // boundary. Push-result handling can rebuild the overlay (and clear
+        // boundary. A subscription section can rebuild the overlay (and clear
         // `overlay_dirty`) before this point, so gating reconciliation on that
         // flag can leave a newly referenced body at refcount zero and make it
         // eligible for LRU eviction. The TypeScript core has the same
@@ -4763,6 +4944,7 @@ impl SyncClient {
         results: &[OpResult],
         rejection_details: Option<&BTreeMap<i32, RejectionDetails>>,
         report: &mut SyncReport,
+        prune_outcomes: bool,
     ) {
         let Some(index) = self
             .outbox
@@ -4796,17 +4978,20 @@ impl SyncClient {
                 } else {
                     CommitOutcomeStatus::Cached
                 };
-                if self
+                let persisted = self
                     .persist_commit_outcome(
                         client_commit_id,
                         outcome_status,
                         &journal_results,
                         None,
                     )
-                    .and_then(|()| self.delete_outbox_persisted(client_commit_id))
-                    .and_then(|()| self.prune_commit_outcomes())
-                    .is_err()
-                {
+                    .and_then(|()| self.delete_outbox_persisted(client_commit_id));
+                let persisted = if prune_outcomes {
+                    persisted.and_then(|()| self.prune_commit_outcomes())
+                } else {
+                    persisted
+                };
+                if persisted.is_err() {
                     self.rollback_observation("syncular_push_result");
                     return;
                 }
@@ -4929,17 +5114,20 @@ impl SyncClient {
                 } else {
                     CommitOutcomeStatus::Conflict
                 };
-                if self
+                let persisted = self
                     .persist_commit_outcome(
                         client_commit_id,
                         outcome_status,
                         &journal_results,
                         Some(&operations),
                     )
-                    .and_then(|()| self.delete_outbox_persisted(client_commit_id))
-                    .and_then(|()| self.prune_commit_outcomes())
-                    .is_err()
-                {
+                    .and_then(|()| self.delete_outbox_persisted(client_commit_id));
+                let persisted = if prune_outcomes {
+                    persisted.and_then(|()| self.prune_commit_outcomes())
+                } else {
+                    persisted
+                };
+                if persisted.is_err() {
                     self.rollback_observation("syncular_push_result");
                     return;
                 }
@@ -4961,7 +5149,6 @@ impl SyncClient {
                     batch.table(&operation.table);
                 }
             }
-            self.rebuild_overlay_if_dirty();
         }
         if self
             .finish_observation("syncular_push_result", batch)
@@ -4969,6 +5156,20 @@ impl SyncClient {
         {
             self.rollback_observation("syncular_push_result");
         }
+    }
+
+    fn push_result_is_final(status: PushStatus, results: &[OpResult]) -> bool {
+        status != PushStatus::Rejected
+            || !results.iter().any(|result| {
+                matches!(
+                    result,
+                    OpResult::Error {
+                        code,
+                        retryable: true,
+                        ..
+                    } if code == "sync.idempotency_cache_miss"
+                )
+            })
     }
 
     // -- subscription sections ------------------------------------------------------
@@ -6539,6 +6740,9 @@ impl SyncClient {
     /// every visible table as (base server state) + (pending outbox replay
     /// on top). Optimistic rows carry version `-1`.
     fn rebuild_overlay(&mut self) {
+        #[cfg(test)]
+        self.overlay_rebuild_count
+            .set(self.overlay_rebuild_count.get() + 1);
         self.exec("SAVEPOINT syncular_overlay");
         for table in self.schema.tables.clone() {
             for index in &table.fts_indexes {

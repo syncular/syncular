@@ -163,6 +163,10 @@ export type ClientDiagnosticsListener = (
 export class ClientDiagnosticsEmitter {
   readonly #listeners = new Set<ClientDiagnosticsListener>();
 
+  get observed(): boolean {
+    return this.#listeners.size > 0;
+  }
+
   on(listener: ClientDiagnosticsListener): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
