@@ -193,6 +193,12 @@ server persists each table's column layout (name/type/nullable) in
 changed table keyset-paged and rewrites payload + projection in the
 migration transaction. Append-only is enforced (old layout must be an
 exact prefix; added columns must be nullable) — anything else fails loud.
+Typegen enforces the earlier authoring boundary with the committed
+`syncular.migrations.lock.json`: normalized SQL checksums make every deployed
+migration immutable, and per-migration column snapshots let generation name
+the first incompatible table/column before a client or server opens. Existing
+projects create the baseline once with `syncular migrations baseline`; normal
+generation may append new entries but never rewrites a locked one.
 The original design's claim that "no re-encoding of old rows is required"
 was wrong. (Old `sync_changes` entries stay old-encoded: the §7.4.3 client
 schema-bump reset forces a re-bootstrap, so pre-bump deltas are never

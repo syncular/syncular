@@ -1,0 +1,37 @@
+{
+  "formatVersion": 1,
+  "migrations": [
+    {
+      "name": "0001_initial",
+      "sha256": "850af3a336e7364bebb3284bd7b2eb4d5790508eed01e3d1658a6c3ee17087da",
+      "tables": [
+        {
+          "name": "notes",
+          "primaryKey": "id",
+          "columns": [
+            {
+              "name": "id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "list_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "body",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "updated_at_ms",
+              "type": "integer",
+              "nullable": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

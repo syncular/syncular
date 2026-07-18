@@ -62,8 +62,8 @@ scaffolder logic. For each template it:
 
 1. scaffolds into a temp dir (`--local`),
 2. asserts the tree shape + placeholder substitution + package.json rewrite,
-3. runs `syncular generate --check` — proving the committed
-   `syncular.generated.ts` is byte-fresh,
+3. runs `syncular generate --check` — proving immutable migration history and
+   the committed `syncular.generated.ts` are byte-fresh,
 4. links a `node_modules` into the temp dir **offline** (see
    [`test/link-workspace.ts`](./test/link-workspace.ts): `@syncular/*` →
    the real package dirs, external deps → the workspace `.bun` hoist store),

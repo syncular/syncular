@@ -11,7 +11,7 @@ have zero imports, so pulling one in adds no dependency edge.
 The authoritative contract for the manifest, the IR, and the SQL subset is the
 [typegen README](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md); this is the workflow.
 
-## The two inputs
+## The committed schema inputs
 
 **Migrations** (`migrations/NNNN_name/up.sql`) declare table shape. typegen
 parses a strict SQL subset (`CREATE TABLE`, `ALTER TABLE ADD COLUMN`,
@@ -58,6 +58,24 @@ new column or uniqueness definition. On a server schema bump, Syncular
 rebuilds the declared secondary indexes on its relational projection tables;
 clients recreate their application tables during their normal re-bootstrap.
 
+**The migration lock** (`syncular.migrations.lock.json`) is the immutable,
+version-controlled baseline. It stores migration names, normalized SQL
+checksums, and privacy-safe column-layout snapshots for diagnostics. It never
+stores SQL, rows, database paths, or secrets. Scaffolds and `syncular init`
+create it. For an existing project, review the current migration history once
+and run:
+
+```sh
+syncular migrations baseline --manifest-dir .
+syncular migrations check --manifest-dir .
+```
+
+The baseline command refuses overwrite. Once deployed, restore any accidentally
+edited migration and add a new migration for the repair. Do not delete and
+re-baseline the lock. Existing-table additions must be trailing nullable
+columns; changing names, order, types, or nullability in locked history is not
+an upgrade.
+
 `CREATE VIRTUAL TABLE … USING fts5` declares a client-local full-text
 projection owned by an existing synced table. It is emitted into every client
 schema but never enters the wire or server schema. See
@@ -70,15 +88,18 @@ query pattern, and lifecycle.
 syncular generate --manifest-dir .
 ```
 
-This writes the IR JSON and every configured schema or named-query output.
-**Commit all generated outputs.** Each generated file carries the IR hash in
-its header, so freshness is verifiable:
+This validates locked history, appends valid new migrations to the lock, and
+writes the IR JSON plus every configured schema or named-query output. **Commit
+the lock and all generated outputs.** Each generated file carries the IR hash
+in its header, so freshness is verifiable:
 
 ```sh
 syncular generate --check     # exits non-zero unless on-disk files are byte-exact
 ```
 
-Wire `--check` into CI so it catches any schema change that was not regenerated.
+Wire `--check` into CI so it catches missing generated changes and any edit,
+removal, rename, reorder, type change, or nullability change in deployed
+history. `syncular migrations check` is a faster history-only CI gate.
 
 ## What you get
 

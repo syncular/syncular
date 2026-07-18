@@ -9,22 +9,30 @@ overrides it.
 
 ```sh
 syncular generate [--manifest-dir <dir>] [--check] [--watch]
+syncular migrations baseline|check [--manifest-dir <dir>]
 syncular init [--manifest-dir <dir>]
 ```
 
 `generate` reads `<dir>/syncular.json` plus its migrations directory and
-writes the IR JSON and the generated TS module. `--check` regenerates in
-memory and exits 1 unless both files on disk match **byte-exactly** (this is
-the freshness contract; it is unchanged). `--watch` regenerates on any change
-under the manifest dir (Bun's recursive `fs.watch`, debounced; it skips the
-write when outputs are already fresh so it never loops on its own output).
-`--check` and `--watch` are mutually exclusive.
+writes the migration lock, IR JSON, and configured generated modules.
+`--check` regenerates in memory and exits 1 unless every output on disk matches
+**byte-exactly**. `--watch` regenerates on any change under the manifest dir
+(Bun's recursive `fs.watch`, debounced; it skips the write when outputs are
+already fresh so it never loops on its own output). `--check` and `--watch`
+are mutually exclusive.
 
-`init` scaffolds a starter `syncular.json` + `migrations/0001_initial/up.sql`
-into an existing project (the "add syncular to my app" path). It refuses to
-overwrite an existing manifest or first migration. New projects usually start
-from the scaffolder instead (`bun create syncular-app my-app`), which emits the
-same shape plus a server + client.
+`migrations baseline` creates the first
+`syncular.migrations.lock.json` and refuses to replace one that already
+exists. `migrations check` is the fast, CI-friendly history check without
+query analysis or output generation. New migrations are appended to the lock
+by ordinary `generate`; locked migrations may never be edited, removed,
+renamed, or reordered.
+
+`init` scaffolds a starter `syncular.json`, first migration, and migration
+lock into an existing project (the "add syncular to my app" path). It refuses
+to overwrite any of them. New projects usually start from the scaffolder
+instead (`bun create syncular-app my-app`), which emits the same shape plus a
+server + client.
 
 When `generate` cannot find the manifest or migrations, the error points at the
 schema guide and suggests `syncular init`.
@@ -98,6 +106,31 @@ previous entry's `through` up to and including its own. **Gap rule**: the
 final entry's `through` must be the final migration — a migration not
 covered by any version is a hard error (so is a `through` naming a
 missing or out-of-order migration).
+
+### Immutable migration history
+
+`syncular.migrations.lock.json` is the version-controlled deployment baseline.
+Each entry records the migration name, a SHA-256 checksum of its SQL (line
+endings normalized), and a column-layout snapshot used only for diagnostics.
+It contains no SQL, filesystem path, row data, or runtime database state.
+
+For an existing project adopting this contract, review the current history
+once, then run:
+
+```sh
+syncular migrations baseline --manifest-dir .
+git add syncular.migrations.lock.json
+syncular migrations check --manifest-dir .
+```
+
+After that, a deployed migration is immutable. Restore an accidentally edited
+migration and express the repair in a new `NNNN_name/up.sql`; do not delete and
+re-baseline the lock. Existing table layouts are append-only and added columns
+must be nullable so stored payloads and every server backend can upgrade
+safely. `generate` appends a valid new migration to the lock, while
+`generate --check` fails until that updated lock and generated outputs are
+committed. Drift diagnostics name the locked migration and the first affected
+table/column without printing SQL or local paths.
 
 **Every-migrated-table rule.** Every table created by the migrations must
 appear in `tables`. A migrated-but-unlisted table is a hard error, not a
@@ -297,8 +330,8 @@ The emitted `*.generated.ts` module:
 
 **Lint/freshness split**: `*.generated.ts` is excluded from biome (see
 `biome.json`) — hand-format rules on machine output only create churn.
-Freshness and integrity are enforced instead by `syncular generate
---check`, which is byte-exact and therefore strictly stronger; the
+Freshness and migration-history integrity are enforced instead by `syncular
+generate --check`, which is byte-exact and refuses locked-history drift; the
 generated fixture is still typechecked by `tsc` and exercised by tests.
 
 ## 5. Native emitter contracts (Swift / Kotlin / Dart)

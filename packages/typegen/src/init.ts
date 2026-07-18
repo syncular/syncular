@@ -9,6 +9,11 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { MANIFEST_FILENAME } from './manifest';
+import {
+  buildMigrationLock,
+  MIGRATION_LOCK_FILENAME,
+  serializeMigrationLock,
+} from './migration-lock';
 
 const STARTER_MANIFEST = `{
   "manifestVersion": 1,
@@ -73,6 +78,7 @@ export function initProject(dir: string): InitResult {
   const manifestPath = join(root, MANIFEST_FILENAME);
   const migrationDir = join(root, 'migrations', '0001_initial');
   const migrationPath = join(migrationDir, 'up.sql');
+  const migrationLockPath = join(root, MIGRATION_LOCK_FILENAME);
   const queriesDir = join(root, 'queries');
   const queryPath = join(queriesDir, 'notes-in-list.sql');
 
@@ -87,6 +93,11 @@ export function initProject(dir: string): InitResult {
       `${migrationPath} already exists — refusing to overwrite.`,
     );
   }
+  if (existsSync(migrationLockPath)) {
+    throw new InitError(
+      `${migrationLockPath} already exists — refusing to overwrite immutable migration history.`,
+    );
+  }
   if (existsSync(queryPath)) {
     throw new InitError(`${queryPath} already exists — refusing to overwrite.`);
   }
@@ -95,6 +106,15 @@ export function initProject(dir: string): InitResult {
   mkdirSync(queriesDir, { recursive: true });
   writeFileSync(manifestPath, STARTER_MANIFEST, 'utf8');
   writeFileSync(migrationPath, STARTER_MIGRATION, 'utf8');
+  writeFileSync(
+    migrationLockPath,
+    serializeMigrationLock(
+      buildMigrationLock([{ name: '0001_initial', sql: STARTER_MIGRATION }]),
+    ),
+    'utf8',
+  );
   writeFileSync(queryPath, STARTER_QUERY, 'utf8');
-  return { written: [manifestPath, migrationPath, queryPath] };
+  return {
+    written: [manifestPath, migrationPath, migrationLockPath, queryPath],
+  };
 }

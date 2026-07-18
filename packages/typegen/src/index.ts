@@ -19,6 +19,7 @@ export * from './ir';
 export * from './lower';
 export * from './lsp';
 export * from './manifest';
+export * from './migration-lock';
 export * from './naming';
 export * from './query';
 export * from './query-ir';

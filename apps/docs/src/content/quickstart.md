@@ -31,10 +31,10 @@ To copy the example by hand instead of scaffolding:
 cp -r examples/quickstart my-app && cd my-app
 ```
 
-## 2. Describe the schema
+## 2. Describe and lock the schema
 
-Two files drive everything (the scaffolder wrote both). The migration declares
-the table shape:
+The scaffolder wrote a migration, manifest, and
+`syncular.migrations.lock.json`. The migration declares the table shape:
 
 ```sql
 -- migrations/0001_initial/up.sql
@@ -77,9 +77,11 @@ authorized: `list:{list_id}` means "a note belongs to the list in its
 bun run generate     # → syncular generate --manifest-dir .
 ```
 
-This writes `src/syncular.generated.ts`, a zero-import module exporting a
-`schema` object (used by both server and client) plus per-table row types.
-Commit it; regenerate whenever the schema changes. See
+This verifies immutable migration history and writes
+`src/syncular.generated.ts`, a zero-import module exporting a `schema` object
+(used by both server and client) plus per-table row types. Commit the generated
+module and migration lock; add a new migration rather than editing a deployed
+one. See
 [Schema & typegen](/guide-schema/) for the full workflow.
 
 ## 4. The server

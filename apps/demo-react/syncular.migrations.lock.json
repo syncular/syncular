@@ -1,0 +1,52 @@
+{
+  "formatVersion": 1,
+  "migrations": [
+    {
+      "name": "0001_initial",
+      "sha256": "56f54ab2430eeadfceeb0acbcb961933ee0e546e04136933a019aa0cd7f400aa",
+      "tables": [
+        {
+          "name": "todos",
+          "primaryKey": "id",
+          "columns": [
+            {
+              "name": "id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "list_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "title",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "done",
+              "type": "boolean",
+              "nullable": false
+            },
+            {
+              "name": "position",
+              "type": "integer",
+              "nullable": false
+            },
+            {
+              "name": "updated_at_ms",
+              "type": "integer",
+              "nullable": false
+            },
+            {
+              "name": "attachment",
+              "type": "blob_ref",
+              "nullable": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

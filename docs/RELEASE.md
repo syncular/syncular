@@ -1,10 +1,28 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.19** (`v0.15.19`). All artifacts use Apache-2.0, except
+current release is **0.15.20** (`v0.15.20`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.20 release notes
+
+0.15.20 makes application migration history immutable before a client or
+server opens. Typegen now requires the committed
+`syncular.migrations.lock.json`, validates every locked migration as an exact
+name-and-checksum prefix, and permits ordinary generation to append only new
+migrations. Drift fails with a privacy-safe diagnostic naming the migration
+and first affected table/column without printing SQL, filesystem paths, row
+data, or runtime database state.
+
+The release adds `syncular migrations baseline` for deliberate one-time
+adoption and `syncular migrations check` for a fast CI gate. `syncular init`
+and every maintained scaffold/example include the lock. Existing projects must
+review their current migration history once, run the baseline command, and
+commit the result before their first 0.15.20 generation. A deployed migration
+must then be restored rather than edited; compatible repairs use a new
+migration and trailing nullable columns.
 
 ## 0.15.19 release notes
 

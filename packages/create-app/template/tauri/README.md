@@ -47,6 +47,7 @@ Prerequisites: [Rust](https://rustup.rs) and the
 | File | What it is |
 |---|---|
 | `syncular.json` + `migrations/` + `queries/` | Schema and named-query inputs |
+| `syncular.migrations.lock.json` | Immutable deployed-migration checksums/layout evidence (committed) |
 | `src/syncular.generated.ts` + `src/syncular.queries.ts` | Generated descriptors (committed) |
 | `src/server.ts` | Sync server + WebSocket + the web frontend, one Bun process |
 | `src/frontend/engine.ts` | **The seam**: picks worker core vs native core |
@@ -83,8 +84,8 @@ On desktop, the plugin owns the database path and the transport — see
    deployed sync endpoint (rotating auth goes through `client.setHeaders`).
 4. **`src/frontend/main.tsx`** — the UI. Everything under `<SyncProvider>` is
    shared code; grow it into your app.
-5. **`migrations/` + `syncular.json`** — add tables and scopes, then
-   `bun run generate`.
+5. **`migrations/` + `syncular.json`** — append migrations and add tables or
+   scopes, then `bun run generate`. Never edit a migration after deployment.
 
 ## Next
 

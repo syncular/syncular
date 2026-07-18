@@ -37,6 +37,7 @@ describe('syncular init', () => {
     expect(init.exitCode).toBe(0);
     expect(init.stdout).toContain('syncular.json');
     expect(existsSync(join(dir, 'syncular.json'))).toBe(true);
+    expect(existsSync(join(dir, 'syncular.migrations.lock.json'))).toBe(true);
     expect(existsSync(join(dir, 'migrations', '0001_initial', 'up.sql'))).toBe(
       true,
     );

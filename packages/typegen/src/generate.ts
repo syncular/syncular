@@ -41,6 +41,13 @@ import {
   type ManifestScopeSpec,
   parseManifest,
 } from './manifest';
+import {
+  buildMigrationLock,
+  MIGRATION_LOCK_FILENAME,
+  readMigrationLock,
+  serializeMigrationLock,
+  validateMigrationLock,
+} from './migration-lock';
 import { buildNamingMap, type NamingTarget } from './naming';
 import {
   type AnalyzedQuery,
@@ -521,6 +528,9 @@ export interface GenerateResult {
   readonly queryHash: string;
   /** Generated TS module source (the exact bytes of the `.ts` output). */
   readonly module: string;
+  /** Immutable application-migration history baseline. */
+  readonly migrationLockJson: string;
+  readonly migrationLockPath: string;
   readonly irPath: string;
   readonly modulePath: string;
   /** Analyzed named queries (empty when no `queries/` files / no query output). */
@@ -530,8 +540,12 @@ export interface GenerateResult {
   readonly outputs: readonly GeneratedOutput[];
 }
 
-/** Read `syncular.json` + migrations under `manifestDir`; build outputs. */
-export function generate(manifestDir: string): GenerateResult {
+interface ProjectInputs {
+  readonly manifest: Manifest;
+  readonly migrations: readonly MigrationInput[];
+}
+
+function loadProjectInputs(manifestDir: string): ProjectInputs {
   const manifestPath = resolve(manifestDir, MANIFEST_FILENAME);
   if (!existsSync(manifestPath)) {
     throw new TypegenError(manifestPath, 'manifest not found');
@@ -547,6 +561,46 @@ export function generate(manifestDir: string): GenerateResult {
   }
   const manifest = parseManifest(raw);
   const migrations = loadMigrations(resolve(manifestDir, manifest.migrations));
+  return { manifest, migrations };
+}
+
+/**
+ * Build a first immutable migration baseline. The caller owns the one-time
+ * write so the CLI can refuse replacement before touching the filesystem.
+ */
+export function baselineMigrationHistory(manifestDir: string): GeneratedOutput {
+  const { manifest, migrations } = loadProjectInputs(manifestDir);
+  // Baseline only a schema that is valid as a complete generated project.
+  buildIr(manifest, migrations);
+  return {
+    path: resolve(manifestDir, MIGRATION_LOCK_FILENAME),
+    content: serializeMigrationLock(buildMigrationLock(migrations)),
+  };
+}
+
+/** Fast CI check for migration history without emitting/query analysis. */
+export function checkMigrationHistory(manifestDir: string): string[] {
+  const { manifest, migrations } = loadProjectInputs(manifestDir);
+  const current = buildMigrationLock(migrations);
+  validateMigrationLock(readMigrationLock(manifestDir), current);
+  buildIr(manifest, migrations);
+  const output = {
+    path: resolve(manifestDir, MIGRATION_LOCK_FILENAME),
+    content: serializeMigrationLock(current),
+  };
+  if (readFileSync(output.path, 'utf8') !== output.content) {
+    return [
+      `${MIGRATION_LOCK_FILENAME}: new migrations are not locked — run generate and commit the updated lock`,
+    ];
+  }
+  return [];
+}
+
+/** Read `syncular.json` + migrations under `manifestDir`; build outputs. */
+export function generate(manifestDir: string): GenerateResult {
+  const { manifest, migrations } = loadProjectInputs(manifestDir);
+  const migrationLock = buildMigrationLock(migrations);
+  validateMigrationLock(readMigrationLock(manifestDir), migrationLock);
   const ir = buildIr(manifest, migrations);
 
   // §5/§12 naming: the emitter targets this run generates (keyword hazards
@@ -575,9 +629,12 @@ export function generate(manifestDir: string): GenerateResult {
   const irJson = serializeIr(ir);
   const hash = irHash(irJson);
   const module = emitModule(ir, hash, manifest.naming);
+  const migrationLockJson = serializeMigrationLock(migrationLock);
+  const migrationLockPath = resolve(manifestDir, MIGRATION_LOCK_FILENAME);
   const irPath = resolve(manifestDir, manifest.output.ir);
   const modulePath = resolve(manifestDir, manifest.output.module);
   const outputs: GeneratedOutput[] = [
+    { path: migrationLockPath, content: migrationLockJson },
     { path: irPath, content: irJson },
     { path: modulePath, content: module },
   ];
@@ -700,6 +757,8 @@ export function generate(manifestDir: string): GenerateResult {
     queryIrJson,
     queryHash,
     module,
+    migrationLockJson,
+    migrationLockPath,
     irPath,
     modulePath,
     queries: analyzedQueries,
