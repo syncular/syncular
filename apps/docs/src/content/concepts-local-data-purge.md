@@ -99,3 +99,27 @@ or clean its remaining protected local data.
 For the key lifecycle, see [Client-side encryption](/concepts-encryption/).
 For the durable evidence left by rejected pending work, see
 [Conflicts & optimistic writes](/concepts-conflicts/).
+
+## Race-free security bootstrap
+
+Use the shared client lifecycle when the purge decision must happen before any
+protected data can be queried or synced:
+
+```ts
+const client = await createClient({
+  ...config,
+  securityPreflight: true,
+});
+
+// Validate and durably journal the signed directive in application code.
+await client.purgeLocalData(directive.plan);
+await client.activateSecurity({ encryption: acceptedKeyring });
+```
+
+`preflight` permits lifecycle/status/local-revision inspection and the exact
+purge only. Queries, mutations, subscription changes, outbox access, sync,
+realtime/presence, blobs, and automatic host-loop work fail with
+`client.security_preflight_required`. `beginSecurityPreflight()` provides the
+same barrier for a live revocation: it gates new work immediately and waits for
+already-started database/network/native-sidecar work before releasing the old
+keyring. Activation cannot overtake that barrier.

@@ -315,6 +315,29 @@ export interface SyncClientConfig {
    * `client.decrypt_failed`, never silent plaintext).
    */
   readonly encryption?: EncryptionConfig;
+  /**
+   * Open the local replica in the fail-closed security preflight state.
+   *
+   * Preflight opens/migrates the database but suppresses every protected read,
+   * mutation, subscription, transport, realtime, presence, and blob operation.
+   * Only lifecycle/status inspection and `purgeLocalData` remain available.
+   * Install the post-authentication keyring and release the gate with
+   * `activateSecurity`. This is mutually exclusive with `encryption`: secure
+   * hosts must not materialize key bytes before their preflight has passed.
+   */
+  readonly securityPreflight?: boolean;
+}
+
+/** The fail-closed local-replica security lifecycle shared by every host. */
+export type SecurityLifecycle = 'preflight' | 'active';
+
+/** Stable client-local error while protected operations are preflight-gated. */
+export const SECURITY_PREFLIGHT_REQUIRED_CODE =
+  'client.security_preflight_required';
+
+/** Key material installed atomically when a direct client becomes active. */
+export interface SecurityActivation {
+  readonly encryption?: EncryptionConfig;
 }
 
 /** §8.6 a peer's ephemeral presence document on a scope key. */
@@ -471,7 +494,8 @@ export class SyncClient {
   readonly #db: ClientDatabase;
   readonly #schema: CompiledClientSchema;
   /** §5.11 client-side encryption config; undefined ⇒ E2EE off. */
-  readonly #encryption: EncryptionConfig | undefined;
+  #encryption: EncryptionConfig | undefined;
+  #securityLifecycle: SecurityLifecycle;
   readonly #now: () => number;
   readonly #outcomeRetentionMaxEntries: number;
   #started = false;
@@ -524,12 +548,25 @@ export class SyncClient {
    * sections, when the seam is quiescent.
    */
   #opChain: Promise<unknown> = Promise.resolve();
+  /** Async protected operations outside the SQLite serialization chain
+   * (blob I/O and realtime connect). Security preflight waits for this set to
+   * drain after synchronously closing the gate. */
+  readonly #protectedAsync = new Set<Promise<unknown>>();
+  #preflightBarrier: Promise<void> | undefined;
 
   constructor(config: SyncClientConfig) {
+    if (config.securityPreflight === true && config.encryption !== undefined) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        'securityPreflight and encryption are mutually exclusive; install keys with activateSecurity after preflight',
+      );
+    }
     this.#config = config;
     this.#db = config.database;
     this.#schema = compileClientSchema(config.schema);
     this.#encryption = config.encryption;
+    this.#securityLifecycle =
+      config.securityPreflight === true ? 'preflight' : 'active';
     this.#now = config.now ?? Date.now;
     const outcomeRetentionMaxEntries =
       config.limits?.outcomeRetentionMaxEntries ?? 1_000;
@@ -613,7 +650,7 @@ export class SyncClient {
       this.#schemaFloor === undefined &&
       (listOutbox(this.#db).length > 0 ||
         subscriptions.some((sub) => sub.status === 'active'));
-    if (startupWork) {
+    if (startupWork && this.#securityLifecycle === 'active') {
       this.#needsPull = true;
       this.#config.onSyncNeeded?.('startup');
       this.#config.onSyncIntent?.({ kind: 'interactive' });
@@ -722,6 +759,68 @@ export class SyncClient {
     this.#started = false;
   }
 
+  /** Current fail-closed local-replica security state. */
+  get securityLifecycle(): SecurityLifecycle {
+    return this.#securityLifecycle;
+  }
+
+  /**
+   * Block new protected operations immediately, then wait for every already
+   * serialized database/network operation to settle before releasing key
+   * references. Hosts await this barrier before applying a quarantine purge.
+   */
+  beginSecurityPreflight(): Promise<void> {
+    this.#requireStarted();
+    if (this.#preflightBarrier !== undefined) return this.#preflightBarrier;
+    this.#securityLifecycle = 'preflight';
+    this.disconnectRealtime();
+    const barrier = (async () => {
+      await Promise.allSettled([this.#opChain, ...this.#protectedAsync]);
+      this.disconnectRealtime();
+      this.#encryption = undefined;
+      this.#syncOutstanding = false;
+    })();
+    this.#preflightBarrier = barrier;
+    void barrier.then(
+      () => {
+        if (this.#preflightBarrier === barrier)
+          this.#preflightBarrier = undefined;
+      },
+      () => {
+        if (this.#preflightBarrier === barrier)
+          this.#preflightBarrier = undefined;
+      },
+    );
+    return barrier;
+  }
+
+  /**
+   * Atomically install the post-authentication keyring and release the gate.
+   * Persisted subscriptions/outbox work produces one exact startup intent only
+   * after activation, never while the local quarantine decision is pending.
+   */
+  async activateSecurity(options: SecurityActivation = {}): Promise<void> {
+    this.#requireStarted();
+    if (this.#securityLifecycle === 'active') {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        'activateSecurity requires the client to be in security preflight',
+      );
+    }
+    await (this.#preflightBarrier ?? this.#opChain);
+    this.#encryption = options.encryption;
+    this.#securityLifecycle = 'active';
+    const startupWork =
+      this.#schemaFloor === undefined &&
+      (listOutbox(this.#db).length > 0 ||
+        loadSubscriptions(this.#db).some((sub) => sub.status === 'active'));
+    if (startupWork) {
+      this.#setSyncNeeded(true);
+      this.#config.onSyncNeeded?.('startup');
+      this.#config.onSyncIntent?.({ kind: 'interactive' });
+    }
+  }
+
   // -- accessors ------------------------------------------------------------
 
   get clientId(): string {
@@ -730,6 +829,7 @@ export class SyncClient {
 
   /** The underlying database — raw SQL is the local query API (B3). */
   get database(): ClientDatabase {
+    this.#requireActive();
     return this.#db;
   }
 
@@ -742,6 +842,7 @@ export class SyncClient {
    * internals read `this.#db` directly and skip this method by design.
    */
   query(sql: string, params?: readonly SqlValue[]): SqlRow[] {
+    this.#requireActive();
     assertReadOnlyQuery(sql);
     return stripSyncColumns(this.#db.query(sql, params));
   }
@@ -758,7 +859,7 @@ export class SyncClient {
    * `windowState()` across separate worker/IPC calls.
    */
   querySnapshot<Row = SqlRow>(spec: QueryReadSpec): QuerySnapshot<Row> {
-    this.#requireStarted();
+    this.#requireActive();
     assertReadOnlyQuery(spec.sql);
     return this.#db.transaction(() => {
       const revision = getLocalRevision(this.#db);
@@ -901,6 +1002,17 @@ export class SyncClient {
     return next;
   }
 
+  #runProtectedAsync<T>(fn: () => Promise<T>): Promise<T> {
+    this.#requireActive();
+    const task = Promise.resolve().then(fn);
+    this.#protectedAsync.add(task);
+    void task.then(
+      () => this.#protectedAsync.delete(task),
+      () => this.#protectedAsync.delete(task),
+    );
+    return task;
+  }
+
   // -- blobs (§5.9) ---------------------------------------------------------
 
   /**
@@ -910,7 +1022,14 @@ export class SyncClient {
    * a `blob_ref` column of a mutation. The referencing row MUST be written
    * (via `mutate`) after this call so upload-before-push holds (§5.9.3).
    */
-  async uploadBlob(
+  uploadBlob(
+    bytes: Uint8Array,
+    options?: { readonly mediaType?: string; readonly name?: string },
+  ): Promise<BlobRef> {
+    return this.#runProtectedAsync(() => this.#uploadBlob(bytes, options));
+  }
+
+  async #uploadBlob(
     bytes: Uint8Array,
     options?: { readonly mediaType?: string; readonly name?: string },
   ): Promise<BlobRef> {
@@ -950,7 +1069,11 @@ export class SyncClient {
    * transport (§5.9.5), verifies the content address, caches, and returns.
    * Accepts a raw `blob_ref` column string or a bare `blobId`.
    */
-  async fetchBlob(blobIdOrRef: string): Promise<CachedBlob> {
+  fetchBlob(blobIdOrRef: string): Promise<CachedBlob> {
+    return this.#runProtectedAsync(() => this.#fetchBlob(blobIdOrRef));
+  }
+
+  async #fetchBlob(blobIdOrRef: string): Promise<CachedBlob> {
     const blobId = blobIdOrRef.startsWith('sha256:')
       ? blobIdOrRef
       : parseBlobRef(blobIdOrRef).blobId;
@@ -1021,7 +1144,11 @@ export class SyncClient {
   }
 
   /** Flush any queued blob uploads (§5.9.7 B4); safe to call standalone. */
-  async flushBlobUploads(): Promise<void> {
+  flushBlobUploads(): Promise<void> {
+    return this.#runProtectedAsync(() => this.#flushBlobUploads());
+  }
+
+  async #flushBlobUploads(): Promise<void> {
     const transport = this.#config.blobs;
     if (transport === undefined || !this.#hasBlobs) return;
     for (const pending of listPendingUploads(this.#db)) {
@@ -1086,22 +1213,24 @@ export class SyncClient {
   }
 
   get conflicts(): readonly ConflictRecord[] {
+    this.#requireActive();
     return this.#conflicts;
   }
 
   get rejections(): readonly RejectionRecord[] {
+    this.#requireActive();
     return this.#rejections;
   }
 
   /** One durable final outcome by the originating client commit id. */
   commitOutcome(clientCommitId: string): CommitOutcome | undefined {
-    this.#requireStarted();
+    this.#requireActive();
     return readCommitOutcome(this.#db, clientCommitId);
   }
 
   /** Newest-first durable outcome journal. */
   commitOutcomes(query: CommitOutcomeQuery = {}): readonly CommitOutcome[] {
-    this.#requireStarted();
+    this.#requireActive();
     return listCommitOutcomes(this.#db, query);
   }
 
@@ -1112,7 +1241,7 @@ export class SyncClient {
    * dismissed. The transition is one-way and survives restart.
    */
   resolveCommitOutcome(input: ResolveCommitOutcomeInput): CommitOutcome {
-    this.#requireStarted();
+    this.#requireActive();
     const current = readCommitOutcome(this.#db, input.clientCommitId);
     if (current === undefined) {
       throw new ClientSyncError(
@@ -1226,12 +1355,14 @@ export class SyncClient {
    * Ephemeral — reflects only what the socket has delivered.
    */
   presence(scopeKey: string): readonly PresencePeer[] {
+    this.#requireActive();
     const peers = this.#presence.get(scopeKey);
     return peers === undefined ? [] : [...peers.values()];
   }
 
   /** Every scope key this client currently has presence state for. */
   presenceKeys(): string[] {
+    this.#requireActive();
     return [...this.#presence.keys()];
   }
 
@@ -1256,7 +1387,7 @@ export class SyncClient {
    * by the server with `presence.forbidden`.
    */
   setPresence(scopeKey: string, doc: Record<string, unknown> | null): void {
-    this.#requireStarted();
+    this.#requireActive();
     const socket = this.#socket;
     if (socket === undefined) {
       throw new ClientSyncError(
@@ -1289,24 +1420,24 @@ export class SyncClient {
   }
 
   subscriptions(): SubscriptionRecord[] {
-    this.#requireStarted();
+    this.#requireActive();
     return loadSubscriptions(this.#db);
   }
 
   subscription(id: string): SubscriptionRecord | undefined {
-    this.#requireStarted();
+    this.#requireActive();
     return getSubscription(this.#db, id);
   }
 
   pendingCommits(): OutboxCommit[] {
-    this.#requireStarted();
+    this.#requireActive();
     return listOutbox(this.#db);
   }
 
   // -- subscriptions ----------------------------------------------------------
 
   subscribe(input: SubscribeInput): void {
-    this.#requireStarted();
+    this.#requireActive();
     if (!this.#schema.tables.has(input.table)) {
       throw new ClientSyncError(
         'sync.unknown_table',
@@ -1334,7 +1465,7 @@ export class SyncClient {
   }
 
   unsubscribe(id: string): void {
-    this.#requireStarted();
+    this.#requireActive();
     deleteSubscription(this.#db, id);
   }
 
@@ -1362,7 +1493,7 @@ export class SyncClient {
     base: WindowBase,
     units: readonly string[],
   ): Promise<CommandResult<void>> {
-    this.#requireStarted();
+    this.#requireActive();
     const table = this.#table(base.table);
     if (!table.scopeColumnByVariable.has(base.variable)) {
       throw new ClientSyncError(
@@ -1429,7 +1560,7 @@ export class SyncClient {
    * advances past -1 with no resume token held).
    */
   windowState(base: WindowBase): WindowState {
-    this.#requireStarted();
+    this.#requireActive();
     const baseKey = windowBaseKey(base);
     const live = loadWindowUnits(this.#db, baseKey);
     const pending: string[] = [];
@@ -1540,7 +1671,7 @@ export class SyncClient {
     mutations: readonly MutationInput[],
     changedFieldsByIndex: readonly (readonly string[] | undefined)[] = [],
   ): string {
-    this.#requireStarted();
+    this.#requireActive();
     const clientCommitId = crypto.randomUUID();
     const operations: OutboxOperation[] = mutations.map((mutation, index) => {
       const table = this.#table(mutation.table);
@@ -1617,7 +1748,7 @@ export class SyncClient {
     partial: Readonly<Record<string, unknown>>,
     options?: { readonly baseVersion?: number },
   ): string {
-    this.#requireStarted();
+    this.#requireActive();
     const compiled = this.#table(table);
     const pkColumn = compiled.columns[compiled.primaryKeyIndex] as RowColumn;
     const rows = this.#db.query(
@@ -1951,7 +2082,7 @@ export class SyncClient {
    * `setWindow` at an await point.
    */
   sync(): Promise<SyncSummary> {
-    this.#requireStarted();
+    this.#requireActive();
     if (this.#syncOutstanding) {
       return Promise.reject(
         new ClientSyncError(
@@ -2159,8 +2290,11 @@ export class SyncClient {
 
   // -- realtime (§8 client side) ----------------------------------------------
 
-  async connectRealtime(): Promise<void> {
-    this.#requireStarted();
+  connectRealtime(): Promise<void> {
+    return this.#runProtectedAsync(() => this.#connectRealtime());
+  }
+
+  async #connectRealtime(): Promise<void> {
     const connector = this.#config.realtime;
     if (connector === undefined) {
       throw new ClientSyncError(
@@ -2168,7 +2302,7 @@ export class SyncClient {
         'no realtime connector configured',
       );
     }
-    this.#socket = await connector({
+    const socket = await connector({
       onText: (text) => this.#handleRealtimeText(text),
       onBinary: (bytes) => this.#routeRealtimeBinary(bytes),
       onClose: () => {
@@ -2177,6 +2311,14 @@ export class SyncClient {
         this.#abortPendingRound('realtime socket closed mid-round (§8.7)');
       },
     });
+    if (this.#securityLifecycle === 'preflight') {
+      socket.close();
+      throw new ClientSyncError(
+        SECURITY_PREFLIGHT_REQUIRED_CODE,
+        'realtime connected after the client entered security preflight',
+      );
+    }
+    this.#socket = socket;
   }
 
   disconnectRealtime(): void {
@@ -3333,6 +3475,16 @@ export class SyncClient {
       throw new ClientSyncError(
         'sync.invalid_request',
         'SyncClient.start() has not completed',
+      );
+    }
+  }
+
+  #requireActive(): void {
+    this.#requireStarted();
+    if (this.#securityLifecycle === 'preflight') {
+      throw new ClientSyncError(
+        SECURITY_PREFLIGHT_REQUIRED_CODE,
+        'the local replica is in security preflight; complete quarantine checks and call activateSecurity before accessing protected data',
       );
     }
   }

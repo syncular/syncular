@@ -11,6 +11,7 @@
  * hermetic pattern the roadmap sets for the RN JS bridge.
  */
 import { describe, expect, test } from 'bun:test';
+import { SECURITY_PREFLIGHT_REQUIRED_CODE } from '@syncular/client';
 import { normalizeClient, type SyncClientLike } from '@syncular/react';
 import { hostBoolean } from '../../../packages/typegen/test/fixtures/basic/syncular.queries';
 import {
@@ -185,6 +186,61 @@ describe('createNativeSyncClient', () => {
     );
     expect(createParams.clientId).toBe('c1');
     expect(pump.started).toBe(1);
+  });
+
+  test('preflight blocks protected work and installs the portable keyring on activation', async () => {
+    const { nativeModule, eventEmitter, calls, emit } =
+      makeNative(defaultResponder);
+    const client = await createNativeSyncClient({
+      schema: { version: 1, tables: [] },
+      securityPreflight: true,
+      nativeModule,
+      eventEmitter,
+    });
+    const create = calls.find((call) => call.fn === 'create');
+    const createParams = JSON.parse(
+      (create?.arg as { createJson: string }).createJson,
+    );
+    expect(createParams.securityPreflight).toBe(true);
+    expect(await client.securityLifecycle()).toBe('preflight');
+    await expect(client.query('SELECT 1')).rejects.toMatchObject({
+      code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+    });
+    emit({ type: 'sync-intent', intent: { kind: 'interactive' } });
+    for (let turn = 0; turn < 3; turn += 1) await Promise.resolve();
+    expect(
+      calls.some(
+        (call) =>
+          call.fn === 'command' &&
+          (call.arg as { method?: string }).method === 'syncUntilIdle',
+      ),
+    ).toBe(false);
+
+    await client.purgeLocalData({
+      purgeId: 'directive-1',
+      targets: [{ table: 'todo', selectors: { list_id: ['list-1'] } }],
+    });
+    await client.activateSecurity({
+      encryption: {
+        keys: { 'practice-v2': new Uint8Array(32).fill(0x3c) },
+        keyIdColumns: { patients: 'encryption_key_id' },
+      },
+    });
+    expect(await client.securityLifecycle()).toBe('active');
+    const activation = calls.find(
+      (call) =>
+        call.fn === 'command' &&
+        (call.arg as { method?: string }).method === 'activateSecurity',
+    );
+    expect(
+      (
+        activation?.arg as {
+          params: { encryption: { keys: Record<string, unknown> } };
+        }
+      ).params.encryption.keys['practice-v2'],
+    ).toEqual({ $bytes: '3c'.repeat(32) });
+    expect(await client.query('SELECT 1')).toBeInstanceOf(Array);
+    await client.close();
   });
 
   test('query uses the query fast path and decodes bytes', async () => {

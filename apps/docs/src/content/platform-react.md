@@ -147,5 +147,11 @@ implements the shared surface. This is an application-authorized security
 operation, not a UI convenience; follow the subscription-gating workflow in
 [Authorized local purge](/concepts-local-data-purge/).
 
+The normalized client also exposes `securityLifecycle()`,
+`beginSecurityPreflight()`, and keyless `activateSecurity()`. Install a
+portable or direct keyring through the concrete client before mounting the
+ordinary provider tree; React must not render protected hooks while the client
+reports `preflight`.
+
 See [Named queries](/tooling-queries/), [Windowing](/concepts-windowing/), and
 the [package README](https://github.com/syncular/syncular/tree/main/packages/react).

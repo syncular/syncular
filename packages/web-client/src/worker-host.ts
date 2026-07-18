@@ -32,6 +32,7 @@ import type {
   QuerySnapshot,
   RejectionRecord,
   SchemaFloor,
+  SecurityLifecycle,
   SubscribeInput,
   SyncClientLimits,
   SyncSummary,
@@ -87,6 +88,7 @@ import {
   type WorkerInitConfig,
   type WorkerInitResult,
   type WorkerMethod,
+  type WorkerSecurityActivation,
   type WorkerToMainMessage,
 } from './worker-protocol';
 
@@ -140,6 +142,8 @@ export interface SyncClientHandleConfig {
   readonly endpoints: WorkerEndpoints;
   /** Structured-clone-safe E2EE keyring installed only in the leader worker. */
   readonly encryption?: EncryptionKeyringConfig;
+  /** Open the worker-owned replica behind the fail-closed security gate. */
+  readonly securityPreflight?: boolean;
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
   /** Worker-side host loop (§8.4); default true. */
@@ -421,6 +425,18 @@ export class SyncClientHandle {
 
   subscribe(input: SubscribeInput): Promise<void> {
     return this.#call('subscribe', [input]);
+  }
+
+  securityLifecycle(): Promise<SecurityLifecycle> {
+    return this.#call('securityLifecycle', []);
+  }
+
+  beginSecurityPreflight(): Promise<void> {
+    return this.#call('beginSecurityPreflight', []);
+  }
+
+  activateSecurity(options: WorkerSecurityActivation = {}): Promise<void> {
+    return this.#call('activateSecurity', [options]);
   }
 
   unsubscribe(id: string): Promise<void> {
@@ -724,6 +740,9 @@ function buildInitConfig(config: SyncClientHandleConfig): WorkerInitConfig {
     ...(config.encryption !== undefined
       ? { encryption: config.encryption }
       : {}),
+    ...(config.securityPreflight !== undefined
+      ? { securityPreflight: config.securityPreflight }
+      : {}),
     ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
     ...(config.limits !== undefined ? { limits: config.limits } : {}),
     ...(config.autoSync !== undefined ? { autoSync: config.autoSync } : {}),
@@ -1006,6 +1025,13 @@ async function bootFollower(
     await follower.waitUntilBound();
   } catch {
     /* bind timed out — return the (degraded but functional) handle anyway */
+  }
+  // Init configuration belongs to the one leader worker. A newly opened
+  // follower that explicitly requests security preflight must therefore put
+  // the shared origin replica behind the same barrier before it is returned;
+  // otherwise an already-running leader would silently ignore the request.
+  if (config.securityPreflight === true) {
+    await handle.beginSecurityPreflight();
   }
   return handle;
 }

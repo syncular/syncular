@@ -13,6 +13,7 @@ import {
   type LeaderLease,
   type LeaderLock,
   NOT_LEADER_CODE,
+  SECURITY_PREFLIGHT_REQUIRED_CODE,
   STORAGE_BUSY_CODE,
   type SyncClientHandle,
   type SyncClientHandleConfig,
@@ -151,6 +152,39 @@ test('boot → subscribe → mutate → sync → query, all over the RPC', async
   expect(await handle.rejections()).toEqual([]);
   expect(await handle.schemaFloor()).toBeUndefined();
   expect(await handle.syncNeeded()).toBe(false);
+});
+
+test('worker preflight gates protected RPCs and activates the host loop later', async () => {
+  const { handle, events } = await makeHandle({
+    clientId: 'rpc-security-preflight',
+    securityPreflight: true,
+  });
+
+  expect(await handle.securityLifecycle()).toBe('preflight');
+  expect((await handle.statusSnapshot()).currentSchemaVersion).toBe(1);
+  await expectRejectsWithCode(
+    handle.query('SELECT id FROM tasks'),
+    SECURITY_PREFLIGHT_REQUIRED_CODE,
+  );
+  await expectRejectsWithCode(
+    handle.subscribe({
+      id: 'blocked',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    }),
+    SECURITY_PREFLIGHT_REQUIRED_CODE,
+  );
+  expect(
+    await handle.purgeLocalData({
+      purgeId: 'rpc-security-directive',
+      targets: [{ table: 'tasks', selectors: { project_id: ['p1'] } }],
+    }),
+  ).toEqual({ alreadyApplied: false, purgedRows: 0, droppedCommits: 0 });
+  expect(events.synced).toEqual([]);
+
+  await handle.activateSecurity();
+  expect(await handle.securityLifecycle()).toBe('active');
+  expect(await handle.query('SELECT id FROM tasks')).toEqual([]);
 });
 
 test('application-authorized local purge crosses the worker RPC atomically', async () => {

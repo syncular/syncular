@@ -81,7 +81,7 @@ routes:
 
 | Group | Methods |
 | --- | --- |
-| Lifecycle | `create`, `recreateWithSchema`, `upgrading` |
+| Lifecycle | `create`, `securityLifecycle`, `beginSecurityPreflight`, `activateSecurity`, `shutdown`, `recreateWithSchema`, `upgrading` |
 | Subscriptions | `subscribe`, `unsubscribe`, `subscriptionState`, `setWindow`, `windowState` |
 | Writes & reads | `mutate`, `patch`, `readRows`, `query`, `querySnapshot`, `pendingCommitIds` |
 | Authorized local purge | `purgeLocalData` |
@@ -96,6 +96,13 @@ routes:
 `purgeLocalData` is a local security primitive, not an authority decision. A
 binding must validate the directive and gate affected subscriptions before
 forwarding it. See [Authorized local purge](/concepts-local-data-purge/).
+
+Native hosts can create with `securityPreflight: true`, run the validated purge,
+and call `activateSecurity` with the portable keyring. The shared router rejects
+every other protected command with `client.security_preflight_required` until
+activation. `beginSecurityPreflight` disconnects realtime and replaces the
+Rust keyring with an empty configuration; `shutdown` drops the client. Owned
+native key buffers are overwritten on replacement/drop.
 
 ## Events
 

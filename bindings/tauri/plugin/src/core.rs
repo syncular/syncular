@@ -90,6 +90,17 @@ impl SyncularCore {
         if method == "create" {
             self.transport.set_signed_urls(self.effects.signed_urls);
         }
+        if method == "beginSecurityPreflight"
+            || method == "shutdown"
+            || (method == "create"
+                && params
+                    .get("securityPreflight")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false))
+        {
+            self.interactive_sync = false;
+            self.background_sync_ms = None;
+        }
         if let Ok(value) = &result {
             if value.pointer("/effects/sync/kind").and_then(Value::as_str) == Some("interactive") {
                 self.interactive_sync = true;
@@ -158,6 +169,12 @@ impl SyncularCore {
 
     /// Release the socket/reader thread. Idempotent.
     pub fn shutdown(&mut self) {
+        if let Some(mut client) = self.client.take() {
+            client.disconnect_realtime(&mut self.transport);
+            client.begin_security_preflight();
+        }
+        self.interactive_sync = false;
+        self.background_sync_ms = None;
         self.transport.shutdown();
     }
 

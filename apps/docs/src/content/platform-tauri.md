@@ -149,6 +149,14 @@ store keys remain the app's responsibility.
 See [Authorized local purge](/concepts-local-data-purge/) for the complete
 authority and subscription-gating workflow.
 
+For quarantine-before-data, create with `securityPreflight: true`, run the
+validated purge, then call `activateSecurity({ encryption })`. Before
+activation, protected commands and both query paths fail with
+`client.security_preflight_required`. `beginSecurityPreflight()` gates new
+work and drains the mutable owner plus read sidecar before removing the old
+Rust keyring. `close()` shuts down that native client; it no longer only
+detaches the webview listener.
+
 ## The command and event surface
 
 The plugin dispatches through the shared `syncular-command` router — the same

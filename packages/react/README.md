@@ -101,6 +101,27 @@ const clientResource = createSyncClientResource(() => createClient());
 Call `await clientResource.dispose()` from the application's real lifecycle
 owner, not from a StrictMode-sensitive child effect.
 
+If the application requires authentication or signed quarantine processing
+before protected data is visible, complete the concrete client's security
+preflight before returning it from the resource factory. Do not mount the
+ordinary provider tree while `securityLifecycle` is `preflight`: reactive store
+startup intentionally touches protected status/outcome/query surfaces.
+
+```ts
+const clientResource = createSyncClientResource(async () => {
+  const client = await createClient({ securityPreflight: true });
+  await applyValidatedLocalPurge(client);
+  await client.activateSecurity({ encryption: acceptedKeyring });
+  return client;
+});
+```
+
+The normalized client exposes `securityLifecycle()`,
+`beginSecurityPreflight()`, and keyless `activateSecurity()` for host-agnostic
+coordination. Key-bearing activation stays on each concrete client type because
+direct TypeScript uses an `EncryptionConfig`, while Worker/Tauri/React Native
+use the portable keyring.
+
 Use `renderBoundary` as the canonical application guard across browser and
 native hosts. It covers resource startup/errors, migration, client upgrade,
 server-behind, incompatible-schema, and unreachable-leader states. The

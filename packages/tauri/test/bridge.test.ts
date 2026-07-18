@@ -7,6 +7,7 @@
  * one interface).
  */
 import { describe, expect, test } from 'bun:test';
+import { SECURITY_PREFLIGHT_REQUIRED_CODE } from '@syncular/client';
 import { normalizeClient, type SyncClientLike } from '@syncular/react';
 import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
 import { createTauriSyncClient, type TauriApi } from '../src/index';
@@ -201,6 +202,56 @@ describe('createTauriSyncClient', () => {
       },
       keyIdColumns: { patients: 'encryption_key_id' },
     });
+  });
+
+  test('preflight blocks fast reads, permits purge, and installs keys only on activation', async () => {
+    const { tauri, calls } = makeTauri(defaultResponder);
+    const client = await createTauriSyncClient({
+      schema: { version: 1, tables: [] },
+      securityPreflight: true,
+      tauri,
+    });
+
+    expect(await client.securityLifecycle()).toBe('preflight');
+    await expect(client.query('SELECT 1')).rejects.toMatchObject({
+      code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+    });
+    expect(calls.some((call) => call.cmd.endsWith('syncular_query'))).toBe(
+      false,
+    );
+    await client.purgeLocalData({
+      purgeId: 'directive-1',
+      targets: [{ table: 'todo', selectors: { list_id: ['list-1'] } }],
+    });
+
+    await client.activateSecurity({
+      encryption: {
+        keys: { 'practice-v2': new Uint8Array(32).fill(0x5a) },
+        keyIdColumns: { patients: 'encryption_key_id' },
+      },
+    });
+    expect(await client.securityLifecycle()).toBe('active');
+    expect(await client.query('SELECT 1')).toBeInstanceOf(Array);
+    const activation = calls.find(
+      (call) =>
+        call.cmd.endsWith('syncular_command') &&
+        (call.args.command as { method?: string }).method ===
+          'activateSecurity',
+    );
+    expect(
+      (
+        activation?.args.command as {
+          params: { encryption: { keys: Record<string, unknown> } };
+        }
+      ).params.encryption.keys['practice-v2'],
+    ).toEqual({ $bytes: '5a'.repeat(32) });
+
+    const barrier = client.beginSecurityPreflight();
+    await expect(client.query('SELECT 1')).rejects.toMatchObject({
+      code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+    });
+    await barrier;
+    await client.close();
   });
 
   test('query uses the syncular_query fast path and decodes bytes', async () => {
@@ -459,13 +510,20 @@ describe('createTauriSyncClient', () => {
     expect(count).toBe(1);
   });
 
-  test('close detaches the event listener', async () => {
-    const { client, emit } = await build();
+  test('close shuts down the native core and detaches the event listener', async () => {
+    const { client, emit, calls } = await build();
     let count = 0;
     client.onInvalidate(() => {
       count += 1;
     });
     await client.close();
+    expect(
+      calls.some(
+        (call) =>
+          call.cmd.endsWith('syncular_command') &&
+          (call.args.command as { method?: string }).method === 'shutdown',
+      ),
+    ).toBe(true);
     emit({
       type: 'change',
       batch: {

@@ -15,6 +15,9 @@ import type { SyncClientLike } from '../src/client';
 
 export function handleShapeOf(client: SyncClient): SyncClientLike {
   return {
+    securityLifecycle: () => Promise.resolve(client.securityLifecycle),
+    beginSecurityPreflight: () => client.beginSecurityPreflight(),
+    activateSecurity: () => client.activateSecurity(),
     onChange: (listener) => client.onChange(listener),
     onInvalidate: (listener) => client.onInvalidate(listener),
     onPresence: (listener) => client.onPresence(listener),

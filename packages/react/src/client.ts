@@ -28,6 +28,7 @@ import type {
   RejectionRecord,
   ResolveCommitOutcomeInput,
   SchemaFloor,
+  SecurityLifecycle,
   SqlRow,
   SqlValue,
   SyncStatusSnapshot,
@@ -48,6 +49,12 @@ export interface SyncClientLike {
   onPresence(listener: (scopeKey: string) => void): () => void;
   onLeadershipChange?(listener: (state: LeadershipState) => void): () => void;
   leadershipSnapshot?(): LeadershipState | undefined;
+  securityLifecycle:
+    | SecurityLifecycle
+    | (() => SecurityLifecycle | Promise<SecurityLifecycle>);
+  beginSecurityPreflight(): void | Promise<void>;
+  /** Key-bearing activation remains available on each concrete host type. */
+  activateSecurity(): void | Promise<void>;
   query(
     sql: string,
     params?: readonly SqlValue[],
@@ -130,6 +137,10 @@ export interface NormalizedClient {
   onPresence(listener: (scopeKey: string) => void): () => void;
   onLeadershipChange(listener: (state: LeadershipState) => void): () => void;
   leadershipSnapshot(): LeadershipState | undefined;
+  securityLifecycle(): Promise<SecurityLifecycle>;
+  beginSecurityPreflight(): Promise<void>;
+  /** Key-bearing activation remains available on each concrete host type. */
+  activateSecurity(): Promise<void>;
   query(sql: string, params?: readonly SqlValue[]): Promise<SqlRow[]>;
   mutate(mutations: readonly MutationInput[]): Promise<string>;
   patch(
@@ -173,6 +184,10 @@ export function normalizeClient(client: SyncClientLike): NormalizedClient {
     onLeadershipChange: (listener) =>
       client.onLeadershipChange?.(listener) ?? (() => {}),
     leadershipSnapshot: () => client.leadershipSnapshot?.(),
+    securityLifecycle: () => resolveMember(client, 'securityLifecycle'),
+    beginSecurityPreflight: () =>
+      Promise.resolve(client.beginSecurityPreflight()),
+    activateSecurity: () => Promise.resolve(client.activateSecurity()),
     query: (sql, params) => Promise.resolve(client.query(sql, params)),
     mutate: (mutations) => Promise.resolve(client.mutate(mutations)),
     patch: (table, rowId, partial, options) =>

@@ -143,7 +143,13 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
 
   function runAutoSync(): void {
     autoSyncScheduled = false;
-    if (closed || client === undefined) return;
+    if (
+      closed ||
+      client === undefined ||
+      client.securityLifecycle === 'preflight'
+    ) {
+      return;
+    }
     const running = client;
     void serializedSync(() => running.syncUntilIdle())
       .then((summary) => {
@@ -160,7 +166,13 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
   }
 
   function consumeSyncIntent(intent: SyncIntent): void {
-    if (!autoSync || closed || client === undefined || intent.kind === 'none') {
+    if (
+      !autoSync ||
+      closed ||
+      client === undefined ||
+      client.securityLifecycle === 'preflight' ||
+      intent.kind === 'none'
+    ) {
       return;
     }
     if (intent.kind === 'background') {
@@ -303,6 +315,9 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       ...(config.encryption !== undefined
         ? { encryption: encryptionConfigFromKeyring(config.encryption) }
         : {}),
+      ...(config.securityPreflight !== undefined
+        ? { securityPreflight: config.securityPreflight }
+        : {}),
       onSyncNeeded: (reason) => {
         post({ t: 'event', event: { kind: 'sync-needed', reason } });
         consumeSyncIntent({ kind: 'interactive' });
@@ -344,6 +359,21 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
   }
 
   const api: WorkerApi = {
+    securityLifecycle: () => requireClient().securityLifecycle,
+    beginSecurityPreflight: async () => {
+      if (backgroundTimer !== undefined) clearTimeout(backgroundTimer);
+      backgroundTimer = undefined;
+      backgroundDue = Number.POSITIVE_INFINITY;
+      autoSyncScheduled = false;
+      await requireClient().beginSecurityPreflight();
+    },
+    activateSecurity: async (options = {}) => {
+      await requireClient().activateSecurity({
+        ...(options.encryption !== undefined
+          ? { encryption: encryptionConfigFromKeyring(options.encryption) }
+          : {}),
+      });
+    },
     subscribe: (input) => requireClient().subscribe(input),
     unsubscribe: (id) => requireClient().unsubscribe(id),
     setWindow: async (base, units) => {

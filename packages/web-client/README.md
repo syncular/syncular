@@ -232,6 +232,28 @@ subscription that could download the protected rows again. This method does
 not authenticate a directive, revoke server authority, delete app-owned files,
 or remove a key from the OS secure store.
 
+For a race-free bootstrap, construct the client/worker handle with
+`securityPreflight: true`. Before activation, protected reads, writes,
+subscriptions, sync/realtime, blobs, and the automatic host loop fail with
+`client.security_preflight_required`; status, local revision, lifecycle, and
+the exact local purge remain available.
+
+```ts
+const client = await createSyncClientHandle({
+  ...config,
+  securityPreflight: true,
+});
+
+await client.purgeLocalData(directive.plan);
+await client.activateSecurity({ encryption: acceptedKeyring });
+```
+
+Use `beginSecurityPreflight()` before a live key rotation/revocation. It gates
+new calls immediately, disconnects realtime, waits for in-flight core/blob work,
+and releases the old keyring before resolving. In multi-tab mode the gate
+belongs to the single shared leader replica. Direct clients expose the same
+lifecycle with an `EncryptionConfig`; Worker handles use the portable keyring.
+
 Within one local SQLite transaction the engine deletes exactly the matching
 synced rows, lets generated FTS triggers remove their projections, drops every
 whole pending commit with a matching operation, restores/replays unrelated

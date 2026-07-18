@@ -27,6 +27,7 @@ import type {
   QuerySnapshot,
   RejectionRecord,
   SchemaFloor,
+  SecurityLifecycle,
   SubscribeInput,
   SyncClientLimits,
   SyncSummary,
@@ -100,6 +101,8 @@ export interface WorkerInitConfig {
   readonly endpoints: WorkerEndpoints;
   /** Portable raw keyring installed inside the worker-owned client core. */
   readonly encryption?: EncryptionKeyringConfig;
+  /** Open the worker-owned replica behind the fail-closed security gate. */
+  readonly securityPreflight?: boolean;
   readonly clientId?: string;
   readonly limits?: SyncClientLimits;
   /**
@@ -115,11 +118,19 @@ export interface WorkerInitResult {
   readonly clientId: string;
 }
 
+/** Structured-clone-safe key material installed at security activation. */
+export interface WorkerSecurityActivation {
+  readonly encryption?: EncryptionKeyringConfig;
+}
+
 // ---------------------------------------------------------------------------
 // The logical API — the one shared shape (worker implements, handle projects)
 // ---------------------------------------------------------------------------
 
 export interface WorkerApi {
+  securityLifecycle(): SecurityLifecycle;
+  beginSecurityPreflight(): Promise<void>;
+  activateSecurity(options?: WorkerSecurityActivation): Promise<void>;
   subscribe(input: SubscribeInput): void;
   unsubscribe(id: string): void;
   /** §4.8 windowed subscriptions: set the live units for a window base. */
