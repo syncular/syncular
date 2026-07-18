@@ -338,12 +338,16 @@ export function runStorageContract(
       await tx.putPushResult('c1', 'commit-1', {
         status: 'applied',
         commitSeq: 5,
+        recordedAtMs: 1_750_000_000_000,
+        cacheIdentity: 'push-cache-1',
         results: [{ opIndex: 0, status: 'applied' }],
       });
       await tx.commit();
       const got = await storage.getPushResult(PARTITION, 'c1', 'commit-1');
       expect(got?.status).toBe('applied');
       expect(got?.commitSeq).toBe(5);
+      expect(got?.recordedAtMs).toBe(1_750_000_000_000);
+      expect(got?.cacheIdentity).toBe('push-cache-1');
       expect(got?.results).toEqual([{ opIndex: 0, status: 'applied' }]);
       expect(
         await storage.getPushResult(PARTITION, 'c1', 'missing'),

@@ -193,6 +193,12 @@ function serializePushResult(result: StoredPushResult): unknown {
   return {
     status: result.status,
     ...(result.commitSeq !== undefined ? { commitSeq: result.commitSeq } : {}),
+    ...(result.recordedAtMs !== undefined
+      ? { recordedAtMs: result.recordedAtMs }
+      : {}),
+    ...(result.cacheIdentity !== undefined
+      ? { cacheIdentity: result.cacheIdentity }
+      : {}),
     results: result.results.map((record) => {
       if (record.status === 'conflict') {
         return {
@@ -223,6 +229,8 @@ function deserializePushResult(value: unknown): StoredPushResult {
   const parsed = value as {
     status: 'applied' | 'rejected';
     commitSeq?: number;
+    recordedAtMs?: number;
+    cacheIdentity?: string;
     results: SerializedResult[];
   };
   const results: PushOperationResult[] = parsed.results.map((record) => {
@@ -251,6 +259,12 @@ function deserializePushResult(value: unknown): StoredPushResult {
   return {
     status: parsed.status,
     ...(parsed.commitSeq !== undefined ? { commitSeq: parsed.commitSeq } : {}),
+    ...(parsed.recordedAtMs !== undefined
+      ? { recordedAtMs: parsed.recordedAtMs }
+      : {}),
+    ...(parsed.cacheIdentity !== undefined
+      ? { cacheIdentity: parsed.cacheIdentity }
+      : {}),
     results,
   };
 }

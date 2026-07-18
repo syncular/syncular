@@ -21,6 +21,8 @@ import {
 } from '@syncular/core';
 import type { SyncServerConfig } from './context';
 import { SyncError } from './errors';
+import type { SyncularServerEvent, SyncularServerEvents } from './events';
+import { composeEvents } from './events-ring';
 import { handleSyncRequest } from './handler';
 
 /** One app-shaped seed mutation — the same vocabulary as client mutations. */
@@ -54,6 +56,48 @@ export interface SeedTarget {
   readonly commitId?: string;
 }
 
+export interface SeedMutationErrorOptions {
+  readonly clientId: string;
+  readonly clientCommitId: string;
+  readonly opIndex: number;
+  readonly code: string;
+  readonly replayed: boolean;
+  readonly retryable: boolean;
+  readonly message: string;
+  readonly recordedAtMs?: number;
+  readonly cacheIdentity?: string;
+}
+
+/** Structured terminal failure from the real push path used by a seed. */
+export class SeedMutationError extends Error {
+  override readonly name = 'SeedMutationError';
+  readonly clientId: string;
+  readonly clientCommitId: string;
+  readonly opIndex: number;
+  /** Exact protocol or host-validator rejection code. */
+  readonly code: string;
+  readonly replayed: boolean;
+  readonly retryable: boolean;
+  readonly recordedAtMs?: number;
+  readonly cacheIdentity?: string;
+
+  constructor(options: SeedMutationErrorOptions) {
+    super(options.message);
+    this.clientId = options.clientId;
+    this.clientCommitId = options.clientCommitId;
+    this.opIndex = options.opIndex;
+    this.code = options.code;
+    this.replayed = options.replayed;
+    this.retryable = options.retryable;
+    if (options.recordedAtMs !== undefined) {
+      this.recordedAtMs = options.recordedAtMs;
+    }
+    if (options.cacheIdentity !== undefined) {
+      this.cacheIdentity = options.cacheIdentity;
+    }
+  }
+}
+
 const MAPPABLE_RE = /^_*[A-Za-z][A-Za-z0-9_]*$/;
 
 /** Pinned §12 schema alias used by generated row types and every client host. */
@@ -79,8 +123,8 @@ function snakeToCamel(name: string): string {
 
 /**
  * Seed `mutations` into a partition through the real push path. Throws a
- * `SyncError` when the push is rejected or any operation fails, so a broken
- * seed fails loud at boot instead of silently serving an empty database.
+ * `SeedMutationError` when the push is rejected and `SyncError` for malformed
+ * helper input, so a broken seed fails loud instead of serving an empty store.
  */
 export async function seedMutations(
   config: SyncServerConfig,
@@ -154,13 +198,37 @@ export async function seedMutations(
       accept: 0b0011,
     },
   ];
+  type SeedTerminalEvent = Extract<
+    SyncularServerEvent,
+    { type: 'push.rejected' | 'push.conflicted' }
+  >;
+  let terminalEvent: SeedTerminalEvent | undefined;
+  const capture: SyncularServerEvents = {
+    emit(event) {
+      if (
+        (event.type === 'push.rejected' || event.type === 'push.conflicted') &&
+        event.clientId === clientId &&
+        event.clientCommitId === clientCommitId
+      ) {
+        terminalEvent = event;
+      }
+    },
+  };
   const response = await handleSyncRequest(
     encodeMessage({
       wireVersion: PROTOCOL_WIRE_VERSION,
       msgKind: 'request',
       frames,
     }),
-    { ...config, partition: target.partition, actorId: target.actorId },
+    {
+      ...config,
+      partition: target.partition,
+      actorId: target.actorId,
+      events:
+        config.events === undefined
+          ? capture
+          : composeEvents(config.events, capture),
+    },
   );
 
   // Fail loud: surface the first rejected/failed operation.
@@ -177,13 +245,30 @@ export async function seedMutations(
   }
   if (result.status === 'rejected') {
     const failed = result.results.find((r) => r.status !== 'applied');
+    const code = failed?.code ?? 'sync.invalid_request';
+    const opIndex = failed?.opIndex ?? 0;
+    const retryable = failed?.status === 'error' ? failed.retryable : false;
     const detail =
-      failed !== undefined && 'code' in failed
-        ? ` (op ${failed.opIndex}: ${failed.code} — ${failed.message})`
-        : '';
-    throw new SyncError(
-      'sync.invalid_request',
-      `seedMutations: the seed commit was rejected${detail}`,
-    );
+      failed === undefined
+        ? ''
+        : ` (op ${opIndex}: ${code} — ${failed.message})`;
+    const replayed = terminalEvent?.replay ?? false;
+    throw new SeedMutationError({
+      clientId,
+      clientCommitId,
+      opIndex,
+      code,
+      replayed,
+      retryable,
+      message: `seedMutations: the seed commit was rejected${
+        replayed ? ' (cached replay)' : ''
+      }${detail}`,
+      ...(terminalEvent?.recordedAtMs !== undefined
+        ? { recordedAtMs: terminalEvent.recordedAtMs }
+        : {}),
+      ...(terminalEvent?.cacheIdentity !== undefined
+        ? { cacheIdentity: terminalEvent.cacheIdentity }
+        : {}),
+    });
   }
 }

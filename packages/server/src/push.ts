@@ -750,6 +750,42 @@ function resultFrame(
   };
 }
 
+export interface ProcessedPushCommit {
+  readonly frame: PushResultFrame;
+  /** True when this request observed an already-recorded idempotency outcome. */
+  readonly replayed: boolean;
+  readonly recordedAtMs?: number;
+  readonly cacheIdentity?: string;
+}
+
+function processedPushCommit(
+  clientCommitId: string,
+  stored: StoredPushResult,
+  replayed: boolean,
+): ProcessedPushCommit {
+  return {
+    frame: resultFrame(clientCommitId, stored, replayed),
+    replayed,
+    ...(stored.recordedAtMs !== undefined
+      ? { recordedAtMs: stored.recordedAtMs }
+      : {}),
+    ...(stored.cacheIdentity !== undefined
+      ? { cacheIdentity: stored.cacheIdentity }
+      : {}),
+  };
+}
+
+function newStoredPushResult(
+  recordedAtMs: number,
+  result: Omit<StoredPushResult, 'recordedAtMs' | 'cacheIdentity'>,
+): StoredPushResult {
+  return {
+    ...result,
+    recordedAtMs,
+    cacheIdentity: crypto.randomUUID(),
+  };
+}
+
 function idempotencyCacheMissFrame(
   clientCommitId: string,
   error: SyncError,
@@ -776,7 +812,7 @@ async function persistRejectedPushResult(
   clientId: string,
   clientCommitId: string,
   stored: StoredPushResult,
-): Promise<StoredPushResult> {
+): Promise<{ readonly stored: StoredPushResult; readonly replayed: boolean }> {
   const rejectionTx = await storage.begin(partition);
   try {
     await rejectionTx.putPushResult(clientId, clientCommitId, stored);
@@ -793,7 +829,10 @@ async function persistRejectedPushResult(
   if (canonical === undefined) {
     throw new Error('push rejection finalization did not persist an outcome');
   }
-  return canonical;
+  return {
+    stored: canonical,
+    replayed: canonical.cacheIdentity !== stored.cacheIdentity,
+  };
 }
 
 export interface AppliedCommitEvent {
@@ -811,6 +850,23 @@ export async function processPushCommit(
   clientId: string,
   frame: PushCommitFrame,
 ): Promise<PushResultFrame> {
+  return (
+    await processPushCommitWithTrace(ctx, schema, resolved, clientId, frame)
+  ).frame;
+}
+
+/**
+ * Host-observable variant of `processPushCommit`. The SSP2 wire frame keeps
+ * rejected replays as `status: rejected`; this companion result preserves the
+ * cache provenance needed by structured events and server helpers.
+ */
+export async function processPushCommitWithTrace(
+  ctx: SyncRequestContext,
+  schema: CompiledSchema,
+  resolved: ResolvedScopes,
+  clientId: string,
+  frame: PushCommitFrame,
+): Promise<ProcessedPushCommit> {
   const { storage, partition } = ctx;
   let persisted: StoredPushResult | undefined;
   try {
@@ -826,12 +882,15 @@ export async function processPushCommit(
     ) {
       // §6.3: answer the retryable cache-miss for this commit rather than
       // re-applying. Not persisted — a retry may find a readable record.
-      return idempotencyCacheMissFrame(frame.clientCommitId, error);
+      return {
+        frame: idempotencyCacheMissFrame(frame.clientCommitId, error),
+        replayed: false,
+      };
     }
     throw error;
   }
   if (persisted !== undefined) {
-    return resultFrame(frame.clientCommitId, persisted, true);
+    return processedPushCommit(frame.clientCommitId, persisted, true);
   }
 
   const createdAtMs = clockOf(ctx)();
@@ -863,7 +922,11 @@ export async function processPushCommit(
         );
         if (serializedPersisted !== undefined) {
           await tx.rollback();
-          return resultFrame(frame.clientCommitId, serializedPersisted, true);
+          return processedPushCommit(
+            frame.clientCommitId,
+            serializedPersisted,
+            true,
+          );
         }
       } catch (error) {
         if (
@@ -871,7 +934,10 @@ export async function processPushCommit(
           error.code === 'sync.idempotency_cache_miss'
         ) {
           await tx.rollback();
-          return idempotencyCacheMissFrame(frame.clientCommitId, error);
+          return {
+            frame: idempotencyCacheMissFrame(frame.clientCommitId, error),
+            replayed: false,
+          };
         }
         throw error;
       }
@@ -923,10 +989,10 @@ export async function processPushCommit(
     if (terminated !== undefined) {
       // §6.3 rejected: only the terminating operation's record; §6.4:
       // every write of the commit rolls back.
-      const stored: StoredPushResult = {
+      const stored = newStoredPushResult(createdAtMs, {
         status: 'rejected',
         results: [terminated],
-      };
+      });
       if (commitValidator !== undefined) {
         // Discard candidate rows and persist the rejection while retaining the
         // same partition lock. This closes the duplicate-request race between
@@ -946,13 +1012,13 @@ export async function processPushCommit(
           frame.clientCommitId,
           stored,
         );
-        return resultFrame(
+        return processedPushCommit(
           frame.clientCommitId,
-          canonical,
-          canonical !== stored,
+          canonical.stored,
+          canonical.replayed,
         );
       }
-      return resultFrame(frame.clientCommitId, stored, false);
+      return processedPushCommit(frame.clientCommitId, stored, false);
     }
 
     const commitSeq = await tx.appendCommit({
@@ -962,7 +1028,11 @@ export async function processPushCommit(
       createdAtMs,
       changes,
     });
-    const stored: StoredPushResult = { status: 'applied', commitSeq, results };
+    const stored = newStoredPushResult(createdAtMs, {
+      status: 'applied',
+      commitSeq,
+      results,
+    });
     await tx.putPushResult(clientId, frame.clientCommitId, stored);
     await tx.commit();
     if (ctx.realtime !== undefined && changes.length > 0) {
@@ -973,11 +1043,11 @@ export async function processPushCommit(
         changes,
       });
     }
-    return resultFrame(frame.clientCommitId, stored, false);
+    return processedPushCommit(frame.clientCommitId, stored, false);
   } catch (error) {
     await tx.rollback();
     if (error instanceof StorageConstraintError) {
-      const stored: StoredPushResult = {
+      const stored = newStoredPushResult(createdAtMs, {
         status: 'rejected',
         results: [
           {
@@ -988,7 +1058,7 @@ export async function processPushCommit(
             retryable: false,
           },
         ],
-      };
+      });
       const canonical = await persistRejectedPushResult(
         storage,
         partition,
@@ -996,7 +1066,11 @@ export async function processPushCommit(
         frame.clientCommitId,
         stored,
       );
-      return resultFrame(frame.clientCommitId, canonical, canonical !== stored);
+      return processedPushCommit(
+        frame.clientCommitId,
+        canonical.stored,
+        canonical.replayed,
+      );
     }
     throw error;
   }

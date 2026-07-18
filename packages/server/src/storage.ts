@@ -70,6 +70,10 @@ export interface StoredPushResult {
   readonly status: 'applied' | 'rejected';
   /** Present iff `status` is `applied`. */
   readonly commitSeq?: number;
+  /** Host clock when this terminal idempotency outcome was first recorded. */
+  readonly recordedAtMs?: number;
+  /** Privacy-safe identity used to distinguish this stored outcome from a race. */
+  readonly cacheIdentity?: string;
   readonly results: readonly PushOperationResult[];
 }
 

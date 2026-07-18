@@ -173,6 +173,21 @@ Whole-commit validation checks a client-proposed commit; it does not grant
 authority. Privileged operations such as connecting facilities still belong in
 explicit server-authoritative commands.
 
+## Seed idempotency and safe revisioning
+
+`seedMutations` uses the real push path and a stable `clientId`/`commitId`.
+Both applied and rejected outcomes are terminal for that key. A rejected call
+throws `SeedMutationError`, whose structured `code`, `opIndex`, `replayed`,
+`recordedAtMs`, and `cacheIdentity` fields distinguish a fresh policy failure
+from replay of an older cached rejection.
+
+After correcting a development seed definition, advance an explicit seed
+revision (`catalog-v1` to `catalog-v2`) and rerun it; do not delete the database
+or unrelated rows. This does not apply to application commands. After an
+unknown command outcome, reuse the original idempotency key because changing it
+can execute the operation twice. The full inspection and recovery recipe is in
+the public [server guide](https://syncular.dev/guide-server/#seeding-data).
+
 The task-oriented [concurrency and conflict-correction guide](https://syncular.dev/guide-concurrency-correction/)
 shows version projection, aggregate rollback, corrected replacement commits,
 explicit acknowledgement, and restart-safe recovery UI together.
