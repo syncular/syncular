@@ -1739,13 +1739,17 @@ export class SyncClient {
     }
     const existing = getSubscription(this.#db, input.id);
     if (existing !== undefined) {
-      saveSubscription(this.#db, {
-        ...existing,
-        table: input.table,
-        scopes: input.scopes,
-        ...(input.params !== undefined ? { params: input.params } : {}),
-      });
-      this.#emitDiagnostics();
+      const sameIntent =
+        existing.table === input.table &&
+        canonicalScopeJson(existing.scopes) ===
+          canonicalScopeJson(input.scopes) &&
+        existing.params === input.params;
+      if (!sameIntent) {
+        throw new ClientSyncError(
+          'client.subscription_intent_mismatch',
+          'subscribe: the subscription id is already registered for a different table, scopes, or params',
+        );
+      }
       return;
     }
     saveSubscription(this.#db, {

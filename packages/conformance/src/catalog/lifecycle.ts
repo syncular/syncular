@@ -19,6 +19,83 @@ const P1 = { project_id: ['p1'] } as const;
 
 export const lifecycleScenarios: readonly Scenario[] = [
   {
+    name: 'subscription/identity-is-immutable-and-idempotent',
+    specRefs: ['§4.1', '§7.5'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: { project_id: ['p1', 'p2'], org_id: ['o1'] },
+      });
+      await a.api.subscribe({
+        id: 'stable-subscription',
+        table: 'tasks',
+        scopes: { project_id: ['p2', 'p1'] },
+        params: '{"view":"v1"}',
+      });
+      await syncIdle(a);
+      const complete = await a.api.subscriptionState('stable-subscription');
+      check(
+        complete !== undefined && complete.cursor >= 0,
+        'the original subscription completed',
+      );
+
+      // Canonically identical values are one intent even if the host repeats
+      // or reorders them. Progress must not reset on a React remount/restart.
+      await a.api.subscribe({
+        id: 'stable-subscription',
+        table: 'tasks',
+        scopes: { project_id: ['p1', 'p2', 'p1'] },
+        params: '{"view":"v1"}',
+      });
+      checkEqual(
+        await a.api.subscriptionState('stable-subscription'),
+        complete,
+        'an identical re-declaration retains exact progress',
+      );
+
+      const mismatches = [
+        {
+          id: 'stable-subscription',
+          table: 'tasks',
+          scopes: { project_id: ['p1'] },
+          params: '{"view":"v1"}',
+        },
+        {
+          id: 'stable-subscription',
+          table: 'tasks',
+          scopes: { project_id: ['p2', 'p1'] },
+          params: '{"view":"v2"}',
+        },
+        {
+          id: 'stable-subscription',
+          table: 'docs',
+          scopes: { org_id: ['o1'], projectId: ['p1'] },
+          params: '{"view":"v1"}',
+        },
+      ] as const;
+      for (const mismatch of mismatches) {
+        let code = '';
+        try {
+          await a.api.subscribe(mismatch);
+        } catch (error) {
+          code = (error as { code?: string }).code ?? '';
+        }
+        checkEqual(
+          code,
+          'client.subscription_intent_mismatch',
+          'a changed table, scope, or params fails with the stable client code',
+        );
+        checkEqual(
+          await a.api.subscriptionState('stable-subscription'),
+          complete,
+          'a rejected rebind cannot alter prior subscription evidence',
+        );
+      }
+    },
+  },
+
+  {
     name: 'cursor/horizon-reset-rebootstrap-and-boundary',
     specRefs: ['§4.6', '§4.7', '§5.6', 'B.8'],
     async run(ctx) {

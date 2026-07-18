@@ -93,10 +93,17 @@ const WORKLOAD = {
  * - `propagationP95CeilingMs` 20 ms: local in-process p95 is 0.2 ms. A
  *   100× allowance absorbs runner noise; breaching 20 ms in-process means
  *   a sleep/poll crept into the sync/realtime loop.
- * - `ownJsRawCeilingBytes` 111 KB: syncular's own JS (core + codec) is
- *   105.2 KB raw today. Bundle bytes are deterministic — no runner noise —
+ * - `ownJsRawCeilingBytes` 118 KB: syncular's own JS (core + codec) is
+ *   112.8 KB raw today. Bundle bytes are deterministic — no runner noise —
  *   so this stays tight (~5% headroom: enough that a one-KB innocent
  *   change doesn't trip, small enough to catch real bloat). RAISED from
+ *   111 KB (2026-07-18): the 0.15.17 privacy-safe diagnostics snapshot,
+ *   host evidence, storage estimates, and failure normalization increased
+ *   that release's baseline to 114,822 bytes but omitted the corresponding
+ *   budget re-derivation. 0.15.18 acknowledgement batching moved the baseline
+ *   to 115,402 bytes; immutable subscription identity adds only 119 raw bytes
+ *   (115,402 → 115,521). 118 KB restores the standing ~5% headroom over the
+ *   complete current feature set. RAISED from
  *   102 KB (2026-07-17): application-authorized local data purge added
  *   4,114 raw bytes (103,584 → 107,698) for bounded selector validation,
  *   idempotency, atomic optimistic rollback, row/FTS/blob cleanup, and
@@ -155,7 +162,7 @@ const BUDGETS = {
   bootstrapRowsPerSecFloor: 90_000,
   imageBootstrapRowsPerSecFloor: 300_000,
   propagationP95CeilingMs: 20,
-  ownJsRawCeilingBytes: 111 * 1024,
+  ownJsRawCeilingBytes: 118 * 1024,
   totalGzipCeilingBytes: 600 * 1024,
 } as const;
 

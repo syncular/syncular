@@ -1,10 +1,34 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.17** (`v0.15.17`). All artifacts use Apache-2.0, except
+current release is **0.15.19** (`v0.15.19`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.19 release notes
+
+0.15.19 makes a durable subscription id an immutable query identity.
+Re-declaring the same canonical table, scopes, and params is idempotent and
+retains cursor/bootstrap progress; attempting to reuse the id for a different
+intent fails locally with `client.subscription_intent_mismatch` before any
+registration state changes. TypeScript and Rust now share this behavior across
+direct, persisted-restart, Worker leader/follower, shared Tauri/React Native
+command, and conformance paths.
+
+The release also re-derives the own-code bundle budget from the complete
+0.15.18 baseline. The identity guard adds 119 minified raw bytes; the corrected
+budget restores the standing approximately five-percent headroom without
+changing the total compressed-payload ceiling.
+
+## 0.15.18 release notes
+
+0.15.18 batches push-acknowledgement reconciliation. TypeScript defers
+diagnostics during response application, carries exact outbox counts through
+revisioned status snapshots, and enforces outcome retention once per response.
+Rust likewise rebuilds the optimistic overlay and prunes outcomes once at the
+response boundary instead of once per acknowledgement. Mixed applied, cached,
+rejected, and retryable results retain their prior durable semantics.
 
 ## 0.15.17 release notes
 

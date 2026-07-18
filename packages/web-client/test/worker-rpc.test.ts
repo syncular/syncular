@@ -177,6 +177,41 @@ test('boot → subscribe → mutate → sync → query, all over the RPC', async
   expect(diagnosticEvents.length).toBeGreaterThan(0);
 });
 
+test('worker subscriptions reject an identity rebind without losing completeness', async () => {
+  const { handle } = await makeHandle({
+    clientId: 'rpc-subscription-identity',
+    autoSync: false,
+  });
+  await handle.subscribe({
+    id: 'stable-subscription',
+    table: 'tasks',
+    scopes: { project_id: ['p2', 'p1'] },
+    params: '{"view":"v1"}',
+  });
+  await handle.syncUntilIdle();
+  const complete = await handle.subscription('stable-subscription');
+  expect(complete?.cursor).toBeGreaterThanOrEqual(0);
+
+  await handle.subscribe({
+    id: 'stable-subscription',
+    table: 'tasks',
+    scopes: { project_id: ['p1', 'p2', 'p1'] },
+    params: '{"view":"v1"}',
+  });
+  expect(await handle.subscription('stable-subscription')).toEqual(complete);
+
+  await expectRejectsWithCode(
+    handle.subscribe({
+      id: 'stable-subscription',
+      table: 'tasks',
+      scopes: { project_id: ['p2'] },
+      params: '{"view":"v1"}',
+    }),
+    'client.subscription_intent_mismatch',
+  );
+  expect(await handle.subscription('stable-subscription')).toEqual(complete);
+});
+
 test('worker preflight gates protected RPCs and activates the host loop later', async () => {
   const { handle, events } = await makeHandle({
     clientId: 'rpc-security-preflight',

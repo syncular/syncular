@@ -312,6 +312,41 @@ test('leader + follower: follower proxies the full API to the one core', async (
   }).toEqual(leaderDiagnostics);
 });
 
+test('a follower cannot rebind a leader-owned subscription identity', async () => {
+  const group = makeGroup();
+  const leader = await group.make({ clientId: 'mt-subscription-identity' });
+  const follower = await group.make();
+  await leader.subscribe({
+    id: 'stable-subscription',
+    table: 'tasks',
+    scopes: { project_id: ['mp2', 'mp1'] },
+    params: '{"view":"v1"}',
+  });
+  await leader.syncUntilIdle();
+  const complete = await leader.subscription('stable-subscription');
+  expect(complete?.cursor).toBeGreaterThanOrEqual(0);
+
+  await follower.subscribe({
+    id: 'stable-subscription',
+    table: 'tasks',
+    scopes: { project_id: ['mp1', 'mp2', 'mp1'] },
+    params: '{"view":"v1"}',
+  });
+  expect(await follower.subscription('stable-subscription')).toEqual(complete);
+
+  await expect(
+    follower.subscribe({
+      id: 'stable-subscription',
+      table: 'tasks',
+      scopes: { project_id: ['mp2'] },
+      params: '{"view":"v1"}',
+    }),
+  ).rejects.toMatchObject({
+    code: 'client.subscription_intent_mismatch',
+  });
+  expect(await leader.subscription('stable-subscription')).toEqual(complete);
+});
+
 test('a follower preflight request gates the already-running shared leader', async () => {
   const group = makeGroup();
   const leader = await group.make({ clientId: 'mt-security-lead' });

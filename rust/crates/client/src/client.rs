@@ -382,6 +382,154 @@ mod observation_tests {
     }
 
     #[test]
+    fn reopening_preserves_immutable_subscription_identity_and_progress() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-subscription-identity-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let schema = json!({
+            "version": 1,
+            "tables": [
+                {
+                    "name": "tasks",
+                    "primaryKey": "id",
+                    "columns": [
+                        { "name": "id", "type": "string", "nullable": false },
+                        { "name": "project_id", "type": "string", "nullable": false }
+                    ],
+                    "scopes": [{ "pattern": "project:{project_id}" }]
+                },
+                {
+                    "name": "docs",
+                    "primaryKey": "id",
+                    "columns": [
+                        { "name": "id", "type": "string", "nullable": false },
+                        { "name": "org_id", "type": "string", "nullable": false },
+                        { "name": "project_id", "type": "string", "nullable": false }
+                    ],
+                    "scopes": [
+                        { "pattern": "org:{org_id}" },
+                        { "pattern": "project:{projectId}", "column": "project_id" }
+                    ]
+                }
+            ]
+        });
+
+        {
+            let mut first = SyncClient::open_path_with_identity(
+                None,
+                &schema,
+                ClientLimits::default(),
+                path.to_str().expect("UTF-8 temp path"),
+            )
+            .expect("first open");
+            first
+                .subscribe(
+                    "stable-subscription".to_owned(),
+                    "tasks".to_owned(),
+                    vec![(
+                        "project_id".to_owned(),
+                        vec!["p2".to_owned(), "p1".to_owned()],
+                    )],
+                    Some(r#"{"view":"v1"}"#.to_owned()),
+                )
+                .expect("persist subscription");
+            let persisted = {
+                let subscription = first
+                    .subs
+                    .iter_mut()
+                    .find(|subscription| subscription.id == "stable-subscription")
+                    .expect("subscription");
+                subscription.cursor = 41;
+                subscription.bootstrap_state = Some("resume-token".to_owned());
+                subscription.effective = Some(vec![(
+                    "project_id".to_owned(),
+                    vec!["p1".to_owned(), "p2".to_owned()],
+                )]);
+                subscription.synced_once = true;
+                subscription.clone()
+            };
+            first.persist_sub(&persisted);
+        }
+
+        let mut reopened = SyncClient::open_path_with_identity(
+            None,
+            &schema,
+            ClientLimits::default(),
+            path.to_str().expect("UTF-8 temp path"),
+        )
+        .expect("reopen");
+        let progress = reopened
+            .subscription_state("stable-subscription")
+            .expect("persisted state");
+        assert_eq!(progress.cursor, 41);
+        assert!(progress.has_resume_token);
+
+        reopened
+            .subscribe(
+                "stable-subscription".to_owned(),
+                "tasks".to_owned(),
+                vec![(
+                    "project_id".to_owned(),
+                    vec!["p1".to_owned(), "p2".to_owned(), "p1".to_owned()],
+                )],
+                Some(r#"{"view":"v1"}"#.to_owned()),
+            )
+            .expect("canonical intent is idempotent");
+        assert_eq!(
+            reopened
+                .subscription_state("stable-subscription")
+                .expect("unchanged state")
+                .cursor,
+            progress.cursor
+        );
+
+        for (table, scopes, params) in [
+            (
+                "tasks",
+                vec![("project_id".to_owned(), vec!["p1".to_owned()])],
+                Some(r#"{"view":"v1"}"#.to_owned()),
+            ),
+            (
+                "tasks",
+                vec![(
+                    "project_id".to_owned(),
+                    vec!["p2".to_owned(), "p1".to_owned()],
+                )],
+                Some(r#"{"view":"v2"}"#.to_owned()),
+            ),
+            (
+                "docs",
+                vec![
+                    ("org_id".to_owned(), vec!["o1".to_owned()]),
+                    ("projectId".to_owned(), vec!["p1".to_owned()]),
+                ],
+                Some(r#"{"view":"v1"}"#.to_owned()),
+            ),
+        ] {
+            let error = reopened
+                .subscribe(
+                    "stable-subscription".to_owned(),
+                    table.to_owned(),
+                    scopes,
+                    params,
+                )
+                .expect_err("identity rebind must fail");
+            assert!(error.starts_with("client.subscription_intent_mismatch:"));
+            assert_eq!(
+                reopened
+                    .subscription_state("stable-subscription")
+                    .expect("unchanged state")
+                    .cursor,
+                progress.cursor
+            );
+        }
+
+        drop(reopened);
+        std::fs::remove_file(path).expect("remove temp database");
+    }
+
+    #[test]
     fn reopening_clears_a_schema_floor_the_running_app_already_satisfies() {
         let path = std::env::temp_dir().join(format!(
             "syncular-satisfied-schema-floor-{}.db",
@@ -3465,6 +3613,18 @@ impl SyncClient {
         if self.schema.table(&table).is_none() {
             return Err(format!("unknown table {table:?}"));
         }
+        if let Some(existing) = self.subs.iter().find(|subscription| subscription.id == id) {
+            let same_intent = existing.table == table
+                && canonical_scope_json(&existing.requested) == canonical_scope_json(&scopes)
+                && existing.params == params;
+            if same_intent {
+                return Ok(());
+            }
+            return Err(
+                "client.subscription_intent_mismatch: the subscription id is already registered for a different table, scopes, or params"
+                    .to_owned(),
+            );
+        }
         let sub = Subscription {
             id: id.clone(),
             table,
@@ -3478,11 +3638,7 @@ impl SyncClient {
             synced_once: false,
         };
         self.persist_sub(&sub);
-        if let Some(existing) = self.subs.iter_mut().find(|s| s.id == id) {
-            *existing = sub;
-        } else {
-            self.subs.push(sub);
-        }
+        self.subs.push(sub);
         Ok(())
     }
 
