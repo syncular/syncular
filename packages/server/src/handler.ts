@@ -44,7 +44,7 @@ import {
   type SubscriptionPlan,
   subscriptionSection,
 } from './pull';
-import { processPushCommit } from './push';
+import { type ProcessedPushCommit, processPushCommitWithTrace } from './push';
 import type { CompiledSchema } from './schema';
 import { compileSchema } from './schema';
 import { computeEffective, type ResolvedScopes } from './scopes';
@@ -339,8 +339,9 @@ function emitPushEvent(
   ctx: SyncRequestContext,
   clientId: string,
   push: PushCommitFrame,
-  frame: PushResultFrame,
+  processed: ProcessedPushCommit,
 ): void {
+  const { frame } = processed;
   const base = {
     atMs: clockOf(ctx)(),
     partition: ctx.partition,
@@ -354,7 +355,7 @@ function emitPushEvent(
       type: 'push.applied',
       ...base,
       ...(frame.commitSeq !== undefined ? { commitSeq: frame.commitSeq } : {}),
-      replay: frame.status === 'cached',
+      replay: processed.replayed,
     });
     return;
   }
@@ -365,6 +366,13 @@ function emitPushEvent(
       type: 'push.conflicted',
       ...base,
       opIndex: record.opIndex,
+      replay: processed.replayed,
+      ...(processed.recordedAtMs !== undefined
+        ? { recordedAtMs: processed.recordedAtMs }
+        : {}),
+      ...(processed.cacheIdentity !== undefined
+        ? { cacheIdentity: processed.cacheIdentity }
+        : {}),
     });
     return;
   }
@@ -376,6 +384,13 @@ function emitPushEvent(
         ? record.code
         : 'sync.invalid_request',
     opIndex: record?.opIndex ?? 0,
+    replay: processed.replayed,
+    ...(processed.recordedAtMs !== undefined
+      ? { recordedAtMs: processed.recordedAtMs }
+      : {}),
+    ...(processed.cacheIdentity !== undefined
+      ? { cacheIdentity: processed.cacheIdentity }
+      : {}),
   });
 }
 
@@ -423,15 +438,16 @@ async function* streamResponse(
   try {
     // Push half (§6): one PUSH_RESULT per PUSH_COMMIT, in request order.
     for (const push of plan.pushes) {
-      const frame = await processPushCommit(
+      const processed = await processPushCommitWithTrace(
         ctx,
         schema,
         plan.resolved,
         plan.header.clientId,
         push,
       );
+      const { frame } = processed;
       if (events !== undefined) {
-        emitPushEvent(events, ctx, plan.header.clientId, push, frame);
+        emitPushEvent(events, ctx, plan.header.clientId, push, processed);
       }
       yield encodeResponseFrame(frame);
       const details = pushResultDetailsFrame(frame);

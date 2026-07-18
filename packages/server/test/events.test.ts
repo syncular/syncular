@@ -127,7 +127,18 @@ describe('push events', () => {
     expect(conflicted).toHaveLength(1);
     expect(conflicted[0]?.clientCommitId).toBe('c2');
     expect(conflicted[0]?.opIndex).toBe(0);
+    expect(conflicted[0]?.replay).toBe(false);
+    expect(typeof conflicted[0]?.cacheIdentity).toBe('string');
     expect(ofType(t.events, 'push.rejected')).toHaveLength(0);
+
+    await sync(t, [
+      pushCommit('c2', [upsert('tasks', 't1', taskRow('t1', 'p1'), 0)]),
+    ]);
+    expect(ofType(t.events, 'push.conflicted')[1]).toMatchObject({
+      replay: true,
+      recordedAtMs: conflicted[0]?.recordedAtMs,
+      cacheIdentity: conflicted[0]?.cacheIdentity,
+    });
   });
 
   test('rejection emits push.rejected with the terminating code', async () => {
@@ -140,6 +151,21 @@ describe('push events', () => {
     expect(rejected).toHaveLength(1);
     expect(rejected[0]?.code).toBe('sync.forbidden');
     expect(rejected[0]?.operations).toBe(1);
+    expect(rejected[0]?.replay).toBe(false);
+    expect(rejected[0]?.recordedAtMs).toBe(t.now.ms);
+    expect(typeof rejected[0]?.cacheIdentity).toBe('string');
+
+    await sync(t, [
+      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+    ]);
+    const withReplay = ofType(t.events, 'push.rejected');
+    expect(withReplay).toHaveLength(2);
+    expect(withReplay[1]).toMatchObject({
+      code: 'sync.forbidden',
+      replay: true,
+      recordedAtMs: rejected[0]?.recordedAtMs,
+      cacheIdentity: rejected[0]?.cacheIdentity,
+    });
   });
 
   test('resolver failure emits scopes.resolve_failed on the request path', async () => {

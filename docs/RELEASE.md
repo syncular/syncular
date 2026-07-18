@@ -1,10 +1,26 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.22** (`v0.15.22`). All artifacts use Apache-2.0, except
+current release is **0.15.23** (`v0.15.23`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.23 release notes
+
+0.15.23 makes cached seed rejections diagnosable without changing SSP2 wire
+semantics. `seedMutations` now throws the typed `SeedMutationError` with the
+exact rejection code, operation index, retryability, client/commit identity,
+and `replayed` provenance. Newly persisted push outcomes also retain their
+original host time and a privacy-safe cache identity, surfaced through rejected
+and conflicted structured server events.
+
+SQLite, PostgreSQL/PGlite, and D1 conformance rejects one deterministic seed,
+repairs authority, proves that the same ID replays the original result, and
+then applies a new seed revision without clearing unrelated rows. The server
+guide now distinguishes safe development-seed revisioning from production
+command retries, where changing an idempotency key after an unknown outcome can
+execute an operation twice.
 
 ## 0.15.22 release notes
 

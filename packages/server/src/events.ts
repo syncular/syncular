@@ -63,12 +63,22 @@ export interface PushRejectedEvent extends PushEventBase {
   readonly type: 'push.rejected';
   readonly code: string;
   readonly opIndex: number;
+  /** True when the rejection was replayed from the idempotency cache. */
+  readonly replay: boolean;
+  /** Original host time for outcomes recorded by a metadata-aware server. */
+  readonly recordedAtMs?: number;
+  /** Privacy-safe identity of the stored outcome, when available. */
+  readonly cacheIdentity?: string;
 }
 
 /** A push commit terminated by a version conflict (§6.2). */
 export interface PushConflictedEvent extends PushEventBase {
   readonly type: 'push.conflicted';
   readonly opIndex: number;
+  /** True when the conflict was replayed from the idempotency cache. */
+  readonly replay: boolean;
+  readonly recordedAtMs?: number;
+  readonly cacheIdentity?: string;
 }
 
 /** One emitted segment within a pull subscription section. */

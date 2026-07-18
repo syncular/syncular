@@ -151,25 +151,60 @@ behave exactly like synced rows. It is THE supported seeding recipe for dev
 servers, demos, and ops scripts:
 
 ```ts
-import { seedMutations } from '@syncular/server';
+import { SeedMutationError, seedMutations } from '@syncular/server';
 
-await seedMutations(config, { partition: 'demo', actorId: 'seed-user' }, [
-  {
-    table: 'todos',
-    op: 'upsert',
-    // SQL snake_case or the exact generated camelCase alias; missing nullable
-    // columns become NULL (`address_line_1` maps to `addressLine1`).
-    values: { id: 'seed-1', listId: 'welcome', title: 'Hello', done: false },
-  },
-]);
+try {
+  await seedMutations(
+    config,
+    {
+      partition: 'demo',
+      actorId: 'seed-user',
+      clientId: 'demo-seed',
+      commitId: 'welcome-v1',
+    },
+    [
+      {
+        table: 'todos',
+        op: 'upsert',
+        // SQL snake_case or the exact generated camelCase alias; missing
+        // nullable columns become NULL.
+        values: { id: 'seed-1', listId: 'welcome', title: 'Hello', done: false },
+      },
+    ],
+  );
+} catch (error) {
+  if (error instanceof SeedMutationError) {
+    console.error({
+      code: error.code,
+      operation: error.opIndex,
+      replayed: error.replayed,
+      recordedAtMs: error.recordedAtMs,
+      cacheIdentity: error.cacheIdentity,
+    });
+  }
+  throw error;
+}
 ```
 
-The commit id defaults to a stable `seed-commit-1`, so re-running the seed
-replays idempotently and writes nothing twice; pass `commitId` to seed
-additional batches. A rejected seed (bad scopes, failed validation, unknown
-column) throws with the failing operation's code — a broken seed fails loud
-at boot. In tests, prefer [`@syncular/testkit`](/tooling-testing/): a test
-client that mutates and syncs covers the same ground with virtual time.
+The commit id defaults to a stable `seed-commit-1`, so re-running an accepted
+seed writes nothing twice. Rejections are terminal for the same
+`clientId`/`commitId` too: fixing the resolver or validator does not alter the
+already-recorded outcome. `SeedMutationError` exposes the exact protocol or
+host-validator `code`, `opIndex`, `replayed`, original `recordedAtMs`, and a
+privacy-safe `cacheIdentity`; no message parsing is required.
+
+For a corrected development seed, inspect the structured error, fix the seed
+or authority, and advance a reviewable seed revision such as `welcome-v1` to
+`welcome-v2`. Leave the database and unrelated rows intact. Do not delete the
+whole database and do not mutate or remove the old idempotency outcome. This
+revisioning rule is only for a changed seed definition. Application commands
+must keep their original request ID after an unknown outcome: inventing a new
+ID can execute the same real-world operation twice.
+
+Malformed helper input such as an unknown table/column throws `SyncError`
+before a push exists. In tests, prefer
+[`@syncular/testkit`](/tooling-testing/): a test client that mutates and syncs
+covers the same ground with virtual time.
 
 ## Choosing the rest
 
