@@ -8,7 +8,13 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type ClientSchema, ClientSyncError } from '@syncular/client';
+import {
+  type ClientSchema,
+  ClientSyncError,
+  type SqlRow,
+  type SqlValue,
+} from '@syncular/client';
+import { BunClientDatabase } from '@syncular/client/bun';
 import { ValidationRejection } from '@syncular/server';
 import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
 import {
@@ -20,6 +26,29 @@ import {
   tableRows,
   taskValues,
 } from './helpers';
+
+class OutboxReadCountingDatabase extends BunClientDatabase {
+  outboxReadCount = 0;
+  outcomePruneCount = 0;
+
+  override query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
+    const normalized = sql.replace(/\s+/g, ' ').trim();
+    if (normalized.includes('FROM _syncular_outbox ORDER BY seq ASC')) {
+      this.outboxReadCount += 1;
+    }
+    if (
+      normalized === 'SELECT COUNT(*) AS count FROM _syncular_commit_outcomes'
+    ) {
+      this.outcomePruneCount += 1;
+    }
+    return super.query(sql, params);
+  }
+
+  resetCounts(): void {
+    this.outboxReadCount = 0;
+    this.outcomePruneCount = 0;
+  }
+}
 
 describe('two clients, one server (tripwire)', () => {
   test('mutation → push → other-client pull converges', async () => {
@@ -275,6 +304,54 @@ describe('conflict surfacing (§6.2, §6.5)', () => {
 });
 
 describe('durable commit outcomes', () => {
+  test('keeps outbox scans constant across a batched acknowledgement response', async () => {
+    const server = makeServer();
+    const db = new OutboxReadCountingDatabase();
+    const entry = await makeClient(server, {
+      clientId: 'batched-ack-client',
+      database: db,
+    });
+    const observedOutboxCounts: number[] = [];
+    let diagnosticsCount = 0;
+    entry.client.onChange((batch) => {
+      if (batch.outcomesChanged && batch.status !== undefined) {
+        observedOutboxCounts.push(batch.status.outbox);
+      }
+    });
+
+    try {
+      for (let index = 0; index < 32; index += 1) {
+        entry.client.mutate([
+          {
+            table: 'tasks',
+            op: 'upsert',
+            values: taskValues(`batched-${index}`, 'batched'),
+          },
+        ]);
+      }
+
+      entry.client.onDiagnostics(() => {
+        diagnosticsCount += 1;
+      });
+      db.resetCounts();
+      const summary = await entry.client.sync();
+
+      expect(summary.applied).toHaveLength(32);
+      // Request encoding, one coalesced status baseline, final replay, and one
+      // observed diagnostics snapshot. None may scale with PUSH_RESULT count.
+      expect(db.outboxReadCount).toBe(4);
+      expect(db.outcomePruneCount).toBe(1);
+      expect(diagnosticsCount).toBe(1);
+      expect(observedOutboxCounts).toEqual(
+        Array.from({ length: 32 }, (_, index) => 31 - index),
+      );
+      expect(entry.client.pendingCommits()).toHaveLength(0);
+    } finally {
+      await entry.client.close();
+      db.close();
+    }
+  });
+
   test('journals the final result atomically with outbox drain and survives restart', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'syncular-outcomes-'));
     const databasePath = join(directory, 'client.db');

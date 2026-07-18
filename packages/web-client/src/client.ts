@@ -503,6 +503,18 @@ function emptySummary(pushed: number): MutableSummary {
   };
 }
 
+function isFinalPushResult(frame: PushResultFrame): boolean {
+  return (
+    frame.status !== 'rejected' ||
+    !frame.results.some(
+      (result) =>
+        result.status === 'error' &&
+        result.code === 'sync.idempotency_cache_miss' &&
+        result.retryable,
+    )
+  );
+}
+
 export class SyncClient {
   readonly #config: SyncClientConfig;
   readonly #db: ClientDatabase;
@@ -546,6 +558,8 @@ export class SyncClient {
   /** §8.6: subscribable presence-change listeners (twin of onPresence). */
   readonly #presenceListeners = new Set<(scopeKey: string) => void>();
   readonly #diagnostics = new ClientDiagnosticsEmitter();
+  #diagnosticsDeferralDepth = 0;
+  #diagnosticsPending = false;
   #lastRound: DiagnosticLastRound | undefined;
   #lastChange: DiagnosticLastChange | undefined;
   /** The batch accumulator; non-undefined only inside `#applyBatch`. */
@@ -1159,8 +1173,31 @@ export class SyncClient {
   }
 
   #emitDiagnostics(): void {
-    if (!this.#started || this.#securityLifecycle !== 'active') return;
+    if (
+      !this.#started ||
+      this.#securityLifecycle !== 'active' ||
+      !this.#diagnostics.observed
+    ) {
+      return;
+    }
+    if (this.#diagnosticsDeferralDepth > 0) {
+      this.#diagnosticsPending = true;
+      return;
+    }
     this.#diagnostics.emit(this.diagnosticsSnapshot());
+  }
+
+  #beginDiagnosticsDeferral(): void {
+    this.#diagnosticsDeferralDepth += 1;
+  }
+
+  #endDiagnosticsDeferral(): void {
+    if (this.#diagnosticsDeferralDepth === 0) return;
+    this.#diagnosticsDeferralDepth -= 1;
+    if (this.#diagnosticsDeferralDepth === 0 && this.#diagnosticsPending) {
+      this.#diagnosticsPending = false;
+      this.#emitDiagnostics();
+    }
   }
 
   /** One call for the complete status domain used by reactive hosts. */
@@ -1169,10 +1206,10 @@ export class SyncClient {
     return this.#statusSnapshot();
   }
 
-  #statusSnapshot(): SyncStatusSnapshot {
+  #statusSnapshot(outboxCount?: number): SyncStatusSnapshot {
     return {
       currentSchemaVersion: this.#config.schema.version,
-      outbox: listOutbox(this.#db).length,
+      outbox: outboxCount ?? listOutbox(this.#db).length,
       upgrading: this.#upgrading,
       leaseState: this.#leaseState,
       schemaFloor: this.#schemaFloor,
@@ -1186,7 +1223,10 @@ export class SyncClient {
    * Re-entrant calls share the outer batch so a nested apply never
    * double-emits (e.g. purge → blob reconcile → replay inside one round).
    */
-  #applyBatch<T>(fn: (batch: ChangeAccumulator) => T): T {
+  #applyBatch<T>(
+    fn: (batch: ChangeAccumulator) => T,
+    statusSnapshotOverride?: () => SyncStatusSnapshot,
+  ): T {
     if (this.#batch !== undefined) return fn(this.#batch);
     const batch = new ChangeAccumulator();
     let revision: LocalRevision | undefined;
@@ -1199,7 +1239,9 @@ export class SyncClient {
           result = fn(batch);
           if (batch.touched) {
             revision = bumpLocalRevision(this.#db);
-            if (batch.statusChanged) status = this.#statusSnapshot();
+            if (batch.statusChanged) {
+              status = statusSnapshotOverride?.() ?? this.#statusSnapshot();
+            }
           }
         } finally {
           this.#batch = undefined;
@@ -2346,6 +2388,7 @@ export class SyncClient {
       );
     }
     this.#syncOutstanding = true;
+    this.#beginDiagnosticsDeferral();
     const startedAtMs = this.#now();
     return this.#serialize(() => this.#runSync())
       .then(
@@ -2380,6 +2423,7 @@ export class SyncClient {
       )
       .finally(() => {
         this.#syncOutstanding = false;
+        this.#endDiagnosticsDeferral();
       });
   }
 
@@ -2842,12 +2886,20 @@ export class SyncClient {
       string,
       ReadonlyMap<number, RejectionDetails>
     >();
+    let lastFinalPushResult: PushResultFrame | undefined;
     for (const frame of message.frames) {
-      if (frame.type !== 'PUSH_RESULT_DETAILS') continue;
-      rejectionDetailsByCommit.set(
-        frame.clientCommitId,
-        new Map(frame.entries.map((entry) => [entry.opIndex, entry.details])),
-      );
+      if (frame.type === 'PUSH_RESULT_DETAILS') {
+        rejectionDetailsByCommit.set(
+          frame.clientCommitId,
+          new Map(frame.entries.map((entry) => [entry.opIndex, entry.details])),
+        );
+      } else if (
+        frame.type === 'PUSH_RESULT' &&
+        commitsById.has(frame.clientCommitId) &&
+        isFinalPushResult(frame)
+      ) {
+        lastFinalPushResult = frame;
+      }
     }
 
     const header = message.frames[0];
@@ -2879,9 +2931,11 @@ export class SyncClient {
     let section: OpenSection | undefined;
     let errorFrame: ClientSyncError | undefined;
     let deltaCursor = -1;
+    let responseOutboxCount: number | undefined;
 
     // Each durable observer transaction emits its own revisioned batch.
     // Async decrypt/download work happens outside SQLite transactions.
+    this.#beginDiagnosticsDeferral();
     try {
       for (const frame of message.frames.slice(1)) {
         switch (frame.type) {
@@ -2895,17 +2949,26 @@ export class SyncClient {
               expiresAtMs: frame.expiresAtMs,
             });
             break;
-          case 'PUSH_RESULT':
-            this.#applyBatch((batch) =>
-              this.#handlePushResult(
-                frame,
-                commitsById,
-                summary,
-                batch,
-                rejectionDetailsByCommit.get(frame.clientCommitId),
-              ),
+          case 'PUSH_RESULT': {
+            let outboxCount =
+              responseOutboxCount ?? listOutbox(this.#db).length;
+            this.#applyBatch(
+              (batch) => {
+                const drained = this.#handlePushResult(
+                  frame,
+                  commitsById,
+                  summary,
+                  batch,
+                  rejectionDetailsByCommit.get(frame.clientCommitId),
+                  frame === lastFinalPushResult,
+                );
+                if (drained) outboxCount -= 1;
+              },
+              () => this.#statusSnapshot(outboxCount),
             );
+            responseOutboxCount = outboxCount;
             break;
+          }
           case 'PUSH_RESULT_DETAILS':
             // Pre-indexed above so companion ordering remains wire-additive.
             break;
@@ -3103,10 +3166,14 @@ export class SyncClient {
         if (errorFrame !== undefined) break;
       }
     } finally {
-      // §7.1: local reads see outbox state applied optimistically — replay
-      // the still-pending commits on top of the freshly applied server state.
-      this.#replayOutbox();
-      this.#reconcileBlobs(false);
+      try {
+        // §7.1: local reads see outbox state applied optimistically — replay
+        // the still-pending commits on top of the freshly applied server state.
+        this.#replayOutbox();
+        this.#reconcileBlobs(false);
+      } finally {
+        this.#endDiagnosticsDeferral();
+      }
     }
 
     if (errorFrame !== undefined) throw errorFrame;
@@ -3136,9 +3203,10 @@ export class SyncClient {
     summary: MutableSummary,
     batch: ChangeAccumulator,
     rejectionDetails: ReadonlyMap<number, RejectionDetails> | undefined,
-  ): void {
+    pruneOutcomes: boolean,
+  ): boolean {
     const commit = commitsById.get(frame.clientCommitId);
-    if (commit === undefined) return;
+    if (commit === undefined) return false;
     if (frame.status === 'applied' || frame.status === 'cached') {
       // §6.3: applied and cached both drain the outbox — cached means
       // "already applied, you may have missed the ack".
@@ -3152,11 +3220,13 @@ export class SyncClient {
         })),
       });
       deleteOutboxCommit(this.#db, frame.clientCommitId);
-      pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
+      if (pruneOutcomes) {
+        pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
+      }
       batch.status();
       batch.outcomes();
       summary.applied.push(frame.clientCommitId);
-      return;
+      return true;
     }
     // rejected
     const cacheMiss = frame.results.some(
@@ -3169,7 +3239,7 @@ export class SyncClient {
       // §6.3: a serving failure, not the commit's outcome — keep the
       // commit queued and retry the identical push later.
       summary.retryable.push(frame.clientCommitId);
-      return;
+      return false;
     }
     const outcomeResults: CommitOperationOutcome[] = [];
     for (const result of frame.results) {
@@ -3218,7 +3288,9 @@ export class SyncClient {
       results: outcomeResults,
       operations: commit.operations,
     });
-    pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
+    if (pruneOutcomes) {
+      pruneCommitOutcomes(this.#db, this.#outcomeRetentionMaxEntries);
+    }
     batch.outcomes();
     // §7.2: remove the rejected optimistic layer. Before-images restore
     // validator-rejected updates even when the server emitted no new COMMIT;
@@ -3228,6 +3300,7 @@ export class SyncClient {
     });
     batch.status();
     summary.rejected.push(frame.clientCommitId);
+    return true;
   }
 
   #decodeServerRow(
