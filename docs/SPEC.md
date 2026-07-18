@@ -2839,7 +2839,10 @@ reader:
 - `scanRows({ table, scopeFilter, afterRowId?, limit? })` returns final
   candidate rows in ascending `rowId` order. `scopeFilter` is required;
   `afterRowId` is an exclusive keyset cursor; `limit` defaults to 100 and MUST
-  be an integer from 1 through 1,000.
+  be an integer from 1 through 1,000. At the storage boundary an empty or
+  omitted scope map MUST fail with the privacy-safe host error
+  `sync.storage.scan_requires_scope`; it MUST NOT return an
+  indistinguishable empty result.
 
 The reader is a server-host capability inside the already authenticated
 partition, not client-derived authorization. A host MUST request only the
@@ -2884,6 +2887,23 @@ client is already authorized to propose. It does not grant authority, connect
 partitions/facilities, allocate globally unique resources, run privileged
 workflows, or replace commands whose server must choose or transform the
 write. Those remain explicit server-authoritative functions.
+
+Such a command MAY use the server storage's trusted relational-index lookup to
+find rows by an exact alternate key without declaring another client scope.
+`scanRowsByIndex` names one declared index, supplies exactly one value for each
+index column, uses exclusive `rowId` keyset pagination, and limits every page to
+an integer from 1 through 1,000. The table MUST be materialized. Transactional
+lookups MUST observe the transaction's candidate writes and deletes. Unknown
+indexes, non-materialized tables, value-count mismatches, and invalid bounds
+MUST fail with stable privacy-safe host errors.
+
+The capability belongs to the trusted server storage object and is not an SSP2
+operation. It MUST NOT create a declared scope variable, participate in
+requested/allowed/effective scope evaluation, alter generated named-query
+coverage, or be selectable by a client. A host MUST NOT expose arbitrary
+table/index/value selection to an untrusted caller. Exact server lookups,
+client-visible scope indexes, correlated multi-variable scopes, and explicit
+materialized reverse-index/work-queue rows remain distinct mechanisms.
 
 ---
 

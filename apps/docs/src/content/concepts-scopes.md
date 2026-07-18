@@ -104,6 +104,21 @@ that an in-parent row is readable and writable, an out-of-parent row with an
 otherwise allowed child value is neither readable nor writable, and revocation,
 realtime, segments, and future child-only projections preserve that boundary.
 
+## Scopes are not server search indexes
+
+Adding a scope pattern changes the client authorization and named-query
+coverage contract. Do not add `workspace_id`, an external provider tenant ID,
+or an expiry bucket merely because an authoritative command needs to find
+rows by that value.
+
+For one known row, use the server storage primary-key read. For an exact lookup
+over declared app columns, use the trusted server-only relational-index scan.
+For ordered, ranged, or derived work, maintain an explicit server-only reverse
+projection atomically with the domain row. The
+[storage lookup guide](/server-storage/#choosing-the-right-row-lookup) compares
+all four shapes and shows a user-scoped key-grant table revoked by Workspace
+without widening any client subscription.
+
 ## Write-path authorization
 
 The same resolver guards writes ([SPEC §3.4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#34-write-path-authorization)),

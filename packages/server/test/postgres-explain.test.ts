@@ -19,6 +19,7 @@ import { encodeRow, type RowColumn } from '@syncular/core';
 import {
   commitWindowPageSql,
   compileSchema,
+  indexRowPageStatement,
   PostgresServerStorage,
   type ServerSchema,
   scanRowPageSql,
@@ -42,6 +43,7 @@ const SCHEMA: ServerSchema = {
       columns: COLUMNS,
       primaryKey: 'id',
       scopes: ['project:{project_id}'],
+      indexes: [{ name: 'tasks_by_project', columns: ['project_id'] }],
     },
   ],
 };
@@ -147,6 +149,29 @@ test('scanRows page scan is index-driven (no Seq Scan)', async () => {
   ]);
   expect(plan).toContain('Index');
   expect(plan).not.toContain('Seq Scan on sync_row_scopes');
+  expect(plan).not.toContain('Seq Scan on tasks');
+  await db.close();
+});
+
+test('trusted exact lookup uses its declared relational index', async () => {
+  const { db } = await seededStorage();
+  const table = compileSchema(SCHEMA).tables.get('tasks');
+  if (table === undefined) throw new Error('tasks not compiled');
+  const index = table.indexes.find(
+    (candidate) => candidate.name === 'tasks_by_project',
+  );
+  if (index === undefined) throw new Error('tasks index not compiled');
+  const statement = indexRowPageStatement(
+    table,
+    index,
+    ['p3'],
+    PARTITION,
+    null,
+    64,
+    'postgres',
+  );
+  const plan = await explain(db, statement.sql, [...statement.params]);
+  expect(plan).toContain('tasks_by_project');
   expect(plan).not.toContain('Seq Scan on tasks');
   await db.close();
 });

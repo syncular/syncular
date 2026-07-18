@@ -45,6 +45,7 @@ import {
   commitWindowPageSql,
   deleteRowSql,
   dropTableDdl,
+  indexRowPageStatement,
   layoutsOf,
   migratePayload,
   parseLayouts,
@@ -84,6 +85,7 @@ import type {
   CommitMetadata,
   CommitMetadataQuery,
   CommitWindowQuery,
+  IndexRowScanQuery,
   NewCommit,
   RowScanQuery,
   ScopeActivityQuery,
@@ -95,6 +97,7 @@ import type {
   StoredRow,
 } from './storage';
 import { isD1ConstraintError, StorageConstraintError } from './storage-errors';
+import { assertScopeIndexedScan, resolveIndexRowScan } from './storage-query';
 
 // -- The subset of the D1 API this storage uses (structural typing) ---------
 // Declared locally so the package takes no `@cloudflare/workers-types`
@@ -193,6 +196,7 @@ class D1Transaction implements StorageTransaction {
 
   async scanRows(query: RowScanQuery): Promise<StoredRow[]> {
     this.#assertOpen();
+    assertScopeIndexedScan(query);
     const variables = Object.keys(query.scopeFilter).sort();
     const firstVariable = variables[0];
     if (firstVariable === undefined) return [];
@@ -248,6 +252,60 @@ class D1Transaction implements StorageTransaction {
       ) {
         rows.set(rowId, pending.row);
       }
+    }
+    return [...rows.values()]
+      .sort((left, right) => left.rowId.localeCompare(right.rowId))
+      .slice(0, query.limit);
+  }
+
+  async scanRowsByIndex(query: IndexRowScanQuery): Promise<StoredRow[]> {
+    this.#assertOpen();
+    const table = this.#resolveTable(query.table);
+    const index = resolveIndexRowScan(table, query);
+    const pendingForTable = [...this.#pending.entries()].filter(([key]) =>
+      key.startsWith(`${query.table}\u0000`),
+    );
+    const persistedLimit = query.limit + pendingForTable.length;
+    const statement = indexRowPageStatement(
+      table,
+      index,
+      query.values,
+      this.#partition,
+      query.afterRowId,
+      persistedLimit,
+      'sqlite',
+    );
+    const { results: records } = await this.#db
+      .prepare(statement.sql)
+      .bind(...statement.params)
+      .all<SqliteRowRecord>();
+
+    const rows = new Map(
+      records.map((record) => {
+        const row = toStoredRow(record);
+        return [row.rowId, row] as const;
+      }),
+    );
+    const columnPositions = index.columns.map((column) => {
+      const position = table.columnIndex.get(column);
+      if (position === undefined) {
+        throw new Error('compiled relational index references unknown column');
+      }
+      return position;
+    });
+    const lowerBound = query.afterRowId ?? '';
+    for (const [key, pending] of pendingForTable) {
+      const rowId = key.slice(query.table.length + 1);
+      rows.delete(rowId);
+      if (pending.kind !== 'row' || rowId <= lowerBound) continue;
+      const values = decodeRow(table.columns, pending.row.payload);
+      const matches = columnPositions.every((position, valueIndex) =>
+        relationalValuesEqual(
+          values[position] ?? null,
+          query.values[valueIndex] ?? null,
+        ),
+      );
+      if (matches) rows.set(rowId, pending.row);
     }
     return [...rows.values()]
       .sort((left, right) => left.rowId.localeCompare(right.rowId))
@@ -859,6 +917,7 @@ export class D1ServerStorage implements ServerStorage {
   }
 
   async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
+    assertScopeIndexedScan(query);
     const variables = Object.keys(query.scopeFilter).sort();
     const firstVariable = variables[0];
     if (firstVariable === undefined) return [];
@@ -902,6 +961,28 @@ export class D1ServerStorage implements ServerStorage {
       if (records.length < batchSize) break;
     }
     return rows;
+  }
+
+  async scanRowsByIndex(
+    partition: string,
+    query: IndexRowScanQuery,
+  ): Promise<StoredRow[]> {
+    const table = this.table(query.table);
+    const index = resolveIndexRowScan(table, query);
+    const statement = indexRowPageStatement(
+      table,
+      index,
+      query.values,
+      partition,
+      query.afterRowId,
+      query.limit,
+      'sqlite',
+    );
+    const { results } = await this.#db
+      .prepare(statement.sql)
+      .bind(...statement.params)
+      .all<SqliteRowRecord>();
+    return results.map(toStoredRow);
   }
 
   async getClientRecord(

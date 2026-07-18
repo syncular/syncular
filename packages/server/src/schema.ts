@@ -180,6 +180,11 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
         );
       }
       indexNames.add(index.name);
+      if (index.columns.length === 0) {
+        throw new Error(
+          `table ${table.name}: index ${JSON.stringify(index.name)} must name at least one column`,
+        );
+      }
       for (const column of index.columns) {
         if (!columnIndex.has(column)) {
           throw new Error(

@@ -47,6 +47,7 @@ import {
   commitWindowPageSql,
   deleteRowSql,
   dropTableDdl,
+  indexRowPageStatement,
   layoutsOf,
   migratePayload,
   parseLayouts,
@@ -73,6 +74,7 @@ import type {
   CommitMetadata,
   CommitMetadataQuery,
   CommitWindowQuery,
+  IndexRowScanQuery,
   NewCommit,
   RowScanQuery,
   ScopeActivityQuery,
@@ -88,6 +90,7 @@ import {
   isPostgresConstraintError,
   StorageConstraintError,
 } from './storage-errors';
+import { assertScopeIndexedScan, resolveIndexRowScan } from './storage-query';
 
 /**
  * Schema DDL. Applied by `PostgresServerStorage.migrate()` (idempotent).
@@ -374,6 +377,26 @@ async function getRowOn(
   return record === undefined ? undefined : toStoredRow(record);
 }
 
+async function scanRowsByIndexOn(
+  q: PgQueryable,
+  compiled: CompiledTable,
+  partition: string,
+  query: IndexRowScanQuery,
+): Promise<StoredRow[]> {
+  const index = resolveIndexRowScan(compiled, query);
+  const statement = indexRowPageStatement(
+    compiled,
+    index,
+    query.values,
+    partition,
+    query.afterRowId,
+    query.limit,
+    'postgres',
+  );
+  const { rows } = await q.query<RowRecord>(statement.sql, statement.params);
+  return rows.map(toStoredRow);
+}
+
 async function writeRowOn(
   q: PgQueryable,
   compiled: CompiledTable,
@@ -437,6 +460,7 @@ class PostgresTransaction implements StorageTransaction {
 
   async scanRows(query: RowScanQuery): Promise<StoredRow[]> {
     this.#assertOpen();
+    assertScopeIndexedScan(query);
     const variables = Object.keys(query.scopeFilter).sort();
     const firstVariable = variables[0];
     if (firstVariable === undefined) return [];
@@ -471,6 +495,16 @@ class PostgresTransaction implements StorageTransaction {
       if (records.length < batchSize) break;
     }
     return rows;
+  }
+
+  scanRowsByIndex(query: IndexRowScanQuery): Promise<StoredRow[]> {
+    this.#assertOpen();
+    return scanRowsByIndexOn(
+      this.#client,
+      this.#resolveTable(query.table),
+      this.#partition,
+      query,
+    );
   }
 
   async lockPartitionForCommitValidation(): Promise<void> {
@@ -1012,6 +1046,7 @@ export class PostgresServerStorage implements ServerStorage {
   }
 
   async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
+    assertScopeIndexedScan(query);
     const variables = Object.keys(query.scopeFilter).sort();
     const firstVariable = variables[0];
     if (firstVariable === undefined) return [];
@@ -1052,6 +1087,18 @@ export class PostgresServerStorage implements ServerStorage {
       if (records.length < batchSize) break;
     }
     return rows;
+  }
+
+  scanRowsByIndex(
+    partition: string,
+    query: IndexRowScanQuery,
+  ): Promise<StoredRow[]> {
+    return scanRowsByIndexOn(
+      this.#exec,
+      this.table(query.table),
+      partition,
+      query,
+    );
   }
 
   async getClientRecord(

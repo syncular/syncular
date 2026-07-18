@@ -49,7 +49,7 @@ import {
   type RowColumn,
   type RowValue,
 } from '@syncular/core';
-import type { CompiledSchema, CompiledTable } from './schema';
+import type { CompiledSchema, CompiledTable, IndexSchema } from './schema';
 import type { StoredRow } from './storage';
 
 export type RelationalDialect = 'sqlite' | 'postgres';
@@ -285,6 +285,50 @@ export function selectRowSql(
 ): string {
   const p = dialect === 'sqlite' ? ['?', '?'] : ['$1', '$2'];
   return `SELECT ${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, ${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, ${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, ${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=${p[0]} AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}=${p[1]}`;
+}
+
+export interface IndexRowPageStatement {
+  readonly sql: string;
+  readonly params: readonly unknown[];
+}
+
+/**
+ * Bounded exact lookup through one declared relational index. Unlike
+ * `scanRowPageSql`, this is a trusted server-host query: it never reads or
+ * creates Syncular scope-index entries and is not reachable from SSP2.
+ */
+export function indexRowPageStatement(
+  table: CompiledTable,
+  index: IndexSchema,
+  values: readonly RowValue[],
+  partition: string,
+  afterRowId: string | null | undefined,
+  limit: number,
+  dialect: RelationalDialect,
+): IndexRowPageStatement {
+  const params: unknown[] = [partition];
+  const placeholder = (): string =>
+    dialect === 'sqlite' ? '?' : `$${params.length}`;
+  const predicates = index.columns.map((columnName, valueIndex) => {
+    const columnPosition = table.columnIndex.get(columnName);
+    const column =
+      columnPosition === undefined ? undefined : table.columns[columnPosition];
+    if (column === undefined) {
+      throw new Error('compiled relational index references unknown column');
+    }
+    const value = values[valueIndex] ?? null;
+    if (value === null) return `${quoteIdent(columnName)} IS NULL`;
+    params.push(toSqlValue(column, value, dialect));
+    return `${quoteIdent(columnName)}=${placeholder()}`;
+  });
+  params.push(afterRowId ?? '');
+  const after = placeholder();
+  params.push(limit);
+  const pageLimit = placeholder();
+  return {
+    sql: `SELECT ${quoteIdent(SYNC_ROW_ID_COLUMN)} AS row_id, ${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, ${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, ${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=${dialect === 'sqlite' ? '?' : '$1'} AND ${predicates.join(' AND ')} AND ${quoteIdent(SYNC_ROW_ID_COLUMN)}>${after} ORDER BY ${quoteIdent(SYNC_ROW_ID_COLUMN)} LIMIT ${pageLimit}`,
+    params,
+  };
 }
 
 /**

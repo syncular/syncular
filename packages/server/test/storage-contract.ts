@@ -18,6 +18,7 @@ import {
   compileSchema,
   type ServerSchema,
   type ServerStorage,
+  StorageQueryError,
   type StoredPushResult,
   type StoredRow,
 } from '@syncular/server';
@@ -44,6 +45,12 @@ const DOCS_COLUMNS: readonly RowColumn[] = [
   { name: 'org_id', type: 'string', nullable: false },
   { name: 'project_id', type: 'string', nullable: false },
 ];
+const DEVICE_KEY_GRANTS_COLUMNS: readonly RowColumn[] = [
+  { name: 'id', type: 'string', nullable: false },
+  { name: 'user_id', type: 'string', nullable: false },
+  { name: 'workspace_id', type: 'string', nullable: false },
+  { name: 'key_id', type: 'string', nullable: false },
+];
 export const CONTRACT_SCHEMA: ServerSchema = {
   version: 1,
   tables: [
@@ -52,12 +59,25 @@ export const CONTRACT_SCHEMA: ServerSchema = {
       columns: TASKS_COLUMNS,
       primaryKey: 'id',
       scopes: ['project:{project_id}'],
+      indexes: [{ name: 'tasks_by_project', columns: ['project_id'] }],
     },
     {
       name: 'docs',
       columns: DOCS_COLUMNS,
       primaryKey: 'id',
       scopes: ['org:{org_id}', 'project:{project_id}'],
+    },
+    {
+      name: 'device_key_grants',
+      columns: DEVICE_KEY_GRANTS_COLUMNS,
+      primaryKey: 'id',
+      scopes: ['user:{user_id}'],
+      indexes: [
+        {
+          name: 'device_key_grants_by_workspace',
+          columns: ['workspace_id'],
+        },
+      ],
     },
   ],
 };
@@ -82,6 +102,24 @@ function docRow(rowId: string, project: string, serverVersion = 1): StoredRow {
     serverVersion,
     scopes: { project_id: project },
     payload: encodeRow(DOCS_COLUMNS, [rowId, 'o1', project]),
+  };
+}
+
+function deviceKeyGrantRow(
+  rowId: string,
+  userId: string,
+  workspaceId: string,
+): StoredRow {
+  return {
+    rowId,
+    serverVersion: 1,
+    scopes: { user_id: userId },
+    payload: encodeRow(DEVICE_KEY_GRANTS_COLUMNS, [
+      rowId,
+      userId,
+      workspaceId,
+      `key-${rowId}`,
+    ]),
   };
 }
 
@@ -475,6 +513,161 @@ export function runStorageContract(
         limit: 10,
       });
       expect(page2.map((r) => r.rowId)).toEqual(['r4']);
+    });
+
+    test('scanRows rejects an empty or omitted scope filter explicitly', async () => {
+      const storage = await make();
+      for (const scopeFilter of [{}, undefined]) {
+        try {
+          await storage.scanRows(PARTITION, {
+            table: 'tasks',
+            scopeFilter: scopeFilter as never,
+            afterRowId: null,
+            limit: 10,
+          });
+          throw new Error('expected scanRows to reject');
+        } catch (error) {
+          expect(error).toBeInstanceOf(StorageQueryError);
+          expect((error as StorageQueryError).code).toBe(
+            'sync.storage.scan_requires_scope',
+          );
+          expect((error as Error).message).not.toContain('tasks');
+        }
+      }
+    });
+
+    test('scanRowsByIndex is exact, ordered, and resumable', async () => {
+      const storage = await make();
+      expect(storage.scanRowsByIndex).toBeDefined();
+      const tx = await storage.begin(PARTITION);
+      await tx.upsertRow('tasks', taskRow('r3', 'p1'));
+      await tx.upsertRow('tasks', taskRow('r1', 'p1'));
+      await tx.upsertRow('tasks', taskRow('r2', 'p2'));
+      await tx.upsertRow('tasks', taskRow('r4', 'p1'));
+      await tx.commit();
+
+      const page1 = await storage.scanRowsByIndex?.(PARTITION, {
+        table: 'tasks',
+        index: 'tasks_by_project',
+        values: ['p1'],
+        afterRowId: null,
+        limit: 2,
+      });
+      expect(page1?.map((row) => row.rowId)).toEqual(['r1', 'r3']);
+      const page2 = await storage.scanRowsByIndex?.(PARTITION, {
+        table: 'tasks',
+        index: 'tasks_by_project',
+        values: ['p1'],
+        afterRowId: 'r3',
+        limit: 10,
+      });
+      expect(page2?.map((row) => row.rowId)).toEqual(['r4']);
+    });
+
+    test('trusted alternate lookup does not become a client-visible scope', async () => {
+      const storage = await make();
+      const table =
+        compileSchema(CONTRACT_SCHEMA).tables.get('device_key_grants');
+      expect([...(table?.declaredVariables ?? [])]).toEqual(['user_id']);
+
+      const tx = await storage.begin(PARTITION);
+      await tx.upsertRow(
+        'device_key_grants',
+        deviceKeyGrantRow('g1', 'user-1', 'workspace-1'),
+      );
+      await tx.upsertRow(
+        'device_key_grants',
+        deviceKeyGrantRow('g2', 'user-2', 'workspace-1'),
+      );
+      await tx.upsertRow(
+        'device_key_grants',
+        deviceKeyGrantRow('g3', 'user-3', 'workspace-2'),
+      );
+      await tx.commit();
+
+      const grants = await storage.scanRowsByIndex?.(PARTITION, {
+        table: 'device_key_grants',
+        index: 'device_key_grants_by_workspace',
+        values: ['workspace-1'],
+        afterRowId: null,
+        limit: 10,
+      });
+      expect(grants?.map((row) => row.rowId)).toEqual(['g1', 'g2']);
+      expect(grants?.map((row) => row.scopes)).toEqual([
+        { user_id: 'user-1' },
+        { user_id: 'user-2' },
+      ]);
+    });
+
+    test('transaction index scans see staged upserts, moves, and deletes', async () => {
+      const storage = await make();
+      const seed = await storage.begin(PARTITION);
+      await seed.upsertRow('tasks', taskRow('r1', 'p1'));
+      await seed.upsertRow('tasks', taskRow('r2', 'p1'));
+      await seed.commit();
+
+      const tx = await storage.begin(PARTITION);
+      expect(tx.scanRowsByIndex).toBeDefined();
+      await tx.deleteRow('tasks', 'r1');
+      await tx.upsertRow('tasks', taskRow('r2', 'p2', 2));
+      await tx.upsertRow('tasks', taskRow('r3', 'p1'));
+      const rows = await tx.scanRowsByIndex?.({
+        table: 'tasks',
+        index: 'tasks_by_project',
+        values: ['p1'],
+        afterRowId: null,
+        limit: 10,
+      });
+      expect(rows?.map((row) => row.rowId)).toEqual(['r3']);
+      await tx.rollback();
+    });
+
+    test('scanRowsByIndex rejects undeclared, malformed, and unbounded lookups', async () => {
+      const storage = await make();
+      expect(storage.scanRowsByIndex).toBeDefined();
+      const cases = [
+        {
+          query: {
+            table: 'tasks',
+            index: 'missing',
+            values: ['p1'],
+            afterRowId: null,
+            limit: 10,
+          },
+          code: 'sync.storage.index_not_found',
+        },
+        {
+          query: {
+            table: 'tasks',
+            index: 'tasks_by_project',
+            values: [],
+            afterRowId: null,
+            limit: 10,
+          },
+          code: 'sync.storage.index_value_count_mismatch',
+        },
+        {
+          query: {
+            table: 'tasks',
+            index: 'tasks_by_project',
+            values: ['p1'],
+            afterRowId: null,
+            limit: 1_001,
+          },
+          code: 'sync.storage.invalid_limit',
+        },
+      ] as const;
+      for (const { query, code } of cases) {
+        try {
+          await storage.scanRowsByIndex?.(PARTITION, query);
+          throw new Error('expected scanRowsByIndex to reject');
+        } catch (error) {
+          expect(error).toBeInstanceOf(StorageQueryError);
+          expect((error as StorageQueryError).code).toBe(code);
+          expect((error as Error).message).not.toContain('tasks');
+          expect((error as Error).message).not.toContain('p1');
+        }
+      }
     });
 
     test('deleting a row removes it from the scope scan', async () => {

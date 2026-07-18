@@ -177,6 +177,30 @@ The task-oriented [concurrency and conflict-correction guide](https://syncular.d
 shows version projection, aggregate rollback, corrected replacement commits,
 explicit acknowledgement, and restart-safe recovery UI together.
 
+## Trusted relational-index lookups for authoritative commands
+
+`scanRows` is a Syncular scope-index scan, never an unscoped administrative
+query. Passing an empty or omitted `scopeFilter` throws the exported
+`StorageQueryError` with `code: 'sync.storage.scan_requires_scope'` on
+SQLite, PostgreSQL, and D1.
+
+An authoritative command that needs an exact alternate lookup can instead use
+the optional `storage.scanRowsByIndex(partition, query)` or transactional
+`tx.scanRowsByIndex(query)` capability. The query names one declared
+`TableSchema.indexes` entry, supplies one exact value per index column, uses an
+exclusive `afterRowId`, and has a required limit from 1 through 1,000. All
+shipped adapters implement it; transaction reads see staged writes and deletes.
+It requires a materialized table.
+
+This is a trusted `@syncular/server` storage capability, not SSP2: it creates no
+scope variable, named-query obligation, subscription descriptor, or client
+authority. Never expose table/index/value selection through a client-controlled
+route. Custom adapters may omit the additive method; authoritative commands
+must check for it and fail closed. See the public
+[storage lookup guide](https://syncular.dev/server-storage/#choosing-the-right-row-lookup)
+for a user-scoped key-grant table revoked through a Workspace index and for the
+atomic reverse-index/queue fallback required by ordered or derived lookups.
+
 ## Structured events (the ops seam)
 
 One optional interface, `SyncularServerEvents`, carries every

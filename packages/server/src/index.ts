@@ -51,4 +51,8 @@ export * from './sqlite-lease-store';
 export * from './sqlite-segment-store';
 export * from './sqlite-storage';
 export * from './storage';
+export {
+  StorageQueryError,
+  type StorageQueryErrorCode,
+} from './storage-errors';
 export * from './validate';
