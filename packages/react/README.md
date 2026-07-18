@@ -229,6 +229,10 @@ not need a custom retention effect.
 
 ## Other hooks
 
+- `useDiagnostics({ expectedSubscriptions })` observes the versioned,
+  privacy-safe support snapshot. Native/Worker events trigger a fresh request,
+  preserving expected-but-unregistered intent on every host. Subscription ids
+  must be stable and PHI-free; scopes are not accepted.
 - `useSyncStatus()` observes the status domain without a follow-up read after
   every row change. It includes `availability` and `currentSchemaVersion`;
   `outbox` is local push work, while `syncNeeded` specifically means an inbound
@@ -243,3 +247,52 @@ not need a custom retention effect.
   surfaces for integrations.
 
 The hooks are SSR-safe: no local query runs during server rendering.
+
+### Privacy-safe support view
+
+Use application-owned, stable, PHI-free subscription ids to make missing
+registration distinguishable from a completed zero-row bootstrap. The hook
+refreshes after diagnostics events on direct, Worker, Tauri, and React Native
+hosts while preserving that expected intent:
+
+```tsx
+import { useDiagnostics } from '@syncular/react';
+
+const expectedSubscriptions = [
+  { id: 'membership-security', table: 'facility_memberships' },
+  { id: 'scheduler-window', table: 'surgeries' },
+] as const;
+
+function SyncSupportPanel() {
+  const { snapshot, isLoading, error, refresh } = useDiagnostics({
+    expectedSubscriptions,
+  });
+
+  if (isLoading) return <p>Collecting local sync evidence…</p>;
+  if (error) return <p>Diagnostics unavailable: {error.message}</p>;
+
+  return (
+    <section>
+      <button type="button" onClick={() => void refresh()}>
+        Refresh
+      </button>
+      <button
+        type="button"
+        disabled={!snapshot}
+        onClick={() =>
+          snapshot &&
+          void navigator.clipboard.writeText(JSON.stringify(snapshot, null, 2))
+        }
+      >
+        Copy support snapshot
+      </button>
+      <pre>{JSON.stringify(snapshot, null, 2)}</pre>
+    </section>
+  );
+}
+```
+
+The snapshot deliberately excludes scopes, rows, clinical counts, SQL, paths,
+identities, credentials, mutation bodies, stack traces, and arbitrary prose.
+Do not enrich the copied bundle with database files, query results, or console
+dumps. See SPEC §7.6 for the complete contract.

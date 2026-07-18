@@ -34,6 +34,10 @@ import type {
   WindowState,
 } from './client';
 import type { SqlRow, SqlValue } from './database';
+import type {
+  ClientDiagnosticsRequest,
+  ClientDiagnosticsSnapshot,
+} from './diagnostics';
 import type { EncryptionKeyringConfig } from './encryption';
 import type {
   ClientChangeBatch,
@@ -153,6 +157,9 @@ export interface WorkerApi {
   querySnapshot(spec: QueryReadSpec): QuerySnapshot;
   localRevision(): LocalRevision;
   statusSnapshot(): SyncStatusSnapshot;
+  diagnosticsSnapshot(
+    request?: ClientDiagnosticsRequest,
+  ): ClientDiagnosticsSnapshot;
   conflicts(): readonly ConflictRecord[];
   rejections(): readonly RejectionRecord[];
   commitOutcome(clientCommitId: string): CommitOutcome | undefined;
@@ -240,6 +247,11 @@ export type SyncWorkerEvent =
       /** Exact revisioned core transaction; Sets and bigint clone directly. */
       readonly kind: 'change';
       readonly batch: ClientChangeBatch;
+    }
+  | {
+      /** Atomic privacy-safe health/support evidence from the worker core. */
+      readonly kind: 'diagnostics';
+      readonly snapshot: ClientDiagnosticsSnapshot;
     };
 
 export type WorkerToMainMessage =

@@ -7,6 +7,7 @@
  */
 
 import {
+  type BlobTransport,
   type ClientSchema,
   type EncryptionConfig,
   type SegmentFetchRequest,
@@ -21,7 +22,10 @@ import {
   createRealtimeHub,
   handleSegmentDownload,
   handleSyncRequest,
+  type LeaseConfig,
+  MemoryLeaseStore,
   MemorySegmentStore,
+  RESOLVER_OUTAGE,
   type RealtimeHub,
   type ServerSchema,
   type ServerStorage,
@@ -89,6 +93,7 @@ export interface TestServer {
   /** Allowed scopes per actor (§3.2 step 3); tests mutate freely. */
   readonly allowed: Record<string, ScopeMap>;
   readonly resolverError: { value: boolean };
+  readonly resolverOutage: { value: boolean };
   readonly limits: {
     maxOperationsPerRequest: number;
     inlineSegmentMaxBytes: number;
@@ -131,12 +136,16 @@ function wrapStorage(
 
 export function makeServer(
   schema: ServerSchema = SERVER_SCHEMA,
-  options: { readonly validators?: ValidatorRegistry } = {},
+  options: {
+    readonly validators?: ValidatorRegistry;
+    readonly leases?: { readonly ttlMs: number };
+  } = {},
 ): TestServer {
   const storage = new SqliteServerStorage();
   const segments = new MemorySegmentStore();
   const allowed: Record<string, ScopeMap> = {};
   const resolverError = { value: false };
+  const resolverOutage = { value: false };
   const faults: ServerFaults = { cacheMissOnce: false };
   const limits = {
     maxOperationsPerRequest: 500,
@@ -148,10 +157,18 @@ export function makeServer(
     projectId: ['*'],
     org_id: ['*'],
   };
-  const resolveScopes = ({ actorId }: { actorId: string }): ScopeMap => {
+  const resolveScopes = ({ actorId }: { actorId: string }) => {
     if (resolverError.value) throw new Error('resolver failure');
+    if (resolverOutage.value) return RESOLVER_OUTAGE;
     return allowed[actorId] ?? defaultAllowed;
   };
+  const leases: LeaseConfig | undefined =
+    options.leases === undefined
+      ? undefined
+      : {
+          ttlMs: options.leases.ttlMs,
+          store: new MemoryLeaseStore({ leaseId: () => 'lease-private-id' }),
+        };
   const wrapped = wrapStorage(storage, faults);
   const hub = createRealtimeHub({
     schema,
@@ -162,6 +179,7 @@ export function makeServer(
     // the HTTP binding (one handler, two framings).
     segments,
     limits,
+    ...(leases !== undefined ? { leases } : {}),
     ...(options.validators !== undefined
       ? { validators: options.validators }
       : {}),
@@ -172,6 +190,7 @@ export function makeServer(
     hub,
     allowed,
     resolverError,
+    resolverOutage,
     limits,
     faults,
     now,
@@ -184,6 +203,7 @@ export function makeServer(
       resolveScopes,
       clock: () => now.ms,
       limits,
+      ...(leases !== undefined ? { leases } : {}),
       ...(options.validators !== undefined
         ? { validators: options.validators }
         : {}),
@@ -216,6 +236,8 @@ export interface MakeClientOptions {
   readonly schema?: ClientSchema;
   readonly limits?: SyncClientLimits;
   readonly encryption?: EncryptionConfig;
+  readonly blobs?: BlobTransport;
+  readonly blobCacheMaxBytes?: number;
 }
 
 export async function makeClient(
@@ -239,6 +261,10 @@ export async function makeClient(
     ...(options.limits !== undefined ? { limits: options.limits } : {}),
     ...(options.encryption !== undefined
       ? { encryption: options.encryption }
+      : {}),
+    ...(options.blobs !== undefined ? { blobs: options.blobs } : {}),
+    ...(options.blobCacheMaxBytes !== undefined
+      ? { blobCacheMaxBytes: options.blobCacheMaxBytes }
       : {}),
     transport: async (bytes) => {
       const response = await handleSyncRequest(bytes, server.ctxFor(actorId));

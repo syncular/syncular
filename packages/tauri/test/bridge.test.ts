@@ -44,6 +44,24 @@ function makeTauri(
 
 const OK = (result: unknown) => ({ result });
 
+const DIAGNOSTICS = {
+  version: 1,
+  capturedAtMs: 10,
+  host: {
+    kind: 'direct',
+    role: 'single',
+    connectivity: 'online',
+    realtime: 'connected',
+  },
+  securityLifecycle: 'active',
+  schema: { currentVersion: 1, upgrading: false },
+  replica: { localRevision: '7', syncNeeded: false, pendingOutbox: 0 },
+  lease: { state: 'none' },
+  subscriptions: [],
+  subscriptionsTruncated: false,
+  storage: { status: 'healthy' },
+} as const;
+
 /** A responder that answers create + the accessor commands with fixtures. */
 function defaultResponder(cmd: string, args: Record<string, unknown>): unknown {
   if (cmd === 'plugin:syncular|syncular_query') {
@@ -93,6 +111,8 @@ function defaultResponder(cmd: string, args: Record<string, unknown>): unknown {
         upgrading: false,
         syncNeeded: false,
       });
+    case 'diagnosticsSnapshot':
+      return OK(DIAGNOSTICS);
     case 'conflicts':
       return OK({ conflicts: [] });
     case 'rejections':
@@ -488,6 +508,30 @@ describe('createTauriSyncClient', () => {
     expect(scopeKeys).toEqual(['room:42']);
   });
 
+  test('diagnostics commands and events preserve evidence and mark the Tauri host', async () => {
+    const { client, calls, emit } = await build();
+    const requested = await client.diagnosticsSnapshot({
+      expectedSubscriptions: [{ id: 'membership', table: 'memberships' }],
+    });
+    expect(requested.host).toMatchObject({ kind: 'tauri', role: 'single' });
+    expect(
+      (
+        calls.findLast(
+          (call) =>
+            (call.args.command as { method?: string } | undefined)?.method ===
+            'diagnosticsSnapshot',
+        )?.args.command as { params: unknown }
+      ).params,
+    ).toEqual({
+      expectedSubscriptions: [{ id: 'membership', table: 'memberships' }],
+    });
+
+    const seen: string[] = [];
+    client.onDiagnostics((snapshot) => seen.push(snapshot.host.kind));
+    emit({ type: 'diagnostics', snapshot: DIAGNOSTICS });
+    expect(seen).toEqual(['tauri']);
+  });
+
   test('unsubscribing a listener stops delivery', async () => {
     const { client, emit } = await build();
     let count = 0;
@@ -558,6 +602,7 @@ describe('SyncClientLike parity', () => {
     // onInvalidate / onPresence return unsubscribe fns.
     expect(typeof normalized.onInvalidate(() => {})).toBe('function');
     expect(typeof normalized.onPresence(() => {})).toBe('function');
+    expect(typeof normalized.onDiagnostics(() => {})).toBe('function');
 
     // Every async accessor resolves (the hooks call exactly these).
     expect(await normalized.query('SELECT 1')).toBeInstanceOf(Array);
@@ -567,6 +612,10 @@ describe('SyncClientLike parity', () => {
     expect(await normalized.statusSnapshot()).toMatchObject({
       currentSchemaVersion: 1,
       outbox: 0,
+    });
+    expect(await normalized.diagnosticsSnapshot()).toMatchObject({
+      version: 1,
+      host: { kind: 'tauri' },
     });
     expect(await normalized.mutate([])).toBe('commit-1');
     expect(await normalized.patch('todo', 't1', { title: 'next' })).toBe(

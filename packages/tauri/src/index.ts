@@ -30,6 +30,9 @@
 import type {
   ClientChangeBatch,
   ClientChangeListener,
+  ClientDiagnosticsListener,
+  ClientDiagnosticsRequest,
+  ClientDiagnosticsSnapshot,
   CommitOutcome,
   CommitOutcomeQuery,
   ConflictRecord,
@@ -56,7 +59,10 @@ import type {
 // -- Types the bridge speaks (structurally the web-client's) -----------------
 // Most imports stay type-only; the stable preflight error code is shared at
 // runtime so every host surfaces byte-identical policy evidence.
-import { SECURITY_PREFLIGHT_REQUIRED_CODE } from '@syncular/client';
+import {
+  SECURITY_PREFLIGHT_REQUIRED_CODE,
+  withClientDiagnosticsHost,
+} from '@syncular/client';
 
 /** A driver-protocol reply: `{result}` on success or `{error}` on failure. */
 interface CommandReply {
@@ -250,6 +256,7 @@ export class TauriSyncClient {
   readonly #tauri: TauriApi;
   readonly #invalidationListeners = new Set<InvalidationListener>();
   readonly #changeListeners = new Set<ClientChangeListener>();
+  readonly #diagnosticsListeners = new Set<ClientDiagnosticsListener>();
   readonly #presenceListeners = new Set<(scopeKey: string) => void>();
   #unlisten: (() => void) | undefined;
   #closed = false;
@@ -349,6 +356,18 @@ export class TauriSyncClient {
         }
         break;
       }
+      case 'diagnostics': {
+        const snapshot = decodeDiagnosticsSnapshot(event.snapshot, 'tauri');
+        if (snapshot === undefined) break;
+        for (const listener of this.#diagnosticsListeners) {
+          try {
+            listener(snapshot);
+          } catch {
+            /* a diagnostics observer must never break event dispatch */
+          }
+        }
+        break;
+      }
       default:
         // Unknown extension events are deliberately ignored. All durable
         // observable state arrives in the revisioned `change` batch.
@@ -414,6 +433,11 @@ export class TauriSyncClient {
     return () => this.#changeListeners.delete(listener);
   }
 
+  onDiagnostics(listener: ClientDiagnosticsListener): () => void {
+    this.#diagnosticsListeners.add(listener);
+    return () => this.#diagnosticsListeners.delete(listener);
+  }
+
   onPresence(listener: (scopeKey: string) => void): () => void {
     this.#presenceListeners.add(listener);
     return () => this.#presenceListeners.delete(listener);
@@ -468,6 +492,19 @@ export class TauriSyncClient {
 
   async statusSnapshot(): Promise<SyncStatusSnapshot> {
     return (await this.#command('statusSnapshot', {})) as SyncStatusSnapshot;
+  }
+
+  async diagnosticsSnapshot(
+    request: ClientDiagnosticsRequest = {},
+  ): Promise<ClientDiagnosticsSnapshot> {
+    const snapshot = (await this.#command('diagnosticsSnapshot', {
+      expectedSubscriptions: request.expectedSubscriptions ?? [],
+    })) as ClientDiagnosticsSnapshot;
+    return withClientDiagnosticsHost(snapshot, {
+      ...snapshot.host,
+      kind: 'tauri',
+      role: 'single',
+    });
   }
 
   async mutate(mutations: readonly MutationInput[]): Promise<string> {
@@ -746,8 +783,23 @@ export class TauriSyncClient {
     this.#unlisten = undefined;
     this.#invalidationListeners.clear();
     this.#changeListeners.clear();
+    this.#diagnosticsListeners.clear();
     this.#presenceListeners.clear();
   }
+}
+
+function decodeDiagnosticsSnapshot(
+  value: unknown,
+  kind: 'tauri',
+): ClientDiagnosticsSnapshot | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const snapshot = value as ClientDiagnosticsSnapshot;
+  if (snapshot.version !== 1 || snapshot.host === undefined) return undefined;
+  return withClientDiagnosticsHost(snapshot, {
+    ...snapshot.host,
+    kind,
+    role: 'single',
+  });
 }
 
 /** The error a `{error}` reply surfaces (mirrors the web-client `ClientSyncError`). */

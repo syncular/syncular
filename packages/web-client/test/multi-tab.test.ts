@@ -295,6 +295,21 @@ test('leader + follower: follower proxies the full API to the one core', async (
   // State surfaces cross the channel.
   expect(await follower.conflicts()).toEqual([]);
   expect(await follower.schemaFloor()).toBeUndefined();
+  const leaderDiagnostics = await leader.diagnosticsSnapshot();
+  const followerDiagnostics = await follower.diagnosticsSnapshot();
+  expect(leaderDiagnostics.host).toMatchObject({
+    kind: 'worker',
+    role: 'leader',
+  });
+  expect(followerDiagnostics.host).toMatchObject({
+    kind: 'worker',
+    role: 'follower',
+  });
+  expect({
+    ...followerDiagnostics,
+    capturedAtMs: leaderDiagnostics.capturedAtMs,
+    host: leaderDiagnostics.host,
+  }).toEqual(leaderDiagnostics);
 });
 
 test('a follower preflight request gates the already-running shared leader', async () => {
@@ -324,8 +339,16 @@ test('events fan out from the leader to two followers', async () => {
 
   const inval1: number[] = [];
   const inval2: number[] = [];
+  const diagnostics1: string[] = [];
+  const diagnostics2: string[] = [];
   f1.onInvalidate((e) => inval1.push(e.tables.size));
   f2.onInvalidate((e) => inval2.push(e.tables.size));
+  f1.onDiagnostics((snapshot) =>
+    diagnostics1.push(snapshot.replica.localRevision),
+  );
+  f2.onDiagnostics((snapshot) =>
+    diagnostics2.push(snapshot.replica.localRevision),
+  );
 
   await leader.subscribe({
     id: 's',
@@ -340,6 +363,8 @@ test('events fan out from the leader to two followers', async () => {
 
   await waitFor(() => inval1.length >= 1, 'follower 1 invalidation');
   await waitFor(() => inval2.length >= 1, 'follower 2 invalidation');
+  await waitFor(() => diagnostics1.length >= 1, 'follower 1 diagnostics');
+  await waitFor(() => diagnostics2.length >= 1, 'follower 2 diagnostics');
   expect(inval1.some((n) => n >= 1)).toBe(true);
   expect(inval2.some((n) => n >= 1)).toBe(true);
 });

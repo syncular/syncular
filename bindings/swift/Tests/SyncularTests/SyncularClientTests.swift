@@ -109,12 +109,14 @@ private func upsert(id: String, title: String) -> JSONValue {
 @Test func pollEventNonBlockingWhenNoneQueued() async throws {
     let client = try makeClient()
     defer { client.close() }
-    // The background loop is running; with no realtime/server nothing is
-    // enqueued. Assert no event arrives within a short window.
+    // Creation emits one privacy-safe diagnostics snapshot. Once startup
+    // evidence has drained, idle polling must not invent repeated events.
     let box = EventBox()
     client.onEvent = { _ in box.mark() }
     try await Task.sleep(nanoseconds: 300_000_000)
-    #expect(box.count == 0)
+    let startupCount = box.count
+    try await Task.sleep(nanoseconds: 300_000_000)
+    #expect(box.count == startupCount)
 }
 
 @Test func pendingCommitsAfterOfflineMutate() throws {

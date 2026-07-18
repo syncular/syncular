@@ -103,6 +103,10 @@ async function makeHandle(
 
 test('boot → subscribe → mutate → sync → query, all over the RPC', async () => {
   const { handle } = await makeHandle({ clientId: 'rpc-a', autoSync: false });
+  const diagnosticEvents: string[] = [];
+  handle.onDiagnostics((snapshot) => {
+    diagnosticEvents.push(snapshot.replica.localRevision);
+  });
   expect(handle.isLeader).toBe(true);
   expect(handle.clientId).toBe('rpc-a');
 
@@ -152,6 +156,25 @@ test('boot → subscribe → mutate → sync → query, all over the RPC', async
   expect(await handle.rejections()).toEqual([]);
   expect(await handle.schemaFloor()).toBeUndefined();
   expect(await handle.syncNeeded()).toBe(false);
+  const diagnostics = await handle.diagnosticsSnapshot({
+    expectedSubscriptions: [
+      { id: 'tasks', table: 'tasks' },
+      { id: 'membership-security', table: 'docs' },
+    ],
+  });
+  expect(diagnostics.host).toMatchObject({ kind: 'worker', role: 'leader' });
+  expect(diagnostics.subscriptions).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: 'tasks', state: 'complete' }),
+      expect.objectContaining({
+        id: 'membership-security',
+        state: 'unregistered',
+      }),
+    ]),
+  );
+  expect(diagnostics.lastRound).toMatchObject({ status: 'succeeded' });
+  expect(JSON.stringify(diagnostics)).not.toContain('p1');
+  expect(diagnosticEvents.length).toBeGreaterThan(0);
 });
 
 test('worker preflight gates protected RPCs and activates the host loop later', async () => {

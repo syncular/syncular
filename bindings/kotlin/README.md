@@ -62,6 +62,8 @@ client.listener = SyncularEventListener { event ->
     when (event.type) {
         "sync-intent" -> scheduleSync()
         "change"      -> refreshVisibleState()
+        "diagnostics" -> refreshSupportEvidence(event.payload)
+        else          -> Unit
     }
 }
 

@@ -79,6 +79,24 @@ function makeNative(
 
 const OK = (result: unknown) => ({ result });
 
+const DIAGNOSTICS = {
+  version: 1,
+  capturedAtMs: 10,
+  host: {
+    kind: 'direct',
+    role: 'single',
+    connectivity: 'online',
+    realtime: 'connected',
+  },
+  securityLifecycle: 'active',
+  schema: { currentVersion: 1, upgrading: false },
+  replica: { localRevision: '7', syncNeeded: false, pendingOutbox: 0 },
+  lease: { state: 'none' },
+  subscriptions: [],
+  subscriptionsTruncated: false,
+  storage: { status: 'healthy' },
+} as const;
+
 /** A responder answering create + the accessor commands with fixtures. */
 function defaultResponder(
   method: string,
@@ -118,6 +136,8 @@ function defaultResponder(
         upgrading: false,
         syncNeeded: false,
       });
+    case 'diagnosticsSnapshot':
+      return OK(DIAGNOSTICS);
     case 'conflicts':
       return OK({ conflicts: [] });
     case 'rejections':
@@ -399,6 +419,33 @@ describe('createNativeSyncClient', () => {
     expect(scopeKeys).toEqual(['room:42']);
   });
 
+  test('diagnostics commands and events preserve evidence and mark the React Native host', async () => {
+    const { client, calls, emit } = await build();
+    const requested = await client.diagnosticsSnapshot({
+      expectedSubscriptions: [{ id: 'membership', table: 'memberships' }],
+    });
+    expect(requested.host).toMatchObject({
+      kind: 'react-native',
+      role: 'single',
+    });
+    expect(
+      (
+        calls.findLast(
+          (call) =>
+            call.fn === 'command' &&
+            (call.arg as { method?: string }).method === 'diagnosticsSnapshot',
+        )?.arg as { params: unknown }
+      ).params,
+    ).toEqual({
+      expectedSubscriptions: [{ id: 'membership', table: 'memberships' }],
+    });
+
+    const seen: string[] = [];
+    client.onDiagnostics((snapshot) => seen.push(snapshot.host.kind));
+    emit({ type: 'diagnostics', snapshot: DIAGNOSTICS });
+    expect(seen).toEqual(['react-native']);
+  });
+
   test('interactive sync intents coalesce into one immediate native round', async () => {
     const { client, calls, emit } = await build();
     emit({ type: 'sync-intent', intent: { kind: 'interactive' } });
@@ -460,6 +507,7 @@ describe('SyncClientLike parity', () => {
     expect(typeof normalized.onChange(() => {})).toBe('function');
     expect(typeof normalized.onInvalidate(() => {})).toBe('function');
     expect(typeof normalized.onPresence(() => {})).toBe('function');
+    expect(typeof normalized.onDiagnostics(() => {})).toBe('function');
 
     expect(await normalized.query('SELECT 1')).toBeInstanceOf(Array);
     expect((await normalized.querySnapshot({ sql: 'SELECT 1' })).revision).toBe(
@@ -487,6 +535,10 @@ describe('SyncClientLike parity', () => {
     expect(await normalized.statusSnapshot()).toMatchObject({
       currentSchemaVersion: 1,
       outbox: 1,
+    });
+    expect(await normalized.diagnosticsSnapshot()).toMatchObject({
+      version: 1,
+      host: { kind: 'react-native' },
     });
     expect(await normalized.conflicts()).toEqual([]);
     expect(await normalized.rejections()).toEqual([]);

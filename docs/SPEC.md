@@ -3384,6 +3384,62 @@ does not manufacture command work. Automatic hosts consume the startup intent
 through the same owner loop as command effects. Manual-sync hosts preserve it
 for observability until the application runs sync.
 
+### 7.6 Privacy-safe client diagnostics
+
+This section specifies a client-local support contract. It adds no SSP2 frame,
+server authority, telemetry upload, or permission to inspect application rows.
+Every direct, Worker leader/follower, Tauri, and React Native host MUST expose
+`diagnosticsSnapshot(request?)` with `version: 1` and an `onDiagnostics`
+change signal. React integrations SHOULD expose the same evidence through a
+hook. A host wrapper changes only topology facts (`kind`, `role`, connectivity,
+realtime); the underlying evidence remains equivalent.
+
+The snapshot is one bounded observation containing:
+
+- capture time; host kind/role/connectivity/realtime; security lifecycle;
+- generated schema version, migration state, and any required/latest floor;
+- decimal local revision, sync-needed state, and pending outbox commit count;
+- lease health (`none`, `active`, `expired`, or `stopped`), expiry, and a
+  stable error code, never the lease id;
+- every registered subscription's application id, generated table, cursor,
+  completeness, state (`bootstrapping`, `complete`, `reset`, `revoked`, or
+  `failed`), and optional stable reason code;
+- the last sync round as bounded counters or a stable failure code, and the
+  last revisioned change as generated table/window names plus changed-domain
+  booleans; and
+- aggregate SQLite/outbox/outcome/blob-cache byte estimates and storage state
+  (`healthy`, `pressure`, or `unreadable`). Failure to open storage remains the
+  stable startup error `client.storage_unavailable`; no snapshot can be read
+  from a replica which did not open.
+
+`request.expectedSubscriptions` MAY name at most 256 application-owned,
+PHI-free `{id, table}` pairs. A missing registration is returned as
+`unregistered`, which is distinct from a registered bootstrap that completed
+with zero rows. An id registered against a different table is `failed` with
+`client.subscription_intent_mismatch`. The request cannot carry scopes or
+scope values. The result prioritizes expected ids, returns at most 256
+subscriptions, and sets `subscriptionsTruncated` when other registrations were
+omitted. Last-change table and window domains are independently capped at 256
+and set `domainsTruncated` when clipped.
+
+Diagnostics MUST NOT contain requested/effective scope values, row ids, row
+values, clinical/domain row counts, SQL, database paths or filenames, client
+ids, actor ids, lease ids, auth headers/tokens, encryption keys, mutation or
+rollback bodies, stack traces, arbitrary server/transport prose, or
+application-defined metadata. Error/reason fields are bounded code-like
+values; an invalid value becomes `client.unknown_failure`. Subscription ids
+are returned by design, so applications MUST keep them stable, code-like, and
+free of patient/user data.
+
+The core emits diagnostics only after the state it describes is committed.
+Native hosts fingerprint snapshots without `capturedAtMs` and emit only when
+evidence changes; read-only calls do not create noise. Worker and native
+bridges forward core evidence and MUST NOT reconstruct it from command names.
+An expected-subscription-aware observer treats the event as invalidation and
+requests a fresh snapshot with its intent list. Diagnostics remains a
+protected operation during security preflight because table/subscription
+evidence belongs to the quarantined replica.
+
 ---
 
 ## 8. Realtime

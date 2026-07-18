@@ -126,6 +126,12 @@ describe('revocation purge (§3.3)', () => {
     const sub = a.client.subscription('s1');
     expect(sub?.status).toBe('revoked');
     expect(sub?.reasonCode).toBe('sync.scope_revoked');
+    expect(a.client.diagnosticsSnapshot().subscriptions[0]).toMatchObject({
+      id: 's1',
+      state: 'revoked',
+      complete: false,
+      reasonCode: 'sync.scope_revoked',
+    });
 
     const ids = tableRows(a.db, 'tasks').map((r) => r.id);
     expect(ids).not.toContain('t1'); // purged: matches effective p1
@@ -201,6 +207,12 @@ describe('revocation purge (§3.3)', () => {
     expect(sub?.status).toBe('failed');
     expect(sub?.reasonCode).toBe('sync.scope_revoked');
     expect(sub?.cursor).toBe(-1); // SUB_END was never persisted (§1.4)
+    expect(a.client.diagnosticsSnapshot().subscriptions[0]).toMatchObject({
+      id: 's1',
+      state: 'failed',
+      complete: false,
+      reasonCode: 'sync.scope_revoked',
+    });
 
     // The table is no longer synced.
     const next = await a.client.sync();

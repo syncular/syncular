@@ -1,10 +1,28 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.16** (`v0.15.16`). All artifacts use Apache-2.0, except
+current release is **0.15.17** (`v0.15.17`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.17 release notes
+
+0.15.17 adds one versioned, privacy-safe client diagnostics contract across
+direct TypeScript, Worker leader/follower, Rust command/FFI, Tauri, React
+Native, and normalized React hosts, plus the `useDiagnostics` React hook.
+
+The release includes:
+
+- unregistered intent, bootstrap/zero-row completion, reset,
+  revocation, failure, schema floor, lease stop, outbox, offline transport, and
+  storage health without exposing scopes, rows, clinical counts, SQL, paths,
+  identities, secrets, mutation bodies, or arbitrary prose.
+- raw direct-transport failure normalization to the stable retryable
+  `sync.transport_failed` code while preserving structured server errors.
+- a forward-compatible native FFI event stream across Swift, Kotlin,
+  and Flutter; native startup now emits one diagnostics event and idle polling
+  suppresses unchanged snapshots.
 
 ## 0.15.16 release notes
 

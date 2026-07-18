@@ -105,6 +105,15 @@ activation, protected operations and automatic sync intents fail closed with
 the bounded purge remain available. `beginSecurityPreflight()` provides the
 live rotation/revocation barrier, while `close()` releases the entire FFI core.
 
+`diagnosticsSnapshot({ expectedSubscriptions })`, `onDiagnostics`, and the
+shared React `useDiagnostics` hook expose the same versioned Rust-core evidence
+as Tauri and browser hosts, with `{ kind: 'react-native', role: 'single' }`.
+Expected ids must be stable and PHI-free. The snapshot excludes scope values,
+rows and clinical counts, SQL, paths, device/client/lease ids, auth, keys,
+mutation bodies, stack traces, and arbitrary prose, so it can back a redacted
+copy-to-support action. Never attach the SQLite database, native logs, or app
+state to that payload. The API remains protected during security preflight.
+
 ## Verification bar
 
 `./check.sh` runs the automated gate:

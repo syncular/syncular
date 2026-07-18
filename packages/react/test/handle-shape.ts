@@ -19,6 +19,7 @@ export function handleShapeOf(client: SyncClient): SyncClientLike {
     beginSecurityPreflight: () => client.beginSecurityPreflight(),
     activateSecurity: () => client.activateSecurity(),
     onChange: (listener) => client.onChange(listener),
+    onDiagnostics: (listener) => client.onDiagnostics(listener),
     onInvalidate: (listener) => client.onInvalidate(listener),
     onPresence: (listener) => client.onPresence(listener),
     // query is async on the handle (RPC round-trip).
@@ -30,6 +31,8 @@ export function handleShapeOf(client: SyncClient): SyncClientLike {
     purgeLocalData: (input) => Promise.resolve(client.purgeLocalData(input)),
     querySnapshot: (spec) => Promise.resolve(client.querySnapshot(spec)),
     statusSnapshot: () => Promise.resolve(client.statusSnapshot()),
+    diagnosticsSnapshot: (request) =>
+      Promise.resolve(client.diagnosticsSnapshot(request)),
     // Getters on SyncClient become async methods on the handle.
     conflicts: () => Promise.resolve(client.conflicts),
     rejections: () => Promise.resolve(client.rejections),

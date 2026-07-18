@@ -69,6 +69,155 @@ pub struct SyncStatusSnapshot {
     pub sync_needed: bool,
 }
 
+pub const CLIENT_DIAGNOSTICS_VERSION: u8 = 1;
+pub const MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS: usize = 256;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExpectedDiagnosticSubscription {
+    pub id: String,
+    pub table: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClientDiagnosticsRequest {
+    #[serde(default)]
+    pub expected_subscriptions: Vec<ExpectedDiagnosticSubscription>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientDiagnosticsHost {
+    pub kind: String,
+    pub role: String,
+    pub connectivity: String,
+    pub realtime: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticSubscription {
+    pub id: String,
+    pub table: String,
+    pub state: String,
+    pub complete: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticRoundCounters {
+    pub pushed: u32,
+    pub applied: usize,
+    pub rejected: usize,
+    pub retryable: usize,
+    pub conflicts: u32,
+    pub commits_applied: u32,
+    pub segment_rows_applied: u32,
+    pub bootstrapping: usize,
+    pub resets: usize,
+    pub revoked: usize,
+    pub failed: usize,
+    pub deferred_commits: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticLastRound {
+    pub status: String,
+    pub started_at_ms: i64,
+    pub completed_at_ms: i64,
+    pub duration_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counters: Option<DiagnosticRoundCounters>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticLastChange {
+    pub revision: String,
+    pub recorded_at_ms: i64,
+    pub tables: Vec<String>,
+    pub windows: Vec<String>,
+    pub domains_truncated: bool,
+    pub status_changed: bool,
+    pub conflicts_changed: bool,
+    pub rejections_changed: bool,
+    pub outcomes_changed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientDiagnosticsStorage {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_bytes_approx: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_outbox_bytes_approx: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retained_outcome_bytes_approx: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retained_outcome_entries: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blob_cache_bytes_approx: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pressure_reason_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientDiagnosticsSnapshot {
+    pub version: u8,
+    pub captured_at_ms: i64,
+    pub host: ClientDiagnosticsHost,
+    pub security_lifecycle: String,
+    pub schema: ClientDiagnosticsSchema,
+    pub replica: ClientDiagnosticsReplica,
+    pub lease: ClientDiagnosticsLease,
+    pub subscriptions: Vec<DiagnosticSubscription>,
+    pub subscriptions_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_round: Option<DiagnosticLastRound>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_change: Option<DiagnosticLastChange>,
+    pub storage: ClientDiagnosticsStorage,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientDiagnosticsSchema {
+    pub current_version: i32,
+    pub upgrading: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_version: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientDiagnosticsReplica {
+    pub local_revision: String,
+    pub sync_needed: bool,
+    pub pending_outbox: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientDiagnosticsLease {
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+}
+
 /// JSON bindings carry the u64 revision as a decimal string (§7.5).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -213,6 +362,7 @@ pub struct SyncReport {
     pub resets: Vec<String>,
     pub revoked: Vec<String>,
     pub failed: Vec<String>,
+    pub deferred_commits: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema_floor: Option<SchemaFloor>,
 }

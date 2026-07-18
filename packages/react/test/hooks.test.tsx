@@ -18,6 +18,7 @@ import {
   SyncProvider,
   useCommitOutcomes,
   useConflicts,
+  useDiagnostics,
   usePresence,
   useRawSql,
   useRetainedWindow,
@@ -190,6 +191,38 @@ describe('useSyncStatus', () => {
     client.setPending([{}]);
     act(() => client.emitStatus());
     await waitFor(() => expect(result.current.outbox).toBe(1));
+  });
+});
+
+describe('useDiagnostics', () => {
+  test('keeps expected subscription intent across diagnostic events', async () => {
+    const client = new FakeClient();
+    const { result } = renderHook(
+      () =>
+        useDiagnostics({
+          expectedSubscriptions: [
+            { id: 'membership-security', table: 'memberships' },
+          ],
+        }),
+      { wrapper: wrapper(client) },
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.snapshot?.subscriptions).toEqual([
+      expect.objectContaining({
+        id: 'membership-security',
+        state: 'unregistered',
+        complete: false,
+      }),
+    ]);
+
+    client.setCurrentSchemaVersion(2);
+    act(() => client.emitDiagnostics());
+    await waitFor(() =>
+      expect(result.current.snapshot?.schema.currentVersion).toBe(2),
+    );
+    expect(result.current.snapshot?.subscriptions[0]?.id).toBe(
+      'membership-security',
+    );
   });
 });
 

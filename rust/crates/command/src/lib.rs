@@ -20,8 +20,9 @@ use ssp2::{
     ControlMessage,
 };
 use syncular_client::{
-    ClientLimits, CommandEffects, CommitOutcomeQuery, LocalDataPurgeInput, Mutation,
-    ResolveCommitOutcomeInput, SyncClient, Transport, WindowBase, WindowCoverage,
+    ClientDiagnosticsRequest, ClientLimits, CommandEffects, CommitOutcomeQuery,
+    LocalDataPurgeInput, Mutation, ResolveCommitOutcomeInput, SyncClient, Transport, WindowBase,
+    WindowCoverage,
 };
 
 // -- bytes <-> {"$bytes": hex} (the driver-protocol byte envelope) ----------
@@ -563,6 +564,18 @@ pub fn dispatch<T: Transport>(
         })),
         "statusSnapshot" => Ok(serde_json::to_value(need_client(client)?.status_snapshot())
             .expect("status serializes")),
+        "diagnosticsSnapshot" => {
+            let request = serde_json::from_value::<ClientDiagnosticsRequest>(params.clone())
+                .map_err(|error| {
+                    client_err(format!(
+                        "sync.invalid_request: invalid diagnostics request: {error}"
+                    ))
+                })?;
+            let snapshot = need_client(client)?
+                .diagnostics_snapshot(&request)
+                .map_err(client_err)?;
+            Ok(serde_json::to_value(snapshot).expect("diagnostics serialize"))
+        }
         // Conformance/debug drains. Production hosts normally drain these
         // immediately after every command, but exposing the exact core output
         // here lets both client implementations consume one observation
@@ -945,6 +958,15 @@ mod tests {
         )
         .expect_err("protected query must fail");
         assert_eq!(query_error.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+        let diagnostics_error = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "diagnosticsSnapshot",
+            &json!({}),
+        )
+        .expect_err("diagnostics table/subscription evidence remains protected");
+        assert_eq!(diagnostics_error.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
 
         dispatch(
             &mut transport,

@@ -15,6 +15,10 @@
  */
 import { SyncClient } from './client';
 import type { ClientDatabase } from './database';
+import {
+  type ClientDiagnosticsSnapshot,
+  withClientDiagnosticsHost,
+} from './diagnostics';
 import { encryptionConfigFromKeyring } from './encryption';
 import { ClientSyncError } from './errors';
 import {
@@ -338,6 +342,22 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     started.onChange((batch) => {
       if (!closed) post({ t: 'event', event: { kind: 'change', batch } });
     });
+    const postDiagnostics = (snapshot: ClientDiagnosticsSnapshot): void => {
+      if (closed) return;
+      post({
+        t: 'event',
+        event: {
+          kind: 'diagnostics',
+          snapshot: withClientDiagnosticsHost(snapshot, {
+            kind: 'worker',
+            role: 'leader',
+            connectivity: offline ? 'offline' : snapshot.host.connectivity,
+            realtime: snapshot.host.realtime,
+          }),
+        },
+      });
+    };
+    started.onDiagnostics(postDiagnostics);
     await started.start();
     realtimeConnector =
       overrides.createRealtime !== undefined
@@ -411,6 +431,15 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     querySnapshot: (spec) => requireClient().querySnapshot(spec),
     localRevision: () => requireClient().localRevision,
     statusSnapshot: () => requireClient().statusSnapshot(),
+    diagnosticsSnapshot: (request) => {
+      const snapshot = requireClient().diagnosticsSnapshot(request);
+      return withClientDiagnosticsHost(snapshot, {
+        kind: 'worker',
+        role: 'leader',
+        connectivity: offline ? 'offline' : snapshot.host.connectivity,
+        realtime: snapshot.host.realtime,
+      });
+    },
     conflicts: () => requireClient().conflicts,
     rejections: () => requireClient().rejections,
     commitOutcome: (clientCommitId) =>
@@ -434,6 +463,21 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     setOffline: (value) => {
       offline = value;
       if (offline) client?.disconnectRealtime();
+      else if (client !== undefined) {
+        const snapshot = client.diagnosticsSnapshot();
+        post({
+          t: 'event',
+          event: {
+            kind: 'diagnostics',
+            snapshot: withClientDiagnosticsHost(snapshot, {
+              kind: 'worker',
+              role: 'leader',
+              connectivity: snapshot.host.connectivity,
+              realtime: snapshot.host.realtime,
+            }),
+          },
+        });
+      }
     },
     close: async () => {
       closed = true;

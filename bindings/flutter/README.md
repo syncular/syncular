@@ -72,8 +72,9 @@ reachable via the raw `command(method, params)`.
 
 ### Event delivery — the honest simple choice
 
-The core is **callback-free**: exact `change` batches, `sync-intent`, and
-`presence` are drained via `poll_event`. This wrapper
+The core is **callback-free**: exact `change` batches, `sync-intent`,
+`presence`, and privacy-safe `diagnostics` snapshots are drained via
+`poll_event`. This wrapper
 runs a `Timer.periodic` on the **owning isolate** doing **non-blocking** polls
 (`timeout_ms = 0`) that drain everything currently queued, then return
 immediately. This is deliberate:
