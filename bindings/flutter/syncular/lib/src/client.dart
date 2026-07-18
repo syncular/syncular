@@ -19,8 +19,9 @@ import 'dart:ffi';
 import 'ffi.dart';
 
 /// An event surfaced by the native core's `poll_event`: an exact revisioned
-/// `change` batch, explicit `sync-intent`, or ephemeral `presence`. The full
-/// decoded object is preserved in [payload]; [type] is lifted for switching.
+/// `change` batch, explicit `sync-intent`, ephemeral `presence`, or a
+/// privacy-safe `diagnostics` snapshot. The full decoded object is preserved in
+/// [payload]; [type] is lifted for switching.
 class SyncularEvent {
   /// The event discriminator (`"change"`, `"sync-intent"`, …).
   final String type;

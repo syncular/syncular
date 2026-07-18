@@ -13,6 +13,9 @@
  */
 import type {
   ClientChangeListener,
+  ClientDiagnosticsListener,
+  ClientDiagnosticsRequest,
+  ClientDiagnosticsSnapshot,
   CommitOutcome,
   CommitOutcomeQuery,
   ConflictRecord,
@@ -45,6 +48,7 @@ import type {
 export interface SyncClientLike {
   readonly currentSchemaVersion?: number;
   onChange(listener: ClientChangeListener): () => void;
+  onDiagnostics(listener: ClientDiagnosticsListener): () => void;
   onInvalidate(listener: InvalidationListener): () => void;
   onPresence(listener: (scopeKey: string) => void): () => void;
   onLeadershipChange?(listener: (state: LeadershipState) => void): () => void;
@@ -73,6 +77,9 @@ export interface SyncClientLike {
     spec: QueryReadSpec,
   ): QuerySnapshot<Row> | Promise<QuerySnapshot<Row>>;
   statusSnapshot(): SyncStatusSnapshot | Promise<SyncStatusSnapshot>;
+  diagnosticsSnapshot(
+    request?: ClientDiagnosticsRequest,
+  ): ClientDiagnosticsSnapshot | Promise<ClientDiagnosticsSnapshot>;
   conflicts:
     | readonly ConflictRecord[]
     | (() => readonly ConflictRecord[] | Promise<readonly ConflictRecord[]>);
@@ -133,6 +140,7 @@ function resolveMember<T>(
 export interface NormalizedClient {
   readonly currentSchemaVersion?: number;
   onChange(listener: ClientChangeListener): () => void;
+  onDiagnostics(listener: ClientDiagnosticsListener): () => void;
   onInvalidate(listener: InvalidationListener): () => void;
   onPresence(listener: (scopeKey: string) => void): () => void;
   onLeadershipChange(listener: (state: LeadershipState) => void): () => void;
@@ -152,6 +160,9 @@ export interface NormalizedClient {
   purgeLocalData(input: LocalDataPurgeInput): Promise<LocalDataPurgeResult>;
   querySnapshot<Row = SqlRow>(spec: QueryReadSpec): Promise<QuerySnapshot<Row>>;
   statusSnapshot(): Promise<SyncStatusSnapshot>;
+  diagnosticsSnapshot(
+    request?: ClientDiagnosticsRequest,
+  ): Promise<ClientDiagnosticsSnapshot>;
   conflicts(): Promise<readonly ConflictRecord[]>;
   rejections(): Promise<readonly RejectionRecord[]>;
   commitOutcome(clientCommitId: string): Promise<CommitOutcome | undefined>;
@@ -179,6 +190,7 @@ export function normalizeClient(client: SyncClientLike): NormalizedClient {
       ? { currentSchemaVersion: client.currentSchemaVersion }
       : {}),
     onChange: (listener) => client.onChange(listener),
+    onDiagnostics: (listener) => client.onDiagnostics(listener),
     onInvalidate: (listener) => client.onInvalidate(listener),
     onPresence: (listener) => client.onPresence(listener),
     onLeadershipChange: (listener) =>
@@ -195,6 +207,8 @@ export function normalizeClient(client: SyncClientLike): NormalizedClient {
     purgeLocalData: (input) => Promise.resolve(client.purgeLocalData(input)),
     querySnapshot: (spec) => Promise.resolve(client.querySnapshot(spec)),
     statusSnapshot: () => Promise.resolve(client.statusSnapshot()),
+    diagnosticsSnapshot: (request) =>
+      Promise.resolve(client.diagnosticsSnapshot(request)),
     conflicts: () => resolveMember(client, 'conflicts'),
     rejections: () => resolveMember(client, 'rejections'),
     commitOutcome: (clientCommitId) =>

@@ -23,13 +23,18 @@ use ssp2::{
 };
 
 use crate::api::{
-    ClientChangeBatch, ClientLimits, CommandEffects, CommitOperation, CommitOperationOutcome,
-    CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution, CommitOutcomeStatus,
-    ConflictRecord, CoverageSnapshot, LeaseState, LocalDataPurgeInput, LocalDataPurgeResult,
-    LocalDataPurgeTarget, Mutation, PresencePeer, QueryRow, QuerySnapshot, QueryValue,
-    RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RowState, SchemaFloor,
-    SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
-    WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
+    ClientChangeBatch, ClientDiagnosticsHost, ClientDiagnosticsLease, ClientDiagnosticsReplica,
+    ClientDiagnosticsRequest, ClientDiagnosticsSchema, ClientDiagnosticsSnapshot,
+    ClientDiagnosticsStorage, ClientLimits, CommandEffects, CommitOperation,
+    CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution,
+    CommitOutcomeStatus, ConflictRecord, CoverageSnapshot, DiagnosticLastChange,
+    DiagnosticLastRound, DiagnosticRoundCounters, DiagnosticSubscription, LeaseState,
+    LocalDataPurgeInput, LocalDataPurgeResult, LocalDataPurgeTarget, Mutation, PresencePeer,
+    QueryRow, QuerySnapshot, QueryValue, RejectionDetails, RejectionRecord,
+    ResolveCommitOutcomeInput, RowState, SchemaFloor, SubscriptionStateView, SyncIntent,
+    SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange, WindowBase, WindowChange,
+    WindowCoverage, WindowState, WindowUnitRef, CLIENT_DIAGNOSTICS_VERSION,
+    MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
 };
 use crate::schema::{parse_schema_json, ClientSchema, FtsIndexSchema, TableSchema};
 use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
@@ -48,6 +53,7 @@ const ACCEPT_INLINE_ROWS: u8 = 1 << 0;
 const ACCEPT_EXTERNAL_ROWS: u8 = 1 << 1;
 const ACCEPT_SQLITE: u8 = 1 << 2;
 const ACCEPT_SIGNED_URLS: u8 = 1 << 3;
+const MAX_DIAGNOSTIC_DOMAINS: usize = 256;
 
 /// §7.4.1 persisted local schema-version marker (`_syncular_meta` key).
 const LOCAL_SCHEMA_VERSION_KEY: &str = "localSchemaVersion";
@@ -1140,6 +1146,8 @@ pub struct SyncClient {
     sync_intent_queue: VecDeque<SyncIntent>,
     /// Explicit exponential retry policy for transient transport failures.
     retry_delay_ms: u64,
+    last_round: Option<DiagnosticLastRound>,
+    last_change: Option<DiagnosticLastChange>,
 }
 
 fn quote_ident(name: &str) -> String {
@@ -1677,6 +1685,8 @@ impl SyncClient {
             change_queue: VecDeque::new(),
             sync_intent_queue: VecDeque::new(),
             retry_delay_ms: 250,
+            last_round: None,
+            last_change: None,
         };
         // The row write path leans on the prepared-statement cache (two
         // insert statements per synced table, plus the bookkeeping
@@ -2095,6 +2105,228 @@ impl SyncClient {
         }
     }
 
+    pub fn diagnostics_snapshot(
+        &self,
+        request: &ClientDiagnosticsRequest,
+    ) -> Result<ClientDiagnosticsSnapshot, String> {
+        if request.expected_subscriptions.len() > MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS {
+            return Err(format!(
+                "sync.invalid_request: diagnosticsSnapshot accepts at most {MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS} expected subscriptions"
+            ));
+        }
+        let mut subscriptions = BTreeMap::<String, DiagnosticSubscription>::new();
+        for sub in &self.subs {
+            let reset = sub.cursor < 0 && sub.reason_code.as_deref() == Some("sync.cursor_expired");
+            let complete =
+                sub.state == SubState::Active && sub.cursor >= 0 && sub.bootstrap_state.is_none();
+            let state = match sub.state {
+                SubState::Revoked => "revoked",
+                SubState::Failed => "failed",
+                SubState::Active if reset => "reset",
+                SubState::Active if complete => "complete",
+                SubState::Active => "bootstrapping",
+            };
+            subscriptions.insert(
+                sub.id.clone(),
+                DiagnosticSubscription {
+                    id: sub.id.clone(),
+                    table: sub.table.clone(),
+                    state: state.to_owned(),
+                    complete,
+                    cursor: Some(sub.cursor),
+                    reason_code: sub.reason_code.as_deref().map(Self::diagnostic_code),
+                },
+            );
+        }
+        for expected in &request.expected_subscriptions {
+            if expected.id.is_empty() || expected.table.is_empty() {
+                return Err("sync.invalid_request: diagnosticsSnapshot expected subscriptions require non-empty id and table strings".to_owned());
+            }
+            if subscriptions
+                .get(&expected.id)
+                .is_some_and(|registered| registered.table != expected.table)
+            {
+                subscriptions.insert(
+                    expected.id.clone(),
+                    DiagnosticSubscription {
+                        id: expected.id.clone(),
+                        table: expected.table.clone(),
+                        state: "failed".to_owned(),
+                        complete: false,
+                        cursor: None,
+                        reason_code: Some("client.subscription_intent_mismatch".to_owned()),
+                    },
+                );
+            } else {
+                subscriptions.entry(expected.id.clone()).or_insert_with(|| {
+                    DiagnosticSubscription {
+                        id: expected.id.clone(),
+                        table: expected.table.clone(),
+                        state: "unregistered".to_owned(),
+                        complete: false,
+                        cursor: None,
+                        reason_code: None,
+                    }
+                });
+            }
+        }
+        let mut ordered_subscriptions = Vec::new();
+        let mut included = BTreeSet::new();
+        for expected in &request.expected_subscriptions {
+            if included.insert(expected.id.clone()) {
+                if let Some(subscription) = subscriptions.get(&expected.id) {
+                    ordered_subscriptions.push(subscription.clone());
+                }
+            }
+        }
+        for (id, subscription) in &subscriptions {
+            if included.insert(id.clone()) {
+                ordered_subscriptions.push(subscription.clone());
+            }
+        }
+        let subscriptions_truncated =
+            ordered_subscriptions.len() > MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS;
+        ordered_subscriptions.truncate(MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS);
+        let captured_at_ms = self.clock_now_ms();
+        let lease = if let Some(error_code) = self
+            .lease_state
+            .as_ref()
+            .and_then(|state| state.error_code.clone())
+        {
+            ClientDiagnosticsLease {
+                state: "stopped".to_owned(),
+                expires_at_ms: self
+                    .lease_state
+                    .as_ref()
+                    .and_then(|state| state.expires_at_ms),
+                error_code: Some(Self::diagnostic_code(&error_code)),
+            }
+        } else if let Some(expires_at_ms) = self
+            .lease_state
+            .as_ref()
+            .and_then(|state| state.expires_at_ms)
+        {
+            ClientDiagnosticsLease {
+                state: if expires_at_ms <= captured_at_ms {
+                    "expired".to_owned()
+                } else {
+                    "active".to_owned()
+                },
+                expires_at_ms: Some(expires_at_ms),
+                error_code: None,
+            }
+        } else {
+            ClientDiagnosticsLease {
+                state: "none".to_owned(),
+                expires_at_ms: None,
+                error_code: None,
+            }
+        };
+        let connectivity = match self.last_round.as_ref() {
+            Some(round) if round.status == "succeeded" => "online",
+            Some(round)
+                if round.status == "failed"
+                    && round
+                        .error_code
+                        .as_deref()
+                        .is_some_and(Self::retryable_transport_code) =>
+            {
+                "offline"
+            }
+            _ => "unknown",
+        };
+        Ok(ClientDiagnosticsSnapshot {
+            version: CLIENT_DIAGNOSTICS_VERSION,
+            captured_at_ms,
+            host: ClientDiagnosticsHost {
+                kind: "direct".to_owned(),
+                role: "single".to_owned(),
+                connectivity: connectivity.to_owned(),
+                realtime: if self.realtime_connected {
+                    "connected".to_owned()
+                } else {
+                    "disconnected".to_owned()
+                },
+            },
+            security_lifecycle: self.security_lifecycle().to_owned(),
+            schema: ClientDiagnosticsSchema {
+                current_version: self.schema.version,
+                upgrading: self.upgrading,
+                required_version: self
+                    .schema_floor
+                    .as_ref()
+                    .and_then(|floor| floor.required_schema_version),
+                latest_version: self
+                    .schema_floor
+                    .as_ref()
+                    .and_then(|floor| floor.latest_schema_version),
+            },
+            replica: ClientDiagnosticsReplica {
+                local_revision: self.local_revision().to_string(),
+                sync_needed: self.sync_needed,
+                pending_outbox: self.outbox.len(),
+            },
+            lease,
+            subscriptions: ordered_subscriptions,
+            subscriptions_truncated,
+            last_round: self.last_round.clone(),
+            last_change: self.last_change.clone(),
+            storage: self.diagnostics_storage(),
+        })
+    }
+
+    fn diagnostics_storage(&self) -> ClientDiagnosticsStorage {
+        let read = || -> Result<ClientDiagnosticsStorage, rusqlite::Error> {
+            let page_count: i64 = self
+                .conn
+                .query_row("PRAGMA page_count", [], |row| row.get(0))?;
+            let page_size: i64 = self
+                .conn
+                .query_row("PRAGMA page_size", [], |row| row.get(0))?;
+            let outbox_bytes: i64 = self.conn.query_row(
+                "SELECT COALESCE(SUM(LENGTH(ops_json)), 0) FROM _syncular_outbox",
+                [],
+                |row| row.get(0),
+            )?;
+            let (outcome_entries, outcome_bytes): (i64, i64) = self.conn.query_row(
+                "SELECT COUNT(*), COALESCE(SUM(LENGTH(results_json) + COALESCE(LENGTH(operations_json), 0)), 0) FROM _syncular_commit_outcomes",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let blob_bytes = if self.schema_has_blobs() {
+                self.conn.query_row(
+                    "SELECT COALESCE(SUM(byte_length), 0) FROM _syncular_blobs",
+                    [],
+                    |row| row.get(0),
+                )?
+            } else {
+                0
+            };
+            let pressure = self
+                .limits
+                .blob_cache_max_bytes
+                .is_some_and(|limit| blob_bytes > limit);
+            Ok(ClientDiagnosticsStorage {
+                status: if pressure { "pressure" } else { "healthy" }.to_owned(),
+                database_bytes_approx: Some(page_count.saturating_mul(page_size).max(0)),
+                pending_outbox_bytes_approx: Some(outbox_bytes.max(0)),
+                retained_outcome_bytes_approx: Some(outcome_bytes.max(0)),
+                retained_outcome_entries: Some(outcome_entries.max(0)),
+                blob_cache_bytes_approx: Some(blob_bytes.max(0)),
+                pressure_reason_code: pressure.then(|| "client.blob_cache_over_limit".to_owned()),
+            })
+        };
+        read().unwrap_or_else(|_| ClientDiagnosticsStorage {
+            status: "unreadable".to_owned(),
+            database_bytes_approx: None,
+            pending_outbox_bytes_approx: None,
+            retained_outcome_bytes_approx: None,
+            retained_outcome_entries: None,
+            blob_cache_bytes_approx: None,
+            pressure_reason_code: None,
+        })
+    }
+
     pub fn drain_change_batches(&mut self) -> Vec<ClientChangeBatch> {
         self.change_queue.drain(..).collect()
     }
@@ -2115,7 +2347,29 @@ impl SyncClient {
     }
 
     fn retryable_transport_code(code: &str) -> bool {
-        code == "transport.failed" || code == "sync.transport_failed"
+        code == "transport.failed"
+            || code == "transport.unavailable"
+            || code == "sync.transport_failed"
+    }
+
+    fn diagnostic_code(code: &str) -> String {
+        let valid = !code.is_empty()
+            && code.len() <= 96
+            && code.contains('.')
+            && code
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_lowercase())
+            && code.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'.' | b'_' | b'-')
+            });
+        if valid {
+            code.to_owned()
+        } else {
+            "client.unknown_failure".to_owned()
+        }
     }
 
     fn set_sync_needed(&mut self, value: bool, interactive: bool) {
@@ -2195,6 +2449,35 @@ impl SyncClient {
         self.conn
             .execute_batch(&format!("RELEASE {name}"))
             .map_err(|error| error.to_string())?;
+        let mut diagnostic_tables = event
+            .tables
+            .iter()
+            .map(|entry| entry.table.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let mut diagnostic_windows = event
+            .windows
+            .iter()
+            .map(|entry| entry.table.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let domains_truncated = diagnostic_tables.len() > MAX_DIAGNOSTIC_DOMAINS
+            || diagnostic_windows.len() > MAX_DIAGNOSTIC_DOMAINS;
+        diagnostic_tables.truncate(MAX_DIAGNOSTIC_DOMAINS);
+        diagnostic_windows.truncate(MAX_DIAGNOSTIC_DOMAINS);
+        self.last_change = Some(DiagnosticLastChange {
+            revision: event.revision.clone(),
+            recorded_at_ms: self.clock_now_ms(),
+            tables: diagnostic_tables,
+            windows: diagnostic_windows,
+            domains_truncated,
+            status_changed: event.status.is_some(),
+            conflicts_changed: event.conflicts_changed,
+            rejections_changed: event.rejections_changed,
+            outcomes_changed: event.outcomes_changed,
+        });
         self.change_queue.push_back(event);
         Ok(())
     }
@@ -4109,6 +4392,44 @@ impl SyncClient {
     // -- sync -------------------------------------------------------------------
 
     pub fn sync(&mut self, transport: &mut dyn Transport) -> SyncOutcome {
+        let started_at_ms = self.clock_now_ms();
+        let outcome = self.sync_inner(transport);
+        let completed_at_ms = self.clock_now_ms();
+        self.last_round = Some(match &outcome {
+            SyncOutcome::Ok(report) => DiagnosticLastRound {
+                status: "succeeded".to_owned(),
+                started_at_ms,
+                completed_at_ms,
+                duration_ms: completed_at_ms.saturating_sub(started_at_ms).max(0),
+                counters: Some(DiagnosticRoundCounters {
+                    pushed: report.pushed,
+                    applied: report.applied.len(),
+                    rejected: report.rejected.len(),
+                    retryable: report.retryable.len(),
+                    conflicts: report.conflicts,
+                    commits_applied: report.commits_applied,
+                    segment_rows_applied: report.segment_rows_applied,
+                    bootstrapping: report.bootstrapping.len(),
+                    resets: report.resets.len(),
+                    revoked: report.revoked.len(),
+                    failed: report.failed.len(),
+                    deferred_commits: report.deferred_commits,
+                }),
+                error_code: None,
+            },
+            SyncOutcome::Failed { error_code, .. } => DiagnosticLastRound {
+                status: "failed".to_owned(),
+                started_at_ms,
+                completed_at_ms,
+                duration_ms: completed_at_ms.saturating_sub(started_at_ms).max(0),
+                counters: None,
+                error_code: Some(Self::diagnostic_code(error_code)),
+            },
+        });
+        outcome
+    }
+
+    fn sync_inner(&mut self, transport: &mut dyn Transport) -> SyncOutcome {
         if self.stopped {
             // §1.6: the client stopped at the schema floor; syncing is inert
             // until an upgrade. The outbox is preserved for replay.
@@ -4175,7 +4496,10 @@ impl SyncClient {
                 message: "expected a response message".to_owned(),
             };
         }
-        let outcome = self.process_response(transport, response, &meta);
+        let mut outcome = self.process_response(transport, response, &meta);
+        if let SyncOutcome::Ok(report) = &mut outcome {
+            report.deferred_commits = meta.deferred_commits;
+        }
         match &outcome {
             SyncOutcome::Ok(_) => self.reset_background_retry(),
             SyncOutcome::Failed { error_code, .. }
@@ -4223,6 +4547,7 @@ impl SyncClient {
                     aggregate.resets.extend(report.resets.iter().cloned());
                     aggregate.revoked.extend(report.revoked.iter().cloned());
                     aggregate.failed.extend(report.failed.iter().cloned());
+                    aggregate.deferred_commits = report.deferred_commits;
                     if report.schema_floor.is_some() {
                         aggregate.schema_floor = report.schema_floor.clone();
                     }

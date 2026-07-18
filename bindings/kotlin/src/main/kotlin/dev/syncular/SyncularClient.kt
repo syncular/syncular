@@ -5,8 +5,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * An event surfaced by the native core's `poll_event`: an exact revisioned
- * `change` batch, explicit `sync-intent`, or ephemeral `presence`. The full
- * decoded object is preserved; [type] is lifted for switching.
+ * `change` batch, explicit `sync-intent`, ephemeral `presence`, or a
+ * privacy-safe `diagnostics` snapshot. The full decoded object is preserved;
+ * [type] is lifted for switching.
  */
 data class SyncularEvent(val type: String, val payload: JsonValue)
 

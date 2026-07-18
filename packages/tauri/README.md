@@ -59,6 +59,21 @@ preflight at both the JavaScript and native command boundaries. Supply bootstrap
 headers through trusted plugin configuration; rotate them only after successful
 activation.
 
+## Privacy-safe diagnostics
+
+`diagnosticsSnapshot({ expectedSubscriptions })` and `onDiagnostics(listener)`
+carry the native Rust core's versioned support evidence through the Tauri event
+channel. The bridge marks the host as `{ kind: 'tauri', role: 'single' }`; it
+does not infer state from IPC commands. Expected subscriptions accept only
+stable PHI-free ids and generated table names, never scope values.
+
+The snapshot is suitable for a redacted “copy diagnostics” workflow: it omits
+rows, clinical row counts, scopes, SQL, paths, client/actor/lease ids, auth,
+keys, mutations, stack traces, and arbitrary prose. Do not supplement it with
+the SQLite file, WebView console dump, or application state. Diagnostics stays
+blocked during security preflight because subscription/table evidence is
+protected. See SPEC §7.6 and `@syncular/react`'s `useDiagnostics`.
+
 ## React availability guard
 
 The Tauri bridge carries `currentSchemaVersion`, `schemaFloor`, and migration

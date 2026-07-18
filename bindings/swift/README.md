@@ -41,11 +41,13 @@ try client.crdtDeleteText(table: "notes", rowId: "n1", column: "doc", index: 0, 
 // Raw escape hatch for any method the conveniences don't cover:
 let result = try client.command(method: "leaseState", params: .object([:]))
 
-// Exact changes and explicit scheduling intents arrive on the main queue:
+// Exact changes, scheduling intents, and privacy-safe diagnostics snapshots
+// arrive on the main queue:
 client.onEvent = { event in
     switch event.type {
     case "sync-intent": client.syncInBackground()
     case "change":      refreshVisibleState()
+    case "diagnostics": refreshSupportEvidence(event.payload)
     default:            break
     }
 }

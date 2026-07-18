@@ -26,6 +26,9 @@
 import type {
   ClientChangeBatch,
   ClientChangeListener,
+  ClientDiagnosticsListener,
+  ClientDiagnosticsRequest,
+  ClientDiagnosticsSnapshot,
   CommitOutcome,
   CommitOutcomeQuery,
   ConflictRecord,
@@ -49,7 +52,10 @@ import type {
   WindowBase,
   WindowState,
 } from '@syncular/client';
-import { SECURITY_PREFLIGHT_REQUIRED_CODE } from '@syncular/client';
+import {
+  SECURITY_PREFLIGHT_REQUIRED_CODE,
+  withClientDiagnosticsHost,
+} from '@syncular/client';
 
 /** A driver-protocol reply: `{result}` on success or `{error}` on failure. */
 interface CommandReply {
@@ -273,6 +279,7 @@ export class NativeSyncClient {
   readonly #autoSync: boolean;
   readonly #invalidationListeners = new Set<InvalidationListener>();
   readonly #changeListeners = new Set<ClientChangeListener>();
+  readonly #diagnosticsListeners = new Set<ClientDiagnosticsListener>();
   readonly #presenceListeners = new Set<(scopeKey: string) => void>();
   #subscription: { remove(): void } | undefined;
   #closed = false;
@@ -393,6 +400,21 @@ export class NativeSyncClient {
           Number.isFinite(intent.delayMs)
         ) {
           this.#requestBackgroundSync(Math.max(0, intent.delayMs));
+        }
+        break;
+      }
+      case 'diagnostics': {
+        const snapshot = decodeDiagnosticsSnapshot(
+          event.snapshot,
+          'react-native',
+        );
+        if (snapshot === undefined) break;
+        for (const listener of this.#diagnosticsListeners) {
+          try {
+            listener(snapshot);
+          } catch {
+            /* a diagnostics observer must never break event dispatch */
+          }
         }
         break;
       }
@@ -526,6 +548,11 @@ export class NativeSyncClient {
     return () => this.#changeListeners.delete(listener);
   }
 
+  onDiagnostics(listener: ClientDiagnosticsListener): () => void {
+    this.#diagnosticsListeners.add(listener);
+    return () => this.#diagnosticsListeners.delete(listener);
+  }
+
   onPresence(listener: (scopeKey: string) => void): () => void {
     this.#presenceListeners.add(listener);
     return () => this.#presenceListeners.delete(listener);
@@ -573,6 +600,19 @@ export class NativeSyncClient {
 
   async statusSnapshot(): Promise<SyncStatusSnapshot> {
     return (await this.#command('statusSnapshot', {})) as SyncStatusSnapshot;
+  }
+
+  async diagnosticsSnapshot(
+    request: ClientDiagnosticsRequest = {},
+  ): Promise<ClientDiagnosticsSnapshot> {
+    const snapshot = (await this.#command('diagnosticsSnapshot', {
+      expectedSubscriptions: request.expectedSubscriptions ?? [],
+    })) as ClientDiagnosticsSnapshot;
+    return withClientDiagnosticsHost(snapshot, {
+      ...snapshot.host,
+      kind: 'react-native',
+      role: 'single',
+    });
   }
 
   async mutate(mutations: readonly MutationInput[]): Promise<string> {
@@ -863,9 +903,24 @@ export class NativeSyncClient {
     this.#subscription = undefined;
     this.#invalidationListeners.clear();
     this.#changeListeners.clear();
+    this.#diagnosticsListeners.clear();
     this.#presenceListeners.clear();
     await this.#native.close();
   }
+}
+
+function decodeDiagnosticsSnapshot(
+  value: unknown,
+  kind: 'react-native',
+): ClientDiagnosticsSnapshot | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const snapshot = value as ClientDiagnosticsSnapshot;
+  if (snapshot.version !== 1 || snapshot.host === undefined) return undefined;
+  return withClientDiagnosticsHost(snapshot, {
+    ...snapshot.host,
+    kind,
+    role: 'single',
+  });
 }
 
 /** The error a `{error}` reply surfaces (mirrors the web-client `ClientSyncError`). */

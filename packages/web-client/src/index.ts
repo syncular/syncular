@@ -15,6 +15,7 @@ export * from './client';
 export * from './content-type';
 export * from './database';
 export * from './devtools';
+export * from './diagnostics';
 export * from './encryption';
 export * from './errors';
 export * from './http';

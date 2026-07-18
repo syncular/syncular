@@ -132,7 +132,11 @@ fn poll_event_nonblocking_returns_null_when_empty() {
         "create",
         json!({ "clientId": "c1", "schema": simple_schema() }),
     );
-    // Non-blocking poll with no events queued → null.
+    // Active creation publishes the initial diagnostics snapshot exactly once.
+    let initial = poll_event(handle).expect("initial diagnostics event");
+    assert_eq!(initial["type"], "diagnostics");
+    assert_eq!(initial["snapshot"]["version"], 1);
+    // Non-blocking poll after the queue is drained → null.
     let ev = syncular_client_poll_event(handle, 0);
     assert!(ev.is_null());
     syncular_client_close(handle);
@@ -173,7 +177,39 @@ fn poll_event_forwards_exact_change_batches_and_sync_intents() {
         .find(|event| event["type"] == "sync-intent")
         .expect("mutation publishes sync intent");
     assert_eq!(intent["intent"]["kind"], "interactive");
+    let diagnostics = events
+        .iter()
+        .rfind(|event| event["type"] == "diagnostics")
+        .expect("mutation publishes changed diagnostics");
+    assert_eq!(diagnostics["snapshot"]["version"], 1);
+    assert_eq!(diagnostics["snapshot"]["replica"]["pendingOutbox"], 1);
 
+    syncular_client_close(handle);
+}
+
+#[test]
+fn diagnostics_command_reports_expected_intent_without_private_payloads() {
+    let config = CString::new("{}").unwrap();
+    let handle = syncular_client_new(config.as_ptr());
+    command(
+        handle,
+        "create",
+        json!({ "clientId": "private-client", "schema": simple_schema() }),
+    );
+    let reply = command(
+        handle,
+        "diagnosticsSnapshot",
+        json!({
+            "expectedSubscriptions": [{ "id": "membership", "table": "todo" }]
+        }),
+    );
+    assert_eq!(
+        reply["result"]["subscriptions"][0]["state"], "unregistered",
+        "diagnostics reply: {reply}"
+    );
+    let encoded = reply.to_string();
+    assert!(!encoded.contains("private-client"));
+    assert!(!encoded.contains("operations"));
     syncular_client_close(handle);
 }
 

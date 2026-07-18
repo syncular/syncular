@@ -28,13 +28,18 @@ pub mod transport;
 pub mod values;
 
 pub use api::{
-    ClientChangeBatch, ClientLimits, CommandEffects, CommitOperation, CommitOperationOutcome,
-    CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution, CommitOutcomeStatus,
-    ConflictRecord, CoverageSnapshot, LocalDataPurgeInput, LocalDataPurgeResult,
+    ClientChangeBatch, ClientDiagnosticsHost, ClientDiagnosticsLease, ClientDiagnosticsReplica,
+    ClientDiagnosticsRequest, ClientDiagnosticsSchema, ClientDiagnosticsSnapshot,
+    ClientDiagnosticsStorage, ClientLimits, CommandEffects, CommitOperation,
+    CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution,
+    CommitOutcomeStatus, ConflictRecord, CoverageSnapshot, DiagnosticLastChange,
+    DiagnosticLastRound, DiagnosticRoundCounters, DiagnosticSubscription,
+    ExpectedDiagnosticSubscription, LocalDataPurgeInput, LocalDataPurgeResult,
     LocalDataPurgeTarget, Mutation, PresencePeer, QueryRow, QuerySnapshot, QueryValue,
     RejectionRecord, ResolveCommitOutcomeInput, RowState, SchemaFloor, SubscriptionStateView,
     SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange, WindowBase, WindowChange,
-    WindowCoverage, WindowState, WindowUnitRef,
+    WindowCoverage, WindowState, WindowUnitRef, CLIENT_DIAGNOSTICS_VERSION,
+    MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
 };
 pub use client::{FileQuerySnapshotReader, SyncClient, SECURITY_PREFLIGHT_REQUIRED_CODE};
 pub use schema::{compile_schema, parse_schema_json, ClientSchema};

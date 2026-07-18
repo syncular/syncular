@@ -60,6 +60,20 @@ import {
 } from './blob';
 import type { ClientDatabase, SqlRow, SqlValue } from './database';
 import { registerDevtools } from './devtools';
+import {
+  CLIENT_DIAGNOSTICS_VERSION,
+  ClientDiagnosticsEmitter,
+  type ClientDiagnosticsListener,
+  type ClientDiagnosticsRequest,
+  type ClientDiagnosticsSnapshot,
+  type ClientDiagnosticsStorage,
+  type DiagnosticLastChange,
+  type DiagnosticLastRound,
+  type DiagnosticRoundCounters,
+  type DiagnosticSubscription,
+  MAX_DIAGNOSTIC_DOMAINS,
+  MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
+} from './diagnostics';
 import type { EncryptionConfig } from './encryption';
 import { ClientSyncError } from './errors';
 import {
@@ -531,6 +545,9 @@ export class SyncClient {
   readonly #invalidation = new InvalidationEmitter();
   /** §8.6: subscribable presence-change listeners (twin of onPresence). */
   readonly #presenceListeners = new Set<(scopeKey: string) => void>();
+  readonly #diagnostics = new ClientDiagnosticsEmitter();
+  #lastRound: DiagnosticLastRound | undefined;
+  #lastChange: DiagnosticLastChange | undefined;
   /** The batch accumulator; non-undefined only inside `#applyBatch`. */
   #batch: ChangeAccumulator | undefined;
   /**
@@ -669,6 +686,7 @@ export class SyncClient {
       upgrading: async () => this.upgrading,
       onInvalidate: (listener) => this.onInvalidate(listener),
     });
+    this.#emitDiagnostics();
   }
 
   /**
@@ -819,6 +837,7 @@ export class SyncClient {
       this.#config.onSyncNeeded?.('startup');
       this.#config.onSyncIntent?.({ kind: 'interactive' });
     }
+    this.#emitDiagnostics();
   }
 
   // -- accessors ------------------------------------------------------------
@@ -928,6 +947,222 @@ export class SyncClient {
     return this.#changes.on(listener);
   }
 
+  /** Subscribe to complete, privacy-safe diagnostic snapshots. */
+  onDiagnostics(listener: ClientDiagnosticsListener): () => void {
+    return this.#diagnostics.on(listener);
+  }
+
+  /**
+   * One atomic support/product-health view. It never returns scope values,
+   * rows, SQL, paths, auth material, lease ids, keys, or mutation bodies.
+   */
+  diagnosticsSnapshot(
+    request: ClientDiagnosticsRequest = {},
+  ): ClientDiagnosticsSnapshot {
+    this.#requireActive();
+    const expected = request.expectedSubscriptions ?? [];
+    if (expected.length > MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        `diagnosticsSnapshot accepts at most ${MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS} expected subscriptions`,
+      );
+    }
+    const registered = loadSubscriptions(this.#db);
+    const subscriptions = new Map<string, DiagnosticSubscription>();
+    for (const sub of registered) {
+      const reset = sub.cursor < 0 && sub.reasonCode === 'sync.cursor_expired';
+      const complete =
+        sub.status === 'active' &&
+        sub.cursor >= 0 &&
+        sub.bootstrapState === undefined;
+      subscriptions.set(sub.id, {
+        id: sub.id,
+        table: sub.table,
+        state:
+          sub.status === 'revoked'
+            ? 'revoked'
+            : sub.status === 'failed'
+              ? 'failed'
+              : reset
+                ? 'reset'
+                : complete
+                  ? 'complete'
+                  : 'bootstrapping',
+        complete,
+        cursor: sub.cursor,
+        ...(sub.reasonCode !== undefined
+          ? { reasonCode: this.#diagnosticCode(sub.reasonCode) }
+          : {}),
+      });
+    }
+    for (const item of expected) {
+      if (
+        typeof item.id !== 'string' ||
+        item.id.length === 0 ||
+        typeof item.table !== 'string' ||
+        item.table.length === 0
+      ) {
+        throw new ClientSyncError(
+          'sync.invalid_request',
+          'diagnosticsSnapshot expected subscriptions require non-empty id and table strings',
+        );
+      }
+      const registeredSubscription = subscriptions.get(item.id);
+      if (
+        registeredSubscription !== undefined &&
+        registeredSubscription.table !== item.table
+      ) {
+        subscriptions.set(item.id, {
+          id: item.id,
+          table: item.table,
+          state: 'failed',
+          complete: false,
+          reasonCode: 'client.subscription_intent_mismatch',
+        });
+      } else if (registeredSubscription === undefined) {
+        subscriptions.set(item.id, {
+          id: item.id,
+          table: item.table,
+          state: 'unregistered',
+          complete: false,
+        });
+      }
+    }
+    const capturedAtMs = this.#now();
+    const leaseState = this.#diagnosticLease(capturedAtMs);
+    const connectivity =
+      this.#lastRound?.status === 'succeeded'
+        ? 'online'
+        : this.#lastRound?.status === 'failed' &&
+            this.#transportFailureCode(this.#lastRound.errorCode)
+          ? 'offline'
+          : 'unknown';
+    const expectedOrder = new Map(
+      expected.map((item, index) => [item.id, index] as const),
+    );
+    const allSubscriptions = [...subscriptions.values()].sort((a, b) => {
+      const aExpected = expectedOrder.get(a.id);
+      const bExpected = expectedOrder.get(b.id);
+      if (aExpected !== undefined || bExpected !== undefined) {
+        return (
+          (aExpected ?? Number.MAX_SAFE_INTEGER) -
+          (bExpected ?? Number.MAX_SAFE_INTEGER)
+        );
+      }
+      return a.id.localeCompare(b.id);
+    });
+    return {
+      version: CLIENT_DIAGNOSTICS_VERSION,
+      capturedAtMs,
+      host: {
+        kind: 'direct',
+        role: 'single',
+        connectivity,
+        realtime:
+          this.#config.realtime === undefined
+            ? 'unsupported'
+            : this.#socket === undefined
+              ? 'disconnected'
+              : 'connected',
+      },
+      securityLifecycle: this.#securityLifecycle,
+      schema: {
+        currentVersion: this.#config.schema.version,
+        upgrading: this.#upgrading,
+        ...(this.#schemaFloor?.requiredSchemaVersion !== undefined
+          ? { requiredVersion: this.#schemaFloor.requiredSchemaVersion }
+          : {}),
+        ...(this.#schemaFloor?.latestSchemaVersion !== undefined
+          ? { latestVersion: this.#schemaFloor.latestSchemaVersion }
+          : {}),
+      },
+      replica: {
+        localRevision: getLocalRevision(this.#db).toString(),
+        syncNeeded: this.#needsPull,
+        pendingOutbox: listOutbox(this.#db).length,
+      },
+      lease: leaseState,
+      subscriptions: allSubscriptions.slice(
+        0,
+        MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
+      ),
+      subscriptionsTruncated:
+        allSubscriptions.length > MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
+      ...(this.#lastRound !== undefined ? { lastRound: this.#lastRound } : {}),
+      ...(this.#lastChange !== undefined
+        ? { lastChange: this.#lastChange }
+        : {}),
+      storage: this.#diagnosticStorage(),
+    };
+  }
+
+  #diagnosticLease(nowMs: number): ClientDiagnosticsSnapshot['lease'] {
+    const lease = this.#leaseState;
+    if (lease?.errorCode !== undefined) {
+      return {
+        state: 'stopped',
+        errorCode: this.#diagnosticCode(lease.errorCode),
+        ...(lease.expiresAtMs !== undefined
+          ? { expiresAtMs: lease.expiresAtMs }
+          : {}),
+      };
+    }
+    if (lease?.expiresAtMs === undefined) return { state: 'none' };
+    return {
+      state: lease.expiresAtMs <= nowMs ? 'expired' : 'active',
+      expiresAtMs: lease.expiresAtMs,
+    };
+  }
+
+  #diagnosticStorage(): ClientDiagnosticsStorage {
+    try {
+      const pageCount = Number(
+        this.#db.query('PRAGMA page_count')[0]?.page_count ?? 0,
+      );
+      const pageSize = Number(
+        this.#db.query('PRAGMA page_size')[0]?.page_size ?? 0,
+      );
+      const outboxBytes = Number(
+        this.#db.query(
+          'SELECT COALESCE(SUM(LENGTH(operations)), 0) AS bytes FROM _syncular_outbox',
+        )[0]?.bytes ?? 0,
+      );
+      const outcome = this.#db.query(
+        `SELECT COUNT(*) AS entries,
+                COALESCE(SUM(LENGTH(results) + COALESCE(LENGTH(operations), 0)), 0) AS bytes
+           FROM _syncular_commit_outcomes`,
+      )[0];
+      const blobBytes = this.#hasBlobs
+        ? Number(
+            this.#db.query(
+              'SELECT COALESCE(SUM(byte_length), 0) AS bytes FROM _syncular_blobs',
+            )[0]?.bytes ?? 0,
+          )
+        : 0;
+      const pressure =
+        this.#config.blobCacheMaxBytes !== undefined &&
+        blobBytes > this.#config.blobCacheMaxBytes;
+      return {
+        status: pressure ? 'pressure' : 'healthy',
+        databaseBytesApprox: Math.max(0, pageCount * pageSize),
+        pendingOutboxBytesApprox: Math.max(0, outboxBytes),
+        retainedOutcomeBytesApprox: Math.max(0, Number(outcome?.bytes ?? 0)),
+        retainedOutcomeEntries: Math.max(0, Number(outcome?.entries ?? 0)),
+        blobCacheBytesApprox: Math.max(0, blobBytes),
+        ...(pressure
+          ? { pressureReasonCode: 'client.blob_cache_over_limit' as const }
+          : {}),
+      };
+    } catch {
+      return { status: 'unreadable' };
+    }
+  }
+
+  #emitDiagnostics(): void {
+    if (!this.#started || this.#securityLifecycle !== 'active') return;
+    this.#diagnostics.emit(this.diagnosticsSnapshot());
+  }
+
   /** One call for the complete status domain used by reactive hosts. */
   statusSnapshot(): SyncStatusSnapshot {
     this.#requireStarted();
@@ -976,9 +1211,25 @@ export class SyncClient {
     }
     if (revision !== undefined) {
       const event = batch.finish(revision, status);
+      const tables = [...new Set(event.tables.map((entry) => entry.table))];
+      const windows = [...new Set(event.windows.map((entry) => entry.table))];
+      this.#lastChange = {
+        revision: revision.toString(),
+        recordedAtMs: this.#now(),
+        tables: tables.slice(0, MAX_DIAGNOSTIC_DOMAINS),
+        windows: windows.slice(0, MAX_DIAGNOSTIC_DOMAINS),
+        domainsTruncated:
+          tables.length > MAX_DIAGNOSTIC_DOMAINS ||
+          windows.length > MAX_DIAGNOSTIC_DOMAINS,
+        statusChanged: event.status !== undefined,
+        conflictsChanged: event.conflictsChanged,
+        rejectionsChanged: event.rejectionsChanged,
+        outcomesChanged: event.outcomesChanged,
+      };
       this.#changes.emit(event);
       const legacy = invalidationFromChange(event);
       if (legacy !== undefined) this.#invalidation.emit(legacy);
+      this.#emitDiagnostics();
     }
     return result;
   }
@@ -1452,6 +1703,7 @@ export class SyncClient {
         scopes: input.scopes,
         ...(input.params !== undefined ? { params: input.params } : {}),
       });
+      this.#emitDiagnostics();
       return;
     }
     saveSubscription(this.#db, {
@@ -1462,11 +1714,13 @@ export class SyncClient {
       cursor: -1,
       status: 'active',
     });
+    this.#emitDiagnostics();
   }
 
   unsubscribe(id: string): void {
     this.#requireActive();
     deleteSubscription(this.#db, id);
+    this.#emitDiagnostics();
   }
 
   // -- windowed subscriptions (§4.8) ------------------------------------------
@@ -2092,9 +2346,73 @@ export class SyncClient {
       );
     }
     this.#syncOutstanding = true;
-    return this.#serialize(() => this.#runSync()).finally(() => {
-      this.#syncOutstanding = false;
-    });
+    const startedAtMs = this.#now();
+    return this.#serialize(() => this.#runSync())
+      .then(
+        (summary) => {
+          const completedAtMs = this.#now();
+          this.#lastRound = {
+            status: 'succeeded',
+            startedAtMs,
+            completedAtMs,
+            durationMs: Math.max(0, completedAtMs - startedAtMs),
+            counters: this.#diagnosticRoundCounters(summary),
+          };
+          this.#emitDiagnostics();
+          return summary;
+        },
+        (error: unknown) => {
+          const completedAtMs = this.#now();
+          const code = (error as { code?: unknown }).code;
+          this.#lastRound = {
+            status: 'failed',
+            startedAtMs,
+            completedAtMs,
+            durationMs: Math.max(0, completedAtMs - startedAtMs),
+            errorCode:
+              typeof code === 'string'
+                ? this.#diagnosticCode(code)
+                : 'client.unknown_failure',
+          };
+          this.#emitDiagnostics();
+          throw error;
+        },
+      )
+      .finally(() => {
+        this.#syncOutstanding = false;
+      });
+  }
+
+  #diagnosticRoundCounters(summary: SyncSummary): DiagnosticRoundCounters {
+    return {
+      pushed: summary.pushed,
+      applied: summary.applied.length,
+      rejected: summary.rejected.length,
+      retryable: summary.retryable.length,
+      conflicts: summary.conflicts.length,
+      commitsApplied: summary.commitsApplied,
+      segmentRowsApplied: summary.segmentRowsApplied,
+      bootstrapping: summary.bootstrapping.length,
+      resets: summary.resets.length,
+      revoked: summary.revoked.length,
+      failed: summary.failed.length,
+      deferredCommits: summary.deferredCommits ?? 0,
+    };
+  }
+
+  #transportFailureCode(code: string): boolean {
+    return (
+      code === 'transport.failed' ||
+      code === 'transport.unavailable' ||
+      code === 'sync.transport_failed' ||
+      code === 'client.worker_failed'
+    );
+  }
+
+  #diagnosticCode(code: string): string {
+    return code.length <= 96 && /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$/.test(code)
+      ? code
+      : 'client.unknown_failure';
   }
 
   async #runSync(): Promise<SyncSummary> {
@@ -2254,7 +2572,23 @@ export class SyncClient {
    */
   #roundTrip(request: Uint8Array): Promise<Uint8Array> {
     const socket = this.#socket;
-    if (socket === undefined) return this.#config.transport(request);
+    if (socket === undefined) {
+      return Promise.resolve()
+        .then(() => this.#config.transport(request))
+        .catch((error: unknown) => {
+          if (
+            error instanceof ClientSyncError ||
+            typeof (error as { code?: unknown })?.code === 'string'
+          ) {
+            throw error;
+          }
+          throw new ClientSyncError(
+            'sync.transport_failed',
+            `transport round failed: ${error instanceof Error ? error.message : String(error)}`,
+            true,
+          );
+        });
+    }
     return new Promise<Uint8Array>((resolve, reject) => {
       // sync() already enforces one round in flight (§8.7).
       this.#pendingRound = {
@@ -2309,6 +2643,7 @@ export class SyncClient {
         this.#socket = undefined;
         this.#presence.clear(); // §8.6.1: presence is per-connection
         this.#abortPendingRound('realtime socket closed mid-round (§8.7)');
+        this.#emitDiagnostics();
       },
     });
     if (this.#securityLifecycle === 'preflight') {
@@ -2319,6 +2654,7 @@ export class SyncClient {
       );
     }
     this.#socket = socket;
+    this.#emitDiagnostics();
   }
 
   disconnectRealtime(): void {
@@ -2326,6 +2662,7 @@ export class SyncClient {
     this.#socket = undefined;
     this.#presence.clear(); // §8.6.1: presence is per-connection
     this.#abortPendingRound('realtime socket disconnected mid-round (§8.7)');
+    this.#emitDiagnostics();
   }
 
   /**

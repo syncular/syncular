@@ -40,6 +40,13 @@ import type {
 } from './client';
 import type { SqlRow, SqlValue } from './database';
 import { registerDevtools } from './devtools';
+import {
+  ClientDiagnosticsEmitter,
+  type ClientDiagnosticsListener,
+  type ClientDiagnosticsRequest,
+  type ClientDiagnosticsSnapshot,
+  withClientDiagnosticsHost,
+} from './diagnostics';
 import type { EncryptionKeyringConfig } from './encryption';
 import { ClientSyncError } from './errors';
 import {
@@ -180,6 +187,8 @@ export interface SyncClientHandleConfig {
   readonly onUpgrading?: (upgrading: boolean) => void;
   /** §8.6: presence on a scope key changed. */
   readonly onPresence?: (scopeKey: string) => void;
+  /** Atomic privacy-safe diagnostics changed. */
+  readonly onDiagnostics?: (snapshot: ClientDiagnosticsSnapshot) => void;
 }
 
 interface Pending {
@@ -247,6 +256,7 @@ export class SyncClientHandle {
   readonly #invalidation: InvalidationEmitter;
   readonly #changes: ChangeEmitter;
   readonly #presence: Set<(scopeKey: string) => void>;
+  readonly #diagnostics: ClientDiagnosticsEmitter;
   readonly #roleListeners: Set<(role: HandleRole) => void>;
   readonly #leadershipListeners: Set<(state: LeadershipState) => void>;
   readonly #devtoolsUnregister: () => void;
@@ -262,6 +272,7 @@ export class SyncClientHandle {
     invalidation: InvalidationEmitter;
     changes: ChangeEmitter;
     presence: Set<(scopeKey: string) => void>;
+    diagnostics: ClientDiagnosticsEmitter;
     roleListeners?: Set<(role: HandleRole) => void>;
     leadershipListeners?: Set<(state: LeadershipState) => void>;
     leadership?: LeadershipState;
@@ -284,6 +295,7 @@ export class SyncClientHandle {
     this.#invalidation = internals.invalidation;
     this.#changes = internals.changes;
     this.#presence = internals.presence;
+    this.#diagnostics = internals.diagnostics;
     this.#roleListeners = internals.roleListeners ?? new Set();
     this.#leadershipListeners = internals.leadershipListeners ?? new Set();
     // RFC 0002 §3.2: console introspection — a no-op outside a dev page.
@@ -346,6 +358,14 @@ export class SyncClientHandle {
       this.#changes.emit(event.batch);
       const legacy = invalidationFromChange(event.batch);
       if (legacy !== undefined) this.#invalidation.emit(legacy);
+    } else if (event.kind === 'diagnostics') {
+      this.#diagnostics.emit(
+        withClientDiagnosticsHost(event.snapshot, {
+          ...event.snapshot.host,
+          kind: 'worker',
+          role: this.#role,
+        }),
+      );
     }
   }
 
@@ -361,6 +381,10 @@ export class SyncClientHandle {
 
   onChange(listener: ClientChangeListener): () => void {
     return this.#changes.on(listener);
+  }
+
+  onDiagnostics(listener: ClientDiagnosticsListener): () => void {
+    return this.#diagnostics.on(listener);
   }
 
   /**
@@ -493,6 +517,17 @@ export class SyncClientHandle {
 
   statusSnapshot(): Promise<SyncStatusSnapshot> {
     return this.#call('statusSnapshot', []);
+  }
+
+  async diagnosticsSnapshot(
+    request: ClientDiagnosticsRequest = {},
+  ): Promise<ClientDiagnosticsSnapshot> {
+    const snapshot = await this.#call('diagnosticsSnapshot', [request]);
+    return withClientDiagnosticsHost(snapshot, {
+      ...snapshot.host,
+      kind: 'worker',
+      role: this.#role,
+    });
   }
 
   conflicts(): Promise<readonly ConflictRecord[]> {
@@ -767,6 +802,8 @@ function fireConfigCallbacks(
       ...(event.summary !== undefined ? { summary: event.summary } : {}),
       ...(event.error !== undefined ? { error: event.error } : {}),
     });
+  } else if (event.kind === 'diagnostics') {
+    config.onDiagnostics?.(event.snapshot);
   }
 }
 
@@ -786,6 +823,7 @@ export async function createSyncClientHandle(
   const invalidation = new InvalidationEmitter();
   const changes = new ChangeEmitter();
   const presence = new Set<(scopeKey: string) => void>();
+  const diagnostics = new ClientDiagnosticsEmitter();
   const roleListeners = new Set<(role: HandleRole) => void>();
   if (resolvedConfig.onRoleChange !== undefined)
     roleListeners.add(resolvedConfig.onRoleChange);
@@ -811,6 +849,7 @@ export async function createSyncClientHandle(
       invalidation,
       changes,
       presence,
+      diagnostics,
       roleListeners,
       leadershipListeners,
     });
@@ -826,6 +865,7 @@ export async function createSyncClientHandle(
       invalidation,
       changes,
       presence,
+      diagnostics,
       roleListeners,
       leadershipListeners,
     });
@@ -836,6 +876,7 @@ export async function createSyncClientHandle(
     invalidation,
     changes,
     presence,
+    diagnostics,
     roleListeners,
     leadershipListeners,
   });
@@ -846,6 +887,7 @@ interface HandleParts {
   invalidation: InvalidationEmitter;
   changes: ChangeEmitter;
   presence: Set<(scopeKey: string) => void>;
+  diagnostics: ClientDiagnosticsEmitter;
   roleListeners: Set<(role: HandleRole) => void>;
   leadershipListeners: Set<(state: LeadershipState) => void>;
 }
@@ -904,6 +946,7 @@ async function bootLeader(
     invalidation: parts.invalidation,
     changes: parts.changes,
     presence: parts.presence,
+    diagnostics: parts.diagnostics,
     roleListeners: parts.roleListeners,
     leadershipListeners: parts.leadershipListeners,
   });
@@ -1009,6 +1052,7 @@ async function bootFollower(
     invalidation: parts.invalidation,
     changes: parts.changes,
     presence: parts.presence,
+    diagnostics: parts.diagnostics,
     roleListeners: parts.roleListeners,
     leadershipListeners: parts.leadershipListeners,
   });

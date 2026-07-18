@@ -44,7 +44,7 @@ use std::os::raw::c_longlong;
 use std::sync::{Arc, Condvar, Mutex};
 
 use serde_json::{json, Value};
-use syncular_client::SyncClient;
+use syncular_client::{ClientDiagnosticsRequest, SyncClient};
 use syncular_command::{dispatch, CreateEffects};
 
 pub mod transport;
@@ -65,6 +65,7 @@ pub struct Handle {
     transport: HostTransport,
     effects: CreateEffects,
     queue: Arc<EventQueue>,
+    last_diagnostics_fingerprint: Option<Value>,
 }
 
 /// A bounded, blocking event queue: `poll_event` waits up to `timeout_ms` for
@@ -124,6 +125,7 @@ impl Handle {
             transport,
             effects: CreateEffects::default(),
             queue,
+            last_diagnostics_fingerprint: None,
         })
     }
 
@@ -140,6 +142,7 @@ impl Handle {
             &params,
         );
         if method == "create" {
+            self.last_diagnostics_fingerprint = None;
             self.transport.set_signed_urls(self.effects.signed_urls);
         }
         // Command-local work is an explicit router effect (mutation and
@@ -158,6 +161,7 @@ impl Handle {
         // forward the core's committed observation output.
         self.drain_realtime();
         self.drain_core_outputs();
+        self.emit_diagnostics_if_changed();
         match result {
             Ok(value) => json!({ "result": value }),
             Err((code, message)) => json!({ "error": { "code": code, "message": message } }),
@@ -207,6 +211,34 @@ impl Handle {
                 json: json!({ "type": "sync-intent", "intent": intent }),
             });
         }
+    }
+
+    /// Forward a privacy-safe snapshot only when its state (excluding capture
+    /// time) changes. This keeps the event atomic with the command/realtime
+    /// observation while avoiding noise from read-only calls and polling.
+    fn emit_diagnostics_if_changed(&mut self) {
+        let Some(client) = self.client.as_ref() else {
+            return;
+        };
+        if client.security_preflight() {
+            return;
+        }
+        let Ok(snapshot) = client.diagnostics_snapshot(&ClientDiagnosticsRequest::default()) else {
+            return;
+        };
+        let Ok(mut fingerprint) = serde_json::to_value(&snapshot) else {
+            return;
+        };
+        if let Some(object) = fingerprint.as_object_mut() {
+            object.remove("capturedAtMs");
+        }
+        if self.last_diagnostics_fingerprint.as_ref() == Some(&fingerprint) {
+            return;
+        }
+        self.last_diagnostics_fingerprint = Some(fingerprint);
+        self.queue.push(Event {
+            json: json!({ "type": "diagnostics", "snapshot": snapshot }),
+        });
     }
 }
 

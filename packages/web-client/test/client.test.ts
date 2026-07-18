@@ -1059,6 +1059,14 @@ describe('schema floor (§1.6)', () => {
     expect(a.client.stopped).toBe(true);
     // §1.6: nothing was processed — the push commit stays queued.
     expect(a.client.pendingCommits()).toHaveLength(1);
+    expect(a.client.diagnosticsSnapshot()).toMatchObject({
+      schema: {
+        currentVersion: 2,
+        requiredVersion: 1,
+        latestVersion: 1,
+      },
+      replica: { pendingOutbox: 1 },
+    });
 
     // Further syncs are local no-ops while stopped.
     const again = await a.client.sync();

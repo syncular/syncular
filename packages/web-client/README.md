@@ -179,6 +179,35 @@ The state is a discriminated union covering startup, migration,
 children; a blocked live query has `phase === 'blocked'`, never an indefinite
 loading state.
 
+## Privacy-safe support diagnostics
+
+Every direct and Worker/multi-tab client exposes the same versioned snapshot:
+
+```ts
+const snapshot = await client.diagnosticsSnapshot({
+  expectedSubscriptions: [
+    { id: 'membership-security', table: 'facility_memberships' },
+    { id: 'scheduler-window', table: 'surgeries' },
+  ],
+});
+
+const off = client.onDiagnostics(() => refreshSupportView());
+```
+
+`expectedSubscriptions` contains application intent only—stable PHI-free ids
+and generated table names, never scopes. It lets a support screen distinguish
+an absent registration from a legitimate zero-row completed bootstrap. The
+snapshot also distinguishes reset, revocation, failure, schema floor, lease
+stop, pending outbox, offline transport, and storage pressure/unreadability.
+Worker leaders and followers return identical evidence with their honest role.
+
+The contract intentionally excludes scope values, rows and clinical row
+counts, SQL, paths, client/actor/lease ids, auth, keys, mutation bodies, stack
+traces, and arbitrary prose. It is safe to copy the JSON snapshot into a
+redacted support ticket as long as the application also keeps subscription ids
+free of patient/user data. Do not attach database files, console dumps, query
+results, or app state alongside it. See SPEC §7.6.
+
 ## Durable commit outcomes
 
 `SyncClient` and every host bridge expose `commitOutcome(id)`,

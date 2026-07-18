@@ -27,7 +27,7 @@
 use std::collections::VecDeque;
 
 use serde_json::{json, Value};
-use syncular_client::{SyncClient, SyncIntent};
+use syncular_client::{ClientDiagnosticsRequest, SyncClient, SyncIntent};
 use syncular_command::{dispatch, CreateEffects};
 
 use crate::transport::{self, HostTransport};
@@ -47,6 +47,7 @@ pub struct SyncularCore {
     transport: HostTransport,
     effects: CreateEffects,
     queue: VecDeque<Event>,
+    last_diagnostics_fingerprint: Option<Value>,
     interactive_sync: bool,
     background_sync_ms: Option<u64>,
 }
@@ -69,6 +70,7 @@ impl SyncularCore {
             transport,
             effects: CreateEffects::default(),
             queue: VecDeque::new(),
+            last_diagnostics_fingerprint: None,
             interactive_sync: false,
             background_sync_ms: None,
         })
@@ -88,6 +90,7 @@ impl SyncularCore {
             &params,
         );
         if method == "create" {
+            self.last_diagnostics_fingerprint = None;
             self.transport.set_signed_urls(self.effects.signed_urls);
         }
         if method == "beginSecurityPreflight"
@@ -108,6 +111,7 @@ impl SyncularCore {
         }
         self.drain_realtime();
         self.drain_core_outputs();
+        self.emit_diagnostics_if_changed();
         match result {
             Ok(value) => json!({ "result": value }),
             Err((code, message)) => json!({ "error": { "code": code, "message": message } }),
@@ -152,6 +156,7 @@ impl SyncularCore {
     pub fn poll_transport(&mut self) {
         self.drain_realtime();
         self.drain_core_outputs();
+        self.emit_diagnostics_if_changed();
     }
 
     /// Drain every event queued since the last call (the host thread pushes
@@ -230,6 +235,33 @@ impl SyncularCore {
                 SyncIntent::None => {}
             }
         }
+    }
+
+    /// Emit one privacy-safe snapshot only when durable/client status changed.
+    /// `capturedAtMs` is excluded from the fingerprint so polling and read-only
+    /// commands do not create event noise. Expected-but-unregistered intent is
+    /// request-local and is obtained through `diagnosticsSnapshot` directly.
+    fn emit_diagnostics_if_changed(&mut self) {
+        let Some(client) = self.client.as_ref() else {
+            return;
+        };
+        if client.security_preflight() {
+            return;
+        }
+        let Ok(snapshot) = client.diagnostics_snapshot(&ClientDiagnosticsRequest::default()) else {
+            return;
+        };
+        let Ok(mut fingerprint) = serde_json::to_value(&snapshot) else {
+            return;
+        };
+        if let Some(object) = fingerprint.as_object_mut() {
+            object.remove("capturedAtMs");
+        }
+        if self.last_diagnostics_fingerprint.as_ref() == Some(&fingerprint) {
+            return;
+        }
+        self.last_diagnostics_fingerprint = Some(fingerprint);
+        self.push(json!({ "type": "diagnostics", "snapshot": snapshot }));
     }
 }
 
@@ -340,6 +372,7 @@ mod tests {
             .filter_map(|e| e.json.get("type").and_then(Value::as_str))
             .collect();
         assert!(kinds.contains(&"change"), "kinds: {kinds:?}");
+        assert!(kinds.contains(&"diagnostics"), "kinds: {kinds:?}");
         let change = events
             .iter()
             .find(|event| event.json["type"] == "change")
@@ -353,6 +386,24 @@ mod tests {
         assert!(matches!(core.take_sync_intent(), SyncIntent::Interactive));
         // Draining is exhaustive.
         assert!(core.drain_events().is_empty());
+    }
+
+    #[test]
+    fn diagnostics_are_versioned_bounded_and_payload_free() {
+        let mut core = SyncularCore::new(&json!({})).unwrap();
+        create(&mut core);
+        let reply = core.command(&json!({
+            "method": "diagnosticsSnapshot",
+            "params": {
+                "expectedSubscriptions": [{ "id": "membership", "table": "todo" }]
+            }
+        }));
+        assert_eq!(reply["result"]["version"], 1);
+        assert_eq!(reply["result"]["subscriptions"][0]["state"], "unregistered");
+        let encoded = reply.to_string();
+        assert!(!encoded.contains("clientId"));
+        assert!(!encoded.contains("dbPath"));
+        assert!(!encoded.contains("operations"));
     }
 
     #[test]

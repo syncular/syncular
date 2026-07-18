@@ -9,6 +9,9 @@
 import type {
   ClientChangeBatch,
   ClientChangeListener,
+  ClientDiagnosticsListener,
+  ClientDiagnosticsRequest,
+  ClientDiagnosticsSnapshot,
   CommitOutcome,
   CommitOutcomeQuery,
   ConflictRecord,
@@ -37,6 +40,7 @@ import type { SyncClientLike } from '../src/client';
 export class FakeClient implements SyncClientLike {
   securityLifecycle: SecurityLifecycle = 'active';
   #changes = new Set<ClientChangeListener>();
+  #diagnosticsListeners = new Set<ClientDiagnosticsListener>();
   #invalidation = new Set<InvalidationListener>();
   #presenceListeners = new Set<(scopeKey: string) => void>();
   #leadershipListeners = new Set<(state: LeadershipState) => void>();
@@ -180,6 +184,52 @@ export class FakeClient implements SyncClientLike {
   onChange(listener: ClientChangeListener): () => void {
     this.#changes.add(listener);
     return () => this.#changes.delete(listener);
+  }
+
+  onDiagnostics(listener: ClientDiagnosticsListener): () => void {
+    this.#diagnosticsListeners.add(listener);
+    return () => this.#diagnosticsListeners.delete(listener);
+  }
+
+  diagnosticsSnapshot(
+    request: ClientDiagnosticsRequest = {},
+  ): ClientDiagnosticsSnapshot {
+    return {
+      version: 1,
+      capturedAtMs: 1,
+      host: {
+        kind: 'direct',
+        role: 'single',
+        connectivity: 'unknown',
+        realtime: 'disconnected',
+      },
+      securityLifecycle: this.securityLifecycle,
+      schema: {
+        currentVersion: this.#currentSchemaVersion,
+        upgrading: this.#upgrading,
+      },
+      replica: {
+        localRevision: this.#revision.toString(),
+        syncNeeded: this.#syncNeeded,
+        pendingOutbox: this.#pending.length,
+      },
+      lease: { state: 'none' },
+      subscriptions: (request.expectedSubscriptions ?? []).map(
+        ({ id, table }) => ({
+          id,
+          table,
+          state: 'unregistered',
+          complete: false,
+        }),
+      ),
+      subscriptionsTruncated: false,
+      storage: { status: 'healthy' },
+    };
+  }
+
+  emitDiagnostics(request: ClientDiagnosticsRequest = {}): void {
+    const snapshot = this.diagnosticsSnapshot(request);
+    for (const listener of this.#diagnosticsListeners) listener(snapshot);
   }
 
   onPresence(listener: (scopeKey: string) => void): () => void {

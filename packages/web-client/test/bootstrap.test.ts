@@ -269,6 +269,12 @@ describe('cursor expiry (§4.6)', () => {
     const sub = b.client.subscription('s1');
     expect(sub?.cursor).toBe(-1);
     expect(sub?.status).toBe('active');
+    expect(b.client.diagnosticsSnapshot().subscriptions[0]).toMatchObject({
+      id: 's1',
+      state: 'reset',
+      complete: false,
+      reasonCode: 'sync.cursor_expired',
+    });
     // §4.6: reset is a staleness signal, not a purge — rows stay in place
     // until bootstrap application replaces them.
     expect(tableRows(b.db, 'tasks')).toHaveLength(3);
@@ -278,5 +284,9 @@ describe('cursor expiry (§4.6)', () => {
     expect(b.client.subscription('s1')?.cursor).toBe(
       await server.storage.getMaxCommitSeq(PARTITION),
     );
+    expect(b.client.diagnosticsSnapshot().subscriptions[0]).toMatchObject({
+      state: 'complete',
+      complete: true,
+    });
   });
 });

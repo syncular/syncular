@@ -37,6 +37,11 @@ export {
 } from './use-commit-outcomes';
 export { type UseConflictsResult, useConflicts } from './use-conflicts';
 export {
+  type UseDiagnosticsOptions,
+  type UseDiagnosticsResult,
+  useDiagnostics,
+} from './use-diagnostics';
+export {
   type SyncTableDescriptor,
   type UseMutationOptions,
   type UseMutationResult,
