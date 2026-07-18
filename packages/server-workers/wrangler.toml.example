@@ -3,10 +3,9 @@
 #
 # This deploys BOTH bindings (SPEC §1.1): the HTTP handler (POST /sync,
 # GET /segments/:id, PUT/GET /blobs/:id) and realtime (§8) over a Durable
-# Object (GET /realtime). For an HTTP-only deployment, omit the
-# `[[durable_objects.bindings]]` + `[[migrations]]` blocks and drop the
-# `realtime` option from `createWorkersFetchHandler` — still fully conformant
-# (clients sync over POST /sync). See packages/server-workers/README.md.
+# Object (coordinated POST /sync and optional GET /realtime). HTTP-only
+# transport keeps the binding/migration and uses `coordinator` instead of
+# `realtime`. See packages/server-workers/README.md.
 
 name = "syncular-sync"
 main = "src/worker.ts"

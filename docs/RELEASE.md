@@ -1,10 +1,34 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.23** (`v0.15.23`). All artifacts use Apache-2.0, except
+current release is **0.15.24** (`v0.15.24`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.24 release notes
+
+0.15.24 makes first-result-wins idempotency safe under overlapping
+delivery without changing SSP2 wire bytes. Every push now acquires its
+per-partition apply boundary before operation reads, validation, CRDT merge, or
+writes, re-checks the idempotency key under that boundary, and retains it
+through applied or rejected terminal-result commit. SQLite queues its single
+connection, PostgreSQL uses the partition row lock, and custom adapters fail
+closed when the lock/finalization seam is absent.
+
+D1 pushes now fail closed unless the storage is inside an explicitly
+coordinated partition. `createWorkersFetchHandler` forwards authenticated
+`/sync` rounds through one Durable Object per partition using an explicit FIFO;
+HTTP-only deployments use `coordinator`, while `realtime` reuses the same
+namespace for WebSocket upgrades. Different partition DOs remain concurrent.
+
+Realtime sync rounds now inherit the complete canonical `SyncServerConfig`
+capability set, including CRDT mergers and blob services. The preferred
+`RealtimeDOConfig.syncConfig(storage)` factory is shared by HTTP-forwarded and
+socket rounds; the older `hubConfig` and `commitValidationSerialized` names are
+deprecated compatibility bridges. Deterministic overlap and transport-parity
+tests cover applied, conflict, row/aggregate/constraint rejection, CRDT merge,
+notification count, SQLite, real-PostgreSQL gating, and D1 HTTP/socket paths.
 
 ## 0.15.23 release notes
 

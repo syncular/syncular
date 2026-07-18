@@ -23,6 +23,7 @@ import {
   SqliteServerStorage,
   type SyncRequestContext,
 } from '@syncular/server';
+import { overlapAfterTwoOptimisticMisses } from './helpers';
 
 /** A note table: an ordinary `title` (LWW) + a `doc` crdt column. */
 const NOTE_COLUMNS: readonly RowColumn[] = [
@@ -270,6 +271,36 @@ describe('CRDT column push merge (SPEC.md §5.10.3)', () => {
     });
     expect(again.status).toBe('applied');
     expect([...((await storedDoc('n1')) ?? [])]).toEqual([5]);
+  });
+
+  test('overlapping duplicate CRDT deliveries merge exactly once', async () => {
+    let mergeCalls = 0;
+    const mergers: CrdtMergerRegistry = {
+      'set-union': (stored, incoming) => {
+        mergeCalls += 1;
+        return setUnionMerge(stored, incoming);
+      },
+    };
+    const overlapStorage = overlapAfterTwoOptimisticMisses(storage);
+    const overlapContext: SyncRequestContext = {
+      ...makeCtx(mergers),
+      storage: overlapStorage,
+    };
+    const operation = {
+      rowId: 'overlap-crdt',
+      payload: noteRow('overlap-crdt', 'p1', 'one merge', new Uint8Array([7])),
+    };
+
+    const [left, right] = await Promise.all([
+      push(overlapContext, 'overlap-crdt-commit', operation),
+      push(overlapContext, 'overlap-crdt-commit', operation),
+    ]);
+    expect([left.status, right.status].sort()).toEqual(['applied', 'cached']);
+    expect(mergeCalls).toBe(1);
+    expect([...((await storedDoc('overlap-crdt')) ?? [])]).toEqual([7]);
+    expect(
+      (await storage.getRow('part-1', 'notes', 'overlap-crdt'))?.serverVersion,
+    ).toBe(1);
   });
 
   test('a crdt push with no merger registered fails loud (§5.10.6)', async () => {

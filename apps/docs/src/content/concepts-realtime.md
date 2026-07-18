@@ -14,6 +14,9 @@ request/response semantics**. The socket carries sync rounds as tagged binary
 byte streams driven by the same handler as the HTTP endpoint, so the protocol
 treats the two identically ([SPEC §8.7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#87-websocket-native-sync-loop),
 [§1.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#11-endpoints)).
+`RealtimeHubConfig` inherits the canonical server sync capabilities so CRDT
+mergers, blob checks, validators, limits, leases, and events do not disappear
+when a client selects the socket transport.
 
 - **Reference clients sync exclusively over the socket** once connected.
 - `POST /sync` stays fully conformant, for push-only producers, curl

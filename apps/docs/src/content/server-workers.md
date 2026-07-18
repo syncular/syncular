@@ -1,9 +1,9 @@
 # Cloudflare Workers
 
 `@syncular/server-workers` runs the sync server on Cloudflare's edge: D1
-for storage, R2 for segment and blob bytes, and a Durable Object for
-realtime. This page takes you from a bare Worker to a full deployment with
-WebSockets and scheduled blob GC.
+for storage, R2 for segment and blob bytes, and one Durable Object per
+partition for push serialization and optional realtime. This page takes you
+from a bare Worker to a full deployment with WebSockets and scheduled blob GC.
 
 The package is deliberately thin: the server core is runtime-neutral
 TypeScript (Web `Request`/`Response`/`fetch`/Web-Crypto only, enforced by a
@@ -33,6 +33,7 @@ import { schema } from './syncular.generated';
 
 interface Env {
   DB: D1Database; // wrangler [[d1_databases]] binding = "DB"
+  SYNC_COORDINATOR: DurableObjectNamespace<SyncularRealtimeDO>;
   R2_ACCOUNT_ID: string;
   R2_ACCESS_KEY_ID: string;
   R2_SECRET_ACCESS_KEY: string;
@@ -59,18 +60,21 @@ function syncConfig(env: Env): SyncServerConfig {
 }
 
 export default {
-  fetch: createWorkersFetchHandler<Env>((env) => ({
-    config: syncConfig(env),
-    authenticate: (request) => authenticate(request, env),
-  })),
+  fetch: createWorkersFetchHandler<Env>({
+    config: (env) => ({
+      config: syncConfig(env),
+      authenticate: (request) => authenticate(request, env),
+    }),
+    coordinator: (env) => ({ namespace: env.SYNC_COORDINATOR }),
+  }),
 };
 ```
 
-This HTTP-only shape is fully conformant, the same guarantee covered in
-[Server setup](/guide-server/): it is a smaller deployment, complete and
-correct on its own. One platform note: Workers has no SQLite engine, so
-there is no `sqliteImageBuilder`. Clients that advertise the sqlite-image
-bootstrap lane are served the rows lane instead.
+HTTP-only transport remains fully conformant, but D1 writes are not stateless:
+the `coordinator` forwards authenticated `/sync` rounds through the partition
+DO. WebSocket upgrades are optional; the DO binding and FIFO are mandatory for
+D1 pushes. Workers has no SQLite engine, so there is no `sqliteImageBuilder`;
+clients advertising that lane receive rows instead.
 
 ## D1 storage
 
@@ -90,30 +94,22 @@ wrangler d1 create syncular
 wrangler d1 migrations apply syncular
 ```
 
-**Per-partition write serialization.** The dense per-partition `commitSeq`
-is read live and buffered `+1`. This is exact under one request, but two
-concurrent pushes to the *same* partition need a serialization point. The
-realtime Durable Object is the natural one (all of a partition's writes
-land in its single-threaded DO); an HTTP-only deployment expecting
-concurrent same-partition writes should front them with a coordinating
-primitive (a DO or a Queue). This mirrors Postgres's per-partition row
-lock, achieved by placement rather than a lock D1 does not expose.
+**Per-partition write serialization.** Every push must serialize before row
+reads/validation/CRDT merge and re-check idempotency under that boundary. The
+Workers adapter forwards `/sync` to one DO per partition and the DO uses an
+explicit FIFO; Durable Object events may otherwise interleave at `await`.
 
-Whole-commit validation makes this constraint fail-closed. With
-`commitValidator` configured, a plain `new D1ServerStorage(env.DB)` rejects the
-push because D1 cannot lock an interactive candidate transaction. The storage
-inside `SyncularRealtimeHost` opts in automatically: that host is already one
-single-threaded Durable Object per partition. A custom coordinated host may
-pass `{ commitValidationSerialized: true }`, but a stateless HTTP Worker must
-not. `durableObjectRealtimeNotifier` only wakes sockets after an HTTP commit;
-it does not serialize that HTTP write.
+A plain `new D1ServerStorage(env.DB)` fails closed before every push, not only
+when `commitValidator` is present. A custom coordinator may pass
+`{ pushApplySerialized: true }`; a stateless Worker must not. Different
+partitions still use different DOs and remain concurrent.
 
 ## Realtime: the Durable Object
 
 Realtime on Workers runs through `SyncularRealtimeHost`: one Durable Object
 per partition (`idFromName(partition)`), hosting the same `RealtimeHub` the
-Bun/Node path uses. Because a partition's sockets and its commit fan-out
-are co-located and single-threaded, a sync round landing over the socket
+Bun/Node path uses. Because a partition's sockets, explicit sync FIFO, and
+commit fan-out are co-located, a sync round landing over the socket
 fans its delta to the partition's other sockets with no LISTEN/NOTIFY
 needed, and the DO doubles as the per-partition write serialization point
 D1 wants.
@@ -123,29 +119,35 @@ or bill wall time. On the first message after a wake, the host rebuilds
 the session from a minimal serialized attachment plus the client record in
 D1, the durable source of truth; nothing in-flight can be hibernated.
 
-Wiring: declare the DO class delegating to `SyncularRealtimeHost`, pass a
-`realtime` factory to `createWorkersFetchHandler`, and give the HTTP path
-`durableObjectRealtimeNotifier(env.REALTIME)` so a push landing in a plain
-isolate wakes the partition's DO. This is the in-platform analogue of
-LISTEN/NOTIFY: the message only nudges the DO to re-pull, is
-fire-and-forget, and never fails the push itself.
+Wiring: declare the DO class delegating to `SyncularRealtimeHost`, reuse one
+canonical sync-config factory for HTTP-forwarded and socket rounds, and pass a
+`realtime` factory to `createWorkersFetchHandler`. Its namespace coordinates
+HTTP `/sync` and also handles WebSocket upgrades.
 
 ```ts
 import {
   createWorkersFetchHandler,
-  durableObjectRealtimeNotifier,
   D1ServerStorage,
   SyncularRealtimeHost,
   type RealtimeDOConfig,
 } from '@syncular/server-workers';
 import { DurableObject } from 'cloudflare:workers';
+import type { RealtimeHubConfig } from '@syncular/server';
+
+const canonicalSyncConfig = (
+  env: Env,
+  storage: D1ServerStorage,
+) => ({
+    schema,
+    storage,
+    resolveScopes: (args) => resolveScopes(args, env),
+    segments: makeSegments(env),
+    blobs: makeBlobs(env),
+    crdtMergers: makeCrdtMergers(env),
+  } satisfies RealtimeHubConfig);
 
 const realtimeDOConfig = (env: Env): RealtimeDOConfig => ({
-  hubConfig: () => ({
-    schema,
-    resolveScopes: (args) => resolveScopes(args, env),
-    segments: makeSegments(env), // the SAME store the HTTP path uses
-  }),
+  syncConfig: (storage) => canonicalSyncConfig(env, storage),
 });
 
 export class SyncularRealtimeDO extends DurableObject<Env> {
@@ -161,10 +163,7 @@ export class SyncularRealtimeDO extends DurableObject<Env> {
 export default {
   fetch: createWorkersFetchHandler<Env>({
     config: (env) => ({
-      config: {
-        ...syncConfig(env),
-        realtime: durableObjectRealtimeNotifier(env.REALTIME),
-      },
+      config: canonicalSyncConfig(env, new D1ServerStorage(env.DB)),
       authenticate: (request) => authenticate(request, env),
     }),
     realtime: (env) => ({
@@ -206,8 +205,8 @@ new_classes = ["SyncularRealtimeDO"]
 
 Secrets (`wrangler secret put`): `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
 `R2_SECRET_ACCESS_KEY`, plus whatever your `authenticate()` needs. For an
-HTTP-only deployment, omit the DO binding and migration blocks and drop the
-`realtime` option.
+HTTP-only deployment, keep the DO binding/migration and use `coordinator`
+instead of `realtime`; only the WebSocket route is omitted.
 
 ## Blob GC on a schedule
 

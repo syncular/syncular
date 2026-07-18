@@ -69,11 +69,17 @@ class SqliteTransaction implements StorageTransaction {
   #storage: SqliteServerStorage;
   #partition: string;
   #open = true;
-  #commitValidationSavepoint = false;
+  #pushApplySavepoint = false;
+  readonly #release: () => void;
 
-  constructor(storage: SqliteServerStorage, partition: string) {
+  constructor(
+    storage: SqliteServerStorage,
+    partition: string,
+    release: () => void,
+  ) {
     this.#storage = storage;
     this.#partition = partition;
+    this.#release = release;
     storage.db.exec('BEGIN IMMEDIATE');
   }
 
@@ -96,11 +102,11 @@ class SqliteTransaction implements StorageTransaction {
     return this.#storage.scanRowsByIndex(this.#partition, query);
   }
 
-  async lockPartitionForCommitValidation(): Promise<void> {
+  async lockPartitionForPush(): Promise<void> {
     this.#assertOpen();
     // BEGIN IMMEDIATE in the constructor already owns SQLite's writer lock.
-    this.#storage.db.exec('SAVEPOINT syncular_commit_validation_candidate');
-    this.#commitValidationSavepoint = true;
+    this.#storage.db.exec('SAVEPOINT syncular_push_candidate');
+    this.#pushApplySavepoint = true;
   }
 
   async commitRejectedPushResult(
@@ -109,18 +115,12 @@ class SqliteTransaction implements StorageTransaction {
     result: StoredPushResult,
   ): Promise<void> {
     this.#assertOpen();
-    if (!this.#commitValidationSavepoint) {
-      throw new Error(
-        'whole-commit rejection requires its validation savepoint',
-      );
+    if (!this.#pushApplySavepoint) {
+      throw new Error('push rejection requires its apply savepoint');
     }
-    this.#storage.db.exec(
-      'ROLLBACK TO SAVEPOINT syncular_commit_validation_candidate',
-    );
-    this.#storage.db.exec(
-      'RELEASE SAVEPOINT syncular_commit_validation_candidate',
-    );
-    this.#commitValidationSavepoint = false;
+    this.#storage.db.exec('ROLLBACK TO SAVEPOINT syncular_push_candidate');
+    this.#storage.db.exec('RELEASE SAVEPOINT syncular_push_candidate');
+    this.#pushApplySavepoint = false;
     await this.putPushResult(clientId, clientCommitId, result);
     await this.commit();
   }
@@ -245,18 +245,28 @@ class SqliteTransaction implements StorageTransaction {
   async commit(): Promise<void> {
     this.#assertOpen();
     this.#open = false;
-    this.#storage.db.exec('COMMIT');
+    try {
+      this.#storage.db.exec('COMMIT');
+    } finally {
+      this.#release();
+    }
   }
 
   async rollback(): Promise<void> {
     if (!this.#open) return;
     this.#open = false;
-    this.#storage.db.exec('ROLLBACK');
+    try {
+      this.#storage.db.exec('ROLLBACK');
+    } finally {
+      this.#release();
+    }
   }
 }
 
 export class SqliteServerStorage implements ServerStorage {
   readonly db: Database;
+  /** One bun:sqlite connection can own only one transaction at a time. */
+  #transactionTail: Promise<void> = Promise.resolve();
   /** Set by `ensureSchema`: app-table lookup for the relational row store. */
   #tables: ReadonlyMap<string, CompiledTable> | undefined;
   #schemaVersion: number | undefined;
@@ -405,7 +415,18 @@ export class SqliteServerStorage implements ServerStorage {
   }
 
   async begin(partition: string): Promise<StorageTransaction> {
-    return new SqliteTransaction(this, partition);
+    const previous = this.#transactionTail;
+    let release!: () => void;
+    this.#transactionTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return new SqliteTransaction(this, partition, release);
+    } catch (error) {
+      release();
+      throw error;
+    }
   }
 
   /** Internal: write a row + refresh its scope-index entries. */

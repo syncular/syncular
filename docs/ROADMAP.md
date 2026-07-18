@@ -179,8 +179,8 @@ This block is assembly on a proven core — packages, not protocol.
       per partition hosting the RealtimeHub, WS hibernation driving the
       existing RealtimeSession (rehydrated from a minimal socket attachment +
       the D1 client record on wake), in-DO commit fan-out, D1 storage; the
-      `/realtime` upgrade route + the HTTP-push wake path (the in-platform
-      LISTEN/NOTIFY analogue). Hermetic tests drive the real session/hub/D1
+      `/realtime` upgrade route plus the per-partition HTTP/socket sync FIFO
+      required for D1 first-result-wins apply. Hermetic tests drive the real session/hub/D1
       code through the real DO class over a DO double (d1-double doctrine) +
       the reference codec — the conformance bar for a deployment adapter.
       Real-`wrangler dev` smoke is a documented manual recipe, not an

@@ -203,15 +203,23 @@ export interface StorageTransaction {
    */
   scanRowsByIndex?(query: IndexRowScanQuery): Promise<StoredRow[]>;
   /**
-   * Serialize candidate-state validation for this partition before any row
-   * read/write. Required at runtime when `commitValidator` is configured.
+   * Serialize every push apply for this partition before any operation read,
+   * validation, merge, or write. The push layer re-checks idempotency only
+   * after this resolves and retains the lock through terminal-result commit.
+   * Missing support fails closed before an app-row mutation.
+   */
+  lockPartitionForPush?(): Promise<void>;
+  /**
+   * @deprecated Implement `lockPartitionForPush`. Kept as a compatibility
+   * bridge for custom adapters whose existing implementation already locks
+   * the complete partition from before candidate reads through commit.
    */
   lockPartitionForCommitValidation?(): Promise<void>;
   /**
-   * §6.8 rejection finalization while the validation serialization lock is
-   * still held: discard every candidate write, persist the rejected
-   * idempotency result, and finish the transaction atomically. Required when
-   * `commitValidator` is configured so a concurrent duplicate cannot rerun it.
+   * Rejection finalization while the push-apply serialization lock is still
+   * held: discard every candidate write, persist the rejected idempotency
+   * result, and finish the transaction atomically. Required for every push so
+   * a concurrent duplicate cannot rerun operations, validators, or merges.
    */
   commitRejectedPushResult?(
     clientId: string,

@@ -2576,6 +2576,18 @@ Semantics:
 - A `clientCommitId` duplicated **within one request** is processed once;
   subsequent occurrences return the persisted result per the replay rule
   (§2.3): `cached` if it applied, `rejected` if it rejected.
+- Every apparently new push is serialized by partition before any operation
+  read, authorization, conflict check, row validation, CRDT merge, or staged
+  write. The server then re-checks the idempotency key while holding that
+  serialization boundary. It retains the boundary through the atomic commit
+  of either the applied result or a rejected/conflicted terminal result. Thus
+  two overlapping deliveries that both miss the optimistic lookup still run
+  exactly one operation pipeline and return the first byte-equivalent result;
+  callbacks, merges, row versions, commit-log entries, and realtime
+  notifications are never duplicated. Hosts SHOULD retain cross-partition
+  concurrency where their storage permits it (for example, one Durable Object
+  per partition or independent PostgreSQL transactions); a single SQLite
+  connection necessarily queues its transactions globally.
 
 #### 6.3.1 `PUSH_RESULT_DETAILS` additive companion frame
 
@@ -2791,17 +2803,16 @@ therefore configure one transaction-scoped **whole-commit validator**.
 
 **Host seam, off by default.** `commitValidator` is a host callback, not a wire
 feature and not generated schema metadata. With no callback configured the
-server performs no extra validation lock, candidate scan, or callback. The
-callback MUST NOT mutate storage or its inputs; it accepts by returning (or
-resolving) and rejects by throwing a deliberate validation rejection.
+server performs no candidate scan or callback; the ordinary §6.3 partition
+serialization still applies to every push. The callback MUST NOT mutate storage
+or its inputs; it accepts by returning (or resolving) and rejects by throwing a
+deliberate validation rejection.
 
-**Fixed order.** The server first performs the ordinary optimistic idempotency
-lookup (§6.3). For an apparently uncached commit with a whole-commit validator
-it then acquires the storage's per-partition validation serialization primitive
-**before reading or staging any operation** and re-checks the idempotency record
-under that lock. The second lookup closes a concurrent duplicate-request race;
-if it finds a result, the callback does not run. Each new operation then
-proceeds through the ordinary §6.1–§6.7 path,
+**Fixed order.** The server uses the ordinary §6.3 optimistic lookup,
+per-partition push serialization, and locked idempotency re-check before
+reading or staging any operation. If the locked lookup finds a result, the
+callback does not run. Each new operation then proceeds through the ordinary
+§6.1–§6.7 path,
 including conflicts, authorization, CRDT merge, and per-row validation. If an
 operation terminates, the whole-commit callback does not run. Otherwise every
 operation is staged in the same storage transaction, and the callback runs
@@ -2850,23 +2861,24 @@ tables and scope values its invariant requires. Unknown tables, invalid bounds,
 or a storage without candidate scans fail loudly; Syncular never substitutes a
 stale out-of-transaction read.
 
-**Serialization is mandatory.** Candidate-state validation is correct only if
-two commits in the same partition cannot both validate against states that
-exclude one another. A storage that exposes this feature MUST serialize the
-partition from the pre-operation lock through commit/rollback:
+**Serialization is mandatory.** Every push requires the §6.3 boundary, and
+candidate-state validation additionally depends on it so two commits cannot
+both validate against states that exclude one another. A storage MUST
+serialize the partition from the pre-operation lock through commit/rollback:
 
 - SQLite's write transaction already provides the serialization point.
 - PostgreSQL locks the partition registry row (`FOR UPDATE`) before any row
   read or write.
-- D1 has no interactive transaction lock. It may enable the feature only when
-  every write for the partition is externally serialized by one Durable Object
-  (or an equivalent coordinator). `D1ServerStorage` therefore requires an
-  explicit `commitValidationSerialized: true` assertion from that coordinator;
-  its default fails closed when §6.8 is configured.
+- D1 has no interactive transaction lock. Every sync round that can push MUST
+  pass through one explicit per-partition Durable Object request queue (or an
+  equivalent coordinator). `D1ServerStorage` therefore requires an explicit
+  `pushApplySerialized: true` assertion from that coordinator; its default
+  fails closed before every push, whether or not §6.8 is configured.
 - A custom storage MUST implement the equivalent transaction lock,
-  candidate-state scan, and atomic rejected-result finalization contract.
-  Missing support fails the commit loudly; it MUST NOT silently weaken the
-  invariant.
+  locked idempotency re-check support, and atomic rejected-result finalization
+  contract. Whole-commit validation additionally requires candidate-state
+  scans. Missing support fails before app-row mutation; it MUST NOT silently
+  weaken the invariant.
 
 This is deliberately partition-wide rather than row-lock inference: the host
 callback may read arbitrary aggregate members, so Syncular cannot know a

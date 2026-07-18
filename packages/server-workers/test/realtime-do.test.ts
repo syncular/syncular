@@ -4,8 +4,8 @@
  * `RealtimeHub` logic through the real DO class — the DO is a deployment
  * adapter, so this is the conformance bar for the Workers realtime binding
  * (§8): connect → hello → round over the socket (§8.7 bytes via the reference
- * codec) → delta on commit → ack; hibernation rehydration; the HTTP-push wake
- * fan-out; presence through the DO.
+ * codec) → delta on commit → ack; hibernation rehydration; HTTP-forwarded
+ * push fan-out; presence through the DO.
  *
  * No `workerd`, no HTTP server: request/response bytes are built and decoded
  * with the reference codec (`@syncular/core`), the sockets are in-memory
@@ -18,6 +18,7 @@ import {
   encodeRow,
   MessageStreamScanner,
   PROTOCOL_WIRE_VERSION,
+  type PushCommitFrame,
   type PushResultFrame,
   REALTIME_TAG_DELTA,
   REALTIME_TAG_ROUND,
@@ -26,8 +27,13 @@ import {
   type SubStartFrame,
 } from '@syncular/core';
 import {
+  type BlobStore,
+  blobIdFor,
   CommitValidationRejection,
   type CommitValidator,
+  type CrdtMergerRegistry,
+  compileSchema,
+  MemoryBlobStore,
   MemorySegmentStore,
   type ServerSchema,
   SSP2_CONTENT_TYPE,
@@ -58,6 +64,8 @@ const TASK_COLUMNS: readonly RowColumn[] = [
   { name: 'id', type: 'string', nullable: false },
   { name: 'list_id', type: 'string', nullable: false },
   { name: 'title', type: 'string', nullable: false },
+  { name: 'doc', type: 'crdt', nullable: true, crdtType: 'set-union' },
+  { name: 'attachment', type: 'blob_ref', nullable: true },
 ];
 
 const SCHEMA: ServerSchema = {
@@ -72,8 +80,18 @@ const SCHEMA: ServerSchema = {
   ],
 };
 
-function taskRow(id: string, listId: string, title: string): Uint8Array {
-  return encodeRow(TASK_COLUMNS, [id, listId, title]);
+function taskRow(
+  id: string,
+  listId: string,
+  title: string,
+  doc: Uint8Array | null = null,
+  attachment: string | null = null,
+): Uint8Array {
+  return encodeRow(TASK_COLUMNS, [id, listId, title, doc, attachment]);
+}
+
+function blobRef(blobId: string, byteLength: number): string {
+  return JSON.stringify({ blobId, byteLength });
 }
 
 /** Capture every `WebSocketPair` the host constructs so the test can drive the
@@ -86,12 +104,25 @@ class TrackedPair extends FakeWebSocketPair {
   }
 }
 
-function realtimeConfig(commitValidator?: CommitValidator): RealtimeDOConfig {
+function realtimeConfig(
+  commitValidator?: CommitValidator,
+  capabilities: {
+    readonly blobs?: BlobStore;
+    readonly crdtMergers?: CrdtMergerRegistry;
+  } = {},
+): RealtimeDOConfig {
   return {
-    hubConfig: () => ({
+    syncConfig: (storage) => ({
       schema: SCHEMA,
+      storage,
       resolveScopes: () => ({ list_id: ['*'] }),
       segments: new MemorySegmentStore(),
+      ...(capabilities.blobs !== undefined
+        ? { blobs: capabilities.blobs }
+        : {}),
+      ...(capabilities.crdtMergers !== undefined
+        ? { crdtMergers: capabilities.crdtMergers }
+        : {}),
       ...(commitValidator !== undefined ? { commitValidator } : {}),
     }),
   };
@@ -122,6 +153,14 @@ function makeHttpHandler(
       config,
       authenticate: async () => ({ actorId: ACTOR_ID, partition: PARTITION }),
     }),
+    realtime: () => ({
+      namespace,
+      authenticate: async () => ({
+        actorId: ACTOR_ID,
+        partition: PARTITION,
+        clientId: 'http-client',
+      }),
+    }),
   });
   const ctx = { waitUntil: () => {}, passThroughOnException: () => {} };
   return (request) => handler(request, {}, ctx);
@@ -144,6 +183,14 @@ function httpSyncRequest(frames: RequestFrame[], clientId: string): Request {
     headers: { 'content-type': SSP2_CONTENT_TYPE },
     body: syncRequestBytes(frames, clientId).slice().buffer as ArrayBuffer,
   });
+}
+
+async function decodeHttpSync(responseInput: Response | Promise<Response>) {
+  const response = await responseInput;
+  expect(response.status).toBe(200);
+  const message = decodeMessage(new Uint8Array(await response.arrayBuffer()));
+  if (message.msgKind !== 'response') throw new Error('expected response');
+  return message;
 }
 
 /** Directly upgrade a socket on one DO, returning the client/server sockets. */
@@ -197,12 +244,8 @@ function decodeRoundResponse(frames: SocketFrame[]) {
 }
 
 /**
- * Yield to the event loop until in-flight async work settles. A §8.7 round is
- * kicked off with `void this.#runRound(...)` (the round streams asynchronously
- * while `handleBinary`/`webSocketMessage` return synchronously — the
- * platform-faithful shape). Over the synchronous D1 double the round completes
- * within a handful of microtask/macrotask turns; this drains them so the test
- * observes the finished round. (Mirrors how a real client awaits the socket.)
+ * Yield to the event loop until fire-and-forget control/fanout work settles.
+ * Completed sync rounds themselves are awaited by the DO partition FIFO.
  */
 async function settle(): Promise<void> {
   for (let i = 0; i < 20; i++) {
@@ -471,8 +514,8 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
       'reader',
     );
     reader.sent.length = 0;
-    // A push lands via the PLAIN HTTP handler (a stateless isolate). Its
-    // configured realtime notifier wakes the partition's DO.
+    // The outer HTTP handler authenticates, then forwards the sync body into
+    // this partition DO and its in-process hub.
     const http = makeHttpHandler(db, ns);
     const pushResp = await http(
       httpSyncRequest(
@@ -498,6 +541,259 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
     const wake = textFrames(reader.sent).find((m) => m.event === 'sync');
     expect(wake).toBeDefined();
     expect((wake?.data as { reason?: string }).reason).toBe('catchup-required');
+  });
+
+  test('overlapping HTTP duplicates are serialized by the partition DO', async () => {
+    let validatorCalls = 0;
+    const db = await makeDb();
+    const ns = new FakeDurableObjectNamespace(
+      db,
+      realtimeConfig(() => {
+        validatorCalls += 1;
+      }),
+    );
+    const http = makeHttpHandler(db, ns);
+    const commit: PushCommitFrame = {
+      type: 'PUSH_COMMIT',
+      clientCommitId: 'overlap-http',
+      operations: [
+        {
+          table: 'tasks',
+          rowId: 'overlap-http-row',
+          op: 'upsert',
+          payload: taskRow('overlap-http-row', 'L', 'once'),
+        },
+      ],
+    };
+
+    const [left, right] = await Promise.all([
+      decodeHttpSync(http(httpSyncRequest([commit], 'overlap-client'))),
+      decodeHttpSync(http(httpSyncRequest([commit], 'overlap-client'))),
+    ]);
+    const resultOf = (message: typeof left) =>
+      message.frames.find(
+        (frame): frame is PushResultFrame => frame.type === 'PUSH_RESULT',
+      );
+    expect([resultOf(left)?.status, resultOf(right)?.status].sort()).toEqual([
+      'applied',
+      'cached',
+    ]);
+    expect(validatorCalls).toBe(1);
+    const inspect = new D1ServerStorage(db, { pushApplySerialized: true });
+    expect(await inspect.getMaxCommitSeq(PARTITION)).toBe(1);
+  });
+
+  test('overlapping socket duplicates retain the DO FIFO through round commit', async () => {
+    let validatorCalls = 0;
+    const db = await makeDb();
+    const ns = new FakeDurableObjectNamespace(
+      db,
+      realtimeConfig(() => {
+        validatorCalls += 1;
+      }),
+    );
+    const first = await connect(ns, 'socket-overlap-client');
+    const second = await connect(ns, 'socket-overlap-client');
+    first.server.sent.length = 0;
+    second.server.sent.length = 0;
+    const commit: PushCommitFrame = {
+      type: 'PUSH_COMMIT',
+      clientCommitId: 'overlap-socket',
+      operations: [
+        {
+          table: 'tasks',
+          rowId: 'overlap-socket-row',
+          op: 'upsert',
+          payload: taskRow('overlap-socket-row', 'L', 'once'),
+        },
+      ],
+    };
+
+    await Promise.all([
+      sendRound(first.do_, first.server, [commit], 'socket-overlap-client'),
+      sendRound(second.do_, second.server, [commit], 'socket-overlap-client'),
+    ]);
+    const resultOf = (server: FakeWebSocket) => {
+      const message = decodeRoundResponse(server.sent);
+      if (message.msgKind !== 'response') throw new Error('expected response');
+      return message.frames.find(
+        (frame): frame is PushResultFrame => frame.type === 'PUSH_RESULT',
+      );
+    };
+    expect(
+      [resultOf(first.server)?.status, resultOf(second.server)?.status].sort(),
+    ).toEqual(['applied', 'cached']);
+    expect(validatorCalls).toBe(1);
+    const inspect = new D1ServerStorage(db, { pushApplySerialized: true });
+    expect(await inspect.getMaxCommitSeq(PARTITION)).toBe(1);
+  });
+
+  test('different partition DOs remain concurrent', async () => {
+    let releasePartitionA!: () => void;
+    const partitionAGate = new Promise<void>((resolve) => {
+      releasePartitionA = resolve;
+    });
+    let enteredPartitionA!: () => void;
+    const partitionAEntered = new Promise<void>((resolve) => {
+      enteredPartitionA = resolve;
+    });
+    const db = await makeDb();
+    const ns = new FakeDurableObjectNamespace(
+      db,
+      realtimeConfig(async ({ partition }) => {
+        if (partition === 'partition-a') {
+          enteredPartitionA();
+          await partitionAGate;
+        }
+      }),
+    );
+    const directStorage = new D1ServerStorage(db);
+    const handler = createWorkersFetchHandler<unknown>({
+      config: () => ({
+        config: {
+          schema: SCHEMA,
+          storage: directStorage,
+          segments: new MemorySegmentStore(),
+          resolveScopes: () => ({ list_id: ['*'] }),
+        },
+        authenticate: async (request) => ({
+          actorId: ACTOR_ID,
+          partition: request.headers.get('x-test-partition') ?? '',
+        }),
+      }),
+      coordinator: () => ({ namespace: ns }),
+    });
+    const request = (partition: string, rowId: string) => {
+      const value = httpSyncRequest(
+        [
+          {
+            type: 'PUSH_COMMIT',
+            clientCommitId: `commit-${partition}`,
+            operations: [
+              {
+                table: 'tasks',
+                rowId,
+                op: 'upsert',
+                payload: taskRow(rowId, 'L', partition),
+              },
+            ],
+          },
+        ],
+        `client-${partition}`,
+      );
+      value.headers.set('x-test-partition', partition);
+      return handler(value, {}, { waitUntil: () => {} });
+    };
+
+    const partitionA = request('partition-a', 'row-a');
+    await partitionAEntered;
+    const partitionB = request('partition-b', 'row-b');
+    const bFinishedFirst = await Promise.race([
+      partitionB.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 100)),
+    ]);
+    expect(bFinishedFirst).toBe(true);
+    releasePartitionA();
+    expect((await partitionA).status).toBe(200);
+    expect((await partitionB).status).toBe(200);
+  });
+
+  test('HTTP-forwarded and socket rounds preserve CRDT/blob sync semantics', async () => {
+    const attachmentBytes = new Uint8Array([9, 8, 7]);
+    const attachmentId = await blobIdFor(attachmentBytes);
+    const run = async (transport: 'http' | 'socket') => {
+      let mergeCalls = 0;
+      let validatorCalls = 0;
+      const blobs = new MemoryBlobStore();
+      await blobs.put(
+        PARTITION,
+        attachmentId,
+        attachmentBytes,
+        1_750_000_000_000,
+      );
+      const db = await makeDb();
+      const ns = new FakeDurableObjectNamespace(
+        db,
+        realtimeConfig(
+          () => {
+            validatorCalls += 1;
+          },
+          {
+            blobs,
+            crdtMergers: {
+              'set-union': (stored, incoming) => {
+                mergeCalls += 1;
+                const values = new Set<number>(stored ?? []);
+                for (const value of incoming) values.add(value);
+                return new Uint8Array([...values].sort((a, b) => a - b));
+              },
+            },
+          },
+        ),
+      );
+      const commit: PushCommitFrame = {
+        type: 'PUSH_COMMIT',
+        clientCommitId: 'transport-parity',
+        operations: [
+          {
+            table: 'tasks',
+            rowId: 'transport-row',
+            op: 'upsert',
+            payload: taskRow(
+              'transport-row',
+              'L',
+              'same semantics',
+              new Uint8Array([3, 1]),
+              blobRef(attachmentId, attachmentBytes.length),
+            ),
+          },
+        ],
+      };
+      let result: PushResultFrame | undefined;
+      if (transport === 'http') {
+        const message = await decodeHttpSync(
+          makeHttpHandler(
+            db,
+            ns,
+          )(httpSyncRequest([commit], 'transport-client')),
+        );
+        result = message.frames.find(
+          (frame): frame is PushResultFrame => frame.type === 'PUSH_RESULT',
+        );
+      } else {
+        const { do_, server } = await connect(ns, 'transport-client');
+        await sendRound(do_, server, [commit], 'transport-client');
+        const message = decodeRoundResponse(server.sent);
+        if (message.msgKind !== 'response') {
+          throw new Error('expected response');
+        }
+        result = message.frames.find(
+          (frame): frame is PushResultFrame => frame.type === 'PUSH_RESULT',
+        );
+      }
+      const inspect = new D1ServerStorage(db, { pushApplySerialized: true });
+      await inspect.ensureSchema(compileSchema(SCHEMA));
+      const row = await inspect.getRow(PARTITION, 'tasks', 'transport-row');
+      return {
+        result,
+        mergeCalls,
+        validatorCalls,
+        payload: row?.payload,
+        serverVersion: row?.serverVersion,
+      };
+    };
+
+    const http = await run('http');
+    const socket = await run('socket');
+    expect(http.result).toEqual(socket.result);
+    expect(http.result?.status).toBe('applied');
+    expect(http.mergeCalls).toBe(1);
+    expect(socket.mergeCalls).toBe(1);
+    expect(http.validatorCalls).toBe(1);
+    expect(socket.validatorCalls).toBe(1);
+    expect(http.payload).toEqual(socket.payload);
+    expect(http.serverVersion).toBe(1);
+    expect(socket.serverVersion).toBe(1);
   });
 
   test('presence fans out between two sockets on the DO (§8.6)', async () => {

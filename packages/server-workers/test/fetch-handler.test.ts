@@ -32,6 +32,7 @@ import {
 import { D1DatabaseDouble } from '../../server/test/d1-double';
 import { startS3Stub } from '../../server/test/s3-stub';
 import { createWorkersFetchHandler, D1ServerStorage } from '../src/index';
+import { FakeDurableObjectNamespace } from './do-double';
 
 const PARTITION = 'part-1';
 const ACTOR_ID = 'actor-1';
@@ -67,17 +68,38 @@ async function makeHandler(
   const db = new D1DatabaseDouble();
   const storage = new D1ServerStorage(db);
   await storage.migrate();
+  const segments = new MemorySegmentStore();
+  const blobs = makeBlobs();
   const config: SyncServerConfig = {
     schema: SCHEMA,
     storage,
-    segments: new MemorySegmentStore(),
-    blobs: makeBlobs(),
+    segments,
+    blobs,
     resolveScopes: () => ({ list_id: ['*'] }),
   };
-  const handler = createWorkersFetchHandler<TestEnv>((env) => ({
-    config: env.config,
-    authenticate: async () => ({ actorId: ACTOR_ID, partition: PARTITION }),
-  }));
+  const namespace = new FakeDurableObjectNamespace(db, {
+    syncConfig: (coordinatedStorage) => ({
+      schema: SCHEMA,
+      storage: coordinatedStorage,
+      segments,
+      blobs,
+      resolveScopes: () => ({ list_id: ['*'] }),
+    }),
+  });
+  const handler = createWorkersFetchHandler<TestEnv>({
+    config: (env) => ({
+      config: env.config,
+      authenticate: async () => ({ actorId: ACTOR_ID, partition: PARTITION }),
+    }),
+    realtime: () => ({
+      namespace,
+      authenticate: async () => ({
+        actorId: ACTOR_ID,
+        partition: PARTITION,
+        clientId: 'client-1',
+      }),
+    }),
+  });
   const env: TestEnv = { DB: db, config };
   const ctx = { waitUntil: () => {}, passThroughOnException: () => {} };
   return (request: Request) => handler(request, env, ctx);
@@ -134,6 +156,95 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
       }),
     );
     expect(response.status).toBe(415);
+  });
+
+  test('HTTP-only transport can coordinate D1 pushes without mounting realtime', async () => {
+    const db = new D1DatabaseDouble();
+    const directStorage = new D1ServerStorage(db);
+    await directStorage.migrate();
+    const segments = new MemorySegmentStore();
+    const namespace = new FakeDurableObjectNamespace(db, {
+      syncConfig: (storage) => ({
+        schema: SCHEMA,
+        storage,
+        segments,
+        resolveScopes: () => ({ list_id: ['*'] }),
+      }),
+    });
+    const handler = createWorkersFetchHandler<unknown>({
+      config: () => ({
+        config: {
+          schema: SCHEMA,
+          storage: directStorage,
+          segments,
+          resolveScopes: () => ({ list_id: ['*'] }),
+        },
+        authenticate: async () => ({ actorId: ACTOR_ID, partition: PARTITION }),
+      }),
+      coordinator: () => ({ namespace }),
+    });
+    const response = await handler(
+      syncRequest([
+        {
+          type: 'PUSH_COMMIT',
+          clientCommitId: 'coordinator-only',
+          operations: [
+            {
+              table: 'tasks',
+              rowId: 'coordinator-only-row',
+              op: 'upsert',
+              payload: taskRow('coordinator-only-row', 'L', 'coordinated'),
+            },
+          ],
+        },
+      ]),
+      {},
+      { waitUntil: () => {} },
+    );
+    expect((await decodeSync(response)).frames).toContainEqual(
+      expect.objectContaining({
+        type: 'PUSH_RESULT',
+        status: 'applied',
+      }),
+    );
+  });
+
+  test('a stateless D1 push fails before app-row mutation', async () => {
+    const db = new D1DatabaseDouble();
+    const storage = new D1ServerStorage(db);
+    await storage.migrate();
+    const handler = createWorkersFetchHandler<unknown>(() => ({
+      config: {
+        schema: SCHEMA,
+        storage,
+        segments: new MemorySegmentStore(),
+        resolveScopes: () => ({ list_id: ['*'] }),
+      },
+      authenticate: async () => ({ actorId: ACTOR_ID, partition: PARTITION }),
+    }));
+    const response = await handler(
+      syncRequest([
+        {
+          type: 'PUSH_COMMIT',
+          clientCommitId: 'unsafe-stateless',
+          operations: [
+            {
+              table: 'tasks',
+              rowId: 'must-not-land',
+              op: 'upsert',
+              payload: taskRow('must-not-land', 'L', 'unsafe'),
+            },
+          ],
+        },
+      ]),
+      {},
+      { waitUntil: () => {} },
+    );
+    expect(response.status).toBe(400);
+    expect(await storage.getMaxCommitSeq(PARTITION)).toBe(0);
+    expect(
+      await storage.getPushResult(PARTITION, 'client-1', 'unsafe-stateless'),
+    ).toBeUndefined();
   });
 
   test('push then pull round-trips a row through the Workers entry', async () => {

@@ -806,35 +806,6 @@ function idempotencyCacheMissFrame(
   };
 }
 
-async function persistRejectedPushResult(
-  storage: SyncRequestContext['storage'],
-  partition: string,
-  clientId: string,
-  clientCommitId: string,
-  stored: StoredPushResult,
-): Promise<{ readonly stored: StoredPushResult; readonly replayed: boolean }> {
-  const rejectionTx = await storage.begin(partition);
-  try {
-    await rejectionTx.putPushResult(clientId, clientCommitId, stored);
-    await rejectionTx.commit();
-  } catch (error) {
-    await rejectionTx.rollback();
-    throw error;
-  }
-  const canonical = await storage.getPushResult(
-    partition,
-    clientId,
-    clientCommitId,
-  );
-  if (canonical === undefined) {
-    throw new Error('push rejection finalization did not persist an outcome');
-  }
-  return {
-    stored: canonical,
-    replayed: canonical.cacheIdentity !== stored.cacheIdentity,
-  };
-}
-
 export interface AppliedCommitEvent {
   readonly commit: StoredCommit;
 }
@@ -899,48 +870,49 @@ export async function processPushCommitWithTrace(
   const validators = ctx.validators;
   const commitValidator = ctx.commitValidator;
   const tx = await storage.begin(partition);
+  const lockPartitionForPush =
+    tx.lockPartitionForPush?.bind(tx) ??
+    tx.lockPartitionForCommitValidation?.bind(tx);
   const commitRejectedPushResult = tx.commitRejectedPushResult?.bind(tx);
   try {
-    if (commitValidator !== undefined) {
-      if (
-        tx.lockPartitionForCommitValidation === undefined ||
-        commitRejectedPushResult === undefined
-      ) {
-        throw new Error(
-          'storage transaction does not support atomic whole-commit validation finalization',
-        );
-      }
-      await tx.lockPartitionForCommitValidation();
-      // The optimistic lookup above may have raced another request for the
-      // same idempotency key. Re-check after acquiring partition serialization
-      // so a concurrent duplicate never reruns the aggregate validator.
-      try {
-        const serializedPersisted = await storage.getPushResult(
-          partition,
-          clientId,
+    if (
+      lockPartitionForPush === undefined ||
+      commitRejectedPushResult === undefined
+    ) {
+      throw new Error(
+        'storage transaction does not support serialized push apply and atomic rejection finalization',
+      );
+    }
+    await lockPartitionForPush();
+    // The optimistic lookup above may have raced another delivery. Re-check
+    // only after acquiring partition serialization and before any operation
+    // read, validation, merge, or staged write.
+    try {
+      const serializedPersisted = await storage.getPushResult(
+        partition,
+        clientId,
+        frame.clientCommitId,
+      );
+      if (serializedPersisted !== undefined) {
+        await tx.rollback();
+        return processedPushCommit(
           frame.clientCommitId,
+          serializedPersisted,
+          true,
         );
-        if (serializedPersisted !== undefined) {
-          await tx.rollback();
-          return processedPushCommit(
-            frame.clientCommitId,
-            serializedPersisted,
-            true,
-          );
-        }
-      } catch (error) {
-        if (
-          error instanceof SyncError &&
-          error.code === 'sync.idempotency_cache_miss'
-        ) {
-          await tx.rollback();
-          return {
-            frame: idempotencyCacheMissFrame(frame.clientCommitId, error),
-            replayed: false,
-          };
-        }
-        throw error;
       }
+    } catch (error) {
+      if (
+        error instanceof SyncError &&
+        error.code === 'sync.idempotency_cache_miss'
+      ) {
+        await tx.rollback();
+        return {
+          frame: idempotencyCacheMissFrame(frame.clientCommitId, error),
+          replayed: false,
+        };
+      }
+      throw error;
     }
     const results: PushOperationResult[] = [];
     const changes: NewChange[] = [];
@@ -993,32 +965,24 @@ export async function processPushCommitWithTrace(
         status: 'rejected',
         results: [terminated],
       });
-      if (commitValidator !== undefined) {
-        // Discard candidate rows and persist the rejection while retaining the
-        // same partition lock. This closes the duplicate-request race between
-        // rollback and the durable idempotency outcome.
-        if (commitRejectedPushResult === undefined) {
-          throw new Error(
-            'storage transaction lost whole-commit rejection finalization support',
-          );
-        }
-        await commitRejectedPushResult(clientId, frame.clientCommitId, stored);
-      } else {
-        await tx.rollback();
-        const canonical = await persistRejectedPushResult(
-          storage,
-          partition,
-          clientId,
-          frame.clientCommitId,
-          stored,
-        );
-        return processedPushCommit(
-          frame.clientCommitId,
-          canonical.stored,
-          canonical.replayed,
+      // Discard candidates and persist the rejection while retaining the same
+      // partition lock. There is no unlock gap in which a duplicate can rerun.
+      await commitRejectedPushResult(clientId, frame.clientCommitId, stored);
+      const canonical = await storage.getPushResult(
+        partition,
+        clientId,
+        frame.clientCommitId,
+      );
+      if (canonical === undefined) {
+        throw new Error(
+          'push rejection finalization did not persist an outcome',
         );
       }
-      return processedPushCommit(frame.clientCommitId, stored, false);
+      return processedPushCommit(
+        frame.clientCommitId,
+        canonical,
+        canonical.cacheIdentity !== stored.cacheIdentity,
+      );
     }
 
     const commitSeq = await tx.appendCommit({
@@ -1045,7 +1009,6 @@ export async function processPushCommitWithTrace(
     }
     return processedPushCommit(frame.clientCommitId, stored, false);
   } catch (error) {
-    await tx.rollback();
     if (error instanceof StorageConstraintError) {
       const stored = newStoredPushResult(createdAtMs, {
         status: 'rejected',
@@ -1059,19 +1022,30 @@ export async function processPushCommitWithTrace(
           },
         ],
       });
-      const canonical = await persistRejectedPushResult(
-        storage,
+      if (commitRejectedPushResult === undefined) {
+        await tx.rollback();
+        throw new Error(
+          'storage transaction lost atomic push rejection finalization support',
+        );
+      }
+      await commitRejectedPushResult(clientId, frame.clientCommitId, stored);
+      const canonical = await storage.getPushResult(
         partition,
         clientId,
         frame.clientCommitId,
-        stored,
       );
+      if (canonical === undefined) {
+        throw new Error(
+          'push rejection finalization did not persist an outcome',
+        );
+      }
       return processedPushCommit(
         frame.clientCommitId,
-        canonical.stored,
-        canonical.replayed,
+        canonical,
+        canonical.cacheIdentity !== stored.cacheIdentity,
       );
     }
+    await tx.rollback();
     throw error;
   }
 }

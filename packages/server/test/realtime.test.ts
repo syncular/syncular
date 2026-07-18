@@ -45,6 +45,7 @@ function makeHub(t: TestContext, maxDeltaBytes?: number): RealtimeHub {
   const hub = createRealtimeHub({
     schema: t.ctx.schema,
     storage: t.ctx.storage,
+    segments: t.segments,
     resolveScopes: t.ctx.resolveScopes,
     ...(t.ctx.clock !== undefined ? { clock: t.ctx.clock } : {}),
     ...(maxDeltaBytes !== undefined ? { maxDeltaBytes } : {}),
@@ -460,6 +461,7 @@ describe('presence (§8.6)', () => {
     const smallCapHub = createRealtimeHub({
       schema: t.ctx.schema,
       storage: t.ctx.storage,
+      segments: t.segments,
       resolveScopes: t.ctx.resolveScopes,
       ...(t.ctx.clock !== undefined ? { clock: t.ctx.clock } : {}),
       maxPresenceBytes: 16,
