@@ -39,7 +39,7 @@ version = "2"
 optional = true
 
 [dependencies.tungstenite]
-version = "0.24"
+version = "0.30"
 optional = true
 features = ["rustls-tls-webpki-roots"]
 
