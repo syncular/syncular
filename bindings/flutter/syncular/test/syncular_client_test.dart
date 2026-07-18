@@ -6,8 +6,8 @@
 // Coverage mirrors the Swift/Kotlin suites: init/create, command round-trip,
 // mutate → readRows (optimistic row, version -1), the query fast path, error
 // surfacing, the offline outbox, a network command reporting transport.unavailable
-// on the lean core, event-poll (none pending when idle), close idempotence, and
-// pause/resume.
+// on the lean core, event-poll (initial diagnostics, then none while idle),
+// close idempotence, and pause/resume.
 import 'package:syncular/syncular.dart';
 import 'package:test/test.dart';
 
@@ -105,9 +105,16 @@ void main() {
     expect(outcome['errorCode'], contains('transport'));
   });
 
-  test('poll loop delivers nothing when idle', () async {
+  test('poll loop delivers initial diagnostics then nothing when idle',
+      () async {
     final client = makeClient();
     addTearDown(client.close);
+
+    final initial = await client.events.first.timeout(
+      const Duration(seconds: 2),
+    );
+    expect(initial.type, equals('diagnostics'));
+
     var count = 0;
     final sub = client.events.listen((_) => count++);
     addTearDown(sub.cancel);
