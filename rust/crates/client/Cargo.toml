@@ -35,7 +35,7 @@ optional = true
 # One native transport implementation shared by the FFI and Tauri hosts.
 # Keeping it behind a client feature preserves dependency-lean core builds.
 [dependencies.ureq]
-version = "2"
+version = "3"
 optional = true
 
 [dependencies.tungstenite]
