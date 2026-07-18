@@ -3,9 +3,10 @@
  *
  * `syncular.migrations.lock.json` is a version-controlled baseline of every
  * migration that has been accepted so far. Existing entries are immutable;
- * generation may only append newly named migrations. The per-migration schema
- * snapshot exists solely to make checksum drift actionable without retaining
- * SQL text, row data, or filesystem paths in diagnostics.
+ * generation may only append newly named migrations. Format 2 stores one
+ * canonical head-schema snapshot for actionable diagnostics instead of a
+ * cumulative schema copy after every migration. Format 1 remains readable and
+ * writable until an explicit `migrations upgrade-lock` command replaces it.
  */
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
@@ -16,7 +17,8 @@ import type { IrColumn, IrColumnType } from './ir';
 import { applyMigrationSql, type ParsedTable } from './sql';
 
 export const MIGRATION_LOCK_FILENAME = 'syncular.migrations.lock.json';
-export const MIGRATION_LOCK_FORMAT_VERSION = 1;
+export const MIGRATION_LOCK_FORMAT_VERSION = 2;
+export const LEGACY_MIGRATION_LOCK_FORMAT_VERSION = 1;
 
 export interface MigrationLockColumn {
   readonly name: string;
@@ -34,12 +36,29 @@ export interface MigrationLockTable {
 export interface MigrationLockEntry {
   readonly name: string;
   readonly sha256: string;
+}
+
+export interface LegacyMigrationLockEntry extends MigrationLockEntry {
   readonly tables: readonly MigrationLockTable[];
 }
 
-export interface MigrationLock {
+export interface LegacyMigrationLock {
+  readonly formatVersion: typeof LEGACY_MIGRATION_LOCK_FORMAT_VERSION;
+  readonly migrations: readonly LegacyMigrationLockEntry[];
+}
+
+export interface MigrationLockV2 {
   readonly formatVersion: typeof MIGRATION_LOCK_FORMAT_VERSION;
   readonly migrations: readonly MigrationLockEntry[];
+  readonly head: {
+    readonly tables: readonly MigrationLockTable[];
+  };
+}
+
+export type MigrationLock = LegacyMigrationLock | MigrationLockV2;
+
+interface CurrentMigrationHistory {
+  readonly migrations: readonly LegacyMigrationLockEntry[];
 }
 
 function normalizedSql(sql: string): string {
@@ -71,13 +90,13 @@ function snapshotTables(
     }));
 }
 
-/** Build the exact lock document for a complete migration sequence. */
-export function buildMigrationLock(
+/** Replay a complete migration sequence with ephemeral diagnostic snapshots. */
+function buildMigrationHistory(
   migrations: readonly MigrationInput[],
-): MigrationLock {
+): CurrentMigrationHistory {
   const tables = new Map<string, ParsedTable>();
   const droppedTables = new Set<string>();
-  const entries: MigrationLockEntry[] = [];
+  const entries: LegacyMigrationLockEntry[] = [];
   for (const migration of migrations) {
     applyMigrationSql(
       tables,
@@ -91,7 +110,43 @@ export function buildMigrationLock(
       tables: snapshotTables(tables),
     });
   }
-  return { formatVersion: MIGRATION_LOCK_FORMAT_VERSION, migrations: entries };
+  return { migrations: entries };
+}
+
+function lockFromHistory(
+  history: CurrentMigrationHistory,
+  formatVersion:
+    | typeof LEGACY_MIGRATION_LOCK_FORMAT_VERSION
+    | typeof MIGRATION_LOCK_FORMAT_VERSION,
+): MigrationLock {
+  if (history.migrations.length === 0) {
+    failLock('cannot lock an empty migration history');
+  }
+  if (formatVersion === LEGACY_MIGRATION_LOCK_FORMAT_VERSION) {
+    return {
+      formatVersion: LEGACY_MIGRATION_LOCK_FORMAT_VERSION,
+      migrations: history.migrations,
+    };
+  }
+  const head = history.migrations.at(-1) as LegacyMigrationLockEntry;
+  return {
+    formatVersion: MIGRATION_LOCK_FORMAT_VERSION,
+    migrations: history.migrations.map(({ name, sha256 }) => ({
+      name,
+      sha256,
+    })),
+    head: { tables: head.tables },
+  };
+}
+
+/** Build a deterministic lock document for a complete migration sequence. */
+export function buildMigrationLock(
+  migrations: readonly MigrationInput[],
+  formatVersion:
+    | typeof LEGACY_MIGRATION_LOCK_FORMAT_VERSION
+    | typeof MIGRATION_LOCK_FORMAT_VERSION = MIGRATION_LOCK_FORMAT_VERSION,
+): MigrationLock {
+  return lockFromHistory(buildMigrationHistory(migrations), formatVersion);
 }
 
 /** Fixed-order, byte-deterministic serialization for clean code review. */
@@ -165,21 +220,53 @@ function parseTable(value: unknown, context: string): MigrationLockTable {
 function parseEntry(value: unknown, index: number): MigrationLockEntry {
   const context = `migrations[${index}]`;
   if (!isRecord(value)) failLock(`${context} must be an object`);
-  const { name, sha256, tables } = value;
+  const { name, sha256 } = value;
   if (typeof name !== 'string' || name.length === 0) {
     failLock(`${context}.name must be a non-empty string`);
   }
   if (typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(sha256)) {
     failLock(`${context}.sha256 must be a lowercase SHA-256 digest`);
   }
+  return { name, sha256 };
+}
+
+function parseLegacyEntry(
+  value: unknown,
+  index: number,
+): LegacyMigrationLockEntry {
+  const context = `migrations[${index}]`;
+  const entry = parseEntry(value, index);
+  if (!isRecord(value)) failLock(`${context} must be an object`);
+  const { tables } = value;
   if (!Array.isArray(tables)) failLock(`${context}.tables must be an array`);
   return {
-    name,
-    sha256,
+    ...entry,
     tables: tables.map((table, tableIndex) =>
       parseTable(table, `${context}.tables[${tableIndex}]`),
     ),
   };
+}
+
+function parseHead(value: unknown): MigrationLockV2['head'] {
+  if (!isRecord(value)) failLock('head must be an object');
+  if (!Array.isArray(value.tables)) failLock('head.tables must be an array');
+  return {
+    tables: value.tables.map((table, index) =>
+      parseTable(table, `head.tables[${index}]`),
+    ),
+  };
+}
+
+function assertUniqueMigrationNames(
+  migrations: readonly MigrationLockEntry[],
+): void {
+  const names = new Set<string>();
+  for (const migration of migrations) {
+    if (names.has(migration.name)) {
+      failLock(`migration ${JSON.stringify(migration.name)} appears twice`);
+    }
+    names.add(migration.name);
+  }
 }
 
 /** Parse and structurally validate a committed lock document. */
@@ -191,23 +278,32 @@ export function parseMigrationLock(source: string): MigrationLock {
     failLock('invalid JSON');
   }
   if (!isRecord(raw)) failLock('root must be an object');
-  if (raw.formatVersion !== MIGRATION_LOCK_FORMAT_VERSION) {
+  if (
+    raw.formatVersion !== LEGACY_MIGRATION_LOCK_FORMAT_VERSION &&
+    raw.formatVersion !== MIGRATION_LOCK_FORMAT_VERSION
+  ) {
     failLock(
-      `formatVersion must be ${MIGRATION_LOCK_FORMAT_VERSION}, got ${JSON.stringify(raw.formatVersion)}`,
+      `formatVersion must be ${LEGACY_MIGRATION_LOCK_FORMAT_VERSION} or ${MIGRATION_LOCK_FORMAT_VERSION}, got ${JSON.stringify(raw.formatVersion)}`,
     );
   }
   if (!Array.isArray(raw.migrations) || raw.migrations.length === 0) {
     failLock('migrations must be a non-empty array');
   }
-  const migrations = raw.migrations.map(parseEntry);
-  const names = new Set<string>();
-  for (const migration of migrations) {
-    if (names.has(migration.name)) {
-      failLock(`migration ${JSON.stringify(migration.name)} appears twice`);
-    }
-    names.add(migration.name);
+  if (raw.formatVersion === LEGACY_MIGRATION_LOCK_FORMAT_VERSION) {
+    const migrations = raw.migrations.map(parseLegacyEntry);
+    assertUniqueMigrationNames(migrations);
+    return {
+      formatVersion: LEGACY_MIGRATION_LOCK_FORMAT_VERSION,
+      migrations,
+    };
   }
-  return { formatVersion: MIGRATION_LOCK_FORMAT_VERSION, migrations };
+  const migrations = raw.migrations.map(parseEntry);
+  assertUniqueMigrationNames(migrations);
+  return {
+    formatVersion: MIGRATION_LOCK_FORMAT_VERSION,
+    migrations,
+    head: parseHead(raw.head),
+  };
 }
 
 /** Read the version-controlled baseline without exposing its absolute path. */
@@ -266,8 +362,8 @@ function describeColumnDifference(
 }
 
 function firstSchemaDifference(
-  locked: MigrationLockEntry,
-  current: MigrationLockEntry,
+  locked: LegacyMigrationLockEntry,
+  current: LegacyMigrationLockEntry,
 ): string {
   const length = Math.max(locked.tables.length, current.tables.length);
   for (let index = 0; index < length; index++) {
@@ -303,9 +399,9 @@ const REPAIR_HINT =
  * Validate the committed history as an exact prefix of the current sequence.
  * New migrations may be appended; existing names and bytes may never change.
  */
-export function validateMigrationLock(
+function validateMigrationHistory(
   locked: MigrationLock,
-  current: MigrationLock,
+  current: CurrentMigrationHistory,
 ): void {
   for (let index = 0; index < locked.migrations.length; index++) {
     const before = locked.migrations[index] as MigrationLockEntry;
@@ -321,9 +417,45 @@ export function validateMigrationLock(
       );
     }
     if (before.sha256 !== after.sha256) {
+      const diagnosticBefore: LegacyMigrationLockEntry =
+        locked.formatVersion === LEGACY_MIGRATION_LOCK_FORMAT_VERSION
+          ? (locked.migrations[index] as LegacyMigrationLockEntry)
+          : {
+              ...before,
+              tables: locked.head.tables,
+            };
+      // Format 2 keeps one schema snapshot after the complete locked prefix.
+      // Compare it with the current schema at that same boundary, excluding
+      // valid newly appended migrations from the diagnostic.
+      const diagnosticAfter =
+        locked.formatVersion === LEGACY_MIGRATION_LOCK_FORMAT_VERSION
+          ? after
+          : (current.migrations[locked.migrations.length - 1] ?? after);
       failLock(
-        `history drift in migration ${JSON.stringify(before.name)}: checksum changed; first schema difference: ${firstSchemaDifference(before, after)}; ${REPAIR_HINT}`,
+        `history drift in migration ${JSON.stringify(before.name)}: checksum changed; first schema difference: ${firstSchemaDifference(diagnosticBefore, diagnosticAfter)}; ${REPAIR_HINT}`,
       );
     }
   }
+}
+
+/**
+ * Validate a committed lock against migration inputs and build its exact next
+ * document. Ordinary generation preserves the committed format; upgrading a
+ * version-1 lock is always an explicit command.
+ */
+export function updateMigrationLock(
+  locked: MigrationLock,
+  migrations: readonly MigrationInput[],
+): MigrationLock {
+  const current = buildMigrationHistory(migrations);
+  validateMigrationHistory(locked, current);
+  return lockFromHistory(current, locked.formatVersion);
+}
+
+/** Validate without changing the committed lock format. */
+export function validateMigrationLock(
+  locked: MigrationLock,
+  migrations: readonly MigrationInput[],
+): void {
+  validateMigrationHistory(locked, buildMigrationHistory(migrations));
 }

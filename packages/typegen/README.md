@@ -9,7 +9,7 @@ overrides it.
 
 ```sh
 syncular generate [--manifest-dir <dir>] [--check] [--watch]
-syncular migrations baseline|check [--manifest-dir <dir>]
+syncular migrations baseline|check|upgrade-lock [--manifest-dir <dir>]
 syncular init [--manifest-dir <dir>]
 ```
 
@@ -26,7 +26,8 @@ are mutually exclusive.
 exists. `migrations check` is the fast, CI-friendly history check without
 query analysis or output generation. New migrations are appended to the lock
 by ordinary `generate`; locked migrations may never be edited, removed,
-renamed, or reordered.
+renamed, or reordered. Existing format-1 locks remain valid and keep their
+format until `migrations upgrade-lock` explicitly validates and compacts them.
 
 `init` scaffolds a starter `syncular.json`, first migration, and migration
 lock into an existing project (the "add syncular to my app" path). It refuses
@@ -110,9 +111,11 @@ missing or out-of-order migration).
 ### Immutable migration history
 
 `syncular.migrations.lock.json` is the version-controlled deployment baseline.
-Each entry records the migration name, a SHA-256 checksum of its SQL (line
-endings normalized), and a column-layout snapshot used only for diagnostics.
-It contains no SQL, filesystem path, row data, or runtime database state.
+Format 2 records every migration name and SHA-256 checksum (line endings
+normalized), plus one canonical head-schema column snapshot used only for
+diagnostics. It contains no SQL, filesystem path, row data, or runtime database
+state, and grows with migration metadata plus the current schema rather than
+repeating the full cumulative schema after every migration.
 
 For an existing project adopting this contract, review the current history
 once, then run:
@@ -122,6 +125,18 @@ syncular migrations baseline --manifest-dir .
 git add syncular.migrations.lock.json
 syncular migrations check --manifest-dir .
 ```
+
+Projects with a committed format-1 lock upgrade deliberately, after first
+checking that immutable history is unchanged:
+
+```sh
+syncular migrations check --manifest-dir .
+syncular migrations upgrade-lock --manifest-dir .
+git add syncular.migrations.lock.json
+```
+
+The upgrade command refuses an already-current lock and ordinary `generate`
+never changes the lock format implicitly.
 
 After that, a deployed migration is immutable. Restore an accidentally edited
 migration and express the repair in a new `NNNN_name/up.sql`; do not delete and

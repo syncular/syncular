@@ -24,6 +24,7 @@ import {
   checkOutputs,
   generate,
   loadQueries,
+  upgradeMigrationHistory,
   writeOutputs,
 } from './generate';
 import { InitError, initProject } from './init';
@@ -38,7 +39,7 @@ const USAGE = `usage: syncular <command> [options]
 
 commands:
   generate   build the IR + typed module from syncular.json + migrations/
-  migrations baseline or check immutable deployed migration history
+  migrations baseline, check, or upgrade-lock immutable migration history
   fmt        format .syql query files canonically (one style, no options)
   lsp        run the .syql language server over stdio (editor tooling)
   init       scaffold a starter syncular.json + migrations/0001_initial
@@ -59,6 +60,7 @@ fmt options:
 migrations options:
   baseline               create the first immutable history lock; refuses overwrite
   check                  validate the committed history without generating outputs
+  upgrade-lock           explicitly compact a validated format-1 lock to format 2
   --manifest-dir <dir>   directory holding syncular.json (default: .)
 
 init options:
@@ -332,8 +334,14 @@ function runFmt(argv: readonly string[]): void {
 
 function runMigrations(argv: readonly string[]): void {
   const action = argv[0];
-  if (action !== 'baseline' && action !== 'check') {
-    fail(`migrations requires 'baseline' or 'check'\n${USAGE}`);
+  if (
+    action !== 'baseline' &&
+    action !== 'check' &&
+    action !== 'upgrade-lock'
+  ) {
+    fail(
+      `migrations requires 'baseline', 'check', or 'upgrade-lock'\n${USAGE}`,
+    );
   }
   const manifestDir = parseManifestDir(argv.slice(1));
   if (action === 'baseline') {
@@ -351,6 +359,19 @@ function runMigrations(argv: readonly string[]): void {
     writeFileSync(output.path, output.content, 'utf8');
     console.log(`wrote ${output.path}`);
     console.log('commit this migration baseline before deployment');
+    return;
+  }
+
+  if (action === 'upgrade-lock') {
+    let output: ReturnType<typeof upgradeMigrationHistory>;
+    try {
+      output = upgradeMigrationHistory(manifestDir);
+    } catch (error) {
+      fail(friendlyGenerateError(error));
+    }
+    writeFileSync(output.path, output.content, 'utf8');
+    console.log(`upgraded ${output.path} to compact format 2`);
+    console.log('review and commit the migration-lock format upgrade');
     return;
   }
 

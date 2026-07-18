@@ -34,6 +34,12 @@ verification; push is Benjamin's alone).
 
 ## 2. Wave 2 (approved, launches as wave 1 lands)
 
+- [ ] **Compact immutable migration locks** (implementation under release
+      verification 2026-07-18): format 2 stores checksum history plus one head
+      schema, format 1 remains valid, and only explicit `migrations
+      upgrade-lock` changes representation. Remove after release, large-history
+      growth coverage, and the downstream POC lock/runtime matrix are green.
+
 - [x] **Server-side write-validation hooks** (LANDED 2026-07-05): per-table
       `validators` on the server config — a host callback run after decode +
       §3.4 scope authz, INSIDE the commit transaction, per operation; a throw

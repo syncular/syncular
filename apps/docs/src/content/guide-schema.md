@@ -59,11 +59,12 @@ rebuilds the declared secondary indexes on its relational projection tables;
 clients recreate their application tables during their normal re-bootstrap.
 
 **The migration lock** (`syncular.migrations.lock.json`) is the immutable,
-version-controlled baseline. It stores migration names, normalized SQL
-checksums, and privacy-safe column-layout snapshots for diagnostics. It never
-stores SQL, rows, database paths, or secrets. Scaffolds and `syncular init`
-create it. For an existing project, review the current migration history once
-and run:
+version-controlled baseline. Compact format 2 stores migration names,
+normalized SQL checksums, and one privacy-safe canonical head-schema snapshot
+for diagnostics. It never stores SQL, rows, database paths, or secrets, and its
+size grows with migration metadata plus the current schema rather than every
+cumulative schema snapshot. Scaffolds and `syncular init` create it. For an
+existing project, review the current migration history once and run:
 
 ```sh
 syncular migrations baseline --manifest-dir .
@@ -75,6 +76,15 @@ edited migration and add a new migration for the repair. Do not delete and
 re-baseline the lock. Existing-table additions must be trailing nullable
 columns; changing names, order, types, or nullability in locked history is not
 an upgrade.
+
+Existing format-1 locks remain valid and are not silently rewritten by
+generation. Compact one only through the explicit, reviewable transition:
+
+```sh
+syncular migrations check --manifest-dir .
+syncular migrations upgrade-lock --manifest-dir .
+git add syncular.migrations.lock.json
+```
 
 `CREATE VIRTUAL TABLE … USING fts5` declares a client-local full-text
 projection owned by an existing synced table. It is emitted into every client
