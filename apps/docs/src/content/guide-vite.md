@@ -129,6 +129,13 @@ schema, and query modules advance together. If disposal fails, the replacement
 worker is never opened and the returned resource reports the close failure
 through `SyncProvider.renderBoundary` as a startup error.
 
+React effect cleanup for the old provider may run after the retained resource
+has closed its client. This ordering is supported: window release during store
+teardown is best effort and a closed handle does not escape as an unhandled
+rejection. Applications do not need to force a provider unmount before calling
+the helper. Resource-close failures are still reported as startup errors and
+still prevent a competing owner from opening.
+
 Retaining a worker on a new schema is unsafe even if a hot query module appears
 to work: the page can adopt new SQL immediately while the running worker still
 owns the old local schema. Boot-time schema recovery only runs in the

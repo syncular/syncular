@@ -76,6 +76,7 @@ class FakeReactiveClient implements ReactiveQueryClient {
   conflictCalls = 0;
   rejectionCalls = 0;
   currentStatus = STATUS;
+  setWindowFailure: Error | undefined;
 
   onChange(listener: ClientChangeListener): () => void {
     this.listeners.add(listener);
@@ -114,8 +115,11 @@ class FakeReactiveClient implements ReactiveQueryClient {
     return [];
   }
 
-  setWindow(base: WindowBase, units: readonly string[]): void {
+  setWindow(base: WindowBase, units: readonly string[]): void | Promise<void> {
     this.setWindowCalls.push({ base, units: [...units] });
+    if (this.setWindowFailure !== undefined) {
+      return Promise.reject(this.setWindowFailure);
+    }
   }
 
   windowState(): WindowState {
@@ -313,6 +317,25 @@ describe('composable windows and domain routing', () => {
     expect(store.status.getSnapshot().status).toEqual(status);
     off();
     store.dispose();
+  });
+
+  test('treats window release after client closure as best-effort teardown', async () => {
+    const client = new FakeReactiveClient();
+    const store = new ReactiveClientStore(client);
+    const retained = store.retainWindow(BASE, ['p1']);
+    await retained.ready;
+
+    client.setWindowFailure = new Error('the handle is closed');
+    store.dispose();
+    await drainMicrotasks();
+
+    expect(client.setWindowCalls).toEqual([
+      { base: BASE, units: ['p1'] },
+      { base: BASE, units: [] },
+    ]);
+    store.dispose();
+    await drainMicrotasks();
+    expect(client.setWindowCalls).toHaveLength(2);
   });
 });
 
