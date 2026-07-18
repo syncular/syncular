@@ -56,6 +56,7 @@ describe('native emitter goldens', () => {
     // Schema outputs in a stable order; each language's queries file follows
     // its schema file when the manifest opts into named queries.
     expect(names).toEqual([
+      'syncular.migrations.lock.json',
       'syncular.ir.json',
       'syncular.generated.ts',
       'syncular.queries.ir.json',

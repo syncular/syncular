@@ -18,7 +18,14 @@
 import { existsSync, readFileSync, watch, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { formatSyql } from './fmt';
-import { checkOutputs, generate, loadQueries, writeOutputs } from './generate';
+import {
+  baselineMigrationHistory,
+  checkMigrationHistory,
+  checkOutputs,
+  generate,
+  loadQueries,
+  writeOutputs,
+} from './generate';
 import { InitError, initProject } from './init';
 import { runLspStdio } from './lsp';
 import { MANIFEST_FILENAME, parseManifest } from './manifest';
@@ -31,6 +38,7 @@ const USAGE = `usage: syncular <command> [options]
 
 commands:
   generate   build the IR + typed module from syncular.json + migrations/
+  migrations baseline or check immutable deployed migration history
   fmt        format .syql query files canonically (one style, no options)
   lsp        run the .syql language server over stdio (editor tooling)
   init       scaffold a starter syncular.json + migrations/0001_initial
@@ -47,6 +55,11 @@ fmt options:
                          queries directory, recursively)
   --manifest-dir <dir>   directory holding syncular.json (default: .)
   --check                fail unless every file is already canonical
+
+migrations options:
+  baseline               create the first immutable history lock; refuses overwrite
+  check                  validate the committed history without generating outputs
+  --manifest-dir <dir>   directory holding syncular.json (default: .)
 
 init options:
   --manifest-dir <dir>   directory to scaffold into (default: .)`;
@@ -317,6 +330,40 @@ function runFmt(argv: readonly string[]): void {
   if (drifted === 0) console.log('all .syql files canonical');
 }
 
+function runMigrations(argv: readonly string[]): void {
+  const action = argv[0];
+  if (action !== 'baseline' && action !== 'check') {
+    fail(`migrations requires 'baseline' or 'check'\n${USAGE}`);
+  }
+  const manifestDir = parseManifestDir(argv.slice(1));
+  if (action === 'baseline') {
+    let output: ReturnType<typeof baselineMigrationHistory>;
+    try {
+      output = baselineMigrationHistory(manifestDir);
+    } catch (error) {
+      fail(friendlyGenerateError(error));
+    }
+    if (existsSync(output.path)) {
+      fail(
+        `${output.path} already exists — refusing to replace immutable migration history`,
+      );
+    }
+    writeFileSync(output.path, output.content, 'utf8');
+    console.log(`wrote ${output.path}`);
+    console.log('commit this migration baseline before deployment');
+    return;
+  }
+
+  let drift: string[];
+  try {
+    drift = checkMigrationHistory(manifestDir);
+  } catch (error) {
+    fail(friendlyGenerateError(error));
+  }
+  if (drift.length > 0) fail(drift.join('\n'));
+  console.log('migration history is locked and unchanged');
+}
+
 export function runCli(argv: readonly string[]): void {
   const command = argv[0];
   if (command === 'generate') {
@@ -334,6 +381,10 @@ export function runCli(argv: readonly string[]): void {
   }
   if (command === 'fmt') {
     runFmt(argv.slice(1));
+    return;
+  }
+  if (command === 'migrations') {
+    runMigrations(argv.slice(1));
     return;
   }
   if (command === 'lsp') {

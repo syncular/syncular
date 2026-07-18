@@ -1,0 +1,384 @@
+{
+  "formatVersion": 1,
+  "migrations": [
+    {
+      "name": "0001_initial",
+      "sha256": "7124eff6676d042f2ef6678f20f89e3a788b74756a9d69bfd44133dfe3cf896a",
+      "tables": [
+        {
+          "name": "docs",
+          "primaryKey": "id",
+          "columns": [
+            {
+              "name": "id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "org_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "project_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "body",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "score",
+              "type": "float",
+              "nullable": true
+            },
+            {
+              "name": "attachment",
+              "type": "bytes",
+              "nullable": true
+            }
+          ]
+        },
+        {
+          "name": "tasks",
+          "primaryKey": "id",
+          "columns": [
+            {
+              "name": "id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "project_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "title",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "done",
+              "type": "boolean",
+              "nullable": false
+            },
+            {
+              "name": "reviewed",
+              "type": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "priority",
+              "type": "integer",
+              "nullable": true
+            },
+            {
+              "name": "meta",
+              "type": "json",
+              "nullable": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "0002_add_task_estimate",
+      "sha256": "db11def86af7a50d5f49121d733a5e15d4750a3cc070998f5a057608fbf98099",
+      "tables": [
+        {
+          "name": "docs",
+          "primaryKey": "id",
+          "columns": [
+            {
+              "name": "id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "org_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "project_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "body",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "score",
+              "type": "float",
+              "nullable": true
+            },
+            {
+              "name": "attachment",
+              "type": "bytes",
+              "nullable": true
+            }
+          ]
+        },
+        {
+          "name": "tasks",
+          "primaryKey": "id",
+          "columns": [
+            {
+              "name": "id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "project_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "title",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "done",
+              "type": "boolean",
+              "nullable": false
+            },
+            {
+              "name": "reviewed",
+              "type": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "priority",
+              "type": "integer",
+              "nullable": true
+            },
+            {
+              "name": "meta",
+              "type": "json",
+              "nullable": true
+            },
+            {
+              "name": "estimate",
+              "type": "float",
+              "nullable": true
+            },
+            {
+              "name": "estimated_at",
+              "type": "integer",
+              "nullable": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "0003_add_doc_crdt",
+      "sha256": "256a5d54268bcbaf362d446173ec667171cac55a9a3b9f913d983b67605cc76f",
+      "tables": [
+        {
+          "name": "docs",
+          "primaryKey": "id",
+          "columns": [
+            {
+              "name": "id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "org_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "project_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "body",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "score",
+              "type": "float",
+              "nullable": true
+            },
+            {
+              "name": "attachment",
+              "type": "bytes",
+              "nullable": true
+            },
+            {
+              "name": "body_doc",
+              "type": "crdt",
+              "nullable": true,
+              "crdtType": "yjs-doc"
+            }
+          ]
+        },
+        {
+          "name": "tasks",
+          "primaryKey": "id",
+          "columns": [
+            {
+              "name": "id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "project_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "title",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "done",
+              "type": "boolean",
+              "nullable": false
+            },
+            {
+              "name": "reviewed",
+              "type": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "priority",
+              "type": "integer",
+              "nullable": true
+            },
+            {
+              "name": "meta",
+              "type": "json",
+              "nullable": true
+            },
+            {
+              "name": "estimate",
+              "type": "float",
+              "nullable": true
+            },
+            {
+              "name": "estimated_at",
+              "type": "integer",
+              "nullable": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "0004_add_doc_blob_ref",
+      "sha256": "e9e8f89bbf5664a150ed9d5137493f115f1877877008dc8d0893016140e424aa",
+      "tables": [
+        {
+          "name": "docs",
+          "primaryKey": "id",
+          "columns": [
+            {
+              "name": "id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "org_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "project_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "body",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "score",
+              "type": "float",
+              "nullable": true
+            },
+            {
+              "name": "attachment",
+              "type": "bytes",
+              "nullable": true
+            },
+            {
+              "name": "body_doc",
+              "type": "crdt",
+              "nullable": true,
+              "crdtType": "yjs-doc"
+            },
+            {
+              "name": "remote_blob",
+              "type": "blob_ref",
+              "nullable": true
+            }
+          ]
+        },
+        {
+          "name": "tasks",
+          "primaryKey": "id",
+          "columns": [
+            {
+              "name": "id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "project_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "title",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "done",
+              "type": "boolean",
+              "nullable": false
+            },
+            {
+              "name": "reviewed",
+              "type": "boolean",
+              "nullable": true
+            },
+            {
+              "name": "priority",
+              "type": "integer",
+              "nullable": true
+            },
+            {
+              "name": "meta",
+              "type": "json",
+              "nullable": true
+            },
+            {
+              "name": "estimate",
+              "type": "float",
+              "nullable": true
+            },
+            {
+              "name": "estimated_at",
+              "type": "integer",
+              "nullable": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
