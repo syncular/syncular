@@ -668,6 +668,10 @@ MUST fail loudly; a client MUST NOT silently omit the projection or replace
 database deletion MUST remove the base plaintext and its FTS copy together.
 Named-query invalidation maps an FTS projection back to its owning synced
 table; the projection never claims independent scope coverage.
+Clean primary-key inserts MUST NOT perform a source-ID scan of the existing FTS
+projection. Replacement-safe cleanup MAY use an indexed source-table existence
+guard before insert; `INSERT OR REPLACE` correctness MUST NOT depend on SQLite
+firing a delete trigger for the displaced row.
 
 **App-facing row versions.** Every client query surface MUST expose the
 protocol-owned per-row version through the public pseudo-column

@@ -103,6 +103,13 @@ projection is first created. Scope purge, snapshot replace, delta upsert,
 optimistic mutation, rejection rollback, and schema reset all flow through the
 visible table and therefore update the index transactionally.
 
+Clean inserts append directly to the FTS projection. Replacement cleanup lives
+in a `BEFORE INSERT` trigger guarded by an indexed existence lookup on the
+source primary key, so `INSERT OR REPLACE` remains correct without scanning the
+growing FTS table before every new row. Client startup recreates Syncular-owned
+FTS triggers transactionally so this maintenance strategy can be corrected
+without requiring an application schema-version bump.
+
 The Rust client creates FTS only for the visible half of its base/visible pair.
 Its overlay rebuild suspends per-row FTS triggers and performs one FTS rebuild
 after the visible table is complete, avoiding an extra tokenizer pass for every
