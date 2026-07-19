@@ -44,6 +44,7 @@
     "@biomejs/biome": "^2.4.10",
     "@syncular/typegen": "workspace:*",
     "@types/bun": "latest",
+    "sharp": "^0.35.3",
     "typescript": "^5.9.0"
   }
 }

@@ -4,6 +4,7 @@
 // <title>; the heading itself stays in the rendered body.
 import type { MarkdownInstance } from 'astro';
 import Docs from '../layouts/Docs.astro';
+import { markdownDescription } from '../seo';
 
 export async function getStaticPaths() {
   const mods = import.meta.glob<MarkdownInstance<Record<string, never>>>(
@@ -23,9 +24,10 @@ const { mod } = Astro.props;
 const { slug } = Astro.params;
 const title =
   mod.getHeadings().find((h) => h.depth === 1)?.text ?? 'syncular';
+const description = markdownDescription(mod.rawContent());
 const Content = mod.Content;
 ---
 
-<Docs title={title} active={slug ?? ''}>
+<Docs title={title} description={description} active={slug ?? ''}>
   <Content />
 </Docs>

@@ -11,6 +11,11 @@ tab size.
 
 - `../apps/docs/public/favicon.svg` — the singularity, near-square crop.
   Linked from every page head (landing, docs layout, 404).
+- `mark-dark.svg` / `mark-light.svg` — a detailed, text-free singularity mark
+  for large placements. The dark variant is also published as
+  `../apps/docs/public/brand-mark.svg`.
+- `../apps/docs/public/social-card.png` — a 1200×630 raster of the detailed
+  mark, centered in a crop-safe field for Open Graph and Twitter previews.
 - `banner-dark.svg` / `banner-light.svg` — the wordmark lockup (mark +
   `SYNCULAR_`) shown at the top of the repo `README.md` via a `<picture>`
   that swaps on `prefers-color-scheme`.
@@ -21,7 +26,7 @@ face wherever they appear standalone — a browser tab, a GitHub README.
 ## Regenerate
 
 ```
-bun logo/gen-brand.mjs               # favicon.svg + both banners
+bun logo/gen-brand.mjs               # favicon, marks, social card, banners
 ```
 
 `gen-logos.mjs` is the mark library (the singularity/wordmark generator) that

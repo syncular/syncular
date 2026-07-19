@@ -1,15 +1,18 @@
 ---
 // Teletype 404 — served by the Workers static-assets deploy
 // (not_found_handling: "404-page").
+import PageMeta from '../components/PageMeta.astro';
 ---
 
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>404 — signal lost — syncular</title>
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <PageMeta
+      title="404 — signal lost"
+      description="That path crossed the event horizon and never came back. Return to syncular's offline-first SQL sync documentation."
+      canonicalPath="/404/"
+      robots="noindex, nofollow"
+    />
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body class="landing-body">

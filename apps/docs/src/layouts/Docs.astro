@@ -9,26 +9,37 @@
 // re-renders. Links to pages without the router (the landing hero, 404) fall
 // back to a normal full navigation automatically.
 import { ClientRouter } from 'astro:transitions';
+import PageMeta from '../components/PageMeta.astro';
 import { nav } from '../nav';
+import { DEFAULT_DESCRIPTION } from '../seo';
 // package.json at the repository root is the one release-version authority.
 import rootPkg from '../../../../package.json';
 
 interface Props {
   title: string;
   active: string;
+  description?: string;
+  canonicalPath?: string;
   wide?: boolean;
 }
-const { title, active, wide = false } = Astro.props;
+const {
+  title,
+  active,
+  description = DEFAULT_DESCRIPTION,
+  canonicalPath = `/${active}/`,
+  wide = false,
+} = Astro.props;
 const releasedVersion = rootPkg.version;
 ---
 
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{title} — syncular</title>
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <PageMeta
+      title={title}
+      description={description}
+      canonicalPath={canonicalPath}
+    />
     <link rel="alternate" type="text/markdown" href={`/${active}.md`} />
     <link rel="api-catalog" href="/.well-known/api-catalog" />
     <link rel="stylesheet" href="/style.css" />
