@@ -22,6 +22,7 @@ export * from './http';
 export * from './invalidation';
 export * from './leader-lock';
 export * from './local-purge';
+export * from './local-rebootstrap';
 export * from './multi-tab';
 export * from './naming';
 export * from './outbox';

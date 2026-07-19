@@ -293,6 +293,35 @@ Only bounded, non-empty, code-like values on plaintext string schema columns
 are accepted. There is intentionally no full-table mode. The result exposes
 counts only—never row ids or selector values.
 
+## Application-authorized projection rebootstrap
+
+`rebootstrapLocalData({ rebootstrapId })` is the recovery primitive for a
+locally damaged or persistently inconsistent replicated projection. It drops
+and recreates only Syncular's server-derived tables, rewinds the existing
+subscription registrations, and requests a fresh bootstrap. It preserves the
+client id, lease state, pending outbox commits, commit outcomes, subscription
+intent, and protected bookkeeping.
+
+```ts
+const result = await client.rebootstrapLocalData({
+  rebootstrapId: crypto.randomUUID(),
+});
+```
+
+The reset, durable idempotency marker, and optimistic outbox replay are one
+SQLite transaction. An interruption therefore leaves either the old
+projection or the fully reset projection with pending offline work still
+visible. Reusing the same id returns `alreadyApplied: true`. The counts-only
+result reports retained commits and reset subscriptions without exposing ids,
+rows, scopes, or clinical values.
+
+This API is not a security erase, sign-out, membership revocation, schema
+upgrade, or draft deletion mechanism. It fails closed during security
+preflight and while a schema-floor stop is active. The application must show a
+preview and explicit confirmation, preserve app-owned drafts/files separately,
+and reserve the operation for diagnostics/support recovery rather than normal
+startup.
+
 Validator rejections may include bounded `details` (`fieldPaths`, `reason`,
 `requiredAction`, and explicitly safe `references`). The details persist with
 the rejection. Treat every value as a machine hint: map known values to

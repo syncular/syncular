@@ -35,11 +35,11 @@ pub use api::{
     CommitOutcomeStatus, ConflictRecord, CoverageSnapshot, DiagnosticLastChange,
     DiagnosticLastRound, DiagnosticRoundCounters, DiagnosticSubscription,
     ExpectedDiagnosticSubscription, LocalDataPurgeInput, LocalDataPurgeResult,
-    LocalDataPurgeTarget, Mutation, PresencePeer, QueryRow, QuerySnapshot, QueryValue,
-    RejectionRecord, ResolveCommitOutcomeInput, RowState, SchemaFloor, SubscriptionStateView,
-    SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange, WindowBase, WindowChange,
-    WindowCoverage, WindowState, WindowUnitRef, CLIENT_DIAGNOSTICS_VERSION,
-    MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
+    LocalDataPurgeTarget, LocalDataRebootstrapInput, LocalDataRebootstrapResult, Mutation,
+    PresencePeer, QueryRow, QuerySnapshot, QueryValue, RejectionRecord, ResolveCommitOutcomeInput,
+    RowState, SchemaFloor, SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport,
+    SyncStatusSnapshot, TableChange, WindowBase, WindowChange, WindowCoverage, WindowState,
+    WindowUnitRef, CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
 };
 pub use client::{FileQuerySnapshotReader, SyncClient, SECURITY_PREFLIGHT_REQUIRED_CODE};
 pub use schema::{compile_schema, parse_schema_json, ClientSchema};

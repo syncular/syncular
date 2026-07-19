@@ -670,6 +670,22 @@ pub struct LocalDataPurgeResult {
     pub dropped_commits: usize,
 }
 
+/// Durable application repair id. Reusing the id is an exact no-op.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalDataRebootstrapInput {
+    pub rebootstrap_id: String,
+}
+
+/// Privacy-safe acknowledgement for a replicated-projection recovery.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDataRebootstrapResult {
+    pub already_applied: bool,
+    pub retained_commits: usize,
+    pub reset_subscriptions: usize,
+}
+
 /// Client limits (§4.2 request knobs).
 #[derive(Debug, Clone, Default)]
 pub struct ClientLimits {

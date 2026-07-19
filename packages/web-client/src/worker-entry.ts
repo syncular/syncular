@@ -419,6 +419,8 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       return result.value;
     },
     purgeLocalData: (input) => requireClient().purgeLocalData(input),
+    rebootstrapLocalData: (input) =>
+      requireClient().rebootstrapLocalData(input),
     sync: () => {
       const running = requireClient();
       return serializedSync(() => running.sync());

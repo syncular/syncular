@@ -45,6 +45,10 @@ import type {
   SyncStatusSnapshot,
 } from './invalidation';
 import type { LocalDataPurgeInput, LocalDataPurgeResult } from './local-purge';
+import type {
+  LocalDataRebootstrapInput,
+  LocalDataRebootstrapResult,
+} from './local-rebootstrap';
 import type { OutboxCommit } from './outbox';
 import type {
   CommitOutcome,
@@ -151,6 +155,10 @@ export interface WorkerApi {
   ): string;
   /** Application-authorized, idempotent local security purge. */
   purgeLocalData(input: LocalDataPurgeInput): LocalDataPurgeResult;
+  /** Application-authorized, outbox-preserving projection recovery. */
+  rebootstrapLocalData(
+    input: LocalDataRebootstrapInput,
+  ): LocalDataRebootstrapResult;
   sync(): Promise<SyncSummary>;
   syncUntilIdle(maxRounds?: number): Promise<SyncSummary>;
   query(sql: string, params?: readonly SqlValue[]): SqlRow[];

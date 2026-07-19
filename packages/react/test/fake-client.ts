@@ -21,6 +21,8 @@ import type {
   LeaseState,
   LocalDataPurgeInput,
   LocalDataPurgeResult,
+  LocalDataRebootstrapInput,
+  LocalDataRebootstrapResult,
   MutationInput,
   PresencePeer,
   QueryReadSpec,
@@ -256,6 +258,16 @@ export class FakeClient implements SyncClientLike {
 
   purgeLocalData(_input: LocalDataPurgeInput): LocalDataPurgeResult {
     return { alreadyApplied: false, purgedRows: 0, droppedCommits: 0 };
+  }
+
+  rebootstrapLocalData(
+    _input: LocalDataRebootstrapInput,
+  ): LocalDataRebootstrapResult {
+    return {
+      alreadyApplied: false,
+      retainedCommits: this.#pending.length,
+      resetSubscriptions: 0,
+    };
   }
 
   querySnapshot<Row = SqlRow>(spec: QueryReadSpec): QuerySnapshot<Row> {

@@ -238,6 +238,10 @@ test('worker preflight gates protected RPCs and activates the host loop later', 
       targets: [{ table: 'tasks', selectors: { project_id: ['p1'] } }],
     }),
   ).toEqual({ alreadyApplied: false, purgedRows: 0, droppedCommits: 0 });
+  await expectRejectsWithCode(
+    handle.rebootstrapLocalData({ rebootstrapId: 'blocked-repair' }),
+    SECURITY_PREFLIGHT_REQUIRED_CODE,
+  );
   expect(events.synced).toEqual([]);
 
   await handle.activateSecurity();
@@ -307,6 +311,50 @@ test('application-authorized local purge crosses the worker RPC atomically', asy
     alreadyApplied: true,
     purgedRows: 0,
     droppedCommits: 0,
+  });
+});
+
+test('outbox-preserving rebootstrap crosses the worker RPC atomically', async () => {
+  const { handle } = await makeHandle({
+    clientId: 'rpc-local-rebootstrap',
+    autoSync: false,
+  });
+  await handle.subscribe({
+    id: 'rpc-rebootstrap-tasks',
+    table: 'tasks',
+    scopes: { project_id: ['p1'] },
+  });
+  const pending = await handle.mutate([
+    {
+      table: 'tasks',
+      op: 'upsert',
+      values: taskValues('offline-row', 'p1', 'offline'),
+    },
+  ]);
+
+  expect(
+    await handle.rebootstrapLocalData({ rebootstrapId: 'rpc-repair-001' }),
+  ).toEqual({
+    alreadyApplied: false,
+    retainedCommits: 1,
+    resetSubscriptions: 1,
+  });
+  expect(await handle.query('SELECT id FROM tasks')).toEqual([
+    { id: 'offline-row' },
+  ]);
+  expect(
+    (await handle.pendingCommits()).map((commit) => commit.clientCommitId),
+  ).toEqual([pending]);
+  expect(await handle.subscription('rpc-rebootstrap-tasks')).toMatchObject({
+    cursor: -1,
+    status: 'active',
+  });
+  expect(
+    await handle.rebootstrapLocalData({ rebootstrapId: 'rpc-repair-001' }),
+  ).toEqual({
+    alreadyApplied: true,
+    retainedCommits: 0,
+    resetSubscriptions: 0,
   });
 });
 

@@ -96,6 +96,12 @@ function defaultResponder(cmd: string, args: Record<string, unknown>): unknown {
         purgedRows: 2,
         droppedCommits: 1,
       });
+    case 'rebootstrapLocalData':
+      return OK({
+        alreadyApplied: false,
+        retainedCommits: 3,
+        resetSubscriptions: 4,
+      });
     case 'querySnapshot':
       return OK({
         revision: '7',
@@ -251,6 +257,9 @@ describe('createTauriSyncClient', () => {
       purgeId: 'directive-1',
       targets: [{ table: 'todo', selectors: { list_id: ['list-1'] } }],
     });
+    await expect(
+      client.rebootstrapLocalData({ rebootstrapId: 'blocked-repair' }),
+    ).rejects.toMatchObject({ code: SECURITY_PREFLIGHT_REQUIRED_CODE });
 
     await client.activateSecurity({
       encryption: {
@@ -406,6 +415,28 @@ describe('createTauriSyncClient', () => {
     );
     expect(call?.args.command).toEqual({
       method: 'purgeLocalData',
+      params: { input },
+    });
+  });
+
+  test('rebootstrapLocalData forwards the exact idempotency key over the command bridge', async () => {
+    const { client, calls } = await build();
+    const input = { rebootstrapId: 'support-case-001' } as const;
+    expect(await client.rebootstrapLocalData(input)).toEqual({
+      alreadyApplied: false,
+      retainedCommits: 3,
+      resetSubscriptions: 4,
+    });
+    const call = calls.findLast(
+      (candidate) =>
+        (
+          candidate.args.command as
+            | { method?: string; params?: unknown }
+            | undefined
+        )?.method === 'rebootstrapLocalData',
+    );
+    expect(call?.args.command).toEqual({
+      method: 'rebootstrapLocalData',
       params: { input },
     });
   });

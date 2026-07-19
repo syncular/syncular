@@ -129,6 +129,12 @@ function defaultResponder(
         purgedRows: 2,
         droppedCommits: 1,
       });
+    case 'rebootstrapLocalData':
+      return OK({
+        alreadyApplied: false,
+        retainedCommits: 3,
+        resetSubscriptions: 4,
+      });
     case 'statusSnapshot':
       return OK({
         currentSchemaVersion: 1,
@@ -240,6 +246,9 @@ describe('createNativeSyncClient', () => {
       purgeId: 'directive-1',
       targets: [{ table: 'todo', selectors: { list_id: ['list-1'] } }],
     });
+    await expect(
+      client.rebootstrapLocalData({ rebootstrapId: 'blocked-repair' }),
+    ).rejects.toMatchObject({ code: SECURITY_PREFLIGHT_REQUIRED_CODE });
     await client.activateSecurity({
       encryption: {
         keys: { 'practice-v2': new Uint8Array(32).fill(0x3c) },
@@ -357,6 +366,25 @@ describe('createNativeSyncClient', () => {
     );
     expect(command?.arg).toEqual({
       method: 'purgeLocalData',
+      params: { input },
+    });
+  });
+
+  test('rebootstrapLocalData forwards the exact idempotency key', async () => {
+    const { client, calls } = await build();
+    const input = { rebootstrapId: 'support-case-001' } as const;
+    expect(await client.rebootstrapLocalData(input)).toEqual({
+      alreadyApplied: false,
+      retainedCommits: 3,
+      resetSubscriptions: 4,
+    });
+    const command = calls.findLast(
+      (call) =>
+        call.fn === 'command' &&
+        (call.arg as { method: string }).method === 'rebootstrapLocalData',
+    );
+    expect(command?.arg).toEqual({
+      method: 'rebootstrapLocalData',
       params: { input },
     });
   });

@@ -1,10 +1,21 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.27** (`v0.15.27`). All artifacts use Apache-2.0, except
+current release is **0.15.28** (`v0.15.28`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.28 release notes
+
+0.15.28 adds `rebootstrapLocalData({ rebootstrapId })` across the TypeScript core,
+  worker/multi-tab handle, normalized React facade, Tauri, React Native, Rust
+  core, and native command router. The application-authorized recovery keeps
+  device identity, lease state, outcomes, subscriptions, and the entire
+  outbox while atomically recreating the server-derived projection, rewinding
+  subscription progress, replaying optimistic work, and requesting a fresh
+  bootstrap. Durable idempotency, counts-only results, preflight/schema-floor
+  fail-closed behavior, restart recovery, and cross-host parity are covered.
 
 ## 0.15.27 release notes
 

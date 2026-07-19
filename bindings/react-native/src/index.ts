@@ -38,6 +38,8 @@ import type {
   LeaseState,
   LocalDataPurgeInput,
   LocalDataPurgeResult,
+  LocalDataRebootstrapInput,
+  LocalDataRebootstrapResult,
   MutationInput,
   PresencePeer,
   QueryReadSpec,
@@ -645,6 +647,19 @@ export class NativeSyncClient {
     return (await this.#command('purgeLocalData', {
       input,
     })) as LocalDataPurgeResult;
+  }
+
+  async rebootstrapLocalData(
+    input: LocalDataRebootstrapInput,
+  ): Promise<LocalDataRebootstrapResult> {
+    const result = (await this.#command('rebootstrapLocalData', {
+      input,
+    })) as LocalDataRebootstrapResult;
+    return {
+      alreadyApplied: result.alreadyApplied,
+      retainedCommits: result.retainedCommits,
+      resetSubscriptions: result.resetSubscriptions,
+    };
   }
 
   // -- Native CRDT (SPEC.md §5.10.5; needs the FFI `crdt-yjs` feature) ---------

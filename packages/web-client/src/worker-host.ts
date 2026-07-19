@@ -65,6 +65,10 @@ import {
   webLocksLeaderLock,
 } from './leader-lock';
 import type { LocalDataPurgeInput, LocalDataPurgeResult } from './local-purge';
+import type {
+  LocalDataRebootstrapInput,
+  LocalDataRebootstrapResult,
+} from './local-rebootstrap';
 import {
   broadcastChannelFactory,
   type CrossTabChannel,
@@ -491,6 +495,12 @@ export class SyncClientHandle {
 
   purgeLocalData(input: LocalDataPurgeInput): Promise<LocalDataPurgeResult> {
     return this.#call('purgeLocalData', [input]);
+  }
+
+  rebootstrapLocalData(
+    input: LocalDataRebootstrapInput,
+  ): Promise<LocalDataRebootstrapResult> {
+    return this.#call('rebootstrapLocalData', [input]);
   }
 
   sync(): Promise<SyncSummary> {
