@@ -372,14 +372,26 @@ function createFtsProjection(
   const deleteFor = (value: string) =>
     `DELETE FROM ${quoteIdent(index.name)} WHERE ${quoteIdent(FTS_SOURCE_ID_COLUMN)} = ${value}`;
 
+  // A clean insert cannot already have a projection row because the source
+  // primary key is unique. Keep clean inserts linear by moving replacement
+  // cleanup behind an indexed source-table existence check. SQLite does not
+  // reliably invoke DELETE triggers for the row displaced by REPLACE.
+  for (const suffix of ['bi', 'ai', 'ad', 'au']) {
+    db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`${index.name}_${suffix}`)}`);
+  }
+  const replacementExists = `EXISTS (SELECT 1 FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = new.${quoteIdent(table.primaryKey)})`;
+
   db.exec(
-    `CREATE TRIGGER IF NOT EXISTS ${quoteIdent(`${index.name}_ai`)} AFTER INSERT ON ${quoteIdent(table.name)} BEGIN ${deleteFor(newSourceId)}; INSERT INTO ${quoteIdent(index.name)} (${projectionColumns}) VALUES (${newValues}); END`,
+    `CREATE TRIGGER ${quoteIdent(`${index.name}_bi`)} BEFORE INSERT ON ${quoteIdent(table.name)} WHEN ${replacementExists} BEGIN ${deleteFor(newSourceId)}; END`,
   );
   db.exec(
-    `CREATE TRIGGER IF NOT EXISTS ${quoteIdent(`${index.name}_ad`)} AFTER DELETE ON ${quoteIdent(table.name)} BEGIN ${deleteFor(oldSourceId)}; END`,
+    `CREATE TRIGGER ${quoteIdent(`${index.name}_ai`)} AFTER INSERT ON ${quoteIdent(table.name)} BEGIN INSERT INTO ${quoteIdent(index.name)} (${projectionColumns}) VALUES (${newValues}); END`,
   );
   db.exec(
-    `CREATE TRIGGER IF NOT EXISTS ${quoteIdent(`${index.name}_au`)} AFTER UPDATE ON ${quoteIdent(table.name)} BEGIN ${deleteFor(oldSourceId)}; ${deleteFor(newSourceId)}; INSERT INTO ${quoteIdent(index.name)} (${projectionColumns}) VALUES (${newValues}); END`,
+    `CREATE TRIGGER ${quoteIdent(`${index.name}_ad`)} AFTER DELETE ON ${quoteIdent(table.name)} BEGIN ${deleteFor(oldSourceId)}; END`,
+  );
+  db.exec(
+    `CREATE TRIGGER ${quoteIdent(`${index.name}_au`)} AFTER UPDATE ON ${quoteIdent(table.name)} BEGIN ${deleteFor(oldSourceId)}; ${deleteFor(newSourceId)}; INSERT INTO ${quoteIdent(index.name)} (${projectionColumns}) VALUES (${newValues}); END`,
   );
 
   if (!existed) {

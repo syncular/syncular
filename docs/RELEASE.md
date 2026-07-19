@@ -1,10 +1,21 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.32** (`v0.15.32`). All artifacts use Apache-2.0, except
+current release is **0.15.33** (`v0.15.33`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.33 release notes
+
+0.15.33 makes clean FTS5 bootstrap and segment application linear. The
+TypeScript and Rust clients no longer scan a growing FTS5 projection before
+every clean source-table insert. Replacement cleanup now runs only when an
+indexed source-primary-key lookup proves that `INSERT OR REPLACE` will displace
+an existing row; normal bootstrap and segment application remain linear while
+replace, update, delete, reopen, and schema-reset semantics stay transactionally
+correct. Startup recreates Syncular-owned FTS triggers so existing application
+databases adopt the fix without an application schema-version bump.
 
 ## 0.15.32 release notes
 

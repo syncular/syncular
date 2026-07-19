@@ -1152,6 +1152,25 @@ mod observation_tests {
         });
         let mut client = SyncClient::new("fts-test".to_owned(), &schema, ClientLimits::default())
             .expect("FTS5 client");
+        let insert_trigger: String = client
+            .conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='catalogue_codes_fts_ai'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("insert trigger");
+        let replace_guard: String = client
+            .conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='catalogue_codes_fts_bi'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("replace guard");
+        assert!(!insert_trigger.contains("DELETE FROM"));
+        assert!(replace_guard.contains("BEFORE INSERT"));
+        assert!(replace_guard.contains("WHEN EXISTS"));
         let search = |client: &SyncClient, query: &str| {
             client
                 .query(
@@ -3386,13 +3405,20 @@ impl SyncClient {
         let delete_new = format!("DELETE FROM {fts} WHERE {source_id} = CAST(new.{pk} AS TEXT)");
         let delete_old = format!("DELETE FROM {fts} WHERE {source_id} = CAST(old.{pk} AS TEXT)");
         let insert_new = format!("INSERT INTO {fts} ({projection_columns}) VALUES ({new_values})");
+        let bi = quote_ident(&format!("{}_bi", index.name));
+        let ai = quote_ident(&format!("{}_ai", index.name));
+        let ad = quote_ident(&format!("{}_ad", index.name));
+        let au = quote_ident(&format!("{}_au", index.name));
+        let replacement_exists = format!("EXISTS (SELECT 1 FROM {source} WHERE {pk} = new.{pk})");
         let sql = format!(
-            "CREATE TRIGGER IF NOT EXISTS {ai} AFTER INSERT ON {source} BEGIN {delete_new}; {insert_new}; END;
-             CREATE TRIGGER IF NOT EXISTS {ad} AFTER DELETE ON {source} BEGIN {delete_old}; END;
-             CREATE TRIGGER IF NOT EXISTS {au} AFTER UPDATE ON {source} BEGIN {delete_old}; {delete_new}; {insert_new}; END;",
-            ai = quote_ident(&format!("{}_ai", index.name)),
-            ad = quote_ident(&format!("{}_ad", index.name)),
-            au = quote_ident(&format!("{}_au", index.name)),
+            "DROP TRIGGER IF EXISTS {bi};
+             DROP TRIGGER IF EXISTS {ai};
+             DROP TRIGGER IF EXISTS {ad};
+             DROP TRIGGER IF EXISTS {au};
+             CREATE TRIGGER {bi} BEFORE INSERT ON {source} WHEN {replacement_exists} BEGIN {delete_new}; END;
+             CREATE TRIGGER {ai} AFTER INSERT ON {source} BEGIN {insert_new}; END;
+             CREATE TRIGGER {ad} AFTER DELETE ON {source} BEGIN {delete_old}; END;
+             CREATE TRIGGER {au} AFTER UPDATE ON {source} BEGIN {delete_old}; {delete_new}; {insert_new}; END;",
         );
         self.conn.execute_batch(&sql).map_err(|e| e.to_string())
     }
