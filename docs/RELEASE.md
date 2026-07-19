@@ -1,10 +1,19 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.30** (`v0.15.30`). All artifacts use Apache-2.0, except
+current release is **0.15.31** (`v0.15.31`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.31 release notes
+
+0.15.31 removes the final deprecated Node 20 action runtime from deployment.
+Docs and demo workflows now invoke the lockfile-pinned Wrangler 4 CLI directly
+with Cloudflare's documented token and account environment variables, instead
+of the Node 20-based `cloudflare/wrangler-action@v3` wrapper. A workflow
+regression test prevents that wrapper or outdated official setup-action majors
+from returning.
 
 ## 0.15.30 release notes
 

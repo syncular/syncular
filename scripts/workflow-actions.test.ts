@@ -8,7 +8,7 @@ const REQUIRED_MAJORS = new Map([
   ['actions/setup-java', 5],
 ]);
 
-test('official setup actions use current Node 24 runtime majors', async () => {
+test('workflows avoid deprecated Node action runtimes', async () => {
   const workflowDirectory = join(import.meta.dir, '..', '.github', 'workflows');
   const files = (await readdir(workflowDirectory)).filter((name) =>
     /\.ya?ml$/u.test(name),
@@ -17,6 +17,11 @@ test('official setup actions use current Node 24 runtime majors', async () => {
 
   for (const file of files) {
     const contents = await readFile(join(workflowDirectory, file), 'utf8');
+    if (contents.includes('cloudflare/wrangler-action@')) {
+      violations.push(
+        `${file}: cloudflare/wrangler-action embeds a deprecated Node runtime; use the pinned Wrangler CLI`,
+      );
+    }
     for (const match of contents.matchAll(
       /uses:\s+(actions\/[\w-]+)@v(\d+)/gu,
     )) {
