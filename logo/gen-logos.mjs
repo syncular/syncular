@@ -23,7 +23,13 @@ const fontDefs = (fontCss) => (fontCss ? `<defs><style>${fontCss}</style></defs>
 // Render a cell grid to an SVG. cells:[{cx,cy,ch,cls}] px centers.
 // Pass fontCss (an @font-face rule) to embed IBM Plex Mono for standalone use
 // (favicon, README) where the platform monospace can't be relied on.
-export function toSvg({ cols, rows, fs, cells, round = true }, t, pad = 1.0, fontCss = '') {
+export function toSvg(
+  { cols, rows, fs, cells, round = true },
+  t,
+  pad = 1.0,
+  fontCss = '',
+  title = 'syncular ASCII singularity mark',
+) {
   const cw = fs * 0.6, ch = fs * 1.05;
   const w = cols * cw, h = rows * ch;
   const P2 = fs * pad;
@@ -31,7 +37,8 @@ export function toSvg({ cols, rows, fs, cells, round = true }, t, pad = 1.0, fon
     .map((c) => `<tspan x="${c.cx.toFixed(1)}" y="${c.cy.toFixed(1)}" fill="${t[c.cls]}">${esc(c.ch)}</tspan>`)
     .join('');
   const bgRx = round ? Math.min(w, h) * 0.14 + P2 : 0;
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${(-P2).toFixed(1)} ${(-P2).toFixed(1)} ${(w + 2 * P2).toFixed(1)} ${(h + 2 * P2).toFixed(1)}" role="img">
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${(-P2).toFixed(1)} ${(-P2).toFixed(1)} ${(w + 2 * P2).toFixed(1)} ${(h + 2 * P2).toFixed(1)}" role="img" aria-labelledby="syncular-mark-title">
+<title id="syncular-mark-title">${title}</title>
 ${fontDefs(fontCss)}<rect x="${(-P2).toFixed(1)}" y="${(-P2).toFixed(1)}" width="${(w + 2 * P2).toFixed(1)}" height="${(h + 2 * P2).toFixed(1)}" rx="${bgRx.toFixed(1)}" fill="${t.bg}"/>
 <text font-family="'IBM Plex Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,monospace" font-size="${fs}" font-weight="700" text-anchor="middle" dominant-baseline="central">${spans}</text>
 </svg>`;
@@ -39,15 +46,26 @@ ${fontDefs(fontCss)}<rect x="${(-P2).toFixed(1)}" y="${(-P2).toFixed(1)}" width=
 
 // Core generator — a frozen frame of the singularity.
 // Radii are fractions of the vertical half-height so every crop is well-formed.
-export function singularity({ cols, rows, fs, horizonFrac = 0.28, ringFrac = 0.4, t0 = 0.9, labels = [], stars = true }) {
-  const CX = (cols - 1) / 2, CY = (rows - 1) / 2, ASPECT = 0.5;
+export function singularity({
+  cols,
+  rows,
+  fs,
+  horizonFrac = 0.28,
+  ringFrac = 0.4,
+  t0 = 0.9,
+  labels = [],
+  stars = true,
+  aspect = 0.5,
+  radialFrequency = 1.15,
+}) {
+  const CX = (cols - 1) / 2, CY = (rows - 1) / 2;
   const cw = fs * 0.6, ch = fs * 1.05;
   const cells = [];
   const rDisk = CY - 0.5;
   const rHorizon = rDisk * horizonFrac, rRing = rDisk * ringFrac;
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {
-      const dx = (x - CX) * ASPECT, dy = y - CY;
+      const dx = (x - CX) * aspect, dy = y - CY;
       const rr = Math.hypot(dx, dy);
       const a = Math.atan2(dy, dx);
       const px = x * cw + cw / 2, py = y * ch + ch / 2;
@@ -58,7 +76,7 @@ export function singularity({ cols, rows, fs, horizonFrac = 0.28, ringFrac = 0.4
         cells.push({ cx: px, cy: py, ch: p > 0.66 ? '@' : p > 0.33 ? '#' : '*', cls: 'amber' });
       } else if (rr < rDisk) {
         const band = (rr - rRing) / (rDisk - rRing);
-        let b = (0.5 + 0.5 * Math.sin(2 * a - rr * 1.15 + t0 * 2.4)) * (1 - band * 0.8);
+        let b = (0.5 + 0.5 * Math.sin(2 * a - rr * radialFrequency + t0 * 2.4)) * (1 - band * 0.8);
         b += 0.32 * Math.cos(a - t0 * 0.9) * (1 - band);
         b += (hash(x, y) - 0.5) * 0.16;
         const idx = Math.max(0, Math.min(8, Math.floor(b * 9)));
@@ -105,7 +123,8 @@ export function wordmark(spec, t, fontCss = '') {
   const spans = s.cells
     .map((c) => `<tspan x="${(pad + c.cx).toFixed(1)}" y="${(pad + c.cy).toFixed(1)}" fill="${t[c.cls]}">${esc(c.ch)}</tspan>`)
     .join('');
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${totalW.toFixed(1)} ${totalH.toFixed(1)}" role="img">
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${totalW.toFixed(1)} ${totalH.toFixed(1)}" role="img" aria-labelledby="syncular-wordmark-title">
+<title id="syncular-wordmark-title">syncular</title>
 ${fontDefs(fontCss)}<rect width="${totalW.toFixed(1)}" height="${totalH.toFixed(1)}" rx="${(totalH * 0.16).toFixed(1)}" fill="${t.bg}"/>
 <text font-family="'IBM Plex Mono',ui-monospace,Menlo,Consolas,monospace" font-size="${spec.fs}" font-weight="500" text-anchor="middle" dominant-baseline="central">${spans}</text>
 <text x="${tx.toFixed(1)}" y="${baseline.toFixed(1)}" font-family="'IBM Plex Mono',ui-monospace,Menlo,Consolas,monospace" font-size="${wordFs.toFixed(1)}" font-weight="700" letter-spacing="1.5" dominant-baseline="central" fill="${t.ink}">${word}<tspan fill="${t.amber}">_</tspan></text>
@@ -116,6 +135,20 @@ ${fontDefs(fontCss)}<rect width="${totalW.toFixed(1)}" height="${totalH.toFixed(
 // stay in lockstep with the gallery marks.
 export const COARSE = {
   wordmark: { cols: 13, rows: 9, fs: 26, horizonFrac: 0.36, ringFrac: 0.56, stars: false },
+};
+
+// A higher-resolution, text-free mark for places where the pictogram has room
+// to breathe (social previews, press kits, app splash screens). Its geometry
+// deliberately follows the landing hero more closely than the coarse favicon.
+export const DETAILED_MARK = {
+  cols: 69,
+  rows: 35,
+  fs: 18,
+  horizonFrac: 0.27,
+  ringFrac: 0.38,
+  stars: true,
+  aspect: 0.55,
+  radialFrequency: 1.35,
 };
 
 // Run directly (not imported) → write the gallery marks.

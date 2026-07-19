@@ -10,6 +10,7 @@ import { reflectReleaseVersion } from './scripts/release-version.mjs';
 import { SYQL_HIGHLIGHTER_LANGUAGES } from './src/syql-highlighting.ts';
 
 export default defineConfig({
+  site: 'https://syncular.dev',
   server: { port: 3100 },
   devToolbar: { enabled: false },
   vite: {

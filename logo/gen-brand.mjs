@@ -3,7 +3,15 @@
 // Fonts are embedded (data-URI @font-face) so the marks render in true IBM
 // Plex Mono anywhere they are shown standalone — a browser tab, a GitHub README.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { singularity, wordmark, toSvg, P, COARSE } from './gen-logos.mjs';
+import sharp from 'sharp';
+import {
+  singularity,
+  wordmark,
+  toSvg,
+  P,
+  COARSE,
+  DETAILED_MARK,
+} from './gen-logos.mjs';
 
 const b64 = (p) => readFileSync(p).toString('base64');
 const f5 = b64('apps/docs/public/fonts/plex-mono-500.woff2');
@@ -18,8 +26,37 @@ const favSpec = singularity({
 });
 writeFileSync('apps/docs/public/favicon.svg', toSvg({ ...favSpec, round: true }, P.dark, 0.6, fontCss));
 
+// DETAILED MARK — no wordmark, more of the landing-page singularity. The dark
+// variant is also public so brand consumers can use the exact social mark.
+const detailedMark = singularity(DETAILED_MARK);
+const markDark = toSvg(
+  { ...detailedMark, round: true },
+  P.dark,
+  0.85,
+  fontCss,
+);
+const markLight = toSvg(
+  { ...detailedMark, round: true },
+  P.light,
+  0.85,
+  fontCss,
+);
+writeFileSync('logo/mark-dark.svg', markDark);
+writeFileSync('logo/mark-light.svg', markLight);
+writeFileSync('apps/docs/public/brand-mark.svg', markDark);
+
+// SOCIAL PREVIEW — PNG is intentional: social crawlers do not consistently
+// accept SVG. Keep the mark centered so wide and square crops both preserve it.
+await sharp(Buffer.from(markDark))
+  .resize(1200, 630, {
+    fit: 'contain',
+    background: P.dark.bg,
+  })
+  .png({ compressionLevel: 9 })
+  .toFile('apps/docs/public/social-card.png');
+
 // README BANNERS — the wordmark lockup, dark + light, font embedded.
 writeFileSync('logo/banner-dark.svg', wordmark(COARSE.wordmark, P.dark, fontCss));
 writeFileSync('logo/banner-light.svg', wordmark(COARSE.wordmark, P.light, fontCss));
 
-console.log('wrote favicon.svg + README banners');
+console.log('wrote favicon.svg + detailed marks + social-card.png + README banners');

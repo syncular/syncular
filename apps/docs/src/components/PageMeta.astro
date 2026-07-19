@@ -1,0 +1,66 @@
+---
+interface Props {
+  title: string;
+  description: string;
+  canonicalPath: string;
+  documentTitle?: string;
+  type?: 'website' | 'article';
+  author?: string;
+  publishedAt?: string;
+  robots?: string;
+}
+
+const {
+  title,
+  description,
+  canonicalPath,
+  documentTitle = `${title} — syncular`,
+  type = 'website',
+  author,
+  publishedAt,
+  robots,
+} = Astro.props;
+
+const site = Astro.site ?? new URL('https://syncular.dev');
+const canonicalUrl = new URL(canonicalPath, site);
+const imageUrl = new URL('/social-card.png', site);
+const imageAlt =
+  'syncular ASCII singularity mark with a bright accretion disk and amber event horizon';
+const publishedDate = publishedAt
+  ? new Date(`${publishedAt}T00:00:00.000Z`).toISOString()
+  : undefined;
+---
+
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{documentTitle}</title>
+<meta name="description" content={description} />
+<meta name="theme-color" content="#000000" />
+{robots ? <meta name="robots" content={robots} /> : null}
+{author ? <meta name="author" content={author} /> : null}
+
+<meta property="og:type" content={type} />
+<meta property="og:title" content={title} />
+<meta property="og:description" content={description} />
+<meta property="og:url" content={canonicalUrl} />
+<meta property="og:site_name" content="syncular" />
+<meta property="og:locale" content="en_US" />
+<meta property="og:image" content={imageUrl} />
+<meta property="og:image:secure_url" content={imageUrl} />
+<meta property="og:image:type" content="image/png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content={imageAlt} />
+{
+  type === 'article' && publishedDate ? (
+    <meta property="article:published_time" content={publishedDate} />
+  ) : null
+}
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content={title} />
+<meta name="twitter:description" content={description} />
+<meta name="twitter:image" content={imageUrl} />
+<meta name="twitter:image:alt" content={imageAlt} />
+
+<link rel="canonical" href={canonicalUrl} />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />

@@ -2,6 +2,7 @@
 // Blog shell: the landing page's teletype header/footer around a focused,
 // readable article column. Blog posts remain plain Markdown sources.
 import rootPkg from '../../../../package.json';
+import PageMeta from '../components/PageMeta.astro';
 
 interface Props {
   title: string;
@@ -22,7 +23,6 @@ const {
   readingMinutes,
   index = false,
 } = Astro.props;
-const canonicalUrl = new URL(canonicalPath, Astro.site ?? 'https://syncular.dev');
 const formattedDate = publishedAt
   ? new Intl.DateTimeFormat('en', {
       year: 'numeric',
@@ -36,19 +36,14 @@ const formattedDate = publishedAt
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{title} — syncular</title>
-    <meta name="description" content={description} />
-    <meta property="og:type" content={index ? 'website' : 'article'} />
-    <meta property="og:title" content={title} />
-    <meta property="og:description" content={description} />
-    <meta property="og:url" content={canonicalUrl} />
-    <meta property="og:site_name" content="syncular" />
-    {publishedAt ? <meta property="article:published_time" content={publishedAt} /> : null}
-    {author ? <meta name="author" content={author} /> : null}
-    <link rel="canonical" href={canonicalUrl} />
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <PageMeta
+      title={title}
+      description={description}
+      canonicalPath={canonicalPath}
+      type={index ? 'website' : 'article'}
+      author={author}
+      publishedAt={publishedAt}
+    />
     <link rel="alternate" type="text/markdown" href={index ? '/blog.md' : `${canonicalPath.replace(/\/$/, '')}.md`} />
     <link rel="api-catalog" href="/.well-known/api-catalog" />
     <link rel="stylesheet" href="/style.css" />

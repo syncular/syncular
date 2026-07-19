@@ -4,6 +4,7 @@
 // client-side script; the code tabs are CSS-only radios highlighted by Shiki
 // at build time.
 import { Code } from 'astro:components';
+import PageMeta from '../components/PageMeta.astro';
 import { TABS } from '../snippets';
 import rootPkg from '../../../../package.json';
 
@@ -38,19 +39,20 @@ const PLATFORM_LINKS = [
 
 const RULE_EQ = '='.repeat(160);
 const RULE_DASH = '-'.repeat(160);
+const title = 'syncular — offline-first SQL sync for every platform';
+const description =
+  'Local SQLite on every client, kept in sync through a server-authoritative commit log. One protocol across web, Swift, Kotlin, Flutter, React Native, Tauri, and Rust.';
 ---
 
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>syncular — offline-first SQL sync for every platform</title>
-    <meta
-      name="description"
-      content="Local SQLite on every client, kept in sync through a server-authoritative commit log. One written protocol, two conformance-locked cores (TypeScript and Rust), bindings for web, React, Swift, Kotlin, Flutter, React Native, and Tauri."
+    <PageMeta
+      title={title}
+      description={description}
+      canonicalPath="/"
+      documentTitle={title}
     />
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="alternate" type="text/markdown" href="/index.md" />
     <link rel="api-catalog" href="/.well-known/api-catalog" />
     <link rel="stylesheet" href="/style.css" />
