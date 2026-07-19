@@ -14,6 +14,7 @@ import {
   type QueryDb,
   queryNameFromFile,
   queryNameFromPath,
+  scanTableRefs,
   synthesizeDdl,
 } from '../src';
 
@@ -116,6 +117,39 @@ describe('SELECT-only', () => {
     expect(() =>
       analyze('bad.sql', 'SELECT id FROM todos; SELECT title FROM todos'),
     ).toThrow(/exactly one SELECT/);
+  });
+});
+
+describe('reactive table discovery', () => {
+  test('rejects simple and parenthesized comma joins before emitting metadata', () => {
+    for (const sql of [
+      `SELECT left_row.id
+       FROM todos AS left_row, todos AS right_row
+       WHERE right_row.id = left_row.id`,
+      `SELECT left_row.id
+       FROM (todos AS left_row, todos AS right_row)
+       WHERE right_row.id = left_row.id`,
+    ]) {
+      expect(() => analyze('q.sql', sql)).toThrow(
+        'use an explicit JOIN ... ON clause',
+      );
+    }
+  });
+
+  test('accepts non-relation commas in projections and functions', () => {
+    const query = analyze(
+      'q.sql',
+      `SELECT id, title, coalesce(note, title) AS display_title
+       FROM todos`,
+    );
+    expect(query.tables).toEqual(['todos']);
+
+    const derived = analyze(
+      'derived.sql',
+      `SELECT nested.id
+       FROM (SELECT id, title FROM todos) AS nested`,
+    );
+    expect(derived.tables).toEqual(['todos']);
   });
 });
 
@@ -243,6 +277,106 @@ describe('column fidelity', () => {
   test('a boolean column decodes as boolean (exact)', () => {
     const q = analyze('q.sql', 'SELECT done FROM todos');
     expect(q.columns[0]).toMatchObject({ type: 'boolean', fidelity: 'exact' });
+  });
+  test('LEFT JOIN lifts required columns on the right side to nullable', () => {
+    const q = analyze(
+      'q.sql',
+      `SELECT parent.title AS parent_title, child.title AS child_title
+       FROM todos AS parent
+       LEFT JOIN todos AS child ON child.id = parent.id`,
+    );
+    expect(q.columns.map((column) => column.nullable)).toEqual([false, true]);
+  });
+  test('RIGHT JOIN lifts every prior relation while keeping its right side exact', () => {
+    const q = analyze(
+      'q.sql',
+      `SELECT parent.title AS parent_title, child.title AS child_title
+       FROM todos AS parent
+       RIGHT JOIN todos AS child ON child.id = parent.id`,
+    );
+    expect(q.columns.map((column) => column.nullable)).toEqual([true, false]);
+  });
+  test('FULL OUTER JOIN lifts required columns on both sides to nullable', () => {
+    const q = analyze(
+      'q.sql',
+      `SELECT parent.title AS parent_title, child.title AS child_title
+       FROM todos AS parent
+       FULL OUTER JOIN todos AS child ON child.id = parent.id`,
+    );
+    expect(q.columns.map((column) => column.nullable)).toEqual([true, true]);
+  });
+  test('a chained outer-join order retains every prior null extension', () => {
+    const q = analyze(
+      'q.sql',
+      `SELECT root.title AS root_title,
+              optional_child.title AS optional_child_title,
+              required_child.title AS required_child_title
+       FROM todos AS root
+       LEFT JOIN todos AS optional_child ON optional_child.id = root.id
+       RIGHT JOIN todos AS required_child ON required_child.id = root.id`,
+    );
+    expect(q.columns.map((column) => column.nullable)).toEqual([
+      true,
+      true,
+      false,
+    ]);
+  });
+  test('parenthesized LEFT JOIN groups lift every nested relation', () => {
+    const sql = `SELECT root.title AS root_title,
+                        grouped.title AS grouped_title,
+                        nested.title AS nested_title
+                 FROM todos AS root
+                 LEFT JOIN (
+                   todos AS grouped
+                   JOIN todos AS nested ON nested.id = grouped.id
+                 ) ON grouped.id = root.id`;
+    const q = analyze('q.sql', sql);
+    expect(q.columns.map((column) => column.nullable)).toEqual([
+      false,
+      true,
+      true,
+    ]);
+    expect(scanTableRefs(sql, IR)).toEqual([
+      { table: 'todos', alias: 'root', nullable: false },
+      { table: 'todos', alias: 'grouped', nullable: true },
+      { table: 'todos', alias: 'nested', nullable: true },
+    ]);
+  });
+  test('RIGHT JOIN null-extends a parenthesized left relation as one unit', () => {
+    const q = analyze(
+      'q.sql',
+      `SELECT first.title AS first_title,
+              second.title AS second_title,
+              required.title AS required_title
+       FROM (
+         todos AS first
+         JOIN todos AS second ON second.id = first.id
+       )
+       RIGHT JOIN todos AS required ON required.id = first.id`,
+    );
+    expect(q.columns.map((column) => column.nullable)).toEqual([
+      true,
+      true,
+      false,
+    ]);
+  });
+  test('FULL JOIN parenthesized groups null-extend both relation units', () => {
+    const q = analyze(
+      'q.sql',
+      `SELECT root.title AS root_title,
+              grouped.title AS grouped_title,
+              nested.title AS nested_title
+       FROM todos AS root
+       FULL JOIN (
+         todos AS grouped
+         JOIN todos AS nested ON nested.id = grouped.id
+       ) ON grouped.id = root.id`,
+    );
+    expect(q.columns.map((column) => column.nullable)).toEqual([
+      true,
+      true,
+      true,
+    ]);
   });
   test('an explicitly aliased local server version is exact and non-null', () => {
     const q = analyze(

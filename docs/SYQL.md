@@ -385,12 +385,37 @@ sync query listTodos(listId) {
 }
 ```
 
-Coverage MUST resolve to exactly one instance of the covered table and MUST
-bind every scope declared by that table through required, non-null equality or
-`IN` predicates. A self-join therefore cannot claim coverage. Scope predicates
-under `OR`, negation, a conditional, or a nested query are not proofs. An `IN`
-proof may contain only required binds. Otherwise compilation fails; it never
-silently widens coverage.
+Coverage MUST resolve every read schema table, with exactly one instance of
+each table, and MUST bind every scope declared by every table through required,
+non-null equality or `IN` predicates. The result descriptor contains one
+coverage entry per read table; a client may report the query complete only when
+all entries are complete.
+
+A scope proof may propagate between qualified scope columns joined by a
+required outer `WHERE` equality or by a simple mandatory `ON` equality. For
+example, `details.list_id = todos.list_id` inherits the required bind proven for
+`todos.list_id`. An `ON` clause containing `OR`, `NOT`, a subquery, or a CTE is
+not a proof. A self-join cannot claim coverage because its table instances
+cannot be represented independently by the table-level readiness boundary.
+Scope predicates under `OR`, negation, a conditional, or a nested query are not
+proofs. An `IN` proof may contain only required binds. Otherwise compilation
+fails; it never silently widens coverage or treats invalidation as readiness.
+Comma-separated table sources are outside the proof-compatible SQL subset and
+MUST fail generation with guidance to use an explicit `JOIN ... ON` relation.
+
+```syql
+sync query listTodosWithDetails(listId) {
+  select t.id, t.title, d.body
+  from todos as t
+  left join todo_details as d
+    on d.todo_id = t.id and d.list_id = t.list_id
+  where t.list_id = :listId;
+}
+```
+
+This query has aggregate coverage for both `todos/list_id` and
+`todo_details/list_id`. The optional `d.body` result is nullable independently
+of that completeness proof.
 
 For a table with more than one scope, the query selects the unit dimension:
 
@@ -404,9 +429,39 @@ sync query threadMessages(roomId, left, right) by messages.thread_id {
 
 The selected dimension may use equality or `IN`. Every other scope is fixed by
 exactly one required equality bind. `by` names the SQL table name or alias used
-by the selected instance and one of its declared scope columns.
+by the selected anchor instance and one of its declared scope columns. A joined
+single-scope table uses its sole dimension. A joined multi-scope table must have
+exactly one dimension with the anchor's unit parameters and exact fixed-scope
+proofs for the remainder; otherwise the query must be split.
 
-## 14. Result identity
+## 14. Result types and identity
+
+### 14.1 Outer-join nullability
+
+A projected plain column MUST retain its schema type and schema nullability.
+The compiler MUST additionally mark it nullable whenever SQL outer-join
+semantics can synthesize `NULL` for its resolved table alias:
+
+- `LEFT [OUTER] JOIN` null-extends the new right relation;
+- `RIGHT [OUTER] JOIN` null-extends every prior relation in that join chain;
+- `FULL [OUTER] JOIN` null-extends both sides;
+- `INNER`, `CROSS`, and ordinary `JOIN` introduce no new nullability and MUST
+  NOT erase nullability introduced earlier in the chain.
+
+A parenthesized relation group is one relation unit for its enclosing join.
+Outer null-extension applies to every physical relation inside the optional
+group, while nested joins retain their own left-to-right semantics. Physical
+tables read inside derived subqueries remain dependencies even when the derived
+alias cannot provide an exact column origin.
+
+This rule applies independently of a physical column's `NOT NULL` declaration
+and is shared by every generated target. A result expression whose physical
+origin or join-side nullability cannot be proven MUST use the documented
+nullable fallback or fail compilation; it MUST NOT be emitted as required.
+Unqualified columns coalesced by `USING` or `NATURAL JOIN` MUST NOT be assigned
+an arbitrary single-table origin.
+
+### 14.2 Result identity
 
 The compiler infers result identity conservatively from schema primary keys,
 table references, joins, aliases, and projected result names. A simple

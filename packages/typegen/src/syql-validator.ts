@@ -101,6 +101,7 @@ interface BindSymbol {
   readonly authoredType?: SyqlValueType;
 }
 
+const IDENT_SOURCE = '[A-Za-z_][A-Za-z0-9_]*';
 const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const NONDETERMINISTIC_FUNCTIONS = new Set([
   'random',
@@ -1065,6 +1066,77 @@ class Validator {
       }
       return true;
     };
+    const requiredJoinEqualityAt = (index: number): boolean => {
+      const prefix = cleaned.slice(0, index);
+      const clauses = [
+        ...prefix.matchAll(
+          /\b(ON|JOIN|WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|UNION|EXCEPT|INTERSECT)\b/gi,
+        ),
+      ];
+      const last = clauses.at(-1);
+      if (last?.[1]?.toUpperCase() !== 'ON') return false;
+      const start = (last.index ?? 0) + last[0].length;
+      const next =
+        /\b(?:JOIN|WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|UNION|EXCEPT|INTERSECT)\b/i.exec(
+          cleaned.slice(index),
+        );
+      const end = next === null ? cleaned.length : index + next.index;
+      const clause = cleaned.slice(start, end);
+      return !/\b(?:OR|NOT|SELECT|WITH)\b/i.test(clause);
+    };
+    const refByAlias = new Map(
+      refs.map((ref) => [ref.alias.toLowerCase(), ref] as const),
+    );
+    const scopeNode = (alias: string, column: string): string =>
+      `${alias.toLowerCase()}\0${column.toLowerCase()}`;
+    const parents = new Map<string, string>();
+    const find = (node: string): string => {
+      const parent = parents.get(node);
+      if (parent === undefined) {
+        parents.set(node, node);
+        return node;
+      }
+      if (parent === node) return node;
+      const root = find(parent);
+      parents.set(node, root);
+      return root;
+    };
+    const union = (left: string, right: string): void => {
+      const leftRoot = find(left);
+      const rightRoot = find(right);
+      if (leftRoot !== rightRoot) parents.set(rightRoot, leftRoot);
+    };
+    const scopeColumn = (alias: string, column: string): boolean => {
+      const ref = refByAlias.get(alias.toLowerCase());
+      const table = this.#ir.tables.find((item) => item.name === ref?.table);
+      return (
+        table?.scopes.some(
+          (scope) => scope.column.toLowerCase() === column.toLowerCase(),
+        ) === true
+      );
+    };
+    const qualifiedEquality = new RegExp(
+      `(${IDENT_SOURCE})\\.(${IDENT_SOURCE})\\s*(?:=|==|\\bIS\\b)\\s*(${IDENT_SOURCE})\\.(${IDENT_SOURCE})`,
+      'gi',
+    );
+    for (const match of cleaned.matchAll(qualifiedEquality)) {
+      const leftAlias = match[1] as string;
+      const leftColumn = match[2] as string;
+      const rightAlias = match[3] as string;
+      const rightColumn = match[4] as string;
+      if (
+        !scopeColumn(leftAlias, leftColumn) ||
+        !scopeColumn(rightAlias, rightColumn) ||
+        (!requiredAt(match.index ?? 0) &&
+          !requiredJoinEqualityAt(match.index ?? 0))
+      ) {
+        continue;
+      }
+      union(
+        scopeNode(leftAlias, leftColumn),
+        scopeNode(rightAlias, rightColumn),
+      );
+    }
     const required = new Set(
       [...symbols.values()].flatMap((symbol) =>
         symbol.parameter.kind === 'value' &&
@@ -1075,6 +1147,7 @@ class Validator {
       ),
     );
     const candidates: Candidate[] = [];
+    const directScopeEvidence = new Map<string, InferredScope>();
     for (const ref of refs) {
       const table = this.#ir.tables.find((item) => item.name === ref.table);
       if (table === undefined) continue;
@@ -1133,7 +1206,7 @@ class Validator {
         }
         const params = [...new Set(found.map((item) => item.name))];
         if (params.length > 0) {
-          inferred.push({
+          const evidence: InferredScope = {
             binding: {
               table: table.name,
               variable: scope.variable,
@@ -1143,11 +1216,49 @@ class Validator {
             operator: found.some((item) => item.operator === 'in')
               ? 'in'
               : 'equal',
-          });
+          };
+          inferred.push(evidence);
+          directScopeEvidence.set(scopeNode(ref.alias, scope.column), evidence);
         }
       }
       candidates.push({ ref, scopes: inferred });
     }
+
+    const resolvedCandidates = candidates.map((candidate): Candidate => {
+      const table = this.#ir.tables.find(
+        (item) => item.name === candidate.ref.table,
+      );
+      if (table === undefined) return candidate;
+      const directByVariable = new Map(
+        candidate.scopes.map((scope) => [scope.binding.variable, scope]),
+      );
+      const scopes = table.scopes.flatMap((scope): InferredScope[] => {
+        const direct = directByVariable.get(scope.variable);
+        if (direct !== undefined) return [direct];
+        const root = find(scopeNode(candidate.ref.alias, scope.column));
+        const inherited = [...directScopeEvidence.entries()]
+          .filter(([node]) => find(node) === root)
+          .map(([, evidence]) => evidence);
+        const params = [
+          ...new Set(inherited.flatMap((evidence) => evidence.binding.params)),
+        ];
+        if (params.length === 0) return [];
+        return [
+          {
+            binding: {
+              table: table.name,
+              variable: scope.variable,
+              pattern: scope.pattern,
+              params,
+            },
+            operator: inherited.some((evidence) => evidence.operator === 'in')
+              ? 'in'
+              : 'equal',
+          },
+        ];
+      });
+      return { ...candidate, scopes };
+    });
 
     const ftsOwners = new Map(
       this.#ir.tables.flatMap((table) =>
@@ -1159,8 +1270,13 @@ class Validator {
     ]
       .sort()
       .map((table) => {
-        const instances = candidates.filter((item) => item.ref.table === table);
-        if (instances.some((item) => item.scopes.length === 0)) {
+        const instances = resolvedCandidates.filter(
+          (item) => item.ref.table === table,
+        );
+        if (
+          instances.length !== 1 ||
+          instances.some((item) => item.scopes.length === 0)
+        ) {
           return { table, scopes: [] };
         }
         const scopes = instances
@@ -1182,83 +1298,142 @@ class Validator {
       });
 
     if (!logical.declaration.sync) return { dependencies, coverage: [] };
-    let eligible = candidates.filter((candidate) => {
+    const syncedCandidates = resolvedCandidates.filter((candidate) =>
+      this.#ir.tables.some((table) => table.name === candidate.ref.table),
+    );
+    const eligible = syncedCandidates.filter((candidate) => {
       const table = this.#ir.tables.find(
         (item) => item.name === candidate.ref.table,
       );
       return (
         table !== undefined &&
-        candidates.filter((item) => item.ref.table === candidate.ref.table)
-          .length === 1 &&
+        syncedCandidates.filter(
+          (item) => item.ref.table === candidate.ref.table,
+        ).length === 1 &&
         table.scopes.length > 0 &&
         candidate.scopes.length === table.scopes.length
       );
     });
     const syncBy = logical.declaration.syncBy;
-    if (syncBy !== undefined) {
-      eligible = eligible.filter(
-        (candidate) => candidate.ref.alias === syncBy.qualifier,
-      );
-    }
-    if (eligible.length !== 1) {
+    if (eligible.length === 0 || eligible.length !== syncedCandidates.length) {
       this.#fail(
         'SYQL6005_INVALID_SYNC_QUERY',
         logical.declaration.syncBy?.span ?? logical.declaration.nameSpan,
-        eligible.length === 0
-          ? 'sync query coverage cannot be proven from required equality/IN predicates over every declared scope'
-          : 'sync query resolves to multiple coverable table instances; split the query or select one with `by alias.scope`',
+        'sync query coverage cannot be proven for every read table from required equality/IN predicates over every declared scope; split the query or add an exact compatible scope proof',
       );
     }
-    const candidate = eligible[0] as Candidate;
-    const table = this.#ir.tables.find(
-      (item) => item.name === candidate.ref.table,
-    );
-    if (table === undefined) throw new Error('eligible table disappeared');
-    if (table.scopes.length > 1 && syncBy === undefined) {
+    const byCandidate =
+      syncBy === undefined
+        ? undefined
+        : eligible.find(
+            (candidate) => candidate.ref.alias === syncBy.qualifier,
+          );
+    if (syncBy !== undefined && byCandidate === undefined) {
+      this.#fail(
+        'SYQL6005_INVALID_SYNC_QUERY',
+        syncBy.span,
+        `sync query \`by ${syncBy.qualifier}.${syncBy.column}\` does not name one fully coverable table instance`,
+      );
+    }
+    if (
+      syncBy === undefined &&
+      eligible.some((candidate) => {
+        const table = this.#ir.tables.find(
+          (item) => item.name === candidate.ref.table,
+        );
+        return (table?.scopes.length ?? 0) > 1;
+      })
+    ) {
       this.#fail(
         'SYQL6005_INVALID_SYNC_QUERY',
         logical.declaration.nameSpan,
-        `sync query for multi-scope table ${table.name} must select its unit dimension with \`by ${candidate.ref.alias}.scope_column\``,
+        'a sync query reading any multi-scope table must select an anchor unit dimension with `by alias.scope_column`',
       );
     }
-    const dimensionColumn = syncBy?.column ?? table.scopes[0]?.column;
-    const dimension = table.scopes.find(
-      (scope) => scope.column === dimensionColumn,
-    );
-    if (dimension === undefined) {
-      this.#fail(
-        'SYQL6005_INVALID_SYNC_QUERY',
-        syncBy?.span ?? logical.declaration.nameSpan,
-        `${candidate.ref.alias}.${dimensionColumn ?? ''} is not a declared scope`,
+
+    let anchorUnit: InferredScope | undefined;
+    if (byCandidate !== undefined && syncBy !== undefined) {
+      const table = this.#ir.tables.find(
+        (item) => item.name === byCandidate.ref.table,
       );
+      const dimension = table?.scopes.find(
+        (scope) => scope.column === syncBy.column,
+      );
+      anchorUnit = byCandidate.scopes.find(
+        (scope) => scope.binding.variable === dimension?.variable,
+      );
+      if (dimension === undefined || anchorUnit === undefined) {
+        this.#fail(
+          'SYQL6005_INVALID_SYNC_QUERY',
+          syncBy.span,
+          `${byCandidate.ref.alias}.${syncBy.column} is not a proven declared scope`,
+        );
+      }
     }
-    const byVariable = new Map(
-      candidate.scopes.map((scope) => [scope.binding.variable, scope]),
-    );
-    const unit = byVariable.get(dimension.variable) as InferredScope;
-    const fixedScopes = table.scopes
-      .filter((scope) => scope.variable !== dimension.variable)
-      .map((scope) => {
-        const fixed = byVariable.get(scope.variable) as InferredScope;
-        if (fixed.operator !== 'equal' || fixed.binding.params.length !== 1) {
-          this.#fail(
-            'SYQL6005_INVALID_SYNC_QUERY',
-            syncBy?.span ?? logical.declaration.nameSpan,
-            `fixed sync scope ${table.name}.${scope.column} must use one required equality bind`,
-          );
-        }
-        return {
-          variable: fixed.binding.variable,
-          params: fixed.binding.params,
-        };
-      });
-    const coverage: QueryCoverageBinding = {
-      table: table.name,
-      variable: unit.binding.variable,
-      units: unit.binding.params,
-      fixedScopes,
-    };
-    return { dependencies, coverage: [coverage] };
+
+    const sameParams = (
+      left: readonly string[],
+      right: readonly string[],
+    ): boolean =>
+      left.length === right.length &&
+      left.every((value) => right.includes(value));
+    const coverage = eligible.map((candidate): QueryCoverageBinding => {
+      const table = this.#ir.tables.find(
+        (item) => item.name === candidate.ref.table,
+      );
+      if (table === undefined) throw new Error('eligible table disappeared');
+      const byVariable = new Map(
+        candidate.scopes.map((scope) => [scope.binding.variable, scope]),
+      );
+      let unit: InferredScope | undefined;
+      if (candidate === byCandidate) {
+        unit = anchorUnit;
+      } else if (table.scopes.length === 1) {
+        unit = candidate.scopes[0];
+      } else if (anchorUnit !== undefined) {
+        const matching = candidate.scopes.filter((scope) =>
+          sameParams(scope.binding.params, anchorUnit.binding.params),
+        );
+        if (matching.length === 1) unit = matching[0];
+      }
+      if (unit === undefined) {
+        this.#fail(
+          'SYQL6005_INVALID_SYNC_QUERY',
+          syncBy?.span ?? logical.declaration.nameSpan,
+          `joined multi-scope table ${table.name} has no unambiguous unit dimension compatible with the selected anchor; split the query`,
+        );
+      }
+      const fixedScopes = table.scopes
+        .filter((scope) => scope.variable !== unit.binding.variable)
+        .map((scope) => {
+          const fixed = byVariable.get(scope.variable) as
+            | InferredScope
+            | undefined;
+          if (
+            fixed === undefined ||
+            fixed.operator !== 'equal' ||
+            fixed.binding.params.length !== 1
+          ) {
+            this.#fail(
+              'SYQL6005_INVALID_SYNC_QUERY',
+              syncBy?.span ?? logical.declaration.nameSpan,
+              `fixed sync scope ${table.name}.${scope.column} must use one required equality bind`,
+            );
+          }
+          return {
+            variable: fixed.binding.variable,
+            params: fixed.binding.params,
+          };
+        });
+      return {
+        table: table.name,
+        variable: unit.binding.variable,
+        units: unit.binding.params,
+        fixedScopes,
+      };
+    });
+    coverage.sort((left, right) => left.table.localeCompare(right.table));
+    return { dependencies, coverage };
   }
 
   #validateSort(
