@@ -1,10 +1,28 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.31** (`v0.15.31`). All artifacts use Apache-2.0, except
+current release is **0.15.32** (`v0.15.32`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.32 release notes
+
+0.15.32 adds an entirely local SYQL playground to the documentation. The
+route-local Monaco editor reuses Syncular's TextMate grammar, compiles through
+the real revision-1 parser, semantic analyzer, validator, and lowerer in a web
+worker, and prepares generated statements against an ephemeral SQLite WASM
+schema. Readers can switch representative examples, inspect every physical
+statement and its bind/reactive metadata, format source, and keep editing while
+the last successful SQL is visibly stale.
+
+The playground supplies tolerant schema-aware completions for declarations,
+clauses, tables, aliases, columns, and query inputs. SYQL validation now checks
+SQLite/schema references before bind inference, so a misspelled table or
+qualifier produces a precise `SYQL6002_INVALID_SQL` diagnostic with the
+offending source span and a conservative nearest-name suggestion instead of a
+misleading uninferrable-bind error. The browser and LSP surfaces render the
+same concise diagnostic detail.
 
 ## 0.15.31 release notes
 

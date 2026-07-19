@@ -101,8 +101,14 @@ interface BindSymbol {
   readonly authoredType?: SyqlValueType;
 }
 
+interface SqliteDiagnostic {
+  readonly span: SyqlSourceSpan;
+  readonly message: string;
+}
+
 const IDENT_SOURCE = '[A-Za-z_][A-Za-z0-9_]*';
 const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SQLITE_SUBJECT_RE = '[A-Za-z_][A-Za-z0-9_$]*';
 const NONDETERMINISTIC_FUNCTIONS = new Set([
   'random',
   'randomblob',
@@ -126,6 +132,63 @@ const CURRENT_TIME_KEYWORDS = new Set([
   'current_time',
   'current_timestamp',
 ]);
+
+function editDistance(left: string, right: string): number {
+  const previous = Array.from(
+    { length: right.length + 1 },
+    (_, index) => index,
+  );
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      current[rightIndex] = Math.min(
+        (current[rightIndex - 1] as number) + 1,
+        (previous[rightIndex] as number) + 1,
+        (previous[rightIndex - 1] as number) +
+          (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1),
+      );
+    }
+    previous.splice(0, previous.length, ...current);
+  }
+  return previous[right.length] as number;
+}
+
+function nearestName(
+  authored: string,
+  candidates: readonly string[],
+): string | undefined {
+  const normalized = authored.toLowerCase();
+  const ranked = [...new Set(candidates)]
+    .filter((candidate) => candidate.toLowerCase() !== normalized)
+    .map((candidate) => ({
+      candidate,
+      distance: editDistance(normalized, candidate.toLowerCase()),
+    }))
+    .sort(
+      (left, right) =>
+        left.distance - right.distance ||
+        left.candidate.localeCompare(right.candidate),
+    );
+  const nearest = ranked[0];
+  if (nearest === undefined) return undefined;
+  const threshold = Math.max(1, Math.floor(normalized.length / 3));
+  return nearest.distance <= threshold ? nearest.candidate : undefined;
+}
+
+function suggestion(authored: string, candidates: readonly string[]): string {
+  const nearest = nearestName(authored, candidates);
+  return nearest === undefined ? '' : `; did you mean \`${nearest}\`?`;
+}
+
+function identifierText(token: SyqlToken | undefined): string | undefined {
+  if (token?.kind === 'identifier') return token.text;
+  if (token?.kind !== 'quoted-identifier') return undefined;
+  if (token.text.startsWith('[') && token.text.endsWith(']')) {
+    return token.text.slice(1, -1).replaceAll(']]', ']');
+  }
+  const quote = token.text[0];
+  return token.text.slice(1, -1).replaceAll(`${quote}${quote}`, quote ?? '');
+}
 const AGGREGATE_FUNCTIONS = new Set([
   'avg',
   'count',
@@ -393,6 +456,7 @@ class Validator {
       logical.declaration.statement.span,
       refs,
     );
+    this.#validateSqlite(activeSql, logical, refs);
 
     const bindSymbols = this.#bindSymbols(logical.declaration);
     const bindTypes = this.#resolveBindTypes(
@@ -896,6 +960,190 @@ class Validator {
         );
       }
     }
+  }
+
+  #validateSqlite(
+    sql: string,
+    logical: SyqlLogicalQuery,
+    refs: readonly TableRef[],
+  ): void {
+    try {
+      this.#db.analyze(sql);
+    } catch (error) {
+      const sqliteMessage =
+        error instanceof Error ? error.message : String(error);
+      const diagnostic = this.#describeSqliteError(
+        sqliteMessage,
+        logical,
+        refs,
+      );
+      this.#fail('SYQL6002_INVALID_SQL', diagnostic.span, diagnostic.message);
+    }
+  }
+
+  #describeSqliteError(
+    sqliteMessage: string,
+    logical: SyqlLogicalQuery,
+    refs: readonly TableRef[],
+  ): SqliteDiagnostic {
+    const fallback = logical.declaration.statement.span;
+    const tableNames = this.#ir.tables.flatMap((table) => [
+      table.name,
+      ...table.ftsIndexes.map((index) => index.name),
+    ]);
+    const noTable = new RegExp(
+      `no such table:\\s*(?:main\\.)?(${SQLITE_SUBJECT_RE})`,
+      'i',
+    ).exec(sqliteMessage);
+    if (noTable !== null) {
+      const table = noTable[1] as string;
+      return {
+        span: this.#sqlSubjectSpan(logical, table, 'table') ?? fallback,
+        message: `unknown table \`${table}\`${suggestion(table, tableNames)}`,
+      };
+    }
+
+    const noColumn = new RegExp(
+      `no such column:\\s*(${SQLITE_SUBJECT_RE})(?:\\.(${SQLITE_SUBJECT_RE}))?`,
+      'i',
+    ).exec(sqliteMessage);
+    if (noColumn !== null) {
+      const first = noColumn[1] as string;
+      const second = noColumn[2];
+      if (second !== undefined) {
+        const qualifier = first;
+        const ref = refs.find(
+          (candidate) =>
+            candidate.alias.toLowerCase() === qualifier.toLowerCase(),
+        );
+        if (ref === undefined) {
+          const qualifiers = refs.map((candidate) => candidate.alias);
+          return {
+            span:
+              this.#sqlSubjectSpan(
+                logical,
+                `${qualifier}.${second}`,
+                'qualifier',
+              ) ?? fallback,
+            message: `unknown table or alias \`${qualifier}\`${suggestion(qualifier, qualifiers)}`,
+          };
+        }
+        const columns = this.#columnsForTable(ref.table);
+        return {
+          span:
+            this.#sqlSubjectSpan(logical, `${qualifier}.${second}`, 'column') ??
+            fallback,
+          message: `unknown column \`${second}\` on \`${qualifier}\`${suggestion(second, columns)}`,
+        };
+      }
+      const columns = refs.flatMap((ref) => this.#columnsForTable(ref.table));
+      return {
+        span: this.#sqlSubjectSpan(logical, first, 'column') ?? fallback,
+        message: `unknown column \`${first}\`${suggestion(first, columns)}`,
+      };
+    }
+
+    const ambiguous = new RegExp(
+      `ambiguous column name:\\s*(?:${SQLITE_SUBJECT_RE}\\.)?(${SQLITE_SUBJECT_RE})`,
+      'i',
+    ).exec(sqliteMessage);
+    if (ambiguous !== null) {
+      const column = ambiguous[1] as string;
+      const choices = refs
+        .filter((ref) =>
+          this.#columnsForTable(ref.table).some(
+            (candidate) => candidate.toLowerCase() === column.toLowerCase(),
+          ),
+        )
+        .map((ref) => `\`${ref.alias}.${column}\``);
+      return {
+        span: this.#sqlSubjectSpan(logical, column, 'column') ?? fallback,
+        message: `column \`${column}\` is ambiguous${
+          choices.length === 0
+            ? '; add a table or alias qualifier'
+            : `; use ${choices.join(' or ')}`
+        }`,
+      };
+    }
+
+    const syntax = /near\s+["']([^"']+)["']:\s*syntax error/i.exec(
+      sqliteMessage,
+    );
+    if (syntax !== null) {
+      const token = syntax[1] as string;
+      return {
+        span: this.#sqlSubjectSpan(logical, token, 'token') ?? fallback,
+        message: `SQL syntax error near \`${token}\``,
+      };
+    }
+    if (/incomplete input/i.test(sqliteMessage)) {
+      return {
+        span: {
+          file: fallback.file,
+          start: fallback.end,
+          end: fallback.end,
+        },
+        message: 'incomplete SQL statement',
+      };
+    }
+    return {
+      span: fallback,
+      message: `SQL rejected by SQLite: ${sqliteMessage}`,
+    };
+  }
+
+  #columnsForTable(tableName: string): readonly string[] {
+    const table = this.#ir.tables.find(
+      (candidate) => candidate.name === tableName,
+    );
+    if (table !== undefined) return table.columns.map((column) => column.name);
+    for (const owner of this.#ir.tables) {
+      const fts = owner.ftsIndexes.find(
+        (candidate) => candidate.name === tableName,
+      );
+      if (fts !== undefined) return ['_syncular_source_id', ...fts.columns];
+    }
+    return [];
+  }
+
+  #sqlSubjectSpan(
+    logical: SyqlLogicalQuery,
+    subject: string,
+    focus: 'table' | 'qualifier' | 'column' | 'token',
+  ): SyqlSourceSpan | undefined {
+    const tokens = significant(logical.declaration.statement.tokens);
+    const [qualifier, column] = subject.split('.', 2);
+    const matches = (token: SyqlToken | undefined, expected: string): boolean =>
+      identifierText(token)?.toLowerCase() === expected.toLowerCase();
+
+    if (focus === 'table') {
+      for (let index = 0; index < tokens.length - 1; index += 1) {
+        const keyword = tokenLower(tokens[index]);
+        if (
+          (keyword === 'from' || keyword === 'join') &&
+          matches(tokens[index + 1], subject)
+        ) {
+          return tokens[index + 1]?.span;
+        }
+      }
+    }
+    if (column !== undefined) {
+      for (let index = 0; index < tokens.length - 2; index += 1) {
+        if (
+          matches(tokens[index], qualifier as string) &&
+          tokens[index + 1]?.text === '.' &&
+          matches(tokens[index + 2], column)
+        ) {
+          return focus === 'qualifier'
+            ? tokens[index]?.span
+            : tokens[index + 2]?.span;
+        }
+      }
+    }
+    for (const token of tokens) {
+      if (matches(token, subject)) return token.span;
+    }
+    return undefined;
   }
 
   #bindSymbols(query: SyqlQueryDeclaration): ReadonlyMap<string, BindSymbol> {

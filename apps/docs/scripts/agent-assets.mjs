@@ -65,13 +65,39 @@ const contentFiles = findMarkdownFiles(contentDir).map((path) => {
   };
 });
 
-const bySlug = new Map(contentFiles.map((page) => [page.slug, page]));
+const playgroundPath = join(root, 'src/pages/playground.astro');
+const playgroundPage = {
+  slug: 'playground',
+  path: playgroundPath,
+  title: 'SYQL playground',
+  lastmod: statSync(playgroundPath).mtime.toISOString().slice(0, 10),
+  body: `# SYQL playground
+
+The interactive SYQL playground compiles editable SYQL to its complete,
+compiler-selected physical SQLite plan. It runs locally in the browser with
+the same parser, semantic analysis, schema validation, formatter, and lowerer
+used by Syncular typegen.
+
+- [Open the playground](${site}/playground/)
+- [Read the SYQL language guide](${site}/syql/)
+- [Try optional filters](${site}/playground/?example=optional)
+- [Try sort profiles and a bounded limit](${site}/playground/?example=sort-limit)
+- [Inspect synchronization coverage](${site}/playground/?example=sync-coverage)
+- [Try a reusable predicate](${site}/playground/?example=predicate)
+
+The initial schema is a scoped \`todos\` table. The page exposes generated SQL,
+statement variants, public inputs, private binds, dependencies, coverage, and
+row identity. Source text is never uploaded or persisted.
+`,
+};
+const discoverablePages = [...contentFiles, playgroundPage];
+const bySlug = new Map(discoverablePages.map((page) => [page.slug, page]));
 const orderedPages = [
   ...navItems.flatMap((item) => {
     const page = bySlug.get(item.slug);
     return page ? [{ ...page, title: item.title }] : [];
   }),
-  ...contentFiles
+  ...discoverablePages
     .filter((page) => !navItems.some((item) => item.slug === page.slug))
     .sort((a, b) => a.slug.localeCompare(b.slug)),
 ];

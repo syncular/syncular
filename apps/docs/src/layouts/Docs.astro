@@ -16,8 +16,9 @@ import rootPkg from '../../../../package.json';
 interface Props {
   title: string;
   active: string;
+  wide?: boolean;
 }
-const { title, active } = Astro.props;
+const { title, active, wide = false } = Astro.props;
 const releasedVersion = rootPkg.version;
 ---
 
@@ -57,11 +58,11 @@ const releasedVersion = rootPkg.version;
         ))
       }
     </nav>
-    <main>
+    <main class:list={{ 'wide-main': wide }}>
       <div class="release-banner" role="note">
         documentation for published release <code>v{releasedVersion}</code>
       </div>
-      <article>
+      <article class:list={{ 'wide-article': wide }}>
         <slot />
       </article>
     </main>

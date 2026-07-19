@@ -1,0 +1,381 @@
+---
+import Docs from '../layouts/Docs.astro';
+import {
+  PLAYGROUND_EXAMPLES,
+  PLAYGROUND_SCHEMAS,
+  schemaSummary,
+} from '../playground/examples';
+
+const initialExample = PLAYGROUND_EXAMPLES[0];
+const schema = PLAYGROUND_SCHEMAS[initialExample.schemaId];
+---
+
+<Docs
+  title="SYQL playground"
+  active="playground"
+  wide={true}
+>
+  <div id="syql-playground" class="playground" data-state="loading">
+    <header class="playground-intro">
+      <div>
+        <h1>SYQL playground</h1>
+        <p>
+          Edit the checked SYQL source and inspect every statement in the
+          compiler-selected physical SQL plan.
+        </p>
+      </div>
+      <a href="/syql/">language guide →</a>
+    </header>
+
+    <div class="example-bar" aria-label="Playground examples">
+      <div class="example-tabs" role="group" aria-label="Choose an example">
+        {
+          PLAYGROUND_EXAMPLES.map((example, index) => (
+            <button
+              type="button"
+              class="example-button"
+              data-example-id={example.id}
+              aria-pressed={index === 0 ? 'true' : 'false'}
+            >
+              {example.label}
+            </button>
+          ))
+        }
+      </div>
+      <p id="playground-example-description">{initialExample.description}</p>
+    </div>
+
+    <div class="playground-workspace">
+      <section class="playground-panel source-panel" aria-labelledby="source-label">
+        <header class="panel-header">
+          <div>
+            <span class="panel-kicker">source</span>
+            <h2 id="source-label">SYQL</h2>
+          </div>
+          <div class="panel-actions">
+            <button type="button" id="playground-format">Format</button>
+            <button type="button" id="playground-reset">Reset</button>
+          </div>
+        </header>
+        <div id="playground-source" class="editor-host" aria-label="Editable SYQL source">
+          <pre class="editor-fallback"><code>{initialExample.source}</code></pre>
+        </div>
+      </section>
+
+      <section class="playground-panel sql-panel" aria-labelledby="sql-label">
+        <header class="panel-header sql-header">
+          <div>
+            <span class="panel-kicker">selected physical plan</span>
+            <h2 id="sql-label">SQL</h2>
+          </div>
+          <div class="plan-badges" aria-live="polite">
+            <span id="playground-backend">initializing</span>
+            <span id="playground-statement-count">—</span>
+          </div>
+        </header>
+        <div class="plan-controls">
+          <label>
+            <span>query</span>
+            <select id="playground-query" disabled></select>
+          </label>
+          <label>
+            <span>statement</span>
+            <select id="playground-statement" disabled></select>
+          </label>
+          <label>
+            <span>view</span>
+            <select id="playground-representation">
+              <option value="named">named binds</option>
+              <option value="positional">positional binds</option>
+            </select>
+          </label>
+          <button type="button" id="playground-copy" disabled>Copy SQL</button>
+        </div>
+        <div id="playground-sql" class="editor-host" aria-label="Generated SQL output">
+          <pre class="editor-fallback"><code>-- loading the SYQL compiler…</code></pre>
+        </div>
+        <div class="stale-banner" id="playground-stale" hidden>
+          stale output — fix the source to compile again
+        </div>
+      </section>
+    </div>
+
+    <div class="playground-statusbar">
+      <p id="playground-status" role="status" aria-live="polite">
+        Loading editor and compiler…
+      </p>
+      <span id="playground-schema-summary">
+        schema: {schemaSummary(initialExample.schemaId)}
+      </span>
+    </div>
+
+    <div class="playground-details">
+      <details id="playground-schema">
+        <summary>Schema environment</summary>
+        {
+          schema.tables.map((table) => (
+            <div class="schema-table">
+              <h3>{table.name}</h3>
+              <p>
+                primary key <code>{table.primaryKey}</code>
+                {table.scopes.length > 0 && (
+                  <> · scopes {table.scopes.map((scope) => scope.column).join(', ')}</>
+                )}
+              </p>
+              {
+                table.indexes.length > 0 && (
+                  <p>
+                    indexes{' '}
+                    {table.indexes.map((index, indexPosition) => (
+                      <>
+                        {indexPosition > 0 && ', '}
+                        <code>{index.name}({index.columns.join(', ')})</code>
+                      </>
+                    ))}
+                  </p>
+                )
+              }
+              <table>
+                <thead>
+                  <tr><th>column</th><th>type</th><th>null</th></tr>
+                </thead>
+                <tbody>
+                  {table.columns.map((column) => (
+                    <tr>
+                      <td><code>{column.name}</code></td>
+                      <td>{column.type}</td>
+                      <td>{column.nullable ? 'yes' : 'no'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))
+        }
+      </details>
+      <details id="playground-plan">
+        <summary>Plan metadata</summary>
+        <pre id="playground-metadata">Compile the source to inspect inputs, binds, dependencies, coverage, and identity.</pre>
+      </details>
+    </div>
+
+    <section class="diagnostics" aria-labelledby="diagnostics-label">
+      <h2 id="diagnostics-label">Diagnostics</h2>
+      <ol id="playground-diagnostics">
+        <li>No diagnostics.</li>
+      </ol>
+    </section>
+
+    <noscript>
+      <p class="playground-noscript">
+        The playground needs JavaScript for its local editor and compiler. The{' '}
+        <a href="/syql/">SYQL language guide</a> remains available without it.
+      </p>
+    </noscript>
+  </div>
+
+  <script>
+    import '../playground/client';
+  </script>
+</Docs>
+
+<style is:global>
+  .wide-main { align-items: stretch; }
+  .wide-main .release-banner { max-width: 90rem; align-self: center; }
+  article.wide-article { max-width: 90rem; margin: 0 auto; }
+  .playground { --playground-height: clamp(31rem, 63vh, 47rem); }
+  .playground-intro {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1rem 2rem;
+    margin-bottom: 1.5rem;
+  }
+  .playground-intro h1 { margin-bottom: 0.45rem; }
+  .playground-intro h1 + p { max-width: 54rem; margin: 0; color: var(--dim); }
+  .playground-intro > a {
+    flex: none;
+    padding: 0.3rem 0;
+    font-size: 0.76rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .example-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(16rem, 28rem);
+    align-items: center;
+    border: 1px solid var(--border);
+    border-bottom: 0;
+    background: var(--panel);
+  }
+  .example-tabs { display: flex; overflow-x: auto; }
+  .example-button,
+  .panel-actions button,
+  .plan-controls button {
+    border: 0;
+    border-right: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+    color: var(--dim);
+    font: inherit;
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .example-button { flex: none; padding: 0.72rem 0.85rem; }
+  .example-button:hover,
+  .example-button[aria-pressed='true'],
+  .panel-actions button:hover,
+  .plan-controls button:hover:not(:disabled) {
+    background: var(--amber);
+    color: #000;
+  }
+  .example-button:focus-visible,
+  .panel-actions button:focus-visible,
+  .plan-controls button:focus-visible,
+  .plan-controls select:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: -2px;
+  }
+  #playground-example-description {
+    margin: 0;
+    padding: 0.55rem 0.8rem;
+    color: var(--faint);
+    font-size: 0.7rem;
+    line-height: 1.4;
+    border-left: 1px solid var(--border);
+  }
+  .playground-workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    height: var(--playground-height);
+    border: 1px solid var(--border-strong);
+  }
+  .playground-panel { min-width: 0; display: flex; flex-direction: column; }
+  .source-panel { border-right: 1px solid var(--border-strong); }
+  .panel-header {
+    min-height: 4rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding-left: 0.9rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--void);
+  }
+  article .panel-header h2 {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    font-size: 0.95rem;
+  }
+  .panel-kicker {
+    display: block;
+    margin-bottom: 0.15rem;
+    color: var(--faint);
+    font-size: 0.6rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .panel-actions { align-self: stretch; display: flex; }
+  .panel-actions button { padding: 0 0.85rem; border-left: 1px solid var(--border); border-right: 0; }
+  .plan-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.35rem; padding-right: 0.75rem; }
+  .plan-badges span {
+    border: 1px solid var(--border);
+    padding: 0.16rem 0.38rem;
+    color: var(--dim);
+    font-size: 0.61rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .plan-controls {
+    min-height: 3.35rem;
+    display: flex;
+    align-items: stretch;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  .plan-controls label { min-width: 0; display: flex; flex: 1 1 0; flex-direction: column; justify-content: center; padding: 0.35rem 0.55rem; border-right: 1px solid var(--border); }
+  .plan-controls label > span { color: var(--faint); font-size: 0.55rem; letter-spacing: 0.08em; text-transform: uppercase; }
+  .plan-controls select {
+    min-width: 0;
+    width: 100%;
+    border: 0;
+    background: var(--panel);
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.68rem;
+  }
+  .plan-controls button { flex: none; padding: 0 0.75rem; border-right: 0; }
+  .plan-controls button:disabled { cursor: not-allowed; color: var(--faint); }
+  .editor-host { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; background: var(--panel); }
+  .editor-fallback { position: absolute; inset: 0; margin: 0; border: 0; color: var(--dim); }
+  .editor-host .monaco-editor,
+  .editor-host .overflow-guard { width: 100% !important; height: 100% !important; }
+  .stale-banner {
+    position: absolute;
+    right: 0.65rem;
+    bottom: 0.65rem;
+    z-index: 4;
+    border: 1px solid #ff6b5f;
+    background: #160604;
+    color: #ff9a91;
+    padding: 0.25rem 0.45rem;
+    font-size: 0.62rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .sql-panel { position: relative; }
+  .playground-statusbar {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.4rem 1rem;
+    padding: 0.42rem 0.65rem;
+    border: 1px solid var(--border);
+    border-top: 0;
+    color: var(--faint);
+    font-size: 0.66rem;
+  }
+  .playground-statusbar p { margin: 0; color: inherit; }
+  .playground[data-state='success'] #playground-status { color: var(--amber); }
+  .playground[data-state='error'] #playground-status { color: #ff8a80; }
+  .playground-details { display: grid; grid-template-columns: 1fr 1fr; margin-top: 1rem; border: 1px solid var(--border); }
+  .playground-details details + details { border-left: 1px solid var(--border); }
+  .playground-details summary { padding: 0.55rem 0.7rem; color: var(--dim); cursor: pointer; font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; }
+  .playground-details details[open] summary { border-bottom: 1px solid var(--border); color: var(--amber); }
+  .schema-table { padding: 0.7rem; }
+  article .schema-table h3 { margin-top: 0; }
+  .schema-table p { color: var(--dim); font-size: 0.72rem; }
+  .schema-table table { margin-bottom: 0; }
+  #playground-metadata { min-height: 10rem; margin: 0; border: 0; white-space: pre-wrap; color: var(--dim); font-size: 0.72rem; }
+  .diagnostics { margin-top: 1rem; border: 1px solid var(--border); }
+  article .diagnostics h2 { margin: 0; padding: 0.55rem 0.7rem; border: 0; border-bottom: 1px solid var(--border); font-size: 0.72rem; }
+  .diagnostics ol { margin: 0; padding: 0.55rem 0.7rem 0.55rem 2.1rem; color: var(--dim); font-size: 0.72rem; }
+  .diagnostics button { border: 0; background: transparent; color: #ff9a91; font: inherit; text-align: left; cursor: pointer; }
+  .diagnostics button:hover { color: var(--ink); }
+  .diagnostic-code { color: #ff8a80; font-weight: 700; }
+  .playground-noscript { border: 1px solid #ff6b5f; padding: 0.7rem; }
+  @media (max-width: 1100px) {
+    .example-bar { grid-template-columns: 1fr; }
+    #playground-example-description { border-top: 1px solid var(--border); border-left: 0; }
+    .playground { --playground-height: clamp(29rem, 60vh, 42rem); }
+  }
+  @media (max-width: 780px) {
+    .playground-intro { align-items: flex-start; flex-direction: column; }
+    .playground-workspace { grid-template-columns: 1fr; height: auto; }
+    .source-panel { border-right: 0; border-bottom: 1px solid var(--border-strong); }
+    .editor-host { min-height: 24rem; }
+    .playground-details { grid-template-columns: 1fr; }
+    .playground-details details + details { border-top: 1px solid var(--border); border-left: 0; }
+    .playground-statusbar { flex-direction: column; }
+  }
+  @media (max-width: 520px) {
+    .panel-header { align-items: stretch; padding-left: 0.65rem; }
+    .panel-header > div:first-child { align-self: center; }
+    .plan-badges { align-content: center; padding-right: 0.45rem; }
+    .plan-controls { flex-wrap: wrap; }
+    .plan-controls label { min-width: 50%; border-bottom: 1px solid var(--border); }
+    .plan-controls button { min-height: 2.5rem; flex: 1 0 100%; }
+  }
+</style>

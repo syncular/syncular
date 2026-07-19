@@ -19,6 +19,12 @@ const walk = (dir) => {
         .replace(/(href|src)="\//g, `$1="${base}`)
         .replace(/url\(\s*['"]?\/(?!\/)/g, (m) => m.replace('/', base));
       if (out !== src) writeFileSync(path, out);
+    } else if (name.endsWith('.js')) {
+      // Vite emits root-absolute URLs for worker and WASM assets inside JS
+      // chunks. They are not reachable through the HTML/CSS rewrite above.
+      const src = readFileSync(path, 'utf8');
+      const out = src.replaceAll('/_astro/', `${base}_astro/`);
+      if (out !== src) writeFileSync(path, out);
     }
   }
 };
