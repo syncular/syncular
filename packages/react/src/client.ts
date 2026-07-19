@@ -24,6 +24,8 @@ import type {
   LeaseState,
   LocalDataPurgeInput,
   LocalDataPurgeResult,
+  LocalDataRebootstrapInput,
+  LocalDataRebootstrapResult,
   MutationInput,
   PresencePeer,
   QueryReadSpec,
@@ -73,6 +75,9 @@ export interface SyncClientLike {
   purgeLocalData(
     input: LocalDataPurgeInput,
   ): LocalDataPurgeResult | Promise<LocalDataPurgeResult>;
+  rebootstrapLocalData(
+    input: LocalDataRebootstrapInput,
+  ): LocalDataRebootstrapResult | Promise<LocalDataRebootstrapResult>;
   querySnapshot<Row = SqlRow>(
     spec: QueryReadSpec,
   ): QuerySnapshot<Row> | Promise<QuerySnapshot<Row>>;
@@ -158,6 +163,9 @@ export interface NormalizedClient {
     options?: { readonly baseVersion?: number },
   ): Promise<string>;
   purgeLocalData(input: LocalDataPurgeInput): Promise<LocalDataPurgeResult>;
+  rebootstrapLocalData(
+    input: LocalDataRebootstrapInput,
+  ): Promise<LocalDataRebootstrapResult>;
   querySnapshot<Row = SqlRow>(spec: QueryReadSpec): Promise<QuerySnapshot<Row>>;
   statusSnapshot(): Promise<SyncStatusSnapshot>;
   diagnosticsSnapshot(
@@ -205,6 +213,8 @@ export function normalizeClient(client: SyncClientLike): NormalizedClient {
     patch: (table, rowId, partial, options) =>
       Promise.resolve(client.patch(table, rowId, partial, options)),
     purgeLocalData: (input) => Promise.resolve(client.purgeLocalData(input)),
+    rebootstrapLocalData: (input) =>
+      Promise.resolve(client.rebootstrapLocalData(input)),
     querySnapshot: (spec) => Promise.resolve(client.querySnapshot(spec)),
     statusSnapshot: () => Promise.resolve(client.statusSnapshot()),
     diagnosticsSnapshot: (request) =>

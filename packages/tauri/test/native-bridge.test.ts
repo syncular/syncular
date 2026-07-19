@@ -290,6 +290,50 @@ if (!available) {
       }
     });
 
+    test('real native rebootstrap retains optimistic work and rewinds subscriptions', async () => {
+      const host = nativeTauri();
+      try {
+        const client = await createTauriSyncClient({ schema, tauri: host.api });
+        await client.subscribe({
+          id: 'native-repair-todos',
+          table: 'todos',
+          scopes: { listId: ['held'] },
+        });
+        const pending = await client.mutate([
+          {
+            op: 'upsert',
+            table: 'todos',
+            values: { id: 'offline', listId: 'held', title: 'keep me' },
+          },
+        ]);
+        expect(
+          await client.rebootstrapLocalData({
+            rebootstrapId: 'native-repair-001',
+          }),
+        ).toEqual({
+          alreadyApplied: false,
+          retainedCommits: 1,
+          resetSubscriptions: 1,
+        });
+        expect(await client.query('SELECT id FROM todos')).toEqual([
+          { id: 'offline' },
+        ]);
+        expect(await client.pendingCommits()).toEqual([pending]);
+        expect(
+          await client.rebootstrapLocalData({
+            rebootstrapId: 'native-repair-001',
+          }),
+        ).toEqual({
+          alreadyApplied: true,
+          retainedCommits: 0,
+          resetSubscriptions: 0,
+        });
+        await client.close();
+      } finally {
+        await host.close();
+      }
+    });
+
     test('real Rust preflight purges before protected reads and activates in place', async () => {
       const host = nativeTauri();
       try {
@@ -312,6 +356,11 @@ if (!available) {
           purgedRows: 0,
           droppedCommits: 0,
         });
+        await expect(
+          client.rebootstrapLocalData({
+            rebootstrapId: 'native-blocked-repair',
+          }),
+        ).rejects.toMatchObject({ code: SECURITY_PREFLIGHT_REQUIRED_CODE });
 
         await client.activateSecurity();
         expect(await client.securityLifecycle()).toBe('active');

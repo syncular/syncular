@@ -29,12 +29,12 @@ use crate::api::{
     CommitOperationOutcome, CommitOutcome, CommitOutcomeQuery, CommitOutcomeResolution,
     CommitOutcomeStatus, ConflictRecord, CoverageSnapshot, DiagnosticLastChange,
     DiagnosticLastRound, DiagnosticRoundCounters, DiagnosticSubscription, LeaseState,
-    LocalDataPurgeInput, LocalDataPurgeResult, LocalDataPurgeTarget, Mutation, PresencePeer,
-    QueryRow, QuerySnapshot, QueryValue, RejectionDetails, RejectionRecord,
-    ResolveCommitOutcomeInput, RowState, SchemaFloor, SubscriptionStateView, SyncIntent,
-    SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange, WindowBase, WindowChange,
-    WindowCoverage, WindowState, WindowUnitRef, CLIENT_DIAGNOSTICS_VERSION,
-    MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
+    LocalDataPurgeInput, LocalDataPurgeResult, LocalDataPurgeTarget, LocalDataRebootstrapInput,
+    LocalDataRebootstrapResult, Mutation, PresencePeer, QueryRow, QuerySnapshot, QueryValue,
+    RejectionDetails, RejectionRecord, ResolveCommitOutcomeInput, RowState, SchemaFloor,
+    SubscriptionStateView, SyncIntent, SyncOutcome, SyncReport, SyncStatusSnapshot, TableChange,
+    WindowBase, WindowChange, WindowCoverage, WindowState, WindowUnitRef,
+    CLIENT_DIAGNOSTICS_VERSION, MAX_DIAGNOSTIC_EXPECTED_SUBSCRIPTIONS,
 };
 use crate::schema::{parse_schema_json, ClientSchema, FtsIndexSchema, TableSchema};
 use crate::transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, TransportError};
@@ -117,6 +117,119 @@ mod observation_tests {
             client.drain_sync_intents().as_slice(),
             [SyncIntent::Background { delay_ms: 250 }]
         ));
+    }
+
+    #[test]
+    fn local_rebootstrap_is_atomic_idempotent_and_preserves_offline_work() {
+        let mut client = client();
+        client
+            .subscribe(
+                "repair-tasks".to_owned(),
+                "tasks".to_owned(),
+                vec![("project_id".to_owned(), vec!["p1".to_owned()])],
+                None,
+            )
+            .expect("subscribe");
+        {
+            let sub = client
+                .subs
+                .iter_mut()
+                .find(|sub| sub.id == "repair-tasks")
+                .expect("subscription");
+            sub.cursor = 42;
+            sub.synced_once = true;
+            let persisted = sub.clone();
+            client.persist_sub(&persisted);
+        }
+        for table in ["_syncular_base_tasks", "tasks"] {
+            client
+                .conn
+                .execute(
+                    &format!(
+                        "INSERT INTO {table}(id, project_id, _syncular_version) VALUES (?1, ?2, 1)"
+                    ),
+                    rusqlite::params!["server-row", "p1"],
+                )
+                .expect("seed server row");
+        }
+        let pending = client
+            .mutate(vec![Mutation::Upsert {
+                table: "tasks".to_owned(),
+                values: Map::from_iter([
+                    ("id".to_owned(), Value::from("offline-row")),
+                    ("project_id".to_owned(), Value::from("p1")),
+                ]),
+                base_version: None,
+            }])
+            .expect("queue offline work");
+        client.drain_change_batches();
+        client.drain_sync_intents();
+
+        assert_eq!(
+            client
+                .rebootstrap_local_data(&LocalDataRebootstrapInput {
+                    rebootstrap_id: "support-case-001".to_owned(),
+                })
+                .expect("rebootstrap"),
+            LocalDataRebootstrapResult {
+                already_applied: false,
+                retained_commits: 1,
+                reset_subscriptions: 1,
+            }
+        );
+        let visible_ids = client
+            .conn
+            .prepare("SELECT id FROM tasks ORDER BY id")
+            .expect("prepare visible ids")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query visible ids")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect visible ids");
+        assert_eq!(visible_ids, vec!["offline-row"]);
+        assert_eq!(client.pending_commit_ids(), vec![pending]);
+        assert_eq!(
+            client
+                .subscription_state("repair-tasks")
+                .expect("subscription")
+                .cursor,
+            -1
+        );
+        assert!(client.upgrading());
+        assert!(client.sync_needed());
+        assert!(matches!(
+            client.drain_sync_intents().as_slice(),
+            [SyncIntent::Interactive]
+        ));
+        assert_eq!(client.drain_change_batches().len(), 1);
+
+        assert_eq!(
+            client
+                .rebootstrap_local_data(&LocalDataRebootstrapInput {
+                    rebootstrap_id: "support-case-001".to_owned(),
+                })
+                .expect("idempotent retry"),
+            LocalDataRebootstrapResult {
+                already_applied: true,
+                retained_commits: 0,
+                reset_subscriptions: 0,
+            }
+        );
+        assert!(client.drain_change_batches().is_empty());
+    }
+
+    #[test]
+    fn local_rebootstrap_cannot_bypass_schema_floor() {
+        let mut client = client();
+        client.set_schema_floor(Some(SchemaFloor {
+            required_schema_version: Some(2),
+            latest_schema_version: Some(2),
+        }));
+        let error = client
+            .rebootstrap_local_data(&LocalDataRebootstrapInput {
+                rebootstrap_id: "blocked-floor".to_owned(),
+            })
+            .expect_err("schema floor must block repair");
+        assert!(error.contains("cannot bypass an active schema-floor stop"));
     }
 
     #[test]
@@ -1453,7 +1566,7 @@ fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-fn is_local_purge_code_like(value: &str) -> bool {
+fn is_local_operation_code_like(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.first().is_some_and(u8::is_ascii_alphanumeric)
         && bytes
@@ -2990,7 +3103,7 @@ impl SyncClient {
     fn run_schema_reset(&mut self) -> Result<(), String> {
         self.begin_observation("syncular_schema_reset")?;
         let mut batch = ChangeAccumulator::default();
-        let result = self.run_schema_reset_observed(&mut batch);
+        let result = self.run_schema_reset_observed(&mut batch, true);
         if let Err(error) = result {
             self.rollback_observation("syncular_schema_reset");
             return Err(error);
@@ -3002,7 +3115,11 @@ impl SyncClient {
         Ok(())
     }
 
-    fn run_schema_reset_observed(&mut self, batch: &mut ChangeAccumulator) -> Result<(), String> {
+    fn run_schema_reset_observed(
+        &mut self,
+        batch: &mut ChangeAccumulator,
+        drop_incompatible: bool,
+    ) -> Result<(), String> {
         self.upgrading = true;
         batch.status = true;
         for table in &self.schema.tables {
@@ -3088,7 +3205,7 @@ impl SyncClient {
         // §7.4.4: drop outbox commits that cannot re-encode under the new
         // schema (a referenced column/table the bump removed), surfacing each
         // as a `sync.outbox_incompatible` rejection.
-        if self.drop_incompatible_outbox()? {
+        if drop_incompatible && self.drop_incompatible_outbox()? {
             batch.rejections = true;
             batch.status = true;
             batch.outcomes = true;
@@ -6053,7 +6170,7 @@ impl SyncClient {
         let invalid = |message: String| format!("sync.invalid_request: {message}");
         if input.purge_id.is_empty()
             || input.purge_id.len() > 128
-            || !is_local_purge_code_like(&input.purge_id)
+            || !is_local_operation_code_like(&input.purge_id)
         {
             return Err(invalid(
                 "local purge purgeId must be a 1–128 character code-like identifier".to_owned(),
@@ -6118,7 +6235,7 @@ impl SyncClient {
                 if values.iter().any(|value| {
                     value.is_empty()
                         || value.len() > MAX_LOCAL_PURGE_VALUE_LENGTH
-                        || !is_local_purge_code_like(value)
+                        || !is_local_operation_code_like(value)
                 }) {
                     return Err(invalid(format!(
                         "local purge selector values must be 1–{MAX_LOCAL_PURGE_VALUE_LENGTH} character code-like identifiers"
@@ -6366,6 +6483,94 @@ impl SyncClient {
             return Err(error);
         }
         Ok(result)
+    }
+
+    /// Application-authorized recovery of the replicated projection. Unlike a
+    /// local security purge, this retains the entire outbox, device identity,
+    /// lease, outcomes, subscription registrations, and protected bookkeeping.
+    /// The projection reset, subscription rewind, optimistic replay, and
+    /// idempotency marker share one savepoint for interruption safety.
+    pub fn rebootstrap_local_data(
+        &mut self,
+        input: &LocalDataRebootstrapInput,
+    ) -> Result<LocalDataRebootstrapResult, String> {
+        if input.rebootstrap_id.is_empty()
+            || input.rebootstrap_id.len() > 128
+            || !is_local_operation_code_like(&input.rebootstrap_id)
+        {
+            return Err(
+                "sync.invalid_request: local rebootstrap rebootstrapId must be a 1–128 character code-like identifier"
+                    .to_owned(),
+            );
+        }
+        let meta_key = format!("localRebootstrap:{}", input.rebootstrap_id);
+        if self.get_meta(&meta_key).is_some() {
+            return Ok(LocalDataRebootstrapResult {
+                already_applied: true,
+                retained_commits: 0,
+                reset_subscriptions: 0,
+            });
+        }
+        if self.stopped || self.schema_floor.is_some() {
+            return Err(
+                "sync.invalid_request: local rebootstrap cannot bypass an active schema-floor stop; update the application first"
+                    .to_owned(),
+            );
+        }
+
+        let retained_commits = self.outbox.len();
+        let reset_subscriptions = self.subs.len();
+        let prior_subs = self.subs.clone();
+        let prior_upgrading = self.upgrading;
+        let prior_stopped = self.stopped;
+        let prior_schema_floor = self.schema_floor.clone();
+        let prior_overlay_dirty = self.overlay_dirty.get();
+        let prior_sync_needed = self.sync_needed;
+        let prior_sync_intents = self.sync_intent_queue.clone();
+
+        self.begin_observation("syncular_local_rebootstrap")?;
+        let mut batch = ChangeAccumulator::default();
+        let applied = (|| -> Result<(), String> {
+            self.run_schema_reset_observed(&mut batch, false)?;
+            self.conn
+                .execute(
+                    "INSERT INTO _syncular_meta(key, value) VALUES (?1, 'v1')",
+                    rusqlite::params![meta_key],
+                )
+                .map_err(|error| error.to_string())?;
+            self.sync_needed = true;
+            self.sync_intent_queue.push_back(SyncIntent::Interactive);
+            batch.status = true;
+            Ok(())
+        })();
+        if let Err(error) = applied {
+            self.rollback_observation("syncular_local_rebootstrap");
+            self.subs = prior_subs;
+            self.upgrading = prior_upgrading;
+            self.stopped = prior_stopped;
+            self.schema_floor = prior_schema_floor;
+            self.overlay_dirty.set(prior_overlay_dirty);
+            self.sync_needed = prior_sync_needed;
+            self.sync_intent_queue = prior_sync_intents;
+            return Err(error);
+        }
+        if let Err(error) = self.finish_observation("syncular_local_rebootstrap", batch) {
+            self.rollback_observation("syncular_local_rebootstrap");
+            self.subs = prior_subs;
+            self.upgrading = prior_upgrading;
+            self.stopped = prior_stopped;
+            self.schema_floor = prior_schema_floor;
+            self.overlay_dirty.set(prior_overlay_dirty);
+            self.sync_needed = prior_sync_needed;
+            self.sync_intent_queue = prior_sync_intents;
+            return Err(error);
+        }
+
+        Ok(LocalDataRebootstrapResult {
+            already_applied: false,
+            retained_commits,
+            reset_subscriptions,
+        })
     }
 
     // -- scope purge + doomed outbox (§3.3) ----------------------------------------

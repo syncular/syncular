@@ -21,8 +21,8 @@ use ssp2::{
 };
 use syncular_client::{
     ClientDiagnosticsRequest, ClientLimits, CommandEffects, CommitOutcomeQuery,
-    LocalDataPurgeInput, Mutation, ResolveCommitOutcomeInput, SyncClient, Transport, WindowBase,
-    WindowCoverage,
+    LocalDataPurgeInput, LocalDataRebootstrapInput, Mutation, ResolveCommitOutcomeInput,
+    SyncClient, Transport, WindowBase, WindowCoverage,
 };
 
 // -- bytes <-> {"$bytes": hex} (the driver-protocol byte envelope) ----------
@@ -485,6 +485,32 @@ pub fn dispatch<T: Transport>(
                 .purge_local_data(&input)
                 .map_err(client_err)?;
             serde_json::to_value(result).map_err(|error| client_err(error.to_string()))
+        }
+        "rebootstrapLocalData" => {
+            let input: LocalDataRebootstrapInput =
+                serde_json::from_value(params.get("input").cloned().ok_or_else(|| {
+                    client_err(
+                        "sync.invalid_request: rebootstrapLocalData missing input".to_owned(),
+                    )
+                })?)
+                .map_err(|error| {
+                    client_err(format!(
+                        "sync.invalid_request: invalid rebootstrapLocalData input: {error}"
+                    ))
+                })?;
+            let result = need_client(client)?
+                .rebootstrap_local_data(&input)
+                .map_err(client_err)?;
+            Ok(json!({
+                "alreadyApplied": result.already_applied,
+                "retainedCommits": result.retained_commits,
+                "resetSubscriptions": result.reset_subscriptions,
+                "effects": if result.already_applied {
+                    CommandEffects::none()
+                } else {
+                    CommandEffects::interactive()
+                }
+            }))
         }
         "sync" => {
             let outcome = need_client(client)?.sync(transport);
@@ -1053,6 +1079,16 @@ mod tests {
             }),
         )
         .expect("authorized local purge remains available");
+
+        let repair_error = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "rebootstrapLocalData",
+            &json!({ "input": { "rebootstrapId": "blocked-repair" } }),
+        )
+        .expect_err("projection repair must remain protected during preflight");
+        assert_eq!(repair_error.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
 
         dispatch(
             &mut transport,

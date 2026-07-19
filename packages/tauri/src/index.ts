@@ -42,6 +42,8 @@ import type {
   LeaseState,
   LocalDataPurgeInput,
   LocalDataPurgeResult,
+  LocalDataRebootstrapInput,
+  LocalDataRebootstrapResult,
   MutationInput,
   PresencePeer,
   QueryReadSpec,
@@ -537,6 +539,19 @@ export class TauriSyncClient {
     return (await this.#command('purgeLocalData', {
       input,
     })) as LocalDataPurgeResult;
+  }
+
+  async rebootstrapLocalData(
+    input: LocalDataRebootstrapInput,
+  ): Promise<LocalDataRebootstrapResult> {
+    const result = (await this.#command('rebootstrapLocalData', {
+      input,
+    })) as LocalDataRebootstrapResult;
+    return {
+      alreadyApplied: result.alreadyApplied,
+      retainedCommits: result.retainedCommits,
+      resetSubscriptions: result.resetSubscriptions,
+    };
   }
 
   /**

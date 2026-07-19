@@ -28,6 +28,15 @@ for validating the server-authoritative directive, gating subscriptions before
 the purge, deleting app-owned drafts/files, and removing the corresponding key
 from the OS secure store after SQLite cleanup succeeds.
 
+For support-directed projection recovery, the bridge also exposes
+`rebootstrapLocalData({ rebootstrapId })`. It atomically recreates only synced
+projection tables, rewinds retained subscriptions, replays the complete
+outbox, and requests a fresh bootstrap while preserving device identity,
+lease state, outcomes, and protected bookkeeping. The result contains only
+`alreadyApplied`, `retainedCommits`, and `resetSubscriptions`. It is blocked
+during security preflight and an active schema-floor stop; it is not a sign-out
+or secure-erasure API.
+
 ## Secure preflight and native disposal
 
 Create with `securityPreflight: true` when authentication, signed device

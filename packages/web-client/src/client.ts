@@ -104,6 +104,12 @@ import {
   localDataPurgeTargetMatches,
 } from './local-purge';
 import {
+  compileLocalDataRebootstrap,
+  type LocalDataRebootstrapInput,
+  type LocalDataRebootstrapResult,
+  localDataRebootstrapMetaKey,
+} from './local-rebootstrap';
+import {
   appendOutboxCommit,
   deleteOutboxCommit,
   dropOutboxCommitsInScope,
@@ -2220,6 +2226,71 @@ export class SyncClient {
       this.#rejections.length = rejectionCount;
       throw error;
     }
+  }
+
+  /**
+   * Rebuild the server-derived local projection without sacrificing offline
+   * work or device identity. The reset, subscription rewind, durable
+   * idempotency marker, and optimistic outbox replay are one SQLite
+   * transaction, so an interruption cannot expose a half-repaired replica.
+   *
+   * This is an application-authorized repair primitive, not a security purge.
+   * It is unavailable during security preflight and while a schema-floor stop
+   * is active: neither condition can be repaired by redownloading data.
+   */
+  rebootstrapLocalData(
+    input: LocalDataRebootstrapInput,
+  ): LocalDataRebootstrapResult {
+    this.#requireActive();
+    const rebootstrapId = compileLocalDataRebootstrap(input);
+    const metaKey = localDataRebootstrapMetaKey(rebootstrapId);
+    if (getMeta(this.#db, metaKey) !== undefined) {
+      return {
+        alreadyApplied: true,
+        retainedCommits: 0,
+        resetSubscriptions: 0,
+      };
+    }
+    if (this.#schemaFloor !== undefined) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        'local rebootstrap cannot bypass an active schema-floor stop; update the application first',
+      );
+    }
+
+    const pending = listOutbox(this.#db);
+    const resetSubscriptions = loadSubscriptions(this.#db).length;
+    const priorUpgrading = this.#upgrading;
+    const priorNeedsPull = this.#needsPull;
+    try {
+      this.#applyBatch((batch) => {
+        this.#upgrading = true;
+        this.#needsPull = true;
+        batch.status();
+        dropAndRecreateSyncedTables(this.#db, this.#schema);
+        resetSubscriptionsForBump(this.#db);
+        for (const table of this.#schema.tables.values()) {
+          batch.table(table.name);
+        }
+        for (const commit of pending) {
+          this.#applyOperationsLocally(commit.operations, batch);
+        }
+        setMeta(this.#db, metaKey, 'v1');
+      });
+    } catch (error) {
+      this.#upgrading = priorUpgrading;
+      this.#needsPull = priorNeedsPull;
+      throw error;
+    }
+
+    if (!priorUpgrading) this.#config.onUpgrading?.(true);
+    this.#config.onSyncNeeded?.('startup');
+    this.#config.onSyncIntent?.({ kind: 'interactive' });
+    return {
+      alreadyApplied: false,
+      retainedCommits: pending.length,
+      resetSubscriptions,
+    };
   }
 
   #localPurgeTargetsByTable(

@@ -96,6 +96,14 @@ work, reconciles blob references, and returns counts only. The app must first
 validate the directive and gate subscriptions, then separately remove
 app-owned files and OS-secure-store keys.
 
+`rebootstrapLocalData({ rebootstrapId })` provides the matching native recovery
+path for a damaged replicated projection. One transaction recreates synced
+tables, rewinds retained subscriptions, persists the idempotency key, and
+replays pending offline commits. Device identity, lease state, outcomes,
+subscription intent, and protected bookkeeping remain intact. The counts-only
+result is safe for a support UI; the operation stays blocked during security
+preflight and a schema-floor stop and must not be used as secure erase.
+
 For authentication/quarantine-before-data, construct with
 `securityPreflight: true`, apply the exact local purge, then call
 `activateSecurity({ encryption: acceptedKeyring })`. React Native now accepts
