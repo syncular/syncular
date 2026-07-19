@@ -236,6 +236,14 @@ exclusive `afterRowId`, and has a required limit from 1 through 1,000. All
 shipped adapters implement it; transaction reads see staged writes and deletes.
 It requires a materialized table.
 
+`values` is always a complete, order-sensitive index tuple. A compound index
+on `(workspace_id, state, id)` therefore requires exactly three values; passing
+only `[workspaceId]` is rejected with
+`sync.storage.index_value_count_mismatch` and is never interpreted as a
+leading-prefix scan. Declare a separate `(workspace_id)` index when the command
+must enumerate every row in one Workspace. Syncular does not currently expose
+trusted prefix or range scans.
+
 This is a trusted `@syncular/server` storage capability, not SSP2: it creates no
 scope variable, named-query obligation, subscription descriptor, or client
 authority. Never expose table/index/value selection through a client-controlled

@@ -154,11 +154,13 @@ worker can briefly compete for the same persistent OPFS directory. Never wipe
 or rename the database in response to a retryable startup error.
 
 For Vite, use `retainViteSyncClientResource(hot.data, schema.version,
-createClient)`. It retains a `{ schemaVersion, resource }` record, reuses it for
-same-schema HMR, and awaits old-resource disposal before creating a schema-bump
-replacement. Request `hot.invalidate()` only when its `schemaChanged` result is
-true and `disposalError` is absent; the official example and full explanation
-are in the [Vite guide](https://syncular.dev/guide-vite/). The helper may close
+createClient)`. It retains a `{ schemaVersion, runtimeVersion, resource }`
+record, reuses it for same-schema HMR on the same published Syncular runtime,
+and awaits old-resource disposal before creating a schema-bump or
+package-upgrade replacement. Request `hot.invalidate()` only when its
+`ownerChanged` result is true and `disposalError` is absent; the official
+example, optimizer exclusion, and upgrade workflow are in the
+[Vite guide](https://syncular.dev/guide-vite/). The helper may close
 the retained client before React runs cleanup for the old provider; Syncular
 absorbs that teardown-only window-release race while still surfacing failures
 from closing the resource itself.

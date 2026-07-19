@@ -18,7 +18,9 @@ import {
   type SyncClientHandle,
   type SyncClientHandleConfig,
   WORKER_FAILED_CODE,
+  WORKER_RESTART_REQUIRED_CODE,
   type WorkerErrorShape,
+  workerStartupError,
 } from '@syncular/client';
 import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
 import {
@@ -606,6 +608,23 @@ test('worker init failure rejects the handle cleanly', async () => {
     }),
     WORKER_FAILED_CODE,
   );
+});
+
+test('worker bundle load failures require a privacy-safe full restart', () => {
+  const stale = workerStartupError(
+    'Failed to fetch dynamically imported module: http://localhost:5199/node_modules/.vite/deps/encryption-secret.js?v=private',
+  );
+  expect(stale).toMatchObject({
+    code: WORKER_RESTART_REQUIRED_CODE,
+    retryable: false,
+  });
+  expect(stale.message).not.toContain('localhost');
+  expect(stale.message).not.toContain('encryption-secret');
+
+  expect(workerStartupError('ordinary worker exception')).toMatchObject({
+    code: WORKER_FAILED_CODE,
+    retryable: false,
+  });
 });
 
 test('retryable storage ownership failure crosses worker RPC and releases leadership', async () => {

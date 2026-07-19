@@ -144,11 +144,12 @@ deterministic tuple for diagnostics and host integration. Replica IDs are
 stable code-like values (`A-Z`, `a-z`, `0-9`, dot, underscore, dash).
 
 During Vite development, retain the React client resource only while its
-captured generated schema version matches. The
-[schema-aware Vite guide](https://syncular.dev/guide-vite/) uses
+captured generated schema version and published Syncular runtime identity both
+match. The
+[schema-and-runtime-aware Vite guide](https://syncular.dev/guide-vite/) uses
 `retainViteSyncClientResource` to close the old worker before constructing a
-schema-bump replacement; hot-reloading query code alone does not migrate the
-worker-owned database.
+schema-bump or package-upgrade replacement; hot-reloading query code alone does
+not migrate the worker-owned database.
 
 Set `multiTab: false` to opt out. A losing tab then becomes an
 `isLeader === false` handle whose calls reject with `client.not_leader`. This
@@ -359,6 +360,11 @@ handle again. **Do not delete, rename, or silently replace the database with an
 in-memory one**; the local database and pending outbox may be perfectly healthy.
 Missing or obsolete OPFS APIs instead use the non-retryable
 `client.storage_unavailable` code.
+
+A worker graph that still names a retired Vite optimizer chunk instead uses
+the non-retryable `client.worker_restart_required` code. Restart the dev server
+and reload the page; do not clear OPFS. The original bundler message and chunk
+URL are deliberately not copied into the public error.
 
 When using `@syncular/react`, `createSyncClientResource()` exposes `retry()` and
 passes the same action as the second argument to `SyncProvider.renderError`.

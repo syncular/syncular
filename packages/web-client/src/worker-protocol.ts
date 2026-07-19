@@ -67,6 +67,8 @@ import type { WindowBase } from './window';
 export const NOT_LEADER_CODE = 'client.not_leader';
 /** The worker (or its RPC channel) failed outside protocol semantics. */
 export const WORKER_FAILED_CODE = 'client.worker_failed';
+/** A page/worker bundle identity changed and a full host reload is required. */
+export const WORKER_RESTART_REQUIRED_CODE = 'client.worker_restart_required';
 
 // ---------------------------------------------------------------------------
 // Init configuration (structured-clone safe)

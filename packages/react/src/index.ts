@@ -30,6 +30,7 @@ export {
   type SyncClientResource,
   type SyncClientResourceSnapshot,
 } from './resource';
+export { SYNCULAR_REACT_RUNTIME_VERSION } from './runtime-version';
 export { useReactiveStore, useSyncClient } from './use-client';
 export {
   type UseCommitOutcomesResult,

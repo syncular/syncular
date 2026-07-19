@@ -180,10 +180,25 @@ useEffect(() => {
 Pair it with `useSyncStatus().outbox` for the three states a status pill
 needs: offline (queueing), online with a draining outbox, and in sync.
 
+## `client.worker_restart_required` after a package upgrade
+
+The page tried to start a worker graph that still referred to a retired Vite
+optimizer chunk. This is a development-host identity mismatch, not evidence of
+replica corruption. Stop Vite, reinstall from the lockfile, restart once with
+`--force`, and reload every open app tab. Do not clear OPFS: device identity,
+subscription progress, and an unsynced outbox may live there.
+
+Use `SYNCULAR_VITE_OPTIMIZE_DEPS_EXCLUDE` from `@syncular/react/vite` and the
+schema-and-runtime-aware `retainViteSyncClientResource` recipe in the
+[Vite guide](/guide-vite/). Current clients sanitize the original bundler text
+and URL before surfacing this stable code, so support diagnostics do not retain
+local paths or chunk names.
+
 ## Vite build errors mentioning sqlite-wasm or the worker
 
 Two config lines fix both: `optimizeDeps.exclude` for
-`@sqlite.org/sqlite-wasm` and `worker.format: 'es'`. The full setup —
+`@sqlite.org/sqlite-wasm` plus `SYNCULAR_VITE_OPTIMIZE_DEPS_EXCLUDE`, and
+`worker.format: 'es'`. The full setup —
 including the dev proxy for `/sync`, `/segments`, and the `/realtime`
 WebSocket — is on the [Vite page](/guide-vite/).
 

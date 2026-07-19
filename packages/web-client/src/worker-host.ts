@@ -92,6 +92,7 @@ import {
   NOT_LEADER_CODE,
   type SyncWorkerEvent,
   WORKER_FAILED_CODE,
+  WORKER_RESTART_REQUIRED_CODE,
   type WorkerApi,
   type WorkerDatabaseInit,
   type WorkerEndpoints,
@@ -102,6 +103,20 @@ import {
   type WorkerSecurityActivation,
   type WorkerToMainMessage,
 } from './worker-protocol';
+
+const WORKER_BUNDLE_LOAD_FAILURE =
+  /(?:failed to fetch dynamically imported module|error loading dynamically imported module|importing a module script failed|failed to load module script)/iu;
+
+/** Classify startup without echoing a chunk URL or bundler text to UI/logs. */
+export function workerStartupError(message: unknown): ClientSyncError {
+  if (typeof message === 'string' && WORKER_BUNDLE_LOAD_FAILURE.test(message)) {
+    return new ClientSyncError(
+      WORKER_RESTART_REQUIRED_CODE,
+      'the sync worker bundle changed; fully reload this application',
+    );
+  }
+  return new ClientSyncError(WORKER_FAILED_CODE, 'the sync worker failed');
+}
 
 export type HandleRole = 'leader' | 'follower';
 
@@ -717,10 +732,7 @@ async function startWorkerCore(options: {
       }
     };
     const onError = (event: ErrorEvent) => {
-      const error = new ClientSyncError(
-        WORKER_FAILED_CODE,
-        `the sync worker failed: ${event.message ?? 'unknown error'}`,
-      );
+      const error = workerStartupError(event.message);
       reject(error);
       for (const entry of pending.values()) entry.reject(error);
       pending.clear();
