@@ -2524,7 +2524,8 @@ export class SyncClient {
       code === 'transport.failed' ||
       code === 'transport.unavailable' ||
       code === 'sync.transport_failed' ||
-      code === 'client.worker_failed'
+      code === 'client.worker_failed' ||
+      code === 'client.worker_restart_required'
     );
   }
 

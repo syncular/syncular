@@ -146,6 +146,15 @@ never wrap it in a route that accepts table, index, or value choices from an
 untrusted client. Custom storage adapters may omit this additive capability
 and should fail the command closed, as above.
 
+`values` is a complete, order-sensitive tuple—not a SQL-style leading-prefix
+request. For an index declared as
+`columns: ['workspace_id', 'state', 'id']`, only
+`values: [workspaceId, state, id]` is valid. `values: [workspaceId]` fails with
+`sync.storage.index_value_count_mismatch`; it does not enumerate the
+Workspace. If a command needs that enumeration, declare a dedicated
+`columns: ['workspace_id']` index and query it with one value. Trusted prefix
+and range scans are intentionally not part of this API.
+
 This is also the right shape for a provider webhook: declare, for example,
 `facilities_by_workos_organization` over `workos_organization_id`, resolve the
 exact Facility, then use another declared index or known primary key to find

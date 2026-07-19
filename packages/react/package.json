@@ -33,6 +33,13 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
+    },
+    "./vite": {
+      "bun": "./src/vite-config.ts",
+      "import": {
+        "types": "./dist/vite-config.d.ts",
+        "default": "./dist/vite-config.js"
+      }
     }
   },
   "files": [

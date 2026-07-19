@@ -42,7 +42,7 @@ jobs:
   npm:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
@@ -51,9 +51,12 @@ jobs:
           # lookup for the moving `latest` tag during registry outages.
           bun-version: 1.3.14
       # npm CLI >= 11.5 performs OIDC trusted publishing natively.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
+          # Release jobs use Bun's frozen lockfile and do not need setup-node's
+          # automatic npm cache. Keep the privileged OIDC path cache-neutral.
+          package-manager-cache: false
       - run: npm install -g npm@latest
       - run: bun install --frozen-lockfile
       - name: validate source version and release tag
@@ -109,7 +112,7 @@ jobs:
   crates:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
@@ -193,7 +196,7 @@ jobs:
       group: docs-deploy
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2
@@ -221,7 +224,7 @@ jobs:
       group: demo-deploy
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ env.RELEASE_TAG }}
       - uses: oven-sh/setup-bun@v2

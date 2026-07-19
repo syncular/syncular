@@ -77,6 +77,10 @@ export const CONTRACT_SCHEMA: ServerSchema = {
           name: 'device_key_grants_by_workspace',
           columns: ['workspace_id'],
         },
+        {
+          name: 'device_key_grants_by_workspace_key',
+          columns: ['workspace_id', 'key_id'],
+        },
       ],
     },
   ],
@@ -601,6 +605,15 @@ export function runStorageContract(
         { user_id: 'user-1' },
         { user_id: 'user-2' },
       ]);
+
+      const exactCompound = await storage.scanRowsByIndex?.(PARTITION, {
+        table: 'device_key_grants',
+        index: 'device_key_grants_by_workspace_key',
+        values: ['workspace-1', 'key-g2'],
+        afterRowId: null,
+        limit: 10,
+      });
+      expect(exactCompound?.map((row) => row.rowId)).toEqual(['g2']);
     });
 
     test('transaction index scans see staged upserts, moves, and deletes', async () => {
@@ -645,6 +658,18 @@ export function runStorageContract(
             table: 'tasks',
             index: 'tasks_by_project',
             values: [],
+            afterRowId: null,
+            limit: 10,
+          },
+          code: 'sync.storage.index_value_count_mismatch',
+        },
+        {
+          // A leading value is not a SQL-style prefix scan. Hosts that need
+          // all Workspace rows must declare the dedicated one-column index.
+          query: {
+            table: 'device_key_grants',
+            index: 'device_key_grants_by_workspace_key',
+            values: ['workspace-1'],
             afterRowId: null,
             limit: 10,
           },

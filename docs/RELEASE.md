@@ -1,10 +1,33 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.29** (`v0.15.29`). All artifacts use Apache-2.0, except
+current release is **0.15.30** (`v0.15.30`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.30 release notes
+
+0.15.30 closes three integration footguns found while productionizing an
+offline-first medical application. Trusted `scanRowsByIndex` lookups now
+document and conformance-test complete compound-index tuple arity across
+SQLite, PostgreSQL/PGlite, and D1: a leading value never becomes an implicit
+prefix scan, and the privacy-safe mismatch code is explicit beside every
+public example.
+
+Vite HMR retention now keys the persistent worker owner by both the generated
+application schema and the materialized Syncular runtime version. A package
+upgrade therefore closes the old owner before opening a same-schema replacement.
+The Vite preset keeps Syncular's ESM worker graph out of optimizer chunks, the
+guide defines a no-data-loss upgrade/restart sequence, and retired dynamic
+module failures surface as sanitized `client.worker_restart_required` instead
+of retrying a dead chunk or exposing its URL.
+
+GitHub-hosted workflows now use the current Node 24 action runtimes:
+`actions/checkout@v6`, `actions/setup-node@v6`, and `actions/setup-java@v5`.
+The privileged npm OIDC release job explicitly disables setup-node's automatic
+package-manager cache while retaining frozen-lockfile, provenance, and
+dependency-order checks.
 
 ## 0.15.29 release notes
 

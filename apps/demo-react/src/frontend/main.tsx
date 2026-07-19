@@ -232,10 +232,10 @@ const clientResource = retainedClient.resource;
 
 if (
   hot !== undefined &&
-  retainedClient.schemaChanged &&
+  retainedClient.ownerChanged &&
   retainedClient.disposalError === undefined
 ) {
-  hot.invalidate('Syncular generated schema changed');
+  hot.invalidate('Syncular owner identity changed');
 }
 
 function Root() {

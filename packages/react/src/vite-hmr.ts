@@ -1,16 +1,25 @@
 import type { SyncClientLike } from './client';
 import { createSyncClientResource, type SyncClientResource } from './resource';
+import { SYNCULAR_REACT_RUNTIME_VERSION } from './runtime-version';
 
 /** The exact value retained in `import.meta.hot.data.syncularClientResource`. */
 export interface RetainedSyncularResource {
   readonly schemaVersion: number;
+  readonly runtimeVersion: string;
   readonly resource: SyncClientResource;
 }
 
 export interface ViteSyncClientResourceResult {
   readonly resource: SyncClientResource;
-  /** True only when an older captured schema identity was replaced. */
+  /**
+   * Compatibility signal used by existing integrations to invalidate HMR.
+   * True when either the schema or Syncular runtime identity changed.
+   */
   readonly schemaChanged: boolean;
+  /** True only when a retained owner came from another Syncular release. */
+  readonly runtimeChanged: boolean;
+  /** True whenever an incompatible retained owner was replaced. */
+  readonly ownerChanged: boolean;
   /** A failed close is exposed by `resource` as a startup error. */
   readonly disposalError?: Error;
 }
@@ -29,10 +38,12 @@ function isResource(value: unknown): value is SyncClientResource {
   );
 }
 
-function retainedFrom(
-  hotData: HotData | undefined,
-):
-  | { readonly schemaVersion?: number; readonly resource: SyncClientResource }
+function retainedFrom(hotData: HotData | undefined):
+  | {
+      readonly schemaVersion?: number;
+      readonly runtimeVersion?: string;
+      readonly resource: SyncClientResource;
+    }
   | undefined {
   const value = hotData?.syncularClientResource;
   if (isResource(value)) {
@@ -42,6 +53,7 @@ function retainedFrom(
   if (typeof value !== 'object' || value === null) return undefined;
   const candidate = value as {
     readonly schemaVersion?: unknown;
+    readonly runtimeVersion?: unknown;
     readonly resource?: unknown;
   };
   if (
@@ -53,28 +65,52 @@ function retainedFrom(
   }
   return {
     schemaVersion: candidate.schemaVersion,
+    ...(typeof candidate.runtimeVersion === 'string'
+      ? { runtimeVersion: candidate.runtimeVersion }
+      : {}),
     resource: candidate.resource,
   };
 }
 
 /**
- * Reuse a Vite-owned client only while its captured generated schema matches.
- * On a bump, the prior resource is fully disposed before the replacement
- * resource (and therefore its worker) is constructed.
+ * Reuse a Vite-owned client only while both its captured generated schema and
+ * materialized Syncular runtime identity match. On either change, the prior
+ * resource is fully disposed before the replacement resource (and therefore
+ * its worker) is constructed.
  */
 export async function retainViteSyncClientResource(
   hotData: HotData | undefined,
   schemaVersion: number,
   factory: () => SyncClientLike | Promise<SyncClientLike>,
+  runtimeVersion = SYNCULAR_REACT_RUNTIME_VERSION,
 ): Promise<ViteSyncClientResourceResult> {
   if (!Number.isInteger(schemaVersion) || schemaVersion < 1) {
     throw new TypeError('schemaVersion must be a positive integer');
   }
+  if (
+    typeof runtimeVersion !== 'string' ||
+    runtimeVersion.length === 0 ||
+    runtimeVersion.length > 96
+  ) {
+    throw new TypeError('runtimeVersion must be a bounded non-empty string');
+  }
 
   const retained = retainedFrom(hotData);
-  if (retained?.schemaVersion === schemaVersion) {
-    return { resource: retained.resource, schemaChanged: false };
+  if (
+    retained?.schemaVersion === schemaVersion &&
+    retained.runtimeVersion === runtimeVersion
+  ) {
+    return {
+      resource: retained.resource,
+      schemaChanged: false,
+      runtimeChanged: false,
+      ownerChanged: false,
+    };
   }
+
+  const ownerChanged = retained !== undefined;
+  const runtimeChanged =
+    retained !== undefined && retained.runtimeVersion !== runtimeVersion;
 
   let disposalError: Error | undefined;
   if (retained !== undefined) {
@@ -91,12 +127,20 @@ export async function retainViteSyncClientResource(
     disposalError === undefined ? factory : () => Promise.reject(disposalError),
   );
   if (hotData !== undefined) {
-    const record: RetainedSyncularResource = { schemaVersion, resource };
+    const record: RetainedSyncularResource = {
+      schemaVersion,
+      runtimeVersion,
+      resource,
+    };
     hotData.syncularClientResource = record;
   }
   return {
     resource,
-    schemaChanged: retained !== undefined,
+    // Existing apps already invalidate on this property. Preserve that
+    // recovery behavior for a same-schema package upgrade.
+    schemaChanged: ownerChanged,
+    runtimeChanged,
+    ownerChanged,
     ...(disposalError !== undefined ? { disposalError } : {}),
   };
 }

@@ -1,8 +1,9 @@
 # Vite
 
-The browser worker mode runs out of the box under Vite once three
-non-obvious pieces are in place: a wasm exclusion, the worker output format,
-and a dev proxy for the sync endpoints. This page is the whole setup.
+The browser worker mode runs out of the box under Vite once four
+non-obvious pieces are in place: the Syncular/wasm optimizer exclusions, the
+worker output format, a dev proxy for the sync endpoints, and one
+schema-and-runtime-correct HMR owner. This page is the whole setup.
 
 (The packages ship compiled JS to browser bundlers — the `browser` exports
 condition points at `dist/` — so webpack, Next.js, and Metro consume them
@@ -11,6 +12,7 @@ with stock configs too; the pieces on this page are Vite-specific wiring.)
 ## vite.config.ts
 
 ```ts
+import { SYNCULAR_VITE_OPTIMIZE_DEPS_EXCLUDE } from '@syncular/react/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
@@ -19,7 +21,10 @@ export default defineConfig({
     // module URL; Vite's dependency pre-bundling relocates the module and
     // breaks that resolution. Excluding it keeps the package's asset
     // layout intact in dev.
-    exclude: ['@sqlite.org/sqlite-wasm'],
+    exclude: [
+      '@sqlite.org/sqlite-wasm',
+      ...SYNCULAR_VITE_OPTIMIZE_DEPS_EXCLUDE,
+    ],
   },
   worker: {
     // The sync worker is an ES module (it imports @syncular/client, which
@@ -79,12 +84,13 @@ const client = await createSyncClientHandle({
 The relative endpoint URLs ride the dev proxy in development and your
 reverse proxy in production, so nothing changes between the two.
 
-## Keep one schema-correct persistent owner during HMR
+## Keep one schema-and-runtime-correct persistent owner during HMR
 
 React remounts do not duplicate a `createSyncClientResource`, but Vite may
 replace the module that created it while its old worker is still alive. A
-same-schema component or query edit should reuse that owner. A generated-schema
-change must instead close it before a replacement worker starts:
+same-schema component or query edit on the same Syncular release should reuse
+that owner. A generated-schema change or Syncular package upgrade must instead
+close it before a replacement worker starts:
 
 ```ts
 import {
@@ -105,10 +111,10 @@ const clientResource = retained.resource;
 
 if (
   import.meta.hot &&
-  retained.schemaChanged &&
+  retained.ownerChanged &&
   retained.disposalError === undefined
 ) {
-  import.meta.hot.invalidate('Syncular generated schema changed');
+  import.meta.hot.invalidate('Syncular owner identity changed');
 }
 ```
 
@@ -118,16 +124,21 @@ The helper stores exactly this record in
 ```ts
 interface RetainedSyncularResource {
   readonly schemaVersion: number;
+  readonly runtimeVersion: string;
   readonly resource: SyncClientResource;
 }
 ```
 
-On ordinary HMR the captured version matches and the resource is reused. On a
-schema bump, disposal finishes before the replacement resource is constructed;
+The runtime version is materialized into the published `@syncular/react`
+package; applications do not maintain it. On ordinary HMR both captured
+identities match and the resource is reused. On a schema bump or package
+upgrade, disposal finishes before the replacement resource is constructed;
 only then does the module request invalidation so the page, worker, generated
 schema, and query modules advance together. If disposal fails, the replacement
 worker is never opened and the returned resource reports the close failure
-through `SyncProvider.renderBoundary` as a startup error.
+through `SyncProvider.renderBoundary` as a startup error. `schemaChanged`
+remains a compatibility alias for `ownerChanged`; new integrations should use
+the latter.
 
 React effect cleanup for the old provider may run after the retained resource
 has closed its client. This ordering is supported: window release during store
@@ -146,6 +157,28 @@ Current Syncular versions report this as retryable `client.storage_busy`; it is
 not a reason to wipe the local database. See the
 [official React example](https://github.com/syncular/syncular/blob/main/apps/demo-react/src/frontend/main.tsx)
 and [Troubleshooting](/troubleshooting/) for the complete boundary.
+
+## Upgrading Syncular during Vite development
+
+The optimizer exclusion above keeps Syncular's worker graph out of hashed
+`node_modules/.vite/deps` chunks, and the retained owner includes the published
+Syncular runtime version. Together they make a package upgrade with an unchanged
+application schema replace the worker safely.
+
+When changing Syncular versions while a dev server is running:
+
+1. stop the Vite server;
+2. install the new packages with the repository's frozen-lockfile workflow;
+3. restart Vite with `--force` once so its ordinary third-party dependency
+   cache is rebuilt; and
+4. reload every open app tab so no old page keeps an obsolete worker graph.
+
+Do not delete OPFS or site data. The persistent replica, device identity,
+subscription cursors, and unsynced outbox belong to the application origin and
+survive this worker replacement. If a browser still reports a retired dynamic
+module, Syncular classifies worker startup as
+`client.worker_restart_required` without exposing the chunk URL; repeat the
+server restart and full page reload rather than entering a retry loop.
 
 ## Headers
 

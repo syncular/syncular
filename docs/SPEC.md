@@ -2909,6 +2909,13 @@ lookups MUST observe the transaction's candidate writes and deletes. Unknown
 indexes, non-materialized tables, value-count mismatches, and invalid bounds
 MUST fail with stable privacy-safe host errors.
 
+The values form the complete, order-sensitive index tuple. A caller MUST NOT
+omit trailing values to request a leading-prefix lookup: a declaration over
+`(workspace_id, state, id)` accepts exactly three values, and one value MUST
+fail with `sync.storage.index_value_count_mismatch`. A host that needs an exact
+Workspace-only lookup MUST declare a separate `(workspace_id)` index. This
+capability does not define prefix or range scans.
+
 The capability belongs to the trusted server storage object and is not an SSP2
 operation. It MUST NOT create a declared scope variable, participate in
 requested/allowed/effective scope evaluation, alter generated named-query
@@ -4108,7 +4115,10 @@ authentication failure (wrong key), a malformed envelope, or a post-decrypt
 value-parse failure; category `crypto`, non-retryable, raised at the apply
 seam, never on the wire], `client.subscription_intent_mismatch` [§4.1 — one
 registered subscription id was re-declared with a different table, canonical
-scope map, or params], `storage.*`, `worker.*`, `runtime.*`) — client
+scope map, or params], `client.worker_failed` [a browser worker failed outside
+wire semantics], `client.worker_restart_required` [a browser worker module
+graph refers to a retired bundler chunk and the page must reload without
+deleting its local replica], `storage.*`, `worker.*`, `runtime.*`) — client
 SDKs may keep such codes internally but they are not protocol. Reserved
 without a producer: `sync.integrity_rejected`,
 `sync.websocket_not_configured`, and `sync.unsupported_operation` (no

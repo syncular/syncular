@@ -77,6 +77,7 @@ export const managedFlutterManifestPaths = [
 ] as const;
 
 const managedArtifactVersionTextPaths = [
+  { path: 'packages/react/src/runtime-version.ts', occurrences: 1 },
   {
     path: 'packages/create-app/template/tauri/src-tauri/Cargo.toml',
     occurrences: 1,
