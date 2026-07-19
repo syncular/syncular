@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="logo/banner-dark.svg" />
-    <img alt="syncular" src="logo/banner-light.svg" width="440" />
+    <source media="(prefers-color-scheme: dark)" srcset="logo/readme-animated-dark.svg" />
+    <img alt="Animated syncular ASCII singularity" src="logo/readme-animated-light.svg" width="720" />
   </picture>
 </p>
 

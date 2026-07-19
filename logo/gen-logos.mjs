@@ -18,6 +18,7 @@ export const P = {
 };
 
 const esc = (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c);
+const escText = (value) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 const fontDefs = (fontCss) => (fontCss ? `<defs><style>${fontCss}</style></defs>` : '');
 
 // Render a cell grid to an SVG. cells:[{cx,cy,ch,cls}] px centers.
@@ -57,6 +58,9 @@ export function singularity({
   stars = true,
   aspect = 0.5,
   radialFrequency = 1.15,
+  ringPhase = t0 * 3.6,
+  diskPhase = t0 * 2.4,
+  lightPhase = t0 * 0.9,
 }) {
   const CX = (cols - 1) / 2, CY = (rows - 1) / 2;
   const cw = fs * 0.6, ch = fs * 1.05;
@@ -72,12 +76,12 @@ export function singularity({
       if (rr < rHorizon) {
         // event horizon — empty darkness
       } else if (rr < rRing) {
-        const p = 0.5 + 0.5 * Math.sin(a * 3 - t0 * 3.6 + rr);
+        const p = 0.5 + 0.5 * Math.sin(a * 3 - ringPhase + rr);
         cells.push({ cx: px, cy: py, ch: p > 0.66 ? '@' : p > 0.33 ? '#' : '*', cls: 'amber' });
       } else if (rr < rDisk) {
         const band = (rr - rRing) / (rDisk - rRing);
-        let b = (0.5 + 0.5 * Math.sin(2 * a - rr * radialFrequency + t0 * 2.4)) * (1 - band * 0.8);
-        b += 0.32 * Math.cos(a - t0 * 0.9) * (1 - band);
+        let b = (0.5 + 0.5 * Math.sin(2 * a - rr * radialFrequency + diskPhase)) * (1 - band * 0.8);
+        b += 0.32 * Math.cos(a - lightPhase) * (1 - band);
         b += (hash(x, y) - 0.5) * 0.16;
         const idx = Math.max(0, Math.min(8, Math.floor(b * 9)));
         if (idx === 0) continue;
@@ -128,6 +132,119 @@ export function wordmark(spec, t, fontCss = '') {
 ${fontDefs(fontCss)}<rect width="${totalW.toFixed(1)}" height="${totalH.toFixed(1)}" rx="${(totalH * 0.16).toFixed(1)}" fill="${t.bg}"/>
 <text font-family="'IBM Plex Mono',ui-monospace,Menlo,Consolas,monospace" font-size="${spec.fs}" font-weight="500" text-anchor="middle" dominant-baseline="central">${spans}</text>
 <text x="${tx.toFixed(1)}" y="${baseline.toFixed(1)}" font-family="'IBM Plex Mono',ui-monospace,Menlo,Consolas,monospace" font-size="${wordFs.toFixed(1)}" font-weight="700" letter-spacing="1.5" dominant-baseline="central" fill="${t.ink}">${word}<tspan fill="${t.amber}">_</tspan></text>
+</svg>`;
+}
+
+function frameText(cells, { cols, rows, fs }, classes, fill) {
+  const cw = fs * 0.6, ch = fs * 1.05;
+  const grid = Array.from({ length: rows }, () => Array(cols).fill(' '));
+  for (const cell of cells) {
+    if (!classes.has(cell.cls)) continue;
+    const col = Math.round(cell.cx / cw - 0.5);
+    const row = Math.round(cell.cy / ch - 0.5);
+    if (row >= 0 && row < rows && col >= 0 && col < cols) {
+      grid[row][col] = cell.ch;
+    }
+  }
+  const lines = grid
+    .map((line, row) => {
+      const value = line.join('').trimEnd();
+      if (value.length === 0) return '';
+      return `<tspan x="${(cw / 2).toFixed(1)}" y="${(row * ch + ch / 2).toFixed(1)}">${escText(value)}</tspan>`;
+    })
+    .join('');
+  return `<text xml:space="preserve" font-family="'IBM Plex Mono','SFMono-Regular',ui-monospace,Menlo,Consolas,monospace" font-size="${fs}" font-weight="700" dominant-baseline="central" fill="${fill}">${lines}</text>`;
+}
+
+// Script-free animation for GitHub and other SVG image contexts. It samples
+// the landing simulation into declarative CSS frames, with a real first-frame
+// fallback underneath and a prefers-reduced-motion freeze.
+export function animatedWordmark(
+  {
+    cols = 43,
+    rows = 23,
+    fs = 16,
+    frameCount = 32,
+    duration = 6.4,
+    horizonFrac = 0.27,
+    ringFrac = 0.38,
+    aspect = 0.55,
+    radialFrequency = 1.35,
+  } = {},
+  t,
+  fontCss = '',
+) {
+  const cw = fs * 0.6, ch = fs * 1.05;
+  const markW = cols * cw, markH = rows * ch;
+  const pad = fs * 1.15;
+  const gap = fs * 2.2;
+  const wordFs = markH * 0.43;
+  const wordAdvance = wordFs * 0.6;
+  const word = 'SYNCULAR';
+  const wordX = pad + markW + gap;
+  const baseline = pad + markH / 2;
+  const totalW = wordX + wordAdvance * (word.length + 1) + pad;
+  const totalH = markH + pad * 2;
+  const frameStep = duration / frameCount;
+  const visiblePercent = 100 / frameCount;
+  const rDisk = (rows - 1) / 2 - 0.5;
+
+  const makeFrame = (index) => {
+    const phase = index / frameCount;
+    const labels = [0, 0.25, 0.5, 0.75].map((offset, commit) => {
+      const progress = (phase + offset) % 1;
+      const radius = rDisk * (1.06 - progress * 0.73);
+      const angle = commit * 1.47 + progress * Math.PI * 2.35;
+      return {
+        col: Math.round((cols - 1) / 2 + (radius * Math.cos(angle)) / aspect),
+        row: Math.round((rows - 1) / 2 + radius * Math.sin(angle)),
+        text: `c${41 + commit}`,
+      };
+    });
+    return singularity({
+      cols,
+      rows,
+      fs,
+      horizonFrac,
+      ringFrac,
+      aspect,
+      radialFrequency,
+      labels,
+      ringPhase: phase * Math.PI * 4,
+      diskPhase: phase * Math.PI * 2,
+      lightPhase: phase * Math.PI * 2,
+    });
+  };
+
+  const renderFrame = (frame) =>
+    frameText(frame.cells, frame, new Set(['ink', 'dim', 'faint']), t.ink) +
+    frameText(frame.cells, frame, new Set(['amber', 'amberDim']), t.amber);
+
+  const fallback = makeFrame(0);
+  const frames = Array.from({ length: frameCount }, (_, index) => {
+    const frame = makeFrame(index);
+    return `<g class="syncular-frame syncular-frame-${index}" opacity="0"><rect width="${markW.toFixed(1)}" height="${markH.toFixed(1)}" fill="${t.bg}"/>${renderFrame(frame)}</g>`;
+  }).join('');
+  const delays = Array.from(
+    { length: frameCount },
+    (_, index) =>
+      `.syncular-frame-${index}{animation-delay:${(index * frameStep).toFixed(3)}s}`,
+  ).join('');
+  const animationCss = `${fontCss}
+.syncular-frame{animation:syncular-frame ${duration}s steps(1,end) infinite}
+${delays}
+.syncular-cursor{animation:syncular-cursor 1.1s steps(1,end) infinite}
+@keyframes syncular-frame{0%,${visiblePercent.toFixed(4)}%{opacity:1}${(visiblePercent + 0.01).toFixed(4)}%,100%{opacity:0}}
+@keyframes syncular-cursor{50%{opacity:0}}
+@media(prefers-reduced-motion:reduce){.syncular-frame{animation:none;opacity:0}.syncular-cursor{animation:none}}`;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${totalW.toFixed(1)} ${totalH.toFixed(1)}" role="img" aria-labelledby="syncular-animated-title syncular-animated-desc">
+<title id="syncular-animated-title">syncular</title>
+<desc id="syncular-animated-desc">Animated ASCII singularity: commits spiral into an amber event horizon beside the syncular wordmark.</desc>
+<defs><style>${animationCss}</style><clipPath id="syncular-mark-clip"><rect width="${markW.toFixed(1)}" height="${markH.toFixed(1)}"/></clipPath></defs>
+<rect width="${totalW.toFixed(1)}" height="${totalH.toFixed(1)}" rx="${(totalH * 0.14).toFixed(1)}" fill="${t.bg}"/>
+<g transform="translate(${pad.toFixed(1)} ${pad.toFixed(1)})" clip-path="url(#syncular-mark-clip)">${renderFrame(fallback)}${frames}</g>
+<text x="${wordX.toFixed(1)}" y="${baseline.toFixed(1)}" font-family="'IBM Plex Mono',ui-monospace,Menlo,Consolas,monospace" font-size="${wordFs.toFixed(1)}" font-weight="700" letter-spacing="1.5" dominant-baseline="central" fill="${t.ink}">${word}<tspan class="syncular-cursor" fill="${t.amber}">_</tspan></text>
 </svg>`;
 }
 
