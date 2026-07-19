@@ -534,6 +534,72 @@
       }
     },
     {
+      "name": "outerJoinValues",
+      "file": "outer-join-values.sql",
+      "sourceSql": "-- Required columns from the optional side must be nullable in every emitted\n-- language even though their physical schema columns are NOT NULL.\nSELECT t.id AS task_id, t.title, d.body AS doc_body\nFROM tasks AS t\nLEFT JOIN docs AS d ON d.project_id = t.project_id\nWHERE t.id = :taskId",
+      "sql": "-- Required columns from the optional side must be nullable in every emitted\n-- language even though their physical schema columns are NOT NULL.\nSELECT t.id AS taskId, t.title, d.body AS docBody FROM tasks AS t\nLEFT JOIN docs AS d ON d.project_id = t.project_id\nWHERE t.id = :taskId",
+      "positionalSql": "SELECT t.id AS taskId, t.title, d.body AS docBody FROM tasks AS t LEFT JOIN docs AS d ON d.project_id = t.project_id WHERE t.id = ?",
+      "params": [
+        {
+          "name": "taskId",
+          "langName": "taskId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "task_id",
+          "langName": "taskId",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
+        },
+        {
+          "name": "title",
+          "langName": "title",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "title"
+          }
+        },
+        {
+          "name": "doc_body",
+          "langName": "docBody",
+          "type": "string",
+          "nullable": true,
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "body"
+          }
+        }
+      ],
+      "tables": [
+        "docs",
+        "tasks"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "docs",
+            "scopes": []
+          },
+          {
+            "table": "tasks",
+            "scopes": []
+          }
+        ],
+        "coverage": []
+      }
+    },
+    {
       "name": "projectDocCount",
       "file": "project-doc-count.sql",
       "sourceSql": "-- Aggregate (count(*) → fallback nullable number) + a plain grouped ref.\nSELECT project_id, count(*) AS doc_count\nFROM docs\nGROUP BY project_id",
@@ -1042,6 +1108,179 @@
         "coverage": [],
         "rowKey": [
           "id"
+        ]
+      }
+    },
+    {
+      "name": "joinedSyncCoverage",
+      "file": "joined-sync-coverage.syql",
+      "sourceSql": "select t.id AS taskId, d.id AS docId, d.body from tasks as t\n  join docs as d on d.project_id = t.project_id\n  where t.project_id = :projectId\n    and d.org_id = :orgId\n  order by t.id, d.id",
+      "sql": "select t.id AS taskId, d.id AS docId, d.body from tasks as t\n  join docs as d on d.project_id = t.project_id\n  where t.project_id = :projectId\n    and d.org_id = :orgId\n  order by t.id, d.id",
+      "positionalSql": "select t.id AS taskId, d.id AS docId, d.body from tasks as t join docs as d on d.project_id = t.project_id where t.project_id = ? and d.org_id = ? order by t.id, d.id",
+      "params": [
+        {
+          "name": "projectId",
+          "langName": "projectId",
+          "type": "string"
+        },
+        {
+          "name": "orgId",
+          "langName": "orgId",
+          "type": "string"
+        }
+      ],
+      "columns": [
+        {
+          "name": "task_id",
+          "langName": "taskId",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "tasks",
+            "column": "id"
+          }
+        },
+        {
+          "name": "doc_id",
+          "langName": "docId",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "id"
+          }
+        },
+        {
+          "name": "body",
+          "langName": "body",
+          "type": "string",
+          "nullable": false,
+          "fidelity": "exact",
+          "origin": {
+            "table": "docs",
+            "column": "body"
+          }
+        }
+      ],
+      "tables": [
+        "docs",
+        "tasks"
+      ],
+      "reactive": {
+        "dependencies": [
+          {
+            "table": "docs",
+            "scopes": [
+              {
+                "variable": "org_id",
+                "pattern": "org:{org_id}",
+                "params": [
+                  "orgId"
+                ]
+              },
+              {
+                "variable": "projectId",
+                "pattern": "project:{projectId}",
+                "params": [
+                  "projectId"
+                ]
+              }
+            ]
+          },
+          {
+            "table": "tasks",
+            "scopes": [
+              {
+                "variable": "project_id",
+                "pattern": "project:{project_id}",
+                "params": [
+                  "projectId"
+                ]
+              }
+            ]
+          }
+        ],
+        "coverage": [
+          {
+            "table": "docs",
+            "variable": "projectId",
+            "units": [
+              "projectId"
+            ],
+            "fixedScopes": [
+              {
+                "variable": "org_id",
+                "params": [
+                  "orgId"
+                ]
+              }
+            ]
+          },
+          {
+            "table": "tasks",
+            "variable": "project_id",
+            "units": [
+              "projectId"
+            ],
+            "fixedScopes": []
+          }
+        ],
+        "rowKey": [
+          "taskId",
+          "docId"
+        ]
+      },
+      "syql": {
+        "revision": 1,
+        "inputs": [
+          {
+            "kind": "value",
+            "name": "orgId",
+            "langName": "orgId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          },
+          {
+            "kind": "value",
+            "name": "projectId",
+            "langName": "projectId",
+            "type": "string",
+            "nullable": false,
+            "required": true
+          }
+        ],
+        "plan": {
+          "backend": "variants",
+          "activationControls": [],
+          "conditions": [],
+          "statements": [
+            {
+              "activationMask": 0,
+              "sql": "select t.id AS taskId, d.id AS docId, d.body from tasks as t\n  join docs as d on d.project_id = t.project_id\n  where t.project_id = :projectId\n    and d.org_id = :orgId\n  order by t.id, d.id",
+              "positionalSql": "select t.id AS taskId, d.id AS docId, d.body from tasks as t join docs as d on d.project_id = t.project_id where t.project_id = ? and d.org_id = ? order by t.id, d.id",
+              "binds": [
+                {
+                  "kind": "value",
+                  "name": "projectId",
+                  "type": "string",
+                  "input": "projectId"
+                },
+                {
+                  "kind": "value",
+                  "name": "orgId",
+                  "type": "string",
+                  "input": "orgId"
+                }
+              ]
+            }
+          ]
+        },
+        "identity": [
+          "taskId",
+          "docId"
         ]
       }
     },

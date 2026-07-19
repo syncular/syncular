@@ -24,6 +24,23 @@ The file path becomes the generated API name. Parameters, result columns,
 types, tables, and conservative reactive metadata are derived at generation
 time.
 
+Plain projected columns retain their schema type and nullability. Outer joins
+also contribute SQL null-extension: columns from the optional side of a
+`LEFT JOIN`, the prior side of a `RIGHT JOIN`, and both sides of a `FULL OUTER
+JOIN` are generated as nullable in TypeScript, Swift, Kotlin, Dart, and Rust,
+even when the physical column is `NOT NULL`.
+
+```sql
+select t.id, d.body as document_body
+from tasks t
+left join documents d on d.task_id = t.id
+```
+
+Here `id` remains required while `documentBody` is nullable. Aliases,
+left-to-right join chains, and parenthesized relation groups retain any
+nullability introduced by an earlier outer join. Physical tables inside a
+derived subquery still participate in reactive dependencies.
+
 Use plain SQL whenever the statement shape is fixed.
 
 When a write needs compare-and-set semantics, explicitly project
@@ -58,8 +75,16 @@ The SQL is direct. `when` controls complete optional conjuncts. `BETWEEN
 generated enum, and the limit is validated before execution.
 
 `query` is a reactive local read. `sync query` also claims synchronization
-coverage, so the compiler requires complete scope proof from ordinary SQL
-predicates. Result identity is inferred from projected schema keys.
+coverage, so the compiler requires complete scope proof for every read schema
+table. Required scope binds may propagate through a qualified, mandatory
+scope-column equality in `WHERE` or a simple `JOIN ... ON` clause. Generated
+coverage is aggregate: the query is not ready until every table window is
+complete. Ambiguous joins, optional boolean branches, nested SQL, and self-joins
+fail closed instead of claiming partial readiness. Result identity is inferred
+from projected schema keys.
+
+Use explicit `JOIN ... ON` syntax; comma-separated table sources are rejected
+so a valid SQLite statement can never omit a table from reactive metadata.
 
 ## Generate and check
 

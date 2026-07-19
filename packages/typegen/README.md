@@ -557,7 +557,7 @@ boundary):
 
 | Result column | Type source | Nullability | Fidelity |
 |---|---|---|---|
-| **plain column ref** (`title`, `t.title`, `title AS x`) | resolved to the IR column (decltype confirms) — exact IR type, incl. `json`/`blob_ref`/`crdt` | the IR column's `NOT NULL` | **exact** |
+| **plain column ref** (`title`, `t.title`, `title AS x`) | resolved to the IR column (decltype confirms) — exact IR type, incl. `json`/`blob_ref`/`crdt` | the IR column's nullability, lifted to nullable whenever `LEFT`, `RIGHT`, or `FULL OUTER JOIN` can null-extend its table alias | **exact** |
 | **computed expression** (`count(*)`, `done + 1`, `:p AS l`) | decltype is null → documented fallback: aggregate/arithmetic → number, else string | always nullable (an expression's nullability is not knowable from decltype) | **fallback** |
 
 Every local synced table also has the protocol-owned `_sync_version` column.
@@ -572,7 +572,9 @@ query getTodo(listId, todoId) {
 }
 ```
 
-The generated `serverVersion` field is an exact, non-null `integer`. The
+The generated `serverVersion` field is an exact, non-null `integer` for a base
+or required join relation; it is nullable when projected from an optional side
+of an outer join. The
 physical name is intentionally not a public result name: project it with an
 alias such as `server_version`. `_sync_version` is query-only, is excluded from
 schema and mutation types, and is not added by `select *`; this prevents client
@@ -585,9 +587,17 @@ server assigns one.
 run the statement against the empty DB), and `paramsCount`. It does **not**
 expose column origin (table/column), param **names**, or `NOT NULL` flags — so
 typegen resolves plain refs against the IR itself (parse the SELECT list +
-FROM/JOIN, match `name`/`alias.name`) to attach exact nullability, and parses
-`:name` placeholders from the SQL text for param names. Want an exact type for
-a computed column? Alias it to a plain ref, or accept the honest fallback.
+FROM/JOIN, match `name`/`alias.name`) to attach schema nullability plus SQL
+outer-join null-extension, and parses `:name` placeholders from the SQL text
+for param names. Each join chain is evaluated left-to-right: `LEFT` lifts the
+new right relation unit, `RIGHT` lifts every prior relation in that chain, and
+`FULL` lifts both. A parenthesized relation group is one unit for its enclosing
+join while its nested join order remains intact. `INNER`, `CROSS`, and ordinary
+`JOIN` do not remove nullability already introduced earlier in the chain.
+Unqualified coalesced `USING`/`NATURAL` columns are not assigned a guessed
+physical origin and stay on the honest nullable fallback path. Want an exact
+type for a computed column? Alias it to a plain ref, or accept the honest
+fallback.
 
 **Parameters** use the `:name` convention. A param's type is **inferred** where
 it compares against a plain column ref — `WHERE list_id = :listId` (equality,
@@ -623,8 +633,8 @@ identifier and keeping those that name an IR table. This captures subquery /
 `WHERE EXISTS (…)` tables (they still appear under `FROM`/`JOIN`), and the
 prepare() still guarantees the SQL itself is correct.
 
-Inference is deliberately conservative around `OR`, joins, grouping, and
-computed identity. Ordinary scope predicates construct exact reactive facts;
+Inference is deliberately conservative around `OR`, grouping, ambiguous joins,
+and computed identity. Ordinary scope predicates construct exact reactive facts;
 `sync query` additionally requests checked coverage:
 
 ```syql
@@ -634,10 +644,21 @@ sync query compareLists(left, right) {
 }
 ```
 
-Coverage must resolve one table instance and bind every declared scope. Only
+Coverage must resolve every read schema table, with one instance per table, and
+bind every declared scope. A required scope bind can propagate across a
+qualified scope-column equality in an unconditional outer `WHERE` clause or a
+simple mandatory `ON` clause. The generated descriptor contains aggregate
+coverage for every table, and readiness requires all of it. Self-joins and
+`ON` clauses containing `OR`, `NOT`, or nested SQL cannot claim coverage. Only
 required, non-null, exactly typed binds are allowed. Result identity is inferred
-from schema keys and the projection. Without constructive proof the compiler
-falls back to table-wide dependency, no coverage, and/or unkeyed reconciliation.
+from schema keys and the projection. Without constructive proof an ordinary
+query falls back to table-wide dependency, no coverage, and/or unkeyed
+reconciliation; a `sync query` fails generation rather than claiming partial
+completeness.
+
+Use explicit `JOIN ... ON` relations. SQLite comma joins are rejected because
+the compiler will not emit reactive metadata unless every read relation is
+represented by the same proof model.
 
 **Emitted shape, per language** (abbreviated):
 

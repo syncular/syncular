@@ -38,6 +38,22 @@ const IR: IrDocument = {
       extensions: {},
     },
     {
+      name: 'todo_details',
+      primaryKey: 'id',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'todo_id', type: 'string', nullable: false },
+        { name: 'list_id', type: 'string', nullable: false },
+        { name: 'body', type: 'string', nullable: false },
+      ],
+      scopes: [
+        { pattern: 'list:{list_id}', variable: 'list_id', column: 'list_id' },
+      ],
+      indexes: [],
+      ftsIndexes: [],
+      extensions: {},
+    },
+    {
       name: 'messages',
       primaryKey: 'id',
       columns: [
@@ -243,6 +259,102 @@ describe('SYQL schema/SQL validation', () => {
       }`),
     );
     expect(nullableScope.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
+  });
+
+  test('proves aggregate coverage for every joined scoped table', () => {
+    const query = validate(`sync query q(listId) {
+      select T.id, todo_details.body
+      from todos as T
+      left join (todo_details)
+        on todo_details.todo_id = T.id
+        and todo_details.list_id = T.list_id
+      where T.list_id = :listId;
+    }`).queries[0];
+
+    expect(query?.reactive.dependencies).toEqual([
+      {
+        table: 'todo_details',
+        scopes: [
+          {
+            table: 'todo_details',
+            variable: 'list_id',
+            pattern: 'list:{list_id}',
+            params: ['listId'],
+          },
+        ],
+      },
+      {
+        table: 'todos',
+        scopes: [
+          {
+            table: 'todos',
+            variable: 'list_id',
+            pattern: 'list:{list_id}',
+            params: ['listId'],
+          },
+        ],
+      },
+    ]);
+    expect(query?.reactive.coverage).toEqual([
+      {
+        table: 'todo_details',
+        variable: 'list_id',
+        units: ['listId'],
+        fixedScopes: [],
+      },
+      {
+        table: 'todos',
+        variable: 'list_id',
+        units: ['listId'],
+        fixedScopes: [],
+      },
+    ]);
+    expect(query?.analysis.columns).toMatchObject([
+      { name: 'id', nullable: false },
+      { name: 'body', nullable: true },
+    ]);
+  });
+
+  test('rejects joined sync coverage without a mandatory compatible scope proof', () => {
+    for (const join of [
+      'on d.todo_id = t.id',
+      'on d.todo_id = t.id and (d.list_id = t.list_id or d.list_id is null)',
+    ]) {
+      const error = frontendError(() =>
+        validate(`sync query q(listId) {
+          select t.id, d.body
+          from todos as t
+          left join todo_details as d ${join}
+          where t.list_id = :listId;
+        }`),
+      );
+      expect(error.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
+    }
+  });
+
+  test('ordinary joined queries stay reactive but never claim completeness', () => {
+    const query = validate(`query q(listId) {
+      select t.id, d.body
+      from todos as t
+      left join todo_details as d on d.todo_id = t.id
+      where t.list_id = :listId;
+    }`).queries[0];
+
+    expect(query?.reactive.dependencies).toEqual([
+      { table: 'todo_details', scopes: [] },
+      {
+        table: 'todos',
+        scopes: [
+          {
+            table: 'todos',
+            variable: 'list_id',
+            pattern: 'list:{list_id}',
+            params: ['listId'],
+          },
+        ],
+      },
+    ]);
+    expect(query?.reactive.coverage).toEqual([]);
   });
 
   test('a partially scoped self-join falls back table-wide', () => {

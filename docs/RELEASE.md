@@ -1,10 +1,27 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.28** (`v0.15.28`). All artifacts use Apache-2.0, except
+current release is **0.15.29** (`v0.15.29`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
 ## Unreleased
+
+## 0.15.29 release notes
+
+0.15.29 makes generated joined reads honest about both result values and local
+completeness. Outer-join null extension now lifts required physical columns to
+nullable output types across TypeScript, Swift, Kotlin, Dart, and Rust,
+including left-to-right and parenthesized `LEFT`, `RIGHT`, and `FULL` relation
+groups. Parenthesized groups enumerate every physical read table; unsupported
+comma-separated relation sources fail generation with an explicit-join fix.
+
+SYQL sync queries can now prove compatible scope bindings through mandatory
+qualified join equalities and emit aggregate coverage for every read schema
+table. Generation fails closed for an unproved table, self-join, ambiguous
+multi-scope dimension, optional/negated join proof, or nested relation proof.
+Client snapshot readiness remains incomplete until every emitted table window
+is present and bootstrapped, and becomes incomplete again when any window is
+removed.
 
 ## 0.15.28 release notes
 

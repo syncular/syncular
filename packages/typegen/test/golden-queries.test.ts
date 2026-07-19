@@ -21,6 +21,8 @@ import {
 import {
   booleanResults,
   booleanResultsMapRow,
+  joinedSyncCoverageQuery,
+  outerJoinValues,
   QueryResultDecodeError,
 } from './fixtures/basic/syncular.queries';
 
@@ -114,6 +116,50 @@ describe('named-query emitter goldens', () => {
       booleanResultsMapRow({ id: 'bad', isDone: 'yes', maybeDone: null }),
     ).toThrow(QueryResultDecodeError);
   });
+
+  test('the generated runner accepts a runtime NULL from an outer-joined required column', async () => {
+    const rows = await outerJoinValues(
+      {
+        query: () => [{ taskId: 'task-1', title: 'Prepare', docBody: null }],
+      },
+      { taskId: 'task-1' },
+    );
+    expect(rows).toEqual([
+      { taskId: 'task-1', title: 'Prepare', docBody: null },
+    ]);
+  });
+
+  test('the generated descriptor retains aggregate joined-table coverage', () => {
+    expect(
+      joinedSyncCoverageQuery.coverage({ orgId: 'o1', projectId: 'p1' }),
+    ).toEqual([
+      {
+        base: {
+          table: 'docs',
+          variable: 'projectId',
+          fixedScopes: { org_id: ['o1'] },
+        },
+        units: ['p1'],
+      },
+      {
+        base: { table: 'tasks', variable: 'project_id' },
+        units: ['p1'],
+      },
+    ]);
+  });
+
+  test('required-only SYQL Rust output has no unused activation mask', () => {
+    const output = outputFor(QUERY_FILES.rust);
+    const module = output.slice(
+      output.indexOf('pub mod joined_sync_coverage'),
+      output.indexOf(
+        '\npub mod ',
+        output.indexOf('pub mod joined_sync_coverage') + 1,
+      ),
+    );
+    expect(module).not.toContain('activation_mask');
+    expect(module).toContain('let statement_index = 0usize;');
+  });
 });
 
 describe('named-query analysis fidelity', () => {
@@ -141,6 +187,31 @@ describe('named-query analysis fidelity', () => {
       type: 'float',
       fidelity: 'exact',
     });
+  });
+
+  test('outer joins lift physical NOT NULL columns on the optional side', () => {
+    const q = byName.get('outerJoinValues');
+    expect(q).toBeDefined();
+    expect(q?.columns).toEqual([
+      expect.objectContaining({
+        name: 'task_id',
+        type: 'string',
+        nullable: false,
+        fidelity: 'exact',
+      }),
+      expect.objectContaining({
+        name: 'title',
+        type: 'string',
+        nullable: false,
+        fidelity: 'exact',
+      }),
+      expect.objectContaining({
+        name: 'doc_body',
+        type: 'string',
+        nullable: true,
+        fidelity: 'exact',
+      }),
+    ]);
   });
 
   test('param types are inferred from equality + IN comparisons', () => {

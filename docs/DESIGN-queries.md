@@ -107,14 +107,17 @@ and result semantics are identical.
 ## 5. Reactive proof boundary
 
 Plain SQL analysis infers conservatively from table reads and required
-conjunctive scope equalities. Joins, `OR`, grouping, ambiguous aliases, or
-unproven identities fall back to table-wide dependencies, no coverage, and/or
-unkeyed reconciliation.
+conjunctive scope equalities. Required scope evidence may cross a qualified
+scope-column equality in an unconditional outer `WHERE` or simple mandatory
+`JOIN ... ON` clause. `OR`, negation, grouping, ambiguous aliases/joins,
+self-joins, or unproven identities fall back to table-wide dependencies, no
+coverage, and/or unkeyed reconciliation.
 
 SYQL infers exact dependency facts from ordinary required equality/`IN`
-predicates over schema scope columns. `sync query` explicitly requests coverage
-and is accepted only when one table instance and all its scopes are proven.
-Result identity is inferred conservatively from schema keys and the projection.
+predicates over schema scope columns. `sync query` explicitly requests aggregate
+coverage and is accepted only when every read schema table appears once and all
+of every table's scopes are proven. Result identity is inferred conservatively
+from schema keys and the projection.
 
 These facts are correctness inputs to invalidation and readiness. They are
 never accepted as unchecked hints.

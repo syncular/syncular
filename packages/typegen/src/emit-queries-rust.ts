@@ -401,7 +401,10 @@ function emitSelect(query: AnalyzedQuery): string[] {
       '        }',
     );
   }
-  if (metadata.plan.backend === 'variants') {
+  const usesActivationMask =
+    metadata.plan.backend === 'variants' &&
+    metadata.plan.activationControls.length > 0;
+  if (usesActivationMask) {
     lines.push('        let mut activation_mask = 0usize;');
     metadata.plan.activationControls.forEach((control, index) => {
       lines.push(
@@ -425,12 +428,11 @@ function emitSelect(query: AnalyzedQuery): string[] {
   }
   const sortIndex = sort?.kind === 'sort' ? 'sort_index' : '0usize';
   const profileCount = sort?.kind === 'sort' ? sort.profiles.length : 1;
-  const index =
-    metadata.plan.backend === 'variants'
-      ? profileCount === 1
-        ? 'activation_mask'
-        : `activation_mask * ${profileCount} + ${sortIndex}`
-      : sortIndex;
+  const index = usesActivationMask
+    ? profileCount === 1
+      ? 'activation_mask'
+      : `activation_mask * ${profileCount} + ${sortIndex}`
+    : sortIndex;
   lines.push(
     `        let statement_index = ${index};`,
     '        match statement_index {',

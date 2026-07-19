@@ -28,9 +28,10 @@
  *   origin column's exact declared type. We map it back through the SAME
  *   TYPE_MAP the migration parser uses → the exact IR column type. For
  *   NULLABILITY we resolve the ref against the IR ourselves (parse the SELECT
- *   list + FROM/JOIN, match `name`/`alias.name` to an IR table column) — an
- *   IR-exact non-nullable/nullable answer. This is the drift-kill: same type
- *   AND nullability as the schema, guaranteed by SQLite's own reference check.
+ *   list + FROM/JOIN, match `name`/`alias.name` to an IR table column), then
+ *   lift it when an outer join can synthesize NULL for that relation. This is
+ *   the drift-kill: schema nullability plus SQL join null-extension, with
+ *   SQLite still proving every reference.
  * - **Computed expression** (`count(*)`, `done + 1`, `:label AS l`): decltype
  *   is null. We fall back to a documented honest type from the raw column
  *   name/shape: aggregate/arith → nullable number, anything else → nullable
@@ -693,6 +694,8 @@ export interface TableRef {
   readonly table: string;
   /** Alias (or the table name when un-aliased). */
   readonly alias: string;
+  /** True when an enclosing flat join chain can null-extend this relation. */
+  readonly nullable: boolean;
 }
 
 const IDENT = '[A-Za-z_][A-Za-z0-9_]*';
@@ -707,6 +710,7 @@ const RESERVED_ALIAS = new Set([
   'left',
   'right',
   'outer',
+  'natural',
   'join',
   'cross',
   'using',
@@ -715,27 +719,176 @@ const RESERVED_ALIAS = new Set([
 ]);
 const RESERVED_ALIAS_PATTERN = [...RESERVED_ALIAS].join('|');
 const TABLE_REF_RE = new RegExp(
-  `\\b(?:FROM|JOIN)\\s+(${IDENT})(?:\\s+(?:AS\\s+)?((?!(?:${RESERVED_ALIAS_PATTERN})\\b)${IDENT}))?`,
+  `\\b(FROM|(?:NATURAL\\s+)?(?:(LEFT|RIGHT|FULL)(?:\\s+OUTER)?|INNER|CROSS)?\\s*JOIN)\\s+((?:\\(\\s*)*)(${IDENT})(?:\\s+(?:AS\\s+)?((?!(?:${RESERVED_ALIAS_PATTERN})\\b)${IDENT}))?`,
   'gi',
 );
 
-export function scanTableRefs(sql: string, ir: IrDocument): TableRef[] {
+function parenthesisDepthAt(sql: string, index: number): number {
+  let depth = 0;
+  for (let cursor = 0; cursor < index; cursor += 1) {
+    if (sql[cursor] === '(') depth += 1;
+    else if (sql[cursor] === ')') depth = Math.max(0, depth - 1);
+  }
+  return depth;
+}
+
+function matchingParenthesis(sql: string, open: number): number {
+  let depth = 0;
+  for (let cursor = open; cursor < sql.length; cursor += 1) {
+    if (sql[cursor] === '(') depth += 1;
+    else if (sql[cursor] === ')') {
+      depth -= 1;
+      if (depth === 0) return cursor;
+    }
+  }
+  return sql.length;
+}
+
+function hasCommaJoinedSchemaTable(sql: string, ir: IrDocument): boolean {
   const cleaned = stripCommentsAndStrings(sql);
   const known = new Set(
     ir.tables.flatMap((table) => [
-      table.name,
-      ...table.ftsIndexes.map((index) => index.name),
+      table.name.toLowerCase(),
+      ...table.ftsIndexes.map((index) => index.name.toLowerCase()),
     ]),
   );
+  const activeFromDepths = new Set<number>();
+  const clauseEnders = new Set([
+    'WHERE',
+    'GROUP',
+    'HAVING',
+    'ORDER',
+    'LIMIT',
+    'WINDOW',
+    'UNION',
+    'EXCEPT',
+    'INTERSECT',
+    'RETURNING',
+  ]);
+  let depth = 0;
+  let cursor = 0;
+  const nextIdentifier = (start: number): string | undefined => {
+    let index = start;
+    while (
+      index < cleaned.length &&
+      (/\s/.test(cleaned[index] as string) || cleaned[index] === '(')
+    ) {
+      index += 1;
+    }
+    const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(cleaned.slice(index));
+    return match?.[0];
+  };
+
+  while (cursor < cleaned.length) {
+    const char = cleaned[cursor] as string;
+    if (char === '(') {
+      const next = nextIdentifier(cursor + 1);
+      if (
+        activeFromDepths.has(depth) &&
+        next !== undefined &&
+        known.has(next.toLowerCase())
+      ) {
+        activeFromDepths.add(depth + 1);
+      }
+      depth += 1;
+      cursor += 1;
+      continue;
+    }
+    if (char === ')') {
+      activeFromDepths.delete(depth);
+      depth = Math.max(0, depth - 1);
+      cursor += 1;
+      continue;
+    }
+    if (char === ',' && activeFromDepths.has(depth)) {
+      const next = nextIdentifier(cursor + 1);
+      if (next !== undefined && known.has(next.toLowerCase())) return true;
+      cursor += 1;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(char)) {
+      let end = cursor + 1;
+      while (
+        end < cleaned.length &&
+        /[A-Za-z0-9_]/.test(cleaned[end] as string)
+      ) {
+        end += 1;
+      }
+      const word = cleaned.slice(cursor, end).toUpperCase();
+      if (word === 'FROM') activeFromDepths.add(depth);
+      else if (clauseEnders.has(word)) activeFromDepths.delete(depth);
+      cursor = end;
+      continue;
+    }
+    cursor += 1;
+  }
+  return false;
+}
+
+export function scanTableRefs(sql: string, ir: IrDocument): TableRef[] {
+  const cleaned = stripCommentsAndStrings(sql);
+  const known = new Map(
+    ir.tables.flatMap((table) => [
+      [table.name.toLowerCase(), table.name] as const,
+      ...table.ftsIndexes.map(
+        (index) => [index.name.toLowerCase(), index.name] as const,
+      ),
+    ]),
+  );
+  const nullableGroups = [
+    ...cleaned.matchAll(/\b(?:LEFT|FULL)(?:\s+OUTER)?\s+JOIN\s*(\()/gi),
+  ].map((match) => {
+    const open = (match.index ?? 0) + match[0].lastIndexOf('(');
+    return { open, close: matchingParenthesis(cleaned, open) };
+  });
   const refs: TableRef[] = [];
+  const relationStartByDepth = new Map<number, number>();
   for (const m of cleaned.matchAll(TABLE_REF_RE)) {
-    const table = m[1] as string;
-    if (!known.has(table)) continue; // e.g. FROM (subquery) — table is `(`; skip
-    let alias = m[2];
+    const operator = (m[1] as string).toUpperCase();
+    const outerKind = m[2]?.toUpperCase();
+    const rawTable = m[4] as string;
+    const operatorDepth = parenthesisDepthAt(cleaned, m.index ?? 0);
+    const relativeTableIndex = m[0]
+      .toLowerCase()
+      .indexOf(rawTable.toLowerCase(), (m[1] as string).length);
+    const tableIndex =
+      (m.index ?? 0) + Math.max((m[1] as string).length, relativeTableIndex);
+    const tableDepth = parenthesisDepthAt(cleaned, tableIndex);
+    if (operator === 'FROM') {
+      relationStartByDepth.set(operatorDepth, refs.length);
+      relationStartByDepth.set(tableDepth, refs.length);
+    } else if (
+      tableDepth > operatorDepth &&
+      !relationStartByDepth.has(tableDepth)
+    ) {
+      relationStartByDepth.set(tableDepth, refs.length);
+    }
+    if (outerKind === 'RIGHT' || outerKind === 'FULL') {
+      const relationStart =
+        relationStartByDepth.get(operatorDepth) ?? refs.length;
+      for (let index = relationStart; index < refs.length; index += 1) {
+        const prior = refs[index];
+        if (prior !== undefined && !prior.nullable) {
+          refs[index] = { ...prior, nullable: true };
+        }
+      }
+    }
+    const table = known.get(rawTable.toLowerCase());
+    if (table === undefined) continue; // e.g. a derived SELECT/CTE name
+    let alias = m[5];
     if (alias !== undefined && RESERVED_ALIAS.has(alias.toLowerCase())) {
       alias = undefined;
     }
-    refs.push({ table, alias: alias ?? table });
+    refs.push({
+      table,
+      alias: alias ?? table,
+      nullable:
+        outerKind === 'LEFT' ||
+        outerKind === 'FULL' ||
+        nullableGroups.some(
+          (group) => tableIndex > group.open && tableIndex < group.close,
+        ),
+    });
   }
   return refs;
 }
@@ -793,6 +946,7 @@ const PLAIN_REF_RE = new RegExp(`^(?:(${IDENT})\\.)?(${IDENT})$`);
 interface ResolvedSource {
   readonly table: string;
   readonly column: IrTable['columns'][number];
+  readonly nullableByJoin: boolean;
 }
 
 function declaredFtsProjection(ir: IrDocument, tableName: string): boolean {
@@ -819,47 +973,80 @@ function resolveSource(
   const columnName = m[2] as string;
   const byName = new Map(ir.tables.map((t) => [t.name, t] as const));
   if (qualifier !== undefined) {
-    const ref = refs.find((r) => r.alias === qualifier);
+    const ref = refs.find(
+      (candidate) => candidate.alias.toLowerCase() === qualifier.toLowerCase(),
+    );
     if (ref === undefined) return null;
     const table = byName.get(ref.table);
-    const col = table?.columns.find((c) => c.name === columnName);
-    if (col !== undefined) return { table: ref.table, column: col };
+    const col = table?.columns.find(
+      (candidate) => candidate.name.toLowerCase() === columnName.toLowerCase(),
+    );
+    if (col !== undefined) {
+      return {
+        table: ref.table,
+        column: col,
+        nullableByJoin: ref.nullable,
+      };
+    }
     if (
       columnName === FTS_SOURCE_ID_COLUMN &&
       declaredFtsProjection(ir, ref.table)
     ) {
-      return { table: ref.table, column: FTS_SOURCE_ID_IR_COLUMN };
+      return {
+        table: ref.table,
+        column: FTS_SOURCE_ID_IR_COLUMN,
+        nullableByJoin: ref.nullable,
+      };
     }
     return null;
   }
   // Unqualified: search every FROM/JOIN table (SQLite already resolved
-  // ambiguity; a single-table query is the common case).
+  // ambiguity; a single-table query is the common case). A USING/NATURAL
+  // coalesced name can have more than one physical origin, so keep it on the
+  // honest nullable fallback path instead of guessing one side.
+  const matches: ResolvedSource[] = [];
   for (const ref of refs) {
     const table = byName.get(ref.table);
-    const col = table?.columns.find((c) => c.name === columnName);
-    if (col !== undefined) return { table: ref.table, column: col };
+    const col = table?.columns.find(
+      (candidate) => candidate.name.toLowerCase() === columnName.toLowerCase(),
+    );
+    if (col !== undefined) {
+      matches.push({
+        table: ref.table,
+        column: col,
+        nullableByJoin: ref.nullable,
+      });
+    }
     if (
       columnName === FTS_SOURCE_ID_COLUMN &&
       declaredFtsProjection(ir, ref.table)
     ) {
-      return { table: ref.table, column: FTS_SOURCE_ID_IR_COLUMN };
+      matches.push({
+        table: ref.table,
+        column: FTS_SOURCE_ID_IR_COLUMN,
+        nullableByJoin: ref.nullable,
+      });
     }
   }
-  return null;
+  return matches.length === 1 ? (matches[0] as ResolvedSource) : null;
 }
 
 /** Resolve the one supported query-only protocol column. SQLite still proves
  * qualifier/ambiguity against the synthesized local tables. */
-function isSyncVersionSource(
+function syncVersionSourceNullability(
   item: SelectItem,
   refs: readonly TableRef[],
-): boolean {
+): boolean | null {
   const match = PLAIN_REF_RE.exec(item.expr);
-  if (match === null || match[2] !== SYNC_VERSION_COLUMN) return false;
+  if (match === null || match[2] !== SYNC_VERSION_COLUMN) return null;
   const qualifier = match[1];
-  return qualifier === undefined
-    ? refs.length === 1
-    : refs.some((ref) => ref.alias === qualifier);
+  if (qualifier === undefined) {
+    return refs.length === 1 ? (refs[0]?.nullable ?? null) : null;
+  }
+  const matches = refs.filter(
+    (ref) => ref.alias.toLowerCase() === qualifier.toLowerCase(),
+  );
+  return matches.length === 1 ? (matches[0]?.nullable ?? null) : null;
 }
 
 // -- param type inference -----------------------------------------------------
@@ -1279,6 +1466,12 @@ export function analyzeStatement(
   if (sourceSql.length === 0) {
     throw new TypegenError(file, 'query file is empty');
   }
+  if (hasCommaJoinedSchemaTable(sourceSql, ir)) {
+    throw new TypegenError(
+      file,
+      'comma-separated table sources are unsupported because reactive proof requires every relation; use an explicit JOIN ... ON clause',
+    );
+  }
 
   // SELECT-only (the read tier). A `WITH` is allowed when its main statement
   // is a SELECT (SQLite also allows WITH … INSERT/UPDATE/DELETE — writes).
@@ -1375,7 +1568,9 @@ export function analyzeStatement(
     const source = item !== undefined ? resolveSource(item, refs, ir) : null;
     const sqlName = sqlNames[index] ?? colName;
     const langName = langNames[index] ?? colName;
-    if (item !== undefined && isSyncVersionSource(item, refs)) {
+    const syncVersionNullable =
+      item !== undefined ? syncVersionSourceNullability(item, refs) : null;
+    if (syncVersionNullable !== null) {
       if (sqlName === SYNC_VERSION_COLUMN) {
         throw new TypegenError(
           file,
@@ -1386,7 +1581,7 @@ export function analyzeStatement(
         name: sqlName,
         langName,
         type: 'integer',
-        nullable: false,
+        nullable: syncVersionNullable,
         fidelity: 'exact',
       };
     }
@@ -1403,7 +1598,7 @@ export function analyzeStatement(
         name: sqlName,
         langName,
         type: sourceType,
-        nullable: source.column.nullable,
+        nullable: source.column.nullable || source.nullableByJoin,
         fidelity: 'exact',
         origin: { table: source.table, column: source.column.name },
       };

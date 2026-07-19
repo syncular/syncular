@@ -8,6 +8,11 @@ import { BunClientDatabase } from '@syncular/client/bun';
 import { CLIENT_SCHEMA, makeClient, makeServer, taskValues } from './helpers';
 
 const BASE: WindowBase = { table: 'tasks', variable: 'project_id' };
+const DOC_BASE: WindowBase = {
+  table: 'docs',
+  variable: 'projectId',
+  fixedScopes: { org_id: ['o1'] },
+};
 
 describe('revisioned local observation (SPEC §7.5)', () => {
   test('mutation revision is atomic with rows/status and scope moves include before + after', async () => {
@@ -75,6 +80,45 @@ describe('revisioned local observation (SPEC §7.5)', () => {
         batch.windows.some((window) => window.units.has('empty')),
       ),
     ).toBe(true);
+  });
+
+  test('aggregate coverage stays incomplete until every table window is complete', async () => {
+    const client = await makeClient(makeServer(), {
+      clientId: 'aggregate-windowed',
+    });
+    await client.client.setWindowCommand(BASE, ['p1']);
+    await client.client.syncUntilIdle();
+    await client.client.setWindowCommand(DOC_BASE, ['p1']);
+
+    const spec = {
+      sql: 'SELECT * FROM tasks WHERE project_id = ?',
+      params: ['p1'],
+      coverage: [
+        { base: BASE, units: ['p1'] },
+        { base: DOC_BASE, units: ['p1'] },
+      ],
+    } as const;
+    const partial = client.client.querySnapshot(spec);
+    expect(partial.coverage.complete).toBe(false);
+    expect(partial.coverage.pending).toEqual([
+      { baseKey: 'docs\0projectId\0{"org_id":["o1"]}', unit: 'p1' },
+    ]);
+    expect(partial.coverage.missing).toEqual([]);
+
+    await client.client.syncUntilIdle();
+    expect(client.client.querySnapshot(spec).coverage).toEqual({
+      complete: true,
+      pending: [],
+      missing: [],
+    });
+
+    await client.client.setWindowCommand(DOC_BASE, []);
+    const missing = client.client.querySnapshot(spec).coverage;
+    expect(missing.complete).toBe(false);
+    expect(missing.pending).toEqual([]);
+    expect(missing.missing).toEqual([
+      { baseKey: 'docs\0projectId\0{"org_id":["o1"]}', unit: 'p1' },
+    ]);
   });
 
   test('persisted identity cannot be silently rebound', async () => {

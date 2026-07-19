@@ -1,0 +1,8 @@
+sync query joinedSyncCoverage(orgId, projectId) by t.project_id {
+  select t.id as task_id, d.id as doc_id, d.body
+  from tasks as t
+  join docs as d on d.project_id = t.project_id
+  where t.project_id = :projectId
+    and d.org_id = :orgId
+  order by t.id, d.id;
+}
