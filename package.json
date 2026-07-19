@@ -1,6 +1,6 @@
 {
   "name": "syncular",
-  "version": "0.15.31",
+  "version": "0.15.32",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -12,6 +12,9 @@
     "bindings/react-native",
     "bindings/tauri/example"
   ],
+  "overrides": {
+    "dompurify": "3.4.12"
+  },
   "scripts": {
     "postinstall": "git config core.hooksPath .githooks 2>/dev/null || true",
     "audit": "bun audit",

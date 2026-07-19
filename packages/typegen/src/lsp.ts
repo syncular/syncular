@@ -379,7 +379,7 @@ export class SyqlLanguageServer {
         severity: 1,
         source: 'syncular',
         code: error.code,
-        message,
+        message: error.detail,
       };
     }
     return {

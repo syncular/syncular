@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
-import sqlGrammar from '@shikijs/langs/sql';
-import { createHighlighter, type LanguageRegistration } from 'shiki';
+import { createHighlighter } from 'shiki';
+import { SYQL_HIGHLIGHTER_LANGUAGES } from '../src/syql-highlighting';
 
 const source = `query listTodos(first?, second?: { start, end }) {
 
@@ -20,22 +20,9 @@ const source = `query listTodos(first?, second?: { start, end }) {
 }`;
 
 test('keeps highlighting after a nested SYQL block closes', async () => {
-  const grammar = (await Bun.file(
-    new URL(
-      '../../../editors/vscode-syql/syntaxes/syql.tmLanguage.json',
-      import.meta.url,
-    ),
-  ).json()) as LanguageRegistration;
   const highlighter = await createHighlighter({
     themes: ['github-dark'],
-    langs: [
-      ...sqlGrammar,
-      {
-        ...grammar,
-        name: 'syql',
-        embeddedLangs: ['sql'],
-      },
-    ],
+    langs: SYQL_HIGHLIGHTER_LANGUAGES,
   });
 
   try {

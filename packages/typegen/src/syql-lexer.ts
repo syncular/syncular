@@ -55,6 +55,8 @@ export type SyqlLexErrorCode =
 /** A source-spanned, stable-code error shared by the lexer and parser. */
 export class SyqlFrontendError extends TypegenError {
   readonly code: string;
+  /** Human-readable diagnostic without the location/code prefix in `message`. */
+  readonly detail: string;
   readonly span: SyqlSourceSpan;
   readonly sourceFile: string;
 
@@ -65,6 +67,7 @@ export class SyqlFrontendError extends TypegenError {
     );
     this.name = 'SyqlFrontendError';
     this.code = code;
+    this.detail = message;
     this.span = span;
     this.sourceFile = span.file;
   }

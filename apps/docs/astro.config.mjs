@@ -5,16 +5,25 @@
 // build script + scripts/rebase.mjs), not Astro's `base`, so authored links
 // stay root-absolute exactly as before.
 import { defineConfig } from 'astro/config';
-import sqlGrammar from '@shikijs/langs/sql';
+import { fileURLToPath } from 'node:url';
 import { reflectReleaseVersion } from './scripts/release-version.mjs';
-import syqlGrammar from '../../editors/vscode-syql/syntaxes/syql.tmLanguage.json' with {
-  type: 'json',
-};
+import { SYQL_HIGHLIGHTER_LANGUAGES } from './src/syql-highlighting.ts';
 
 export default defineConfig({
   server: { port: 3100 },
   devToolbar: { enabled: false },
   vite: {
+    resolve: {
+      alias: {
+        '@syncular/typegen/syql-browser': fileURLToPath(
+          new URL(
+            '../../packages/typegen/src/syql-browser.ts',
+            import.meta.url,
+          ),
+        ),
+      },
+    },
+    optimizeDeps: { exclude: ['@sqlite.org/sqlite-wasm'] },
     plugins: [
       {
         name: 'syncular-release-version-in-markdown',
@@ -31,14 +40,7 @@ export default defineConfig({
   markdown: {
     shikiConfig: {
       theme: 'css-variables',
-      langs: [
-        ...sqlGrammar,
-        {
-          ...syqlGrammar,
-          name: 'syql',
-          embeddedLangs: ['sql'],
-        },
-      ],
+      langs: SYQL_HIGHLIGHTER_LANGUAGES,
     },
   },
   build: { format: 'directory' },

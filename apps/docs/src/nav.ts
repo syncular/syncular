@@ -69,6 +69,7 @@ export const nav: readonly NavSection[] = [
       { slug: 'tooling-queries', title: 'Named queries' },
       { slug: 'tooling-local-search', title: 'Local full-text search' },
       { slug: 'syql', title: 'SYQL language' },
+      { slug: 'playground', title: 'SYQL playground' },
       { slug: 'tooling-testing', title: 'Testing your app' },
     ],
   },

@@ -165,6 +165,58 @@ describe('SYQL schema/SQL validation', () => {
     expect(query?.reactive.rowKey).toEqual(['id']);
   });
 
+  test('reports an unknown table before downstream bind inference', () => {
+    const error = frontendError(() =>
+      validate(`query listTodos(listId) {
+  select id, title from todo
+  where todos.list_id = :listId;
+}`),
+    );
+
+    expect(error.code).toBe('SYQL6002_INVALID_SQL');
+    expect(error.detail).toBe('unknown table `todo`; did you mean `todos`?');
+    expect(error.span.start).toMatchObject({ line: 2, column: 25 });
+    expect(error.message).not.toContain('cannot infer');
+  });
+
+  test('distinguishes unknown qualifiers, columns, and ambiguous columns', () => {
+    const qualifier = frontendError(() =>
+      validate(`query q(listId) {
+  select id from todos
+  where todo.list_id = :listId;
+}`),
+    );
+    expect(qualifier.code).toBe('SYQL6002_INVALID_SQL');
+    expect(qualifier.detail).toBe(
+      'unknown table or alias `todo`; did you mean `todos`?',
+    );
+    expect(qualifier.span.start).toMatchObject({ line: 3, column: 9 });
+
+    const column = frontendError(() =>
+      validate(`query q(listId) {
+  select id from todos
+  where todos.lsit_id = :listId;
+}`),
+    );
+    expect(column.code).toBe('SYQL6002_INVALID_SQL');
+    expect(column.detail).toBe(
+      'unknown column `lsit_id` on `todos`; did you mean `list_id`?',
+    );
+    expect(column.span.start).toMatchObject({ line: 3, column: 15 });
+
+    const ambiguous = frontendError(() =>
+      validate(`query q() {
+  select id from todos
+  join messages on messages.id = todos.id;
+}`),
+    );
+    expect(ambiguous.code).toBe('SYQL6002_INVALID_SQL');
+    expect(ambiguous.detail).toBe(
+      'column `id` is ambiguous; use `todos.id` or `messages.id`',
+    );
+    expect(ambiguous.span.start).toMatchObject({ line: 2, column: 10 });
+  });
+
   test('requires embedded nodes to be whole outer conjuncts', () => {
     const underOr = frontendError(() =>
       validate(`query q(status?) {
@@ -638,6 +690,7 @@ describe('SYQL schema/SQL validation', () => {
       validate('query q() {  select missing from todos ; }'),
     );
     expect(error.code).toBe('SYQL6002_INVALID_SQL');
-    expect(error.message).toContain('no such column');
+    expect(error.detail).toBe('unknown column `missing`');
+    expect(error.span.start).toMatchObject({ line: 1, column: 21 });
   });
 });

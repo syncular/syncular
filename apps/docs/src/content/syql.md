@@ -12,6 +12,14 @@ The executable vectors live under
 Use a plain `.sql` query when the statement is fixed. Use `.syql` when its
 shape depends on optional inputs or when it should declare sync coverage.
 
+Explore the compiler directly in the [SYQL playground](/playground/), or jump
+to the [optional-filter](/playground/?example=optional),
+[sort-and-limit](/playground/?example=sort-limit),
+[sync-coverage](/playground/?example=sync-coverage), or
+[reusable-predicate](/playground/?example=predicate) examples. Everything runs
+locally in the browser against the same parser, validator, and lowerer used by
+typegen.
+
 ## Complete example
 
 ```syql

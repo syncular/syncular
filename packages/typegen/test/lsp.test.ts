@@ -81,13 +81,16 @@ describe('revision-1 SyqlLanguageServer', () => {
         diagnostics: Array<{
           code?: string;
           message: string;
-          range: { start: { line: number } };
+          range: { start: Position; end: Position };
         }>;
       }
     ).diagnostics[0];
     expect(sqlDiagnostic?.code).toBe('SYQL6002_INVALID_SQL');
-    expect(sqlDiagnostic?.message).toContain('no such column');
-    expect(sqlDiagnostic?.range.start.line).toBeGreaterThan(1);
+    expect(sqlDiagnostic?.message).toBe('unknown column `no_such_column`');
+    expect(sqlDiagnostic?.range).toEqual({
+      start: { line: 4, character: 22 },
+      end: { line: 4, character: 36 },
+    });
 
     const [parseNotification] = open(
       new SyqlLanguageServer(),

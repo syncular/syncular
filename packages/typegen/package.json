@@ -36,6 +36,14 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
+    },
+    "./syql-browser": {
+      "bun": "./src/syql-browser.ts",
+      "browser": "./dist/syql-browser.js",
+      "import": {
+        "types": "./dist/syql-browser.d.ts",
+        "default": "./dist/syql-browser.js"
+      }
     }
   },
   "files": [
