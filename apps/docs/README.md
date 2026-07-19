@@ -91,3 +91,37 @@ Keep DNSSEC enabled for authenticated answers.
 bun run build
 CLOUDFLARE_ACCOUNT_ID=336bfd20ccb2f56e24ac0afeca6b4837 bunx wrangler deploy
 ```
+
+## Privacy-conscious engagement analytics
+
+The docs Worker writes aggregate page and article-reading events to the
+Cloudflare Workers Analytics Engine dataset `syncular_docs_engagement`. The
+binding in `wrangler.jsonc` creates the dataset on first write; no JavaScript is
+needed for page views. Individual blog articles load `public/engagement.js`,
+which records one `article_read` after 30 visible seconds and 60% scroll depth.
+
+The schema is deliberately stable and non-identifying:
+
+- `blob1..11`: event, path, referrer hostname, country, broad device class,
+  response status, site section, UTM source/medium/campaign, cache status.
+- `double1..3`: count (`1`), active seconds, scroll depth.
+- `index1`: hostname (the Analytics Engine sampling key).
+
+No IP address, cookie, full referrer, full user agent, or stable visitor ID is
+written. Requests with Global Privacy Control or Do Not Track enabled are
+excluded. The public disclosure is at `/privacy/`.
+
+Query the last seven days using the locally authenticated Wrangler identity
+(it needs Account Analytics Read), or pass a token explicitly:
+
+```sh
+bun run analytics
+bun run analytics -- --days 30
+bun run analytics -- --days 7 --json
+```
+
+The report shows page views, qualified article reads and read rate, acquisition
+sources/campaigns, and countries. Analytics Engine also appears in Cloudflare's
+Analytics dashboard; data retention is three months. Requests tagged with
+`utm_medium=verification` are retained for deployment diagnostics but omitted
+from the CLI report.

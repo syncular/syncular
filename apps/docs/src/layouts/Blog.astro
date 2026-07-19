@@ -48,6 +48,7 @@ const formattedDate = publishedAt
     <link rel="api-catalog" href="/.well-known/api-catalog" />
     <link rel="stylesheet" href="/style.css" />
     <script src="/webmcp.js" defer></script>
+    {!index ? <script src="/engagement.js" defer></script> : null}
   </head>
   <body class="landing-body">
     <div class="wrap">
@@ -89,6 +90,7 @@ const formattedDate = publishedAt
             <a href="/what-is/">DOCS</a>
             <a href="https://github.com/syncular/syncular">GITHUB</a>
             <a href="https://www.npmjs.com/org/syncular">NPM</a>
+            <a href="/privacy/">PRIVACY</a>
           </nav>
           <span class="end">SYNCULAR v{rootPkg.version} · APACHE-2.0 · END OF TRANSMISSION <span class="sq">■</span></span>
         </div>

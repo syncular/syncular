@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "analytics": "node scripts/analytics.mjs",
     "build": "astro build && node scripts/agent-assets.mjs && node scripts/rebase.mjs",
     "dev": "astro dev",
     "deploy": "astro build && node scripts/agent-assets.mjs && node scripts/rebase.mjs && wrangler deploy"

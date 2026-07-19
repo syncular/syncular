@@ -16,5 +16,11 @@
     "html_handling": "auto-trailing-slash",
     "not_found_handling": "404-page"
   },
+  "analytics_engine_datasets": [
+    {
+      "binding": "ANALYTICS",
+      "dataset": "syncular_docs_engagement"
+    }
+  ],
   "routes": [{ "pattern": "syncular.dev/*", "zone_name": "syncular.dev" }]
 }
