@@ -17,8 +17,11 @@ tab size.
 - `../apps/docs/public/social-card.png` — a 1200×630 raster of the detailed
   mark, centered in a crop-safe field for Open Graph and Twitter previews.
 - `banner-dark.svg` / `banner-light.svg` — the wordmark lockup (mark +
-  `SYNCULAR_`) shown at the top of the repo `README.md` via a `<picture>`
-  that swaps on `prefers-color-scheme`.
+  `SYNCULAR_`) retained as the static wordmark.
+- `readme-animated-dark.svg` / `readme-animated-light.svg` — script-free,
+  looping versions of the landing-page singularity used at the top of the repo
+  `README.md`. The animation freezes to its fallback frame when the reader
+  prefers reduced motion.
 
 Both embed IBM Plex Mono (data-URI `@font-face`) so they render in the true
 face wherever they appear standalone — a browser tab, a GitHub README.

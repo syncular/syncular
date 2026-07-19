@@ -11,6 +11,7 @@ import {
   P,
   COARSE,
   DETAILED_MARK,
+  animatedWordmark,
 } from './gen-logos.mjs';
 
 const b64 = (p) => readFileSync(p).toString('base64');
@@ -59,4 +60,17 @@ await sharp(Buffer.from(markDark))
 writeFileSync('logo/banner-dark.svg', wordmark(COARSE.wordmark, P.dark, fontCss));
 writeFileSync('logo/banner-light.svg', wordmark(COARSE.wordmark, P.light, fontCss));
 
-console.log('wrote favicon.svg + detailed marks + social-card.png + README banners');
+// README HERO — a script-free loop sampled from the live landing simulation.
+// Dark/light assets let GitHub's <picture> follow the reader's color scheme.
+writeFileSync(
+  'logo/readme-animated-dark.svg',
+  animatedWordmark({}, P.dark, fontCss),
+);
+writeFileSync(
+  'logo/readme-animated-light.svg',
+  animatedWordmark({}, P.light, fontCss),
+);
+
+console.log(
+  'wrote favicon.svg + detailed marks + social-card.png + static and animated README banners',
+);
