@@ -227,6 +227,27 @@ revisioning rule is only for a changed seed definition. Application commands
 must keep their original request ID after an unknown outcome: inventing a new
 ID can execute the same real-world operation twice.
 
+The `clientId` has a separate identity contract: its first registration binds
+it to one actor within the partition. Revisions by that same seed actor keep the
+stable client ID. If a security or ownership correction moves the seed to a
+different actor, advance **both** identities:
+
+```ts
+await seedMutations(config, {
+  partition: 'production-eu',
+  actorId: 'server-authority',       // changed from seed-user
+  clientId: 'catalog-server-seed',   // new purpose-specific client identity
+  commitId: 'catalog-v2',            // new seed definition revision
+}, correctedRows);
+```
+
+Changing the actor and commit ID while retaining the old client ID must fail
+with `sync.invalid_client_id` and `recommendedAction: resetClientId`. That is
+evidence of an actor/client mismatch, not database corruption. Recover by
+using a new purpose-specific client ID as above; never delete unrelated rows or
+the prior terminal outcome. This actor-change recipe is for controlled seeding
+and backfills, not application commands or unknown real-world command outcomes.
+
 Malformed helper input such as an unknown table/column throws `SyncError`
 before a push exists. In tests, prefer
 [`@syncular/testkit`](/tooling-testing/): a test client that mutates and syncs

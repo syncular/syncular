@@ -24,6 +24,28 @@ export interface ViteSyncClientResourceResult {
   readonly disposalError?: Error;
 }
 
+/**
+ * Synchronous module-bootstrap result for Vite targets that do not support
+ * top-level await. The resource is immediately usable by `SyncProvider`; it
+ * remains pending until an obsolete owner has closed and the replacement
+ * factory is allowed to run.
+ */
+export interface ViteSyncClientResourceBootstrap {
+  readonly resource: SyncClientResource;
+  /**
+   * Resolves after an incompatible retained owner has closed. A rejection is
+   * also published by `resource` as its startup error, and prevents the
+   * replacement factory from running.
+   */
+  readonly handoff: Promise<void>;
+  /** Compatibility alias; true whenever the retained owner was replaced. */
+  readonly schemaChanged: boolean;
+  /** True only when a retained owner came from another Syncular release. */
+  readonly runtimeChanged: boolean;
+  /** True whenever an incompatible retained owner is being replaced. */
+  readonly ownerChanged: boolean;
+}
+
 type HotData = Record<string, unknown>;
 
 function errorOf(value: unknown): Error {
@@ -72,6 +94,81 @@ function retainedFrom(hotData: HotData | undefined):
   };
 }
 
+function validateIdentity(schemaVersion: number, runtimeVersion: string): void {
+  if (!Number.isInteger(schemaVersion) || schemaVersion < 1) {
+    throw new TypeError('schemaVersion must be a positive integer');
+  }
+  if (
+    typeof runtimeVersion !== 'string' ||
+    runtimeVersion.length === 0 ||
+    runtimeVersion.length > 96
+  ) {
+    throw new TypeError('runtimeVersion must be a bounded non-empty string');
+  }
+}
+
+/**
+ * Create or reuse a Vite-retained resource without top-level await.
+ *
+ * On an owner change, the returned resource's factory is sequenced behind the
+ * prior resource's complete disposal. A failed close therefore becomes the
+ * ordinary resource startup error and never constructs a competing owner.
+ */
+export function createViteSyncClientResource(
+  hotData: HotData | undefined,
+  schemaVersion: number,
+  factory: () => SyncClientLike | Promise<SyncClientLike>,
+  runtimeVersion = SYNCULAR_REACT_RUNTIME_VERSION,
+): ViteSyncClientResourceBootstrap {
+  validateIdentity(schemaVersion, runtimeVersion);
+
+  const retained = retainedFrom(hotData);
+  if (
+    retained?.schemaVersion === schemaVersion &&
+    retained.runtimeVersion === runtimeVersion
+  ) {
+    return {
+      resource: retained.resource,
+      handoff: Promise.resolve(),
+      schemaChanged: false,
+      runtimeChanged: false,
+      ownerChanged: false,
+    };
+  }
+
+  const ownerChanged = retained !== undefined;
+  const runtimeChanged =
+    retained !== undefined && retained.runtimeVersion !== runtimeVersion;
+  const handoff = retained
+    ? Promise.resolve().then(() => retained.resource.dispose())
+    : Promise.resolve();
+  // The resource below observes the same rejection. Attaching a handler here
+  // also keeps an integration that ignores `handoff` free of an unhandled
+  // promise while the provider reports the typed startup failure.
+  void handoff.catch(() => undefined);
+  const resource = createSyncClientResource(async () => {
+    await handoff;
+    return factory();
+  });
+
+  if (hotData !== undefined) {
+    const record: RetainedSyncularResource = {
+      schemaVersion,
+      runtimeVersion,
+      resource,
+    };
+    hotData.syncularClientResource = record;
+  }
+
+  return {
+    resource,
+    handoff,
+    schemaChanged: ownerChanged,
+    runtimeChanged,
+    ownerChanged,
+  };
+}
+
 /**
  * Reuse a Vite-owned client only while both its captured generated schema and
  * materialized Syncular runtime identity match. On either change, the prior
@@ -84,16 +181,7 @@ export async function retainViteSyncClientResource(
   factory: () => SyncClientLike | Promise<SyncClientLike>,
   runtimeVersion = SYNCULAR_REACT_RUNTIME_VERSION,
 ): Promise<ViteSyncClientResourceResult> {
-  if (!Number.isInteger(schemaVersion) || schemaVersion < 1) {
-    throw new TypeError('schemaVersion must be a positive integer');
-  }
-  if (
-    typeof runtimeVersion !== 'string' ||
-    runtimeVersion.length === 0 ||
-    runtimeVersion.length > 96
-  ) {
-    throw new TypeError('runtimeVersion must be a bounded non-empty string');
-  }
+  validateIdentity(schemaVersion, runtimeVersion);
 
   const retained = retainedFrom(hotData);
   if (

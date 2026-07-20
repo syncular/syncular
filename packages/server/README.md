@@ -217,6 +217,16 @@ unknown command outcome, reuse the original idempotency key because changing it
 can execute the operation twice. The full inspection and recovery recipe is in
 the public [server guide](https://syncular.dev/guide-server/#seeding-data).
 
+One extra rule applies when the seed actor changes. A Syncular `clientId` is
+bound to its first actor inside a partition. Keep the client ID stable for seed
+revisions under that actor, but allocate both a new purpose-specific `clientId`
+and a new `commitId` when moving a seed to another actor. Changing only the
+commit ID correctly fails with `sync.invalid_client_id`; do not erase the
+database to bypass that identity evidence. For example, move
+`catalog-import/seed-user/catalog-v1` to
+`catalog-import/server-authority/catalog-v2`, not merely to
+`catalog-import/seed-user/catalog-v2`.
+
 The task-oriented [concurrency and conflict-correction guide](https://syncular.dev/guide-concurrency-correction/)
 shows version projection, aggregate rollback, corrected replacement commits,
 explicit acknowledgement, and restart-safe recovery UI together.

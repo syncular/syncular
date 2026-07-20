@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import type { SyncClientLike } from '../src/client';
 import type { SyncClientResource } from '../src/resource';
-import { retainViteSyncClientResource } from '../src/vite-hmr';
+import {
+  createViteSyncClientResource,
+  retainViteSyncClientResource,
+} from '../src/vite-hmr';
 import { FakeClient } from './fake-client';
 
 async function settled(resource: SyncClientResource) {
@@ -14,6 +17,74 @@ async function settled(resource: SyncClientResource) {
 }
 
 describe('Vite schema-aware HMR fixture', () => {
+  test('boots synchronously without opening a replacement before async disposal', async () => {
+    const hotData: Record<string, unknown> = {};
+    const timeline: string[] = [];
+    let releaseClose: (() => void) | undefined;
+    const closeGate = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+
+    const current = createViteSyncClientResource(hotData, 1, () => {
+      timeline.push('open:1');
+      const client = new FakeClient();
+      (client as FakeClient & { close: () => Promise<void> }).close =
+        async () => {
+          timeline.push('close:start:1');
+          await closeGate;
+          timeline.push('close:end:1');
+        };
+      return client;
+    });
+    expect(current.resource.getSnapshot().phase).toBe('pending');
+    expect((await settled(current.resource)).phase).toBe('ready');
+
+    const replacement = createViteSyncClientResource(hotData, 2, () => {
+      timeline.push('open:2');
+      return new FakeClient();
+    });
+    expect(replacement.ownerChanged).toBe(true);
+    expect(replacement.resource.getSnapshot().phase).toBe('pending');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(timeline).toEqual(['open:1', 'close:start:1']);
+
+    releaseClose?.();
+    await replacement.handoff;
+    expect((await settled(replacement.resource)).phase).toBe('ready');
+    expect(timeline).toEqual([
+      'open:1',
+      'close:start:1',
+      'close:end:1',
+      'open:2',
+    ]);
+    await replacement.resource.dispose();
+  });
+
+  test('surfaces synchronous-bootstrap disposal failure without opening a replacement', async () => {
+    const hotData: Record<string, unknown> = {};
+    let replacementCalls = 0;
+    const current = createViteSyncClientResource(hotData, 1, () => {
+      const client = new FakeClient();
+      (client as FakeClient & { close: () => void }).close = () => {
+        throw new Error('worker close failed');
+      };
+      return client;
+    });
+    expect((await settled(current.resource)).phase).toBe('ready');
+
+    const replacement = createViteSyncClientResource(hotData, 2, () => {
+      replacementCalls += 1;
+      return new FakeClient();
+    });
+    await expect(replacement.handoff).rejects.toThrow('worker close failed');
+    const snapshot = await settled(replacement.resource);
+    expect(snapshot.phase).toBe('error');
+    if (snapshot.phase !== 'error') throw new Error('expected startup error');
+    expect(snapshot.error.message).toBe('worker close failed');
+    expect(replacementCalls).toBe(0);
+  });
+
   test('rejects an invalid runtime identity', async () => {
     await expect(
       retainViteSyncClientResource({}, 1, () => new FakeClient(), 42 as never),
