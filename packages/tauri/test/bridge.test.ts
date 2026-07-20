@@ -275,6 +275,7 @@ describe('createTauriSyncClient', () => {
         keys: { 'practice-v2': new Uint8Array(32).fill(0x5a) },
         keyIdColumns: { patients: 'encryption_key_id' },
       },
+      headers: { authorization: 'Bearer post-preflight' },
     });
     expect(await client.securityLifecycle()).toBe('active');
     expect(await client.query('SELECT 1')).toBeInstanceOf(Array);
@@ -291,6 +292,15 @@ describe('createTauriSyncClient', () => {
         }
       ).params.encryption.keys['practice-v2'],
     ).toEqual({ $bytes: '5a'.repeat(32) });
+    // The fresh token rides the activation command itself, so the native
+    // side can apply it before the startup sync the activation enqueues.
+    expect(
+      (
+        activation?.args.command as {
+          params: { headers: Record<string, string> };
+        }
+      ).params.headers,
+    ).toEqual({ authorization: 'Bearer post-preflight' });
 
     const barrier = client.beginSecurityPreflight();
     await expect(client.query('SELECT 1')).rejects.toMatchObject({
@@ -298,6 +308,42 @@ describe('createTauriSyncClient', () => {
     });
     await barrier;
     await client.close();
+  });
+
+  test('a native preflight refusal of a plain re-create surfaces through create', async () => {
+    // The Rust command router refuses a create WITHOUT securityPreflight
+    // while a preflight is pending; the bridge must surface that refusal as
+    // a construction failure and a preflighted re-create must stay gated.
+    const { tauri } = makeTauri((cmd, args) => {
+      const command = args.command as
+        | { method?: string; params?: Record<string, unknown> }
+        | undefined;
+      if (
+        command?.method === 'create' &&
+        command.params?.securityPreflight !== true
+      ) {
+        return {
+          error: {
+            code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+            message:
+              'the local replica is in security preflight; a replacement create must itself request securityPreflight, and protected data opens only after activateSecurity',
+          },
+        };
+      }
+      return defaultResponder(cmd, args);
+    });
+    await expect(
+      createTauriSyncClient({ schema: { version: 1, tables: [] }, tauri }),
+    ).rejects.toMatchObject({ code: SECURITY_PREFLIGHT_REQUIRED_CODE });
+    const gated = await createTauriSyncClient({
+      schema: { version: 1, tables: [] },
+      securityPreflight: true,
+      tauri,
+    });
+    expect(await gated.securityLifecycle()).toBe('preflight');
+    await expect(gated.query('SELECT 1')).rejects.toMatchObject({
+      code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+    });
   });
 
   test('query uses the syncular_query fast path and decodes bytes', async () => {
@@ -606,6 +652,48 @@ describe('createTauriSyncClient', () => {
 
     const seen: string[] = [];
     client.onDiagnostics((snapshot) => seen.push(snapshot.host.kind));
+    emit({ type: 'diagnostics', snapshot: DIAGNOSTICS });
+    expect(seen).toEqual(['tauri']);
+  });
+
+  test('the first diagnostics listener enables native pushes exactly once', async () => {
+    const { client, calls } = await build();
+    const offFirst = client.onDiagnostics(() => {});
+    client.onDiagnostics(() => {});
+    offFirst();
+    client.onDiagnostics(() => {});
+    await settle();
+    // The native core gates pushed snapshots behind an observed consumer; a
+    // push-only frontend (never pulling a snapshot) must still register.
+    const enables = calls.filter(
+      (call) =>
+        call.cmd.endsWith('syncular_command') &&
+        (call.args.command as { method?: string }).method ===
+          'enableDiagnostics',
+    );
+    expect(enables).toHaveLength(1);
+  });
+
+  test('an older native core rejecting enableDiagnostics leaves listeners working', async () => {
+    const { tauri, emit } = makeTauri((cmd, args) => {
+      const method = (args.command as { method?: string } | undefined)?.method;
+      if (method === 'enableDiagnostics') {
+        return {
+          error: {
+            code: 'client.failed',
+            message: 'unknown method "enableDiagnostics"',
+          },
+        };
+      }
+      return defaultResponder(cmd, args);
+    });
+    const client = await createTauriSyncClient({
+      schema: { version: 1, tables: [] },
+      tauri,
+    });
+    const seen: string[] = [];
+    client.onDiagnostics((snapshot) => seen.push(snapshot.host.kind));
+    await settle();
     emit({ type: 'diagnostics', snapshot: DIAGNOSTICS });
     expect(seen).toEqual(['tauri']);
   });

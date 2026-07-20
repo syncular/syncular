@@ -195,6 +195,12 @@ if (!available) {
         const client = await createTauriSyncClient({ schema, tauri: host.api });
         const batches: unknown[] = [];
         client.onChange((batch) => batches.push(batch));
+        // A push-only diagnostics consumer (never pulling a snapshot): the
+        // bridge's enableDiagnostics registration must start native pushes.
+        const diagnosticsKinds: string[] = [];
+        client.onDiagnostics((snapshot) =>
+          diagnosticsKinds.push(snapshot.host.kind),
+        );
         const store = new ReactiveClientStore(normalizeClient(client));
         store.start();
         const query = store.query<{ id: string; title: string }>({
@@ -220,6 +226,7 @@ if (!available) {
         );
         expect(snapshot.revision).toBe(1n);
         expect(snapshot.rows).toEqual([{ id: 't1', title: 'native' }]);
+        expect(diagnosticsKinds).toContain('tauri');
         expect(batches).toHaveLength(1);
         expect(
           (batches[0] as { tables: readonly { table: string }[] }).tables[0]
@@ -399,10 +406,36 @@ if (!available) {
           }),
         ).rejects.toMatchObject({ code: SECURITY_PREFLIGHT_REQUIRED_CODE });
 
-        await client.activateSecurity();
-        expect(await client.securityLifecycle()).toBe('active');
-        expect(await client.query('SELECT id FROM todos')).toEqual([]);
-        await client.close();
+        // The escape the gate exists to prevent: re-issuing create WITHOUT
+        // the securityPreflight flag must be refused by the real router.
+        await expect(
+          createTauriSyncClient({ schema, tauri: host.api }),
+        ).rejects.toMatchObject({ code: SECURITY_PREFLIGHT_REQUIRED_CODE });
+        // A preflighted replacement is permitted and stays gated.
+        const replacement = await createTauriSyncClient({
+          schema,
+          securityPreflight: true,
+          tauri: host.api,
+        });
+        await expect(
+          replacement.query('SELECT id FROM todos'),
+        ).rejects.toMatchObject({ code: SECURITY_PREFLIGHT_REQUIRED_CODE });
+
+        // Activation carries the fresh header set atomically and releases
+        // the gate; a plain create behaves as before afterwards.
+        await replacement.activateSecurity({
+          headers: { authorization: 'Bearer post-preflight' },
+        });
+        expect(await replacement.securityLifecycle()).toBe('active');
+        expect(await replacement.query('SELECT id FROM todos')).toEqual([]);
+        await replacement.close();
+        const reopened = await createTauriSyncClient({
+          schema,
+          tauri: host.api,
+        });
+        expect(await reopened.securityLifecycle()).toBe('active');
+        expect(await reopened.query('SELECT id FROM todos')).toEqual([]);
+        await reopened.close();
       } finally {
         await host.close();
       }

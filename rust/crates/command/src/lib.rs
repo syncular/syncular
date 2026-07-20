@@ -58,6 +58,14 @@ pub struct CreateEffects {
     /// §5.4 capability the harness/host announced for its endpoints — the
     /// host sets its transport's `supports_url_fetch` accordingly.
     pub signed_urls: bool,
+    /// True while a security preflight is pending: a preflighted client was
+    /// installed (or entered preflight, or was shut down mid-preflight) and
+    /// `activateSecurity` has yet to complete. `dispatch` maintains this so a
+    /// replacement `create` without the `securityPreflight` flag is refused —
+    /// including across `shutdown`, where the client slot is empty. Every host
+    /// inherits the rule because the flag lives on this shared, host-persistent
+    /// state.
+    pub security_preflight_pending: bool,
 }
 
 fn client_err(message: String) -> CommandError {
@@ -144,6 +152,24 @@ pub fn parse_encryption(
         }
     }
     Ok(config)
+}
+
+/// Parse an `activateSecurity` (or rotation) `headers` param: an object of
+/// string values, replacing the transport's FULL header set (RFC 0002 §2.3).
+/// The router validates the shape at the shared chokepoint; each host applies
+/// the parsed set to its own transport (the router stays transport-agnostic).
+pub fn parse_headers(value: &Value) -> Result<Vec<(String, String)>, String> {
+    let object = value.as_object().ok_or_else(|| {
+        "sync.invalid_request: headers must be an object of string values".to_owned()
+    })?;
+    let mut headers = Vec::with_capacity(object.len());
+    for (name, value) in object {
+        let value = value
+            .as_str()
+            .ok_or_else(|| format!("sync.invalid_request: header {name:?} must be a string"))?;
+        headers.push((name.clone(), value.to_owned()));
+    }
+    Ok(headers)
 }
 
 pub fn parse_mutations(value: Option<&Value>) -> Result<Vec<Mutation>, String> {
@@ -287,7 +313,28 @@ pub fn dispatch<T: Transport>(
     method: &str,
     params: &Value,
 ) -> Result<Value, CommandError> {
-    if method != "create" {
+    if method == "create" {
+        // Fail-closed against a compromised webview re-issuing `create` (or
+        // `shutdown` + `create`) WITHOUT the securityPreflight flag to exit
+        // the gate: while a preflight is pending — on the live client, or
+        // carried in `effects` across a `shutdown` — a replacement create must
+        // itself request securityPreflight; the gate opens only through
+        // activateSecurity.
+        let requests_preflight = params
+            .get("securityPreflight")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let preflight_engaged = client.as_ref().map_or(
+            effects.security_preflight_pending,
+            SyncClient::security_preflight,
+        );
+        if preflight_engaged && !requests_preflight {
+            return Err((
+                syncular_client::SECURITY_PREFLIGHT_REQUIRED_CODE.to_owned(),
+                "the local replica is in security preflight; a replacement create must itself request securityPreflight, and protected data opens only after activateSecurity".to_owned(),
+            ));
+        }
+    } else {
         let allowed_during_preflight = matches!(
             method,
             "securityLifecycle"
@@ -359,6 +406,7 @@ pub fn dispatch<T: Transport>(
             if security_preflight {
                 instance.begin_security_preflight();
             }
+            effects.security_preflight_pending = security_preflight;
             *client = Some(instance);
             Ok(json!({}))
         }
@@ -369,6 +417,7 @@ pub fn dispatch<T: Transport>(
             let running = need_client(client)?;
             running.disconnect_realtime(transport);
             running.begin_security_preflight();
+            effects.security_preflight_pending = true;
             Ok(json!({}))
         }
         "activateSecurity" => {
@@ -376,13 +425,27 @@ pub fn dispatch<T: Transport>(
                 Some(value) => parse_encryption(value).map_err(client_err)?,
                 None => syncular_client::values::EncryptionConfig::default(),
             };
+            // Optional fresh transport headers ride the activation atomically,
+            // so a preflight that outlives the boot token starts its first
+            // sync round with valid credentials. Validated here at the shared
+            // chokepoint (invalid input keeps the gate closed); the host
+            // applies the parsed set to its own transport.
+            if let Some(headers) = params.get("headers") {
+                parse_headers(headers).map_err(client_err)?;
+            }
             need_client(client)?
                 .activate_security(encryption)
                 .map_err(client_err)?;
+            effects.security_preflight_pending = false;
             Ok(json!({}))
         }
         "shutdown" => {
             if let Some(running) = client.as_mut() {
+                // Capture the gate state BEFORE the shutdown barrier flips the
+                // client into preflight: an unactivated preflight stays
+                // pending across the shutdown, while an activated client may
+                // be recreated plainly afterwards.
+                effects.security_preflight_pending = running.security_preflight();
                 running.disconnect_realtime(transport);
                 running.begin_security_preflight();
             }
@@ -881,7 +944,7 @@ mod tests {
         SegmentRequest, SyncClient, Transport, TransportError, SECURITY_PREFLIGHT_REQUIRED_CODE,
     };
 
-    use super::{dispatch, parse_encryption, CreateEffects};
+    use super::{dispatch, parse_encryption, parse_headers, CreateEffects};
 
     #[derive(Default)]
     struct NoNetwork {
@@ -1185,5 +1248,229 @@ mod tests {
         )
         .expect_err("mutation must be gated");
         assert_eq!(blocked.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+    }
+
+    #[test]
+    fn preflight_refuses_a_replacement_create_without_the_flag() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema(), "securityPreflight": true }),
+        )
+        .expect("preflight create");
+
+        // The escape the gate exists to prevent: a plain re-create must fail.
+        let escape = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema() }),
+        )
+        .expect_err("plain create must be refused during preflight");
+        assert_eq!(escape.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+        // The refused create left the preflighted client installed and gated.
+        let query_error = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "query",
+            &json!({ "sql": "SELECT id FROM todos", "params": [] }),
+        )
+        .expect_err("protected query stays gated");
+        assert_eq!(query_error.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+
+        // A preflighted replacement is permitted and stays gated.
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema(), "securityPreflight": true }),
+        )
+        .expect("preflighted replacement create");
+        let still_gated = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "query",
+            &json!({ "sql": "SELECT id FROM todos", "params": [] }),
+        )
+        .expect_err("replacement stays gated");
+        assert_eq!(still_gated.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+
+        // A legitimate activation releases the gate; creates behave as today.
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "activateSecurity",
+            &json!({}),
+        )
+        .expect("activation");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema() }),
+        )
+        .expect("plain create after activation");
+        let rows = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "query",
+            &json!({ "sql": "SELECT id FROM todos", "params": [] }),
+        )
+        .expect("active query");
+        assert_eq!(rows, json!({ "rows": [] }));
+    }
+
+    #[test]
+    fn preflight_gate_survives_shutdown_before_replacement_creates() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema(), "securityPreflight": true }),
+        )
+        .expect("preflight create");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "shutdown",
+            &json!({}),
+        )
+        .expect("shutdown during preflight");
+        assert!(client.is_none());
+
+        // The pending preflight rides `effects` across the empty client slot.
+        let escape = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema() }),
+        )
+        .expect_err("shutdown + plain create must stay refused");
+        assert_eq!(escape.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema(), "securityPreflight": true }),
+        )
+        .expect("preflighted re-create");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "activateSecurity",
+            &json!({}),
+        )
+        .expect("activation");
+
+        // An ACTIVATED client shut down cleanly may be recreated plainly.
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "shutdown",
+            &json!({}),
+        )
+        .expect("shutdown after activation");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema() }),
+        )
+        .expect("plain create after an activated shutdown");
+    }
+
+    #[test]
+    fn activate_security_validates_optional_headers_atomically() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema(), "securityPreflight": true }),
+        )
+        .expect("preflight create");
+
+        // Invalid header shapes fail loudly and keep the gate closed.
+        let invalid = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "activateSecurity",
+            &json!({ "headers": { "authorization": 7 } }),
+        )
+        .expect_err("non-string header must fail");
+        assert_eq!(invalid.0, "sync.invalid_request");
+        let lifecycle = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "securityLifecycle",
+            &json!({}),
+        )
+        .expect("lifecycle");
+        assert_eq!(lifecycle, json!({ "state": "preflight" }));
+
+        // A valid header set activates in one atomic step.
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "activateSecurity",
+            &json!({ "headers": { "authorization": "Bearer fresh" } }),
+        )
+        .expect("activation with fresh headers");
+        let lifecycle = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "securityLifecycle",
+            &json!({}),
+        )
+        .expect("lifecycle");
+        assert_eq!(lifecycle, json!({ "state": "active" }));
+    }
+
+    #[test]
+    fn parse_headers_reads_the_full_replacement_set() {
+        let parsed = parse_headers(&json!({
+            "authorization": "Bearer fresh",
+            "x-tenant": "t1"
+        }))
+        .expect("valid headers parse");
+        assert_eq!(
+            parsed,
+            vec![
+                ("authorization".to_owned(), "Bearer fresh".to_owned()),
+                ("x-tenant".to_owned(), "t1".to_owned())
+            ]
+        );
+        assert!(parse_headers(&json!(["authorization"])).is_err());
+        assert!(parse_headers(&json!({ "authorization": null })).is_err());
     }
 }

@@ -45,7 +45,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use serde_json::{json, Value};
 use syncular_client::{ClientDiagnosticsRequest, SyncClient};
-use syncular_command::{dispatch, CreateEffects};
+use syncular_command::{dispatch, parse_headers, CreateEffects};
 
 pub mod transport;
 
@@ -144,6 +144,21 @@ impl Handle {
         if method == "create" {
             self.last_diagnostics_fingerprint = None;
             self.transport.set_signed_urls(self.effects.signed_urls);
+        }
+        if method == "activateSecurity" && result.is_ok() {
+            // A successful activation may carry a fresh transport header set
+            // (already validated by the shared router — a shape failure comes
+            // back as its error result). Apply it here, before the RN host
+            // consumes the startup sync intent the activation enqueued (a
+            // `sync-intent` event answered with a strictly later
+            // `syncUntilIdle` command), so a preflight that outlived the boot
+            // token starts its first round with valid credentials.
+            if let Some(headers) = params
+                .get("headers")
+                .and_then(|value| parse_headers(value).ok())
+            {
+                self.transport.set_headers(headers);
+            }
         }
         // Command-local work is an explicit router effect (mutation and
         // window changes); realtime/retry work is drained from the core queue

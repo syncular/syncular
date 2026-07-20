@@ -265,6 +265,7 @@ export class TauriSyncClient {
   #closed = false;
   #securityLifecycle: SecurityLifecycle;
   #preflightBarrier: Promise<void> | undefined;
+  #diagnosticsEnabled = false;
 
   /** @internal — use {@link createTauriSyncClient}. */
   constructor(
@@ -408,8 +409,18 @@ export class TauriSyncClient {
     return barrier;
   }
 
+  /**
+   * Complete the security preflight. `headers` optionally carries a fresh
+   * FULL transport header set that the native host applies atomically with
+   * the activation, before the startup sync it enqueues — so a preflight
+   * that outlives the boot token starts its first round with valid
+   * credentials (the direct `setHeaders` path stays refused while gated).
+   */
   async activateSecurity(
-    options: { readonly encryption?: EncryptionKeyringConfig } = {},
+    options: {
+      readonly encryption?: EncryptionKeyringConfig;
+      readonly headers?: Readonly<Record<string, string>>;
+    } = {},
   ): Promise<void> {
     if (this.#securityLifecycle === 'active') {
       throw new TauriSyncError(
@@ -422,6 +433,7 @@ export class TauriSyncClient {
       ...(options.encryption !== undefined
         ? { encryption: encodeEncryption(options.encryption) }
         : {}),
+      ...(options.headers !== undefined ? { headers: options.headers } : {}),
     });
     this.#securityLifecycle = 'active';
   }
@@ -438,7 +450,31 @@ export class TauriSyncClient {
 
   onDiagnostics(listener: ClientDiagnosticsListener): () => void {
     this.#diagnosticsListeners.add(listener);
+    this.#enableDiagnosticsPush();
     return () => this.#diagnosticsListeners.delete(listener);
+  }
+
+  /**
+   * Host-local push registration: the native core emits pushed diagnostics
+   * snapshots only once a consumer is known (a `diagnosticsSnapshot` pull, or
+   * this explicit `enableDiagnostics` signal). Fired once, on the first
+   * registered listener, fire-and-forget. The invoke deliberately bypasses
+   * the bridge's preflight gate — the command is a pure observability
+   * registration handled before dispatch, and the native side stays silent
+   * until activation anyway. Errors are tolerated: an older native core
+   * rejects the unknown command, and the mount-time snapshot pull path keeps
+   * `useDiagnostics` working there.
+   */
+  #enableDiagnosticsPush(): void {
+    if (this.#diagnosticsEnabled || this.#closed) return;
+    this.#diagnosticsEnabled = true;
+    void this.#tauri
+      .invoke<CommandReply>(`${PLUGIN}syncular_command`, {
+        command: { method: 'enableDiagnostics', params: {} },
+      })
+      .catch(() => {
+        /* fire-and-forget; an error reply is equally ignored above */
+      });
   }
 
   onPresence(listener: (scopeKey: string) => void): () => void {

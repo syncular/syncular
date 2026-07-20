@@ -214,6 +214,76 @@ fn diagnostics_command_reports_expected_intent_without_private_payloads() {
 }
 
 #[test]
+fn preflight_refuses_plain_replacement_creates_and_activates_with_headers() {
+    let config = CString::new("{}").unwrap();
+    let handle = syncular_client_new(config.as_ptr());
+    let created = command(
+        handle,
+        "create",
+        json!({
+            "clientId": "ffi-preflight-escape",
+            "schema": simple_schema(),
+            "securityPreflight": true
+        }),
+    );
+    assert_eq!(created["result"], json!({}), "preflight create: {created}");
+
+    // The escape the gate exists to prevent: re-issuing create WITHOUT the
+    // securityPreflight flag must be refused by the shared router.
+    let escape = command(
+        handle,
+        "create",
+        json!({ "clientId": "ffi-preflight-escape", "schema": simple_schema() }),
+    );
+    assert_eq!(
+        escape["error"]["code"], "client.security_preflight_required",
+        "{escape}"
+    );
+    let gated = command(
+        handle,
+        "query",
+        json!({ "sql": "SELECT id FROM todo", "params": [] }),
+    );
+    assert_eq!(gated["error"]["code"], "client.security_preflight_required");
+
+    // Invalid activation headers fail loudly and keep the gate closed.
+    let invalid = command(
+        handle,
+        "activateSecurity",
+        json!({ "headers": { "authorization": 7 } }),
+    );
+    assert_eq!(invalid["error"]["code"], "sync.invalid_request", "{invalid}");
+    let lifecycle = command(handle, "securityLifecycle", Value::Null);
+    assert_eq!(lifecycle["result"]["state"], "preflight");
+
+    // A valid header set rides the activation atomically (applied to the
+    // owned transport before any startup sync round) and releases the gate.
+    let activated = command(
+        handle,
+        "activateSecurity",
+        json!({ "headers": { "authorization": "Bearer post-preflight" } }),
+    );
+    assert_eq!(activated["result"], json!({}), "{activated}");
+    let rows = command(
+        handle,
+        "query",
+        json!({ "sql": "SELECT id FROM todo", "params": [] }),
+    );
+    assert_eq!(rows["result"]["rows"], json!([]));
+    let recreated = command(
+        handle,
+        "create",
+        json!({ "clientId": "ffi-preflight-escape", "schema": simple_schema() }),
+    );
+    assert_eq!(
+        recreated["result"],
+        json!({}),
+        "plain create after activation: {recreated}"
+    );
+    syncular_client_close(handle);
+}
+
+#[test]
 fn malformed_config_returns_null_handle() {
     let bad = CString::new("not json").unwrap();
     let handle = syncular_client_new(bad.as_ptr());
