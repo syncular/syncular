@@ -381,8 +381,47 @@ describe('unsupported constructs are hard errors that name the construct', () =>
     );
     expectError(
       "INSERT INTO t VALUES ('x')",
-      /unsupported SQL statement.*"INSERT"/,
+      /INSERT data migration is unsupported.*migration SQL is schema-only/,
     );
+  });
+
+  test('top-level DML fails before inner punctuation with rollout guidance', () => {
+    const cases = [
+      {
+        kind: 'UPDATE',
+        sql: 'UPDATE evidence AS outcome SET state = 1 WHERE outcome.incident_id = source.incident_id',
+      },
+      {
+        kind: 'INSERT',
+        sql: 'INSERT INTO evidence (id, state) SELECT source.id, source.state FROM source',
+      },
+      {
+        kind: 'DELETE',
+        sql: 'DELETE FROM evidence WHERE evidence.incident_id = source.incident_id',
+      },
+    ] as const;
+
+    for (const item of cases) {
+      let error: unknown;
+      try {
+        parse(item.sql);
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(TypegenError);
+      const message = (error as TypegenError).message;
+      expect(message).toContain(`${item.kind} data migration is unsupported`);
+      expect(message).toContain('migration SQL is schema-only');
+      expect(message).toContain('nullable expansion');
+      expect(message).toContain(
+        'versioned server-authoritative Syncular writes',
+      );
+      expect(message).toContain('retire the old representation');
+      expect(message).toContain(
+        'https://syncular.dev/guide-schema/#data-changes-and-backfills',
+      );
+      expect(message).not.toContain('unexpected character');
+    }
   });
 
   test('DROP INDEX removes or replaces one declared index', () => {

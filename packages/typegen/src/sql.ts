@@ -73,6 +73,9 @@ interface Token {
 const WORD_START = /[\p{L}_]/u;
 const WORD_PART = /[\p{L}\p{M}\p{N}_]/u;
 const DIGIT = /[0-9]/;
+const DATA_MUTATION_STATEMENTS = new Set(['UPDATE', 'INSERT', 'DELETE']);
+const DATA_MUTATION_GUIDANCE =
+  'Syncular migration SQL is schema-only: retain the old representation, deploy a nullable expansion, backfill through versioned server-authoritative Syncular writes under a new idempotency key, validate future writes, then retire the old representation in a later schema version. See https://syncular.dev/guide-schema/#data-changes-and-backfills';
 
 const tableIdentifierSources = new WeakMap<ParsedTable, string>();
 const columnIdentifierSources = new WeakMap<IrColumn, string>();
@@ -170,7 +173,15 @@ function tokenizeStatements(sql: string, source: string): Token[][] {
     } else if (WORD_START.test(ch)) {
       let end = i + 1;
       while (end < sql.length && WORD_PART.test(sql[end] as string)) end += 1;
-      current.push({ kind: 'word', text: sql.slice(i, end) });
+      const text = sql.slice(i, end);
+      current.push({ kind: 'word', text });
+      const statementKind = text.toUpperCase();
+      if (current.length === 1 && DATA_MUTATION_STATEMENTS.has(statementKind)) {
+        throw new TypegenError(
+          source,
+          `${statementKind} data migration is unsupported. ${DATA_MUTATION_GUIDANCE}`,
+        );
+      }
       i = end;
     } else if (DIGIT.test(ch)) {
       let end = i + 1;
