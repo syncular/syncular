@@ -44,6 +44,20 @@ function search(db: BunClientDatabase, query: string): string[] {
     .map((row) => String(row.id));
 }
 
+/**
+ * Raw projection hits WITHOUT the source-table join, so an orphaned entry
+ * for a REPLACE-displaced row (a ghost) is visible to the assertion.
+ */
+function rawFtsHits(db: BunClientDatabase, query: string): string[] {
+  return db
+    .query(
+      `SELECT _syncular_source_id AS sid FROM catalogue_codes_fts
+       WHERE catalogue_codes_fts MATCH ? ORDER BY sid`,
+      [query],
+    )
+    .map((row) => String(row.sid));
+}
+
 describe('RFC 0005 local FTS5 projections', () => {
   test('initial build and insert/update/delete stay transactionally current', () => {
     const db = new BunClientDatabase();
@@ -136,26 +150,179 @@ describe('RFC 0005 local FTS5 projections', () => {
     expect(search(db, 'typhoid')).toEqual(['c2']);
   });
 
-  test('clean bulk inserts do not scan the growing FTS projection', () => {
+  test('REPLACE displacing a different-PK row via a secondary unique index leaves no ghost hit', () => {
+    const schema: ClientSchema = {
+      version: 1,
+      tables: [
+        {
+          ...(SCHEMA.tables[0] as NonNullable<(typeof SCHEMA.tables)[0]>),
+          indexes: [
+            {
+              name: 'catalogue_codes_code_unique',
+              columns: ['code'],
+              unique: true,
+            },
+          ],
+        },
+      ],
+    };
     const db = new BunClientDatabase();
-    ensureLocalSchema(db, compileClientSchema(SCHEMA));
-    const insert = db.db.query(
-      'INSERT INTO catalogue_codes(id, release_id, code, title) VALUES (?, ?, ?, ?)',
+    ensureLocalSchema(db, compileClientSchema(schema));
+    db.exec(
+      `INSERT INTO catalogue_codes(id, release_id, code, title) VALUES ('c1', 'r1', 'A01', 'Cholera')`,
     );
-    const startedAt = performance.now();
-    db.transaction(() => {
-      for (let index = 0; index < 20_000; index += 1) {
-        insert.run(
-          `c${index}`,
-          'r1',
-          `C${String(index).padStart(5, '0')}`,
-          `Synthetic title ${index}`,
-        );
-      }
-    });
-    const elapsedMs = performance.now() - startedAt;
-    expect(search(db, '"synthetic" "19999"')).toEqual(['c19999']);
-    expect(elapsedMs).toBeLessThan(2_500);
+    db.exec(
+      `INSERT INTO catalogue_codes(id, release_id, code, title) VALUES ('c2', 'r1', 'B01', 'Typhoid')`,
+    );
+    // Different PK, same unique `code`: REPLACE displaces c1 without firing
+    // a DELETE trigger for it. The BEFORE INSERT guard cleans its FTS entry.
+    db.exec(
+      `INSERT OR REPLACE INTO catalogue_codes(id, release_id, code, title) VALUES ('c9', 'r1', 'A01', 'Smallpox')`,
+    );
+    expect(
+      db.query(`SELECT id FROM catalogue_codes ORDER BY id`).map((r) => r.id),
+    ).toEqual(['c2', 'c9']);
+    expect(rawFtsHits(db, 'cholera')).toEqual([]);
+    expect(rawFtsHits(db, 'smallpox')).toEqual(['c9']);
+    expect(search(db, 'typhoid')).toEqual(['c2']);
+
+    // One REPLACE displacing through BOTH paths at once: pk c2 plus c9's
+    // unique code. Both projection entries are cleaned.
+    db.exec(
+      `INSERT OR REPLACE INTO catalogue_codes(id, release_id, code, title) VALUES ('c2', 'r1', 'A01', 'Measles')`,
+    );
+    expect(
+      db.query(`SELECT id FROM catalogue_codes ORDER BY id`).map((r) => r.id),
+    ).toEqual(['c2']);
+    expect(rawFtsHits(db, 'typhoid')).toEqual([]);
+    expect(rawFtsHits(db, 'smallpox')).toEqual([]);
+    expect(search(db, 'measles')).toEqual(['c2']);
+  });
+
+  test('multi-column unique displacement cleans exactly the displaced row', () => {
+    const schema: ClientSchema = {
+      version: 1,
+      tables: [
+        {
+          ...(SCHEMA.tables[0] as NonNullable<(typeof SCHEMA.tables)[0]>),
+          indexes: [
+            {
+              name: 'catalogue_codes_release_code_unique',
+              columns: ['release_id', 'code'],
+              unique: true,
+            },
+          ],
+        },
+      ],
+    };
+    const db = new BunClientDatabase();
+    ensureLocalSchema(db, compileClientSchema(schema));
+    // Same code in two releases coexists under the composite unique key.
+    db.exec(
+      `INSERT INTO catalogue_codes(id, release_id, code, title) VALUES ('c1', 'r1', 'A01', 'Cholera')`,
+    );
+    db.exec(
+      `INSERT INTO catalogue_codes(id, release_id, code, title) VALUES ('c2', 'r2', 'A01', 'Typhoid')`,
+    );
+    db.exec(
+      `INSERT OR REPLACE INTO catalogue_codes(id, release_id, code, title) VALUES ('c9', 'r1', 'A01', 'Smallpox')`,
+    );
+    expect(
+      db.query(`SELECT id FROM catalogue_codes ORDER BY id`).map((r) => r.id),
+    ).toEqual(['c2', 'c9']);
+    expect(rawFtsHits(db, 'cholera')).toEqual([]);
+    // The r2 row matches only one of the two unique columns and survives.
+    expect(search(db, 'typhoid')).toEqual(['c2']);
+    expect(search(db, 'smallpox')).toEqual(['c9']);
+  });
+
+  test('reopening an upgraded database regenerates the unique-aware guard', () => {
+    const schema: ClientSchema = {
+      version: 1,
+      tables: [
+        {
+          ...(SCHEMA.tables[0] as NonNullable<(typeof SCHEMA.tables)[0]>),
+          indexes: [
+            {
+              name: 'catalogue_codes_code_unique',
+              columns: ['code'],
+              unique: true,
+            },
+          ],
+        },
+      ],
+    };
+    const compiled = compileClientSchema(schema);
+    const db = new BunClientDatabase();
+    ensureLocalSchema(db, compiled);
+    // Simulate a database written by the pk-only guard generation.
+    db.exec('DROP TRIGGER catalogue_codes_fts_bi');
+    db.exec(
+      `CREATE TRIGGER catalogue_codes_fts_bi BEFORE INSERT ON catalogue_codes
+       WHEN EXISTS (SELECT 1 FROM catalogue_codes WHERE id = new.id) BEGIN
+         DELETE FROM catalogue_codes_fts WHERE _syncular_source_id = CAST(new.id AS TEXT);
+       END`,
+    );
+    // Every open re-ensures the schema, which drops and recreates the
+    // triggers — the upgraded database picks up the unique-aware guard.
+    ensureLocalSchema(db, compiled);
+    const guard = String(
+      db.query(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='catalogue_codes_fts_bi'",
+      )[0]?.sql,
+    );
+    expect(guard).toContain('IN (SELECT');
+    db.exec(
+      `INSERT INTO catalogue_codes(id, release_id, code, title) VALUES ('c1', 'r1', 'A01', 'Cholera')`,
+    );
+    db.exec(
+      `INSERT OR REPLACE INTO catalogue_codes(id, release_id, code, title) VALUES ('c9', 'r1', 'A01', 'Smallpox')`,
+    );
+    expect(rawFtsHits(db, 'cholera')).toEqual([]);
+    expect(search(db, 'smallpox')).toEqual(['c9']);
+  });
+
+  test('clean bulk inserts do not scan the growing FTS projection', () => {
+    const rows = 5_000;
+    const bulkInsertMs = (db: BunClientDatabase): number => {
+      const insert = db.db.query(
+        'INSERT INTO catalogue_codes(id, release_id, code, title) VALUES (?, ?, ?, ?)',
+      );
+      const startedAt = performance.now();
+      db.transaction(() => {
+        for (let index = 0; index < rows; index += 1) {
+          insert.run(
+            `c${index}`,
+            'r1',
+            `C${String(index).padStart(5, '0')}`,
+            `Synthetic title ${index}`,
+          );
+        }
+      });
+      return performance.now() - startedAt;
+    };
+
+    const clean = new BunClientDatabase();
+    ensureLocalSchema(clean, compileClientSchema(SCHEMA));
+    const cleanMs = bulkInsertMs(clean);
+    expect(search(clean, '"synthetic" "4999"')).toEqual(['c4999']);
+
+    // Comparative bound: an insert trigger that deletes by source id scans
+    // the whole projection per row. The clean triggers must stay decisively
+    // faster than that hazard on the same machine — a wall-clock cap here
+    // would flake on loaded CI.
+    const scanning = new BunClientDatabase();
+    ensureLocalSchema(scanning, compileClientSchema(SCHEMA));
+    scanning.exec('DROP TRIGGER catalogue_codes_fts_ai');
+    scanning.exec(
+      `CREATE TRIGGER catalogue_codes_fts_ai AFTER INSERT ON catalogue_codes BEGIN
+        DELETE FROM catalogue_codes_fts WHERE _syncular_source_id = CAST(new.id AS TEXT);
+        INSERT INTO catalogue_codes_fts (_syncular_source_id, code, title)
+          VALUES (CAST(new.id AS TEXT), new.code, new.title);
+      END`,
+    );
+    const scanningMs = bulkInsertMs(scanning);
+    expect(cleanMs * 3).toBeLessThan(scanningMs);
   });
 
   test('encrypted declared-string columns feed only the local plaintext projection', () => {

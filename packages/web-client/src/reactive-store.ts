@@ -850,10 +850,16 @@ export class ReactiveClientStore {
       // Releasing a window is best-effort teardown. A resource owner may have
       // already closed the underlying worker/native handle before React effect
       // cleanup runs (notably during schema-changing HMR). Do not let that
-      // harmless ordering race escape as an unhandled rejection.
-      void Promise.resolve(this.client.setWindow(group.base, [])).catch(
-        () => undefined,
-      );
+      // harmless ordering race escape as an unhandled rejection — and the
+      // interface permits a plain void return, so a closed handle may also
+      // throw synchronously; swallow that the same way.
+      try {
+        void Promise.resolve(this.client.setWindow(group.base, [])).catch(
+          () => undefined,
+        );
+      } catch {
+        // Same teardown race, surfaced synchronously.
+      }
     }
     this.#windowClaims.clear();
   }

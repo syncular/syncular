@@ -15,12 +15,34 @@ use crate::schema::TableSchema;
 /// key selection. Empty ⇒ E2EE off. `key_id_for` defaults to per-table
 /// (`keyId = table`). Always present on the client; the crypto is compiled
 /// only under the `e2ee` feature.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct EncryptionConfig {
     pub keys: HashMap<String, Vec<u8>>,
     /// Portable per-table selector: the named non-encrypted string column in
     /// each plaintext row contains the key id used for new envelopes.
     pub key_id_columns: HashMap<String, String>,
+}
+
+/// Manual Debug so a stray `{config:?}` log line stays free of key material:
+/// key entries render as `id → <N bytes>`.
+impl std::fmt::Debug for EncryptionConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        struct Redacted(usize);
+        impl std::fmt::Debug for Redacted {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "<{} bytes>", self.0)
+            }
+        }
+        let keys: std::collections::BTreeMap<&String, Redacted> = self
+            .keys
+            .iter()
+            .map(|(id, key)| (id, Redacted(key.len())))
+            .collect();
+        f.debug_struct("EncryptionConfig")
+            .field("keys", &keys)
+            .field("key_id_columns", &self.key_id_columns)
+            .finish()
+    }
 }
 
 impl Drop for EncryptionConfig {
@@ -629,6 +651,24 @@ mod naming_tests {
             config.key_id_for(&table, &row).expect("selects key"),
             "practice-key-v1"
         );
+    }
+
+    #[test]
+    fn debug_render_redacts_key_material() {
+        let mut config = EncryptionConfig::default();
+        config
+            .keys
+            .insert("practice-key-v1".to_owned(), vec![0xAB; 32]);
+        config
+            .key_id_columns
+            .insert("patients".to_owned(), "encryption_key_id".to_owned());
+        let rendered = format!("{config:?}");
+        assert!(rendered.contains("practice-key-v1"), "{rendered}");
+        assert!(rendered.contains("<32 bytes>"), "{rendered}");
+        assert!(rendered.contains("encryption_key_id"), "{rendered}");
+        // Raw byte values never appear (0xAB renders as 171 under derive).
+        assert!(!rendered.contains("171"), "{rendered}");
+        assert!(!rendered.contains("0xAB"), "{rendered}");
     }
 
     fn table(names: &[&str]) -> TableSchema {

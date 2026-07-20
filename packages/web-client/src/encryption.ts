@@ -13,11 +13,13 @@ import {
   DecryptError,
   decryptValue,
   encryptValue,
+  KEY_LENGTH,
   type NonceSource,
   type PlainValue,
   type RowColumn,
   type RowValue,
 } from '@syncular/core';
+import { ClientSyncError } from './errors';
 import type { CompiledClientTable } from './schema';
 
 /**
@@ -59,12 +61,29 @@ export interface EncryptionKeyringConfig {
   readonly keyIdColumns?: Readonly<Record<string, string>>;
 }
 
-/** Convert a portable keyring into the direct-client encryption contract. */
+/**
+ * Convert a portable keyring into the direct-client encryption contract.
+ * Key lengths are validated here, at install time: every side of the wire
+ * enforces {@link KEY_LENGTH}-byte keys, so a wrong-length key fails loud
+ * with a clear config error before any sync round runs.
+ */
 export function encryptionConfigFromKeyring(
   keyring: EncryptionKeyringConfig,
 ): EncryptionConfig {
+  for (const [keyId, key] of Object.entries(keyring.keys)) {
+    if (key.length !== KEY_LENGTH) {
+      throw new ClientSyncError(
+        'sync.invalid_request',
+        `encryption key ${JSON.stringify(keyId)} must be ${KEY_LENGTH} bytes (AES-256), got ${key.length}`,
+      );
+    }
+  }
   return {
-    keyProvider: (keyId) => keyring.keys[keyId],
+    // Own-property lookup only: the keyId arrives from the wire envelope, so
+    // a prototype-chain name like "constructor" must read as a missing key
+    // and take the clean DecryptError path.
+    keyProvider: (keyId) =>
+      Object.hasOwn(keyring.keys, keyId) ? keyring.keys[keyId] : undefined,
     ...(keyring.keyIdColumns !== undefined
       ? { keyIdColumns: keyring.keyIdColumns }
       : {}),
