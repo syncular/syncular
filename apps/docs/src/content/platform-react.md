@@ -140,6 +140,11 @@ ordinary generated query.
   `useSyncClient().resolveCommitOutcome(...)`.
 - `usePresence(scopeKey)` observes ephemeral realtime peers.
 - `useSyncClient()` and `useReactiveStore()` expose integration-level access.
+  A realtime supervisor installed on the concrete client before
+  `SyncProvider` is observable through the normalized `useSyncClient()` facade
+  with `realtimeSupervisorSnapshot()` and
+  `subscribeRealtimeSupervisor()`; the facade does not acquire socket
+  ownership.
 
 The normalized client also exposes
 `useSyncClient().purgeLocalData({ purgeId, targets })` on every host that

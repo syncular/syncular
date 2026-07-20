@@ -90,13 +90,35 @@ interface RealtimeSupervisorAttachment {
   readonly supervisor: RealtimeSupervisor;
 }
 
-function attachment(client: object): RealtimeSupervisorAttachment | undefined {
+const observationSources = new WeakMap<object, object>();
+
+function attachment(
+  client: object,
+  visited: Set<object> = new Set(),
+): RealtimeSupervisorAttachment | undefined {
+  if (visited.has(client)) return undefined;
+  visited.add(client);
   const candidate = Reflect.get(client, REALTIME_SUPERVISOR_KEY) as
     | Partial<RealtimeSupervisorAttachment>
     | undefined;
-  return candidate?.version === 1 && candidate.supervisor
-    ? (candidate as RealtimeSupervisorAttachment)
-    : undefined;
+  if (candidate?.version === 1 && candidate.supervisor) {
+    return candidate as RealtimeSupervisorAttachment;
+  }
+  const source = observationSources.get(client);
+  return source === undefined ? undefined : attachment(source, visited);
+}
+
+/**
+ * Preserve supervisor observation across a facade without transferring
+ * transport ownership or exposing the source client. Binding packages use
+ * this when they normalize a client into another object identity.
+ */
+export function linkRealtimeSupervisorObservation<Target extends object>(
+  target: Target,
+  source: object,
+): Target {
+  if (target !== source) observationSources.set(target, source);
+  return target;
 }
 
 function scheduleTimer(callback: () => void, delayMs: number): CancelTimer {
