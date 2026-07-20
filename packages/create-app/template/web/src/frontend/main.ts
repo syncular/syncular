@@ -69,11 +69,15 @@ async function main(): Promise<void> {
   });
 
   // The supported host policy owns connect + catch-up, retries transient
-  // startup/socket loss, and suspends while this page is offline or hidden.
+  // startup/socket loss, and suspends while this page is offline.
   // Rendering remains local-first: no network promise blocks app startup.
+  // The handle is multi-tab (followers proxy to one leader socket), so
+  // `sharedTransport` keeps a hidden tab from tearing down realtime for a
+  // sibling tab that is still visible.
   installRealtimeSupervisor(handle, {
     connectivity: browserConnectivitySignal(),
     lifecycle: documentLifecycleSignal(),
+    sharedTransport: true,
   });
   const renderRealtimeStatus = () => {
     const phase = realtimeSupervisorSnapshot(handle).phase;

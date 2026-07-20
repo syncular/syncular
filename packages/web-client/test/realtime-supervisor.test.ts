@@ -381,6 +381,220 @@ describe('supported realtime host supervisor', () => {
     supervisor.stop();
   });
 
+  test('steady-state connected diagnostics keep the adopted transport quiet', async () => {
+    const timers = scheduler();
+    const realtime = fixture();
+    const supervisor = new RealtimeSupervisor(realtime.client, {
+      schedule: timers.schedule,
+    });
+    supervisor.start();
+    await settle();
+    timers.runNext();
+    await settle();
+    expect(supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    const catchUps = realtime.calls.catchUp;
+    let notifications = 0;
+    supervisor.subscribe(() => {
+      notifications += 1;
+    });
+    for (let index = 0; index < 5; index += 1) realtime.emit('connected');
+    await settle();
+    expect(realtime.calls.catchUp).toBe(catchUps);
+    expect(notifications).toBe(0);
+    expect(supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    supervisor.stop();
+  });
+
+  test('a superseded connect attempt leaves the successor state and socket alone', async () => {
+    const app = signal<RealtimeSupervisorLifecycleState>('active');
+    const timers = scheduler();
+    const resolvers: (() => void)[] = [];
+    const calls = { connect: 0, catchUp: 0, disconnect: 0 };
+    const client = {
+      connectRealtime: () =>
+        new Promise<void>((resolve) => {
+          calls.connect += 1;
+          resolvers.push(resolve);
+        }),
+      async syncUntilIdle() {
+        calls.catchUp += 1;
+      },
+      disconnectRealtime() {
+        calls.disconnect += 1;
+      },
+      diagnosticsSnapshot: () => diagnostics('disconnected'),
+      onDiagnostics: () => () => undefined,
+      async close() {},
+    };
+    const supervisor = new RealtimeSupervisor(client, {
+      lifecycle: app.port,
+      schedule: timers.schedule,
+      random: () => 0,
+    });
+    supervisor.start();
+    await settle();
+    timers.runNext();
+    await settle();
+    expect(calls.connect).toBe(1);
+
+    app.emit('background');
+    expect(supervisor.snapshot()).toEqual({ phase: 'background', attempt: 0 });
+    expect(calls.disconnect).toBe(1);
+    app.emit('active');
+    timers.runNext();
+    await settle();
+    expect(calls.connect).toBe(2);
+
+    resolvers[0]?.();
+    await settle();
+    expect(calls.disconnect).toBe(1);
+    expect(supervisor.snapshot()).toEqual({ phase: 'connecting', attempt: 0 });
+
+    resolvers[1]?.();
+    await settle();
+    expect(calls.catchUp).toBe(1);
+    expect(supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    supervisor.stop();
+  });
+
+  test('sharedTransport keeps the shared socket alive when one tab backgrounds', async () => {
+    const shared = { connected: false, connects: 0, disconnects: 0 };
+    const listeners = new Set<ClientDiagnosticsListener>();
+    const broadcast = () => {
+      const snapshot = diagnostics(
+        shared.connected ? 'connected' : 'disconnected',
+      );
+      for (const listener of listeners) listener(snapshot);
+    };
+    const makeTabClient = () => ({
+      async connectRealtime() {
+        shared.connects += 1;
+        shared.connected = true;
+        broadcast();
+      },
+      async syncUntilIdle() {},
+      disconnectRealtime() {
+        shared.disconnects += 1;
+        shared.connected = false;
+        broadcast();
+      },
+      diagnosticsSnapshot: () =>
+        diagnostics(shared.connected ? 'connected' : 'disconnected'),
+      onDiagnostics(listener: ClientDiagnosticsListener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      async close() {},
+    });
+    const timersA = scheduler();
+    const timersB = scheduler();
+    const lifecycleB = signal<RealtimeSupervisorLifecycleState>('active');
+    const a = new RealtimeSupervisor(makeTabClient(), {
+      schedule: timersA.schedule,
+      random: () => 0,
+      sharedTransport: true,
+    });
+    const b = new RealtimeSupervisor(makeTabClient(), {
+      lifecycle: lifecycleB.port,
+      schedule: timersB.schedule,
+      random: () => 0,
+      sharedTransport: true,
+    });
+    a.start();
+    b.start();
+    await settle();
+    timersA.runNext();
+    await settle();
+    expect(a.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    expect(b.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    expect(shared.connects).toBe(1);
+
+    lifecycleB.emit('background');
+    await settle();
+    expect(shared.disconnects).toBe(0);
+    expect(shared.connected).toBe(true);
+    expect(a.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    expect(b.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+
+    lifecycleB.emit('active');
+    await settle();
+    expect(shared.connects).toBe(1);
+    expect(a.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    a.stop();
+    b.stop();
+  });
+
+  test('disconnected diagnostics beside a pending retry keep the attempt count', async () => {
+    const timers = scheduler();
+    const realtime = fixture(['reject', 'reject', 'resolve']);
+    const supervisor = new RealtimeSupervisor(realtime.client, {
+      schedule: timers.schedule,
+      random: () => 0,
+    });
+    supervisor.start();
+    await settle();
+    timers.runNext();
+    await settle();
+    expect(supervisor.snapshot()).toEqual({
+      phase: 'retrying',
+      attempt: 1,
+      retryDelayMs: 1_000,
+    });
+    for (let index = 0; index < 6; index += 1) realtime.emit('disconnected');
+    expect(supervisor.snapshot()).toEqual({
+      phase: 'retrying',
+      attempt: 1,
+      retryDelayMs: 1_000,
+    });
+    expect(timers.pending()).toBe(1);
+    expect(timers.runNext()).toBe(1_000);
+    await settle();
+    expect(supervisor.snapshot()).toEqual({
+      phase: 'retrying',
+      attempt: 2,
+      retryDelayMs: 2_000,
+    });
+    expect(timers.runNext()).toBe(2_000);
+    await settle();
+    expect(supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    supervisor.stop();
+  });
+
+  test('a later connected diagnostic recovers from a transient unsupported report', async () => {
+    const timers = scheduler();
+    const realtime = fixture();
+    const supervisor = new RealtimeSupervisor(realtime.client, {
+      schedule: timers.schedule,
+    });
+    supervisor.start();
+    await settle();
+    timers.runNext();
+    await settle();
+    expect(supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    realtime.emit('unsupported');
+    expect(supervisor.snapshot()).toEqual({ phase: 'unsupported', attempt: 0 });
+    realtime.emit('disconnected');
+    expect(supervisor.snapshot()).toEqual({ phase: 'unsupported', attempt: 0 });
+    expect(timers.pending()).toBe(0);
+    realtime.emit('connected');
+    await settle();
+    expect(realtime.calls.catchUp).toBe(2);
+    expect(supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });
+    supervisor.stop();
+  });
+
+  test('installing a second supervisor on one client throws', async () => {
+    const timers = scheduler();
+    const realtime = fixture();
+    const client = installRealtimeSupervisor(realtime.client, {
+      schedule: timers.schedule,
+    });
+    expect(() =>
+      installRealtimeSupervisor(client, { schedule: timers.schedule }),
+    ).toThrow('already has a supervisor');
+    await client.close();
+  });
+
   test('reconnect catches up a remote-only commit before claiming connected', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'supervisor-writer' });

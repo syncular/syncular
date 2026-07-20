@@ -42,10 +42,15 @@ export interface Engine extends SyncClientLike {
 const isTauri = () => '__TAURI_INTERNALS__' in window;
 
 export async function createEngine(): Promise<Engine> {
+  // Both hosts hand this view a shared transport — the Tauri core lives in
+  // the host process behind every webview, and the browser handle is
+  // multi-tab (followers proxy to one leader socket) — so `sharedTransport`
+  // keeps a hidden view from tearing down realtime for a visible sibling.
   const supervise = <Client extends Engine>(client: Client): Client =>
     installRealtimeSupervisor(client, {
       connectivity: browserConnectivitySignal(),
       lifecycle: documentLifecycleSignal(),
+      sharedTransport: true,
     });
   if (isTauri()) {
     // Desktop: the native Rust core in the Tauri process.
