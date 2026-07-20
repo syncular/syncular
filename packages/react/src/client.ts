@@ -41,7 +41,7 @@ import type {
   WindowBase,
   WindowState,
 } from '@syncular/client';
-import { linkRealtimeSupervisorObservation } from '@syncular/client';
+import { linkRealtimeSupervisorObservation } from '@syncular/client/realtime-supervisor-observation';
 
 /**
  * The structural union of `SyncClient` and `SyncClientHandle`. Members that

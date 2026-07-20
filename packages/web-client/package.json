@@ -34,6 +34,14 @@
         "default": "./dist/index.js"
       }
     },
+    "./realtime-supervisor-observation": {
+      "bun": "./src/realtime-supervisor-observation.ts",
+      "browser": "./dist/realtime-supervisor-observation.js",
+      "import": {
+        "types": "./dist/realtime-supervisor-observation.d.ts",
+        "default": "./dist/realtime-supervisor-observation.js"
+      }
+    },
     "./bun": {
       "bun": "./src/bun-database.ts",
       "browser": "./dist/bun-database.js",

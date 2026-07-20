@@ -4,6 +4,9 @@ import type {
   ClientDiagnosticsListener,
   ClientDiagnosticsSnapshot,
 } from './diagnostics';
+import { realtimeSupervisorObservationSource } from './realtime-supervisor-observation';
+
+export { linkRealtimeSupervisorObservation } from './realtime-supervisor-observation';
 
 type CancelTimer = () => void;
 
@@ -90,8 +93,6 @@ interface RealtimeSupervisorAttachment {
   readonly supervisor: RealtimeSupervisor;
 }
 
-const observationSources = new WeakMap<object, object>();
-
 function attachment(
   client: object,
   visited: Set<object> = new Set(),
@@ -104,21 +105,8 @@ function attachment(
   if (candidate?.version === 1 && candidate.supervisor) {
     return candidate as RealtimeSupervisorAttachment;
   }
-  const source = observationSources.get(client);
+  const source = realtimeSupervisorObservationSource(client);
   return source === undefined ? undefined : attachment(source, visited);
-}
-
-/**
- * Preserve supervisor observation across a facade without transferring
- * transport ownership or exposing the source client. Binding packages use
- * this when they normalize a client into another object identity.
- */
-export function linkRealtimeSupervisorObservation<Target extends object>(
-  target: Target,
-  source: object,
-): Target {
-  if (target !== source) observationSources.set(target, source);
-  return target;
 }
 
 function scheduleTimer(callback: () => void, delayMs: number): CancelTimer {

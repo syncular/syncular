@@ -69,6 +69,19 @@ async function settle(): Promise<void> {
 }
 
 describe('realtime supervisor through the normalized React client', () => {
+  test('keeps the optional supervisor runtime out of the normalizer bundle', async () => {
+    const result = await Bun.build({
+      entrypoints: [`${import.meta.dir}/../src/client.ts`],
+      target: 'bun',
+      minify: true,
+    });
+    expect(result.success).toBe(true);
+    const output = await result.outputs[0]?.text();
+    expect(output).toBeDefined();
+    expect(output).not.toContain('realtime supervisor delays');
+    expect(output).not.toContain('syncular.realtime-supervisor.v1');
+  });
+
   test('preserves snapshot and subscription identity without owning transport', async () => {
     let realtime: 'connected' | 'disconnected' = 'disconnected';
     let diagnosticsListener: ClientDiagnosticsListener | undefined;
