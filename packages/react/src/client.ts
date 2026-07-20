@@ -11,6 +11,7 @@
  * value → read it) and wraps every result in `Promise.resolve`, so a hook
  * never has to care which core it holds.
  */
+
 import type {
   ClientChangeListener,
   ClientDiagnosticsListener,
@@ -40,6 +41,7 @@ import type {
   WindowBase,
   WindowState,
 } from '@syncular/client';
+import { linkRealtimeSupervisorObservation } from '@syncular/client';
 
 /**
  * The structural union of `SyncClient` and `SyncClientHandle`. Members that
@@ -193,7 +195,7 @@ export interface NormalizedClient {
 }
 
 export function normalizeClient(client: SyncClientLike): NormalizedClient {
-  return {
+  const normalized: NormalizedClient = {
     ...(client.currentSchemaVersion !== undefined
       ? { currentSchemaVersion: client.currentSchemaVersion }
       : {}),
@@ -237,4 +239,5 @@ export function normalizeClient(client: SyncClientLike): NormalizedClient {
     setWindow: (base, units) => Promise.resolve(client.setWindow(base, units)),
     windowState: (base) => Promise.resolve(client.windowState(base)),
   };
+  return linkRealtimeSupervisorObservation(normalized, client);
 }

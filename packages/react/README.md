@@ -252,7 +252,11 @@ not need a custom retention effect.
   `useSyncClient().resolveCommitOutcome(...)`.
 - `usePresence(scopeKey)` observes ephemeral realtime peers.
 - `useSyncClient()` and `useReactiveStore()` expose the normalized low-level
-  surfaces for integrations.
+  surfaces for integrations. When the concrete client was passed through
+  `installRealtimeSupervisor()` before mounting `SyncProvider`, its normalized
+  `useSyncClient()` facade preserves supervisor observation: pass it directly
+  to `realtimeSupervisorSnapshot()` and `subscribeRealtimeSupervisor()`.
+  Transport ownership and disposal remain on the concrete client/resource.
 
 The hooks are SSR-safe: no local query runs during server rendering.
 

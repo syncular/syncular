@@ -1,8 +1,17 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.37** (`v0.15.37`). All artifacts use Apache-2.0, except
+current release is **0.15.38** (`v0.15.38`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.38 release notes
+
+- `@syncular/react` normalized clients now preserve observation of a realtime
+  supervisor installed on their source client. Passing `useSyncClient()` to
+  `realtimeSupervisorSnapshot()` or `subscribeRealtimeSupervisor()` reports
+  the same bounded phase as the raw client instead of the unattached
+  `unsupported` fallback, without transferring socket ownership or exposing
+  the source client.
 
 ## 0.15.37 release notes
 
