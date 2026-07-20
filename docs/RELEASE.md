@@ -1,8 +1,15 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.41** (`v0.15.41`). All artifacts use Apache-2.0, except
+current release is **0.15.42** (`v0.15.42`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.42 release notes
+
+- This release carries the 0.15.41 integration hardening and makes its Vite
+  build fixture self-contained in a clean checkout before workspace package
+  artifacts exist. The 0.15.41 trusted release was cancelled before any npm or
+  crate publication after that fixture exposed the ordering assumption.
 
 ## 0.15.41 release notes
 

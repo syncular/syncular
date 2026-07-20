@@ -1,5 +1,4 @@
 import { createViteSyncClientResource } from '../../src/vite-hmr';
-import { FakeClient } from '../fake-client';
 
 interface ViteHotContext {
   readonly data: Record<string, unknown>;
@@ -10,7 +9,10 @@ const hot = (import.meta as ImportMeta & { readonly hot?: ViteHotContext }).hot;
 const retained = createViteSyncClientResource(
   hot?.data,
   1,
-  () => new FakeClient(),
+  // The build fixture only proves module/runtime ownership wiring. Keep its
+  // client self-contained so it also runs before workspace package `dist`
+  // artifacts exist in a clean release checkout.
+  () => ({ close: () => undefined }) as never,
 );
 
 void retained.handoff.then(
