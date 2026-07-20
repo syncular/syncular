@@ -252,7 +252,10 @@ fn preflight_refuses_plain_replacement_creates_and_activates_with_headers() {
         "activateSecurity",
         json!({ "headers": { "authorization": 7 } }),
     );
-    assert_eq!(invalid["error"]["code"], "sync.invalid_request", "{invalid}");
+    assert_eq!(
+        invalid["error"]["code"], "sync.invalid_request",
+        "{invalid}"
+    );
     let lifecycle = command(handle, "securityLifecycle", Value::Null);
     assert_eq!(lifecycle["result"]["state"], "preflight");
 
@@ -341,6 +344,118 @@ fn header_matches_symbols() {
             .any(|l| l.ends_with(&format!(" {name}")) || l.ends_with(&format!(" _{name}")));
         assert!(found, "exported symbol {name} not found in {artifact}");
     }
+}
+
+static TEMP_DB_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// A unique temp-file path for a file-backed replica (with WAL/SHM sidecars).
+fn temp_db_path() -> String {
+    let n = TEMP_DB_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut dir = std::env::temp_dir();
+    dir.push(format!(
+        "syncular-ffi-preflight-{}-{n}.sqlite",
+        std::process::id()
+    ));
+    dir.to_string_lossy().into_owned()
+}
+
+fn remove_db(path: &str) {
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let _ = std::fs::remove_file(format!("{path}{suffix}"));
+    }
+}
+
+/// The React Native escape: the native module rebuilds its FFI handle on every
+/// create, so the in-memory gate does not survive teardown. A file-backed
+/// replica left in preflight must refuse a plain re-create through a fresh
+/// handle, because the quarantine marker persists in the replica itself.
+#[test]
+fn plain_recreate_against_a_preflighted_file_replica_is_refused() {
+    let path = temp_db_path();
+    remove_db(&path);
+    let config = CString::new("{}").unwrap();
+
+    // H1: a normal active replica writes a protected row, then re-quarantines.
+    let h1 = syncular_client_new(config.as_ptr());
+    assert!(!h1.is_null());
+    let created = command(
+        h1,
+        "create",
+        json!({ "clientId": "rn-replica", "schema": simple_schema(), "dbPath": path }),
+    );
+    assert_eq!(created["result"], json!({}), "initial create: {created}");
+    let mutate = command(
+        h1,
+        "mutate",
+        json!({ "mutations": [{
+            "op": "upsert", "table": "todo",
+            "values": { "id": "secret", "title": "classified", "done": false }
+        }] }),
+    );
+    assert!(
+        mutate["result"]["clientCommitId"].is_string(),
+        "mutate: {mutate}"
+    );
+    let quarantine = command(h1, "beginSecurityPreflight", Value::Null);
+    assert_eq!(quarantine["result"], json!({}), "quarantine: {quarantine}");
+    // Handle teardown — exactly what the RN native module does per create.
+    syncular_client_close(h1);
+
+    // H2: a rebuilt handle (fresh CreateEffects) attempts a PLAIN create against
+    // the same file. Pre-fix this succeeded and exposed the row; the persisted
+    // marker now forces a refusal.
+    let h2 = syncular_client_new(config.as_ptr());
+    assert!(!h2.is_null());
+    let escape = command(
+        h2,
+        "create",
+        json!({ "clientId": "rn-replica", "schema": simple_schema(), "dbPath": path }),
+    );
+    assert_eq!(
+        escape["error"]["code"], "client.security_preflight_required",
+        "plain re-create against a preflighted replica must be refused: {escape}"
+    );
+    // No client installed, so the protected row stays unreachable on H2.
+    let gated = command(
+        h2,
+        "query",
+        json!({ "sql": "SELECT id FROM todo", "params": [] }),
+    );
+    assert!(
+        gated.get("error").is_some(),
+        "query must not run without a client: {gated}"
+    );
+    syncular_client_close(h2);
+
+    // The data is protected, not lost: a preflight reopen plus activation
+    // recovers it.
+    let h3 = syncular_client_new(config.as_ptr());
+    let reopened = command(
+        h3,
+        "create",
+        json!({
+            "clientId": "rn-replica", "schema": simple_schema(),
+            "dbPath": path, "securityPreflight": true
+        }),
+    );
+    assert_eq!(
+        reopened["result"],
+        json!({}),
+        "preflight reopen: {reopened}"
+    );
+    let activated = command(h3, "activateSecurity", json!({}));
+    assert_eq!(activated["result"], json!({}), "activate: {activated}");
+    let rows = command(h3, "readRows", json!({ "table": "todo" }));
+    let list = rows["result"]["rows"].as_array().expect("rows array");
+    assert_eq!(
+        list.len(),
+        1,
+        "protected row recovered after activation: {rows}"
+    );
+    assert_eq!(list[0]["values"]["title"], "classified");
+    syncular_client_close(h3);
+
+    remove_db(&path);
 }
 
 #[test]
