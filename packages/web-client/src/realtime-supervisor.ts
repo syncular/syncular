@@ -53,8 +53,18 @@ export interface RealtimeSupervisorSnapshot {
 export interface RealtimeSupervisorOptions {
   /** Host online/offline evidence. Unknown remains connectable and observable. */
   readonly connectivity?: RealtimeSupervisorSignal<ClientDiagnosticsConnectivity>;
-  /** Browser/native foreground evidence. Background always suspends the socket. */
+  /** Browser/native foreground evidence. Background suspends a tab-owned
+   * socket; with `sharedTransport` it only serves as a resume nudge. */
   readonly lifecycle?: RealtimeSupervisorSignal<RealtimeSupervisorLifecycleState>;
+  /**
+   * The client's realtime transport is shared with sibling tabs or webviews
+   * (multi-tab handles proxying to one leader socket, native cores behind
+   * several views). Backgrounding THIS view then keeps the socket open,
+   * because a sibling may still be visible and a follower's disconnect would
+   * tear down realtime for everyone. Offline and protection evidence still
+   * suspend.
+   */
+  readonly sharedTransport?: boolean;
   /** Publish preflight before draining keys so reconnect stops in the same turn. */
   readonly protection?: RealtimeSupervisorSignal<RealtimeSupervisorProtectionState>;
   /** Deterministic test/host timer seam. */
@@ -215,6 +225,7 @@ export class RealtimeSupervisor {
   readonly #connectivity?: RealtimeSupervisorOptions['connectivity'];
   readonly #lifecycle?: RealtimeSupervisorOptions['lifecycle'];
   readonly #protection?: RealtimeSupervisorOptions['protection'];
+  readonly #sharedTransport: boolean;
   readonly #scheduleTimer: NonNullable<RealtimeSupervisorOptions['schedule']>;
   readonly #random: () => number;
   readonly #initialDelayMs: number;
@@ -247,6 +258,7 @@ export class RealtimeSupervisor {
     this.#connectivity = options.connectivity;
     this.#lifecycle = options.lifecycle;
     this.#protection = options.protection;
+    this.#sharedTransport = options.sharedTransport === true;
     this.#scheduleTimer = options.schedule ?? scheduleTimer;
     this.#random = options.random ?? Math.random;
     this.#initialDelayMs = boundedDelay(
@@ -304,6 +316,7 @@ export class RealtimeSupervisor {
     this.#unsubscribeLifecycle?.();
     this.#unsubscribeProtection?.();
     this.#publish({ phase: 'stopped', attempt: 0 });
+    this.#listeners.clear();
     if (disconnect) this.#disconnect();
   }
 
@@ -336,7 +349,9 @@ export class RealtimeSupervisor {
     ) {
       return 'offline';
     }
-    if (this.#lifecycle?.current() === 'background') return 'background';
+    if (!this.#sharedTransport && this.#lifecycle?.current() === 'background') {
+      return 'background';
+    }
     return undefined;
   }
 
@@ -410,43 +425,77 @@ export class RealtimeSupervisor {
       this.#reconcileHostState();
       return;
     }
+    // Count an attempt only when this call actually schedules one. Repeated
+    // 'disconnected' diagnostics beside a pending retry keep the backoff and
+    // the worker-mode reconnect nudge intact.
+    if (
+      this.#connected ||
+      this.#connecting ||
+      this.#cancelRetry !== undefined
+    ) {
+      return;
+    }
     const delay = this.#retryDelay();
     this.#attempt = Math.min(32, this.#attempt + 1);
     this.#schedule(delay);
   }
 
+  /**
+   * A superseded attempt observed a generation bump mid-flight. Whenever a
+   * newer generation is mid-connect or holds the transport, that generation
+   * owns the shared socket and the stale attempt leaves every field alone.
+   * With the supervisor otherwise quiescent (suspended or stopped), the
+   * socket this attempt opened is unwanted — release it.
+   */
+  #releaseSupersededSocket(): void {
+    if (this.#connecting || this.#connected || this.#transportConnected) {
+      return;
+    }
+    this.#disconnect();
+  }
+
   async #connect(): Promise<void> {
     if (!this.#canConnect() || this.#connected || this.#connecting) return;
+    const generation = this.#generation;
     this.#connecting = true;
     this.#publish({ phase: 'connecting', attempt: this.#attempt });
-    const generation = this.#generation;
     let failed = false;
     try {
       await this.#client.connectRealtime();
+      if (generation !== this.#generation) {
+        this.#releaseSupersededSocket();
+        return;
+      }
       this.#transportConnected = true;
-      if (generation !== this.#generation || !this.#canConnect()) {
+      if (!this.#canConnect()) {
+        this.#transportConnected = false;
         this.#disconnect();
         return;
       }
       await this.#catchUpConnectedTransport(generation);
     } catch {
+      if (generation !== this.#generation) {
+        this.#releaseSupersededSocket();
+        return;
+      }
       failed = true;
       this.#connected = false;
       this.#transportConnected = false;
       this.#disconnect();
     } finally {
-      this.#connecting = false;
+      // A superseded attempt leaves the successor's in-flight state alone.
+      if (generation === this.#generation) this.#connecting = false;
     }
     if (failed && generation === this.#generation) this.#scheduleRetry();
   }
 
   async #catchUpConnectedTransport(generation: number): Promise<void> {
     await this.#client.syncUntilIdle();
-    if (
-      generation !== this.#generation ||
-      !this.#canConnect() ||
-      !this.#transportConnected
-    ) {
+    if (generation !== this.#generation) {
+      this.#releaseSupersededSocket();
+      return;
+    }
+    if (!this.#canConnect() || !this.#transportConnected) {
       this.#disconnect();
       return;
     }
@@ -459,20 +508,25 @@ export class RealtimeSupervisor {
     if (!this.#canConnect() || this.#connecting || !this.#transportConnected) {
       return;
     }
+    const generation = this.#generation;
     this.#connecting = true;
     this.#clearRetry();
     this.#publish({ phase: 'connecting', attempt: this.#attempt });
-    const generation = this.#generation;
     let failed = false;
     try {
       await this.#catchUpConnectedTransport(generation);
     } catch {
+      if (generation !== this.#generation) {
+        this.#releaseSupersededSocket();
+        return;
+      }
       failed = true;
       this.#connected = false;
       this.#transportConnected = false;
       this.#disconnect();
     } finally {
-      this.#connecting = false;
+      // A superseded adoption leaves the successor's in-flight state alone.
+      if (generation === this.#generation) this.#connecting = false;
     }
     if (failed && generation === this.#generation) this.#scheduleRetry();
   }
@@ -497,8 +551,13 @@ export class RealtimeSupervisor {
       if (disconnect) this.#disconnect();
       return;
     }
-    if (!this.#realtimeSupported) return;
-    this.#realtimeSupported = true;
+    if (!this.#realtimeSupported) {
+      // A live socket is positive evidence the earlier 'unsupported' report
+      // was transient (a mid-restart or mis-detected capability probe), so it
+      // recovers the supervisor. Every other report keeps the latch closed.
+      if (snapshot.host.realtime !== 'connected') return;
+      this.#realtimeSupported = true;
+    }
     const block = this.#hostBlock();
     if (block) {
       this.#suspend(block);
@@ -506,8 +565,10 @@ export class RealtimeSupervisor {
     }
     if (snapshot.host.realtime === 'connected') {
       this.#transportConnected = true;
-      if (this.#connecting) return;
-      this.#connected = false;
+      // Steady state: diagnostics re-announce 'connected' on every sync
+      // round and subscription change. An already-adopted transport keeps
+      // its phase and skips the redundant catch-up.
+      if (this.#connecting || this.#connected) return;
       void this.#adoptConnectedTransport();
       return;
     }
@@ -566,12 +627,22 @@ export class RealtimeSupervisor {
   }
 }
 
-/** Install one supervisor and make client disposal cancel it before close. */
+/**
+ * Install one supervisor and make client disposal cancel it before close.
+ * A client accepts exactly one supervisor for its lifetime; installing a
+ * second throws, because silently keeping the first would discard the second
+ * call's options.
+ */
 export function installRealtimeSupervisor<T extends RealtimeSupervisorClient>(
   client: T,
   options?: RealtimeSupervisorOptions,
 ): T {
-  if (attachment(client)) return client;
+  if (attachment(client)) {
+    throw new Error(
+      'installRealtimeSupervisor: this client already has a supervisor; ' +
+        'install one supervisor per client lifetime',
+    );
+  }
   const supervisor = new RealtimeSupervisor(client, options);
   Object.defineProperty(client, REALTIME_SUPERVISOR_KEY, {
     configurable: false,

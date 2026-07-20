@@ -85,7 +85,14 @@ installRealtimeSupervisor(handle, {
 It owns one connection attempt, retries initial failure and later socket loss
 with bounded exponential jitter, suspends while offline/background/protected,
 runs `syncUntilIdle()` before reporting `connected`, and cancels before
-`close()`. `realtimeSupervisorSnapshot()` and
+`close()`.
+
+Multi-tab handles share ONE leader socket across every tab, so pass
+`sharedTransport: true` (the templates do): backgrounding this tab then
+leaves the shared socket alone — a sibling tab may still be visible — while
+offline and protection continue to suspend. Each client accepts exactly one
+supervisor for its lifetime; a second `installRealtimeSupervisor` call
+throws. `realtimeSupervisorSnapshot()` and
 `subscribeRealtimeSupervisor()` expose only `phase`, `attempt`, and the bounded
 library delay for UI/diagnostics—never raw transport prose or identities.
 
@@ -350,9 +357,9 @@ visible. Reusing the same id returns `alreadyApplied: true` together with the
 original `retainedCommits` and `resetSubscriptions` counts. The core stores
 that counts-only receipt atomically with the reset, so an application crash
 after the SQLite commit but before its own acknowledgement does not turn the
-retry into a misleading zero-impact result. Markers written before Syncular
-0.15.36 cannot reconstruct their historical counts and preserve the former
-zero-count replay behavior. A malformed or unreadable persisted receipt fails
+retry into a misleading zero-impact result. Markers persisted in the legacy
+format carry no counts receipt; a retry against one of them keeps returning
+the zero-count result. A malformed or unreadable persisted receipt fails
 closed with the sanitized `sync.local_corrupt` client-local code and performs
 no reset. No receipt exposes ids, rows, scopes, or clinical values.
 

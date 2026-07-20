@@ -211,9 +211,13 @@ async function createClient() {
     autoSync: true,
     lockName: 'syncular-demo-react',
   });
+  // The handle is multi-tab (followers proxy to one leader socket), so
+  // `sharedTransport` keeps a hidden tab from tearing down realtime for a
+  // sibling tab that is still visible.
   return installRealtimeSupervisor(handle, {
     connectivity: browserConnectivitySignal(),
     lifecycle: documentLifecycleSignal(),
+    sharedTransport: true,
   });
 }
 

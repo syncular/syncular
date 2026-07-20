@@ -12,7 +12,6 @@
  * reconnect), a pending-commit counter, and surfaced §6.3 conflicts.
  */
 import {
-  browserConnectivitySignal,
   ClientSyncError,
   type ConflictRecord,
   createSyncClientHandle,
@@ -153,6 +152,9 @@ async function makeWorkerCore(
       // HTTP sync still works without the socket.
     }
   };
+  // The pane's offline toggle drives the supervisor's connectivity evidence,
+  // matching the embedded and ephemeral modes below.
+  const network = mutableConnectivitySignal();
   return {
     backendLabel: MULTITAB
       ? 'sqlite-wasm (OPFS, worker, multi-tab)'
@@ -166,12 +168,17 @@ async function makeWorkerCore(
     pendingCount: async () => (await handle.pendingCommits()).length,
     conflicts: () => handle.conflicts(),
     setOffline: async (offline) => {
+      network.set(offline ? 'offline' : 'online');
       await handle.setOffline(offline);
     },
     startRealtimeSupervisor: () => {
+      // TODO 3.2: with ?multitab the panes share one leader socket, so
+      // `sharedTransport` keeps a hidden tab from tearing it down for a
+      // sibling tab that is still visible.
       installRealtimeSupervisor(handle, {
-        connectivity: browserConnectivitySignal(),
+        connectivity: network.signal,
         lifecycle: documentLifecycleSignal(),
+        sharedTransport: MULTITAB,
       });
     },
     uploadBlob: async (bytes, options) => {

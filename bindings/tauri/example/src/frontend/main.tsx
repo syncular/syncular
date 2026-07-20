@@ -153,9 +153,13 @@ function TodoApp() {
 
 const clientResource = createSyncClientResource(async () => {
   const client = await createTauriSyncClient({ schema });
+  // The native core runs in the Tauri host process behind every webview, so
+  // `sharedTransport` keeps a hidden window from tearing down realtime for a
+  // sibling window that is still visible.
   return installRealtimeSupervisor(client, {
     connectivity: browserConnectivitySignal(),
     lifecycle: documentLifecycleSignal(),
+    sharedTransport: true,
   });
 });
 
