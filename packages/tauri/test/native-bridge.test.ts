@@ -49,6 +49,7 @@ function nativeTauri(): {
     readonly cmd: string;
     readonly args: Record<string, unknown>;
   }>;
+  exec(sql: string): Promise<void>;
   close(): Promise<void>;
 } {
   const process = Bun.spawn([binary], {
@@ -134,6 +135,15 @@ function nativeTauri(): {
   return {
     api,
     calls,
+    async exec(sql: string) {
+      const response = await request({ kind: 'exec', sql });
+      const reply = response.reply as {
+        readonly error?: { readonly code?: string };
+      };
+      if (reply.error !== undefined) {
+        throw new Error(reply.error.code ?? 'harness exec failed');
+      }
+    },
     async close() {
       process.stdin.end();
       await process.exited;
@@ -319,15 +329,42 @@ if (!available) {
           { id: 'offline' },
         ]);
         expect(await client.pendingCommits()).toEqual([pending]);
+        await client.close();
+        const reopened = await createTauriSyncClient({
+          schema,
+          tauri: host.api,
+        });
         expect(
-          await client.rebootstrapLocalData({
+          await reopened.rebootstrapLocalData({
             rebootstrapId: 'native-repair-001',
           }),
         ).toEqual({
           alreadyApplied: true,
-          retainedCommits: 0,
-          resetSubscriptions: 0,
+          retainedCommits: 1,
+          resetSubscriptions: 1,
         });
+        await reopened.close();
+      } finally {
+        await host.close();
+      }
+    });
+
+    test('real native rebootstrap fails closed on a malformed durable receipt', async () => {
+      const host = nativeTauri();
+      try {
+        const client = await createTauriSyncClient({ schema, tauri: host.api });
+        await host.exec(
+          `INSERT INTO _syncular_meta(key, value) VALUES ('localRebootstrap:native-corrupt-receipt', '{"version":2}')`,
+        );
+        const attempt = client.rebootstrapLocalData({
+          rebootstrapId: 'native-corrupt-receipt',
+        });
+        await expect(attempt).rejects.toMatchObject({
+          code: 'sync.local_corrupt',
+          message:
+            'sync.local_corrupt: persisted local rebootstrap receipt is invalid',
+        });
+        await expect(client.query('SELECT id FROM todos')).resolves.toEqual([]);
         await client.close();
       } finally {
         await host.close();

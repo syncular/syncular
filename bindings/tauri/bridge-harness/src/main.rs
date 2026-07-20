@@ -65,6 +65,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            Some("exec") => {
+                let sql = request.get("sql").and_then(Value::as_str).unwrap_or("");
+                match rusqlite::Connection::open(&db_path).and_then(|conn| conn.execute_batch(sql))
+                {
+                    Ok(()) => json!({ "result": {} }),
+                    Err(_) => json!({
+                        "error": {
+                            "code": "harness.exec_failed",
+                            "message": "test database mutation failed"
+                        }
+                    }),
+                }
+            }
             _ => {
                 json!({ "error": { "code": "harness.invalid_request", "message": "unknown harness request kind" } })
             }

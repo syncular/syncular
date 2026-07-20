@@ -312,9 +312,15 @@ const result = await client.rebootstrapLocalData({
 The reset, durable idempotency marker, and optimistic outbox replay are one
 SQLite transaction. An interruption therefore leaves either the old
 projection or the fully reset projection with pending offline work still
-visible. Reusing the same id returns `alreadyApplied: true`. The counts-only
-result reports retained commits and reset subscriptions without exposing ids,
-rows, scopes, or clinical values.
+visible. Reusing the same id returns `alreadyApplied: true` together with the
+original `retainedCommits` and `resetSubscriptions` counts. The core stores
+that counts-only receipt atomically with the reset, so an application crash
+after the SQLite commit but before its own acknowledgement does not turn the
+retry into a misleading zero-impact result. Markers written before Syncular
+0.15.36 cannot reconstruct their historical counts and preserve the former
+zero-count replay behavior. A malformed or unreadable persisted receipt fails
+closed with the sanitized `sync.local_corrupt` client-local code and performs
+no reset. No receipt exposes ids, rows, scopes, or clinical values.
 
 Worker, Tauri, and React Native adapters strictly decode the exact result
 shape before returning it. Missing or additional fields, a non-boolean

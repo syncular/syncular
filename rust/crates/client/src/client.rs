@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use ssp2::model::{Frame, MediaType, Message, MsgKind, Op, OpResult, PushStatus, SubStatus};
@@ -61,9 +62,63 @@ const LOCAL_REVISION_KEY: &str = "localRevision";
 const CLIENT_ID_KEY: &str = "clientId";
 const LEASE_STATE_KEY: &str = "leaseState";
 const SCHEMA_FLOOR_KEY: &str = "schemaFloor";
+const LOCAL_REBOOTSTRAP_RECEIPT_VERSION: u8 = 2;
+const MAX_JS_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 /// §7.4.4 client-local code: a pending outbox commit cannot re-encode under
 /// the new schema after a bump. Never a wire code (§10.3).
 const OUTBOX_INCOMPATIBLE_CODE: &str = "sync.outbox_incompatible";
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PersistedLocalDataRebootstrapReceipt {
+    version: u8,
+    retained_commits: u64,
+    reset_subscriptions: u64,
+}
+
+fn invalid_local_rebootstrap_receipt() -> String {
+    "sync.local_corrupt: persisted local rebootstrap receipt is invalid".to_owned()
+}
+
+fn encode_local_rebootstrap_receipt(
+    retained_commits: usize,
+    reset_subscriptions: usize,
+) -> Result<String, String> {
+    let retained_commits =
+        u64::try_from(retained_commits).map_err(|_| invalid_local_rebootstrap_receipt())?;
+    let reset_subscriptions =
+        u64::try_from(reset_subscriptions).map_err(|_| invalid_local_rebootstrap_receipt())?;
+    if retained_commits > MAX_JS_SAFE_INTEGER || reset_subscriptions > MAX_JS_SAFE_INTEGER {
+        return Err(invalid_local_rebootstrap_receipt());
+    }
+    serde_json::to_string(&PersistedLocalDataRebootstrapReceipt {
+        version: LOCAL_REBOOTSTRAP_RECEIPT_VERSION,
+        retained_commits,
+        reset_subscriptions,
+    })
+    .map_err(|_| invalid_local_rebootstrap_receipt())
+}
+
+fn decode_local_rebootstrap_receipt(value: &str) -> Result<(usize, usize), String> {
+    // Pre-0.15.36 markers proved application but did not retain the receipt.
+    if value == "v1" {
+        return Ok((0, 0));
+    }
+    let receipt: PersistedLocalDataRebootstrapReceipt =
+        serde_json::from_str(value).map_err(|_| invalid_local_rebootstrap_receipt())?;
+    if receipt.version != LOCAL_REBOOTSTRAP_RECEIPT_VERSION
+        || receipt.retained_commits > MAX_JS_SAFE_INTEGER
+        || receipt.reset_subscriptions > MAX_JS_SAFE_INTEGER
+    {
+        return Err(invalid_local_rebootstrap_receipt());
+    }
+    Ok((
+        usize::try_from(receipt.retained_commits)
+            .map_err(|_| invalid_local_rebootstrap_receipt())?,
+        usize::try_from(receipt.reset_subscriptions)
+            .map_err(|_| invalid_local_rebootstrap_receipt())?,
+    ))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SubState {
@@ -210,11 +265,189 @@ mod observation_tests {
                 .expect("idempotent retry"),
             LocalDataRebootstrapResult {
                 already_applied: true,
-                retained_commits: 0,
-                reset_subscriptions: 0,
+                retained_commits: 1,
+                reset_subscriptions: 1,
             }
         );
         assert!(client.drain_change_batches().is_empty());
+    }
+
+    #[test]
+    fn local_rebootstrap_receipt_codec_is_bounded_and_legacy_compatible() {
+        let encoded = encode_local_rebootstrap_receipt(3, 4).expect("encode receipt");
+        assert_eq!(
+            decode_local_rebootstrap_receipt(&encoded).expect("decode receipt"),
+            (3, 4)
+        );
+        assert_eq!(
+            decode_local_rebootstrap_receipt("v1").expect("legacy marker"),
+            (0, 0)
+        );
+        for malformed in [
+            "",
+            "{}",
+            r#"{"version":3,"retainedCommits":1,"resetSubscriptions":1}"#,
+            r#"{"version":2,"retainedCommits":1,"resetSubscriptions":1,"extra":true}"#,
+            r#"{"version":2,"retainedCommits":9007199254740992,"resetSubscriptions":1}"#,
+        ] {
+            assert_eq!(
+                decode_local_rebootstrap_receipt(malformed)
+                    .expect_err("malformed receipt must fail"),
+                "sync.local_corrupt: persisted local rebootstrap receipt is invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn local_rebootstrap_replays_the_original_receipt_after_reopen() {
+        let path = std::env::temp_dir().join(format!(
+            "syncular-rebootstrap-receipt-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let schema = json!({
+            "version": 1,
+            "tables": [{
+                "name": "tasks",
+                "primaryKey": "id",
+                "columns": [
+                    { "name": "id", "type": "string", "nullable": false },
+                    { "name": "project_id", "type": "string", "nullable": false }
+                ],
+                "scopes": [{ "pattern": "project:{project_id}" }]
+            }]
+        });
+        let path_string = path.to_str().expect("UTF-8 temp path");
+
+        {
+            let mut first = SyncClient::open_path(
+                "repair-restart-client".to_owned(),
+                &schema,
+                ClientLimits::default(),
+                path_string,
+            )
+            .expect("first open");
+            first
+                .subscribe(
+                    "repair-tasks".to_owned(),
+                    "tasks".to_owned(),
+                    vec![("project_id".to_owned(), vec!["p1".to_owned()])],
+                    None,
+                )
+                .expect("subscribe");
+            first
+                .mutate(vec![Mutation::Upsert {
+                    table: "tasks".to_owned(),
+                    values: Map::from_iter([
+                        ("id".to_owned(), Value::from("offline-row")),
+                        ("project_id".to_owned(), Value::from("p1")),
+                    ]),
+                    base_version: None,
+                }])
+                .expect("queue offline work");
+            assert_eq!(
+                first
+                    .rebootstrap_local_data(&LocalDataRebootstrapInput {
+                        rebootstrap_id: "restart-receipt".to_owned(),
+                    })
+                    .expect("first rebootstrap"),
+                LocalDataRebootstrapResult {
+                    already_applied: false,
+                    retained_commits: 1,
+                    reset_subscriptions: 1,
+                }
+            );
+        }
+
+        let mut reopened = SyncClient::open_path(
+            "repair-restart-client".to_owned(),
+            &schema,
+            ClientLimits::default(),
+            path_string,
+        )
+        .expect("reopen");
+        reopened.drain_change_batches();
+        reopened.drain_sync_intents();
+        assert_eq!(
+            reopened
+                .rebootstrap_local_data(&LocalDataRebootstrapInput {
+                    rebootstrap_id: "restart-receipt".to_owned(),
+                })
+                .expect("receipt replay"),
+            LocalDataRebootstrapResult {
+                already_applied: true,
+                retained_commits: 1,
+                reset_subscriptions: 1,
+            }
+        );
+        assert!(reopened.drain_change_batches().is_empty());
+        assert!(reopened.drain_sync_intents().is_empty());
+        drop(reopened);
+        std::fs::remove_file(path).expect("remove temp database");
+    }
+
+    #[test]
+    fn local_rebootstrap_fails_closed_on_malformed_or_unreadable_receipts() {
+        let mut malformed = client();
+        malformed
+            .subscribe(
+                "repair-tasks".to_owned(),
+                "tasks".to_owned(),
+                vec![("project_id".to_owned(), vec!["p1".to_owned()])],
+                None,
+            )
+            .expect("subscribe");
+        malformed.set_meta("localRebootstrap:malformed", "{\"version\":2}");
+        malformed.drain_change_batches();
+        malformed.drain_sync_intents();
+        let malformed_error = malformed
+            .rebootstrap_local_data(&LocalDataRebootstrapInput {
+                rebootstrap_id: "malformed".to_owned(),
+            })
+            .expect_err("malformed receipt must fail closed");
+        assert_eq!(
+            malformed_error,
+            "sync.local_corrupt: persisted local rebootstrap receipt is invalid"
+        );
+        assert!(!malformed.upgrading());
+        assert_eq!(
+            malformed
+                .subscription_state("repair-tasks")
+                .expect("unchanged subscription")
+                .cursor,
+            -1
+        );
+        assert!(malformed.drain_change_batches().is_empty());
+        assert!(malformed.drain_sync_intents().is_empty());
+
+        let mut unreadable = client();
+        unreadable
+            .conn
+            .execute(
+                "INSERT INTO tasks(id, project_id, _syncular_version) VALUES (?1, ?2, 1)",
+                rusqlite::params!["server-row", "p1"],
+            )
+            .expect("seed visible row");
+        unreadable
+            .conn
+            .execute("DROP TABLE _syncular_meta", [])
+            .expect("break marker storage");
+        let unreadable_error = unreadable
+            .rebootstrap_local_data(&LocalDataRebootstrapInput {
+                rebootstrap_id: "unreadable".to_owned(),
+            })
+            .expect_err("unreadable marker storage must fail closed");
+        assert_eq!(
+            unreadable_error,
+            "sync.local_corrupt: persisted local rebootstrap receipt is unreadable"
+        );
+        let visible_rows = unreadable
+            .conn
+            .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get::<_, i64>(0))
+            .expect("visible projection remains");
+        assert_eq!(visible_rows, 1);
+        assert!(!unreadable.upgrading());
+        assert!(unreadable.drain_change_batches().is_empty());
+        assert!(unreadable.drain_sync_intents().is_empty());
     }
 
     #[test]
@@ -2317,6 +2550,19 @@ impl SyncClient {
                 |row| row.get::<_, String>(0),
             )
             .ok()
+    }
+
+    fn get_meta_strict(&self, key: &str) -> Result<Option<String>, String> {
+        self.conn
+            .query_row(
+                "SELECT value FROM _syncular_meta WHERE key = ?1",
+                rusqlite::params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|_| {
+                "sync.local_corrupt: persisted local rebootstrap receipt is unreadable".to_owned()
+            })
     }
 
     fn set_meta(&self, key: &str, value: &str) {
@@ -6530,11 +6776,13 @@ impl SyncClient {
             );
         }
         let meta_key = format!("localRebootstrap:{}", input.rebootstrap_id);
-        if self.get_meta(&meta_key).is_some() {
+        if let Some(persisted) = self.get_meta_strict(&meta_key)? {
+            let (retained_commits, reset_subscriptions) =
+                decode_local_rebootstrap_receipt(&persisted)?;
             return Ok(LocalDataRebootstrapResult {
                 already_applied: true,
-                retained_commits: 0,
-                reset_subscriptions: 0,
+                retained_commits,
+                reset_subscriptions,
             });
         }
         if self.stopped || self.schema_floor.is_some() {
@@ -6553,6 +6801,7 @@ impl SyncClient {
         let prior_overlay_dirty = self.overlay_dirty.get();
         let prior_sync_needed = self.sync_needed;
         let prior_sync_intents = self.sync_intent_queue.clone();
+        let receipt = encode_local_rebootstrap_receipt(retained_commits, reset_subscriptions)?;
 
         self.begin_observation("syncular_local_rebootstrap")?;
         let mut batch = ChangeAccumulator::default();
@@ -6560,8 +6809,8 @@ impl SyncClient {
             self.run_schema_reset_observed(&mut batch, false)?;
             self.conn
                 .execute(
-                    "INSERT INTO _syncular_meta(key, value) VALUES (?1, 'v1')",
-                    rusqlite::params![meta_key],
+                    "INSERT INTO _syncular_meta(key, value) VALUES (?1, ?2)",
+                    rusqlite::params![meta_key, receipt],
                 )
                 .map_err(|error| error.to_string())?;
             self.sync_needed = true;

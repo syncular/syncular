@@ -355,8 +355,8 @@ test('outbox-preserving rebootstrap crosses the worker RPC atomically', async ()
     await handle.rebootstrapLocalData({ rebootstrapId: 'rpc-repair-001' }),
   ).toEqual({
     alreadyApplied: true,
-    retainedCommits: 0,
-    resetSubscriptions: 0,
+    retainedCommits: 1,
+    resetSubscriptions: 1,
   });
 });
 

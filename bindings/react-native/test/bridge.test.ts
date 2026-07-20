@@ -392,6 +392,51 @@ describe('createNativeSyncClient', () => {
     });
   });
 
+  test('returns the original native receipt counts after a client recreation', async () => {
+    let applied = false;
+    const { nativeModule, eventEmitter } = makeNative((method, params) => {
+      if (method === 'rebootstrapLocalData') {
+        const alreadyApplied = applied;
+        applied = true;
+        return OK({
+          alreadyApplied,
+          retainedCommits: 3,
+          resetSubscriptions: 4,
+        });
+      }
+      return defaultResponder(method, params);
+    });
+    const first = await createNativeSyncClient({
+      clientId: 'receipt-replay',
+      schema: { version: 1, tables: [] },
+      nativeModule,
+      eventEmitter,
+    });
+    expect(
+      await first.rebootstrapLocalData({ rebootstrapId: 'repair-replay' }),
+    ).toEqual({
+      alreadyApplied: false,
+      retainedCommits: 3,
+      resetSubscriptions: 4,
+    });
+    await first.close();
+
+    const reopened = await createNativeSyncClient({
+      clientId: 'receipt-replay',
+      schema: { version: 1, tables: [] },
+      nativeModule,
+      eventEmitter,
+    });
+    expect(
+      await reopened.rebootstrapLocalData({ rebootstrapId: 'repair-replay' }),
+    ).toEqual({
+      alreadyApplied: true,
+      retainedCommits: 3,
+      resetSubscriptions: 4,
+    });
+    await reopened.close();
+  });
+
   test.each([
     {},
     {

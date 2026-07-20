@@ -1,8 +1,22 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.35** (`v0.15.35`). All artifacts use Apache-2.0, except
+current release is **0.15.36** (`v0.15.36`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.36 release notes
+
+- Local projection rebootstrap now persists the original bounded
+  `retainedCommits` and `resetSubscriptions` receipt in the same SQLite
+  transaction as its application marker. Retrying the same `rebootstrapId`
+  after a process or host restart returns `alreadyApplied: true` with those
+  exact first-application counts across direct, Worker, Tauri, and React Native
+  clients. Pre-0.15.36 markers retain their explicit legacy zero-count behavior.
+- Native recovery-marker lookup no longer converts SQLite failures into a
+  missing marker. Malformed or unreadable receipts fail closed with sanitized
+  `sync.local_corrupt` and do not reset projection tables, rewind subscriptions,
+  enqueue sync, overwrite the receipt, or expose SQL, paths, identifiers, or
+  database prose.
 
 ## 0.15.35 release notes
 

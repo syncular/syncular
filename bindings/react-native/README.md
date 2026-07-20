@@ -101,7 +101,12 @@ path for a damaged replicated projection. One transaction recreates synced
 tables, rewinds retained subscriptions, persists the idempotency key, and
 replays pending offline commits. Device identity, lease state, outcomes,
 subscription intent, and protected bookkeeping remain intact. The counts-only
-result is safe for a support UI; the operation stays blocked during security
+result is safe for a support UI. The native receipt persists the original
+counts in the same transaction, so a replay after app recreation returns
+`alreadyApplied: true` with the first acknowledgement. Malformed or unreadable
+receipt storage fails closed as sanitized `sync.local_corrupt` and does not
+repeat the reset; pre-0.15.36 legacy markers keep zero-count replay
+compatibility. The operation stays blocked during security
 preflight and a schema-floor stop and must not be used as secure erase. The
 JavaScript bridge rejects missing or additional acknowledgement fields,
 incorrect types, and negative, fractional, non-finite, or unsafe-integer counts

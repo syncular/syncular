@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = "1"
 syncular-client = { path = "../../../rust/crates/client" }
 tauri-plugin-syncular = { path = "../plugin" }

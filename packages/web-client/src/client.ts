@@ -110,6 +110,10 @@ import {
   localDataRebootstrapMetaKey,
 } from './local-rebootstrap';
 import {
+  decodeLocalDataRebootstrapReceipt,
+  encodeLocalDataRebootstrapReceipt,
+} from './local-rebootstrap-receipt';
+import {
   appendOutboxCommit,
   deleteOutboxCommit,
   dropOutboxCommitsInScope,
@@ -2244,11 +2248,13 @@ export class SyncClient {
     this.#requireActive();
     const rebootstrapId = compileLocalDataRebootstrap(input);
     const metaKey = localDataRebootstrapMetaKey(rebootstrapId);
-    if (getMeta(this.#db, metaKey) !== undefined) {
+    const persistedReceipt = getMeta(this.#db, metaKey);
+    if (persistedReceipt !== undefined) {
+      const receipt = decodeLocalDataRebootstrapReceipt(persistedReceipt);
       return {
         alreadyApplied: true,
-        retainedCommits: 0,
-        resetSubscriptions: 0,
+        retainedCommits: receipt.retainedCommits,
+        resetSubscriptions: receipt.resetSubscriptions,
       };
     }
     if (this.#schemaFloor !== undefined) {
@@ -2275,7 +2281,14 @@ export class SyncClient {
         for (const commit of pending) {
           this.#applyOperationsLocally(commit.operations, batch);
         }
-        setMeta(this.#db, metaKey, 'v1');
+        setMeta(
+          this.#db,
+          metaKey,
+          encodeLocalDataRebootstrapReceipt({
+            retainedCommits: pending.length,
+            resetSubscriptions,
+          }),
+        );
       });
     } catch (error) {
       this.#upgrading = priorUpgrading;
