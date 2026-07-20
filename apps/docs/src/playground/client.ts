@@ -24,6 +24,7 @@ import { SYNCULAR_MONACO_THEME } from './theme';
 
 const MARKER_OWNER = 'syncular-syql-playground';
 const COMPILE_DEBOUNCE_MS = 150;
+const COMPILE_TIMEOUT_MS = 10_000;
 
 type Highlighter = Awaited<ReturnType<typeof createHighlighterCore>>;
 
@@ -181,7 +182,7 @@ function planMetadata(
 
 class PlaygroundApp {
   readonly #root: HTMLElement;
-  readonly #worker: Worker;
+  #worker: Worker;
   readonly #sourceEditor: monaco.editor.IStandaloneCodeEditor;
   readonly #sqlEditor: monaco.editor.IStandaloneCodeEditor;
   readonly #models = new Map<string, monaco.editor.ITextModel>();
@@ -211,6 +212,7 @@ class PlaygroundApp {
   #requestId = 0;
   #latestCompileId = 0;
   #compileTimer: number | undefined;
+  #compileWatchdog: number | undefined;
   #lastSuccessfulSql = false;
   #disposed = false;
 
@@ -333,17 +335,28 @@ class PlaygroundApp {
       }),
     );
 
-    this.#worker = new Worker(
+    this.#worker = this.#createWorker();
+    this.#wireEvents();
+    this.#selectExample(this.#activeExample, false);
+  }
+
+  #createWorker(): Worker {
+    const worker = new Worker(
       new URL('./compiler.worker.ts', import.meta.url),
       {
         type: 'module',
         name: 'syncular-syql-compiler',
       },
     );
-    this.#worker.addEventListener('message', this.#onWorkerMessage);
-    this.#worker.addEventListener('error', this.#onWorkerError);
-    this.#wireEvents();
-    this.#selectExample(this.#activeExample, false);
+    worker.addEventListener('message', this.#onWorkerMessage);
+    worker.addEventListener('error', this.#onWorkerError);
+    return worker;
+  }
+
+  #releaseWorker(): void {
+    this.#worker.removeEventListener('message', this.#onWorkerMessage);
+    this.#worker.removeEventListener('error', this.#onWorkerError);
+    this.#worker.terminate();
   }
 
   #activeModel(): monaco.editor.ITextModel {
@@ -482,12 +495,45 @@ class PlaygroundApp {
     this.#compileTimer = undefined;
     const requestId = ++this.#requestId;
     this.#latestCompileId = requestId;
+    this.#armCompileWatchdog();
     this.#post({
       kind: 'compile',
       requestId,
       schemaId: this.#activeExample.schemaId,
       source: this.#activeModel().getValue(),
     });
+  }
+
+  #armCompileWatchdog(): void {
+    this.#clearCompileWatchdog();
+    this.#compileWatchdog = window.setTimeout(
+      () => this.#onCompileTimeout(),
+      COMPILE_TIMEOUT_MS,
+    );
+  }
+
+  #clearCompileWatchdog(): void {
+    if (this.#compileWatchdog !== undefined) {
+      window.clearTimeout(this.#compileWatchdog);
+      this.#compileWatchdog = undefined;
+    }
+  }
+
+  #onCompileTimeout(): void {
+    this.#compileWatchdog = undefined;
+    if (this.#disposed) return;
+    this.#releaseWorker();
+    this.#pendingFormats.clear();
+    this.#worker = this.#createWorker();
+    this.#showDiagnostics([
+      {
+        code: 'PLAYGROUND_COMPILE_TIMEOUT',
+        message: `the compiler did not respond within ${COMPILE_TIMEOUT_MS / 1000} seconds; a fresh worker is ready — edit the source to retry`,
+      },
+    ]);
+    this.#setState('error', 'Compiler timed out · worker restarted');
+    this.#stale.hidden = !this.#lastSuccessfulSql;
+    this.#root.dataset.stale = String(this.#lastSuccessfulSql);
   }
 
   #format(): void {
@@ -514,6 +560,9 @@ class PlaygroundApp {
     if (this.#disposed) return;
     const response = event.data;
     if (response.kind === 'ready') return;
+    if (response.requestId === this.#latestCompileId) {
+      this.#clearCompileWatchdog();
+    }
     if (response.kind === 'formatted') {
       const pending = this.#pendingFormats.get(response.requestId);
       this.#pendingFormats.delete(response.requestId);
@@ -570,6 +619,7 @@ class PlaygroundApp {
 
   readonly #onWorkerError = (event: ErrorEvent): void => {
     if (this.#disposed) return;
+    this.#clearCompileWatchdog();
     this.#showDiagnostics([
       { code: 'PLAYGROUND_WORKER_ERROR', message: event.message },
     ]);
@@ -724,9 +774,8 @@ class PlaygroundApp {
     this.#eventController.abort();
     if (this.#compileTimer !== undefined)
       window.clearTimeout(this.#compileTimer);
-    this.#worker.removeEventListener('message', this.#onWorkerMessage);
-    this.#worker.removeEventListener('error', this.#onWorkerError);
-    this.#worker.terminate();
+    this.#clearCompileWatchdog();
+    this.#releaseWorker();
     for (const disposable of this.#disposables) disposable.dispose();
     this.#sourceEditor.dispose();
     this.#sqlEditor.dispose();

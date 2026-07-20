@@ -23,7 +23,11 @@ const FEATURES = [
   { title: 'testkit', body: 'in-process server, fault injection, and a virtual clock drive the real engine', href: '/tooling-testing/' },
 ] as const;
 
-const CONFORMANCE_SCENARIOS = 93;
+// Kept aligned with packages/conformance/src/catalog by
+// test/conformance-count.test.ts; the catalog itself is Bun-only
+// (import.meta.dir plus the full client/server stacks), so the landing
+// page cannot import it during the Astro build.
+const CONFORMANCE_SCENARIOS = 95;
 
 const PLATFORM_LINKS = [
   { label: 'WEB', href: '/platform-web/' },

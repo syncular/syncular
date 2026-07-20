@@ -2,15 +2,25 @@
   if (
     navigator.globalPrivacyControl === true ||
     navigator.doNotTrack === '1' ||
+    navigator.doNotTrack === 'yes' ||
+    navigator.msDoNotTrack === '1' ||
     !/^\/blog\/[a-z0-9][a-z0-9-]*\/?$/.test(location.pathname)
   ) {
     return;
   }
 
+  const referrerHostname = (() => {
+    try {
+      return document.referrer ? new URL(document.referrer).hostname : '';
+    } catch {
+      return '';
+    }
+  })();
+
   const params = new URLSearchParams(location.search);
   const payload = {
     path: location.pathname,
-    referrer: document.referrer,
+    referrer: referrerHostname,
     utmSource: params.get('utm_source'),
     utmMedium: params.get('utm_medium'),
     utmCampaign: params.get('utm_campaign'),
@@ -18,6 +28,7 @@
     scrollDepth: 0,
   };
   let reported = false;
+  let ticker;
 
   const updateDepth = () => {
     const height = document.documentElement.scrollHeight;
@@ -38,6 +49,7 @@
     }
 
     reported = true;
+    clearInterval(ticker);
     const body = JSON.stringify(payload);
     if (!navigator.sendBeacon('/_analytics/read', body)) {
       void fetch('/_analytics/read', {
@@ -51,7 +63,7 @@
 
   addEventListener('scroll', updateDepth, { passive: true });
   updateDepth();
-  setInterval(() => {
+  ticker = setInterval(() => {
     if (document.visibilityState === 'visible') payload.activeSeconds += 1;
     reportIfRead();
   }, 1000);

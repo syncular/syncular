@@ -57,7 +57,7 @@ Return `{ list_id: ['*'] }` to grant every value of a variable (the quickstart
 does this for its single demo user). If the resolver throws, syncular fences:
 no data leaks on an authorization error.
 
-## Multiple variables are not correlated tuples
+## Multiple variables are independent dimensions
 
 Each key in an allowed-scope map is checked independently. For example:
 
@@ -97,7 +97,7 @@ A row for `(workspace-a, surgery-1)` passes, while
 the Workspace fence. But a future `surgery_notes` table scoped only by
 `surgery_id` would make the same wildcard authorize notes for every Surgery.
 Adding or changing a table's scope patterns is therefore an authorization
-review, not merely a schema change.
+review in its own right.
 
 Test isolation with at least two parents and representative child IDs. Prove
 that an in-parent row is readable and writable, an out-of-parent row with an
