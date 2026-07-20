@@ -94,15 +94,20 @@ const WORKLOAD = {
  *   100× allowance absorbs runner noise; breaching 20 ms in-process means
  *   a sleep/poll crept into the sync/realtime loop.
  * - `ownJsRawCeilingBytes` 122 KB: syncular's own JS (core + codec) is
- *   116.4 KB raw today. Bundle bytes are deterministic — no runner noise —
+ *   116.6 KB raw today. Bundle bytes are deterministic — no runner noise —
  *   so this stays tight (~5% headroom: enough that a one-KB innocent
  *   change doesn't trip, small enough to catch real bloat). RAISED from
- *   118 KB (2026-07-20): the review-fix batch added 3,640 raw bytes
- *   (115,521 → 119,161) for the rebootstrap round-epoch fence, fixpoint
- *   purge doomed-commit selection, supervisor generation guards +
- *   sharedTransport, unique-index-aware FTS replacement triggers, and
- *   keyring install-time validation — correctness/security behavior in
- *   the sync core. 122 KB restores the standing ~5% headroom. RAISED from
+ *   118 KB (2026-07-20): per-commit measurement attributes the growth
+ *   (115,521 → 119,356) as 2,742 bytes from feature commits that shipped
+ *   without a budget re-derivation — safe local rebootstrap (+1,091),
+ *   rebootstrap receipt replay (+952), realtime lifecycle wiring (+404),
+ *   linear FTS bootstrap (+276), portable identifier validation (+19) —
+ *   plus 1,093 bytes from the review-fix batch: rebootstrap round-epoch
+ *   fence and fixpoint purge selection (+275), keyring install-time
+ *   validation (+623), unique-index-aware FTS replacement triggers
+ *   (+195). The realtime supervisor is tree-shaken out of this entry
+ *   (bundle-entry.ts never references it) and contributes zero measured
+ *   bytes. 122 KB restores the standing ~5% headroom. RAISED from
  *   111 KB (2026-07-18): the 0.15.17 privacy-safe diagnostics snapshot,
  *   host evidence, storage estimates, and failure normalization increased
  *   that release's baseline to 114,822 bytes but omitted the corresponding
