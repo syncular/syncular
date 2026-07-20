@@ -41,7 +41,7 @@ jobs:
             directory: bindings/tauri
     steps:
       - uses: actions/checkout@v6
-      - uses: rustsec/audit-check@v2.0.0
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           working-directory: ${{ matrix.directory }}
@@ -60,8 +60,26 @@ jobs:
             manifest: bindings/tauri/Cargo.toml
     steps:
       - uses: actions/checkout@v6
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           rust-version: stable
           manifest-path: ${{ matrix.manifest }}
           arguments: --locked
+
+  # JS advisories disclosed after the last push would otherwise sit unnoticed
+  # until the next push (ci.yml runs `bun run audit` on push/PR). This job
+  # gives the daily cron the same JS supply-chain coverage.
+  js-audit:
+    name: JS advisories (bun audit)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Audit dependencies
+        run: bun run audit
