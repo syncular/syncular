@@ -412,6 +412,22 @@ describe('SYQL schema/SQL validation', () => {
     expect(error.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
   });
 
+  test('a null-safe IS in an outer-join ON never carries a scope proof', () => {
+    // `c.list_id IS b.list_id` holds when a null-extended `b` makes both sides
+    // NULL, so a preserved-side `c` row outside :listId reaches the result;
+    // only `=`/`==` prove coverage, so `c` stays unprovable here.
+    const error = frontendError(() =>
+      validate(`sync query q(listId) {
+        select a.id, b.body
+        from todos as a
+        left join todo_details as b on b.list_id = a.list_id
+        left join notes as c on c.list_id IS b.list_id
+        where a.list_id = :listId;
+      }`),
+    );
+    expect(error.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
+  });
+
   test('inner-join ON equalities still propagate scope proofs symmetrically', () => {
     const query = validate(`sync query q(listId) {
       select t.id, d.body

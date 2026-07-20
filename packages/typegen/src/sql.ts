@@ -80,6 +80,7 @@ const DATA_MUTATION_GUIDANCE =
 const tableIdentifierSources = new WeakMap<ParsedTable, string>();
 const columnIdentifierSources = new WeakMap<IrColumn, string>();
 const indexIdentifierSources = new WeakMap<IrIndex, string>();
+const ftsIndexIdentifierSources = new WeakMap<IrFtsIndex, string>();
 
 /** Objects created while replaying the locked, immutable history prefix.
  * Rules adopted while that prefix was already deployed (nullable-only ADD
@@ -151,6 +152,14 @@ export function validateFinalSchemaIdentifiers(
         `table ${table.name}: index`,
         index.name,
         index,
+      );
+    }
+    for (const ftsIndex of table.ftsIndexes) {
+      validateIdentifier(
+        ftsIndexIdentifierSources.get(ftsIndex) ?? tableSource,
+        `table ${table.name}: FTS virtual table`,
+        ftsIndex.name,
+        ftsIndex,
       );
     }
   }
@@ -393,7 +402,7 @@ function parseCreate(
   options: ApplyMigrationSqlOptions,
 ): void {
   if (cursor.eatWord('VIRTUAL')) {
-    parseCreateVirtualTable(cursor, tables);
+    parseCreateVirtualTable(cursor, tables, source, options);
     return;
   }
   if (cursor.eatWord('TABLE')) {
@@ -430,6 +439,8 @@ const ALLOWED_FTS_TOKENIZERS = new Set([
 function parseCreateVirtualTable(
   cursor: Cursor,
   tables: Map<string, ParsedTable>,
+  source: string,
+  options: ApplyMigrationSqlOptions,
 ): void {
   cursor.expectWord('TABLE', 'after CREATE VIRTUAL');
   if (cursor.eatWord('IF')) {
@@ -542,7 +553,10 @@ function parseCreateVirtualTable(
       );
     }
   }
-  table.ftsIndexes.push({ name, columns, tokenize });
+  const ftsIndex = { name, columns, tokenize };
+  table.ftsIndexes.push(ftsIndex);
+  ftsIndexIdentifierSources.set(ftsIndex, source);
+  if (options.lockedHistory === true) lockedHistoryObjects.add(ftsIndex);
 }
 
 function parseCreateTable(
@@ -835,6 +849,10 @@ function parseDropIndex(
   }
   for (const table of tables.values()) {
     if (table.ftsIndexes.some((candidate) => candidate.name === name)) {
+      // `DROP INDEX IF EXISTS <fts>` matches SQLite: an FTS5 virtual table is
+      // no regular index, so IF EXISTS resolves to a tolerant no-op (this also
+      // keeps a locked migration carrying the statement replayable).
+      if (ifExists) return;
       cursor.fail(
         `DROP INDEX ${name}: ${name} is an FTS5 virtual table (CREATE VIRTUAL TABLE … USING fts5); the migration subset removes an FTS projection together with its owning content table (DROP TABLE ${table.name})`,
       );
