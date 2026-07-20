@@ -1,8 +1,18 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.39** (`v0.15.39`). All artifacts use Apache-2.0, except
+current release is **0.15.40** (`v0.15.40`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.40 release notes
+
+- Typegen now recognizes top-level `UPDATE`, `INSERT`, and `DELETE` migration
+  statements before tokenizing their inner SQL. Each fails with a
+  construct-specific, privacy-safe schema-only diagnostic and links to the
+  nullable-expand, versioned server-authoritative backfill, validate, and
+  later-retire rollout contract instead of reporting punctuation such as a
+  qualified-column dot. The public schema guide and Typegen README now make
+  that data-preserving sequence explicit.
 
 ## 0.15.39 release notes
 

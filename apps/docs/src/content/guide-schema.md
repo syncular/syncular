@@ -78,13 +78,24 @@ columns; changing names, order, types, or nullability in locked history is not
 an upgrade. A SQL `DEFAULT` does not backfill existing Syncular row payloads,
 so a required appended column is rejected even when it has a literal default.
 
-Roll such a change out in four explicit steps:
+## Data changes and backfills
+
+Migration SQL is schema-only. `UPDATE`, `INSERT`, and `DELETE` do not modify
+accepted Syncular row payloads and are rejected before their inner SQL is
+parsed. The diagnostic links back to this rollout contract instead of reporting
+punctuation from SQL that cannot run here. Retain the old representation until
+the replacement is proven complete.
+
+Roll such a change out in five explicit steps:
 
 1. Add the trailing column as nullable and deploy the schema.
 2. Backfill existing rows with versioned, server-authoritative writes under a
    new idempotency key.
 3. Enforce the required value in host validation for future writes.
-4. Keep the synced column nullable; do not tighten its SQL nullability later.
+4. Validate the backfill and all supported client versions against accepted
+   server evidence.
+5. Retire the old column or table only in a later schema version. Keep a synced
+   appended column nullable; do not tighten its SQL nullability later.
 
 Existing format-1 locks remain valid and are not silently rewritten by
 generation. Compact one only through the explicit, reviewable transition:

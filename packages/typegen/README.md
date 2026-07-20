@@ -148,12 +148,20 @@ silently invent a value for them. `baseline`, `migrations check`, and
 `generate` therefore reject `ALTER TABLE … ADD COLUMN … NOT NULL`, including
 one with a literal default.
 
-Use an expand/backfill/validate rollout instead: add the trailing column as
+### Data changes and backfills
+
+Migration SQL is schema-only. `UPDATE`, `INSERT`, and `DELETE` do not mutate
+accepted Syncular row payloads and are rejected before their inner SQL is
+parsed, with a diagnostic linking to this rollout contract. Keep the old
+representation available until the new one is proven complete.
+
+Use an expand/backfill/validate/retire rollout instead: add the trailing column as
 nullable; deploy that schema; fill existing rows with versioned,
 server-authoritative writes under a new idempotency key; then enforce the
-required value in host validation. Do not tighten the synced column's
-nullability in a later migration. `generate` appends a valid new migration to
-the lock, while
+required value in host validation. Validate the backfill and every supported
+client before retiring an old column or table in a later schema version. Do not
+tighten the synced column's nullability in a later migration. `generate`
+appends a valid new migration to the lock, while
 `generate --check` fails until that updated lock and generated outputs are
 committed. Drift diagnostics name the locked migration and the first affected
 table/column without printing SQL or local paths.

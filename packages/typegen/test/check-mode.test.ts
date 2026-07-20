@@ -169,6 +169,23 @@ describe('syncular generate', () => {
     expect(run.stderr).toContain('TRIGGER');
   });
 
+  test('data-changing migration SQL fails with the safe rollout contract', () => {
+    const dir = freshDir();
+    appendFileSync(
+      join(dir, 'migrations', '0002_add_task_estimate', 'up.sql'),
+      '\nUPDATE tasks AS task SET estimate = 1 WHERE task.id = source.id;\n',
+    );
+    const run = runCli(['generate', '--manifest-dir', dir]);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain('0002_add_task_estimate/up.sql');
+    expect(run.stderr).toContain('UPDATE data migration is unsupported');
+    expect(run.stderr).toContain('migration SQL is schema-only');
+    expect(run.stderr).toContain(
+      'versioned server-authoritative Syncular writes',
+    );
+    expect(run.stderr).not.toContain('unexpected character');
+  });
+
   test('an overlong final identifier fails before any generated artifact or lock is written', () => {
     const dir = freshDir();
     expect(runCli(['generate', '--manifest-dir', dir]).exitCode).toBe(0);
