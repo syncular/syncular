@@ -342,6 +342,22 @@ function createSyncedTable(
 
 const FTS_SOURCE_ID_COLUMN = '_syncular_source_id';
 
+/**
+ * Create (or migrate) one contentful FTS5 projection for a table plus its
+ * synchronizing triggers. Every open drops and recreates the full trigger set
+ * (`_bi`, `_ai`, `_ad`, `_au`, and, when the table has a unique index, `_bu`),
+ * so existing databases pick up newly added guards. The BEFORE INSERT (`_bi`)
+ * and BEFORE UPDATE (`_bu`) guards remove projection rows for entries displaced
+ * by `INSERT OR REPLACE` / `UPDATE OR REPLACE` through the primary key or a
+ * secondary unique index — cases where SQLite does not reliably fire the AFTER
+ * DELETE trigger for the displaced row.
+ *
+ * Limitation: because a BEFORE trigger runs before SQLite resolves the
+ * conflict, an `OR IGNORE` write whose row is dropped still executes these
+ * displacement DELETEs, transiently removing the surviving row's projection
+ * entry. Syncular's mirror writes never use `OR IGNORE`; see the guard-block
+ * comment below for the full rationale.
+ */
 function createFtsProjection(
   db: ClientDatabase,
   table: CompiledClientTable,
@@ -371,6 +387,8 @@ function createFtsProjection(
   ].join(', ');
   const deleteFor = (value: string) =>
     `DELETE FROM ${quoteIdent(index.name)} WHERE ${quoteIdent(FTS_SOURCE_ID_COLUMN)} = ${value}`;
+  const deleteDisplaced = (select: string) =>
+    `DELETE FROM ${quoteIdent(index.name)} WHERE ${quoteIdent(FTS_SOURCE_ID_COLUMN)} IN (${select})`;
 
   // A clean insert cannot already have a projection row because the source
   // primary key is unique. Keep clean inserts linear by moving replacement
@@ -378,9 +396,25 @@ function createFtsProjection(
   // reliably invoke DELETE triggers for rows displaced by REPLACE, and a
   // REPLACE can displace rows through TWO paths: the primary key AND any
   // secondary UNIQUE index (a different-PK row whose unique key matches the
-  // incoming row). The BEFORE INSERT guard covers both, so every displaced
-  // row's projection entry is removed before the REPLACE lands.
-  for (const suffix of ['bi', 'ai', 'ad', 'au']) {
+  // incoming row). The BEFORE INSERT guard covers both for `INSERT OR REPLACE`;
+  // the mirroring BEFORE UPDATE guard covers `UPDATE OR REPLACE` that pushes a
+  // different-PK row out through a unique index (the AFTER UPDATE trigger only
+  // knows the updated row's own old/new ids, so it would leave that displaced
+  // row's projection entry behind as a ghost hit). Primary-key displacement by
+  // `UPDATE OR REPLACE` needs no BEFORE guard: the new pk equals the displaced
+  // row's pk, so the AFTER UPDATE delete of the new source id already clears it.
+  //
+  // Known limitation — `OR IGNORE`: a BEFORE trigger fires before SQLite
+  // resolves the conflict, and SQLite exposes no signal for the eventual
+  // resolution. So an `INSERT OR IGNORE` / `UPDATE OR IGNORE` whose row is
+  // dropped on conflict still runs these displacement DELETEs, removing the
+  // SURVIVING row's projection entry (a false negative until that row is next
+  // rewritten). Moving cleanup to AFTER triggers would dodge the no-op but
+  // reintroduce the REPLACE-doesn't-fire-DELETE gap and a full-projection scan
+  // per write, so the guards stay BEFORE. Syncular's own mirror writes use
+  // `INSERT … ON CONFLICT (pk) DO UPDATE` (apply.ts), which never takes the
+  // IGNORE path; only hand-written `OR IGNORE` against a mirror table is exposed.
+  for (const suffix of ['bi', 'ai', 'ad', 'au', 'bu']) {
     db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`${index.name}_${suffix}`)}`);
   }
   const replacementExists = `EXISTS (SELECT 1 FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = new.${quoteIdent(table.primaryKey)})`;
@@ -400,10 +434,7 @@ function createFtsProjection(
   ].join(' OR ');
   const insertGuardBody = [
     deleteFor(newSourceId),
-    ...displacedByUnique.map(
-      (select) =>
-        `DELETE FROM ${quoteIdent(index.name)} WHERE ${quoteIdent(FTS_SOURCE_ID_COLUMN)} IN (${select})`,
-    ),
+    ...displacedByUnique.map(deleteDisplaced),
   ].join('; ');
 
   db.exec(
@@ -418,6 +449,19 @@ function createFtsProjection(
   db.exec(
     `CREATE TRIGGER ${quoteIdent(`${index.name}_au`)} AFTER UPDATE ON ${quoteIdent(table.name)} BEGIN ${deleteFor(oldSourceId)}; ${deleteFor(newSourceId)}; INSERT INTO ${quoteIdent(index.name)} (${projectionColumns}) VALUES (${newValues}); END`,
   );
+  // BEFORE UPDATE guard for `UPDATE OR REPLACE`: clear the projection of any
+  // different-PK row about to be displaced through a secondary unique index by
+  // the new values. Only meaningful when the table has a unique index; with
+  // none, no update can displace a foreign row, so the trigger is omitted.
+  if (displacedByUnique.length > 0) {
+    const updateGuardCondition = displacedByUnique
+      .map((select) => `EXISTS (${select})`)
+      .join(' OR ');
+    const updateGuardBody = displacedByUnique.map(deleteDisplaced).join('; ');
+    db.exec(
+      `CREATE TRIGGER ${quoteIdent(`${index.name}_bu`)} BEFORE UPDATE ON ${quoteIdent(table.name)} WHEN ${updateGuardCondition} BEGIN ${updateGuardBody}; END`,
+    );
+  }
 
   if (!existed) {
     db.exec(

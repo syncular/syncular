@@ -282,6 +282,73 @@ describe('RFC 0005 local FTS5 projections', () => {
     expect(search(db, 'smallpox')).toEqual(['c9']);
   });
 
+  test('UPDATE OR REPLACE displacing a different-PK row leaves no ghost hit', () => {
+    const UNIQUE_SCHEMA: ClientSchema = {
+      version: 1,
+      tables: [
+        {
+          name: 'catalogue_codes',
+          columns: [
+            { name: 'id', type: 'string', nullable: false },
+            { name: 'release_id', type: 'string', nullable: false },
+            { name: 'code', type: 'string', nullable: false },
+            { name: 'title', type: 'string', nullable: false },
+          ],
+          primaryKey: 'id',
+          scopes: ['release:{release_id}'],
+          indexes: [
+            { name: 'catalogue_codes_code', columns: ['code'], unique: true },
+          ],
+          ftsIndexes: [
+            {
+              name: 'catalogue_codes_fts',
+              columns: ['code', 'title'],
+              tokenize: 'unicode61 remove_diacritics 2',
+            },
+          ],
+        },
+      ],
+    };
+    const db = new BunClientDatabase();
+    ensureLocalSchema(db, compileClientSchema(UNIQUE_SCHEMA));
+
+    // The migration recreates the BEFORE UPDATE guard for the unique index.
+    expect(
+      db.query(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND name='catalogue_codes_fts_bu'",
+      ),
+    ).toHaveLength(1);
+
+    db.exec(
+      `INSERT INTO catalogue_codes(id, release_id, code, title) VALUES ('c1', 'r1', 'A01', 'Cholera')`,
+    );
+    db.exec(
+      `INSERT INTO catalogue_codes(id, release_id, code, title) VALUES ('c2', 'r1', 'B01', 'Typhoid fever')`,
+    );
+    expect(search(db, 'cholera')).toEqual(['c1']);
+    expect(search(db, '"typhoid fever"')).toEqual(['c2']);
+
+    // Moving c2's code onto c1's unique 'A01' displaces c1 via the unique
+    // index (OR REPLACE deletes c1). c1's projection entry must go with it.
+    db.exec(
+      `UPDATE OR REPLACE catalogue_codes SET code='A01', title='Merged entry' WHERE id='c2'`,
+    );
+
+    expect(db.query('SELECT id FROM catalogue_codes ORDER BY id')).toEqual([
+      { id: 'c2' },
+    ]);
+    // No ghost: c1's old text is no longer searchable.
+    expect(search(db, 'cholera')).toEqual([]);
+    expect(search(db, '"typhoid fever"')).toEqual([]);
+    // c2 reflects its new values exactly once.
+    expect(search(db, 'merged')).toEqual(['c2']);
+    expect(search(db, 'A01')).toEqual(['c2']);
+    // The projection has exactly one row (no orphaned c1 entry).
+    expect(
+      db.query('SELECT COUNT(*) AS n FROM catalogue_codes_fts')[0]?.n,
+    ).toBe(1);
+  });
+
   test('clean bulk inserts do not scan the growing FTS projection', () => {
     // The scanning control arm is O(rows^2) by construction; 1,500 rows keeps
     // it near two seconds (a decisive >3x margin over the linear clean arm)

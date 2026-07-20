@@ -81,6 +81,12 @@ const sectionFor = (pathname: string) => {
 const privacyOptOut = (request: Request) =>
   request.headers.get('sec-gpc') === '1' || request.headers.get('dnt') === '1';
 
+// A hover-prefetch that announces itself is kept out of page_view counts.
+// Chromium and Firefox send `Sec-Purpose: prefetch` (or the legacy
+// `Purpose: prefetch`), so those requests are detectable here. Safari's
+// prefetch fallback issues a plain `fetch()` with no purpose header, so those
+// requests are indistinguishable from a real navigation and still count as a
+// page_view — that case cannot be filtered server-side.
 export const isPrefetch = (request: Request) =>
   (request.headers.get('sec-purpose') ?? '')
     .toLowerCase()
