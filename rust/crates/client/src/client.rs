@@ -62,6 +62,11 @@ const LOCAL_REVISION_KEY: &str = "localRevision";
 const CLIENT_ID_KEY: &str = "clientId";
 const LEASE_STATE_KEY: &str = "leaseState";
 const SCHEMA_FLOOR_KEY: &str = "schemaFloor";
+/// Persisted fail-closed quarantine marker: present while a security preflight
+/// is pending and `activateSecurity` has yet to run. Storing it in the replica
+/// keeps the gate with the data it protects, so a rebuilt host handle reopening
+/// the same file returns in preflight even though its in-memory state is fresh.
+const SECURITY_PREFLIGHT_PENDING_KEY: &str = "securityPreflightPending";
 const LOCAL_REBOOTSTRAP_RECEIPT_VERSION: u8 = 2;
 const MAX_JS_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 /// §7.4.4 client-local code: a pending outbox commit cannot re-encode under
@@ -2498,6 +2503,9 @@ impl SyncClient {
         self.security_preflight = true;
         self.encryption = crate::values::EncryptionConfig::default();
         self.sync_intent_queue.clear();
+        // Persist the quarantine so it survives handle teardown and restart:
+        // reopening this replica re-enters preflight until activation clears it.
+        self.set_meta(SECURITY_PREFLIGHT_PENDING_KEY, "1");
     }
 
     /// Install the post-authentication keyring and release the host loop.
@@ -2512,6 +2520,7 @@ impl SyncClient {
         }
         self.encryption = encryption;
         self.security_preflight = false;
+        self.delete_meta(SECURITY_PREFLIGHT_PENDING_KEY);
         self.enqueue_startup_sync_if_needed();
         Ok(())
     }
@@ -2784,6 +2793,11 @@ impl SyncClient {
             .transpose()
             .map_err(|error| format!("invalid persisted schema floor: {error}"))?;
         self.stopped = self.schema_floor.is_some();
+        // A replica left in unactivated preflight reopens gated: the quarantine
+        // decision persists with the data across handle teardown and restart.
+        if self.get_meta(SECURITY_PREFLIGHT_PENDING_KEY).as_deref() == Some("1") {
+            self.security_preflight = true;
+        }
         Ok(())
     }
 

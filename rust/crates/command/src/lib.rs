@@ -61,17 +61,18 @@ pub struct CreateEffects {
     /// True while a security preflight is pending: a preflighted client was
     /// installed (or entered preflight, or was shut down mid-preflight) and
     /// `activateSecurity` has yet to complete. `dispatch` maintains this so a
-    /// replacement `create` without the `securityPreflight` flag is refused —
-    /// including across `shutdown`, where the client slot is empty.
+    /// replacement `create` without the `securityPreflight` flag is refused
+    /// across `shutdown`, where the client slot is empty, on a host that reuses
+    /// one `CreateEffects` across creates (the Tauri plugin, the conformance
+    /// shim, the bench harness).
     ///
-    /// The refusal holds only for a host that reuses one `CreateEffects` across
-    /// creates: the Tauri plugin (one owner-thread core for the plugin's life),
-    /// the conformance shim, and the bench harness. A host that allocates a
-    /// fresh `CreateEffects` per create — the React Native native module builds
-    /// a new FFI handle on every `create` — starts each create with the flag
-    /// clear, so it MUST enforce the gate in its own glue (reuse one handle for
-    /// the process, or refuse a plain re-create while the live handle is
-    /// preflighting).
+    /// A host that allocates a fresh `CreateEffects` per create — the React
+    /// Native native module rebuilds its FFI handle on every `create` — starts
+    /// each create with this flag clear. For those hosts the persisted marker
+    /// in the client core carries the gate: a file-backed replica reopens in
+    /// preflight, and the `create` path refuses a plain re-create against it.
+    /// This in-memory flag covers the same-handle case where no file persists
+    /// the marker.
     pub security_preflight_pending: bool,
 }
 
@@ -400,6 +401,19 @@ pub fn dispatch<T: Transport>(
                 .get("securityPreflight")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            // A file-backed replica reopens in preflight when its persisted
+            // quarantine marker is set (client core restores it). Refuse a plain
+            // re-create so a rebuilt host handle — the React Native native module
+            // tears its FFI handle down on every create — cannot downgrade a
+            // quarantined replica to active. A create that itself requests
+            // securityPreflight, or an activated replica whose marker cleared,
+            // proceeds.
+            if instance.security_preflight() && !security_preflight {
+                return Err((
+                    syncular_client::SECURITY_PREFLIGHT_REQUIRED_CODE.to_owned(),
+                    "the local replica is in security preflight; a replacement create must itself request securityPreflight, and protected data opens only after activateSecurity".to_owned(),
+                ));
+            }
             if security_preflight && params.get("encryption").is_some() {
                 return Err(client_err(
                     "sync.invalid_request: securityPreflight and encryption are mutually exclusive; install keys with activateSecurity after preflight"
