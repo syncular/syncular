@@ -42,6 +42,7 @@ import {
   type WorkerErrorShape,
   type WorkerInitConfig,
   type WorkerInitResult,
+  type WorkerMethod,
   type WorkerToMainMessage,
 } from './worker-protocol';
 
@@ -491,9 +492,22 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     },
   };
 
+  // Local purge/rebootstrap rewrite the same durable state an in-flight
+  // sync round captured at send time; running their RPCs on the sync chain
+  // orders them against RPC- and auto-driven rounds (the client core's
+  // reset fence covers hosts that call the core directly).
+  const syncChainMethods: ReadonlySet<WorkerMethod> = new Set<WorkerMethod>([
+    'purgeLocalData',
+    'rebootstrapLocalData',
+  ]);
+
   async function dispatch(message: WorkerCallMessage): Promise<unknown> {
     const method = api[message.method] as (...args: unknown[]) => unknown;
-    return await method.apply(api, message.args as unknown[]);
+    const invoke = () => method.apply(api, message.args as unknown[]);
+    if (syncChainMethods.has(message.method)) {
+      return await serializedSync(async () => invoke());
+    }
+    return await invoke();
   }
 
   function run(

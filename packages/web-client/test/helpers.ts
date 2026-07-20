@@ -18,7 +18,13 @@ import {
   type SyncIntent,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
-import type { RowColumn, ScopeMap } from '@syncular/core';
+import {
+  decodeMessage,
+  encodeMessage,
+  type ResponseFrame,
+  type RowColumn,
+  type ScopeMap,
+} from '@syncular/core';
 import {
   createRealtimeHub,
   handleSegmentDownload,
@@ -219,6 +225,19 @@ export interface ClientFaults {
   dropResponseOnce: boolean;
   /** Corrupt the Nth remaining segment download (1 = next). 0 = off. */
   corruptSegmentDownload: number;
+  /**
+   * Hold the next response (already produced by the server) until `opened`
+   * resolves — the mid-round window for race-injection tests. `onHeld`
+   * fires once the round is parked on the gate.
+   */
+  holdResponseOnce?:
+    | {
+        readonly opened: Promise<void>;
+        readonly onHeld?: () => void;
+      }
+    | undefined;
+  /** Repeat every PUSH_RESULT frame of the next response (wire duplicate). */
+  duplicatePushResultOnce: boolean;
 }
 
 export interface TestClient {
@@ -254,6 +273,7 @@ export async function makeClient(
   const faults: ClientFaults = {
     dropResponseOnce: false,
     corruptSegmentDownload: 0,
+    duplicatePushResultOnce: false,
   };
   const wakes: Array<'hello' | string> = [];
   const intents: SyncIntent[] = [];
@@ -276,6 +296,22 @@ export async function makeClient(
       if (faults.dropResponseOnce) {
         faults.dropResponseOnce = false;
         throw new Error('simulated response loss');
+      }
+      const hold = faults.holdResponseOnce;
+      if (hold !== undefined) {
+        faults.holdResponseOnce = undefined;
+        hold.onHeld?.();
+        await hold.opened;
+      }
+      if (faults.duplicatePushResultOnce) {
+        faults.duplicatePushResultOnce = false;
+        const message = decodeMessage(response);
+        if (message.msgKind === 'response') {
+          const frames = message.frames.flatMap((frame): ResponseFrame[] =>
+            frame.type === 'PUSH_RESULT' ? [frame, frame] : [frame],
+          );
+          return encodeMessage({ ...message, frames });
+        }
       }
       return response;
     },
@@ -322,6 +358,26 @@ export async function makeClient(
   const client = new SyncClient(config);
   await client.start();
   return { client, db, faults, wakes, intents };
+}
+
+/**
+ * A manually-opened gate for `holdResponseOnce`: `held` resolves once the
+ * round is parked mid-flight, `release` lets the response through.
+ */
+export function responseGate(): {
+  fault: NonNullable<ClientFaults['holdResponseOnce']>;
+  held: Promise<void>;
+  release: () => void;
+} {
+  let release!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let onHeld!: () => void;
+  const held = new Promise<void>((resolve) => {
+    onHeld = resolve;
+  });
+  return { fault: { opened, onHeld }, held, release };
 }
 
 /** Readiness wait, never a sleep (test doctrine). */

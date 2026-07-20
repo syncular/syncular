@@ -558,6 +558,16 @@ export class SyncClient {
    * (the fast-bail the delta path reads).
    */
   #syncOutstanding = false;
+  /**
+   * Bumped by every local projection reset (`rebootstrapLocalData`). A sync
+   * round captures this epoch together with its subscription state; a
+   * mismatch at SUB_END means a reset landed while the round was in flight,
+   * so the captured cursors predate the rewind and persisting them would
+   * overwrite it and silently skip the fresh bootstrap. The Rust core is
+   * synchronous over `&mut self` and gets this fencing for free; the epoch
+   * restores the equivalent semantics across the round's await points.
+   */
+  #localResetEpoch = 0;
   /** Retry policy belongs to the operation that classified the failure. */
   #retryDelayMs = 250;
   readonly #hasBlobs: boolean;
@@ -2124,53 +2134,62 @@ export class SyncClient {
     const rejectionCount = this.#rejections.length;
     try {
       return this.#applyBatch((batch) => {
-        const initialRowIds = this.#localPurgeRowIds(purge);
         const targetsByTable = this.#localPurgeTargetsByTable(purge);
-        const doomed = listOutbox(this.#db)
-          .filter((commit) => {
-            const images = new Map(
-              listOutboxBeforeImages(this.#db, commit.clientCommitId).map(
-                (image) => [image.opIndex, image],
-              ),
-            );
-            return commit.operations.some((operation, opIndex) => {
-              const targets = targetsByTable.get(operation.table);
-              if (targets === undefined) return false;
-              if (
-                initialRowIds.get(operation.table)?.has(operation.rowId) ===
-                true
-              ) {
-                return true;
-              }
-              if (
-                operation.values !== undefined &&
-                targets.some((target) =>
-                  localDataPurgeTargetMatches(target, operation.values ?? {}),
-                )
-              ) {
-                return true;
-              }
-              const beforeValues = images.get(opIndex)?.values;
-              return (
-                beforeValues !== undefined &&
-                targets.some((target) =>
-                  localDataPurgeTargetMatches(target, beforeValues),
-                )
+        // Doomed detection runs to fixpoint, matching the Rust core's rule:
+        // a commit is doomed when any of its ops touches a base-matching
+        // row. Base values only become visible here as rollbacks restore
+        // before-images and rebase later commits' images onto them (a
+        // stacked edit over a moved row initially shows the moved values),
+        // so each pass rolls back what it caught — newest-first, so an
+        // older doomed write never reappears — and re-scans until the
+        // outbox is stable.
+        const doomed: OutboxCommit[] = [];
+        let rowIds = this.#localPurgeRowIds(purge);
+        for (;;) {
+          const caught = listOutbox(this.#db)
+            .filter((commit) => {
+              const images = new Map(
+                listOutboxBeforeImages(this.#db, commit.clientCommitId).map(
+                  (image) => [image.opIndex, image],
+                ),
               );
-            });
-          })
-          // Reverse order is essential: each rollback restores its before-image;
-          // removing newest-first prevents an older doomed write reappearing.
-          .sort((a, b) => b.seq - a.seq);
-
-        for (const commit of doomed) {
-          this.#rollbackFailedCommit(commit, batch);
+              return commit.operations.some((operation, opIndex) => {
+                const targets = targetsByTable.get(operation.table);
+                if (targets === undefined) return false;
+                if (
+                  rowIds.get(operation.table)?.has(operation.rowId) === true
+                ) {
+                  return true;
+                }
+                if (
+                  operation.values !== undefined &&
+                  targets.some((target) =>
+                    localDataPurgeTargetMatches(target, operation.values ?? {}),
+                  )
+                ) {
+                  return true;
+                }
+                const beforeValues = images.get(opIndex)?.values;
+                return (
+                  beforeValues !== undefined &&
+                  targets.some((target) =>
+                    localDataPurgeTargetMatches(target, beforeValues),
+                  )
+                );
+              });
+            })
+            .sort((a, b) => b.seq - a.seq);
+          if (caught.length === 0) break;
+          for (const commit of caught) {
+            this.#rollbackFailedCommit(commit, batch);
+          }
+          doomed.push(...caught);
+          // Rollback may reveal a target row hidden by an optimistic delete
+          // or move; the re-selected set drives both the next scan and the
+          // final row deletion below.
+          rowIds = this.#localPurgeRowIds(purge);
         }
 
-        // Rollback may reveal a target row hidden by an optimistic delete or
-        // move, so select the final base/visible set only after doomed commits
-        // have been removed.
-        const rowIds = this.#localPurgeRowIds(purge);
         let purgedRows = 0;
         for (const [tableName, ids] of rowIds) {
           if (ids.size === 0) continue;
@@ -2296,6 +2315,9 @@ export class SyncClient {
       this.#needsPull = priorNeedsPull;
       throw error;
     }
+    // Fence any in-flight sync round: its captured subscription state now
+    // predates the rewind, so its SUB_END cursors must stay unpersisted.
+    this.#localResetEpoch += 1;
 
     if (!priorUpgrading) this.#config.onUpgrading?.(true);
     this.#config.onSyncNeeded?.('startup');
@@ -2575,6 +2597,9 @@ export class SyncClient {
       // mapping.
       const { pushFrames, outbox, deferred } =
         await this.#encodeOutboxForPush();
+      // Captured together with the subscription state below: the response
+      // apply persists SUB_END cursors only while this epoch is current.
+      const resetEpoch = this.#localResetEpoch;
       const subs = loadSubscriptions(this.#db).filter(
         (sub) => sub.status === 'active',
       );
@@ -2625,6 +2650,7 @@ export class SyncClient {
         outbox,
         subs,
         'pull',
+        resetEpoch,
       );
       // §4.8 E1: the push half may have drained commits that pinned rows of
       // a shrunk window unit — retry any deferred evictions now.
@@ -2998,6 +3024,7 @@ export class SyncClient {
     sentCommits: readonly OutboxCommit[],
     sentSubs: readonly SubscriptionRecord[] | undefined,
     mode: 'pull' | 'delta',
+    resetEpoch: number = this.#localResetEpoch,
   ): Promise<SyncSummary> {
     const summary = emptySummary(sentCommits.length);
     const commitsById = new Map(
@@ -3258,7 +3285,12 @@ export class SyncClient {
             if (
               section !== undefined &&
               !section.skip &&
-              section.sub !== undefined
+              section.sub !== undefined &&
+              // Reset fence: a rebootstrap that landed mid-round already
+              // rewound this subscription's cursor; the captured SUB_END
+              // state predates the rewind and must stay unpersisted so the
+              // next round runs the fresh bootstrap.
+              this.#localResetEpoch === resetEpoch
             ) {
               const applied = this.#finishSection(
                 section.sub,
@@ -3315,7 +3347,14 @@ export class SyncClient {
       .map((sub) => sub.id);
     // §7.4.5: the reset is over once the first post-reset pull round leaves
     // no subscription mid-bootstrap — the tables are rebuilt and current.
-    if (this.#upgrading && mode === 'pull' && bootstrapping.length === 0) {
+    // The epoch check keeps a round that predates a mid-flight rebootstrap
+    // from declaring that reset finished before its bootstrap ran.
+    if (
+      this.#upgrading &&
+      mode === 'pull' &&
+      bootstrapping.length === 0 &&
+      this.#localResetEpoch === resetEpoch
+    ) {
       this.#setUpgrading(false);
     }
     return { ...summary, bootstrapping };
@@ -3331,6 +3370,12 @@ export class SyncClient {
   ): boolean {
     const commit = commitsById.get(frame.clientCommitId);
     if (commit === undefined) return false;
+    // `commitsById` is the round's send-time snapshot. The commit can leave
+    // the outbox before this frame is handled — a local purge doomed it while
+    // the round was in flight, or an earlier duplicate frame in this response
+    // already drained it. Its recorded outcome stands, and skipping keeps the
+    // cached outbox count exact (a drain may only be counted once).
+    if (!this.#outboxCommitExists(frame.clientCommitId)) return false;
     if (frame.status === 'applied' || frame.status === 'cached') {
       // §6.3: applied and cached both drain the outbox — cached means
       // "already applied, you may have missed the ack".
@@ -3425,6 +3470,15 @@ export class SyncClient {
     batch.status();
     summary.rejected.push(frame.clientCommitId);
     return true;
+  }
+
+  #outboxCommitExists(clientCommitId: string): boolean {
+    return (
+      this.#db.query(
+        'SELECT 1 FROM _syncular_outbox WHERE client_commit_id = ? LIMIT 1',
+        [clientCommitId],
+      ).length > 0
+    );
   }
 
   #decodeServerRow(

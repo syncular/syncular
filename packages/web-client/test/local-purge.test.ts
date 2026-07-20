@@ -4,7 +4,13 @@ import {
   ClientSyncError,
   type LocalDataPurgeInput,
 } from '@syncular/client';
-import { makeClient, makeServer, tableRows } from './helpers';
+import {
+  makeClient,
+  makeServer,
+  responseGate,
+  tableRows,
+  taskValues,
+} from './helpers';
 
 const SCHEMA: ClientSchema = {
   version: 1,
@@ -204,6 +210,102 @@ describe('application-authorized local data purge', () => {
     });
     expect(tableRows(local.db, 'patient_notes')).toEqual([]);
     expect(local.client.commitOutcome(doomedCommit)?.status).toBe('rejected');
+    await local.client.close();
+    local.db.close();
+  });
+
+  test('dooms every stacked commit over a base-matching row and deletes the row', async () => {
+    const local = await makeClient(makeServer(), {
+      clientId: 'local-purge-stacked-client',
+      schema: SCHEMA,
+    });
+    // Base row matches the purge; a pending commit moves it away from the
+    // target key, and a second pending commit re-edits the moved row (its
+    // values and before-image both show the moved key). The Rust core dooms
+    // the whole stack because the base row matches, and deletes the row.
+    insertBase(local.db, 'target', 'key-revoked', 'Target original');
+    const moved = local.client.mutate([
+      {
+        table: 'patient_notes',
+        op: 'upsert',
+        values: values('target', 'key-held', 'Target original'),
+      },
+    ]);
+    const retitled = local.client.patch('patient_notes', 'target', {
+      title: 'Target renamed',
+    });
+
+    expect(local.client.purgeLocalData(PURGE)).toEqual({
+      alreadyApplied: false,
+      purgedRows: 1,
+      droppedCommits: 2,
+    });
+    expect(tableRows(local.db, 'patient_notes')).toEqual([]);
+    expect(local.client.pendingCommits()).toEqual([]);
+    for (const clientCommitId of [moved, retitled]) {
+      expect(local.client.commitOutcome(clientCommitId)).toEqual(
+        expect.objectContaining({
+          status: 'rejected',
+          results: expect.arrayContaining([
+            expect.objectContaining({
+              rejection: expect.objectContaining({
+                code: 'client.local_data_purged',
+              }),
+            }),
+          ]),
+        }),
+      );
+    }
+    await local.client.close();
+    local.db.close();
+  });
+
+  test('a purge landing between push and response keeps the purge outcome and an exact outbox count', async () => {
+    const server = makeServer();
+    const local = await makeClient(server, {
+      clientId: 'local-purge-race-client',
+    });
+    local.client.subscribe({
+      id: 'purge-race-tasks',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    await local.client.syncUntilIdle();
+    const inFlight = local.client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('race-row', 'p1', 'racing'),
+      },
+    ]);
+    const outboxCounts: number[] = [];
+    local.client.onChange((change) => {
+      if (change.status !== undefined) outboxCounts.push(change.status.outbox);
+    });
+
+    // Park the round after the server applied the push, then purge the
+    // in-flight commit inside that window.
+    const gate = responseGate();
+    local.faults.holdResponseOnce = gate.fault;
+    const round = local.client.sync();
+    await gate.held;
+    expect(
+      local.client.purgeLocalData({
+        purgeId: 'purge-race-001',
+        targets: [{ table: 'tasks', selectors: { project_id: ['p1'] } }],
+      }),
+    ).toEqual({ alreadyApplied: false, purgedRows: 0, droppedCommits: 1 });
+    expect(local.client.pendingCommits()).toEqual([]);
+    expect(local.client.commitOutcome(inFlight)?.status).toBe('rejected');
+    gate.release();
+    const summary = await round;
+
+    // The response's PUSH_RESULT for the purged commit is skipped: the
+    // purge outcome stands and the outbox count stays at zero.
+    expect(summary.applied).toEqual([]);
+    expect(local.client.commitOutcome(inFlight)?.status).toBe('rejected');
+    expect(local.client.statusSnapshot().outbox).toBe(0);
+    expect(outboxCounts.every((count) => count >= 0)).toBe(true);
     await local.client.close();
     local.db.close();
   });
