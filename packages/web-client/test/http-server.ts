@@ -19,6 +19,8 @@ export interface HttpTestServer {
   readonly syncUrl: string;
   readonly segmentsUrl: string;
   readonly realtimeUrl: string;
+  readonly realtimeOpened: number;
+  readonly realtimeActive: number;
   stop(): Promise<void>;
 }
 
@@ -48,6 +50,8 @@ export function serveOverHttp(
   server: TestServer,
   actorId = 'actor-1',
 ): HttpTestServer {
+  let realtimeOpened = 0;
+  let realtimeActive = 0;
   const bunServer = Bun.serve<SocketData>({
     port: 0,
     async fetch(request, s) {
@@ -92,6 +96,8 @@ export function serveOverHttp(
     },
     websocket: {
       open(ws) {
+        realtimeOpened += 1;
+        realtimeActive += 1;
         server.hub
           .connect({
             partition: PARTITION,
@@ -116,6 +122,7 @@ export function serveOverHttp(
         }
       },
       close(ws) {
+        realtimeActive = Math.max(0, realtimeActive - 1);
         ws.data.session?.close();
       },
     },
@@ -125,6 +132,12 @@ export function serveOverHttp(
     syncUrl: `${base}/sync`,
     segmentsUrl: `${base}/segments`,
     realtimeUrl: `ws://localhost:${bunServer.port}/realtime?clientId={clientId}`,
+    get realtimeOpened() {
+      return realtimeOpened;
+    },
+    get realtimeActive() {
+      return realtimeActive;
+    },
     stop: async () => {
       await bunServer.stop(true);
     },

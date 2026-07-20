@@ -1,8 +1,27 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.36** (`v0.15.36`). All artifacts use Apache-2.0, except
+current release is **0.15.37** (`v0.15.37`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.37 release notes
+
+- `@syncular/client` now provides a supported cross-host realtime supervisor.
+  It owns initial connection and socket-close recovery, bounded exponential
+  backoff with jitter, offline/background/security-preflight suspension,
+  explicit catch-up before reporting connected, privacy-safe observable phases,
+  and cancellation before client disposal. Browser/Tauri lifecycle adapters,
+  React Native guidance, maintained demos, and create-app templates use the
+  same policy.
+- TypeScript realtime connection ownership is idempotent while connected and
+  single-flight while connecting. Disconnect/close invalidates a late connector
+  result with sanitized `client.realtime_cancelled`, closes that stale socket,
+  and leaves no orphan. Worker RPC and the Rust/native command core pin the same
+  one-socket/reconnect contract; native disconnect is idempotent too.
+- Realtime guidance now distinguishes the worker's coalesced sync-intent loop
+  from socket lifecycle policy and states explicitly that an available HTTP
+  round transport does not provide continuous remote convergence without a
+  real host trigger.
 
 ## 0.15.36 release notes
 

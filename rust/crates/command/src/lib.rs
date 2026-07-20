@@ -883,7 +883,11 @@ mod tests {
 
     use super::{dispatch, parse_encryption, CreateEffects};
 
-    struct NoNetwork;
+    #[derive(Default)]
+    struct NoNetwork {
+        realtime_connects: usize,
+        realtime_closes: usize,
+    }
 
     impl Transport for NoNetwork {
         fn sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
@@ -902,6 +906,7 @@ mod tests {
         }
 
         fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            self.realtime_connects += 1;
             Ok(())
         }
 
@@ -910,6 +915,7 @@ mod tests {
         }
 
         fn realtime_close(&mut self) -> Result<(), TransportError> {
+            self.realtime_closes += 1;
             Ok(())
         }
     }
@@ -927,6 +933,60 @@ mod tests {
                 "scopes": [{ "pattern": "list:{list_id}", "column": "list_id" }]
             }]
         })
+    }
+
+    #[test]
+    fn native_command_realtime_connection_is_idempotent() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema() }),
+        )
+        .expect("create client");
+
+        for _ in 0..2 {
+            dispatch(
+                &mut transport,
+                &mut client,
+                &mut effects,
+                "connectRealtime",
+                &json!({}),
+            )
+            .expect("idempotent connect command");
+        }
+        assert_eq!(transport.realtime_connects, 1);
+
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "disconnectRealtime",
+            &json!({}),
+        )
+        .expect("disconnect command");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "disconnectRealtime",
+            &json!({}),
+        )
+        .expect("idempotent disconnect command");
+        assert_eq!(transport.realtime_closes, 1);
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "connectRealtime",
+            &json!({}),
+        )
+        .expect("deliberate reconnect command");
+        assert_eq!(transport.realtime_connects, 2);
     }
 
     #[test]
@@ -953,7 +1013,7 @@ mod tests {
 
     #[test]
     fn native_command_hosts_reject_subscription_identity_rebinds() {
-        let mut transport = NoNetwork;
+        let mut transport = NoNetwork::default();
         let mut client: Option<SyncClient> = None;
         let mut effects = CreateEffects::default();
         dispatch(
@@ -1022,7 +1082,7 @@ mod tests {
 
     #[test]
     fn security_preflight_is_fail_closed_until_exact_activation() {
-        let mut transport = NoNetwork;
+        let mut transport = NoNetwork::default();
         let mut client: Option<SyncClient> = None;
         let mut effects = CreateEffects::default();
         dispatch(

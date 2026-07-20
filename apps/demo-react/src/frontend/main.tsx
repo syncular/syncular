@@ -15,7 +15,12 @@
  *   completeness and the exact local revision arrive as one atomic snapshot.
  */
 
-import { createSyncClientHandle } from '@syncular/client';
+import {
+  browserConnectivitySignal,
+  createSyncClientHandle,
+  documentLifecycleSignal,
+  installRealtimeSupervisor,
+} from '@syncular/client';
 import {
   retainViteSyncClientResource,
   SyncProvider,
@@ -206,12 +211,10 @@ async function createClient() {
     autoSync: true,
     lockName: 'syncular-demo-react',
   });
-  try {
-    await handle.connectRealtime();
-  } catch {
-    // HTTP sync still works without the socket.
-  }
-  return handle;
+  return installRealtimeSupervisor(handle, {
+    connectivity: browserConnectivitySignal(),
+    lifecycle: documentLifecycleSignal(),
+  });
 }
 
 interface ViteHotContext {

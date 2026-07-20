@@ -13,6 +13,33 @@ local Tauri views remain responsive while the native client is syncing over
 HTTP/WebSocket. Mutations, sync, and all durable writes remain serialized on
 the single mutable core owner.
 
+## Realtime lifecycle
+
+Use the supervisor exported by `@syncular/client` for the WebView host policy:
+
+```ts
+import {
+  browserConnectivitySignal,
+  documentLifecycleSignal,
+  installRealtimeSupervisor,
+} from '@syncular/client';
+import { createTauriSyncClient } from '@syncular/tauri';
+
+const client = await createTauriSyncClient({ schema });
+installRealtimeSupervisor(client, {
+  connectivity: browserConnectivitySignal(),
+  lifecycle: documentLifecycleSignal(),
+  protection,
+});
+```
+
+The supervisor performs reconnect, bounded retry, resume catch-up, diagnostics,
+and close cancellation without opening duplicate native sockets. The document
+signal is the portable WebView baseline. Apps that observe native sleep/wake or
+window lifecycle should pass that evidence through the same structural
+`RealtimeSupervisorSignal`; protected apps publish `preflight` before releasing
+keys and `active` only after reactivation. Render local SQLite immediately.
+
 The bridge includes the native core's durable commit-outcome journal:
 `commitOutcome`, `commitOutcomes`, and `resolveCommitOutcome`. Final results
 and explicit conflict resolutions survive process restarts; active failures

@@ -4,6 +4,7 @@
  * with post-apply acks, and wake-up → coalesced catch-up pull.
  */
 import { describe, expect, test } from 'bun:test';
+import type { RealtimeHandlers, RealtimeSocket } from '@syncular/client';
 import {
   makeClient,
   makeServer,
@@ -14,6 +15,74 @@ import {
 } from './helpers';
 
 describe('handshake (§8.1)', () => {
+  test('connect is sequentially idempotent and concurrent calls share one socket', async () => {
+    let opens = 0;
+    let closes = 0;
+    const local = await makeClient(makeServer(), {
+      clientId: 'single-realtime-owner',
+      realtime: async (handlers) => {
+        opens += 1;
+        return {
+          send: () => undefined,
+          sendBytes: () => undefined,
+          close: () => {
+            closes += 1;
+            handlers.onClose?.();
+          },
+        };
+      },
+    });
+
+    const first = local.client.connectRealtime();
+    const concurrent = local.client.connectRealtime();
+    expect(concurrent).toBe(first);
+    await Promise.all([first, concurrent]);
+    await local.client.connectRealtime();
+    expect(opens).toBe(1);
+
+    local.client.disconnectRealtime();
+    expect(closes).toBe(1);
+    await local.client.connectRealtime();
+    expect(opens).toBe(2);
+    await local.client.close();
+    expect(closes).toBe(2);
+  });
+
+  test('disconnect invalidates an in-flight connect before it can install a stale socket', async () => {
+    let handlers: RealtimeHandlers | undefined;
+    let resolveSocket: ((socket: RealtimeSocket) => void) | undefined;
+    let closes = 0;
+    const local = await makeClient(makeServer(), {
+      clientId: 'cancelled-realtime-owner',
+      realtime: (nextHandlers) => {
+        handlers = nextHandlers;
+        return new Promise<RealtimeSocket>((resolve) => {
+          resolveSocket = resolve;
+        });
+      },
+    });
+
+    const connecting = local.client.connectRealtime();
+    await Promise.resolve();
+    local.client.disconnectRealtime();
+    resolveSocket?.({
+      send: () => undefined,
+      sendBytes: () => undefined,
+      close: () => {
+        closes += 1;
+        handlers?.onClose?.();
+      },
+    });
+    await expect(connecting).rejects.toMatchObject({
+      code: 'client.realtime_cancelled',
+    });
+    expect(closes).toBe(1);
+    expect(local.client.diagnosticsSnapshot().host.realtime).toBe(
+      'disconnected',
+    );
+    await local.client.close();
+  });
+
   test('hello with requiresSync flags a pull; a caught-up client is quiet', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });

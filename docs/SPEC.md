@@ -3655,6 +3655,13 @@ pinned, never interpreted.
 
 ### 8.4 Reconnect and catch-up
 
+- Reference-client connection ownership is idempotent and single-flight. A
+  repeated or concurrent connect while connecting/connected MUST NOT open a
+  second socket. Disconnect/close invalidates an in-flight result before it
+  can become the owned socket, releases exactly the current socket, and permits
+  one later deliberate reconnect. A TypeScript connect invalidated before
+  activation fails with the sanitized client-local code
+  `client.realtime_cancelled`.
 - Client reconnect uses exponential backoff (suggested: initial 1 s, ×2,
   cap 30 s) **with jitter**; after `hello.requiresSync` or any wake-up,
   the client MUST apply jitter (suggested uniform 0–2 s, host-tunable)
@@ -4124,6 +4131,9 @@ durable local-recovery receipt is malformed or unreadable; non-retryable and
 sanitized before application code], `client.invalid_host_response` [a Worker or native
 command bridge returned a malformed value for a strictly decoded public
 result; non-retryable and sanitized before application code],
+`client.realtime_cancelled` [§8.4 — disconnect or close invalidated an
+in-flight TypeScript realtime connector before its socket could become active;
+client-local, non-wire, and sanitized],
 `client.worker_failed` [a browser worker failed outside wire semantics],
 `client.worker_restart_required` [a browser worker module
 graph refers to a retired bundler chunk and the page must reload without

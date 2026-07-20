@@ -157,6 +157,29 @@ work and drains the mutable owner plus read sidecar before removing the old
 Rust keyring. `close()` shuts down that native client; it no longer only
 detaches the webview listener.
 
+Install the shared realtime supervisor on the returned client so a transient
+startup failure or socket close cannot strand remote-only changes:
+
+```ts
+import {
+  browserConnectivitySignal,
+  documentLifecycleSignal,
+  installRealtimeSupervisor,
+} from '@syncular/client';
+
+installRealtimeSupervisor(client, {
+  connectivity: browserConnectivitySignal(),
+  lifecycle: documentLifecycleSignal(),
+  protection,
+});
+```
+
+This baseline follows WebView connectivity/visibility. A desktop app with
+native sleep/wake evidence should expose it through the same structural
+lifecycle signal. The supervisor owns bounded reconnect and catch-up; the
+native core guarantees repeated connect commands still own only one socket.
+See [Realtime](/concepts-realtime/) for phases and diagnostics.
+
 ## The command and event surface
 
 The plugin dispatches through the shared `syncular-command` router — the same

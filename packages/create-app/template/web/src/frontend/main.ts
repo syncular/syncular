@@ -13,9 +13,14 @@
  * to watch them converge over the realtime socket.
  */
 import {
+  browserConnectivitySignal,
   ClientSyncError,
   createSyncClientHandle,
+  documentLifecycleSignal,
+  installRealtimeSupervisor,
+  realtimeSupervisorSnapshot,
   type SqlRow,
+  subscribeRealtimeSupervisor,
 } from '@syncular/client';
 import { schema, todoListSubscription } from '../syncular.generated';
 
@@ -63,15 +68,25 @@ async function main(): Promise<void> {
     scopes: todoListSubscription.scopes({ listId: LIST_ID }),
   });
 
-  // Connect-then-sync (§8.7 reference boot order): the first sync round rides
-  // the socket and registers this connection's subscriptions at round end.
-  try {
-    await handle.connectRealtime();
-  } catch {
-    // HTTP sync still works without the socket.
-  }
-  await handle.syncUntilIdle();
-  setStatus('in sync');
+  // The supported host policy owns connect + catch-up, retries transient
+  // startup/socket loss, and suspends while this page is offline or hidden.
+  // Rendering remains local-first: no network promise blocks app startup.
+  installRealtimeSupervisor(handle, {
+    connectivity: browserConnectivitySignal(),
+    lifecycle: documentLifecycleSignal(),
+  });
+  const renderRealtimeStatus = () => {
+    const phase = realtimeSupervisorSnapshot(handle).phase;
+    setStatus(
+      phase === 'connected'
+        ? 'in sync'
+        : phase === 'offline'
+          ? 'offline — edits queue in the outbox'
+          : phase,
+    );
+  };
+  subscribeRealtimeSupervisor(handle, renderRealtimeStatus);
+  renderRealtimeStatus();
   await refresh();
 
   let offline = false;
@@ -82,14 +97,9 @@ async function main(): Promise<void> {
     if (offline) {
       setStatus('offline — edits queue in the outbox');
     } else {
-      setStatus('back online — draining outbox…');
-      try {
-        await handle.connectRealtime();
-      } catch {
-        // socket optional
-      }
-      await handle.syncUntilIdle();
-      setStatus('in sync');
+      // The online diagnostic wakes the supervisor. Its successful reconnect
+      // always performs syncUntilIdle before publishing `connected`.
+      setStatus('back online — reconnecting…');
     }
     await refresh();
   });

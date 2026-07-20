@@ -174,6 +174,65 @@ mod observation_tests {
         ));
     }
 
+    struct CountingRealtimeTransport {
+        connects: usize,
+        closes: usize,
+    }
+
+    impl Transport for CountingRealtimeTransport {
+        fn sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("sync.transport_failed", "offline"))
+        }
+
+        fn realtime_sync(&mut self, _request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("sync.transport_failed", "offline"))
+        }
+
+        fn download_segment(
+            &mut self,
+            _request: &SegmentRequest,
+        ) -> Result<Vec<u8>, TransportError> {
+            Err(TransportError::new("sync.transport_failed", "offline"))
+        }
+
+        fn realtime_connect(&mut self) -> Result<(), TransportError> {
+            self.connects += 1;
+            Ok(())
+        }
+
+        fn realtime_send(&mut self, _text: &str) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        fn realtime_close(&mut self) -> Result<(), TransportError> {
+            self.closes += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn realtime_connection_ownership_is_idempotent() {
+        let mut client = client();
+        let mut transport = CountingRealtimeTransport {
+            connects: 0,
+            closes: 0,
+        };
+        client
+            .connect_realtime(&mut transport)
+            .expect("first connect");
+        client
+            .connect_realtime(&mut transport)
+            .expect("idempotent connect");
+        assert_eq!(transport.connects, 1);
+        client.disconnect_realtime(&mut transport);
+        client.disconnect_realtime(&mut transport);
+        assert_eq!(transport.closes, 1);
+        client
+            .connect_realtime(&mut transport)
+            .expect("deliberate reconnect");
+        assert_eq!(transport.connects, 2);
+    }
+
     #[test]
     fn local_rebootstrap_is_atomic_idempotent_and_preserves_offline_work() {
         let mut client = client();
@@ -7439,6 +7498,9 @@ impl SyncClient {
     // -- realtime (§8) ---------------------------------------------------------------
 
     pub fn connect_realtime(&mut self, transport: &mut dyn Transport) -> Result<(), String> {
+        if self.realtime_connected {
+            return Ok(());
+        }
         transport
             .realtime_connect_for_client(&self.client_id)
             .map_err(|e| format!("{}: {}", e.code, e.message))?;
@@ -7447,6 +7509,9 @@ impl SyncClient {
     }
 
     pub fn disconnect_realtime(&mut self, transport: &mut dyn Transport) {
+        if !self.realtime_connected {
+            return;
+        }
         let _ = transport.realtime_close();
         self.realtime_connected = false;
         self.presence.clear(); // §8.6.1: presence is per-connection

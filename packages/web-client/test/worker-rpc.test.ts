@@ -528,6 +528,23 @@ test('realtime wake-ups drive the worker-side host loop (§8.4)', async () => {
   expect(events.wakes.length).toBeGreaterThanOrEqual(0);
 });
 
+test('worker realtime connect is single-owner across repeated RPC calls', async () => {
+  const { handle } = await makeHandle({
+    clientId: 'rpc-rt-owner',
+    autoSync: false,
+  });
+  const openedBefore = http.realtimeOpened;
+  await Promise.all([handle.connectRealtime(), handle.connectRealtime()]);
+  await handle.connectRealtime();
+  expect(http.realtimeOpened - openedBefore).toBe(1);
+
+  await handle.disconnectRealtime();
+  await waitFor(() => http.realtimeActive === 0, 'worker realtime disconnect');
+  await handle.connectRealtime();
+  expect(http.realtimeOpened - openedBefore).toBe(2);
+  await handle.disconnectRealtime();
+});
+
 test('offline gate queues, reconnect drains through the worker', async () => {
   const { handle } = await makeHandle({
     clientId: 'rpc-off',

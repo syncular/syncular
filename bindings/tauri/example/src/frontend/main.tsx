@@ -15,6 +15,11 @@
  * app land (the bridge owns all of it).
  */
 import {
+  browserConnectivitySignal,
+  documentLifecycleSignal,
+  installRealtimeSupervisor,
+} from '@syncular/client';
+import {
   createSyncClientResource,
   SyncProvider,
   useMutation,
@@ -148,8 +153,10 @@ function TodoApp() {
 
 const clientResource = createSyncClientResource(async () => {
   const client = await createTauriSyncClient({ schema });
-  await client.connectRealtime().catch(() => {});
-  return client;
+  return installRealtimeSupervisor(client, {
+    connectivity: browserConnectivitySignal(),
+    lifecycle: documentLifecycleSignal(),
+  });
 });
 
 function Root() {

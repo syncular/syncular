@@ -18,6 +18,12 @@
  * the web build never ships the Tauri bridge, and the Tauri webview never
  * loads sqlite-wasm.
  */
+
+import {
+  browserConnectivitySignal,
+  documentLifecycleSignal,
+  installRealtimeSupervisor,
+} from '@syncular/client';
 import type { SyncClientLike } from '@syncular/react';
 import { schema } from '../syncular.generated';
 
@@ -26,7 +32,9 @@ import { schema } from '../syncular.generated';
  * lifecycle both concrete clients share, still fully host-agnostic.
  */
 export interface Engine extends SyncClientLike {
+  syncUntilIdle(maxRounds?: number): unknown | Promise<unknown>;
   connectRealtime(): Promise<void>;
+  disconnectRealtime(): void | Promise<void>;
   close(): Promise<void>;
 }
 
@@ -34,22 +42,29 @@ export interface Engine extends SyncClientLike {
 const isTauri = () => '__TAURI_INTERNALS__' in window;
 
 export async function createEngine(): Promise<Engine> {
+  const supervise = <Client extends Engine>(client: Client): Client =>
+    installRealtimeSupervisor(client, {
+      connectivity: browserConnectivitySignal(),
+      lifecycle: documentLifecycleSignal(),
+    });
   if (isTauri()) {
     // Desktop: the native Rust core in the Tauri process.
     const { createTauriSyncClient } = await import('@syncular/tauri');
-    return createTauriSyncClient({ schema });
+    return supervise(await createTauriSyncClient({ schema }));
   }
   // Web: the whole core in a worker, persisted on OPFS.
   const { createSyncClientHandle } = await import('@syncular/client');
   const WS = location.protocol === 'https:' ? 'wss' : 'ws';
-  return createSyncClientHandle({
-    worker: () => new Worker('/worker.js', { type: 'module' }),
-    schema,
-    database: { mode: 'persistent', name: 'app' },
-    endpoints: {
-      syncUrl: '/sync',
-      segmentsUrl: '/segments',
-      realtimeUrl: `${WS}://${location.host}/realtime?clientId={clientId}`,
-    },
-  });
+  return supervise(
+    await createSyncClientHandle({
+      worker: () => new Worker('/worker.js', { type: 'module' }),
+      schema,
+      database: { mode: 'persistent', name: 'app' },
+      endpoints: {
+        syncUrl: '/sync',
+        segmentsUrl: '/segments',
+        realtimeUrl: `${WS}://${location.host}/realtime?clientId={clientId}`,
+      },
+    }),
+  );
 }

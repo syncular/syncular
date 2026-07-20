@@ -91,6 +91,7 @@
     "bindings/tauri/example": {
       "name": "@syncular/tauri-example",
       "dependencies": {
+        "@syncular/client": "workspace:*",
         "@syncular/react": "workspace:*",
         "@syncular/tauri": "workspace:*",
         "react": "^18.3.1",

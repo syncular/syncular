@@ -82,6 +82,34 @@ shims marshal only strings. Lifecycle: `client.pause()` (stop the native event
 pump + disconnect realtime — call from `AppState` `'background'`) and
 `client.resume()`; `client.close()` releases the native core.
 
+For retrying realtime rather than one-shot `resume()`, install the shared
+supervisor and pass an `AppState`-backed structural signal:
+
+```tsx
+import { installRealtimeSupervisor } from '@syncular/client';
+import { AppState } from 'react-native';
+
+const lifecycle = {
+  current: () => AppState.currentState === 'active' ? 'active' : 'background',
+  subscribe: (listener) => {
+    const subscription = AppState.addEventListener('change', (state) =>
+      listener(state === 'active' ? 'active' : 'background'),
+    );
+    return () => subscription.remove();
+  },
+} as const;
+
+installRealtimeSupervisor(client, { lifecycle, connectivity, protection });
+```
+
+The supervisor disconnects in background/preflight, retries transient startup
+and socket-close failures with bounded jitter, catches up before reporting
+connected, and stops before `close()`. Continue calling `pause()` / `resume()`
+to stop and start the native event pump. Their best-effort socket work and the
+supervisor are safe together because realtime connection ownership is
+idempotent; the supervisor adds the retry/catch-up policy that one-shot resume
+does not provide.
+
 Final commit outcomes use the same native SQLite journal as Tauri. Call
 `commitOutcome`, `commitOutcomes`, and `resolveCommitOutcome`; active
 conflicts/rejections and their losing operations survive app restarts.
