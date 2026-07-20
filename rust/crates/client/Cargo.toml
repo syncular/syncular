@@ -35,11 +35,11 @@ optional = true
 # One native transport implementation shared by the FFI and Tauri hosts.
 # Keeping it behind a client feature preserves dependency-lean core builds.
 [dependencies.ureq]
-version = "2"
+version = "3"
 optional = true
 
 [dependencies.tungstenite]
-version = "0.24"
+version = "0.30"
 optional = true
 features = ["rustls-tls-webpki-roots"]
 

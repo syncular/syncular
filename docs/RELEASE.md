@@ -1,8 +1,21 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.42** (`v0.15.42`). All artifacts use Apache-2.0, except
+current release is **0.15.43** (`v0.15.43`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.43 release notes
+
+- Rust native transports now use `ureq` 3.3 and `tungstenite` 0.30. The HTTP
+  migration preserves unbounded segment/blob body reads, configured headers,
+  status-as-error behavior, and the existing wire contract; WebSocket text and
+  binary payloads use the new owned buffer types across production and FFI
+  round-test paths. Feature-enabled native builds now require Rust 1.85.
+- E2EE now uses `aes-gcm` 0.11 and `x25519-dalek` 3.0, with the current nonce
+  conversion and operating-system RNG APIs. Envelope and wrapped-key bytes are
+  unchanged and remain covered by the cross-language vectors.
+- The Rust workspace updates `uuid` from 1.23.4 to 1.23.5 and both Cargo
+  workspaces carry synchronized lockfiles for the dependency set.
 
 ## 0.15.42 release notes
 

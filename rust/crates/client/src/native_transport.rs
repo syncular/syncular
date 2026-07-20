@@ -315,7 +315,6 @@ mod native {
     //! `GET {baseUrl}/segments/{id}`, `PUT/GET {baseUrl}/blobs/{id}`, and the
     //! realtime socket at `{wsUrl}` (ws(s):// derived from baseUrl).
 
-    use std::io::Read;
     use std::net::TcpStream;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Condvar, Mutex};
@@ -518,7 +517,7 @@ mod native {
                 base_url: base_url.trim_end_matches('/').to_owned(),
                 ws_url,
                 headers,
-                agent: ureq::AgentBuilder::new().build(),
+                agent: ureq::Agent::new_with_defaults(),
                 signed_urls: false,
                 inbound: Arc::new(match notify {
                     Some(notify) => InboundBuffer::with_notify(notify),
@@ -539,11 +538,11 @@ mod native {
             let mut req = self
                 .agent
                 .post(&url)
-                .set("content-type", "application/vnd.syncular.sync.v2");
+                .header("content-type", "application/vnd.syncular.sync.v2");
             for (k, v) in &self.headers {
-                req = req.set(k, v);
+                req = req.header(k.as_str(), v.as_str());
             }
-            let resp = req.send_bytes(body).map_err(|e| http_err("POST", e))?;
+            let resp = req.send(body).map_err(|e| http_err("POST", e))?;
             read_body(resp)
         }
 
@@ -551,7 +550,7 @@ mod native {
             let mut req = self.agent.get(url);
             if with_headers {
                 for (k, v) in &self.headers {
-                    req = req.set(k, v);
+                    req = req.header(k.as_str(), v.as_str());
                 }
             }
             let resp = req.call().map_err(|e| http_err("GET", e))?;
@@ -587,12 +586,11 @@ mod native {
         }
     }
 
-    fn read_body(resp: ureq::Response) -> Result<Vec<u8>, TransportError> {
-        let mut buf = Vec::new();
-        resp.into_reader()
-            .read_to_end(&mut buf)
-            .map_err(|e| http_err("read", e))?;
-        Ok(buf)
+    fn read_body(resp: ureq::http::Response<ureq::Body>) -> Result<Vec<u8>, TransportError> {
+        resp.into_body()
+            .into_with_config()
+            .read_to_vec()
+            .map_err(|e| http_err("read", e))
     }
 
     impl Transport for NativeTransport {
@@ -620,7 +618,7 @@ mod native {
                 let mut ws = socket
                     .lock()
                     .map_err(|_| TransportError::new("transport.failed", "ws lock poisoned"))?;
-                ws.send(Message::Binary(framed))
+                ws.send(Message::Binary(framed.into()))
                     .map_err(|e| http_err("ws round send", &e))
                     .and_then(|()| ws.flush().map_err(|e| http_err("ws round flush", &e)))
             };
@@ -646,9 +644,9 @@ mod native {
             let mut req = self
                 .agent
                 .get(&url)
-                .set("x-syncular-scopes", &request.requested_scopes_json);
+                .header("x-syncular-scopes", &request.requested_scopes_json);
             for (k, v) in &self.headers {
-                req = req.set(k, v);
+                req = req.header(k.as_str(), v.as_str());
             }
             let resp = req.call().map_err(|e| http_err("GET segment", e))?;
             read_body(resp)
@@ -672,14 +670,14 @@ mod native {
             // Full `sha256:<hex>` id in the path — the reference server's
             // isBlobId check rejects a bare hex id (§5.9.1).
             let url = format!("{}/blobs/{}", self.base_url, blob_id);
-            let mut req = self.agent.put(&url).set(
+            let mut req = self.agent.put(&url).header(
                 "content-type",
                 media_type.unwrap_or("application/octet-stream"),
             );
             for (k, v) in &self.headers {
-                req = req.set(k, v);
+                req = req.header(k.as_str(), v.as_str());
             }
-            req.send_bytes(bytes).map_err(|e| http_err("PUT blob", e))?;
+            req.send(bytes).map_err(|e| http_err("PUT blob", e))?;
             Ok(())
         }
 
@@ -689,7 +687,7 @@ mod native {
             let url = format!("{}/blobs/{}", self.base_url, blob_id);
             let mut req = self.agent.get(&url);
             for (k, v) in &self.headers {
-                req = req.set(k, v);
+                req = req.header(k.as_str(), v.as_str());
             }
             let resp = req.call().map_err(|e| {
                 let e = http_err("GET blob", e);
@@ -703,8 +701,10 @@ mod native {
             // §5.9.5 always-issue: a JSON body carries a presigned `url`; an
             // octet-stream body is inline bytes.
             let is_json = resp
-                .header("content-type")
-                .is_some_and(|ct| ct.contains("application/json"));
+                .headers()
+                .get(ureq::http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.contains("application/json"));
             let body = read_body(resp)?;
             if is_json {
                 if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) {
@@ -736,16 +736,16 @@ mod native {
             let mut req = self
                 .agent
                 .post(&url)
-                .set("content-type", "application/json");
+                .header("content-type", "application/json");
             for (k, v) in &self.headers {
-                req = req.set(k, v);
+                req = req.header(k.as_str(), v.as_str());
             }
             let body = serde_json::json!({
                 "byteLength": byte_length,
                 "mediaType": media_type,
             });
             let resp = req
-                .send_string(&body.to_string())
+                .send(body.to_string())
                 .map_err(|e| http_err("POST upload-grant", e))?;
             let grant_body = read_body(resp)?;
             let parsed: serde_json::Value = serde_json::from_slice(&grant_body)
@@ -769,12 +769,11 @@ mod native {
             media_type: Option<&str>,
         ) -> Result<(), TransportError> {
             // §5.9.3: the presigned URL is the entire grant — no host auth.
-            let req = self.agent.put(url).set(
+            let req = self.agent.put(url).header(
                 "content-type",
                 media_type.unwrap_or("application/octet-stream"),
             );
-            req.send_bytes(bytes)
-                .map_err(|e| http_err("PUT blob url", e))?;
+            req.send(bytes).map_err(|e| http_err("PUT blob url", e))?;
             Ok(())
         }
 
@@ -845,7 +844,7 @@ mod native {
                     ws.read()
                 };
                 match msg {
-                    Ok(Message::Text(text)) => inbound.push(Inbound::Text(text)),
+                    Ok(Message::Text(text)) => inbound.push(Inbound::Text(text.to_string())),
                     Ok(Message::Binary(bytes)) => {
                         // §8.7 tag demux: round chunk → round channel; delta →
                         // inbound (stripped of its tag, a bare SSP2 response
@@ -887,7 +886,7 @@ mod native {
             let mut ws = socket
                 .lock()
                 .map_err(|_| TransportError::new("transport.failed", "ws lock poisoned"))?;
-            ws.send(Message::Text(text.to_owned()))
+            ws.send(Message::Text(text.to_owned().into()))
                 .map_err(|e| http_err("ws send", e))?;
             ws.flush().map_err(|e| http_err("ws flush", e))?;
             Ok(())
