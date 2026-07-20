@@ -450,6 +450,37 @@ describe('immutable migration history', () => {
     expect(drift.stderr).not.toContain(dir);
   });
 
+  test('upgrade-lock refuses while unlocked appended migrations exist', () => {
+    const dir = freshDir();
+    const lockPath = join(dir, 'syncular.migrations.lock.json');
+    const before = readFileSync(lockPath, 'utf8');
+    appendNullableMigration(dir);
+
+    const refused = runCli([
+      'migrations',
+      'upgrade-lock',
+      '--manifest-dir',
+      dir,
+    ]);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toContain('0005_add_task_reviewer');
+    expect(refused.stderr).toContain('appended beyond the locked history');
+    expect(refused.stderr).toContain('run generate to extend the lock');
+    expect(readFileSync(lockPath, 'utf8')).toBe(before);
+
+    // After generate extends (and here preserves the format-1) lock, the
+    // conversion is a separate explicit act that succeeds.
+    expect(runCli(['generate', '--manifest-dir', dir]).exitCode).toBe(0);
+    const upgraded = runCli([
+      'migrations',
+      'upgrade-lock',
+      '--manifest-dir',
+      dir,
+    ]);
+    expect(upgraded.exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(lockPath, 'utf8')).formatVersion).toBe(2);
+  });
+
   test('format upgrade refuses drift and leaves the version-1 lock byte-exact', () => {
     const dir = freshDir();
     const lockPath = join(dir, 'syncular.migrations.lock.json');

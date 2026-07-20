@@ -40,6 +40,21 @@ const IR: IrDocument = {
       ftsIndexes: [],
       extensions: {},
     },
+    {
+      name: 'projects',
+      primaryKey: 'id',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'list_id', type: 'string', nullable: false },
+        { name: 'tag', type: 'string', nullable: false },
+      ],
+      scopes: [
+        { pattern: 'list:{list_id}', variable: 'list_id', column: 'list_id' },
+      ],
+      indexes: [],
+      ftsIndexes: [],
+      extensions: {},
+    },
   ],
   subscriptions: [],
   extensions: {},
@@ -134,6 +149,18 @@ describe('reactive table discovery', () => {
         'use an explicit JOIN ... ON clause',
       );
     }
+  });
+
+  test('accepts function-call parentheses over table-qualified columns in ON', () => {
+    // The `(` after `instr` opens a function call; with unaliased tables the
+    // argument after the comma is a table-qualified column whose qualifier is
+    // a schema table, and the detector must leave it alone.
+    const query = analyze(
+      'fn-join.sql',
+      `SELECT todos.id
+       FROM todos JOIN projects ON instr(todos.note, projects.tag) > 0`,
+    );
+    expect([...query.tables].sort()).toEqual(['projects', 'todos']);
   });
 
   test('accepts non-relation commas in projections and functions', () => {

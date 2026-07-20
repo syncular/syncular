@@ -226,6 +226,68 @@ describe('portable relational identifier parity', () => {
     );
   });
 
+  test('non-ASCII final identifiers fail loudly as unportable', () => {
+    expect(() =>
+      parseFinal('CREATE TABLE aufgaben_übersicht (id TEXT PRIMARY KEY)'),
+    ).toThrow(
+      'table name "aufgaben_übersicht" must be an ASCII identifier matching [A-Za-z_][A-Za-z0-9_]*',
+    );
+    expect(() =>
+      parseFinal('CREATE TABLE t (id TEXT PRIMARY KEY, größe INTEGER)'),
+    ).toThrow('column name "größe" must be an ASCII identifier');
+    expect(() =>
+      parseFinal(
+        'CREATE TABLE t (id TEXT PRIMARY KEY); CREATE INDEX idx_prüfung ON t (id)',
+      ),
+    ).toThrow('index name "idx_prüfung" must be an ASCII identifier');
+  });
+
+  test('locked history keeps replaying non-ASCII identifiers', () => {
+    const tables = new Map<string, ParsedTable>();
+    applyMigrationSql(
+      tables,
+      'CREATE TABLE aufgaben_übersicht (id TEXT PRIMARY KEY, größe INTEGER); CREATE INDEX idx_prüfung ON aufgaben_übersicht (id)',
+      '0001_locked/up.sql',
+      new Set(),
+      { lockedHistory: true },
+    );
+    expect(() => validateFinalSchemaIdentifiers(tables)).not.toThrow();
+    // A migration appended beyond the locked prefix enforces the rule, even
+    // on a table the locked history created.
+    applyMigrationSql(
+      tables,
+      'ALTER TABLE aufgaben_übersicht ADD COLUMN qualität TEXT',
+      '0002_new/up.sql',
+      new Set(),
+    );
+    expect(() => validateFinalSchemaIdentifiers(tables)).toThrow(
+      'column name "qualität" must be an ASCII identifier',
+    );
+  });
+
+  test('locked history replays a required ADD COLUMN; appended migrations enforce nullability', () => {
+    const tables = new Map<string, ParsedTable>();
+    applyMigrationSql(
+      tables,
+      'CREATE TABLE t (id TEXT PRIMARY KEY); ALTER TABLE t ADD COLUMN kind TEXT NOT NULL',
+      '0001_locked/up.sql',
+      new Set(),
+      { lockedHistory: true },
+    );
+    expect(tables.get('t')?.columns).toEqual([
+      { name: 'id', type: 'string', nullable: false },
+      { name: 'kind', type: 'string', nullable: false },
+    ]);
+    expect(() =>
+      applyMigrationSql(
+        tables,
+        'ALTER TABLE t ADD COLUMN extra TEXT NOT NULL',
+        '0002_new/up.sql',
+        new Set(),
+      ),
+    ).toThrow('added column "extra" must be nullable');
+  });
+
   test('permits a locked invalid historical name after a forward repair', () => {
     const tables = new Map<string, ParsedTable>();
     const longName = 'i'.repeat(64);
@@ -442,6 +504,15 @@ describe('unsupported constructs are hard errors that name the construct', () =>
     expectError(
       'CREATE TABLE t (id TEXT PRIMARY KEY); DROP VIEW nope',
       /unsupported DROP statement.*"VIEW"/,
+    );
+  });
+
+  test('DROP INDEX on an FTS virtual table names the actual construct', () => {
+    expectError(
+      `CREATE TABLE docs (id TEXT PRIMARY KEY, body TEXT);
+       CREATE VIRTUAL TABLE docs_fts USING fts5(body, content=docs);
+       DROP INDEX docs_fts`,
+      /DROP INDEX docs_fts: docs_fts is an FTS5 virtual table .*removes an FTS projection together with its owning content table \(DROP TABLE docs\)/,
     );
   });
 

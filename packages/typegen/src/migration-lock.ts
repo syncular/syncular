@@ -81,18 +81,29 @@ function snapshotColumn(column: IrColumn): MigrationLockColumn {
 function snapshotTables(
   tables: ReadonlyMap<string, ParsedTable>,
 ): MigrationLockTable[] {
-  return [...tables.values()]
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map((table) => ({
-      name: table.name,
-      primaryKey: table.primaryKey,
-      columns: table.columns.map(snapshotColumn),
-    }));
+  return (
+    [...tables.values()]
+      // Code-point order keeps the serialization byte-identical across locales.
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      .map((table) => ({
+        name: table.name,
+        primaryKey: table.primaryKey,
+        columns: table.columns.map(snapshotColumn),
+      }))
+  );
 }
 
-/** Replay a complete migration sequence with ephemeral diagnostic snapshots. */
+/** The names of every migration a committed lock has made immutable. */
+export function lockedMigrationNames(lock: MigrationLock): ReadonlySet<string> {
+  return new Set(lock.migrations.map((migration) => migration.name));
+}
+
+/** Replay a complete migration sequence with ephemeral diagnostic snapshots.
+ * Migrations named in `lockedNames` replay as deployed history; rules that
+ * only appended migrations must satisfy are skipped for them. */
 function buildMigrationHistory(
   migrations: readonly MigrationInput[],
+  lockedNames?: ReadonlySet<string>,
 ): CurrentMigrationHistory {
   const tables = new Map<string, ParsedTable>();
   const droppedTables = new Set<string>();
@@ -103,6 +114,7 @@ function buildMigrationHistory(
       migration.sql,
       `${migration.name}/up.sql`,
       droppedTables,
+      { lockedHistory: lockedNames?.has(migration.name) === true },
     );
     entries.push({
       name: migration.name,
@@ -145,8 +157,12 @@ export function buildMigrationLock(
   formatVersion:
     | typeof LEGACY_MIGRATION_LOCK_FORMAT_VERSION
     | typeof MIGRATION_LOCK_FORMAT_VERSION = MIGRATION_LOCK_FORMAT_VERSION,
+  lockedNames?: ReadonlySet<string>,
 ): MigrationLock {
-  return lockFromHistory(buildMigrationHistory(migrations), formatVersion);
+  return lockFromHistory(
+    buildMigrationHistory(migrations, lockedNames),
+    formatVersion,
+  );
 }
 
 /** Fixed-order, byte-deterministic serialization for clean code review. */
@@ -447,7 +463,10 @@ export function updateMigrationLock(
   locked: MigrationLock,
   migrations: readonly MigrationInput[],
 ): MigrationLock {
-  const current = buildMigrationHistory(migrations);
+  const current = buildMigrationHistory(
+    migrations,
+    lockedMigrationNames(locked),
+  );
   validateMigrationHistory(locked, current);
   return lockFromHistory(current, locked.formatVersion);
 }
@@ -457,5 +476,8 @@ export function validateMigrationLock(
   locked: MigrationLock,
   migrations: readonly MigrationInput[],
 ): void {
-  validateMigrationHistory(locked, buildMigrationHistory(migrations));
+  validateMigrationHistory(
+    locked,
+    buildMigrationHistory(migrations, lockedMigrationNames(locked)),
+  );
 }

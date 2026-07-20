@@ -7,6 +7,7 @@ import { formatSyql } from './fmt';
 import { buildIr, loadMigrations, loadQueries, makeQueryDb } from './generate';
 import type { IrDocument } from './ir';
 import { MANIFEST_FILENAME, parseManifest } from './manifest';
+import { lockedMigrationNames, readMigrationLock } from './migration-lock';
 import type { QueryDb, QueryNamingOptions } from './query';
 import { SyqlFrontendError, type SyqlSourceSpan } from './syql-lexer';
 import type { SyqlLoweredQuery } from './syql-lowering';
@@ -260,9 +261,18 @@ export class SyqlLanguageServer {
           readFileSync(resolve(manifestDir, MANIFEST_FILENAME), 'utf8'),
         ),
       );
+      // Tolerate locked history exactly like generation does; a project with
+      // no readable lock builds strictly.
+      let lockedNames: ReadonlySet<string> | undefined;
+      try {
+        lockedNames = lockedMigrationNames(readMigrationLock(manifestDir));
+      } catch {
+        lockedNames = undefined;
+      }
       const ir = buildIr(
         manifest,
         loadMigrations(resolve(manifestDir, manifest.migrations)),
+        lockedNames,
       );
       const { db } = makeQueryDb(ir);
       const targets: QueryNamingOptions['targets'][number][] = ['ts'];
