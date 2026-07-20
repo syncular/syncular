@@ -204,7 +204,7 @@ pub fn encrypt_value(
     let plaintext = serialize_plain(value)?;
     let ct = cipher(key)?
         .encrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::from(nonce),
             Payload {
                 msg: &plaintext,
                 aad: &[],
@@ -232,7 +232,7 @@ pub fn decrypt_value(
     let c = cipher(&key).map_err(DecryptError)?;
     let plaintext = c
         .decrypt(
-            Nonce::from_slice(&env.nonce),
+            &Nonce::from(env.nonce),
             Payload {
                 msg: &env.ciphertext,
                 aad: &[],

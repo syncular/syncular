@@ -128,7 +128,7 @@ fn quiet_socket_reader_never_starves_round_sends() {
             let _request = read_round_request(ws);
             let mut framed = vec![REALTIME_TAG_ROUND];
             framed.extend_from_slice(&server_response);
-            ws.send(WsMessage::Binary(framed)).unwrap();
+            ws.send(WsMessage::Binary(framed.into())).unwrap();
             ws.flush().unwrap();
         }
     });
@@ -157,7 +157,7 @@ fn round_single_chunk_response_round_trips() {
         // Answer with the whole response as one 0x01 chunk.
         let mut framed = vec![REALTIME_TAG_ROUND];
         framed.extend_from_slice(&server_response);
-        ws.send(WsMessage::Binary(framed)).unwrap();
+        ws.send(WsMessage::Binary(framed.into())).unwrap();
         ws.flush().unwrap();
     });
 
@@ -177,7 +177,7 @@ fn round_chunked_response_reassembles() {
         // Send the response byte-by-byte, each in its own 0x01 chunk —
         // arbitrary boundaries (§8.7); the client concatenates to END.
         for byte in &server_response {
-            ws.send(WsMessage::Binary(vec![REALTIME_TAG_ROUND, *byte]))
+            ws.send(WsMessage::Binary(vec![REALTIME_TAG_ROUND, *byte].into()))
                 .unwrap();
         }
         ws.flush().unwrap();
@@ -215,10 +215,10 @@ fn delta_during_round_is_queued_not_mixed_into_response() {
         // Interleave a 0x00 delta before the round's response completes.
         let mut delta_frame = vec![REALTIME_TAG_DELTA];
         delta_frame.extend_from_slice(&server_delta);
-        ws.send(WsMessage::Binary(delta_frame)).unwrap();
+        ws.send(WsMessage::Binary(delta_frame.into())).unwrap();
         let mut resp_frame = vec![REALTIME_TAG_ROUND];
         resp_frame.extend_from_slice(&server_response);
-        ws.send(WsMessage::Binary(resp_frame)).unwrap();
+        ws.send(WsMessage::Binary(resp_frame.into())).unwrap();
         ws.flush().unwrap();
     });
 

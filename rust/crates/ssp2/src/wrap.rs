@@ -22,7 +22,7 @@ pub const HKDF_INFO: &[u8] = b"syncular/e2ee/x25519-wrap/v1";
 
 /// Generate an X25519 keypair: `(private 32 bytes, public 32 bytes)`.
 pub fn generate_keypair() -> ([u8; 32], [u8; 32]) {
-    let secret = StaticSecret::random_from_rng(rand_core::OsRng);
+    let secret = StaticSecret::random();
     let public = PublicKey::from(&secret);
     (secret.to_bytes(), public.to_bytes())
 }
@@ -56,7 +56,7 @@ pub fn wrap_key_with(
     let wrap_key = derive_wrap_key(shared.as_bytes());
     let cipher = Aes256Gcm::new_from_slice(&wrap_key).map_err(|e| format!("bad key: {e}"))?;
     let wrapped = cipher
-        .encrypt(Nonce::from_slice(&nonce), Payload { msg: k, aad: &[] })
+        .encrypt(&Nonce::from(nonce), Payload { msg: k, aad: &[] })
         .map_err(|e| format!("wrap encrypt failed: {e}"))?;
     let mut out = Vec::with_capacity(1 + 32 + NONCE_LENGTH + wrapped.len());
     out.push(ENVELOPE_VERSION);
@@ -99,7 +99,7 @@ pub fn unwrap_key(envelope: &[u8], recipient_private: &[u8; 32]) -> Result<Vec<u
         Aes256Gcm::new_from_slice(&wrap_key).map_err(|e| DecryptError(format!("bad key: {e}")))?;
     cipher
         .decrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::from(nonce),
             Payload {
                 msg: wrapped,
                 aad: &[],
