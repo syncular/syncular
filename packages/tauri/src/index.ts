@@ -62,6 +62,7 @@ import type {
 // Most imports stay type-only; the stable preflight error code is shared at
 // runtime so every host surfaces byte-identical policy evidence.
 import {
+  decodeLocalDataRebootstrapResult,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
   withClientDiagnosticsHost,
 } from '@syncular/client';
@@ -544,14 +545,9 @@ export class TauriSyncClient {
   async rebootstrapLocalData(
     input: LocalDataRebootstrapInput,
   ): Promise<LocalDataRebootstrapResult> {
-    const result = (await this.#command('rebootstrapLocalData', {
-      input,
-    })) as LocalDataRebootstrapResult;
-    return {
-      alreadyApplied: result.alreadyApplied,
-      retainedCommits: result.retainedCommits,
-      resetSubscriptions: result.resetSubscriptions,
-    };
+    return decodeLocalDataRebootstrapResult(
+      await this.#command('rebootstrapLocalData', { input }),
+    );
   }
 
   /**

@@ -35,7 +35,11 @@ outbox, and requests a fresh bootstrap while preserving device identity,
 lease state, outcomes, and protected bookkeeping. The result contains only
 `alreadyApplied`, `retainedCommits`, and `resetSubscriptions`. It is blocked
 during security preflight and an active schema-floor stop; it is not a sign-out
-or secure-erasure API.
+or secure-erasure API. The JavaScript bridge strictly validates the exact
+acknowledgement shape and non-negative safe-integer counts; version drift or a
+malformed native response fails with the sanitized, stable
+`client.invalid_host_response` code before application recovery state can
+persist it.
 
 ## Secure preflight and native disposal
 

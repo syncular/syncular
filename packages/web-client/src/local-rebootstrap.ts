@@ -10,6 +10,14 @@
 import { ClientSyncError } from './errors';
 
 const CODE_LIKE_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+const RESULT_KEYS = [
+  'alreadyApplied',
+  'resetSubscriptions',
+  'retainedCommits',
+] as const;
+
+/** A non-direct host returned a response that does not match its public API. */
+export const INVALID_HOST_RESPONSE_CODE = 'client.invalid_host_response';
 
 /** A durable idempotency key supplied by the application repair coordinator. */
 export interface LocalDataRebootstrapInput {
@@ -21,6 +29,47 @@ export interface LocalDataRebootstrapResult {
   readonly alreadyApplied: boolean;
   readonly retainedCommits: number;
   readonly resetSubscriptions: number;
+}
+
+function invalidHostResponse(): never {
+  throw new ClientSyncError(
+    INVALID_HOST_RESPONSE_CODE,
+    'rebootstrapLocalData returned an invalid host response',
+  );
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+/**
+ * Strictly decode the privacy-safe acknowledgement returned by a Worker or
+ * native command bridge. Compile-time host types are not runtime proof: this
+ * rejects version drift and malformed bridge values before an application can
+ * persist or display them.
+ */
+export function decodeLocalDataRebootstrapResult(
+  value: unknown,
+): LocalDataRebootstrapResult {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return invalidHostResponse();
+  }
+  const source = value as Record<string, unknown>;
+  const keys = Object.keys(source).sort();
+  if (
+    keys.length !== RESULT_KEYS.length ||
+    keys.some((key, index) => key !== RESULT_KEYS[index]) ||
+    typeof source.alreadyApplied !== 'boolean' ||
+    !isCount(source.retainedCommits) ||
+    !isCount(source.resetSubscriptions)
+  ) {
+    return invalidHostResponse();
+  }
+  return {
+    alreadyApplied: source.alreadyApplied,
+    retainedCommits: source.retainedCommits,
+    resetSubscriptions: source.resetSubscriptions,
+  };
 }
 
 /** Validate before entering the recovery transaction. */

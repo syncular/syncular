@@ -4119,8 +4119,11 @@ authentication failure (wrong key), a malformed envelope, or a post-decrypt
 value-parse failure; category `crypto`, non-retryable, raised at the apply
 seam, never on the wire], `client.subscription_intent_mismatch` [§4.1 — one
 registered subscription id was re-declared with a different table, canonical
-scope map, or params], `client.worker_failed` [a browser worker failed outside
-wire semantics], `client.worker_restart_required` [a browser worker module
+scope map, or params], `client.invalid_host_response` [a Worker or native
+command bridge returned a malformed value for a strictly decoded public
+result; non-retryable and sanitized before application code],
+`client.worker_failed` [a browser worker failed outside wire semantics],
+`client.worker_restart_required` [a browser worker module
 graph refers to a retired bundler chunk and the page must reload without
 deleting its local replica], `storage.*`, `worker.*`, `runtime.*`) — client
 SDKs may keep such codes internally but they are not protocol. Reserved

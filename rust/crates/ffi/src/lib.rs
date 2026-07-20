@@ -163,7 +163,15 @@ impl Handle {
         self.drain_core_outputs();
         self.emit_diagnostics_if_changed();
         match result {
-            Ok(value) => json!({ "result": value }),
+            Ok(mut value) => {
+                // The router's effects have already been converted to native
+                // events; do not leak host-private scheduling metadata through
+                // the application-facing command result.
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("effects");
+                }
+                json!({ "result": value })
+            }
             Err((code, message)) => json!({ "error": { "code": code, "message": message } }),
         }
     }

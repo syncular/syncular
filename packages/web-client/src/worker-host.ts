@@ -65,9 +65,10 @@ import {
   webLocksLeaderLock,
 } from './leader-lock';
 import type { LocalDataPurgeInput, LocalDataPurgeResult } from './local-purge';
-import type {
-  LocalDataRebootstrapInput,
-  LocalDataRebootstrapResult,
+import {
+  decodeLocalDataRebootstrapResult,
+  type LocalDataRebootstrapInput,
+  type LocalDataRebootstrapResult,
 } from './local-rebootstrap';
 import {
   broadcastChannelFactory,
@@ -512,10 +513,12 @@ export class SyncClientHandle {
     return this.#call('purgeLocalData', [input]);
   }
 
-  rebootstrapLocalData(
+  async rebootstrapLocalData(
     input: LocalDataRebootstrapInput,
   ): Promise<LocalDataRebootstrapResult> {
-    return this.#call('rebootstrapLocalData', [input]);
+    return decodeLocalDataRebootstrapResult(
+      await this.#call('rebootstrapLocalData', [input]),
+    );
   }
 
   sync(): Promise<SyncSummary> {

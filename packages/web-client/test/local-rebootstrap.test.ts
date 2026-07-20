@@ -2,8 +2,111 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ClientSyncError } from '@syncular/client';
+import {
+  ClientSyncError,
+  createSyncClientHandle,
+  decodeLocalDataRebootstrapResult,
+  INVALID_HOST_RESPONSE_CODE,
+} from '@syncular/client';
 import { makeClient, makeServer, tableRows, taskValues } from './helpers';
+
+const MALFORMED_RESULTS: unknown[] = [
+  null,
+  { retainedCommits: 1, resetSubscriptions: 1 },
+  {
+    alreadyApplied: false,
+    retainedCommits: 1,
+    resetSubscriptions: 1,
+    extra: true,
+  },
+  { alreadyApplied: false, retainedCommits: -1, resetSubscriptions: 1 },
+  { alreadyApplied: false, retainedCommits: 1.5, resetSubscriptions: 1 },
+  { alreadyApplied: false, retainedCommits: Number.NaN, resetSubscriptions: 1 },
+  { alreadyApplied: false, retainedCommits: '1', resetSubscriptions: 1 },
+  {
+    alreadyApplied: false,
+    retainedCommits: Number.MAX_SAFE_INTEGER + 1,
+    resetSubscriptions: 1,
+  },
+];
+
+function malformedResultWorker(value: unknown): Worker {
+  const listeners = new Set<(event: MessageEvent) => void>();
+  const emit = (data: unknown): void => {
+    for (const listener of listeners) listener({ data } as MessageEvent);
+  };
+  queueMicrotask(() => emit({ t: 'ready' }));
+  return {
+    addEventListener: (
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+    ) => {
+      if (type === 'message' && typeof listener === 'function') {
+        listeners.add(listener as (event: MessageEvent) => void);
+      }
+    },
+    postMessage: (message: {
+      readonly t: string;
+      readonly id?: number;
+      readonly method?: string;
+    }) => {
+      if (message.t === 'init') {
+        queueMicrotask(() =>
+          emit({ t: 'result', id: message.id, value: { clientId: 'host' } }),
+        );
+      } else if (message.t === 'call') {
+        queueMicrotask(() =>
+          emit({
+            t: 'result',
+            id: message.id,
+            value:
+              message.method === 'rebootstrapLocalData' ? value : undefined,
+          }),
+        );
+      }
+    },
+    terminate: () => {},
+  } as unknown as Worker;
+}
+
+describe('local rebootstrap acknowledgement decoder', () => {
+  test('accepts the exact public result shape', () => {
+    expect(
+      decodeLocalDataRebootstrapResult({
+        alreadyApplied: false,
+        retainedCommits: Number.MAX_SAFE_INTEGER,
+        resetSubscriptions: 0,
+      }),
+    ).toEqual({
+      alreadyApplied: false,
+      retainedCommits: Number.MAX_SAFE_INTEGER,
+      resetSubscriptions: 0,
+    });
+  });
+
+  test.each(MALFORMED_RESULTS)('rejects malformed value %#', (value) => {
+    expect(() => decodeLocalDataRebootstrapResult(value)).toThrow(
+      expect.objectContaining({ code: INVALID_HOST_RESPONSE_CODE }),
+    );
+  });
+
+  test.each(
+    MALFORMED_RESULTS,
+  )('the Worker adapter rejects malformed value %#', async (value) => {
+    const handle = await createSyncClientHandle({
+      worker: () => malformedResultWorker(value),
+      schema: { version: 1, tables: [] },
+      database: { mode: 'custom' },
+      endpoints: { syncUrl: 'https://invalid.test/sync' },
+      autoSync: false,
+      multiTab: false,
+    });
+    await expect(
+      handle.rebootstrapLocalData({ rebootstrapId: 'repair-001' }),
+    ).rejects.toMatchObject({ code: INVALID_HOST_RESPONSE_CODE });
+    await handle.close();
+  });
+});
 
 describe('application-authorized local projection rebootstrap', () => {
   test('atomically rewinds subscriptions and retains identity, outcomes, and optimistic work', async () => {

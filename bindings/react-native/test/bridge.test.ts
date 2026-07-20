@@ -11,7 +11,10 @@
  * hermetic pattern the roadmap sets for the RN JS bridge.
  */
 import { describe, expect, test } from 'bun:test';
-import { SECURITY_PREFLIGHT_REQUIRED_CODE } from '@syncular/client';
+import {
+  INVALID_HOST_RESPONSE_CODE,
+  SECURITY_PREFLIGHT_REQUIRED_CODE,
+} from '@syncular/client';
 import { normalizeClient, type SyncClientLike } from '@syncular/react';
 import { hostBoolean } from '../../../packages/typegen/test/fixtures/basic/syncular.queries';
 import {
@@ -387,6 +390,43 @@ describe('createNativeSyncClient', () => {
       method: 'rebootstrapLocalData',
       params: { input },
     });
+  });
+
+  test.each([
+    {},
+    {
+      alreadyApplied: false,
+      retainedCommits: 1,
+      resetSubscriptions: 1,
+      extra: 1,
+    },
+    { alreadyApplied: false, retainedCommits: -1, resetSubscriptions: 1 },
+    { alreadyApplied: false, retainedCommits: 1.5, resetSubscriptions: 1 },
+    {
+      alreadyApplied: false,
+      retainedCommits: Number.NaN,
+      resetSubscriptions: 1,
+    },
+    { alreadyApplied: false, retainedCommits: '1', resetSubscriptions: 1 },
+    {
+      alreadyApplied: false,
+      retainedCommits: Number.MAX_SAFE_INTEGER + 1,
+      resetSubscriptions: 1,
+    },
+  ])('rejects a malformed rebootstrap bridge reply %#', async (value) => {
+    const { nativeModule, eventEmitter } = makeNative((method, params) => {
+      if (method === 'rebootstrapLocalData') return OK(value);
+      return defaultResponder(method, params);
+    });
+    const client = await createNativeSyncClient({
+      clientId: 'invalid-rebootstrap-result',
+      schema: { version: 1, tables: [] },
+      nativeModule,
+      eventEmitter,
+    });
+    await expect(
+      client.rebootstrapLocalData({ rebootstrapId: 'support-case-001' }),
+    ).rejects.toMatchObject({ code: INVALID_HOST_RESPONSE_CODE });
   });
 
   test('accessor methods unwrap their command replies', async () => {

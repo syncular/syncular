@@ -55,6 +55,7 @@ import type {
   WindowState,
 } from '@syncular/client';
 import {
+  decodeLocalDataRebootstrapResult,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
   withClientDiagnosticsHost,
 } from '@syncular/client';
@@ -652,14 +653,9 @@ export class NativeSyncClient {
   async rebootstrapLocalData(
     input: LocalDataRebootstrapInput,
   ): Promise<LocalDataRebootstrapResult> {
-    const result = (await this.#command('rebootstrapLocalData', {
-      input,
-    })) as LocalDataRebootstrapResult;
-    return {
-      alreadyApplied: result.alreadyApplied,
-      retainedCommits: result.retainedCommits,
-      resetSubscriptions: result.resetSubscriptions,
-    };
+    return decodeLocalDataRebootstrapResult(
+      await this.#command('rebootstrapLocalData', { input }),
+    );
   }
 
   // -- Native CRDT (SPEC.md §5.10.5; needs the FFI `crdt-yjs` feature) ---------

@@ -1,8 +1,16 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.34** (`v0.15.34`). All artifacts use Apache-2.0, except
+current release is **0.15.35** (`v0.15.35`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.35 release notes
+
+- Worker, Tauri, and React Native rebootstrap acknowledgements now pass through
+  one strict public decoder. Missing or additional keys, incorrect types, and
+  negative, fractional, non-finite, or unsafe-integer counts fail with the
+  sanitized `client.invalid_host_response` code before application recovery
+  state can persist or display malformed bridge data.
 
 ## 0.15.34 release notes
 
