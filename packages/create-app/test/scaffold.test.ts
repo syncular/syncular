@@ -156,7 +156,9 @@ for (const template of TEMPLATES) {
       const smoke = run(['bun', 'test'], target);
       expect(smoke.exitCode).toBe(0);
       expect(smoke.stderr + smoke.stdout).toContain('pass');
-    });
+      // Scaffold + linked-workspace typecheck + template tests together sit
+      // near bun's 5 s default; the deadline scales with workspace growth.
+    }, 30_000);
 
     test.if(RUN_INSTALL)(
       'full install + smoke (SYNCULAR_TEMPLATE_INSTALL=1)',
