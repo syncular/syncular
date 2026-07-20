@@ -12,7 +12,13 @@ import {
   decodeLocalDataRebootstrapReceipt,
   encodeLocalDataRebootstrapReceipt,
 } from '../src/local-rebootstrap-receipt';
-import { makeClient, makeServer, tableRows, taskValues } from './helpers';
+import {
+  makeClient,
+  makeServer,
+  responseGate,
+  tableRows,
+  taskValues,
+} from './helpers';
 
 const MALFORMED_RESULTS: unknown[] = [
   null,
@@ -226,6 +232,58 @@ describe('application-authorized local projection rebootstrap', () => {
       'server-row',
     ]);
     expect(local.client.pendingCommits()).toEqual([]);
+    expect(local.client.upgrading).toBe(false);
+    await local.client.close();
+    local.db.close();
+  });
+
+  test('a rebootstrap landing mid-round keeps the rewound cursors and runs the fresh bootstrap', async () => {
+    const server = makeServer();
+    const local = await makeClient(server, { clientId: 'repair-race-client' });
+    local.client.subscribe({
+      id: 'race-tasks',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    local.client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('server-row', 'p1', 'accepted'),
+      },
+    ]);
+    await local.client.syncUntilIdle();
+    expect(
+      local.client.subscription('race-tasks')?.cursor,
+    ).toBeGreaterThanOrEqual(0);
+
+    // Park a round between request send and response apply, then reset the
+    // projection inside that window.
+    const gate = responseGate();
+    local.faults.holdResponseOnce = gate.fault;
+    const round = local.client.sync();
+    await gate.held;
+    expect(
+      local.client.rebootstrapLocalData({ rebootstrapId: 'race-001' }),
+    ).toMatchObject({ alreadyApplied: false, resetSubscriptions: 1 });
+    expect(local.client.subscription('race-tasks')?.cursor).toBe(-1);
+    expect(tableRows(local.db, 'tasks')).toEqual([]);
+    gate.release();
+    await round;
+
+    // The stale round's SUB_END state stays unpersisted: the rewound cursor
+    // and the upgrading marker survive.
+    expect(local.client.subscription('race-tasks')?.cursor).toBe(-1);
+    expect(local.client.upgrading).toBe(true);
+    expect(local.client.syncNeeded).toBe(true);
+
+    await local.client.syncUntilIdle();
+    expect(tableRows(local.db, 'tasks').map((row) => row.id)).toEqual([
+      'server-row',
+    ]);
+    expect(
+      local.client.subscription('race-tasks')?.cursor,
+    ).toBeGreaterThanOrEqual(0);
     expect(local.client.upgrading).toBe(false);
     await local.client.close();
     local.db.close();

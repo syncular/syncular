@@ -321,3 +321,38 @@ describe('revoked-scope drop (§3.3)', () => {
     ]);
   });
 });
+
+describe('push-result frame handling', () => {
+  test('a duplicated PUSH_RESULT frame drains the commit once', async () => {
+    const server = makeServer();
+    const local = await makeClient(server, { clientId: 'dup-push-client' });
+    local.client.subscribe({
+      id: 'dup-tasks',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    await local.client.syncUntilIdle();
+    const commit = local.client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('dup-row', 'p1', 'duplicated ack'),
+      },
+    ]);
+    const outboxCounts: number[] = [];
+    local.client.onChange((change) => {
+      if (change.status !== undefined) outboxCounts.push(change.status.outbox);
+    });
+
+    local.faults.duplicatePushResultOnce = true;
+    const summary = await local.client.sync();
+
+    expect(summary.applied).toEqual([commit]);
+    expect(local.client.commitOutcome(commit)?.status).toBe('applied');
+    expect(local.client.pendingCommits()).toEqual([]);
+    expect(local.client.statusSnapshot().outbox).toBe(0);
+    expect(outboxCounts.every((count) => count >= 0)).toBe(true);
+    await local.client.close();
+    local.db.close();
+  });
+});
