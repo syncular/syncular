@@ -316,6 +316,13 @@ visible. Reusing the same id returns `alreadyApplied: true`. The counts-only
 result reports retained commits and reset subscriptions without exposing ids,
 rows, scopes, or clinical values.
 
+Worker, Tauri, and React Native adapters strictly decode the exact result
+shape before returning it. Missing or additional fields, a non-boolean
+`alreadyApplied`, or counts that are not non-negative safe integers fail with
+`client.invalid_host_response`; raw bridge values and native error prose must
+not be persisted as recovery evidence. `decodeLocalDataRebootstrapResult()` is
+public for custom command hosts that expose the same operation.
+
 This API is not a security erase, sign-out, membership revocation, schema
 upgrade, or draft deletion mechanism. It fails closed during security
 preflight and while a schema-floor stop is active. The application must show a

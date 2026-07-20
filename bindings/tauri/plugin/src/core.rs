@@ -113,7 +113,14 @@ impl SyncularCore {
         self.drain_core_outputs();
         self.emit_diagnostics_if_changed();
         match result {
-            Ok(value) => json!({ "result": value }),
+            Ok(mut value) => {
+                // The router's effects are consumed by this native host above;
+                // they are not part of the public command acknowledgement.
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("effects");
+                }
+                json!({ "result": value })
+            }
             Err((code, message)) => json!({ "error": { "code": code, "message": message } }),
         }
     }

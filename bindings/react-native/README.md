@@ -102,7 +102,11 @@ tables, rewinds retained subscriptions, persists the idempotency key, and
 replays pending offline commits. Device identity, lease state, outcomes,
 subscription intent, and protected bookkeeping remain intact. The counts-only
 result is safe for a support UI; the operation stays blocked during security
-preflight and a schema-floor stop and must not be used as secure erase.
+preflight and a schema-floor stop and must not be used as secure erase. The
+JavaScript bridge rejects missing or additional acknowledgement fields,
+incorrect types, and negative, fractional, non-finite, or unsafe-integer counts
+with the stable sanitized `client.invalid_host_response` code before returning
+to application recovery code.
 
 For authentication/quarantine-before-data, construct with
 `securityPreflight: true`, apply the exact local purge, then call
