@@ -126,6 +126,11 @@ for long enough, dropping `_sync_payload` is a cheap follow-up migration
   sqlite-image `quoteIdent` generalizes). Typegen validates the final head
   schema before writing its migration lock or generated outputs, so an already-
   locked invalid historical index can still be removed by a forward migration.
+- Physical secondary-index names carry the `sync_ix_` ownership prefix (with a
+  deterministic FNV-1a-64 fallback when a prefixed name would exceed the
+  63-byte Postgres limit). Version-bump DDL drops prefix-owned names plus bare
+  declared names (which migrates pre-prefix databases onto the scheme), so
+  operator-added tuning indexes and constraint-backed indexes survive bumps.
 - `upsertRow`: `decodeRow(columns, payload)` → typed values →
   `INSERT … ON CONFLICT(_sync_partition, pk) DO UPDATE`, writing the typed
   columns, `_sync_server_version`, `_sync_scopes`, and `_sync_payload` in

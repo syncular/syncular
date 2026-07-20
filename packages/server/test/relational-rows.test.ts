@@ -25,6 +25,7 @@ import {
   createTableDdl,
   D1ServerStorage,
   PostgresServerStorage,
+  physicalIndexName,
   type ServerSchema,
   SqliteServerStorage,
   type StoredRow,
@@ -279,14 +280,14 @@ describe('relational tables (sqlite)', () => {
     expect(stored?.payload).toEqual(row.payload);
   });
 
-  test('user-declared indexes are created server-side', async () => {
+  test('user-declared indexes are created server-side under the ownership prefix', async () => {
     const storage = await sqliteStorage();
     const indexes = storage.db
       .query<{ name: string }, [string]>(
         "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=?",
       )
       .all('tasks');
-    expect(indexes.map((i) => i.name)).toContain('tasks_by_title');
+    expect(indexes.map((i) => i.name)).toContain('sync_ix_tasks_by_title');
   });
 
   test('a secondary unique collision never replaces the existing server row', async () => {
@@ -391,8 +392,8 @@ describe('server-side schema migration (the subset)', () => {
       )
       .all('tasks')
       .map((i) => i.name);
-    expect(indexes).toContain('tasks_by_assignee');
-    expect(indexes).not.toContain('tasks_by_project_title');
+    expect(indexes).toContain('sync_ix_tasks_by_assignee');
+    expect(indexes).not.toContain('sync_ix_tasks_by_project_title');
     const marker = storage.db
       .query<{ schema_version: number }, []>(
         'SELECT schema_version FROM sync_schema_meta WHERE id=1',
@@ -460,10 +461,12 @@ describe('server-side schema migration (the subset)', () => {
       .all()
       .filter((index) => index.origin === 'c');
     expect(indexes).toEqual([
-      expect.objectContaining({ name: 'tasks_by_title', unique: 1 }),
+      expect.objectContaining({ name: 'sync_ix_tasks_by_title', unique: 1 }),
     ]);
     const columns = storage.db
-      .query<{ name: string }, []>('PRAGMA index_info("tasks_by_title")')
+      .query<{ name: string }, []>(
+        'PRAGMA index_info("sync_ix_tasks_by_title")',
+      )
       .all()
       .map((column) => column.name);
     expect(columns).toEqual(['project_id', 'title']);
@@ -479,8 +482,10 @@ describe('server-side schema migration (the subset)', () => {
       "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname=current_schema() AND tablename='tasks' AND indexname <> 'tasks_pkey' ORDER BY indexname",
     );
     expect(indexes.rows).toHaveLength(1);
-    expect(indexes.rows[0]?.indexname).toBe('tasks_by_title');
-    expect(indexes.rows[0]?.indexdef).toContain('UNIQUE INDEX tasks_by_title');
+    expect(indexes.rows[0]?.indexname).toBe('sync_ix_tasks_by_title');
+    expect(indexes.rows[0]?.indexdef).toContain(
+      'UNIQUE INDEX sync_ix_tasks_by_title',
+    );
     expect(indexes.rows[0]?.indexdef).toContain('(project_id, title)');
   });
 
@@ -494,14 +499,112 @@ describe('server-side schema migration (the subset)', () => {
       .prepare('PRAGMA index_list("tasks")')
       .all<{ name: string; unique: number; origin: string }>();
     expect(indexes.results.filter((index) => index.origin === 'c')).toEqual([
-      expect.objectContaining({ name: 'tasks_by_title', unique: 1 }),
+      expect.objectContaining({ name: 'sync_ix_tasks_by_title', unique: 1 }),
     ]);
     const columns = await db
-      .prepare('PRAGMA index_info("tasks_by_title")')
+      .prepare('PRAGMA index_info("sync_ix_tasks_by_title")')
       .all<{ name: string }>();
     expect(columns.results.map((column) => column.name)).toEqual([
       'project_id',
       'title',
+    ]);
+  });
+
+  test('a version bump preserves operator-added tuning indexes and migrates bare declared names', async () => {
+    const storage = new SqliteServerStorage();
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    // An operator tuning index plus a projection index still carrying its
+    // bare declared name (a database created before the ownership prefix).
+    storage.db.run(
+      'CREATE INDEX ops_tasks_tuning ON tasks (title, project_id)',
+    );
+    storage.db.run('DROP INDEX sync_ix_tasks_by_title');
+    storage.db.run('CREATE INDEX tasks_by_title ON tasks (title)');
+
+    await storage.ensureSchema(compileSchema(INDEX_REPLACEMENT_SCHEMA));
+
+    const names = storage.db
+      .query<{ name: string; origin: string }, []>('PRAGMA index_list("tasks")')
+      .all()
+      .filter((index) => index.origin === 'c')
+      .map((index) => index.name);
+    expect(names).toContain('ops_tasks_tuning');
+    expect(names).toContain('sync_ix_tasks_by_title');
+    expect(names).not.toContain('tasks_by_title');
+    expect(names).not.toContain('sync_ix_tasks_by_project_title');
+  });
+
+  test('a version bump on Postgres leaves constraint-owned and operator indexes intact', async () => {
+    const db = await PGlite.create();
+    const storage = new PostgresServerStorage(pgliteExecutor(db));
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    // A UNIQUE constraint owns its backing index; DROP INDEX on it would
+    // abort the whole migration transaction.
+    await db.query(
+      'ALTER TABLE tasks ADD CONSTRAINT tasks_ops_unique UNIQUE (_sync_partition, id)',
+    );
+    await db.query('CREATE INDEX ops_tasks_tuning ON tasks (title)');
+
+    await storage.ensureSchema(compileSchema(INDEX_REPLACEMENT_SCHEMA));
+
+    const indexes = await db.query<{ indexname: string }>(
+      "SELECT indexname FROM pg_indexes WHERE schemaname=current_schema() AND tablename='tasks'",
+    );
+    const names = indexes.rows.map((row) => row.indexname);
+    expect(names).toContain('tasks_ops_unique');
+    expect(names).toContain('ops_tasks_tuning');
+    expect(names).toContain('sync_ix_tasks_by_title');
+    expect(names).not.toContain('sync_ix_tasks_by_project_title');
+  });
+
+  test('an index name moving between tables in one bump applies cleanly', async () => {
+    const v1: ServerSchema = {
+      version: 1,
+      tables: [
+        {
+          name: 'tasks',
+          columns: TASK_COLUMNS,
+          primaryKey: 'id',
+          scopes: ['project:{project_id}'],
+        },
+        {
+          name: 'projects',
+          columns: PROJECT_COLUMNS,
+          primaryKey: 'id',
+          scopes: ['project:{project_id}'],
+          indexes: [{ name: 'by_owner_title', columns: ['name'] }],
+        },
+      ],
+    };
+    const v2: ServerSchema = {
+      version: 2,
+      tables: [
+        {
+          name: 'tasks',
+          columns: TASK_COLUMNS,
+          primaryKey: 'id',
+          scopes: ['project:{project_id}'],
+          indexes: [{ name: 'by_owner_title', columns: ['title'] }],
+        },
+        {
+          name: 'projects',
+          columns: PROJECT_COLUMNS,
+          primaryKey: 'id',
+          scopes: ['project:{project_id}'],
+        },
+      ],
+    };
+    const storage = new SqliteServerStorage();
+    await storage.ensureSchema(compileSchema(v1));
+    await storage.ensureSchema(compileSchema(v2));
+
+    const indexTables = storage.db
+      .query<{ name: string; tbl_name: string }, []>(
+        "SELECT name, tbl_name FROM sqlite_master WHERE type='index' AND name='sync_ix_by_owner_title'",
+      )
+      .all();
+    expect(indexTables).toEqual([
+      { name: 'sync_ix_by_owner_title', tbl_name: 'tasks' },
     ]);
   });
 
@@ -672,7 +775,7 @@ describe('optional materialization (DESIGN "optional materialization")', () => {
       )
       .all('tasks')
       .map((i) => i.name);
-    expect(indexes).not.toContain('tasks_by_title');
+    expect(indexes).not.toContain('sync_ix_tasks_by_title');
     // The sync path is unaffected: byte-verbatim round-trip, scope scan.
     const row = taskRow('t1', 'p1', 'no projection', {
       thumb: new Uint8Array([7]),
@@ -767,7 +870,7 @@ describe('optional materialization (DESIGN "optional materialization")', () => {
       )
       .all('tasks')
       .map((i) => i.name);
-    expect(indexes).toContain('tasks_by_title');
+    expect(indexes).toContain('sync_ix_tasks_by_title');
   });
 
   test('postgres: bump migrates payloads and backfills a flipped-on projection', async () => {
@@ -913,6 +1016,16 @@ describe('invalid identifiers and indexes are rejected at schema compile', () =>
 // --- DDL goldens -------------------------------------------------------------
 
 describe('IR→DDL', () => {
+  test('physical index names carry the ownership prefix within the identifier limit', () => {
+    expect(physicalIndexName('tasks_by_title')).toBe('sync_ix_tasks_by_title');
+    const long = 'i'.repeat(63);
+    const physical = physicalIndexName(long);
+    expect(physical.startsWith('sync_ix_')).toBe(true);
+    expect(new TextEncoder().encode(physical).length).toBeLessThanOrEqual(63);
+    // Deterministic: the same declared name always maps to one physical name.
+    expect(physicalIndexName(long)).toBe(physical);
+  });
+
   test('sqlite and postgres affinities', () => {
     const compiled = compileSchema(SCHEMA).tables.get('tasks');
     if (compiled === undefined) throw new Error('missing table');

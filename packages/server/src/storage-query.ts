@@ -3,18 +3,23 @@ import type { CompiledTable, IndexSchema } from './schema';
 import type { IndexRowScanQuery, RowScanQuery } from './storage';
 import { StorageQueryError } from './storage-errors';
 
-/** Fail loudly instead of making an unsupported unscoped scan look empty. */
-export function assertScopeIndexedScan(query: RowScanQuery): void {
+/**
+ * Fail loudly instead of making an unsupported unscoped scan look empty.
+ * Returns the first scope variable in sorted order — the one every adapter
+ * drives its inverted-index candidate selection with.
+ */
+export function assertScopeIndexedScan(query: RowScanQuery): string {
   const scopeFilter = (
     query as RowScanQuery & { readonly scopeFilter?: ScopeMap | null }
   ).scopeFilter;
-  if (
-    scopeFilter === undefined ||
-    scopeFilter === null ||
-    Object.keys(scopeFilter).length === 0
-  ) {
+  const firstVariable =
+    scopeFilter === undefined || scopeFilter === null
+      ? undefined
+      : Object.keys(scopeFilter).sort()[0];
+  if (firstVariable === undefined) {
     throw new StorageQueryError('sync.storage.scan_requires_scope');
   }
+  return firstVariable;
 }
 
 /** Validate and resolve one exact trusted-host relational index lookup. */

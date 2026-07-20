@@ -411,14 +411,35 @@ describe('whole-commit validation (§6.8)', () => {
     });
     await seed.commit();
 
-    let reads = 0;
+    // The optimistic lookup misses; the serialized re-check then runs on the
+    // transaction's own connection and finds the persisted result.
+    let optimisticReads = 0;
+    let serializedRechecks = 0;
     const storage = new Proxy(base.storage, {
       get(target, property) {
         if (property === 'getPushResult') {
-          return async (...args: [string, string, string]) => {
-            reads += 1;
-            if (reads === 1) return undefined;
-            return target.getPushResult(...args);
+          return async () => {
+            optimisticReads += 1;
+            return undefined;
+          };
+        }
+        if (property === 'begin') {
+          return async (partition: string) => {
+            const tx = await target.begin(partition);
+            return new Proxy(tx, {
+              get(txTarget, txProperty) {
+                if (txProperty === 'getPushResult') {
+                  return async (...args: [string, string]) => {
+                    serializedRechecks += 1;
+                    return txTarget.getPushResult?.(...args);
+                  };
+                }
+                const value = Reflect.get(txTarget, txProperty, txTarget);
+                return typeof value === 'function'
+                  ? value.bind(txTarget)
+                  : value;
+              },
+            });
           };
         }
         const value = Reflect.get(target, property, target);
@@ -433,7 +454,8 @@ describe('whole-commit validation (§6.8)', () => {
     ]);
 
     expect(pushResults(message)[0]?.status).toBe('cached');
-    expect(reads).toBe(2);
+    expect(optimisticReads).toBe(1);
+    expect(serializedRechecks).toBe(1);
     expect(validatorCalls).toBe(0);
     expect(
       await base.storage.getRow('part-1', 'tasks', 'must-not-apply'),

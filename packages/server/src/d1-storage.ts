@@ -149,7 +149,17 @@ class D1Transaction implements StorageTransaction {
   /** Live snapshot of `max_commit_seq`, advanced within this transaction. */
   #maxCommitSeq: number | undefined;
   #pushApplyCheckpoint: number | undefined;
-  #lastApplicationOpIndex: number | undefined;
+  /**
+   * Distinct opIndexes of buffered application upserts. A constraint that
+   * only fires at `db.batch(...)` commit time (e.g. NOT NULL/CHECK the
+   * `#assertNoUniqueCollision` pre-check cannot see) is reported by D1 for
+   * the batch as a whole, and the batch API offers no way to re-run
+   * statements individually without applying them. So attribution at commit
+   * time is exact when the commit buffered exactly one application opIndex
+   * and conservatively omitted otherwise (the push layer then records its
+   * first-op default).
+   */
+  readonly #applicationOpIndexes = new Set<number>();
   /**
    * Read-your-own-writes overlay (§6.2 needs `getRow` to see buffered writes
    * of the same commit — e.g. two ops touching the same row): keyed
@@ -194,12 +204,33 @@ class D1Transaction implements StorageTransaction {
     return record === null ? undefined : toStoredRow(record);
   }
 
+  async getPushResult(
+    clientId: string,
+    clientCommitId: string,
+  ): Promise<StoredPushResult | undefined> {
+    this.#assertOpen();
+    // D1 reads run in autocommit; the push layer's duplicate re-check happens
+    // before this transaction buffers any write, so a direct read is exact.
+    const record = await this.#db
+      .prepare(
+        'SELECT result FROM sync_push_results WHERE partition=? AND client_id=? AND client_commit_id=?',
+      )
+      .bind(this.#partition, clientId, clientCommitId)
+      .first<{ result: string }>();
+    if (record === null) return undefined;
+    try {
+      return deserializePushResult(record.result);
+    } catch {
+      throw syncError(
+        'sync.idempotency_cache_miss',
+        'persisted push result unreadable (§6.3)',
+      );
+    }
+  }
+
   async scanRows(query: RowScanQuery): Promise<StoredRow[]> {
     this.#assertOpen();
-    assertScopeIndexedScan(query);
-    const variables = Object.keys(query.scopeFilter).sort();
-    const firstVariable = variables[0];
-    if (firstVariable === undefined) return [];
+    const firstVariable = assertScopeIndexedScan(query);
     const firstValues = query.scopeFilter[firstVariable] ?? [];
     if (firstValues.length === 0) return [];
 
@@ -337,6 +368,7 @@ class D1Transaction implements StorageTransaction {
     this.#buffer.length = checkpoint;
     this.#pending.clear();
     this.#maxCommitSeq = undefined;
+    this.#applicationOpIndexes.clear();
     await this.putPushResult(clientId, clientCommitId, result);
     await this.commit();
   }
@@ -427,7 +459,9 @@ class D1Transaction implements StorageTransaction {
     this.#assertOpen();
     const compiled = this.#resolveTable(table);
     await this.#assertNoUniqueCollision(compiled, row, context?.opIndex);
-    this.#lastApplicationOpIndex = context?.opIndex;
+    if (context?.opIndex !== undefined) {
+      this.#applicationOpIndexes.add(context.opIndex);
+    }
     this.#pending.set(D1Transaction.#key(table, row.rowId), {
       kind: 'row',
       row,
@@ -572,7 +606,12 @@ class D1Transaction implements StorageTransaction {
         // D1 batches are atomic. Keep this logical transaction open so the
         // push layer can discard its buffered candidates and persist the
         // terminal rejection while the external partition queue is retained.
-        throw new StorageConstraintError(error, this.#lastApplicationOpIndex);
+        // See `#applicationOpIndexes` for the attribution contract.
+        const opIndexes = [...this.#applicationOpIndexes];
+        throw new StorageConstraintError(
+          error,
+          opIndexes.length === 1 ? opIndexes[0] : undefined,
+        );
       }
       throw error;
     }
@@ -928,10 +967,7 @@ export class D1ServerStorage implements ServerStorage {
   }
 
   async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
-    assertScopeIndexedScan(query);
-    const variables = Object.keys(query.scopeFilter).sort();
-    const firstVariable = variables[0];
-    if (firstVariable === undefined) return [];
+    const firstVariable = assertScopeIndexedScan(query);
     const firstValues = query.scopeFilter[firstVariable] ?? [];
     if (firstValues.length === 0) return [];
     // Candidates via the inverted index LEFT JOINed to the row table — one

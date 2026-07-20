@@ -226,8 +226,10 @@ function isSyncPost(request: Request): boolean {
     ?.split(';')[0]
     ?.trim();
   if (contentType !== SSP2_CONTENT_TYPE) return false;
-  const pathname = new URL(request.url).pathname;
-  return pathname === '/sync' || pathname.endsWith('/sync');
+  // Exactly the route `createSyncularHono` mounts (`POST /sync` at the app
+  // root, which is where this handler serves the Hono app). Any other path —
+  // e.g. `/admin/sync` — stays with Hono routing.
+  return new URL(request.url).pathname === '/sync';
 }
 
 /**

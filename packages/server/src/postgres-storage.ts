@@ -434,6 +434,27 @@ async function writeRowOn(
   }
 }
 
+async function getPushResultOn(
+  q: PgQueryable,
+  partition: string,
+  clientId: string,
+  clientCommitId: string,
+): Promise<StoredPushResult | undefined> {
+  const { rows } = await q.query<{ result: unknown }>(
+    'SELECT result FROM sync_push_results WHERE partition=$1 AND client_id=$2 AND client_commit_id=$3',
+    [partition, clientId, clientCommitId],
+  );
+  if (rows[0] === undefined) return undefined;
+  try {
+    return deserializePushResult(asJson(rows[0].result));
+  } catch {
+    throw syncError(
+      'sync.idempotency_cache_miss',
+      'persisted push result unreadable (§6.3)',
+    );
+  }
+}
+
 class PostgresTransaction implements StorageTransaction {
   #client: PgQueryable;
   #partition: string;
@@ -472,12 +493,25 @@ class PostgresTransaction implements StorageTransaction {
     );
   }
 
+  getPushResult(
+    clientId: string,
+    clientCommitId: string,
+  ): Promise<StoredPushResult | undefined> {
+    this.#assertOpen();
+    // Runs on this transaction's pinned client: the push layer's duplicate
+    // re-check happens while the partition lock is held, and a pool-level
+    // read there would wait for a second connection.
+    return getPushResultOn(
+      this.#client,
+      this.#partition,
+      clientId,
+      clientCommitId,
+    );
+  }
+
   async scanRows(query: RowScanQuery): Promise<StoredRow[]> {
     this.#assertOpen();
-    assertScopeIndexedScan(query);
-    const variables = Object.keys(query.scopeFilter).sort();
-    const firstVariable = variables[0];
-    if (firstVariable === undefined) return [];
+    const firstVariable = assertScopeIndexedScan(query);
     const firstValues = query.scopeFilter[firstVariable] ?? [];
     if (firstValues.length === 0) return [];
     const sql = scanRowPageSql(
@@ -791,6 +825,11 @@ export class PostgresServerStorage implements ServerStorage {
           );
           if (rows.length > 0) {
             existing.set(table.name, new Set(rows.map((r) => r.column_name)));
+            // Parity with the SQLite/D1 `origin === 'c'` filter: only
+            // free-standing indexes enter the rebuild set. Constraint-owned
+            // indexes (PRIMARY KEY, UNIQUE constraints) can only be removed
+            // through their constraint, so DROP INDEX on them would abort
+            // the migration transaction.
             const indexes = await client.query<{ index_name: string }>(
               `SELECT index_class.relname AS index_name
                  FROM pg_catalog.pg_class AS table_class
@@ -802,7 +841,12 @@ export class PostgresServerStorage implements ServerStorage {
                    ON index_class.oid = index_meta.indexrelid
                 WHERE namespace.nspname = current_schema()
                   AND table_class.relname = $1
-                  AND NOT index_meta.indisprimary`,
+                  AND NOT index_meta.indisprimary
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM pg_catalog.pg_constraint AS owning_constraint
+                     WHERE owning_constraint.conindid = index_meta.indexrelid
+                  )`,
               [table.name],
             );
             existingIndexes.set(
@@ -948,24 +992,12 @@ export class PostgresServerStorage implements ServerStorage {
     return getRowOn(this.#exec, this.table(table), partition, rowId);
   }
 
-  async getPushResult(
+  getPushResult(
     partition: string,
     clientId: string,
     clientCommitId: string,
   ): Promise<StoredPushResult | undefined> {
-    const { rows } = await this.#exec.query<{ result: unknown }>(
-      'SELECT result FROM sync_push_results WHERE partition=$1 AND client_id=$2 AND client_commit_id=$3',
-      [partition, clientId, clientCommitId],
-    );
-    if (rows[0] === undefined) return undefined;
-    try {
-      return deserializePushResult(asJson(rows[0].result));
-    } catch {
-      throw syncError(
-        'sync.idempotency_cache_miss',
-        'persisted push result unreadable (§6.3)',
-      );
-    }
+    return getPushResultOn(this.#exec, partition, clientId, clientCommitId);
   }
 
   async readCommitWindow(
@@ -1054,10 +1086,7 @@ export class PostgresServerStorage implements ServerStorage {
   }
 
   async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
-    assertScopeIndexedScan(query);
-    const variables = Object.keys(query.scopeFilter).sort();
-    const firstVariable = variables[0];
-    if (firstVariable === undefined) return [];
+    const firstVariable = assertScopeIndexedScan(query);
     const firstValues = query.scopeFilter[firstVariable] ?? [];
     if (firstValues.length === 0) return [];
     // Candidates via the inverted index (ordered + LIMITed at the covering

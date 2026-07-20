@@ -92,6 +92,20 @@ class SqliteTransaction implements StorageTransaction {
     return this.#storage.getRow(this.#partition, table, rowId);
   }
 
+  getPushResult(
+    clientId: string,
+    clientCommitId: string,
+  ): Promise<StoredPushResult | undefined> {
+    this.#assertOpen();
+    // One shared bun:sqlite connection — this read runs inside this
+    // transaction's BEGIN IMMEDIATE.
+    return this.#storage.getPushResult(
+      this.#partition,
+      clientId,
+      clientCommitId,
+    );
+  }
+
   scanRows(query: RowScanQuery): Promise<StoredRow[]> {
     this.#assertOpen();
     return this.#storage.scanRows(this.#partition, query);
@@ -244,10 +258,22 @@ class SqliteTransaction implements StorageTransaction {
 
   async commit(): Promise<void> {
     this.#assertOpen();
-    this.#open = false;
     try {
       this.#storage.db.exec('COMMIT');
+    } catch (error) {
+      // A failed COMMIT (SQLITE_BUSY from an external writer, I/O error)
+      // leaves the connection inside BEGIN IMMEDIATE. Roll back before the
+      // FIFO releases, so the next queued transaction starts on a clean
+      // connection.
+      try {
+        this.#storage.db.exec('ROLLBACK');
+      } catch {
+        // Surface the COMMIT failure; a rollback failure would otherwise
+        // mask it.
+      }
+      throw error;
     } finally {
+      this.#open = false;
       this.#release();
     }
   }
@@ -415,6 +441,10 @@ export class SqliteServerStorage implements ServerStorage {
   }
 
   async begin(partition: string): Promise<StorageTransaction> {
+    // Deliberately global across partitions: SQLite is single-writer per
+    // database file, so one FIFO over the shared connection is the correct
+    // serialization unit — a per-partition queue would still contend on the
+    // same BEGIN IMMEDIATE writer lock.
     const previous = this.#transactionTail;
     let release!: () => void;
     this.#transactionTail = new Promise<void>((resolve) => {
@@ -593,10 +623,7 @@ export class SqliteServerStorage implements ServerStorage {
   }
 
   async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
-    assertScopeIndexedScan(query);
-    const variables = Object.keys(query.scopeFilter).sort();
-    const firstVariable = variables[0];
-    if (firstVariable === undefined) return [];
+    const firstVariable = assertScopeIndexedScan(query);
     const firstValues = query.scopeFilter[firstVariable] ?? [];
     if (firstValues.length === 0) return [];
     // Candidates via the inverted index LEFT JOINed to the row table — one

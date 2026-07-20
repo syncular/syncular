@@ -104,11 +104,8 @@ export interface CompiledSchema {
 const PATTERN_RE = /^([^{}]+):\{([^{}:]+)\}$/;
 
 /**
- * Identifier rules for relational server storage (DESIGN "current-row
- * tables"): app tables live in the same namespace as the sync
- * infrastructure tables (`sync_*`) and carry `_sync_*` meta columns, so
- * both prefixes are reserved; identifiers over 63 bytes would be silently
- * truncated by Postgres.
+ * Compile one `prefix:{variable}` scope pattern against the table's column
+ * list, resolving the scope column's positional index for row extraction.
  */
 function compilePattern(
   table: TableSchema,
@@ -145,6 +142,11 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
     if (tables.has(table.name)) {
       throw new Error(`duplicate table ${JSON.stringify(table.name)}`);
     }
+    // Identifier rules (DESIGN "current-row tables") live in core's
+    // validatePortableRelationalIdentifier, shared with typegen: app tables
+    // share a namespace with the sync infrastructure tables (`sync_*`) and
+    // carry `_sync_*` meta columns, so both prefixes are reserved, and
+    // Postgres silently truncates identifiers over 63 bytes.
     validatePortableRelationalIdentifier('table', table.name);
     const columnIndex = new Map<string, number>();
     table.columns.forEach((column, index) => {

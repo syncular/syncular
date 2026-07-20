@@ -171,10 +171,44 @@ export function addColumnDdl(
 }
 
 /**
+ * Ownership marker for server-created projection indexes. A version bump
+ * rebuilds declared indexes by dropping every index Syncular owns and
+ * re-creating the declared set; this prefix is what marks an index as
+ * Syncular-owned, so operator-added tuning indexes survive bumps. Portable
+ * identifier validation reserves the `sync_` prefix for the server storage
+ * namespace, which keeps user and operator index names out of it.
+ */
+export const SYNC_INDEX_PREFIX = 'sync_ix_';
+
+/** Deterministic FNV-1a 64-bit hash, hex-encoded. Dependency-free so it runs
+ * identically on every server runtime. */
+function fnv1a64Hex(value: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(value)) {
+    hash ^= BigInt(byte);
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return hash.toString(16).padStart(16, '0');
+}
+
+/**
+ * Physical name of one declared index: the ownership prefix plus the
+ * declared name. When that would exceed the 63-byte Postgres identifier
+ * limit, the declared name is replaced by its FNV-1a hash so the physical
+ * name stays deterministic, unique, and within the limit.
+ */
+export function physicalIndexName(declaredName: string): string {
+  const prefixed = `${SYNC_INDEX_PREFIX}${declaredName}`;
+  if (new TextEncoder().encode(prefixed).length <= 63) return prefixed;
+  return `${SYNC_INDEX_PREFIX}${fnv1a64Hex(declaredName)}`;
+}
+
+/**
  * CREATE INDEX IF NOT EXISTS for the table's user-declared indexes
- * (DESIGN "user indexes" — the same names/columns the client materializes;
- * cross-table index-name uniqueness is the user's schema concern, exactly
- * as it is client-side).
+ * (DESIGN "user indexes" — the same declared names/columns the client
+ * materializes; cross-table index-name uniqueness is the user's schema
+ * concern, exactly as it is client-side). Server-side the physical name
+ * carries the {@link SYNC_INDEX_PREFIX} ownership marker.
  */
 export function createIndexDdl(table: CompiledTable): string[] {
   // User indexes name app columns — nothing to index without the projection.
@@ -184,7 +218,7 @@ export function createIndexDdl(table: CompiledTable): string[] {
     const columns = index.columns
       .map((column) => quoteIdent(column))
       .join(', ');
-    return `CREATE ${unique}INDEX IF NOT EXISTS ${quoteIdent(index.name)} ON ${quoteIdent(table.name)} (${columns})`;
+    return `CREATE ${unique}INDEX IF NOT EXISTS ${quoteIdent(physicalIndexName(index.name))} ON ${quoteIdent(table.name)} (${columns})`;
   });
 }
 
@@ -678,6 +712,12 @@ export function rewritePlan(
  * missing columns, and rebuild declared secondary indexes. Rebuilding during
  * a version bump supports DROP INDEX and same-name index replacement without
  * requiring historical index definitions in the stored column-layout marker.
+ *
+ * The drop set is limited to Syncular-owned indexes: physical names carrying
+ * {@link SYNC_INDEX_PREFIX}, plus bare declared names (databases whose
+ * projection indexes predate the ownership prefix migrate onto the prefixed
+ * scheme through this rule). Operator-added tuning indexes keep their own
+ * names and survive every bump.
  */
 export function schemaDdl(
   schema: CompiledSchema,
@@ -685,18 +725,28 @@ export function schemaDdl(
   dialect: RelationalDialect,
   existingIndexesByTable: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
 ): string[] {
-  const out: string[] = [];
+  const drops: string[] = [];
+  const creates: string[] = [];
   for (const table of schema.tables.values()) {
     const existing = existingColumnsByTable.get(table.name);
     if (existing === undefined) {
-      out.push(createTableDdl(table, dialect));
+      creates.push(createTableDdl(table, dialect));
     } else {
+      const declared = new Set(table.indexes.map((index) => index.name));
       for (const indexName of existingIndexesByTable.get(table.name) ?? []) {
-        out.push(dropIndexDdl(indexName));
+        if (
+          indexName.startsWith(SYNC_INDEX_PREFIX) ||
+          declared.has(indexName)
+        ) {
+          drops.push(dropIndexDdl(indexName));
+        }
       }
-      out.push(...addColumnDdl(table, existing, dialect));
+      creates.push(...addColumnDdl(table, existing, dialect));
     }
-    out.push(...createIndexDdl(table));
+    creates.push(...createIndexDdl(table));
   }
-  return out;
+  // Every drop precedes every create: an index name moving between tables in
+  // one bump must release the global (SQLite) index namespace before the
+  // receiving table re-creates it.
+  return [...drops, ...creates];
 }

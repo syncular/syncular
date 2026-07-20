@@ -269,4 +269,73 @@ describe('durable relational constraint rejection', () => {
     ).toBeUndefined();
     expect(await storage.getMaxCommitSeq('workspace-partition')).toBe(1);
   });
+
+  test('a failed rejection finalization still releases the transaction', async () => {
+    const storage = new SqliteServerStorage();
+    expect(
+      pushResult(
+        await push(storage, [
+          commit('finalize-seed', [
+            upsert(
+              'finalize-existing',
+              row('finalize-existing', 'w1', 'finalize-surgery', 'original'),
+            ),
+          ]),
+        ]),
+      ).status,
+    ).toBe('applied');
+
+    // Inject a failure into the rejection finalization of the next push.
+    let injected = false;
+    const wrapped = new Proxy(storage, {
+      get(target, property) {
+        if (property === 'begin') {
+          return async (partition: string) => {
+            const tx = await target.begin(partition);
+            return new Proxy(tx, {
+              get(txTarget, txProperty) {
+                if (txProperty === 'commitRejectedPushResult' && !injected) {
+                  return async () => {
+                    injected = true;
+                    throw new Error('injected finalization failure');
+                  };
+                }
+                const value = Reflect.get(txTarget, txProperty, txTarget);
+                return typeof value === 'function'
+                  ? value.bind(txTarget)
+                  : value;
+              },
+            });
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    await expect(
+      push(wrapped, [
+        commit('finalize-fail', [
+          upsert(
+            'finalize-collision',
+            row('finalize-collision', 'w1', 'finalize-surgery', 'collides'),
+          ),
+        ]),
+      ]),
+    ).rejects.toThrow('injected finalization failure');
+
+    // Regression: the escaped finalization failure used to leave the
+    // transaction open, wedging the storage's begin() queue forever — this
+    // follow-up push would then hang until the test timeout.
+    const after = pushResult(
+      await push(storage, [
+        commit('finalize-after', [
+          upsert(
+            'finalize-survivor',
+            row('finalize-survivor', 'w1', 'finalize-surgery-2', 'survived'),
+          ),
+        ]),
+      ]),
+    );
+    expect(after.status).toBe('applied');
+  });
 });
