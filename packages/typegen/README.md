@@ -278,6 +278,14 @@ is bare column names: **ASC/DESC**, **expression** columns (`lower(a)`), and
 **partial** (`WHERE …`) indexes are hard errors (the IR models column names
 only, so accepting a direction/expression would silently drop it).
 
+Synced table, column, and secondary-index identifiers are checked against the
+same portable relational rules used by server schema compilation. Names use a
+maximum of **63 UTF-8 bytes** (not JavaScript characters), and `sync_`/`_sync`
+remain reserved for Syncular storage. Generation names the migration, object,
+actual byte count, and portable limit before writing the migration lock or any
+generated artifact. Exactly 63 bytes is accepted. Bare Unicode identifiers are
+supported; quoted identifiers remain outside the migration subset.
+
 **Index replacement** (`DROP INDEX`). A previously declared secondary index
 may be removed with `DROP INDEX name` or conditionally with `IF EXISTS`.
 Generation removes it from the head IR; a later `CREATE INDEX` may reuse the
@@ -285,7 +293,10 @@ name with a different uniqueness or column definition. On a server schema
 bump, Syncular rebuilds the declared secondary indexes for its owned
 relational projection tables before advancing the version marker. Client
 mirrors already wipe and re-bootstrap application tables on every schema
-version change.
+version change. Portability validation applies to the final head schema: an
+already-locked historical index with a non-portable name may therefore be
+dropped and replaced in a forward migration, while a non-portable name that
+remains in the head still fails generation.
 
 **Table retirement** (`DROP TABLE`). A table created earlier in migration
 history and dropped before the head version is absent from the IR and must be

@@ -1,10 +1,18 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.33** (`v0.15.33`). All artifacts use Apache-2.0, except
+current release is **0.15.34** (`v0.15.34`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
-## Unreleased
+## 0.15.34 release notes
+
+- Typegen and runtime schema compilation now share one portable relational
+  identifier validator. A final synced table, column, or secondary-index name
+  over PostgreSQL's 63 UTF-8-byte limit—or using Syncular's reserved storage
+  prefix—fails generation before any migration-lock or generated-artifact
+  write, with the migration, object, actual byte count, and maximum named.
+  Exactly-63-byte and Unicode boundaries are covered, and a locked historical
+  bad index remains forward-repairable when a later migration drops it.
 
 ## 0.15.33 release notes
 

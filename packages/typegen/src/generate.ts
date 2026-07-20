@@ -58,7 +58,11 @@ import {
   synthesizeDdl,
 } from './query';
 import { serializeQueryIr } from './query-ir';
-import { applyMigrationSql, type ParsedTable } from './sql';
+import {
+  applyMigrationSql,
+  type ParsedTable,
+  validateFinalSchemaIdentifiers,
+} from './sql';
 import { lowerSyqlQuery } from './syql-lowering';
 import { buildSyqlModuleGraph } from './syql-modules';
 import { analyzeSyqlSemantics } from './syql-semantics';
@@ -282,6 +286,7 @@ export function buildIr(
       droppedTables,
     );
   }
+  validateFinalSchemaIdentifiers(parsedTables);
   const schemaVersions = buildSchemaVersions(manifest, migrations);
   const tables = manifest.tables.map((manifestTable) => {
     const parsed = parsedTables.get(manifestTable.name);

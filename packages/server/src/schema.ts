@@ -5,7 +5,10 @@
  * §2.4 column types, scope patterns per §3.1, and a schema version. Codegen
  * (B5) will emit this shape later; tests hand-write it.
  */
-import type { RowColumn } from '@syncular/core';
+import {
+  type RowColumn,
+  validatePortableRelationalIdentifier,
+} from '@syncular/core';
 
 /** `'prefix:{variable}'` shorthand (column name = variable) or explicit. */
 export type ScopePatternSpec = string | { pattern: string; column: string };
@@ -107,23 +110,6 @@ const PATTERN_RE = /^([^{}]+):\{([^{}:]+)\}$/;
  * both prefixes are reserved; identifiers over 63 bytes would be silently
  * truncated by Postgres.
  */
-function validateIdentifier(kind: string, name: string): void {
-  if (name.length === 0) {
-    throw new Error(`${kind} name must not be empty`);
-  }
-  const lower = name.toLowerCase();
-  if (lower.startsWith('sync_') || lower.startsWith('_sync')) {
-    throw new Error(
-      `${kind} name ${JSON.stringify(name)} uses a reserved prefix (sync_/_sync are the server storage namespace)`,
-    );
-  }
-  if (new TextEncoder().encode(name).length > 63) {
-    throw new Error(
-      `${kind} name ${JSON.stringify(name)} exceeds 63 bytes (Postgres identifier limit)`,
-    );
-  }
-}
-
 function compilePattern(
   table: TableSchema,
   spec: ScopePatternSpec,
@@ -159,7 +145,7 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
     if (tables.has(table.name)) {
       throw new Error(`duplicate table ${JSON.stringify(table.name)}`);
     }
-    validateIdentifier('table', table.name);
+    validatePortableRelationalIdentifier('table', table.name);
     const columnIndex = new Map<string, number>();
     table.columns.forEach((column, index) => {
       if (columnIndex.has(column.name)) {
@@ -167,13 +153,19 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
           `table ${table.name}: duplicate column ${JSON.stringify(column.name)}`,
         );
       }
-      validateIdentifier(`table ${table.name}: column`, column.name);
+      validatePortableRelationalIdentifier(
+        `table ${table.name}: column`,
+        column.name,
+      );
       columnIndex.set(column.name, index);
     });
     const indexes = table.indexes ?? [];
     const indexNames = new Set<string>();
     for (const index of indexes) {
-      validateIdentifier(`table ${table.name}: index`, index.name);
+      validatePortableRelationalIdentifier(
+        `table ${table.name}: index`,
+        index.name,
+      );
       if (indexNames.has(index.name)) {
         throw new Error(
           `table ${table.name}: duplicate index ${JSON.stringify(index.name)}`,

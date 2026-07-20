@@ -21,6 +21,7 @@
  * primary keys, ASC/DESC or expression index columns, partial (`WHERE`)
  * indexes — is a hard error naming the unsupported construct.
  */
+import { validatePortableRelationalIdentifier } from '@syncular/core';
 import { TypegenError } from './errors';
 import type { IrColumn, IrColumnType, IrFtsIndex, IrIndex } from './ir';
 
@@ -69,9 +70,57 @@ interface Token {
   readonly text: string;
 }
 
-const WORD_START = /[A-Za-z_]/;
-const WORD_PART = /[A-Za-z0-9_]/;
+const WORD_START = /[\p{L}_]/u;
+const WORD_PART = /[\p{L}\p{M}\p{N}_]/u;
 const DIGIT = /[0-9]/;
+
+const tableIdentifierSources = new WeakMap<ParsedTable, string>();
+const columnIdentifierSources = new WeakMap<IrColumn, string>();
+const indexIdentifierSources = new WeakMap<IrIndex, string>();
+
+function validateIdentifier(
+  source: string,
+  kind: string,
+  identifier: string,
+): void {
+  try {
+    validatePortableRelationalIdentifier(kind, identifier);
+  } catch (error) {
+    throw new TypegenError(
+      source,
+      error instanceof Error ? error.message : 'invalid relational identifier',
+    );
+  }
+}
+
+/**
+ * Validate the accumulated head schema after every migration has been
+ * applied. This deliberately permits a locked historical migration to create
+ * an invalid identifier when a later forward migration drops it; only final
+ * generated objects must be portable.
+ */
+export function validateFinalSchemaIdentifiers(
+  tables: ReadonlyMap<string, ParsedTable>,
+): void {
+  for (const table of tables.values()) {
+    const tableSource = tableIdentifierSources.get(table) ?? 'migrations';
+    validateIdentifier(tableSource, 'table', table.name);
+    for (const column of table.columns) {
+      validateIdentifier(
+        columnIdentifierSources.get(column) ?? tableSource,
+        `table ${table.name}: column`,
+        column.name,
+      );
+    }
+    for (const index of table.indexes) {
+      validateIdentifier(
+        indexIdentifierSources.get(index) ?? tableSource,
+        `table ${table.name}: index`,
+        index.name,
+      );
+    }
+  }
+}
 
 function tokenizeStatements(sql: string, source: string): Token[][] {
   const statements: Token[][] = [];
@@ -310,11 +359,11 @@ function parseCreate(
   }
   if (cursor.eatWord('UNIQUE')) {
     cursor.expectWord('INDEX', 'after CREATE UNIQUE');
-    parseCreateIndex(cursor, tables, true);
+    parseCreateIndex(cursor, tables, true, source);
     return;
   }
   if (cursor.eatWord('INDEX')) {
-    parseCreateIndex(cursor, tables, false);
+    parseCreateIndex(cursor, tables, false, source);
     return;
   }
   const token = cursor.peek();
@@ -549,13 +598,18 @@ function parseCreateTable(
   const finalColumns = columns.map((c) =>
     c.name === primaryKey ? { ...c, nullable: false } : c,
   );
-  tables.set(name, {
+  const table: ParsedTable = {
     name,
     primaryKey,
     columns: finalColumns,
     indexes: [],
     ftsIndexes: [],
-  });
+  };
+  tables.set(name, table);
+  tableIdentifierSources.set(table, source);
+  for (const column of finalColumns) {
+    columnIdentifierSources.set(column, source);
+  }
 }
 
 /**
@@ -570,6 +624,7 @@ function parseCreateIndex(
   cursor: Cursor,
   tables: Map<string, ParsedTable>,
   unique: boolean,
+  source: string,
 ): void {
   // `INDEX` already matched by the dispatcher.
   if (cursor.eatWord('IF')) {
@@ -646,12 +701,15 @@ function parseCreateIndex(
       `index ${name}: unsupported trailing SQL ${JSON.stringify(trailing.text)}`,
     );
   }
-  table.indexes.push({ name, columns, unique });
+  const index: IrIndex = { name, columns, unique };
+  table.indexes.push(index);
+  indexIdentifierSources.set(index, source);
 }
 
 function parseAlterTable(
   cursor: Cursor,
   tables: Map<string, ParsedTable>,
+  source: string,
 ): void {
   cursor.expectWord('TABLE', 'after ALTER');
   const name = cursor.identifier('a table name');
@@ -679,6 +737,7 @@ function parseAlterTable(
     );
   }
   table.columns.push(def.column);
+  columnIdentifierSources.set(def.column, source);
 }
 
 /** `DROP TABLE [IF EXISTS] name`; table-name reuse remains unsupported. */
@@ -763,7 +822,7 @@ export function applyMigrationSql(
     if (word === 'CREATE') {
       parseCreate(cursor, tables, droppedTables, source);
     } else if (word === 'ALTER') {
-      parseAlterTable(cursor, tables);
+      parseAlterTable(cursor, tables, source);
     } else if (word === 'DROP') {
       parseDrop(cursor, tables, droppedTables);
     } else {

@@ -55,8 +55,10 @@
     "!dist/**/*.test.js",
     "!dist/**/*.test.d.ts"
   ],
+  "dependencies": {
+    "@syncular/core": "workspace:*"
+  },
   "devDependencies": {
-    "@syncular/core": "workspace:*",
     "@syncular/server": "workspace:*"
   }
 }
