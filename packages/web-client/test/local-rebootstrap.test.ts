@@ -8,6 +8,10 @@ import {
   decodeLocalDataRebootstrapResult,
   INVALID_HOST_RESPONSE_CODE,
 } from '@syncular/client';
+import {
+  decodeLocalDataRebootstrapReceipt,
+  encodeLocalDataRebootstrapReceipt,
+} from '../src/local-rebootstrap-receipt';
 import { makeClient, makeServer, tableRows, taskValues } from './helpers';
 
 const MALFORMED_RESULTS: unknown[] = [
@@ -108,6 +112,36 @@ describe('local rebootstrap acknowledgement decoder', () => {
   });
 });
 
+describe('durable local rebootstrap receipt', () => {
+  test('round-trips bounded counts and preserves the legacy marker contract', () => {
+    expect(
+      decodeLocalDataRebootstrapReceipt(
+        encodeLocalDataRebootstrapReceipt({
+          retainedCommits: 3,
+          resetSubscriptions: 4,
+        }),
+      ),
+    ).toEqual({ retainedCommits: 3, resetSubscriptions: 4 });
+    expect(decodeLocalDataRebootstrapReceipt('v1')).toEqual({
+      retainedCommits: 0,
+      resetSubscriptions: 0,
+    });
+  });
+
+  test.each([
+    '',
+    '{}',
+    '{"version":3,"retainedCommits":1,"resetSubscriptions":1}',
+    '{"version":2,"retainedCommits":-1,"resetSubscriptions":1}',
+    `{"version":2,"retainedCommits":${Number.MAX_SAFE_INTEGER + 1},"resetSubscriptions":1}`,
+    '{"version":2,"retainedCommits":1,"resetSubscriptions":1,"extra":true}',
+  ])('rejects malformed persisted receipt %#', (value) => {
+    expect(() => decodeLocalDataRebootstrapReceipt(value)).toThrow(
+      expect.objectContaining({ code: 'sync.local_corrupt' }),
+    );
+  });
+});
+
 describe('application-authorized local projection rebootstrap', () => {
   test('atomically rewinds subscriptions and retains identity, outcomes, and optimistic work', async () => {
     const server = makeServer();
@@ -181,8 +215,8 @@ describe('application-authorized local projection rebootstrap', () => {
       }),
     ).toEqual({
       alreadyApplied: true,
-      retainedCommits: 0,
-      resetSubscriptions: 0,
+      retainedCommits: 1,
+      resetSubscriptions: 1,
     });
     expect(changes).toHaveLength(1);
 
@@ -235,14 +269,53 @@ describe('application-authorized local projection rebootstrap', () => {
         reopened.client.rebootstrapLocalData({ rebootstrapId: 'restart-001' }),
       ).toEqual({
         alreadyApplied: true,
-        retainedCommits: 0,
-        resetSubscriptions: 0,
+        retainedCommits: 1,
+        resetSubscriptions: 1,
       });
       await reopened.client.close();
       reopened.db.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  test('fails closed on a malformed persisted receipt without resetting the projection', async () => {
+    const server = makeServer();
+    const local = await makeClient(server, {
+      clientId: 'repair-corrupt-receipt-client',
+    });
+    local.client.subscribe({
+      id: 'repair-corrupt-receipt-tasks',
+      table: 'tasks',
+      scopes: { project_id: ['p1'] },
+    });
+    local.client.mutate([
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: taskValues('server-row', 'p1', 'accepted'),
+      },
+    ]);
+    await local.client.syncUntilIdle();
+    local.db.exec('INSERT INTO _syncular_meta(key, value) VALUES (?, ?)', [
+      'localRebootstrap:corrupt-receipt',
+      '{"version":2}',
+    ]);
+
+    expect(() =>
+      local.client.rebootstrapLocalData({
+        rebootstrapId: 'corrupt-receipt',
+      }),
+    ).toThrow(expect.objectContaining({ code: 'sync.local_corrupt' }));
+    expect(tableRows(local.db, 'tasks').map((row) => row.id)).toEqual([
+      'server-row',
+    ]);
+    expect(
+      local.client.subscription('repair-corrupt-receipt-tasks')?.cursor,
+    ).toBeGreaterThanOrEqual(0);
+
+    await local.client.close();
+    local.db.close();
   });
 
   test('fails closed for unsafe operation ids', async () => {

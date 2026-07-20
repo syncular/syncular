@@ -24,7 +24,11 @@ export interface LocalDataRebootstrapInput {
   readonly rebootstrapId: string;
 }
 
-/** Privacy-safe acknowledgement; no row or subscription identifiers escape. */
+/**
+ * Privacy-safe acknowledgement; no row or subscription identifiers escape.
+ * An idempotent replay sets `alreadyApplied` while retaining the first call's
+ * exact counts when that repair was first applied by Syncular 0.15.36 or later.
+ */
 export interface LocalDataRebootstrapResult {
   readonly alreadyApplied: boolean;
   readonly retainedCommits: number;

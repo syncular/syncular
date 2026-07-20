@@ -35,7 +35,12 @@ outbox, and requests a fresh bootstrap while preserving device identity,
 lease state, outcomes, and protected bookkeeping. The result contains only
 `alreadyApplied`, `retainedCommits`, and `resetSubscriptions`. It is blocked
 during security preflight and an active schema-floor stop; it is not a sign-out
-or secure-erasure API. The JavaScript bridge strictly validates the exact
+or secure-erasure API. The native SQLite marker atomically retains the original
+counts, so a retry after process restart returns `alreadyApplied: true` with the
+same receipt rather than zero counts. Malformed or unreadable receipt storage
+fails closed as sanitized `sync.local_corrupt` without repeating the reset;
+pre-0.15.36 legacy markers retain their former zero-count compatibility. The
+JavaScript bridge strictly validates the exact
 acknowledgement shape and non-negative safe-integer counts; version drift or a
 malformed native response fails with the sanitized, stable
 `client.invalid_host_response` code before application recovery state can
