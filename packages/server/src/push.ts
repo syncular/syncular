@@ -886,13 +886,21 @@ export async function processPushCommitWithTrace(
     await lockPartitionForPush();
     // The optimistic lookup above may have raced another delivery. Re-check
     // only after acquiring partition serialization and before any operation
-    // read, validation, merge, or staged write.
+    // read, validation, merge, or staged write. The re-check runs on the
+    // transaction's own connection when the backend provides one: a pooled
+    // Postgres client holding the partition lock would otherwise wait for a
+    // second pool slot and deadlock against pushes waiting on the lock. A
+    // racing duplicate's result commits before the lock releases, so the
+    // transaction-scoped read observes it.
     try {
-      const serializedPersisted = await storage.getPushResult(
-        partition,
-        clientId,
-        frame.clientCommitId,
-      );
+      const serializedPersisted =
+        tx.getPushResult !== undefined
+          ? await tx.getPushResult(clientId, frame.clientCommitId)
+          : await storage.getPushResult(
+              partition,
+              clientId,
+              frame.clientCommitId,
+            );
       if (serializedPersisted !== undefined) {
         await tx.rollback();
         return processedPushCommit(
@@ -1028,22 +1036,36 @@ export async function processPushCommitWithTrace(
           'storage transaction lost atomic push rejection finalization support',
         );
       }
-      await commitRejectedPushResult(clientId, frame.clientCommitId, stored);
-      const canonical = await storage.getPushResult(
-        partition,
-        clientId,
-        frame.clientCommitId,
-      );
-      if (canonical === undefined) {
-        throw new Error(
-          'push rejection finalization did not persist an outcome',
+      try {
+        await commitRejectedPushResult(clientId, frame.clientCommitId, stored);
+        const canonical = await storage.getPushResult(
+          partition,
+          clientId,
+          frame.clientCommitId,
         );
+        if (canonical === undefined) {
+          throw new Error(
+            'push rejection finalization did not persist an outcome',
+          );
+        }
+        return processedPushCommit(
+          frame.clientCommitId,
+          canonical,
+          canonical.cacheIdentity !== stored.cacheIdentity,
+        );
+      } catch (finalizationError) {
+        // A failed finalization must still release the transaction: on
+        // SQLite an unreleased BEGIN wedges the storage's global begin()
+        // queue, on Postgres it leaks the pinned pool client. rollback() is
+        // a no-op when the finalization already committed.
+        try {
+          await tx.rollback();
+        } catch {
+          // Surface the finalization failure; a rollback failure would
+          // otherwise mask it.
+        }
+        throw finalizationError;
       }
-      return processedPushCommit(
-        frame.clientCommitId,
-        canonical,
-        canonical.cacheIdentity !== stored.cacheIdentity,
-      );
     }
     await tx.rollback();
     throw error;

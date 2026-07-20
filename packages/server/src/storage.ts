@@ -191,6 +191,20 @@ export interface ScopeActivityQuery {
 export interface StorageTransaction {
   getRow(table: string, rowId: string): Promise<StoredRow | undefined>;
   /**
+   * Optional transaction-scoped idempotency lookup (§2.3) with the same
+   * semantics as `ServerStorage.getPushResult`, including the
+   * `sync.idempotency_cache_miss` throw. The push layer prefers it for the
+   * post-serialization duplicate re-check so the read runs on the
+   * transaction's own connection — a pooled Postgres client that holds the
+   * partition lock must never wait for a second pool slot mid-push. In-tree
+   * SQLite/Postgres/D1 adapters implement it; a custom adapter that omits it
+   * keeps the pool-level read.
+   */
+  getPushResult?(
+    clientId: string,
+    clientCommitId: string,
+  ): Promise<StoredPushResult | undefined>;
+  /**
    * Optional candidate-state scan used only by whole-commit validation.
    * In-tree SQLite/Postgres/D1 backends implement it with read-your-own-writes
    * semantics. A custom backend may omit it until `commitValidator` is used.

@@ -158,6 +158,20 @@ describe('Workers fetch handler (D1 double + memory stores)', () => {
     expect(response.status).toBe(415);
   });
 
+  test('only the exact /sync path reaches the partition coordinator', async () => {
+    // `/admin/sync` merely ends in "/sync"; it belongs to Hono routing (a
+    // 404 here — the admin surface is unmounted) and must never be forwarded
+    // to the sync Durable Object.
+    const response = await fetch_(
+      new Request('https://worker.example/admin/sync', {
+        method: 'POST',
+        headers: { 'content-type': SSP2_CONTENT_TYPE },
+        body: new Uint8Array([0]).slice().buffer as ArrayBuffer,
+      }),
+    );
+    expect(response.status).toBe(404);
+  });
+
   test('HTTP-only transport can coordinate D1 pushes without mounting realtime', async () => {
     const db = new D1DatabaseDouble();
     const directStorage = new D1ServerStorage(db);
