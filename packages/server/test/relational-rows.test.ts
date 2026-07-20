@@ -886,6 +886,17 @@ describe('invalid identifiers and indexes are rejected at schema compile', () =>
     expect(() => table({ name: 'x'.repeat(64) })).toThrow(/63 bytes/);
   });
 
+  test('identifier limit is UTF-8-byte exact for user indexes', () => {
+    expect(() =>
+      table({ indexes: [{ name: 'i'.repeat(63), columns: ['id'] }] }),
+    ).not.toThrow();
+    expect(() =>
+      table({ indexes: [{ name: 'ü'.repeat(32), columns: ['id'] }] }),
+    ).toThrow(
+      'exceeds 63 bytes (Postgres identifier limit; actual UTF-8 length: 64 bytes)',
+    );
+  });
+
   test('index naming an unknown column', () => {
     expect(() =>
       table({ indexes: [{ name: 'bad_idx', columns: ['missing'] }] }),

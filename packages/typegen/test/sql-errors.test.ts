@@ -4,7 +4,13 @@
  * DROP TABLE is a hard error naming the unsupported construct.
  */
 import { describe, expect, test } from 'bun:test';
-import { applyMigrationSql, type ParsedTable, TypegenError } from '../src';
+import { compileSchema } from '@syncular/server';
+import {
+  applyMigrationSql,
+  type ParsedTable,
+  TypegenError,
+  validateFinalSchemaIdentifiers,
+} from '../src';
 
 function parse(sql: string): Map<string, ParsedTable> {
   const tables = new Map<string, ParsedTable>();
@@ -12,7 +18,19 @@ function parse(sql: string): Map<string, ParsedTable> {
   return tables;
 }
 
+function parseFinal(sql: string): Map<string, ParsedTable> {
+  const tables = parse(sql);
+  validateFinalSchemaIdentifiers(tables);
+  return tables;
+}
+
 describe('supported subset', () => {
+  test('accepts Unicode bare identifiers in the migration subset', () => {
+    expect(
+      parse('CREATE TABLE prüfung (id TEXT PRIMARY KEY)').get('prüfung')?.name,
+    ).toBe('prüfung');
+  });
+
   test('create + alter accumulate columns in declaration order', () => {
     const tables = parse(`
       -- comment
@@ -145,6 +163,83 @@ describe('supported subset', () => {
       CREATE VIRTUAL TABLE docs_fts USING fts5(body, content=docs);
     `);
     expect(tables.get('docs')?.ftsIndexes[0]?.tokenize).toBe('unicode61');
+  });
+});
+
+describe('portable relational identifier parity', () => {
+  test('accepts an exactly-63-byte final index name', () => {
+    const name = 'i'.repeat(63);
+    expect(() =>
+      parseFinal(
+        `CREATE TABLE t (id TEXT PRIMARY KEY); CREATE INDEX ${name} ON t (id)`,
+      ),
+    ).not.toThrow();
+  });
+
+  test('rejects final ASCII and UTF-8 index names over 63 bytes', () => {
+    for (const name of ['i'.repeat(64), 'ü'.repeat(32)]) {
+      let error: unknown;
+      try {
+        parseFinal(
+          `CREATE TABLE t (id TEXT PRIMARY KEY); CREATE INDEX ${name} ON t (id)`,
+        );
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(TypegenError);
+      expect((error as TypegenError).source).toBe('test.sql');
+      expect((error as Error).message).toContain(
+        'exceeds 63 bytes (Postgres identifier limit; actual UTF-8 length: 64 bytes)',
+      );
+    }
+  });
+
+  test('uses the same diagnostic as runtime schema compilation', () => {
+    const name = 'i'.repeat(64);
+    let generated: unknown;
+    let runtime: unknown;
+    try {
+      parseFinal(
+        `CREATE TABLE t (id TEXT PRIMARY KEY); CREATE INDEX ${name} ON t (id)`,
+      );
+    } catch (caught) {
+      generated = caught;
+    }
+    try {
+      compileSchema({
+        version: 1,
+        tables: [
+          {
+            name: 't',
+            columns: [{ name: 'id', type: 'string', nullable: false }],
+            primaryKey: 'id',
+            scopes: ['t:{id}'],
+            indexes: [{ name, columns: ['id'] }],
+          },
+        ],
+      });
+    } catch (caught) {
+      runtime = caught;
+    }
+    expect((generated as Error).message.replace(/^test\.sql: /u, '')).toBe(
+      (runtime as Error).message,
+    );
+  });
+
+  test('permits a locked invalid historical name after a forward repair', () => {
+    const tables = new Map<string, ParsedTable>();
+    const longName = 'i'.repeat(64);
+    applyMigrationSql(
+      tables,
+      `CREATE TABLE t (id TEXT PRIMARY KEY); CREATE INDEX ${longName} ON t (id)`,
+      '0050_locked/up.sql',
+    );
+    applyMigrationSql(
+      tables,
+      `DROP INDEX ${longName}; CREATE INDEX t_by_id ON t (id)`,
+      '0051_repair/up.sql',
+    );
+    expect(() => validateFinalSchemaIdentifiers(tables)).not.toThrow();
   });
 });
 

@@ -256,8 +256,10 @@
       "bin": {
         "syncular": "./dist/cli.js",
       },
-      "devDependencies": {
+      "dependencies": {
         "@syncular/core": "workspace:*",
+      },
+      "devDependencies": {
         "@syncular/server": "workspace:*",
       },
     },

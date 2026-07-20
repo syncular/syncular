@@ -118,11 +118,14 @@ for long enough, dropping `_sync_payload` is a cheap follow-up migration
   partitions collide. (Single-partition deployments simply see a constant
   column; server-side app queries add `WHERE _sync_partition = ?` or a
   view per partition if ergonomics warrant it later.)
-- App table and column names are validated at schema compile: reject the
-  `sync_` / `_sync_` prefixes (namespace shared with `sync_commits`,
-  `sync_changes`, `sync_row_scopes`), reject identifiers over 63 bytes
-  (Postgres truncation), and always emit quoted identifiers (the
-  sqlite-image `quoteIdent` generalizes).
+- App table, column, and secondary-index names are validated by one shared
+  portable-identifier validator during both type generation and runtime schema
+  compilation: reject the `sync_` / `_sync_` prefixes (namespace shared with
+  `sync_commits`, `sync_changes`, `sync_row_scopes`), reject identifiers over
+  63 UTF-8 bytes (Postgres truncation), and always emit quoted identifiers (the
+  sqlite-image `quoteIdent` generalizes). Typegen validates the final head
+  schema before writing its migration lock or generated outputs, so an already-
+  locked invalid historical index can still be removed by a forward migration.
 - `upsertRow`: `decodeRow(columns, payload)` → typed values →
   `INSERT … ON CONFLICT(_sync_partition, pk) DO UPDATE`, writing the typed
   columns, `_sync_server_version`, `_sync_scopes`, and `_sync_payload` in

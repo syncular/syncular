@@ -88,6 +88,27 @@ function appendRequiredMigration(dir: string): void {
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 }
 
+function appendOverlongIndexMigration(dir: string): string {
+  const migrationName = '0005_add_overlong_index';
+  const migrationDir = join(dir, 'migrations', migrationName);
+  cpSync(join(dir, 'migrations', '0004_add_doc_blob_ref'), migrationDir, {
+    recursive: true,
+  });
+  const indexName = 'i'.repeat(64);
+  writeFileSync(
+    join(migrationDir, 'up.sql'),
+    `CREATE INDEX ${indexName} ON tasks (project_id);\n`,
+    'utf8',
+  );
+  const manifestPath = join(dir, 'syncular.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+    schemaVersions: Array<{ version: number; through: string }>;
+  };
+  manifest.schemaVersions.push({ version: 5, through: migrationName });
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  return indexName;
+}
+
 interface CliRun {
   exitCode: number;
   stdout: string;
@@ -146,6 +167,41 @@ describe('syncular generate', () => {
     expect(run.exitCode).toBe(1);
     expect(run.stderr).toContain('0002_add_task_estimate/up.sql');
     expect(run.stderr).toContain('TRIGGER');
+  });
+
+  test('an overlong final identifier fails before any generated artifact or lock is written', () => {
+    const dir = freshDir();
+    expect(runCli(['generate', '--manifest-dir', dir]).exitCode).toBe(0);
+    const generatedPaths = [
+      'syncular.migrations.lock.json',
+      'syncular.ir.json',
+      'syncular.generated.ts',
+      'syncular.queries.ir.json',
+      'syncular.queries.ts',
+      'Syncular.generated.swift',
+      'Syncular.queries.swift',
+      'Syncular.generated.kt',
+      'Syncular.queries.kt',
+      'syncular.generated.dart',
+      'syncular.queries.dart',
+      'syncular.queries.rs',
+    ];
+    const before = new Map(
+      generatedPaths.map((path) => [
+        path,
+        readFileSync(join(dir, path), 'utf8'),
+      ]),
+    );
+
+    const indexName = appendOverlongIndexMigration(dir);
+    const run = runCli(['generate', '--manifest-dir', dir]);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain('0005_add_overlong_index/up.sql');
+    expect(run.stderr).toContain(`index name "${indexName}"`);
+    expect(run.stderr).toContain('actual UTF-8 length: 64 bytes');
+    for (const [path, content] of before) {
+      expect(readFileSync(join(dir, path), 'utf8'), path).toBe(content);
+    }
   });
 
   test('bad arguments fail with usage', () => {

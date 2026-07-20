@@ -16,6 +16,7 @@ export * from './frames';
 export * from './message';
 export * from './realtime';
 export * from './rejection-details';
+export * from './relational-identifier';
 export * from './render';
 export * from './row-codec';
 export * from './segment';
