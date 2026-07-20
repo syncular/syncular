@@ -1435,8 +1435,12 @@ class Validator {
         ) === true
       );
     };
+    // Scope inheritance across a join relies on a satisfied predicate proving
+    // both operands non-NULL. `IS` is null-safe (`NULL IS NULL` holds), so it
+    // would let a null-extended row on an outer join's preserved side carry a
+    // scope proof it never satisfies; only `=`/`==` qualify here.
     const qualifiedEquality = new RegExp(
-      `(${IDENT_SOURCE})\\.(${IDENT_SOURCE})\\s*(?:=|==|\\bIS\\b)\\s*(${IDENT_SOURCE})\\.(${IDENT_SOURCE})`,
+      `(${IDENT_SOURCE})\\.(${IDENT_SOURCE})\\s*(?:=|==)\\s*(${IDENT_SOURCE})\\.(${IDENT_SOURCE})`,
       'gi',
     );
     for (const match of cleaned.matchAll(qualifiedEquality)) {

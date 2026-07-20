@@ -283,7 +283,10 @@ describe('RFC 0005 local FTS5 projections', () => {
   });
 
   test('clean bulk inserts do not scan the growing FTS projection', () => {
-    const rows = 5_000;
+    // The scanning control arm is O(rows^2) by construction; 1,500 rows keeps
+    // it near two seconds (a decisive >3x margin over the linear clean arm)
+    // while staying well under the harness deadline.
+    const rows = 1_500;
     const bulkInsertMs = (db: BunClientDatabase): number => {
       const insert = db.db.query(
         'INSERT INTO catalogue_codes(id, release_id, code, title) VALUES (?, ?, ?, ?)',
@@ -305,7 +308,7 @@ describe('RFC 0005 local FTS5 projections', () => {
     const clean = new BunClientDatabase();
     ensureLocalSchema(clean, compileClientSchema(SCHEMA));
     const cleanMs = bulkInsertMs(clean);
-    expect(search(clean, '"synthetic" "4999"')).toEqual(['c4999']);
+    expect(search(clean, '"synthetic" "1499"')).toEqual(['c1499']);
 
     // Comparative bound: an insert trigger that deletes by source id scans
     // the whole projection per row. The clean triggers must stay decisively
@@ -323,7 +326,7 @@ describe('RFC 0005 local FTS5 projections', () => {
     );
     const scanningMs = bulkInsertMs(scanning);
     expect(cleanMs * 3).toBeLessThan(scanningMs);
-  });
+  }, 20_000);
 
   test('encrypted declared-string columns feed only the local plaintext projection', () => {
     const table = SCHEMA.tables[0];

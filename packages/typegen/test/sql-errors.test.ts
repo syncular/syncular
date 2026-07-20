@@ -265,6 +265,49 @@ describe('portable relational identifier parity', () => {
     );
   });
 
+  test('non-ASCII FTS virtual-table names fail loudly, and locked history replays them', () => {
+    expect(() =>
+      parseFinal(
+        'CREATE TABLE docs (id TEXT PRIMARY KEY, body TEXT); CREATE VIRTUAL TABLE docs_übersicht USING fts5(body, content=docs)',
+      ),
+    ).toThrow(
+      'FTS virtual table name "docs_übersicht" must be an ASCII identifier matching [A-Za-z_][A-Za-z0-9_]*',
+    );
+
+    const locked = new Map<string, ParsedTable>();
+    applyMigrationSql(
+      locked,
+      'CREATE TABLE docs (id TEXT PRIMARY KEY, body TEXT); CREATE VIRTUAL TABLE docs_übersicht USING fts5(body, content=docs)',
+      '0001_locked/up.sql',
+      new Set(),
+      { lockedHistory: true },
+    );
+    expect(() => validateFinalSchemaIdentifiers(locked)).not.toThrow();
+  });
+
+  test('DROP INDEX IF EXISTS on an FTS name is a tolerant no-op; a plain DROP names the owner', () => {
+    // A locked migration carrying the IF EXISTS form must keep replaying.
+    const locked = new Map<string, ParsedTable>();
+    expect(() =>
+      applyMigrationSql(
+        locked,
+        'CREATE TABLE docs (id TEXT PRIMARY KEY, body TEXT); CREATE VIRTUAL TABLE docs_fts USING fts5(body, content=docs); DROP INDEX IF EXISTS docs_fts',
+        '0001_locked/up.sql',
+        new Set(),
+        { lockedHistory: true },
+      ),
+    ).not.toThrow();
+    expect(locked.get('docs')?.ftsIndexes.map((index) => index.name)).toEqual([
+      'docs_fts',
+    ]);
+
+    expect(() =>
+      parse(
+        'CREATE TABLE docs (id TEXT PRIMARY KEY, body TEXT); CREATE VIRTUAL TABLE docs_fts USING fts5(body, content=docs); DROP INDEX docs_fts',
+      ),
+    ).toThrow('docs_fts is an FTS5 virtual table');
+  });
+
   test('locked history replays a required ADD COLUMN; appended migrations enforce nullability', () => {
     const tables = new Map<string, ParsedTable>();
     applyMigrationSql(
