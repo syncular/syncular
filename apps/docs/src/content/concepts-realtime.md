@@ -34,24 +34,67 @@ that tells the client to run a pull soon; the wake-up itself carries no data
 ([SPEC §8.2/§8.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#8-realtime)). Propagation on the in-process
 bench is **0.2 ms p95** ([bench results](/benchmarks/)).
 
-## Connect-then-sync
+## The supported host supervisor
 
-The reference boot order is: connect the socket first, then run the first sync
-round *over* it. The round registers this connection's subscriptions at its
-end, which structurally kills the old "connect-before-first-pull ⇒ silent
-no-fanout" footgun. In client code:
+Realtime connection ownership is explicit, but applications do not need to
+reinvent its lifecycle policy. `installRealtimeSupervisor()` owns exactly one
+connection attempt, runs `syncUntilIdle()` before reporting `connected`,
+reconnects initial failures and later socket closes with bounded exponential
+backoff plus jitter, and cancels its work before `client.close()`.
+
+Register durable subscription intent first, then install the supervisor:
 
 ```ts
+import {
+  browserConnectivitySignal,
+  documentLifecycleSignal,
+  installRealtimeSupervisor,
+  realtimeSupervisorSnapshot,
+  subscribeRealtimeSupervisor,
+} from '@syncular/client';
+
 await client.start();
 client.subscribe({ id: 'notes', table: 'notes', scopes: { list_id: [listId] } });
-await client.connectRealtime();
-await client.syncUntilIdle();
+
+installRealtimeSupervisor(client, {
+  connectivity: browserConnectivitySignal(),
+  lifecycle: documentLifecycleSignal(),
+  // For encrypted/locked apps, also pass the host's protection signal. An
+  // explicit signal fails closed until it reports `active`.
+  protection,
+});
 ```
 
-After that, deltas arrive on their own; when the client's `onSyncNeeded`
-fires (a wake-up), run another `sync()`. The [web client guide](/guide-client/)
-shows the full host loop, including immediate interactive work and explicit
-background retry deadlines.
+Render local SQLite state immediately; do not make socket availability a
+startup gate. The first successful connection performs the connect-then-sync
+round over the socket, which registers the connection's subscriptions at round
+end. Later reconnects perform the same explicit catch-up before the supervisor
+publishes `connected`.
+
+`browserConnectivitySignal()` observes online/offline and
+`documentLifecycleSignal()` observes visibility/page lifecycle. React Native
+hosts pass an `AppState`-backed signal; protected applications pass a signal
+that publishes `preflight` before draining keys. Unknown browser connectivity
+remains connectable, while an explicit protection signal remains suspended
+until it is `active`.
+
+```ts
+const off = subscribeRealtimeSupervisor(client, renderConnectionState);
+const state = realtimeSupervisorSnapshot(client);
+// idle | connecting | connected | retrying | offline | background |
+// protected | unsupported | stopped
+```
+
+The snapshot contains only the bounded phase, attempt, and library-owned retry
+delay. Transport errors, URLs, identities, headers, and arbitrary server prose
+are never copied into it. The lower-level `connectRealtime()` and
+`disconnectRealtime()` remain available for custom hosts and are idempotent /
+single-flight: repeated or concurrent connects cannot orphan another socket.
+
+`autoSync` owns coalesced sync intents after wake-ups; the supervisor owns
+socket lifecycle and resume catch-up. They are complementary. Without the
+supervisor, HTTP remains an available round transport, but remote-only changes
+do **not** converge continuously unless an actual host trigger runs a sync.
 
 ## Presence
 

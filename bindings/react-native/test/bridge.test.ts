@@ -13,6 +13,8 @@
 import { describe, expect, test } from 'bun:test';
 import {
   INVALID_HOST_RESPONSE_CODE,
+  installRealtimeSupervisor,
+  realtimeSupervisorSnapshot,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
 } from '@syncular/client';
 import { normalizeClient, type SyncClientLike } from '@syncular/react';
@@ -81,6 +83,10 @@ function makeNative(
 }
 
 const OK = (result: unknown) => ({ result });
+
+async function settle(): Promise<void> {
+  for (let turn = 0; turn < 12; turn += 1) await Promise.resolve();
+}
 
 const DIAGNOSTICS = {
   version: 1,
@@ -557,6 +563,52 @@ describe('createNativeSyncClient', () => {
     client.onDiagnostics((snapshot) => seen.push(snapshot.host.kind));
     emit({ type: 'diagnostics', snapshot: DIAGNOSTICS });
     expect(seen).toEqual(['react-native']);
+  });
+
+  test('shared realtime supervisor reconnects through the React Native bridge', async () => {
+    const { client: rawClient, calls, emit, pump } = await build();
+    const timers: Array<{ callback: () => void; cancelled: boolean }> = [];
+    const client = installRealtimeSupervisor(rawClient, {
+      schedule: (callback) => {
+        const timer = { callback, cancelled: false };
+        timers.push(timer);
+        return () => {
+          timer.cancelled = true;
+        };
+      },
+      random: () => 0,
+    });
+    await settle();
+    expect(realtimeSupervisorSnapshot(client)).toEqual({
+      phase: 'connected',
+      attempt: 0,
+    });
+
+    emit({
+      type: 'diagnostics',
+      snapshot: {
+        ...DIAGNOSTICS,
+        host: { ...DIAGNOSTICS.host, realtime: 'disconnected' },
+      },
+    });
+    const retry = timers.find((timer) => !timer.cancelled);
+    expect(retry).toBeDefined();
+    retry?.callback();
+    await settle();
+    const methods = calls
+      .filter((call) => call.fn === 'command')
+      .map((call) => (call.arg as { method: string }).method);
+    expect(methods).toContain('connectRealtime');
+    expect(methods.filter((method) => method === 'syncUntilIdle')).toHaveLength(
+      2,
+    );
+
+    await client.close();
+    expect(pump.closed).toBe(1);
+    expect(realtimeSupervisorSnapshot(client)).toEqual({
+      phase: 'stopped',
+      attempt: 0,
+    });
   });
 
   test('interactive sync intents coalesce into one immediate native round', async () => {

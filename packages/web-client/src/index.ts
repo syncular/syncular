@@ -29,6 +29,7 @@ export * from './outbox';
 export * from './outcomes';
 export * from './query-guard';
 export * from './reactive-store';
+export * from './realtime-supervisor';
 export * from './schema';
 export * from './sql-tag';
 export * from './state';

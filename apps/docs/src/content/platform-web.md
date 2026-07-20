@@ -116,21 +116,36 @@ The browser bindings are `fetch`/WebSocket wrappers over the protocol
 The worker handle wires all of them for you from the `endpoints` config; you
 only construct transports by hand when building a direct `SyncClient`.
 
-## The sync loop
+## Realtime lifecycle and the sync loop
 
-Connect the socket, then run the first round over it (the
-[connect-then-sync](/concepts-realtime/) boot order):
+Install the supported supervisor after registering subscription intent:
 
 ```ts
-await handle.connectRealtime(); // HTTP sync still works if this fails
-await handle.syncUntilIdle();
+import {
+  browserConnectivitySignal,
+  documentLifecycleSignal,
+  installRealtimeSupervisor,
+} from '@syncular/client';
+
+await handle.subscribe({ id: 'todos', table: 'todos', scopes });
+installRealtimeSupervisor(handle, {
+  connectivity: browserConnectivitySignal(),
+  lifecycle: documentLifecycleSignal(),
+});
 ```
 
-After that, deltas arrive on their own over the socket, and server wake-ups
-raise an immediate sync intent. In worker mode the event/deadline host loop
-runs inside the worker; the page just reacts to revisioned change notifications
-and re-queries. On a direct `SyncClient`, provide `onSyncNeeded` and run
-`sync()` when it fires.
+The supervisor owns initial connect, socket-close reconnect, bounded retry,
+background/offline suspension, cancellation on close, and an explicit catch-up
+before publishing `connected`. Render local rows immediately instead of
+blocking startup on a network promise.
+
+After connection, deltas arrive over the socket and server wake-ups raise an
+immediate sync intent. With `autoSync`, the worker owns coalescing those
+intents; the page reacts to revisioned changes and re-queries. The supervisor
+is still required for reconnect policy. HTTP sync remains available while the
+socket is absent, but it is not continuous remote convergence unless a host
+event, deadline, or explicit command actually starts a round. On a direct
+`SyncClient`, provide `onSyncNeeded` and run `sync()` when it fires.
 
 ## Offline replay
 

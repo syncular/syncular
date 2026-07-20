@@ -12,12 +12,15 @@
  * reconnect), a pending-commit counter, and surfaced §6.3 conflicts.
  */
 import {
+  browserConnectivitySignal,
   ClientSyncError,
   type ConflictRecord,
   createSyncClientHandle,
+  documentLifecycleSignal,
   httpBlobTransport,
   httpSegmentDownloader,
   httpSyncTransport,
+  installRealtimeSupervisor,
   type MutationInput,
   NOT_LEADER_CODE,
   type RealtimeHandlers,
@@ -58,6 +61,24 @@ const EPHEMERAL = new URLSearchParams(location.search).has('ephemeral');
 const MULTITAB = new URLSearchParams(location.search).has('multitab');
 const WS_PROTO = location.protocol === 'https:' ? 'wss' : 'ws';
 
+function mutableConnectivitySignal() {
+  let state: 'online' | 'offline' = 'online';
+  const listeners = new Set<(value: 'online' | 'offline') => void>();
+  return {
+    signal: {
+      current: () => state,
+      subscribe(listener: (value: 'online' | 'offline') => void) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+    set(value: 'online' | 'offline') {
+      state = value;
+      for (const listener of listeners) listener(value);
+    },
+  };
+}
+
 type LocalTodo = TodosRow & { _sync_version: number };
 
 /**
@@ -87,6 +108,8 @@ interface PaneCore {
    * first sync round rides the socket and registers this connection's
    * subscriptions at round end (§8.7). */
   connectRealtime(): Promise<void>;
+  /** Install retry/resume policy after the explicit first catch-up. */
+  startRealtimeSupervisor(): void;
 }
 
 // -- worker mode (the default): whole core behind the RPC handle -------------
@@ -144,7 +167,12 @@ async function makeWorkerCore(
     conflicts: () => handle.conflicts(),
     setOffline: async (offline) => {
       await handle.setOffline(offline);
-      if (!offline) await connectRealtime();
+    },
+    startRealtimeSupervisor: () => {
+      installRealtimeSupervisor(handle, {
+        connectivity: browserConnectivitySignal(),
+        lifecycle: documentLifecycleSignal(),
+      });
     },
     uploadBlob: async (bytes, options) => {
       const ref = await handle.uploadBlob(bytes, options);
@@ -294,6 +322,7 @@ async function makeEmbeddedCore(
   const clientId = crypto.randomUUID();
   let offline = false;
   let syncScheduled = false;
+  const network = mutableConnectivitySignal();
   const offlineError = () =>
     new ClientSyncError(
       'sync.transport_failed',
@@ -362,12 +391,17 @@ async function makeEmbeddedCore(
     fetchBlob: async (blobIdOrRef) =>
       (await client.fetchBlob(blobIdOrRef)).bytes,
     connectRealtime,
+    startRealtimeSupervisor: () => {
+      installRealtimeSupervisor(client, {
+        connectivity: network.signal,
+        lifecycle: documentLifecycleSignal(),
+      });
+    },
     setOffline: async (value) => {
       offline = value;
+      network.set(offline ? 'offline' : 'online');
       if (offline) {
         client.disconnectRealtime();
-      } else {
-        await connectRealtime();
       }
     },
   };
@@ -383,6 +417,7 @@ async function makeEphemeralCore(
   const clientId = crypto.randomUUID();
   let offline = false;
   let syncScheduled = false;
+  const network = mutableConnectivitySignal();
   const baseTransport = httpSyncTransport('/sync');
   const client = new SyncClient({
     database,
@@ -446,12 +481,17 @@ async function makeEphemeralCore(
     fetchBlob: async (blobIdOrRef) =>
       (await client.fetchBlob(blobIdOrRef)).bytes,
     connectRealtime,
+    startRealtimeSupervisor: () => {
+      installRealtimeSupervisor(client, {
+        connectivity: network.signal,
+        lifecycle: documentLifecycleSignal(),
+      });
+    },
     setOffline: async (value) => {
       offline = value;
+      network.set(offline ? 'offline' : 'online');
       if (offline) {
         client.disconnectRealtime();
-      } else {
-        await connectRealtime();
       }
     },
   };
@@ -529,6 +569,7 @@ class Pane {
     // window (the old §8.1 footgun is structurally dead).
     await this.core.connectRealtime();
     await this.syncNow();
+    this.core.startRealtimeSupervisor();
     this.setStatus('ready');
     await this.refresh();
     // Realtime deltas apply inside the core with no per-row callback — a

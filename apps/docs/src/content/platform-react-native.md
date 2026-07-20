@@ -147,6 +147,15 @@ Lifecycle is explicit and battery-aware:
 - `client.resume()` — reconnect realtime and restart the pump.
 - `client.close()` — detach listeners and release the native core.
 
+`resume()` is deliberately one-shot. For retry, socket-close recovery, and an
+explicit catch-up before claiming freshness, install
+`installRealtimeSupervisor()` from `@syncular/client` with an `AppState`-backed
+lifecycle signal plus the app's connectivity and protection signals. Keep
+calling `pause()` / `resume()` to control the native event pump; repeated
+connection attempts are idempotent, so the supervisor safely adds policy
+without creating a second native socket. See
+[Realtime](/concepts-realtime/#the-supported-host-supervisor).
+
 ## Platform notes
 
 - **iOS shim** — [`ios/Syncular.mm`](https://github.com/syncular/syncular/blob/main/bindings/react-native/ios/Syncular.mm),

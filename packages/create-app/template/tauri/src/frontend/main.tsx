@@ -142,13 +142,9 @@ function TodoApp() {
 }
 
 const engineResource = createSyncClientResource(async () => {
-  const engine = await createEngine();
-  try {
-    await engine.connectRealtime();
-  } catch {
-    // offline / no socket — the host loop keeps syncing over HTTP
-  }
-  return engine;
+  // createEngine installs the supported reconnect/catch-up supervisor. React
+  // renders from local SQLite immediately; connectivity never gates startup.
+  return createEngine();
 });
 
 function Root() {

@@ -54,13 +54,47 @@ The handle exposes the same logical API as `SyncClient` (subscribe /
 mutate / sync / query / conflicts / …), every method a promise. It
 acquires the Web Locks leader lock *before* spawning the worker — one
 core per origin. Wake-ups are handled inside the worker (`autoSync`,
-SPEC §8.4: the sync-needed signal is host-driven and the worker IS the
-host); the main thread gets `onSyncNeeded` / `onConflict` / `onSynced`
+SPEC §8.4); the supported page-level realtime supervisor owns reconnect and
+resume policy. The main thread gets `onSyncNeeded` / `onConflict` / `onSynced`
 events for rendering.
 
 **Ephemeral in-memory mode is EXPLICIT.** `openWasmDatabase()` returns an
 in-memory sqlite-wasm database for tests, demos and SSR. Nothing
 persists, on purpose, and that is the only main-thread mode.
+
+## Supported realtime lifecycle
+
+Register subscriptions, then install the cross-host supervisor:
+
+```ts
+import {
+  browserConnectivitySignal,
+  documentLifecycleSignal,
+  installRealtimeSupervisor,
+} from '@syncular/client';
+
+await handle.subscribe({ id: 'todos', table: 'todos', scopes });
+installRealtimeSupervisor(handle, {
+  connectivity: browserConnectivitySignal(),
+  lifecycle: documentLifecycleSignal(),
+  // Encrypted/locked apps also pass their active/preflight signal.
+  protection,
+});
+```
+
+It owns one connection attempt, retries initial failure and later socket loss
+with bounded exponential jitter, suspends while offline/background/protected,
+runs `syncUntilIdle()` before reporting `connected`, and cancels before
+`close()`. `realtimeSupervisorSnapshot()` and
+`subscribeRealtimeSupervisor()` expose only `phase`, `attempt`, and the bounded
+library delay for UI/diagnostics—never raw transport prose or identities.
+
+The lower-level `connectRealtime()` is idempotent while connected and
+single-flight while connecting; disconnect invalidates an in-flight result so
+it cannot install a stale socket. It remains available for custom host loops.
+HTTP rounds still work with no socket, but do not imply continuous convergence:
+a host trigger must actually run them. See the complete
+[realtime lifecycle guide](https://syncular.dev/concepts-realtime/).
 
 ## Multi-tab followers (TODO 3.2, REVISE B3)
 

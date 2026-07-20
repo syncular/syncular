@@ -10,6 +10,7 @@ import {
   type BlobTransport,
   type ClientSchema,
   type EncryptionConfig,
+  type RealtimeConnector,
   type SegmentFetchRequest,
   SyncClient,
   type SyncClientConfig,
@@ -240,6 +241,8 @@ export interface MakeClientOptions {
   readonly encryption?: EncryptionConfig;
   readonly blobs?: BlobTransport;
   readonly blobCacheMaxBytes?: number;
+  /** Override only the realtime seam for focused ownership/lifecycle tests. */
+  readonly realtime?: RealtimeConnector;
 }
 
 export async function makeClient(
@@ -292,23 +295,25 @@ export async function makeClient(
       }
       return result.bytes;
     },
-    realtime: async (handlers) => {
-      const session = await server.hub.connect({
-        partition: PARTITION,
-        actorId,
-        clientId: options.clientId,
-        send: (data) => {
-          if (typeof data === 'string') handlers.onText(data);
-          else handlers.onBinary(data);
-        },
-        closeSocket: () => handlers.onClose?.(),
-      });
-      return {
-        send: (text) => session.handleMessage(text),
-        sendBytes: (bytes) => session.handleBinary(bytes),
-        close: () => session.close(),
-      };
-    },
+    realtime:
+      options.realtime ??
+      (async (handlers) => {
+        const session = await server.hub.connect({
+          partition: PARTITION,
+          actorId,
+          clientId: options.clientId,
+          send: (data) => {
+            if (typeof data === 'string') handlers.onText(data);
+            else handlers.onBinary(data);
+          },
+          closeSocket: () => handlers.onClose?.(),
+        });
+        return {
+          send: (text) => session.handleMessage(text),
+          sendBytes: (bytes) => session.handleBinary(bytes),
+          close: () => session.close(),
+        };
+      }),
     onSyncNeeded: (reason) => {
       wakes.push(reason);
     },

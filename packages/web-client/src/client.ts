@@ -545,6 +545,8 @@ export class SyncClient {
   #conflicts: ConflictRecord[] = [];
   #rejections: RejectionRecord[] = [];
   #socket: RealtimeSocket | undefined;
+  #realtimeConnectPromise: Promise<void> | undefined;
+  #realtimeGeneration = 0;
   #pendingRound: PendingRound | undefined;
   #needsPull = false;
   #syncing = false;
@@ -793,8 +795,7 @@ export class SyncClient {
   async close(): Promise<void> {
     this.#devtoolsUnregister?.();
     this.#devtoolsUnregister = undefined;
-    this.#socket?.close();
-    this.#socket = undefined;
+    this.disconnectRealtime();
     this.#abortPendingRound('client closed mid-round');
     await this.#lease?.release();
     this.#lease = undefined;
@@ -2758,10 +2759,32 @@ export class SyncClient {
   // -- realtime (§8 client side) ----------------------------------------------
 
   connectRealtime(): Promise<void> {
-    return this.#runProtectedAsync(() => this.#connectRealtime());
+    this.#requireActive();
+    if (this.#socket !== undefined) return Promise.resolve();
+    if (this.#realtimeConnectPromise !== undefined) {
+      return this.#realtimeConnectPromise;
+    }
+    const generation = this.#realtimeGeneration;
+    const task = this.#runProtectedAsync(() =>
+      this.#connectRealtime(generation),
+    );
+    this.#realtimeConnectPromise = task;
+    void task.then(
+      () => {
+        if (this.#realtimeConnectPromise === task) {
+          this.#realtimeConnectPromise = undefined;
+        }
+      },
+      () => {
+        if (this.#realtimeConnectPromise === task) {
+          this.#realtimeConnectPromise = undefined;
+        }
+      },
+    );
+    return task;
   }
 
-  async #connectRealtime(): Promise<void> {
+  async #connectRealtime(generation: number): Promise<void> {
     const connector = this.#config.realtime;
     if (connector === undefined) {
       throw new ClientSyncError(
@@ -2769,16 +2792,19 @@ export class SyncClient {
         'no realtime connector configured',
       );
     }
+    let openedSocket: RealtimeSocket | undefined;
     const socket = await connector({
       onText: (text) => this.#handleRealtimeText(text),
       onBinary: (bytes) => this.#routeRealtimeBinary(bytes),
       onClose: () => {
+        if (openedSocket === undefined || this.#socket !== openedSocket) return;
         this.#socket = undefined;
         this.#presence.clear(); // §8.6.1: presence is per-connection
         this.#abortPendingRound('realtime socket closed mid-round (§8.7)');
         this.#emitDiagnostics();
       },
     });
+    openedSocket = socket;
     if (this.#securityLifecycle === 'preflight') {
       socket.close();
       throw new ClientSyncError(
@@ -2786,11 +2812,20 @@ export class SyncClient {
         'realtime connected after the client entered security preflight',
       );
     }
+    if (generation !== this.#realtimeGeneration || !this.#started) {
+      socket.close();
+      throw new ClientSyncError(
+        'client.realtime_cancelled',
+        'realtime connection was cancelled before activation',
+      );
+    }
     this.#socket = socket;
     this.#emitDiagnostics();
   }
 
   disconnectRealtime(): void {
+    this.#realtimeGeneration += 1;
+    this.#realtimeConnectPromise = undefined;
     this.#socket?.close();
     this.#socket = undefined;
     this.#presence.clear(); // §8.6.1: presence is per-connection
