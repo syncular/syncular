@@ -374,15 +374,40 @@ function createFtsProjection(
 
   // A clean insert cannot already have a projection row because the source
   // primary key is unique. Keep clean inserts linear by moving replacement
-  // cleanup behind an indexed source-table existence check. SQLite does not
-  // reliably invoke DELETE triggers for the row displaced by REPLACE.
+  // cleanup behind indexed source-table existence checks. SQLite does not
+  // reliably invoke DELETE triggers for rows displaced by REPLACE, and a
+  // REPLACE can displace rows through TWO paths: the primary key AND any
+  // secondary UNIQUE index (a different-PK row whose unique key matches the
+  // incoming row). The BEFORE INSERT guard covers both, so every displaced
+  // row's projection entry is removed before the REPLACE lands.
   for (const suffix of ['bi', 'ai', 'ad', 'au']) {
     db.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(`${index.name}_${suffix}`)}`);
   }
   const replacementExists = `EXISTS (SELECT 1 FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(table.primaryKey)} = new.${quoteIdent(table.primaryKey)})`;
+  // Per secondary UNIQUE index: the different-PK rows about to be displaced
+  // via that unique key. `=` makes NULL unique values match nothing, which is
+  // exactly SQLite's unique-index semantics (NULLs never conflict).
+  const uniqueIndexes = table.indexes.filter((spec) => spec.unique);
+  const displacedByUnique = uniqueIndexes.map((spec) => {
+    const match = spec.columns
+      .map((column) => `${quoteIdent(column)} = new.${quoteIdent(column)}`)
+      .join(' AND ');
+    return `SELECT ${sourceId} FROM ${quoteIdent(table.name)} WHERE ${match} AND ${quoteIdent(table.primaryKey)} != new.${quoteIdent(table.primaryKey)}`;
+  });
+  const insertGuardCondition = [
+    replacementExists,
+    ...displacedByUnique.map((select) => `EXISTS (${select})`),
+  ].join(' OR ');
+  const insertGuardBody = [
+    deleteFor(newSourceId),
+    ...displacedByUnique.map(
+      (select) =>
+        `DELETE FROM ${quoteIdent(index.name)} WHERE ${quoteIdent(FTS_SOURCE_ID_COLUMN)} IN (${select})`,
+    ),
+  ].join('; ');
 
   db.exec(
-    `CREATE TRIGGER ${quoteIdent(`${index.name}_bi`)} BEFORE INSERT ON ${quoteIdent(table.name)} WHEN ${replacementExists} BEGIN ${deleteFor(newSourceId)}; END`,
+    `CREATE TRIGGER ${quoteIdent(`${index.name}_bi`)} BEFORE INSERT ON ${quoteIdent(table.name)} WHEN ${insertGuardCondition} BEGIN ${insertGuardBody}; END`,
   );
   db.exec(
     `CREATE TRIGGER ${quoteIdent(`${index.name}_ai`)} AFTER INSERT ON ${quoteIdent(table.name)} BEGIN INSERT INTO ${quoteIdent(index.name)} (${projectionColumns}) VALUES (${newValues}); END`,

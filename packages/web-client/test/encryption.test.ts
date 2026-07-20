@@ -5,8 +5,13 @@
  * `client.decrypt_failed`.
  */
 import { describe, expect, test } from 'bun:test';
-import type { ClientSchema } from '@syncular/client';
-import type { RowColumn } from '@syncular/core';
+import {
+  type ClientSchema,
+  compileClientSchema,
+  decryptRowValues,
+  encryptionConfigFromKeyring,
+} from '@syncular/client';
+import { DecryptError, encryptValue, type RowColumn } from '@syncular/core';
 import type { ServerSchema } from '@syncular/server';
 import { makeClient, makeServer, PARTITION, tableRows } from './helpers';
 
@@ -197,5 +202,53 @@ describe('§5.11 encrypted round-trip', () => {
       caught = err;
     }
     expect((caught as { code?: string })?.code).toBe('client.decrypt_failed');
+  });
+});
+
+describe('portable keyring hardening', () => {
+  test('a wire keyId naming a prototype member reads as a missing key', async () => {
+    const config = encryptionConfigFromKeyring({ keys: { secrets: KEY } });
+    // Own-property lookups only: inherited names resolve to no key at all.
+    expect(config.keyProvider('constructor')).toBeUndefined();
+    expect(config.keyProvider('toString')).toBeUndefined();
+    expect(config.keyProvider('hasOwnProperty')).toBeUndefined();
+    expect(config.keyProvider('secrets')).toBe(KEY);
+
+    // End to end through the apply seam: an envelope carrying such a keyId
+    // surfaces the clean missing-key DecryptError.
+    const table = compileClientSchema(CLIENT_SCHEMA).tables.get('secrets');
+    if (table === undefined) throw new Error('fixture table missing');
+    const envelope = await encryptValue('string', 'ghost', 'constructor', KEY);
+    let caught: unknown;
+    try {
+      await decryptRowValues(config, table, ['s1', 'p1', envelope, null]);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(DecryptError);
+    expect(String((caught as Error).message)).toContain(
+      'no key for keyId "constructor"',
+    );
+  });
+
+  test('a wrong-length key fails loud at install time', () => {
+    for (const length of [0, 16, 31, 33, 64]) {
+      let caught: unknown;
+      try {
+        encryptionConfigFromKeyring({
+          keys: { secrets: new Uint8Array(length) },
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect((caught as { code?: string })?.code).toBe('sync.invalid_request');
+      expect(String((caught as Error).message)).toContain(
+        `must be 32 bytes (AES-256), got ${length}`,
+      );
+    }
+    // A correct-length keyring installs cleanly.
+    expect(() =>
+      encryptionConfigFromKeyring({ keys: { secrets: KEY } }),
+    ).not.toThrow();
   });
 });
