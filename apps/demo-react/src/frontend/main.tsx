@@ -22,7 +22,7 @@ import {
   installRealtimeSupervisor,
 } from '@syncular/client';
 import {
-  retainViteSyncClientResource,
+  createViteSyncClientResource,
   SyncProvider,
   useMutation,
   useQuery,
@@ -226,20 +226,24 @@ interface ViteHotContext {
 // resource against the later value of a hot-updated ESM schema binding.
 const capturedSchemaVersion = schema.version;
 const hot = (import.meta as ImportMeta & { readonly hot?: ViteHotContext }).hot;
-const retainedClient = await retainViteSyncClientResource(
+const retainedClient = createViteSyncClientResource(
   hot?.data,
   capturedSchemaVersion,
   createClient,
 );
 const clientResource = retainedClient.resource;
 
-if (
-  hot !== undefined &&
-  retainedClient.ownerChanged &&
-  retainedClient.disposalError === undefined
-) {
-  hot.invalidate('Syncular owner identity changed');
-}
+void retainedClient.handoff.then(
+  () => {
+    if (hot !== undefined && retainedClient.ownerChanged) {
+      hot.invalidate('Syncular owner identity changed');
+    }
+  },
+  () => {
+    // The provider boundary reports the same disposal failure. The
+    // replacement factory was never allowed to open another OPFS owner.
+  },
+);
 
 function Root() {
   return (

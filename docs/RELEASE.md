@@ -1,8 +1,27 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.40** (`v0.15.40`). All artifacts use Apache-2.0, except
+current release is **0.15.41** (`v0.15.41`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.41 release notes
+
+- `@syncular/react` adds `createViteSyncClientResource`, the synchronous
+  schema-and-runtime-aware Vite bootstrap. It immediately exposes a pending
+  resource while sequencing a replacement factory behind complete disposal of
+  an obsolete OPFS owner, so ordinary browser targets need no top-level await.
+  Disposal failures remain provider startup errors and never open a competing
+  owner. The maintained Vite fixture builds the documented recipe for the
+  Chrome 87, Edge 88, ES2020, Firefox 78, and Safari 14 target matrix.
+- The React guide now pins the supported React Router boundary for route-owned
+  controls under sustained `useSyncExternalStore` traffic. A maintained browser
+  fixture bursts Syncular status publications while repeatedly changing query
+  state and proves the checked control, mounted route location, router state,
+  and address bar converge with synchronous router publication.
+- Server seeding documentation and tests now cover actor changes explicitly:
+  `(partition, clientId)` remains actor-bound, so a corrected seed that moves to
+  another actor advances both its purpose-specific client ID and commit ID.
+  The recovery example preserves the database and prior terminal evidence.
 
 ## 0.15.40 release notes
 

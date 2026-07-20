@@ -158,5 +158,35 @@ portable or direct keyring through the concrete client before mounting the
 ordinary provider tree; React must not render protected hooks while the client
 reports `preflight`.
 
+## Router transition scheduling
+
+Syncular hooks use React's `useSyncExternalStore` and may publish continuously
+while realtime, local commits, diagnostics, or status are active. The router
+remains the sole owner of route and query state; do not mirror its location in
+a Syncular table or a second React store.
+
+Some React Router releases publish router state through a transition by
+default. Under sustained external-store traffic, the address bar and the
+router's internal location can advance while a mounted route continues to
+render its previous `useLocation()` or `useSearchParams()` snapshot. Syncular
+cannot guarantee another library's transition scheduling. For route-owned
+clinical controls that must agree synchronously with the visible URL, use the
+router's explicit synchronous publication policy:
+
+```tsx
+import { RouterProvider } from 'react-router-dom';
+
+<RouterProvider router={router} useTransitions={false} />
+```
+
+Keep that choice at the application router boundary rather than scattering
+`flushSync`, browser-global reads, or mirrored query state through feature
+components. The maintained React fixture repeatedly changes a checked
+query-owned control while bursting Syncular status notifications and proves
+the rendered `useSearchParams()` value, React Router location, and browser URL
+converge without reload. Re-evaluate the explicit policy when upgrading React
+or React Router; do not assume Syncular can force synchronous publication on a
+router it does not own.
+
 See [Named queries](/tooling-queries/), [Windowing](/concepts-windowing/), and
 the [package README](https://github.com/syncular/syncular/tree/main/packages/react).

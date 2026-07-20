@@ -67,7 +67,9 @@ export {
   useWindow,
 } from './use-window';
 export {
+  createViteSyncClientResource,
   type RetainedSyncularResource,
   retainViteSyncClientResource,
+  type ViteSyncClientResourceBootstrap,
   type ViteSyncClientResourceResult,
 } from './vite-hmr';

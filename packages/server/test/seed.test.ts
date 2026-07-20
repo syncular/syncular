@@ -3,8 +3,9 @@
  * real push path, re-running replays idempotently, and failures are loud.
  */
 import { describe, expect, test } from 'bun:test';
+import { decodeRow } from '@syncular/core';
 import { seedMutations } from '@syncular/server';
-import { makeContext, TEST_SCHEMA } from './helpers';
+import { makeContext, TASK_COLUMNS, TEST_SCHEMA } from './helpers';
 
 describe('seedMutations', () => {
   test('seeds rows through the real push path, idempotently', async () => {
@@ -49,6 +50,79 @@ describe('seedMutations', () => {
     );
     expect(await storage.getMaxCommitSeq('part-1')).toBe(2);
     expect(await storage.getRow('part-1', 'tasks', 't2')).toBeUndefined();
+  });
+
+  test('documents non-destructive recovery when a seed actor changes', async () => {
+    const { ctx, storage } = makeContext();
+    const base = {
+      partition: 'part-1',
+      actorId: 'seed-user',
+      clientId: 'catalog-seed-user',
+      commitId: 'catalog-v1',
+    };
+    await seedMutations(ctx, base, [
+      {
+        table: 'tasks',
+        op: 'upsert',
+        values: {
+          id: 'catalog-row',
+          projectId: 'p1',
+          title: 'seed actor',
+          done: false,
+        },
+      },
+    ]);
+
+    await expect(
+      seedMutations(
+        ctx,
+        {
+          ...base,
+          actorId: 'server-authority',
+          commitId: 'catalog-v2',
+        },
+        [
+          {
+            table: 'tasks',
+            op: 'upsert',
+            values: {
+              id: 'catalog-row',
+              projectId: 'p1',
+              title: 'server authority',
+              done: false,
+            },
+          },
+        ],
+      ),
+    ).rejects.toMatchObject({ code: 'sync.invalid_client_id' });
+
+    await seedMutations(
+      ctx,
+      {
+        partition: 'part-1',
+        actorId: 'server-authority',
+        clientId: 'catalog-server-authority',
+        commitId: 'catalog-v2',
+      },
+      [
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: {
+            id: 'catalog-row',
+            projectId: 'p1',
+            title: 'server authority',
+            done: false,
+          },
+        },
+      ],
+    );
+
+    const recovered = await storage.getRow('part-1', 'tasks', 'catalog-row');
+    expect(
+      decodeRow(TASK_COLUMNS, recovered?.payload ?? new Uint8Array())[2],
+    ).toBe('server authority');
+    expect(await storage.getMaxCommitSeq('part-1')).toBe(2);
   });
 
   test('an unknown table or column fails loud', async () => {

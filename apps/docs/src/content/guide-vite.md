@@ -94,7 +94,7 @@ close it before a replacement worker starts:
 
 ```ts
 import {
-  retainViteSyncClientResource,
+  createViteSyncClientResource,
   type RetainedSyncularResource,
 } from '@syncular/react';
 import { schema } from './syncular.generated';
@@ -102,20 +102,24 @@ import { schema } from './syncular.generated';
 // Capture this evaluation's number. Do not read a live ESM binding later and
 // assign it to a resource created by an older module evaluation.
 const capturedSchemaVersion = schema.version;
-const retained = await retainViteSyncClientResource(
+const retained = createViteSyncClientResource(
   import.meta.hot?.data,
   capturedSchemaVersion,
   createClient,
 );
 const clientResource = retained.resource;
 
-if (
-  import.meta.hot &&
-  retained.ownerChanged &&
-  retained.disposalError === undefined
-) {
-  import.meta.hot.invalidate('Syncular owner identity changed');
-}
+void retained.handoff.then(
+  () => {
+    if (import.meta.hot && retained.ownerChanged) {
+      import.meta.hot.invalidate('Syncular owner identity changed');
+    }
+  },
+  () => {
+    // clientResource publishes the same close failure through
+    // SyncProvider.renderBoundary; no replacement owner was opened.
+  },
+);
 ```
 
 The helper stores exactly this record in
@@ -132,13 +136,21 @@ interface RetainedSyncularResource {
 The runtime version is materialized into the published `@syncular/react`
 package; applications do not maintain it. On ordinary HMR both captured
 identities match and the resource is reused. On a schema bump or package
-upgrade, disposal finishes before the replacement resource is constructed;
-only then does the module request invalidation so the page, worker, generated
-schema, and query modules advance together. If disposal fails, the replacement
-worker is never opened and the returned resource reports the close failure
-through `SyncProvider.renderBoundary` as a startup error. `schemaChanged`
+upgrade, the returned replacement resource remains pending while disposal
+finishes; its factory cannot construct the replacement client or worker until
+that handoff completes. Only then does the module request invalidation so the
+page, worker, generated schema, and query modules advance together. If
+disposal fails, the replacement worker is never opened and the returned
+resource reports the close failure through
+`SyncProvider.renderBoundary` as a startup error. This synchronous bootstrap
+contains no top-level `await` and builds with Vite's ordinary browser targets;
+do not raise the target merely to enable top-level await. `schemaChanged`
 remains a compatibility alias for `ownerChanged`; new integrations should use
 the latter.
+
+`retainViteSyncClientResource` remains available for module graphs whose
+published target deliberately supports top-level await. It implements the same
+identity and disposal contract, but is not the default browser recipe.
 
 React effect cleanup for the old provider may run after the retained resource
 has closed its client. This ordering is supported: window release during store

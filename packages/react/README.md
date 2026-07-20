@@ -153,14 +153,18 @@ old resource before creating another one. Otherwise the old worker and the new
 worker can briefly compete for the same persistent OPFS directory. Never wipe
 or rename the database in response to a retryable startup error.
 
-For Vite, use `retainViteSyncClientResource(hot.data, schema.version,
-createClient)`. It retains a `{ schemaVersion, runtimeVersion, resource }`
-record, reuses it for same-schema HMR on the same published Syncular runtime,
-and awaits old-resource disposal before creating a schema-bump or
-package-upgrade replacement. Request `hot.invalidate()` only when its
-`ownerChanged` result is true and `disposalError` is absent; the official
-example, optimizer exclusion, and upgrade workflow are in the
-[Vite guide](https://syncular.dev/guide-vite/). The helper may close
+For Vite, use `createViteSyncClientResource(hot.data, schema.version,
+createClient)`. It synchronously returns a pending-or-retained resource, keeps
+a `{ schemaVersion, runtimeVersion, resource }` record, reuses it for
+same-schema HMR on the same published Syncular runtime, and sequences a
+schema-bump or package-upgrade factory behind old-resource disposal. Await its
+`handoff` promise before requesting `hot.invalidate()` when `ownerChanged` is
+true. A failed handoff is also exposed by the resource through the ordinary
+startup boundary and never opens a second owner. This recipe requires no
+top-level await; the official example, optimizer exclusion, and upgrade
+workflow are in the [Vite guide](https://syncular.dev/guide-vite/).
+`retainViteSyncClientResource` remains the async alternative for targets that
+deliberately support top-level await. Either helper may close
 the retained client before React runs cleanup for the old provider; Syncular
 absorbs that teardown-only window-release race while still surfacing failures
 from closing the resource itself.
@@ -259,6 +263,16 @@ not need a custom retention effect.
   Transport ownership and disposal remain on the concrete client/resource.
 
 The hooks are SSR-safe: no local query runs during server rendering.
+
+### Router scheduling
+
+Syncular hooks publish through `useSyncExternalStore`. If React Router owns
+clinical query state, keep the router as the only owner and use its explicit
+synchronous publication policy (`<RouterProvider useTransitions={false}>`) on
+versions where sustained external-store updates can starve a transition. Do
+not repair URL/render disagreement with `window.location`, `flushSync`, or a
+mirrored store. The maintained fixture and upgrade guidance live in the
+[React guide](https://syncular.dev/platform-react/#router-transition-scheduling).
 
 ### Privacy-safe support view
 
