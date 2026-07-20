@@ -263,6 +263,7 @@ describe('createNativeSyncClient', () => {
         keys: { 'practice-v2': new Uint8Array(32).fill(0x3c) },
         keyIdColumns: { patients: 'encryption_key_id' },
       },
+      headers: { authorization: 'Bearer post-preflight' },
     });
     expect(await client.securityLifecycle()).toBe('active');
     const activation = calls.find(
@@ -277,8 +278,54 @@ describe('createNativeSyncClient', () => {
         }
       ).params.encryption.keys['practice-v2'],
     ).toEqual({ $bytes: '3c'.repeat(32) });
+    // The fresh token rides the activation command itself, so the native
+    // host can apply it before the startup sync the activation enqueues.
+    expect(
+      (
+        activation?.arg as {
+          params: { headers: Record<string, string> };
+        }
+      ).params.headers,
+    ).toEqual({ authorization: 'Bearer post-preflight' });
     expect(await client.query('SELECT 1')).toBeInstanceOf(Array);
     await client.close();
+  });
+
+  test('a native preflight refusal of a plain re-create surfaces through create', async () => {
+    // The shared Rust command router refuses a create WITHOUT
+    // securityPreflight while a preflight is pending; the bridge must
+    // surface that refusal as a construction failure and a preflighted
+    // re-create must stay gated.
+    const { nativeModule, eventEmitter } = makeNative((method, params) => {
+      if (method === 'create' && params.securityPreflight !== true) {
+        return {
+          error: {
+            code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+            message:
+              'the local replica is in security preflight; a replacement create must itself request securityPreflight, and protected data opens only after activateSecurity',
+          },
+        };
+      }
+      return defaultResponder(method, params);
+    });
+    await expect(
+      createNativeSyncClient({
+        schema: { version: 1, tables: [] },
+        nativeModule,
+        eventEmitter,
+      }),
+    ).rejects.toMatchObject({ code: SECURITY_PREFLIGHT_REQUIRED_CODE });
+    const gated = await createNativeSyncClient({
+      schema: { version: 1, tables: [] },
+      securityPreflight: true,
+      nativeModule,
+      eventEmitter,
+    });
+    expect(await gated.securityLifecycle()).toBe('preflight');
+    await expect(gated.query('SELECT 1')).rejects.toMatchObject({
+      code: SECURITY_PREFLIGHT_REQUIRED_CODE,
+    });
+    await gated.close();
   });
 
   test('query uses the query fast path and decodes bytes', async () => {

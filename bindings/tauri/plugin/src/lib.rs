@@ -353,6 +353,16 @@ where
             Request::Command { command, reply } => {
                 let command = inject_db_path(command, &config);
                 let result = core.command(&command);
+                if result.get("error").is_none() {
+                    if let Some(headers) = activation_headers(&command) {
+                        // A successful `activateSecurity` may carry a fresh
+                        // header set; apply it here, before this loop consumes
+                        // the startup sync intent the activation enqueued, so
+                        // a preflight that outlived the boot token starts its
+                        // first round with valid credentials.
+                        core.set_headers(headers);
+                    }
+                }
                 let _ = reply.send(result);
                 pump_events(&mut core, &emit);
             }
@@ -401,6 +411,17 @@ fn inject_db_path(mut command: Value, config: &SyncularConfig) -> Value {
         obj.insert("params".to_owned(), json!({ "dbPath": db_path }));
     }
     command
+}
+
+/// The header set an `activateSecurity` command carries (already validated by
+/// the shared command router; a shape failure surfaces as its error reply, so
+/// this extraction only sees well-formed sets on the success path).
+fn activation_headers(command: &Value) -> Option<Vec<(String, String)>> {
+    if command.get("method").and_then(Value::as_str) != Some("activateSecurity") {
+        return None;
+    }
+    let headers = command.pointer("/params/headers")?;
+    syncular_command::parse_headers(headers).ok()
 }
 
 fn client_error(message: impl Into<String>) -> Value {
@@ -770,6 +791,113 @@ mod tests {
         ))
         .expect("active reply");
         assert_eq!(active["result"], Value::Null);
+    }
+
+    #[test]
+    fn activation_headers_extracts_only_the_activation_set() {
+        assert_eq!(
+            activation_headers(&json!({
+                "method": "activateSecurity",
+                "params": { "headers": { "authorization": "Bearer fresh" } }
+            })),
+            Some(vec![(
+                "authorization".to_owned(),
+                "Bearer fresh".to_owned()
+            )])
+        );
+        // Absent headers, other methods, and invalid shapes all yield nothing.
+        assert_eq!(
+            activation_headers(&json!({ "method": "activateSecurity", "params": {} })),
+            None
+        );
+        assert_eq!(
+            activation_headers(&json!({
+                "method": "setWindow",
+                "params": { "headers": { "authorization": "Bearer fresh" } }
+            })),
+            None
+        );
+        assert_eq!(
+            activation_headers(&json!({
+                "method": "activateSecurity",
+                "params": { "headers": { "authorization": 7 } }
+            })),
+            None
+        );
+    }
+
+    #[test]
+    fn preflight_refuses_plain_replacement_creates_through_the_plugin() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+
+        let app = mock_builder()
+            .plugin(init(SyncularConfig {
+                auto_sync: false,
+                ..Default::default()
+            }))
+            .build(mock_context(noop_assets()))
+            .expect("build mock app");
+        let command = |value: Value| {
+            tauri::async_runtime::block_on(syncular_command(app.handle().clone(), value))
+                .expect("command reply")
+        };
+
+        let created = command(json!({
+            "method": "create",
+            "params": {
+                "clientId": "native-preflight-escape",
+                "schema": { "version": 1, "tables": [] },
+                "securityPreflight": true
+            }
+        }));
+        assert!(created.get("error").is_none(), "{created}");
+
+        // The escape attempt: a plain re-create must be refused by the shared
+        // router, and the plugin's fast-read gate must stay engaged.
+        let escape = command(json!({
+            "method": "create",
+            "params": {
+                "clientId": "native-preflight-escape",
+                "schema": { "version": 1, "tables": [] }
+            }
+        }));
+        assert_eq!(
+            escape["error"]["code"],
+            Value::from("client.security_preflight_required"),
+            "{escape}"
+        );
+        let read = tauri::async_runtime::block_on(syncular_query(
+            app.handle().clone(),
+            "SELECT 1".to_owned(),
+            None,
+        ))
+        .expect("query reply");
+        assert_eq!(
+            read["error"]["code"],
+            Value::from("client.security_preflight_required")
+        );
+
+        // Activation (with a fresh header set) releases both gates.
+        let activated = command(json!({
+            "method": "activateSecurity",
+            "params": { "headers": { "authorization": "Bearer fresh" } }
+        }));
+        assert!(activated.get("error").is_none(), "{activated}");
+        let read = tauri::async_runtime::block_on(syncular_query(
+            app.handle().clone(),
+            "SELECT 1 AS value".to_owned(),
+            None,
+        ))
+        .expect("query reply");
+        assert_eq!(read["result"]["rows"][0]["value"], 1);
+        let recreated = command(json!({
+            "method": "create",
+            "params": {
+                "clientId": "native-preflight-escape",
+                "schema": { "version": 1, "tables": [] }
+            }
+        }));
+        assert!(recreated.get("error").is_none(), "{recreated}");
     }
 
     #[test]

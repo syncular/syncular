@@ -48,6 +48,11 @@ pub struct SyncularCore {
     effects: CreateEffects,
     queue: VecDeque<Event>,
     last_diagnostics_fingerprint: Option<Value>,
+    /// Diagnostics snapshots are computed only after a consumer registers —
+    /// the analogue of the web client's `ClientDiagnosticsEmitter.observed`.
+    /// Set by the explicit `enableDiagnostics` command and by the first
+    /// `diagnosticsSnapshot` pull (the devtools attach signal).
+    diagnostics_observed: bool,
     interactive_sync: bool,
     background_sync_ms: Option<u64>,
 }
@@ -71,6 +76,7 @@ impl SyncularCore {
             effects: CreateEffects::default(),
             queue: VecDeque::new(),
             last_diagnostics_fingerprint: None,
+            diagnostics_observed: false,
             interactive_sync: false,
             background_sync_ms: None,
         })
@@ -82,6 +88,22 @@ impl SyncularCore {
     pub fn command(&mut self, command: &Value) -> Value {
         let method = command.get("method").and_then(Value::as_str).unwrap_or("");
         let params = command.get("params").cloned().unwrap_or(Value::Null);
+        if method == "enableDiagnostics" {
+            // Host-local registration signal (the Tauri event channel carries
+            // no listener count). Emission starts on this drain: the reset
+            // fingerprint guarantees the observer receives a first snapshot.
+            self.diagnostics_observed = true;
+            self.last_diagnostics_fingerprint = None;
+            self.drain_realtime();
+            self.drain_core_outputs();
+            self.emit_diagnostics_if_changed();
+            return json!({ "result": {} });
+        }
+        if method == "diagnosticsSnapshot" {
+            // A direct pull proves a diagnostics consumer exists; keep the
+            // pushed snapshots flowing for it from here on.
+            self.diagnostics_observed = true;
+        }
         let result = dispatch(
             &mut self.transport,
             &mut self.client,
@@ -187,6 +209,9 @@ impl SyncularCore {
         }
         self.interactive_sync = false;
         self.background_sync_ms = None;
+        // The TS driver clears its diagnostics listeners on dispose; require
+        // a fresh registration after any restart.
+        self.diagnostics_observed = false;
         self.transport.shutdown();
     }
 
@@ -244,11 +269,18 @@ impl SyncularCore {
         }
     }
 
-    /// Emit one privacy-safe snapshot only when durable/client status changed.
+    /// Emit one privacy-safe snapshot only when a diagnostics consumer has
+    /// registered (`diagnostics_observed`) AND durable/client status changed.
+    /// The observer gate keeps the per-command snapshot work (subscription
+    /// scan, PRAGMA page counts, SUM aggregates, serialization) off every
+    /// unobserved command and transport poll.
     /// `capturedAtMs` is excluded from the fingerprint so polling and read-only
     /// commands do not create event noise. Expected-but-unregistered intent is
     /// request-local and is obtained through `diagnosticsSnapshot` directly.
     fn emit_diagnostics_if_changed(&mut self) {
+        if !self.diagnostics_observed {
+            return;
+        }
         let Some(client) = self.client.as_ref() else {
             return;
         };
@@ -363,6 +395,9 @@ mod tests {
         let mut core = SyncularCore::new(&json!({})).unwrap();
         // Before create, no events.
         create(&mut core);
+        // Register a diagnostics consumer so mutate-driven snapshots flow.
+        let enabled = core.command(&json!({ "method": "enableDiagnostics", "params": {} }));
+        assert_eq!(enabled["result"], json!({}));
         let _ = core.drain_events();
         core.command(&json!({
             "method": "mutate",
@@ -393,6 +428,77 @@ mod tests {
         assert!(matches!(core.take_sync_intent(), SyncIntent::Interactive));
         // Draining is exhaustive.
         assert!(core.drain_events().is_empty());
+    }
+
+    #[test]
+    fn diagnostics_events_wait_for_a_registered_consumer() {
+        let mut core = SyncularCore::new(&json!({})).unwrap();
+        create(&mut core);
+        let _ = core.drain_events();
+        core.command(&json!({
+            "method": "mutate",
+            "params": { "mutations": [{
+                "op": "upsert", "table": "todo",
+                "values": { "id": "t1", "title": "x", "done": false }
+            }] }
+        }));
+        let kinds: Vec<String> = core
+            .drain_events()
+            .iter()
+            .filter_map(|e| e.json.get("type").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect();
+        assert!(kinds.contains(&"change".to_owned()), "kinds: {kinds:?}");
+        // Without a registered consumer the snapshot is never computed.
+        assert!(
+            !kinds.contains(&"diagnostics".to_owned()),
+            "kinds: {kinds:?}"
+        );
+
+        // Registration delivers a first snapshot on the same drain.
+        let enabled = core.command(&json!({ "method": "enableDiagnostics", "params": {} }));
+        assert_eq!(enabled["result"], json!({}));
+        let events = core.drain_events();
+        assert!(
+            events.iter().any(|e| e.json["type"] == "diagnostics"),
+            "events: {events:?}"
+        );
+
+        // Subsequent status changes keep flowing through the fingerprint gate.
+        core.command(&json!({
+            "method": "mutate",
+            "params": { "mutations": [{
+                "op": "upsert", "table": "todo",
+                "values": { "id": "t2", "title": "y", "done": false }
+            }] }
+        }));
+        let events = core.drain_events();
+        assert!(
+            events.iter().any(|e| e.json["type"] == "diagnostics"),
+            "events: {events:?}"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_pull_registers_the_diagnostics_consumer() {
+        let mut core = SyncularCore::new(&json!({})).unwrap();
+        create(&mut core);
+        let _ = core.drain_events();
+        let reply = core.command(&json!({ "method": "diagnosticsSnapshot", "params": {} }));
+        assert_eq!(reply["result"]["version"], 1);
+        let _ = core.drain_events();
+        core.command(&json!({
+            "method": "mutate",
+            "params": { "mutations": [{
+                "op": "upsert", "table": "todo",
+                "values": { "id": "t1", "title": "x", "done": false }
+            }] }
+        }));
+        let events = core.drain_events();
+        assert!(
+            events.iter().any(|e| e.json["type"] == "diagnostics"),
+            "events: {events:?}"
+        );
     }
 
     #[test]

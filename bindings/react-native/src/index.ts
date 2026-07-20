@@ -319,6 +319,9 @@ export class NativeSyncClient {
         'the native sync client is closed',
       );
     }
+    // The allowlist mirrors the command router's and the Tauri bridge's:
+    // `shutdown` is included so a future close() refactor that routes the
+    // teardown through #command keeps working during preflight.
     if (
       this.#securityLifecycle === 'preflight' &&
       ![
@@ -328,6 +331,7 @@ export class NativeSyncClient {
         'purgeLocalData',
         'localRevision',
         'statusSnapshot',
+        'shutdown',
       ].includes(method)
     ) {
       this.#throwSecurityPreflight();
@@ -523,8 +527,18 @@ export class NativeSyncClient {
     return barrier;
   }
 
+  /**
+   * Complete the security preflight. `headers` optionally carries a fresh
+   * FULL transport header set for the native transport, validated by the
+   * shared command router and forwarded with the activation so the host can
+   * apply it before the startup sync the activation enqueues — the path for
+   * a preflight that outlives the boot token.
+   */
   async activateSecurity(
-    options: { readonly encryption?: EncryptionKeyringConfig } = {},
+    options: {
+      readonly encryption?: EncryptionKeyringConfig;
+      readonly headers?: Readonly<Record<string, string>>;
+    } = {},
   ): Promise<void> {
     if (this.#securityLifecycle === 'active') {
       throw new NativeSyncError(
@@ -537,6 +551,7 @@ export class NativeSyncClient {
       ...(options.encryption !== undefined
         ? { encryption: encodeEncryption(options.encryption) }
         : {}),
+      ...(options.headers !== undefined ? { headers: options.headers } : {}),
     });
     this.#securityLifecycle = 'active';
   }
