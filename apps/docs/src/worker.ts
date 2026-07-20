@@ -57,14 +57,18 @@ export const classifyDevice = (userAgent: string | null) => {
 
 export const referrerHost = (value: string | null | undefined) => {
   if (!value) return 'direct';
+  let hostname: string;
   try {
-    const hostname = new URL(value).hostname.toLowerCase();
-    return hostname === 'syncular.dev' || hostname.endsWith('.syncular.dev')
-      ? 'internal'
-      : dimension(hostname, 'direct');
+    hostname = new URL(value).hostname.toLowerCase();
   } catch {
-    return 'direct';
+    // The engagement script sends a bare hostname; accept it directly.
+    const trimmed = value.trim().toLowerCase();
+    hostname = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(trimmed) ? trimmed : '';
   }
+  if (!hostname) return 'direct';
+  return hostname === 'syncular.dev' || hostname.endsWith('.syncular.dev')
+    ? 'internal'
+    : dimension(hostname, 'direct');
 };
 
 const sectionFor = (pathname: string) => {
@@ -76,6 +80,12 @@ const sectionFor = (pathname: string) => {
 
 const privacyOptOut = (request: Request) =>
   request.headers.get('sec-gpc') === '1' || request.headers.get('dnt') === '1';
+
+export const isPrefetch = (request: Request) =>
+  (request.headers.get('sec-purpose') ?? '')
+    .toLowerCase()
+    .includes('prefetch') ||
+  (request.headers.get('purpose') ?? '').toLowerCase() === 'prefetch';
 
 const requestCountry = (request: Request) => {
   const country = (request as Request & { cf?: RequestCf }).cf?.country;
@@ -172,9 +182,12 @@ export const parseArticleRead = (value: unknown): ArticleRead | null => {
 const articleReadResponse = async (request: Request, env: Env) => {
   const url = new URL(request.url);
   const origin = request.headers.get('origin');
+  // Older WebKit builds send no Sec-Fetch headers at all; reject the header
+  // only when it is present with a value other than same-origin.
+  const secFetchSite = request.headers.get('sec-fetch-site');
   const sameOrigin =
     origin === url.origin &&
-    request.headers.get('sec-fetch-site') === 'same-origin';
+    (secFetchSite === null || secFetchSite === 'same-origin');
   const contentLength = Number(request.headers.get('content-length') ?? '0');
 
   if (!sameOrigin || contentLength > 2048) {
@@ -423,6 +436,7 @@ export default {
     if (
       request.method === 'GET' &&
       contentType.includes('text/html') &&
+      !isPrefetch(request) &&
       !privacyOptOut(request)
     ) {
       writeAnalytics(

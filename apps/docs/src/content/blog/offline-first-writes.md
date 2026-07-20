@@ -526,7 +526,7 @@ The web core is TypeScript. The native core is Rust, exposed through thin Swift,
 
 Both implement the written [SSP2 protocol](https://github.com/syncular/syncular/blob/main/docs/SPEC.md). Both consume the same generated schema contract. Both run the same implementation-agnostic [conformance scenarios and golden byte vectors](/guide-conformance/).
 
-At the time of writing, the catalog contains 93 scenarios covering convergence, offline replay, lost acknowledgements, conflicts, scopes, revocation, bootstrap interruption, blobs, encryption, CRDTs, schema upgrades, realtime, presence, windowing, validation, and pruning. The repository gate passes more than 1,200 tests across the TypeScript and Rust paths.
+The catalog contains 95 scenarios covering convergence, offline replay, lost acknowledgements, conflicts, scopes, revocation, bootstrap interruption, blobs, encryption, CRDTs, schema upgrades, realtime, presence, windowing, validation, and pruning. The repository gate passes more than 1,200 tests across the TypeScript and Rust paths.
 
 Writing down a protocol is valuable because it removes implementation language as an excuse. If behavior can only be explained by pointing at a TypeScript object, it is not yet a portable protocol.
 

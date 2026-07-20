@@ -344,6 +344,12 @@ registration state changes. TypeScript and Rust now share this behavior across
 direct, persisted-restart, Worker leader/follower, shared Tauri/React Native
 command, and conformance paths.
 
+**Upgrade note:** apps that previously changed the query, table, scopes, or
+params behind a stable subscription id must now unsubscribe that id first or
+declare the changed intent under a new id. Re-declaring a different intent
+under an existing id fails with `client.subscription_intent_mismatch` and
+leaves the registration, cursor, and bootstrap progress unchanged.
+
 The release also re-derives the own-code bundle budget from the complete
 0.15.18 baseline. The identity guard adds 119 minified raw bytes; the corrected
 budget restores the standing approximately five-percent headroom without

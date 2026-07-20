@@ -766,7 +766,7 @@ A pull for an active subscription returns exactly the changes whose
 stored scopes match the effective scopes: for every effective key, the
 change's stored value for that key is in the effective value list.
 
-**Scope variables are independent dimensions, not correlated tuples.**
+**Scope variables are independent dimensions.**
 An allowed map such as `{ workspace_id: ['w1', 'w2'], surgery_id: ['s1',
 's2'] }` authorizes every row whose `workspace_id` is in the first list
 and whose `surgery_id` is in the second. It does not encode only the pairs

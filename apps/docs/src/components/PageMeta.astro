@@ -2,7 +2,7 @@
 interface Props {
   title: string;
   description: string;
-  canonicalPath: string;
+  canonicalPath?: string;
   documentTitle?: string;
   type?: 'website' | 'article';
   author?: string;
@@ -22,7 +22,7 @@ const {
 } = Astro.props;
 
 const site = Astro.site ?? new URL('https://syncular.dev');
-const canonicalUrl = new URL(canonicalPath, site);
+const canonicalUrl = canonicalPath ? new URL(canonicalPath, site) : undefined;
 const imageUrl = new URL('/social-card.png', site);
 const imageAlt =
   'syncular ASCII singularity mark with a bright accretion disk and amber event horizon';
@@ -42,7 +42,7 @@ const publishedDate = publishedAt
 <meta property="og:type" content={type} />
 <meta property="og:title" content={title} />
 <meta property="og:description" content={description} />
-<meta property="og:url" content={canonicalUrl} />
+{canonicalUrl ? <meta property="og:url" content={canonicalUrl} /> : null}
 <meta property="og:site_name" content="syncular" />
 <meta property="og:locale" content="en_US" />
 <meta property="og:image" content={imageUrl} />
@@ -62,5 +62,5 @@ const publishedDate = publishedAt
 <meta name="twitter:image" content={imageUrl} />
 <meta name="twitter:image:alt" content={imageAlt} />
 
-<link rel="canonical" href={canonicalUrl} />
+{canonicalUrl ? <link rel="canonical" href={canonicalUrl} /> : null}
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />

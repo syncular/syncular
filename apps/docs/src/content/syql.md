@@ -183,7 +183,8 @@ local row that has not yet received a server version.
 
 ## Sort and limit
 
-Dynamic sorting is a closed enum, not arbitrary runtime SQL:
+Dynamic sorting is a closed enum of named profiles; every runtime sort
+resolves to one of the declared orderings:
 
 ```syql
 order by sortBy default newest {
