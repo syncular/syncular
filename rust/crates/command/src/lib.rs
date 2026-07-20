@@ -62,9 +62,16 @@ pub struct CreateEffects {
     /// installed (or entered preflight, or was shut down mid-preflight) and
     /// `activateSecurity` has yet to complete. `dispatch` maintains this so a
     /// replacement `create` without the `securityPreflight` flag is refused —
-    /// including across `shutdown`, where the client slot is empty. Every host
-    /// inherits the rule because the flag lives on this shared, host-persistent
-    /// state.
+    /// including across `shutdown`, where the client slot is empty.
+    ///
+    /// The refusal holds only for a host that reuses one `CreateEffects` across
+    /// creates: the Tauri plugin (one owner-thread core for the plugin's life),
+    /// the conformance shim, and the bench harness. A host that allocates a
+    /// fresh `CreateEffects` per create — the React Native native module builds
+    /// a new FFI handle on every `create` — starts each create with the flag
+    /// clear, so it MUST enforce the gate in its own glue (reuse one handle for
+    /// the process, or refuse a plain re-create while the live handle is
+    /// preflighting).
     pub security_preflight_pending: bool,
 }
 
