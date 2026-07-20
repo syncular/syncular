@@ -23,29 +23,8 @@ on:
 
 permissions:
   contents: read
-  checks: write
-  issues: write
 
 jobs:
-  cargo-audit:
-    name: RustSec (${{ matrix.workspace }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - workspace: core
-            directory: rust
-          - workspace: tauri
-            directory: bindings/tauri
-    steps:
-      - uses: actions/checkout@v6
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          working-directory: ${{ matrix.directory }}
-
   cargo-policy:
     name: cargo-deny (${{ matrix.workspace }})
     runs-on: ubuntu-latest
