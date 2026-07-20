@@ -1,8 +1,16 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.38** (`v0.15.38`). All artifacts use Apache-2.0, except
+current release is **0.15.39** (`v0.15.39`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.39 release notes
+
+- `@syncular/react` now reaches the normalized-client realtime observation
+  bridge through the tiny `@syncular/client/realtime-supervisor-observation`
+  subpath. This retains 0.15.38's truthful supervisor diagnostics without
+  pulling the optional supervisor runtime into an application's initial React
+  bundle solely to link a facade.
 
 ## 0.15.38 release notes
 
