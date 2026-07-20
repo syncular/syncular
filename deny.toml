@@ -5,7 +5,7 @@ all-features = true
 # Vulnerabilities, unsoundness notices, and direct unmaintained dependencies fail.
 yanked = "deny"
 unmaintained = "workspace"
-unused-ignored-advisory = "allow"
+unused-ignored-advisory = "warn"
 ignore = [
   { id = "RUSTSEC-2024-0429", reason = "Tauri 2's supported Linux webview stack pins gtk-rs 0.18; Syncular does not use glib::VariantStrIter" },
 ]
