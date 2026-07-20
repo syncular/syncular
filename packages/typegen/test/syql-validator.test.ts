@@ -54,6 +54,22 @@ const IR: IrDocument = {
       extensions: {},
     },
     {
+      name: 'notes',
+      primaryKey: 'id',
+      columns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'todo_id', type: 'string', nullable: false },
+        { name: 'list_id', type: 'string', nullable: false },
+        { name: 'text', type: 'string', nullable: false },
+      ],
+      scopes: [
+        { pattern: 'list:{list_id}', variable: 'list_id', column: 'list_id' },
+      ],
+      indexes: [],
+      ftsIndexes: [],
+      extensions: {},
+    },
+    {
       name: 'messages',
       primaryKey: 'id',
       columns: [
@@ -364,6 +380,81 @@ describe('SYQL schema/SQL validation', () => {
     expect(query?.analysis.columns).toMatchObject([
       { name: 'id', nullable: false },
       { name: 'body', nullable: true },
+    ]);
+  });
+
+  test('an outer-join ON equality never proves coverage for preserved-side tables', () => {
+    // The LEFT JOIN's ON contains `t.list_id = d.list_id`, an equality
+    // between two preserved-side tables. Preserved rows appear even when the
+    // ON predicate fails, so `t` rows with list_id outside :listId can still
+    // reach the result and coverage stays unprovable.
+    const error = frontendError(() =>
+      validate(`sync query q(listId) {
+        select t.id, d.body
+        from todos as t
+        join todo_details as d on d.todo_id = t.id
+        left join notes as n on n.list_id = t.list_id and t.list_id = d.list_id
+        where d.list_id = :listId;
+      }`),
+    );
+    expect(error.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
+  });
+
+  test('the preserved side of a left join never inherits through its ON', () => {
+    const error = frontendError(() =>
+      validate(`sync query q(listId) {
+        select t.id, d.body
+        from todos as t
+        left join todo_details as d on d.list_id = t.list_id
+        where d.list_id = :listId;
+      }`),
+    );
+    expect(error.code).toBe('SYQL6005_INVALID_SYNC_QUERY');
+  });
+
+  test('inner-join ON equalities still propagate scope proofs symmetrically', () => {
+    const query = validate(`sync query q(listId) {
+      select t.id, d.body
+      from todos as t
+      join todo_details as d on d.todo_id = t.id and d.list_id = t.list_id
+      where t.list_id = :listId;
+    }`).queries[0];
+    expect(query?.reactive.coverage).toEqual([
+      {
+        table: 'todo_details',
+        variable: 'list_id',
+        units: ['listId'],
+        fixedScopes: [],
+      },
+      {
+        table: 'todos',
+        variable: 'list_id',
+        units: ['listId'],
+        fixedScopes: [],
+      },
+    ]);
+  });
+
+  test('a left join with the scope equality in WHERE still proves coverage', () => {
+    const query = validate(`sync query q(listId) {
+      select t.id, d.body
+      from todos as t
+      left join todo_details as d on d.todo_id = t.id
+      where t.list_id = :listId and d.list_id = :listId;
+    }`).queries[0];
+    expect(query?.reactive.coverage).toEqual([
+      {
+        table: 'todo_details',
+        variable: 'list_id',
+        units: ['listId'],
+        fixedScopes: [],
+      },
+      {
+        table: 'todos',
+        variable: 'list_id',
+        units: ['listId'],
+        fixedScopes: [],
+      },
     ]);
   });
 

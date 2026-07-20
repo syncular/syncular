@@ -81,10 +81,30 @@ const tableIdentifierSources = new WeakMap<ParsedTable, string>();
 const columnIdentifierSources = new WeakMap<IrColumn, string>();
 const indexIdentifierSources = new WeakMap<IrIndex, string>();
 
+/** Objects created while replaying the locked, immutable history prefix.
+ * Rules adopted while that prefix was already deployed (nullable-only ADD
+ * COLUMN, ASCII-portable identifiers) replay tolerantly for these objects;
+ * every migration beyond the locked prefix enforces them. */
+const lockedHistoryObjects = new WeakSet<object>();
+
+/** Options for replaying one migration's SQL. */
+export interface ApplyMigrationSqlOptions {
+  /** True while this migration is part of the locked, immutable history
+   * prefix (`syncular.migrations.lock.json`). Deployed migrations are
+   * immutable, so checks that would require editing them are skipped for the
+   * locked prefix and enforced for appended migrations. */
+  readonly lockedHistory?: boolean;
+}
+
+/** ASCII identifier contract shared with named-query analysis: query
+ * dependency tracking and reactivity resolve identifiers with this shape. */
+const PORTABLE_ASCII_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 function validateIdentifier(
   source: string,
   kind: string,
   identifier: string,
+  target: object,
 ): void {
   try {
     validatePortableRelationalIdentifier(kind, identifier);
@@ -94,25 +114,35 @@ function validateIdentifier(
       error instanceof Error ? error.message : 'invalid relational identifier',
     );
   }
+  if (lockedHistoryObjects.has(target)) return;
+  if (!PORTABLE_ASCII_IDENTIFIER_RE.test(identifier)) {
+    throw new TypegenError(
+      source,
+      `${kind} name ${JSON.stringify(identifier)} must be an ASCII identifier matching [A-Za-z_][A-Za-z0-9_]* — named-query analysis resolves ASCII identifiers, so a non-ASCII name silently loses dependency tracking and reactivity`,
+    );
+  }
 }
 
 /**
  * Validate the accumulated head schema after every migration has been
  * applied. This deliberately permits a locked historical migration to create
  * an invalid identifier when a later forward migration drops it; only final
- * generated objects must be portable.
+ * generated objects must be portable. Objects created by locked migrations
+ * are additionally exempt from the ASCII rule (deployed migrations are
+ * immutable, so the name can only be retired by a forward migration).
  */
 export function validateFinalSchemaIdentifiers(
   tables: ReadonlyMap<string, ParsedTable>,
 ): void {
   for (const table of tables.values()) {
     const tableSource = tableIdentifierSources.get(table) ?? 'migrations';
-    validateIdentifier(tableSource, 'table', table.name);
+    validateIdentifier(tableSource, 'table', table.name, table);
     for (const column of table.columns) {
       validateIdentifier(
         columnIdentifierSources.get(column) ?? tableSource,
         `table ${table.name}: column`,
         column.name,
+        column,
       );
     }
     for (const index of table.indexes) {
@@ -120,6 +150,7 @@ export function validateFinalSchemaIdentifiers(
         indexIdentifierSources.get(index) ?? tableSource,
         `table ${table.name}: index`,
         index.name,
+        index,
       );
     }
   }
@@ -359,22 +390,23 @@ function parseCreate(
   tables: Map<string, ParsedTable>,
   droppedTables: ReadonlySet<string>,
   source: string,
+  options: ApplyMigrationSqlOptions,
 ): void {
   if (cursor.eatWord('VIRTUAL')) {
     parseCreateVirtualTable(cursor, tables);
     return;
   }
   if (cursor.eatWord('TABLE')) {
-    parseCreateTable(cursor, tables, droppedTables, source);
+    parseCreateTable(cursor, tables, droppedTables, source, options);
     return;
   }
   if (cursor.eatWord('UNIQUE')) {
     cursor.expectWord('INDEX', 'after CREATE UNIQUE');
-    parseCreateIndex(cursor, tables, true, source);
+    parseCreateIndex(cursor, tables, true, source, options);
     return;
   }
   if (cursor.eatWord('INDEX')) {
-    parseCreateIndex(cursor, tables, false, source);
+    parseCreateIndex(cursor, tables, false, source, options);
     return;
   }
   const token = cursor.peek();
@@ -518,6 +550,7 @@ function parseCreateTable(
   tables: Map<string, ParsedTable>,
   droppedTables: ReadonlySet<string>,
   source: string,
+  options: ApplyMigrationSqlOptions,
 ): void {
   if (cursor.eatWord('IF')) {
     cursor.expectWord('NOT', 'after IF');
@@ -618,8 +651,10 @@ function parseCreateTable(
   };
   tables.set(name, table);
   tableIdentifierSources.set(table, source);
+  if (options.lockedHistory === true) lockedHistoryObjects.add(table);
   for (const column of finalColumns) {
     columnIdentifierSources.set(column, source);
+    if (options.lockedHistory === true) lockedHistoryObjects.add(column);
   }
 }
 
@@ -636,6 +671,7 @@ function parseCreateIndex(
   tables: Map<string, ParsedTable>,
   unique: boolean,
   source: string,
+  options: ApplyMigrationSqlOptions,
 ): void {
   // `INDEX` already matched by the dispatcher.
   if (cursor.eatWord('IF')) {
@@ -715,12 +751,14 @@ function parseCreateIndex(
   const index: IrIndex = { name, columns, unique };
   table.indexes.push(index);
   indexIdentifierSources.set(index, source);
+  if (options.lockedHistory === true) lockedHistoryObjects.add(index);
 }
 
 function parseAlterTable(
   cursor: Cursor,
   tables: Map<string, ParsedTable>,
   source: string,
+  options: ApplyMigrationSqlOptions,
 ): void {
   cursor.expectWord('TABLE', 'after ALTER');
   const name = cursor.identifier('a table name');
@@ -737,7 +775,9 @@ function parseAlterTable(
   cursor.eatWord('COLUMN');
   const def = parseColumnDef(cursor, false);
   cursor.expectEnd();
-  if (!def.column.nullable) {
+  // A locked migration replays as deployed; the nullable rule applies to
+  // migrations beyond the locked prefix, where the SQL can still change.
+  if (!def.column.nullable && options.lockedHistory !== true) {
     cursor.fail(
       `ALTER TABLE ${name}: added column ${JSON.stringify(def.column.name)} must be nullable — SQL defaults do not backfill Syncular row payloads; add the column nullable, backfill it through versioned server-authoritative writes, and enforce required values in application validation`,
     );
@@ -749,6 +789,7 @@ function parseAlterTable(
   }
   table.columns.push(def.column);
   columnIdentifierSources.set(def.column, source);
+  if (options.lockedHistory === true) lockedHistoryObjects.add(def.column);
 }
 
 /** `DROP TABLE [IF EXISTS] name`; table-name reuse remains unsupported. */
@@ -792,6 +833,13 @@ function parseDropIndex(
     table.indexes.splice(index, 1);
     return;
   }
+  for (const table of tables.values()) {
+    if (table.ftsIndexes.some((candidate) => candidate.name === name)) {
+      cursor.fail(
+        `DROP INDEX ${name}: ${name} is an FTS5 virtual table (CREATE VIRTUAL TABLE … USING fts5); the migration subset removes an FTS projection together with its owning content table (DROP TABLE ${table.name})`,
+      );
+    }
+  }
   if (!ifExists) {
     cursor.fail(`DROP INDEX ${name}: index does not exist at this point`);
   }
@@ -825,15 +873,16 @@ export function applyMigrationSql(
   sql: string,
   source: string,
   droppedTables: Set<string> = new Set<string>(),
+  options: ApplyMigrationSqlOptions = {},
 ): void {
   for (const tokens of tokenizeStatements(sql, source)) {
     const cursor = new Cursor(tokens, source);
     const head = cursor.next();
     const word = head.kind === 'word' ? head.text.toUpperCase() : '';
     if (word === 'CREATE') {
-      parseCreate(cursor, tables, droppedTables, source);
+      parseCreate(cursor, tables, droppedTables, source, options);
     } else if (word === 'ALTER') {
-      parseAlterTable(cursor, tables, source);
+      parseAlterTable(cursor, tables, source, options);
     } else if (word === 'DROP') {
       parseDrop(cursor, tables, droppedTables);
     } else {

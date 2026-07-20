@@ -44,6 +44,7 @@ import {
 import {
   buildMigrationLock,
   LEGACY_MIGRATION_LOCK_FORMAT_VERSION,
+  lockedMigrationNames,
   MIGRATION_LOCK_FILENAME,
   readMigrationLock,
   serializeMigrationLock,
@@ -268,10 +269,13 @@ function buildSchemaVersions(
   return out;
 }
 
-/** Pure IR construction — the testable heart of the generator. */
+/** Pure IR construction — the testable heart of the generator. Migrations
+ * named in `lockedNames` replay as immutable deployed history: rules that
+ * only appended migrations must satisfy are skipped for them. */
 export function buildIr(
   manifest: Manifest,
   migrations: readonly MigrationInput[],
+  lockedNames?: ReadonlySet<string>,
 ): IrDocument {
   if (migrations.length === 0) {
     throw new TypegenError(MANIFEST_FILENAME, 'no migrations found');
@@ -284,6 +288,7 @@ export function buildIr(
       migration.sql,
       `${migration.name}/up.sql`,
       droppedTables,
+      { lockedHistory: lockedNames?.has(migration.name) === true },
     );
   }
   validateFinalSchemaIdentifiers(parsedTables);
@@ -600,21 +605,35 @@ export function upgradeMigrationHistory(manifestDir: string): GeneratedOutput {
   }
   // Validate the immutable prefix before replacing its representation.
   updateMigrationLock(locked, migrations);
-  buildIr(manifest, migrations);
+  // upgrade-lock converts the committed representation of history that is
+  // already locked. Extending the lock over appended migrations is its own
+  // reviewable act, so unlocked migrations stop the conversion here.
+  if (migrations.length > locked.migrations.length) {
+    const appended = migrations
+      .slice(locked.migrations.length)
+      .map((migration) => migration.name)
+      .join(', ');
+    throw new TypegenError(
+      MIGRATION_LOCK_FILENAME,
+      `migrations ${appended} are appended beyond the locked history — run generate to extend the lock over them, commit the extended lock, then rerun \`migrations upgrade-lock\``,
+    );
+  }
+  const lockedNames = lockedMigrationNames(locked);
+  buildIr(manifest, migrations, lockedNames);
   return {
     path: resolve(manifestDir, MIGRATION_LOCK_FILENAME),
-    content: serializeMigrationLock(buildMigrationLock(migrations)),
+    content: serializeMigrationLock(
+      buildMigrationLock(migrations, undefined, lockedNames),
+    ),
   };
 }
 
 /** Fast CI check for migration history without emitting/query analysis. */
 export function checkMigrationHistory(manifestDir: string): string[] {
   const { manifest, migrations } = loadProjectInputs(manifestDir);
-  const current = updateMigrationLock(
-    readMigrationLock(manifestDir),
-    migrations,
-  );
-  buildIr(manifest, migrations);
+  const locked = readMigrationLock(manifestDir);
+  const current = updateMigrationLock(locked, migrations);
+  buildIr(manifest, migrations, lockedMigrationNames(locked));
   const output = {
     path: resolve(manifestDir, MIGRATION_LOCK_FILENAME),
     content: serializeMigrationLock(current),
@@ -630,11 +649,9 @@ export function checkMigrationHistory(manifestDir: string): string[] {
 /** Read `syncular.json` + migrations under `manifestDir`; build outputs. */
 export function generate(manifestDir: string): GenerateResult {
   const { manifest, migrations } = loadProjectInputs(manifestDir);
-  const migrationLock = updateMigrationLock(
-    readMigrationLock(manifestDir),
-    migrations,
-  );
-  const ir = buildIr(manifest, migrations);
+  const locked = readMigrationLock(manifestDir);
+  const migrationLock = updateMigrationLock(locked, migrations);
+  const ir = buildIr(manifest, migrations, lockedMigrationNames(locked));
 
   // §5/§12 naming: the emitter targets this run generates (keyword hazards
   // are only real on targets that exist), and the per-table collision check

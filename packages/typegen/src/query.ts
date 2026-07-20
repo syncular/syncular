@@ -767,6 +767,11 @@ function hasCommaJoinedSchemaTable(sql: string, ir: IrDocument): boolean {
   ]);
   let depth = 0;
   let cursor = 0;
+  /** The previous significant token: an uppercased word or a single
+   * punctuation character. Distinguishes a table-source group — a `(` after
+   * FROM, JOIN, `,` or another `(` — from a function call or parenthesized
+   * expression, whose `(` follows an identifier or an operator. */
+  let previous: string | undefined;
   const nextIdentifier = (start: number): string | undefined => {
     let index = start;
     while (
@@ -781,9 +786,19 @@ function hasCommaJoinedSchemaTable(sql: string, ir: IrDocument): boolean {
 
   while (cursor < cleaned.length) {
     const char = cleaned[cursor] as string;
+    if (/\s/.test(char)) {
+      cursor += 1;
+      continue;
+    }
     if (char === '(') {
+      const opensTableSource =
+        previous === 'FROM' ||
+        previous === 'JOIN' ||
+        previous === ',' ||
+        previous === '(';
       const next = nextIdentifier(cursor + 1);
       if (
+        opensTableSource &&
         activeFromDepths.has(depth) &&
         next !== undefined &&
         known.has(next.toLowerCase())
@@ -791,18 +806,21 @@ function hasCommaJoinedSchemaTable(sql: string, ir: IrDocument): boolean {
         activeFromDepths.add(depth + 1);
       }
       depth += 1;
+      previous = '(';
       cursor += 1;
       continue;
     }
     if (char === ')') {
       activeFromDepths.delete(depth);
       depth = Math.max(0, depth - 1);
+      previous = ')';
       cursor += 1;
       continue;
     }
     if (char === ',' && activeFromDepths.has(depth)) {
       const next = nextIdentifier(cursor + 1);
       if (next !== undefined && known.has(next.toLowerCase())) return true;
+      previous = ',';
       cursor += 1;
       continue;
     }
@@ -817,9 +835,11 @@ function hasCommaJoinedSchemaTable(sql: string, ir: IrDocument): boolean {
       const word = cleaned.slice(cursor, end).toUpperCase();
       if (word === 'FROM') activeFromDepths.add(depth);
       else if (clauseEnders.has(word)) activeFromDepths.delete(depth);
+      previous = word;
       cursor = end;
       continue;
     }
+    previous = char;
     cursor += 1;
   }
   return false;

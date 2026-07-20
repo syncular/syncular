@@ -1314,7 +1314,20 @@ class Validator {
       }
       return true;
     };
-    const requiredJoinEqualityAt = (index: number): boolean => {
+    type JoinEqualityContext =
+      | { readonly kind: 'inner' }
+      | {
+          readonly kind: 'outer';
+          /** Lowercased alias introduced by the JOIN that owns this ON. */
+          readonly introducedAlias: string;
+          /** The operand side this outer join null-extends. An outer join's
+           * ON constrains matched rows of the null-extended side only;
+           * preserved-side rows appear even when the ON predicate fails. */
+          readonly nullExtended: 'introduced' | 'prior';
+        };
+    const joinEqualityContextAt = (
+      index: number,
+    ): JoinEqualityContext | undefined => {
       const prefix = cleaned.slice(0, index);
       const clauses = [
         ...prefix.matchAll(
@@ -1322,7 +1335,7 @@ class Validator {
         ),
       ];
       const last = clauses.at(-1);
-      if (last?.[1]?.toUpperCase() !== 'ON') return false;
+      if (last?.[1]?.toUpperCase() !== 'ON') return undefined;
       const start = (last.index ?? 0) + last[0].length;
       const next =
         /\b(?:JOIN|WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|UNION|EXCEPT|INTERSECT)\b/i.exec(
@@ -1330,7 +1343,30 @@ class Validator {
         );
       const end = next === null ? cleaned.length : index + next.index;
       const clause = cleaned.slice(start, end);
-      return !/\b(?:OR|NOT|SELECT|WITH)\b/i.test(clause);
+      if (/\b(?:OR|NOT|SELECT|WITH)\b/i.test(clause)) return undefined;
+      const join = clauses.at(-2);
+      if (join?.[1]?.toUpperCase() !== 'JOIN') return undefined;
+      const joinIndex = join.index ?? 0;
+      const outerKind = /\b(LEFT|RIGHT|FULL)(?:\s+OUTER)?\s*$/i
+        .exec(prefix.slice(0, joinIndex))?.[1]
+        ?.toUpperCase();
+      if (outerKind === undefined) return { kind: 'inner' };
+      // A FULL join preserves both operands, so its ON constrains neither.
+      if (outerKind === 'FULL') return undefined;
+      const introducedAlias = (
+        prefix
+          .slice(joinIndex + join[0].length, last.index)
+          .match(new RegExp(IDENT_SOURCE, 'g')) ?? []
+      )
+        .filter((word) => word.toUpperCase() !== 'AS')
+        .at(-1)
+        ?.toLowerCase();
+      if (introducedAlias === undefined) return undefined;
+      return {
+        kind: 'outer',
+        introducedAlias,
+        nullExtended: outerKind === 'LEFT' ? 'introduced' : 'prior',
+      };
     };
     const refByAlias = new Map(
       refs.map((ref) => [ref.alias.toLowerCase(), ref] as const),
@@ -1354,6 +1390,42 @@ class Validator {
       const rightRoot = find(right);
       if (leftRoot !== rightRoot) parents.set(rightRoot, leftRoot);
     };
+    /** Directed scope inheritance for outer-join ON equalities: `target`
+     * inherits `source`'s proof on every row where target's table actually
+     * contributes (matched rows of the null-extended side). The preserved
+     * side gains nothing from such an equality. */
+    const inheritSources = new Map<string, Set<string>>();
+    const addInheritEdge = (target: string, source: string): void => {
+      find(target);
+      find(source);
+      const sources = inheritSources.get(target) ?? new Set<string>();
+      sources.add(source);
+      inheritSources.set(target, sources);
+    };
+    /** Every node whose direct proof also constrains `start`: the union
+     * class of `start`, plus everything reachable through directed
+     * inheritance edges (each hop stays sound because a satisfied equality
+     * needs both operands non-NULL, so the source relation contributed the
+     * row). */
+    const reachableProofNodes = (start: string): ReadonlySet<string> => {
+      const seen = new Set<string>();
+      const queue = [start];
+      while (queue.length > 0) {
+        const node = queue.pop() as string;
+        if (seen.has(node)) continue;
+        seen.add(node);
+        const root = find(node);
+        for (const classmate of [...parents.keys()]) {
+          if (!seen.has(classmate) && find(classmate) === root) {
+            queue.push(classmate);
+          }
+        }
+        for (const source of inheritSources.get(node) ?? []) {
+          if (!seen.has(source)) queue.push(source);
+        }
+      }
+      return seen;
+    };
     const scopeColumn = (alias: string, column: string): boolean => {
       const ref = refByAlias.get(alias.toLowerCase());
       const table = this.#ir.tables.find((item) => item.name === ref?.table);
@@ -1374,16 +1446,39 @@ class Validator {
       const rightColumn = match[4] as string;
       if (
         !scopeColumn(leftAlias, leftColumn) ||
-        !scopeColumn(rightAlias, rightColumn) ||
-        (!requiredAt(match.index ?? 0) &&
-          !requiredJoinEqualityAt(match.index ?? 0))
+        !scopeColumn(rightAlias, rightColumn)
       ) {
         continue;
       }
-      union(
-        scopeNode(leftAlias, leftColumn),
-        scopeNode(rightAlias, rightColumn),
-      );
+      const index = match.index ?? 0;
+      const leftNode = scopeNode(leftAlias, leftColumn);
+      const rightNode = scopeNode(rightAlias, rightColumn);
+      if (requiredAt(index)) {
+        union(leftNode, rightNode);
+        continue;
+      }
+      const context = joinEqualityContextAt(index);
+      if (context === undefined) continue;
+      if (context.kind === 'inner') {
+        // An inner join's ON filters every result row, so the equality
+        // constrains both operands symmetrically.
+        union(leftNode, rightNode);
+        continue;
+      }
+      const leftIntroduced =
+        leftAlias.toLowerCase() === context.introducedAlias;
+      const rightIntroduced =
+        rightAlias.toLowerCase() === context.introducedAlias;
+      // An equality with both operands on one side of the outer join proves
+      // nothing across it; preserved-side rows appear regardless of the ON.
+      if (leftIntroduced === rightIntroduced) continue;
+      const introducedNode = leftIntroduced ? leftNode : rightNode;
+      const priorNode = leftIntroduced ? rightNode : leftNode;
+      if (context.nullExtended === 'introduced') {
+        addInheritEdge(introducedNode, priorNode);
+      } else {
+        addInheritEdge(priorNode, introducedNode);
+      }
     }
     const required = new Set(
       [...symbols.values()].flatMap((symbol) =>
@@ -1483,9 +1578,11 @@ class Validator {
       const scopes = table.scopes.flatMap((scope): InferredScope[] => {
         const direct = directByVariable.get(scope.variable);
         if (direct !== undefined) return [direct];
-        const root = find(scopeNode(candidate.ref.alias, scope.column));
+        const reachable = reachableProofNodes(
+          scopeNode(candidate.ref.alias, scope.column),
+        );
         const inherited = [...directScopeEvidence.entries()]
-          .filter(([node]) => find(node) === root)
+          .filter(([node]) => reachable.has(node))
           .map(([, evidence]) => evidence);
         const params = [
           ...new Set(inherited.flatMap((evidence) => evidence.binding.params)),
@@ -1680,7 +1777,10 @@ class Validator {
         fixedScopes,
       };
     });
-    coverage.sort((left, right) => left.table.localeCompare(right.table));
+    // Code-point order keeps emitted metadata byte-identical across locales.
+    coverage.sort((left, right) =>
+      left.table < right.table ? -1 : left.table > right.table ? 1 : 0,
+    );
     return { dependencies, coverage };
   }
 
