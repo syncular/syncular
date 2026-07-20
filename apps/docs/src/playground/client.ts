@@ -24,7 +24,11 @@ import { SYNCULAR_MONACO_THEME } from './theme';
 
 const MARKER_OWNER = 'syncular-syql-playground';
 const COMPILE_DEBOUNCE_MS = 150;
-const COMPILE_TIMEOUT_MS = 10_000;
+// A single watchdog guards every worker round-trip (compile and format
+// alike). The worker processes messages FIFO, so one hung request stalls all
+// later work; if nothing settles within this window the worker is terminated
+// and replaced with a fresh one.
+const WORKER_TIMEOUT_MS = 10_000;
 
 type Highlighter = Awaited<ReturnType<typeof createHighlighterCore>>;
 
@@ -212,7 +216,8 @@ class PlaygroundApp {
   #requestId = 0;
   #latestCompileId = 0;
   #compileTimer: number | undefined;
-  #compileWatchdog: number | undefined;
+  #workerWatchdog: number | undefined;
+  readonly #inflight = new Set<number>();
   #lastSuccessfulSql = false;
   #disposed = false;
 
@@ -495,7 +500,7 @@ class PlaygroundApp {
     this.#compileTimer = undefined;
     const requestId = ++this.#requestId;
     this.#latestCompileId = requestId;
-    this.#armCompileWatchdog();
+    this.#trackRequest(requestId);
     this.#post({
       kind: 'compile',
       requestId,
@@ -504,31 +509,48 @@ class PlaygroundApp {
     });
   }
 
-  #armCompileWatchdog(): void {
-    this.#clearCompileWatchdog();
-    this.#compileWatchdog = window.setTimeout(
-      () => this.#onCompileTimeout(),
-      COMPILE_TIMEOUT_MS,
+  /** Register an outstanding worker request and (re)arm the shared watchdog. */
+  #trackRequest(requestId: number): void {
+    this.#inflight.add(requestId);
+    this.#armWatchdog();
+  }
+
+  /**
+   * Drop a settled request from the in-flight set; disarm the watchdog once
+   * nothing is outstanding. Superseded compiles and format replies settle the
+   * same way, so a hung worker is the only thing that leaves the set full.
+   */
+  #settleRequest(requestId: number): void {
+    if (!this.#inflight.delete(requestId)) return;
+    if (this.#inflight.size === 0) this.#clearWatchdog();
+  }
+
+  #armWatchdog(): void {
+    this.#clearWatchdog();
+    this.#workerWatchdog = window.setTimeout(
+      () => this.#onWorkerTimeout(),
+      WORKER_TIMEOUT_MS,
     );
   }
 
-  #clearCompileWatchdog(): void {
-    if (this.#compileWatchdog !== undefined) {
-      window.clearTimeout(this.#compileWatchdog);
-      this.#compileWatchdog = undefined;
+  #clearWatchdog(): void {
+    if (this.#workerWatchdog !== undefined) {
+      window.clearTimeout(this.#workerWatchdog);
+      this.#workerWatchdog = undefined;
     }
   }
 
-  #onCompileTimeout(): void {
-    this.#compileWatchdog = undefined;
+  #onWorkerTimeout(): void {
+    this.#workerWatchdog = undefined;
     if (this.#disposed) return;
     this.#releaseWorker();
     this.#pendingFormats.clear();
+    this.#inflight.clear();
     this.#worker = this.#createWorker();
     this.#showDiagnostics([
       {
-        code: 'PLAYGROUND_COMPILE_TIMEOUT',
-        message: `the compiler did not respond within ${COMPILE_TIMEOUT_MS / 1000} seconds; a fresh worker is ready — edit the source to retry`,
+        code: 'PLAYGROUND_WORKER_TIMEOUT',
+        message: `the compiler did not respond within ${WORKER_TIMEOUT_MS / 1000} seconds; a fresh worker is ready — edit the source to retry`,
       },
     ]);
     this.#setState('error', 'Compiler timed out · worker restarted');
@@ -543,6 +565,7 @@ class PlaygroundApp {
       exampleId: this.#activeExample.id,
       version: model.getVersionId(),
     });
+    this.#trackRequest(requestId);
     this.#post({
       kind: 'format',
       requestId,
@@ -560,9 +583,7 @@ class PlaygroundApp {
     if (this.#disposed) return;
     const response = event.data;
     if (response.kind === 'ready') return;
-    if (response.requestId === this.#latestCompileId) {
-      this.#clearCompileWatchdog();
-    }
+    this.#settleRequest(response.requestId);
     if (response.kind === 'formatted') {
       const pending = this.#pendingFormats.get(response.requestId);
       this.#pendingFormats.delete(response.requestId);
@@ -619,7 +640,8 @@ class PlaygroundApp {
 
   readonly #onWorkerError = (event: ErrorEvent): void => {
     if (this.#disposed) return;
-    this.#clearCompileWatchdog();
+    this.#inflight.clear();
+    this.#clearWatchdog();
     this.#showDiagnostics([
       { code: 'PLAYGROUND_WORKER_ERROR', message: event.message },
     ]);
@@ -774,7 +796,7 @@ class PlaygroundApp {
     this.#eventController.abort();
     if (this.#compileTimer !== undefined)
       window.clearTimeout(this.#compileTimer);
-    this.#clearCompileWatchdog();
+    this.#clearWatchdog();
     this.#releaseWorker();
     for (const disposable of this.#disposables) disposable.dispose();
     this.#sourceEditor.dispose();
