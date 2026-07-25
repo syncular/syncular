@@ -20,7 +20,7 @@ serde_json = "1"
 aes-gcm = { version = "0.11", optional = true }
 x25519-dalek = { version = "3", features = ["getrandom", "static_secrets"], optional = true }
 hkdf = { version = "0.12", optional = true }
-sha2 = { version = "0.10", optional = true }
+sha2 = { version = "0.11", optional = true }
 rand_core = { version = "0.6", features = ["getrandom"], optional = true }
 
 [features]
