@@ -8,7 +8,7 @@ repository = "https://github.com/syncular/syncular"
 
 [dependencies]
 ssp2 = { package = "syncular-ssp2", path = "../ssp2", version = "0.0.0" }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
