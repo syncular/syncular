@@ -334,6 +334,17 @@ export class SyncClientHandle {
     });
   }
 
+  /**
+   * @internal — whether `close()` has run.
+   *
+   * A follower keeps a blocking `acquire` outstanding for the whole time it is a
+   * follower, so its promotion can fire long after the application has discarded
+   * the handle. The promotion path consults this before opening anything.
+   */
+  get __isClosed(): boolean {
+    return this.#closed;
+  }
+
   /** @internal — swap this handle from follower to leader (promotion). */
   __becomeLeader(core: LeaderCore): void {
     this.#follower?.close();
@@ -1020,6 +1031,14 @@ async function bootFollower(
       await lease.release();
       return;
     }
+    if (handle.__isClosed) {
+      // The application discarded this handle while it was queued for
+      // leadership. Promoting now would open a database nobody is holding and
+      // then keep the lock forever, so no other tab could ever take over.
+      // Release instead, and let the next waiter have it.
+      await lease.release();
+      return;
+    }
     // The follower saw the departing leader's epoch; the new leader must
     // strictly exceed it so stale replies/events are discarded everywhere.
     const nextEpoch = follower.maxEpochSeen + 1;
@@ -1058,6 +1077,13 @@ async function bootFollower(
             }
           : {}),
       });
+      if (handle.__isClosed) {
+        // Closed while the worker was starting. `close()` already ran and found
+        // no core to shut down, so this one would leak: tear it down here rather
+        // than hand it to a discarded handle. `close(true)` releases the lease.
+        await core.close(true);
+        return;
+      }
       handle.__becomeLeader(core);
     } catch {
       // Promotion failed to spawn a worker — release so the next tab tries.
