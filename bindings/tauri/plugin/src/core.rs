@@ -205,7 +205,9 @@ impl SyncularCore {
     pub fn shutdown(&mut self) {
         if let Some(mut client) = self.client.take() {
             client.disconnect_realtime(&mut self.transport);
-            client.begin_security_preflight();
+            // Teardown barrier, not a quarantine: persisting the gate here
+            // would refuse every later plain create against this replica.
+            client.seal_security_on_teardown();
         }
         self.interactive_sync = false;
         self.background_sync_ms = None;
