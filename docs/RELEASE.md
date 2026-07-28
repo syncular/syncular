@@ -1,8 +1,36 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.43** (`v0.15.43`). All artifacts use Apache-2.0, except
+current release is **0.15.44** (`v0.15.44`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.44 release notes
+
+- `@syncular/client` no longer promotes a closed follower. A follower keeps a
+  blocking leader-lock acquisition outstanding for its whole life so it can take
+  over when the leader departs, and `close()` did not cancel that intent: the
+  promotion path checked only whether the handle had been assembled, never
+  whether it had since been closed. A discarded handle would therefore wake on
+  the departing leader's lease, spawn a worker, open the database, and hold the
+  lock permanently, after which no other tab could become leader for that
+  origin. Any ordinary `close()` of a follower reached it -- a sign-out, a route
+  teardown, a StrictMode remount -- with no partition or unusual environment
+  required. Promotion now releases the lease when the handle is already closed,
+  and tears down a core whose start raced a `close()`, so the next waiter takes
+  over normally.
+
+- The native command router no longer quarantines a replica when a host simply
+  tears its client down. 0.15.43 made the security-preflight gate durable by
+  persisting a marker in the replica, but `shutdown` reused
+  `begin_security_preflight` as its teardown barrier, so every cleanly closed
+  replica -- including an activated one -- was left marked pending. The next
+  plain `create` was then refused permanently: reopening restored the flag from
+  the marker and the create guard rejected it. Teardown now uses
+  `seal_security_on_teardown`, which releases core-owned key material and closes
+  the in-memory gate without recording a quarantine. An unactivated replica
+  still refuses a plain re-create across shutdown and process restart, which is
+  what the marker exists for. Affects the Tauri plugin and any host on the Rust
+  core; the TypeScript client never persisted the marker and is unaffected.
 
 ## 0.15.43 release notes
 
