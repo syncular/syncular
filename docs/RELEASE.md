@@ -32,6 +32,18 @@ private examples and test harnesses that are never published.
   what the marker exists for. Affects the Tauri plugin and any host on the Rust
   core; the TypeScript client never persisted the marker and is unaffected.
 
+- Dependency security: `svgo`, `postcss`, and `sharp` advisories
+  (GHSA-2p49-hgcm-8545, GHSA-r28c-9q8g-f849, GHSA-f88m-g3jw-g9cj) are resolved
+  through root `overrides`, since each parent pinned a range that excluded the
+  patched version. All three reached the tree only through build tooling -- the
+  docs site, the static demo, and the react package's Vite fixture -- so no
+  published package changes. `react-router` GHSA-qwww-vcr4-c8h2 is explicitly
+  ignored rather than silently skipped: `react-router-dom` has no release
+  carrying the 8.3.0 fix, because v8 moved the DOM entry points into
+  `react-router` itself and requires React 19. It is a devDependency behind one
+  non-RSC test and ships to nobody; the ignore is documented in `package.json`
+  and comes out when the react lane moves to React 19.
+
 ## 0.15.43 release notes
 
 - Rust native transports now use `ureq` 3.3 and `tungstenite` 0.30. The HTTP
