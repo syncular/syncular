@@ -468,7 +468,10 @@ pub fn dispatch<T: Transport>(
                 // be recreated plainly afterwards.
                 effects.security_preflight_pending = running.security_preflight();
                 running.disconnect_realtime(transport);
-                running.begin_security_preflight();
+                // Teardown barrier only: an activated client that shuts down
+                // cleanly must not leave a durable quarantine mark, or its next
+                // plain create would be refused forever.
+                running.seal_security_on_teardown();
             }
             *client = None;
             Ok(json!({}))
@@ -1351,6 +1354,125 @@ mod tests {
         )
         .expect("active query");
         assert_eq!(rows, json!({ "rows": [] }));
+    }
+
+    /// A file-backed replica: the persisted quarantine marker only exists here,
+    /// which is why the in-memory tests above could not catch this.
+    fn temp_db_path(tag: &str) -> String {
+        std::env::temp_dir()
+            .join(format!(
+                "syncular-command-{tag}-{}-{:?}.db",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock")
+                    .as_nanos()
+            ))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn an_activated_replica_reopens_plainly_after_shutdown() {
+        // Shutting an ACTIVATED client down is not a quarantine event. The
+        // teardown barrier used to call `begin_security_preflight`, which now
+        // persists the gate, so every cleanly closed replica was marked pending
+        // and its next plain `create` was refused forever — the reopen path
+        // restores the flag from the marker and the create guard rejects it.
+        let path = temp_db_path("activated-reopen");
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema(), "securityPreflight": true, "dbPath": path }),
+        )
+        .expect("preflight create");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "activateSecurity",
+            &json!({}),
+        )
+        .expect("activation clears the gate");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "shutdown",
+            &json!({}),
+        )
+        .expect("shutdown after activation");
+
+        // The replica is active on disk, so a plain re-create must be admitted.
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema(), "dbPath": path }),
+        )
+        .expect("an activated replica must reopen plainly after shutdown");
+        let state = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "securityLifecycle",
+            &json!({}),
+        )
+        .expect("lifecycle");
+        assert_eq!(state, json!({ "state": "active" }));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_unactivated_replica_stays_quarantined_across_shutdown_on_disk() {
+        // The other half, and the reason the marker exists: a replica that
+        // entered preflight and never activated must still refuse a plain
+        // re-create after shutdown, even on a host that rebuilt its handle and
+        // carries no in-memory flag.
+        let path = temp_db_path("quarantined-reopen");
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema(), "securityPreflight": true, "dbPath": path }),
+        )
+        .expect("preflight create");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "shutdown",
+            &json!({}),
+        )
+        .expect("shutdown during preflight");
+
+        // A fresh host handle: no in-memory pending flag survives here, so only
+        // the persisted marker can hold the gate.
+        let mut rebuilt = CreateEffects::default();
+        let escape = dispatch(
+            &mut transport,
+            &mut client,
+            &mut rebuilt,
+            "create",
+            &json!({ "schema": schema(), "dbPath": path }),
+        )
+        .expect_err("a quarantined replica must refuse a plain re-create");
+        assert_eq!(escape.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

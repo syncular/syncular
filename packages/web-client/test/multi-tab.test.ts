@@ -782,3 +782,76 @@ test('single-tab opt-out: multiTab false keeps the not-leader contract', async (
   await expectRejectsWithCode(loser.query('SELECT 1'), NOT_LEADER_CODE);
   await loser.close();
 });
+
+test('a closed follower never promotes itself, and frees the lock for the next tab', async () => {
+  // A follower keeps a blocking `acquire` outstanding so it can take over when
+  // the leader departs. Closing the handle has to cancel that intent. It did
+  // not: the promotion path only checked whether the handle had been assembled,
+  // never whether it had since been closed — so a handle the application had
+  // already discarded would wake up on the departing leader's lease, spawn a
+  // worker, open the database, and then hold the lock forever. Nothing else
+  // could become leader after that.
+  //
+  // This is the recovery path for a partitioned follower: an app that observes
+  // `blocked` and closes the handle to re-open an isolated replica must not be
+  // shadowed by a zombie that later claims the shared database.
+  const lock = makeSharedLock();
+  const lockName = `mt-closed-follower-${lockSeq++}`;
+  const initConfigs: WorkerInitConfig[] = [];
+
+  const leader = await createSyncClientHandle({
+    worker: () => fakeReadyWorker('closed-follower-leader', initConfigs),
+    schema: CLIENT_SCHEMA,
+    database: { mode: 'custom' },
+    endpoints: { syncUrl: http.syncUrl },
+    autoSync: false,
+    leaderLock: lock,
+    lockName,
+    clientId: 'closed-follower-leader',
+  });
+  expect(leader.isLeader).toBe(true);
+
+  let abandonedWorkerStarts = 0;
+  const abandoned = await createSyncClientHandle({
+    worker: () => {
+      abandonedWorkerStarts += 1;
+      return fakeReadyWorker('abandoned', initConfigs);
+    },
+    schema: CLIENT_SCHEMA,
+    database: { mode: 'custom' },
+    endpoints: { syncUrl: http.syncUrl },
+    autoSync: false,
+    leaderLock: lock,
+    lockName,
+    followerCallTimeoutMs: 25,
+  });
+  expect(abandoned.role).toBe('follower');
+
+  // The application discards this handle — e.g. to re-open in isolated mode.
+  await abandoned.close();
+
+  // The leader departs, releasing the lock the closed follower was queued on.
+  await leader.close();
+
+  // A fresh tab must be able to take the vacated leadership.
+  let successorWorkerStarts = 0;
+  const successor = await createSyncClientHandle({
+    worker: () => {
+      successorWorkerStarts += 1;
+      return fakeReadyWorker('successor', initConfigs);
+    },
+    schema: CLIENT_SCHEMA,
+    database: { mode: 'custom' },
+    endpoints: { syncUrl: http.syncUrl },
+    autoSync: false,
+    leaderLock: lock,
+    lockName,
+    clientId: 'successor',
+  });
+  open.push(successor);
+
+  expect(abandonedWorkerStarts).toBe(0);
+  expect(abandoned.role).toBe('follower');
+  expect(successor.isLeader).toBe(true);
+  expect(successorWorkerStarts).toBe(1);
+});
