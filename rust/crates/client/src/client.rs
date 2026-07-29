@@ -2498,14 +2498,32 @@ impl SyncClient {
         self.security_preflight
     }
 
-    /// Enter the fail-closed gate and release all core-owned key material.
+    /// Quarantine this replica: enter the fail-closed gate, release all
+    /// core-owned key material, and record the gate in the database so
+    /// reopening re-enters preflight until `activate_security` clears it.
+    ///
+    /// Use [`SyncClient::seal_security_on_teardown`] for the shutdown barrier,
+    /// which must NOT leave that durable mark.
     pub fn begin_security_preflight(&mut self) {
-        self.security_preflight = true;
-        self.encryption = crate::values::EncryptionConfig::default();
-        self.sync_intent_queue.clear();
+        self.seal_security_on_teardown();
         // Persist the quarantine so it survives handle teardown and restart:
         // reopening this replica re-enters preflight until activation clears it.
         self.set_meta(SECURITY_PREFLIGHT_PENDING_KEY, "1");
+    }
+
+    /// Release core-owned key material as a host tears the client down,
+    /// WITHOUT recording a quarantine.
+    ///
+    /// Shutting an activated client down is not a quarantine event. Persisting
+    /// the gate here marks every cleanly closed replica as pending, and the
+    /// next plain `create` is then refused permanently: the reopen path
+    /// restores the flag from the marker and the create guard rejects it. The
+    /// in-memory flag still closes the gate for anything still holding this
+    /// instance, which is all a teardown barrier needs.
+    pub fn seal_security_on_teardown(&mut self) {
+        self.security_preflight = true;
+        self.encryption = crate::values::EncryptionConfig::default();
+        self.sync_intent_queue.clear();
     }
 
     /// Install the post-authentication keyring and release the host loop.

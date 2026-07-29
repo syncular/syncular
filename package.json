@@ -1,6 +1,6 @@
 {
   "name": "syncular",
-  "version": "0.15.43",
+  "version": "0.15.44",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -13,11 +13,15 @@
     "bindings/tauri/example"
   ],
   "overrides": {
-    "dompurify": "3.4.12"
+    "dompurify": "3.4.12",
+    "svgo": "^4.0.2",
+    "postcss": "^8.5.23",
+    "sharp": "^0.35.3"
   },
   "scripts": {
     "postinstall": "git config core.hooksPath .githooks 2>/dev/null || true",
-    "audit": "bun audit",
+    "//audit-ignore": "react-router GHSA-qwww-vcr4-c8h2 is ignored, not unfixed: it is an RSC-mode CSRF bypass, and react-router-dom has no release carrying the 8.3.0 fix — the DOM entry points moved into react-router itself in v8, which needs React 19 via useOptimistic. It reaches us only as a devDependency of packages/react used by one test, react-router-scheduling.test.tsx, which drives the data router without RSC and ships to nobody. Drop this ignore when the react lane moves to React 19. The svgo/postcss/sharp advisories are fixed for real, via the root overrides above.",
+    "audit": "bun audit --ignore GHSA-qwww-vcr4-c8h2",
     "check": "bun run version:check && bun run check:code",
     "check:code": "bun run typecheck && bun run lint && bun run test",
     "version:print": "bun scripts/version.ts print",
