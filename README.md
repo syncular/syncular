@@ -10,8 +10,13 @@
 Server-authoritative, offline-first SQL sync you can operate. Clients keep a
 real local SQLite database (OPFS in the browser, native SQLite elsewhere),
 writes go through an optimistic outbox, and one ordered commit log on the
-server stays the source of truth. Docs live at
-[syncular.dev](https://syncular.dev).
+server stays the source of truth.
+
+**[Documentation](https://syncular.dev)** ·
+[Quickstart](https://syncular.dev/quickstart/) ·
+[Live demos](https://syncular.dev/demos/) ·
+[Benchmarks](https://syncular.dev/benchmarks/) ·
+[Blog](https://syncular.dev/blog/)
 
 ```sh
 bun create syncular-app my-app
