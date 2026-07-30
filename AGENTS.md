@@ -59,6 +59,26 @@ feedback; both implemented).
 - **No unrequested publishing.** Deploy, release, and publish scripts run only
   on explicit instruction, like pushes.
 
+## Prose rules for docs
+
+Reader-facing text gets the same review as code. These patterns are
+generated-prose tells; delete them on sight:
+
+- **No em-dashes.** Use a colon, semicolon, comma, parentheses, or a
+  sentence split. List items are "`thing`: description".
+- **No rhetorical antithesis.** "X, not Y" and "not X, but Y" become a plain
+  statement of the positive fact.
+- **No punchlines or aphorisms.** A sentence that restates the previous one
+  as a slogan ("That is the whole point", "This is the spine of the system")
+  gets deleted.
+- **No empty framing.** "The key insight", "It's worth noting", "Crucially",
+  "Simply put", and any sentence whose only job is to announce that the next
+  one matters.
+- **No marketing adjectives.** robust, elegant, seamless, powerful,
+  battle-tested, blazing, production-scale. State the measurable property
+  instead.
+- **No rhetorical questions** answered by the next sentence.
+
 ## Layout
 
 - `packages/*` (TS): `core`, `crypto`, `server`, `server-hono`,
