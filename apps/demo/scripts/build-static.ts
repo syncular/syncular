@@ -1,10 +1,10 @@
 /**
  * Static demo build: the backend-free bundle published at demo.syncular.dev.
- * Emits `dist/` — index.html, app.js (the page, with the embedded flag
- * baked in), server-worker.js (the WHOLE sync server, running in a Web
- * Worker over sqlite-wasm wearing the D1 shape), and the sqlite-wasm
- * vendor files. Cloudflare serves it as plain static assets; there is no
- * server-side compute anywhere.
+ * Emits `dist/` — index.html, the shared favicon and social card, app.js
+ * (the page, with the embedded flag baked in), server-worker.js (the WHOLE
+ * sync server, running in a Web Worker over sqlite-wasm wearing the D1
+ * shape), and the sqlite-wasm vendor files. Cloudflare serves it as plain
+ * static assets; there is no server-side compute anywhere.
  *
  * Two bundler tricks, both also used by the dev server (`src/server.ts`):
  * - `@sqlite.org/sqlite-wasm` stays external and its bare specifier is
@@ -22,6 +22,7 @@ import rootPackage from '../../../package.json';
 const appDir = join(import.meta.dir, '..');
 const frontendDir = join(appDir, 'src', 'frontend');
 const outDir = join(appDir, 'dist');
+const docsPublicDir = join(appDir, '..', 'docs', 'public');
 
 function reflectReleaseVersion(text: string): string {
   if (text.split('0.0.0').length - 1 !== 1) {
@@ -95,6 +96,7 @@ const WASM_FILES = [
   'sqlite3-opfs-async-proxy.js',
   'sqlite3-worker1.mjs',
 ];
+const BRAND_ASSETS = ['favicon.svg', 'social-card.png'];
 
 import { mkdir, rm } from 'node:fs/promises';
 
@@ -114,6 +116,9 @@ await Bun.write(
   join(outDir, 'version.json'),
   `${JSON.stringify({ version: rootPackage.version }, null, 2)}\n`,
 );
+for (const name of BRAND_ASSETS) {
+  await Bun.write(join(outDir, name), Bun.file(join(docsPublicDir, name)));
+}
 for (const name of WASM_FILES) {
   await Bun.write(
     join(outDir, 'vendor', 'sqlite-wasm', name),
