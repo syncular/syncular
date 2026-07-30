@@ -1,17 +1,17 @@
 ---
-title: Here’s What Nobody Tells You About Offline-First
-description: Why durable offline writes are the hard part of sync, how today’s engines work under the hood, and the architecture those lessons produced in Syncular.
+title: 'Durable Offline Writes: Lessons from Seven Sync Engines'
+description: How PowerSync, Zero, Electric, Replicache, Turso, LiveStore, and Jazz handle writes made without a network, and the architecture Syncular took from those lessons.
 author: Benjamin Kniffler
 publishedAt: '2026-07-17'
 ---
 
-# Here’s What Nobody Tells You About Offline-First
+# Durable Offline Writes: Lessons from Seven Sync Engines
 
-Offline reads are easy. Put data in SQLite, query it locally, and render it. Writes are the hard part. They are what will eat your weekends.
+Offline reads are a solved problem: put data in SQLite, query it locally, and render it. Writes are the hard part.
 
-What happens when two devices edit the same row while one is on a plane? What happens when the server applies a push but the acknowledgement disappears? What happens when a user loses access to a project while their laptop still has three days of pending work for it? What happens when the schema changes before that laptop reconnects?
+Two devices edit the same row while one is on a plane. The server applies a push and the acknowledgement disappears. A user loses access to a project while their laptop still holds three days of pending work for it. The schema changes before that laptop reconnects. A sync engine’s write path is the sum of its answers to these situations.
 
-I have been circling this problem for years. Back in 2019 I built [debe](https://github.com/bkniffler/debe), a reactive offline-first datastore with CRDT-based sync, multi-master replication, and adapters for SQLite, Postgres, and in-memory stores. It never became production-ready. It did teach me that convergence is only one part of a real sync product. Authorization, durable recovery, bootstrap, retention, and debugging are just as fundamental.
+I have been circling this problem for years. Back in 2019 I built [debe](https://github.com/bkniffler/debe), a reactive offline-first datastore with CRDT-based sync, multi-master replication, and adapters for SQLite, Postgres, and in-memory stores. It never shipped to production. Building it taught me that convergence is only one part of a real sync product. Authorization, durable recovery, bootstrap, retention, and debugging are just as fundamental.
 
 Seven years later, the ecosystem is much larger. I spent a long time evaluating the current generation of sync tools, building prototypes, and finding the places where application-specific glue begins. Eventually I realized that the glue was the system I wanted to build.
 
@@ -19,7 +19,7 @@ The result became [Syncular](https://syncular.dev): local SQLite on every client
 
 This post is about the path from the landscape to that architecture. Even if you never use Syncular, the failure modes and tradeoffs apply to almost any application that accepts writes without a reliable network.
 
-## Why offline writes are the real problem
+## What offline writes require
 
 Most sync products lead with the read path: how to get server data onto a device quickly and keep a UI reactive. It is valuable and comparatively well understood. Stream rows, maintain a local projection, invalidate queries, and render from the local copy.
 
@@ -97,13 +97,13 @@ local SQL transaction
   -> next client checkpoint
 ```
 
-Local mutations are applied immediately and recorded in `ps_crud`, a blocking FIFO upload queue. The SDK retries them and calls an [`uploadData()` function supplied by the application](https://docs.powersync.com/architecture/client-architecture). That is a deliberate strength: the real backend remains free to run arbitrary validation, authorization, side effects, and conflict rules. PowerSync does not ask the sync service to impersonate the application server.
+Local mutations are applied immediately and recorded in `ps_crud`, a blocking FIFO upload queue. The SDK retries them and calls an [`uploadData()` function supplied by the application](https://docs.powersync.com/architecture/client-architecture). That indirection is deliberate: the real backend remains free to run arbitrary validation, authorization, side effects, and conflict rules. PowerSync does not ask the sync service to impersonate the application server.
 
 PowerSync’s [causal+ consistency model](https://docs.powersync.com/architecture/consistency) makes the split coherent. Local mutations sit as an overlay on the last confirmed checkpoint. While the upload queue is non-empty, the client does not advance to a later checkpoint. After the write has reached the source database and come back through CDC, the client can replace the overlay with a new consistent checkpoint. It avoids trying to merge a half-confirmed local row with an unrelated point in server history.
 
 What this buys is a mature relational replica, a robust download protocol, and application-controlled write semantics. The corresponding boundary is that the read protocol cannot define the final meaning of a rejected write for you. The application API still owns idempotency, conflict policy, authorization drift, and any durable repair record. Partial replication also has to be expressible as stream parameters and supported SQL. Flat ownership rules are elegant; deep organization → project → task permissions need routing columns or application code that resolves membership into parameters.
 
-PowerSync made one design pressure impossible to ignore: every partial-replication system pays a routing tax, and a complete authoritative write protocol needs more than a read stream plus a durable upload queue.
+Every partial-replication system pays a routing tax, and a complete authoritative write protocol needs more than a read stream plus a durable upload queue. PowerSync is where both of those pressures first became concrete for me.
 
 ### Zero: the query result is the replica
 
@@ -111,7 +111,7 @@ PowerSync made one design pressure impossible to ignore: every partial-replicati
 
 A named ZQL query exists on the client and the server. It runs against the local store first, so cached rows render immediately. In parallel, the client sends the query name and arguments to `zero-cache`; `zero-cache` asks the application’s query endpoint for the server-side ZQL expression, which may add permission filters, and runs it against a read-only SQLite replica of Postgres. Logical replication advances that replica. A view-syncer hydrates the query once and then uses incremental view maintenance to push only affected row changes.
 
-That last part matters. Re-running every active query after every database change would make reactive sync scale with `changes × queries`. Zero instead maintains query pipelines. Its own self-hosting guide describes the algorithm as [“hydrate once, then incrementally push diffs”](https://zero.rocicorp.dev/docs/self-host). Client View Records, or CVRs, remember what each client has already received so reconnects can be expressed as diffs rather than full query results.
+Re-running every active query after every database change would make reactive sync scale with `changes × queries`. Zero instead maintains query pipelines. Its own self-hosting guide describes the algorithm as [“hydrate once, then incrementally push diffs”](https://zero.rocicorp.dev/docs/self-host). Client View Records, or CVRs, remember what each client has already received so reconnects can be expressed as diffs rather than full query results.
 
 The local database is therefore roughly the union of active and cached query results, with TTLs controlling how long inactive results stay warm. This keeps the replica shaped exactly like the UI: mount a query and the necessary rows appear; unmount it and the server can eventually stop maintaining it. It also means completeness is a query property. Zero exposes `complete` versus `unknown` results because an immediate local answer may be only the part of the query that happens to be present.
 
@@ -119,7 +119,7 @@ Writes use the same optimistic/authoritative split pioneered by Replicache. A [m
 
 The business operation consequently has two executions: fast and speculative on the client, authoritative on the server. They can share TypeScript, but they do not have to produce the same result. The server may see newer rows, reject access, or invoke systems that the client cannot reach. That freedom produces an excellent interaction model, but it also makes mutator compatibility part of the application’s correctness surface.
 
-[Zero reached 1.0 and general availability in 2026](https://zero.rocicorp.dev/docs/status), and its offline boundary is deliberate rather than unfinished: once the connection state becomes disconnected, [writes are rejected](https://zero.rocicorp.dev/docs/connection). Reads of already-synced data continue to work. By refusing week-old offline writes, Zero avoids pretending that a generic query engine can decide how stale business operations, permissions, and schemas should be repaired.
+[Zero reached 1.0 and general availability in 2026](https://zero.rocicorp.dev/docs/status), and its offline boundary is deliberate: once the connection state becomes disconnected, [writes are rejected](https://zero.rocicorp.dev/docs/connection). Reads of already-synced data continue to work. By refusing week-old offline writes, Zero avoids pretending that a generic query engine can decide how stale business operations, permissions, and schemas should be repaired.
 
 For connected collaborative software, this is an unusually strong set of choices: query-shaped replication, server-side permission transforms, incremental computation, and immediate mutations. For field software that must accept work during a multi-day outage, the rejected-write boundary is decisive. Zero taught me two things: query-driven sync is at its core an incremental computation architecture, and long-term offline writes deserve an explicit protocol rather than an optimistic cache stretched beyond its intended lifetime.
 
@@ -129,7 +129,7 @@ For connected collaborative software, this is an unusually strong set of choices
 
 A consumer requests a Shape from offset `-1` for its initial snapshot, then continues from the returned offset and handle. Once caught up, it can long-poll or use SSE. The stream mixes row operations with control messages such as `up-to-date` and `must-refetch`. Because the protocol is ordinary HTTP, Shape logs fit naturally behind proxies and CDNs. The [HTTP API](https://electric.ax/openapi) is deliberately small enough that different local stores can consume it.
 
-TanStack DB supplies the client-side relational layer. Synced rows enter normalized collections. Live queries are not recomputed wholesale: they use [`d2ts`, a TypeScript differential-dataflow engine](https://tanstack.com/db/latest/docs/overview), to propagate changes through filters, joins, sorts, and aggregates. If one row changes in a large joined query, the system updates the affected part of the dataflow rather than starting the query again.
+TanStack DB supplies the client-side relational layer. Synced rows enter normalized collections. Live queries are not recomputed wholesale: they use [`d2ts`, a TypeScript differential-dataflow engine](https://tanstack.com/db/latest/docs/overview), to propagate changes through filters, joins, sorts, and aggregates. If one row changes in a large joined query, the system updates only the affected part of the dataflow.
 
 Writes travel through the application API instead of backward through the Shape log:
 
@@ -142,7 +142,7 @@ TanStack optimistic transaction
   -> retire optimistic overlay
 ```
 
-The transaction ID is the elegant part of this composition. Waiting for the exact Postgres transaction, rather than a matching row ID, lets TanStack DB know when the authoritative write has passed through Electric, even if other users changed the same rows in between. The [Electric/TanStack reference architecture](https://electric.ax/blog/2025/07/29/super-fast-apps-on-sync-with-tanstack-db) can then rebase the optimistic overlay over concurrent changes and remove it at the correct point in the stream.
+Waiting for the exact Postgres transaction, rather than a matching row ID, lets TanStack DB know when the authoritative write has passed through Electric, even if other users changed the same rows in between. The [Electric/TanStack reference architecture](https://electric.ax/blog/2025/07/29/super-fast-apps-on-sync-with-tanstack-db) can then rebase the optimistic overlay over concurrent changes and remove it at the correct point in the stream.
 
 TanStack DB 0.6 made the offline side substantially stronger. It added [optional SQLite-backed persistence](https://tanstack.com/blog/tanstack-db-0.6-app-ready-with-persistence-and-includes), and [`@tanstack/offline-transactions`](https://github.com/TanStack/db/tree/main/packages/offline-transactions) persists an outbox before applying optimism, processes it in FIFO order, retries with backoff and idempotency keys, and elects one browser-tab leader. This is a real durable write queue that survives restarts.
 
@@ -150,7 +150,7 @@ The power of this stack is composability. Electric specializes in turning Postgr
 
 The cost is that correctness crosses the seams. The outbox can supply an idempotency key, but the endpoint must persist and enforce it. It can retry, but only the application can decide whether an old command is still authorized. It can roll back an optimistic transaction, but it cannot invent the domain-specific repair UI or translate a queued payload across an incompatible schema. Electric’s [Durable Streams](https://electric.ax/blog/2026/01/22/announcing-hosted-durable-streams) add a separate append-only log with idempotent producers and exactly-once semantics, but they remain a coordination primitive rather than the relational business authority.
 
-This stack clarified a distinction I had previously blurred: durable queueing is a client-library feature; durable application of a business operation is an end-to-end protocol property.
+Durable queueing is a client-library feature. Durable application of a business operation is an end-to-end protocol property. Before working through this stack, I had blurred the two.
 
 ### Replicache: mutation logs and deterministic rebase
 
@@ -198,9 +198,9 @@ The sync algorithm is deliberately Git-like. The backend assigns a global total 
 
 Event sourcing buys something row replication cannot provide automatically: the original business intent. `TaskAssigned` is more informative than “the `assignee_id` column changed.” It is a strong basis for audit, debugging, undo, and rebuilding derived state. The [Riffle research](https://riffle.systems/) behind LiveStore also shows the appeal of treating the local database as a materialized application state machine rather than a disposable cache.
 
-History is also the cost center. Event schemas and materializers become compatibility contracts. New clients need a bounded way to reach current state, and old history eventually needs compaction. Partitioning and authorization must decide which event histories a client may receive without leaking the events that produced forbidden rows.
+The same history is where the costs concentrate. Event schemas and materializers become compatibility contracts. New clients need a bounded way to reach current state, and old history eventually needs compaction. Partitioning and authorization must decide which event histories a client may receive without leaking the events that produced forbidden rows.
 
-LiveStore’s documentation is direct about its current frontier: [authorization is still a work item, merge-conflict handling and compaction are not implemented, and the system currently assumes one event log per SQLite database](https://docs.livestore.dev/building-with-livestore/syncing/). That candor marks exactly where a general event-sourced local-first engine becomes a multi-tenant sync product. It reinforced two requirements for me: keep durable causal evidence, but let a current snapshot bound the cost of joining or returning after a long absence.
+LiveStore’s documentation is direct about its current frontier: [authorization is still a work item, merge-conflict handling and compaction are not implemented, and the system currently assumes one event log per SQLite database](https://docs.livestore.dev/building-with-livestore/syncing/). That candor marks exactly where a general event-sourced local-first engine becomes a multi-tenant sync product. It also settled a requirement for Syncular: keep durable causal evidence, and let a current snapshot bound the cost of joining or returning after a long absence.
 
 ### Jazz v2: an integrated row-history database
 
@@ -263,13 +263,13 @@ The invariant that matters most is that push, pull, registration, ordering, and 
 
 Syncular uses one handler with two transport bindings. Once connected, normal combined push/pull rounds and ordered deltas travel as framed SSP2 messages over the WebSocket. When the client is behind, a delta is too large, or a reset is required, the socket sends a wake-up that tells the client to run a full sync round instead of applying an inline delta. `POST /sync` remains a conformant HTTP binding for debugging, server-to-server integrations, push-only producers, and clients without a live socket. Snapshot segments and blobs stay on HTTP because those are the CDN and object-storage paths.
 
-Transport recovery stays boring, and both bindings share one sync implementation.
+Because both bindings share one sync implementation, transport recovery stays boring.
 
 ### Append-only logs beat invisible invalidation when debugging
 
 Reactive invalidation and ordered logs can both keep clients current. Their failure stories are very different.
 
-With an ordered commit log, a client says “give me everything after cursor N.” Every accepted commit gets a sequence. When a row goes missing, you can inspect commits, scopes, cursors, and durable client outcomes. It is a receipt.
+With an ordered commit log, a client says “give me everything after cursor N.” Every accepted commit gets a sequence. When a row goes missing, you can inspect commits, scopes, cursors, and durable client outcomes.
 
 With dependency-driven invalidation, you often reconstruct which change invalidated which query, which recomputation ran, and which result was delivered. Excellent tooling can make that manageable, but the causal chain is less explicit by default.
 
@@ -348,7 +348,7 @@ drain outbox, journal outcome, reconcile local state
 deliver ordered changes to subscribed clients
 ```
 
-Each step is observable and repeatable.
+Each step leaves durable state that can be inspected and replayed.
 
 ### Local SQLite is the application read model
 
@@ -542,9 +542,9 @@ There is no universal winner because “sync” describes several different prod
 
 **Managed client SQLite is becoming the default expectation.** PowerSync, TanStack DB, LiveStore, Jazz, Turso, browser WASM SQLite, and native embedded databases all point in the same direction: application reads should not wait for a network. The differentiation is moving upward into replica boundaries, authorization, write semantics, recovery, and operational evidence.
 
-**Authorization and partial replication are inseparable.** A system that cannot explain why a row belongs on a device does not yet have a multi-tenant offline story.
+**Partial replication is an authorization problem.** A system that cannot explain why a row belongs on a device does not yet have a multi-tenant offline story.
 
-**Vendor lifecycle is architecture.** MongoDB’s [Atlas Device Sync deprecation](https://www.mongodb.com/docs/atlas/app-services/sync/device-sync-deprecation/) forced production Realm users to migrate. Replicache’s transition is gentler because it was open-sourced and remains supported in maintenance mode, but development still moved to Zero. A sync engine may be an excellent product, but its replacement cost belongs in the decision alongside latency and API design.
+**Vendor lifecycle belongs in the decision.** MongoDB’s [Atlas Device Sync deprecation](https://www.mongodb.com/docs/atlas/app-services/sync/device-sync-deprecation/) forced production Realm users to migrate. Replicache’s transition is gentler because it was open-sourced and remains supported in maintenance mode, but development still moved to Zero. A sync engine may be an excellent product and still leave its users with a forced migration, so replacement cost sits alongside latency and API design.
 
 **Decentralized systems start from a different authority model.** Projects such as [Evolu](https://www.evolu.dev/), [Anytype](https://anytype.io/), and Automerge-based applications focus on data sovereignty, cryptographic identity, or operation without one required server authority. Syncular assumes a server exists and makes it responsible for validation, authorization, audit, and final ordering. Jazz v2 no longer belongs cleanly in this category: it deliberately moved toward a trusted server for richer sync-time access control.
 
