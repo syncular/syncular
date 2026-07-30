@@ -15,11 +15,9 @@ LLM assistance is part of how syncular is developed. So far it has been used
 mainly for writing tests and for iterating over technical concepts and
 designs. Production code written with assistance goes through strict review
 and iteration by the maintainer before it lands, and it meets the same bar as
-hand-written code.
-
-The repository is built to make that review verifiable: two independent
-cores (TypeScript and Rust) implement one written protocol, both must pass
-the same conformance catalog, and the repo gate runs more than 1,200 tests.
+hand-written code. The TypeScript and Rust cores both have to pass the
+conformance catalog against the written protocol, and every change runs
+through a gate of more than 1,200 tests.
 
 ## Contributing with LLMs
 
