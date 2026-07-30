@@ -20,12 +20,12 @@ welcome.
 
 ## AI assistance
 
-LLM assistance is welcome for tests, reproductions, benchmarks, tooling, and
-other technical work. For production code, use it under strict review and
-iteration: you must understand and be able to defend every line you submit,
-and the diff must meet the same bar as hand-written code. Low-effort
-machine-generated pull requests, issues, and comments are closed without
-comment.
+LLM assistance is welcome for tests, reproductions, benchmarks, tooling,
+docs, and production code. Review, understand, and iterate on everything
+before you submit it, and be ready to defend every line. The diff must meet
+the same bar as hand-written work, and production code gets the strictest
+review. Low-effort machine-generated pull requests, issues, and comments are
+closed without comment.
 
 Syncular itself is developed under this policy. See [LLMs](/llms/) for how
 LLMs are used in this project and for the plain-text docs bundle you can feed

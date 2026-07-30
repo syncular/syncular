@@ -65,11 +65,12 @@ Read [`AGENTS.md`](AGENTS.md) first. The doctrine in it (spec-first, no
 fallbacks, no timers in tests, cross-core parity) applies to human and
 machine contributors alike.
 
-On AI assistance: LLMs are welcome for tests, reproductions, benchmarks, and
-other technical work. For production code, use them under strict review and
-iteration; you must understand and be able to defend every line you submit.
-Syncular itself is built this way: LLM assistance is used mainly for writing
-tests and iterating over technical concepts, under that same review bar.
+On AI assistance: LLMs are welcome for tests, reproductions, benchmarks,
+docs, and production code. Review, understand, and iterate on everything you
+submit, and be ready to defend every line; production code gets the
+strictest review. In syncular's own development, LLM assistance is used
+mainly for writing tests and iterating over technical concepts, under that
+same review bar.
 Low-effort machine-generated PRs, issues, and comments are closed without
 comment. The full policy and the plain-text docs bundle for agents live at
 [syncular.dev/llms](https://syncular.dev/llms/).
