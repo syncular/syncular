@@ -29,6 +29,13 @@
     header .hint a:hover { background: var(--amber); color: #000; }
     header .hint strong { color: var(--ink); font-weight: 700; }
     header .spacer { flex: 1; }
+    header nav { display: flex; gap: .8rem; flex-wrap: wrap; font-size: .68rem;
+      letter-spacing: .08em; text-transform: uppercase; }
+    header nav a, footer a { color: var(--dim); text-decoration: none; }
+    header nav a::before { content: '[ '; color: var(--faint); }
+    header nav a::after { content: ' ]'; color: var(--faint); }
+    header nav a:hover, footer a:hover { background: var(--amber); color: #000; }
+    header nav a:hover::before, header nav a:hover::after { color: #000; }
 
     button { background: var(--void); border: 1px solid var(--ink); color: var(--ink);
       border-radius: 0; padding: .3rem .7rem; cursor: pointer;
@@ -115,6 +122,11 @@
     <button id="conflict-btn" class="primary" disabled>simulate conflict</button>
     <span class="spacer"></span>
     <span id="global-status" class="hint"></span>
+    <nav aria-label="Syncular links">
+      <a href="https://syncular.dev/what-is/">docs</a>
+      <a href="https://syncular.dev/demos/">demo guide</a>
+      <a href="https://github.com/syncular/syncular">source</a>
+    </nav>
   </header>
   <main>
     <section class="pane" id="pane-a"></section>
@@ -122,7 +134,7 @@
   </main>
   <div class="rule">================================================================================================================================================================</div>
   <footer>
-    <span>SYNCULAR v0.0.0 · DEMO</span>
+    <span>SYNCULAR v0.0.0 · DEMO · <a href="https://syncular.dev/">SYNCULAR.DEV</a></span>
     <span>END OF TRANSMISSION <span class="sq">■</span></span>
   </footer>
   <script type="module" src="/app.js"></script>

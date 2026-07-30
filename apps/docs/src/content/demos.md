@@ -2,8 +2,15 @@
 
 Every demo in the repo is the same very simple todo list, built to prove two
 things per platform: syncular compiles and works there, and the integration is
-a few plain lines of code. This page tells you how to run the two browser
-demos locally and where the native platform examples live.
+a few plain lines of code. The headline browser demo is available online; this
+page also explains how to run both browser demos locally and where the native
+platform examples live.
+
+> **[Launch the live two-pane demo →](https://demo.syncular.dev/)**
+>
+> It runs entirely in your browser: two independent in-memory SQLite clients
+> synchronize through an embedded server worker. Nothing you enter leaves the
+> page, and a reload resets the complete demo.
 
 ## Two-pane convergence demo (`apps/demo`)
 
@@ -12,6 +19,10 @@ The vanilla-DOM headline demo: **two independent client cores** from
 (`SyncClient` + transports + sqlite-wasm on persistent OPFS), syncing a todo
 list through one server (`@syncular/server-hono` over bun:sqlite) in a single
 Bun process. The page drives each core over the `SyncClientHandle` RPC.
+
+The [hosted version](https://demo.syncular.dev/) replaces the Bun development
+server with the same Syncular server core running over sqlite-wasm in a third
+Web Worker, making the complete demo backend-free and self-contained.
 
 ```sh
 git clone https://github.com/syncular/syncular
