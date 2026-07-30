@@ -19,7 +19,7 @@
     "sharp": "^0.35.3"
   },
   "scripts": {
-    "postinstall": "git config core.hooksPath .githooks 2>/dev/null || true",
+    "postinstall": "git config core.hooksPath .githooks 2>/dev/null || true; test -e CLAUDE.md || ln -s AGENTS.md CLAUDE.md || true",
     "//audit-ignore": "react-router GHSA-qwww-vcr4-c8h2 is ignored, not unfixed: it is an RSC-mode CSRF bypass, and react-router-dom has no release carrying the 8.3.0 fix — the DOM entry points moved into react-router itself in v8, which needs React 19 via useOptimistic. It reaches us only as a devDependency of packages/react used by one test, react-router-scheduling.test.tsx, which drives the data router without RSC and ships to nobody. Drop this ignore when the react lane moves to React 19. The svgo/postcss/sharp advisories are fixed for real, via the root overrides above.",
     "audit": "bun audit --ignore GHSA-qwww-vcr4-c8h2",
     "check": "bun run version:check && bun run check:code",

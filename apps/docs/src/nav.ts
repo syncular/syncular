@@ -80,6 +80,8 @@ export const nav: readonly NavSection[] = [
       { slug: 'guide-conformance', title: 'Protocol & conformance' },
       { slug: 'benchmarks', title: 'Benchmarks' },
       { slug: 'troubleshooting', title: 'Troubleshooting' },
+      { slug: 'contributing', title: 'Contributing' },
+      { slug: 'llms', title: 'LLMs' },
       { slug: 'privacy', title: 'Privacy' },
     ],
   },

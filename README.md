@@ -53,3 +53,17 @@ bun create syncular-app my-app
 bun install
 bun run check   # typecheck + lint + test
 ```
+
+## Contributing
+
+Read [`AGENTS.md`](AGENTS.md) first — the doctrine in it (spec-first, no
+fallbacks, no timers in tests, cross-core parity) applies to human and
+machine contributors alike.
+
+On AI assistance: LLMs are welcome for tests, reproductions, benchmarks, and
+other technical work. For production code, use them under strict review and
+iteration — you must understand and be able to defend every line you submit.
+Syncular itself is built this way: LLM assistance is used mainly for writing
+tests and iterating over technical concepts, under that same review bar.
+Low-effort machine-generated PRs, issues, and comments are closed without
+comment.
