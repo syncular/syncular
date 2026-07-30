@@ -124,7 +124,7 @@ describe('mount refusal (no default-open admin)', () => {
     expect(() =>
       createSyncularAdminRoutes(
         admin,
-        // biome-ignore lint/suspicious/noExplicitAny: intentionally omitting the required guard.
+        // oxlint-disable-next-line typescript/no-explicit-any -- intentionally omitting the required guard.
         {} as any,
       ),
     ).toThrow(/authorize/);

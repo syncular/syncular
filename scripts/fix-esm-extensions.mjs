@@ -11,12 +11,12 @@
  * All emitted dist trees are flat with sibling-only relative imports (verified
  * at build time), so no directory -> /index.js rewriting is needed.
  */
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const roots = process.argv.slice(2);
 if (roots.length === 0) {
-  console.error("usage: fix-esm-extensions.mjs <dist-dir> [<dist-dir>...]");
+  console.error('usage: fix-esm-extensions.mjs <dist-dir> [<dist-dir>...]');
   process.exit(1);
 }
 
@@ -24,7 +24,7 @@ if (roots.length === 0) {
 const RE = /(\bfrom\s*['"]|\bimport\s*\(\s*['"])(\.\.?\/[^'"]*?)(['"])/g;
 
 function rewrite(file) {
-  const src = readFileSync(file, "utf8");
+  const src = readFileSync(file, 'utf8');
   const out = src.replace(RE, (m, pre, spec, post) => {
     // leave already-extensioned specifiers alone
     if (/\.(js|mjs|cjs|json|d\.ts|css|wasm)$/.test(spec)) return m;
@@ -38,7 +38,7 @@ function walk(dir) {
     const p = join(dir, name);
     const st = statSync(p);
     if (st.isDirectory()) walk(p);
-    else if (p.endsWith(".js") || p.endsWith(".d.ts")) rewrite(p);
+    else if (p.endsWith('.js') || p.endsWith('.d.ts')) rewrite(p);
   }
 }
 

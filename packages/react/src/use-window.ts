@@ -40,13 +40,14 @@ export function useRetainedWindow(
   const store = useReactiveStore();
   const baseIdentity = canonicalValue(base);
   const unitsIdentity = canonicalValue([...new Set(units)].sort());
-  // biome-ignore lint/correctness/useExhaustiveDependencies: canonical identities represent the complete values
+  // oxlint-disable-next-line react-hooks/exhaustive-deps -- canonical identities represent the complete values
   const stableBase = useMemo(() => base, [baseIdentity]);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: unitsIdentity represents the normalized unit set
+  // oxlint-disable react-hooks/exhaustive-deps -- unitsIdentity represents the normalized unit set
   const stableUnits = useMemo(
     () => [...new Set(units)].sort(),
     [unitsIdentity],
   );
+  // oxlint-enable react-hooks/exhaustive-deps
   const [state, setState] = useState<UseRetainedWindowResult>({
     isPending: true,
     error: undefined,
@@ -87,7 +88,7 @@ export function useWindow(base: WindowBase): UseWindowResult {
   const baseIdentity = canonicalValue(base);
   // Window bases are value objects commonly recreated during render. Preserve
   // the prior object while its canonical value is unchanged.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: baseIdentity represents the complete value
+  // oxlint-disable-next-line react-hooks/exhaustive-deps -- baseIdentity represents the complete value
   const stableBase = useMemo(() => base, [baseIdentity]);
   const entry = useMemo(() => store.window(stableBase), [store, stableBase]);
   const state = useSyncExternalStore(

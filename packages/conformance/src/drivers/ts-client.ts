@@ -8,7 +8,6 @@
 import {
   type ClientChangeBatch,
   type ClientSchema,
-  ClientSyncError,
   type EncryptionConfig,
   type MutationInput,
   SYNC_VERSION_COLUMN,
@@ -758,7 +757,3 @@ export const tsClientDriver: ClientDriver = {
     return new TsClientInstance(client, db, options.schema, options);
   },
 };
-
-// Re-exported so scenario assertions can name the client-side error type
-// without importing the web client directly.
-export { ClientSyncError };

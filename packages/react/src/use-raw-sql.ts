@@ -77,7 +77,7 @@ export function useRawSql<Row = SqlRow>(
   // `identity` canonically contains every value-shaped input. Depending on
   // the caller's array/object references would defeat value-stable query
   // identity; executable decoders and row keys follow function identity.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: canonical value identity is the dependency
+  // oxlint-disable react-hooks/exhaustive-deps -- canonical value identity is the dependency
   const entry = useMemo(
     () =>
       store.query<Row>({
@@ -92,6 +92,7 @@ export function useRawSql<Row = SqlRow>(
       }),
     [store, identity, options?.mapRow, options?.rowKey],
   );
+  // oxlint-enable react-hooks/exhaustive-deps
   const snapshot = useSyncExternalStore(
     enabled ? entry.subscribe : noSubscribe,
     enabled ? entry.getSnapshot : () => DISABLED,

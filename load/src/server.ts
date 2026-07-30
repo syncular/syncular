@@ -184,10 +184,10 @@ class MetricsEvents implements SyncularServerEvents {
 // Storage: sqlite by default, Postgres when SYNCULAR_PG_URL is set
 // ---------------------------------------------------------------------------
 
-// biome-ignore lint/suspicious/noExplicitAny: Bun.sql is version-fluid.
+// oxlint-disable-next-line typescript/no-explicit-any -- Bun.sql is version-fluid.
 const BunSQL = (Bun as any).SQL as undefined | (new (url: string) => any);
 
-// biome-ignore lint/suspicious/noExplicitAny: driver handle is dynamic.
+// oxlint-disable-next-line typescript/no-explicit-any -- driver handle is dynamic.
 function queryableOver(handle: any): PgQueryable {
   return {
     async query<Row = Record<string, unknown>>(
@@ -215,7 +215,7 @@ async function buildStorage(): Promise<{
     const executor: PgExecutor = {
       query: queryableOver(sql).query,
       async transaction<T>(fn: (client: PgQueryable) => Promise<T>) {
-        // biome-ignore lint/suspicious/noExplicitAny: dynamic tx handle.
+        // oxlint-disable-next-line typescript/no-explicit-any -- dynamic tx handle.
         return sql.begin(async (tx: any) => fn(queryableOver(tx)));
       },
       async close() {
@@ -227,7 +227,7 @@ async function buildStorage(): Promise<{
     // Start each PG run from a clean partition.
     // The relational row store: the app table is partitioned by
     // _sync_partition (it may not exist yet on a fresh database).
-    // biome-ignore lint/suspicious/noExplicitAny: dynamic handle.
+    // oxlint-disable-next-line typescript/no-explicit-any -- dynamic handle.
     await (sql as any).unsafe(
       `DO $$ BEGIN
          IF to_regclass('tasks') IS NOT NULL THEN
@@ -244,7 +244,7 @@ async function buildStorage(): Promise<{
       'sync_clients',
       'sync_partitions',
     ]) {
-      // biome-ignore lint/suspicious/noExplicitAny: dynamic handle.
+      // oxlint-disable-next-line typescript/no-explicit-any -- dynamic handle.
       await (sql as any).unsafe(`DELETE FROM ${table} WHERE partition=$1`, [
         PARTITION,
       ]);

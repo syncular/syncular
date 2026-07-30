@@ -7,10 +7,7 @@
  * See README.md for the invalidation granularity truth and the `tables`
  * option.
  */
-export type {
-  NormalizedClient,
-  SyncClientLike,
-} from './client';
+export type { NormalizedClient, SyncClientLike } from './client';
 // `normalizeClient` is the runtime facade the hooks consume; exported so
 // alternate hosts (e.g. `@syncular/tauri`) can assert shape-parity against
 // the exact normalizer the bindings use.
@@ -50,10 +47,7 @@ export {
   useMutation,
 } from './use-mutation';
 export { usePresence } from './use-presence';
-export {
-  type NamedQueryDescriptor,
-  useQuery,
-} from './use-query';
+export { type NamedQueryDescriptor, useQuery } from './use-query';
 export {
   type UseRawSqlOptions,
   type UseRawSqlResult,

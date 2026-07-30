@@ -23,7 +23,7 @@
     "//audit-ignore": "react-router GHSA-qwww-vcr4-c8h2 is ignored, not unfixed: it is an RSC-mode CSRF bypass, and react-router-dom has no release carrying the 8.3.0 fix — the DOM entry points moved into react-router itself in v8, which needs React 19 via useOptimistic. It reaches us only as a devDependency of packages/react used by one test, react-router-scheduling.test.tsx, which drives the data router without RSC and ships to nobody. Drop this ignore when the react lane moves to React 19. The svgo/postcss/sharp advisories are fixed for real, via the root overrides above.",
     "audit": "bun audit --ignore GHSA-qwww-vcr4-c8h2",
     "check": "bun run version:check && bun run check:code",
-    "check:code": "bun run typecheck && bun run lint && bun run test",
+    "check:code": "bun run typecheck && bun run lint && bun run knip && bun run test",
     "version:print": "bun scripts/version.ts print",
     "version:check": "bun scripts/version.ts check",
     "version:materialize": "bun scripts/version.ts materialize",
@@ -36,8 +36,9 @@
     "load": "bun run --cwd load load",
     "load:smoke": "bun run --cwd load load:smoke",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check .",
-    "lint:fix": "biome check --fix .",
+    "lint": "oxlint && oxfmt --check",
+    "lint:fix": "oxlint --fix && oxfmt",
+    "knip": "knip",
     "build:packages": "bun run clean:packages && for p in core crypto server server-hono server-workers crdt-yjs web-client react typegen tauri testing create-app; do echo \"building @ packages/$p\" && tsc -p packages/$p/tsconfig.build.json || exit 1; done && bun run fix:esm && bun run build:bins",
     "build:sites": "bun run version:check && bun run --cwd apps/docs build && bun run --cwd apps/demo build:static",
     "fix:esm": "node scripts/fix-esm-extensions.mjs packages/core/dist packages/crypto/dist packages/server/dist packages/server-hono/dist packages/server-workers/dist packages/crdt-yjs/dist packages/web-client/dist packages/react/dist packages/typegen/dist packages/tauri/dist packages/testing/dist packages/create-app/dist",
@@ -45,9 +46,11 @@
     "build:bins": "chmod +x packages/typegen/dist/cli.js packages/create-app/dist/cli.js 2>/dev/null || true"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.10",
     "@syncular/typegen": "workspace:*",
     "@types/bun": "latest",
+    "knip": "^6.29.0",
+    "oxfmt": "^0.60.0",
+    "oxlint": "^1.75.0",
     "sharp": "^0.35.3",
     "typescript": "^5.9.0"
   }

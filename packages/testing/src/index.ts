@@ -11,10 +11,7 @@
  * pulls in no React. See README.md for paste-ready examples.
  */
 
-export type {
-  TestClient,
-  TestClientOptions,
-} from './client';
+export type { TestClient, TestClientOptions } from './client';
 export {
   createVirtualClock,
   DEFAULT_EPOCH_MS,

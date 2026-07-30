@@ -94,9 +94,7 @@ export function amzTimestamps(nowMs: number): {
 }
 
 /** Sorted, fully re-encoded canonical query string from *decoded* pairs. */
-export function canonicalQuery(
-  params: Iterable<readonly [string, string]>,
-): string {
+function canonicalQuery(params: Iterable<readonly [string, string]>): string {
   return [...params]
     .map(([k, v]) => [uriEncode(k, true), uriEncode(v, true)] as const)
     .sort(([ak, av], [bk, bv]) =>

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignore": [
+    "**/*.generated.ts",
+    "**/*.queries.ts",
+    "packages/create-app/template/**",
+    "bindings/flutter/**",
+    "bindings/kotlin/**",
+    "bindings/swift/**",
+    "apps/docs/public/**"
+  ],
+  "workspaces": {
+    ".": {
+      "entry": ["scripts/*.{ts,mjs}", "logo/*.mjs"]
+    },
+    "packages/conformance": {
+      "entry": ["test/**/*.{ts,tsx,mjs}"]
+    },
+    "packages/react": {
+      "entry": ["test/**/*.{ts,tsx,mjs}"]
+    },
+    "packages/server": {
+      "entry": ["test/**/*.{ts,tsx,mjs}"]
+    },
+    "packages/server-workers": {
+      "entry": ["test/**/*.{ts,tsx,mjs}"]
+    },
+    "packages/tauri": {
+      "entry": ["test/**/*.{ts,tsx,mjs}"]
+    },
+    "packages/testing": {
+      "entry": ["test/**/*.{ts,tsx,mjs}"]
+    },
+    "packages/web-client": {
+      "entry": ["test/**/*.{ts,tsx,mjs}"]
+    },
+    "packages/core": {
+      "entry": ["scripts/*.ts"]
+    },
+    "packages/typegen": {
+      "entry": ["src/cli.ts", "test/**/*.ts"]
+    },
+    "packages/create-app": {
+      "entry": ["src/cli.ts", "test/**/*.ts"]
+    },
+    "apps/demo": {
+      "entry": ["src/**/*.ts"]
+    },
+    "apps/demo-react": {
+      "entry": ["src/**/*.{ts,tsx}"],
+      "ignoreDependencies": ["@sqlite.org/sqlite-wasm"]
+    },
+    "apps/docs": {
+      "entry": ["src/**/*.{ts,tsx}", "scripts/*.mjs"]
+    },
+    "examples/quickstart": {
+      "entry": ["src/**/*.ts"]
+    },
+    "bench": {
+      "entry": ["src/*.ts"],
+      "ignoreDependencies": ["@sqlite.org/sqlite-wasm"]
+    },
+    "load": {
+      "entry": ["src/*.ts"]
+    },
+    "bindings/react-native": {
+      "entry": ["src/NativeSyncular.ts", "test/**/*.ts"],
+      "ignore": ["example/**"]
+    },
+    "bindings/tauri/example": {
+      "entry": ["src/**/*.{ts,tsx}"]
+    }
+  }
+}

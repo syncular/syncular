@@ -263,6 +263,7 @@ class TsServerInstance implements ServerInstance {
     this.#signedUrlTtlSeconds = options.signedUrls?.ttlSeconds ?? 900;
     // Native HMAC issuance (§5.4); ttlSeconds is a live getter so
     // scenarios can flip the TTL between pulls (expiry probes).
+    // oxlint-disable-next-line typescript/no-this-alias -- the getter below closes over the instance
     const self = this;
     this.#signedUrls =
       options.signedUrls !== undefined

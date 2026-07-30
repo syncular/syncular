@@ -497,7 +497,7 @@ test('stale-epoch replies from a dead leader are discarded', async () => {
   };
   const events: unknown[] = [];
   const link = new FollowerLink({
-    // biome-ignore lint/suspicious/noExplicitAny: minimal channel stub
+    // oxlint-disable-next-line typescript/no-explicit-any -- minimal channel stub
     channel: channel as any,
     fromId: 'f',
     onEvent: (e) => events.push(e),
@@ -545,7 +545,7 @@ test('waitUntilBound resolves on announce and rejects on bind timeout', async ()
     close: noop,
   };
   const link = new FollowerLink({
-    // biome-ignore lint/suspicious/noExplicitAny: minimal channel stub
+    // oxlint-disable-next-line typescript/no-explicit-any -- minimal channel stub
     channel: channel as any,
     fromId: 'f',
     onEvent: noop,
@@ -564,7 +564,7 @@ test('waitUntilBound resolves on announce and rejects on bind timeout', async ()
 
   // A link that never hears an announce rejects loudly at the deadline.
   const lonely = new FollowerLink({
-    // biome-ignore lint/suspicious/noExplicitAny: minimal channel stub
+    // oxlint-disable-next-line typescript/no-explicit-any -- minimal channel stub
     channel: { ...channel, addEventListener: noop } as any,
     fromId: 'g',
     onEvent: noop,
@@ -584,7 +584,7 @@ test('a follower call times out loudly when no leader answers', async () => {
     close: noop,
   };
   const link = new FollowerLink({
-    // biome-ignore lint/suspicious/noExplicitAny: minimal channel stub
+    // oxlint-disable-next-line typescript/no-explicit-any -- minimal channel stub
     channel: channel as any,
     fromId: 'f',
     onEvent: noop,

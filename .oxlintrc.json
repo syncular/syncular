@@ -1,0 +1,63 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["unicorn", "typescript", "oxc", "react"],
+  "ignorePatterns": [
+    "**/*.d.ts",
+    "**/*.generated.ts",
+    "**/*.queries.ts",
+    "**/dist/**",
+    "**/target/**",
+    "**/coverage/**",
+    "**/.astro/**",
+    "**/.wrangler/**",
+    "**/.claude/**",
+    "**/node_modules/**"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
+  "rules": {
+    "no-unused-vars": [
+      "error",
+      {
+        "args": "none",
+        "argsIgnorePattern": "^_",
+        "caughtErrors": "none",
+        "caughtErrorsIgnorePattern": "^_",
+        "ignoreRestSiblings": true,
+        "varsIgnorePattern": "^_"
+      }
+    ],
+    "prefer-const": ["error", { "ignoreReadBeforeAssign": true }],
+    "default-param-last": "error",
+    "no-shadow": "off",
+    "no-underscore-dangle": "off",
+    "preserve-caught-error": "off",
+    "typescript/no-explicit-any": "error",
+    "typescript/prefer-as-const": "error",
+    "typescript/no-inferrable-types": "error",
+    "typescript/no-unnecessary-template-expression": "error",
+    "unicorn/prefer-number-properties": "error",
+    "unicorn/no-array-sort": "off",
+    "unicorn/no-array-reverse": "off",
+    "unicorn/no-new-array": "off",
+    "unicorn/no-useless-spread": "off",
+    "unicorn/no-useless-fallback-in-spread": "off",
+    "unicorn/consistent-function-scoping": "off",
+    "unicorn/require-post-message-target-origin": "off",
+    "unicorn/require-module-specifiers": "off",
+    "unicorn/prefer-add-event-listener": "off",
+    "react/react-in-jsx-scope": "off",
+    "react-hooks/rules-of-hooks": "error",
+    "react-hooks/exhaustive-deps": "error"
+  },
+  "overrides": [
+    {
+      "files": ["**/test/**", "**/*.test.ts", "**/*.test.tsx"],
+      "rules": {
+        "no-unsafe-optional-chaining": "off"
+      }
+    }
+  ]
+}

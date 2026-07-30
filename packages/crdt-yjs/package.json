@@ -45,7 +45,6 @@
     "!dist/**/*.test.d.ts"
   ],
   "dependencies": {
-    "@syncular/core": "workspace:*",
     "yjs": "^13.6.0"
   },
   "devDependencies": {

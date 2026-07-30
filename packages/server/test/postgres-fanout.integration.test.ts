@@ -38,7 +38,7 @@ import {
 
 const PG_URL = process.env.SYNCULAR_PG_URL;
 
-// biome-ignore lint/suspicious/noExplicitAny: Bun.sql is version-fluid.
+// oxlint-disable-next-line typescript/no-explicit-any -- Bun.sql is version-fluid.
 const BunSQL = (Bun as any).SQL as undefined | (new (url: string) => any);
 
 const gate =
@@ -62,7 +62,7 @@ const SYNC_SCHEMA: ServerSchema = {
   ],
 };
 
-// biome-ignore lint/suspicious/noExplicitAny: driver handle is dynamic.
+// oxlint-disable-next-line typescript/no-explicit-any -- driver handle is dynamic.
 function queryableOver(handle: any): PgQueryable {
   return {
     async query<Row = Record<string, unknown>>(
@@ -79,13 +79,13 @@ function queryableOver(handle: any): PgQueryable {
 }
 
 /** A `PgExecutor` over Bun.sql — the production-shape adapter (README). */
-// biome-ignore lint/suspicious/noExplicitAny: driver handle is dynamic.
+// oxlint-disable-next-line typescript/no-explicit-any -- driver handle is dynamic.
 function bunSqlExecutor(sql: any): PgExecutor {
   const q = queryableOver(sql);
   return {
     query: q.query,
     async transaction<T>(fn: (client: PgQueryable) => Promise<T>): Promise<T> {
-      // biome-ignore lint/suspicious/noExplicitAny: dynamic tx handle.
+      // oxlint-disable-next-line typescript/no-explicit-any -- dynamic tx handle.
       return sql.begin(async (tx: any) => fn(queryableOver(tx)));
     },
     async close() {
@@ -95,7 +95,7 @@ function bunSqlExecutor(sql: any): PgExecutor {
 }
 
 gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
-  // biome-ignore lint/suspicious/noExplicitAny: dynamic Bun.sql handles.
+  // oxlint-disable-next-line typescript/no-explicit-any -- dynamic Bun.sql handles.
   const handles: any[] = [];
   afterAll(async () => {
     for (const h of handles) await h.end?.().catch(() => {});
@@ -262,13 +262,13 @@ gate('Postgres fanout integration (SYNCULAR_PG_URL)', () => {
 
     const conn: PgNotificationConnection = {
       async listen(channel, handler) {
-        // biome-ignore lint/suspicious/noExplicitAny: Bun.sql listen shape.
+        // oxlint-disable-next-line typescript/no-explicit-any -- Bun.sql listen shape.
         await (listenSql as any).listen(channel, (payload: string) =>
           handler(payload),
         );
       },
       async notify(channel, payload) {
-        // biome-ignore lint/suspicious/noExplicitAny: unsafe param call.
+        // oxlint-disable-next-line typescript/no-explicit-any -- unsafe param call.
         await (notifySql as any).unsafe('SELECT pg_notify($1, $2)', [
           channel,
           payload,

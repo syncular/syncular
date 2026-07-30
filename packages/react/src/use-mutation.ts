@@ -25,8 +25,11 @@ export interface UseMutationResult {
   readonly resetError: () => void;
 }
 
-export interface UseTableMutationResult<Insert, Update, Id>
-  extends UseMutationResult {
+export interface UseTableMutationResult<
+  Insert,
+  Update,
+  Id,
+> extends UseMutationResult {
   readonly upsert: (values: Insert, baseVersion?: number) => Promise<string>;
   readonly patch: (
     id: Id,

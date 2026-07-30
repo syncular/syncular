@@ -77,7 +77,6 @@
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.0.0",
-    "@syncular/core": "workspace:*",
     "@syncular/react": "workspace:*",
     "@testing-library/react": "^16.1.0",
     "@types/react": "^18.3.0",

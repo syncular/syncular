@@ -8,10 +8,7 @@ import {
 } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  reflectReleaseVersion,
-  releaseVersion,
-} from './release-version.mjs';
+import { reflectReleaseVersion, releaseVersion } from './release-version.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const contentDir = join(root, 'src/content');
@@ -104,7 +101,10 @@ const orderedPages = [
 const blogPosts = contentFiles
   .filter((page) => page.slug.startsWith('blog/'))
   .sort((a, b) => b.lastmod.localeCompare(a.lastmod));
-const blogLastmod = blogPosts.map((page) => page.lastmod).sort().at(-1);
+const blogLastmod = blogPosts
+  .map((page) => page.lastmod)
+  .sort()
+  .at(-1);
 
 const landingMarkdown = `# syncular
 

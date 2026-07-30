@@ -46,7 +46,9 @@ const query = async (sql) => {
   const result = await response.json();
   if (!response.ok || result.success === false) {
     const message = result.errors?.map((error) => error.message).join('; ');
-    throw new Error(message || `Cloudflare analytics query failed (${response.status})`);
+    throw new Error(
+      message || `Cloudflare analytics query failed (${response.status})`,
+    );
   }
   return result.data ?? result.result?.data ?? [];
 };

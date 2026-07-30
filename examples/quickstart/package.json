@@ -8,10 +8,9 @@
     "clients": "bun run src/clients.ts"
   },
   "dependencies": {
-    "@syncular/core": "workspace:*",
+    "@syncular/client": "workspace:*",
     "@syncular/server": "workspace:*",
-    "@syncular/server-hono": "workspace:*",
-    "@syncular/client": "workspace:*"
+    "@syncular/server-hono": "workspace:*"
   },
   "devDependencies": {
     "@syncular/typegen": "workspace:*"

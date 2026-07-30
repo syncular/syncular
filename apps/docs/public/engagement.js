@@ -40,11 +40,7 @@
 
   const reportIfRead = () => {
     updateDepth();
-    if (
-      reported ||
-      payload.activeSeconds < 30 ||
-      payload.scrollDepth < 0.6
-    ) {
+    if (reported || payload.activeSeconds < 30 || payload.scrollDepth < 0.6) {
       return;
     }
 

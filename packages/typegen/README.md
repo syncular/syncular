@@ -374,8 +374,9 @@ The emitted `*.generated.ts` module:
   (requested scopes), plus an `SParams` interface when the template has
   `{param}` placeholders.
 
-**Lint/freshness split**: `*.generated.ts` is excluded from biome (see
-`biome.json`) — hand-format rules on machine output only create churn.
+**Lint/freshness split**: `*.generated.ts` is excluded from oxlint and oxfmt
+(see `.oxlintrc.json` / `.oxfmtrc.json`) — hand-format rules on machine
+output only create churn.
 Freshness and migration-history integrity are enforced instead by `syncular
 generate --check`, which is byte-exact and refuses locked-history drift; the
 generated fixture is still typechecked by `tsc` and exercised by tests.

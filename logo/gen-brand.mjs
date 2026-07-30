@@ -23,19 +23,22 @@ const fontCss =
 
 // FAVICON — the coarse singularity, cropped near-square so it holds up in a tab.
 const favSpec = singularity({
-  cols: 17, rows: 10, fs: 32, horizonFrac: 0.34, ringFrac: 0.54, stars: false,
+  cols: 17,
+  rows: 10,
+  fs: 32,
+  horizonFrac: 0.34,
+  ringFrac: 0.54,
+  stars: false,
 });
-writeFileSync('apps/docs/public/favicon.svg', toSvg({ ...favSpec, round: true }, P.dark, 0.6, fontCss));
+writeFileSync(
+  'apps/docs/public/favicon.svg',
+  toSvg({ ...favSpec, round: true }, P.dark, 0.6, fontCss),
+);
 
 // DETAILED MARK — no wordmark, more of the landing-page singularity. The dark
 // variant is also public so brand consumers can use the exact social mark.
 const detailedMark = singularity(DETAILED_MARK);
-const markDark = toSvg(
-  { ...detailedMark, round: true },
-  P.dark,
-  0.85,
-  fontCss,
-);
+const markDark = toSvg({ ...detailedMark, round: true }, P.dark, 0.85, fontCss);
 const markLight = toSvg(
   { ...detailedMark, round: true },
   P.light,
@@ -57,8 +60,14 @@ await sharp(Buffer.from(markDark))
   .toFile('apps/docs/public/social-card.png');
 
 // README BANNERS — the wordmark lockup, dark + light, font embedded.
-writeFileSync('logo/banner-dark.svg', wordmark(COARSE.wordmark, P.dark, fontCss));
-writeFileSync('logo/banner-light.svg', wordmark(COARSE.wordmark, P.light, fontCss));
+writeFileSync(
+  'logo/banner-dark.svg',
+  wordmark(COARSE.wordmark, P.dark, fontCss),
+);
+writeFileSync(
+  'logo/banner-light.svg',
+  wordmark(COARSE.wordmark, P.light, fontCss),
+);
 
 // README HERO — a script-free loop sampled from the live landing simulation.
 // Dark/light assets let GitHub's <picture> follow the reader's color scheme.

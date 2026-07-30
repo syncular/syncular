@@ -34,11 +34,11 @@ import {
   seedServerRows,
 } from './loopback';
 
-// biome-ignore lint/suspicious/noExplicitAny: Bun.sql is version-fluid.
+// oxlint-disable-next-line typescript/no-explicit-any -- Bun.sql is version-fluid.
 const BunSQL = (Bun as any).SQL as undefined | (new (url: string) => any);
 
 /** A `PgExecutor` over Bun.sql — the production-shape driver adapter. */
-// biome-ignore lint/suspicious/noExplicitAny: driver handle is dynamic.
+// oxlint-disable-next-line typescript/no-explicit-any -- driver handle is dynamic.
 function queryableOver(handle: any): PgQueryable {
   return {
     async query<Row = Record<string, unknown>>(
@@ -54,13 +54,13 @@ function queryableOver(handle: any): PgQueryable {
   };
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: driver handle is dynamic.
+// oxlint-disable-next-line typescript/no-explicit-any -- driver handle is dynamic.
 function bunSqlExecutor(sql: any): PgExecutor {
   const q = queryableOver(sql);
   return {
     query: q.query,
     async transaction<T>(fn: (client: PgQueryable) => Promise<T>): Promise<T> {
-      // biome-ignore lint/suspicious/noExplicitAny: dynamic tx handle.
+      // oxlint-disable-next-line typescript/no-explicit-any -- dynamic tx handle.
       return sql.begin(async (tx: any) => fn(queryableOver(tx)));
     },
     async close() {
@@ -88,7 +88,7 @@ async function createPgServer(url: string): Promise<{
   const server = createBenchServer({
     storage,
     close: async () => {
-      // biome-ignore lint/suspicious/noExplicitAny: dynamic handle.
+      // oxlint-disable-next-line typescript/no-explicit-any -- dynamic handle.
       await (sql as any).end?.();
     },
   });
@@ -96,7 +96,7 @@ async function createPgServer(url: string): Promise<{
     // Clear our partition's data so re-runs start clean.
     // The relational row store: the app table is partitioned by
     // _sync_partition (it may not exist yet on a fresh database).
-    // biome-ignore lint/suspicious/noExplicitAny: dynamic handle.
+    // oxlint-disable-next-line typescript/no-explicit-any -- dynamic handle.
     await (sql as any).unsafe(
       `DO $$ BEGIN
          IF to_regclass('tasks') IS NOT NULL THEN
@@ -113,7 +113,7 @@ async function createPgServer(url: string): Promise<{
       'sync_clients',
       'sync_partitions',
     ]) {
-      // biome-ignore lint/suspicious/noExplicitAny: dynamic handle.
+      // oxlint-disable-next-line typescript/no-explicit-any -- dynamic handle.
       await (sql as any).unsafe(`DELETE FROM ${table} WHERE partition=$1`, [
         PARTITION,
       ]);

@@ -100,22 +100,23 @@ describe('local rebootstrap acknowledgement decoder', () => {
     );
   });
 
-  test.each(
-    MALFORMED_RESULTS,
-  )('the Worker adapter rejects malformed value %#', async (value) => {
-    const handle = await createSyncClientHandle({
-      worker: () => malformedResultWorker(value),
-      schema: { version: 1, tables: [] },
-      database: { mode: 'custom' },
-      endpoints: { syncUrl: 'https://invalid.test/sync' },
-      autoSync: false,
-      multiTab: false,
-    });
-    await expect(
-      handle.rebootstrapLocalData({ rebootstrapId: 'repair-001' }),
-    ).rejects.toMatchObject({ code: INVALID_HOST_RESPONSE_CODE });
-    await handle.close();
-  });
+  test.each(MALFORMED_RESULTS)(
+    'the Worker adapter rejects malformed value %#',
+    async (value) => {
+      const handle = await createSyncClientHandle({
+        worker: () => malformedResultWorker(value),
+        schema: { version: 1, tables: [] },
+        database: { mode: 'custom' },
+        endpoints: { syncUrl: 'https://invalid.test/sync' },
+        autoSync: false,
+        multiTab: false,
+      });
+      await expect(
+        handle.rebootstrapLocalData({ rebootstrapId: 'repair-001' }),
+      ).rejects.toMatchObject({ code: INVALID_HOST_RESPONSE_CODE });
+      await handle.close();
+    },
+  );
 });
 
 describe('durable local rebootstrap receipt', () => {
