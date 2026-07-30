@@ -73,11 +73,9 @@ The dispatch itself doesn't live in this crate. It's implemented once in the
 shared [`syncular-command`](https://github.com/syncular/syncular/tree/main/rust/crates/command)
 router, and the stdio conformance shim, this FFI, and the Tauri plugin all
 call into it. Every binding (Swift, Kotlin, Flutter, React Native) drives
-that same router beneath its native surface, which is why protocol behavior
-is identical across platforms: whatever the shim proves against the
-[conformance catalog](/guide-conformance/) applies to every embedding, since
-they all run through this single, fully tested router. The methods it
-routes:
+that same router beneath its native surface, so whatever the shim proves
+against the [conformance catalog](/guide-conformance/) applies to every
+embedding. The methods it routes:
 
 | Group | Methods |
 | --- | --- |
@@ -93,9 +91,9 @@ routes:
 | CRDT (`crdt-yjs` feature) | `crdtText`, `crdtInsertText`, `crdtDeleteText`, `crdtApplyUpdate` |
 | Conformance helpers | `messageRoundtrip`, `segmentRoundtrip`, `realtimeKnown` |
 
-`purgeLocalData` is a local security primitive, not an authority decision. A
-binding must validate the directive and gate affected subscriptions before
-forwarding it. See [Authorized local purge](/concepts-local-data-purge/).
+`purgeLocalData` is a local security primitive: a binding must validate the
+directive and gate affected subscriptions before forwarding it. See
+[Authorized local purge](/concepts-local-data-purge/).
 
 Native hosts can create with `securityPreflight: true`, run the validated purge,
 and call `activateSecurity` with the portable keyring. The shared router rejects
@@ -161,8 +159,8 @@ are client-local commands.
 
 ## Writing a new binding
 
-A binding is thin marshaling and nothing more: every behavior lives behind
-the command surface, which is already conformance-locked. The whole job:
+A binding is thin marshaling: every behavior lives behind the command
+surface, which is already conformance-locked. The steps:
 
 1. Load `libsyncular` and bind the five functions.
 2. Wrap the opaque handle in a class that stringifies `{method, params}`,
@@ -173,16 +171,15 @@ the command surface, which is already conformance-locked. The whole job:
 5. Pump `poll_event` on a background thread and surface events on your
    platform's event loop, with a pause/resume/close lifecycle.
 
-The core owns protocol logic, sync scheduling, and SQL handling; the binding
-only marshals commands across the boundary. Run a new binding against the
+Run a new binding against the
 [conformance catalog](/guide-conformance/) to verify it behaves like every
 other core.
 
 ## Where to go next
 
-- **[Conformance](/guide-conformance/)** — the catalog that locks the
+- **[Conformance](/guide-conformance/)**: the catalog that locks the
   command surface this ABI exposes.
-- **[Rust](/platform-rust/)** — the `syncular-client` crate underneath,
+- **[Rust](/platform-rust/)**: the `syncular-client` crate underneath,
   usable directly from Rust.
-- **[Swift](/platform-swift/)** and **[Kotlin](/platform-kotlin/)** — the
+- **[Swift](/platform-swift/)** and **[Kotlin](/platform-kotlin/)**: the
   idiomatic wrappers to copy when starting a new binding.

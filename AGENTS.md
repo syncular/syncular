@@ -1,4 +1,4 @@
-# Syncular — agent instructions
+# Syncular agent instructions
 
 Local-first sync engine: local SQLite is the read model, writes go through an
 outbox, servers converge clients. One TS core and one Rust core implement the
@@ -10,12 +10,12 @@ human contributors just as much. `CLAUDE.md` is a gitignored symlink to this
 file, created by the root `postinstall` script.
 
 Read before non-trivial work: `docs/SPEC.md` (wire truth), `docs/implementation history`
-(plan of record — **and non-goals; never resurrect one without new
+(plan of record, **including non-goals; never resurrect one without new
 evidence**), `docs/work record` (working list + standing rules), `docs/implementation contract*.md`
 (subsystem designs), `docs/` (0001 admin console, 0002 integration
-feedback — implemented).
+feedback; both implemented).
 
-## Doctrine (enforced, not aspirational)
+## Doctrine (enforced)
 
 - **Spec-first**: wire-behavior changes start in SPEC.md; judgment calls get
   codified back into it.
@@ -25,7 +25,7 @@ feedback — implemented).
 - **Cross-core parity**: behavior observable on the wire or through the
   client surface must match TS and Rust. Semantics changes (e.g. window
   completeness, invalidation granularity) require BOTH cores plus a
-  conformance catalog scenario (`packages/conformance/src/catalog/`) — a
+  conformance catalog scenario (`packages/conformance/src/catalog/`); a
   TS-only change breaks the rust-conformance CI pairing.
 - Commit/push: local commits after verification are fine; **push only on
   the maintainer's explicit instruction** (docs/work record standing rules).
@@ -61,13 +61,13 @@ feedback — implemented).
 
 ## Layout
 
-- `packages/*` — TS: `core`, `crypto`, `server`, `server-hono`,
+- `packages/*` (TS): `core`, `crypto`, `server`, `server-hono`,
   `server-workers`, `web-client` (npm: `@syncular/client`), `react`,
   `typegen` (bin: `syncular`), `tauri` (JS bridge), `crdt-yjs`, `testing`
   (npm: `@syncular/testkit`), `create-app`, `conformance` (private).
-- `rust/` — its own cargo workspace: `ssp2`, `client`, `command`, `ffi`
+- `rust/` is its own cargo workspace: `ssp2`, `client`, `command`, `ffi`
   (C-ABI `libsyncular`), `syncular` (stub crate).
-- `bindings/` — `tauri/` (plugin + example; **separate cargo workspace**,
+- `bindings/`: `tauri/` (plugin + example; **separate cargo workspace**,
   deliberately outside the main cargo gate), `kotlin/` (Gradle, FFM/JDK21+),
   `flutter/`, `react-native/` (bun workspace member), `swift/` (local-only
   gate, needs macOS). Each has its own `check.sh`.
@@ -77,11 +77,11 @@ feedback — implemented).
 
 ```sh
 bun install
-bun run check        # typecheck + oxlint/oxfmt + knip + tests — THE gate (pre-push hook runs it)
+bun run check        # typecheck + oxlint/oxfmt + knip + tests. THE gate (pre-push hook runs it)
 ```
 
 - Tests are split: `test:main` plus an isolated multi-tab lane (documented
-  bun worker+sqlite segfault — see the root package.json note; retry once is
+  bun worker+sqlite segfault, see the root package.json note; retry once is
   expected, do not "fix" it).
 - Rust: `cargo test` / `clippy -D warnings` in `rust/`; the tauri plugin
   builds in `bindings/tauri/` separately.
@@ -92,22 +92,22 @@ bun run check        # typecheck + oxlint/oxfmt + knip + tests — THE gate (pre
 - React package tests: bun:test + RTL over happy-dom (`--preload
   ./test/setup.ts`), `FakeClient` for hook semantics, `loopback.ts` +
   `handle-shape.ts` for the promise-path parity lane. Typegen has golden
-  tests (`test/fixtures/` — the `basic` fixture covers all six column types).
+  tests (`test/fixtures/`; the `basic` fixture covers all six column types).
 
 ### The repo is dist-free (this bites)
 
 `packages/*/dist` is gitignored and only exists after `bun run
 build:packages`. Published exports point `browser`/`import` at `dist/`, but
-the **`bun` condition points at `src/*.ts`** — everything in-repo resolves
+the **`bun` condition points at `src/*.ts`**, so everything in-repo resolves
 through it. Consequences:
 
 - Any tsconfig typechecking against `@syncular/*` inside the repo needs
   `"customConditions": ["bun"]` (see `bindings/react-native/tsconfig.json`).
 - Bun.build sites pin `conditions: ['bun']`.
 - When hot-patching an installed copy in a CONSUMER app: Vite serves whatever
-  the `browser` condition points at — patch that file, not the other one, and
-  never delete `node_modules/.vite` under a running dev server (it serves a
-  mixed bundle; restart instead).
+  the `browser` condition points at, so patch that file, and never delete
+  `node_modules/.vite` under a running dev server (it serves a mixed bundle;
+  restart instead).
 
 ## CI (`.github/workflows/ci.yml`)
 
@@ -118,12 +118,11 @@ Known environmental requirements already encoded (don't regress them):
 
 - kotlin: `junit-platform-launcher` as `testRuntimeOnly` (wrapper-less
   setup-gradle provisions Gradle 9, which stopped injecting it).
-- tauri: `example/dist` must exist before anything compiles the example —
-  `tauri::generate_context!` hard-fails on a missing `frontendDist`.
+- tauri: `example/dist` must exist before anything compiles the example,
+  because `tauri::generate_context!` hard-fails on a missing `frontendDist`.
 - flutter: `dart analyze` is fatal on ANALYZER diagnostics too
-  (`unused_element` etc. — the generated-file `type=lint` ignore does not
-  cover them; the dart emitter emits row helpers conditionally for this
-  reason).
+  (`unused_element` etc. are not covered by the generated-file `type=lint`
+  ignore; the dart emitter emits row helpers conditionally for this reason).
 
 ## Releases
 
@@ -149,12 +148,12 @@ iteration by the submitter, who must understand and be able to defend every
 line. Low-effort machine-generated PRs, issues, and comments are closed
 without comment. The reader-facing version of this policy lives in
 `README.md`, `apps/docs/src/content/contributing.md`, and
-`apps/docs/src/content/llms.md` — keep them in agreement.
+`apps/docs/src/content/llms.md`; keep them in agreement.
 
 ## Consumer-side reference (maintainer-local)
 
 A real two-engine integration (web worker+OPFS and Tauri native behind one
-`SyncClientLike` seam) lives in the Diego monorepo at `../mono/ui-poc` — it
+`SyncClientLike` seam) lives in the Diego monorepo at `../mono/ui-poc`; it
 is the fastest place to smoke-test a change against a living app
 (`bun run server` + `bun run dev` there; see its README/implementation contract.md §8). The
 path only exists on maintainer machines; skip this section if it is absent.

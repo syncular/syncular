@@ -30,7 +30,7 @@ The Rust plugin is on crates.io:
 tauri-plugin-syncular = { version = "0.0.0", features = ["native-transport"] }
 ```
 
-To track unreleased changes, consume it as a git dependency instead — cargo
+To track unreleased changes, consume it as a git dependency instead; cargo
 finds the package inside the repo by name (pin a `rev = "<commit>"` for
 reproducible builds); with a local checkout, a path dependency to
 [`bindings/tauri/plugin`](https://github.com/syncular/syncular/tree/main/bindings/tauri/plugin)
@@ -57,7 +57,7 @@ use tauri_plugin_syncular::SyncularConfig;
 tauri::Builder::default()
     .setup(|app| {
         // Persist the database under the OS app-data dir so it survives
-        // restarts — the whole point of the native instance.
+        // restarts.
         let db_path = app.path().app_data_dir().ok().map(|dir| {
             let _ = std::fs::create_dir_all(&dir);
             dir.join("syncular.db").to_string_lossy().into_owned()
@@ -182,22 +182,22 @@ See [Realtime](/concepts-realtime/) for phases and diagnostics.
 
 ## The command and event surface
 
-The plugin dispatches through the shared `syncular-command` router — the same
+The plugin dispatches through the shared `syncular-command` router, the same
 router the conformance shim and the C-ABI FFI use, so the surface is
 conformance-locked.
 
-- **`syncular_command(command)`** — the whole surface in one command.
+- **`syncular_command(command)`**: the whole surface in one command.
   `command` is `{ "method": "...", "params": {...} }` (create, subscribe,
   mutate, sync, syncUntilIdle, conflicts, presence, setPresence, …). The reply
   is `{ "result": ... }` or `{ "error": { "code", "message" } }`.
-- **`syncular_query(sql, params)`** — the raw read-only SQL fast path.
-- **`syncular_query_snapshot(sql, params, coverage)`** — one IPC read for rows,
+- **`syncular_query(sql, params)`**: the raw read-only SQL fast path.
+- **`syncular_query_snapshot(sql, params, coverage)`**: one IPC read for rows,
   window completeness, and exact local revision. A file-backed plugin serves
   this from an independent read-only SQLite connection, so network work on the
   mutable owner cannot stall reactive views.
-- **`syncular_set_headers(headers)`** — replace the native transport's
+- **`syncular_set_headers(headers)`**: replace the native transport's
   request headers at runtime (see below).
-- **`syncular://event`** — exact revisioned `change` batches plus `presence`
+- **`syncular://event`**: exact revisioned `change` batches plus `presence`
   and lifecycle events. The Rust core originates table/scope/window/status/
   conflict domains; the bridge forwards them without counter diffing or a
   global-invalidation fallback. Bytes use `{ "$bytes": "<hex>" }`, and unsafe
@@ -218,7 +218,7 @@ Real apps rotate JWTs, so the bridge exposes a runtime replacement:
 await client.setHeaders({ authorization: `Bearer ${freshToken}` });
 ```
 
-Pass the FULL header set each time — it replaces the previous set. HTTP
+Pass the FULL header set each time; it replaces the previous set. HTTP
 requests (sync rounds, segments, blobs) use the new headers from the next
 call; the realtime WebSocket sends headers at handshake time, so a live
 socket keeps its old set until it reconnects. To force the new auth onto the
@@ -305,10 +305,10 @@ The only Tauri-specific line is client construction.
 
 ## Where to go next
 
-- **[React hooks](/platform-react/)** — the hook surface the bridge feeds.
-- **[Rust](/platform-rust/)** — the `syncular-client` crate the plugin
+- **[React hooks](/platform-react/)**: the hook surface the bridge feeds.
+- **[Rust](/platform-rust/)**: the `syncular-client` crate the plugin
   consumes directly.
-- **[Realtime](/concepts-realtime/)** — sockets, deltas, and sync rounds over
+- **[Realtime](/concepts-realtime/)**: sockets, deltas, and sync rounds over
   the socket.
-- **[Server setup](/guide-server/)** — the server this native instance syncs
+- **[Server setup](/guide-server/)**: the server this native instance syncs
   against.

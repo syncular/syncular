@@ -126,7 +126,7 @@ Offline or on the lean core it returns
 `{ok: false, errorCode: "transport.unavailable"}`, and the mutation waits in
 the offline outbox; `pendingCommitIds()` stays non-empty until sync drains
 it. Writes are always optimistic, so a `mutate` shows up in
-`readRows`/`query` immediately, ahead of any server round-trip.
+`readRows`/`query` immediately.
 
 ## Collaborative text (CRDT)
 
@@ -170,7 +170,7 @@ integration against the [quickstart](/quickstart/) server.
 
 ## Where to go next
 
-- [FFI & the native core](/platform-ffi/) — the shared C ABI underneath this wrapper.
-- [Scopes & authorization](/concepts-scopes/) — how the scope maps you subscribe with are authorized.
-- [Conflicts & optimistic writes](/concepts-conflicts/) — the payload behind the `conflict` event.
-- [Quickstart](/quickstart/) — the server the examples above talk to.
+- [FFI & the native core](/platform-ffi/): the shared C ABI underneath this wrapper.
+- [Scopes & authorization](/concepts-scopes/): how the scope maps you subscribe with are authorized.
+- [Conflicts & optimistic writes](/concepts-conflicts/): the payload behind the `conflict` event.
+- [Quickstart](/quickstart/): the server the examples above talk to.

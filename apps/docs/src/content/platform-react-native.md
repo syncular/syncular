@@ -35,10 +35,10 @@ rust/scripts/build-native.sh
 
 The script builds every target whose toolchain exists and skips the rest:
 
-- iOS/macOS — `Syncular.xcframework` (device + simulator static archives;
+- iOS/macOS: `Syncular.xcframework` (device + simulator static archives;
   needs full Xcode). Drop it into the package's `ios/` directory, then
   `pod install` in your app.
-- Android — `libsyncular.so` per ABI via `cargo-ndk` (`arm64-v8a`,
+- Android: `libsyncular.so` per ABI via `cargo-ndk` (`arm64-v8a`,
   `x86_64`). Drop each into `android/src/main/jniLibs/<abi>/`.
 
 RN autolinking wires the rest through `syncular-react-native.podspec` and
@@ -90,7 +90,7 @@ function TodoList() {
     'SELECT id, title, done FROM todos WHERE list_id = ? ORDER BY position, id',
     ['groceries'],
   );
-  // mutate([{ table: 'todos', op: 'upsert', values: { ... } }]) — the outbox
+  // mutate([{ table: 'todos', op: 'upsert', values: { ... } }]): the outbox
   // queues offline; the row appears optimistically via invalidation.
 }
 
@@ -139,13 +139,13 @@ and explicit `sync-intent` effects from the Rust core; it does not diff
 counters. The JS bridge feeds changes into the same shared reactive store as
 web and Tauri, while `presence` remains ephemeral.
 
-Lifecycle is explicit and battery-aware:
+Lifecycle is explicit:
 
-- `client.pause()` — stop the native event pump and disconnect realtime. Call
+- `client.pause()`: stop the native event pump and disconnect realtime. Call
   from `AppState` `'background'`. The database and outbox stay intact;
   mutations keep queuing offline.
-- `client.resume()` — reconnect realtime and restart the pump.
-- `client.close()` — detach listeners and release the native core.
+- `client.resume()`: reconnect realtime and restart the pump.
+- `client.close()`: detach listeners and release the native core.
 
 `resume()` is deliberately one-shot. For retry, socket-close recovery, and an
 explicit catch-up before claiming freshness, install
@@ -158,12 +158,12 @@ without creating a second native socket. See
 
 ## Platform notes
 
-- **iOS shim** — [`ios/Syncular.mm`](https://github.com/syncular/syncular/blob/main/bindings/react-native/ios/Syncular.mm),
+- **iOS shim**: [`ios/Syncular.mm`](https://github.com/syncular/syncular/blob/main/bindings/react-native/ios/Syncular.mm),
   ObjC++. Owns the opaque handle, forwards JSON command strings to the C ABI,
   pumps `poll_event` on a serial background dispatch queue, and emits via
   `RCTEventEmitter`. Every library-owned string is released with
   `syncular_free_string`, the deallocator the C ABI requires.
-- **Android shim** — `SyncularModule.kt` + `SyncularPackage.kt`, Kotlin. Binds
+- **Android shim**: `SyncularModule.kt` + `SyncularPackage.kt`, Kotlin. Binds
   the C ABI via FFM (`java.lang.foreign`) with zero JNI C glue, the same
   technique as the [Kotlin binding](/platform-kotlin/), and loads
   `libsyncular.so` from the APK's `jniLibs`.
@@ -177,13 +177,13 @@ without creating a second native socket. See
 
 ## Where to go next
 
-- **[React hooks](/platform-react/)** — the full `useQuery` / `useRawSql` /
+- **[React hooks](/platform-react/)**: the full `useQuery` / `useRawSql` /
   `useMutation` / `usePresence` surface this binding feeds.
-- **[Embedding via C FFI](/platform-ffi/)** — the five-function C ABI
+- **[Embedding via C FFI](/platform-ffi/)**: the five-function C ABI
   underneath the TurboModule.
-- **[The example app](https://github.com/syncular/syncular/tree/main/bindings/react-native/example)**
-  — the runnable todo app, with the per-platform device-build recipe.
-- **[Realtime](/concepts-realtime/)** — how the socket, deltas, and
+- **[The example app](https://github.com/syncular/syncular/tree/main/bindings/react-native/example)**:
+  the runnable todo app, with the per-platform device-build recipe.
+- **[Realtime](/concepts-realtime/)**: how the socket, deltas, and
   invalidations work.
-- **[Authorized local purge](/concepts-local-data-purge/)** — device and key
+- **[Authorized local purge](/concepts-local-data-purge/)**: device and key
   revocation without pretending an offline device was remotely erased.

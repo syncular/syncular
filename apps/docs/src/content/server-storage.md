@@ -78,7 +78,7 @@ An empty or omitted `scopeFilter` is never an “all rows” request. All shippe
 adapters throw `StorageQueryError` with
 `code: 'sync.storage.scan_requires_scope'`; an empty result therefore cannot
 hide an unsupported administrative scan. A relational index also does not
-make its columns available to `scanRows`—scope indexes and SQL indexes solve
+make its columns available to `scanRows`; scope indexes and SQL indexes solve
 different problems.
 
 ### Trusted alternate lookup
@@ -146,8 +146,8 @@ never wrap it in a route that accepts table, index, or value choices from an
 untrusted client. Custom storage adapters may omit this additive capability
 and should fail the command closed, as above.
 
-`values` is a complete, order-sensitive tuple—not a SQL-style leading-prefix
-request. For an index declared as
+`values` is a complete, order-sensitive tuple; a SQL-style leading-prefix
+request is unsupported. For an index declared as
 `columns: ['workspace_id', 'state', 'id']`, only
 `values: [workspaceId, state, id]` is valid. `values: [workspaceId]` fails with
 `sync.storage.index_value_count_mismatch`; it does not enumerate the
@@ -304,7 +304,7 @@ File-attachment bytes get the same backend spread: `MemoryBlobStore`,
 `SqliteBlobStore`, and `S3BlobStore` (S3, R2, MinIO, same SigV4, same
 content-addressed layout, partition-scoped keys).
 
-Blobs differ from segments in one key way: they are durable, with no
+Blobs differ from segments: they are durable, with no
 expiration. A blob referenced by a live row must stay downloadable
 indefinitely, so `S3BlobStore` has no `ttlMs` and maps to no lifecycle
 rule. Do **not** put an S3/R2 lifecycle-expiration rule on the `blob/`
@@ -318,7 +318,7 @@ path: `blobSignedUrls: s3PresignedBlobUrls(blobs)` issues presigned
 download URLs after the row-derived authorization check, and
 `blobUploadUrls: s3PresignedBlobUploads(blobs)` mints direct-to-storage
 upload grants. Absent config means clients stream through the direct
-`PUT /blobs/:blobId` endpoint, a fully supported path in its own right.
+`PUT /blobs/:blobId` endpoint, which is fully supported.
 
 ## Where to go next
 

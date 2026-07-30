@@ -4,8 +4,8 @@
 
 The entire documentation is available as one plain-text file at
 [syncular.dev/llms.txt](https://syncular.dev/llms.txt). Point your agent or
-editor assistant at it for grounded answers about the protocol, the client
-APIs, and the server surface. The repository root also carries
+editor assistant at it for answers about the protocol, the client APIs, and
+the server surface. The repository root also carries
 [`AGENTS.md`](https://github.com/syncular/syncular/blob/main/AGENTS.md), the
 canonical instruction set for coding agents working on syncular itself.
 
@@ -17,11 +17,9 @@ designs. Production code written with assistance goes through strict review
 and iteration by the maintainer before it lands, and it meets the same bar as
 hand-written code.
 
-The repository is structured to keep that verifiable. Two independent cores
-(TypeScript and Rust) implement one written protocol, both must pass the same
-implementation-agnostic conformance catalog, and the repo gate runs more than
-1,200 tests. A change that merely looks plausible fails loudly; a change that
-is correct passes on both cores.
+The repository is built to make that review verifiable: two independent
+cores (TypeScript and Rust) implement one written protocol, both must pass
+the same conformance catalog, and the repo gate runs more than 1,200 tests.
 
 ## Contributing with LLMs
 

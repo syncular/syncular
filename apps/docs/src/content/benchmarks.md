@@ -91,8 +91,8 @@ absolute values; the recorded run is darwin/arm64.
 
 ## Where to go next
 
-- [Bootstrap & segments](/concepts-bootstrap/) — why the sqlite-image lane is
+- [Bootstrap & segments](/concepts-bootstrap/): why the sqlite-image lane is
   fast (build-once images).
-- [Realtime](/concepts-realtime/) — the delta path the propagation numbers
+- [Realtime](/concepts-realtime/): the delta path the propagation numbers
   measure.
-- [Spec & package map](/reference/) — where everything measured here lives.
+- [Spec & package map](/reference/): where everything measured here lives.

@@ -14,18 +14,18 @@ await __SYNCULAR__.snapshot();
 // [{ clientId, role, outbox, subscriptions, conflicts, rejections,
 //    syncNeeded, upgrading, lastInvalidation }]
 
-__SYNCULAR__.clients[0].ref; // the client itself — query it, sync it
+__SYNCULAR__.clients[0].ref; // the client itself: query it, sync it
 await __SYNCULAR__.clients[0].ref.query('SELECT * FROM todos');
 ```
 
 `lastInvalidation` carries the tables and scope keys of the most recent
-apply batch — the fastest way to confirm data is arriving and your live
+apply batch, the fastest way to confirm data is arriving and your live
 queries should have re-run.
 
 ## Enter/mutate silently does nothing
 
 Seen in the dev loop: you restart the dev server while a tab stays open,
-then adding an item does nothing — no new row, no error on screen. The old
+then adding an item does nothing: no new row, no error on screen. The old
 page is still running against its old worker, and the worker's RPC (or its
 transport session) is dead; every `mutate()` **rejects**, but an app that
 never renders the failure can't show it, so the symptom reads as "the app
@@ -33,7 +33,7 @@ ignored me".
 
 Two fixes, both worth doing:
 
-- **Render `useMutation().error` — always.** The hook catches the rejection
+- **Always render `useMutation().error`.** The hook catches the rejection
   and exposes it; an app that only calls `mutate` and drops the promise has
   no failure surface at all. The submit-wrapper pattern:
 
@@ -70,7 +70,7 @@ batch and query descriptor and report it as a parity/routing bug.
 
 ## A list switch is briefly `loading` or `partial`
 
-That is the completeness oracle being honest. Registration is not
+Registration is not
 completeness (§4.8): a newly claimed unit is pending until bootstrap finishes.
 A generated `useQuery` reads rows and that verdict atomically, so render from
 its `phase`; only `phase === 'ready' && rows.length === 0` is a truthful empty
@@ -84,7 +84,7 @@ See [Windowed sync](/concepts-windowing/).
 feeds straight back into `mutate()`; rows read through the raw
 `client.database` tier keep them, and hand-built records can carry them by
 accident. Remove the key, or better, use
-`client.patch(table, rowId, partial)` for partial updates — it reads the
+`client.patch(table, rowId, partial)` for partial updates; it reads the
 current row, merges, and emits the full-row upsert for you.
 
 ## `sync.outbox_incompatible` rejections after a schema bump
@@ -92,7 +92,7 @@ current row, merges, and emits the full-row upsert for you.
 A pending offline commit references a column your new schema removed, so it
 can no longer encode (§7.4.4). The commit leaves the outbox, its optimistic
 rows are undone, and the rejection surfaces with this code; later commits
-keep draining. This is the designed behavior for dropped columns — see
+keep draining. This is the designed behavior for dropped columns; see
 [Schema bumps](/guide-schema/). If you hit it in development, wipe the
 client database (below) and move on.
 
@@ -154,10 +154,10 @@ for await (const name of root.keys()) {
 Clearing site data in devtools (Application → Storage → Clear site data)
 does the same and also drops the leader lock.
 
-## "Am I online?" — connectivity status
+## Connectivity status
 
 `useSyncStatus` exposes `outbox`, `syncNeeded`, `upgrading`, `schemaFloor`,
-and `leaseState` — and deliberately no `online` flag, because the core does
+and `leaseState`, and deliberately no `online` flag, because the core does
 not own connectivity: the host does (§8.4), and the browser already tells
 you. The recipe every app wants:
 
@@ -198,13 +198,13 @@ local paths or chunk names.
 
 Two config lines fix both: `optimizeDeps.exclude` for
 `@sqlite.org/sqlite-wasm` plus `SYNCULAR_VITE_OPTIMIZE_DEPS_EXCLUDE`, and
-`worker.format: 'es'`. The full setup —
+`worker.format: 'es'`. The full setup,
 including the dev proxy for `/sync`, `/segments`, and the `/realtime`
-WebSocket — is on the [Vite page](/guide-vite/).
+WebSocket, is on the [Vite page](/guide-vite/).
 
 ## Where to go next
 
-- **[Vite](/guide-vite/)** — the three-line config plus dev proxy.
-- **[Schema bumps](/guide-schema/)** — the wipe-and-re-bootstrap flow and
+- **[Vite](/guide-vite/)**: the config plus dev proxy.
+- **[Schema bumps](/guide-schema/)**: the wipe-and-re-bootstrap flow and
   what it costs.
-- **[Web (browser)](/platform-web/)** — worker mode, OPFS, multi-tab.
+- **[Web (browser)](/platform-web/)**: worker mode, OPFS, multi-tab.

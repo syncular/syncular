@@ -149,7 +149,7 @@ ordinary generated query.
 The normalized client also exposes
 `useSyncClient().purgeLocalData({ purgeId, targets })` on every host that
 implements the shared surface. This is an application-authorized security
-operation, not a UI convenience; follow the subscription-gating workflow in
+operation; follow the subscription-gating workflow in
 [Authorized local purge](/concepts-local-data-purge/).
 
 The normalized client also exposes `securityLifecycle()`,

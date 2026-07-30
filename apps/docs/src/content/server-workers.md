@@ -229,7 +229,7 @@ export default {
 };
 ```
 
-Getting the grace period right is what keeps this sweep safe. The full
+The sweep is safe only with a correctly sized grace period; the full
 runbook is in [Operations](/server-operations/).
 
 ## Where to go next

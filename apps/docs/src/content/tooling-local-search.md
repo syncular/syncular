@@ -1,7 +1,7 @@
 # Local full-text search
 
 Syncular can generate and maintain an FTS5 projection beside a synced table,
-giving every client production-scale full-text search while offline. The
+giving every client full-text search while offline. The
 projection is local SQLite state: it is never subscribed, mutated, uploaded,
 or stored by the server.
 
@@ -81,7 +81,7 @@ to prove stable identity for a bounded query.
 
 The projection maps back to its owning synced table for reactive dependencies.
 A content change therefore invalidates generated React queries normally.
-Synchronization coverage still comes from predicates on the synced owner—the
+Synchronization coverage still comes from predicates on the synced owner; the
 local projection never claims independent scopes or completeness.
 
 ## Lifecycle and encryption

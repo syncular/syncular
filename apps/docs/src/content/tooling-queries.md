@@ -134,6 +134,6 @@ present `NULL`, and row decoding is strict. The generated module uses the
 `syncular-client` query boundary and requires no direct `serde_json`
 dependency. See [Rust](/platform-rust/) for the complete client workflow.
 
-For production-scale offline text search, declare a client-local FTS5
+For offline full-text search, declare a client-local FTS5
 projection and query it through the same generated surface. See
 [Local full-text search](/tooling-local-search/).

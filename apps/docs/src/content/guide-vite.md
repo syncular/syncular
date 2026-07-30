@@ -5,8 +5,8 @@ non-obvious pieces are in place: the Syncular/wasm optimizer exclusions, the
 worker output format, a dev proxy for the sync endpoints, and one
 schema-and-runtime-correct HMR owner. This page is the whole setup.
 
-(The packages ship compiled JS to browser bundlers — the `browser` exports
-condition points at `dist/` — so webpack, Next.js, and Metro consume them
+(The packages ship compiled JS to browser bundlers via the `browser` exports
+condition pointing at `dist/`, so webpack, Next.js, and Metro consume them
 with stock configs too; the pieces on this page are Vite-specific wiring.)
 
 ## vite.config.ts
@@ -50,12 +50,12 @@ you poll instead of holding a socket.
 
 ## The worker and the client
 
-Vite's worker idiom is `new Worker(new URL(...), { type: 'module' })` — the
+Vite's worker idiom is `new Worker(new URL(...), { type: 'module' })`: the
 bundler sees the URL at the call site and emits the worker as its own
 bundle. `createSyncClientHandle` takes exactly that as a factory:
 
 ```ts
-// worker.ts — the whole client core runs in here.
+// worker.ts: the whole client core runs in here.
 import { startSyncWorker } from '@syncular/client/worker';
 
 startSyncWorker();
@@ -195,15 +195,15 @@ server restart and full page reload rather than entering a retry loop.
 ## Headers
 
 The persistent OPFS mode (`opfs-sahpool`) uses `FileSystemSyncAccessHandle`
-and needs no COOP/COEP headers — the SharedArrayBuffer requirement
+and needs no COOP/COEP headers; the SharedArrayBuffer requirement
 documented by sqlite-wasm applies to its other VFSes. A stock Vite dev
 server works as-is.
 
 ## Where to go next
 
-- **[Web (browser)](/platform-web/)** — the worker mode, OPFS persistence,
+- **[Web (browser)](/platform-web/)**: the worker mode, OPFS persistence,
   and multi-tab behavior this page wires up.
-- **[React](/platform-react/)** — hand the handle to `SyncProvider` and the
+- **[React](/platform-react/)**: hand the handle to `SyncProvider` and the
   hooks take over.
-- **[Troubleshooting](/troubleshooting/)** — the first-integration
+- **[Troubleshooting](/troubleshooting/)**: the first-integration
   checklist, including wiping OPFS between tests.

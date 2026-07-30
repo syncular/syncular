@@ -37,11 +37,11 @@ bun create syncular-app my-app
 | [`packages/core`](packages/core) | Protocol codecs, shared types, vector round-trip |
 | [`packages/server`](packages/server) | `handleSyncRequest(bytes, ctx)` + storage/auth interfaces (SQLite, Postgres, D1) |
 | [`packages/server-hono`](packages/server-hono), [`packages/server-workers`](packages/server-workers) | Framework bindings (Hono, Cloudflare Workers) |
-| [`packages/web-client`](packages/web-client) | `@syncular/client` — TS client core on `@sqlite.org/sqlite-wasm` |
+| [`packages/web-client`](packages/web-client) | `@syncular/client`: TS client core on `@sqlite.org/sqlite-wasm` |
 | [`packages/react`](packages/react) | React hooks over the client |
 | [`packages/typegen`](packages/typegen) | Schema IR + TypeScript emitter, named queries (cargo-free) |
 | [`packages/crypto`](packages/crypto), [`packages/crdt-yjs`](packages/crdt-yjs) | Per-column E2EE primitives, Yjs CRDT mergers |
-| [`packages/testing`](packages/testing) | `@syncular/testkit` — in-memory loopback of real server + clients |
+| [`packages/testing`](packages/testing) | `@syncular/testkit`: in-memory loopback of real server + clients |
 | [`packages/conformance`](packages/conformance) | Scenario runner both cores must pass |
 | [`rust/`](rust) | The Rust client core and its C-ABI FFI crate |
 | [`bindings/`](bindings) | Tauri, React Native, Swift, Kotlin, Flutter |
@@ -56,14 +56,15 @@ bun run check   # typecheck + lint + test
 
 ## Contributing
 
-Read [`AGENTS.md`](AGENTS.md) first — the doctrine in it (spec-first, no
+Read [`AGENTS.md`](AGENTS.md) first. The doctrine in it (spec-first, no
 fallbacks, no timers in tests, cross-core parity) applies to human and
 machine contributors alike.
 
 On AI assistance: LLMs are welcome for tests, reproductions, benchmarks, and
 other technical work. For production code, use them under strict review and
-iteration — you must understand and be able to defend every line you submit.
+iteration; you must understand and be able to defend every line you submit.
 Syncular itself is built this way: LLM assistance is used mainly for writing
 tests and iterating over technical concepts, under that same review bar.
 Low-effort machine-generated PRs, issues, and comments are closed without
-comment.
+comment. The full policy and the plain-text docs bundle for agents live at
+[syncular.dev/llms](https://syncular.dev/llms/).

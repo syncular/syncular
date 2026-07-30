@@ -38,22 +38,22 @@ bundles. Server storage is in-memory by default;
 
 What to try:
 
-- **Convergence** — add, toggle, or delete todos in pane A; they appear in
+- **Convergence**: add, toggle, or delete todos in pane A; they appear in
   pane B via realtime deltas, and vice versa.
-- **Offline replay** — "Go offline" in a pane and keep editing: the **outbox
+- **Offline replay**: "Go offline" in a pane and keep editing: the **outbox
   counter** grows. "Go online" drains it with idempotent retry.
-- **Conflict surfacing** — "Simulate conflict" stages a stale write in an
+- **Conflict surfacing**: "Simulate conflict" stages a stale write in an
   offline pane; bringing it back online surfaces a conflict record in that
   pane, and the app decides the resolution.
 
 Two URL modes change the client topology:
 
-- `?multitab` — open the demo in **two browser tabs** with `?multitab` on
+- `?multitab`: open the demo in **two browser tabs** with `?multitab` on
   both. The first tab's pane becomes the leader (spawns the worker, owns the
   OPFS database, holds the socket); the second becomes a follower proxying to
   it over a BroadcastChannel. The badge shows `leader` / `follower`. Close
   the leader tab and the follower promotes and keeps syncing.
-- `?ephemeral` — the explicit in-memory main-thread mode, labeled in the UI;
+- `?ephemeral`: the explicit in-memory main-thread mode, labeled in the UI;
   nothing survives a reload.
 
 Details: the [demo README](https://github.com/syncular/syncular/tree/main/apps/demo).
@@ -91,7 +91,7 @@ Rust core, with run recipes in each example's README.
 - **Swift (macOS)**: a SwiftUI todo window (plus a terminal variant) over the
   Swift `SyncularClient`; the whole integration is a ~30-line `TodoStore`.
   [bindings/swift/example](https://github.com/syncular/syncular/tree/main/bindings/swift/example)
-- **Kotlin (JVM)** — a terminal todo app over the Kotlin `SyncularClient`
+- **Kotlin (JVM)**: a terminal todo app over the Kotlin `SyncularClient`
   (FFM, JDK 21+), same `TodoStore` shape.
   [bindings/kotlin/example](https://github.com/syncular/syncular/tree/main/bindings/kotlin/example)
 - **Flutter** builds the todo list in ~150 lines over the Dart
@@ -113,7 +113,7 @@ router. The full per-platform verification matrix is
 
 ## Where to go next
 
-- [Quickstart](/quickstart/) — scaffold your own app in five minutes.
-- [React bindings](/platform-react/) — the hook surface the demos use.
-- [Windowed sync](/concepts-windowing/) — what the window dropdown exercises.
-- [Benchmarks](/benchmarks/) — the measured numbers behind the demos.
+- [Quickstart](/quickstart/): scaffold your own app in five minutes.
+- [React bindings](/platform-react/): the hook surface the demos use.
+- [Windowed sync](/concepts-windowing/): what the window dropdown exercises.
+- [Benchmarks](/benchmarks/): the measured numbers behind the demos.

@@ -7,7 +7,7 @@ background, plus the ephemeral and Node/Bun variants of the same core.
 
 The client core (`@syncular/client`) is plain library code: storage behind a
 `ClientDatabase`, network behind transport seams, multi-tab ownership behind a
-leader lock. Local SQL is the query API — you read your own tables directly.
+leader lock. Local SQL is the query API: you read your own tables directly.
 
 ## Install
 
@@ -90,7 +90,7 @@ SQLite database and invalidate through their synced owner table.
 
 The only main-thread mode is ephemeral: `openWasmDatabase()` returns an
 in-memory sqlite-wasm database for tests, demos, and SSR. Memory storage is
-wiped on every reload, which is the point of that mode.
+wiped on every reload by design.
 
 ```ts
 import { SyncClient } from '@syncular/client';
@@ -107,11 +107,11 @@ the whole-core-in-a-worker architecture.
 The browser bindings are `fetch`/WebSocket wrappers over the protocol
 ([SPEC §1.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md)):
 
-- `httpSyncTransport(syncUrl)` — `POST /sync` with protocol bodies.
-- `httpSegmentDownloader(segmentsUrl)` — direct segment download plus the
+- `httpSyncTransport(syncUrl)`: `POST /sync` with protocol bodies.
+- `httpSegmentDownloader(segmentsUrl)`: direct segment download plus the
   signed-URL capability.
-- `httpBlobTransport(blobsUrl)` — blob upload/download ([Blobs](/concepts-blobs/)).
-- `webSocketRealtimeConnector(realtimeUrl)` — the realtime channel.
+- `httpBlobTransport(blobsUrl)`: blob upload/download ([Blobs](/concepts-blobs/)).
+- `webSocketRealtimeConnector(realtimeUrl)`: the realtime channel.
 
 The worker handle wires all of them for you from the `endpoints` config; you
 only construct transports by hand when building a direct `SyncClient`.
@@ -239,8 +239,8 @@ There is a single support floor and a single persistence path:
 
 ## Where to go next
 
-- [React](/platform-react/) — live queries and the hook surface over this client.
-- [Realtime](/concepts-realtime/) — the connect-then-sync boot order and wake-ups.
-- [Named queries](/tooling-queries/) — typed `.sql` reads on every platform.
-- [Local full-text search](/tooling-local-search/) — offline FTS5 over synced rows.
-- [`@syncular/client` README](https://github.com/syncular/syncular/tree/main/packages/web-client) — the full API reference, including blob caching and the RPC protocol.
+- [React](/platform-react/): live queries and the hook surface over this client.
+- [Realtime](/concepts-realtime/): the connect-then-sync boot order and wake-ups.
+- [Named queries](/tooling-queries/): typed `.sql` reads on every platform.
+- [Local full-text search](/tooling-local-search/): offline FTS5 over synced rows.
+- [`@syncular/client` README](https://github.com/syncular/syncular/tree/main/packages/web-client): the full API reference, including blob caching and the RPC protocol.

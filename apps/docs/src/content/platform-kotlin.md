@@ -4,8 +4,7 @@ The Kotlin binding is a **Kotlin/JVM library** (`dev.syncular`) over the Rust
 native core's C FFI, bound via **FFM** (`java.lang.foreign`, JDK 21+). FFM
 downcalls bind the dylib directly, so the build is a single step with no
 hand-written JNI layer, and the only runtime surface beyond `kotlin-stdlib`
-is the JDK itself. The wrapper contributes marshaling; the shared core
-supplies the protocol. See [FFI & the native core](/platform-ffi/) for the
+is the JDK itself. See [FFI & the native core](/platform-ffi/) for the
 underlying C ABI.
 
 ## Install
@@ -168,7 +167,7 @@ independent client.
 
 ## Where to go next
 
-- [FFI & the native core](/platform-ffi/) — the five-function contract this wrapper binds with FFM.
-- [Scopes & authorization](/concepts-scopes/) — what a scope map means server-side.
-- [Conflicts & optimistic writes](/concepts-conflicts/) — background for the `conflict` event.
-- [Quickstart](/quickstart/) — the server used by the example.
+- [FFI & the native core](/platform-ffi/): the five-function contract this wrapper binds with FFM.
+- [Scopes & authorization](/concepts-scopes/): what a scope map means server-side.
+- [Conflicts & optimistic writes](/concepts-conflicts/): background for the `conflict` event.
+- [Quickstart](/quickstart/): the server used by the example.

@@ -231,18 +231,18 @@ dropped-column rejection, and image-lane re-bootstrap).
 
 ### What a bump costs
 
-The two questions a production evaluator asks first, answered:
+Two questions determine what a bump costs in production:
 
 **How much re-downloads?** Exactly the data the app still declares. The
-reset keeps every subscription *registration* — including the per-unit
-subscriptions a [window](/concepts-windowing/) maintains — and clears only
+reset keeps every subscription *registration* (including the per-unit
+subscriptions a [window](/concepts-windowing/) maintains) and clears only
 their sync state, so the re-bootstrap covers the subscriptions and the
 currently windowed-in units, nothing more. A phone holding a 3-project
 window of a 500-project workspace re-downloads those 3 projects. Data
 outside the window was never local and stays that way.
 
 **What does N rows cost?** On the wire, one segment download of the
-subscribed data at the new version — the same bytes as a fresh install, with
+subscribed data at the new version: the same bytes as a fresh install, with
 [segment compression](/concepts-bootstrap/) applied. Locally, the
 [measured](/benchmarks/) apply cost on the sqlite-image lane is ~30 ms for
 100k rows (~3.3M rows/sec); the rows lane applies ~275k rows/sec. The image

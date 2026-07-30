@@ -11,8 +11,8 @@ Normative detail: [SPEC.md §5.11](https://github.com/syncular/syncular/blob/mai
 
 ## The model: plaintext locally, ciphertext on the wire
 
-The one idea to hold onto: **encryption applies at the wire boundary.** The
-local database always holds plaintext.
+**Encryption applies at the wire boundary.** The local database always holds
+plaintext.
 
 - Your **local SQLite mirror stays plaintext.** Local queries, named queries,
   and indexes all keep working over the real values: an encrypted `amount`
@@ -148,9 +148,9 @@ AES-256-GCM with a fresh random 96-bit nonce per encrypt. A `NULL` value stays
 
 ## Sharing a key: asymmetric ("async") encryption
 
-Symmetric keys are great until you need to give one to a **new member**. That
-is what the asymmetric utilities are for: **X25519 sealed-box key wrapping**,
-in `@syncular/crypto` (TS) and `ssp2::wrap` (Rust). These are standalone
+Handing a symmetric key to a **new member** is what the asymmetric utilities
+are for: **X25519 sealed-box key wrapping**, in `@syncular/crypto` (TS) and
+`ssp2::wrap` (Rust). These are standalone
 utilities that sit outside the sync wire protocol. Key distribution travels
 over your own channel or a synced table.
 
@@ -163,17 +163,17 @@ const alice = await generateKeyPair();
 // Anyone with Alice's public key can wrap the table key to her:
 const wrapped = await wrapKey(myTableKey, alice.publicKey);
 
-// Alice — and only Alice — unwraps it with her private key:
+// Only Alice unwraps it with her private key:
 const tableKey = await unwrapKey(wrapped, alice.privateKey);
 ```
 
 ### The synced-wrapped-keys recipe
 
-The clean pattern: keep the wrapped keys in a **synced table**.
+Keep the wrapped keys in a **synced table**.
 
 ```sql
 -- Not encrypted (encryptedColumns is empty): wrapped_key is already
--- ciphertext — the server sees only wrapped bytes it cannot open.
+-- ciphertext; the server sees only wrapped bytes it cannot open.
 CREATE TABLE key_grants (
   id           TEXT PRIMARY KEY,   -- e.g. "secrets/alice"
   project_id   TEXT NOT NULL,      -- scope
@@ -217,19 +217,19 @@ commit that touches the target, replays safe later edits, reconciles cached
 blob references, and durably records the purge id in one SQLite transaction.
 Retries are no-ops; an id reused with a different plan fails closed. This API
 does **not** authenticate the directive or revoke server access, and a powered-
-off device remains unconfirmed—it has not been remotely erased. See
+off device remains unconfirmed and may still hold its local data. See
 [Authorized local purge](/concepts-local-data-purge/) for selector rules,
 host coverage, and the complete authority workflow.
 
 ## What the server can and cannot see: threat model
 
-Be honest about the boundary. With an encrypted column, the server:
+With an encrypted column, the server:
 
 - **cannot** read the plaintext;
 - **can** see the value's **length** (the ciphertext is length-revealing; pad
   before encrypting if length is sensitive);
 - **can** see **which rows change and when** (metadata: row ids, scopes,
-  versions, timestamps are plaintext by design; that is how sync works);
+  versions, timestamps are plaintext by design);
 - sees **ciphertext** in a [write-validator](concepts-conflicts.md): a §6.7
   validator cannot assert on an encrypted column's contents, so business rules
   over encrypted data run on the client, before the write;

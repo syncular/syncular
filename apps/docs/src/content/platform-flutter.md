@@ -112,8 +112,7 @@ result instead of throwing: offline, or on the lean core, it comes back as
 `{ok: false, errorCode: "transport.unavailable"}`, and the write sits in the
 offline outbox until the next sync clears it (check `pendingCommitIds()`
 for what's queued). Every `mutate` writes optimistically, so `readRows` and
-`query` reflect it the moment the call returns, well ahead of any round trip
-to the server.
+`query` reflect it the moment the call returns.
 
 ## Collaborative text (CRDT)
 
@@ -176,7 +175,7 @@ platform scaffolds come from `flutter create` and stay out of the repo.
 
 ## Where to go next
 
-- [FFI & the native core](/platform-ffi/) — the C ABI this package binds via `dart:ffi`.
-- [Scopes & authorization](/concepts-scopes/) — the rules behind the scope maps in `subscribe`.
-- [Conflicts & optimistic writes](/concepts-conflicts/) — what shows up in the `conflict` event.
-- [Quickstart](/quickstart/) — the server the todo example runs against.
+- [FFI & the native core](/platform-ffi/): the C ABI this package binds via `dart:ffi`.
+- [Scopes & authorization](/concepts-scopes/): the rules behind the scope maps in `subscribe`.
+- [Conflicts & optimistic writes](/concepts-conflicts/): what shows up in the `conflict` event.
+- [Quickstart](/quickstart/): the server the todo example runs against.

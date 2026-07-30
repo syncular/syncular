@@ -23,10 +23,10 @@ small):
 syncular-client = { version = "0.0.0", features = ["crdt-yjs", "e2ee"] }
 ```
 
-- `crdt-yjs` — the §5.10.5 native CRDT helpers (`crdt_text`,
+- `crdt-yjs`: the §5.10.5 native CRDT helpers (`crdt_text`,
   `crdt_insert_text`, `crdt_delete_text`, `crdt_apply_update`) over `yrs`,
   Yjs-wire-compatible with the web `@syncular/crdt-yjs` helper.
-- `e2ee` — §5.11 client-side encryption (installed via `set_encryption`).
+- `e2ee`: §5.11 client-side encryption (installed via `set_encryption`).
 
 The wire codec lives in `syncular-ssp2` (library name `ssp2`, also
 `0.0.0` on crates.io); it arrives as a dependency and you rarely need it
@@ -206,13 +206,13 @@ tells you whether another round is already warranted.
 You implement `syncular_client::Transport` and pass it to every
 network-touching call. The required methods:
 
-- `sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError>` — one
+- `sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError>`: one
   combined push+pull round over `POST /sync` (or loopback).
-- `realtime_sync(&mut self, request: &[u8])` — the same round over the
+- `realtime_sync(&mut self, request: &[u8])`: the same round over the
   connected realtime socket (§8.7); the host owns the WS framing.
-- `download_segment(&mut self, request: &SegmentRequest)` — bootstrap
+- `download_segment(&mut self, request: &SegmentRequest)`: bootstrap
   segment fetch (§5.5).
-- `realtime_connect` / `realtime_send` / `realtime_close` — the socket
+- `realtime_connect` / `realtime_send` / `realtime_close`: the socket
   lifecycle and client→server control messages.
 
 Optional methods (whose default implementations return an error) cover
@@ -233,8 +233,8 @@ The core has no callbacks. Connect with
 `client.connect_realtime(&mut transport)?`, then feed inbound frames from
 your socket reader into the core:
 
-- `client.on_realtime_text(&text)` — JSON control messages.
-- `client.on_realtime_binary(&mut transport, &bytes)` — binary delta frames.
+- `client.on_realtime_text(&text)`: JSON control messages.
+- `client.on_realtime_binary(&mut transport, &bytes)`: binary delta frames.
 
 Applied deltas update the local tables directly; `sync_needed()` flips when a
 round is warranted. `disconnect_realtime` closes the lane. While the socket
@@ -244,12 +244,12 @@ the connected socket carries the sync rounds themselves. See
 
 ## Where to go next
 
-- **[Embedding via C FFI](/platform-ffi/)** — this crate packaged as
-  `libsyncular` with a five-function C ABI, plus the batteries-included
-  native transport.
-- **[Tauri](/platform-tauri/)** — a plugin that consumes this crate directly
+- **[Embedding via C FFI](/platform-ffi/)**: this crate packaged as
+  `libsyncular` with a five-function C ABI, plus the bundled native
+  transport.
+- **[Tauri](/platform-tauri/)**: a plugin that consumes this crate directly
   in a desktop app.
-- **[Conformance](/guide-conformance/)** — the catalog that proves the Rust
+- **[Conformance](/guide-conformance/)**: the catalog that proves the Rust
   and TypeScript cores implement one protocol.
-- **[Commits & the outbox](/concepts-commits/)** — what `mutate` and a sync
+- **[Commits & the outbox](/concepts-commits/)**: what `mutate` and a sync
   round actually do.

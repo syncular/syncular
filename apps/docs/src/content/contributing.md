@@ -27,6 +27,6 @@ and the diff must meet the same bar as hand-written code. Low-effort
 machine-generated pull requests, issues, and comments are closed without
 comment.
 
-Syncular itself is developed under this policy — see [LLMs](/llms/) for how
+Syncular itself is developed under this policy. See [LLMs](/llms/) for how
 LLMs are used in this project and for the plain-text docs bundle you can feed
 your own agent.

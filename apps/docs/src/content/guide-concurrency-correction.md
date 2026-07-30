@@ -36,7 +36,7 @@ const appointment = useQuery(appointmentForCorrectionQuery, {
 }).rows[0];
 ```
 
-Choose `baseVersion` from intent, not convenience:
+Choose `baseVersion` by intent:
 
 | Intent | `baseVersion` |
 | --- | --- |
@@ -490,7 +490,7 @@ For an asynchronous provider resource, expose the ready handle from that same
 factory rather than constructing a second handle. On process restart,
 unresolved conflicts and rejections are still `active`; resolved entries retain
 their resolution and replacement link. Retention may prune old applied/cached
-or resolved history, but it never removes active failures—even when active
+or resolved history, but it never removes active failures, even when active
 failures alone exceed the configured cap.
 
 For a non-React lifecycle, the equivalent restoration read is:

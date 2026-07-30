@@ -2,8 +2,7 @@
 
 Day-two concerns for a running sync server: the structured-events hook,
 the admin console, commit-log pruning, blob GC, and the load-test suite.
-Everything here is host-scheduled and opt-in. The server automates none
-of it behind your back.
+Everything here is host-scheduled and opt-in.
 
 ## Structured events
 
@@ -55,7 +54,7 @@ import { createSyncularAdminRoutes } from '@syncular/server-hono';
 const admin = SyncularAdmin.fromConfig(config, { ring });
 const routes = createSyncularAdminRoutes(admin, {
   defaultPartition: 'main',
-  authorize: ({ request }) => isOperator(request), // YOUR check — mandatory
+  authorize: ({ request }) => isOperator(request), // YOUR check (mandatory)
 });
 app.route('/admin', routes);
 ```
@@ -117,9 +116,9 @@ const { swept } = await sweepOrphanBlobs(storage, blobs, partition, {
 
 It reads the live keep-set from the storage reference index and deletes
 only blobs that are **both** unreferenced **and** older than the grace
-period. The grace period is what keeps this correct: clients upload
-bytes before pushing the row that references them, so a fresh upload is
-legitimately unreferenced until its push lands. The 24 h default sits
+period. Clients upload bytes before pushing the row that references
+them, so a fresh upload is legitimately unreferenced until its push
+lands; the grace period covers that gap. The 24 h default sits
 deliberately far above any push window; lower it only if you fully
 understand your clients' outbox latency, since a grace period that is too
 tight risks deleting blobs that are still needed. The helper throws
@@ -140,9 +139,8 @@ SYNCULAR_PG_URL=postgres://… bun run load bootstrap-storm  # Postgres lane
 ```
 
 Scenarios: `push-pull`, `bootstrap-storm`, `reconnect-storm`,
-`maintenance-churn`, `mixed-soak`. `bootstrap-storm` is the headline: it
-asserts, using the event stream, that segment *reuse* beats *build* under a
-storm. Full docs in
+`maintenance-churn`, `mixed-soak`. `bootstrap-storm` asserts, using the
+event stream, that segment *reuse* beats *build* under a storm. Full docs in
 [load/README.md](https://github.com/syncular/syncular/blob/main/load/README.md).
 
 ## Telemetry: what to alert on

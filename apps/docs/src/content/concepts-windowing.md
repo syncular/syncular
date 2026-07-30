@@ -3,10 +3,10 @@
 Most sync engines are all-or-nothing: a client holds every row it is
 authorized for, forever. **Windowed sync** lets a client hold a **partial
 local replica** (the hot projects, the last few months) while the server
-keeps everything, with correct sync semantics throughout. It is syncular's
-post-parity differentiator, solving three problems at once: cold rows that
-pile up as permanent tombstones, full re-downloads triggered by any change,
-and queries served from a replica with no way to prove it complete.
+keeps everything, with correct sync semantics throughout. It solves three
+problems: cold rows that pile up as permanent tombstones, full re-downloads
+triggered by any change, and queries served from a replica with no way to
+prove it complete.
 
 Normative detail: [SPEC.md §4.8](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#48-windowed-subscriptions).
 The design record is
@@ -68,11 +68,11 @@ eviction correct:
 The window registry doubles as a **completeness oracle**. A local query is
 answerable in full only if every scope value it touches is windowed-in
 **and bootstrapped**: registration alone is not completeness. Between
-`setWindow` and a unit's bootstrap landing, the unit is **pending** — its
+`setWindow` and a unit's bootstrap landing, the unit is **pending**: its
 local replica may be empty or partial, and the oracle says so instead of
 letting the app render a false "empty" state on a list switch. A unit with
-zero server rows still becomes complete once its bootstrap round finishes
-(an empty replica is a truthful one). If a query touches a windowed-out or
+zero server rows still becomes complete once its bootstrap round finishes.
+If a query touches a windowed-out or
 pending unit, the result is **partial**, and the API reports that state
 explicitly: the engine never reports a partial replica as complete.
 

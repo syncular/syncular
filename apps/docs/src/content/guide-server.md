@@ -88,9 +88,9 @@ connected sockets.
 
 `createRealtimeHub` builds the transport-agnostic hub; passing it as
 `config.realtime` makes every applied commit fan out to connected sockets.
-Build both from one canonical sync capability object—not just the same storage,
-but the same segments, blobs, CRDT mergers, validators, limits, leases, signed
-delivery, clock, and events. The type inherits `SyncServerConfig` specifically
+Build both from one canonical sync capability object: the same storage,
+segments, blobs, CRDT mergers, validators, limits, leases, signed delivery,
+clock, and events. The type inherits `SyncServerConfig` specifically
 to prevent socket rounds from becoming a narrower handler.
 
 ```ts
@@ -171,8 +171,8 @@ sockets. Multi-instance deployments add a fanout bridge
 
 ## Seeding data
 
-`seedMutations` pushes app-shaped values through the real push pipeline —
-authorization, validation, idempotency, realtime fanout — so seeded rows
+`seedMutations` pushes app-shaped values through the real push pipeline
+(authorization, validation, idempotency, realtime fanout), so seeded rows
 behave exactly like synced rows. It is THE supported seeding recipe for dev
 servers, demos, and ops scripts:
 

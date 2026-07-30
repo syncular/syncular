@@ -2,8 +2,7 @@
 
 Scopes are the authorization core, and you write them yourself. They decide,
 per user, which rows sync, and the decision runs in **your** backend, next to
-your auth, so it stays in agreement with the rest of your access control. This
-is the one piece of syncular you always write yourself.
+your auth, so it stays in agreement with the rest of your access control.
 
 Normative detail lives in [SPEC.md §3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#3-scopes-and-authorization);
 this page is the mental model.
@@ -13,7 +12,7 @@ this page is the mental model.
 Every synced table declares at least one **scope pattern** in the manifest,
 of the form `prefix:{variable}`. A note table scoped by `list:{list_id}` says
 "a row belongs to the list named by its `list_id` column." The prefix plus the
-column value form a **scope key** — `list:welcome`, `list:team-42` — and the
+column value form a **scope key** (`list:welcome`, `list:team-42`), and the
 server maintains an inverted index from scope key to commit, so pulls filter
 by scope without scanning ([SPEC §3.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#31-scope-patterns-and-stored-scopes)).
 

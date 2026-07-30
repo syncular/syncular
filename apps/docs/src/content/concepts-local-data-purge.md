@@ -22,7 +22,8 @@ Use this order:
 
 The method does not authenticate the directive, revoke server authority,
 delete arbitrary files, or erase an offline device remotely. A device that has
-not acknowledged the directive is unconfirmed, not erased.
+not acknowledged the directive remains unconfirmed and may still hold its
+local data.
 
 ## Call the client
 
@@ -62,7 +63,7 @@ One local SQLite transaction:
 - deletes matching visible and confirmed synced rows;
 - lets generated FTS5 maintenance remove matching search documents;
 - rejects each whole pending commit that touches a target with
-  `client.local_data_purged`—an atomic multi-row commit is never split;
+  `client.local_data_purged` (an atomic multi-row commit is never split);
 - restores the last confirmed rows and replays safe later optimistic edits;
 - reconciles cached blob references;
 - records the purge id and canonical plan durably;

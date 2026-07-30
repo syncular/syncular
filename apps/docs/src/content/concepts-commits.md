@@ -3,14 +3,13 @@
 Every server-side write flows through a **commit**: the atomic unit that
 either applies entirely or not at all. Clients track how far they have caught
 up with a **cursor**, and retries are safe because commits are **idempotent**.
-This is the spine of the whole system.
 
 Normative detail: [SPEC.md §2](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#2-data-model-and-identity) and
 [§4](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#4-subscriptions-cursors-pull).
 
 ## The commit log
 
-- Each applied commit gets a **`commitSeq`** — a strictly increasing integer,
+- Each applied commit gets a **`commitSeq`**: a strictly increasing integer,
   monotonic per partition. All changes in a commit share it
   ([SPEC §2.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#21-commits-and-the-log)).
 - A **partition** is your tenant boundary. Your `authenticate()` maps each
@@ -39,7 +38,7 @@ the outcome before acknowledging
 ([SPEC §2.3](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#23-idempotency-identity)). So a retry after a lost
 ack is safe:
 
-- an originally-applied commit replays as `cached` ("already applied — you may
+- an originally-applied commit replays as `cached` ("already applied; you may
   have missed the ack");
 - an originally-rejected commit replays as the same rejection.
 

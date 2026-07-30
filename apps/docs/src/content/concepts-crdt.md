@@ -1,4 +1,4 @@
-# CRDT columns — collaborative text & state
+# CRDT columns: collaborative text & state
 
 Most columns are **last-write-wins** (LWW): the newest write to a row wins, and
 a concurrent write to the same optimistic-concurrency token conflicts (see
@@ -51,7 +51,7 @@ A mutation touching **only** a `crdt` column pushes with `baseVersion` absent
 (last-write-wins mode), so it merges cleanly no matter how far the row has
 advanced. That is the "crdt-only divergence merges cleanly" rule.
 
-## Web client — the `YjsColumn` helper
+## Web client: the `YjsColumn` helper
 
 Clients **push updates; the server merges; clients apply the merged state on
 delivery.** A keystroke produces an update of a few bytes. The
@@ -69,7 +69,7 @@ client.mutate([
   // baseVersion omitted → merges cleanly (crdt-only divergence rule)
 ]);
 
-// On delivery of the server-merged value, apply it back — idempotent.
+// On delivery of the server-merged value, apply it back (idempotent).
 col.applyServerBytes(updatedRow.doc);
 console.log(col.text().toString());          // the app-visible collaborative text
 ```

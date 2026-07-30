@@ -13,16 +13,16 @@ bun install
 
 That is the fastest path: the scaffolder writes the project this page walks
 through (a schema, a ~30-line server, a two-client script, a README, and a
-smoke test). Prefer a browser app? `--template web` scaffolds a Hono server +
-a single-pane todo UI on the worker + OPFS client instead. Want
-[one codebase, web + desktop](/guide-web-desktop/)? `--template tauri` adds a
+smoke test). For a browser app, `--template web` scaffolds a Hono server +
+a single-pane todo UI on the worker + OPFS client instead. For
+[one codebase, web + desktop](/guide-web-desktop/), `--template tauri` adds a
 `src-tauri/` host running the native Rust core behind the engine seam.
 
 > The rest of this page is the **"what it did" explainer**: every snippet is
 > extracted from the runnable [`examples/quickstart`](https://github.com/syncular/syncular/tree/main/examples/quickstart)
 > directory (the same shape the scaffolder emits), which also ships a smoke test
 > that runs this exact path in CI so it cannot rot. If you scaffolded above, you
-> already have these files — read on to understand them, or skip to
+> already have these files; read on to understand them, or skip to
 > [step 3](#3-generate-the-typed-schema) to run it.
 
 To copy the example by hand instead of scaffolding:
@@ -162,7 +162,7 @@ Now write from A and read it back on B: two separate client cores, each with
 its own local database, converging through the server.
 
 ```ts
-// src/clients.ts (abridged — see the file for logging)
+// src/clients.ts (abridged; see the file for logging)
 const a = makeClient(BASE_URL, 'client-a');
 const b = makeClient(BASE_URL, 'client-b');
 await a.start();
@@ -211,20 +211,20 @@ B sees: [
 ✓ converged
 ```
 
-That is the whole loop. `mutate` records a local commit and queues it.
+`mutate` records a local commit and queues it.
 `syncUntilIdle` runs combined push+pull rounds until B's independent database
 converges on A's write, filtered to the scope B is authorized for.
 
 ## Where to go from here
 
-- **[Web (browser)](/platform-web/)** — the real browser build (worker + OPFS)
+- **[Web (browser)](/platform-web/)**: the real browser build (worker + OPFS)
   with realtime and offline replay. Or jump straight to your platform:
   [Swift](/platform-swift/), [Kotlin](/platform-kotlin/),
   [Flutter](/platform-flutter/), [React Native](/platform-react-native/),
   [Tauri](/platform-tauri/), [Rust](/platform-rust/).
-- **[Live demos](/demos/)** — two live panes with offline toggles, conflict
+- **[Live demos](/demos/)**: two live panes with offline toggles, conflict
   surfacing, and file attachments.
-- **[Conflicts & optimistic writes](/concepts-conflicts/)** — what happens
+- **[Conflicts & optimistic writes](/concepts-conflicts/)**: what happens
   when two clients edit the same row.
-- **[Server setup](/guide-server/)** — Postgres, S3/R2 segments, ops events,
+- **[Server setup](/guide-server/)**: Postgres, S3/R2 segments, ops events,
   pruning.

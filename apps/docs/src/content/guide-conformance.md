@@ -6,7 +6,7 @@ interoperate because both implement one written protocol. The protocol is
 shared conformance suite. This page lays out what the spec contains and how a
 third implementation plugs in.
 
-## SPEC.md is the constitution
+## The normative spec
 
 [`SPEC.md`](https://github.com/syncular/syncular/blob/main/docs/SPEC.md) is normative. It fully specifies the wire format
 (the SSP2 envelope, frames, the row codec, segments) and the semantics (the

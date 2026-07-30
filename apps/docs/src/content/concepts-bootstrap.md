@@ -19,8 +19,8 @@ carries a `mediaType`:
 | `rows` | A columnar block of encoded rows | Mandatory-to-implement fallback; small tables ship inline |
 | `sqlite` | A prebuilt SQLite database image | The fast path; importing it is near file-copy speed |
 
-The **sqlite image** is the headline. The client attaches the image and copies
-whole tables in, instead of inserting rows one by one. On the in-process
+With the **sqlite image**, the client attaches the image and copies whole
+tables in, instead of inserting rows one by one. On the in-process
 bench, a 100k-row image bootstrap lands at **30 ms** warm versus 365 ms for
 the rows lane ([bench results](/benchmarks/)). The server builds each
 image once per (scopes, pin) and reuses it, so a bootstrap storm (many clients

@@ -6,8 +6,7 @@ browser, or mocked pieces, so you can assert what your app actually sees:
 convergence, offline queues, conflicts, live queries. Everything in it is
 the shipped core: the same `SyncClient` and the same `@syncular/server`
 protocol handler your production app runs, wired through an in-process
-loopback. A passing test here reflects real sync behavior, running through
-the same code paths production uses.
+loopback.
 
 ## Install
 
@@ -79,7 +78,7 @@ test('an offline client queues writes, then drains on reconnect', async () => {
   expect(a.api.pendingCommits()).toHaveLength(1);
   await expect(a.api.sync()).rejects.toThrow();
 
-  // B has not seen it — nothing left A.
+  // B has not seen it; nothing left A.
   await b.sync();
   expect(b.api.query('SELECT id FROM notes')).toHaveLength(0);
 
@@ -106,7 +105,7 @@ misbehaves:
 ```ts
 a.faults.dropNextRequests = 1;        // lose the next request (outbox survives)
 a.faults.dropNextResponses = 1;       // server applies it, the ack is lost
-a.faults.duplicateNextRequest = true; // replay it — idempotency-cache test
+a.faults.duplicateNextRequest = true; // replay it (idempotency-cache test)
 a.faults.truncateNextResponse = true; // cut the response short (decode error)
 a.faults.corrupt(bytes);              // flip a seeded byte (tamper detection)
 ```
@@ -178,9 +177,8 @@ await waitFor(() => expect(result.current.rows).toHaveLength(1));
 ```
 
 The re-render is driven by the client's real invalidation choke point, the
-same one production hooks fire on, so a passing test reflects real
-live-query behavior. This works identically for `useQuery` and the
-other hooks.
+same one production hooks fire on. This works identically for `useQuery` and
+the other hooks.
 
 ## Scope
 

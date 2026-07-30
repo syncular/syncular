@@ -54,7 +54,7 @@ Multiple tabs still need an explicit coordination model. A single elected owner 
 
 Syncular takes the same constraint seriously. The web client runs the complete TypeScript core and sqlite-wasm inside a Web Worker. Multi-tab mode elects one leader for the database; followers proxy operations and can take over after the leader closes. Native clients use SQLite through the Rust core. In both cases, one sync loop owns one local transactional state machine.
 
-The general lesson is simple: a durable outbox is only as durable as the database transaction and ownership model underneath it.
+A durable outbox is only as durable as the database transaction and ownership model underneath it.
 
 ## Following one write through the landscape
 
@@ -101,7 +101,7 @@ Local mutations are applied immediately and recorded in `ps_crud`, a blocking FI
 
 PowerSync’s [causal+ consistency model](https://docs.powersync.com/architecture/consistency) makes the split coherent. Local mutations sit as an overlay on the last confirmed checkpoint. While the upload queue is non-empty, the client does not advance to a later checkpoint. After the write has reached the source database and come back through CDC, the client can replace the overlay with a new consistent checkpoint. It avoids trying to merge a half-confirmed local row with an unrelated point in server history.
 
-What this buys is a mature relational replica, a robust download protocol, and application-controlled write semantics. The corresponding boundary is that the read protocol cannot define the final meaning of a rejected write for you. The application API still owns idempotency, conflict policy, authorization drift, and any durable repair record. Partial replication also has to be expressible as stream parameters and supported SQL. Flat ownership rules are elegant; deep organization → project → task permissions need routing columns or application code that resolves membership into parameters.
+What this buys is a mature relational replica, a checkpointed download protocol, and application-controlled write semantics. The corresponding boundary is that the read protocol cannot define the final meaning of a rejected write for you. The application API still owns idempotency, conflict policy, authorization drift, and any durable repair record. Partial replication also has to be expressible as stream parameters and supported SQL. Flat ownership rules map directly to stream parameters; deep organization → project → task permissions need routing columns or application code that resolves membership into parameters.
 
 Every partial-replication system pays a routing tax, and a complete authoritative write protocol needs more than a read stream plus a durable upload queue. PowerSync is where both of those pressures first became concrete for me.
 
@@ -121,7 +121,7 @@ The business operation consequently has two executions: fast and speculative on 
 
 [Zero reached 1.0 and general availability in 2026](https://zero.rocicorp.dev/docs/status), and its offline boundary is deliberate: once the connection state becomes disconnected, [writes are rejected](https://zero.rocicorp.dev/docs/connection). Reads of already-synced data continue to work. By refusing week-old offline writes, Zero avoids pretending that a generic query engine can decide how stale business operations, permissions, and schemas should be repaired.
 
-For connected collaborative software, this is an unusually strong set of choices: query-shaped replication, server-side permission transforms, incremental computation, and immediate mutations. For field software that must accept work during a multi-day outage, the rejected-write boundary is decisive. Zero taught me two things: query-driven sync is at its core an incremental computation architecture, and long-term offline writes deserve an explicit protocol rather than an optimistic cache stretched beyond its intended lifetime.
+For connected collaborative software, this is an unusually strong set of choices: query-shaped replication, server-side permission transforms, incremental computation, and immediate mutations. For field software that must accept work during a multi-day outage, the rejected-write boundary is decisive. Zero taught me two things: query-driven sync is an incremental computation architecture, and long-term offline writes deserve an explicit protocol rather than an optimistic cache stretched beyond its intended lifetime.
 
 ### Electric and TanStack DB: compose the read path and write path
 
@@ -146,7 +146,7 @@ Waiting for the exact Postgres transaction, rather than a matching row ID, lets 
 
 TanStack DB 0.6 made the offline side substantially stronger. It added [optional SQLite-backed persistence](https://tanstack.com/blog/tanstack-db-0.6-app-ready-with-persistence-and-includes), and [`@tanstack/offline-transactions`](https://github.com/TanStack/db/tree/main/packages/offline-transactions) persists an outbox before applying optimism, processes it in FIFO order, retries with backoff and idempotency keys, and elects one browser-tab leader. This is a real durable write queue that survives restarts.
 
-The power of this stack is composability. Electric specializes in turning Postgres changes into cache-friendly logs; TanStack DB specializes in local incremental computation; the application server keeps its own write API. A team can adopt those pieces independently.
+Electric specializes in turning Postgres changes into cache-friendly logs; TanStack DB specializes in local incremental computation; the application server keeps its own write API. A team can adopt those pieces independently.
 
 The cost is that correctness crosses the seams. The outbox can supply an idempotency key, but the endpoint must persist and enforce it. It can retry, but only the application can decide whether an old command is still authorized. It can roll back an optimistic transaction, but it cannot invent the domain-specific repair UI or translate a queued payload across an incompatible schema. Electric’s [Durable Streams](https://electric.ax/blog/2026/01/22/announcing-hosted-durable-streams) add a separate append-only log with idempotent producers and exactly-once semantics, but they remain a coordination primitive rather than the relational business authority.
 
@@ -356,7 +356,7 @@ The browser client runs sqlite-wasm over OPFS inside a Web Worker. Native client
 
 The recommended read path is [generated SQL](/tooling-queries/) or [SYQL](/syql/). [Typegen](/guide-schema/) checks queries against the schema and emits typed APIs for TypeScript, Swift, Kotlin, Dart, and Rust. All five targets consume the same target-neutral QueryIR: the same public inputs, selected physical statement, positional bind order, reactive dependencies, synchronization coverage, and proven row identity. There is no second Rust query compiler quietly making different decisions.
 
-The [generated Rust surface](/platform-rust/) is deliberately complete rather than a typed-row wrapper. Each query gets `Params` and `Row` types, an inspectable `select` function, `run`, an atomic `snapshot`, and a descriptor carrying dependencies and coverage. Integers stay exact `i64`; absent optional values remain distinct from present `NULL`; malformed dynamic rows fail with query-and-column context instead of being partially accepted. That is the kind of unglamorous cross-platform fidelity an offline system needs: local reads must mean the same thing everywhere before synchronization can make them converge.
+The [generated Rust surface](/platform-rust/) is deliberately complete rather than a typed-row wrapper. Each query gets `Params` and `Row` types, an inspectable `select` function, `run`, an atomic `snapshot`, and a descriptor carrying dependencies and coverage. Integers stay exact `i64`; absent optional values remain distinct from present `NULL`; malformed dynamic rows fail with query-and-column context instead of being partially accepted. Local reads must mean the same thing everywhere before synchronization can make them converge.
 
 ```tsx
 import { useQuery } from '@syncular/react';
@@ -448,8 +448,6 @@ if (outcome?.status === 'rejected') {
 ```
 
 Rejected operations keep their complete local envelope so the app can build one repair screen over every operation in the failed commit. The envelope stays on the device and is never uploaded as telemetry.
-
-An outbox is not truly durable if the evidence explaining a lost write disappears on restart.
 
 ### Lost acknowledgements are harmless
 
@@ -551,8 +549,6 @@ There is no universal winner because “sync” describes several different prod
 The [Ink & Switch local-first ideals](https://www.inkandswitch.com/local-first/) remain useful: fast, multi-device, offline, collaborative, durable, private, and user-controlled. The hard engineering work is deciding which of those properties the architecture can actually guarantee, and under what authority model.
 
 ## What Syncular does not do
-
-The boundaries are as important as the feature list:
 
 - It is server-authoritative. There is no peer-to-peer mode.
 - It targets structured application data; frame-by-frame game state is out of scope.

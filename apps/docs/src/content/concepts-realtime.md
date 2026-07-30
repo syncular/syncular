@@ -92,7 +92,7 @@ are never copied into it. The lower-level `connectRealtime()` and
 single-flight: repeated or concurrent connects cannot orphan another socket.
 
 `autoSync` owns coalesced sync intents after wake-ups; the supervisor owns
-socket lifecycle and resume catch-up. They are complementary. Without the
+socket lifecycle and resume catch-up. Without the
 supervisor, HTTP remains an available round transport, but remote-only changes
 do **not** converge continuously unless an actual host trigger runs a sync.
 

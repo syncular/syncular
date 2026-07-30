@@ -5,8 +5,6 @@ server-authoritative commit log, scoped to the data each user is allowed to
 see. You read and write local SQL; syncular handles optimistic writes,
 bootstrap, realtime deltas, offline replay, and conflicts.
 
-The one-liner: **local SQLite + a server-authoritative commit log + scopes.**
-
 ## How it fits together
 
 Every client (a browser tab, an iPhone, a Flutter app, a Rust process) owns a
@@ -79,12 +77,11 @@ A few boundaries define it:
 
 ## Boring by design
 
-Sync engines usually bleed effort on infrastructure: implicit protocols and
-toolchain overhead. Syncular spends its whole budget on boring-ness:
+The core design decisions:
 
 | Decision | Why it matters |
 |---|---|
-| A written protocol ([SPEC.md](https://github.com/syncular/syncular/blob/main/docs/SPEC.md)) | A third implementation plugs in against the spec and its golden vectors. Divergence is a bug you can point at. |
+| A written protocol ([SPEC.md](https://github.com/syncular/syncular/blob/main/docs/SPEC.md)) | A third implementation plugs in against the spec and its golden vectors. Divergence shows up as a failing vector or scenario. |
 | Two cores, one protocol | The web core is small, debuggable TypeScript that builds without the Rust toolchain; the Rust core ships native. Parity between them is a CI gate. |
 | One query plan, five targets | TypeScript, Swift, Kotlin, Dart, and Rust generated queries share inputs, selected SQL, bind order, dependencies, coverage, and row identity. |
 | One path per concern | One sync loop over WebSocket, one persistent browser mode (OPFS), one preferred bootstrap format. An unsupported environment produces a clear error. |
@@ -106,7 +103,7 @@ toolchain overhead. Syncular spends its whole budget on boring-ness:
 
 ## Where to go next
 
-- **[Quickstart](/quickstart/)** — two synced clients in a terminal, ≤ 5 minutes.
-- **[Live demos](/demos/)** — see convergence, offline replay, and conflicts run.
-- **[Scopes & authorization](/concepts-scopes/)** — the one piece you write yourself.
-- **[Protocol & conformance](/guide-conformance/)** — how the two cores stay in lockstep.
+- **[Quickstart](/quickstart/)**: two synced clients in a terminal, ≤ 5 minutes.
+- **[Live demos](/demos/)**: see convergence, offline replay, and conflicts run.
+- **[Scopes & authorization](/concepts-scopes/)**: the one piece you write yourself.
+- **[Protocol & conformance](/guide-conformance/)**: how the two cores stay in lockstep.
