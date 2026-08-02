@@ -1,4 +1,4 @@
-/** local search contract IR, generated-schema, and named-query coverage. */
+/** FTS5 IR, generated-schema, and named-query coverage. */
 import { describe, expect, test } from 'bun:test';
 import {
   analyzeQuery,
@@ -48,7 +48,7 @@ const IR: IrDocument = {
   extensions: {},
 };
 
-describe('local search contract typegen surface', () => {
+describe('FTS5 typegen surface', () => {
   test('neutral IR and all generated client languages carry ftsIndexes', () => {
     expect(serializeIr(IR)).toContain('"ftsIndexes"');
     const outputs = [

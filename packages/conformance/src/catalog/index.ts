@@ -1,5 +1,5 @@
 /**
- * The conformance catalog (migration gate B4): breadth of the v1 gate intent
+ * The conformance catalog: breadth of the protocol gate
  * within skeleton scope. Every scenario carries its SPEC.md refs;
  * fine-grained permutations live in package-local tests, not here.
  */

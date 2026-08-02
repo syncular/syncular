@@ -1,6 +1,6 @@
 /**
  * @syncular/server — framework-free embeddable SSP2 protocol library
- * (SPEC.md is normative; migration record B2 is the architectural mandate).
+ * (SPEC.md is normative).
  *
  * Core surface: `handleSyncRequest(bytes, ctx) → bytes` over host-provided
  * storage / scope-resolution / segment-store interfaces, plus a

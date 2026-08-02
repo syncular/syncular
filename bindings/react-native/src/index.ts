@@ -1,8 +1,8 @@
 /**
  * @syncular/react-native — the JS bridge to the native syncular core running
  * over the FFI (the same C ABI Swift/Kotlin wrap). RN's Hermes runtime has no
- * OPFS / sqlite-wasm, so the persistent path is the NATIVE core (decided in
- * implementation plan block 1) — `rusqlite` on the device filesystem, HTTP+WS owned in Rust.
+ * OPFS / sqlite-wasm, so the persistent path is the NATIVE core: `rusqlite` on
+ * the device filesystem, HTTP+WS owned in Rust.
  *
  * This module is the webview-equivalent of `@syncular/tauri`: a thin JS proxy
  * that implements the SAME `SyncClientLike` interface the React package

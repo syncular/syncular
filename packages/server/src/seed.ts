@@ -1,5 +1,5 @@
 /**
- * The public seeding helper (integration contract §2.5): push app-shaped mutations
+ * The public seeding helper: push app-shaped mutations
  * through the REAL push path — one `handleSyncRequest` round built from the
  * server schema — so demos, dev servers, and ops scripts seed data with one
  * supported call. This is the same §6 pipeline every client write takes

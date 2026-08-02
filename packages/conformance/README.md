@@ -1,7 +1,7 @@
 # @syncular/conformance
 
 Implementation-agnostic conformance runner for the SSP2 protocol
-([`SPEC.md`](../../docs/SPEC.md) is normative; migration record B4 is the mandate).
+([`SPEC.md`](../../docs/SPEC.md) is normative).
 A catalog of scenario scripts executes against any (client, server)
 pairing through a driver interface; `bun run check` at the workspace root
 runs the whole catalog on (TS web client × TS server) plus the
@@ -122,7 +122,7 @@ answers — which is exactly how the driver interfaces are shaped: bytes
 in, bytes out, JSON everywhere else, no shared memory, no TS types. The
 conformance suite then runs (Rust client × TS server), (TS client × Rust
 server), and (Rust × Rust) in CI — conformance-in-CI for every runtime
-is the merge precondition (migration gate).
+is the merge precondition.
 
 ## The catalog
 

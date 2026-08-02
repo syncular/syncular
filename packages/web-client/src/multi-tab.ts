@@ -1,5 +1,5 @@
 /**
- * Multi-tab followers (work item 3.2, migration gate B3): one core per origin, N tabs.
+ * Multi-tab followers: one core per origin, N tabs.
  *
  * The leader tab holds the Web Locks lease and runs the worker core (the
  * existing worker-host path, unchanged). Every OTHER tab is a FOLLOWER: it

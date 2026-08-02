@@ -1,5 +1,5 @@
 /**
- * `syncular.json` manifest (migration gate B5) — designed here, minimal but
+ * `syncular.json` manifest: minimal but
  * forward-extensible:
  *
  * ```json

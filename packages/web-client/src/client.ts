@@ -1,8 +1,8 @@
 /**
- * SyncClient — the B3 client protocol core (SPEC.md §§3–8 client side).
+ * SyncClient implements the client side of SPEC.md §§3–8.
  *
  * A plain library running on whatever thread it is constructed on
- * (worker-OPTIONAL, migration gate B3): storage behind `ClientDatabase`, network
+ * Storage is behind `ClientDatabase`, network
  * behind `SyncTransport`/`SegmentDownloader`/`RealtimeConnector`, multi-tab
  * ownership behind `LeaderLock`. One combined push+pull request per
  * `sync()` round (§7.2); local reads go straight to the database.
@@ -708,7 +708,7 @@ export class SyncClient {
       this.#config.onSyncNeeded?.('startup');
       this.#config.onSyncIntent?.({ kind: 'interactive' });
     }
-    // integration contract §3.2: console introspection — a no-op outside a dev page.
+    // Console introspection is a no-op outside a dev page.
     this.#devtoolsUnregister = registerDevtools({
       kind: 'client',
       ref: this,
@@ -881,7 +881,7 @@ export class SyncClient {
     return this.#clientId;
   }
 
-  /** The underlying database — raw SQL is the local query API (B3). */
+  /** The underlying database: raw SQL is the local query API. */
   get database(): ClientDatabase {
     this.#requireActive();
     return this.#db;
@@ -960,7 +960,7 @@ export class SyncClient {
     });
   }
 
-  // -- live-query invalidation (work item 3.1 / implementation contract-eviction I1–I4) -----------
+  // -- live-query invalidation ----------------------------------------------
 
   /**
    * Subscribe to fine-grained invalidation. The callback fires ONCE per
@@ -2725,7 +2725,7 @@ export class SyncClient {
 
   /**
    * One request/response round trip (§8.7): over the socket whenever it
-   * is connected (Architecture choice 1 — the socket IS the sync-round
+   * is connected (the socket IS the sync-round
    * transport, not a fallback pair), otherwise through the configured
    * `SyncTransport` seam (loopback/conformance hosts, HTTP-only
    * producers).

@@ -1,6 +1,6 @@
 /**
- * The env-gated Postgres bench lane (work item §4.1 — "a dedicated bench lane the
- * day it lands"). Runs ONLY when `SYNCULAR_PG_URL` is set; it is NOT part of
+ * The env-gated Postgres bench lane. Runs ONLY when `SYNCULAR_PG_URL` is set;
+ * it is NOT part of
  * `bench:ci` budgets (those stay on the deterministic in-process sqlite
  * loopback). This lane measures the production database path — 100k
  * bootstrap and online propagation — against a real Postgres, so the

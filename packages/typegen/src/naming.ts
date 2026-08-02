@@ -1,5 +1,5 @@
 /**
- * The pinned naming-map algorithm (query contract §5, §12): SQL stays
+ * The pinned naming-map algorithm: SQL stays
  * snake_case; emitters render their language's convention. The IR carries
  * SQL-truth names plus a derived, collision-checked map — this module is
  * that derivation.
@@ -270,7 +270,7 @@ export function isRustKeyword(name: string): boolean {
   return TARGET_KEYWORDS.rust.has(name);
 }
 
-/** Pinned Rust identifier conversion from Rust named-query contract. */
+/** Pinned Rust identifier conversion. */
 export function rustSnakeCase(name: string): string {
   if (!/^_*[A-Za-z][A-Za-z0-9_]*$/.test(name)) return name;
   const lead = /^_*/.exec(name)?.[0] ?? '';

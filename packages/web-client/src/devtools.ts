@@ -1,5 +1,5 @@
 /**
- * The client-side introspection registry (integration contract §3.2): every live
+ * The client-side introspection registry: every live
  * `SyncClient` / `SyncClientHandle` on a page registers itself on
  * `globalThis.__SYNCULAR__`, so a first integration debugs from the console
  * instead of hand-exposing the client:

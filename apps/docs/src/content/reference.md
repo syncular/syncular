@@ -96,16 +96,16 @@ Each operational contract lives next to the code that enforces it:
 - **Horizon & pruning runbook**: [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md#horizon--pruning-operational-guidance).
 - **S3/R2 + CDN + signed URLs**: [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md#segment-storage-on-s3--r2-s3segmentstore).
 - **Postgres storage**: [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md#postgres-storage-the-production-database-path).
-- The runtime / deployment matrix (Bun/Node, Cloudflare Workers) is in the [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md#deployment-matrix-runtime-adapters-todo-42), as is the [admin / console surface](https://github.com/syncular/syncular/blob/main/packages/server/README.md#admin--console-surface-syncularadmin).
+- The runtime / deployment matrix (Bun/Node, Cloudflare Workers) is in the [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md#deployment-matrix-runtime-adapters), as is the [admin / console surface](https://github.com/syncular/syncular/blob/main/packages/server/README.md#admin--console-surface-syncularadmin).
 - The load-test suite (scale & stability lanes) is documented in [load/README.md](https://github.com/syncular/syncular/blob/main/load/README.md).
 - **Native core C ABI**, the five functions every binding wraps: [FFI README](https://github.com/syncular/syncular/blob/main/rust/crates/ffi/README.md).
 - **Bindings doctrine**, what a wrapper must prove: [bindings/README.md](https://github.com/syncular/syncular/blob/main/bindings/README.md).
 
-## Design & implementation plan docs
+## Repository references
 
-- [implementation history](https://github.com/syncular/syncular/blob/main/docs/implementation history): the strategy blocks, the gap register, and the decided non-goals.
-- [work record](https://github.com/syncular/syncular/blob/main/docs/work record): the live working checklist.
-- [windowing contract](https://github.com/syncular/syncular/blob/main/docs/windowing contract): the windowed-sync / local-eviction design.
+- [SPEC.md](https://github.com/syncular/syncular/blob/main/docs/SPEC.md): the wire and client semantics.
+- [SYQL.md](https://github.com/syncular/syncular/blob/main/docs/SYQL.md): the query-language contract.
+- [STYLE.md](https://github.com/syncular/syncular/blob/main/docs/STYLE.md): the visual tokens shared by documentation and developer tools.
 - [bench/RESULTS.md](https://github.com/syncular/syncular/blob/main/bench/RESULTS.md): the curated performance record (summarized at [Benchmarks](/benchmarks/)).
 
 ## Where to go next

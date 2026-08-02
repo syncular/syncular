@@ -4,7 +4,7 @@
  * the demo uses: the server-hono adapter for POST /sync + GET /segments/:id,
  * and a Bun.serve WebSocket bound to the RealtimeHub for the §8.7 socket
  * loop. Storage is bun:sqlite by default; set SYNCULAR_PG_URL to target a
- * real Postgres (the production database path, work item §4.1).
+ * real Postgres (the production database path).
  *
  * A metrics tap rides the events seam (§3): a MetricsEvents sink folds the
  * structured server events into counters (request durations, segment

@@ -1,5 +1,5 @@
 /**
- * The `SyncularAdmin` read surface (work item §2.5). Driven through the loopback
+ * The `SyncularAdmin` read surface. Driven through the loopback
  * doctrine: real pushes/pulls populate storage, then the admin reads assert
  * what the console will show. No HTTP, no sockets.
  */

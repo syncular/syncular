@@ -1,5 +1,5 @@
 /**
- * Multi-tab followers (work item 3.2, migration gate B3): one leader worker core, N
+ * Multi-tab followers: one leader worker core, N
  * follower tabs proxying over a BroadcastChannel. Two handle instances in
  * ONE bun process sharing a lock name IS the multi-tab shape — the lock is
  * an in-process Web-Locks stand-in (bun has no `navigator.locks`), the
@@ -234,7 +234,7 @@ function makeGroup(): Group {
       },
       autoSync: false,
       // multiTab is deliberately OMITTED: this suite exercises the
-      // follower path as the default it is (integration contract §2.4).
+      // follower path as the default it is.
       leaderLock: lock,
       lockName,
       ...overrides,

@@ -1,4 +1,4 @@
-/** local search contract client-local FTS5 projections. */
+/** Client-local FTS5 projections. */
 import { describe, expect, test } from 'bun:test';
 import {
   type ClientSchema,
@@ -58,7 +58,7 @@ function rawFtsHits(db: BunClientDatabase, query: string): string[] {
     .map((row) => String(row.sid));
 }
 
-describe('local search contract local FTS5 projections', () => {
+describe('client-local FTS5 projections', () => {
   test('initial build and insert/update/delete stay transactionally current', () => {
     const db = new BunClientDatabase();
     const compiled = compileClientSchema(SCHEMA);

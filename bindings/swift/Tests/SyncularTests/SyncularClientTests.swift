@@ -7,7 +7,7 @@
 //
 // No server required — the syncular client is offline-first by design: a
 // `mutate` is optimistic and immediately visible via `readRows`/`query`. That
-// is the elegant hermetic path the implementation plan calls for. We cover:
+// is the hermetic path used here. We cover:
 //   init/create · command round-trip · mutate → readRows (optimistic row) ·
 //   query fast path · error surfacing · event poll (none pending) · close
 //   idempotence · a network command failing loudly on the lean core.

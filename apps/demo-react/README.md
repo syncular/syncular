@@ -5,7 +5,7 @@ A single-pane todo app built entirely on `@syncular/react`, running against
 the **same** server core (server-hono over bun:sqlite, a RealtimeHub
 WebSocket, segment + blob endpoints) with a React frontend instead of the
 vanilla-DOM one. The whole client core runs in a Web Worker on persistent
-OPFS (Architecture choice 2); the page talks RPC through the
+OPFS; the page talks RPC through the
 `SyncClientHandle`, which `SyncProvider` hands to the hooks.
 
 It dogfoods the full hook surface:
@@ -47,7 +47,7 @@ meaningful: each list is a separate scope value, windowed in one at a time.
   writes in `query`). Writes stay on `useMutation` so they land in the outbox
   and sync (SPEC §7.1). Updates use generated `patch` helpers instead of
   spreading a full row.
-- **Schema and queries are typegen-generated** (B5 dogfood): `syncular.json` +
+- **Schema and queries are typegen-generated**: `syncular.json` +
   `migrations/` + `queries/` → `bun run generate` →
   `src/syncular.generated.ts` + `src/syncular.queries.ts` + deterministic
   `syncular.queries.ir.json`.

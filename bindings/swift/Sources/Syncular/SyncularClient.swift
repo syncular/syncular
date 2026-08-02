@@ -6,7 +6,7 @@
 // handle, marshals JSON, exposes typed conveniences over the common commands,
 // and runs the `poll_event` loop on a background queue, delivering events on
 // the main queue. Sync/lifecycle logic that isn't in the core lives here (the
-// wrapper owns lifecycle per the implementation plan): `pause()`/`resume()`.
+// wrapper owns lifecycle): `pause()`/`resume()`.
 //
 // Thread-affinity: the core is thread-affine (drive one handle from one
 // thread). This wrapper serializes ALL command dispatch through a private
@@ -414,7 +414,7 @@ public final class SyncularClient {
         _ = try command(method: "disconnectRealtime", params: .object([:]))
     }
 
-    // MARK: - Lifecycle (the wrapper owns it, per the implementation plan)
+    // MARK: - Lifecycle (owned by the wrapper)
 
     /// Pause background activity — stop the event poll loop and disconnect the
     /// realtime socket. Call from `applicationDidEnterBackground` (or a

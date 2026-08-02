@@ -1,5 +1,5 @@
 /**
- * The `__SYNCULAR__` console registry (integration contract §3.2): installs on a dev
+ * The `__SYNCULAR__` console registry: installs on a dev
  * page, tracks live clients + their last invalidation, and unregisters on
  * close. Other suites in the same bun process may install a DOM (react
  * tests) — so the tests save/restore `window` and assert registry deltas

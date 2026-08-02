@@ -1,4 +1,4 @@
-//! The raw-query guard (query contract I3), mirrored from the TS core's
+//! The raw-query guard, mirrored from the TS core's
 //! `query-guard.ts` — the two cores enforce the same rule so `query` behaves
 //! identically through every binding:
 //!

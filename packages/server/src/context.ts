@@ -1,5 +1,5 @@
 /**
- * The host context for `handleSyncRequest` (migration gate B2): storage, the
+ * The host context for `handleSyncRequest`: storage, the
  * `resolveScopes` host callback (runs in the host process — the moat),
  * clock, and a segment store. Framework-free; adapters supply `partition`
  * and `actorId` from host authentication (§1.1).
@@ -154,7 +154,7 @@ export interface SyncServerConfig {
    */
   readonly blobUploadUrls?: BlobUploadPresignConfig;
   /**
-   * §5.3 sqlite-image builder (work item §4.2), injected so the pull path never
+   * §5.3 sqlite-image builder, injected so the pull path never
    * statically imports `bun:sqlite`. Absent ⇒ the sqlite-image lane is off
    * (bit-2 clients are served the rows lane) — the Workers/edge posture. A
    * Bun/Node host wires `buildSqliteImage` from `@syncular/server`.

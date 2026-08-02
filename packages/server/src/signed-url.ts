@@ -198,8 +198,8 @@ export interface SegmentTokenClaims {
 
 const encoder = new TextEncoder();
 
-// Runtime-neutral base64url (no `Buffer` — Workers/Deno/browser safe; work item
-// §4.2): `btoa`/`atob` operate on binary strings, present in every runtime.
+// Runtime-neutral base64url: `btoa`/`atob` operate on binary strings and are
+// present in every supported runtime.
 function base64url(bytes: Uint8Array): string {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);

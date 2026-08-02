@@ -200,7 +200,7 @@ Event sourcing buys something row replication cannot provide automatically: the 
 
 The same history is where the costs concentrate. Event schemas and materializers become compatibility contracts. New clients need a bounded way to reach current state, and old history eventually needs compaction. Partitioning and authorization must decide which event histories a client may receive without leaking the events that produced forbidden rows.
 
-LiveStore’s documentation is direct about its current frontier: [authorization is still a work item, merge-conflict handling and compaction are not implemented, and the system currently assumes one event log per SQLite database](https://docs.livestore.dev/building-with-livestore/syncing/). That candor marks exactly where a general event-sourced local-first engine becomes a multi-tenant sync product. It also settled a requirement for Syncular: keep durable causal evidence, and let a current snapshot bound the cost of joining or returning after a long absence.
+LiveStore’s documentation is direct about its current frontier: [authorization, merge-conflict handling, and compaction are unfinished, and the system currently assumes one event log per SQLite database](https://docs.livestore.dev/building-with-livestore/syncing/). That candor marks exactly where a general event-sourced local-first engine becomes a multi-tenant sync product. It also settled a requirement for Syncular: keep durable causal evidence, and let a current snapshot bound the cost of joining or returning after a long absence.
 
 ### Jazz v2: an integrated row-history database
 

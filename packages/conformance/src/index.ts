@@ -1,6 +1,6 @@
 /**
  * @syncular/conformance — implementation-agnostic scenario runner
- * (migration gate B4; SPEC.md Appendix B). See README.md for the test doctrine
+ * (SPEC.md Appendix B). See README.md for the test doctrine
  * and how to plug a new implementation in via the driver interfaces.
  */
 export * from './catalog';

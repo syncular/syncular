@@ -1,6 +1,6 @@
 # Browser leadership fixture
 
-This fixture exercises browser integration contract §3 in a real browser using native Web Locks,
+This fixture exercises the multi-tab boundary in a real browser using native Web Locks,
 BroadcastChannel, Worker, top-level tabs, and a same-origin preview iframe.
 
 Run `bun packages/web-client/test/browser/serve-leadership.ts`, then cover:

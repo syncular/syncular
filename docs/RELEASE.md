@@ -654,9 +654,8 @@ The release includes:
   deduplication tests;
 - web, React, Vite/HMR, and troubleshooting guidance covering the one-owner
   OPFS invariant, resource preservation, and safe bounded/manual recovery;
-- editorial SYQL specification, RFC, design, release-note, and docs-site
-  cleanup that describes revision 1 as the current canonical language rather
-  than defining it through removed prototype forms.
+- editorial SYQL specification, release-note, and docs-site cleanup that
+  describes revision 1 as the current canonical language.
 
 ## 0.15.4 release notes
 
@@ -676,7 +675,7 @@ The release includes:
 
 ## 0.15.3 release notes
 
-0.15.3 completes local search contract reactive metadata in the SYQL revision-1 frontend.
+0.15.3 completes FTS5 reactive metadata in the SYQL revision-1 frontend.
 A declared local FTS projection is now folded into its synced owner table
 before dependencies are emitted. Queries no longer expose a non-synced virtual
 table as an invalidation dependency, while scope evidence from an explicitly
@@ -696,7 +695,7 @@ queries remain rejected.
 0.15.1 fixes the SYQL portable-profile gate for the FTS5 query contract added
 in 0.15.0. Named queries that reference a schema-declared FTS projection may
 now use the deterministic `bm25`, `highlight`, and `snippet` auxiliary
-functions promised by local search contract. Those functions remain rejected when no
+functions allowed for declared FTS5 projections. Those functions remain rejected when no
 declared FTS projection is present, and arbitrary extension functions remain
 outside the portable SQLite profile.
 
@@ -904,7 +903,7 @@ The release includes:
 
 ## 0.6.0 release notes
 
-0.6.0 ships SYQL revision 1 and SYQL revision 1: a SQL-first language for typed,
+0.6.0 ships SYQL revision 1: a SQL-first language for typed,
 reactive reads and explicit synchronization coverage.
 
 The release includes:
@@ -954,7 +953,7 @@ boundary; the local snapshot IPC lane retains its ≤5 ms p95 gate.
 
 ## 0.5.0 release notes
 
-0.5.0 ships revisioned observation contract, the revisioned reactive-view architecture across the
+0.5.0 ships the revisioned reactive-view architecture across the
 browser, Tauri/Rust, React Native, Swift, Kotlin, Flutter, and FFI surfaces.
 The release includes:
 
@@ -972,9 +971,9 @@ The release includes:
 - shared conformance vectors, native bridge coverage, and local-data
   performance gates.
 
-SYQL revision 1 remains **proposed**. Its lossless SYQL lexer/parser groundwork is in
-the repository, but the destructive language cutover described by that RFC is
-not part of the 0.5.0 contract. Existing generated query inputs remain valid.
+SYQL revision 1 remains **proposed**. Its lossless lexer/parser groundwork is
+in the repository, but the language cutover is not part of the 0.5.0 contract.
+Existing generated query inputs remain valid.
 
 ## Release gates
 

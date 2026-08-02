@@ -1,5 +1,5 @@
 /**
- * Driver interfaces (migration gate B4): the implementation-agnostic seam between
+ * Driver interfaces: the implementation-agnostic seam between
  * the scenario catalog and any (client, server) pairing.
  *
  * Design rule: NOTHING TypeScript-specific crosses a driver boundary.
@@ -617,7 +617,7 @@ export interface DriverWindowBase {
   readonly params?: string;
 }
 
-/** Exact client-local observation output (revisioned observation contract). Revisions are decimal
+/** Exact client-local observation output. Revisions are decimal
  * strings so the same vectors cross JSON/stdin and JavaScript losslessly. */
 export interface DriverChangeBatch {
   readonly revision: string;
@@ -671,7 +671,7 @@ export interface ClientInstance {
     readonly pending: readonly string[];
   }>;
 
-  /** revisioned observation contract observation/conformance surface. */
+  /** Revisioned observation/conformance surface. */
   localRevision?(): Promise<string>;
   statusSnapshot?(): Promise<{
     readonly currentSchemaVersion: number;

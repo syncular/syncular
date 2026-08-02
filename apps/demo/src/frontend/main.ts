@@ -1,8 +1,8 @@
 /**
- * B6 demo frontend: two side-by-side panes, EACH with its own independent
+ * Demo frontend: two side-by-side panes, EACH with its own independent
  * client core syncing through one server. Plain TypeScript + vanilla DOM.
  *
- * Default mode (Architecture choice 2): each pane's WHOLE core runs in a
+ * Default mode: each pane's WHOLE core runs in a
  * Web Worker on a persistent opfs-sahpool database (`demo-a` / `demo-b`),
  * driven through the `SyncClientHandle` RPC. Add `?ephemeral` for the
  * explicit in-memory main-thread mode (nothing survives a reload).
@@ -52,7 +52,7 @@ const LIST_ID = 'demo';
 const SUBSCRIPTION_ID = 'todos';
 const EPHEMERAL = new URLSearchParams(location.search).has('ephemeral');
 /**
- * work item 3.2: `?multitab` makes each pane a multi-tab core — open the demo in
+ * `?multitab` makes each pane a multi-tab core — open the demo in
  * two tabs and the first tab's pane is the leader, the second's is a
  * follower proxying to it (one socket, one DB, N tabs). Off by default so
  * the two panes stay two independent "devices".
@@ -132,7 +132,7 @@ async function makeWorkerCore(
     // worker; the page only re-renders when told (or on its poll tick).
     autoSync: true,
     lockName: `syncular-demo-${paneName.toLowerCase()}`,
-    // work item 3.2: with ?multitab, a second tab's pane follows this one.
+    // With ?multitab, a second tab's pane follows this one.
     multiTab: MULTITAB,
     onRoleChange: () => onDataMaybeChanged(),
     onSynced: () => onDataMaybeChanged(),
@@ -172,7 +172,7 @@ async function makeWorkerCore(
       await handle.setOffline(offline);
     },
     startRealtimeSupervisor: () => {
-      // work item 3.2: with ?multitab the panes share one leader socket, so
+      // With ?multitab the panes share one leader socket, so
       // `sharedTransport` keeps a hidden tab from tearing it down for a
       // sibling tab that is still visible.
       installRealtimeSupervisor(handle, {
@@ -562,7 +562,7 @@ class Pane {
       this.setStatus(`core start failed — ${message}`);
       throw error;
     }
-    // work item 3.2: reflect promotion (follower → leader) in the badge.
+    // Reflect promotion (follower → leader) in the badge.
     this.core.onRoleChange?.(() => this.render());
     await this.core.subscribe({
       id: SUBSCRIPTION_ID,
@@ -758,7 +758,7 @@ class Pane {
     title.append(this.#badge);
     this.#pendingEl = el('span', 'badge', 'outbox 0');
     title.append(this.#pendingEl);
-    // work item 3.2: show leader/follower when ?multitab is on (populated after
+    // Show leader/follower when ?multitab is on (populated after
     // the core starts, in init()).
     if (MULTITAB) {
       this.#roleBadge = el('span', 'badge', 'role …');

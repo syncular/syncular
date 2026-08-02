@@ -1,5 +1,5 @@
 /**
- * `handleSyncRequest(bytes, ctx) → bytes` (SPEC.md §1, migration gate B2).
+ * `handleSyncRequest(bytes, ctx) → bytes` (SPEC.md §1).
  *
  * Internally streaming-friendly (§1.4): `createSyncResponseStream` returns
  * an async iterable of encoded chunks — one per frame — after performing
@@ -629,7 +629,7 @@ async function createStreamCore(
     throw error;
   }
   const schema = compileSchema(ctx.schema);
-  // Relational row tables (server storage contract): create/
+  // Relational row tables: create/
   // migrate on first contact; memoized per storage instance thereafter.
   await ctx.storage.ensureSchema(schema);
   const plan = await planRequest(request, ctx, schema);

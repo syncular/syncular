@@ -3,7 +3,7 @@
 // THIN: it owns the opaque handle, marshals JSON, exposes typed conveniences
 // over the common commands, and runs the `poll_event` loop delivering events to
 // a broadcast Stream. Sync/lifecycle logic the core doesn't own lives here (the
-// wrapper owns lifecycle per the implementation plan): pause()/resume()/close().
+// wrapper owns lifecycle): pause()/resume()/close().
 //
 // The core is thread-affine (drive one handle from one thread). Dart's default
 // concurrency model makes this natural: all command dispatch AND the poll loop
@@ -406,7 +406,7 @@ class SyncularClient {
   /// Close the realtime socket.
   void disconnectRealtime() => command('disconnectRealtime', const {});
 
-  // -- Lifecycle (the wrapper owns it, per the implementation plan) -----------------------
+  // -- Lifecycle (owned by the wrapper) ---------------------------------------
 
   /// Pause background activity — stop the event poll loop and disconnect the
   /// realtime socket. Call from `AppLifecycleState.paused` / a connectivity-lost

@@ -1,5 +1,5 @@
 /**
- * The pinned §12 naming map (query contract): snake→camel vectors,
+ * The pinned naming map: snake→camel vectors,
  * collision/keyword/Dart-underscore hard errors, the "preserve" identity —
  * and the §5 projection lowering that makes runtime keys the language names
  * (AS-aliasing, star expansion, author-alias respect).
@@ -44,7 +44,7 @@ describe('snakeToCamel — the pinned §12 algorithm', () => {
   }
 });
 
-describe('Rust naming — Rust named-query contract', () => {
+describe('Rust naming', () => {
   const VECTORS: readonly [string, string][] = [
     ['createdAt', 'created_at'],
     ['URLValue', 'url_value'],

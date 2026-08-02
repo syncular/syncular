@@ -77,7 +77,7 @@ share: `{method, params}` in, `{result|error}` out, bytes as `{"$bytes":"<hex>"}
 
 ## Lifecycle (the wrapper owns it)
 
-Per the implementation plan, background/foreground and connectivity handling lives here:
+Background/foreground and connectivity handling lives here:
 
 - **`pause()`** — stops the event poll loop and disconnects realtime. Call from
   an Android `Activity.onStop()` / a connectivity-lost callback. Database and

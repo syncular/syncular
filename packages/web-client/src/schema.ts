@@ -1,6 +1,6 @@
 /**
  * Client schema IR (SPEC.md §2.4, §3.1) — the same shape the server
- * compiles, hand-written until codegen (B5) emits it. Drives local table
+ * compiles and is emitted by codegen. Drives local table
  * DDL, the generated row codec, mutation helpers, and the §3.3 purge
  * mapping (scope variable → local column).
  */
@@ -19,7 +19,7 @@ export interface ClientIndexSpec {
   readonly unique: boolean;
 }
 
-/** One client-local contentful FTS5 projection (local search contract). */
+/** One client-local contentful FTS5 projection. */
 export interface ClientFtsIndexSpec {
   readonly name: string;
   readonly columns: readonly string[];
@@ -63,7 +63,7 @@ export interface CompiledClientTable {
   /**
    * Scope variable → the pattern's literal prefix (§3.1). A stored-scope
    * value `v` for this variable has scope key `prefix:v` — the invalidation
-   * vocabulary (work item 3.1 / implementation contract-eviction I2) and the delta-routing key.
+   * vocabulary and the delta-routing key.
    */
   readonly scopePrefixByVariable: ReadonlyMap<string, string>;
   /** Local secondary indexes to create on the mirror table (declaration

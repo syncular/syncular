@@ -61,7 +61,7 @@ pub trait Transport {
     /// host owns the WS-binding mechanics — channel tags, chunk assembly
     /// to the response's END — and returns the assembled response bytes.
     /// The client calls this instead of `sync` whenever realtime is
-    /// connected (Architecture choice 1: the socket IS the sync-round
+    /// connected (the socket IS the sync-round
     /// transport, not a fallback pair); the server registers the round's
     /// subscriptions on the connection at round end, so no reconnect is
     /// needed after subscription changes.

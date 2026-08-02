@@ -1,5 +1,5 @@
 /**
- * Postgres server storage — the production database path (work item §4.1).
+ * Postgres server storage: the production database path.
  *
  * Semantics mirror `SqliteServerStorage` exactly (both run the shared
  * storage contract in `test/storage-contract.ts`); the difference is that
@@ -336,8 +336,8 @@ function toStoredChange(record: ChangeRecord): StoredChange {
 }
 
 /**
- * Migration rewrite (implementation contract "optional materialization"): keyset-paged walk
- * of a row table inside the migration transaction; when `oldLayout` is
+ * Migration rewrite: keyset-paged walk of a row table inside the migration
+ * transaction. When `oldLayout` is
  * given every payload re-encodes under the current columns, and the
  * projection (when materialized) refreshes from the payload either way.
  */
@@ -1251,7 +1251,7 @@ export class PostgresServerStorage implements ServerStorage {
     return rows.map((r) => r.blob_id);
   }
 
-  // -- admin/console read surface (work item §2.5) --------------------------------
+  // -- admin/console read surface --------------------------------------------
 
   async listClientRecords(partition: string): Promise<ClientRecord[]> {
     const { rows } = await this.#exec.query<{

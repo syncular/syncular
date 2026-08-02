@@ -1,5 +1,5 @@
 /**
- * The public seeding helper (integration contract §2.5): app-shaped mutations ride the
+ * The public seeding helper: app-shaped mutations ride the
  * real push path, re-running replays idempotently, and failures are loud.
  */
 import { describe, expect, test } from 'bun:test';

@@ -7,8 +7,7 @@
 //! normalizes, so the hooks work unchanged — the fourth host of one interface
 //! after direct / worker-leader / follower.
 //!
-//! Decided architecture (implementation history block 1): NOT JS syncular in the
-//! webview — webview OPFS is eviction-prone and inconsistent across
+//! The webview does not run JS syncular. Webview OPFS is eviction-prone and inconsistent across
 //! WKWebView/webkitgtk; the Rust core gives a real file DB and native perf.
 //!
 //! ## The surface (mirrors the FFI / conformance shim)
@@ -116,7 +115,7 @@ enum Request {
         params: Value,
         reply: Sender<Value>,
     },
-    /// Replace the transport's request headers (integration contract §2.3). Header state
+    /// Replace the transport's request headers. Header state
     /// lives on the core-owned transport, so mutation rides the same mailbox
     /// as every other access — the one-owning-thread invariant holds.
     SetHeaders {
@@ -547,7 +546,7 @@ async fn syncular_command<R: Runtime>(
 }
 
 /// Replace the native transport's request headers at runtime — the auth
-/// rotation path (integration contract §2.3): a fresh JWT reaches the transport without
+/// Header rotation path: a fresh JWT reaches the transport without
 /// re-registering the plugin. HTTP requests use the new set from the next
 /// call; the realtime socket applies it on its next (re)connect.
 #[tauri::command]
@@ -1016,7 +1015,7 @@ mod tests {
         let rows = qrx.recv().unwrap();
         assert_eq!(rows["result"]["rows"][0]["title"], "hi");
 
-        // integration contract §2.3: header rotation rides the same mailbox; a
+        // Header rotation rides the same mailbox; a
         // client-local (Null-transport) core accepts and ignores the set.
         let (htx, hrx) = channel();
         tx.send(Request::SetHeaders {

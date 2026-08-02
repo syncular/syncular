@@ -9,11 +9,10 @@ This file is the canonical instruction set for coding agents and applies to
 human contributors just as much. `CLAUDE.md` is a gitignored symlink to this
 file, created by the root `postinstall` script.
 
-Read before non-trivial work: `docs/SPEC.md` (wire truth), `docs/implementation history`
-(plan of record, **including non-goals; never resurrect one without new
-evidence**), `docs/work record` (working list + standing rules), `docs/implementation contract*.md`
-(subsystem designs), `docs/` (0001 admin console, 0002 integration
-feedback; both implemented).
+Read before non-trivial work: `docs/SPEC.md` (wire truth), `docs/SYQL.md`
+(query-language truth), the relevant package README, and `docs/RELEASE.md`
+when changing release behavior. Do not revive removed mechanisms or add a
+parallel path without current evidence and a specification change.
 
 ## Doctrine (enforced)
 
@@ -28,7 +27,7 @@ feedback; both implemented).
   conformance catalog scenario (`packages/conformance/src/catalog/`); a
   TS-only change breaks the rust-conformance CI pairing.
 - Commit/push: local commits after verification are fine; **push only on
-  the maintainer's explicit instruction** (docs/work record standing rules).
+  the maintainer's explicit instruction**.
 
 ## Coding rules
 
@@ -174,5 +173,5 @@ machine-generated PRs, issues, and comments are closed without comment. The read
 A real two-engine integration (web worker+OPFS and Tauri native behind one
 `SyncClientLike` seam) lives in the Diego monorepo at `../mono/ui-poc`; it
 is the fastest place to smoke-test a change against a living app
-(`bun run server` + `bun run dev` there; see its README/implementation contract.md §8). The
+(`bun run server` + `bun run dev` there; see its README). The
 path only exists on maintainer machines; skip this section if it is absent.

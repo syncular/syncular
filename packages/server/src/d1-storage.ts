@@ -1,5 +1,5 @@
 /**
- * Cloudflare D1 server storage (work item §4.2 — the Workers deployment rung).
+ * Cloudflare D1 server storage for Workers deployments.
  *
  * D1 *is* SQLite exposed over an async, statement-at-a-time API
  * (`prepare(sql).bind(...).all()` / `.first()` / `.run()`, plus `batch([…])`
@@ -687,7 +687,7 @@ export class D1ServerStorage implements ServerStorage {
       const bindCount = tableColumnNames(table).length;
       if (bindCount > D1_MAX_BIND_PARAMS) {
         throw new Error(
-          `table ${JSON.stringify(table.name)} needs ${bindCount} bound parameters per upsert — D1 caps statements at ${D1_MAX_BIND_PARAMS} (implementation contract "D1 bind-parameter limit")`,
+          `table ${JSON.stringify(table.name)} needs ${bindCount} bound parameters per upsert; D1 caps statements at ${D1_MAX_BIND_PARAMS}`,
         );
       }
     }
@@ -1137,7 +1137,7 @@ export class D1ServerStorage implements ServerStorage {
     return results.map((r) => r.blob_id);
   }
 
-  // -- admin/console read surface (work item §2.5) --------------------------------
+  // -- admin/console read surface --------------------------------------------
 
   async listClientRecords(partition: string): Promise<ClientRecord[]> {
     const { results } = await this.#db

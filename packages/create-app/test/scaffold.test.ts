@@ -78,8 +78,8 @@ describe('package.json rewrite', () => {
     const out = JSON.parse(
       rewriteTemplatePackageJson(src, { packageName: 'my-app', local: false }),
     );
-    // Published range is still workspace:* today (packages unpublished; work item
-    // 6.3) — asserting it round-trips through the rewrite path, not literal.
+    // Assert the published range round-trips through the rewrite path without
+    // pinning this test to a release version.
     expect(typeof out.dependencies['@syncular/core']).toBe('string');
   });
 });

@@ -1,5 +1,5 @@
 /**
- * Neutral schema IR (migration gate B5).
+ * Neutral schema IR.
  *
  * The IR is a versioned, language-neutral JSON document: tables with the
  * SPEC §2.4 column types (+ nullability + primary key), scope patterns
@@ -53,7 +53,7 @@ export interface IrScope {
  * One local secondary index declared by a `CREATE [UNIQUE] INDEX` migration.
  * Applied on BOTH sides: the client materializes it in its local SQLite, and
  * the server creates it on the relational per-app row table
- * (server storage contract "user indexes"; the sync read path
+ * (the server-storage user-index contract; the sync read path
  * itself still uses the scope inverted-index). `columns` preserves declared
  * order (a compound index is order-sensitive). Index order within a table is
  * declaration order.

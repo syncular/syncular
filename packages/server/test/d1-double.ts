@@ -9,7 +9,7 @@
  * the transaction semantics are the same SQLite engine, the contract suite
  * runs against this double with high fidelity to real D1.
  *
- * ## Fidelity limits (documented honestly, work item §4.2)
+ * ## Fidelity limits
  *
  *   - **Sync-under-the-hood**: real D1 is a network round-trip per statement
  *     with its own latency and occasional replication lag on read replicas;

@@ -1,5 +1,5 @@
 /**
- * Transport seams (migration gate B3): request/response bytes, segment download,
+ * Transport seams: request/response bytes, segment download,
  * and the realtime attach surface matching §8's client side. Tests use
  * loopback implementations that call the server library directly — the
  * loopback doctrine; HTTP/WebSocket bindings live in `./http`.

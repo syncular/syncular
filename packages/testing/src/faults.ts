@@ -1,5 +1,5 @@
 /**
- * Fault injection at the transport seam (test doctrine, migration gate B4).
+ * Fault injection at the transport seam.
  *
  * Canonical home: the PUBLIC app test kit. The private conformance harness
  * re-exports from here so both arm the SAME fault vocabulary — one

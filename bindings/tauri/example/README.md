@@ -44,11 +44,6 @@ The example points its native instance at `http://localhost:8788` (the
 `apps/demo-react` server), whose `todos` schema this frontend mirrors and which
 seeds a `groceries` list — so the app shows rows the moment it syncs.
 
-## Screenshot
-
-<!-- work item: drop a screenshot of the running window here (todo list + outbox badge). -->
-_(screenshot placeholder — run `cargo tauri dev` and capture the window)_
-
 ## What to look at
 
 The whole integration is ~40 lines in

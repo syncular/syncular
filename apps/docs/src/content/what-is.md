@@ -98,8 +98,7 @@ The core design decisions:
 - The complete conformance catalog, protocol vectors, package suite, and
   platform-native gates are CI-blocking.
 
-> These docs describe what is in the tree today. Roadmap items are labeled as
-> implementation plan where they appear.
+> These docs describe what is in the tree today.
 
 ## Where to go next
 

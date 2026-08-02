@@ -84,7 +84,7 @@ The wrapper links the native core; the core is built by
 
 ## Lifecycle (the wrapper owns it)
 
-Per the implementation plan, background/foreground and connectivity handling lives in the
+Background/foreground and connectivity handling lives in the
 wrapper, not the core. `SyncularClient` exposes:
 
 - **`pause()`** — stops the event poll loop and disconnects the realtime socket.

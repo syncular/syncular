@@ -1,5 +1,5 @@
 /**
- * bootstrap-storm — THE named scale scenario (migration record). M fresh clients
+ * Bootstrap storm: M fresh clients
  * bootstrap simultaneously against a seeded storm dataset (100k rows in the
  * full profile). All clients read the SAME storm project scope, so the
  * server builds each snapshot segment ONCE and reuses it for the rest —

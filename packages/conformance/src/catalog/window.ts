@@ -1,5 +1,5 @@
 /**
- * Windowed sync (SPEC.md §4.8, Appendix B.18 / windowing contract W1). A
+ * Windowed sync (SPEC.md §4.8, Appendix B.18). A
  * client holds a partial local replica keyed by window units (scope
  * values); `setWindow` manages the value-sharded subscription family. These
  * scenarios pin the six behaviors the design enumerates: widen bootstraps

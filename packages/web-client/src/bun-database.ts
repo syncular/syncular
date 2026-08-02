@@ -1,5 +1,5 @@
 /**
- * `ClientDatabase` on bun:sqlite — the test backend (migration gate B3: the core
+ * `ClientDatabase` on bun:sqlite is the test backend. The core
  * must run without a browser). Not exported from the package root so the
  * browser entry never touches `bun:sqlite`.
  */

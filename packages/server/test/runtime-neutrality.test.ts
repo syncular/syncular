@@ -1,5 +1,5 @@
 /**
- * Runtime-neutrality enforcement (work item §4.2, deliverable 2).
+ * Runtime-neutrality enforcement.
  *
  * The claim: the **core** — the sync handler, the realtime session, the D1
  * storage, the memory stores, the signed-URL/segment/blob machinery, and
@@ -110,7 +110,7 @@ function stripComments(source: string): string {
 const FORBIDDEN_IMPORT = /from\s+['"](bun:[^'"]+|node:[^'"]+)['"]/;
 const FORBIDDEN_GLOBAL = /\bBun\.|\bBuffer\b/;
 
-describe('runtime neutrality (static scan, work item §4.2)', () => {
+describe('runtime neutrality (static scan)', () => {
   const files = reachableCoreFiles();
 
   test('the core import graph is non-trivial (the walk actually ran)', () => {

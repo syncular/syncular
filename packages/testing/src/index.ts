@@ -1,5 +1,5 @@
 /**
- * @syncular/testkit — the app-developer test kit (work item §2).
+ * @syncular/testkit — the app-developer test kit.
  *
  * A small, documented surface over the shipped Syncular core: an in-memory
  * server, N real clients on bun:sqlite through an in-process loopback (no

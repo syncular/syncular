@@ -1,5 +1,5 @@
 /**
- * The minimal Postgres executor seam (migration gate B2: zero runtime deps).
+ * The minimal Postgres executor seam has zero runtime dependencies.
  *
  * `PostgresServerStorage` is written entirely against this interface so the
  * server library never imports a specific driver. Production wires one of:

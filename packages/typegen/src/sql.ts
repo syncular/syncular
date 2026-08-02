@@ -1,5 +1,5 @@
 /**
- * SQL migration subset parser (migration gate B5).
+ * SQL migration subset parser.
  *
  * Parses exactly the subset v1-style migrations need:
  *
@@ -10,7 +10,7 @@
  * - `DROP INDEX [IF EXISTS] name`
  * - `DROP TABLE [IF EXISTS] name`
  * - `CREATE VIRTUAL TABLE name USING fts5(cols…, content=table,
- *   [tokenize='allowlisted tokenizer'])` (local search contract local projection)
+ *   [tokenize='allowlisted tokenizer'])` (client-local FTS5 projection)
  * - column defs: `name TYPE [PRIMARY KEY] [NOT NULL] [NULL]
  *   [DEFAULT literal]`; `ALTER TABLE … ADD COLUMN` is restricted to nullable
  *   columns because Syncular does not execute SQL-default backfills
@@ -434,7 +434,7 @@ const ALLOWED_FTS_TOKENIZERS = new Set([
 ]);
 
 /** Parse the deliberately narrow migration-subset v2 FTS5 form documented in
- * local search contract. The virtual table is attached to its owning synced
+ * The virtual table is attached to its owning synced
  * table and is not itself a synced table. */
 function parseCreateVirtualTable(
   cursor: Cursor,

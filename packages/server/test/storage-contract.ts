@@ -32,7 +32,7 @@ function bytes(...values: number[]): Uint8Array {
 
 /**
  * The contract schema: storage persists rows RELATIONALLY (per-app tables,
- * server storage contract), so every upserted payload must be
+ * the relational-storage contract), so every upserted payload must be
  * valid row-codec bytes for its table.
  */
 const TASKS_COLUMNS: readonly RowColumn[] = [
@@ -259,8 +259,8 @@ export function runStorageContract(
       await tx.upsertRow('tasks', r1);
       const inTx = await tx.getRow('tasks', 'r1');
       expect(inTx?.serverVersion).toBe(2);
-      // The relational store re-serves the payload byte-verbatim (implementation contract
-      // "_sync_payload is the wire source of truth").
+      // The relational store re-serves the payload byte-verbatim because
+      // `_sync_payload` is the wire source of truth.
       expect(inTx?.payload).toEqual(r1.payload);
       expect(inTx?.scopes).toEqual({ project_id: 'p1' });
       await tx.commit();
@@ -950,7 +950,7 @@ export function runStorageContract(
       expect(await storage.listReferencedBlobIds!(PARTITION)).toEqual([]);
     });
 
-    // --- Admin/console read surface (work item §2.5, optional methods) ---
+    // --- Admin/console read surface (optional methods) ---
 
     test('listClientRecords / listCommitMetadata / scopeActivity / getRowScopes', async () => {
       const storage = await make();

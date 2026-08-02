@@ -303,7 +303,7 @@ class SyncularClient private constructor(
     /** Close the realtime socket. */
     fun disconnectRealtime() { command("disconnectRealtime", JsonValue.Obj(emptyMap())) }
 
-    // -- Lifecycle (the wrapper owns it, per the implementation plan) ----------------------
+    // -- Lifecycle (owned by the wrapper) --------------------------------------
 
     /**
      * Pause background activity — stop the event poll loop and disconnect the

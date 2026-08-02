@@ -1,5 +1,5 @@
 /**
- * Admin / console HTTP surface (work item §2.5) — a mountable Hono sub-app over a
+ * Admin / console HTTP surface: a mountable Hono sub-app over a
  * `SyncularAdmin`. JSON endpoints mirror the read surface; a single static
  * HTML page (zero framework, no build step) at `GET /` renders them.
  *
@@ -67,7 +67,7 @@ export function createSyncularAdminRoutes(
 ): Hono {
   if (typeof options.authorize !== 'function') {
     throw new Error(
-      'createSyncularAdminRoutes: an `authorize` guard is required — admin never mounts default-open (work item §2.5)',
+      'createSyncularAdminRoutes: an `authorize` guard is required — admin never mounts default-open',
     );
   }
   const app = new Hono();

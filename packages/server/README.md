@@ -8,7 +8,7 @@ pruning (§4.6), and signed-URL token issuance (§5.4). `SPEC.md` is
 normative for everything on the wire; this README covers the **host
 surface** — in particular the ops seam and the pruning runbook.
 
-## Deployment matrix (runtime adapters, work item §4.2)
+## Deployment matrix (runtime adapters)
 
 The server core is **runtime-neutral TypeScript** — `handleSyncRequest` and
 the realtime session speak only Web `Request`/`Response`/`fetch`/Web-Crypto,

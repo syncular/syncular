@@ -534,7 +534,7 @@ describe('createTauriSyncClient', () => {
     ).rejects.toMatchObject({ code: INVALID_HOST_RESPONSE_CODE });
   });
 
-  test('query strips reserved _sync_* columns (integration contract §2.1)', async () => {
+  test('query strips reserved _sync_* columns', async () => {
     const { tauri } = makeTauri((cmd, args) => {
       if (cmd === 'plugin:syncular|syncular_query') {
         return OK({
@@ -552,7 +552,7 @@ describe('createTauriSyncClient', () => {
     expect(rows).toEqual([{ id: 't1', title: 'hello' }]);
   });
 
-  test('setHeaders posts the full set to syncular_set_headers (integration contract §2.3)', async () => {
+  test('setHeaders posts the full set to syncular_set_headers', async () => {
     const { client, calls } = await build();
     await client.setHeaders({ authorization: 'Bearer fresh' });
     const call = calls.find(

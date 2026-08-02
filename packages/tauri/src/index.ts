@@ -8,7 +8,7 @@
  * (`useRawSql`, `useMutation`, `usePresence`, …) work UNCHANGED against a
  * Tauri app. It is the fourth host of one interface, after the direct
  * `SyncClient`, the worker-leader `SyncClientHandle`, and the multi-tab
- * follower (implementation history block 1).
+ * follower.
  *
  * Every method forwards to the plugin's `syncular_command` command (the whole
  * command surface in one JSON envelope — `{method, params}`), mirroring the FFI
@@ -588,7 +588,7 @@ export class TauriSyncClient {
 
   /**
    * Replace the native transport's request headers at runtime — the auth
-   * rotation path (integration contract §2.3). Pass the FULL header set (it replaces,
+   * rotation path. Pass the FULL header set (it replaces,
    * it does not merge). HTTP requests use the new set from the next call;
    * the realtime socket applies it on its next (re)connect.
    */

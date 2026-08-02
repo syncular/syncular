@@ -3,7 +3,7 @@
  *
  * Requirements it encodes:
  * - commit log with per-partition `commitSeq` (§2.1) and a commit→scope
- *   inverted index designed in from day one (§3.1, migration gate B2): pulls filter
+ *   inverted index (§3.1): pulls filter
  *   by scope via the index, never by scanning the log;
  * - idempotency results per §2.3 persisted in the same transaction as the
  *   commit's writes (§6.4);
@@ -276,7 +276,7 @@ export interface StorageTransaction {
 export interface ServerStorage {
   /**
    * Create/migrate the relational per-app row tables for `schema`
-   * (server storage contract). Idempotent and cheap when the
+   * Idempotent and cheap when the
    * stored schema version already matches (one marker read, memoized per
    * instance); on first use it creates the tables, on a version bump it
    * applies the migration subset (CREATE TABLE / ADD COLUMN / CREATE
@@ -373,7 +373,7 @@ export interface ServerStorage {
   listReferencedBlobIds?(partition: string): Promise<string[]>;
 
   /**
-   * Admin/console read surface (`SyncularAdmin`, work item §2.5) — ADDITIVE,
+   * Admin/console read surface (`SyncularAdmin`): ADDITIVE,
    * optional. All read-only, partition-scoped, and JSON-able. A backend
    * that omits these simply cannot serve the console; the sync path never
    * calls them.

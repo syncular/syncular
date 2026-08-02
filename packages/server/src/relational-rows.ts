@@ -1,5 +1,5 @@
 /**
- * Relational current-row storage (server storage contract).
+ * Relational current-row storage.
  *
  * Every synced table is a REAL table in the server database — the app's
  * columns with proper type affinities, queryable with plain SQL/joins/BI —
@@ -65,7 +65,7 @@ export function quoteIdent(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
 
-/** §5.3-style type affinities, per dialect (implementation contract type-mapping table). */
+/** §5.3-style type affinities, per dialect. */
 export function columnSqlType(
   column: RowColumn,
   dialect: RelationalDialect,
@@ -204,11 +204,11 @@ export function physicalIndexName(declaredName: string): string {
 }
 
 /**
- * CREATE INDEX IF NOT EXISTS for the table's user-declared indexes
- * (implementation contract "user indexes" — the same declared names/columns the client
- * materializes; cross-table index-name uniqueness is the user's schema
- * concern, exactly as it is client-side). Server-side the physical name
- * carries the {@link SYNC_INDEX_PREFIX} ownership marker.
+ * CREATE INDEX IF NOT EXISTS for the table's user-declared indexes. These use
+ * the same declared names and columns the client materializes. Cross-table
+ * index-name uniqueness is the user's schema concern, as it is client-side.
+ * Server-side the physical name carries the {@link SYNC_INDEX_PREFIX}
+ * ownership marker.
  */
 export function createIndexDdl(table: CompiledTable): string[] {
   // User indexes name app columns — nothing to index without the projection.
@@ -478,8 +478,8 @@ export function deleteRowSql(
 }
 
 /**
- * The schema-version marker table gating DDL work (implementation contract "server-side
- * schema migration"): `ensureSchema` compares the stored version and skips
+ * The schema-version marker table gates DDL work. `ensureSchema` compares the
+ * stored version and skips
  * all introspection/DDL when it matches — one cheap read per storage
  * instance (relevant for D1's per-request instantiation).
  *

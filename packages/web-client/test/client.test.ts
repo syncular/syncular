@@ -1,6 +1,6 @@
 /**
- * Full loopback integration: two clients syncing through one real B2
- * server (the migration gate tripwire scenario) — push/pull convergence, conflict
+ * Full loopback integration: two clients syncing through one real server:
+ * push/pull convergence, conflict
  * surfacing (§6.2/§6.5), offline drain + idempotent replay (§2.3/§7.2),
  * rejection handling (§6.3), and the schema-floor stop state (§1.6).
  */
@@ -1180,7 +1180,7 @@ describe('sync loop discipline', () => {
   });
 });
 
-describe('the SELECT * → mutate round trip (integration contract §2.1)', () => {
+describe('the SELECT * → mutate round trip', () => {
   test('query() strips _sync_* columns; explicit aliases pass through', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });

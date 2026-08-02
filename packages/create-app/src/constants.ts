@@ -1,11 +1,9 @@
 import { createRequire } from 'node:module';
 
 /**
- * The ONE place naming lives (work item 6.3 is a product decision — final package
- * identity is not settled). Every user-visible name the scaffolder emits comes
- * from here so a rename is mechanical: change these constants, regenerate the
- * templates' generated files, done. No name is hardcoded elsewhere in this
- * package — grep for the literals below and you should only find them here.
+ * The one place scaffolder naming lives. Every user-visible name the
+ * scaffolder emits comes from here so a rename is mechanical: change these
+ * constants and regenerate the templates' generated files.
  */
 
 /** The scoped npm namespace for the v2 packages, e.g. `@syncular`. */

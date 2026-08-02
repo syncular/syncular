@@ -472,7 +472,7 @@ class TsClientInstance implements ClientInstance {
     if (schemaTable === undefined) throw new Error(`unknown table ${table}`);
     // The raw database tier, deliberately: the driver's row state carries
     // `_sync_version`, which the app-facing `client.query()` strips from
-    // `SELECT *` results (integration contract §2.1).
+    // `SELECT *` results.
     const rows = this.#client.database.query(
       `SELECT * FROM "${table}" ORDER BY "${schemaTable.primaryKey}" ASC`,
     );

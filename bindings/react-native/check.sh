@@ -3,7 +3,7 @@
 # workspaces (its tests are path-ignored from `bun run test`, and its .ts is not
 # in the root tsconfig). Run from anywhere; it cds to its own dir.
 #
-# The verification bar (per implementation plan block 1's honest RN scoping): the JS bridge
+# The verification bar: the JS bridge
 # is exercised with an INJECTED NativeModule double — no device, no RN runtime —
 # proving the SyncClientLike contract, the {$bytes:hex} convention, event fanout,
 # lifecycle, and parity vs the React `normalizeClient`. On top, the example

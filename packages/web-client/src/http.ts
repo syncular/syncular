@@ -2,7 +2,7 @@
  * Browser transport bindings (§1.1, §5.4/§5.5, §8.1): fetch-based sync
  * transport, segment download with signed-URL preference and direct-serve
  * fallback, and a WebSocket realtime connector. Core tests never use these
- * (the loopback doctrine); B6 exercises them in a real browser.
+ * (the loopback doctrine); the browser fixture exercises them in a real browser.
  */
 import type { BlobTransport } from './blob';
 import { SSP2_CONTENT_TYPE } from './content-type';

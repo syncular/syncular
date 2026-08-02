@@ -1,7 +1,6 @@
-# Syncular Protocol Specification (SSP2) — DRAFT
+# Syncular Protocol Specification (SSP2)
 
-Status: **B1 — full normative text, golden vectors generated.** This document
-is normative: implementations conform to this spec and the golden vectors in
+This document is normative: implementations conform to this spec and the golden vectors in
 `spec/vectors/`; divergence is an implementation bug. A change to wire
 format or semantics requires a version bump per §9 and updated vectors in
 the same commit.
@@ -156,8 +155,7 @@ rationale; the referenced sections carry the normative detail.
       the JSON `sync` wake-up with exactly three reason codes (§8.3):
       `delta-too-large`, `catchup-required`, `reset-required`.
 
-- [x] **WebSocket-native sync loop** (Architecture choice 1,
-      2026-07-03). The realtime channel is a full transport
+- [x] **WebSocket-native sync loop.** The realtime channel is a full transport
       binding for sync rounds: request/response SSP2 messages travel over
       the socket as tagged binary byte streams (§8.7), driven by the same
       handler as `POST /sync` — one handler, two framings, zero semantic
@@ -240,8 +238,7 @@ are two framings of the same request/response semantics: the socket
 carries sync rounds as tagged binary byte streams (§8.7) with identical
 message grammar and validation — nothing in §§4–7 distinguishes the
 bindings. Reference clients sync exclusively over the socket once it is
-connected (Architecture choice 1: one loop, no polling mode, no fallback
-pair); `POST /sync` remains fully conformant and is the binding for
+connected; `POST /sync` remains fully conformant and is the binding for
 push-only producers, curl debugging, and server-to-server integration.
 Segment downloads are HTTP-only (§5.5) — the CDN bulk path, not a
 fallback.
@@ -629,7 +626,7 @@ is byte-pinned; existing vectors stay byte-identical (no `crdt` column was
 added to an existing fixture — the §9 rule that a new tag needs pinning is
 met by a *new* case, not by mutating old ones).
 
-For every synced table, codegen (B5) emits from the schema IR, for both
+For every synced table, codegen emits from the schema IR, for both
 sides, a **row codec** for each supported `schemaVersion`:
 
 - Columns are encoded **positionally in schema-IR declaration order** —
@@ -650,7 +647,7 @@ server that cannot codec a table for the client's `schemaVersion` MUST
 answer with `requiredSchemaVersion` — the schema-floor response of
 §1.6, which processes nothing — never with a degraded encoding.
 
-**Client-local FTS5 projections (local search contract).** The schema IR MAY attach an
+**Client-local FTS5 projections.** The schema IR MAY attach an
 `ftsIndexes` array to a synced table. Each entry names a local FTS5 virtual
 table, 1–32 local string columns, and an allowlisted built-in tokenizer. An
 encrypted column is eligible only when its `declaredType` is `string`: apply
@@ -714,7 +711,7 @@ lists on the wire (§0), and one fail-loud rule applies throughout:
 - Stored scopes index the log: the server maintains a commit→scope-key
   inverted index (scope key = the pattern's literal prefix + `:` +
   value) so pulls filter by scope without scanning (an SSP2 storage-schema
-  requirement per migration gate B2; the index itself is not wire-visible).
+  requirement; the index itself is not wire-visible).
 
 ### 3.2 Requested, allowed, effective
 
@@ -1121,9 +1118,8 @@ subscriptions first (even in a separate request) before enqueueing the
 rest. DECISION (recorded): phases are client policy, not wire state —
 one less coupled enum, same capability.
 
-One constraint bounds the "separate request" latitude (resolving the
-ambiguity with §8.1's replace-semantics in windowing's favor, per
-windowing contract §9.1): a pull's subscription list replaces both the
+One constraint bounds the "separate request" latitude: a pull's subscription
+list replaces both the
 persisted registration list (§8.1) and — for socket rounds — the live
 connection's registrations (§8.7), so **omission is unregistration**.
 Steady-state pulls MUST therefore carry the client's complete current
@@ -1426,7 +1422,7 @@ at the pin — the reference server's rule); below that, inline rows
 segments already avoid the extra round-trip. A client that does not
 advertise bit 2 is served the rows lane (§5.2) by capability
 negotiation — rows segments remain mandatory-to-implement, so this is
-version-skew tolerance, not a fallback path in the migration gate sense.
+version-skew tolerance, not a second implementation path.
 
 **Error codes.** No new codes: structural/metadata failures are
 `sync.invalid_request`, the column check is `sync.schema_mismatch`,
@@ -1951,8 +1947,7 @@ payload and reference no blob — they skip the check.
 #### 5.9.7 Client cache lifecycle (constraints B1–B4)
 
 The client caches blob bytes locally, **content-addressed and refcounted
-by referencing rows** — the windowing contract B1–B4 constraints, now
-normative:
+by referencing rows** under the following normative constraints:
 
 - **B1 — Refcounted, content-addressed cache.** Cached blob bodies are
   keyed by `blobId`; the refcount for a `blobId` is the number of local
@@ -3219,7 +3214,7 @@ the feature is invisible until a lease-issuing server sends one.
 
 ### 7.4 Schema-bump flow — wipe, re-bootstrap, replay
 
-**No client-side migration engine** (Architecture choice 3, 2026-07-03).
+**No client-side migration engine.**
 A client never transforms its local tables from schema `N` to schema
 `N+1`. When the schema version changes, it **wipes its local tables,
 re-bootstraps from the server at the new version, and replays the
@@ -3316,7 +3311,7 @@ Whole-database-except-those-three is chosen over a per-table reset for
 correctness and simplicity: a schema bump MAY change table membership,
 foreign-key shape, or scope-column mapping table-wide, and a partial
 reset would have to reason about which tables a version delta touches —
-exactly the migration-engine reasoning Architecture choice 3 rejects.
+exactly the migration-engine reasoning rejected by this section.
 The blunt reset is always correct and the bootstrap that follows is the
 same path every fresh client runs.
 
@@ -3375,7 +3370,7 @@ and know when it is safe to render:
   a small, queryable client state, not a wire concept.
 - A completion signal fires when `upgrading` clears — the app's cue to
   re-run its live queries against the rebuilt tables. In the worker
-  transport (Architecture choice 2) it rides the existing event channel
+  transport it rides the existing event channel
   as an `upgrading` event `{ upgrading: boolean }`, so the UI thread
   learns of the reset and its completion without polling.
 - While `upgrading` is true, local reads see the (possibly empty,
@@ -4299,7 +4294,7 @@ byte-identical output):
 ## Appendix B. Conformance scenarios
 
 Implementation-agnostic scenario definitions executed by
-`packages/conformance` (B4) against any (client, server) pairing over the
+`packages/conformance` against any (client, server) pairing over the
 loopback transport, with fault injection at the transport interface.
 Each is a driver-interface script, not a prose test.
 

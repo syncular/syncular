@@ -11,7 +11,7 @@ function percentile(values: readonly number[], fraction: number): number {
   );
 }
 
-describe('local querySnapshot performance lanes (revisioned observation contract §10.3)', () => {
+describe('local querySnapshot performance lanes', () => {
   test('warm p95 and 100/1k/10k scaling stay local-fast', async () => {
     const db = new BunClientDatabase();
     const client = new SyncClient({

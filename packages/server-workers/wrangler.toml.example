@@ -1,4 +1,4 @@
-# Example wrangler config for a Syncular v2 Workers deployment (work item §4.2).
+# Example wrangler config for a Syncular v2 Workers deployment.
 # Copy to `wrangler.toml` in your Worker project and fill in the ids.
 #
 # This deploys BOTH bindings (SPEC §1.1): the HTTP handler (POST /sync,

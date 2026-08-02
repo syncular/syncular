@@ -1,9 +1,9 @@
-# syncular — two-pane convergence demo (B6)
+# syncular two-pane convergence demo
 
 Two independent client cores from `@syncular/client` — each a Web
 Worker running the WHOLE core (SyncClient + transports + sqlite-wasm on
-persistent OPFS via `opfs-sahpool`, Architecture choice 2) — syncing a
-todo list through the B2 server (server-hono adapter, bun:sqlite storage)
+persistent OPFS via `opfs-sahpool`) — syncing a
+todo list through the demo server (server-hono adapter, bun:sqlite storage)
 in one Bun process. The page drives each core through the
 `SyncClientHandle` RPC. Add `?ephemeral` for the explicit in-memory
 main-thread mode (labeled; nothing survives a reload).
@@ -42,7 +42,7 @@ persists it to a file.
 
 ## Notes
 
-- **Schema is typegen-generated** (B5 dogfood): `syncular.json` +
+- **Schema is typegen-generated**: `syncular.json` +
   `migrations/0001_initial/up.sql` → `bun run generate` →
   `src/syncular.generated.ts` (committed). Both server and clients import
   it.
@@ -68,7 +68,7 @@ persists it to a file.
   + a `useWindow` list-filter dropdown that dogfoods W1 windowing. Run it with
   `bun run --cwd apps/demo-react dev` (port 8788).
 
-## Multi-tab (work item 3.2)
+## Multi-tab
 
 The two panes simulate two **devices**: they use *distinct* lock names, so
 each pane is its own leader with its own core and DB. Multi-tab followers

@@ -47,7 +47,7 @@ describe('golden fixtures', () => {
   });
 
   test('no longer emits the removed Kysely Database interface', () => {
-    // Kysely was dropped (query contract §9); the Row interfaces stay.
+    // The Row interfaces stay independent of a query-builder dependency.
     const module = generate(FIXTURE).module;
     expect(module).not.toContain('export interface Database {');
     expect(module).toContain('export interface TasksRow {');

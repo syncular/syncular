@@ -15,7 +15,7 @@ conflict detection, realtime). Everything needed to interoperate is in that
 document plus the golden vectors in `spec/vectors/`. An implementer needs
 no access to any existing source tree.
 
-[implementation history](https://github.com/syncular/syncular/blob/main/docs/implementation history) sets three rules for the tree:
+Three rules govern protocol changes:
 
 - **Spec-first.** Behavior lands in the spec, with vectors or conformance
   scenarios, before or with the code. The spec is never reverse-engineered

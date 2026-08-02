@@ -1,5 +1,5 @@
 /**
- * Event ring buffer + sink composition (work item §2.5) — the "event stream"
+ * Event ring buffer + sink composition: the "event stream"
  * without any infrastructure dependency.
  *
  * `RingBufferEvents` is a `SyncularServerEvents` sink that retains the last

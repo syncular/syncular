@@ -163,7 +163,7 @@ pub fn parse_encryption(
 }
 
 /// Parse an `activateSecurity` (or rotation) `headers` param: an object of
-/// string values, replacing the transport's FULL header set (integration contract §2.3).
+/// string values, replacing the transport's FULL header set.
 /// The router validates the shape at the shared chokepoint; each host applies
 /// the parsed set to its own transport (the router stays transport-agnostic).
 pub fn parse_headers(value: &Value) -> Result<Vec<(String, String)>, String> {

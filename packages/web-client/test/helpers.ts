@@ -1,6 +1,6 @@
 /**
  * Loopback harness (the loopback doctrine): two `SyncClient`s drive the
- * real B2 server library directly through bytes — `handleSyncRequest` for
+ * real server library directly through bytes — `handleSyncRequest` for
  * sync, `handleSegmentDownload` for segment refs, `RealtimeHub.connect`
  * for the socket seam. No HTTP, no sockets. Fault injection happens at the
  * transport interface.

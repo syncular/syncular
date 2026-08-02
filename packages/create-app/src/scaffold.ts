@@ -55,9 +55,8 @@ function isWorkspacePackage(dependencyName: string): boolean {
  *   when the scaffolded app sits inside this repo's workspace (the in-tree
  *   smoke test path, and `--local` for anyone hacking on the tree).
  * - `local: false` rewrites to {@link PUBLISHED_DEPENDENCY_RANGE}. Today that
- *   is *also* `workspace:*` because the v2 packages are unpublished and
- *   version-less (work item 6.3); the CLI warns. It is one constant to flip the day
- *   they publish.
+ *   is derived from the scaffolder's version because the packages release in
+ *   lockstep.
  */
 export function rewriteTemplatePackageJson(
   source: string,

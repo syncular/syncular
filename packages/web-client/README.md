@@ -5,7 +5,7 @@ browser platform bindings.
 
 ## Client-local FTS5 projections
 
-Generated schemas may attach `ftsIndexes` to a synced table (local search contract). The
+Generated schemas may attach `ftsIndexes` to a synced table. The
 client materializes each as a contentful local FTS5 table with a private stable
 source identity and insert/update/delete triggers. Existing visible rows are
 bulk-indexed on first creation; schema reset recreates the projection. The FTS
@@ -16,8 +16,7 @@ strings.
 
 ## Browser modes — there are exactly two
 
-**Persistent worker mode is THE mode** (migration gate Architecture choice 2,
-2026-07-03). The whole client core — `SyncClient`, the fetch/WebSocket
+**Persistent worker mode is THE mode.** The whole client core — `SyncClient`, the fetch/WebSocket
 transports, and SQLite on the `opfs-sahpool` VFS — runs inside a Web
 Worker. The UI thread talks to it through a thin postMessage RPC:
 
@@ -103,7 +102,7 @@ HTTP rounds still work with no socket, but do not imply continuous convergence:
 a host trigger must actually run them. See the complete
 [realtime lifecycle guide](https://syncular.dev/concepts-realtime/).
 
-## Multi-tab followers (work item 3.2, migration gate B3)
+## Multi-tab followers
 
 By default, every tab of the same origin shares ONE core:
 one sync loop, one WebSocket, one OPFS database, N tabs.

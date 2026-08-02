@@ -1,5 +1,5 @@
 /**
- * I4 (query contract): the `sql` tagged template. The invariant under
+ * The `sql` tagged template. The invariant under
  * test is structural: interpolated values can only become `?` binds; text
  * can only enter via the literal template, an allowlisted `sql.ident`, or
  * a deliberate `sql.raw`.

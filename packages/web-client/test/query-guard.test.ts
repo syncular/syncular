@@ -1,5 +1,5 @@
 /**
- * I3 (query contract): the public `client.query()` is a guarded
+ * The public `client.query()` is a guarded
  * read-only, single-statement surface. Writes must go through `mutate`
  * (outbox, SPEC §7.1); multi-statement strings must never reach
  * sqlite-wasm's run-them-all `exec`.

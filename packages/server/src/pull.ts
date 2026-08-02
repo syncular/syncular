@@ -253,7 +253,7 @@ async function* sqliteImageSegment(
   // builder through `sqliteImageBuilder`; when omitted we default to the
   // in-tree `buildSqliteImage` ONLY on a Bun runtime, reached by a *dynamic*
   // import so `bun:sqlite` is never a static dependency of the pull path
-  // (work item §4.2 neutrality — enforced by test/runtime-neutrality.test.ts). On
+  // (runtime neutrality is enforced by test/runtime-neutrality.test.ts). On
   // Workers/edge (no `Bun`) this yields the rows lane for a bit-2 client — a
   // support floor, not a fallback (§5.3: sqlite is an *accept*, not a demand).
   const buildImage = await resolveImageBuilder(ctx);

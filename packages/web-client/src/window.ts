@@ -1,5 +1,5 @@
 /**
- * Windowed subscriptions (SPEC.md §4.8 / windowing contract W1).
+ * Windowed subscriptions (SPEC.md §4.8).
  *
  * A window is a partial local replica keyed by scope VALUES: the client
  * holds rows for a chosen set of units (one scope value each) of a window

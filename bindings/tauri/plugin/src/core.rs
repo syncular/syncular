@@ -194,7 +194,7 @@ impl SyncularCore {
         self.queue.drain(..).collect()
     }
 
-    /// Replace the transport's request headers (integration contract §2.3 — rotating
+    /// Replace the transport's request headers. Rotating
     /// auth without tearing the plugin down). See
     /// `HostTransport::set_headers` for the HTTP/WS pickup semantics.
     pub fn set_headers(&mut self, headers: Vec<(String, String)>) {

@@ -1,6 +1,6 @@
 /**
- * @syncular/client — the B3 TypeScript client protocol core
- * (SPEC.md is normative; migration record B3 is the architectural mandate).
+ * @syncular/client is the TypeScript client protocol core.
+ * SPEC.md is normative.
  *
  * Browser-safe root: database backends live behind subpath exports
  * (`./bun` for bun:sqlite tests, `./wasm` for sqlite-wasm + OPFS); the

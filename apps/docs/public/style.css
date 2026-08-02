@@ -154,7 +154,7 @@ main {
 }
 article { width: 100%; max-width: 47rem; font-size: 0.92rem; }
 
-/* The main-vs-released drift marker (integration contract §1.3). */
+/* The main-vs-released drift marker. */
 .release-banner {
   width: 100%;
   max-width: 47rem;

@@ -80,7 +80,7 @@ describe('named-query emitter goldens', () => {
   });
 
   test('the QueryIR JSON matches the committed golden byte-exactly', () => {
-    // The frontend-equivalence contract (query contract §1): whatever
+    // The frontend-equivalence contract: whatever
     // frontend produced these queries, this exact IR JSON must come out.
     const committed = readFileSync(
       join(FIXTURE, 'syncular.queries.ir.json'),

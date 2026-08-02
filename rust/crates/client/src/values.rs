@@ -95,7 +95,7 @@ impl EncryptionConfig {
     }
 }
 
-/// The pinned §12 snake→camel conversion (query contract §5) — the Rust
+/// The pinned snake→camel conversion. The Rust
 /// copy of the typegen/TS-client algorithm, kept in lockstep by shared test
 /// vectors. Leading/trailing `_` runs are preserved; middle segments split
 /// on `_` (doubled underscores drop); no acronym awareness.

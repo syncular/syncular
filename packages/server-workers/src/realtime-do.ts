@@ -1,6 +1,6 @@
 /**
  * `SyncularRealtimeDO` — the Cloudflare Durable Object realtime host (§8, the
- * second binding of §1.1). implementation plan block 2: the designed-but-deferred half of
+ * second binding of §1.1). The deferred half of
  * the Workers deployment matrix, now built.
  *
  * ## The shape

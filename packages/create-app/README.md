@@ -7,24 +7,13 @@ bun create syncular-app my-app            # prompts for the template
 bunx create-syncular-app my-app --template web
 ```
 
-> Naming (`@syncular/*`, bin `create-syncular-app`, CLI `syncular`) is not
-> final — package identity is work item 6.3. Every user-visible name lives in
-> [`src/constants.ts`](./src/constants.ts) so a rename is mechanical: edit the
-> constants, regenerate the templates' generated files, done.
-
 ## Templates
 
 | Template | Shape |
 |---|---|
 | `minimal` | Server + a terminal two-client convergence demo (no browser) — migrations + manifest + `generate` wiring. Copy-evolved from `examples/quickstart`. The smallest honest starting point. |
 | `web` | Hono server + WebSocket realtime + a single-pane browser todo app whose whole client core runs in a Web Worker on OPFS. Derived from `apps/demo`, slimmed to one pane (no conflict simulator, no blob attachments) — the minimal browser app a real user starts from. |
-| `tauri` | One React codebase, web + desktop (integration contract §4.1): the `web` template's server plus a shared React tree behind the `__TAURI_INTERNALS__` engine seam (`src/frontend/engine.ts`) — worker core on OPFS in the browser, native Rust core in a `src-tauri/` host (`tauri-plugin-syncular` from crates.io, `native-transport`). Derived from `bindings/tauri/example` + the [web+desktop guide](../../apps/docs/src/content/guide-web-desktop.md). |
-
-> **Next-template candidate: `react` (web-only).** [`apps/demo-react`](../../apps/demo-react)
-> is the ready-made source for a hooks-based web-only template — the `tauri`
-> template already carries the hook surface for the two-host story. Slim
-> demo-react the way `web` slims `apps/demo` when a web-only React template
-> is wanted. Not built yet — noted so the shape is on record.
+| `tauri` | One React codebase, web + desktop: the `web` template's server plus a shared React tree behind the `__TAURI_INTERNALS__` engine seam (`src/frontend/engine.ts`) — worker core on OPFS in the browser, native Rust core in a `src-tauri/` host (`tauri-plugin-syncular` from crates.io, `native-transport`). Derived from `bindings/tauri/example` + the [web+desktop guide](../../apps/docs/src/content/guide-web-desktop.md). |
 
 Each template ships its own `README.md` (run steps, what to edit first),
 `.gitignore` (as `gitignore` — see below), a working `tsconfig.json`, and a
@@ -40,13 +29,8 @@ ranges:
   are the only ranges that resolve when the scaffolded app sits inside this
   repo's workspace.
 - **default** (a normal `bunx create-…` run): rewrite to
-  `PUBLISHED_DEPENDENCY_RANGE` (`src/constants.ts`). **Today that constant is
-  *also* `workspace:*`** because the workspace packages are unpublished and
-  version-less (all `private`, no `version` — work item 6.3), so there is no honest
-  semver range yet. The CLI **warns loudly** in this case: a `bun install`
-  outside the repo cannot resolve the deps until publishing lands. When the
-  packages ship, flip that one constant to `^<version>` (or teach the CLI to
-  read the published version) — a single edit.
+  `PUBLISHED_DEPENDENCY_RANGE` (`src/constants.ts`), derived from the
+  scaffolder's own version because all Syncular packages release in lockstep.
 
 `.gitignore` ships as `gitignore` (no dot) because npm strips real dotfiles
 from published tarballs; the scaffolder renames it on copy.

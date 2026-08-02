@@ -1,5 +1,5 @@
 /**
- * The pinned snake→camel naming map (query contract §5, §12) — the
+ * The pinned snake→camel naming map. The
  * client-side copy of the typegen algorithm (kept in lockstep by shared
  * test vectors; the Rust core carries the same function). Used by `mutate`
  * to accept BOTH casings for value keys: the canonical camelCase the

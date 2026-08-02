@@ -62,7 +62,7 @@ export interface SqliteImageInput {
 
 /**
  * The §5.3 image-builder capability, injected through
- * `SyncServerConfig.sqliteImageBuilder` (work item §4.2). Building an image needs
+ * `SyncServerConfig.sqliteImageBuilder`. Building an image needs
  * a real SQLite engine (`bun:sqlite` here), which is not available on every
  * runtime — Cloudflare Workers has none. So the core takes the builder as an
  * optional capability rather than importing `bun:sqlite` on the pull path:

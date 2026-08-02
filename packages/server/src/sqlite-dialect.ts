@@ -11,8 +11,7 @@
  * db.prepare(sql).bind(...).all()`); a shared execution layer would have to
  * pick one calling convention and adapt the other, which is uglier than two
  * thin storage classes that each speak their driver's native shape while
- * importing the same SQL text and codecs from here (work item §4.2 judgment
- * call — "clean parallel implementation against the storage contract").
+ * importing the same SQL text and codecs from here.
  * Both classes run the identical `test/storage-contract.ts`, so the
  * behavior is held key-for-key regardless.
  */
@@ -35,7 +34,7 @@ import type {
  * The inverted scope index carries the ordered column (`commit_seq` /
  * `row_id`) last in the PRIMARY KEY, so the candidate scan is an index
  * range that returns already-ordered rows — the same covering-index shape
- * the Postgres storage documents (§3.1, migration gate B2 performance-by-
+ * the Postgres storage documents (§3.1, performance-by-
  * construction).
  */
 export const SQLITE_DDL = `

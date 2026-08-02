@@ -1,5 +1,5 @@
 /**
- * Worker + RPC mode (Architecture choice 2): the whole client core runs in
+ * Worker + RPC mode: the whole client core runs in
  * a real Worker (bun's Web Worker implementation) behind the
  * worker-protocol RPC, against a real HTTP + WebSocket server. Only the
  * SQLite backend differs from the browser (bun:sqlite via the bootstrap's

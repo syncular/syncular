@@ -8,7 +8,7 @@
  * interface, after direct / worker / follower / Tauri).
  *
  * No device, no RN runtime — the native module is injected, exactly the
- * hermetic pattern the implementation plan sets for the RN JS bridge.
+ * hermetic pattern used by the RN JS bridge.
  */
 import { describe, expect, test } from 'bun:test';
 import {

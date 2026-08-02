@@ -1,4 +1,4 @@
-# @syncular-load — load & scale verification
+# @syncular-load: load and scale verification
 
 A **bun-native, dependency-light** load suite for syncular. It spawns
 **one real server process** (Hono adapter, real HTTP + WebSocket on
@@ -53,8 +53,8 @@ machine-readable JSON result to `load/results/<scenario>-<profile>-<ts>.json`.
 
 ### Postgres lane
 
-By default storage is in-memory `bun:sqlite`. To target a real Postgres —
-the production database path (work item §4.1) —
+By default storage is in-memory `bun:sqlite`. To target a real Postgres,
+the production database path,
 set `SYNCULAR_PG_URL`:
 
 ```bash
@@ -86,7 +86,7 @@ leak), not a busy laptop.
 
 ### Why `bootstrap-storm` is the headline
 
-migration record names bootstrap-storm as *the* scale scenario, and the §5.3
+The bootstrap-storm scenario exercises §5.3
 sqlite-image reuse rule is what should shine: with M clients on **one shared
 scope**, the server builds the whole-table snapshot image **once** and every
 other client **reuses** it (per `partition, table, schemaVersion, scopeDigest,

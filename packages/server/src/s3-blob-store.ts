@@ -98,7 +98,7 @@ function parseStatsJson(json: string): StatsAccumulator {
   };
 }
 
-// Runtime-neutral base64url (work item §4.2): `Buffer` is not present on
+// Runtime-neutral base64url: `Buffer` is not present on
 // Cloudflare Workers without `nodejs_compat`, so the metadata header is
 // (de)coded with `btoa`/`atob`, available in every runtime.
 function utf8ToBase64url(text: string): string {

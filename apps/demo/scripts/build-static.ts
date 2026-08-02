@@ -58,7 +58,7 @@ const build = await Bun.build({
   target: 'browser',
   // Workspace packages resolve their `bun` condition (TS source) so the
   // build works without `build:packages` (the published `browser`
-  // condition points at compiled dist, integration contract §1.1).
+  // condition points at compiled dist).
   conditions: ['bun'],
   minify: true,
   define: { SYNCULAR_DEMO_EMBEDDED: 'true' },

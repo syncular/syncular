@@ -1,10 +1,10 @@
 /**
- * The single static console page (work item §2.5). Zero framework, no build
+ * The single static console page. Zero framework, no build
  * step, ~one file: it fetches the sibling JSON endpoints (relative to its
  * own mount path), renders tables, and offers an auto-refresh toggle —
  * 5% of the code a full console app would cost, the 80% operator value.
  *
- * Styling follows docs/STYLE.md (the teletype theme): everything
+ * Styling follows docs/STYLE.md: everything
  * monospace, pure black, a single amber accent, 1px borders, sharp
  * corners, bracketed labels, inverse-video hover. The page ships as one
  * self-contained string, so it uses the system mono fallback stack.

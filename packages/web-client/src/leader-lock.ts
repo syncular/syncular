@@ -1,5 +1,5 @@
 /**
- * Multi-tab ownership seam (migration gate B3): exactly one core instance owns the
+ * Multi-tab ownership seam: exactly one core instance owns the
  * local database. The interface is the whole B3 deliverable — cross-tab
  * follower fanout is post-gate. Browsers use Web Locks; tests use the
  * no-op single-owner lock.
@@ -15,7 +15,7 @@ export interface LeaderLock {
    * Resolves immediately: the lease when leadership was free, `undefined`
    * when another owner holds it. The worker handle uses this so a second
    * tab gets a clear not-leader state instead of blocking forever
-   * (followers are post-gate, work item 3.2).
+   * (followers are post-gate).
    */
   tryAcquire?(name: string): Promise<LeaderLease | undefined>;
 }

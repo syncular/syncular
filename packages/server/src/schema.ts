@@ -3,7 +3,7 @@
  *
  * The server is configured with a schema IR: tables, columns with the six
  * §2.4 column types, scope patterns per §3.1, and a schema version. Codegen
- * (B5) will emit this shape later; tests hand-write it.
+ * Typegen emits this shape; tests hand-write it.
  */
 import {
   type RowColumn,
@@ -14,9 +14,8 @@ import {
 export type ScopePatternSpec = string | { pattern: string; column: string };
 
 /**
- * A user-declared index (the migration subset's CREATE INDEX). With
- * relational server storage these apply server-side too (implementation contract
- * "user indexes") — the same declaration the client materializes.
+ * A user-declared index (the migration subset's CREATE INDEX). Relational
+ * server storage applies the same declaration the client materializes.
  */
 export interface IndexSchema {
   readonly name: string;
@@ -35,7 +34,7 @@ export interface TableSchema {
   /** User indexes (optional) — created on the server's relational tables. */
   readonly indexes?: readonly IndexSchema[];
   /**
-   * Server-side column materialization (server storage contract
+   * Server-side column materialization
    * "optional materialization"). When `true` (the usual default) the server's
    * row table carries the app's typed columns as a queryable projection;
    * when `false` it carries only the `_sync_*` meta columns — same storage
@@ -142,8 +141,8 @@ export function compileSchema(schema: ServerSchema): CompiledSchema {
     if (tables.has(table.name)) {
       throw new Error(`duplicate table ${JSON.stringify(table.name)}`);
     }
-    // Identifier rules (implementation contract "current-row tables") live in core's
-    // validatePortableRelationalIdentifier, shared with typegen: app tables
+    // Identifier rules live in core's validatePortableRelationalIdentifier,
+    // shared with typegen: app tables
     // share a namespace with the sync infrastructure tables (`sync_*`) and
     // carry `_sync_*` meta columns, so both prefixes are reserved, and
     // Postgres silently truncates identifiers over 63 bytes.

@@ -1,6 +1,6 @@
 /**
- * Main-thread side of the worker mode (Architecture choice 2) and the
- * multi-tab topology (work item 3.2, migration gate B3).
+ * Main-thread side of the worker mode and the
+ * multi-tab topology.
  *
  * `createSyncClientHandle` acquires the Web Locks leader lock and, when it
  * wins, spawns the worker running the WHOLE core — so exactly one core runs
@@ -8,7 +8,7 @@
  * holding the lock). The returned {@link SyncClientHandle} is a thin, fully
  * async proxy over the `worker-protocol` RPC.
  *
- * Multi-tab is the DEFAULT (integration contract §2.4 — the follower path is
+ * Multi-tab is the DEFAULT. The follower path is
  * conformance-covered): a tab that LOSES the election becomes a FOLLOWER
  * (`role === 'follower'`) that proxies every call to the leader tab over a
  * BroadcastChannel (see `multi-tab.ts`). When the leader tab closes, its
@@ -181,7 +181,7 @@ export interface SyncClientHandleConfig {
   /** Shared by default; isolated derives the database/lock/channel tuple. */
   readonly replica?: BrowserReplicaMode;
   /**
-   * Multi-tab followers (work item 3.2). On by default: a tab that loses the
+   * Multi-tab followers. On by default: a tab that loses the
    * leader election becomes a FOLLOWER that proxies to the leader over a
    * BroadcastChannel, and contests + promotes when the leader closes. Set
    * false for the single-tab contract — the loser is a dead
@@ -318,7 +318,7 @@ export class SyncClientHandle {
     this.#diagnostics = internals.diagnostics;
     this.#roleListeners = internals.roleListeners ?? new Set();
     this.#leadershipListeners = internals.leadershipListeners ?? new Set();
-    // integration contract §3.2: console introspection — a no-op outside a dev page.
+    // Console introspection is a no-op outside a dev page.
     this.#devtoolsUnregister = registerDevtools({
       kind: 'handle',
       ref: this,
@@ -401,7 +401,7 @@ export class SyncClientHandle {
   }
 
   /**
-   * work item 3.1 / I1: subscribe to fine-grained invalidation — the identical
+   * Subscribe to fine-grained invalidation. The identical
    * surface as `SyncClient.onInvalidate`, so React bindings target one
    * interface across direct, worker-leader, and follower modes. Returns an
    * unsubscribe function.

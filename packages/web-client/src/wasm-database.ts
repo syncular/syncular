@@ -1,6 +1,6 @@
 /**
- * `ClientDatabase` on @sqlite.org/sqlite-wasm (Architecture choice 2,
- * 2026-07-03). Two modes, no ladder between them:
+ * `ClientDatabase` on @sqlite.org/sqlite-wasm. Two modes, no ladder between
+ * them:
  *
  * - `openPersistentWasmDatabase(name)` — THE persistent browser mode:
  *   OPFS via the `opfs-sahpool` VFS, restricted to Web Worker contexts
@@ -184,7 +184,7 @@ function initSqlite3(): Promise<Sqlite3Static> {
  * EXPLICIT ephemeral mode: an in-memory sqlite-wasm database. For tests,
  * demos and SSR only — nothing persists. The persistent mode is
  * `openPersistentWasmDatabase` inside a worker; there is no fallback from
- * one to the other (Architecture choice 2).
+ * one to the other.
  */
 export async function openWasmDatabase(): Promise<ClientDatabase> {
   const sqlite3 = await initSqlite3();
@@ -242,7 +242,7 @@ function opfsSahPoolError(error: unknown, directory: string): ClientSyncError {
  * `opfs-sahpool` VFS. Worker-context only — not because SAHPool requires
  * it (it uses `FileSystemSyncAccessHandle`, no `Atomics.wait`, and could
  * technically run on the main thread), but because the persistent mode IS
- * whole-core-in-a-worker (migration gate Architecture choice 2, 2026-07-03) and
+ * whole-core-in-a-worker and
  * this factory enforces that decision. No COOP/COEP headers required.
  *
  * Support floor: no OPFS → a loud `ClientSyncError`, never a fallback.

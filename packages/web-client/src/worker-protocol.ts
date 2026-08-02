@@ -1,5 +1,5 @@
 /**
- * The worker RPC protocol (Architecture choice 2, 2026-07-03): the whole
+ * The worker RPC protocol: the whole
  * client core runs in a Web Worker; the UI thread talks to it through
  * this thin, multiplexed postMessage protocol. Exactly SIX message types
  * (`init`, `call`, `ready`, `result`, `error`, `event`) — every logical
@@ -63,7 +63,7 @@ import type { WindowBase } from './window';
 // Client-local error codes (never wire codes; §10 stays server-owned)
 // ---------------------------------------------------------------------------
 
-/** The handle exists but this tab lost the leader election (work item 3.2). */
+/** The handle exists but this tab lost the leader election. */
 export const NOT_LEADER_CODE = 'client.not_leader';
 /** The worker (or its RPC channel) failed outside protocol semantics. */
 export const WORKER_FAILED_CODE = 'client.worker_failed';

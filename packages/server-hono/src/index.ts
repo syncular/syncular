@@ -1,5 +1,5 @@
 /**
- * Hono adapter (migration gate B2): a thin wrapper proving the embed boundary.
+ * Hono adapter: a thin wrapper proving the embed boundary.
  * Hono is a dependency of this adapter only, never of the server core.
  * Mounts the §1.1 routes: POST /sync and GET /segments/:segmentId
  * (realtime upgrades are runtime-specific and stay with the host).

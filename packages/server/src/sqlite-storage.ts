@@ -1,7 +1,7 @@
 /**
  * SQLite storage via `bun:sqlite` (dev-speed, dependency-free).
  *
- * Scope fanout is index-first (migration gate B2): both the commit log and the
+ * Scope fanout is index-first: both the commit log and the
  * current-row table carry a (table, variable, value) inverted index; reads
  * select candidates from the index and verify the full multi-variable
  * match against the stored scope map — never a log scan.
@@ -396,8 +396,8 @@ export class SqliteServerStorage implements ServerStorage {
   }
 
   /**
-   * Migration rewrite (implementation contract "optional materialization"): keyset-paged walk
-   * of a row table; when `oldLayout` is given every payload re-encodes under
+   * Migration rewrite: keyset-paged walk of a row table. When `oldLayout` is
+   * given every payload re-encodes under
    * the current columns, and the projection (when materialized) refreshes
    * from the payload either way.
    */
@@ -808,7 +808,7 @@ export class SqliteServerStorage implements ServerStorage {
     return rows.map((r) => r.blob_id);
   }
 
-  // -- admin/console read surface (work item §2.5) --------------------------------
+  // -- admin/console read surface --------------------------------------------
 
   async listClientRecords(partition: string): Promise<ClientRecord[]> {
     const records = this.db

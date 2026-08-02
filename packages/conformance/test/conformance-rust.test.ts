@@ -1,7 +1,7 @@
 /**
  * The Rust pairing: the SAME catalog on (Rust client × TS server), with
  * the ssp2 codec driving the golden-vector stage — the "two cores, one
- * written protocol" proof (migration gate stage 2).
+ * written protocol" proof.
  *
  * Hermetic by default: this file is inert unless SYNCULAR_RUST_CONFORMANCE=1
  * (which builds the shim via cargo if needed) or the shim binary already

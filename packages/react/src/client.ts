@@ -5,7 +5,7 @@
  * their public surfaces diverge (getters vs methods, sync vs promise), so
  * this module normalizes both into a single async-friendly facade the hooks
  * consume. That is the "one interface across direct and worker-handle modes"
- * the invalidation seam (work item 3.1) was standardized to enable.
+ * the invalidation seam enables.
  *
  * The normalizer resolves each accessor at call time (function → call it,
  * value → read it) and wraps every result in `Promise.resolve`, so a hook

@@ -1,5 +1,5 @@
 /**
- * The raw-query guard (query contract I3). `client.query()` / the React
+ * The raw-query guard. `client.query()` and the React
  * `useRawSql` hook are the untrusted raw-SQL tier: an app hands us a SQL
  * string and we run it against the local database. Two rules make that safe
  * to expose, enforced HERE in the core (previously they lived in the

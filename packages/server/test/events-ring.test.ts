@@ -1,6 +1,6 @@
 /**
  * Ring buffer semantics (cap, filter, ordering, clear) and sink composition
- * (fan-out + throwing-member isolation) — work item §2.5.
+ * (fan-out + throwing-member isolation).
  */
 import { describe, expect, test } from 'bun:test';
 import {

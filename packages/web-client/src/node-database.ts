@@ -1,6 +1,6 @@
 /**
  * `ClientDatabase` on better-sqlite3 — the Electron-main / plain-Node
- * backend (work item 2: Node ClientDatabase). Semantics mirror `./bun-database`
+ * backend. Semantics mirror `./bun-database`
  * exactly (synchronous exec/query/transaction with the shared savepoint
  * helper, and the same §5.3 sqlite-image ATTACH path), so the core behaves
  * identically whether it runs on bun:sqlite (tests), sqlite-wasm (browser)

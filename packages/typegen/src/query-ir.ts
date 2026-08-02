@@ -1,5 +1,5 @@
 /**
- * QueryIR serialization (query contract §1): the frontend-agnostic,
+ * QueryIR serialization: the frontend-agnostic,
  * deterministic JSON form of analyzed queries. This is the golden-fixture
  * format — equivalent inputs in any frontend (`.sql` today, `.syql` later)
  * must produce byte-identical IR JSON, the same trick the wire protocol

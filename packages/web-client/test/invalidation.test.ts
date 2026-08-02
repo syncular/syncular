@@ -1,6 +1,6 @@
 /**
- * The ONE apply-path invalidation choke point (work item 3.1 / implementation contract-eviction
- * I1–I4): every local mutation emits exactly one coalesced
+ * The one apply-path invalidation choke point: every local mutation emits
+ * exactly one coalesced
  * `{tables, scopeKeys}` event per apply batch, keyed by the §3.1 scope
  * vocabulary where the wire carries it. These tests assert the granularity
  * truth and the coalescing rule against the real loopback server — the
@@ -57,7 +57,7 @@ async function seededPair(): Promise<{
   return { server, a, b };
 }
 
-describe('invalidation choke point (work item 3.1)', () => {
+describe('invalidation choke point', () => {
   test('local mutate emits one event with the touched table + scope key', async () => {
     const { a } = await seededPair();
     const rec = record(a.client);

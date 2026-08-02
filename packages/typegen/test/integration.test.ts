@@ -1,5 +1,5 @@
 /**
- * Integration: the generated module drives the real B2 server through
+ * Integration: the generated module drives the real server through
  * bytes (loopback doctrine — no HTTP): construct a server with the
  * generated ServerSchema-compatible object, push one row, pull it back
  * via the generated subscription helper, decode it with the generated
@@ -63,7 +63,7 @@ async function sync(
   return message;
 }
 
-describe('generated schema against the B2 server', () => {
+describe('generated schema against the server', () => {
   test('push + pull one row through bytes', async () => {
     const ctx = makeContext();
     const tasks = schema.tables[0];

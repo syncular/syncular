@@ -1,7 +1,7 @@
 /**
  * The embedded sync server: the WHOLE Syncular server running in a Web
  * Worker, so the published demo is static files with zero backend. The
- * engine is runtime-neutral by design (work item §4.2); the one Bun-specific
+ * engine is runtime-neutral by design; the one Bun-specific
  * piece — storage — is covered by `D1ServerStorage`, which takes any
  * object with the D1 statement shape. sqlite-wasm wears that shape here
  * (the same trick as the test suite's d1-double, over the browser's

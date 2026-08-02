@@ -1,9 +1,8 @@
 # Realtime & the WebSocket-native loop
 
 Once connected, a client has one sync loop, and it runs over a WebSocket. The
-WebSocket loop is the only realtime transport: a
-[architecture choice](https://github.com/syncular/syncular/blob/main/docs/implementation history)
-to keep a single, well-tested path per concern.
+WebSocket loop is the only realtime transport, keeping one tested path for
+realtime sync.
 
 Normative detail: [SPEC.md §8](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#8-realtime).
 

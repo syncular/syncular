@@ -1,7 +1,7 @@
 # @syncular/typegen
 
 SQL migrations + one manifest → neutral schema IR (JSON) → generated TS
-module (migration gate B5). This file is the authoritative contract for the three
+module. This file is the authoritative contract for the three
 tool-level formats: the manifest, the IR, and the SQL subset. Wire-protocol
 semantics (column types, scope patterns, schema-version gating) live in
 [`../../docs/SPEC.md`](../../docs/SPEC.md) §2.4, §3.1, §1.5 — this document never
@@ -451,8 +451,8 @@ revision-1 structured frontend: authoritative typed inputs, explicit
 `when(...)` conjuncts, atomic optional groups, imported hygienic predicates,
 inferred scope dependencies, explicit sync coverage, complete sort profiles,
 bounded limits, and inferred identity. Its complete normative definition is
-[`../../docs/SYQL.md`](../../docs/SYQL.md); the rationale and implementation
-record are [`../../docs/SYQL.md`](../../docs/SYQL.md).
+[`../../docs/SYQL.md`](../../docs/SYQL.md). Both frontends produce the same
+deterministic QueryIR consumed by every language emitter.
 
 Tooling: `syncular generate --print <name>` prints every selected checked
 statement and bind, `syncular fmt` is the semantic-preserving canonical

@@ -1,4 +1,4 @@
-/** Cross-core revisioned observation contract observation vectors. These assert the local reactive
+/** Cross-core revisioned-observation vectors. These assert the local reactive
  * contract itself (revision, atomic snapshot, exact domains, and sync intent),
  * not just eventual server convergence. The same scenarios run on the TS and
  * Rust client cores through their real command surfaces. */
@@ -24,7 +24,7 @@ function requireObservation(client: ClientInstance) {
     client.drainChangeBatches === undefined ||
     client.drainSyncIntents === undefined
   ) {
-    throw new Error('client lacks the implementation contract 0003 observation surface');
+    throw new Error('client lacks the revisioned observation surface');
   }
   return {
     localRevision: client.localRevision.bind(client),
@@ -37,7 +37,7 @@ function requireObservation(client: ClientInstance) {
 export const observationScenarios: readonly Scenario[] = [
   {
     name: 'observation/optimistic-scope-move-and-atomic-snapshot',
-    specRefs: ['§7.5', 'revisioned observation contract'],
+    specRefs: ['§7.5'],
     async run(ctx) {
       const handle = await ctx.newClient({
         actorId: 'actor-a',
@@ -112,7 +112,7 @@ export const observationScenarios: readonly Scenario[] = [
   },
   {
     name: 'observation/zero-row-window-completion',
-    specRefs: ['§4.8', '§7.5', 'revisioned observation contract'],
+    specRefs: ['§4.8', '§7.5'],
     async run(ctx) {
       const handle = await ctx.newClient({
         actorId: 'actor-a',
@@ -165,7 +165,7 @@ export const observationScenarios: readonly Scenario[] = [
   },
   {
     name: 'observation/persistent-open-catch-up-intent',
-    specRefs: ['§7.5', '§8.4', 'revisioned observation contract'],
+    specRefs: ['§7.5', '§8.4'],
     async run(ctx) {
       const handle = await ctx.newClient({
         actorId: 'actor-a',
@@ -199,7 +199,7 @@ export const observationScenarios: readonly Scenario[] = [
   },
   {
     name: 'observation/remote-commit-exact-change',
-    specRefs: ['§4.5', '§7.5', 'revisioned observation contract'],
+    specRefs: ['§4.5', '§7.5'],
     async run(ctx) {
       const handle = await ctx.newClient({
         actorId: 'actor-a',
@@ -247,7 +247,7 @@ export const observationScenarios: readonly Scenario[] = [
   },
   {
     name: 'observation/window-shrink-and-rollback',
-    specRefs: ['§4.8', '§7.5', 'revisioned observation contract'],
+    specRefs: ['§4.8', '§7.5'],
     async run(ctx) {
       const handle = await ctx.newClient({
         actorId: 'actor-a',

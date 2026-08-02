@@ -1,6 +1,6 @@
 /**
- * `SyncularAdmin` — the operator-facing read surface over the server core
- * (work item §2.5). A read-only, partition-scoped, JSON-able query layer over
+ * `SyncularAdmin` is the operator-facing read surface over the server core.
+ * It is a read-only, partition-scoped, JSON-able query layer over
  * `ServerStorage`, the optional segment/blob store stats, and an in-memory
  * event ring. It delivers the 80% operator value (who's connected, what's
  * flowing, horizon health, the event tail) as a handful of queries in the
@@ -179,7 +179,7 @@ function percentile(sample: readonly number[], q: number): number {
 function required<T>(value: T | undefined, what: string): T {
   if (value === undefined) {
     throw new Error(
-      `SyncularAdmin: the configured ${what} does not implement this read (work item §2.5 optional method missing)`,
+      `SyncularAdmin: the configured ${what} does not implement this optional read`,
     );
   }
   return value;

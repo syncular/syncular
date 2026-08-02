@@ -1,5 +1,5 @@
 /**
- * Storage abstraction (migration gate B3): the client core runs on any SQLite that
+ * Storage abstraction: the client core runs on any SQLite that
  * implements this minimal synchronous surface. Tests use bun:sqlite
  * (`./bun-database`); browsers use sqlite-wasm + OPFS (`./wasm-database`).
  * Methods are synchronous because both backends execute synchronously once

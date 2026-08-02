@@ -134,7 +134,7 @@ const WORKLOAD = {
  *   and explicit one-way resolution. 95 KB restores the standing ~6%
  *   headroom over the shipped feature; the total-gzip payload gate remains
  *   unchanged. RAISED from 82 KB
- *   (2026-07-14, revisioned observation contract): revisioned reactive views added 5,677 raw
+ *   (2026-07-14): revisioned reactive views added 5,677 raw
  *   bytes / 1,853 gzip bytes (79,333 → 85,010 raw) for the durable local
  *   revision, exact change batches, atomic query/status snapshots, and
  *   core-owned sync intent. The module graph confirms no native/Tauri code
@@ -149,7 +149,7 @@ const WORKLOAD = {
  *   on purpose as the conservative tripwire). Legitimate growth (a
  *   shipped security feature), re-derived per the standing rule. RAISED
  *   from 66 KB
- *   (2026-07-04, implementation plan block 3 / implementation contract-eviction W1): windowed sync —
+ *   (2026-07-04, SPEC §4.8): windowed sync —
  *   the `window.ts` registry + the `setWindow`/`windowState`/eviction/
  *   pending-drain logic in `client.ts` and `evictScopedRows` in `apply.ts`
  *   (the differentiator, SPEC §4.8) — added +6.12 KB raw (62.98 → 69.10 KB)
@@ -159,7 +159,7 @@ const WORKLOAD = {
  *   compress away. 72 KB re-pins the raw line with working headroom above
  *   the shipped feature. This is legitimate growth (a shipped
  *   differentiator), not bloat — re-derived per the standing rule. Earlier
- *   raise, from 60 KB (2026-07-03, work item 3.1): the live-query invalidation
+ *   raise, from 60 KB (2026-07-03): the live-query invalidation
  *   choke point added +1.84 KB raw (61.14 → 62.98 KB) / +0.49 KB gzip.
  *   Note: `totalGzipCeilingBytes` is the shipped-size
  *   gate; own-JS raw is the anti-bloat tripwire, and the feature trips it by
@@ -338,7 +338,7 @@ async function measureBundle(): Promise<BundleResult> {
     target: 'browser',
     // The size gate measures syncular's TS source via the `bun` condition
     // (the published `browser` condition points at compiled dist and needs
-    // a `build:packages` first, integration contract §1.1).
+    // a `build:packages` first).
     conditions: ['bun'],
     minify: true,
     sourcemap: 'none',

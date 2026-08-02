@@ -1,5 +1,5 @@
 /**
- * Revisioned client-local observation events (SPEC §7.5 / revisioned observation contract).
+ * Revisioned client-local observation events (SPEC §7.5).
  *
  * The core records observer domains while it owns the SQLite transaction,
  * increments the persisted local revision in that same transaction, and emits

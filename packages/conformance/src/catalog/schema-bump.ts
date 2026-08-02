@@ -1,5 +1,5 @@
 /**
- * Schema-bump flow (SPEC.md §7.4; work item 3.3): NO client-side migration
+ * Schema-bump flow (SPEC.md §7.4): NO client-side migration
  * engine. On a schema version change the client keeps its (schema-agnostic)
  * outbox, wipes local tables, re-bootstraps at the new version, and replays.
  *

@@ -1,10 +1,10 @@
 /**
  * Minimal AWS Signature Version 4 — exactly the subset the S3 segment
  * store needs (header-signed requests and presigned GET URLs), hand-rolled
- * per the dependency-light doctrine (migration gate): SigV4 is small and
+ * per the dependency-light doctrine: SigV4 is small and
  * well-specified, so no SDK.
  *
- * Runtime-neutral (work item §4.2): the crypto primitives are Web Crypto
+ * Runtime-neutral: the crypto primitives are Web Crypto
  * (`crypto.subtle`), not `node:crypto`, so this module runs unchanged on
  * Cloudflare Workers / Deno / browsers as well as Bun/Node. `crypto.subtle`
  * is async, so signing is async throughout; the `S3SegmentStore` consumers

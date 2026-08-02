@@ -54,7 +54,7 @@ pub struct IndexIr {
     pub unique: bool,
 }
 
-/// One client-local contentful FTS5 projection (local search contract).
+/// One client-local contentful FTS5 projection.
 #[derive(Debug, Clone, Deserialize)]
 pub struct FtsIndexIr {
     pub name: String,

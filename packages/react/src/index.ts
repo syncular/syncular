@@ -1,6 +1,6 @@
 /**
  * @syncular/react — React bindings with fine-grained live queries
- * (work item 3.1 / implementation contract-eviction I1–I4). Works against BOTH `SyncClient`
+ * Works against BOTH `SyncClient`
  * (direct) and `SyncClientHandle` (worker) through one normalized client
  * interface. React 18+ (react is a peer dependency); no other runtime deps.
  *

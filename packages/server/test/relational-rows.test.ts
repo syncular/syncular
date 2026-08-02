@@ -1,5 +1,5 @@
 /**
- * Relational server storage (server storage contract).
+ * Relational server storage.
  *
  * What the generic blob store could never offer — and what these tests pin:
  *   1. the server database holds REAL app tables (`SELECT title FROM tasks`
@@ -736,7 +736,7 @@ describe('server-side schema migration (the subset)', () => {
 
 // --- optional materialization -------------------------------------------------
 
-describe('optional materialization (implementation contract "optional materialization")', () => {
+describe('optional materialization', () => {
   const bareSchema = (
     materialize: boolean | undefined,
     version = 1,
@@ -1046,7 +1046,7 @@ describe('IR→DDL', () => {
 
 // --- D1 bind-parameter cap ---------------------------------------------------
 
-describe('D1 bind-parameter cap (implementation contract "D1 bind-parameter limit")', () => {
+describe('D1 bind-parameter cap', () => {
   test('a table too wide for one D1 upsert fails fast at ensureSchema', async () => {
     const wide: ServerSchema = {
       version: 1,

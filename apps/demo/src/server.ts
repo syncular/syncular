@@ -1,10 +1,10 @@
 /**
- * B6 demo backend: one Bun process serving
- * - POST /sync + GET /segments/:id via the B2 server-hono adapter,
+ * Demo backend: one Bun process serving
+ * - POST /sync + GET /segments/:id via the server-hono adapter,
  * - GET /realtime as a WebSocket wired to the server's RealtimeHub,
  * - the static frontend: TWO bundles built with Bun.build at startup —
  *   /app.js (the page) and /worker.js (the sync worker running the whole
- *   client core on opfs-sahpool, Architecture choice 2). Module workers do
+ *   client core on opfs-sahpool). Module workers do
  *   not inherit the page's import map, so a build plugin rewrites the
  *   sqlite-wasm bare specifier to /vendor/sqlite-wasm/index.mjs in both
  *   bundles; the package files are served under /vendor/sqlite-wasm/.
@@ -12,7 +12,7 @@
  *   (it uses FileSystemSyncAccessHandle, not SharedArrayBuffer).
  *
  * Storage is bun:sqlite (in-memory by default; set SYNCULAR_DEMO_DB=path
- * for a file). The schema is the typegen-generated module (B5 dogfood).
+ * for a file). The schema is the typegen-generated module.
  */
 import { dirname, join } from 'node:path';
 import {
@@ -62,7 +62,7 @@ const blobs = new SqliteBlobStore();
 const resolveScopes = () => ({ list_id: ['*'] });
 
 /**
- * Ops events. The in-memory ring always feeds the admin console (work item §2.5);
+ * Ops events. The in-memory ring always feeds the admin console;
  * SYNCULAR_DEMO_EVENTS=1 additionally logs one JSON line per event. The two
  * sinks compose so the console tail and the log see the same emissions.
  */
@@ -77,7 +77,7 @@ const hub = createRealtimeHub({
   storage,
   resolveScopes,
   // §8.7: the socket carries sync rounds through the same handler and
-  // segment store as POST /sync (Architecture choice 1).
+  // segment store as POST /sync.
   segments,
   events,
 });
@@ -96,7 +96,7 @@ const hono = createSyncularHono({
 });
 
 /**
- * Admin console (work item §2.5), mounted behind a trivial dev guard: enabled
+ * Admin console, mounted behind a trivial dev guard: enabled
  * only with SYNCULAR_DEMO_ADMIN=1 and, when SYNCULAR_DEMO_ADMIN_TOKEN is
  * set, gated on a matching `?token=` / `Authorization: Bearer` — a stand-in
  * for the real host guard (never default-open). Reachable at /admin.
@@ -126,7 +126,7 @@ const adminHono = adminEnabled
     })()
   : undefined;
 
-/** Seed a few rows (integration contract §2.5 — the supported recipe: `seedMutations`
+/** Seed a few rows (the supported recipe: `seedMutations`
  * pushes app-shaped values through the real §6 pipeline, idempotent per
  * commit id). */
 async function seed(): Promise<void> {
@@ -166,7 +166,7 @@ const build = await Bun.build({
   target: 'browser',
   // Workspace packages resolve their `bun` condition (TS source), so the
   // dev loop never needs `build:packages` (the published `browser`
-  // condition points at compiled dist for external bundlers, integration contract §1.1).
+  // condition points at compiled dist for external bundlers).
   conditions: ['bun'],
   sourcemap: 'inline',
   external: ['@sqlite.org/sqlite-wasm'],

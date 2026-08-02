@@ -1,5 +1,5 @@
 /**
- * Worker-side bootstrap (Architecture choice 2): constructs the WHOLE
+ * Worker-side bootstrap: constructs the WHOLE
  * client core — SyncClient + transports + realtime + SQLite — inside the
  * worker and serves the `worker-protocol` RPC over postMessage.
  *

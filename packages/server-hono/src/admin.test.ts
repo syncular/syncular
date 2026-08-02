@@ -1,5 +1,5 @@
 /**
- * Admin HTTP routes (work item §2.5): auth-guard enforcement (mount refusal +
+ * Admin HTTP routes: auth-guard enforcement (mount refusal +
  * 401 path), JSON endpoints mirroring the read surface, and a smoke of the
  * static console page. Driven through Hono's in-process fetch dispatch (the
  * same allowance as index.test.ts — no socket).

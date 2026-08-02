@@ -1,5 +1,5 @@
 /**
- * LISTEN/NOTIFY multi-instance fanout (work item §4.1) — the primitive that lets
+ * LISTEN/NOTIFY multi-instance fanout lets
  * N server instances behind a load balancer wake each other's realtime
  * sessions when a commit lands on any one of them.
  *

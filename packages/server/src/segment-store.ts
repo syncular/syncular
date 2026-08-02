@@ -44,8 +44,8 @@ export interface SegmentFindKey {
 }
 
 /**
- * Coarse store-level counters for the admin/console read surface (work item
- * §2.5). Optional — a store that omits `stats()` simply cannot report them.
+ * Coarse store-level counters for the admin/console read surface. Optional:
+ * a store that omits `stats()` simply cannot report them.
  * All counts include expired-but-not-yet-evicted entries (the store's own
  * bytes on disk), split by media type.
  */
@@ -80,7 +80,7 @@ export interface SegmentStore {
    * rebuilding sqlite images while one exists (§5.3).
    */
   find(key: SegmentFindKey, nowMs: number): Promise<SegmentRecord | undefined>;
-  /** Admin/console counters (work item §2.5) — ADDITIVE, optional. */
+  /** Admin/console counters: ADDITIVE, optional. */
   stats?(): Promise<SegmentStoreStats>;
 }
 

@@ -6,7 +6,7 @@
  * + typed mutations + `useSyncStatus`.
  *
  * Two Bun.build bundles at startup: /app.js (the React page) and /worker.js
- * (the whole client core on opfs-sahpool, Architecture choice 2). Module
+ * (the whole client core on opfs-sahpool). Module
  * workers do not inherit the page's import map, so the sqlite-wasm bare
  * specifier is rewritten to /vendor/sqlite-wasm/ in both bundles.
  */
@@ -61,7 +61,7 @@ const hono = createSyncularHono({
   authenticate: async () => ({ actorId: ACTOR_ID, partition: PARTITION }),
 });
 
-/** Seed a few rows across the three lists (integration contract §2.5 — the supported
+/** Seed a few rows across the three lists (the supported
  * recipe: `seedMutations` pushes app-shaped values through the real §6
  * pipeline, idempotent per commit id). */
 async function seed(): Promise<void> {
@@ -71,7 +71,7 @@ async function seed(): Promise<void> {
     ['groceries', 'Milk, eggs, coffee'],
     ['groceries', 'Olive oil'],
     ['work', 'Ship the demo-react app'],
-    ['work', 'Review the query surface RFC'],
+    ['work', 'Review the query surface'],
     ['travel', 'Renew passport'],
   ];
   const mutations: SeedMutation[] = seeds.map(([list, title], index) => ({
@@ -104,7 +104,7 @@ const build = await Bun.build({
   target: 'browser',
   // Workspace packages resolve their `bun` condition (TS source), so the
   // dev loop never needs `build:packages` (the published `browser`
-  // condition points at compiled dist for external bundlers, integration contract §1.1).
+  // condition points at compiled dist for external bundlers).
   conditions: ['bun'],
   sourcemap: 'inline',
   external: ['@sqlite.org/sqlite-wasm'],

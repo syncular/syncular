@@ -108,8 +108,7 @@ Taken together: `apps/demo` covers the browser core loop, `apps/demo-react`
 covers the typed hook surface, and the native examples show that React web,
 Tauri, and React Native run identical hook code while Swift, Kotlin, and Dart
 mirror one wrapper surface over the same conformance-locked JSON command
-router. The full per-platform verification matrix is
-[demo guide](https://github.com/syncular/syncular/blob/main/docs/demo guide).
+router. Each example README contains its run and verification instructions.
 
 ## Where to go next
 

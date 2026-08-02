@@ -154,10 +154,9 @@ parsing or lowering the query. The Rust output additionally exposes typed
 ## Schema bumps and client upgrades
 
 When your schema changes, you bump `schemaVersions` in the manifest and
-regenerate. There is no client-side migration engine
-([architecture choice 3](https://github.com/syncular/syncular/blob/main/docs/implementation history),
-SPEC §7.4): a client does not transform its local tables from one version to
-the next. On a version change it keeps the outbox, wipes its local tables,
+regenerate. There is no client-side migration engine (SPEC §7.4): a client
+does not transform its local tables from one version to the next. On a version
+change it keeps the outbox, wipes its local tables,
 re-bootstraps at the new version, and replays the outbox on top. Bootstrap
 from a SQLite-image segment runs at millions of rows per second on the image
 lane, fast enough that drilling the bootstrap path on every upgrade costs

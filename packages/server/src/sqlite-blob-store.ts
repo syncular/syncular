@@ -3,7 +3,7 @@
  * dependency-free). Bun-specific by design (top-level `bun:sqlite` import),
  * so it lives in its own module — the runtime-neutral `BlobStore` interface,
  * `MemoryBlobStore`, `blobIdFor`, and `isBlobId` stay in `blob-store.ts` for
- * the Workers/edge core (work item §4.2 neutrality discipline; enforced by
+ * the Workers/edge core (runtime neutrality is enforced by
  * `test/runtime-neutrality.test.ts`).
  */
 import { Database } from 'bun:sqlite';

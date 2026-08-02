@@ -1,5 +1,5 @@
 /**
- * `@syncular/server-workers` — the Cloudflare Workers entry (work item §4.2).
+ * `@syncular/server-workers` — the Cloudflare Workers entry.
  *
  * This is deliberately thin. `createSyncularHono` (server-hono) is already
  * Workers-native: it routes with Hono (which runs unmodified on `workerd`)

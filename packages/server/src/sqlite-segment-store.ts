@@ -4,8 +4,8 @@
  * top level, so it lives in its own module — importing it opts into the Bun
  * runtime. The runtime-neutral `SegmentStore` interface, `MemorySegmentStore`,
  * and `segmentIdFor` stay in `segment-store.ts` so the Workers/edge core can
- * import them without pulling in `bun:sqlite` (work item §4.2 neutrality
- * discipline; enforced by `test/runtime-neutrality.test.ts`).
+ * import them without pulling in `bun:sqlite` (runtime neutrality is enforced
+ * by `test/runtime-neutrality.test.ts`).
  */
 import { Database } from 'bun:sqlite';
 import {

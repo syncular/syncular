@@ -3,7 +3,7 @@
  * dependency-free). Bun-specific by design (top-level `bun:sqlite` import),
  * so it lives in its own module — the runtime-neutral `LeaseStore` interface,
  * `LeaseRecord`, and `MemoryLeaseStore` stay in `lease-store.ts` for the
- * Workers/edge core (work item §4.2 neutrality discipline; enforced by
+ * Workers/edge core (runtime neutrality is enforced by
  * `test/runtime-neutrality.test.ts`).
  */
 import { Database } from 'bun:sqlite';

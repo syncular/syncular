@@ -1,5 +1,5 @@
 /**
- * Projection lowering (query contract §5): rewrite a query's top-level
+ * Projection lowering: rewrite a query's top-level
  * SELECT list so the runtime result keys ARE the language-facing names —
  * `select created_at from todos` lowers to
  * `select created_at as createdAt from todos` under camelCase naming, so

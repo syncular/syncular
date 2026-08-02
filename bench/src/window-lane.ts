@@ -1,5 +1,5 @@
 /**
- * §4.8 value-sharding proof (implementation contract-eviction W1 bench, cheap lane): a
+ * §4.8 value-sharding proof: a
  * window replace `{A,B}→{B,C}` must re-download ONLY C — the intersection
  * B is neither re-bootstrapped nor evicted. We prove it on segment
  * counters: after the replace, exactly C's rows are applied as bootstrap

@@ -1,6 +1,6 @@
 /**
  * The `sql` tagged template — the raw tier's composition helper
- * (query contract I4). Structural injection safety: an interpolated
+ * Structural injection safety: an interpolated
  * value can only ever become a `?` bind parameter; SQL text can only enter
  * through the literal template, `sql.ident()` (allowlist-gated) or a loud
  * `sql.raw()`. This helper is deliberately dumb plumbing and stays that
