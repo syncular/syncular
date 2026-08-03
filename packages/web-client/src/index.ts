@@ -11,6 +11,7 @@
 export * from './apply';
 export * from './availability';
 export * from './blob';
+export * from './browser-storage-persistence';
 export * from './client';
 export * from './content-type';
 export * from './database';

@@ -1,8 +1,21 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.44** (`v0.15.44`). All artifacts use Apache-2.0, except
+current release is **0.15.45** (`v0.15.45`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.45 release notes
+
+- `@syncular/client` adds `checkBrowserStoragePersistence()` and
+  `requestBrowserStoragePersistence()`. They report persistent or best-effort
+  storage without exposing browser exception text. Persistence requests remain
+  on the Window side, where applications can call them from a user action.
+- Browser guidance and the web create-app template now distinguish OPFS reload
+  persistence from origin eviction resistance. The template offers a
+  user-triggered `Protect offline data` action and warns while best-effort
+  storage contains pending outbox commits. The specification records that
+  whole-origin eviction removes OPFS and IndexedDB together, so a second
+  origin-local outbox would not protect unsynced writes.
 
 ## 0.15.44 release notes
 

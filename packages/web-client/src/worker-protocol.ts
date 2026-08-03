@@ -76,7 +76,7 @@ export const WORKER_RESTART_REQUIRED_CODE = 'client.worker_restart_required';
 
 export type WorkerDatabaseInit =
   | {
-      /** THE persistent mode: opfs-sahpool, named database. */
+      /** Reload-persistent OPFS mode; origin eviction policy stays page-owned. */
       readonly mode: 'persistent';
       readonly name: string;
       /** Optional pool directory override (default `.syncular/<name>`). */

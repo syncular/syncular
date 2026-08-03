@@ -17,6 +17,11 @@ Open the URL, add todos, toggle "Go offline" and keep editing — the outbox
 counter grows and drains with idempotent retry on reconnect. Open a second
 browser window on the same URL to watch them converge over the realtime socket.
 
+The page checks whether the origin has eviction-resistant storage and offers a
+`Protect offline data` action while it remains best effort. If permission is
+not granted, a non-empty outbox displays a warning because browser eviction can
+remove the OPFS database and its unsynced writes.
+
 `bun test` runs a server-level convergence smoke test (the browser UI is
 covered by `tsc`).
 

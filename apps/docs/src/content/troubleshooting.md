@@ -138,6 +138,20 @@ Do **not** wipe or rename the OPFS directory for this error: it may contain the
 healthy local replica and unsynced outbox. Missing/obsolete browser APIs use
 the separate, non-retryable `client.storage_unavailable` code.
 
+## Pending outbox on best-effort browser storage
+
+`openPersistentWasmDatabase` means the SQLite database survives ordinary
+reloads. Browser eviction resistance is a separate origin-level permission.
+Use `checkBrowserStoragePersistence()` at startup and call
+`requestBrowserStoragePersistence()` from a user action near the first
+important offline write. If the result remains `best-effort`, warn whenever
+the outbox is non-empty. Clearing or evicting the origin removes both the local
+rows and the pending outbox.
+
+Do not mirror the outbox into IndexedDB for this condition. IndexedDB and OPFS
+share the origin storage policy and are deleted together when the origin is
+evicted.
+
 ## Wiping OPFS for a clean test
 
 The persistent worker database lives in the origin's OPFS. To reset a dev

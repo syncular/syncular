@@ -2,7 +2,7 @@
  * `ClientDatabase` on @sqlite.org/sqlite-wasm. Two modes, no ladder between
  * them:
  *
- * - `openPersistentWasmDatabase(name)` — THE persistent browser mode:
+ * - `openPersistentWasmDatabase(name)` — THE reload-persistent browser mode:
  *   OPFS via the `opfs-sahpool` VFS, restricted to Web Worker contexts
  *   because the whole client core runs in a worker by design. SAHPool
  *   needs **no COOP/COEP headers and no SharedArrayBuffer** (it is built
@@ -10,7 +10,10 @@
  *   proxy — the COOP/COEP requirement documented by sqlite-wasm applies
  *   only to `oo1.OpfsDb`, which this binding no longer uses). Browsers
  *   without OPFS are unsupported (support floor ~2023+): the factory
- *   fails loud. Never IndexedDB, never a silent in-memory fallback.
+ *   fails loud. Never IndexedDB, never a silent in-memory fallback. The
+ *   browser's separate origin-eviction policy is exposed from the root package
+ *   by `checkBrowserStoragePersistence` and
+ *   `requestBrowserStoragePersistence`.
  * - `openWasmDatabase()` — EXPLICIT ephemeral: an in-memory database for
  *   tests, demos and SSR. Nothing survives a reload, on purpose.
  *
@@ -238,14 +241,16 @@ function opfsSahPoolError(error: unknown, directory: string): ClientSyncError {
 }
 
 /**
- * THE persistent browser mode: a named database on OPFS via the
+ * THE reload-persistent browser mode: a named database on OPFS via the
  * `opfs-sahpool` VFS. Worker-context only — not because SAHPool requires
  * it (it uses `FileSystemSyncAccessHandle`, no `Atomics.wait`, and could
  * technically run on the main thread), but because the persistent mode IS
  * whole-core-in-a-worker and
  * this factory enforces that decision. No COOP/COEP headers required.
  *
- * Support floor: no OPFS → a loud `ClientSyncError`, never a fallback.
+ * Support floor: no OPFS → a loud `ClientSyncError`, never a fallback. This
+ * factory cannot request eviction-resistant origin storage because that API
+ * belongs to the page's Window context.
  */
 export async function openPersistentWasmDatabase(
   name: string,

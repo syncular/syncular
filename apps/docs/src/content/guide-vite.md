@@ -72,7 +72,7 @@ const client = await createSyncClientHandle({
   worker: () =>
     new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }),
   schema,
-  database: { mode: 'persistent', name: 'app' }, // OPFS, survives reloads
+  database: { mode: 'persistent', name: 'app' }, // OPFS, survives reloads while the origin remains stored
   endpoints: {
     syncUrl: '/sync',
     segmentsUrl: '/segments',

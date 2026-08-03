@@ -11,6 +11,7 @@
     header h1 { font-size: 1.2rem; margin: 0; }
     .badge { font-size: 0.7rem; padding: 0.1rem 0.45rem; border-radius: 999px; border: 1px solid currentColor; opacity: 0.7; }
     #status { font-size: 0.8rem; opacity: 0.7; min-height: 1.1em; margin: 0 0 1rem; }
+    #storage-warning { font-size: 0.8rem; border: 1px solid currentColor; padding: 0.6rem; }
     form { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
     form input { flex: 1; padding: 0.4rem 0.6rem; }
     ul { list-style: none; margin: 0; padding: 0; }
@@ -24,9 +25,12 @@
   <header>
     <h1>__PROJECT_NAME__</h1>
     <span id="outbox" class="badge">outbox 0</span>
+    <span id="storage" class="badge">storage checking</span>
+    <button id="storage-btn" hidden>Protect offline data</button>
     <button id="offline-btn">Go offline</button>
   </header>
   <p id="status">starting…</p>
+  <p id="storage-warning" role="alert" hidden></p>
   <form id="add-form">
     <input id="add-input" placeholder="Add a todo…" autocomplete="off" />
     <button type="submit">Add</button>

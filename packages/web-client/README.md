@@ -33,7 +33,7 @@ import { createSyncClientHandle } from '@syncular/client';
 const handle = await createSyncClientHandle({
   worker: () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }),
   schema,
-  database: { mode: 'persistent', name: 'app' }, // OPFS, survives reloads
+  database: { mode: 'persistent', name: 'app' }, // OPFS, survives reloads while the origin remains stored
   endpoints: {
     syncUrl: '/sync',
     segmentsUrl: '/segments',
@@ -56,6 +56,25 @@ core per origin. Wake-ups are handled inside the worker (`autoSync`,
 SPEC §8.4); the supported page-level realtime supervisor owns reconnect and
 resume policy. The main thread gets `onSyncNeeded` / `onConflict` / `onSynced`
 events for rendering.
+
+OPFS is best effort until the browser grants origin persistence. The page owns
+that decision because `StorageManager.persist()` is a Window API and should be
+requested from a user action:
+
+```ts
+import {
+  checkBrowserStoragePersistence,
+  requestBrowserStoragePersistence,
+} from '@syncular/client';
+
+const current = await checkBrowserStoragePersistence();
+const requested = await requestBrowserStoragePersistence(); // user action
+```
+
+Each call returns `persistent` or a structured `best-effort` reason. Keep the
+client usable after denial, display the state, and warn whenever best-effort
+storage contains pending outbox commits. Origin eviction removes OPFS and its
+outbox together; persistence does not prevent a user from clearing site data.
 
 **Ephemeral in-memory mode is EXPLICIT.** `openWasmDatabase()` returns an
 in-memory sqlite-wasm database for tests, demos and SSR. Nothing
@@ -392,6 +411,9 @@ successful history may be dismissed. See SPEC §7.2.1.
   `FileSystemSyncAccessHandle`, unlike the Atomics-based `opfs` VFS).
 - Browsers without OPFS (~pre-2023) are **unsupported**:
   `openPersistentWasmDatabase` fails loud instead of degrading.
+- OPFS is reload-persistent but begins as best-effort origin storage. The root
+  package exports `checkBrowserStoragePersistence()` and
+  `requestBrowserStoragePersistence()` for the page-level persistence policy.
 - **Never IndexedDB.** There is no wa-sqlite/absurd-sql style fallback
   and none is planned.
 - `openPersistentWasmDatabase` refuses to run on the main thread — not a

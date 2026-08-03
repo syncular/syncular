@@ -2946,6 +2946,19 @@ materialized reverse-index/work-queue rows remain distinct mechanisms.
   (`applied`/`cached`) or been dropped; pending writes stay visible
   throughout.
 
+**Client storage durability boundary.** Durable in this section means that the
+outbox is transactionally persisted in the client's selected local store while
+that store exists. It does not protect against deletion of the whole local
+store by the user, operating system, or browser. Browser OPFS belongs to the
+origin's storage bucket, which is best effort by default and may be evicted
+under storage pressure. A browser binding MUST expose whether the origin is
+currently persistent and a Window-side operation that requests persistence.
+The recommended browser setup SHOULD request persistence from a user action
+near the first important offline write and MUST surface a best-effort result
+when pending outbox commits exist. A denied request leaves the database usable
+with best-effort durability. A second origin-local outbox store does not cover
+origin eviction and MUST NOT be presented as an eviction backup.
+
 ### 7.2 Replay and idempotent retry
 
 - After reconnect, the client replays the outbox from the oldest

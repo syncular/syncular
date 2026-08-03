@@ -14,11 +14,14 @@
  */
 import {
   browserConnectivitySignal,
+  type BrowserStoragePersistence,
+  checkBrowserStoragePersistence,
   ClientSyncError,
   createSyncClientHandle,
   documentLifecycleSignal,
   installRealtimeSupervisor,
   realtimeSupervisorSnapshot,
+  requestBrowserStoragePersistence,
   type SqlRow,
   subscribeRealtimeSupervisor,
 } from '@syncular/client';
@@ -39,6 +42,11 @@ interface Todo {
 const statusEl = document.getElementById('status') as HTMLElement;
 const listEl = document.getElementById('todos') as HTMLUListElement;
 const outboxEl = document.getElementById('outbox') as HTMLElement;
+const storageEl = document.getElementById('storage') as HTMLElement;
+const storageWarningEl = document.getElementById(
+  'storage-warning',
+) as HTMLElement;
+const storageBtn = document.getElementById('storage-btn') as HTMLButtonElement;
 const form = document.getElementById('add-form') as HTMLFormElement;
 const input = document.getElementById('add-input') as HTMLInputElement;
 const offlineBtn = document.getElementById('offline-btn') as HTMLButtonElement;
@@ -48,6 +56,8 @@ function setStatus(text: string): void {
 }
 
 async function main(): Promise<void> {
+  let storagePersistence: BrowserStoragePersistence =
+    await checkBrowserStoragePersistence();
   const handle = await createSyncClientHandle({
     worker: () => new Worker('/worker.js', { type: 'module' }),
     schema,
@@ -92,6 +102,13 @@ async function main(): Promise<void> {
   subscribeRealtimeSupervisor(handle, renderRealtimeStatus);
   renderRealtimeStatus();
   await refresh();
+
+  storageBtn.addEventListener('click', async () => {
+    storageBtn.disabled = true;
+    storagePersistence = await requestBrowserStoragePersistence();
+    storageBtn.disabled = false;
+    await refresh();
+  });
 
   let offline = false;
   offlineBtn.addEventListener('click', async () => {
@@ -142,6 +159,16 @@ async function main(): Promise<void> {
     )) as unknown as Todo[];
     const pending = (await handle.pendingCommits()).length;
     outboxEl.textContent = `outbox ${pending}`;
+    storageEl.textContent =
+      storagePersistence.state === 'persistent'
+        ? 'storage persistent'
+        : 'storage best effort';
+    storageBtn.hidden = storagePersistence.state === 'persistent';
+    storageWarningEl.hidden =
+      storagePersistence.state === 'persistent' || pending === 0;
+    storageWarningEl.textContent =
+      'Unsynced changes can disappear if the browser evicts this site. ' +
+      'Keep this tab open and reconnect, or protect offline data.';
     listEl.replaceChildren(...rows.map((row) => renderRow(row)));
 
     async function toggle(row: Todo): Promise<void> {

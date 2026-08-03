@@ -42,7 +42,7 @@ import { schema } from './syncular.generated';
 const handle = await createSyncClientHandle({
   worker: () => new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }),
   schema,
-  database: { mode: 'persistent', name: 'my-app' }, // OPFS, survives reloads
+  database: { mode: 'persistent', name: 'my-app' }, // OPFS, survives reloads while the origin remains stored
   endpoints: {
     syncUrl: '/sync',
     segmentsUrl: '/segments',
@@ -58,6 +58,42 @@ acquires the Web Locks leader lock before spawning the worker, so there is one
 core per origin. Wake-ups are handled inside the worker (with `autoSync` the worker
 IS the sync host); the main thread gets `onSyncNeeded` / `onConflict` /
 `onSynced` events for rendering.
+
+## Eviction-resistant storage
+
+OPFS survives ordinary reloads, but it uses the origin's best-effort storage
+bucket unless the browser grants persistence. Browser storage pressure may
+evict a best-effort origin, deleting the SQLite database and any pending
+outbox commits together.
+
+Check the state at startup. Request persistence from a user action near the
+first important offline write or when the user enables offline work:
+
+```ts
+import {
+  checkBrowserStoragePersistence,
+  requestBrowserStoragePersistence,
+} from '@syncular/client';
+
+let storagePersistence = await checkBrowserStoragePersistence();
+
+protectOfflineDataButton.addEventListener('click', async () => {
+  storagePersistence = await requestBrowserStoragePersistence();
+  renderStoragePersistence(storagePersistence);
+});
+```
+
+Both functions return `{ state: 'persistent' }` or a structured
+`{ state: 'best-effort', reason }` result. A denial is a valid browser policy
+decision, so the database remains available. Show a visible warning whenever
+the result is best effort and `pendingCommits()` is non-empty. Applications
+whose offline writes cannot accept that risk should disable offline mutation
+until persistence is granted.
+
+Persistence applies to the origin's storage as a whole. It reduces automatic
+eviction risk but cannot prevent a user from clearing site data. See the
+[browser persistence API](https://developer.mozilla.org/en-US/docs/Web/API/StorageManager/persist)
+and [storage eviction criteria](https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria).
 
 ## Reads & writes
 
@@ -153,7 +189,9 @@ Take the network away and keep calling `mutate`: the outbox accumulates
 and your local reads stay live. On reconnect, the next sync drains the outbox
 with [idempotent retry](/concepts-commits/); applied commits leave the outbox,
 conflicts and rejections surface. Nothing is lost across a schema upgrade: the
-outbox is schema-agnostic and re-encodes at send time.
+outbox is schema-agnostic and re-encodes at send time. Whole-origin deletion or
+eviction is outside that guarantee; use the persistence setup above and warn
+while best-effort storage holds pending commits.
 
 The [demo app](https://github.com/syncular/syncular/tree/main/apps/demo)
 exercises all of this live: two panes with offline toggles, a pending-commit
@@ -232,6 +270,10 @@ There is a single support floor and a single persistence path:
   `openPersistentWasmDatabase` throws immediately on them.
 - OPFS is the only persistence path. The client does not touch IndexedDB, and
   a wa-sqlite/absurd-sql style fallback is not planned.
+- OPFS starts in the origin's best-effort storage bucket. Use
+  `checkBrowserStoragePersistence()` and a user-triggered
+  `requestBrowserStoragePersistence()` call to establish and surface the
+  browser's durability decision.
 - A temporarily occupied SAH pool fails with retryable
   `client.storage_busy`; missing/obsolete OPFS APIs fail with non-retryable
   `client.storage_unavailable`. Never wipe a database merely because its live

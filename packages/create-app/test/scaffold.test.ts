@@ -119,6 +119,20 @@ for (const template of TEMPLATES) {
           '__PROJECT_NAME__',
         );
       }
+      if (template === 'web') {
+        const frontend = readFileSync(
+          join(target, 'src', 'frontend', 'main.ts'),
+          'utf8',
+        );
+        expect(frontend).toContain('checkBrowserStoragePersistence');
+        expect(frontend).toContain('requestBrowserStoragePersistence');
+        expect(frontend).toContain(
+          'Unsynced changes can disappear if the browser evicts this site.',
+        );
+        expect(readFileSync(indexHtml, 'utf8')).toContain(
+          'Protect offline data',
+        );
+      }
     });
 
     test('committed generated schema is fresh (generate --check)', () => {
