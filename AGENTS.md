@@ -160,18 +160,13 @@ installs Tauri's GTK/WebKit apt deps for the plugin's verify build. Runbook:
 
 ## Contributions
 
-External PRs are held to the same doctrine as maintainer work. AI assistance
-is welcome for tests, reproductions, benchmarks, docs, and production code.
-Review, understand, and iterate on everything you submit; you must be able
-to defend every line. Production code gets the strictest review. Low-effort
-machine-generated PRs, issues, and comments are closed without comment. The reader-facing version of this policy lives in
-`README.md`, `apps/docs/src/content/contributing.md`, and
+External PRs are held to the same doctrine as maintainer work. LLM assistance
+is welcome for tests, reproductions, benchmarks, tooling, docs, and production
+code. If a model drafted or rewrote code or prose that is still in an external
+pull request, mention that in the pull request description; routine completion
+and spelling help do not need a note. Review, understand, and iterate on
+everything you submit; you must be able to defend every line. Production code
+gets the strictest review. Low-effort machine-generated PRs, issues, and
+comments are closed without comment. The reader-facing version of this policy
+lives in `README.md`, `apps/docs/src/content/contributing.md`, and
 `apps/docs/src/content/llms.md`; keep them in agreement.
-
-## Consumer-side reference (maintainer-local)
-
-A real two-engine integration (web worker+OPFS and Tauri native behind one
-`SyncClientLike` seam) lives in the Diego monorepo at `../mono/ui-poc`; it
-is the fastest place to smoke-test a change against a living app
-(`bun run server` + `bun run dev` there; see its README). The
-path only exists on maintainer machines; skip this section if it is absent.
