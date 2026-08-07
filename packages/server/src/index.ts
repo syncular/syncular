@@ -8,6 +8,7 @@
  * handler (§5.5), and signed-URL token issuance/verification (§5.4).
  */
 export * from './admin';
+export * from './authoritative-query';
 export * from './blob-handlers';
 export * from './blob-store';
 export * from './content-encoding';
@@ -20,6 +21,8 @@ export * from './events-ring';
 export * from './frame-bytes';
 export * from './handler';
 export * from './lease-store';
+export * from './operations';
+export * from './operations-realtime';
 // The `PgExecutor` seam + Postgres storage/fanout are driver-agnostic (zero
 // runtime deps). Concrete driver adapters (pglite for tests; Bun.sql /
 // node-postgres for production, documented in the README) live in separate

@@ -57,6 +57,9 @@ export const nav: readonly NavSection[] = [
     title: 'Server',
     items: [
       { slug: 'guide-server', title: 'Server setup' },
+      { slug: 'guide-headless-clients', title: 'Headless Node & Bun clients' },
+      { slug: 'guide-remote-operations', title: 'Remote server operations' },
+      { slug: 'guide-domain-events', title: 'Domain actions & event rows' },
       { slug: 'server-reactions', title: 'Durable reactions' },
       { slug: 'server-storage', title: 'Storage backends' },
       { slug: 'server-workers', title: 'Cloudflare Workers' },

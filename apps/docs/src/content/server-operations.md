@@ -4,6 +4,11 @@ Day-two concerns for a running sync server: the structured-events hook,
 the admin console, commit-log pruning, reaction retention, blob GC, and the
 load-test suite. Everything here is host-scheduled and opt-in.
 
+Application-level domain actions use immutable
+[domain event rows](/guide-domain-events/). Registered application queries and
+commands use [remote server operations](/guide-remote-operations/).
+`SyncularServerEvents` below remains operational telemetry.
+
 ## Structured events
 
 One optional interface, `SyncularServerEvents`, carries every
@@ -214,3 +219,7 @@ event stream, that segment *reuse* beats *build* under a storm. Full docs in
   the policies pruning and GC interact with.
 - [Cloudflare Workers](/server-workers/): running the sweep from a cron
   trigger.
+- [Domain actions and event rows](/guide-domain-events/): durable application
+  intent stored with domain writes.
+- [Remote server operations](/guide-remote-operations/): database-less typed
+  queries, commands, and live watches.

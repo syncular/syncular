@@ -1,8 +1,8 @@
 /**
  * Hono adapter: a thin wrapper proving the embed boundary.
  * Hono is a dependency of this adapter only, never of the server core.
- * Mounts the §1.1 routes: POST /sync and GET /segments/:segmentId
- * (realtime upgrades are runtime-specific and stay with the host).
+ * Mounts the §1.1 routes including sync, registered operations, segments, and
+ * blobs. Realtime upgrades are runtime-specific and stay with the host.
  */
 import {
   encodeSegmentBody,
@@ -11,6 +11,8 @@ import {
   handleBlobUpload,
   handleBlobUploadGrant,
   handleSegmentDownload,
+  handleRemoteOperation,
+  type RemoteOperationRegistry,
   handleSyncRequest,
   SSP2_CONTENT_TYPE,
   SyncError,
@@ -22,6 +24,7 @@ export * from './admin';
 
 export interface SyncularHonoOptions {
   readonly config: SyncServerConfig;
+  readonly operations?: RemoteOperationRegistry;
   /** Host authentication (§1.1); `null` ⇒ 401 `sync.auth_required`. */
   readonly authenticate: (
     request: Request,
@@ -65,6 +68,28 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
     } catch (error) {
       return errorResponse(error);
     }
+  });
+
+  app.post('/operations', async (c) => {
+    if (options.operations === undefined) {
+      return errorResponse(new SyncError('operation.unknown'));
+    }
+    const contentType = c.req.header('content-type')?.split(';')[0]?.trim();
+    if (contentType !== 'application/vnd.syncular.operations.v1+json') {
+      return errorResponse(new SyncError('operation.invalid_request'));
+    }
+    const auth = await options.authenticate(c.req.raw);
+    if (auth === null)
+      return errorResponse(new SyncError('sync.auth_required'));
+    const bytes = new Uint8Array(await c.req.arrayBuffer());
+    const out = await handleRemoteOperation(
+      bytes,
+      { ...options.config, ...auth },
+      options.operations,
+    );
+    return c.body(out.slice().buffer as ArrayBuffer, 200, {
+      'Content-Type': 'application/vnd.syncular.operations.v1+json',
+    });
   });
 
   app.get('/segments/:segmentId', async (c) => {

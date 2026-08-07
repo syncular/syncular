@@ -15,6 +15,9 @@ checked by the server when it syncs.
 The browser client runs SQLite on OPFS. Native integrations share the Rust core
 and native SQLite across Rust, Swift, Kotlin, Flutter, React Native, and Tauri.
 Servers run on Bun, Node, or Cloudflare Workers with SQLite, Postgres, or D1.
+Backend processes can run the same SQLite client headlessly, or use the
+database-less remote client for push-only commits and registered server
+operations.
 
 **[Documentation](https://syncular.dev)** ·
 [Quickstart](https://syncular.dev/quickstart/) ·
@@ -43,7 +46,8 @@ can still change before 1.0. Changes are recorded in
 
 ## How behavior is checked
 
-[`docs/SPEC.md`](docs/SPEC.md) defines the wire protocol, and
+[`docs/SPEC.md`](docs/SPEC.md) defines the sync wire protocol,
+[`docs/REMOTE.md`](docs/REMOTE.md) defines registered remote operations, and
 [`spec/vectors/`](spec/vectors) contains its byte-level fixtures. The
 TypeScript and Rust cores run the same implementation-independent conformance
 catalog. A behavior change that affects both cores has to update the spec and

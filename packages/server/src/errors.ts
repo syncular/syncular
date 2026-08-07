@@ -14,8 +14,44 @@ export interface ErrorCatalogEntry {
   readonly httpStatus: number;
 }
 
-/** The §10.2 wire catalog (21 sync.* + 4 blob.* codes), keyed by stable code. */
+/** The §10.2 wire catalog, keyed by stable code. */
 export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
+  'operation.unknown': {
+    category: 'not-found',
+    retryable: false,
+    recommendedAction: 'regenerateClient',
+    httpStatus: 404,
+  },
+  'operation.forbidden': {
+    category: 'forbidden',
+    retryable: false,
+    recommendedAction: 'checkPermissions',
+    httpStatus: 403,
+  },
+  'operation.invalid_request': {
+    category: 'invalid-request',
+    retryable: false,
+    recommendedAction: 'fixRequest',
+    httpStatus: 400,
+  },
+  'operation.result_too_large': {
+    category: 'invalid-request',
+    retryable: false,
+    recommendedAction: 'fixRequest',
+    httpStatus: 400,
+  },
+  'operation.storage_unsupported': {
+    category: 'internal',
+    retryable: false,
+    recommendedAction: 'inspectServer',
+    httpStatus: 500,
+  },
+  'operation.query_failed': {
+    category: 'internal',
+    retryable: false,
+    recommendedAction: 'inspectServer',
+    httpStatus: 500,
+  },
   'sync.auth_required': {
     category: 'auth-required',
     retryable: true,

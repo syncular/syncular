@@ -260,6 +260,29 @@ export interface ScopeActivityQuery {
   readonly limit: number;
 }
 
+/** A registered SELECT executed against the authoritative row projection. */
+export type AuthoritativeQueryValue =
+  | string
+  | number
+  | bigint
+  | boolean
+  | Uint8Array
+  | null;
+
+export interface AuthoritativeQueryRequest {
+  /** Generated, positional SQLite-family SQL. It never comes from the request. */
+  readonly sql: string;
+  readonly params: readonly AuthoritativeQueryValue[];
+  /** Generated dependency set, used to validate and partition every relation. */
+  readonly tables: readonly string[];
+}
+
+/** One transactionally consistent authoritative query snapshot. */
+export interface AuthoritativeQueryResult {
+  readonly rows: readonly Readonly<Record<string, unknown>>[];
+  readonly maxCommitSeq: number;
+}
+
 /**
  * One transaction per push commit (§6.4): all row writes, the appended
  * commit (with its scope-index entries), and the idempotency record either
@@ -467,6 +490,16 @@ export interface ServerStorage {
 
   /** Scope-filtered snapshot scan, ordered by rowId (bootstrap paging). */
   scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]>;
+
+  /**
+   * Optional registered-query capability. The implementation MUST replace
+   * every generated app-table relation with a partition-filtered relation and
+   * return rows plus maxCommitSeq from one consistent database snapshot.
+   */
+  queryAuthoritative?(
+    partition: string,
+    query: AuthoritativeQueryRequest,
+  ): Promise<AuthoritativeQueryResult>;
 
   /**
    * Optional trusted-host exact lookup through a declared relational index.

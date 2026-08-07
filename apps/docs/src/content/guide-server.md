@@ -1,5 +1,11 @@
 # Server setup
 
+Looking for a server client or background worker? Use the normal
+[`SyncClient` headlessly](/guide-headless-clients/) when the process needs a
+local SQLite read model. Use [`SyncRemoteClient`](/guide-remote-operations/)
+when it needs database-less commits, predefined authoritative queries, or
+commands.
+
 The server is a framework-free protocol library:
 `handleSyncRequest(bytes, ctx) → bytes` over host-provided storage,
 scope-resolution, and segment/blob-store interfaces. A thin Hono adapter

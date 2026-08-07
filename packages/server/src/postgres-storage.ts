@@ -36,6 +36,11 @@
  * does not tolerate). Cross-partition pushes never contend.
  */
 import type { PushOperationResult } from '@syncular/core';
+import {
+  bindAuthoritativePartition,
+  postgresPlaceholders,
+  prepareAuthoritativeQuery,
+} from './authoritative-query';
 import { syncError } from './errors';
 import {
   asBytes,
@@ -68,6 +73,8 @@ import {
 import type { CompiledSchema, CompiledTable } from './schema';
 import { matchesEffective } from './scopes';
 import type {
+  AuthoritativeQueryRequest,
+  AuthoritativeQueryResult,
   ClientCursorInfo,
   ClientRecord,
   ClientSubscription,
@@ -1038,6 +1045,46 @@ export class PostgresServerStorage implements ServerStorage {
       [partition],
     );
     return rows[0] === undefined ? 0 : asNumber(rows[0].max_commit_seq);
+  }
+
+  async queryAuthoritative(
+    partition: string,
+    query: AuthoritativeQueryRequest,
+  ): Promise<AuthoritativeQueryResult> {
+    if (this.#tables === undefined) {
+      throw new Error(
+        'ensureSchema(schema) must run before registered queries',
+      );
+    }
+    const prepared = bindAuthoritativePartition(
+      prepareAuthoritativeQuery(
+        query.sql,
+        query.params,
+        query.tables,
+        this.#tables,
+      ),
+      partition,
+    );
+    return this.#exec.transaction(async (client) => {
+      await client.query(
+        'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY',
+      );
+      const result = await client.query<Readonly<Record<string, unknown>>>(
+        postgresPlaceholders(prepared.sql),
+        prepared.params,
+      );
+      const cursor = await client.query<{ max_commit_seq: unknown }>(
+        'SELECT max_commit_seq FROM sync_partitions WHERE partition=$1',
+        [partition],
+      );
+      return {
+        rows: result.rows,
+        maxCommitSeq:
+          cursor.rows[0] === undefined
+            ? 0
+            : asNumber(cursor.rows[0].max_commit_seq),
+      };
+    });
   }
 
   async getHorizonSeq(partition: string): Promise<number> {

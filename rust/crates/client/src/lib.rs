@@ -23,6 +23,7 @@ pub mod crdt;
 pub mod native_transport;
 pub mod query_guard;
 pub mod realtime_round;
+pub mod remote;
 pub mod schema;
 pub mod transport;
 pub mod values;
@@ -49,4 +50,8 @@ pub use transport::{BlobDownload, BlobUploadGrant, SegmentRequest, Transport, Tr
 // native transports (FFI + Tauri plugin) reach it through their existing
 // `syncular-client` dependency, without each adding a direct `ssp2` path dep.
 pub use realtime_round::{RealtimeRound, RoundInbound, REALTIME_TAG_DELTA, REALTIME_TAG_ROUND};
+pub use remote::{
+    PreparedRemoteCommit, RemoteBytes, RemoteClientError, RemoteCommandResult, RemoteCommitInput,
+    RemoteCommitResult, RemoteQueryResult, SyncRemoteClient,
+};
 pub use ssp2::{MessageStreamScanner, ScannedMessage};

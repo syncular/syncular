@@ -210,6 +210,16 @@ describe('error catalog (§10.2)', () => {
       retryable: true,
       recommendedAction: 'refreshAuth',
     });
-    expect(Object.keys(ERROR_CATALOG)).toHaveLength(28);
+    expect(ERROR_CATALOG['operation.forbidden']).toMatchObject({
+      category: 'forbidden',
+      retryable: false,
+      recommendedAction: 'checkPermissions',
+    });
+    expect(ERROR_CATALOG['operation.query_failed']).toMatchObject({
+      category: 'internal',
+      retryable: false,
+      recommendedAction: 'inspectServer',
+    });
+    expect(Object.keys(ERROR_CATALOG)).toHaveLength(34);
   });
 });

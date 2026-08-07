@@ -17,6 +17,7 @@ export * from './message';
 export * from './realtime';
 export * from './rejection-details';
 export * from './relational-identifier';
+export * from './remote-operations';
 export * from './render';
 export * from './row-codec';
 export * from './segment';

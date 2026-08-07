@@ -844,13 +844,38 @@ export async function processPushCommitWithTrace(
   clientId: string,
   frame: PushCommitFrame,
 ): Promise<ProcessedPushCommit> {
+  return processPushOperationsWithTrace(
+    ctx,
+    schema,
+    resolved,
+    clientId,
+    frame.clientCommitId,
+    async () => frame.operations,
+  );
+}
+
+/**
+ * Shared serialized apply path for SSP2 commits and authoritative commands.
+ * The builder runs after the partition lock and idempotency re-check, so its
+ * reads and the returned operations share the transaction that is committed.
+ */
+export async function processPushOperationsWithTrace(
+  ctx: SyncRequestContext,
+  schema: CompiledSchema,
+  resolved: ResolvedScopes,
+  clientId: string,
+  clientCommitId: string,
+  buildOperations: (
+    tx: StorageTransaction,
+  ) => Promise<readonly PushOperation[]>,
+): Promise<ProcessedPushCommit> {
   const { storage, partition } = ctx;
   let persisted: StoredPushResult | undefined;
   try {
     persisted = await storage.getPushResult(
       partition,
       clientId,
-      frame.clientCommitId,
+      clientCommitId,
     );
   } catch (error) {
     if (
@@ -860,14 +885,14 @@ export async function processPushCommitWithTrace(
       // §6.3: answer the retryable cache-miss for this commit rather than
       // re-applying. Not persisted — a retry may find a readable record.
       return {
-        frame: idempotencyCacheMissFrame(frame.clientCommitId, error),
+        frame: idempotencyCacheMissFrame(clientCommitId, error),
         replayed: false,
       };
     }
     throw error;
   }
   if (persisted !== undefined) {
-    return processedPushCommit(frame.clientCommitId, persisted, true);
+    return processedPushCommit(clientCommitId, persisted, true);
   }
 
   const createdAtMs = clockOf(ctx)();
@@ -903,19 +928,11 @@ export async function processPushCommitWithTrace(
     try {
       const serializedPersisted =
         tx.getPushResult !== undefined
-          ? await tx.getPushResult(clientId, frame.clientCommitId)
-          : await storage.getPushResult(
-              partition,
-              clientId,
-              frame.clientCommitId,
-            );
+          ? await tx.getPushResult(clientId, clientCommitId)
+          : await storage.getPushResult(partition, clientId, clientCommitId);
       if (serializedPersisted !== undefined) {
         await tx.rollback();
-        return processedPushCommit(
-          frame.clientCommitId,
-          serializedPersisted,
-          true,
-        );
+        return processedPushCommit(clientCommitId, serializedPersisted, true);
       }
     } catch (error) {
       if (
@@ -924,7 +941,7 @@ export async function processPushCommitWithTrace(
       ) {
         await tx.rollback();
         return {
-          frame: idempotencyCacheMissFrame(frame.clientCommitId, error),
+          frame: idempotencyCacheMissFrame(clientCommitId, error),
           replayed: false,
         };
       }
@@ -934,8 +951,9 @@ export async function processPushCommitWithTrace(
     const changes: NewChange[] = [];
     const validatedOperations: ValidateCommitOperation[] = [];
     let terminated: PushOperationResult | undefined;
-    for (let opIndex = 0; opIndex < frame.operations.length; opIndex++) {
-      const op = frame.operations[opIndex];
+    const operations = await buildOperations(tx);
+    for (let opIndex = 0; opIndex < operations.length; opIndex++) {
+      const op = operations[opIndex];
       if (op === undefined) continue;
       const outcome = await applyOperation(
         tx,
@@ -964,7 +982,7 @@ export async function processPushCommitWithTrace(
         tx,
         schema,
         clientId,
-        frame.clientCommitId,
+        clientCommitId,
         ctx.actorId,
         partition,
         validatedOperations,
@@ -978,7 +996,7 @@ export async function processPushCommitWithTrace(
     if (terminated === undefined && reactionPlanner !== undefined) {
       preparedReactions = await prepareReactions(reactionPlanner, {
         clientId,
-        clientCommitId: frame.clientCommitId,
+        clientCommitId,
         actorId: ctx.actorId,
         partition,
         operations: validatedOperations,
@@ -995,11 +1013,11 @@ export async function processPushCommitWithTrace(
       });
       // Discard candidates and persist the rejection while retaining the same
       // partition lock. There is no unlock gap in which a duplicate can rerun.
-      await commitRejectedPushResult(clientId, frame.clientCommitId, stored);
+      await commitRejectedPushResult(clientId, clientCommitId, stored);
       const canonical = await storage.getPushResult(
         partition,
         clientId,
-        frame.clientCommitId,
+        clientCommitId,
       );
       if (canonical === undefined) {
         throw new Error(
@@ -1007,7 +1025,7 @@ export async function processPushCommitWithTrace(
         );
       }
       return processedPushCommit(
-        frame.clientCommitId,
+        clientCommitId,
         canonical,
         canonical.cacheIdentity !== stored.cacheIdentity,
       );
@@ -1015,14 +1033,14 @@ export async function processPushCommitWithTrace(
 
     const commitSeq = await tx.appendCommit({
       clientId,
-      clientCommitId: frame.clientCommitId,
+      clientCommitId,
       actorId: ctx.actorId,
       createdAtMs,
       changes,
     });
     const newReactions = toNewReactions(preparedReactions, {
       clientId,
-      clientCommitId: frame.clientCommitId,
+      clientCommitId,
       commitSeq,
       createdAtMs,
     });
@@ -1038,7 +1056,7 @@ export async function processPushCommitWithTrace(
       commitSeq,
       results,
     });
-    await tx.putPushResult(clientId, frame.clientCommitId, stored);
+    await tx.putPushResult(clientId, clientCommitId, stored);
     await tx.commit();
     if (ctx.events !== undefined) {
       const atMs = clockOf(ctx)();
@@ -1049,7 +1067,7 @@ export async function processPushCommitWithTrace(
           partition,
           actorId: ctx.actorId,
           clientId,
-          clientCommitId: frame.clientCommitId,
+          clientCommitId,
           commitSeq,
           idempotencyKey: reaction.idempotencyKey,
           reactionType: reaction.type,
@@ -1065,7 +1083,7 @@ export async function processPushCommitWithTrace(
         changes,
       });
     }
-    return processedPushCommit(frame.clientCommitId, stored, false);
+    return processedPushCommit(clientCommitId, stored, false);
   } catch (error) {
     if (error instanceof StorageConstraintError) {
       const stored = newStoredPushResult(createdAtMs, {
@@ -1087,11 +1105,11 @@ export async function processPushCommitWithTrace(
         );
       }
       try {
-        await commitRejectedPushResult(clientId, frame.clientCommitId, stored);
+        await commitRejectedPushResult(clientId, clientCommitId, stored);
         const canonical = await storage.getPushResult(
           partition,
           clientId,
-          frame.clientCommitId,
+          clientCommitId,
         );
         if (canonical === undefined) {
           throw new Error(
@@ -1099,7 +1117,7 @@ export async function processPushCommitWithTrace(
           );
         }
         return processedPushCommit(
-          frame.clientCommitId,
+          clientCommitId,
           canonical,
           canonical.cacheIdentity !== stored.cacheIdentity,
         );

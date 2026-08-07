@@ -7,6 +7,10 @@
  * match against the stored scope map — never a log scan.
  */
 import { Database } from 'bun:sqlite';
+import {
+  bindAuthoritativePartition,
+  prepareAuthoritativeQuery,
+} from './authoritative-query';
 import { syncError } from './errors';
 import {
   commitWindowPageSql,
@@ -42,6 +46,9 @@ import {
   toStoredRow,
 } from './sqlite-dialect';
 import type {
+  AuthoritativeQueryRequest,
+  AuthoritativeQueryResult,
+  AuthoritativeQueryValue,
   ClientCursorInfo,
   ClientRecord,
   ClientSubscription,
@@ -590,6 +597,55 @@ export class SqliteServerStorage implements ServerStorage {
       )
       .get(partition);
     return row?.max_commit_seq ?? 0;
+  }
+
+  async queryAuthoritative(
+    partition: string,
+    query: AuthoritativeQueryRequest,
+  ): Promise<AuthoritativeQueryResult> {
+    if (this.#tables === undefined) {
+      throw new Error(
+        'ensureSchema(schema) must run before registered queries',
+      );
+    }
+    const prepared = bindAuthoritativePartition(
+      prepareAuthoritativeQuery(
+        query.sql,
+        query.params,
+        query.tables,
+        this.#tables,
+      ),
+      partition,
+    );
+    const previous = this.#transactionTail;
+    let release!: () => void;
+    this.#transactionTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    let open = false;
+    try {
+      this.db.exec('BEGIN');
+      open = true;
+      const rows = this.db
+        .query<Readonly<Record<string, unknown>>, AuthoritativeQueryValue[]>(
+          prepared.sql,
+        )
+        .all(...prepared.params);
+      const cursor = this.db
+        .query<{ max_commit_seq: number }, [string]>(
+          'SELECT max_commit_seq FROM sync_partitions WHERE partition=?',
+        )
+        .get(partition);
+      this.db.exec('COMMIT');
+      open = false;
+      return { rows, maxCommitSeq: cursor?.max_commit_seq ?? 0 };
+    } catch (error) {
+      if (open) this.db.exec('ROLLBACK');
+      throw error;
+    } finally {
+      release();
+    }
   }
 
   async getHorizonSeq(partition: string): Promise<number> {

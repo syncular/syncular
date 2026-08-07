@@ -8,6 +8,25 @@
 /** One combined push+pull round trip: SSP2 request bytes → response bytes. */
 export type SyncTransport = (request: Uint8Array) => Promise<Uint8Array>;
 
+/** One registered authoritative query or command request. */
+export type RemoteOperationTransport = (
+  request: Uint8Array,
+) => Promise<Uint8Array>;
+
+export interface RemoteOperationRealtimeHandlers {
+  onMessage(bytes: Uint8Array): void;
+  onClose?(): void;
+}
+
+export interface RemoteOperationRealtimeSocket {
+  send(bytes: Uint8Array): void;
+  close(): void;
+}
+
+export type RemoteOperationRealtimeConnector = (
+  handlers: RemoteOperationRealtimeHandlers,
+) => RemoteOperationRealtimeSocket | Promise<RemoteOperationRealtimeSocket>;
+
 export interface SegmentFetchRequest {
   readonly segmentId: string;
   readonly table: string;

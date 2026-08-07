@@ -71,6 +71,7 @@ export interface NamedQuery<Row, Params = undefined> {
   readonly sql: string;
   readonly mapRow: (row: Readonly<Record<string, unknown>>) => Row;
   readonly tables: readonly string[];
+  readonly resultColumns: readonly QueryResultColumn[];
   readonly bind: (params: Params) => readonly QueryValue[];
   readonly sqlFor?: (params: Params) => string;
   readonly dependencies: (params: Params) => readonly QueryDependency[];
@@ -83,6 +84,12 @@ export interface NamedQuery<Row, Params = undefined> {
 export interface QueryDependency {
   readonly table: string;
   readonly scopeKeys?: readonly string[];
+}
+
+export interface QueryResultColumn {
+  readonly name: string;
+  readonly type: 'string' | 'integer' | 'float' | 'boolean' | 'json' | 'bytes' | 'blob_ref' | 'crdt';
+  readonly nullable: boolean;
 }
 
 export interface WindowCoverage {
@@ -129,6 +136,7 @@ export const booleanResultsQuery: NamedQuery<BooleanResultsRow, undefined> = {
   sql: booleanResultsSql,
   mapRow: booleanResultsMapRow,
   tables: booleanResultsTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'isDone', type: 'boolean', nullable: false }, { name: 'maybeDone', type: 'boolean', nullable: true }],
   dependencies: () => [
     { table: 'docs' },
     { table: 'tasks' },
@@ -172,6 +180,7 @@ export const findDocByOrgQuery: NamedQuery<FindDocByOrgRow, FindDocByOrgParams> 
   sql: findDocByOrgSql,
   mapRow: findDocByOrgMapRow,
   tables: findDocByOrgTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'body', type: 'string', nullable: false }],
   dependencies: (params) => [
     { table: 'docs', scopeKeys: ['org:' + String(params.orgId) + ''] },
   ],
@@ -217,6 +226,7 @@ export const docValueTypesQuery: NamedQuery<DocValueTypesRow, DocValueTypesParam
   sql: docValueTypesSql,
   mapRow: docValueTypesMapRow,
   tables: docValueTypesTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'attachment', type: 'bytes', nullable: true }, { name: 'bodyDoc', type: 'crdt', nullable: true }, { name: 'remoteBlob', type: 'blob_ref', nullable: true }],
   dependencies: () => [
     { table: 'docs' },
   ],
@@ -261,6 +271,7 @@ export const docWithBodyQuery: NamedQuery<DocWithBodyRow, DocWithBodyParams> = {
   sql: docWithBodySql,
   mapRow: docWithBodyMapRow,
   tables: docWithBodyTables,
+  resultColumns: [{ name: 'docId', type: 'string', nullable: false }, { name: 'body', type: 'string', nullable: false }, { name: 'taskTitle', type: 'string', nullable: false }],
   dependencies: (params) => [
     { table: 'docs', scopeKeys: ['org:' + String(params.orgId) + ''] },
     { table: 'tasks' },
@@ -305,6 +316,7 @@ export const docsInProjectQuery: NamedQuery<DocsInProjectRow, DocsInProjectParam
   sql: docsInProjectSql,
   mapRow: docsInProjectMapRow,
   tables: docsInProjectTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'body', type: 'string', nullable: false }],
   dependencies: (params) => [
     { table: 'docs', scopeKeys: ['org:' + String(params.orgId) + '', 'project:' + String(params.projectId) + ''] },
   ],
@@ -352,6 +364,7 @@ export const hostBooleanQuery: NamedQuery<HostBooleanRow, HostBooleanParams> = {
   sql: hostBooleanSql,
   mapRow: hostBooleanMapRow,
   tables: hostBooleanTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'done', type: 'boolean', nullable: false }],
   dependencies: (params) => [
     { table: 'tasks', scopeKeys: ['project:' + String(params.projectId) + ''] },
   ],
@@ -402,6 +415,7 @@ export const listProjectTasksQuery: NamedQuery<ListProjectTasksRow, ListProjectT
   sql: listProjectTasksSql,
   mapRow: listProjectTasksMapRow,
   tables: listProjectTasksTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'title', type: 'string', nullable: false }, { name: 'done', type: 'boolean', nullable: false }, { name: 'priority', type: 'integer', nullable: true }, { name: 'estimate', type: 'float', nullable: true }],
   dependencies: (params) => [
     { table: 'tasks', scopeKeys: ['project:' + String(params.projectId) + ''] },
   ],
@@ -447,6 +461,7 @@ export const outerJoinValuesQuery: NamedQuery<OuterJoinValuesRow, OuterJoinValue
   sql: outerJoinValuesSql,
   mapRow: outerJoinValuesMapRow,
   tables: outerJoinValuesTables,
+  resultColumns: [{ name: 'taskId', type: 'string', nullable: false }, { name: 'title', type: 'string', nullable: false }, { name: 'docBody', type: 'string', nullable: true }],
   dependencies: () => [
     { table: 'docs' },
     { table: 'tasks' },
@@ -485,6 +500,7 @@ export const projectDocCountQuery: NamedQuery<ProjectDocCountRow, undefined> = {
   sql: projectDocCountSql,
   mapRow: projectDocCountMapRow,
   tables: projectDocCountTables,
+  resultColumns: [{ name: 'projectId', type: 'string', nullable: false }, { name: 'docCount', type: 'float', nullable: true }],
   dependencies: () => [
     { table: 'docs' },
   ],
@@ -528,6 +544,7 @@ export const reportingTasksByPriorityQuery: NamedQuery<ReportingTasksByPriorityR
   sql: reportingTasksByPrioritySql,
   mapRow: reportingTasksByPriorityMapRow,
   tables: reportingTasksByPriorityTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'title', type: 'string', nullable: false }, { name: 'priority', type: 'integer', nullable: true }],
   dependencies: () => [
     { table: 'tasks' },
   ],
@@ -575,6 +592,7 @@ export const reportOpenTasksQuery: NamedQuery<ReportOpenTasksRow, ReportOpenTask
   sql: reportOpenTasksSql,
   mapRow: reportOpenTasksMapRow,
   tables: reportOpenTasksTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'title', type: 'string', nullable: false }, { name: 'done', type: 'boolean', nullable: false }],
   dependencies: (params) => [
     { table: 'tasks', scopeKeys: ['project:' + String(params.projectId) + ''] },
   ],
@@ -620,6 +638,7 @@ export const reportDocScoresQuery: NamedQuery<ReportDocScoresRow, ReportDocScore
   sql: reportDocScoresSql,
   mapRow: reportDocScoresMapRow,
   tables: reportDocScoresTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'orgId', type: 'string', nullable: false }, { name: 'score', type: 'float', nullable: true }],
   dependencies: () => [
     { table: 'docs' },
   ],
@@ -658,6 +677,7 @@ export const taskTitlesQuery: NamedQuery<TaskTitlesRow, undefined> = {
   sql: taskTitlesSql,
   mapRow: taskTitlesMapRow,
   tables: taskTitlesTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'title', type: 'string', nullable: false }],
   dependencies: () => [
     { table: 'tasks' },
   ],
@@ -707,6 +727,7 @@ export const taskValueTypesQuery: NamedQuery<TaskValueTypesRow, TaskValueTypesPa
   sql: taskValueTypesSql,
   mapRow: taskValueTypesMapRow,
   tables: taskValueTypesTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'done', type: 'boolean', nullable: false }, { name: 'priority', type: 'integer', nullable: true }, { name: 'estimate', type: 'float', nullable: true }, { name: 'meta', type: 'json', nullable: true }],
   dependencies: () => [
     { table: 'tasks' },
   ],
@@ -751,6 +772,7 @@ export const tasksInProjectsQuery: NamedQuery<TasksInProjectsRow, TasksInProject
   sql: tasksInProjectsSql,
   mapRow: tasksInProjectsMapRow,
   tables: tasksInProjectsTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'title', type: 'string', nullable: false }],
   dependencies: (params) => [
     { table: 'tasks', scopeKeys: ['project:' + String(params.first) + '', 'project:' + String(params.second) + ''] },
   ],
@@ -795,6 +817,7 @@ export const tasksSinceQuery: NamedQuery<TasksSinceRow, TasksSinceParams> = {
   sql: tasksSinceSql,
   mapRow: tasksSinceMapRow,
   tables: tasksSinceTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'title', type: 'string', nullable: false }],
   dependencies: () => [
     { table: 'tasks' },
   ],
@@ -864,6 +887,7 @@ export const joinedSyncCoverageQuery: NamedQuery<JoinedSyncCoverageRow, JoinedSy
   mapRow: joinedSyncCoverageMapRow,
   sqlFor: (params: JoinedSyncCoverageParams) => joinedSyncCoverageSelect(params).sql,
   tables: joinedSyncCoverageTables,
+  resultColumns: [{ name: 'taskId', type: 'string', nullable: false }, { name: 'docId', type: 'string', nullable: false }, { name: 'body', type: 'string', nullable: false }],
   dependencies: (params) => [
     { table: 'docs', scopeKeys: ['org:' + String(params.orgId) + '', 'project:' + String(params.projectId) + ''] },
     { table: 'tasks', scopeKeys: ['project:' + String(params.projectId) + ''] },
@@ -936,6 +960,7 @@ export const taskMetaFilterQuery: NamedQuery<TaskMetaFilterRow, TaskMetaFilterPa
   mapRow: taskMetaFilterMapRow,
   sqlFor: (params: TaskMetaFilterParams) => taskMetaFilterSelect(params).sql,
   tables: taskMetaFilterTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'meta', type: 'json', nullable: true }],
   dependencies: (params) => [
     { table: 'tasks', scopeKeys: ['project:' + String(params.projectId) + ''] },
   ],
@@ -1022,6 +1047,7 @@ export const searchTasksQuery: NamedQuery<SearchTasksRow, SearchTasksParams> = {
   mapRow: searchTasksMapRow,
   sqlFor: (params: SearchTasksParams) => searchTasksSelect(params).sql,
   tables: searchTasksTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'title', type: 'string', nullable: false }, { name: 'done', type: 'boolean', nullable: false }, { name: 'priority', type: 'integer', nullable: true }, { name: 'estimatedAt', type: 'integer', nullable: true }],
   dependencies: (params) => [
     { table: 'tasks', scopeKeys: ['project:' + String(params.projectId) + ''] },
   ],
@@ -1103,6 +1129,7 @@ export const taskEstimateRangeQuery: NamedQuery<TaskEstimateRangeRow, TaskEstima
   mapRow: taskEstimateRangeMapRow,
   sqlFor: (params: TaskEstimateRangeParams) => taskEstimateRangeSelect(params).sql,
   tables: taskEstimateRangeTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'title', type: 'string', nullable: false }, { name: 'estimate', type: 'float', nullable: true }],
   dependencies: (params) => [
     { table: 'tasks', scopeKeys: ['project:' + String(params.projectId) + ''] },
   ],

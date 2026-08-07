@@ -40,6 +40,10 @@
  * rather than a lock D1 does not expose.
  */
 import { decodeRow, type RowValue } from '@syncular/core';
+import {
+  bindAuthoritativePartition,
+  prepareAuthoritativeQuery,
+} from './authoritative-query';
 import { syncError } from './errors';
 import {
   commitWindowPageSql,
@@ -79,6 +83,8 @@ import {
   toStoredRow,
 } from './sqlite-dialect';
 import type {
+  AuthoritativeQueryRequest,
+  AuthoritativeQueryResult,
   ClientCursorInfo,
   ClientRecord,
   ClientSubscription,
@@ -910,6 +916,61 @@ export class D1ServerStorage implements ServerStorage {
       .bind(partition)
       .first<{ max_commit_seq: number }>();
     return row?.max_commit_seq ?? 0;
+  }
+
+  async queryAuthoritative(
+    partition: string,
+    query: AuthoritativeQueryRequest,
+  ): Promise<AuthoritativeQueryResult> {
+    if (this.#tables === undefined) {
+      throw new Error(
+        'ensureSchema(schema) must run before registered queries',
+      );
+    }
+    const prepared = bindAuthoritativePartition(
+      prepareAuthoritativeQuery(
+        query.sql,
+        query.params,
+        query.tables,
+        this.#tables,
+      ),
+      partition,
+    );
+    const results = await this.#db.batch([
+      this.#db.prepare(prepared.sql).bind(...prepared.params),
+      this.#db
+        .prepare('SELECT max_commit_seq FROM sync_partitions WHERE partition=?')
+        .bind(partition),
+    ]);
+    const rowsResult = results[0];
+    const cursorResult = results[1];
+    if (
+      typeof rowsResult !== 'object' ||
+      rowsResult === null ||
+      !('results' in rowsResult) ||
+      !Array.isArray(rowsResult.results) ||
+      typeof cursorResult !== 'object' ||
+      cursorResult === null ||
+      !('results' in cursorResult) ||
+      !Array.isArray(cursorResult.results)
+    ) {
+      throw new Error('D1 registered query returned an invalid batch result');
+    }
+    const cursor = cursorResult.results[0];
+    const maxCommitSeq =
+      typeof cursor === 'object' &&
+      cursor !== null &&
+      'max_commit_seq' in cursor &&
+      typeof cursor.max_commit_seq === 'number'
+        ? cursor.max_commit_seq
+        : 0;
+    return {
+      rows: rowsResult.results.filter(
+        (row): row is Readonly<Record<string, unknown>> =>
+          typeof row === 'object' && row !== null,
+      ),
+      maxCommitSeq,
+    };
   }
 
   async getHorizonSeq(partition: string): Promise<number> {

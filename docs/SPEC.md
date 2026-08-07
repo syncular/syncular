@@ -228,6 +228,8 @@ A server mounts these routes under a host-chosen prefix `<mount>`:
 | `<mount>/blobs/{blobId}/upload-grant` | POST | Presigned-upload grant: mint a direct-to-storage PUT URL (§5.9.3) |
 | `<mount>/blobs/{blobId}` | GET | Blob download with row-derived re-authorization (§5.9.5) |
 | `<mount>/realtime` | GET (WebSocket upgrade) | Realtime channel (§8) |
+| `<mount>/operations` | POST | Registered authoritative query or command ([REMOTE.md](./REMOTE.md)) |
+| `<mount>/operations/realtime` | GET (WebSocket upgrade) | Live registered-query watches ([REMOTE.md](./REMOTE.md)) |
 
 Content type for SSP2 bodies is `application/vnd.syncular.sync.v2`. A
 server MUST reject a `<mount>/sync` request with any other content type
@@ -2763,7 +2765,8 @@ classified as safe for the actor that already passed the row write gate.
 
 **Host codes MUST be distinguishable from protocol codes.** A host
 validation code **MUST NOT** begin with any reserved protocol-family
-prefix: **`sync.`**, **`blob.`**, **`presence.`**, or **`client.`**. These
+prefix: **`sync.`**, **`blob.`**, **`operation.`**, **`presence.`**, or
+**`client.`**. These
 namespace the protocol's own error families (§10.2 and the client-local
 codes of §10.3); reserving them guarantees a code appearing in a rejection
 record is unambiguously either a protocol code or a host code, never a
@@ -3049,6 +3052,32 @@ source transaction commits, `reaction.started`, `reaction.retried`,
 fire-and-forget operational events and do not replace reaction storage.
 `SyncularAdmin.listReactions` and the authenticated Hono
 `GET /admin/reactions` route expose partition-scoped lifecycle state.
+
+### 6.10 Database-less commit producers
+
+A process MAY submit ordinary commits without maintaining a local replica.
+It sends a push-only SSP2 request to `POST <mount>/sync`: `REQ_HEADER`, one or
+more `PUSH_COMMIT` frames, and `END`. A `PULL_HEADER` is unnecessary. The
+server applies the same authorization, conflict, validation, atomicity,
+idempotency, commit-log, and realtime rules as every replica-originated push.
+
+The producer MUST supply a stable `clientId` for its service identity and a
+stable `clientCommitId` for each logical operation. Losing the response does
+not authorize a new id. A retry MUST resend the byte-equivalent commit under
+the original `(partition, clientId, clientCommitId)` key (§2.3). The caller is
+responsible for retaining or deterministically deriving that identity because
+there is no Syncular outbox.
+
+A database-less producer has no local rows, subscriptions, cursor, optimistic
+state, rollback journal, or offline queue. It receives the terminal
+`PUSH_RESULT` directly. A conflict record carries the authoritative row bytes
+and version exactly as it does for a replica client. The caller decides
+whether to issue a corrected commit under a new `clientCommitId`.
+
+The application-facing remote operation protocol for authoritative queries,
+commands, and live query watches is defined separately in
+[`docs/REMOTE.md`](./REMOTE.md). Ordinary commits continue to use SSP2 so
+there is one commit path.
 
 ---
 
@@ -4211,6 +4240,12 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 
 | Code | Category | Retryable | Action | Produced when |
 |---|---|---|---|---|
+| `operation.unknown` | not-found | no | regenerateClient | A registered query or command ID is absent or has the wrong kind ([REMOTE.md](./REMOTE.md)) |
+| `operation.forbidden` | forbidden | no | checkPermissions | Registered query scope coverage or an operation authorizer denies access ([REMOTE.md](./REMOTE.md)) |
+| `operation.invalid_request` | invalid-request | no | fixRequest | A remote operation message, query coverage, command plan, or parameter set is invalid ([REMOTE.md](./REMOTE.md)) |
+| `operation.result_too_large` | invalid-request | no | fixRequest | A registered query returns more than its configured `maxRows` ([REMOTE.md](./REMOTE.md)) |
+| `operation.storage_unsupported` | internal | no | inspectServer | Configured storage lacks authoritative query support ([REMOTE.md](./REMOTE.md)) |
+| `operation.query_failed` | internal | no | inspectServer | Registered authoritative SQL execution or result decoding fails ([REMOTE.md](./REMOTE.md)) |
 | `sync.auth_required` | auth-required | yes | refreshAuth | Host authentication absent/failed (HTTP 401; WS close) |
 | `sync.auth_lease_required` | auth-required | yes | refreshAuth | The host opted the request into lease authorization (a live-resolver outage) but no valid lease exists for `(partition, clientId)` — expired, actor-mismatched, or never issued (§7.3.3) — *new in SSP2*; request-level |
 | `sync.auth_lease_revoked` | auth-required | yes | refreshAuth | A lease-authorized round was attempted on a lease the host revoked by `leaseId` (§7.3.4) — *new in SSP2*; request-level. Distinct from `sync.scope_revoked` (§3.3): the grant was pulled, but no local data is purged |
@@ -4307,7 +4342,7 @@ code — it is opaque to the client runtime, which applies generic rejection
 handling and never hardcodes its `category`/`retryable`/`recommendedAction`
 (those fields are catalog-fixed only for the codes in §10.2). A host code
 MUST NOT begin with the reserved protocol-family prefixes `sync.`,
-`blob.`, `presence.`, or `client.` (§6.7), so a code in a rejection record
+`blob.`, `operation.`, `presence.`, or `client.` (§6.7), so a code in a rejection record
 is always unambiguously either a protocol code (this catalog, its fixed
 metadata applies) or a host code (opaque, app-defined). This keeps the
 wire catalog closed while letting hosts mint their own business-rule

@@ -8,6 +8,17 @@ pruning (§4.6), and signed-URL token issuance (§5.4). `SPEC.md` is
 normative for everything on the wire; this README covers the **host
 surface** — in particular the ops seam and the pruning runbook.
 
+Application processes can expose generated named queries and transactional
+commands through `RemoteOperationRegistry`. Queries stay in the server
+registry, command mutations use the ordinary serialized push path, and
+`RemoteOperationWatchHub` provides live replacement snapshots. The protocol is
+specified in [`docs/REMOTE.md`](../../docs/REMOTE.md) and the practical setup is
+in the [remote operations guide](https://syncular.dev/guide-remote-operations/).
+
+Application intent belongs in immutable domain event rows written in the same
+commit as the state change. `SyncularServerEvents` below remains operational
+telemetry. See the [domain event guide](https://syncular.dev/guide-domain-events/).
+
 ## Deployment matrix (runtime adapters)
 
 The server core is **runtime-neutral TypeScript** — `handleSyncRequest` and
