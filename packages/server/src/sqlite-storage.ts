@@ -48,8 +48,16 @@ import type {
   CommitMetadata,
   CommitMetadataQuery,
   CommitWindowQuery,
+  DurableJsonValue,
   IndexRowScanQuery,
   NewCommit,
+  NewReaction,
+  PrunedReactionCounts,
+  ReactionClaimQuery,
+  ReactionFailure,
+  ReactionFailureUpdate,
+  ReactionListQuery,
+  ReactionPruneQuery,
   RowScanQuery,
   ScopeActivityQuery,
   ScopeCommitActivity,
@@ -57,6 +65,7 @@ import type {
   StorageTransaction,
   StoredCommit,
   StoredPushResult,
+  StoredReaction,
   StoredRow,
 } from './storage';
 import {
@@ -64,6 +73,53 @@ import {
   StorageConstraintError,
 } from './storage-errors';
 import { assertScopeIndexedScan, resolveIndexRowScan } from './storage-query';
+
+interface SqliteReactionRecord {
+  partition: string;
+  idempotency_key: string;
+  type: string;
+  version: number;
+  payload: string;
+  source_client_id: string;
+  source_client_commit_id: string;
+  source_commit_seq: number;
+  created_at_ms: number;
+  available_at_ms: number;
+  status: StoredReaction['status'];
+  attempts: number;
+  max_attempts: number;
+  lease_owner: string | null;
+  lease_expires_at_ms: number | null;
+  completed_at_ms: number | null;
+  last_failure: string | null;
+}
+
+function toStoredReaction(record: SqliteReactionRecord): StoredReaction {
+  return {
+    idempotencyKey: record.idempotency_key,
+    type: record.type,
+    version: record.version,
+    payload: JSON.parse(record.payload) as DurableJsonValue,
+    sourceClientId: record.source_client_id,
+    sourceClientCommitId: record.source_client_commit_id,
+    sourceCommitSeq: record.source_commit_seq,
+    createdAtMs: record.created_at_ms,
+    maxAttempts: record.max_attempts,
+    status: record.status,
+    attempts: record.attempts,
+    availableAtMs: record.available_at_ms,
+    ...(record.lease_owner !== null ? { leaseOwner: record.lease_owner } : {}),
+    ...(record.lease_expires_at_ms !== null
+      ? { leaseExpiresAtMs: record.lease_expires_at_ms }
+      : {}),
+    ...(record.completed_at_ms !== null
+      ? { completedAtMs: record.completed_at_ms }
+      : {}),
+    ...(record.last_failure !== null
+      ? { lastFailure: JSON.parse(record.last_failure) as ReactionFailure }
+      : {}),
+  };
+}
 
 class SqliteTransaction implements StorageTransaction {
   #storage: SqliteServerStorage;
@@ -256,6 +312,32 @@ class SqliteTransaction implements StorageTransaction {
       );
   }
 
+  async enqueueReactions(reactions: readonly NewReaction[]): Promise<void> {
+    this.#assertOpen();
+    const statement = this.#storage.db.query(
+      `INSERT INTO sync_reactions(
+         partition, idempotency_key, type, version, payload,
+         source_client_id, source_client_commit_id, source_commit_seq,
+         created_at_ms, available_at_ms, status, attempts, max_attempts
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,'pending',0,?)`,
+    );
+    for (const reaction of reactions) {
+      statement.run(
+        this.#partition,
+        reaction.idempotencyKey,
+        reaction.type,
+        reaction.version,
+        JSON.stringify(reaction.payload),
+        reaction.sourceClientId,
+        reaction.sourceClientCommitId,
+        reaction.sourceCommitSeq,
+        reaction.createdAtMs,
+        reaction.createdAtMs,
+        reaction.maxAttempts,
+      );
+    }
+  }
+
   async commit(): Promise<void> {
     this.#assertOpen();
     try {
@@ -296,6 +378,20 @@ export class SqliteServerStorage implements ServerStorage {
   /** Set by `ensureSchema`: app-table lookup for the relational row store. */
   #tables: ReadonlyMap<string, CompiledTable> | undefined;
   #schemaVersion: number | undefined;
+
+  async #serializeReactionWrite<T>(operation: () => T): Promise<T> {
+    const previous = this.#transactionTail;
+    let release!: () => void;
+    this.#transactionTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return operation();
+    } finally {
+      release();
+    }
+  }
 
   constructor(db: Database | string = ':memory:') {
     this.db = typeof db === 'string' ? new Database(db) : db;
@@ -573,6 +669,219 @@ export class SqliteServerStorage implements ServerStorage {
         'persisted push result unreadable (§6.3)',
       );
     }
+  }
+
+  async claimReactions(
+    partition: string,
+    query: ReactionClaimQuery,
+  ): Promise<StoredReaction[]> {
+    if (query.types.length === 0 || query.limit <= 0) return [];
+    return this.#serializeReactionWrite(() => {
+      const typeParams = query.types.map(() => '?').join(',');
+      const records = this.db
+        .query<SqliteReactionRecord, (string | number)[]>(
+          `UPDATE sync_reactions
+            SET status='leased', attempts=attempts+1,
+                lease_owner=?, lease_expires_at_ms=?, completed_at_ms=NULL
+          WHERE (partition, idempotency_key) IN (
+            SELECT partition, idempotency_key
+              FROM sync_reactions
+             WHERE partition=? AND type IN (${typeParams})
+               AND ((status='pending' AND available_at_ms<=?)
+                 OR (status='leased' AND lease_expires_at_ms<=?))
+             ORDER BY CASE WHEN status='leased' THEN lease_expires_at_ms
+                           ELSE available_at_ms END,
+                      created_at_ms, idempotency_key
+             LIMIT ?
+          )
+        RETURNING *`,
+        )
+        .all(
+          query.leaseOwner,
+          Math.min(
+            Number.MAX_SAFE_INTEGER,
+            query.nowMs + query.leaseDurationMs,
+          ),
+          partition,
+          ...query.types,
+          query.nowMs,
+          query.nowMs,
+          query.limit,
+        );
+      return records
+        .map(toStoredReaction)
+        .sort(
+          (a, b) =>
+            a.createdAtMs - b.createdAtMs ||
+            a.idempotencyKey.localeCompare(b.idempotencyKey),
+        );
+    });
+  }
+
+  async completeReaction(
+    partition: string,
+    idempotencyKey: string,
+    leaseOwner: string,
+    completedAtMs: number,
+  ): Promise<boolean> {
+    return this.#serializeReactionWrite(() => {
+      const result = this.db
+        .query(
+          `UPDATE sync_reactions
+            SET status='completed', completed_at_ms=?,
+                lease_owner=NULL, lease_expires_at_ms=NULL
+          WHERE partition=? AND idempotency_key=?
+            AND status='leased' AND lease_owner=?`,
+        )
+        .run(completedAtMs, partition, idempotencyKey, leaseOwner);
+      return Number(result.changes) === 1;
+    });
+  }
+
+  async extendReactionLease(
+    partition: string,
+    idempotencyKey: string,
+    leaseOwner: string,
+    leaseExpiresAtMs: number,
+  ): Promise<boolean> {
+    return this.#serializeReactionWrite(() => {
+      const result = this.db
+        .query(
+          `UPDATE sync_reactions SET lease_expires_at_ms=?
+          WHERE partition=? AND idempotency_key=?
+            AND status='leased' AND lease_owner=?`,
+        )
+        .run(leaseExpiresAtMs, partition, idempotencyKey, leaseOwner);
+      return Number(result.changes) === 1;
+    });
+  }
+
+  async failReaction(
+    partition: string,
+    idempotencyKey: string,
+    update: ReactionFailureUpdate,
+  ): Promise<boolean> {
+    const retry = update.retryAtMs !== undefined;
+    return this.#serializeReactionWrite(() => {
+      const result = this.db
+        .query(
+          `UPDATE sync_reactions
+            SET status=?, available_at_ms=?, last_failure=?,
+                lease_owner=NULL, lease_expires_at_ms=NULL
+          WHERE partition=? AND idempotency_key=?
+            AND status='leased' AND lease_owner=?`,
+        )
+        .run(
+          retry ? 'pending' : 'dead-letter',
+          update.retryAtMs ?? update.failure.atMs,
+          JSON.stringify(update.failure),
+          partition,
+          idempotencyKey,
+          update.leaseOwner,
+        );
+      return Number(result.changes) === 1;
+    });
+  }
+
+  async retryReaction(
+    partition: string,
+    idempotencyKey: string,
+    nowMs: number,
+  ): Promise<boolean> {
+    return this.#serializeReactionWrite(() => {
+      const result = this.db
+        .query(
+          `UPDATE sync_reactions
+            SET status='pending', attempts=0, available_at_ms=?,
+                last_failure=NULL, lease_owner=NULL, lease_expires_at_ms=NULL,
+                completed_at_ms=NULL
+          WHERE partition=? AND idempotency_key=? AND status='dead-letter'`,
+        )
+        .run(nowMs, partition, idempotencyKey);
+      return Number(result.changes) === 1;
+    });
+  }
+
+  async getReaction(
+    partition: string,
+    idempotencyKey: string,
+  ): Promise<StoredReaction | undefined> {
+    const record = this.db
+      .query<SqliteReactionRecord, [string, string]>(
+        'SELECT * FROM sync_reactions WHERE partition=? AND idempotency_key=?',
+      )
+      .get(partition, idempotencyKey);
+    return record === null ? undefined : toStoredReaction(record);
+  }
+
+  async listReactions(
+    partition: string,
+    query: ReactionListQuery,
+  ): Promise<StoredReaction[]> {
+    const where = ['partition=?'];
+    const params: (string | number)[] = [partition];
+    if (query.statuses !== undefined && query.statuses.length > 0) {
+      where.push(`status IN (${query.statuses.map(() => '?').join(',')})`);
+      params.push(...query.statuses);
+    }
+    if (query.types !== undefined && query.types.length > 0) {
+      where.push(`type IN (${query.types.map(() => '?').join(',')})`);
+      params.push(...query.types);
+    }
+    params.push(query.limit);
+    const records = this.db
+      .query<SqliteReactionRecord, (string | number)[]>(
+        `SELECT * FROM sync_reactions WHERE ${where.join(' AND ')}
+          ORDER BY created_at_ms DESC, idempotency_key DESC LIMIT ?`,
+      )
+      .all(...params);
+    return records.map(toStoredReaction);
+  }
+
+  async pruneReactions(
+    partition: string,
+    query: ReactionPruneQuery,
+  ): Promise<PrunedReactionCounts> {
+    if (query.limit <= 0) return { completed: 0, deadLetter: 0 };
+    return this.#serializeReactionWrite(() => {
+      const records = this.db
+        .query<
+          { status: 'completed' | 'dead-letter' },
+          [string, string, number, number, number, number, number]
+        >(
+          `DELETE FROM sync_reactions
+            WHERE partition=? AND idempotency_key IN (
+              SELECT idempotency_key FROM sync_reactions
+               WHERE partition=?
+                 AND ((status='completed' AND completed_at_ms IS NOT NULL
+                       AND completed_at_ms<?)
+                   OR (status='dead-letter' AND available_at_ms<?))
+               ORDER BY CASE WHEN status='completed' THEN completed_at_ms
+                             ELSE available_at_ms END,
+                        idempotency_key
+               LIMIT ?
+            )
+              AND ((status='completed' AND completed_at_ms IS NOT NULL
+                    AND completed_at_ms<?)
+                OR (status='dead-letter' AND available_at_ms<?))
+          RETURNING status`,
+        )
+        .all(
+          partition,
+          partition,
+          query.completedBeforeMs,
+          query.deadLetterBeforeMs,
+          query.limit,
+          query.completedBeforeMs,
+          query.deadLetterBeforeMs,
+        );
+      return {
+        completed: records.filter((record) => record.status === 'completed')
+          .length,
+        deadLetter: records.filter((record) => record.status === 'dead-letter')
+          .length,
+      };
+    });
   }
 
   async readCommitWindow(

@@ -189,6 +189,9 @@ the other hooks.
   `@syncular/conformance` instead. See [Conformance](/guide-conformance/).
 - The clock advances only when your test moves it; setTimeout runs on its
   own. See the clock note above.
+- Durable reaction planners and runners use server integration and storage
+  contract tests with the same virtual-clock discipline. See the
+  [reaction testing checklist](/server-reactions/#testing-checklist).
 
 ## Where to go next
 

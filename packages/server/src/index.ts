@@ -31,6 +31,35 @@ export * from './prune';
 export * from './pull';
 export * from './push';
 export * from './readiness';
+export {
+  DEFAULT_REACTION_INITIAL_BACKOFF_MS,
+  DEFAULT_REACTION_LEASE_MS,
+  DEFAULT_REACTION_MAX_ATTEMPTS,
+  DEFAULT_REACTION_MAX_BACKOFF_MS,
+  DEFAULT_REACTION_RETENTION,
+  MAX_REACTION_FAILURE_DETAILS_BYTES,
+  MAX_REACTION_PAYLOAD_BYTES,
+  MAX_REACTIONS_PER_COMMIT,
+  PermanentReactionError,
+  pruneReactions,
+  ReactionRunner,
+  reactionIdempotencyKey,
+  retryDeadLetterReaction,
+  RetryableReactionError,
+  type PlannedReaction,
+  type PruneReactionsOptions,
+  type ReactionHandler,
+  type ReactionHandlerInput,
+  type ReactionHandlers,
+  type ReactionPlan,
+  type ReactionPlanner,
+  type ReactionPlannerInput,
+  type ReactionPruneResult,
+  type ReactionRetentionPolicy,
+  type ReactionRunnerOptions,
+  type ReactionRunResult,
+  type ReactionTypeMap,
+} from './reactions';
 export * from './realtime';
 export * from './relational-rows';
 export * from './s3-blob-store';

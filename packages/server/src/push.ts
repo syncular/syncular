@@ -33,6 +33,12 @@ import type { SyncRequestContext } from './context';
 import { clockOf } from './context';
 import type { CrdtMergerRegistry } from './crdt-merger';
 import { SyncError } from './errors';
+import { emitEvent } from './events';
+import {
+  prepareReactions,
+  type PreparedReaction,
+  toNewReactions,
+} from './reactions';
 import type { CompiledSchema, CompiledTable } from './schema';
 import type { ResolvedScopes } from './scopes';
 import { authorizeWrite, renderScopeValue, storedScopesForRow } from './scopes';
@@ -869,6 +875,7 @@ export async function processPushCommitWithTrace(
   const crdtMergers = ctx.crdtMergers;
   const validators = ctx.validators;
   const commitValidator = ctx.commitValidator;
+  const reactionPlanner = ctx.reactionPlanner;
   const tx = await storage.begin(partition);
   const lockPartitionForPush =
     tx.lockPartitionForPush?.bind(tx) ??
@@ -877,10 +884,11 @@ export async function processPushCommitWithTrace(
   try {
     if (
       lockPartitionForPush === undefined ||
-      commitRejectedPushResult === undefined
+      commitRejectedPushResult === undefined ||
+      (reactionPlanner !== undefined && tx.enqueueReactions === undefined)
     ) {
       throw new Error(
-        'storage transaction does not support serialized push apply and atomic rejection finalization',
+        'storage transaction does not support serialized push apply, atomic rejection finalization, and configured durable reactions',
       );
     }
     await lockPartitionForPush();
@@ -966,6 +974,18 @@ export async function processPushCommitWithTrace(
       }
     }
 
+    let preparedReactions: PreparedReaction[] = [];
+    if (terminated === undefined && reactionPlanner !== undefined) {
+      preparedReactions = await prepareReactions(reactionPlanner, {
+        clientId,
+        clientCommitId: frame.clientCommitId,
+        actorId: ctx.actorId,
+        partition,
+        operations: validatedOperations,
+        read: commitValidationReader(tx, schema),
+      });
+    }
+
     if (terminated !== undefined) {
       // §6.3 rejected: only the terminating operation's record; §6.4:
       // every write of the commit rolls back.
@@ -1000,6 +1020,19 @@ export async function processPushCommitWithTrace(
       createdAtMs,
       changes,
     });
+    const newReactions = toNewReactions(preparedReactions, {
+      clientId,
+      clientCommitId: frame.clientCommitId,
+      commitSeq,
+      createdAtMs,
+    });
+    if (newReactions.length > 0) {
+      const enqueueReactions = tx.enqueueReactions;
+      if (enqueueReactions === undefined) {
+        throw new Error('storage lost durable reaction enqueue support');
+      }
+      await enqueueReactions.call(tx, newReactions);
+    }
     const stored = newStoredPushResult(createdAtMs, {
       status: 'applied',
       commitSeq,
@@ -1007,6 +1040,23 @@ export async function processPushCommitWithTrace(
     });
     await tx.putPushResult(clientId, frame.clientCommitId, stored);
     await tx.commit();
+    if (ctx.events !== undefined) {
+      const atMs = clockOf(ctx)();
+      for (const reaction of newReactions) {
+        emitEvent(ctx.events, {
+          type: 'reaction.queued',
+          atMs,
+          partition,
+          actorId: ctx.actorId,
+          clientId,
+          clientCommitId: frame.clientCommitId,
+          commitSeq,
+          idempotencyKey: reaction.idempotencyKey,
+          reactionType: reaction.type,
+          version: reaction.version,
+        });
+      }
+    }
     if (ctx.realtime !== undefined && changes.length > 0) {
       await ctx.realtime.notifyCommit(partition, {
         commitSeq,

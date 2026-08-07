@@ -7,13 +7,14 @@
  * refuses to mount without a host-provided `authorize` guard (it throws at
  * construction). Every request runs the guard first; a falsy result is a
  * 401. Admin is a privileged surface (it reads every partition's clients,
- * commit metadata, and scope activity) and SPEC.md deliberately says nothing
- * about it — authorization is entirely the host's, and mandatory.
+ * commit metadata, scope activity, and reactions) and authorization is
+ * entirely the host's and mandatory.
  */
 import {
   errorBody,
   matchesRingQuery,
   type RingEventQuery,
+  type ReactionStatus,
   SyncError,
   type SyncularAdmin,
   type SyncularServerEvent,
@@ -154,6 +155,32 @@ export function createSyncularAdminRoutes(
         ...(table !== undefined ? { table } : {}),
       });
       return Response.json({ commits });
+    } catch (error) {
+      return jsonError(error);
+    }
+  });
+
+  app.get('/reactions', async (c) => {
+    try {
+      const status = c.req.query('status');
+      const type = c.req.query('type');
+      const allowed = new Set<ReactionStatus>([
+        'pending',
+        'leased',
+        'completed',
+        'dead-letter',
+      ]);
+      if (status !== undefined && !allowed.has(status as ReactionStatus)) {
+        throw new SyncError('sync.invalid_request', 'invalid reaction status');
+      }
+      const reactions = await admin.listReactions(partitionOf(c), {
+        ...(status !== undefined
+          ? { statuses: [status as ReactionStatus] }
+          : {}),
+        ...(type !== undefined ? { types: [type] } : {}),
+        limit: intParam(c.req.query('limit'), 100),
+      });
+      return Response.json({ reactions });
     } catch (error) {
       return jsonError(error);
     }

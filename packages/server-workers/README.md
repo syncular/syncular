@@ -113,7 +113,9 @@ wrangler d1 migrations apply syncular
 
 The schema is plain SQLite DDL (shared with `bun:sqlite` via
 `sqlite-dialect.ts`), so it is portable across the two SQLite-family
-storages.
+storages. Regenerate and apply a migration when upgrading Syncular adds a core
+table. The durable reaction queue uses `sync_reactions`; a Worker running a
+reaction planner or runner fails closed if that migration is absent.
 
 ## Storage: D1 (`D1ServerStorage`)
 
@@ -128,6 +130,19 @@ immediately (autocommit) and **buffers** writes, flushing them as one atomic
 `db.batch()` at `commit()` (the §6.4 all-or-nothing commit; a rejected op
 rolls back by never flushing). A read-your-own-writes overlay makes `getRow`
 see buffered writes of the same commit.
+
+Durable reactions use the same model. Planned rows join the source commit's
+atomic batch. `ReactionRunner` claims due rows with one
+`UPDATE ... RETURNING` statement, so concurrent Workers have no select/update
+gap. Reaction handlers execute outside the source transaction. Run the runner
+from a Worker scheduler, queue consumer, Workflow step, or Durable Object
+alarm according to the application's hosting model.
+
+Schedule `pruneReactions` per partition as a separate maintenance pass.
+Defaults retain completed rows for 30 days and dead-lettered rows for 90 days,
+with at most 1,000 deletions per pass. Repeat while `mayHaveMore` is true.
+Pending and leased rows are never eligible. D1 executes each bounded cleanup
+as one `DELETE ... RETURNING` statement.
 
 **Concurrency posture.** Every push, not only whole-commit validation, must
 serialize before operation reads and re-check idempotency under that boundary.

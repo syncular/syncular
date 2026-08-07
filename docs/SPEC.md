@@ -2923,6 +2923,133 @@ table/index/value selection to an untrusted caller. Exact server lookups,
 client-visible scope indexes, correlated multi-variable scopes, and explicit
 materialized reverse-index/work-queue rows remain distinct mechanisms.
 
+### 6.9 Durable server reactions
+
+Operational events are a fire-and-forget observability seam. Application work
+that must follow an accepted commit uses a durable server reaction. Reactions
+are a server-host feature and add no SSP2 frame or client-visible authority.
+
+**Planning order.** A host MAY configure one `reactionPlanner`. The server runs
+it only for a new commit after every operation and §6.7/§6.8 validator has
+accepted the final candidate state. It runs before commit-log append,
+idempotency append, and transaction commit:
+
+`optimistic idempotency → partition serialization → locked idempotency →
+decode/auth/row validation/write × N → whole-commit validation → reaction
+planning → append log/reactions/idempotency → commit`
+
+The planner receives the same `clientId`, `clientCommitId`, `actorId`,
+`partition`, ordered operation evidence, and candidate-state reader as §6.8.
+It MUST be pure with respect to storage outside the transaction and every
+external system. It MAY perform candidate reads and return data. It MUST NOT
+send email, invoke a webhook, publish a message, start a job, or perform any
+other user-visible side effect. TypeScript cannot prove callback purity, so
+this is a host correctness requirement. A planner throw aborts the open
+transaction and surfaces as a server failure. It does not persist a rejected
+client outcome; a later delivery may run the planner again.
+
+A conflict, protocol rejection, authorization rejection, row-validator
+rejection, or whole-commit rejection MUST enqueue zero reactions. A locked
+idempotency hit MUST skip the planner. Replaying an applied commit returns its
+cached result and MUST NOT add a second reaction row.
+
+**Planned record.** Each record contains:
+
+- `key`: non-empty, unique within the source commit, at most 256 UTF-8 bytes.
+- `type`: a code-like handler name at most 128 UTF-8 bytes.
+- `version`: a positive signed 32-bit integer. A handler MUST branch on
+  versions it supports and treat an unsupported version as a permanent
+  failure.
+- `payload`: plain JSON with finite numbers, at most 16 levels deep and at
+  most 65,536 UTF-8 bytes after normalization. Functions, `undefined`,
+  non-finite numbers, class instances, and cyclic values are invalid.
+- `maxAttempts`: an integer from 1 through 100; the default is 10.
+
+A commit may plan at most 100 records. Any invalid record fails the push
+transaction before commit. The persisted handler idempotency key is the stable
+JSON encoding of `[partition, clientId, clientCommitId, key]`. The tuple makes
+a planner key local to its source commit and partition, and removes delimiter
+ambiguity. A handler MUST pass this idempotency key to an external system when
+that system supports idempotent requests.
+
+**Atomic storage.** App rows, commit metadata and changes, reaction rows, and
+the applied idempotency result MUST commit in one authoritative transaction.
+The reaction table is partition-scoped and independent of commit-log/change
+tables. `pruneCommitLog` MUST NOT delete pending, leased, completed, or
+dead-lettered reactions. A missing transaction enqueue capability MUST fail
+before app-row mutation when a planner is configured.
+
+SQLite and PostgreSQL write reaction rows through the existing §6.3 push
+transaction. D1 buffers them into the same atomic `D1Database.batch()` as the
+source commit and requires the existing per-partition coordinator assertion.
+D1 MUST fail closed before the push when that assertion is absent. A D1 claim
+MUST use one write statement that both chooses due rows and returns their new
+leases; a select followed by a later update cannot provide the required claim
+guarantee. A D1 runtime that cannot execute that statement atomically MUST fail
+closed for reaction delivery.
+
+**Delivery state machine.** A host drives `ReactionRunner.runOnce()` from its
+scheduler or queue wake. Rows move through `pending`, `leased`, `completed`,
+and `dead-letter` states. A claim is one atomic storage operation over one
+partition and the worker's registered handler types. It selects due pending
+rows and expired leases, changes the owner/expiry, and increments `attempts`.
+PostgreSQL uses row locks with `SKIP LOCKED`; SQLite and D1 use one atomic
+`UPDATE ... RETURNING` statement. Concurrent workers therefore normally
+receive disjoint leases.
+
+Every runner call uses a fresh opaque lease-owner token. Before starting each
+handler in a claimed batch, the runner renews that row using the token. If the
+row expired and another worker reclaimed it while an earlier batch member was
+running, renewal fails and the stale runner skips the handler.
+
+Handlers execute after the authoritative push transaction has committed. A
+handler receives its payload and version, source client/commit/sequence,
+current attempt, maximum attempts, partition, and stable idempotency key. A
+long handler MAY call `extendLease()` before expiry. Completion, lease
+extension, retry, and dead-letter updates compare the current lease owner. A
+stale worker cannot acknowledge or alter a lease that another worker has
+claimed.
+
+Delivery is at least once. If a process crashes after a handler performs its
+side effect and before completion is recorded, the lease expires and another
+worker may invoke the handler again with the same idempotency key. External
+systems decide whether that repeated request collapses to one effect.
+Syncular does not promise exactly-once execution for external side effects.
+
+An ordinary throw and `RetryableReactionError` are retryable. The retry delay
+is bounded exponential backoff:
+`min(maxBackoffMs, initialBackoffMs × 2^(attempt − 1))`, with defaults of one
+second and five minutes. `PermanentReactionError` dead-letters immediately;
+a retryable failure dead-letters when `attempts >= maxAttempts`. Persisted
+failure information contains a stable error code, failure time, and optional
+plain JSON details bounded to 8,192 bytes. Raw exception text is not persisted.
+An operator may reset a dead-lettered row through
+`retryDeadLetterReaction`; the reset clears failure information and attempts
+and makes the row immediately due.
+
+**Terminal retention.** Reaction storage MUST provide a bounded,
+partition-scoped cleanup operation over terminal rows. A cleanup pass MUST
+delete only `completed` rows whose completion time is strictly older than its
+completed cutoff and `dead-letter` rows whose failure time is strictly older
+than its dead-letter cutoff. It MUST NOT delete `pending` or `leased` rows,
+including expired leases. Cleanup is independent of commit-log pruning and
+MUST NOT alter source commits, app rows, or idempotency results.
+
+`pruneReactions` applies separate retention floors and a maximum row count per
+pass. Defaults retain completed reactions for 30 days, dead-lettered reactions
+for 90 days, and delete at most 1,000 rows per pass. A host schedules passes and
+repeats while the result reports that more rows may remain. Manual retry and
+cleanup may race; their storage operations MUST serialize so exactly one
+terminal transition wins. Every pass MAY emit `reaction.prune_completed` with
+the cutoffs, per-status removal counts, limit, and `mayHaveMore` flag.
+
+**Observability and reads.** Lifecycle events are `reaction.queued` after the
+source transaction commits, `reaction.started`, `reaction.retried`,
+`reaction.completed`, and `reaction.dead_lettered`. They remain
+fire-and-forget operational events and do not replace reaction storage.
+`SyncularAdmin.listReactions` and the authenticated Hono
+`GET /admin/reactions` route expose partition-scoped lifecycle state.
+
 ---
 
 ## 7. Offline writes and replay

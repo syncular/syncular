@@ -15,6 +15,12 @@ Start with the dedicated [SYQL language guide](/syql/) for examples and the
 authoring model. Use the language specification when implementing tooling or
 when exact normative behavior matters.
 
+## Task guides
+
+- [Durable server reactions](/server-reactions/): atomically plan application
+  work from accepted commits, then deliver it with leases, retries, stable
+  idempotency keys, and dead letters.
+
 ## Protocol specification by section
 
 | Section | Topic |
@@ -42,7 +48,7 @@ All published under the `@syncular/*` scope (plus the unscoped scaffolder):
 | Package | What it is | Source |
 |---|---|---|
 | `@syncular/core` | Protocol codecs, shared types, the golden-vector round-trip | [packages/core](https://github.com/syncular/syncular/tree/main/packages/core) |
-| `@syncular/server` | `handleSyncRequest` + storage/auth/segment/blob interfaces, realtime hub, pruning, signed URLs, `SyncularAdmin` | [packages/server](https://github.com/syncular/syncular/tree/main/packages/server) |
+| `@syncular/server` | `handleSyncRequest` + storage/auth/segment/blob interfaces, durable reaction planning and delivery, realtime hub, pruning, signed URLs, `SyncularAdmin` | [packages/server](https://github.com/syncular/syncular/tree/main/packages/server) |
 | `@syncular/server-hono` | Thin Hono adapter mounting the §1.1 routes + the static admin page | [packages/server-hono](https://github.com/syncular/syncular/tree/main/packages/server-hono) |
 | `@syncular/server-workers` | Cloudflare Workers entry: fetch handler over D1 storage + R2 segments/blobs | [packages/server-workers](https://github.com/syncular/syncular/tree/main/packages/server-workers) |
 | `@syncular/client` | The TS client core on sqlite-wasm/OPFS, worker + transports, multi-tab | [packages/web-client](https://github.com/syncular/syncular/tree/main/packages/web-client) |

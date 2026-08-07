@@ -65,6 +65,83 @@ export interface StoredCommit {
   readonly changes: readonly StoredChange[];
 }
 
+/** JSON values accepted by the durable reaction payload/failure store. */
+export type DurableJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly DurableJsonValue[]
+  | { readonly [key: string]: DurableJsonValue };
+
+export type ReactionStatus = 'pending' | 'leased' | 'completed' | 'dead-letter';
+
+export interface ReactionFailure {
+  /** Stable application or Syncular error identity. */
+  readonly code: string;
+  readonly atMs: number;
+  /** Bounded JSON metadata. Diagnostic exception text is never persisted. */
+  readonly details?: { readonly [key: string]: DurableJsonValue };
+}
+
+/** A validated reaction row written with its source commit. */
+export interface NewReaction {
+  readonly idempotencyKey: string;
+  readonly type: string;
+  readonly version: number;
+  readonly payload: DurableJsonValue;
+  readonly sourceClientId: string;
+  readonly sourceClientCommitId: string;
+  readonly sourceCommitSeq: number;
+  readonly createdAtMs: number;
+  readonly maxAttempts: number;
+}
+
+/** Durable reaction state returned to workers and administrative readers. */
+export interface StoredReaction extends NewReaction {
+  readonly status: ReactionStatus;
+  /** Incremented atomically when a worker claims the reaction. */
+  readonly attempts: number;
+  readonly availableAtMs: number;
+  readonly leaseOwner?: string;
+  readonly leaseExpiresAtMs?: number;
+  readonly completedAtMs?: number;
+  readonly lastFailure?: ReactionFailure;
+}
+
+export interface ReactionClaimQuery {
+  /** Opaque token unique to this claim operation. */
+  readonly leaseOwner: string;
+  readonly types: readonly string[];
+  readonly nowMs: number;
+  readonly leaseDurationMs: number;
+  readonly limit: number;
+}
+
+export interface ReactionListQuery {
+  readonly statuses?: readonly ReactionStatus[];
+  readonly types?: readonly string[];
+  readonly limit: number;
+}
+
+export interface ReactionFailureUpdate {
+  readonly leaseOwner: string;
+  readonly failure: ReactionFailure;
+  /** Present for retry; absent moves the row to the dead-letter state. */
+  readonly retryAtMs?: number;
+}
+
+export interface ReactionPruneQuery {
+  readonly completedBeforeMs: number;
+  readonly deadLetterBeforeMs: number;
+  readonly limit: number;
+}
+
+export interface PrunedReactionCounts {
+  readonly completed: number;
+  readonly deadLetter: number;
+}
+
 /** Persisted push outcome for idempotent replay (§2.3, §6.3). */
 export interface StoredPushResult {
   readonly status: 'applied' | 'rejected';
@@ -249,6 +326,12 @@ export interface StorageTransaction {
   /** Allocates the next per-partition commitSeq and appends the commit. */
   appendCommit(commit: NewCommit): Promise<number>;
   /**
+   * Persist reaction rows in this authoritative transaction. Required when
+   * the host configures a reaction planner. Reactions survive commit-log
+   * pruning because they live outside the commit/change tables.
+   */
+  enqueueReactions?(reactions: readonly NewReaction[]): Promise<void>;
+  /**
    * Persist an idempotency outcome only when the key is still absent. The
    * first writer wins; callers read the canonical value after commit.
    */
@@ -322,6 +405,55 @@ export interface ServerStorage {
     clientId: string,
     clientCommitId: string,
   ): Promise<StoredPushResult | undefined>;
+
+  /**
+   * Atomically lease due or expired-lease reactions for one worker. Optional
+   * for compatibility with custom storages; reaction runners fail closed when
+   * any lifecycle method is absent.
+   */
+  claimReactions?(
+    partition: string,
+    query: ReactionClaimQuery,
+  ): Promise<StoredReaction[]>;
+  /** Acknowledge only while `leaseOwner` still owns the lease. */
+  completeReaction?(
+    partition: string,
+    idempotencyKey: string,
+    leaseOwner: string,
+    completedAtMs: number,
+  ): Promise<boolean>;
+  /** Extend only while `leaseOwner` still owns the active lease. */
+  extendReactionLease?(
+    partition: string,
+    idempotencyKey: string,
+    leaseOwner: string,
+    leaseExpiresAtMs: number,
+  ): Promise<boolean>;
+  /** Retry or dead-letter only while `leaseOwner` still owns the lease. */
+  failReaction?(
+    partition: string,
+    idempotencyKey: string,
+    update: ReactionFailureUpdate,
+  ): Promise<boolean>;
+  /** Reset a dead-lettered row for an explicit operator retry. */
+  retryReaction?(
+    partition: string,
+    idempotencyKey: string,
+    nowMs: number,
+  ): Promise<boolean>;
+  getReaction?(
+    partition: string,
+    idempotencyKey: string,
+  ): Promise<StoredReaction | undefined>;
+  listReactions?(
+    partition: string,
+    query: ReactionListQuery,
+  ): Promise<StoredReaction[]>;
+  /** Delete a bounded set of aged terminal rows. Never deletes active work. */
+  pruneReactions?(
+    partition: string,
+    query: ReactionPruneQuery,
+  ): Promise<PrunedReactionCounts>;
 
   /**
    * Matching commits in the window, oldest first, each carrying only its

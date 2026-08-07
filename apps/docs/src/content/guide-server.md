@@ -268,12 +268,17 @@ covers the same ground with virtual time.
   [Cloudflare Workers](/server-workers/).
 - **Day two**: structured events, the admin console, commit-log pruning,
   blob GC, and load testing live in [Operations](/server-operations/).
+- **Post-commit application work**: configure planners, leased handlers,
+  retries, and dead letters in
+  [Durable server reactions](/server-reactions/).
 
 ## Where to go next
 
 - [Storage backends](/server-storage/): SQLite, Postgres, D1, segment and
   blob stores, signed URLs and CDN.
 - [Cloudflare Workers](/server-workers/): D1 + R2 + Durable Object realtime.
+- [Durable server reactions](/server-reactions/): email, webhooks,
+  projections, and jobs after accepted commits.
 - [Operations](/server-operations/): events, admin console, pruning, GC,
   load tests.
 - [Scopes & authorization](/concepts-scopes/): how `resolveScopes` gates
