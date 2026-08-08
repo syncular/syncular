@@ -49,6 +49,11 @@ await __SYNCULAR__.clients[0].ref.query('SELECT * FROM todos');
 apply batch, the fastest way to confirm data is arriving and your live
 queries should have re-run.
 
+Production builds omit the registry. A public sandbox with non-sensitive data
+can retain it by defining `SYNCULAR_DEVTOOLS` as `true` in the bundler. The
+registry exposes full client handles, so applications with private data must
+keep the production gate. The two-pane demo enables this flag in both builds.
+
 ## Enter/mutate silently does nothing
 
 Seen in the dev loop: you restart the dev server while a tab stays open,

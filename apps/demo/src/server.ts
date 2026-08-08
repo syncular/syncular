@@ -169,6 +169,7 @@ const build = await Bun.build({
   // condition points at compiled dist for external bundlers).
   conditions: ['bun'],
   sourcemap: 'inline',
+  define: { SYNCULAR_DEVTOOLS: 'true' },
   external: ['@sqlite.org/sqlite-wasm'],
 });
 async function bundleText(basename: string): Promise<string> {

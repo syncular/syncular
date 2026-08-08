@@ -61,7 +61,13 @@ const build = await Bun.build({
   // condition points at compiled dist).
   conditions: ['bun'],
   minify: true,
-  define: { SYNCULAR_DEMO_EMBEDDED: 'true' },
+  // The hosted demo intentionally exposes the documented __SYNCULAR__
+  // browser-console registry. Other production builds keep the registry
+  // gated off through their ordinary production NODE_ENV definition.
+  define: {
+    SYNCULAR_DEMO_EMBEDDED: 'true',
+    SYNCULAR_DEVTOOLS: 'true',
+  },
   external: ['@sqlite.org/sqlite-wasm'],
   plugins: [bunSqliteStub],
 });

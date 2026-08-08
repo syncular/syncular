@@ -36,7 +36,6 @@ import {
   type SeedMutation,
   seedMutations,
   type SyncServerConfig,
-  SyncularAdmin,
 } from '@syncular/server';
 import { schema } from '../syncular.generated';
 
@@ -101,7 +100,6 @@ const ring = new RingBufferEvents({ capacity: 500 });
 interface EmbeddedServerParts {
   readonly config: SyncServerConfig;
   readonly hub: ReturnType<typeof createRealtimeHub>;
-  readonly admin: SyncularAdmin;
 }
 
 async function bootServer(): Promise<EmbeddedServerParts> {
@@ -134,7 +132,7 @@ async function bootServer(): Promise<EmbeddedServerParts> {
     // Everything inlines: no segment-download path in the embedded demo.
     limits: { inlineSegmentMaxBytes: 64 * 1024 * 1024 },
   };
-  return { config, hub, admin: SyncularAdmin.fromConfig(config, { ring }) };
+  return { config, hub };
 }
 
 /** Seed a few rows through the real push path (same seed as the dev server). */
@@ -210,7 +208,7 @@ const booted = bootServer()
 
 scope.onmessage = (event: MessageEvent) => {
   void (async () => {
-    const { config, hub, admin } = await booted;
+    const { config, hub } = await booted;
     const ctx = { ...config, partition: PARTITION, actorId: ACTOR_ID };
     const msg = event.data as {
       kind: string;
@@ -257,27 +255,6 @@ scope.onmessage = (event: MessageEvent) => {
             throw new Error('memory blob store always serves inline bytes');
           }
           reply({ kind: 'result', ok: true, bytes: result.bytes });
-          break;
-        }
-        case 'admin-snapshot': {
-          const [horizon, clients, commits, stats] = await Promise.all([
-            admin.horizonStatus(PARTITION),
-            admin.listClients(PARTITION),
-            admin.listCommits(PARTITION, { limit: 25 }),
-            admin.stats(PARTITION),
-          ]);
-          reply({
-            kind: 'result',
-            ok: true,
-            snapshot: {
-              horizon,
-              metrics: admin.metrics(PARTITION),
-              stats,
-              clients,
-              commits,
-              events: admin.events({ limit: 50 }),
-            },
-          });
           break;
         }
         case 'rt-open': {
