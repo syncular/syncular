@@ -32,6 +32,7 @@ import { handleSegmentDownload, handleSyncRequest } from '@syncular/server';
 import {
   CLIENT_SCHEMA,
   makeServer,
+  TEST_LOG_EPOCH,
   type TestServer,
   taskValues,
 } from './helpers';
@@ -174,6 +175,10 @@ test('setWindow does not interleave with a bootstrap pull (§4.8, §8.2, one loo
     plainSegments(server, 'actor-1'),
   );
   await writer.client.start();
+  writer.db.exec(
+    'INSERT OR REPLACE INTO _syncular_meta(key, value) VALUES (?, ?)',
+    ['logEpoch', TEST_LOG_EPOCH],
+  );
   for (const [id, project] of [
     ['a1', 'winA'],
     ['b1', 'winB'],
@@ -187,6 +192,10 @@ test('setWindow does not interleave with a bootstrap pull (§4.8, §8.2, one loo
   const gate = gatedSegments(server, 'actor-1');
   const reader = makeProbeClient(server, 'reader', gate.downloader);
   await reader.client.start();
+  reader.db.exec(
+    'INSERT OR REPLACE INTO _syncular_meta(key, value) VALUES (?, ?)',
+    ['logEpoch', TEST_LOG_EPOCH],
+  );
   // Window in winA — the bootstrap pull for it will download a gated segment.
   await reader.client.setWindow({ table: 'tasks', variable: 'project_id' }, [
     'winA',

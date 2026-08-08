@@ -80,6 +80,7 @@ describe('revision-1 SyqlLanguageServer', () => {
       sqlNotification?.params as {
         diagnostics: Array<{
           code?: string;
+          data?: { remedy: string };
           message: string;
           range: { start: Position; end: Position };
         }>;
@@ -87,6 +88,10 @@ describe('revision-1 SyqlLanguageServer', () => {
     ).diagnostics[0];
     expect(sqlDiagnostic?.code).toBe('SYQL6002_INVALID_SQL');
     expect(sqlDiagnostic?.message).toBe('unknown column `no_such_column`');
+    expect(sqlDiagnostic?.data).toEqual({
+      remedy:
+        'Correct the reported SQLite syntax, table, column, function, or bind error.',
+    });
     expect(sqlDiagnostic?.range).toEqual({
       start: { line: 4, character: 22 },
       end: { line: 4, character: 36 },

@@ -106,7 +106,8 @@ export async function runWindowShardLane(
     initialApplied += summary.segmentRowsApplied;
     if (
       summary.segmentRowsApplied === 0 &&
-      summary.bootstrapping.length === 0
+      summary.bootstrapping.length === 0 &&
+      summary.resets.length === 0
     ) {
       break;
     }
@@ -120,7 +121,8 @@ export async function runWindowShardLane(
     replaceApplied += summary.segmentRowsApplied;
     if (
       summary.segmentRowsApplied === 0 &&
-      summary.bootstrapping.length === 0
+      summary.bootstrapping.length === 0 &&
+      summary.resets.length === 0
     ) {
       break;
     }

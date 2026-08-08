@@ -9,6 +9,12 @@
       "covers": "Active subscription, zero commits, cursor advanced anyway (SPEC.md §4.5)"
     },
     {
+      "name": "epoch-reset",
+      "bin": "epoch-reset.bin",
+      "json": "epoch-reset.json",
+      "covers": "Wire version 2 header-only reset after a partition log epoch change"
+    },
+    {
       "name": "commits-incremental",
       "bin": "commits-incremental.bin",
       "json": "commits-incremental.json",

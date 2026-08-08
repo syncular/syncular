@@ -29,10 +29,11 @@ export interface RequestHandledEvent {
   /**
    * `ok` — response streamed to END;
    * `schema_floor` — §2.4 required-schema answer;
+   * `reset` — §2.1 log-epoch reset answer;
    * `rejected` — request validation failed before any bytes (§1.7);
    * `error` — in-band ERROR frame (§1.6) or a thrown host failure.
    */
-  readonly outcome: 'ok' | 'schema_floor' | 'rejected' | 'error';
+  readonly outcome: 'ok' | 'schema_floor' | 'reset' | 'rejected' | 'error';
   /** §10.2 code for `rejected`/`error`; `"internal"` for non-SyncErrors. */
   readonly errorCode?: string;
   readonly pushCommits: number;

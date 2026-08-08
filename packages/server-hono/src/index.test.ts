@@ -11,7 +11,6 @@ import {
   encodeRemoteOperationRequest,
   decodeRemoteOperationResponse,
   encodeRow,
-  PROTOCOL_WIRE_VERSION,
   type RowColumn,
 } from '@syncular/core';
 import {
@@ -48,10 +47,11 @@ const SCHEMA: ServerSchema = {
 function makeApp(
   events?: SyncularServerEvents,
   operations?: RemoteOperationRegistry,
+  storage = new SqliteServerStorage(),
 ) {
   const config: SyncServerConfig = {
     schema: SCHEMA,
-    storage: new SqliteServerStorage(),
+    storage,
     segments: new MemorySegmentStore(),
     resolveScopes: () => ({ project_id: ['p1'] }),
     limits: { inlineSegmentMaxBytes: 1 },
@@ -70,7 +70,7 @@ function makeApp(
 
 function requestBytes(title = 'hello'): Uint8Array {
   return encodeMessage({
-    wireVersion: PROTOCOL_WIRE_VERSION,
+    wireVersion: 1,
     msgKind: 'request',
     frames: [
       { type: 'REQ_HEADER', clientId: 'client-1', schemaVersion: 1 },
@@ -119,6 +119,7 @@ describe('hono adapter', () => {
       dependencies: () => [{ table: 'tasks' }],
       coverage: () => [],
     };
+    const storage = new SqliteServerStorage();
     const app = makeApp(
       undefined,
       new RemoteOperationRegistry([
@@ -130,6 +131,7 @@ describe('hono adapter', () => {
           },
         }),
       ]),
+      storage,
     );
     const response = await app.request('/operations', {
       method: 'POST',
@@ -157,6 +159,9 @@ describe('hono adapter', () => {
       operationId: descriptor.id,
       rows: [],
       maxCommitSeq: 0,
+    });
+    expect((await storage.listPartitionRegistry())[0]).toMatchObject({
+      partition: 'part-1',
     });
   });
 

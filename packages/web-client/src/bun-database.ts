@@ -15,6 +15,12 @@ import {
   type SqlValue,
 } from './database';
 
+declare module 'bun:sqlite' {
+  interface Database {
+    clearQueryCache(): void;
+  }
+}
+
 type BunParam = string | number | bigint | Uint8Array | null;
 
 function coerceParams(params: readonly SqlValue[]): BunParam[] {
@@ -34,6 +40,11 @@ export class BunClientDatabase implements ClientDatabase {
 
   exec(sql: string, params: readonly SqlValue[] = []): void {
     this.db.query(sql).run(...coerceParams(params));
+    // `Database.query()` caches prepared statements. Clear that cache after
+    // schema DDL so a reset does not reprepare every later row upsert.
+    if (/^\s*(?:CREATE|DROP|ALTER)\b/i.test(sql)) {
+      this.db.clearQueryCache();
+    }
   }
 
   query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {

@@ -31,6 +31,7 @@ export class SqliteSegmentStore implements SegmentStore {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sync_segments(
         segment_id TEXT PRIMARY KEY, partition TEXT NOT NULL,
+        log_epoch TEXT NOT NULL,
         tbl TEXT NOT NULL, schema_version INTEGER NOT NULL,
         media_type TEXT NOT NULL, scope_digest TEXT NOT NULL,
         as_of_commit_seq INTEGER NOT NULL, row_count INTEGER NOT NULL,
@@ -39,6 +40,14 @@ export class SqliteSegmentStore implements SegmentStore {
         expires_at_ms INTEGER NOT NULL, bytes BLOB NOT NULL
       );
     `);
+    const columns = this.db
+      .query<{ name: string }, []>('PRAGMA table_info(sync_segments)')
+      .all();
+    if (!columns.some((column) => column.name === 'log_epoch')) {
+      this.db.exec(
+        "ALTER TABLE sync_segments ADD COLUMN log_epoch TEXT NOT NULL DEFAULT ''",
+      );
+    }
   }
 
   async put(
@@ -57,14 +66,15 @@ export class SqliteSegmentStore implements SegmentStore {
     this.db
       .query(
         `INSERT OR REPLACE INTO sync_segments(
-          segment_id, partition, tbl, schema_version, media_type,
+          segment_id, partition, log_epoch, tbl, schema_version, media_type,
           scope_digest, as_of_commit_seq, row_count, row_cursor,
           next_row_cursor, byte_length, created_at_ms, expires_at_ms, bytes
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         record.segmentId,
         record.partition,
+        record.logEpoch,
         record.table,
         record.schemaVersion,
         record.mediaType,
@@ -89,6 +99,7 @@ export class SqliteSegmentStore implements SegmentStore {
         {
           segment_id: string;
           partition: string;
+          log_epoch: string;
           tbl: string;
           schema_version: number;
           media_type: string;
@@ -110,6 +121,7 @@ export class SqliteSegmentStore implements SegmentStore {
       record: {
         segmentId: row.segment_id,
         partition: row.partition,
+        logEpoch: row.log_epoch,
         table: row.tbl,
         schemaVersion: row.schema_version,
         mediaType: row.media_type === 'sqlite' ? 'sqlite' : 'rows',
@@ -140,18 +152,19 @@ export class SqliteSegmentStore implements SegmentStore {
           created_at_ms: number;
           expires_at_ms: number;
         },
-        [string, string, number, string, string, number, number]
+        [string, string, string, number, string, string, number, number]
       >(
         `SELECT segment_id, row_count, next_row_cursor, byte_length,
                 created_at_ms, expires_at_ms
          FROM sync_segments
-         WHERE partition=? AND tbl=? AND schema_version=? AND media_type=?
+         WHERE partition=? AND log_epoch=? AND tbl=? AND schema_version=? AND media_type=?
            AND scope_digest=? AND as_of_commit_seq=? AND row_cursor IS NULL
            AND expires_at_ms > ?
          LIMIT 1`,
       )
       .get(
         key.partition,
+        key.logEpoch,
         key.table,
         key.schemaVersion,
         key.mediaType,
@@ -163,6 +176,7 @@ export class SqliteSegmentStore implements SegmentStore {
     return {
       segmentId: row.segment_id,
       partition: key.partition,
+      logEpoch: key.logEpoch,
       table: key.table,
       schemaVersion: key.schemaVersion,
       mediaType: key.mediaType,

@@ -35,6 +35,7 @@ export * from './realtime-supervisor';
 export * from './schema';
 export * from './sql-tag';
 export * from './state';
+export * from './sync-scheduler';
 export * from './transport';
 export * from './window';
 export * from './worker-host';

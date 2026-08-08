@@ -233,10 +233,9 @@ export default {
   fetch: /* … as above … */,
   async scheduled(_event: unknown, env: Env) {
     const storage = new D1ServerStorage(env.DB);
+    await storage.migrate();
     const blobs = makeBlobs(env); // the same S3BlobStore config
-    // listPartitions: your registry of active partitions (e.g. a D1 table
-    // your authenticate() maintains); the server does not enumerate them.
-    for (const partition of await listPartitions(env)) {
+    for (const { partition } of await storage.listPartitionRegistry()) {
       await pruneCommitLog({ storage, partition, nowMs: Date.now() });
 
       let result;

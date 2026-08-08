@@ -58,6 +58,10 @@ share: `{method, params}` in, `{result|error}` out, bytes as `{"$bytes":"<hex>"}
 `readRows` returns `RowState` objects (`{rowId, version, values}`; `version == -1`
 marks an optimistic, not-yet-synced row); `query` returns flat SQL rows.
 
+Call `setHeaders(["Authorization": "Bearer \(token)"])` after credential
+rotation. HTTP requests use the new headers immediately. Reconnect realtime to
+repeat the WebSocket handshake with them.
+
 ## Binary linkage — two consumption modes
 
 The wrapper links the native core; the core is built by
@@ -86,6 +90,10 @@ The wrapper links the native core; the core is built by
 
 Background/foreground and connectivity handling lives in the
 wrapper, not the core. `SyncularClient` exposes:
+
+`IOSPathConnectivitySignal` wraps `NWPathMonitor`.
+`SyncularConnectivityAdapter` binds that signal to `pause()` and `resume()`;
+stop both objects during client teardown.
 
 - **`pause()`** — stops the event poll loop and disconnects the realtime socket.
   Call from `applicationDidEnterBackground` (SwiftUI: `.onChange(of: scenePhase)`

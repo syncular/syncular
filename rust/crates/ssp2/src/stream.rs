@@ -14,7 +14,7 @@
 //! rule) and walks frame length prefixes; full decoding stays with
 //! [`crate::decode_message`].
 
-use crate::decode::{SSP2_MAGIC, WIRE_VERSION};
+use crate::decode::{MINIMUM_WIRE_VERSION, SSP2_MAGIC, WIRE_VERSION};
 use crate::error::{DecodeError, Result};
 use crate::model::frame_type;
 
@@ -110,7 +110,7 @@ impl MessageStreamScanner {
             return Err(DecodeError::invalid("bad envelope magic (expected SSP2)"));
         }
         let wire_version = u16::from_le_bytes([b[4], b[5]]);
-        if wire_version != WIRE_VERSION {
+        if !(MINIMUM_WIRE_VERSION..=WIRE_VERSION).contains(&wire_version) {
             return Err(DecodeError::invalid(format!(
                 "unsupported wireVersion {wire_version}"
             )));
@@ -141,11 +141,13 @@ mod tests {
     /// the same shape the TS scanner test uses.
     fn request_bytes() -> Vec<u8> {
         let message = Message {
+            wire_version: 1,
             msg_kind: MsgKind::Request,
             frames: vec![
                 Frame::ReqHeader {
                     client_id: "c1".to_owned(),
                     schema_version: 1,
+                    log_epoch: None,
                 },
                 Frame::PullHeader {
                     limit_commits: 0,

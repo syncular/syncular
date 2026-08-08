@@ -43,6 +43,7 @@ import {
 } from '@syncular/server';
 
 export const PARTITION = 'part-1';
+export const TEST_LOG_EPOCH = 'test-log-epoch';
 
 export const TASK_COLUMNS: readonly RowColumn[] = [
   { name: 'id', type: 'string', nullable: false },
@@ -116,6 +117,11 @@ function wrapStorage(
 ): ServerStorage {
   return {
     ensureSchema: (s) => storage.ensureSchema(s),
+    touchPartition: (p, at, epoch) => storage.touchPartition(p, at, epoch),
+    rotatePartitionLogEpoch: (p, epoch, at) =>
+      storage.rotatePartitionLogEpoch(p, epoch, at),
+    listPartitionRegistry: () => storage.listPartitionRegistry(),
+    listPartitions: () => storage.listPartitions(),
     begin: (p) => storage.begin(p),
     getMaxCommitSeq: (p) => storage.getMaxCommitSeq(p),
     getHorizonSeq: (p) => storage.getHorizonSeq(p),
@@ -159,6 +165,7 @@ export function makeServer(
     inlineSegmentMaxBytes: 256 * 1024,
   };
   const now = { ms: 1_750_000_000_000 };
+  void storage.touchPartition(PARTITION, now.ms, TEST_LOG_EPOCH);
   const defaultAllowed: ScopeMap = {
     project_id: ['*'],
     projectId: ['*'],
@@ -357,6 +364,10 @@ export async function makeClient(
   };
   const client = new SyncClient(config);
   await client.start();
+  db.exec('INSERT OR REPLACE INTO _syncular_meta(key, value) VALUES (?, ?)', [
+    'logEpoch',
+    TEST_LOG_EPOCH,
+  ]);
   return { client, db, faults, wakes, intents };
 }
 

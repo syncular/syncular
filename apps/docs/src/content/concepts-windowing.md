@@ -21,6 +21,36 @@ already the authorization boundary, the fanout index, and the segment cache
 key, so windowing by it costs nothing new on the wire. The server side is
 unchanged: windowing reuses the existing frames, fields, and codes.
 
+## Creation-time month windows
+
+Store an immutable UTC month bucket when each row is created. Derive the value
+from the creation timestamp, then use the same column as the scope variable:
+
+```ts
+import { creationTimeBucket, last } from '@syncular/client';
+
+const createdAtMs = Date.now();
+const row = {
+  id: crypto.randomUUID(),
+  created_at_ms: createdAtMs,
+  created_month: creationTimeBucket(createdAtMs, 'month'),
+};
+
+await client.setWindow(
+  { table: 'messages', variable: 'created_month' },
+  last(3, 'month'),
+);
+```
+
+`last(3, 'month')` returns the current UTC month and the two preceding months,
+ordered oldest first. Pass an explicit `nowMs` in jobs and tests that require a
+pinned boundary. Month values use `YYYY-MM` for timestamps from 1970 through
+year 9999. Counts range from 1 through 1200.
+
+Do not recompute `created_month` as time passes. The bucket records creation
+time, so a rolling window changes only its set of live scope values. No timer
+mutates stored rows.
+
 ## Changing the window is a set difference
 
 A window change is a set difference on a **family** of subscriptions, one per

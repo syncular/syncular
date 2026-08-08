@@ -82,12 +82,12 @@ VERIFY="$(cd "${QUICKSTART_DIR}" && SMOKE_TITLE="${TITLE}" SMOKE_URL="http://loc
 import { makeClient } from './src/make-client';
 const b = makeClient(process.env.SMOKE_URL!, 'kotlin-smoke-verify-' + Date.now());
 await b.start();
-b.subscribe({ id: 'notes', table: 'notes', scopes: { list_id: ['welcome'] } });
+b.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } });
 await b.syncUntilIdle();
-const rows = b.query('SELECT body FROM notes');
-const hit = rows.some((r: any) => String(r.body).includes(process.env.SMOKE_TITLE!));
+const rows = b.query('SELECT title FROM todos');
+const hit = rows.some((r: any) => String(r.title).includes(process.env.SMOKE_TITLE!));
 console.log(hit ? 'VERIFY_OK' : 'VERIFY_MISS');
-for (const r of rows) console.log('  server row:', r.body);
+for (const r of rows) console.log('  server row:', r.title);
 await b.close();
 process.exit(hit ? 0 : 1);
 TS

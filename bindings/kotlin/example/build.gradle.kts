@@ -1,5 +1,5 @@
 // The syncular Kotlin todo example — a terminal app over the SyncularClient
-// wrapper (the root project), talking to the quickstart server's `notes` table.
+// wrapper (the root project), talking to the quickstart server's `todos` table.
 // It runs as a Gradle `application` module so `gradle :example:run` drives it;
 // the CI smoke pipes a scripted stdin at it against a live quickstart server.
 //

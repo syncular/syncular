@@ -287,6 +287,31 @@ fn preflight_refuses_plain_replacement_creates_and_activates_with_headers() {
 }
 
 #[test]
+fn set_headers_is_a_validated_runtime_command() {
+    let config = CString::new("{}").unwrap();
+    let handle = syncular_client_new(config.as_ptr());
+    let created = command(
+        handle,
+        "create",
+        json!({ "clientId": "ffi-header-rotation", "schema": simple_schema() }),
+    );
+    assert_eq!(created["result"], json!({}));
+    let rotated = command(
+        handle,
+        "setHeaders",
+        json!({ "headers": { "authorization": "Bearer fresh" } }),
+    );
+    assert_eq!(rotated["result"], json!({}), "{rotated}");
+    let invalid = command(
+        handle,
+        "setHeaders",
+        json!({ "headers": { "authorization": 7 } }),
+    );
+    assert_eq!(invalid["error"]["code"], "sync.invalid_request");
+    syncular_client_close(handle);
+}
+
+#[test]
 fn malformed_config_returns_null_handle() {
     let bad = CString::new("not json").unwrap();
     let handle = syncular_client_new(bad.as_ptr());

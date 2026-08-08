@@ -105,6 +105,12 @@ Log the cause for operators and stop startup. Do not catch readiness errors in
 authentication or convert them to a 401; request-time schema checks are only a
 defensive fallback.
 
+After restoring an authoritative database, keep traffic stopped and call
+`rotatePartitionLogEpoch({ storage, partition })` for every restored
+partition. The rotation clears stale client cursors and requires version 2
+clients to reset their server-derived rows while preserving the outbox. Follow
+the complete [backup and restore runbook](https://syncular.dev/server-backup-restore/).
+
 ## Write validators and recovery metadata
 
 `validators` is the server-authoritative seam for row business rules that
@@ -507,7 +513,7 @@ by design:
 | `horizonStatus(partition)` | `{maxCommitSeq, horizonSeq, retainedCommits, activeCursorFloor, recommendedHorizonSeq, recommendation}` — the horizon a prune pass would reach now (§4.6) + a coarse `up-to-date` / `prune-recommended`. |
 | `segmentStats()` / `blobStats(partition)` / `stats(partition)` | Counts/bytes where the stores expose them (segments split rows/sqlite). `undefined` when a store omits `stats()`. |
 | `metrics(partition, {windowMs?, buckets?})` | Ring-derived request/push health over a trailing window (default 5 min): request count/rate, error share, p50/p95 duration, push applied/rejected/conflicted, and per-bucket counts for a sparkline. Zero new server state; all zeros when no ring is wired. |
-| `listPartitions()` / `partitionsOverview()` | Every partition the storage holds state for; the overview adds retained backlog, client counts (known/active), and the prune recommendation per partition — the fleet view. |
+| `listPartitionRegistry()` / `partitionsOverview()` | Every authenticated partition; the registry carries log continuity and last-authenticated time, while the overview adds retained backlog, client counts, and the prune recommendation. |
 | `events({type?, sinceMs?, clientId?, actorId?, limit?})` | The ring tail, newest first. Empty when no ring is wired (`hasEventStream` reports which). |
 | `subscribeEvents(listener)` | Live events as they land in the ring; returns the unsubscribe function, `undefined` when no ring is wired. |
 

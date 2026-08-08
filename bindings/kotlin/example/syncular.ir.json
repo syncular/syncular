@@ -5,13 +5,14 @@
     {
       "version": 1,
       "migrations": [
-        "0001_initial"
+        "0001_initial",
+        "0002_canonical_todos"
       ]
     }
   ],
   "tables": [
     {
-      "name": "notes",
+      "name": "todos",
       "primaryKey": "id",
       "columns": [
         {
@@ -25,8 +26,18 @@
           "nullable": false
         },
         {
-          "name": "body",
+          "name": "title",
           "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "done",
+          "type": "boolean",
+          "nullable": false
+        },
+        {
+          "name": "position",
+          "type": "integer",
           "nullable": false
         },
         {
@@ -47,8 +58,8 @@
   ],
   "subscriptions": [
     {
-      "name": "listNotes",
-      "table": "notes",
+      "name": "todosInList",
+      "table": "todos",
       "scopes": [
         {
           "variable": "list_id",

@@ -43,10 +43,13 @@ use crate::transport::{HostTransport, Inbound};
 /// server's answer to a bare round.
 fn response_bytes() -> Vec<u8> {
     encode_message(&Message {
+        wire_version: 1,
         msg_kind: MsgKind::Response,
         frames: vec![Frame::RespHeader {
             required_schema_version: None,
             latest_schema_version: None,
+            log_epoch: None,
+            reset_required: None,
         }],
     })
 }
@@ -110,10 +113,12 @@ fn connect_native(port: u16) -> HostTransport {
 
 fn request_bytes() -> Vec<u8> {
     encode_message(&Message {
+        wire_version: 1,
         msg_kind: MsgKind::Request,
         frames: vec![Frame::ReqHeader {
             client_id: "c1".to_owned(),
             schema_version: 1,
+            log_epoch: None,
         }],
     })
 }
@@ -185,10 +190,12 @@ fn round_chunked_response_reassembles() {
 
     let mut transport = connect_native(port);
     let request = encode_message(&Message {
+        wire_version: 1,
         msg_kind: MsgKind::Request,
         frames: vec![Frame::ReqHeader {
             client_id: "c1".to_owned(),
             schema_version: 1,
+            log_epoch: None,
         }],
     });
     let got = transport.realtime_sync(&request).expect("round ok");
@@ -202,10 +209,13 @@ fn delta_during_round_is_queued_not_mixed_into_response() {
     // A standalone delta the server (mis)behaves by sending mid-round; the
     // client must queue it to the inbound lane, not fold it into the round.
     let delta = encode_message(&Message {
+        wire_version: 1,
         msg_kind: MsgKind::Response,
         frames: vec![Frame::RespHeader {
             required_schema_version: Some(7),
             latest_schema_version: Some(7),
+            log_epoch: None,
+            reset_required: None,
         }],
     });
     let server_response = response.clone();
@@ -224,10 +234,12 @@ fn delta_during_round_is_queued_not_mixed_into_response() {
 
     let mut transport = connect_native(port);
     let request = encode_message(&Message {
+        wire_version: 1,
         msg_kind: MsgKind::Request,
         frames: vec![Frame::ReqHeader {
             client_id: "c1".to_owned(),
             schema_version: 1,
+            log_epoch: None,
         }],
     });
     let got = transport.realtime_sync(&request).expect("round ok");
@@ -269,10 +281,12 @@ fn mid_round_socket_drop_fails_the_round() {
 
     let mut transport = connect_native(port);
     let request = encode_message(&Message {
+        wire_version: 1,
         msg_kind: MsgKind::Request,
         frames: vec![Frame::ReqHeader {
             client_id: "c1".to_owned(),
             schema_version: 1,
+            log_epoch: None,
         }],
     });
     let outcome = transport.realtime_sync(&request);

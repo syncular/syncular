@@ -53,12 +53,28 @@ organization; in a single-tenant deployment, one fixed value is fine.
 
 ## Enumerating partitions
 
-The server derives partitions from `authenticate` and does not keep its own
-registry; maintenance code that loops over partitions
-([Operations](/server-operations/), the Workers `scheduled` handler) needs
-the application's list. Maintain one where your tenants already live (the
-application database, or a table the `authenticate` path updates), and treat
-an empty maintenance pass for a retired tenant as harmless.
+The storage backend keeps a partition registry. Every authenticated sync,
+operation, segment, blob, and realtime request refreshes
+`lastAuthenticatedAtMs`. The first request creates the partition's log epoch.
+Authentication remains the source of the partition value; a client cannot
+write the registry directly.
+
+Use the registry for maintenance loops:
+
+```ts
+for (const entry of await storage.listPartitionRegistry()) {
+  await pruneCommitLog({
+    storage,
+    partition: entry.partition,
+    nowMs: Date.now(),
+  });
+}
+```
+
+Each entry contains `partition`, `logEpoch`, `epochRequired`, and
+`lastAuthenticatedAtMs`. A maintenance policy can skip a long-inactive entry,
+while the admin fleet view lists every entry. A restore runbook rotates the
+log epoch before traffic resumes; see [Backup and restore](/server-backup-restore/).
 
 ## Where to go next
 

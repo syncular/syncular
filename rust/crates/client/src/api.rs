@@ -13,6 +13,77 @@ pub type QueryValue = Value;
 /// One dynamic query result row, keyed by QueryIR runtime projection name.
 pub type QueryRow = Map<String, QueryValue>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeBucketUnit {
+    Month,
+}
+
+const MAX_TIME_BUCKET_MS: i64 = 253_402_300_799_999;
+
+fn utc_year_month(timestamp_ms: i64) -> Result<(i64, i64), String> {
+    if !(0..=MAX_TIME_BUCKET_MS).contains(&timestamp_ms) {
+        return Err(
+            "sync.invalid_request: time bucket timestamps must fall from 1970 through 9999"
+                .to_owned(),
+        );
+    }
+    let z = timestamp_ms / 86_400_000 + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    if month <= 2 {
+        year += 1;
+    }
+    Ok((year, month))
+}
+
+/// Derive the immutable UTC scope value stored when a row is created.
+pub fn creation_time_bucket(created_at_ms: i64, unit: TimeBucketUnit) -> Result<String, String> {
+    match unit {
+        TimeBucketUnit::Month => {
+            let (year, month) = utc_year_month(created_at_ms)?;
+            Ok(format!("{year:04}-{month:02}"))
+        }
+    }
+}
+
+/// Return a rolling UTC month window ordered from oldest to newest.
+pub fn last(count: usize, unit: TimeBucketUnit, now_ms: i64) -> Result<Vec<String>, String> {
+    if !(1..=1_200).contains(&count) {
+        return Err(
+            "sync.invalid_request: time bucket count must be from 1 through 1200".to_owned(),
+        );
+    }
+    match unit {
+        TimeBucketUnit::Month => {
+            let (year, month) = utc_year_month(now_ms)?;
+            let current = year * 12 + month - 1;
+            if current - (count as i64 - 1) < 1970 * 12 {
+                return Err(
+                    "sync.invalid_request: every returned UTC month must fall from 1970 through 9999"
+                        .to_owned(),
+                );
+            }
+            Ok((0..count)
+                .rev()
+                .map(|offset| {
+                    let value = current - offset as i64;
+                    format!(
+                        "{:04}-{:02}",
+                        value.div_euclid(12),
+                        value.rem_euclid(12) + 1
+                    )
+                })
+                .collect())
+        }
+    }
+}
+
 /// §4.8 window base: one table, the scope variable whose values are the
 /// window units, any fixed scopes shared by every unit, and host-opaque
 /// `params` carried onto each unit's subscription.
@@ -38,6 +109,32 @@ pub struct WindowState {
     pub units: Vec<String>,
     /// Registered units whose bootstrap has not yet completed.
     pub pending: Vec<String>,
+}
+
+#[cfg(test)]
+mod time_bucket_tests {
+    use super::{creation_time_bucket, last, TimeBucketUnit};
+
+    #[test]
+    fn utc_month_buckets_cross_year_boundaries() {
+        let now = 1_770_508_800_000; // 2026-02-08T00:00:00Z
+        assert_eq!(
+            creation_time_bucket(now, TimeBucketUnit::Month).unwrap(),
+            "2026-02"
+        );
+        assert_eq!(
+            last(3, TimeBucketUnit::Month, now).unwrap(),
+            vec!["2025-12", "2026-01", "2026-02"]
+        );
+    }
+
+    #[test]
+    fn utc_month_buckets_reject_unbounded_input() {
+        assert!(last(0, TimeBucketUnit::Month, 0).is_err());
+        assert!(last(1_201, TimeBucketUnit::Month, 0).is_err());
+        assert!(last(2, TimeBucketUnit::Month, 0).is_err());
+        assert!(creation_time_bucket(-1, TimeBucketUnit::Month).is_err());
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

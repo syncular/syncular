@@ -199,6 +199,12 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
     recommendedAction: 'upgradeClient',
     httpStatus: 400,
   },
+  'sync.client_wire_unsupported': {
+    category: 'schema-mismatch',
+    retryable: false,
+    recommendedAction: 'upgradeClient',
+    httpStatus: 400,
+  },
   'sync.websocket_connection_limit': {
     category: 'rate-limited',
     retryable: true,

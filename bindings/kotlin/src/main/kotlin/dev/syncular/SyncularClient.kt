@@ -235,6 +235,17 @@ class SyncularClient private constructor(
         command("unsubscribe", JsonValue.obj("id" to JsonValue.of(id)))
     }
 
+    /** Replace the full native transport header set. Subsequent HTTP requests
+     * use it immediately; reconnect realtime to apply it to the handshake. */
+    fun setHeaders(headers: Map<String, String>) {
+        command(
+            "setHeaders",
+            JsonValue.obj(
+                "headers" to JsonValue.Obj(headers.mapValues { JsonValue.of(it.value) }),
+            ),
+        )
+    }
+
     /** Run one sync round against the server (needs native-transport). Never
      *  errors out-of-band; inspect `ok`/`errorCode` on the returned object. */
     fun sync(): JsonValue = command("sync", JsonValue.Obj(emptyMap()))

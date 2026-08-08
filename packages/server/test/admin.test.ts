@@ -206,6 +206,7 @@ describe('partitions', () => {
       changes: [],
     });
     await tx.commit();
+    await t.storage.touchPartition('part-2', t.now.ms, 'epoch-2');
     expect(await admin.listPartitions()).toEqual(['part-1', 'part-2']);
     const overview = await admin.partitionsOverview();
     expect(overview).toHaveLength(2);
@@ -420,6 +421,7 @@ describe('stats + event stream', () => {
       });
       const meta: SegmentMetadata = {
         partition: 'p',
+        logEpoch: 'epoch-1',
         table: 'tasks',
         schemaVersion: 1,
         mediaType: 'rows',

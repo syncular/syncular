@@ -230,5 +230,15 @@ and hover/definition/references for imported predicates. Rust maps exact
 integers to `i64`, optional nullable inputs to `SyqlPresence<Option<T>>`,
 groups to generated structs, and sorts to closed enums.
 
+Every stable diagnostic code has one remediation instruction. The language
+server publishes it as `Diagnostic.data.remedy`, and tooling can generate the
+same catalog from `@syncular/typegen`:
+
+```ts
+import { generateSyqlDiagnosticCatalog } from '@syncular/typegen';
+
+const catalog = generateSyqlDiagnosticCatalog();
+```
+
 For exact grammar, lowering, portability, and diagnostic requirements, use the
 [normative specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md).

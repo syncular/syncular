@@ -27,7 +27,7 @@ import {
   httpSyncTransport,
   webSocketRealtimeConnector,
 } from './http';
-import type { CommandEffects, SyncIntent } from './invalidation';
+import type { SyncIntent } from './invalidation';
 import type {
   RealtimeConnector,
   SegmentDownloader,
@@ -209,10 +209,6 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     }
     autoSyncScheduled = true;
     queueMicrotask(runAutoSync);
-  }
-
-  function consumeEffects(effects: CommandEffects): void {
-    consumeSyncIntent(effects.sync);
   }
 
   function requireClient(): SyncClient {
@@ -398,14 +394,11 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     subscribe: (input) => requireClient().subscribe(input),
     unsubscribe: (id) => requireClient().unsubscribe(id),
     setWindow: async (base, units) => {
-      const result = await requireClient().setWindowCommand(base, units);
-      consumeEffects(result.effects);
+      await requireClient().setWindowCommand(base, units);
     },
     windowState: (base) => requireClient().windowState(base),
     mutate: (mutations) => {
-      const result = requireClient().mutateCommand(mutations);
-      consumeEffects(result.effects);
-      return result.value;
+      return requireClient().mutateCommand(mutations).value;
     },
     patch: (table, rowId, partial, options) => {
       // Same §8.4 rule as `mutate`: a local write must push without the app
@@ -416,7 +409,6 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
         partial,
         options,
       );
-      consumeEffects(result.effects);
       return result.value;
     },
     purgeLocalData: (input) => requireClient().purgeLocalData(input),

@@ -1,0 +1,12 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 2,
+  "msgKind": "response",
+  "frames": [
+    {
+      "type": "RESP_HEADER",
+      "logEpoch": "epoch-2026-07-02-b",
+      "resetRequired": true
+    }
+  ]
+}

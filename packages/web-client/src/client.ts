@@ -513,6 +513,8 @@ function emptySummary(pushed: number): MutableSummary {
   };
 }
 
+const LOG_EPOCH_META_KEY = 'logEpoch';
+
 function isFinalPushResult(frame: PushResultFrame): boolean {
   return (
     frame.status !== 'rejected' ||
@@ -579,6 +581,10 @@ export class SyncClient {
   readonly #invalidation = new InvalidationEmitter();
   /** §8.6: subscribable presence-change listeners (twin of onPresence). */
   readonly #presenceListeners = new Set<(scopeKey: string) => void>();
+  readonly #syncNeededListeners = new Set<
+    (reason: 'startup' | 'hello' | WakeReason) => void
+  >();
+  readonly #syncIntentListeners = new Set<(intent: SyncIntent) => void>();
   readonly #diagnostics = new ClientDiagnosticsEmitter();
   #diagnosticsDeferralDepth = 0;
   #diagnosticsPending = false;
@@ -705,8 +711,8 @@ export class SyncClient {
         subscriptions.some((sub) => sub.status === 'active'));
     if (startupWork && this.#securityLifecycle === 'active') {
       this.#needsPull = true;
-      this.#config.onSyncNeeded?.('startup');
-      this.#config.onSyncIntent?.({ kind: 'interactive' });
+      this.#emitSyncNeeded('startup');
+      this.#emitSyncIntent({ kind: 'interactive' });
     }
     // Console introspection is a no-op outside a dev page.
     this.#devtoolsUnregister = registerDevtools({
@@ -776,6 +782,29 @@ export class SyncClient {
     this.#replayOutbox();
   }
 
+  /** §2.1 reset after the server reports a different log continuity. */
+  #runLogEpochReset(logEpoch: string): string[] {
+    const subscriptions = loadSubscriptions(this.#db);
+    const pending = listOutbox(this.#db);
+    this.#setUpgrading(true);
+    this.#applyBatch((batch) => {
+      this.#db.transaction(() => {
+        dropAndRecreateSyncedTables(this.#db, this.#schema);
+        resetSubscriptionsForBump(this.#db);
+        setMeta(this.#db, LOG_EPOCH_META_KEY, logEpoch);
+        for (const commit of pending) {
+          this.#applyOperationsLocally(commit.operations, batch);
+        }
+      });
+      for (const table of this.#schema.tables.values()) batch.table(table.name);
+    });
+    this.#localResetEpoch += 1;
+    this.#setSyncNeeded(true);
+    this.#emitSyncNeeded('startup');
+    this.#emitSyncIntent({ kind: 'interactive' });
+    return subscriptions.map((subscription) => subscription.id);
+  }
+
   #setUpgrading(upgrading: boolean): void {
     if (this.#upgrading === upgrading) return;
     this.#applyBatch((batch) => {
@@ -803,6 +832,7 @@ export class SyncClient {
   }
 
   async close(): Promise<void> {
+    this.#emitSyncIntent({ kind: 'none' });
     this.#devtoolsUnregister?.();
     this.#devtoolsUnregister = undefined;
     this.disconnectRealtime();
@@ -810,6 +840,38 @@ export class SyncClient {
     await this.#lease?.release();
     this.#lease = undefined;
     this.#started = false;
+    this.#syncNeededListeners.clear();
+    this.#syncIntentListeners.clear();
+  }
+
+  #emitSyncNeeded(reason: 'startup' | 'hello' | WakeReason): void {
+    try {
+      this.#config.onSyncNeeded?.(reason);
+    } catch {
+      // An observer cannot alter sync correctness.
+    }
+    for (const listener of this.#syncNeededListeners) {
+      try {
+        listener(reason);
+      } catch {
+        // An observer cannot alter sync correctness.
+      }
+    }
+  }
+
+  #emitSyncIntent(intent: SyncIntent): void {
+    try {
+      this.#config.onSyncIntent?.(intent);
+    } catch {
+      // An observer cannot alter sync correctness.
+    }
+    for (const listener of this.#syncIntentListeners) {
+      try {
+        listener(intent);
+      } catch {
+        // An observer cannot alter sync correctness.
+      }
+    }
   }
 
   /** Current fail-closed local-replica security state. */
@@ -869,8 +931,8 @@ export class SyncClient {
         loadSubscriptions(this.#db).some((sub) => sub.status === 'active'));
     if (startupWork) {
       this.#setSyncNeeded(true);
-      this.#config.onSyncNeeded?.('startup');
-      this.#config.onSyncIntent?.({ kind: 'interactive' });
+      this.#emitSyncNeeded('startup');
+      this.#emitSyncIntent({ kind: 'interactive' });
     }
     this.#emitDiagnostics();
   }
@@ -980,6 +1042,24 @@ export class SyncClient {
   /** Subscribe to exact revisioned observer transactions (SPEC §7.5). */
   onChange(listener: ClientChangeListener): () => void {
     return this.#changes.on(listener);
+  }
+
+  /** Subscribe to host wake signals raised by startup and realtime. */
+  onSyncNeeded(
+    listener: (reason: 'startup' | 'hello' | WakeReason) => void,
+  ): () => void {
+    this.#syncNeededListeners.add(listener);
+    return () => {
+      this.#syncNeededListeners.delete(listener);
+    };
+  }
+
+  /** Subscribe to exact core-owned scheduling instructions. */
+  onSyncIntent(listener: (intent: SyncIntent) => void): () => void {
+    this.#syncIntentListeners.add(listener);
+    return () => {
+      this.#syncIntentListeners.delete(listener);
+    };
   }
 
   /** Subscribe to complete, privacy-safe diagnostic snapshots. */
@@ -1781,12 +1861,17 @@ export class SyncClient {
       cursor: -1,
       status: 'active',
     });
+    this.#setSyncNeeded(true);
+    this.#emitSyncIntent({ kind: 'interactive' });
     this.#emitDiagnostics();
   }
 
   unsubscribe(id: string): void {
     this.#requireActive();
+    if (getSubscription(this.#db, id) === undefined) return;
     deleteSubscription(this.#db, id);
+    this.#setSyncNeeded(true);
+    this.#emitSyncIntent({ kind: 'interactive' });
     this.#emitDiagnostics();
   }
 
@@ -1851,7 +1936,9 @@ export class SyncClient {
               status: 'active',
             });
           });
+          this.#needsPull = true;
           batch.window(baseKey, base.table, unit);
+          batch.status();
         });
         changed = true;
         widened = true;
@@ -1867,6 +1954,9 @@ export class SyncClient {
     const effects: CommandEffects = {
       sync: changed || widened ? { kind: 'interactive' } : { kind: 'none' },
     };
+    if (effects.sync.kind === 'interactive') {
+      this.#emitSyncIntent(effects.sync);
+    }
     return { value: undefined, effects };
   }
 
@@ -1934,6 +2024,8 @@ export class SyncClient {
       });
       batch.scopeMap(table, effective);
       batch.window(baseKey, table.name, unit);
+      this.#needsPull = true;
+      batch.status();
     });
   }
 
@@ -2043,7 +2135,9 @@ export class SyncClient {
         this.#applyOperationsLocally(operations, batch);
         batch.status();
       });
+      this.#needsPull = true;
     });
+    this.#emitSyncIntent({ kind: 'interactive' });
     return clientCommitId;
   }
 
@@ -2320,8 +2414,8 @@ export class SyncClient {
     this.#localResetEpoch += 1;
 
     if (!priorUpgrading) this.#config.onUpgrading?.(true);
-    this.#config.onSyncNeeded?.('startup');
-    this.#config.onSyncIntent?.({ kind: 'interactive' });
+    this.#emitSyncNeeded('startup');
+    this.#emitSyncIntent({ kind: 'interactive' });
     return {
       alreadyApplied: false,
       retainedCommits: pending.length,
@@ -2585,9 +2679,14 @@ export class SyncClient {
     // survive it — the reference server keeps no replay buffer (§8.2).
     this.#setSyncNeeded(false);
     try {
+      const logEpoch = getMeta(this.#db, LOG_EPOCH_META_KEY);
       // §5.9.7 B4: upload pending blobs BEFORE pushing rows that reference
       // them, so the server-side existence check (§6.6) passes.
-      if (this.#hasBlobs && this.#config.blobs !== undefined) {
+      if (
+        logEpoch !== undefined &&
+        this.#hasBlobs &&
+        this.#config.blobs !== undefined
+      ) {
         await this.flushBlobUploads();
       }
       // §7.4.4: encode the outbox with the CURRENT codec; a commit that
@@ -2596,7 +2695,9 @@ export class SyncClient {
       // the queue. `pushFrames` and `outbox` stay index-aligned for result
       // mapping.
       const { pushFrames, outbox, deferred } =
-        await this.#encodeOutboxForPush();
+        logEpoch === undefined
+          ? { pushFrames: [], outbox: [], deferred: 0 }
+          : await this.#encodeOutboxForPush();
       // Captured together with the subscription state below: the response
       // apply persists SUB_END cursors only while this epoch is current.
       const resetEpoch = this.#localResetEpoch;
@@ -2609,6 +2710,7 @@ export class SyncClient {
           type: 'REQ_HEADER',
           clientId: this.#clientId,
           schemaVersion: this.#schema.version,
+          ...(logEpoch !== undefined ? { logEpoch } : {}),
         },
         ...pushFrames,
         {
@@ -2686,11 +2788,7 @@ export class SyncClient {
           delayMs: this.#retryDelayMs,
         };
         this.#retryDelayMs = Math.min(this.#retryDelayMs * 2, 30_000);
-        try {
-          this.#config.onSyncIntent?.(intent);
-        } catch {
-          // An observer cannot alter sync correctness.
-        }
+        this.#emitSyncIntent(intent);
       }
       throw error;
     } finally {
@@ -2916,14 +3014,14 @@ export class SyncClient {
     if (event.event === 'hello') {
       if (event.data.requiresSync) {
         this.#setSyncNeeded(true);
-        this.#config.onSyncNeeded?.('hello');
+        this.#emitSyncNeeded('hello');
       }
       return;
     }
     if (event.event === 'sync') {
       // §8.3: any wake-up means "run a pull soon", never data.
       this.#setSyncNeeded(true);
-      this.#config.onSyncNeeded?.(event.data.reason);
+      this.#emitSyncNeeded(event.data.reason);
       return;
     }
     if (event.event === 'presence') {
@@ -2995,7 +3093,7 @@ export class SyncClient {
       } catch {
         // A delta that cannot be applied is recovered by a pull (§8.3).
         this.#setSyncNeeded(true);
-        this.#config.onSyncNeeded?.('catchup-required');
+        this.#emitSyncNeeded('catchup-required');
       }
     });
   }
@@ -3057,6 +3155,16 @@ export class SyncClient {
     if (header?.type !== 'RESP_HEADER') {
       throw new ClientSyncError('sync.invalid_request', 'missing RESP_HEADER');
     }
+    if (
+      message.wireVersion < 2 ||
+      header.logEpoch === undefined ||
+      header.resetRequired === undefined
+    ) {
+      throw new ClientSyncError(
+        'client.invalid_host_response',
+        'the server response does not carry wire version 2 log-epoch state',
+      );
+    }
     if (header.requiredSchemaVersion !== undefined) {
       // §1.6 schema floor: nothing else was processed — stop syncing and
       // surface the upgrade requirement. A live-round floor always stops:
@@ -3077,6 +3185,26 @@ export class SyncClient {
         bootstrapping: [],
         schemaFloor,
       };
+    }
+    const currentLogEpoch = getMeta(this.#db, LOG_EPOCH_META_KEY);
+    if (header.resetRequired) {
+      if (mode !== 'pull' || message.frames.length !== 1) {
+        throw new ClientSyncError(
+          'client.invalid_host_response',
+          'a log-epoch reset response must contain only RESP_HEADER',
+        );
+      }
+      return {
+        ...summary,
+        resets: this.#runLogEpochReset(header.logEpoch),
+        bootstrapping: [],
+      };
+    }
+    if (currentLogEpoch === undefined || currentLogEpoch !== header.logEpoch) {
+      throw new ClientSyncError(
+        'client.invalid_host_response',
+        'the server changed logEpoch without requiring a reset',
+      );
     }
 
     let section: OpenSection | undefined;

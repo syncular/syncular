@@ -8,6 +8,8 @@
 // surfacing, the offline outbox, a network command reporting transport.unavailable
 // on the lean core, event-poll (initial diagnostics, then none while idle),
 // close idempotence, and pause/resume.
+import 'dart:async';
+
 import 'package:syncular/syncular.dart';
 import 'package:test/test.dart';
 
@@ -78,6 +80,31 @@ void main() {
       'scopes': <String, Object?>{},
     });
     expect(result, isA<Map<String, Object?>>());
+  });
+
+  test('rotates transport headers without recreating the client', () {
+    final client = makeClient();
+    addTearDown(client.close);
+    client.setHeaders({'authorization': 'Bearer fresh'});
+    client.subscribe('after-rotation', 'todo');
+    expect(client.subscriptionState('after-rotation'), equals('active'));
+  });
+
+  test('connectivity adapter pauses, resumes, and detaches', () async {
+    final client = makeClient();
+    addTearDown(client.close);
+    final changes = StreamController<bool>.broadcast();
+    final adapter = SyncularConnectivityAdapter(
+      client,
+      FlutterConnectivitySignal(online: false, changes: changes.stream),
+    );
+    expect(changes.hasListener, isTrue);
+    changes.add(true);
+    await Future<void>.value();
+    client.subscribe('after-connectivity', 'todo');
+    await adapter.close();
+    expect(changes.hasListener, isFalse);
+    await changes.close();
   });
 
   test('error reply surfaces as SyncularError', () {

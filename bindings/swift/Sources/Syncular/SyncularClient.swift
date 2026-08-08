@@ -318,6 +318,15 @@ public final class SyncularClient {
         _ = try command(method: "unsubscribe", params: .object(["id": .string(id)]))
     }
 
+    /// Replace the full native transport header set. Subsequent HTTP requests
+    /// use it immediately; reconnect realtime to apply it to the handshake.
+    public func setHeaders(_ headers: [String: String]) throws {
+        _ = try command(
+            method: "setHeaders",
+            params: .object(["headers": .object(headers.mapValues { .string($0) })])
+        )
+    }
+
     /// Run one sync round against the server (needs `native-transport`).
     @discardableResult
     public func sync() throws -> JSONValue {

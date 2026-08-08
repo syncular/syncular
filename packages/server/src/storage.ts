@@ -164,6 +164,8 @@ export interface ClientSubscription {
 export interface ClientRecord {
   readonly clientId: string;
   readonly actorId: string;
+  /** SSP2 version last accepted from this client; selects realtime deltas. */
+  readonly wireVersion: number;
   /** Minimum `nextCursor` across the last pull's active subscriptions. */
   readonly cursor: number;
   readonly updatedAtMs: number;
@@ -218,6 +220,14 @@ export interface ClientCursorInfo {
   readonly clientId: string;
   readonly cursor: number;
   readonly updatedAtMs: number;
+}
+
+/** Durable partition identity refreshed after host authentication (§2.1). */
+export interface PartitionRegistryEntry {
+  readonly partition: string;
+  readonly logEpoch: string;
+  readonly epochRequired: boolean;
+  readonly lastAuthenticatedAtMs: number;
 }
 
 /**
@@ -397,6 +407,21 @@ export interface ServerStorage {
    */
   ensureSchema(schema: CompiledSchema): Promise<void>;
 
+  /** Create or refresh the authenticated partition registry row (§2.1). */
+  touchPartition(
+    partition: string,
+    authenticatedAtMs: number,
+    initialLogEpoch: string,
+  ): Promise<PartitionRegistryEntry>;
+  /** Rotate log continuity after restore and discard stale cursor records. */
+  rotatePartitionLogEpoch(
+    partition: string,
+    logEpoch: string,
+    authenticatedAtMs: number,
+  ): Promise<PartitionRegistryEntry>;
+  /** Registry entries ordered by partition for maintenance loops. */
+  listPartitionRegistry(): Promise<PartitionRegistryEntry[]>;
+
   begin(partition: string): Promise<StorageTransaction>;
 
   getMaxCommitSeq(partition: string): Promise<number>;
@@ -551,10 +576,8 @@ export interface ServerStorage {
    * change scope index (never a log scan).
    * `getRowScopes`: the (table, rowId) row's current server_version and
    * stored scopes without decoding its payload — the row inspector.
-   * `listPartitions`: every partition this storage holds state for — the
-   * union of the partition registry (commit log counters) and client
-   * records, sorted. Powers the console's fleet view / partition picker;
-   * deliberately NOT partition-scoped (the one cross-partition read).
+   * `listPartitions`: the partition-only compatibility view of
+   * `listPartitionRegistry`, sorted.
    */
   listClientRecords?(partition: string): Promise<ClientRecord[]>;
   listCommitMetadata?(
@@ -572,7 +595,7 @@ export interface ServerStorage {
   ): Promise<
     { serverVersion: number; scopes: Record<string, string> } | undefined
   >;
-  listPartitions?(): Promise<string[]>;
+  listPartitions(): Promise<string[]>;
 }
 
 /** A row referencing a blob, with the scopes needed to authorize download. */

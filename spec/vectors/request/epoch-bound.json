@@ -1,0 +1,31 @@
+{
+  "magic": "SSP2",
+  "wireVersion": 2,
+  "msgKind": "request",
+  "frames": [
+    {
+      "type": "REQ_HEADER",
+      "clientId": "client-a",
+      "schemaVersion": 2,
+      "logEpoch": "epoch-2026-07-02-a"
+    },
+    {
+      "type": "PULL_HEADER",
+      "limitCommits": 500,
+      "limitSnapshotRows": 2000,
+      "maxSnapshotPages": 8,
+      "accept": 15
+    },
+    {
+      "type": "SUBSCRIPTION",
+      "id": "sub-notes",
+      "table": "notes",
+      "scopes": {
+        "project": [
+          "p1"
+        ]
+      },
+      "cursor": 42
+    }
+  ]
+}

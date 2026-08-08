@@ -48,6 +48,16 @@ client a persistent database path; an in-memory database loses rows, cursors,
 client identity, and the outbox on restart. `SyncularConfig` also takes
 `wsUrl` and `headers` (auth, tenant, …) for the native transport.
 
+Rotate credentials without recreating the client:
+
+```kotlin
+client.setHeaders(mapOf("Authorization" to "Bearer $freshToken"))
+```
+
+The next HTTP request uses the new headers. An open WebSocket keeps the
+headers from its handshake; call `pause()` and `resume()` when the new
+credential must apply to the live socket immediately.
+
 ## Reads & writes
 
 ```kotlin
@@ -145,6 +155,44 @@ Packaging a real AAR needs the Android Gradle Plugin + `cargo-ndk`; FFM on
 Android also requires a recent runtime.
 
 ## Lifecycle & threading
+
+`AndroidConnectivitySignal` adapts the host's current network check and
+`ConnectivityManager.NetworkCallback` registration:
+
+```kotlin
+fun online(): Boolean = connectivityManager
+    .getNetworkCapabilities(connectivityManager.activeNetwork)
+    ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+
+val signal = AndroidConnectivitySignal(
+    current = ::online,
+    observe = { listener ->
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(
+                network: Network,
+                capabilities: NetworkCapabilities,
+            ) = listener(
+                capabilities.hasCapability(
+                    NetworkCapabilities.NET_CAPABILITY_VALIDATED,
+                ),
+            )
+            override fun onLost(network: Network) = listener(false)
+        }
+        connectivityManager.registerDefaultNetworkCallback(callback)
+        SyncularConnectivitySubscription {
+            connectivityManager.unregisterNetworkCallback(callback)
+        }
+    },
+)
+val connectivity = SyncularConnectivityAdapter(client, signal)
+
+// During client teardown:
+connectivity.close()
+```
+
+The signal reports network availability only. If activity state also controls
+the client, supply a combined foreground-and-online signal or close this
+adapter in `onStop()`.
 
 - **`pause()`** stops the event poll loop and disconnects the realtime
   socket. Call from an Android `Activity.onStop()` or a connectivity-lost

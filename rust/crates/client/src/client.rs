@@ -15,6 +15,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use ssp2::decode::WIRE_VERSION;
 use ssp2::model::{Frame, MediaType, Message, MsgKind, Op, OpResult, PushStatus, SubStatus};
 use ssp2::primitives::RawJson;
 use ssp2::segment::{decode_rows_segment, Column, ColumnType, ColumnValue, Row, RowsSegment};
@@ -62,6 +63,7 @@ const LOCAL_REVISION_KEY: &str = "localRevision";
 const CLIENT_ID_KEY: &str = "clientId";
 const LEASE_STATE_KEY: &str = "leaseState";
 const SCHEMA_FLOOR_KEY: &str = "schemaFloor";
+const LOG_EPOCH_KEY: &str = "logEpoch";
 /// Persisted fail-closed quarantine marker: present while a security preflight
 /// is pending and `activateSecurity` has yet to run. Storing it in the replica
 /// keeps the gate with the data it protects, so a rebuilt host handle reopening
@@ -176,6 +178,29 @@ mod observation_tests {
         assert!(matches!(
             client.drain_sync_intents().as_slice(),
             [SyncIntent::Background { delay_ms: 250 }]
+        ));
+    }
+
+    #[test]
+    fn log_epoch_reset_requests_an_immediate_follow_up_round() {
+        let mut client = client();
+        client
+            .subscribe(
+                "epoch-tasks".to_owned(),
+                "tasks".to_owned(),
+                vec![("project_id".to_owned(), vec!["p1".to_owned()])],
+                None,
+            )
+            .expect("subscribe");
+        client.drain_sync_intents();
+
+        client
+            .run_log_epoch_reset("epoch-2")
+            .expect("reset partition log epoch");
+
+        assert!(matches!(
+            client.drain_sync_intents().as_slice(),
+            [SyncIntent::Interactive]
         ));
     }
 
@@ -532,6 +557,7 @@ mod observation_tests {
     #[test]
     fn batched_push_acknowledgements_rebuild_overlay_once_per_response() {
         let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
         const COMMIT_COUNT: usize = 32;
 
         for index in 0..COMMIT_COUNT {
@@ -552,6 +578,8 @@ mod observation_tests {
         let mut frames = vec![Frame::RespHeader {
             required_schema_version: None,
             latest_schema_version: None,
+            log_epoch: Some("epoch-1".to_owned()),
+            reset_required: Some(false),
         }];
         frames.extend(request_meta.pushed_ids.iter().enumerate().map(
             |(index, client_commit_id)| Frame::PushResult {
@@ -562,6 +590,7 @@ mod observation_tests {
             },
         ));
         let response = Message {
+            wire_version: WIRE_VERSION,
             msg_kind: MsgKind::Response,
             frames,
         };
@@ -588,6 +617,7 @@ mod observation_tests {
     #[test]
     fn mixed_push_results_reconcile_and_prune_once_per_response() {
         let mut client = client();
+        client.set_meta(LOG_EPOCH_KEY, "epoch-1");
         for index in 0..4 {
             client
                 .mutate(vec![Mutation::Upsert {
@@ -605,11 +635,14 @@ mod observation_tests {
         let ids = &request_meta.pushed_ids;
         assert_eq!(ids.len(), 4);
         let response = Message {
+            wire_version: WIRE_VERSION,
             msg_kind: MsgKind::Response,
             frames: vec![
                 Frame::RespHeader {
                     required_schema_version: None,
                     latest_schema_version: None,
+                    log_epoch: Some("epoch-1".to_owned()),
+                    reset_required: Some(false),
                 },
                 Frame::PushResult {
                     client_commit_id: ids[0].clone(),
@@ -3471,6 +3504,26 @@ impl SyncClient {
         Ok(())
     }
 
+    fn run_log_epoch_reset(&mut self, log_epoch: &str) -> Result<Vec<String>, String> {
+        let resets = self.subs.iter().map(|sub| sub.id.clone()).collect();
+        self.begin_observation("syncular_log_epoch_reset")?;
+        let mut batch = ChangeAccumulator::default();
+        let result = self.run_schema_reset_observed(&mut batch, false);
+        if let Err(error) = result {
+            self.rollback_observation("syncular_log_epoch_reset");
+            return Err(error);
+        }
+        self.set_meta(LOG_EPOCH_KEY, log_epoch);
+        self.sync_needed = true;
+        batch.status = true;
+        if let Err(error) = self.finish_observation("syncular_log_epoch_reset", batch) {
+            self.rollback_observation("syncular_log_epoch_reset");
+            return Err(error);
+        }
+        self.sync_intent_queue.push_back(SyncIntent::Interactive);
+        Ok(resets)
+    }
+
     fn run_schema_reset_observed(
         &mut self,
         batch: &mut ChangeAccumulator,
@@ -5092,14 +5145,25 @@ impl SyncClient {
     // -- request building ---------------------------------------------------------
 
     fn build_request(&self, url_capable: bool) -> (Message, RequestMeta) {
+        let log_epoch = self.get_meta(LOG_EPOCH_KEY);
         let mut frames = vec![Frame::ReqHeader {
             client_id: self.client_id.clone(),
             schema_version: self.schema.version,
+            log_epoch: log_epoch.clone(),
         }];
         let mut pushed_ids = Vec::new();
         let mut ops_in_request = 0usize;
         let mut deferred_commits = 0usize;
-        for (index, commit) in self.outbox.iter().enumerate() {
+        for (index, commit) in self
+            .outbox
+            .iter()
+            .take(if log_epoch.is_some() {
+                self.outbox.len()
+            } else {
+                0
+            })
+            .enumerate()
+        {
             // §6.1 splitBatch: stop at the operation cap — commits apply in
             // order, so everything from the first non-fitting commit on is
             // deferred to the next round. A single over-cap commit still goes
@@ -5169,6 +5233,7 @@ impl SyncClient {
             ));
         }
         let message = Message {
+            wire_version: WIRE_VERSION,
             msg_kind: MsgKind::Request,
             frames,
         };
@@ -5237,7 +5302,7 @@ impl SyncClient {
         self.set_sync_needed(false, false);
         // §5.9.7 B4: upload pending blobs before pushing the referencing
         // rows, so the server-side existence check (§6.6) passes.
-        if self.schema_has_blobs() {
+        if self.get_meta(LOG_EPOCH_KEY).is_some() && self.schema_has_blobs() {
             if let Err(TransportError { code, message }) = self.flush_blob_uploads(transport) {
                 if Self::retryable_transport_code(&code) {
                     self.schedule_background_retry();
@@ -5418,11 +5483,31 @@ impl SyncClient {
             }
         }
         let mut frames = response.frames.into_iter();
+        if response.wire_version < 2 {
+            return SyncOutcome::Failed {
+                error_code: "client.invalid_host_response".to_owned(),
+                message: "server response does not carry wire version 2 log-epoch state".to_owned(),
+            };
+        }
         match frames.next() {
             Some(Frame::RespHeader {
                 required_schema_version,
                 latest_schema_version,
+                log_epoch,
+                reset_required,
             }) => {
+                let Some(log_epoch) = log_epoch else {
+                    return SyncOutcome::Failed {
+                        error_code: "client.invalid_host_response".to_owned(),
+                        message: "response header omits logEpoch".to_owned(),
+                    };
+                };
+                let Some(reset_required) = reset_required else {
+                    return SyncOutcome::Failed {
+                        error_code: "client.invalid_host_response".to_owned(),
+                        message: "response header omits resetRequired".to_owned(),
+                    };
+                };
                 if let Some(required) = required_schema_version {
                     // §1.6 schema-floor response: nothing else is processed;
                     // stop syncing and surface the upgrade requirement.
@@ -5433,6 +5518,32 @@ impl SyncClient {
                     self.set_schema_floor(Some(floor.clone()));
                     report.schema_floor = Some(floor);
                     return SyncOutcome::Ok(report);
+                }
+                if reset_required {
+                    if frames.next().is_some() {
+                        return SyncOutcome::Failed {
+                            error_code: "client.invalid_host_response".to_owned(),
+                            message: "log-epoch reset response contains body frames".to_owned(),
+                        };
+                    }
+                    match self.run_log_epoch_reset(&log_epoch) {
+                        Ok(resets) => {
+                            report.resets = resets;
+                            return SyncOutcome::Ok(report);
+                        }
+                        Err(message) => {
+                            return SyncOutcome::Failed {
+                                error_code: "sync.local_corrupt".to_owned(),
+                                message,
+                            };
+                        }
+                    }
+                }
+                if self.get_meta(LOG_EPOCH_KEY).as_deref() != Some(log_epoch.as_str()) {
+                    return SyncOutcome::Failed {
+                        error_code: "client.invalid_host_response".to_owned(),
+                        message: "server changed logEpoch without requiring a reset".to_owned(),
+                    };
                 }
             }
             _ => {

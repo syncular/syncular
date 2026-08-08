@@ -12,7 +12,6 @@ import {
   decodeRow,
   encodeMessage,
   encodeRow,
-  PROTOCOL_WIRE_VERSION,
   type PushResultFrame,
   type RequestFrame,
   type ResponseMessage,
@@ -47,7 +46,7 @@ async function sync(
   frames: RequestFrame[],
 ): Promise<ResponseMessage> {
   const bytes = encodeMessage({
-    wireVersion: PROTOCOL_WIRE_VERSION,
+    wireVersion: 1,
     msgKind: 'request',
     frames: [
       {

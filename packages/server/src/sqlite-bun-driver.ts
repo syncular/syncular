@@ -9,8 +9,12 @@ import type {
 export class BunSqliteDatabase implements SqliteDatabase {
   readonly native: Database;
 
-  constructor(path = ':memory:') {
-    this.native = new Database(path);
+  constructor(value: string | Database = ':memory:') {
+    this.native = typeof value === 'string' ? new Database(value) : value;
+  }
+
+  static deserialize(bytes: Uint8Array): BunSqliteDatabase {
+    return new BunSqliteDatabase(Database.deserialize(bytes));
   }
 
   exec(sql: string): void {

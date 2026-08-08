@@ -104,6 +104,35 @@ class SyncularClientTest {
     }
 
     @Test
+    fun rotatesTransportHeadersWithoutRecreatingTheClient() {
+        makeClient().use { client ->
+            client.setHeaders(mapOf("authorization" to "Bearer fresh"))
+            client.subscribe(id = "after-rotation", table = "todo")
+            assertEquals("active", client.subscriptionState("after-rotation"))
+        }
+    }
+
+    @Test
+    fun connectivityAdapterPausesResumesAndDetaches() {
+        makeClient().use { client ->
+            var listener: ((Boolean) -> Unit)? = null
+            val signal = AndroidConnectivitySignal(
+                current = { false },
+                observe = { callback ->
+                    listener = callback
+                    SyncularConnectivitySubscription { listener = null }
+                },
+            )
+            val adapter = SyncularConnectivityAdapter(client, signal)
+            assertNotNull(listener)
+            listener?.invoke(true)
+            client.subscribe(id = "after-connectivity", table = "todo")
+            adapter.close()
+            assertEquals(null, listener)
+        }
+    }
+
+    @Test
     fun errorReplySurfacesAsSyncularException() {
         makeClient().use { client ->
             assertFailsWith<SyncularException> { client.readRows("does_not_exist") }

@@ -15,7 +15,7 @@
  * `decodeMessage`.
  */
 import { utf8Encode } from './bytes';
-import { PROTOCOL_WIRE_VERSION, SYNC_PACK_MAGIC } from './constants';
+import { isSupportedProtocolWireVersion, SYNC_PACK_MAGIC } from './constants';
 import { DecodeError } from './errors';
 
 const MAGIC = utf8Encode(SYNC_PACK_MAGIC);
@@ -106,7 +106,7 @@ export class MessageStreamScanner {
       throw new DecodeError('sync.invalid_request', 'bad envelope magic');
     }
     const wireVersion = (b[4] as number) | ((b[5] as number) << 8);
-    if (wireVersion !== PROTOCOL_WIRE_VERSION) {
+    if (!isSupportedProtocolWireVersion(wireVersion)) {
       throw new DecodeError(
         'sync.invalid_request',
         `unsupported wireVersion ${wireVersion}`,

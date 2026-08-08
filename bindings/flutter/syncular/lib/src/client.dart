@@ -298,6 +298,11 @@ class SyncularClient {
   /// Remove a subscription.
   void unsubscribe(String id) => command('unsubscribe', {'id': id});
 
+  /// Replace the full native transport header set. Subsequent HTTP requests
+  /// use it immediately; reconnect realtime to apply it to the handshake.
+  void setHeaders(Map<String, String> headers) =>
+      command('setHeaders', {'headers': headers});
+
   /// Run one sync round against the server (needs `native-transport`). Never
   /// errors out-of-band; inspect `ok`/`errorCode` on the returned map.
   Map<String, Object?> sync() => command('sync', const {});

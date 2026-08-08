@@ -556,6 +556,11 @@ export class NativeSyncClient {
     this.#securityLifecycle = 'active';
   }
 
+  /** Replace the full native transport header set without recreating state. */
+  async setHeaders(headers: Readonly<Record<string, string>>): Promise<void> {
+    await this.#command('setHeaders', { headers });
+  }
+
   onInvalidate(listener: InvalidationListener): () => void {
     this.#invalidationListeners.add(listener);
     return () => this.#invalidationListeners.delete(listener);

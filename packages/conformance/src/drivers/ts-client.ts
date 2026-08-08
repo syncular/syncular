@@ -6,6 +6,7 @@
  */
 
 import {
+  creationTimeBucket,
   type ClientChangeBatch,
   type ClientSchema,
   type EncryptionConfig,
@@ -14,6 +15,7 @@ import {
   SyncClient,
   type SyncIntent,
   type SyncSummary,
+  last,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
 import type { RowValue, ScopeMap } from '@syncular/core';
@@ -235,6 +237,7 @@ class TsClientInstance implements ClientInstance {
   readonly #options: ClientCreateOptions;
   readonly #changes: ClientChangeBatch[] = [];
   readonly #intents: SyncIntent[] = [];
+  #epochEstablished = false;
 
   constructor(
     client: SyncClient,
@@ -297,6 +300,18 @@ class TsClientInstance implements ClientInstance {
         : {}),
       ...(base.params !== undefined ? { params: base.params } : {}),
     });
+  }
+
+  async timeWindowSugar(
+    createdAtMs: number,
+    count: number,
+    unit: 'month',
+    nowMs: number,
+  ): Promise<{ bucket: string; units: readonly string[] }> {
+    return {
+      bucket: creationTimeBucket(createdAtMs, unit),
+      units: last(count, unit, nowMs),
+    };
   }
 
   async mutate(mutations: readonly ClientMutation[]): Promise<string> {
@@ -451,7 +466,16 @@ class TsClientInstance implements ClientInstance {
 
   async sync(): Promise<ClientSyncResult> {
     try {
-      return toReport(await this.#client.sync());
+      const first = toReport(await this.#client.sync());
+      if (
+        first.ok &&
+        !this.#epochEstablished &&
+        first.report.schemaFloor === undefined
+      ) {
+        this.#epochEstablished = true;
+        return toReport(await this.#client.sync());
+      }
+      return first;
     } catch (error) {
       const { code, message } = errorCodeOf(error);
       return { ok: false, errorCode: code, message };
@@ -460,7 +484,11 @@ class TsClientInstance implements ClientInstance {
 
   async syncUntilIdle(maxRounds?: number): Promise<ClientSyncResult> {
     try {
-      return toReport(await this.#client.syncUntilIdle(maxRounds));
+      const result = toReport(await this.#client.syncUntilIdle(maxRounds));
+      if (result.ok && result.report.schemaFloor === undefined) {
+        this.#epochEstablished = true;
+      }
+      return result;
     } catch (error) {
       const { code, message } = errorCodeOf(error);
       return { ok: false, errorCode: code, message };

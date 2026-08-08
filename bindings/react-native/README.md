@@ -66,6 +66,8 @@ const client = await createNativeSyncClient({
   baseUrl: 'https://your.server/sync', // engages the native transport
 });
 
+await client.setHeaders({ Authorization: `Bearer ${freshToken}` });
+
 // Every @syncular/react hook works unchanged:
 <SyncProvider client={client}>{/* … */}</SyncProvider>;
 

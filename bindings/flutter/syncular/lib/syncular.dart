@@ -21,4 +21,6 @@ library syncular;
 
 export 'src/client.dart'
     show SyncularClient, SyncularConfig, SyncularEvent, SyncularError;
+export 'src/connectivity.dart'
+    show FlutterConnectivitySignal, SyncularConnectivityAdapter;
 export 'src/ffi.dart' show SyncularFfi;

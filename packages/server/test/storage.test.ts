@@ -18,6 +18,7 @@ import {
   type StoredPushResult,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
+import { BunSqliteDatabase } from '@syncular/server/sqlite';
 import { StorageConstraintError } from '../src/storage-errors';
 import { D1DatabaseDouble } from './d1-double';
 import { CONTRACT_SCHEMA, runStorageContract } from './storage-contract';
@@ -40,6 +41,67 @@ runStorageContract('d1/double', async () => {
   });
   await storage.migrate();
   return storage;
+});
+
+const LEGACY_CLIENTS_DDL = `CREATE TABLE sync_clients(
+  partition TEXT NOT NULL, client_id TEXT NOT NULL, actor_id TEXT NOT NULL,
+  cursor INTEGER NOT NULL, subscriptions TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY(partition, client_id)
+)`;
+
+test('SQLite migrates legacy client records to wire version 1', async () => {
+  const db = new BunSqliteDatabase();
+  db.exec(LEGACY_CLIENTS_DDL);
+  db.run(
+    `INSERT INTO sync_clients(
+       partition, client_id, actor_id, cursor, subscriptions, updated_at_ms
+     ) VALUES (?,?,?,?,?,?)`,
+    ['partition', 'client', 'actor', 7, '[]', 10],
+  );
+  const storage = new SqliteServerStorage(db);
+  expect(await storage.getClientRecord('partition', 'client')).toMatchObject({
+    wireVersion: 1,
+    cursor: 7,
+  });
+  storage.db.close();
+});
+
+test('D1 migrates legacy client records to wire version 1', async () => {
+  const db = new D1DatabaseDouble();
+  await db.exec(LEGACY_CLIENTS_DDL);
+  await db
+    .prepare(
+      `INSERT INTO sync_clients(
+         partition, client_id, actor_id, cursor, subscriptions, updated_at_ms
+       ) VALUES (?,?,?,?,?,?)`,
+    )
+    .bind('partition', 'client', 'actor', 7, '[]', 10)
+    .run();
+  const storage = new D1ServerStorage(db, { pushApplySerialized: true });
+  await storage.migrate();
+  expect(await storage.getClientRecord('partition', 'client')).toMatchObject({
+    wireVersion: 1,
+    cursor: 7,
+  });
+});
+
+test('Postgres migrates legacy client records to wire version 1', async () => {
+  const db = await PGlite.create();
+  await db.exec(LEGACY_CLIENTS_DDL);
+  await db.query(
+    `INSERT INTO sync_clients(
+       partition, client_id, actor_id, cursor, subscriptions, updated_at_ms
+     ) VALUES ($1,$2,$3,$4,$5,$6)`,
+    ['partition', 'client', 'actor', 7, '[]', 10],
+  );
+  const storage = new PostgresServerStorage(pgliteExecutor(db));
+  await storage.migrate();
+  expect(await storage.getClientRecord('partition', 'client')).toMatchObject({
+    wireVersion: 1,
+    cursor: 7,
+  });
+  await db.close();
 });
 
 test('D1 push apply fails closed without external serialization', async () => {

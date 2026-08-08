@@ -1118,6 +1118,7 @@ export function runStorageContract(
       const record: ClientRecord = {
         clientId: 'c1',
         actorId: 'a1',
+        wireVersion: 2,
         cursor: 42,
         updatedAtMs: NOW,
         subscriptions: [
@@ -1292,6 +1293,7 @@ export function runStorageContract(
       await storage.putClientRecord(PARTITION, {
         clientId: 'c1',
         actorId: 'a1',
+        wireVersion: 2,
         cursor: 2,
         updatedAtMs: NOW,
         subscriptions: [
@@ -1340,32 +1342,54 @@ export function runStorageContract(
       ).toBeUndefined();
     });
 
-    test('listPartitions unions the registry and client records, sorted', async () => {
+    test('authenticated partition registry refreshes, lists, and rotates', async () => {
       const storage = await make();
-      if (storage.listPartitions === undefined) {
-        // A backend may legitimately omit the admin surface; skip cleanly.
-        return;
-      }
       expect(await storage.listPartitions()).toEqual([]);
-      // A commit registers one partition…
-      const tx = await storage.begin('part-b');
-      await tx.appendCommit({
-        clientId: 'c1',
-        clientCommitId: 'k1',
-        actorId: 'a1',
-        createdAtMs: NOW,
-        changes: [],
+      await storage.touchPartition('part-b', NOW, 'epoch-b');
+      await storage.touchPartition('part-a', NOW + 1, 'epoch-a');
+      const refreshed = await storage.touchPartition(
+        'part-a',
+        NOW + 2,
+        'ignored-racing-epoch',
+      );
+      expect(refreshed).toEqual({
+        partition: 'part-a',
+        logEpoch: 'epoch-a',
+        epochRequired: false,
+        lastAuthenticatedAtMs: NOW + 2,
       });
-      await tx.commit();
-      // …a client record alone registers another (no commits there yet).
+      expect(await storage.listPartitions()).toEqual(['part-a', 'part-b']);
+      expect(await storage.listPartitionRegistry()).toEqual([
+        refreshed,
+        {
+          partition: 'part-b',
+          logEpoch: 'epoch-b',
+          epochRequired: false,
+          lastAuthenticatedAtMs: NOW,
+        },
+      ]);
+
       await storage.putClientRecord('part-a', {
         clientId: 'c1',
         actorId: 'a1',
-        cursor: 0,
+        wireVersion: 2,
+        cursor: 12,
         updatedAtMs: NOW,
         subscriptions: [],
       });
-      expect(await storage.listPartitions()).toEqual(['part-a', 'part-b']);
+      expect(
+        await storage.rotatePartitionLogEpoch(
+          'part-a',
+          'epoch-after-restore',
+          NOW + 3,
+        ),
+      ).toEqual({
+        partition: 'part-a',
+        logEpoch: 'epoch-after-restore',
+        epochRequired: true,
+        lastAuthenticatedAtMs: NOW + 3,
+      });
+      expect(await storage.getClientRecord('part-a', 'c1')).toBeUndefined();
     });
   });
 }

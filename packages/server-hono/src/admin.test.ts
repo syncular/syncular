@@ -5,12 +5,7 @@
  * same allowance as index.test.ts — no socket).
  */
 import { describe, expect, test } from 'bun:test';
-import {
-  encodeMessage,
-  encodeRow,
-  PROTOCOL_WIRE_VERSION,
-  type RowColumn,
-} from '@syncular/core';
+import { encodeMessage, encodeRow, type RowColumn } from '@syncular/core';
 import {
   MemorySegmentStore,
   RingBufferEvents,
@@ -76,7 +71,7 @@ function harness() {
 
   async function seed(): Promise<void> {
     const bytes = encodeMessage({
-      wireVersion: PROTOCOL_WIRE_VERSION,
+      wireVersion: 1,
       msgKind: 'request',
       frames: [
         { type: 'REQ_HEADER', clientId: 'client-1', schemaVersion: 1 },

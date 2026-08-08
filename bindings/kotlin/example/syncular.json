@@ -11,12 +11,12 @@
       "queriesPath": "./src/main/kotlin/dev/syncular/example/Syncular.queries.kt"
     }
   },
-  "schemaVersions": [{ "version": 1, "through": "0001_initial" }],
-  "tables": [{ "name": "notes", "scopes": ["list:{list_id}"] }],
+  "schemaVersions": [{ "version": 1, "through": "0002_canonical_todos" }],
+  "tables": [{ "name": "todos", "scopes": ["list:{list_id}"] }],
   "subscriptions": [
     {
-      "name": "listNotes",
-      "table": "notes",
+      "name": "todosInList",
+      "table": "todos",
       "scopes": { "list_id": ["{listId}"] }
     }
   ]

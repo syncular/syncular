@@ -32,6 +32,48 @@
           ]
         }
       ]
+    },
+    {
+      "name": "0002_canonical_todos",
+      "sha256": "7240d2866772f998df533a2dc29fa7579ef1fd476455d70dacf9cf6046fc9611",
+      "tables": [
+        {
+          "name": "todos",
+          "primaryKey": "id",
+          "columns": [
+            {
+              "name": "id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "list_id",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "title",
+              "type": "string",
+              "nullable": false
+            },
+            {
+              "name": "done",
+              "type": "boolean",
+              "nullable": false
+            },
+            {
+              "name": "position",
+              "type": "integer",
+              "nullable": false
+            },
+            {
+              "name": "updated_at_ms",
+              "type": "integer",
+              "nullable": false
+            }
+          ]
+        }
+      ]
     }
   ]
 }

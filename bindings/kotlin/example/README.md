@@ -9,11 +9,7 @@ Commands (one per line, interactive or piped): `list`, `add <title>`,
 `toggle <id>`, `sync`, `pending`, `quit`.
 
 It talks to the [`examples/quickstart`](../../../examples/quickstart) server's
-`notes` table — the same schema and server the quickstart's TS clients use. A
-todo is a `notes` row: `body` carries the title, and done-state rides as a
-leading `[x] ` / `[ ] ` marker (the quickstart schema has no `done` column and
-this example is read-only, so completion is modeled in the body — an honest fit,
-no schema fork).
+canonical `todos` table, which the quickstart's TypeScript clients also use.
 
 ## The integration, in ~30 lines
 
@@ -25,7 +21,7 @@ protocol logic — the native core owns all of it.
 
 The schema is **generated, not hand-built**:
 [`Syncular.generated.kt`](src/main/kotlin/dev/syncular/example/Syncular.generated.kt)
-(`SyncularSchema.schema` + the `Notes` data class + the `ListNotes` subscription
+(`SyncularSchema.schema` + the `Todos` data class + the `TodosInList` subscription
 helper) comes from [`syncular.json`](syncular.json) + [`migrations/`](migrations)
 via `syncular generate` (regenerate with `bun packages/typegen/src/cli.ts
 generate --manifest-dir bindings/kotlin/example` from the repo root).

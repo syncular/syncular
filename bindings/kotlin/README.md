@@ -75,9 +75,18 @@ share: `{method, params}` in, `{result|error}` out, bytes as `{"$bytes":"<hex>"}
 `readRows` returns RowState objects (`{rowId, version, values}`; `version == -1`
 = optimistic/offline); `query` returns flat SQL rows.
 
+Call `setHeaders(mapOf("Authorization" to "Bearer $token"))` after credential
+rotation. HTTP requests use the new headers immediately. Reconnect realtime to
+repeat the WebSocket handshake with them.
+
 ## Lifecycle (the wrapper owns it)
 
 Background/foreground and connectivity handling lives here:
+
+`AndroidConnectivitySignal` accepts the host's current validated-network check
+and `ConnectivityManager.NetworkCallback` registration.
+`SyncularConnectivityAdapter` binds the signal to `pause()` and `resume()` and
+unregisters it from `close()`.
 
 - **`pause()`** — stops the event poll loop and disconnects realtime. Call from
   an Android `Activity.onStop()` / a connectivity-lost callback. Database and

@@ -460,6 +460,13 @@ pub fn dispatch<T: Transport>(
             effects.security_preflight_pending = false;
             Ok(json!({}))
         }
+        "setHeaders" => {
+            let headers = params
+                .get("headers")
+                .ok_or_else(|| client_err("setHeaders missing headers".to_owned()))?;
+            parse_headers(headers).map_err(client_err)?;
+            Ok(json!({}))
+        }
         "shutdown" => {
             if let Some(running) = client.as_mut() {
                 // Capture the gate state BEFORE the shutdown barrier flips the
@@ -525,6 +532,32 @@ pub fn dispatch<T: Transport>(
             let base = window_base_from_params(params.get("base")).map_err(client_err)?;
             let state = need_client(client)?.window_state(&base);
             Ok(json!({ "units": state.units, "pending": state.pending }))
+        }
+        "timeWindowSugar" => {
+            let created_at_ms = params
+                .get("createdAtMs")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| client_err("timeWindowSugar missing createdAtMs".to_owned()))?;
+            let count = params
+                .get("count")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| client_err("timeWindowSugar missing count".to_owned()))?;
+            let now_ms = params
+                .get("nowMs")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| client_err("timeWindowSugar missing nowMs".to_owned()))?;
+            if params.get("unit").and_then(Value::as_str) != Some("month") {
+                return Err(client_err(
+                    "sync.invalid_request: timeWindowSugar requires the month unit".to_owned(),
+                ));
+            }
+            let unit = syncular_client::TimeBucketUnit::Month;
+            Ok(json!({
+                "bucket": syncular_client::creation_time_bucket(created_at_ms, unit)
+                    .map_err(client_err)?,
+                "units": syncular_client::last(count, unit, now_ms).map_err(client_err)?,
+            }))
         }
         "mutate" => {
             let mutations = parse_mutations(params.get("mutations")).map_err(client_err)?;
@@ -1615,5 +1648,55 @@ mod tests {
         );
         assert!(parse_headers(&json!(["authorization"])).is_err());
         assert!(parse_headers(&json!({ "authorization": null })).is_err());
+    }
+
+    #[test]
+    fn set_headers_validates_replacement_and_respects_preflight() {
+        let mut transport = NoNetwork::default();
+        let mut client: Option<SyncClient> = None;
+        let mut effects = CreateEffects::default();
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "create",
+            &json!({ "schema": schema() }),
+        )
+        .expect("create");
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "setHeaders",
+            &json!({ "headers": { "authorization": "Bearer fresh" } }),
+        )
+        .expect("valid replacement");
+        let invalid = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "setHeaders",
+            &json!({ "headers": { "authorization": 7 } }),
+        )
+        .expect_err("invalid replacement");
+        assert_eq!(invalid.0, "sync.invalid_request");
+
+        dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "beginSecurityPreflight",
+            &json!({}),
+        )
+        .expect("preflight");
+        let gated = dispatch(
+            &mut transport,
+            &mut client,
+            &mut effects,
+            "setHeaders",
+            &json!({ "headers": {} }),
+        )
+        .expect_err("direct rotation must respect preflight");
+        assert_eq!(gated.0, SECURITY_PREFLIGHT_REQUIRED_CODE);
     }
 }

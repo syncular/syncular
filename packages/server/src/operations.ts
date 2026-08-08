@@ -9,7 +9,11 @@ import {
   type ScopeMap,
 } from '@syncular/core';
 import type { SyncRequestContext } from './context';
-import { REMOTE_COMMAND_CLIENT_ID_PREFIX, RESOLVER_OUTAGE } from './context';
+import {
+  REMOTE_COMMAND_CLIENT_ID_PREFIX,
+  RESOLVER_OUTAGE,
+  touchAuthenticatedPartition,
+} from './context';
 import { SyncError, syncError } from './errors';
 import { processPushOperationsWithTrace } from './push';
 import { compileSchema } from './schema';
@@ -673,6 +677,7 @@ export async function handleRemoteOperation(
     return encodeRemoteOperationError(error, 'operation.invalid_request');
   }
   try {
+    await touchAuthenticatedPartition(ctx);
     if (request.clientId.startsWith(REMOTE_COMMAND_CLIENT_ID_PREFIX)) {
       throw syncError(
         'sync.invalid_client_id',

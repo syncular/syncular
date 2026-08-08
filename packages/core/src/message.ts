@@ -20,7 +20,7 @@ import {
   writeStringListMap,
   writeStringMap,
 } from './bytes';
-import { PROTOCOL_WIRE_VERSION, SYNC_PACK_MAGIC } from './constants';
+import { isSupportedProtocolWireVersion, SYNC_PACK_MAGIC } from './constants';
 import { DecodeError } from './errors';
 import {
   FrameType,
@@ -42,6 +42,8 @@ export interface ReqHeaderFrame {
   type: 'REQ_HEADER';
   clientId: string;
   schemaVersion: number;
+  /** Wire v2 partition log identity; absent requests epoch acquisition. */
+  logEpoch?: string;
 }
 
 export interface PushOperation {
@@ -98,6 +100,10 @@ export interface RespHeaderFrame {
   type: 'RESP_HEADER';
   requiredSchemaVersion?: number;
   latestSchemaVersion?: number;
+  /** Required and non-empty on wire v2. */
+  logEpoch?: string;
+  /** Required on wire v2. True produces a header-only reset response. */
+  resetRequired?: boolean;
 }
 
 /** §7.3.2: a server-issued auth lease delivered to the client (opaque). */
@@ -261,12 +267,26 @@ function requireJsonDocument(raw: string, what: string): string {
 // Frame payload decoders (each consumes exactly the frame payload)
 // ---------------------------------------------------------------------------
 
-function decodeReqHeader(r: ByteReader): ReqHeaderFrame {
+function decodeReqHeader(r: ByteReader, wireVersion: number): ReqHeaderFrame {
   const clientId = r.str();
   if (clientId.length === 0) invalid('REQ_HEADER.clientId must be non-empty');
   const schemaVersion = r.i32();
   if (schemaVersion < 1) invalid('REQ_HEADER.schemaVersion must be >= 1');
-  return { type: 'REQ_HEADER', clientId, schemaVersion };
+  const logEpoch =
+    wireVersion >= 2
+      ? r.opt(() => {
+          const value = r.str();
+          if (value.length === 0)
+            invalid('REQ_HEADER.logEpoch must be non-empty');
+          return value;
+        })
+      : undefined;
+  return {
+    type: 'REQ_HEADER',
+    clientId,
+    schemaVersion,
+    ...(logEpoch !== undefined ? { logEpoch } : {}),
+  };
 }
 
 function decodePushCommit(r: ByteReader): PushCommitFrame {
@@ -348,13 +368,20 @@ function decodeSubscription(r: ByteReader): SubscriptionFrame {
   };
 }
 
-function decodeRespHeader(r: ByteReader): RespHeaderFrame {
+function decodeRespHeader(r: ByteReader, wireVersion: number): RespHeaderFrame {
   const requiredSchemaVersion = r.opt(() => r.i32());
   const latestSchemaVersion = r.opt(() => r.i32());
+  const logEpoch = wireVersion >= 2 ? r.str() : undefined;
+  if (logEpoch !== undefined && logEpoch.length === 0) {
+    invalid('RESP_HEADER.logEpoch must be non-empty');
+  }
+  const resetRequired = wireVersion >= 2 ? r.bool() : undefined;
   return {
     type: 'RESP_HEADER',
     ...(requiredSchemaVersion !== undefined ? { requiredSchemaVersion } : {}),
     ...(latestSchemaVersion !== undefined ? { latestSchemaVersion } : {}),
+    ...(logEpoch !== undefined ? { logEpoch } : {}),
+    ...(resetRequired !== undefined ? { resetRequired } : {}),
   };
 }
 
@@ -587,12 +614,13 @@ function decodeErrorFrame(r: ByteReader): ErrorFrame {
 function decodeRequestFrame(
   frameType: number,
   payload: Uint8Array,
+  wireVersion: number,
 ): RequestFrame {
   const r = new ByteReader(payload);
   let frame: RequestFrame;
   switch (frameType) {
     case FrameType.REQ_HEADER:
-      frame = decodeReqHeader(r);
+      frame = decodeReqHeader(r, wireVersion);
       break;
     case FrameType.PUSH_COMMIT:
       frame = decodePushCommit(r);
@@ -618,12 +646,13 @@ function decodeRequestFrame(
 function decodeResponseFrame(
   frameType: number,
   payload: Uint8Array,
+  wireVersion: number,
 ): ResponseFrame {
   const r = new ByteReader(payload);
   let frame: ResponseFrame;
   switch (frameType) {
     case FrameType.RESP_HEADER:
-      frame = decodeRespHeader(r);
+      frame = decodeRespHeader(r, wireVersion);
       break;
     case FrameType.LEASE:
       frame = decodeLease(r);
@@ -822,7 +851,10 @@ const PUSH_STATUS_BYTES = { applied: 1, cached: 2, rejected: 3 } as const;
 const SUB_STATUS_BYTES = { active: 1, revoked: 2, reset: 3 } as const;
 const MEDIA_TYPE_BYTES = { rows: 1, sqlite: 2 } as const;
 
-function encodeFrame(frame: RequestFrame | ResponseFrame): {
+function encodeFrame(
+  frame: RequestFrame | ResponseFrame,
+  wireVersion: number,
+): {
   frameType: number;
   payload: Uint8Array;
 } {
@@ -837,6 +869,14 @@ function encodeFrame(frame: RequestFrame | ResponseFrame): {
       }
       w.str(frame.clientId);
       w.i32(frame.schemaVersion);
+      if (wireVersion >= 2) {
+        if (frame.logEpoch === '') {
+          throw new Error('REQ_HEADER.logEpoch must be non-empty');
+        }
+        w.opt(frame.logEpoch, (v) => w.str(v));
+      } else if (frame.logEpoch !== undefined) {
+        throw new Error('REQ_HEADER.logEpoch requires wireVersion 2');
+      }
       return { frameType: FrameType.REQ_HEADER, payload: w.finish() };
     }
     case 'PUSH_COMMIT': {
@@ -885,6 +925,21 @@ function encodeFrame(frame: RequestFrame | ResponseFrame): {
     case 'RESP_HEADER': {
       w.opt(frame.requiredSchemaVersion, (v) => w.i32(v));
       w.opt(frame.latestSchemaVersion, (v) => w.i32(v));
+      if (wireVersion >= 2) {
+        if (frame.logEpoch === undefined || frame.logEpoch.length === 0) {
+          throw new Error('RESP_HEADER.logEpoch is required and non-empty');
+        }
+        if (frame.resetRequired === undefined) {
+          throw new Error('RESP_HEADER.resetRequired is required');
+        }
+        w.str(frame.logEpoch);
+        w.bool(frame.resetRequired);
+      } else if (
+        frame.logEpoch !== undefined ||
+        frame.resetRequired !== undefined
+      ) {
+        throw new Error('RESP_HEADER epoch fields require wireVersion 2');
+      }
       return { frameType: FrameType.RESP_HEADER, payload: w.finish() };
     }
     case 'LEASE': {
@@ -1050,7 +1105,7 @@ function encodeFrame(frame: RequestFrame | ResponseFrame): {
 // ---------------------------------------------------------------------------
 
 export function encodeMessage(message: SyncMessage): Uint8Array {
-  if (message.wireVersion !== PROTOCOL_WIRE_VERSION) {
+  if (!isSupportedProtocolWireVersion(message.wireVersion)) {
     throw new Error(`unsupported wireVersion ${message.wireVersion}`);
   }
   validateFrameSequence(message);
@@ -1060,7 +1115,7 @@ export function encodeMessage(message: SyncMessage): Uint8Array {
   w.u8(message.msgKind === 'request' ? 0x01 : 0x02);
   w.u8(0x00);
   for (const frame of message.frames) {
-    const { frameType, payload } = encodeFrame(frame);
+    const { frameType, payload } = encodeFrame(frame, message.wireVersion);
     w.u8(frameType);
     w.u32(payload.length);
     w.raw(payload);
@@ -1109,7 +1164,7 @@ export function decodeMessage(bytes: Uint8Array): SyncMessage {
     invalid('bad envelope magic');
   }
   const wireVersion = r.u16();
-  if (wireVersion !== PROTOCOL_WIRE_VERSION) {
+  if (!isSupportedProtocolWireVersion(wireVersion)) {
     invalid(`unsupported wireVersion ${wireVersion}`);
   }
   const kindByte = r.u8();
@@ -1122,7 +1177,9 @@ export function decodeMessage(bytes: Uint8Array): SyncMessage {
     const message: RequestMessage = {
       wireVersion,
       msgKind: 'request',
-      frames: readFrames(r, decodeRequestFrame),
+      frames: readFrames(r, (frameType, payload) =>
+        decodeRequestFrame(frameType, payload, wireVersion),
+      ),
     };
     validateRequestSequence(message.frames);
     return message;
@@ -1130,7 +1187,9 @@ export function decodeMessage(bytes: Uint8Array): SyncMessage {
   const message: ResponseMessage = {
     wireVersion,
     msgKind: 'response',
-    frames: readFrames(r, decodeResponseFrame),
+    frames: readFrames(r, (frameType, payload) =>
+      decodeResponseFrame(frameType, payload, wireVersion),
+    ),
   };
   validateResponseSequence(message.frames);
   return message;

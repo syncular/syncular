@@ -8,7 +8,11 @@
  */
 import { blobIdFor, isBlobId } from './blob-store';
 import type { SyncRequestContext } from './context';
-import { clockOf, RESOLVER_OUTAGE } from './context';
+import {
+  clockOf,
+  RESOLVER_OUTAGE,
+  touchAuthenticatedPartition,
+} from './context';
 import { SyncError, syncError } from './errors';
 import { emitEvent } from './events';
 import { compileSchema } from './schema';
@@ -72,6 +76,7 @@ export async function handleBlobUpload(
   ctx: SyncRequestContext,
   request: BlobUploadRequest,
 ): Promise<void> {
+  await touchAuthenticatedPartition(ctx);
   const store = ctx.blobs;
   if (store === undefined) {
     throw syncError('blob.not_found', 'this server has no blob store (§5.9)');
@@ -125,6 +130,7 @@ export async function handleBlobDownload(
   ctx: SyncRequestContext,
   blobId: string,
 ): Promise<BlobDownloadResult> {
+  await touchAuthenticatedPartition(ctx);
   const events = ctx.events;
   if (events === undefined) return downloadBlob(ctx, blobId);
   const clock = clockOf(ctx);
@@ -301,6 +307,7 @@ export async function handleBlobUploadGrant(
   ctx: SyncRequestContext,
   request: BlobUploadGrantRequest,
 ): Promise<BlobUploadGrantResult> {
+  await touchAuthenticatedPartition(ctx);
   const store = ctx.blobs;
   if (store === undefined) {
     throw syncError('blob.not_found', 'this server has no blob store (§5.9)');
