@@ -1,4 +1,4 @@
--- The demo `todos` schema is byte-identical to apps/demo's todos, so the
+-- The B6 demo `todos` schema — byte-identical to apps/demo's todos, so the
 -- Flutter example talks to the SAME dev server (apps/demo, port 8787) unchanged.
 -- `attachment` is a §5.9 blob_ref column (tag 7): a nullable reference to an
 -- uploaded file, resolved on demand via the /blobs endpoints.

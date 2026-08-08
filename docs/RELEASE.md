@@ -1,8 +1,32 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.45** (`v0.15.45`). All artifacts use Apache-2.0, except
+current release is **0.15.46** (`v0.15.46`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.46 release notes
+
+- Durable server reactions plan bounded application work after commit
+  validation and persist it in the same transaction as application rows,
+  commit metadata, and the push idempotency result. `ReactionRunner` provides
+  leased at-least-once delivery with stable idempotency keys, retries, dead
+  letters, manual reset, and bounded terminal retention on SQLite, PostgreSQL,
+  and D1.
+- `SyncRemoteClient` adds a database-less server and machine-to-machine client
+  for ordinary Syncular commits, registered typed queries, server-authoritative
+  commands, and live query snapshots. Queries support generated scope coverage
+  or explicit privileged authorization. Commands run under the partition write
+  boundary with their own authorizer and stable request identity. The Rust
+  client adds the matching database-less ordinary-commit producer.
+- Server documentation now covers SQLite-backed `SyncClient` processes in Node
+  and Bun, immutable relational domain-event rows, atomic event validation,
+  idempotent work-table consumption, remote operations, and durable reactions.
+  D1 deployments that enable a reaction planner must apply the regenerated
+  shared SQLite/D1 DDL before accepting commits.
+- Patched dependency overrides resolve the available `dompurify`, `hono`,
+  `js-yaml`, `nanoid`, and `undici` advisories. Two `image-size` advisories
+  remain explicitly ignored because no fixed release exists and the package is
+  present only in the React Native Metro development toolchain.
 
 ## 0.15.45 release notes
 

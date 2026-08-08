@@ -1,4 +1,4 @@
--- The demo `todos` schema is byte-identical to apps/demo-react's todos, so
+-- The B6 demo `todos` schema — byte-identical to apps/demo-react's todos, so
 -- this Tauri app talks to the SAME dev server unchanged.
 -- `attachment` is a §5.9 blob_ref column (tag 7): a nullable reference to an
 -- uploaded file, resolved on demand via the /blobs endpoints.
