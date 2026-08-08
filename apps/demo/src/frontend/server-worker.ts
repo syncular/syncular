@@ -8,7 +8,7 @@
  * SQLite instead of bun:sqlite).
  *
  * The page talks to this worker over a small RPC:
- *   page → worker: {kind:'sync'|'blob-upload'|'blob-download', id, …}
+ *   page → worker: {kind:'sync'|'blob-upload'|'blob-download'|'admin', id, …}
  *                  {kind:'rt-open'|'rt-text'|'rt-bytes'|'rt-close', channel, …}
  *   worker → page: {kind:'result', id, ok, …} · {kind:'rt-…', channel, …}
  *                  {kind:'ready'} once seeded.
@@ -36,7 +36,9 @@ import {
   type SeedMutation,
   seedMutations,
   type SyncServerConfig,
+  SyncularAdmin,
 } from '@syncular/server';
+import { createSyncularAdminRoutes } from '@syncular/server-hono';
 import { schema } from '../syncular.generated';
 
 const PARTITION = 'demo';
@@ -100,6 +102,7 @@ const ring = new RingBufferEvents({ capacity: 500 });
 interface EmbeddedServerParts {
   readonly config: SyncServerConfig;
   readonly hub: ReturnType<typeof createRealtimeHub>;
+  readonly adminRequest: (path: string) => Promise<Response>;
 }
 
 async function bootServer(): Promise<EmbeddedServerParts> {
@@ -132,7 +135,20 @@ async function bootServer(): Promise<EmbeddedServerParts> {
     // Everything inlines: no segment-download path in the embedded demo.
     limits: { inlineSegmentMaxBytes: 64 * 1024 * 1024 },
   };
-  return { config, hub };
+  const adminRoutes = createSyncularAdminRoutes(
+    SyncularAdmin.fromConfig(config, { ring }),
+    {
+      defaultPartition: PARTITION,
+      // This route surface is reachable only through the worker RPC. The page
+      // verifies the same-origin console frame before forwarding a request.
+      authorize: () => true,
+    },
+  );
+  return {
+    config,
+    hub,
+    adminRequest: async (path) => adminRoutes.request(path),
+  };
 }
 
 /** Seed a few rows through the real push path (same seed as the dev server). */
@@ -208,7 +224,7 @@ const booted = bootServer()
 
 scope.onmessage = (event: MessageEvent) => {
   void (async () => {
-    const { config, hub } = await booted;
+    const { config, hub, adminRequest } = await booted;
     const ctx = { ...config, partition: PARTITION, actorId: ACTOR_ID };
     const msg = event.data as {
       kind: string;
@@ -219,6 +235,7 @@ scope.onmessage = (event: MessageEvent) => {
       channel?: number;
       clientId?: string;
       text?: string;
+      path?: string;
     };
     const reply = (body: Record<string, unknown>, transfer?: Transferable[]) =>
       scope.postMessage({ id: msg.id, ...body }, transfer);
@@ -255,6 +272,19 @@ scope.onmessage = (event: MessageEvent) => {
             throw new Error('memory blob store always serves inline bytes');
           }
           reply({ kind: 'result', ok: true, bytes: result.bytes });
+          break;
+        }
+        case 'admin': {
+          if (msg.path === undefined || !msg.path.startsWith('/')) {
+            throw new Error('admin request requires a route path');
+          }
+          const response = await adminRequest(msg.path);
+          reply({
+            kind: 'result',
+            ok: true,
+            status: response.status,
+            body: await response.json(),
+          });
           break;
         }
         case 'rt-open': {

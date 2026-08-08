@@ -17,8 +17,8 @@
 export const changelog = [
   {
     date: '2026-08-09',
-    title: 'Hosted demo repair and debug console',
-    body: 'The hosted two-pane demo seeds through the epoch-aware server helper and explicitly retains the browser debugging registry. Open browser devtools to inspect both live clients through __SYNCULAR__, including their snapshots and full client handles.',
+    title: 'Hosted demo repair and graphical console',
+    body: 'The hosted two-pane demo seeds through the epoch-aware server helper and opens the existing graphical SyncularAdmin console against its embedded server worker. The console reads horizon status, metrics, store stats, clients, commits, rows, scope activity, and events without sending demo data to a remote server.',
     links: [{ href: '/demos/', label: 'Live demos' }],
   },
   {
