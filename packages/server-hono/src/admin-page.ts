@@ -14,6 +14,9 @@
  * All fetches are same-origin and relative ('./clients', …), so the page
  * works under whatever prefix the host mounts the routes at, and the host's
  * `authorize` guard applies to the page's own XHRs (same cookies/headers).
+ * `?transport=parent` sends the same route paths to a same-origin parent
+ * frame. Static demos can reuse this page while their admin routes run in a
+ * Web Worker.
  *
  * Panels cover the whole read surface: a metrics statusbar (ring-derived
  * rates + sparkline), the fleet view (`/partitions`, doubling as the
@@ -217,6 +220,21 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
   // trailing slash so 'base + /clients' hits '…/admin/clients' regardless of
   // whether the URL had the trailing slash.
   var base = location.pathname.replace(/\\/+$/, '');
+  var parentTransport = new URLSearchParams(location.search).get('transport') === 'parent';
+  var nextRequestId = 1;
+  var parentRequests = {};
+  if (parentTransport) {
+    window.addEventListener('message', function (event) {
+      if (event.source !== window.parent || event.origin !== location.origin) return;
+      var message = event.data;
+      if (!message || message.kind !== 'syncular-admin-response' || typeof message.id !== 'number') return;
+      var request = parentRequests[message.id];
+      if (!request) return;
+      delete parentRequests[message.id];
+      if (message.ok) request.resolve(message.body);
+      else request.reject(new Error((message.body && message.body.code) || ('HTTP ' + message.status)));
+    });
+  }
   function qs(params) {
     var parts = [];
     var p = el('partition').value.trim();
@@ -230,7 +248,17 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
     return parts.length ? '?' + parts.join('&') : '';
   }
   function get(path, params) {
-    return fetch(base + path + qs(params), { headers: { accept: 'application/json' } })
+    var query = qs(params);
+    if (parentTransport) {
+      return new Promise(function (resolve, reject) {
+        var id = nextRequestId++;
+        parentRequests[id] = { resolve: resolve, reject: reject };
+        window.parent.postMessage({
+          kind: 'syncular-admin-request', id: id, path: path + query
+        }, location.origin);
+      });
+    }
+    return fetch(base + path + query, { headers: { accept: 'application/json' } })
       .then(function (r) {
         if (!r.ok) return r.json().then(function (b) { throw new Error(b.code || ('HTTP ' + r.status)); });
         return r.json();
@@ -445,7 +473,7 @@ export const ADMIN_CONSOLE_HTML = `<!doctype html>
         el('events').innerHTML = empty('no RingBufferEvents wired on this admin');
         return;
       }
-      if (typeof EventSource === 'function') { connectStream(); return; }
+      if (!parentTransport && typeof EventSource === 'function') { connectStream(); return; }
       renderEventList(res.events);
     });
   }

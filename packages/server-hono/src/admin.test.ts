@@ -17,6 +17,7 @@ import {
 } from '@syncular/server';
 import { Hono } from 'hono';
 import { createSyncularAdminRoutes } from './admin';
+import { ADMIN_CONSOLE_HTML } from './admin-page';
 import { createSyncularHono } from './index';
 
 const COLUMNS: readonly RowColumn[] = [
@@ -388,5 +389,11 @@ describe('static console page', () => {
     const html = await res.text();
     expect(html).toContain('Syncular console');
     expect(html).toContain('<!doctype html>');
+  });
+
+  test('supports the same-origin parent transport used by static hosts', () => {
+    expect(ADMIN_CONSOLE_HTML).toContain("get('transport') === 'parent'");
+    expect(ADMIN_CONSOLE_HTML).toContain('syncular-admin-request');
+    expect(ADMIN_CONSOLE_HTML).toContain('syncular-admin-response');
   });
 });

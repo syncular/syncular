@@ -202,6 +202,9 @@ interface EmbeddedServer {
     mediaType?: string,
   ): Promise<void>;
   blobDownload(blobId: string): Promise<Uint8Array>;
+  admin(
+    path: string,
+  ): Promise<{ readonly status: number; readonly body: unknown }>;
   /** A realtime "socket": a numbered channel into the worker's hub (§8.7). */
   rtOpen(clientId: string, handlers: RealtimeHandlers): Promise<RealtimeSocket>;
 }
@@ -217,14 +220,18 @@ function getEmbeddedServer(): Promise<EmbeddedServer> {
     const pending = new Map<
       number,
       {
-        resolve: (msg: { bytes?: Uint8Array }) => void;
+        resolve: (msg: {
+          bytes?: Uint8Array;
+          status?: number;
+          body?: unknown;
+        }) => void;
         reject: (error: Error) => void;
       }
     >();
     const channels = new Map<number, RealtimeHandlers>();
     const call = (
       body: Record<string, unknown>,
-    ): Promise<{ bytes?: Uint8Array }> =>
+    ): Promise<{ bytes?: Uint8Array; status?: number; body?: unknown }> =>
       new Promise((res, rej) => {
         const id = nextId++;
         pending.set(id, { resolve: res, reject: rej });
@@ -243,6 +250,13 @@ function getEmbeddedServer(): Promise<EmbeddedServer> {
         const out = (await call({ kind: 'blob-download', blobId })).bytes;
         if (out === undefined) throw new Error('blob rpc returned no bytes');
         return out;
+      },
+      admin: async (path) => {
+        const result = await call({ kind: 'admin', path });
+        if (result.status === undefined || result.body === undefined) {
+          throw new Error('admin rpc returned no response');
+        }
+        return { status: result.status, body: result.body };
       },
       rtOpen: async (clientId, handlers) => {
         const channel = nextChannel++;
@@ -266,6 +280,8 @@ function getEmbeddedServer(): Promise<EmbeddedServer> {
         id?: number;
         ok?: boolean;
         bytes?: Uint8Array;
+        status?: number;
+        body?: unknown;
         text?: string;
         channel?: number;
         error?: { code: string; message: string };
@@ -1007,17 +1023,80 @@ async function main(): Promise<void> {
   const globalStatus = document.getElementById('global-status') as HTMLElement;
 
   await Promise.all([paneA.init(), paneB.init()]);
-  const debugRegistry = (
-    window as typeof window & {
-      readonly __SYNCULAR__?: { readonly clients: readonly unknown[] };
-    }
-  ).__SYNCULAR__;
-  if (debugRegistry?.clients.length === 2) {
-    console.info('Syncular debug console ready: await __SYNCULAR__.snapshot()');
-  } else {
-    console.error(
-      'sync.demo_devtools_unavailable: expected two registered clients',
-    );
+  const consoleLink = document.getElementById(
+    'console-link',
+  ) as HTMLAnchorElement;
+  if (EMBEDDED) {
+    consoleLink.hidden = false;
+    const dialog = document.getElementById(
+      'admin-console-dialog',
+    ) as HTMLDialogElement;
+    const frame = document.getElementById(
+      'admin-console-frame',
+    ) as HTMLIFrameElement;
+    window.addEventListener('message', (event) => {
+      if (
+        event.origin !== location.origin ||
+        event.source !== frame.contentWindow
+      ) {
+        return;
+      }
+      const message = event.data as {
+        readonly kind?: unknown;
+        readonly id?: unknown;
+        readonly path?: unknown;
+      };
+      if (
+        message.kind !== 'syncular-admin-request' ||
+        typeof message.id !== 'number' ||
+        typeof message.path !== 'string'
+      ) {
+        return;
+      }
+      const requestId = message.id;
+      const path = message.path;
+      void (async () => {
+        try {
+          const response = await (await getEmbeddedServer()).admin(path);
+          frame.contentWindow?.postMessage(
+            {
+              kind: 'syncular-admin-response',
+              id: requestId,
+              ok: response.status >= 200 && response.status < 300,
+              status: response.status,
+              body: response.body,
+            },
+            location.origin,
+          );
+        } catch (error) {
+          frame.contentWindow?.postMessage(
+            {
+              kind: 'syncular-admin-response',
+              id: requestId,
+              ok: false,
+              status: 500,
+              body: {
+                code:
+                  error instanceof ClientSyncError
+                    ? error.code
+                    : 'sync.internal',
+              },
+            },
+            location.origin,
+          );
+        }
+      })();
+    });
+    consoleLink.addEventListener('click', (event) => {
+      event.preventDefault();
+      if (frame.getAttribute('src') === null) {
+        frame.src = '/admin.html?transport=parent';
+      }
+      dialog.showModal();
+    });
+    document.getElementById('console-close')?.addEventListener('click', () => {
+      dialog.close();
+    });
   }
 
   conflictBtn.disabled = false;

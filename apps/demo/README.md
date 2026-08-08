@@ -39,11 +39,11 @@ persists it to a file.
   offline, edits the row in both panes (pane B's edit wins on the server),
   then asks you to toggle pane A online — the replayed stale-`baseVersion`
   commit surfaces a §6.3 conflict record (never auto-resolved) in pane A.
-- **Debug console**: open browser devtools on the hosted demo and run
-  `await __SYNCULAR__.snapshot()`. The registry contains both live clients;
-  `__SYNCULAR__.clients[0].ref` exposes the first client for queries and sync
-  inspection. Both demo builds explicitly retain this development registry.
-  For the Bun server operator console, run
+- **Server console**: select `[ console ]` in the hosted demo to open the
+  graphical `SyncularAdmin` interface. The interface reads the embedded server
+  worker and displays horizon status, metrics, store stats, clients, commit
+  metadata, row inspection, scope activity, and the event tail for the in-page
+  `demo` partition. For the Bun server operator console, run
   `SYNCULAR_DEMO_ADMIN=1 bun run dev` and open `/admin`.
 
 ## Notes

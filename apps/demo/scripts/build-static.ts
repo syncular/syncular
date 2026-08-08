@@ -1,8 +1,8 @@
 /**
  * Static demo build: the backend-free bundle published at demo.syncular.dev.
- * Emits `dist/` — index.html, the shared favicon and social card, app.js
- * (the page, with the embedded flag baked in), server-worker.js (the WHOLE
- * sync server, running in a Web Worker over sqlite-wasm wearing the D1
+ * Emits `dist/`: index.html, admin.html, the shared favicon and social card,
+ * app.js (the page, with the embedded flag baked in), server-worker.js (the
+ * WHOLE sync server, running in a Web Worker over sqlite-wasm wearing the D1
  * shape), and the sqlite-wasm vendor files. Cloudflare serves it as plain
  * static assets; there is no server-side compute anywhere.
  *
@@ -18,6 +18,7 @@
 import { dirname, join } from 'node:path';
 import type { BunPlugin } from 'bun';
 import rootPackage from '../../../package.json';
+import { ADMIN_CONSOLE_HTML } from '../../../packages/server-hono/src/admin-page';
 
 const appDir = join(import.meta.dir, '..');
 const frontendDir = join(appDir, 'src', 'frontend');
@@ -61,13 +62,7 @@ const build = await Bun.build({
   // condition points at compiled dist).
   conditions: ['bun'],
   minify: true,
-  // The hosted demo intentionally exposes the documented __SYNCULAR__
-  // browser-console registry. Other production builds keep the registry
-  // gated off through their ordinary production NODE_ENV definition.
-  define: {
-    SYNCULAR_DEMO_EMBEDDED: 'true',
-    SYNCULAR_DEVTOOLS: 'true',
-  },
+  define: { SYNCULAR_DEMO_EMBEDDED: 'true' },
   external: ['@sqlite.org/sqlite-wasm'],
   plugins: [bunSqliteStub],
 });
@@ -118,6 +113,7 @@ await Bun.write(
   join(outDir, 'index.html'),
   reflectReleaseVersion(await Bun.file(join(frontendDir, 'index.html')).text()),
 );
+await Bun.write(join(outDir, 'admin.html'), ADMIN_CONSOLE_HTML);
 await Bun.write(
   join(outDir, 'version.json'),
   `${JSON.stringify({ version: rootPackage.version }, null, 2)}\n`,

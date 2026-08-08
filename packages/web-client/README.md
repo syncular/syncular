@@ -268,21 +268,6 @@ The state is a discriminated union covering startup, migration,
 children; a blocked live query has `phase === 'blocked'`, never an indefinite
 loading state.
 
-## Browser console debugging
-
-Development pages register every live client and page-side worker handle on
-`window.__SYNCULAR__`:
-
-```js
-await __SYNCULAR__.snapshot();
-await __SYNCULAR__.clients[0].ref.query('SELECT * FROM todos');
-```
-
-Production bundles omit this registry. A public sandbox with non-sensitive
-data can retain it by defining `SYNCULAR_DEVTOOLS` as `true` in the bundler.
-The registry exposes full client handles, so applications with private data
-must keep the production gate.
-
 ## Privacy-safe support diagnostics
 
 Every direct and Worker/multi-tab client exposes the same versioned snapshot:
