@@ -1,8 +1,28 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.47** (`v0.15.47`). All artifacts use Apache-2.0, except
+current release is **0.15.48** (`v0.15.48`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.48 release notes
+
+- Wire version 2 binds client rounds to a partition log epoch. Restore rotation
+  invalidates abandoned cursors, resets server-derived rows, retains the
+  outbox, and replays pending commits after bootstrap. The authenticated
+  partition registry supplies the maintenance and restore inventory. The
+  TypeScript and Rust cores share the restore conformance scenarios and accept
+  the current and previous wire versions.
+- `installSyncScheduler(client)` consumes the core sync-intent stream with one
+  in-flight round and cancellable retry deadlines. Swift, Kotlin, Flutter, and
+  React Native clients rotate request headers at runtime. The iOS, Android, and
+  Flutter connectivity adapters drive the native pause and resume lifecycle
+  from host reachability signals.
+- Creation-time UTC month helpers provide stable W2 window units. Typegen emits
+  the SYQL diagnostic remedy catalog for application tooling, and the server
+  exposes the partition registry through its admin surface.
+- The Bun client adapter clears cached prepared statements after schema DDL.
+  First-connect epoch resets retain the rows-bootstrap throughput budget after
+  recreating synced tables.
 
 ## 0.15.47 release notes
 
