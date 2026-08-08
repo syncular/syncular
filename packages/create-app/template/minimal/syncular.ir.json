@@ -11,7 +11,7 @@
   ],
   "tables": [
     {
-      "name": "notes",
+      "name": "todos",
       "primaryKey": "id",
       "columns": [
         {
@@ -25,8 +25,18 @@
           "nullable": false
         },
         {
-          "name": "body",
+          "name": "title",
           "type": "string",
+          "nullable": false
+        },
+        {
+          "name": "done",
+          "type": "boolean",
+          "nullable": false
+        },
+        {
+          "name": "position",
+          "type": "integer",
           "nullable": false
         },
         {
@@ -47,8 +57,8 @@
   ],
   "subscriptions": [
     {
-      "name": "notesInList",
-      "table": "notes",
+      "name": "todosInList",
+      "table": "todos",
       "scopes": [
         {
           "variable": "list_id",

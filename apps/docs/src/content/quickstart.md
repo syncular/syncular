@@ -33,16 +33,18 @@ The scaffolder wrote a migration, manifest, and
 
 ```sql
 -- migrations/0001_initial/up.sql
-CREATE TABLE notes (
+CREATE TABLE todos (
   id TEXT PRIMARY KEY,
   list_id TEXT NOT NULL,
-  body TEXT NOT NULL,
+  title TEXT NOT NULL,
+  done BOOLEAN NOT NULL,
+  position INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL
 );
 ```
 
 The manifest names the synced tables, their **scopes** (how rows are
-authorized: `list:{list_id}` means "a note belongs to the list in its
+authorized: `list:{list_id}` means "a todo belongs to the list in its
 `list_id` column"), and any subscription templates:
 
 ```json
@@ -55,11 +57,11 @@ authorized: `list:{list_id}` means "a note belongs to the list in its
     "module": "./src/syncular.generated.ts"
   },
   "schemaVersions": [{ "version": 1, "through": "0001_initial" }],
-  "tables": [{ "name": "notes", "scopes": ["list:{list_id}"] }],
+  "tables": [{ "name": "todos", "scopes": ["list:{list_id}"] }],
   "subscriptions": [
     {
-      "name": "notesInList",
-      "table": "notes",
+      "name": "todosInList",
+      "table": "todos",
       "scopes": { "list_id": ["{listId}"] }
     }
   ]
@@ -163,26 +165,28 @@ const b = makeClient(BASE_URL, 'client-b');
 await a.start();
 await b.start();
 
-const sub = { id: 'notes', table: 'notes', scopes: { list_id: ['welcome'] } };
+const sub = { id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } };
 a.subscribe(sub);
 b.subscribe(sub);
 
 a.mutate([
   {
-    table: 'notes',
+    table: 'todos',
     op: 'upsert',
     values: {
-      id: 'note-1',
-      list_id: 'welcome',
-      body: 'Hello from client A',
+      id: 'todo-1',
+      list_id: 'groceries',
+      title: 'Buy milk',
+      done: false,
+      position: 1,
       updated_at_ms: Date.now(),
     },
   },
 ]);
 await a.syncUntilIdle(); // push A's outbox to the server
-await b.syncUntilIdle(); // B bootstraps the list and applies A's note
+await b.syncUntilIdle(); // B bootstraps the list and applies A's todo
 
-console.log('B sees:', b.query('SELECT id, body FROM notes ORDER BY id'));
+console.log('B sees:', b.query('SELECT id, title FROM todos ORDER BY id'));
 ```
 
 With the server still running, in a second terminal:
@@ -194,12 +198,12 @@ bun run clients
 You should see:
 
 ```
-A: wrote note-1, pushing…
+A: wrote todo-1, pushing…
 B: syncing…
 B sees: [
   {
-    id: "note-1",
-    body: "Hello from client A",
+    id: "todo-1",
+    title: "Buy milk",
   }
 ]
 

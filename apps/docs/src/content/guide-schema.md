@@ -34,9 +34,9 @@ patterns, subscription templates, and the schema-version history:
     "rust": { "queriesPath": "./src/syncular_queries.rs" }
   },
   "schemaVersions": [{ "version": 1, "through": "0001_initial" }],
-  "tables": [{ "name": "notes", "scopes": ["list:{list_id}"] }],
+  "tables": [{ "name": "todos", "scopes": ["list:{list_id}"] }],
   "subscriptions": [
-    { "name": "notesInList", "table": "notes", "scopes": { "list_id": ["{listId}"] } }
+    { "name": "todosInList", "table": "todos", "scopes": { "list_id": ["{listId}"] } }
   ]
 }
 ```
@@ -133,15 +133,15 @@ history. `syncular migrations check` is a faster history-only CI gate.
 
 ## What you get
 
-For a table `notes`, the module exports:
+For a table `todos`, the module exports:
 
 - `schema`: the object passed to both `SyncClient` and `SyncServerConfig`
   (structurally a `ServerSchema` *and* a `ClientSchema`).
-- `NotesRow`: one field per column, in row-codec order.
-- `NotesInsert` / `NotesUpdate`: client-side input conveniences (the wire
+- `TodosRow`: one field per column, in row-codec order.
+- `TodosInsert` / `TodosUpdate`: client-side input conveniences (the wire
   stays full-row upserts; nothing partial is encoded).
 
-For a subscription `notesInList`, a `notesInListSubscription` with a
+For a subscription `todosInList`, a `todosInListSubscription` with a
 `scopes(params)` builder and a typed `params` interface.
 
 Configured `.sql` and `.syql` named queries add typed inputs, projection rows,

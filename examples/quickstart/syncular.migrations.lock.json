@@ -1,37 +1,49 @@
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "migrations": [
     {
       "name": "0001_initial",
-      "sha256": "e52319a8c28ce9af7f8d8bfc63599f70cfc3555b3695604aaa0677eb3b7ccfbd",
-      "tables": [
-        {
-          "name": "notes",
-          "primaryKey": "id",
-          "columns": [
-            {
-              "name": "id",
-              "type": "string",
-              "nullable": false
-            },
-            {
-              "name": "list_id",
-              "type": "string",
-              "nullable": false
-            },
-            {
-              "name": "body",
-              "type": "string",
-              "nullable": false
-            },
-            {
-              "name": "updated_at_ms",
-              "type": "integer",
-              "nullable": false
-            }
-          ]
-        }
-      ]
+      "sha256": "9c8b9b5541e527627a9f93b01aea6897431385657af55c0d8e74ad153f601c9a"
     }
-  ]
+  ],
+  "head": {
+    "tables": [
+      {
+        "name": "todos",
+        "primaryKey": "id",
+        "columns": [
+          {
+            "name": "id",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "list_id",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "title",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "done",
+            "type": "boolean",
+            "nullable": false
+          },
+          {
+            "name": "position",
+            "type": "integer",
+            "nullable": false
+          },
+          {
+            "name": "updated_at_ms",
+            "type": "integer",
+            "nullable": false
+          }
+        ]
+      }
+    ]
+  }
 }

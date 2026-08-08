@@ -37,16 +37,16 @@ test('two clients converge', async () => {
   const a = await sync.client('a');
   const b = await sync.client('b');
 
-  const sub = { id: 's', table: 'notes', scopes: { list_id: ['welcome'] } };
+  const sub = { id: 's', table: 'todos', scopes: { list_id: ['groceries'] } };
   a.api.subscribe(sub);
   b.api.subscribe(sub);
 
   a.api.mutate([
-    { table: 'notes', op: 'upsert', values: { id: 'n1', list_id: 'welcome', body: 'hi' } },
+    { table: 'todos', op: 'upsert', values: { id: 't1', list_id: 'groceries', title: 'hi' } },
   ]);
   await sync.syncAll(); // push A's outbox, pull it into B
 
-  expect(b.api.query('SELECT body FROM notes')).toEqual([{ body: 'hi' }]);
+  expect(b.api.query('SELECT title FROM todos')).toEqual([{ title: 'hi' }]);
   await sync.dispose();
 });
 ```
@@ -102,10 +102,10 @@ await client.close()
 
 ```ts
 a.goOffline();
-a.api.mutate([{ table: 'notes', op: 'upsert', values: { id: 'n1', list_id: 'l', body: 'draft' } }]);
+a.api.mutate([{ table: 'todos', op: 'upsert', values: { id: 't1', list_id: 'l', title: 'draft' } }]);
 
 // Visible locally (optimistic), but nothing leaves:
-expect(a.api.query('SELECT body FROM notes')).toEqual([{ body: 'draft' }]);
+expect(a.api.query('SELECT title FROM todos')).toEqual([{ title: 'draft' }]);
 expect(a.api.pendingCommits()).toHaveLength(1);
 await expect(a.api.sync()).rejects.toThrow(); // offline
 
@@ -173,18 +173,18 @@ deterministic conflict—no timers or transport mocks are needed:
 ```ts
 await sync.syncAll();
 const [{ version }] = a.api.query(
-  'SELECT _sync_version AS version FROM notes WHERE id = ?',
-  ['n1'],
+  'SELECT _sync_version AS version FROM todos WHERE id = ?',
+  ['t1'],
 ) as Array<{ version: number }>;
 
-a.api.patch('notes', 'n1', { body: 'A' }, { baseVersion: version });
-b.api.patch('notes', 'n1', { body: 'B' }, { baseVersion: version });
+a.api.patch('todos', 't1', { title: 'A' }, { baseVersion: version });
+b.api.patch('todos', 't1', { title: 'B' }, { baseVersion: version });
 
 await a.sync(); // wins version + 1
 await b.sync(); // loses against the stale base
 
-expect(b.api.conflicts[0]?.serverRow.body).toBe('A');
-expect(b.api.conflicts[0]?.operation?.changedFields).toEqual(['body']);
+expect(b.api.conflicts[0]?.serverRow.title).toBe('A');
+expect(b.api.conflicts[0]?.operation?.changedFields).toEqual(['title']);
 ```
 
 Pass `validators` to `createTestSync` to exercise the same business rules as
@@ -213,16 +213,16 @@ import { syncWrapper } from '@syncular/testkit/react';
 
 const sync = await createTestSync({ schema });
 const client = await sync.client('a');
-client.api.subscribe({ id: 's', table: 'notes', scopes: { list_id: ['x'] } });
+client.api.subscribe({ id: 's', table: 'todos', scopes: { list_id: ['x'] } });
 await client.sync();
 
 const { result } = renderHook(
-  () => useRawSql('SELECT * FROM notes'),
+  () => useRawSql('SELECT * FROM todos'),
   { wrapper: syncWrapper(client) },
 );
 
 await act(async () => {
-  client.api.mutate([{ table: 'notes', op: 'upsert', values: { id: 'n1', list_id: 'x', body: 'hi' } }]);
+  client.api.mutate([{ table: 'todos', op: 'upsert', values: { id: 't1', list_id: 'x', title: 'hi' } }]);
 });
 await waitFor(() => expect(result.current.rows).toHaveLength(1));
 ```

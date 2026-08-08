@@ -45,18 +45,24 @@ test('two clients converge through the server', async () => {
   await a.start();
   await b.start();
 
-  const sub = { id: 'notes', table: 'notes', scopes: { list_id: ['welcome'] } };
+  const sub = {
+    id: 'todos',
+    table: 'todos',
+    scopes: { list_id: ['groceries'] },
+  };
   a.subscribe(sub);
   b.subscribe(sub);
 
   a.mutate([
     {
-      table: 'notes',
+      table: 'todos',
       op: 'upsert',
       values: {
-        id: 'note-1',
-        list_id: 'welcome',
-        body: 'Hello from client A',
+        id: 'todo-1',
+        list_id: 'groceries',
+        title: 'Buy milk',
+        done: false,
+        position: 1,
         updated_at_ms: Date.now(),
       },
     },
@@ -64,8 +70,8 @@ test('two clients converge through the server', async () => {
   await a.syncUntilIdle();
   await b.syncUntilIdle();
 
-  const rows = b.query('SELECT id, body FROM notes ORDER BY id');
-  expect(rows).toEqual([{ id: 'note-1', body: 'Hello from client A' }]);
+  const rows = b.query('SELECT id, title FROM todos ORDER BY id');
+  expect(rows).toEqual([{ id: 'todo-1', title: 'Buy milk' }]);
 
   await a.close();
   await b.close();

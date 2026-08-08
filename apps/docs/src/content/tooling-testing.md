@@ -30,16 +30,27 @@ test('two clients converge', async () => {
   const a = await sync.client('a');
   const b = await sync.client('b');
 
-  const sub = { id: 's', table: 'notes', scopes: { list_id: ['welcome'] } };
+  const sub = { id: 's', table: 'todos', scopes: { list_id: ['groceries'] } };
   a.api.subscribe(sub);
   b.api.subscribe(sub);
 
   a.api.mutate([
-    { table: 'notes', op: 'upsert', values: { id: 'n1', list_id: 'welcome', body: 'hi' } },
+    {
+      table: 'todos',
+      op: 'upsert',
+      values: {
+        id: 't1',
+        list_id: 'groceries',
+        title: 'Buy milk',
+        done: false,
+        position: 1,
+        updated_at_ms: Date.now(),
+      },
+    },
   ]);
   await sync.syncAll(); // push A's outbox, pull it into B
 
-  expect(b.api.query('SELECT body FROM notes')).toEqual([{ body: 'hi' }]);
+  expect(b.api.query('SELECT title FROM todos')).toEqual([{ title: 'Buy milk' }]);
   await sync.dispose();
 });
 ```
@@ -63,31 +74,42 @@ test('an offline client queues writes, then drains on reconnect', async () => {
   const sync = await createTestSync({ schema });
   const a = await sync.client('a');
   const b = await sync.client('b');
-  const sub = { id: 's', table: 'notes', scopes: { list_id: ['welcome'] } };
+  const sub = { id: 's', table: 'todos', scopes: { list_id: ['groceries'] } };
   a.api.subscribe(sub);
   b.api.subscribe(sub);
   await sync.syncAll();
 
   a.goOffline();
   a.api.mutate([
-    { table: 'notes', op: 'upsert', values: { id: 'n1', list_id: 'welcome', body: 'offline' } },
+    {
+      table: 'todos',
+      op: 'upsert',
+      values: {
+        id: 't1',
+        list_id: 'groceries',
+        title: 'written offline',
+        done: false,
+        position: 1,
+        updated_at_ms: Date.now(),
+      },
+    },
   ]);
 
   // Optimistically visible locally, but nothing leaves the client:
-  expect(a.api.query('SELECT body FROM notes')).toEqual([{ body: 'offline' }]);
+  expect(a.api.query('SELECT title FROM todos')).toEqual([{ title: 'written offline' }]);
   expect(a.api.pendingCommits()).toHaveLength(1);
   await expect(a.api.sync()).rejects.toThrow();
 
   // B has not seen it; nothing left A.
   await b.sync();
-  expect(b.api.query('SELECT id FROM notes')).toHaveLength(0);
+  expect(b.api.query('SELECT id FROM todos')).toHaveLength(0);
 
   // Back online: the queue drains and B converges.
   a.goOnline();
   await sync.syncAll();
   expect(a.api.pendingCommits()).toHaveLength(0);
-  expect(b.api.query('SELECT id, body FROM notes')).toEqual([
-    { id: 'n1', body: 'offline' },
+  expect(b.api.query('SELECT id, title FROM todos')).toEqual([
+    { id: 't1', title: 'written offline' },
   ]);
   await sync.dispose();
 });
@@ -162,16 +184,29 @@ import { syncWrapper } from '@syncular/testkit/react';
 
 const sync = await createTestSync({ schema });
 const client = await sync.client('a');
-client.api.subscribe({ id: 's', table: 'notes', scopes: { list_id: ['x'] } });
+client.api.subscribe({ id: 's', table: 'todos', scopes: { list_id: ['x'] } });
 await client.sync();
 
 const { result } = renderHook(
-  () => useRawSql('SELECT * FROM notes'),
+  () => useRawSql('SELECT * FROM todos'),
   { wrapper: syncWrapper(client) },
 );
 
 await act(async () => {
-  client.api.mutate([{ table: 'notes', op: 'upsert', values: { id: 'n1', list_id: 'x', body: 'hi' } }]);
+  client.api.mutate([
+    {
+      table: 'todos',
+      op: 'upsert',
+      values: {
+        id: 't1',
+        list_id: 'x',
+        title: 'Buy milk',
+        done: false,
+        position: 1,
+        updated_at_ms: Date.now(),
+      },
+    },
+  ]);
 });
 await waitFor(() => expect(result.current.rows).toHaveLength(1));
 ```
