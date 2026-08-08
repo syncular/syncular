@@ -36,6 +36,7 @@ export const nav: readonly NavSection[] = [
     title: 'Concepts',
     items: [
       { slug: 'concepts-commits', title: 'Commits, cursors, idempotency' },
+      { slug: 'concepts-subscriptions', title: 'Subscriptions & the outbox' },
       { slug: 'concepts-scopes', title: 'Scopes & authorization' },
       { slug: 'concepts-bootstrap', title: 'Bootstrap & segments' },
       { slug: 'concepts-windowing', title: 'Windowed sync' },
@@ -60,8 +61,10 @@ export const nav: readonly NavSection[] = [
       { slug: 'guide-server', title: 'Server setup' },
       { slug: 'server-storage', title: 'Storage backends' },
       { slug: 'server-workers', title: 'Cloudflare Workers' },
+      { slug: 'server-partitions', title: 'Partitions & multi-tenancy' },
       { slug: 'server-operations', title: 'Operations and maintenance' },
       { slug: 'server-reactions', title: 'Durable reactions' },
+      { slug: 'server-realtime-tickets', title: 'Realtime tickets' },
       { slug: 'guide-server-clients', title: 'Server-side sync clients' },
       { slug: 'guide-remote-operations', title: 'Remote server operations' },
     ],
@@ -70,6 +73,7 @@ export const nav: readonly NavSection[] = [
     title: 'Tooling',
     items: [
       { slug: 'guide-schema', title: 'Schema & typegen' },
+      { slug: 'tooling-cli', title: 'CLI reference' },
       { slug: 'tooling-queries', title: 'Named queries' },
       { slug: 'tooling-local-search', title: 'Local full-text search' },
       { slug: 'syql', title: 'SYQL language' },

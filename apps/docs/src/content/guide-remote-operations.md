@@ -312,9 +312,9 @@ unwatch();
 client.close();
 ```
 
-The ticket rules are the same as for the
-[sync WebSocket](/guide-server-clients/): short-lived, because proxy access
-logs retain URLs, with a custom connector for per-attempt rotation.
+The ticket rules are the same as for the sync WebSocket: short-lived,
+because proxy access logs retain URLs, with a custom connector for
+per-attempt rotation ([Realtime tickets](/server-realtime-tickets/)).
 
 Watches are live invalidations, not durable work delivery. After a connection
 loss, reconnect and register the watch again to receive a fresh snapshot.

@@ -146,10 +146,11 @@ sync after reconnect. A custom service loop can call `connectRealtime()` and
 `disconnectRealtime()` directly instead.
 
 The example authenticates the WebSocket with a query parameter because the
-built-in connector uses the standard `WebSocket` constructor. Configure the
-server to accept that short-lived ticket, and keep long-lived service bearers
-out of URLs that a proxy may log. A rotating ticket flow can provide a custom
-`RealtimeConnector` that obtains a ticket for each connection attempt. The
+built-in connector uses the standard `WebSocket` constructor. Keep
+long-lived service bearers out of URLs that a proxy may log: mint and verify
+a short-lived ticket instead ([Realtime tickets](/server-realtime-tickets/));
+a rotating flow provides a custom `RealtimeConnector` that obtains one per
+connection attempt. The
 connector requires a global `WebSocket`, which Bun and Node 22.13 or newer
 provide.
 

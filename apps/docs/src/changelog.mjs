@@ -17,6 +17,16 @@
 export const changelog = [
   {
     date: '2026-08-08',
+    title: 'Docs restructure',
+    body: 'One example domain per audience across the site, a dependency-ordered concepts arc, template-locked platform pages, and new pages for subscriptions and the outbox, schema upgrades, partitions, realtime tickets, encryption keys, and the CLI.',
+    links: [
+      { href: '/concepts-subscriptions/', label: 'Subscriptions & the outbox' },
+      { href: '/concepts-schema-upgrades/', label: 'Schema upgrades' },
+      { href: '/server-partitions/', label: 'Partitions & multi-tenancy' },
+    ],
+  },
+  {
+    date: '2026-08-08',
     title: 'Server-side sync clients on built-in SQLite',
     body: 'SyncClient runs in a CLI, background worker, or long-running service. The SQLite export selects built-in node:sqlite or bun:sqlite, and the server storage package uses the same runtime-selected import.',
     links: [
