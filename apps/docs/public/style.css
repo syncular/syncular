@@ -114,6 +114,10 @@ pre, code, kbd { font-family: inherit; }
   color: var(--amber);
   animation: blink 1.1s steps(1) infinite;
 }
+/* Mobile-only burger; same visually-hidden pattern as .tab-input. */
+.sidebar-toggle { position: absolute; opacity: 0; pointer-events: none; }
+.sidebar-burger { display: none; }
+
 .nav-section { margin-bottom: 1.35rem; }
 .nav-section h4 {
   font-size: 0.68rem;
@@ -694,8 +698,29 @@ article .blog-card p {
     position: static;
     border-right: none;
     border-bottom: 1px solid var(--border);
-    padding-bottom: 1rem;
+    padding: 0.9rem 1.1rem;
   }
+  .sidebar-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .sidebar .brand { margin: 0 0.25rem; }
+  .sidebar-burger {
+    display: block;
+    cursor: pointer;
+    color: var(--amber);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+  .sidebar-burger::after { content: '[ MENU ]'; }
+  .sidebar-toggle:checked ~ .sidebar-top .sidebar-burger::after {
+    content: '[ CLOSE ]';
+  }
+  .sidebar .nav-section { display: none; }
+  .sidebar-toggle:checked ~ .nav-section { display: block; }
+  .sidebar-top + .nav-section { margin-top: 1.3rem; }
   main { padding: 1.6rem 1.1rem 4rem; }
   main.blog-main { padding-top: 1.6rem; }
   .feature-list, .cores { grid-template-columns: 1fr; }

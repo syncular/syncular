@@ -48,7 +48,16 @@ const releasedVersion = rootPkg.version;
   </head>
   <body>
     <nav class="sidebar" transition:persist="sidebar">
-      <a class="brand" href="/">syncular</a>
+      <input
+        type="checkbox"
+        id="sidebar-toggle"
+        class="sidebar-toggle"
+        aria-label="Toggle navigation"
+      />
+      <div class="sidebar-top">
+        <a class="brand" href="/">syncular</a>
+        <label class="sidebar-burger" for="sidebar-toggle"></label>
+      </div>
       {
         nav.map((section) => (
           <div class="nav-section">
@@ -95,6 +104,10 @@ const releasedVersion = rootPkg.version;
         if (sb) sb.scrollTop = sidebarScroll;
       });
       document.addEventListener('astro:page-load', () => {
+        // The persisted sidebar keeps its checkbox state across swaps, so the
+        // mobile menu would stay open after navigating; close it by hand.
+        const toggle = document.querySelector<HTMLInputElement>('.sidebar-toggle');
+        if (toggle) toggle.checked = false;
         const path = location.pathname;
         for (const a of document.querySelectorAll<HTMLAnchorElement>(
           '.sidebar .nav-section a',
