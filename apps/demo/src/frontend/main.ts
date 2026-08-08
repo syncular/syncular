@@ -78,7 +78,7 @@ function mutableConnectivitySignal() {
   };
 }
 
-type LocalTodo = TodosRow & { _sync_version: number };
+type LocalTodo = TodosRow & { syncVersion: number };
 
 /**
  * The pane's view of a client core: the handle's async surface. The
@@ -202,6 +202,7 @@ interface EmbeddedServer {
     mediaType?: string,
   ): Promise<void>;
   blobDownload(blobId: string): Promise<Uint8Array>;
+  adminSnapshot(): Promise<Record<string, unknown>>;
   /** A realtime "socket": a numbered channel into the worker's hub (§8.7). */
   rtOpen(clientId: string, handlers: RealtimeHandlers): Promise<RealtimeSocket>;
 }
@@ -217,14 +218,20 @@ function getEmbeddedServer(): Promise<EmbeddedServer> {
     const pending = new Map<
       number,
       {
-        resolve: (msg: { bytes?: Uint8Array }) => void;
+        resolve: (msg: {
+          bytes?: Uint8Array;
+          snapshot?: Record<string, unknown>;
+        }) => void;
         reject: (error: Error) => void;
       }
     >();
     const channels = new Map<number, RealtimeHandlers>();
     const call = (
       body: Record<string, unknown>,
-    ): Promise<{ bytes?: Uint8Array }> =>
+    ): Promise<{
+      bytes?: Uint8Array;
+      snapshot?: Record<string, unknown>;
+    }> =>
       new Promise((res, rej) => {
         const id = nextId++;
         pending.set(id, { resolve: res, reject: rej });
@@ -243,6 +250,13 @@ function getEmbeddedServer(): Promise<EmbeddedServer> {
         const out = (await call({ kind: 'blob-download', blobId })).bytes;
         if (out === undefined) throw new Error('blob rpc returned no bytes');
         return out;
+      },
+      adminSnapshot: async () => {
+        const snapshot = (await call({ kind: 'admin-snapshot' })).snapshot;
+        if (snapshot === undefined) {
+          throw new Error('admin rpc returned no snapshot');
+        }
+        return snapshot;
       },
       rtOpen: async (clientId, handlers) => {
         const channel = nextChannel++;
@@ -266,6 +280,7 @@ function getEmbeddedServer(): Promise<EmbeddedServer> {
         id?: number;
         ok?: boolean;
         bytes?: Uint8Array;
+        snapshot?: Record<string, unknown>;
         text?: string;
         channel?: number;
         error?: { code: string; message: string };
@@ -273,6 +288,15 @@ function getEmbeddedServer(): Promise<EmbeddedServer> {
       switch (msg.kind) {
         case 'ready':
           resolve(api);
+          break;
+        case 'boot-error':
+          reject(
+            new ClientSyncError(
+              msg.error?.code ?? 'sync.internal',
+              msg.error?.message ?? 'embedded server failed to start',
+              false,
+            ),
+          );
           break;
         case 'result': {
           if (msg.id === undefined) break;
@@ -570,6 +594,12 @@ class Pane {
       scopes: todoListSubscription.scopes({ listId: LIST_ID }),
     });
     this.#ready = true;
+    this.#offlineBtn.disabled = false;
+    for (const control of this.root.querySelectorAll<
+      HTMLInputElement | HTMLButtonElement
+    >('form.add input, form.add button')) {
+      control.disabled = false;
+    }
     // Connect-then-sync (§8.7 reference boot order): the first sync
     // round rides the socket and registers this connection's
     // subscriptions at round end — no reconnect, no silent-no-fanout
@@ -667,7 +697,7 @@ class Pane {
         table: 'todos',
         op: 'upsert',
         values: { ...values },
-        ...(row._sync_version >= 1 ? { baseVersion: row._sync_version } : {}),
+        ...(row.syncVersion >= 1 ? { baseVersion: row.syncVersion } : {}),
       },
     ]);
     await this.afterMutation();
@@ -739,7 +769,7 @@ class Pane {
       this.core.query(
         `SELECT id, list_id AS listId, title, done, position,
                 updated_at_ms AS updatedAtMs, attachment,
-                "${SYNC_VERSION_COLUMN}" AS _sync_version
+                "${SYNC_VERSION_COLUMN}" AS syncVersion
          FROM todos ORDER BY position ASC, id ASC`,
       ),
       this.core.pendingCount(),
@@ -765,6 +795,7 @@ class Pane {
       title.append(this.#roleBadge);
     }
     this.#offlineBtn = el('button', undefined, 'Go offline');
+    this.#offlineBtn.disabled = true;
     this.#offlineBtn.addEventListener('click', () => {
       void this.setOffline(!this.offline);
     });
@@ -776,11 +807,14 @@ class Pane {
 
     const form = el('form', 'add');
     const input = el('input');
+    input.disabled = true;
     input.placeholder = `Add a todo in pane ${this.name}…`;
     const submit = el('button', undefined, 'Add');
+    submit.disabled = true;
     form.append(input, submit);
     form.addEventListener('submit', (event) => {
       event.preventDefault();
+      if (!this.#ready) return;
       const value = input.value.trim();
       if (value.length === 0) return;
       input.value = '';
@@ -836,7 +870,7 @@ class Pane {
     const version = el(
       'span',
       'ver',
-      row._sync_version === -1 ? 'local' : `v${row._sync_version}`,
+      row.syncVersion === -1 ? 'local' : `v${row.syncVersion}`,
     );
     titleCell.append(version);
 
@@ -954,7 +988,7 @@ async function simulateConflict(
   await b.syncNow();
   const inA = a.todo(id);
   const inB = b.todo(id);
-  if (inA === undefined || inB === undefined || inA._sync_version < 1) {
+  if (inA === undefined || inB === undefined || inA.syncVersion < 1) {
     status.textContent = 'conflict setup failed — panes did not converge';
     return;
   }
@@ -989,6 +1023,41 @@ async function main(): Promise<void> {
 
   await Promise.all([paneA.init(), paneB.init()]);
 
+  const consoleLink = document.getElementById(
+    'console-link',
+  ) as HTMLAnchorElement;
+  const consolePanel = document.getElementById('server-console') as HTMLElement;
+  const consoleOutput = document.getElementById(
+    'console-output',
+  ) as HTMLPreElement;
+  const consoleRefresh = document.getElementById(
+    'console-refresh',
+  ) as HTMLButtonElement;
+  if (EMBEDDED) {
+    consoleLink.hidden = false;
+    const refreshConsole = async () => {
+      consoleRefresh.disabled = true;
+      consoleOutput.textContent = 'reading server state…';
+      try {
+        consoleOutput.textContent = JSON.stringify(
+          await (await getEmbeddedServer()).adminSnapshot(),
+          null,
+          2,
+        );
+      } catch (error) {
+        consoleOutput.textContent =
+          error instanceof Error ? error.message : String(error);
+      } finally {
+        consoleRefresh.disabled = false;
+      }
+    };
+    consoleRefresh.addEventListener('click', () => void refreshConsole());
+    consoleLink.addEventListener('click', () => {
+      consolePanel.hidden = false;
+      void refreshConsole();
+    });
+  }
+
   conflictBtn.disabled = false;
   conflictBtn.addEventListener('click', () => {
     conflictBtn.disabled = true;
@@ -998,4 +1067,4 @@ async function main(): Promise<void> {
   });
 }
 
-void main();
+void main().catch((error: unknown) => console.error(error));

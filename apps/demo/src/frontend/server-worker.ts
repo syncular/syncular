@@ -22,12 +22,6 @@
  */
 import sqlite3InitModule from '@sqlite.org/sqlite-wasm';
 import {
-  encodeMessage,
-  encodeRow,
-  PROTOCOL_WIRE_VERSION,
-  type RequestFrame,
-} from '@syncular/core';
-import {
   createRealtimeHub,
   type D1Database,
   type D1PreparedStatement,
@@ -39,9 +33,12 @@ import {
   MemorySegmentStore,
   type RealtimeSession,
   RingBufferEvents,
+  type SeedMutation,
+  seedMutations,
   type SyncServerConfig,
+  SyncularAdmin,
 } from '@syncular/server';
-import { schema, type TodosRow } from '../syncular.generated';
+import { schema } from '../syncular.generated';
 
 const PARTITION = 'demo';
 const ACTOR_ID = 'demo-user';
@@ -104,6 +101,7 @@ const ring = new RingBufferEvents({ capacity: 500 });
 interface EmbeddedServerParts {
   readonly config: SyncServerConfig;
   readonly hub: ReturnType<typeof createRealtimeHub>;
+  readonly admin: SyncularAdmin;
 }
 
 async function bootServer(): Promise<EmbeddedServerParts> {
@@ -136,62 +134,33 @@ async function bootServer(): Promise<EmbeddedServerParts> {
     // Everything inlines: no segment-download path in the embedded demo.
     limits: { inlineSegmentMaxBytes: 64 * 1024 * 1024 },
   };
-  return { config, hub };
+  return { config, hub, admin: SyncularAdmin.fromConfig(config, { ring }) };
 }
 
 /** Seed a few rows through the real push path (same seed as the dev server). */
 async function seed(config: SyncServerConfig): Promise<void> {
-  const table = schema.tables[0];
-  if (table === undefined) throw new Error('schema has no tables');
   const now = Date.now();
-  const rows: TodosRow[] = [
+  const mutations: SeedMutation[] = [
     'Open this page in two panes',
     'Toggle a pane offline and keep editing',
     'Attach a file to a todo — it uploads then syncs',
   ].map((title, index) => ({
-    id: `seed-${index + 1}`,
-    listId: 'demo',
-    title,
-    done: false,
-    position: index + 1,
-    updatedAtMs: now,
-    attachment: null,
+    table: 'todos',
+    op: 'upsert',
+    values: {
+      id: `seed-${index + 1}`,
+      listId: 'demo',
+      title,
+      done: false,
+      position: index + 1,
+      updatedAtMs: now,
+      attachment: null,
+    },
   }));
-  const frames: RequestFrame[] = [
-    { type: 'REQ_HEADER', clientId: 'seed', schemaVersion: schema.version },
-    {
-      type: 'PUSH_COMMIT',
-      clientCommitId: 'seed-commit-1',
-      operations: rows.map((row) => ({
-        table: 'todos',
-        rowId: row.id,
-        op: 'upsert' as const,
-        payload: encodeRow(table.columns, [
-          row.id,
-          row.listId,
-          row.title,
-          row.done,
-          row.position,
-          row.updatedAtMs,
-          row.attachment,
-        ]),
-      })),
-    },
-    {
-      type: 'PULL_HEADER',
-      limitCommits: 0,
-      limitSnapshotRows: 0,
-      maxSnapshotPages: 0,
-      accept: 0b0011,
-    },
-  ];
-  await handleSyncRequest(
-    encodeMessage({
-      wireVersion: PROTOCOL_WIRE_VERSION,
-      msgKind: 'request',
-      frames,
-    }),
-    { ...config, partition: PARTITION, actorId: ACTOR_ID },
+  await seedMutations(
+    config,
+    { partition: PARTITION, actorId: ACTOR_ID },
+    mutations,
   );
 }
 
@@ -228,15 +197,20 @@ function serializeSyncRound<T>(operation: () => Promise<T>): Promise<T> {
   return result;
 }
 
-const booted = bootServer().then(async (parts) => {
-  await seed(parts.config);
-  scope.postMessage({ kind: 'ready' });
-  return parts;
-});
+const booted = bootServer()
+  .then(async (parts) => {
+    await seed(parts.config);
+    scope.postMessage({ kind: 'ready' });
+    return parts;
+  })
+  .catch((error: unknown) => {
+    scope.postMessage({ kind: 'boot-error', error: toRpcError(error) });
+    throw error;
+  });
 
 scope.onmessage = (event: MessageEvent) => {
   void (async () => {
-    const { config, hub } = await booted;
+    const { config, hub, admin } = await booted;
     const ctx = { ...config, partition: PARTITION, actorId: ACTOR_ID };
     const msg = event.data as {
       kind: string;
@@ -283,6 +257,27 @@ scope.onmessage = (event: MessageEvent) => {
             throw new Error('memory blob store always serves inline bytes');
           }
           reply({ kind: 'result', ok: true, bytes: result.bytes });
+          break;
+        }
+        case 'admin-snapshot': {
+          const [horizon, clients, commits, stats] = await Promise.all([
+            admin.horizonStatus(PARTITION),
+            admin.listClients(PARTITION),
+            admin.listCommits(PARTITION, { limit: 25 }),
+            admin.stats(PARTITION),
+          ]);
+          reply({
+            kind: 'result',
+            ok: true,
+            snapshot: {
+              horizon,
+              metrics: admin.metrics(PARTITION),
+              stats,
+              clients,
+              commits,
+              events: admin.events({ limit: 50 }),
+            },
+          });
           break;
         }
         case 'rt-open': {
