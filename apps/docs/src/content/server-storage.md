@@ -21,10 +21,10 @@ three backends. Each one carries your app's typed columns plus the sync
 meta columns:
 
 ```sql
-CREATE TABLE tasks(
+CREATE TABLE todos(
   _sync_partition       TEXT NOT NULL,
   id                    TEXT NOT NULL,
-  project_id            TEXT,
+  list_id               TEXT,
   title                 TEXT,
   done                  INTEGER,
   _sync_server_version  INTEGER NOT NULL,
@@ -39,10 +39,10 @@ and analytics against synced data right in your server database, and
 indexes declared in your migrations are created here as well. The sync
 serve path (pull, bootstrap, segments) reads `_sync_payload`, the verbatim
 wire bytes, so server-side querying and the protocol stay decoupled.
-The low-level `storage.ensureSchema` method accepts a compiled schema. App
-hosts should instead call `ensureSyncServerReady(config)` with the generated
-schema before binding a port; it compiles the schema and creates or migrates
-these tables. Request-time checks remain a defensive fallback.
+App hosts create and migrate these tables by calling
+`ensureSyncServerReady(config)` before binding a port
+([Server setup](/guide-server/)); the low-level `storage.ensureSchema`
+accepts a compiled schema directly.
 
 A per-table `materialize` flag on the server schema controls the
 projection:
@@ -63,9 +63,8 @@ modes; the flag only decides whether the typed projection is populated.
 
 ## Choosing the right row lookup
 
-Syncular has four deliberately different lookup shapes. Do not turn a server
-search need into a client scope unless clients genuinely need to subscribe by
-that dimension.
+Syncular has four lookup shapes. Do not turn a server search need into a
+client scope unless clients need to subscribe by that dimension.
 
 | Need | API / pattern | Authorization meaning |
 |---|---|---|
@@ -83,9 +82,9 @@ different problems.
 
 ### Trusted alternate lookup
 
-Suppose encryption-key grants sync only to their exact user, but disconnecting
-a Workspace must revoke every grant in that Workspace. Keep the client scope
-small and declare an ordinary relational index for the authoritative lookup:
+Suppose encryption-key grants sync only to their exact user, but revoking a
+clinic must revoke every grant in that clinic. Keep the client scope small and
+declare an ordinary relational index for the authoritative lookup:
 
 ```ts
 const schema: ServerSchema = {
@@ -95,14 +94,14 @@ const schema: ServerSchema = {
     columns: [
       { name: 'id', type: 'string', nullable: false },
       { name: 'user_id', type: 'string', nullable: false },
-      { name: 'workspace_id', type: 'string', nullable: false },
+      { name: 'clinic_id', type: 'string', nullable: false },
       { name: 'wrapped_key', type: 'bytes', nullable: false },
     ],
     primaryKey: 'id',
     scopes: ['user:{user_id}'],
     indexes: [{
-      name: 'device_key_grants_by_workspace',
-      columns: ['workspace_id'],
+      name: 'device_key_grants_by_clinic',
+      columns: ['clinic_id'],
     }],
   }],
 };
@@ -110,7 +109,7 @@ const schema: ServerSchema = {
 
 The index does not enter `declaredVariables`, named-query scope coverage, a
 subscription descriptor, or `resolveScopes`. A client can request only
-`user_id`; knowing the Workspace ID or index name grants nothing. Trusted host
+`user_id`; knowing the clinic ID or index name grants nothing. Trusted host
 code can use the exact index inside the same authoritative transaction:
 
 ```ts
@@ -123,8 +122,8 @@ let afterRowId: string | null = null;
 for (;;) {
   const page = await tx.scanRowsByIndex({
     table: 'device_encryption_key_grants',
-    index: 'device_key_grants_by_workspace',
-    values: [workspaceId], // one exact value per declared index column
+    index: 'device_key_grants_by_clinic',
+    values: [clinicId],    // one exact value per declared index column
     afterRowId,
     limit: 250,            // required integer, 1..1,000
   });
@@ -148,18 +147,17 @@ and should fail the command closed, as above.
 
 `values` is a complete, order-sensitive tuple; a SQL-style leading-prefix
 request is unsupported. For an index declared as
-`columns: ['workspace_id', 'state', 'id']`, only
-`values: [workspaceId, state, id]` is valid. `values: [workspaceId]` fails with
+`columns: ['clinic_id', 'state', 'id']`, only
+`values: [clinicId, state, id]` is valid. `values: [clinicId]` fails with
 `sync.storage.index_value_count_mismatch`; it does not enumerate the
-Workspace. If a command needs that enumeration, declare a dedicated
-`columns: ['workspace_id']` index and query it with one value. Trusted prefix
+clinic. If a command needs that enumeration, declare a dedicated
+`columns: ['clinic_id']` index and query it with one value. Trusted prefix
 and range scans are intentionally not part of this API.
 
 This is also the right shape for a provider webhook: declare, for example,
-`facilities_by_workos_organization` over `workos_organization_id`, resolve the
-exact Facility, then use another declared index or known primary key to find
-its private Workspace. The external tenant identifier never becomes an actor
-scope.
+`clinics_by_workos_organization` over `workos_organization_id`, resolve the
+exact clinic, then use another declared index or known primary key from
+there. The external tenant identifier never becomes an actor scope.
 
 ### When a reverse-index row is still correct
 
@@ -199,8 +197,8 @@ The production database path. It implements the same `ServerStorage`
 contract with the inverted scope index carried through as **covering
 indexes**, so scope fanout always runs as an index range scan. A dedicated
 test asserts via
-`EXPLAIN` that the fanout candidate scans stay index-driven, so the
-regression cannot silently return. `storage.migrate()` applies the DDL
+`EXPLAIN` that the fanout candidate scans stay index-driven, so a
+regression to row scans fails in CI. `storage.migrate()` applies the DDL
 idempotently: safe to call on every boot.
 
 The server library never imports a Postgres driver. You wire yours through

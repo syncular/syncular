@@ -25,38 +25,42 @@ Map each reaction type to its persisted payload. The type name is the handler
 registration key. `version` belongs to the record so handlers can migrate
 independently of old queued work.
 
+The planner input here is an immutable
+[domain event row](/guide-domain-events/) written in the same commit as the
+state it describes:
+
 ```ts
 import type { ReactionPlanner } from '@syncular/server';
 
 type AppReactions = {
-  'invoice.email': {
-    readonly invoiceId: string;
-    readonly customerId: string;
+  'appointment.notify_rescheduled': {
+    readonly eventId: string;
+    readonly appointmentId: string;
   };
 };
 
 const reactionPlanner: ReactionPlanner<AppReactions> = ({ operations }) =>
   operations.flatMap((operation) => {
     if (
-      operation.table !== 'invoice_events' ||
+      operation.table !== 'domain_events' ||
       operation.op !== 'upsert' ||
-      operation.row?.kind !== 'invoice_finalized'
+      operation.row?.event_type !== 'appointment_rescheduled'
     ) {
       return [];
     }
 
-    const invoiceId = operation.row.invoice_id;
-    const customerId = operation.row.customer_id;
-    if (typeof invoiceId !== 'string' || typeof customerId !== 'string') {
-      throw new Error('invalid invoice_finalized event');
+    const eventId = operation.row.id;
+    const appointmentId = operation.row.aggregate_id;
+    if (typeof eventId !== 'string' || typeof appointmentId !== 'string') {
+      throw new Error('invalid appointment_rescheduled event');
     }
 
     return [
       {
-        key: `finalized-email:${invoiceId}`,
-        type: 'invoice.email',
+        key: `notify:${eventId}`,
+        type: 'appointment.notify_rescheduled',
         version: 1,
-        payload: { invoiceId, customerId },
+        payload: { eventId, appointmentId },
         maxAttempts: 8,
       },
     ];
@@ -129,26 +133,25 @@ import {
 const runner = new ReactionRunner<AppReactions>({
   storage,
   partition: 'tenant-42',
-  workerId: 'invoice-email-worker-1',
+  workerId: 'appointment-notify-worker-1',
   batchSize: 10,
   leaseDurationMs: 30_000,
   handlers: {
-    'invoice.email': async ({
+    'appointment.notify_rescheduled': async ({
       version,
       payload,
       idempotencyKey,
       extendLease,
     }) => {
       if (version !== 1) {
-        throw new PermanentReactionError('invoice.email_version_unsupported', {
+        throw new PermanentReactionError('appointment.notify_version_unsupported', {
           version,
         });
       }
 
       await extendLease();
-      await emailProvider.sendInvoice({
-        invoiceId: payload.invoiceId,
-        customerId: payload.customerId,
+      await emailProvider.sendRescheduleNotice({
+        appointmentId: payload.appointmentId,
         idempotencyKey,
       });
     },
@@ -186,13 +189,13 @@ import {
 } from '@syncular/server';
 
 if (response.status === 429 || response.status >= 500) {
-  throw new RetryableReactionError('invoice.email_provider_unavailable', {
+  throw new RetryableReactionError('appointment.notify_provider_unavailable', {
     status: response.status,
   });
 }
 
 if (response.status === 400) {
-  throw new PermanentReactionError('invoice.email_invalid_request', {
+  throw new PermanentReactionError('appointment.notify_invalid_request', {
     status: response.status,
   });
 }
@@ -253,13 +256,13 @@ durable source of lifecycle state.
 ```ts
 const failed = await admin.listReactions('tenant-42', {
   statuses: ['dead-letter'],
-  types: ['invoice.email'],
+  types: ['appointment.notify_rescheduled'],
   limit: 50,
 });
 ```
 
 The authenticated Hono admin routes expose the same data at
-`GET /admin/reactions?status=dead-letter&type=invoice.email&limit=50` when the
+`GET /admin/reactions?status=dead-letter&type=appointment.notify_rescheduled&limit=50` when the
 admin app is mounted at `/admin`. The response includes persisted payloads and
 failure details. Treat access as application-data access and keep limits small
 when payloads are large.
@@ -279,38 +282,11 @@ the runtime cannot execute that statement atomically. See
 wiring.
 
 Commit-log pruning never deletes reactions in any lifecycle state. Schedule
-`pruneReactions` separately for every partition:
-
-```ts
-import { pruneReactions } from '@syncular/server';
-
-let result;
-do {
-  result = await pruneReactions({
-    storage,
-    partition: 'tenant-42',
-    nowMs: Date.now(),
-    events,
-    retention: {
-      completedRetentionMs: 30 * 24 * 60 * 60 * 1000,
-      deadLetterRetentionMs: 90 * 24 * 60 * 60 * 1000,
-      batchSize: 1000,
-    },
-  });
-} while (result.mayHaveMore);
-```
-
-Those values are the defaults. A pass removes at most `batchSize` terminal
-rows. It deletes a `completed` row only when `completedAtMs` is strictly older
-than the completed cutoff. It deletes a `dead-letter` row only when its failure
-time is strictly older than the dead-letter cutoff. Pending and leased rows,
-including expired leases, are never eligible.
-
-The longer dead-letter window preserves failure diagnostics and the manual
-retry opportunity. Lower it only when another system retains the information
-operators need. Cleanup and manual retry are atomic storage operations, so a
-race either resets the row or removes it. `reaction.prune_completed` reports
-the cutoffs, limit, removal counts, and `mayHaveMore` value for each pass.
+`pruneReactions` separately for every partition; the retention windows,
+eligibility rules, and the bounded-pass loop are in
+[Operations and maintenance](/server-operations/#reaction-retention).
+Cleanup and manual retry are atomic storage operations, so a race either
+resets the row or removes it.
 
 ## Performance boundaries
 
@@ -357,10 +333,6 @@ The repository examples are in
 and
 [`packages/server/test/storage-contract.ts`](https://github.com/syncular/syncular/blob/main/packages/server/test/storage-contract.ts).
 
-## Choosing the server mechanism
-
-Use a durable reaction when work derives from an accepted Syncular commit and
-must execute under server ownership. Use an immutable application row when
-history must sync to clients or support relational queries. Use a normal
-`SyncClient` when the worker needs a local replica, subscriptions, or its own
-outbox.
+For choosing between a reaction, an event row, a server-side `SyncClient`,
+and `SyncRemoteClient`, use the
+[capability matrix](/guide-remote-operations/#capability-matrix).

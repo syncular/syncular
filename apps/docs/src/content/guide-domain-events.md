@@ -183,58 +183,13 @@ to the event it corrects.
 ## Plan durable reactions from event rows
 
 When [durable server reactions](/server-reactions/) are enabled, use the event
-row as the planner input. The planner runs after validation while the source
-transaction is still open. Its reaction records commit atomically with the
-appointment, reservation, event row, commit log, and idempotency result.
-
-```ts
-import type { ReactionPlanner } from '@syncular/server';
-
-type AppointmentReactions = {
-  'appointment.notify_rescheduled': {
-    readonly eventId: string;
-    readonly appointmentId: string;
-    readonly payload: string;
-  };
-};
-
-export const appointmentReactionPlanner: ReactionPlanner<
-  AppointmentReactions
-> = ({ operations }) =>
-  operations.flatMap((operation) => {
-    if (
-      operation.table !== 'domain_events' ||
-      operation.op !== 'upsert' ||
-      operation.row?.event_type !== 'appointment_rescheduled'
-    ) {
-      return [];
-    }
-
-    const eventId = operation.row.id;
-    const appointmentId = operation.row.aggregate_id;
-    const payload = operation.row.payload;
-    if (
-      typeof eventId !== 'string' ||
-      typeof appointmentId !== 'string' ||
-      typeof payload !== 'string'
-    ) {
-      throw new Error('invalid appointment_rescheduled event');
-    }
-
-    return [
-      {
-        key: `notify:${eventId}`,
-        type: 'appointment.notify_rescheduled',
-        version: 1,
-        payload: { eventId, appointmentId, payload },
-      },
-    ];
-  });
-```
-
-Pass the planner as `SyncServerConfig.reactionPlanner`. A runner handles the
-reaction after commit and receives a stable reaction idempotency key. Keep
-external calls out of both `mutate()` validation and the planner.
+row as the planner input: match `domain_events` operations by `event_type`
+and return bounded reaction records. The planner runs after validation while
+the source transaction is still open, so its records commit atomically with
+the appointment, reservation, event row, commit log, and idempotency result.
+The full planner and runner for this exact schema are on
+[Durable server reactions](/server-reactions/). Keep external calls out of
+both `mutate()` validation and the planner.
 
 ## Consumption and retention
 

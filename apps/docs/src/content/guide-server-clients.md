@@ -260,16 +260,8 @@ process.once('SIGTERM', () => void shutdown());
 
 ## Choose the correct server-side surface
 
-- Server-side `SyncClient`: persistent local SQLite, local SQL reads, scoped
-  or wildcard access from `resolveScopes`, durable outbox, subscriptions, and
-  realtime convergence.
-- [`SyncRemoteClient`](/guide-remote-operations/): no SQLite. It submits
-  ordinary commits and calls registered remote queries or commands.
-- Direct authoritative database access: trusted code located with the server
-  database. It bypasses the Syncular client protocol and should remain inside
-  the server trust boundary.
-- `SyncularServerEvents`: operational telemetry. It is not a durable work
-  queue or an application subscription.
-- [Durable server reactions](/server-reactions/): durable post-commit work
-  scheduling. They are separate from a server-side replica and from live
-  query watches.
+A server-side `SyncClient` fits a process that needs a persistent local SQL
+read model with a durable outbox and realtime convergence. Every other
+server-side need (database-less commits, registered queries, commands,
+watches, telemetry, durable post-commit work) is compared in the
+[capability matrix](/guide-remote-operations/#capability-matrix).

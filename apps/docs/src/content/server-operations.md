@@ -1,8 +1,8 @@
 # Operations and maintenance
 
 Day-two concerns for a running sync server: the structured-events hook,
-the admin console, commit-log pruning, reaction retention, blob GC, and the
-load-test suite. Everything here is host-scheduled and opt-in.
+the admin console, seeding, commit-log pruning, reaction retention, blob GC,
+and the load-test suite. Everything here is host-scheduled and opt-in.
 
 Application-level domain actions use immutable
 [domain event rows](/guide-domain-events/). Registered application queries and
@@ -73,10 +73,94 @@ there is no default-open admin. Every endpoint runs the guard first; a
 falsy result is a 401. `GET /admin` serves a single static HTML page, built
 without a framework or a build step, that polls the sibling JSON endpoints
 and renders horizon, store stats, clients, recent commits, and the event
-tail with a 2 s auto-refresh, at about 300 lines by design.
+tail with a 2 s auto-refresh.
 S3-backed stats are labeled `approximate` since S3 does not report exact
 counts cheaply; a storage backend that omits an optional admin method
 raises an error rather than rendering a silently-empty console.
+
+## Seeding data
+
+`seedMutations` pushes app-shaped values through the real push pipeline
+(authorization, validation, idempotency, realtime fanout), so seeded rows
+behave exactly like synced rows. It is the supported seeding recipe for dev
+servers, demos, and ops scripts:
+
+```ts
+import { SeedMutationError, seedMutations } from '@syncular/server';
+
+try {
+  await seedMutations(
+    config,
+    {
+      partition: 'demo',
+      actorId: 'seed-user',
+      clientId: 'demo-seed',
+      commitId: 'welcome-v1',
+    },
+    [
+      {
+        table: 'todos',
+        op: 'upsert',
+        // SQL snake_case or the exact generated camelCase alias; missing
+        // nullable columns become NULL.
+        values: { id: 'seed-1', listId: 'groceries', title: 'Hello', done: false },
+      },
+    ],
+  );
+} catch (error) {
+  if (error instanceof SeedMutationError) {
+    console.error({
+      code: error.code,
+      operation: error.opIndex,
+      replayed: error.replayed,
+      recordedAtMs: error.recordedAtMs,
+      cacheIdentity: error.cacheIdentity,
+    });
+  }
+  throw error;
+}
+```
+
+The commit id defaults to a stable `seed-commit-1`, so re-running an accepted
+seed writes nothing twice. Rejections are terminal for the same
+`clientId`/`commitId` too: fixing the resolver or validator does not alter the
+already-recorded outcome. `SeedMutationError` exposes the exact protocol or
+host-validator `code`, `opIndex`, `replayed`, original `recordedAtMs`, and a
+privacy-safe `cacheIdentity`; no message parsing is required.
+
+For a corrected development seed, inspect the structured error, fix the seed
+or authority, and advance a reviewable seed revision such as `welcome-v1` to
+`welcome-v2`. Leave the database and unrelated rows intact. Do not delete the
+whole database and do not mutate or remove the old idempotency outcome. This
+revisioning rule is only for a changed seed definition. Application commands
+must keep their original request ID after an unknown outcome: inventing a new
+ID can execute the same real-world operation twice.
+
+The `clientId` has a separate identity contract: its first registration binds
+it to one actor within the partition. Revisions by that same seed actor keep the
+stable client ID. If a security or ownership correction moves the seed to a
+different actor, advance **both** identities:
+
+```ts
+await seedMutations(config, {
+  partition: 'production-eu',
+  actorId: 'server-authority',       // changed from seed-user
+  clientId: 'catalog-server-seed',   // new purpose-specific client identity
+  commitId: 'catalog-v2',            // new seed definition revision
+}, correctedRows);
+```
+
+Changing the actor and commit ID while retaining the old client ID must fail
+with `sync.invalid_client_id` and `recommendedAction: resetClientId`. That is
+evidence of an actor/client mismatch, not database corruption. Recover by
+using a new purpose-specific client ID as above; never delete unrelated rows or
+the prior terminal outcome. This actor-change recipe is for controlled seeding
+and backfills, not application commands or unknown real-world command outcomes.
+
+Malformed helper input such as an unknown table/column throws `SyncError`
+before a push exists. In tests, prefer
+[`@syncular/testkit`](/tooling-testing/): a test client that mutates and syncs
+covers the same ground with virtual time.
 
 ## Commit-log pruning
 
@@ -108,10 +192,10 @@ The defaults are conservative; lowering them risks more client resets.
 
 A client whose cursor fell behind the horizon gets a reset and
 re-bootstraps from scratch. This is expected behavior, and its rate is
-your pruning health signal: a steady trickle is devices returning from
-long absences; a spike means you pruned faster than your fleet syncs and
-are paying for it in bootstrap load. Observe it via
-`pull.served` subscriptions with `status: "reset"`.
+your pruning health signal: devices returning from long absences produce a
+low steady rate, while a rising rate means the horizon advanced past cursors
+the fleet still uses, and each affected client pays a full re-bootstrap.
+Observe it via `pull.served` subscriptions with `status: "reset"`.
 
 ## Reaction retention
 

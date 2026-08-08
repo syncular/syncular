@@ -2,10 +2,9 @@
 
 `@syncular/server-workers` runs the sync server on Cloudflare's edge: D1
 for storage, R2 for segment and blob bytes, and one Durable Object per
-partition for push serialization and optional realtime. This page takes you
-from a bare Worker to a full deployment with WebSockets and scheduled blob GC.
+partition for push serialization and optional realtime.
 
-The package is deliberately thin: the server core is runtime-neutral
+The package is thin: the server core is runtime-neutral
 TypeScript (Web `Request`/`Response`/`fetch`/Web-Crypto only, enforced by a
 static import-graph test), so the Workers lane runs the same HTTP handler,
 wired to `env` bindings.
@@ -225,6 +224,7 @@ the `scheduled` handler.
 ```ts
 import {
   D1ServerStorage,
+  pruneCommitLog,
   pruneReactions,
   sweepOrphanBlobs,
 } from '@syncular/server';
@@ -234,7 +234,11 @@ export default {
   async scheduled(_event: unknown, env: Env) {
     const storage = new D1ServerStorage(env.DB);
     const blobs = makeBlobs(env); // the same S3BlobStore config
+    // listPartitions: your registry of active partitions (e.g. a D1 table
+    // your authenticate() maintains); the server does not enumerate them.
     for (const partition of await listPartitions(env)) {
+      await pruneCommitLog({ storage, partition, nowMs: Date.now() });
+
       let result;
       do {
         result = await pruneReactions({
@@ -250,10 +254,8 @@ export default {
 };
 ```
 
-Reaction cleanup retains completed records for 30 days and dead-lettered
-records for 90 days by default. It never deletes pending or leased records.
-Blob cleanup is safe only with a correctly sized grace period. The full
-runbook is in [Operations and maintenance](/server-operations/).
+Retention windows, eligibility rules, and what to alert on are the
+[Operations and maintenance](/server-operations/) runbook.
 
 ## Where to go next
 

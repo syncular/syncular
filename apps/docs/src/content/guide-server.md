@@ -1,10 +1,9 @@
 # Server setup
 
-Looking for a server client or background worker? Use the normal
-[`SyncClient` on the server](/guide-server-clients/) when the process needs a
-local SQLite read model. Use [`SyncRemoteClient`](/guide-remote-operations/)
-when it needs database-less commits, predefined authoritative queries, or
-commands.
+This page wires the sync server itself. A backend process that consumes it
+runs a [server-side `SyncClient`](/guide-server-clients/) when it needs a
+local SQLite read model, or [`SyncRemoteClient`](/guide-remote-operations/)
+for database-less commits, registered queries, and commands.
 
 The server is a framework-free protocol library:
 `handleSyncRequest(bytes, ctx) → bytes` over host-provided storage,
@@ -14,8 +13,7 @@ auth. This page walks through that wiring; storage choices, Workers
 deployment, and operations each have their own page.
 
 The full host surface is the
-[server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md);
-this guide is the path through it.
+[server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md).
 
 ## The minimal server
 
@@ -85,10 +83,9 @@ Two more surfaces attach outside the adapter:
 - `GET /admin`: the optional operator console, mounted separately and
   never open by default. See [Operations and maintenance](/server-operations/).
 
-An HTTP-only deployment is fully conformant: clients that never open the
-socket sync over `POST /sync` with identical semantics. Realtime is simply
-a second binding onto that same handler, adding a live channel for
-connected sockets.
+An HTTP-only deployment is conformant: clients that never open the socket
+sync over `POST /sync` with identical semantics. Realtime is a second
+binding onto the same handler.
 
 ## Realtime hub wiring
 
@@ -175,90 +172,6 @@ sockets. Multi-instance deployments add a fanout bridge
 (`PostgresFanout` on Postgres, the Durable Object on Workers). See
 [Storage backends](/server-storage/).
 
-## Seeding data
-
-`seedMutations` pushes app-shaped values through the real push pipeline
-(authorization, validation, idempotency, realtime fanout), so seeded rows
-behave exactly like synced rows. It is THE supported seeding recipe for dev
-servers, demos, and ops scripts:
-
-```ts
-import { SeedMutationError, seedMutations } from '@syncular/server';
-
-try {
-  await seedMutations(
-    config,
-    {
-      partition: 'demo',
-      actorId: 'seed-user',
-      clientId: 'demo-seed',
-      commitId: 'welcome-v1',
-    },
-    [
-      {
-        table: 'todos',
-        op: 'upsert',
-        // SQL snake_case or the exact generated camelCase alias; missing
-        // nullable columns become NULL.
-        values: { id: 'seed-1', listId: 'welcome', title: 'Hello', done: false },
-      },
-    ],
-  );
-} catch (error) {
-  if (error instanceof SeedMutationError) {
-    console.error({
-      code: error.code,
-      operation: error.opIndex,
-      replayed: error.replayed,
-      recordedAtMs: error.recordedAtMs,
-      cacheIdentity: error.cacheIdentity,
-    });
-  }
-  throw error;
-}
-```
-
-The commit id defaults to a stable `seed-commit-1`, so re-running an accepted
-seed writes nothing twice. Rejections are terminal for the same
-`clientId`/`commitId` too: fixing the resolver or validator does not alter the
-already-recorded outcome. `SeedMutationError` exposes the exact protocol or
-host-validator `code`, `opIndex`, `replayed`, original `recordedAtMs`, and a
-privacy-safe `cacheIdentity`; no message parsing is required.
-
-For a corrected development seed, inspect the structured error, fix the seed
-or authority, and advance a reviewable seed revision such as `welcome-v1` to
-`welcome-v2`. Leave the database and unrelated rows intact. Do not delete the
-whole database and do not mutate or remove the old idempotency outcome. This
-revisioning rule is only for a changed seed definition. Application commands
-must keep their original request ID after an unknown outcome: inventing a new
-ID can execute the same real-world operation twice.
-
-The `clientId` has a separate identity contract: its first registration binds
-it to one actor within the partition. Revisions by that same seed actor keep the
-stable client ID. If a security or ownership correction moves the seed to a
-different actor, advance **both** identities:
-
-```ts
-await seedMutations(config, {
-  partition: 'production-eu',
-  actorId: 'server-authority',       // changed from seed-user
-  clientId: 'catalog-server-seed',   // new purpose-specific client identity
-  commitId: 'catalog-v2',            // new seed definition revision
-}, correctedRows);
-```
-
-Changing the actor and commit ID while retaining the old client ID must fail
-with `sync.invalid_client_id` and `recommendedAction: resetClientId`. That is
-evidence of an actor/client mismatch, not database corruption. Recover by
-using a new purpose-specific client ID as above; never delete unrelated rows or
-the prior terminal outcome. This actor-change recipe is for controlled seeding
-and backfills, not application commands or unknown real-world command outcomes.
-
-Malformed helper input such as an unknown table/column throws `SyncError`
-before a push exists. In tests, prefer
-[`@syncular/testkit`](/tooling-testing/): a test client that mutates and syncs
-covers the same ground with virtual time.
-
 ## Choosing the rest
 
 - **Storage**: `SqliteServerStorage` uses `bun:sqlite` on Bun and built-in
@@ -274,8 +187,8 @@ covers the same ground with virtual time.
   import-graph test). `@syncular/server-hono` covers Bun/Node;
   `@syncular/server-workers` covers Cloudflare Workers. See
   [Cloudflare Workers](/server-workers/).
-- **Day two**: structured events, the admin console, commit-log pruning,
-  blob GC, and load testing live in
+- **Day two**: structured events, the admin console, seeding, commit-log
+  pruning, blob GC, and load testing live in
   [Operations and maintenance](/server-operations/).
 - **Post-commit application work**: configure planners, leased handlers,
   retries, and dead letters in

@@ -19,10 +19,11 @@ SQLite.
 | Protocol telemetry | `SyncularServerEvents` | None | Operator access | Sink-owned |
 | Durable post-commit work | Durable server reactions | None | Server configuration | Reaction store |
 
-## Database-less ordinary commits
+## Construct the client
 
-The client uses the existing `/sync` push path. It does not create a local
-database, subscription cursor, or outbox.
+One construction serves every example on this page. The bearer token is
+application auth, exactly as for a
+[server-side sync client](/guide-server-clients/).
 
 ```ts
 import {
@@ -32,26 +33,37 @@ import {
 } from '@syncular/client';
 import { schema } from './syncular.generated';
 
-const serviceToken = process.env.SERVICE_TOKEN;
+const serviceToken = process.env.SYNCULAR_SERVICE_TOKEN;
 if (serviceToken === undefined) throw new Error('missing service token');
 const headers = { Authorization: `Bearer ${serviceToken}` };
+
 const client = new SyncRemoteClient({
   schema,
-  clientId: 'billing-webhooks',
+  clientId: 'scheduling-worker',
   transport: httpSyncTransport('https://api.example.com/sync', { headers }),
   operations: httpRemoteOperationTransport(
     'https://api.example.com/operations',
     { headers },
   ),
 });
+```
 
+The schema and `/sync` transport are optional when a process only calls
+registered queries or commands; ordinary commits require both.
+
+## Database-less ordinary commits
+
+The client uses the existing `/sync` push path. It does not create a local
+database, subscription cursor, or outbox.
+
+```ts
 const prepared = await client.prepareCommit({
-  requestId: 'stripe-event-evt_123',
+  requestId: 'booking-event-evt_123',
   mutations: [
     {
-      table: 'invoices',
+      table: 'appointments',
       op: 'upsert',
-      values: invoice,
+      values: appointment,
     },
   ],
 });
@@ -75,10 +87,10 @@ import {
   registerRemoteQuery,
   RemoteOperationRegistry,
 } from '@syncular/server';
-import { tasksInProjectQuery } from './syncular.queries';
+import { appointmentsInClinicQuery } from './syncular.queries';
 
 export const operations = new RemoteOperationRegistry([
-  registerRemoteQuery(tasksInProjectQuery, {
+  registerRemoteQuery(appointmentsInClinicQuery, {
     maxRows: 500,
     auth: { access: 'scoped' },
   }),
@@ -96,7 +108,7 @@ scoped.
 An administrative query uses a mandatory privileged authorizer:
 
 ```ts
-registerRemoteQuery(allInvoicesQuery, {
+registerRemoteQuery(allAppointmentsQuery, {
   maxRows: 2_000,
   auth: {
     access: 'privileged',
@@ -118,33 +130,14 @@ const app = createSyncularHono({
 Call it with the same generated descriptor:
 
 ```ts
-import {
-  httpRemoteOperationTransport,
-  SyncRemoteClient,
-} from '@syncular/client';
-import { tasksInProjectQuery } from './syncular.queries';
+import { appointmentsInClinicQuery } from './syncular.queries';
 
-const token = process.env.SYNCULAR_SERVICE_TOKEN;
-if (token === undefined) throw new Error('missing service token');
-const headers = { Authorization: `Bearer ${token}` };
-
-const queryClient = new SyncRemoteClient({
-  clientId: 'reporting-worker',
-  operations: httpRemoteOperationTransport(
-    'https://api.example.com/operations',
-    { headers },
-  ),
-});
-
-const snapshot = await queryClient.query(tasksInProjectQuery, {
-  projectId: 'project-42',
+const snapshot = await client.query(appointmentsInClinicQuery, {
+  clinicId: 'clinic-42',
 });
 
 console.log(snapshot.rows, snapshot.maxCommitSeq);
 ```
-
-The schema and `/sync` transport are optional when a process only calls
-registered queries or commands. Ordinary commits require both.
 
 The storage adapter rewrites every generated app-table relation into a
 partition-filtered relation. It executes the rows and `maxCommitSeq` reads in
@@ -169,35 +162,40 @@ import {
   registerRemoteCommand,
   RemoteOperationRegistry,
 } from '@syncular/server';
-import { captureInvoice } from './remote-operation-descriptors';
+import { confirmAppointment } from './remote-operation-descriptors';
 
 const operations = new RemoteOperationRegistry([
-  registerRemoteCommand(captureInvoice, {
-    authorize: ({ actorId }) => billingServiceActors.has(actorId),
+  registerRemoteCommand(confirmAppointment, {
+    authorize: ({ actorId }) => schedulingServiceActors.has(actorId),
     run: async (command, input) => {
-      const invoice = await command.getRow('invoices', input.invoiceId);
-      if (invoice === undefined) throw new Error('invoice is unavailable');
+      const appointment = await command.getRow(
+        'appointments',
+        input.appointmentId,
+      );
+      if (appointment === undefined) {
+        throw new Error('appointment is unavailable');
+      }
       return [
         {
-          table: 'invoices',
+          table: 'appointments',
           op: 'upsert',
-          values: { ...invoice, status: 'captured' },
+          values: { ...appointment, status: 'confirmed' },
         },
         {
           table: 'domain_events',
           op: 'upsert',
           values: {
             id: JSON.stringify([
-              'invoice-captured',
+              'appointment-confirmed',
               command.actorId,
               command.clientId,
               command.operationId,
               command.requestId,
             ]),
-            account_id: invoice.account_id,
-            aggregate_type: 'invoice',
-            aggregate_id: input.invoiceId,
-            event_type: 'invoice_captured',
+            clinic_id: appointment.clinic_id,
+            aggregate_type: 'appointment',
+            aggregate_id: input.appointmentId,
+            event_type: 'appointment_confirmed',
             occurred_at_ms: Date.now(),
             payload: '{}',
           },
@@ -216,18 +214,18 @@ import {
   type RemoteCommandDescriptor,
 } from '@syncular/client';
 
-export const captureInvoice: RemoteCommandDescriptor<{
-  invoiceId: string;
-}> = remoteCommand('commands/capture-invoice-v1');
+export const confirmAppointment: RemoteCommandDescriptor<{
+  appointmentId: string;
+}> = remoteCommand('commands/confirm-appointment-v1');
 ```
 
 The client supplies a stable request ID:
 
 ```ts
 const result = await client.command(
-  captureInvoice,
-  'capture-request-018f',
-  { invoiceId: 'invoice-42' },
+  confirmAppointment,
+  'confirm-request-018f',
+  { appointmentId: 'appt-42' },
 );
 ```
 
@@ -285,38 +283,25 @@ the socket with an application protocol error. The Hono adapter mounts the
 HTTP `/operations` route; WebSocket upgrade wiring remains with the runtime
 host.
 
-Client setup and subscription:
+On the client, add `operationRealtime` to the constructor from
+[above](#construct-the-client), then watch:
 
 ```ts
-import {
-  httpRemoteOperationTransport,
-  httpSyncTransport,
-  SyncRemoteClient,
-  webSocketRemoteOperationConnector,
-} from '@syncular/client';
+import { webSocketRemoteOperationConnector } from '@syncular/client';
 
-const token = process.env.SYNCULAR_SERVICE_TOKEN;
-if (token === undefined) throw new Error('missing service token');
 const realtimeTicket = process.env.SYNCULAR_OPERATION_REALTIME_TICKET;
 if (realtimeTicket === undefined) throw new Error('missing realtime ticket');
-const headers = { Authorization: `Bearer ${token}` };
 
 const client = new SyncRemoteClient({
-  schema,
-  clientId: 'reporting-worker',
-  transport: httpSyncTransport('https://api.example.com/sync', { headers }),
-  operations: httpRemoteOperationTransport(
-    'https://api.example.com/operations',
-    { headers },
-  ),
+  // schema, clientId, transport, operations: as above
   operationRealtime: webSocketRemoteOperationConnector(
     `wss://api.example.com/operations/realtime?ticket=${encodeURIComponent(realtimeTicket)}`,
   ),
 });
 
 const unwatch = await client.watch(
-  tasksInProjectQuery,
-  { projectId: 'project-42' },
+  appointmentsInClinicQuery,
+  { clinicId: 'clinic-42' },
   {
     onSnapshot: ({ rows }) => replaceReport(rows),
     onError: (error) => reportWatchFailure(error),
@@ -327,9 +312,9 @@ unwatch();
 client.close();
 ```
 
-Use a short-lived WebSocket ticket because proxy access logs can retain URLs.
-A custom `RemoteOperationRealtimeConnector` can obtain a new ticket for each
-connection attempt when the application rotates them.
+The ticket rules are the same as for the
+[sync WebSocket](/guide-server-clients/): short-lived, because proxy access
+logs retain URLs, with a custom connector for per-attempt rotation.
 
 Watches are live invalidations, not durable work delivery. After a connection
 loss, reconnect and register the watch again to receive a fresh snapshot.
