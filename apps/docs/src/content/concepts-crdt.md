@@ -22,10 +22,10 @@ which know to hand the stored and incoming bytes to a merger on apply.
 
 ```sql
 CREATE TABLE notes (
-  id         TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL,
-  title      TEXT NOT NULL,   -- ordinary LWW column
-  doc        CRDT             -- collaborative text; nullable = empty document
+  id      TEXT PRIMARY KEY,
+  list_id TEXT NOT NULL,
+  title   TEXT NOT NULL,   -- ordinary LWW column
+  doc     CRDT             -- collaborative text; nullable = empty document
 );
 ```
 
@@ -49,7 +49,7 @@ Two rules make collaborative editing conflict-free:
 
 A mutation touching **only** a `crdt` column pushes with `baseVersion` absent
 (last-write-wins mode), so it merges cleanly no matter how far the row has
-advanced. That is the "crdt-only divergence merges cleanly" rule.
+advanced.
 
 ## Web client: the `YjsColumn` helper
 

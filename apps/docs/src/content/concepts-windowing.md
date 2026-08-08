@@ -1,12 +1,10 @@
 # Windowed sync
 
-Most sync engines are all-or-nothing: a client holds every row it is
-authorized for, forever. **Windowed sync** lets a client hold a **partial
-local replica** (the hot projects, the last few months) while the server
-keeps everything, with correct sync semantics throughout. It solves three
-problems: cold rows that pile up as permanent tombstones, full re-downloads
-triggered by any change, and queries served from a replica with no way to
-prove it complete.
+**Windowed sync** lets a client hold a **partial local replica** (the busy
+lists, the last few months) while the server keeps the full history, with
+correct sync semantics throughout. Evicted rows leave no tombstones, a window
+change transfers only the delta, and every local query can ask whether its
+window is complete.
 
 Normative detail: [SPEC.md §4.8](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#48-windowed-subscriptions).
 
@@ -14,8 +12,8 @@ Normative detail: [SPEC.md §4.8](https://github.com/syncular/syncular/blob/main
 
 You already scope your tables ([Scopes](/concepts-scopes/)). A **window**
 reuses that machinery: it is the set of scope **values** a client currently
-holds locally. Subscribe to `project:{A,B}` now, `{B,C}` later; or to time
-buckets `bucket:{2026-05, 2026-06, 2026-07}` and slide them. The **window
+holds locally. Subscribe to lists `A` and `B` now, `B` and `C` later; or to
+month buckets (`2026-05`, `2026-06`, `2026-07`) and slide them. The **window
 unit** (the atom of eviction and re-entry) is one scope value.
 
 Windowing is the one mechanism: dynamic scope-set change. The scope column is
@@ -37,10 +35,10 @@ live unit:
 - **Replace** `{A,B} → {B,C}` is shrink + widen. Because units are
   value-sharded, `B` stays cached: the cost of a window change scales with the
   size of the *delta*. (The bench proves it on a segment counter:
-  `{A,B}→{B,C}` re-applies only the one project's rows that changed.)
+  `{A,B}→{B,C}` re-applies only the one list's rows that changed.)
 
 Because a window unit maps to a subscription, apps trade subscription count
-against re-entry granularity by choosing the unit: per-project is exact,
+against re-entry granularity by choosing the unit: per-list is exact,
 per-month-bucket is exact, one subscription for a 500-value set re-bootstraps
 the whole set on any change. Value-sharding is comfortable to a few hundred
 units; beyond that, group values into coarser units.
@@ -77,16 +75,16 @@ explicitly: the engine never reports a partial replica as complete.
 ## Using it
 
 For named queries, typegen normally owns this plumbing. A predicate such as
-`WHERE project_id = :projectId` is proven against the schema and emitted as
+`WHERE list_id = :listId` is proven against the schema and emitted as
 query coverage. `useQuery` claims that unit and reads rows, completeness, and
 the exact local revision in one SQLite snapshot:
 
 ```tsx
-const tasks = useQuery(listProjectTasksQuery, { projectId });
+const todos = useQuery(listTodosQuery, { listId });
 
-if (tasks.phase === 'loading') return <Skeleton />;
-if (tasks.phase === 'ready' && tasks.rows.length === 0) return <Empty />;
-return <Rows rows={tasks.rows} partial={tasks.phase === 'partial'} />;
+if (todos.phase === 'loading') return <Skeleton />;
+if (todos.phase === 'ready' && todos.rows.length === 0) return <Empty />;
+return <Rows rows={todos.rows} partial={todos.phase === 'partial'} />;
 ```
 
 That distinction makes a zero-row bootstrap safe: `[]` is not a complete empty
@@ -103,8 +101,8 @@ runtime-built queries:
 ```ts
 const store = useReactiveStore();
 const retention = store.retainWindow(
-  { table: 'tasks', variable: 'project_id' },
-  ['p1', 'p2'],
+  { table: 'todos', variable: 'list_id' },
+  ['groceries', 'work'],
 );
 await retention.ready;
 
@@ -116,8 +114,8 @@ React applications use the lifecycle-safe adapter for a known working set:
 
 ```tsx
 const retention = useRetainedWindow(
-  { table: 'tasks', variable: 'project_id' },
-  ['p1', 'p2'],
+  { table: 'todos', variable: 'list_id' },
+  ['groceries', 'work'],
 );
 ```
 
@@ -127,14 +125,3 @@ on unmount, and surfaces registration through `isPending` / `error`.
 `setWindow`/`windowState` and React's `useWindow` remain explicit primitives.
 They feed the same union coordinator, but ordinary generated queries should
 not repeat their coverage by hand.
-
-## What's next
-
-- **W2, TTL sugar**: codegen emits creation-time bucket scope columns plus a
-  sliding-window helper (`window: { bucket: last(3, 'month') }`), pure
-  client/codegen sugar over W1.
-- **Blob retention on eviction**: cached blob bodies are refcounted by
-  referencing rows. Eviction releases refs, and the blobs follow LRU
-  retention, persisting until cache pressure reclaims them: eviction is a
-  local storage decision, server authorization is unchanged, and the rows can
-  be re-synced. This lands with the blob work.

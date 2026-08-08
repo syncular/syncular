@@ -35,7 +35,7 @@ const result = await client.purgeLocalData({
     {
       table: 'patient_notes',
       selectors: {
-        facility_id: [directive.facilityId],
+        clinic_id: [directive.clinicId],
         encryption_key_id: [directive.keyVersionId],
       },
     },
@@ -47,7 +47,7 @@ console.log(result.alreadyApplied, result.purgedRows, result.droppedCommits);
 ```
 
 Selectors inside one target use AND semantics; targets use OR semantics. The
-example deletes `patient_notes` rows matching both the facility and key
+example deletes `patient_notes` rows matching both the clinic and key
 version. A selector must name a plaintext string schema column and contain one
 or more exact, code-like values. There is intentionally no empty target,
 wildcard, expression, encrypted selector, or full-table mode.
@@ -98,7 +98,7 @@ first, then purge. For a revoked encryption key, delete the OS-secure-store key
 only after SQLite cleanup succeeds, otherwise the app may be unable to inspect
 or clean its remaining protected local data.
 
-For the key lifecycle, see [Client-side encryption](/concepts-encryption/).
+For the key lifecycle, see [Encryption keys](/concepts-encryption-keys/).
 For the durable evidence left by rejected pending work, see
 [Conflicts & optimistic writes](/concepts-conflicts/).
 

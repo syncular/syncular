@@ -152,28 +152,52 @@ The browser bindings are `fetch`/WebSocket wrappers over the protocol
 The worker handle wires all of them for you from the `endpoints` config; you
 only construct transports by hand when building a direct `SyncClient`.
 
-## Realtime lifecycle and the sync loop
+## The realtime supervisor
 
-Install the supported supervisor after registering subscription intent:
+Install the supervisor after registering subscription intent:
 
 ```ts
 import {
   browserConnectivitySignal,
   documentLifecycleSignal,
   installRealtimeSupervisor,
+  realtimeSupervisorSnapshot,
+  subscribeRealtimeSupervisor,
 } from '@syncular/client';
 
 await handle.subscribe({ id: 'todos', table: 'todos', scopes });
 installRealtimeSupervisor(handle, {
   connectivity: browserConnectivitySignal(),
   lifecycle: documentLifecycleSignal(),
+  // For encrypted/locked apps, also pass the host's protection signal. An
+  // explicit signal fails closed until it reports `active`.
 });
 ```
 
-The supervisor owns initial connect, socket-close reconnect, bounded retry,
-background/offline suspension, cancellation on close, and an explicit catch-up
-before publishing `connected`. Render local rows immediately instead of
-blocking startup on a network promise.
+The supervisor owns initial connect, socket-close reconnect, bounded retry
+with jitter, background/offline suspension, cancellation on close, and an
+explicit catch-up before publishing `connected`. Render local rows
+immediately instead of blocking startup on a network promise.
+
+`browserConnectivitySignal()` observes online/offline and
+`documentLifecycleSignal()` observes visibility and page lifecycle. React
+Native hosts pass an `AppState`-backed signal; protected applications pass a
+signal that publishes `preflight` before draining keys. Unknown browser
+connectivity remains connectable, while an explicit protection signal remains
+suspended until it is `active`.
+
+```ts
+const off = subscribeRealtimeSupervisor(handle, renderConnectionState);
+const state = realtimeSupervisorSnapshot(handle);
+// idle | connecting | connected | retrying | offline | background |
+// protected | unsupported | stopped
+```
+
+The snapshot contains only the bounded phase, attempt, and library-owned
+retry delay; transport errors, URLs, identities, and headers are never copied
+into it. The lower-level `connectRealtime()` and `disconnectRealtime()`
+remain available for custom hosts and are idempotent and single-flight:
+repeated or concurrent connects cannot orphan another socket.
 
 After connection, deltas arrive over the socket and server wake-ups raise an
 immediate sync intent. With `autoSync`, the worker owns coalescing those

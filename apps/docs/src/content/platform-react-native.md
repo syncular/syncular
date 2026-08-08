@@ -154,7 +154,7 @@ lifecycle signal plus the app's connectivity and protection signals. Keep
 calling `pause()` / `resume()` to control the native event pump; repeated
 connection attempts are idempotent, so the supervisor safely adds policy
 without creating a second native socket. See
-[Realtime](/concepts-realtime/#the-supported-host-supervisor).
+[Realtime](/platform-web/#the-realtime-supervisor).
 
 ## Platform notes
 

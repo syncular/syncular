@@ -19,10 +19,21 @@ pushes the outbox and drains the results.
 
 ```ts
 const commitId = client.mutate([
-  { table: 'notes', op: 'upsert', values: { id: 'n1', list_id: 'welcome', body: 'draft', updated_at_ms: Date.now() } },
+  {
+    table: 'todos',
+    op: 'upsert',
+    values: {
+      id: 't1',
+      list_id: 'groceries',
+      title: 'Buy milk',
+      done: false,
+      position: 1,
+      updated_at_ms: Date.now(),
+    },
+  },
 ]);
 // the row is already visible locally:
-client.query('SELECT * FROM notes WHERE id = ?', ['n1']);
+client.query('SELECT * FROM todos WHERE id = ?', ['t1']);
 ```
 
 Because the outbox is schema-agnostic and encoded at send time, a commit
@@ -40,7 +51,7 @@ conflict record** and the stored row stays as it was
 
 ```ts
 client.mutate([
-  { table: 'notes', op: 'upsert', baseVersion: 3, values: { /* … */ } },
+  { table: 'todos', op: 'upsert', baseVersion: 3, values: { /* … */ } },
 ]);
 ```
 
@@ -67,10 +78,10 @@ the full row required by the wire protocol, but records the fields the user
 actually changed in local durable metadata:
 
 ```ts
-client.patch('notes', 'n1', { body: 'revised' }, { baseVersion: 3 });
+client.patch('todos', 't1', { title: 'Buy oat milk' }, { baseVersion: 3 });
 
 const [conflict] = client.conflicts;
-conflict.operation?.changedFields; // ['body']
+conflict.operation?.changedFields; // ['title']
 ```
 
 `changedFields` survives restart and is available on both conflict and
@@ -86,102 +97,11 @@ scope check, or a serving hiccup that is retryable) surfaces as a
 semantics driven by the error's `retryable` flag. The
 [error catalog](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#10-errors) is normative.
 
-## Safe, structured validation recovery
+## Recovery
 
-A server write validator can attach a small, strictly bounded recovery object
-to a deliberate host rejection:
-
-```ts
-import { ValidationRejection } from '@syncular/server';
-
-const validators = {
-  notes: ({ row }) => {
-    if (typeof row?.body === 'string' && row.body.length > 500) {
-      throw new ValidationRejection('notes.body_too_long', 'diagnostic only', {
-        fieldPaths: ['body'],
-        reason: 'max_length_exceeded',
-        requiredAction: 'edit_fields',
-        references: { limit: '500' },
-      });
-    }
-  },
-};
-```
-
-After sync, the client persists that object with the durable rejection:
-
-```ts
-const [rejection] = client.rejections;
-rejection.code;                         // 'notes.body_too_long'
-rejection.details?.fieldPaths;          // ['body']
-rejection.details?.requiredAction;      // 'edit_fields'
-rejection.operation?.changedFields;     // the local patch intent, if known
-```
-
-Only put non-sensitive, explicitly approved machine values in `details`.
-Syncular rejects unknown keys, free-form values, malformed paths, and data over
-the protocol limits. Map known codes and tokens to localized app copy; do not
-render the server's diagnostic `message` directly to an end user. Older
-clients ignore the additive details frame and still process the ordinary
-rejection, while newer clients also accept older servers that omit details.
-
-## Atomic aggregate validation
-
-Use the server's `commitValidator` when one user action must carry multiple
-rows together. It sees every decoded, post-merge operation after the rows are
-staged and can read the final candidate state in the same transaction:
-
-```ts
-import { CommitValidationRejection } from '@syncular/server';
-
-const commitValidator = ({ operations }) => {
-  const transition = operations.find(
-    (op) =>
-      op.table === 'surgeries' &&
-      op.row !== undefined &&
-      op.stored !== undefined &&
-      op.row.status !== op.stored.status,
-  );
-  if (
-    transition !== undefined &&
-    !operations.some(
-      (op) =>
-        op.table === 'surgery_status_events' &&
-        op.row?.surgery_id === transition.rowId,
-    )
-  ) {
-    throw new CommitValidationRejection(
-      transition.opIndex,
-      'surgery.status_event_required',
-      'diagnostic only',
-      {
-        fieldPaths: ['status'],
-        reason: 'missing_sibling_operation',
-        requiredAction: 'repair_aggregate',
-      },
-    );
-  }
-};
-```
-
-The server serializes each partition before candidate reads, so concurrent
-commits cannot both validate against mutually incomplete states. D1 requires
-an external per-partition Durable Object (or equivalent coordinator) and fails
-closed unless that serialization is explicitly asserted. This hook validates
-an authorized proposal; privileged operations that choose or transform data
-remain server-authoritative commands.
-
-## Durable correction flow
-
-Final outcomes are journaled in the same local transaction that drains the
-outbox. Use `commitOutcome(id)` or `commitOutcomes({ activeOnly: true })` to
-restore recovery UI after restart. Once the user keeps the server value or
-creates a corrected replacement commit, call `resolveCommitOutcome(...)`;
-resolution is explicit and one-way, so the app never silently loses evidence
-of an offline write that did not land.
-
-For a failed multi-operation commit, `outcome.operations` contains the complete
-ordered local envelope even though the server result names only the operation
-that terminated the atomic commit. Use it only in an authorized,
-domain-specific aggregate repair flow. The envelope is protected local payload,
-does not make full-row intent safe to infer, and never crosses the wire.
+Conflicts and rejections persist as durable **commit outcomes** with
+structured recovery metadata: bounded `details` attached by server
+validators, and the `changedFields` recorded by `patch`. The end-to-end
+repair flow (server validators, atomic aggregate validation, the outcome
+journal, restart, and acknowledgement) is
+[Concurrency and conflict correction](/guide-concurrency-correction/).

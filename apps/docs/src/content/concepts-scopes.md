@@ -10,9 +10,9 @@ this page is the mental model.
 ## Scope patterns
 
 Every synced table declares at least one **scope pattern** in the manifest,
-of the form `prefix:{variable}`. A note table scoped by `list:{list_id}` says
+of the form `prefix:{variable}`. A todos table scoped by `list:{list_id}` says
 "a row belongs to the list named by its `list_id` column." The prefix plus the
-column value form a **scope key** (`list:welcome`, `list:team-42`), and the
+column value form a **scope key** (`list:groceries`, `list:team-42`), and the
 server maintains an inverted index from scope key to commit, so pulls filter
 by scope without scanning ([SPEC §3.1](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#31-scope-patterns-and-stored-scopes)).
 
@@ -62,23 +62,23 @@ Each key in an allowed-scope map is checked independently. For example:
 
 ```ts
 return {
-  workspace_id: ['workspace-a', 'workspace-b'],
-  surgery_id: ['surgery-1', 'surgery-2'],
+  clinic_id: ['clinic-a', 'clinic-b'],
+  appointment_id: ['appt-1', 'appt-2'],
 };
 ```
 
 This permits rows whose two values form any of the four Cartesian
-combinations. It does **not** mean only `(workspace-a, surgery-1)` and
-`(workspace-b, surgery-2)`. Syncular cannot infer a parent/child relation from
+combinations. It does **not** mean only `(clinic-a, appt-1)` and
+`(clinic-b, appt-2)`. Syncular cannot infer a parent/child relation from
 the values or their ordering.
 
-For a child such as a Surgery, choose one of these explicit designs:
+For a child such as an appointment, choose one of these explicit designs:
 
-1. Put both `workspace_id` and `surgery_id` scope patterns on every
-   Surgery-owned table and request both variables in every subscription. Keep
-   the parent reference valid with a server-side validator.
-2. Enumerate the exact Surgery IDs the actor may access instead of granting a
-   wildcard.
+1. Put both `clinic_id` and `appointment_id` scope patterns on every
+   appointment-owned table and request both variables in every subscription.
+   Keep the parent reference valid with a server-side validator.
+2. Enumerate the exact appointment IDs the actor may access instead of
+   granting a wildcard.
 3. Resolve the relationship inside a server-authoritative command when it is
    not suitable for client synchronization.
 
@@ -86,17 +86,16 @@ A child wildcard can be safe in the first design:
 
 ```ts
 return {
-  workspace_id: ['workspace-a'],
-  surgery_id: ['*'],
+  clinic_id: ['clinic-a'],
+  appointment_id: ['*'],
 };
 ```
 
-A row for `(workspace-a, surgery-1)` passes, while
-`(workspace-b, surgery-1)` fails because the table and subscription also carry
-the Workspace fence. But a future `surgery_notes` table scoped only by
-`surgery_id` would make the same wildcard authorize notes for every Surgery.
-Adding or changing a table's scope patterns is therefore an authorization
-review in its own right.
+A row for `(clinic-a, appt-1)` passes, while `(clinic-b, appt-1)` fails
+because the table and subscription also carry the clinic fence. But a future
+`patient_notes` table scoped only by `appointment_id` would make the same
+wildcard authorize notes for every appointment. Adding or changing a table's
+scope patterns is therefore an authorization review in its own right.
 
 Test isolation with at least two parents and representative child IDs. Prove
 that an in-parent row is readable and writable, an out-of-parent row with an
@@ -130,13 +129,6 @@ through two rules:
   into another scope by pushing a changed `list_id`; scope migration is
   server-emitted only. This closes the cross-scope-write hole.
 
-## Windowed sync
-
-A client does not have to hold *every* row it is authorized for. **Windowed
-sync** lets a client keep a **partial local replica** (the hot projects, the
-last few months) while the server keeps everything, with correct sync
-semantics throughout. See [Windowed sync](/concepts-windowing/) for the
-full model; the short version is that a window is a **set of scope values**,
-and changing the window is a set difference on subscriptions: values that
-enter fresh-bootstrap, values that leave are evicted from the local database.
-Shipped in W1 ([SPEC §4.8](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#48-windowed-subscriptions)).
+A client does not have to hold every row it is authorized for:
+[windowed sync](/concepts-windowing/) keeps a partial local replica by
+subscribing to a subset of the allowed scope values.

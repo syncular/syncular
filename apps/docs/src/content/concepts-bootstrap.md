@@ -8,7 +8,7 @@ content-addressed, scope-bound snapshot artifacts.
 Normative detail: [SPEC.md §4.7](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#47-bootstrap-state-machine) and
 [§5](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#5-bootstrap-segments-and-the-download-endpoint).
 
-## One concept: the segment
+## The segment
 
 A **segment** is
 content-addressed (its id is the SHA-256 of its bytes), scope-bound, and
@@ -17,7 +17,7 @@ carries a `mediaType`:
 | `mediaType` | What it is | When |
 |---|---|---|
 | `rows` | A columnar block of encoded rows | Mandatory-to-implement fallback; small tables ship inline |
-| `sqlite` | A prebuilt SQLite database image | The fast path; importing it is near file-copy speed |
+| `sqlite` | A prebuilt SQLite database image | The preferred lane; the client copies whole tables in |
 
 With the **sqlite image**, the client attaches the image and copies whole
 tables in, instead of inserting rows one by one. On the in-process
