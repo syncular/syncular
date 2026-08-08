@@ -9,8 +9,8 @@
 // `mutate` is optimistic and immediately visible via `readRows`/`query`. That
 // is the hermetic path used here. We cover:
 //   init/create · command round-trip · mutate → readRows (optimistic row) ·
-//   query fast path · error surfacing · event poll (none pending) · close
-//   idempotence · a network command failing loudly on the lean core.
+//   query fast path · error surfacing · close idempotence · a network command
+//   failing loudly on the lean core.
 
 import Testing
 import Foundation
@@ -106,19 +106,6 @@ private func upsert(id: String, title: String) -> JSONValue {
     }
 }
 
-@Test func pollEventNonBlockingWhenNoneQueued() async throws {
-    let client = try makeClient()
-    defer { client.close() }
-    // Creation emits one privacy-safe diagnostics snapshot. Once startup
-    // evidence has drained, idle polling must not invent repeated events.
-    let box = EventBox()
-    client.onEvent = { _ in box.mark() }
-    try await Task.sleep(nanoseconds: 300_000_000)
-    let startupCount = box.count
-    try await Task.sleep(nanoseconds: 300_000_000)
-    #expect(box.count == startupCount)
-}
-
 @Test func pendingCommitsAfterOfflineMutate() throws {
     let client = try makeClient()
     defer { client.close() }
@@ -160,12 +147,4 @@ private func upsert(id: String, title: String) -> JSONValue {
     // Still functional after a pause/resume cycle.
     try client.subscribe(id: "s1", table: "todo")
     #expect(try client.subscriptionState(id: "s1") == "active")
-}
-
-/// A tiny thread-safe counter for the inverted event-poll assertion.
-private final class EventBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = 0
-    func mark() { lock.lock(); value += 1; lock.unlock() }
-    var count: Int { lock.lock(); defer { lock.unlock() }; return value }
 }

@@ -133,8 +133,9 @@ Swift suite: init/create, raw command round-trip, mutate → readRows (the
 optimistic row with `version == -1`), the query fast path, `{error}` surfacing as
 `SyncularException`, the offline outbox (`pendingCommitIds`), a network command
 reporting `transport.unavailable` on the lean core (`sync()` returns
-`{ok:false, errorCode}` by design), the idle event poll, `close()` idempotence,
-and a `pause()`/`resume()` cycle.
+`{ok:false, errorCode}` by design), `close()` idempotence, and a
+`pause()`/`resume()` cycle. The Rust FFI suite covers empty event-queue polling
+directly.
 
 **Detect-and-skip:** the gate needs JDK 21+ and Gradle. On a machine without
 them (e.g. a Command-Line-Tools-only mac, which ships a non-functional

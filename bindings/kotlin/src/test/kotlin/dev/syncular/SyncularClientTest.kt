@@ -15,7 +15,7 @@ import kotlin.test.assertTrue
  * Coverage mirrors the Swift suite: init/create, command round-trip, mutate →
  * readRows (optimistic row), the query fast path, error surfacing, the offline
  * outbox, a network command reporting transport.unavailable on the lean core,
- * event-poll (none pending), close idempotence, and pause/resume.
+ * close idempotence, and pause/resume.
  */
 class SyncularClientTest {
     private fun todoSchema(): JsonValue = JsonValue.obj(
@@ -127,16 +127,6 @@ class SyncularClientTest {
             val outcome = client.sync()
             assertEquals(false, outcome["ok"]?.bool)
             assertTrue(outcome["errorCode"]?.string?.contains("transport") == true)
-        }
-    }
-
-    @Test
-    fun pollEventDeliversNothingWhenIdle() {
-        makeClient().use { client ->
-            val count = java.util.concurrent.atomic.AtomicInteger(0)
-            client.listener = SyncularEventListener { count.incrementAndGet() }
-            Thread.sleep(300)
-            assertEquals(0, count.get())
         }
     }
 
