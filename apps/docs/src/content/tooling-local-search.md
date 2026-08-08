@@ -14,24 +14,23 @@ direct Rust hosts.
 Add a virtual table to your normal migration history after its owning table:
 
 ```sql
-CREATE TABLE catalogue_codes (
+CREATE TABLE patient_notes (
   id TEXT PRIMARY KEY,
-  release_id TEXT NOT NULL,
-  code TEXT NOT NULL,
+  clinic_id TEXT NOT NULL,
+  encryption_key_id TEXT NOT NULL,
   title TEXT NOT NULL,
-  full_title TEXT NOT NULL
+  body TEXT NOT NULL
 );
 
-CREATE VIRTUAL TABLE catalogue_codes_fts USING fts5(
-  code,
+CREATE VIRTUAL TABLE patient_notes_fts USING fts5(
   title,
-  full_title,
-  content = catalogue_codes,
+  body,
+  content = patient_notes,
   tokenize = 'unicode61 remove_diacritics 2'
 );
 ```
 
-Here `content = catalogue_codes` declares ownership to Syncular; it is not
+Here `content = patient_notes` declares ownership to Syncular; it is not
 passed through as SQLite external-content mode. Keep only the owning table in
 `syncular.json.tables`. Typegen attaches the projection to that table in the
 neutral IR and every generated client schema.
@@ -55,21 +54,20 @@ identity back to the synced table for scopes, metadata, and a generated row
 key:
 
 ```sql
--- queries/search-catalogue.sql
-SELECT catalogue_codes_fts._syncular_source_id AS fts_source_id,
-       c.id,
-       c.code,
-       c.title,
-       bm25(catalogue_codes_fts) AS rank,
-       snippet(catalogue_codes_fts, 1, '<mark>', '</mark>', ' … ', 16) AS excerpt
-FROM catalogue_codes_fts
-JOIN catalogue_codes c
-  ON CAST(c.id AS TEXT) = catalogue_codes_fts._syncular_source_id
-WHERE catalogue_codes_fts MATCH :query
-  AND c.release_id = :releaseId
+-- queries/search-notes.sql
+SELECT patient_notes_fts._syncular_source_id AS fts_source_id,
+       n.id,
+       n.title,
+       bm25(patient_notes_fts) AS rank,
+       snippet(patient_notes_fts, 1, '<mark>', '</mark>', ' … ', 16) AS excerpt
+FROM patient_notes_fts
+JOIN patient_notes n
+  ON CAST(n.id AS TEXT) = patient_notes_fts._syncular_source_id
+WHERE patient_notes_fts MATCH :query
+  AND n.clinic_id = :clinicId
 ORDER BY rank,
-         catalogue_codes_fts._syncular_source_id ASC,
-         c.id ASC
+         patient_notes_fts._syncular_source_id ASC,
+         n.id ASC
 LIMIT 50;
 ```
 
@@ -93,9 +91,11 @@ optimistic writes, rejection rollback, deletes, scope eviction, and schema
 reset keep it transactionally aligned with the visible table.
 
 Encrypted columns are eligible when their declared application type is
-`string`. Encryption still happens only at the wire boundary: FTS indexes the
-decrypted value already present in the protected local mirror, while the server
-and commit log retain ciphertext. Revoking that local plaintext requires the
+`string`: `patient_notes.body` above can be an
+[encrypted column](/concepts-encryption/) and still be searched. Encryption
+happens only at the wire boundary: FTS indexes the decrypted value already
+present in the protected local mirror, while the server and commit log retain
+ciphertext. Revoking that local plaintext requires the
 same subscription gating and [authorized local purge](/concepts-local-data-purge/)
 as its owner row; the purge removes both in one transaction.
 

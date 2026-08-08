@@ -1,12 +1,10 @@
 # Testing your app
 
 `@syncular/testkit` stands up a whole syncular backend and N real clients
-**in memory**, running as plain function calls rather than over HTTP, a
-browser, or mocked pieces, so you can assert what your app actually sees:
-convergence, offline queues, conflicts, live queries. Everything in it is
-the shipped core: the same `SyncClient` and the same `@syncular/server`
-protocol handler your production app runs, wired through an in-process
-loopback.
+**in memory**, running as plain function calls. There is no HTTP, browser,
+or mocked piece between assertion and engine: the same `SyncClient` and the
+same `@syncular/server` protocol handler your production app runs, wired
+through an in-process loopback.
 
 ## Install
 
@@ -231,6 +229,6 @@ the other hooks.
 ## Where to go next
 
 - [Schema & typegen](/guide-schema/): generate the `schema` your tests import.
-- [React](/platform-react/): the hooks you just tested.
+- [React](/platform-react/): the hook surface under test.
 - [Conformance](/guide-conformance/): the deeper harness for implementing clients and servers.
 - [testkit README](https://github.com/syncular/syncular/blob/main/packages/testing/README.md): the full `TestSync` / `TestClient` surface.

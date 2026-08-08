@@ -195,32 +195,6 @@ for await (const name of root.keys()) {
 Clearing site data in devtools (Application → Storage → Clear site data)
 does the same and also drops the leader lock.
 
-## Connectivity status
-
-`useSyncStatus` exposes `outbox`, `syncNeeded`, `upgrading`, `schemaFloor`,
-and `leaseState`, and deliberately no `online` flag, because the core does
-not own connectivity: the host does (§8.4), and the browser already tells
-you. The recipe every app wants:
-
-```ts
-const [online, setOnline] = useState(navigator.onLine);
-useEffect(() => {
-  const on = () => setOnline(true);
-  const off = () => setOnline(false);
-  window.addEventListener('online', on);
-  window.addEventListener('offline', off);
-  return () => {
-    window.removeEventListener('online', on);
-    window.removeEventListener('offline', off);
-  };
-}, []);
-// "synced" = online && outbox === 0; wire onSynced (handle config) to
-// refresh app-level state after each background round.
-```
-
-Pair it with `useSyncStatus().outbox` for the three states a status pill
-needs: offline (queueing), online with a draining outbox, and in sync.
-
 ## `client.worker_restart_required` after a package upgrade
 
 The page tried to start a worker graph that still referred to a retired Vite

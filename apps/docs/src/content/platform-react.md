@@ -123,6 +123,31 @@ a conservative `FROM`/`JOIN` scanner is used.
 The core guards raw SQL read-only: exactly one `SELECT`, `WITH`, `EXPLAIN`,
 `PRAGMA`, or `VALUES` statement. Writes always use mutations and the outbox.
 
+## Connectivity status
+
+`useSyncStatus` exposes `outbox`, `syncNeeded`, `upgrading`, `schemaFloor`,
+and `leaseState`, and no `online` flag: the host owns connectivity (§8.4),
+and the browser already reports it.
+
+```ts
+const [online, setOnline] = useState(navigator.onLine);
+useEffect(() => {
+  const on = () => setOnline(true);
+  const off = () => setOnline(false);
+  window.addEventListener('online', on);
+  window.addEventListener('offline', off);
+  return () => {
+    window.removeEventListener('online', on);
+    window.removeEventListener('offline', off);
+  };
+}, []);
+// "synced" = online && outbox === 0; wire onSynced (handle config) to
+// refresh app-level state after each background round.
+```
+
+Pair it with `useSyncStatus().outbox` for the three states a status pill
+needs: offline (queueing), online with a draining outbox, and in sync.
+
 ## Changes, windows, and other hooks
 
 Every observer transaction produces one exact, monotonically revisioned
