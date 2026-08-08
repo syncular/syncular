@@ -111,6 +111,10 @@ describe('hono adapter', () => {
       hasParams: false,
       sql: 'SELECT id, title FROM tasks ORDER BY id',
       tables: ['tasks'],
+      resultColumns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'title', type: 'string', nullable: false },
+      ] as const,
       bind: () => [],
       dependencies: () => [{ table: 'tasks' }],
       coverage: () => [],
@@ -153,6 +157,22 @@ describe('hono adapter', () => {
       operationId: descriptor.id,
       rows: [],
       maxCommitSeq: 0,
+    });
+  });
+
+  test('POST /operations rejects the wrong content type with HTTP 415', async () => {
+    const app = makeApp();
+
+    const response = await app.request('/operations', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+
+    expect(response.status).toBe(415);
+    expect(await response.json()).toMatchObject({
+      code: 'operation.invalid_request',
+      retryable: false,
     });
   });
 

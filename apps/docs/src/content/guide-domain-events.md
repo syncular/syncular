@@ -95,6 +95,10 @@ const commitId = client.mutate([
 ]);
 ```
 
+`crypto.randomUUID()` is stable for retries of this durable local commit. If
+the action originates from a retried webhook or job, derive the event ID from
+that upstream request ID or persist the generated ID with the job.
+
 The three operations form one Syncular commit. The server applies every row,
 the commit-log entry, and the idempotency result in one storage transaction.
 A rejection or conflict rolls the complete commit back.
@@ -114,6 +118,7 @@ export const requireAppointmentEvents: CommitValidator = ({ operations }) => {
   const appointments = operations.filter(
     (operation) =>
       operation.table === 'appointments' &&
+      operation.op === 'upsert' &&
       operation.stored !== undefined &&
       operation.row?.starts_at_ms !== operation.stored.starts_at_ms,
   );
@@ -122,12 +127,18 @@ export const requireAppointmentEvents: CommitValidator = ({ operations }) => {
     const reservation = operations.find(
       (operation) =>
         operation.table === 'reservations' &&
+        operation.op === 'upsert' &&
         operation.rowId === reservationId &&
+        operation.row?.clinic_id === appointment.row?.clinic_id &&
         operation.row?.starts_at_ms === appointment.row?.starts_at_ms,
     );
     const event = operations.find(
       (operation) =>
         operation.table === 'domain_events' &&
+        operation.op === 'upsert' &&
+        operation.stored === undefined &&
+        operation.row?.clinic_id === appointment.row?.clinic_id &&
+        operation.row?.aggregate_type === 'appointment' &&
         operation.row?.aggregate_id === appointment.rowId &&
         operation.row?.event_type === 'appointment_rescheduled',
     );
@@ -169,6 +180,62 @@ Corrections to an event that already landed should insert another event, such
 as `appointment_reschedule_corrected`, with its own stable ID and a reference
 to the event it corrects.
 
+## Plan durable reactions from event rows
+
+When [durable server reactions](/server-reactions/) are enabled, use the event
+row as the planner input. The planner runs after validation while the source
+transaction is still open. Its reaction records commit atomically with the
+appointment, reservation, event row, commit log, and idempotency result.
+
+```ts
+import type { ReactionPlanner } from '@syncular/server';
+
+type AppointmentReactions = {
+  'appointment.notify_rescheduled': {
+    readonly eventId: string;
+    readonly appointmentId: string;
+    readonly payload: string;
+  };
+};
+
+export const appointmentReactionPlanner: ReactionPlanner<
+  AppointmentReactions
+> = ({ operations }) =>
+  operations.flatMap((operation) => {
+    if (
+      operation.table !== 'domain_events' ||
+      operation.op !== 'upsert' ||
+      operation.row?.event_type !== 'appointment_rescheduled'
+    ) {
+      return [];
+    }
+
+    const eventId = operation.row.id;
+    const appointmentId = operation.row.aggregate_id;
+    const payload = operation.row.payload;
+    if (
+      typeof eventId !== 'string' ||
+      typeof appointmentId !== 'string' ||
+      typeof payload !== 'string'
+    ) {
+      throw new Error('invalid appointment_rescheduled event');
+    }
+
+    return [
+      {
+        key: `notify:${eventId}`,
+        type: 'appointment.notify_rescheduled',
+        version: 1,
+        payload: { eventId, appointmentId, payload },
+      },
+    ];
+  });
+```
+
+Pass the planner as `SyncServerConfig.reactionPlanner`. A runner handles the
+reaction after commit and receives a stable reaction idempotency key. Keep
+external calls out of both `mutate()` validation and the planner.
+
 ## Consumption and retention
 
 Treat the event primary key as the consumer idempotency key. A worker should
@@ -201,8 +268,3 @@ keep both the commit identity and event ID unchanged.
   under its resolved scopes. Use a [server-authoritative command](/guide-remote-operations/#server-authoritative-commands)
   when the operation needs privileged reads, secret material, a server-owned
   invariant, or custom command authorization.
-
-## Find this guide
-
-Search terms: domain action, domain event, event row, immutable event,
-transactional outbox.

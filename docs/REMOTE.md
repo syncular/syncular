@@ -5,7 +5,7 @@
 
 This protocol serves database-less processes that need authoritative reads or
 server-authoritative commands. Ordinary row commits use the push-only SSP2
-binding in `SPEC.md` §6.9.
+binding in `SPEC.md` §6.10.
 
 An operation-only client does not require a client schema or `/sync`
 transport. Those capabilities are required when it prepares and sends an
@@ -19,7 +19,12 @@ SQL and command code stay in the server process.
 
 Host authentication maps every HTTP request or WebSocket upgrade to an
 `actorId` and partition before the operation runs. Revision 1 is
-partition-local.
+partition-local. If the supplied `clientId` already belongs to another actor
+in that partition, the operation fails with `sync.invalid_client_id`. The
+authenticated actor remains the authority; a host must not treat the
+caller-supplied `clientId` as an authentication credential. Client IDs
+beginning with the internal `["remote-command",` prefix are reserved and fail
+with the same code.
 
 The runtime admin API, `SyncularServerEvents`, durable server reactions, and
 remote application operations are separate surfaces. Remote operations read or
@@ -31,7 +36,8 @@ retained follow-up work after an accepted commit.
 
 A registered query uses a generated `NamedQuery` descriptor. The descriptor
 provides its ID, selected positional SQL, bind values, table dependencies,
-result mapper, and scope coverage.
+result-column metadata, result mapper, and scope coverage. Registration fails
+if result-column metadata is missing, empty, or contains duplicate names.
 
 Before execution, storage replaces every generated application-table relation
 with a derived relation that selects the table's application columns and binds
@@ -40,6 +46,10 @@ interpolated into SQL. A table with `materialize: false` cannot be queried.
 
 Storage executes the query and reads the partition's `maxCommitSeq` in one
 database snapshot. A success response carries both rows and `maxCommitSeq`.
+The server returns only columns named by the generated result metadata and
+normalizes their database values to the declared types. A missing value, a
+null for a non-nullable column, or an invalid value fails with
+`operation.query_failed`.
 
 Every query sets `maxRows` to an integer from 1 through 10,000. Storage executes
 the query with `LIMIT maxRows + 1`. A larger result fails as
@@ -49,9 +59,11 @@ the query with `LIMIT maxRows + 1`. A larger result fails as
 
 Every query uses one registration mode:
 
-- `scoped`: generated coverage must name every table read by the query. The
-  server resolves the actor's allowed scopes and verifies every coverage value
-  before SQL execution. Empty or incomplete coverage fails closed.
+- `scoped`: generated coverage must contain exactly one record for every table
+  read by the query and cover every scope variable declared by that table. The
+  server resolves the actor's allowed scopes and verifies every covered value
+  before SQL execution. Empty, duplicate, extra, or incomplete coverage fails
+  closed. SYQL emits this proof only for a valid `sync query`.
 - `privileged`: registration supplies a query-specific `authorize` callback.
   A false result fails with `operation.forbidden`.
 
@@ -74,9 +86,15 @@ Each invocation carries a non-empty caller-owned `requestId`. The server maps
 the command to the ordinary push idempotency identity:
 
 ```text
-clientId       = "command:" + request.clientId
-clientCommitId = operationId + ":" + requestId
+clientId       = JSON.stringify(["remote-command", actorId, request.clientId])
+clientCommitId = JSON.stringify([operationId, requestId])
 ```
+
+The tuple encoding prevents delimiter collisions between distinct command and
+request IDs and isolates two authenticated actors that happen to supply the
+same client ID. The sync server rejects ordinary SSP2 client IDs beginning
+with the internal `["remote-command",` prefix, so an ordinary commit cannot
+occupy a command result key.
 
 The command callback runs after the partition write lock and the serialized
 idempotency recheck. It may call `getRow(table, rowId)` and returns one or more
@@ -105,12 +123,14 @@ collisions with application object keys.
 | boolean | `{"t":"boolean","v":true}` |
 | finite number | `{"t":"number","v":1.5}` |
 | string | `{"t":"string","v":"x"}` |
-| integer / bigint | `{"t":"integer","v":"42"}` |
+| signed 64-bit integer / bigint | `{"t":"integer","v":"42"}` |
 | bytes | `{"t":"bytes","v":"AAE="}` using standard padded base64 |
 | array | `{"t":"array","v":[...]}` |
 | object | `{"t":"object","v":[["key",...],...]}` |
 
 The complete request or response object is itself encoded as an object value.
+Integer text uses canonical decimal form and the range -2^63 through 2^63-1.
+Base64 must use its canonical padded form.
 
 ## 5. HTTP binding
 
@@ -154,12 +174,16 @@ type Success =
       status: 'applied' | 'cached' | 'rejected';
       commitSeq?: number;
       results: unknown[];
-    };
+};
 ```
 
+`maxCommitSeq` is a non-negative safe integer. A present command `commitSeq`
+is a positive safe integer.
+
 An operation-level failure uses an encoded response with `kind: 'error'`, a
-stable `code`, `message`, and `retryable`. Host authentication and content-type
-failures may use the normal HTTP JSON error response before operation decoding.
+stable `code`, `message`, and `retryable`. Host authentication failures may use
+the normal HTTP JSON error response before operation decoding. A request with
+another content type fails with HTTP 415.
 
 ## 6. Live query watches
 
@@ -188,6 +212,10 @@ one of the descriptor's tables reruns the query. Commits arriving during a run
 set one dirty flag, producing at most one pending rerun at a time. Commits for
 other tables do not rerun it.
 
+`watchId` is unique within one connection. Reusing an active ID fails with
+`operation.invalid_request`. An `unwatch` removes the registration and
+suppresses a query result that was still running for it.
+
 Closing the session removes every watch. Revision 1 has no durable watch cursor
 or reconnect token. The client reconnects and registers a new watch to obtain a
 fresh snapshot.
@@ -198,10 +226,14 @@ fresh snapshot.
 |---|---:|---|
 | `operation.unknown` | no | The ID is absent or has the wrong operation kind |
 | `operation.forbidden` | no | Scope or custom authorization denies access |
-| `operation.invalid_request` | no | The message, coverage, command plan, or parameters are invalid |
+| `operation.invalid_request` | no | The message, generated query coverage, or command mutation plan is invalid |
 | `operation.result_too_large` | no | The query exceeds `maxRows` |
 | `operation.storage_unsupported` | no | Storage lacks authoritative query support |
 | `operation.query_failed` | no | Registered SQL execution fails |
+| `operation.execution_failed` | no | Registered operation code or infrastructure fails unexpectedly |
+
+Identity binding can also produce `sync.invalid_client_id`. Normal command
+commit validation can produce the `sync.*` result codes defined by `SPEC.md`.
 
 Host validator codes follow `SPEC.md` §6.7.
 

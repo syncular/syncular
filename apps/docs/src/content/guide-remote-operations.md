@@ -2,13 +2,15 @@
 
 Server processes do not all need a local replica. `SyncRemoteClient` is the
 database-less client for ordinary commits, registered authoritative queries,
-server-authoritative commands, and live query snapshots.
+server-authoritative commands, and live query snapshots. It fits
+machine-to-machine (M2M) integrations, admin queries, and workers without local
+SQLite.
 
 ## Capability matrix
 
 | Need | Surface | Local SQLite | Authorization | Durable retry |
 |---|---|---:|---|---|
-| Local SQL read model and offline outbox | Headless `SyncClient` | Required | Resolved scopes or wildcard access | Outbox owned by client |
+| Local SQL read model and offline outbox | Server-side `SyncClient` | Required | Resolved scopes or wildcard access | Outbox owned by client |
 | Ordinary commit from a job or webhook | `SyncRemoteClient.commit()` | None | Normal write scopes | Caller retains prepared bytes |
 | Predefined typed server SQL | `SyncRemoteClient.query()` | None | Generated scope coverage or privileged callback | Read-only request |
 | Privileged transactional operation | `SyncRemoteClient.command()` | None | Command callback plus normal write scopes | Stable request ID |
@@ -30,7 +32,9 @@ import {
 } from '@syncular/client';
 import { schema } from './syncular.generated';
 
-const headers = { Authorization: `Bearer ${process.env.SERVICE_TOKEN}` };
+const serviceToken = process.env.SERVICE_TOKEN;
+if (serviceToken === undefined) throw new Error('missing service token');
+const headers = { Authorization: `Bearer ${serviceToken}` };
 const client = new SyncRemoteClient({
   schema,
   clientId: 'billing-webhooks',
@@ -55,10 +59,10 @@ const prepared = await client.prepareCommit({
 const result = await client.sendCommit(prepared);
 ```
 
-Persist `prepared.bytes` with the job when a retry must survive process
-restart. Send the exact bytes again after a lost response. This also preserves
-random encryption nonces. The server returns `cached` after the first applied
-delivery.
+Persist `prepared.bytes` as binary data or base64 with the job when a retry
+must survive process restart. Send the exact decoded bytes again after a lost
+response. This also preserves random encryption nonces. The server returns
+`cached` after the first applied delivery.
 
 ## Registered typed queries
 
@@ -81,10 +85,13 @@ export const operations = new RemoteOperationRegistry([
 ]);
 ```
 
-A scoped registration requires complete generated coverage for every table in
-the query. The server resolves the caller's scopes and verifies every coverage
-unit before executing SQL. Queries without complete coverage fail with
-`operation.invalid_request`.
+A scoped registration requires generated coverage for every table and every
+declared scope in the query. In SYQL, declare it as a `sync query`; typegen then
+emits coverage only when every scope is constrained by required equality or
+`IN` predicates. The server resolves the caller's scopes and verifies every
+covered value before executing SQL. Ordinary queries and queries without a
+complete proof fail with `operation.invalid_request` when registered as
+scoped.
 
 An administrative query uses a mandatory privileged authorizer:
 
@@ -147,6 +154,10 @@ server database. Typegen currently checks the SQLite form, so a Postgres
 deployment should keep remotely registered SQL within the common SQL subset or
 test it against Postgres in CI.
 
+Registration requires generated result-column metadata. The server validates
+and returns only those columns, so driver-specific or undeclared fields do not
+cross the operation boundary.
+
 ## Server-authoritative commands
 
 Commands run custom code after the partition write lock and idempotency
@@ -176,7 +187,13 @@ const operations = new RemoteOperationRegistry([
           table: 'domain_events',
           op: 'upsert',
           values: {
-            id: crypto.randomUUID(),
+            id: JSON.stringify([
+              'invoice-captured',
+              command.actorId,
+              command.clientId,
+              command.operationId,
+              command.requestId,
+            ]),
             account_id: invoice.account_id,
             aggregate_type: 'invoice',
             aggregate_id: input.invoiceId,
@@ -216,6 +233,10 @@ const result = await client.command(
 
 The command authorizer is additional to normal write-scope authorization.
 Configure wildcard scopes only for actors that should have full write access.
+The command context exposes the request's identity-checked `clientId`, its
+`operationId`, and its `requestId` for stable event and application idempotency
+keys.
+The authorizer can run again on a retry, so it must not have side effects.
 Command callbacks should restrict side effects to planning database mutations.
 External calls belong after the commit in an idempotent worker or durable
 reaction.
@@ -241,13 +262,28 @@ const config = {
 ```
 
 The host's WebSocket upgrade for `/operations/realtime` authenticates the
-request, builds a `SyncRequestContext`, and connects it:
+request, builds a `SyncRequestContext`, and connects it. The Syncular portion
+of that runtime-specific adapter is:
 
 ```ts
-const session = operationWatches.connect(context, (bytes) => socket.send(bytes));
-socket.onmessage = (bytes) => void session.receive(bytes);
-socket.onclose = () => session.close();
+import type {
+  RemoteOperationWatchSession,
+  SyncRequestContext,
+} from '@syncular/server';
+
+export function connectOperationWatches(
+  context: SyncRequestContext,
+  send: (bytes: Uint8Array) => void,
+): RemoteOperationWatchSession {
+  return operationWatches.connect(context, send);
+}
 ```
+
+Forward each inbound binary WebSocket message to `session.receive(bytes)` and
+call `session.close()` when the socket closes. If `receive()` rejects, close
+the socket with an application protocol error. The Hono adapter mounts the
+HTTP `/operations` route; WebSocket upgrade wiring remains with the runtime
+host.
 
 Client setup and subscription:
 
@@ -261,6 +297,8 @@ import {
 
 const token = process.env.SYNCULAR_SERVICE_TOKEN;
 if (token === undefined) throw new Error('missing service token');
+const realtimeTicket = process.env.SYNCULAR_OPERATION_REALTIME_TICKET;
+if (realtimeTicket === undefined) throw new Error('missing realtime ticket');
 const headers = { Authorization: `Bearer ${token}` };
 
 const client = new SyncRemoteClient({
@@ -272,7 +310,7 @@ const client = new SyncRemoteClient({
     { headers },
   ),
   operationRealtime: webSocketRemoteOperationConnector(
-    `wss://api.example.com/operations/realtime?access_token=${encodeURIComponent(token)}`,
+    `wss://api.example.com/operations/realtime?ticket=${encodeURIComponent(realtimeTicket)}`,
   ),
 });
 
@@ -289,6 +327,10 @@ unwatch();
 client.close();
 ```
 
+Use a short-lived WebSocket ticket because proxy access logs can retain URLs.
+A custom `RemoteOperationRealtimeConnector` can obtain a new ticket for each
+connection attempt when the application rotates them.
+
 Watches are live invalidations, not durable work delivery. After a connection
 loss, reconnect and register the watch again to receive a fresh snapshot.
 
@@ -304,7 +346,3 @@ loss, reconnect and register the watch again to receive a fresh snapshot.
 - Durable server reactions schedule recoverable post-commit work. Query
   watches provide replaceable live state and may repeat or disappear with the
   connection.
-
-Search terms: database-less client, server client, M2M query, admin query,
-typed server query, predefined query, server-authoritative command,
-subscription.

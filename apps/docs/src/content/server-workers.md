@@ -253,11 +253,11 @@ export default {
 Reaction cleanup retains completed records for 30 days and dead-lettered
 records for 90 days by default. It never deletes pending or leased records.
 Blob cleanup is safe only with a correctly sized grace period. The full
-runbook is in [Operations](/server-operations/).
+runbook is in [Operations and maintenance](/server-operations/).
 
 ## Where to go next
 
-- [Operations](/server-operations/): events, pruning, blob GC, and what to
+- [Operations and maintenance](/server-operations/): events, pruning, blob GC, and what to
   alert on.
 - [Storage backends](/server-storage/): how D1 compares to SQLite and
   Postgres, and the R2 store details.

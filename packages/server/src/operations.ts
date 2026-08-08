@@ -9,7 +9,7 @@ import {
   type ScopeMap,
 } from '@syncular/core';
 import type { SyncRequestContext } from './context';
-import { RESOLVER_OUTAGE } from './context';
+import { REMOTE_COMMAND_CLIENT_ID_PREFIX, RESOLVER_OUTAGE } from './context';
 import { SyncError, syncError } from './errors';
 import { processPushOperationsWithTrace } from './push';
 import { compileSchema } from './schema';
@@ -38,7 +38,7 @@ export interface AuthoritativeQueryDescriptor<Params = undefined> {
   readonly hasParams: boolean;
   readonly sql: string;
   readonly tables: readonly string[];
-  readonly resultColumns?: readonly {
+  readonly resultColumns: readonly {
     readonly name: string;
     readonly type:
       | 'string'
@@ -94,6 +94,9 @@ export type CommandMutation =
 export interface RemoteCommandContext {
   readonly actorId: string;
   readonly partition: string;
+  readonly clientId: string;
+  readonly operationId: string;
+  readonly requestId: string;
   getRow(table: string, rowId: string): Promise<ValidateRow | undefined>;
 }
 
@@ -153,18 +156,28 @@ function normalizeQueryRows(
   rows: readonly Readonly<Record<string, unknown>>[],
   columns: AuthoritativeQueryDescriptor<unknown>['resultColumns'],
 ): readonly Readonly<Record<string, unknown>>[] {
-  if (columns === undefined) return rows;
   return rows.map((row) => {
-    const normalized: Record<string, unknown> = { ...row };
+    const normalized: Record<string, unknown> = Object.create(null);
     for (const column of columns) {
       const value = row[column.name];
-      if (value === null || value === undefined) continue;
+      if (value === undefined || (value === null && !column.nullable)) {
+        throw syncError(
+          'operation.query_failed',
+          'registered query returned a missing or invalid null value',
+        );
+      }
+      if (value === null) {
+        normalized[column.name] = null;
+        continue;
+      }
       switch (column.type) {
         case 'integer': {
           const integer =
-            typeof value === 'bigint' || typeof value === 'string'
+            typeof value === 'bigint'
               ? Number(value)
-              : value;
+              : typeof value === 'string' && /^-?(?:0|[1-9][0-9]*)$/.test(value)
+                ? Number(value)
+                : value;
           if (typeof integer !== 'number' || !Number.isSafeInteger(integer)) {
             throw syncError(
               'operation.query_failed',
@@ -175,27 +188,46 @@ function normalizeQueryRows(
           break;
         }
         case 'float':
-          if (typeof value !== 'number' || !Number.isFinite(value)) {
-            throw syncError(
-              'operation.query_failed',
-              'registered query returned an invalid float',
-            );
+          {
+            const float =
+              typeof value === 'string' &&
+              /^-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/.test(
+                value,
+              )
+                ? Number(value)
+                : value;
+            if (typeof float !== 'number' || !Number.isFinite(float)) {
+              throw syncError(
+                'operation.query_failed',
+                'registered query returned an invalid float',
+              );
+            }
+            normalized[column.name] = float;
           }
           break;
         case 'boolean':
-          if (typeof value === 'number') normalized[column.name] = value !== 0;
-          else if (typeof value !== 'boolean') {
+          if (typeof value === 'number' && Number.isFinite(value)) {
+            normalized[column.name] = value !== 0;
+          } else if (typeof value !== 'boolean') {
             throw syncError(
               'operation.query_failed',
               'registered query returned an invalid boolean',
             );
           }
           break;
-        case 'json':
-          if (typeof value !== 'string') {
-            normalized[column.name] = JSON.stringify(value);
+        case 'json': {
+          const json =
+            typeof value === 'string' ? value : JSON.stringify(value);
+          if (json === undefined) {
+            throw syncError(
+              'operation.query_failed',
+              'registered query returned invalid JSON',
+            );
           }
+          JSON.parse(json);
+          normalized[column.name] = json;
           break;
+        }
         case 'bytes':
         case 'crdt': {
           const bytes =
@@ -232,6 +264,7 @@ function normalizeQueryRows(
           }
           break;
       }
+      if (!(column.name in normalized)) normalized[column.name] = value;
     }
     return normalized;
   });
@@ -242,6 +275,18 @@ export function registerRemoteQuery<Params>(
   descriptor: AuthoritativeQueryDescriptor<Params>,
   options: RemoteQueryOptions<Params>,
 ): RegisteredRemoteQuery {
+  if (
+    descriptor.id.length === 0 ||
+    new Set(descriptor.tables).size !== descriptor.tables.length ||
+    !Array.isArray(descriptor.resultColumns) ||
+    descriptor.resultColumns.length === 0 ||
+    new Set(descriptor.resultColumns.map((column) => column.name)).size !==
+      descriptor.resultColumns.length
+  ) {
+    throw new Error(
+      'remote query requires a non-empty id and unique tables and result columns',
+    );
+  }
   if (
     !Number.isSafeInteger(options.maxRows) ||
     options.maxRows < 1 ||
@@ -255,6 +300,7 @@ export function registerRemoteQuery<Params>(
     tables: descriptor.tables,
     run: async (ctx, clientId, rawParams) => {
       const params = rawParams as Params;
+      const schema = compileSchema(ctx.schema);
       if (options.auth.access === 'scoped') {
         const allowed = await ctx.resolveScopes({
           partition: ctx.partition,
@@ -268,16 +314,48 @@ export function registerRemoteQuery<Params>(
           );
         }
         const coverage = descriptor.coverage(params);
-        const coveredTables = new Set(
-          coverage.map((entry) => entry.base.table),
-        );
-        if (descriptor.tables.some((table) => !coveredTables.has(table))) {
+        const coverageByTable = new Map<string, RemoteQueryCoverage>();
+        for (const entry of coverage) {
+          if (
+            coverageByTable.has(entry.base.table) ||
+            !descriptor.tables.includes(entry.base.table)
+          ) {
+            throw syncError(
+              'operation.invalid_request',
+              'scoped remote query has invalid generated scope coverage',
+            );
+          }
+          coverageByTable.set(entry.base.table, entry);
+        }
+        if (descriptor.tables.some((table) => !coverageByTable.has(table))) {
           throw syncError(
             'operation.invalid_request',
             'scoped remote query lacks complete generated scope coverage',
           );
         }
         for (const entry of coverage) {
+          const table = schema.tables.get(entry.base.table);
+          const fixedScopes = entry.base.fixedScopes ?? {};
+          const coveredVariables = new Set([
+            entry.base.variable,
+            ...Object.keys(fixedScopes),
+          ]);
+          if (
+            table === undefined ||
+            Object.prototype.hasOwnProperty.call(
+              fixedScopes,
+              entry.base.variable,
+            ) ||
+            coveredVariables.size !== table.declaredVariables.size ||
+            [...table.declaredVariables].some(
+              (variable) => !coveredVariables.has(variable),
+            )
+          ) {
+            throw syncError(
+              'operation.invalid_request',
+              'scoped remote query lacks complete generated scope coverage',
+            );
+          }
           if (entry.units.length === 0) {
             throw syncError(
               'operation.invalid_request',
@@ -289,9 +367,7 @@ export function registerRemoteQuery<Params>(
               throw syncError('operation.forbidden');
             }
           }
-          for (const [variable, values] of Object.entries(
-            entry.base.fixedScopes ?? {},
-          )) {
+          for (const [variable, values] of Object.entries(fixedScopes)) {
             if (
               values.length === 0 ||
               values.some((value) => !scopeAllowed(allowed, variable, value))
@@ -314,7 +390,6 @@ export function registerRemoteQuery<Params>(
           'configured storage does not implement authoritative queries',
         );
       }
-      const schema = compileSchema(ctx.schema);
       await ctx.storage.ensureSchema(schema);
       const selectedSql = descriptor.sqlFor?.(params) ?? descriptor.sql;
       let result;
@@ -334,11 +409,21 @@ export function registerRemoteQuery<Params>(
       if (result.rows.length > options.maxRows) {
         throw syncError('operation.result_too_large');
       }
+      let rows;
+      try {
+        rows = normalizeQueryRows(result.rows, descriptor.resultColumns);
+      } catch (error) {
+        if (error instanceof SyncError) throw error;
+        throw syncError(
+          'operation.query_failed',
+          'registered query result decoding failed',
+        );
+      }
       return {
         revision: 1,
         kind: 'query',
         operationId: descriptor.id,
-        rows: normalizeQueryRows(result.rows, descriptor.resultColumns),
+        rows,
         maxCommitSeq: result.maxCommitSeq,
       };
     },
@@ -419,10 +504,16 @@ function commandContext(
   tx: StorageTransaction,
   resolved: ResolvedScopes,
   schema: ReturnType<typeof compileSchema>,
+  clientId: string,
+  operationId: string,
+  requestId: string,
 ): RemoteCommandContext {
   return {
     actorId: ctx.actorId,
     partition: ctx.partition,
+    clientId,
+    operationId,
+    requestId,
     getRow: async (tableName, rowId) => {
       const table = schema.tables.get(tableName);
       if (table === undefined) {
@@ -451,6 +542,9 @@ export function registerRemoteCommand<Input>(
   descriptor: RemoteCommandDescriptor<Input>,
   options: RemoteCommandOptions<Input>,
 ): RegisteredRemoteCommand {
+  if (descriptor.id.length === 0) {
+    throw new Error('remote command id must be non-empty');
+  }
   return {
     kind: 'command',
     id: descriptor.id,
@@ -482,11 +576,22 @@ export function registerRemoteCommand<Input>(
         ctx,
         schema,
         resolved,
-        `command:${clientId}`,
-        `${descriptor.id}:${requestId}`,
+        JSON.stringify(['remote-command', ctx.actorId, clientId]),
+        JSON.stringify([descriptor.id, requestId]),
         async (tx) =>
           commandOperations(
-            await options.run(commandContext(ctx, tx, resolved, schema), input),
+            await options.run(
+              commandContext(
+                ctx,
+                tx,
+                resolved,
+                schema,
+                clientId,
+                descriptor.id,
+                requestId,
+              ),
+              input,
+            ),
             schema,
           ),
       );
@@ -510,8 +615,8 @@ export class RemoteOperationRegistry {
 
   constructor(operations: readonly RegisteredRemoteOperation[]) {
     for (const operation of operations) {
-      if (this.#operations.has(operation.id)) {
-        throw new Error('duplicate remote operation id');
+      if (operation.id.length === 0 || this.#operations.has(operation.id)) {
+        throw new Error('remote operation ids must be non-empty and unique');
       }
       this.#operations.set(operation.id, operation);
     }
@@ -522,14 +627,39 @@ export class RemoteOperationRegistry {
   }
 }
 
+function encodeRemoteOperationError(
+  error: unknown,
+  fallbackCode: 'operation.invalid_request' | 'operation.execution_failed',
+): Uint8Array {
+  const sync =
+    error instanceof SyncError
+      ? error
+      : syncError(
+          fallbackCode,
+          fallbackCode === 'operation.invalid_request'
+            ? 'invalid remote operation request'
+            : 'registered remote operation failed',
+        );
+  return encodeRemoteOperationResponse({
+    revision: 1,
+    kind: 'error',
+    code: sync.code,
+    message: sync.message,
+    retryable: sync.retryable,
+  });
+}
+
 export async function handleRemoteOperation(
   bytes: Uint8Array,
   ctx: SyncRequestContext,
   registry: RemoteOperationRegistry,
 ): Promise<Uint8Array> {
+  let request;
   try {
-    const request = decodeRemoteOperationRequest(bytes);
+    request = decodeRemoteOperationRequest(bytes);
     if (
+      typeof request !== 'object' ||
+      request === null ||
       request.revision !== 1 ||
       (request.kind !== 'query' && request.kind !== 'command') ||
       typeof request.clientId !== 'string' ||
@@ -538,6 +668,26 @@ export async function handleRemoteOperation(
       request.operationId.length === 0
     ) {
       throw syncError('operation.invalid_request');
+    }
+  } catch (error) {
+    return encodeRemoteOperationError(error, 'operation.invalid_request');
+  }
+  try {
+    if (request.clientId.startsWith(REMOTE_COMMAND_CLIENT_ID_PREFIX)) {
+      throw syncError(
+        'sync.invalid_client_id',
+        'clientId uses a reserved server-command namespace (§1.5)',
+      );
+    }
+    const clientRecord = await ctx.storage.getClientRecord(
+      ctx.partition,
+      request.clientId,
+    );
+    if (clientRecord !== undefined && clientRecord.actorId !== ctx.actorId) {
+      throw syncError(
+        'sync.invalid_client_id',
+        'clientId is bound to a different actor in this partition (§1.5)',
+      );
     }
     if (
       request.kind === 'command' &&
@@ -565,19 +715,6 @@ export async function handleRemoteOperation(
       ),
     );
   } catch (error) {
-    const sync =
-      error instanceof SyncError
-        ? error
-        : syncError(
-            'operation.invalid_request',
-            'invalid remote operation request',
-          );
-    return encodeRemoteOperationResponse({
-      revision: 1,
-      kind: 'error',
-      code: sync.code,
-      message: sync.message,
-      retryable: sync.retryable,
-    });
+    return encodeRemoteOperationError(error, 'operation.execution_failed');
   }
 }

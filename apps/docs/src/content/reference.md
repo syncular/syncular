@@ -18,6 +18,12 @@ when exact normative behavior matters.
 
 ## Task guides
 
+- [Server-side sync clients](/guide-server-clients/): run a persistent SQLite
+  replica in a Node or Bun service, CLI, or background worker.
+- [Remote server operations](/guide-remote-operations/): submit database-less
+  commits and call typed queries, commands, and live watches.
+- [Domain actions and event rows](/guide-domain-events/): store application
+  intent atomically with related domain writes.
 - [Durable server reactions](/server-reactions/): atomically plan application
   work from accepted commits, then deliver it with leases, retries, stable
   idempotency keys, and dead letters.
@@ -119,5 +125,5 @@ Each operational contract lives next to the code that enforces it:
 
 - [Quickstart](/quickstart/): the whole shape end to end in five minutes.
 - [Protocol & conformance](/guide-conformance/): how the spec is enforced across cores.
-- [Headless Node and Bun clients](/guide-headless-clients/): persistent server-side replicas.
+- [Server-side sync clients](/guide-server-clients/): persistent SQLite replicas in Node and Bun processes.
 - [Remote server operations](/guide-remote-operations/): database-less commits, typed authoritative queries, commands, and watches.

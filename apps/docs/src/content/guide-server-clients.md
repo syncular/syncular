@@ -1,9 +1,9 @@
-# Headless Node and Bun clients
+# Server-side sync clients
 
-`SyncClient` is the server client for a process that needs a local synchronized
+`SyncClient` can run server-side when a process needs a local synchronized
 read model. The same client used in a browser runs in a CLI, background worker,
 or long-running Node or Bun service. It has no DOM dependency when supplied a
-native SQLite backend.
+native SQLite backend. This deployment is sometimes called a headless client.
 
 Use a persistent database path. An in-memory database loses rows, subscription
 cursors, client identity, and the outbox on restart.
@@ -14,6 +14,7 @@ cursors, client identity, and the outbox on restart.
 import {
   httpSegmentDownloader,
   httpSyncTransport,
+  installRealtimeSupervisor,
   SyncClient,
   webSocketRealtimeConnector,
   type SyncIntent,
@@ -27,6 +28,9 @@ const database = openBunDatabase('./data/appointment-worker.sqlite');
 
 const serviceToken = process.env.SYNCULAR_SERVICE_TOKEN;
 if (serviceToken === undefined) throw new Error('missing service token');
+const realtimeTicket = process.env.SYNCULAR_REALTIME_TICKET;
+if (realtimeTicket === undefined) throw new Error('missing realtime ticket');
+const clientId = 'appointment-worker-eu-1';
 
 let client: SyncClient;
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -34,10 +38,15 @@ let closed = false;
 let running = Promise.resolve();
 
 function schedule(intent: SyncIntent): void {
-  if (closed || intent.kind === 'none') return;
-  if (timer !== undefined) clearTimeout(timer);
+  if (closed) return;
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    timer = undefined;
+  }
+  if (intent.kind === 'none') return;
   const delay = intent.kind === 'background' ? intent.delayMs : 0;
   timer = setTimeout(() => {
+    timer = undefined;
     running = running
       .then(() => client.syncUntilIdle())
       .then(() => undefined)
@@ -48,7 +57,7 @@ function schedule(intent: SyncIntent): void {
 client = new SyncClient({
   database,
   schema,
-  clientId: 'appointment-worker-eu-1',
+  clientId,
   transport: httpSyncTransport('https://api.example.com/sync', {
     headers: { Authorization: `Bearer ${serviceToken}` },
   }),
@@ -56,7 +65,7 @@ client = new SyncClient({
     headers: { Authorization: `Bearer ${serviceToken}` },
   }),
   realtime: webSocketRealtimeConnector(
-    `wss://api.example.com/realtime?access_token=${encodeURIComponent(serviceToken)}`,
+    `wss://api.example.com/realtime?clientId=${encodeURIComponent(clientId)}&ticket=${encodeURIComponent(realtimeTicket)}`,
   ),
   onSyncNeeded: () => schedule({ kind: 'interactive' }),
   onSyncIntent: schedule,
@@ -69,16 +78,24 @@ client.subscribe({
   scopes: { clinic_id: ['clinic-42'] },
 });
 await client.syncUntilIdle();
-await client.connectRealtime();
+installRealtimeSupervisor(client);
 ```
 
+The supervisor owns initial connection, reconnect with bounded backoff, and a
+catch-up sync after reconnect. A custom service loop can call
+`connectRealtime()` and `disconnectRealtime()` directly instead.
+
 The HTTP and WebSocket credentials are application auth. The server's
-`authenticate` callback maps them to an actor and partition. The example uses a
-query parameter for WebSocket authentication because the built-in connector
-uses the standard `WebSocket` constructor. Configure the server to accept that
-credential, or provide a custom `RealtimeConnector` for a runtime that supports
-headers. Bun and current Node runtimes provide `fetch`; the WebSocket connector
-also requires a global `WebSocket` implementation.
+`authenticate` callback maps them to an actor and partition. The realtime host
+passes `clientId` to `RealtimeHub.connect`; Syncular checks its actor binding.
+The client ID identifies the replica and is not an authentication credential.
+The example uses a query parameter for WebSocket authentication because the
+built-in connector uses the standard `WebSocket` constructor. Configure the
+server to accept that short-lived ticket. Do not put a long-lived service
+bearer in a URL that a proxy may log. A rotating ticket flow can provide a
+custom `RealtimeConnector` that obtains a ticket for each connection attempt.
+Bun and current Node runtimes provide `fetch`; the WebSocket connector also
+requires a global `WebSocket` implementation.
 
 `openNodeDatabase()` uses the optional `better-sqlite3` peer. Install it in a
 Node service. Bun should use `openBunDatabase()` and `bun:sqlite`.
@@ -112,8 +129,10 @@ await client.syncUntilIdle();
 console.log({ commitId });
 ```
 
-Keep one live client per database file. The leader lock fails if another
-process tries to own the same replica concurrently.
+Keep one live client per database file. The default server-side lock assumes a
+single owner and does not coordinate across processes. Enforce ownership with
+your service manager or supply a `LeaderLock` backed by a cross-process lock
+when several processes could open the same path.
 
 ## Idempotent event consumption
 
@@ -166,12 +185,20 @@ Stop scheduling new rounds, close realtime, wait for the current round, then
 close SQLite:
 
 ```ts
-async function shutdown(): Promise<void> {
-  closed = true;
-  if (timer !== undefined) clearTimeout(timer);
-  await running;
-  await client.close();
-  database.close();
+let shutdownPromise: Promise<void> | undefined;
+
+function shutdown(): Promise<void> {
+  shutdownPromise ??= (async () => {
+    closed = true;
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    await running;
+    await client.close();
+    database.close();
+  })();
+  return shutdownPromise;
 }
 
 process.once('SIGINT', () => void shutdown());
@@ -180,8 +207,8 @@ process.once('SIGTERM', () => void shutdown());
 
 ## Choose the correct server-side surface
 
-- Headless `SyncClient`: persistent local SQLite, local SQL reads, scoped or
-  wildcard access from `resolveScopes`, durable outbox, subscriptions, and
+- Server-side `SyncClient`: persistent local SQLite, local SQL reads, scoped
+  or wildcard access from `resolveScopes`, durable outbox, subscriptions, and
   realtime convergence.
 - [`SyncRemoteClient`](/guide-remote-operations/): no SQLite. It submits
   ordinary commits and calls registered remote queries or commands.
@@ -190,9 +217,6 @@ process.once('SIGTERM', () => void shutdown());
   the server trust boundary.
 - `SyncularServerEvents`: operational telemetry. It is not a durable work
   queue or an application subscription.
-- Durable server reactions: durable post-commit work scheduling. They are
-  separate from a headless replica and from live query watches.
-
-Search terms: server client, headless client, Node client, Bun client,
-background worker, CLI sync.
-
+- [Durable server reactions](/server-reactions/): durable post-commit work
+  scheduling. They are separate from a server-side replica and from live
+  query watches.

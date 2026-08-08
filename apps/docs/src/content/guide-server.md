@@ -1,7 +1,7 @@
 # Server setup
 
 Looking for a server client or background worker? Use the normal
-[`SyncClient` headlessly](/guide-headless-clients/) when the process needs a
+[`SyncClient` on the server](/guide-server-clients/) when the process needs a
 local SQLite read model. Use [`SyncRemoteClient`](/guide-remote-operations/)
 when it needs database-less commits, predefined authoritative queries, or
 commands.
@@ -83,7 +83,7 @@ Two more surfaces attach outside the adapter:
 - `GET /realtime`: the WebSocket upgrade is runtime-specific and stays with
   your host process (below).
 - `GET /admin`: the optional operator console, mounted separately and
-  never open by default. See [Operations](/server-operations/).
+  never open by default. See [Operations and maintenance](/server-operations/).
 
 An HTTP-only deployment is fully conformant: clients that never open the
 socket sync over `POST /sync` with identical semantics. Realtime is simply
@@ -273,7 +273,8 @@ covers the same ground with virtual time.
   `@syncular/server-workers` covers Cloudflare Workers. See
   [Cloudflare Workers](/server-workers/).
 - **Day two**: structured events, the admin console, commit-log pruning,
-  blob GC, and load testing live in [Operations](/server-operations/).
+  blob GC, and load testing live in
+  [Operations and maintenance](/server-operations/).
 - **Post-commit application work**: configure planners, leased handlers,
   retries, and dead letters in
   [Durable server reactions](/server-reactions/).
@@ -285,7 +286,7 @@ covers the same ground with virtual time.
 - [Cloudflare Workers](/server-workers/): D1 + R2 + Durable Object realtime.
 - [Durable server reactions](/server-reactions/): email, webhooks,
   projections, and jobs after accepted commits.
-- [Operations](/server-operations/): events, admin console, pruning, GC,
+- [Operations and maintenance](/server-operations/): events, admin console, pruning, GC,
   load tests.
 - [Scopes & authorization](/concepts-scopes/): how `resolveScopes` gates
   every read and write.

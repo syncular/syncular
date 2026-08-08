@@ -52,6 +52,12 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCatalogEntry>> = {
     recommendedAction: 'inspectServer',
     httpStatus: 500,
   },
+  'operation.execution_failed': {
+    category: 'internal',
+    retryable: false,
+    recommendedAction: 'inspectServer',
+    httpStatus: 500,
+  },
   'sync.auth_required': {
     category: 'auth-required',
     retryable: true,

@@ -24,6 +24,9 @@ import type { CommitValidator, ValidatorRegistry } from './validate';
 /** SSP2 body content type (§1.1). */
 export const SSP2_CONTENT_TYPE = 'application/vnd.syncular.sync.v2';
 
+/** Internal idempotency namespace. Ordinary SSP2 client IDs cannot use it. */
+export const REMOTE_COMMAND_CLIENT_ID_PREFIX = '["remote-command",';
+
 export interface ResolveScopesArgs {
   readonly partition: string;
   readonly actorId: string;

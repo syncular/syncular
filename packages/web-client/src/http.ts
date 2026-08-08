@@ -86,8 +86,10 @@ export function webSocketRemoteOperationConnector(
   return (handlers) =>
     new Promise((resolve, reject) => {
       const socket = new WebSocket(realtimeUrl);
+      let opened = false;
       socket.binaryType = 'arraybuffer';
       socket.onopen = () => {
+        opened = true;
         resolve({
           send: (bytes) => socket.send(bytes.slice().buffer as ArrayBuffer),
           close: () => socket.close(),
@@ -98,15 +100,34 @@ export function webSocketRemoteOperationConnector(
           handlers.onMessage(new Uint8Array(event.data));
         }
       };
-      socket.onerror = () =>
-        reject(
-          new ClientSyncError(
-            'sync.transport_failed',
-            'remote operation realtime socket failed to connect',
-            true,
-          ),
-        );
-      socket.onclose = () => handlers.onClose?.();
+      socket.onerror = () => {
+        if (!opened) {
+          reject(
+            new ClientSyncError(
+              'sync.transport_failed',
+              'remote operation realtime socket failed to connect',
+              true,
+            ),
+          );
+        }
+        try {
+          socket.close();
+        } catch {
+          handlers.onClose?.();
+        }
+      };
+      socket.onclose = () => {
+        if (!opened) {
+          reject(
+            new ClientSyncError(
+              'sync.transport_failed',
+              'remote operation realtime socket closed while connecting',
+              true,
+            ),
+          );
+        }
+        handlers.onClose?.();
+      };
     });
 }
 
@@ -277,8 +298,10 @@ export function webSocketRealtimeConnector(
   return (handlers) =>
     new Promise((resolve, reject) => {
       const socket = new WebSocket(realtimeUrl);
+      let opened = false;
       socket.binaryType = 'arraybuffer';
       socket.onopen = () => {
+        opened = true;
         resolve({
           send: (text) => socket.send(text),
           sendBytes: (bytes) => {
@@ -292,15 +315,31 @@ export function webSocketRealtimeConnector(
         else handlers.onBinary(new Uint8Array(event.data as ArrayBuffer));
       };
       socket.onerror = () => {
-        reject(
-          new ClientSyncError(
-            'sync.transport_failed',
-            'realtime socket failed to connect',
-            true,
-          ),
-        );
+        if (!opened) {
+          reject(
+            new ClientSyncError(
+              'sync.transport_failed',
+              'realtime socket failed to connect',
+              true,
+            ),
+          );
+        }
+        try {
+          socket.close();
+        } catch {
+          handlers.onClose?.();
+        }
       };
       socket.onclose = () => {
+        if (!opened) {
+          reject(
+            new ClientSyncError(
+              'sync.transport_failed',
+              'realtime socket closed while connecting',
+              true,
+            ),
+          );
+        }
         handlers.onClose?.();
       };
     });

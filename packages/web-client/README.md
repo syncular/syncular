@@ -3,9 +3,9 @@
 The TypeScript client protocol core (SPEC.md §§3–8, client side) plus its
 browser platform bindings.
 
-The normal `SyncClient` also runs headlessly in a CLI or background service.
+The normal `SyncClient` also runs in a CLI or background service.
 Use `openBunDatabase(path)` or `openNodeDatabase(path)` for a persistent local
-replica. See the [headless client guide](https://syncular.dev/guide-headless-clients/).
+replica. See the [server-side sync client guide](https://syncular.dev/guide-server-clients/).
 
 `SyncRemoteClient` is the database-less server client. It sends ordinary
 push-only commits through `/sync` and can call registered typed queries,

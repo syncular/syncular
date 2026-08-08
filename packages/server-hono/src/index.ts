@@ -71,12 +71,15 @@ export function createSyncularHono(options: SyncularHonoOptions): Hono {
   });
 
   app.post('/operations', async (c) => {
-    if (options.operations === undefined) {
-      return errorResponse(new SyncError('operation.unknown'));
-    }
     const contentType = c.req.header('content-type')?.split(';')[0]?.trim();
     if (contentType !== 'application/vnd.syncular.operations.v1+json') {
-      return errorResponse(new SyncError('operation.invalid_request'));
+      return Response.json(
+        errorBody(new SyncError('operation.invalid_request')),
+        { status: 415 },
+      );
+    }
+    if (options.operations === undefined) {
+      return errorResponse(new SyncError('operation.unknown'));
     }
     const auth = await options.authenticate(c.req.raw);
     if (auth === null)

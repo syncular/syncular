@@ -4,6 +4,7 @@ import {
   type RemoteOperationRealtimeMessage,
 } from '@syncular/core';
 import type { RealtimeNotifier, SyncRequestContext } from './context';
+import { REMOTE_COMMAND_CLIENT_ID_PREFIX } from './context';
 import { SyncError, syncError } from './errors';
 import type {
   RegisteredRemoteQuery,
@@ -54,23 +55,67 @@ class WatchSession implements RemoteOperationWatchSession {
     let message: RemoteOperationRealtimeMessage;
     try {
       message = decodeRemoteOperationRealtimeMessage(bytes);
-    } catch {
+      if (
+        typeof message !== 'object' ||
+        message === null ||
+        message.revision !== 1 ||
+        (message.kind !== 'watch' && message.kind !== 'unwatch') ||
+        typeof message.watchId !== 'string' ||
+        message.watchId.length === 0
+      ) {
+        throw syncError('operation.invalid_request');
+      }
+      if (message.kind === 'watch') {
+        if (
+          typeof message.clientId !== 'string' ||
+          message.clientId.length === 0 ||
+          typeof message.operationId !== 'string' ||
+          message.operationId.length === 0
+        ) {
+          throw syncError('operation.invalid_request');
+        }
+      }
+    } catch (error) {
+      if (error instanceof SyncError) throw error;
       throw syncError('operation.invalid_request');
     }
-    if (message.revision !== 1) throw syncError('operation.invalid_request');
     if (message.kind === 'unwatch') {
       this.#watches.delete(message.watchId);
       return;
     }
-    if (message.kind !== 'watch') {
-      throw syncError('operation.invalid_request');
+    if (this.#watches.has(message.watchId)) {
+      this.#sendError(
+        message.watchId,
+        syncError('operation.invalid_request', 'watchId is already active'),
+      );
+      return;
     }
+    if (message.clientId.startsWith(REMOTE_COMMAND_CLIENT_ID_PREFIX)) {
+      this.#sendError(
+        message.watchId,
+        syncError(
+          'sync.invalid_client_id',
+          'clientId uses a reserved server-command namespace (§1.5)',
+        ),
+      );
+      return;
+    }
+    const clientRecord = await this.#ctx.storage.getClientRecord(
+      this.#ctx.partition,
+      message.clientId,
+    );
     if (
-      message.watchId.length === 0 ||
-      message.clientId.length === 0 ||
-      message.operationId.length === 0
+      clientRecord !== undefined &&
+      clientRecord.actorId !== this.#ctx.actorId
     ) {
-      throw syncError('operation.invalid_request');
+      this.#sendError(
+        message.watchId,
+        syncError(
+          'sync.invalid_client_id',
+          'clientId is bound to a different actor in this partition (§1.5)',
+        ),
+      );
+      return;
     }
     const operation = this.#registry.get(message.operationId);
     if (operation === undefined || operation.kind !== 'query') {
@@ -113,6 +158,9 @@ class WatchSession implements RemoteOperationWatchSession {
             state.clientId,
             state.params,
           );
+          if (this.#isClosed || this.#watches.get(state.watchId) !== state) {
+            return;
+          }
           if (response.kind !== 'query') {
             throw syncError('operation.query_failed');
           }
@@ -130,6 +178,9 @@ class WatchSession implements RemoteOperationWatchSession {
           )
             return;
         } catch (error) {
+          if (this.#isClosed || this.#watches.get(state.watchId) !== state) {
+            return;
+          }
           this.#sendError(
             state.watchId,
             error instanceof SyncError
@@ -161,6 +212,7 @@ class WatchSession implements RemoteOperationWatchSession {
   }
 
   #emit(bytes: Uint8Array): boolean {
+    if (this.#isClosed) return false;
     try {
       this.#send(bytes);
       return true;

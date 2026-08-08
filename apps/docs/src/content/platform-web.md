@@ -260,8 +260,8 @@ optional peer dependency, so browser-only apps skip the native build entirely;
 (`npm install better-sqlite3`). The [quickstart](/quickstart/) runs this exact
 shape in a terminal.
 
-See [Headless Node and Bun clients](/guide-headless-clients/) for the complete
-service lifecycle. A process that needs no local SQLite database can use
+See [Server-side sync clients](/guide-server-clients/) for the complete service
+lifecycle. A process that needs no local SQLite database can use
 [`SyncRemoteClient`](/guide-remote-operations/) instead.
 
 ## Browser support

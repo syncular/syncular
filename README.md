@@ -15,9 +15,13 @@ checked by the server when it syncs.
 The browser client runs SQLite on OPFS. Native integrations share the Rust core
 and native SQLite across Rust, Swift, Kotlin, Flutter, React Native, and Tauri.
 Servers run on Bun, Node, or Cloudflare Workers with SQLite, Postgres, or D1.
-Backend processes can run the same SQLite client headlessly, or use the
-database-less remote client for push-only commits and registered server
-operations.
+Backend services and workers can run a
+[server-side `SyncClient`](https://syncular.dev/guide-server-clients/) with
+persistent SQLite (often called a headless client). A
+[database-less `SyncRemoteClient`](https://syncular.dev/guide-remote-operations/)
+submits commits and calls registered server operations. Applications can store
+[domain actions as event rows](https://syncular.dev/guide-domain-events/)
+alongside their related writes.
 
 **[Documentation](https://syncular.dev)** ·
 [Quickstart](https://syncular.dev/quickstart/) ·

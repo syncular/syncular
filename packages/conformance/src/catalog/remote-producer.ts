@@ -1,12 +1,17 @@
 import { check, checkEqual } from '../checks';
 import { ALL_SCOPES, task } from '../fixture';
-import { rawPushCommit, rawUpsert, responsePushResults } from '../raw';
+import {
+  rawPullHeader,
+  rawPushCommit,
+  rawUpsert,
+  responsePushResults,
+} from '../raw';
 import type { Scenario } from '../scenario';
 
 export const remoteProducerScenarios: readonly Scenario[] = [
   {
     name: 'remote-producer/push-only-idempotency',
-    specRefs: ['§6.9', '§2.3', '§6.4'],
+    specRefs: ['§6.10', '§2.3', '§6.4'],
     async run(ctx) {
       await ctx.server.setAllowedScopes('worker', ALL_SCOPES);
       const frames = [
@@ -19,7 +24,7 @@ export const remoteProducerScenarios: readonly Scenario[] = [
         ]),
       ];
       const options = {
-        clientId: 'headless-producer',
+        clientId: 'remote-producer',
         schemaVersion: ctx.serverSchema.version,
       };
       const first = await ctx.rawSync('worker', frames, options);
@@ -42,6 +47,24 @@ export const remoteProducerScenarios: readonly Scenario[] = [
         await ctx.server.getMaxCommitSeq(),
         1,
         'retry allocated no second commit sequence',
+      );
+    },
+  },
+  {
+    name: 'remote-producer/reserved-command-client-namespace',
+    specRefs: ['§1.5', '§6.10'],
+    async run(ctx) {
+      await ctx.server.setAllowedScopes('worker', ALL_SCOPES);
+      const result = await ctx.rawSync('worker', [rawPullHeader()], {
+        clientId: '["remote-command","spoofed"]',
+        schemaVersion: ctx.serverSchema.version,
+      });
+      check(!result.ok, 'reserved command client namespace is rejected');
+      if (result.ok) return;
+      checkEqual(
+        result.error.code,
+        'sync.invalid_client_id',
+        'reserved command client namespace uses the stable identity error',
       );
     },
   },

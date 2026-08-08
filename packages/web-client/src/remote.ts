@@ -1,5 +1,5 @@
 /**
- * Database-less SSP2 producer (§6.9). It prepares and sends ordinary commits
+ * Database-less SSP2 producer (§6.10). It prepares and sends ordinary commits
  * through the existing push path without creating a local replica or outbox.
  */
 import {
@@ -116,6 +116,16 @@ function operationResponse(bytes: Uint8Array): RemoteOperationResponse {
       'remote operation response is malformed',
     );
   }
+  if (
+    typeof response !== 'object' ||
+    response === null ||
+    Array.isArray(response)
+  ) {
+    throw new ClientSyncError(
+      'client.invalid_host_response',
+      'remote operation response is malformed',
+    );
+  }
   if (response.revision !== 1) {
     throw new ClientSyncError(
       'client.invalid_host_response',
@@ -137,7 +147,11 @@ function operationResponse(bytes: Uint8Array): RemoteOperationResponse {
     response.kind === 'query' &&
     (typeof response.operationId !== 'string' ||
       !Array.isArray(response.rows) ||
-      !Number.isSafeInteger(response.maxCommitSeq))
+      response.rows.some(
+        (row) => typeof row !== 'object' || row === null || Array.isArray(row),
+      ) ||
+      !Number.isSafeInteger(response.maxCommitSeq) ||
+      response.maxCommitSeq < 0)
   ) {
     throw new ClientSyncError(
       'client.invalid_host_response',
@@ -151,7 +165,7 @@ function operationResponse(bytes: Uint8Array): RemoteOperationResponse {
       !['applied', 'cached', 'rejected'].includes(response.status) ||
       !Array.isArray(response.results) ||
       (response.commitSeq !== undefined &&
-        !Number.isSafeInteger(response.commitSeq)))
+        (!Number.isSafeInteger(response.commitSeq) || response.commitSeq < 1)))
   ) {
     throw new ClientSyncError(
       'client.invalid_host_response',
@@ -179,6 +193,7 @@ export class SyncRemoteClient {
   readonly #operationRealtime: RemoteOperationRealtimeConnector | undefined;
   #operationSocket: RemoteOperationRealtimeSocket | undefined;
   #operationSocketPromise: Promise<RemoteOperationRealtimeSocket> | undefined;
+  #operationSocketGeneration = 0;
   readonly #watches = new Map<
     string,
     {
@@ -373,10 +388,17 @@ export class SyncRemoteClient {
         'remote query returned a mismatched response',
       );
     }
-    return {
-      rows: response.rows.map((row) => descriptor.mapRow(row)),
-      maxCommitSeq: response.maxCommitSeq,
-    };
+    try {
+      return {
+        rows: response.rows.map((row) => descriptor.mapRow(row)),
+        maxCommitSeq: response.maxCommitSeq,
+      };
+    } catch {
+      throw new ClientSyncError(
+        'client.invalid_host_response',
+        'remote query row is malformed',
+      );
+    }
   }
 
   async command<Input = undefined>(
@@ -449,26 +471,64 @@ export class SyncRemoteClient {
       mapRow: descriptor.mapRow,
       handlers: handlers as RemoteQueryWatchHandlers<unknown>,
     });
-    const socket = await this.#operationRealtimeSocket();
-    socket.send(
-      encodeRemoteOperationRealtimeMessage({
-        revision: 1,
-        kind: 'watch',
-        watchId,
-        clientId: this.#clientId,
-        operationId: descriptor.id,
-        params,
-      }),
-    );
-    return () => {
-      if (!this.#watches.delete(watchId)) return;
-      this.#operationSocket?.send(
+    let socket: RemoteOperationRealtimeSocket;
+    try {
+      socket = await this.#operationRealtimeSocket();
+    } catch (error) {
+      this.#watches.delete(watchId);
+      throw error;
+    }
+    if (!this.#watches.has(watchId)) {
+      throw new ClientSyncError(
+        'client.remote_realtime_cancelled',
+        'remote operation watch was cancelled before registration',
+      );
+    }
+    try {
+      socket.send(
         encodeRemoteOperationRealtimeMessage({
           revision: 1,
-          kind: 'unwatch',
+          kind: 'watch',
           watchId,
+          clientId: this.#clientId,
+          operationId: descriptor.id,
+          params: params ?? null,
         }),
       );
+    } catch {
+      const error = new ClientSyncError(
+        'client.remote_realtime_closed',
+        'remote operation realtime connection closed while registering a watch',
+        true,
+      );
+      this.#disconnectOperationRealtime(
+        this.#operationSocketGeneration,
+        error,
+        true,
+      );
+      throw error;
+    }
+    return () => {
+      if (!this.#watches.delete(watchId)) return;
+      try {
+        this.#operationSocket?.send(
+          encodeRemoteOperationRealtimeMessage({
+            revision: 1,
+            kind: 'unwatch',
+            watchId,
+          }),
+        );
+      } catch {
+        this.#disconnectOperationRealtime(
+          this.#operationSocketGeneration,
+          new ClientSyncError(
+            'client.remote_realtime_closed',
+            'remote operation realtime connection closed while removing a watch',
+            true,
+          ),
+          true,
+        );
+      }
     };
   }
 
@@ -484,57 +544,181 @@ export class SyncRemoteClient {
         'SyncRemoteClient has no remote operation realtime connector',
       );
     }
-    this.#operationSocketPromise = Promise.resolve(
+    const generation = this.#operationSocketGeneration;
+    const pending = Promise.resolve(
       connector({
         onMessage: (bytes) => {
-          const message = decodeRemoteOperationRealtimeMessage(bytes);
-          if (message.kind !== 'snapshot' && message.kind !== 'watch_error') {
+          if (generation !== this.#operationSocketGeneration) return;
+          let message;
+          try {
+            message = decodeRemoteOperationRealtimeMessage(bytes);
+            if (
+              typeof message !== 'object' ||
+              message === null ||
+              message.revision !== 1 ||
+              (message.kind !== 'snapshot' && message.kind !== 'watch_error') ||
+              typeof message.watchId !== 'string'
+            ) {
+              throw new Error('invalid remote operation realtime message');
+            }
+          } catch {
+            this.#disconnectOperationRealtime(
+              generation,
+              new ClientSyncError(
+                'client.invalid_host_response',
+                'remote operation realtime message is malformed',
+              ),
+              true,
+            );
             return;
           }
           const watch = this.#watches.get(message.watchId);
           if (watch === undefined) return;
           if (message.kind === 'watch_error') {
-            watch.handlers.onError?.(
+            if (
+              typeof message.code !== 'string' ||
+              typeof message.message !== 'string' ||
+              typeof message.retryable !== 'boolean'
+            ) {
+              this.#disconnectOperationRealtime(
+                generation,
+                new ClientSyncError(
+                  'client.invalid_host_response',
+                  'remote operation watch error is malformed',
+                ),
+                true,
+              );
+              return;
+            }
+            try {
+              watch.handlers.onError?.(
+                new ClientSyncError(
+                  message.code,
+                  message.message,
+                  message.retryable,
+                ),
+              );
+            } catch {
+              // An observer cannot alter the connection lifecycle.
+            }
+            return;
+          }
+          if (
+            message.operationId !== watch.operationId ||
+            !Array.isArray(message.rows) ||
+            message.rows.some(
+              (row) =>
+                typeof row !== 'object' || row === null || Array.isArray(row),
+            ) ||
+            !Number.isSafeInteger(message.maxCommitSeq) ||
+            message.maxCommitSeq < 0
+          ) {
+            this.#disconnectOperationRealtime(
+              generation,
               new ClientSyncError(
-                message.code,
-                message.message,
-                message.retryable,
+                'client.invalid_host_response',
+                'remote operation watch snapshot is malformed',
               ),
+              true,
             );
             return;
           }
-          if (message.operationId !== watch.operationId) return;
-          watch.handlers.onSnapshot({
-            rows: message.rows.map(watch.mapRow),
-            maxCommitSeq: message.maxCommitSeq,
-          });
-        },
-        onClose: () => {
-          this.#operationSocket = undefined;
-          this.#operationSocketPromise = undefined;
-          for (const watch of this.#watches.values()) {
-            watch.handlers.onError?.(
-              new ClientSyncError(
-                'client.remote_realtime_closed',
-                'remote operation realtime connection closed',
-                true,
-              ),
-            );
+          let rows: unknown[];
+          try {
+            rows = message.rows.map(watch.mapRow);
+          } catch {
+            try {
+              watch.handlers.onError?.(
+                new ClientSyncError(
+                  'client.invalid_host_response',
+                  'remote operation watch row is malformed',
+                ),
+              );
+            } catch {
+              // An observer cannot alter the connection lifecycle.
+            }
+            return;
+          }
+          try {
+            watch.handlers.onSnapshot({
+              rows,
+              maxCommitSeq: message.maxCommitSeq,
+            });
+          } catch {
+            // An observer cannot alter the connection lifecycle.
           }
         },
+        onClose: () => {
+          this.#disconnectOperationRealtime(
+            generation,
+            new ClientSyncError(
+              'client.remote_realtime_closed',
+              'remote operation realtime connection closed',
+              true,
+            ),
+            false,
+          );
+        },
       }),
-    ).then((socket) => {
-      this.#operationSocket = socket;
-      this.#operationSocketPromise = undefined;
-      return socket;
-    });
-    return this.#operationSocketPromise;
+    )
+      .then((socket) => {
+        if (generation !== this.#operationSocketGeneration) {
+          try {
+            socket.close();
+          } catch {
+            // The cancelled socket cannot affect the replacement generation.
+          }
+          throw new ClientSyncError(
+            'client.remote_realtime_cancelled',
+            'remote operation realtime connection was cancelled',
+          );
+        }
+        this.#operationSocket = socket;
+        return socket;
+      })
+      .finally(() => {
+        if (this.#operationSocketPromise === pending) {
+          this.#operationSocketPromise = undefined;
+        }
+      });
+    this.#operationSocketPromise = pending;
+    return pending;
+  }
+
+  #disconnectOperationRealtime(
+    generation: number,
+    error: ClientSyncError | undefined,
+    closeSocket: boolean,
+  ): void {
+    if (generation !== this.#operationSocketGeneration) return;
+    this.#operationSocketGeneration += 1;
+    const socket = this.#operationSocket;
+    this.#operationSocket = undefined;
+    this.#operationSocketPromise = undefined;
+    const watches = [...this.#watches.values()];
+    this.#watches.clear();
+    if (closeSocket) {
+      try {
+        socket?.close();
+      } catch {
+        // Local state is already disconnected.
+      }
+    }
+    if (error === undefined) return;
+    for (const watch of watches) {
+      try {
+        watch.handlers.onError?.(error);
+      } catch {
+        // An observer cannot alter the connection lifecycle.
+      }
+    }
   }
 
   close(): void {
-    this.#operationSocket?.close();
-    this.#operationSocket = undefined;
-    this.#operationSocketPromise = undefined;
-    this.#watches.clear();
+    this.#disconnectOperationRealtime(
+      this.#operationSocketGeneration,
+      undefined,
+      true,
+    );
   }
 }

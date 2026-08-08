@@ -115,11 +115,14 @@ function base64ToBytes(text: string): Uint8Array {
     if (offset < out.length) out[offset++] = (chunk >> 8) & 255;
     if (offset < out.length) out[offset++] = chunk & 255;
   }
+  if (bytesToBase64(out) !== text) throw new Error('invalid base64 value');
   return out;
 }
 
 function encodeValue(value: unknown): EncodedValue {
-  if (value === null || value === undefined) return { t: 'null' };
+  if (value === null) return { t: 'null' };
+  if (value === undefined)
+    throw new Error('remote operation value cannot be undefined');
   if (typeof value === 'boolean') return { t: 'boolean', v: value };
   if (typeof value === 'number') {
     if (!Number.isFinite(value))
@@ -127,7 +130,15 @@ function encodeValue(value: unknown): EncodedValue {
     return { t: 'number', v: value };
   }
   if (typeof value === 'string') return { t: 'string', v: value };
-  if (typeof value === 'bigint') return { t: 'integer', v: value.toString() };
+  if (typeof value === 'bigint') {
+    if (
+      value < -9_223_372_036_854_775_808n ||
+      value > 9_223_372_036_854_775_807n
+    ) {
+      throw new Error('remote operation integer exceeds signed 64-bit range');
+    }
+    return { t: 'integer', v: value.toString() };
+  }
   if (value instanceof Uint8Array) {
     return { t: 'bytes', v: bytesToBase64(value) };
   }
@@ -135,6 +146,10 @@ function encodeValue(value: unknown): EncodedValue {
     return { t: 'array', v: value.map(encodeValue) };
   }
   if (typeof value === 'object') {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error('remote operation value must be a plain object');
+    }
     return {
       t: 'object',
       v: Object.entries(value).map(([key, entry]) => [key, encodeValue(entry)]),
@@ -169,7 +184,14 @@ function decodeValue(value: EncodedValue): unknown {
     case 'integer': {
       if (typeof value.v !== 'string' || !/^-?(?:0|[1-9][0-9]*)$/.test(value.v))
         throw new Error('invalid remote integer value');
-      return BigInt(value.v);
+      const integer = BigInt(value.v);
+      if (
+        integer < -9_223_372_036_854_775_808n ||
+        integer > 9_223_372_036_854_775_807n
+      ) {
+        throw new Error('remote operation integer exceeds signed 64-bit range');
+      }
+      return integer;
     }
     case 'bytes':
       if (typeof value.v !== 'string')
@@ -183,6 +205,7 @@ function decodeValue(value: EncodedValue): unknown {
       if (!Array.isArray(value.v))
         throw new Error('invalid remote object value');
       const entries: Array<readonly [string, unknown]> = [];
+      const keys = new Set<string>();
       for (const entry of value.v) {
         if (
           !Array.isArray(entry) ||
@@ -191,6 +214,8 @@ function decodeValue(value: EncodedValue): unknown {
         ) {
           throw new Error('invalid remote object entry');
         }
+        if (keys.has(entry[0])) throw new Error('duplicate remote object key');
+        keys.add(entry[0]);
         entries.push([entry[0], decodeValue(entry[1])]);
       }
       return Object.fromEntries(entries);

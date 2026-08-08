@@ -7,7 +7,12 @@
  * the client core).
  */
 import { describe, expect, test } from 'bun:test';
-import { ClientSyncError, httpSegmentDownloader } from '../src/index';
+import {
+  ClientSyncError,
+  httpSegmentDownloader,
+  webSocketRealtimeConnector,
+  webSocketRemoteOperationConnector,
+} from '../src/index';
 
 interface SeenRequest {
   readonly url: string;
@@ -74,5 +79,52 @@ describe('httpSegmentDownloader', () => {
     // Exactly one request: the downloader never touched the direct
     // endpoint on failure (§5.4 — descriptor invalidated, re-pull).
     expect(seen).toHaveLength(1);
+  });
+});
+
+describe('WebSocket connectors', () => {
+  test('reject a socket that closes before opening', async () => {
+    class ClosedBeforeOpenWebSocket {
+      static latest: ClosedBeforeOpenWebSocket | undefined;
+      binaryType = 'blob';
+      onclose: (() => void) | null = null;
+
+      constructor(_url: string) {
+        ClosedBeforeOpenWebSocket.latest = this;
+      }
+
+      send(): void {}
+      close(): void {}
+    }
+
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'WebSocket');
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: ClosedBeforeOpenWebSocket,
+    });
+    try {
+      for (const connect of [
+        webSocketRealtimeConnector('wss://example.test/realtime'),
+        webSocketRemoteOperationConnector(
+          'wss://example.test/operations/realtime',
+        ),
+      ]) {
+        const pending = connect({
+          onText: () => undefined,
+          onBinary: () => undefined,
+          onMessage: () => undefined,
+        });
+        ClosedBeforeOpenWebSocket.latest?.onclose?.();
+        await expect(pending).rejects.toMatchObject({
+          code: 'sync.transport_failed',
+        });
+      }
+    } finally {
+      if (original === undefined) {
+        Reflect.deleteProperty(globalThis, 'WebSocket');
+      } else {
+        Object.defineProperty(globalThis, 'WebSocket', original);
+      }
+    }
   });
 });

@@ -31,7 +31,7 @@ import {
   type WakeReason,
 } from '@syncular/core';
 import type { SyncRequestContext, SyncServerConfig } from './context';
-import { RESOLVER_OUTAGE } from './context';
+import { REMOTE_COMMAND_CLIENT_ID_PREFIX, RESOLVER_OUTAGE } from './context';
 import { SyncError, syncError } from './errors';
 import { emitEvent, type SyncularServerEvents } from './events';
 import { createSyncResponseStream } from './handler';
@@ -963,6 +963,12 @@ export class RealtimeHub {
   async connect(options: RealtimeConnectOptions): Promise<RealtimeSession> {
     const { storage } = this.#config;
     const clock = this.#config.clock ?? Date.now;
+    if (options.clientId.startsWith(REMOTE_COMMAND_CLIENT_ID_PREFIX)) {
+      throw syncError(
+        'sync.invalid_client_id',
+        'clientId uses a reserved server-command namespace (§1.5)',
+      );
+    }
     const record = await storage.getClientRecord(
       options.partition,
       options.clientId,

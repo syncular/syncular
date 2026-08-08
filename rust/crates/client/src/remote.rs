@@ -1,4 +1,4 @@
-//! Database-less SSP2 producer (`SPEC.md` §6.9).
+//! Database-less SSP2 producer (`SPEC.md` §6.10).
 //!
 //! Prepared request bytes are the retry unit. A caller that needs crash-safe
 //! retry persists them in its own job or request store.
@@ -329,8 +329,9 @@ impl SyncRemoteClient {
             .remote_operation(&encode_operation_value(&request)?)
             .map_err(|error| RemoteClientError::new(error.code, error.message, true))?;
         let decoded = decode_operation_value(&response)?;
+        validate_operation_revision(&decoded)?;
         if decoded.get("kind").and_then(Value::as_str) == Some("error") {
-            return Err(operation_error(&decoded));
+            return Err(operation_error(&decoded)?);
         }
         if decoded.get("kind").and_then(Value::as_str) != Some("query")
             || decoded.get("operationId").and_then(Value::as_str) != Some(operation_id)
@@ -344,8 +345,11 @@ impl SyncRemoteClient {
         let max_commit_seq = decoded
             .get("maxCommitSeq")
             .and_then(Value::as_i64)
+            .filter(|sequence| (0..=9_007_199_254_740_991).contains(sequence))
             .ok_or_else(|| {
-                RemoteClientError::invalid_response("remote query response lacks maxCommitSeq")
+                RemoteClientError::invalid_response(
+                    "remote query response has invalid maxCommitSeq",
+                )
             })?;
         Ok(RemoteQueryResult {
             rows,
@@ -382,8 +386,9 @@ impl SyncRemoteClient {
             .remote_operation(&encode_operation_value(&request)?)
             .map_err(|error| RemoteClientError::new(error.code, error.message, true))?;
         let decoded = decode_operation_value(&response)?;
+        validate_operation_revision(&decoded)?;
         if decoded.get("kind").and_then(Value::as_str) == Some("error") {
-            return Err(operation_error(&decoded));
+            return Err(operation_error(&decoded)?);
         }
         if decoded.get("kind").and_then(Value::as_str) != Some("command")
             || decoded.get("operationId").and_then(Value::as_str) != Some(operation_id)
@@ -393,16 +398,30 @@ impl SyncRemoteClient {
                 "remote command returned a mismatched response",
             ));
         }
+        let status = decoded
+            .get("status")
+            .and_then(Value::as_str)
+            .filter(|status| matches!(*status, "applied" | "cached" | "rejected"))
+            .ok_or_else(|| {
+                RemoteClientError::invalid_response("remote command response has invalid status")
+            })?;
+        let commit_seq = match decoded.get("commitSeq") {
+            Some(value) => Some(
+                value
+                    .as_i64()
+                    .filter(|sequence| (1..=9_007_199_254_740_991).contains(sequence))
+                    .ok_or_else(|| {
+                        RemoteClientError::invalid_response(
+                            "remote command response has invalid commitSeq",
+                        )
+                    })?,
+            ),
+            None => None,
+        };
         Ok(RemoteCommandResult {
             request_id: request_id.to_owned(),
-            status: decoded
-                .get("status")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    RemoteClientError::invalid_response("remote command response lacks status")
-                })?
-                .to_owned(),
-            commit_seq: decoded.get("commitSeq").and_then(Value::as_i64),
+            status: status.to_owned(),
+            commit_seq,
             results: decoded
                 .get("results")
                 .and_then(Value::as_array)
@@ -422,7 +441,16 @@ fn encode_tagged(value: &Value) -> Result<Value, RemoteClientError> {
     Ok(match value {
         Value::Null => json!({ "t": "null" }),
         Value::Bool(value) => json!({ "t": "boolean", "v": value }),
-        Value::Number(value) if value.is_i64() || value.is_u64() => {
+        Value::Number(value) if value.is_i64() => {
+            json!({ "t": "integer", "v": value.to_string() })
+        }
+        Value::Number(value) if value.is_u64() => {
+            let integer = value.as_u64().expect("guarded above");
+            if integer > i64::MAX as u64 {
+                return Err(RemoteClientError::invalid(
+                    "remote operation integer exceeds signed 64-bit range",
+                ));
+            }
             json!({ "t": "integer", "v": value.to_string() })
         }
         Value::Number(value) => json!({ "t": "number", "v": value }),
@@ -468,9 +496,21 @@ fn decode_tagged(value: &Value) -> Result<Value, RemoteClientError> {
         .ok_or_else(|| RemoteClientError::invalid_response("remote operation value lacks a tag"))?;
     match tag {
         "null" => Ok(Value::Null),
-        "boolean" | "number" | "string" => value.get("v").cloned().ok_or_else(|| {
-            RemoteClientError::invalid_response("remote operation value lacks data")
-        }),
+        "boolean" => value
+            .get("v")
+            .filter(|value| value.is_boolean())
+            .cloned()
+            .ok_or_else(|| RemoteClientError::invalid_response("remote boolean value is invalid")),
+        "number" => value
+            .get("v")
+            .filter(|value| value.is_number())
+            .cloned()
+            .ok_or_else(|| RemoteClientError::invalid_response("remote number value is invalid")),
+        "string" => value
+            .get("v")
+            .filter(|value| value.is_string())
+            .cloned()
+            .ok_or_else(|| RemoteClientError::invalid_response("remote string value is invalid")),
         "integer" => {
             let raw = value.get("v").and_then(Value::as_str).ok_or_else(|| {
                 RemoteClientError::invalid_response("remote integer value is invalid")
@@ -478,6 +518,11 @@ fn decode_tagged(value: &Value) -> Result<Value, RemoteClientError> {
             let number = raw
                 .parse::<i64>()
                 .map_err(|_| RemoteClientError::invalid_response("remote integer exceeds i64"))?;
+            if number.to_string() != raw {
+                return Err(RemoteClientError::invalid_response(
+                    "remote integer value is not canonical",
+                ));
+            }
             Ok(json!(number))
         }
         "bytes" => {
@@ -511,13 +556,25 @@ fn decode_tagged(value: &Value) -> Result<Value, RemoteClientError> {
                 let pair = entry.as_array().ok_or_else(|| {
                     RemoteClientError::invalid_response("remote object entry is invalid")
                 })?;
+                if pair.len() != 2 {
+                    return Err(RemoteClientError::invalid_response(
+                        "remote object entry is invalid",
+                    ));
+                }
                 let key = pair.first().and_then(Value::as_str).ok_or_else(|| {
                     RemoteClientError::invalid_response("remote object key is invalid")
                 })?;
                 let encoded = pair.get(1).ok_or_else(|| {
                     RemoteClientError::invalid_response("remote object entry lacks a value")
                 })?;
-                object.insert(key.to_owned(), decode_tagged(encoded)?);
+                if object
+                    .insert(key.to_owned(), decode_tagged(encoded)?)
+                    .is_some()
+                {
+                    return Err(RemoteClientError::invalid_response(
+                        "remote object contains a duplicate key",
+                    ));
+                }
             }
             Ok(Value::Object(object))
         }
@@ -533,21 +590,33 @@ fn decode_operation_value(bytes: &[u8]) -> Result<Value, RemoteClientError> {
     decode_tagged(&encoded)
 }
 
-fn operation_error(value: &Value) -> RemoteClientError {
-    RemoteClientError::new(
-        value
-            .get("code")
-            .and_then(Value::as_str)
-            .unwrap_or("client.invalid_host_response"),
-        value
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("remote operation failed"),
-        value
-            .get("retryable")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-    )
+fn validate_operation_revision(value: &Value) -> Result<(), RemoteClientError> {
+    if value.get("revision").and_then(Value::as_f64) == Some(1.0) {
+        Ok(())
+    } else {
+        Err(RemoteClientError::invalid_response(
+            "remote operation response has an unsupported revision",
+        ))
+    }
+}
+
+fn operation_error(value: &Value) -> Result<RemoteClientError, RemoteClientError> {
+    let code = value.get("code").and_then(Value::as_str).ok_or_else(|| {
+        RemoteClientError::invalid_response("remote operation error lacks a code")
+    })?;
+    let message = value
+        .get("message")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            RemoteClientError::invalid_response("remote operation error lacks a message")
+        })?;
+    let retryable = value
+        .get("retryable")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            RemoteClientError::invalid_response("remote operation error lacks retryable")
+        })?;
+    Ok(RemoteClientError::new(code, message, retryable))
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -618,13 +687,18 @@ fn base64_decode(text: &str) -> Result<Vec<u8>, RemoteClientError> {
             output.push((values[2] << 6) | values[3]);
         }
     }
+    if base64_encode(&output) != text {
+        return Err(RemoteClientError::invalid_response(
+            "remote bytes value is invalid base64",
+        ));
+    }
     Ok(output)
 }
 
 #[cfg(test)]
 mod tests {
     use serde::{Deserialize, Serialize};
-    use serde_json::{json, Map};
+    use serde_json::{json, Map, Value};
     use ssp2::model::{Frame, Message, MsgKind, Op, OpResult, PushStatus};
     use ssp2::{decode_message, encode_message};
 
@@ -824,5 +898,87 @@ mod tests {
         assert!(String::from_utf8(transport.requests[0].clone())
             .expect("utf8")
             .contains("\"t\":\"bytes\""));
+    }
+
+    #[test]
+    fn rejects_invalid_operation_revision_and_command_status() {
+        let client = SyncRemoteClient::for_operations("worker").expect("client");
+        let mut transport = CachedTransport {
+            requests: Vec::new(),
+            operation_response: Some(
+                encode_operation_value(&json!({
+                    "revision": 2.0,
+                    "kind": "query",
+                    "operationId": "tasks/all",
+                    "rows": [],
+                    "maxCommitSeq": 0,
+                }))
+                .expect("response"),
+            ),
+        };
+
+        let revision = client
+            .query::<_, _, Value>(&mut transport, "tasks/all", &())
+            .expect_err("revision must fail");
+        assert_eq!(revision.code, "client.invalid_host_response");
+
+        transport.operation_response = Some(
+            encode_operation_value(&json!({
+                "revision": super::protocol_revision(),
+                "kind": "query",
+                "operationId": "tasks/all",
+                "rows": [],
+                "maxCommitSeq": 9_007_199_254_740_992i64,
+            }))
+            .expect("response"),
+        );
+        let sequence = client
+            .query::<_, _, Value>(&mut transport, "tasks/all", &())
+            .expect_err("unsafe sequence must fail");
+        assert_eq!(sequence.code, "client.invalid_host_response");
+
+        transport.operation_response = Some(
+            encode_operation_value(&json!({
+                "revision": super::protocol_revision(),
+                "kind": "command",
+                "operationId": "tasks/complete",
+                "requestId": "request-1",
+                "status": "unknown",
+                "results": [],
+            }))
+            .expect("response"),
+        );
+        let status = client
+            .command(&mut transport, "tasks/complete", "request-1", &())
+            .expect_err("status must fail");
+        assert_eq!(status.code, "client.invalid_host_response");
+
+        transport.operation_response = Some(
+            encode_operation_value(&json!({
+                "revision": super::protocol_revision(),
+                "kind": "command",
+                "operationId": "tasks/complete",
+                "requestId": "request-1",
+                "status": "applied",
+                "commitSeq": 0,
+                "results": [],
+            }))
+            .expect("response"),
+        );
+        let sequence = client
+            .command(&mut transport, "tasks/complete", "request-1", &())
+            .expect_err("zero command sequence must fail");
+        assert_eq!(sequence.code, "client.invalid_host_response");
+    }
+
+    #[test]
+    fn rejects_non_portable_integers_and_noncanonical_base64() {
+        let integer = encode_operation_value(&json!(u64::MAX))
+            .expect_err("unsigned values outside i64 must fail");
+        assert_eq!(integer.code, "sync.invalid_request");
+
+        let bytes = decode_operation_value(br#"{"t":"bytes","v":"AB=="}"#)
+            .expect_err("noncanonical base64 must fail");
+        assert_eq!(bytes.code, "client.invalid_host_response");
     }
 }

@@ -23,7 +23,12 @@ import {
   type SubscriptionFrame,
 } from '@syncular/core';
 import type { SyncRequestContext } from './context';
-import { clockOf, limitsOf, RESOLVER_OUTAGE } from './context';
+import {
+  clockOf,
+  limitsOf,
+  REMOTE_COMMAND_CLIENT_ID_PREFIX,
+  RESOLVER_OUTAGE,
+} from './context';
 import { SyncError, syncError } from './errors';
 import {
   emitEvent,
@@ -213,6 +218,13 @@ async function planRequest(
       schemaFloor: true,
       leaseToEmit: undefined,
     };
+  }
+
+  if (header.clientId.startsWith(REMOTE_COMMAND_CLIENT_ID_PREFIX)) {
+    throw syncError(
+      'sync.invalid_client_id',
+      'clientId uses a reserved server-command namespace (§1.5)',
+    );
   }
 
   // §1.5: a clientId already bound to a different actor is rejected.

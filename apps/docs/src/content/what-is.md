@@ -36,7 +36,7 @@ with two independent, conformance-locked implementations:
 - A **Rust core** for everything else: rusqlite on the device filesystem,
   shipped through a five-function C FFI.
 
-Both pass the same golden byte-level vectors and the same 96-scenario
+Both pass the same golden byte-level vectors and the same 97-scenario
 conformance catalog, run against both cores in CI. The platform bindings are
 thin marshaling over the shared Rust core, so protocol behavior is identical
 everywhere:
@@ -59,7 +59,7 @@ On the server you get a framework-neutral core with adapters for
 [SQLite, Postgres, or D1](/server-storage/), and segments/blobs on
 S3-compatible stores.
 
-Backend processes can also run a [headless `SyncClient`](/guide-headless-clients/)
+Backend processes can also run a [server-side `SyncClient`](/guide-server-clients/)
 with persistent SQLite. Processes that do not need a replica use
 [`SyncRemoteClient`](/guide-remote-operations/) for ordinary commits,
 registered typed queries, authoritative commands, and live query snapshots.

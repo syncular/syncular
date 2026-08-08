@@ -414,7 +414,7 @@ envelope codec rejects a no-content request as a **decode error** under
 
 | Field | Type | Semantics |
 |---|---|---|
-| `clientId` | `str` | Stable per-device identifier, non-empty. A server MUST reject a `clientId` already bound to a different actor in the same partition (`sync.invalid_client_id`) |
+| `clientId` | `str` | Stable per-device identifier, non-empty. A server MUST reject a `clientId` already bound to a different actor in the same partition or beginning with the reserved `["remote-command",` server-command prefix (`sync.invalid_client_id`) |
 | `schemaVersion` | `i32` | The client's generated schema version, ≥ 1. Gates codec selection and segment reuse |
 
 ### 1.6 Response message grammar
@@ -4242,16 +4242,17 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 |---|---|---|---|---|
 | `operation.unknown` | not-found | no | regenerateClient | A registered query or command ID is absent or has the wrong kind ([REMOTE.md](./REMOTE.md)) |
 | `operation.forbidden` | forbidden | no | checkPermissions | Registered query scope coverage or an operation authorizer denies access ([REMOTE.md](./REMOTE.md)) |
-| `operation.invalid_request` | invalid-request | no | fixRequest | A remote operation message, query coverage, command plan, or parameter set is invalid ([REMOTE.md](./REMOTE.md)) |
+| `operation.invalid_request` | invalid-request | no | fixRequest | A remote operation message, generated query coverage, or command mutation plan is invalid ([REMOTE.md](./REMOTE.md)) |
 | `operation.result_too_large` | invalid-request | no | fixRequest | A registered query returns more than its configured `maxRows` ([REMOTE.md](./REMOTE.md)) |
 | `operation.storage_unsupported` | internal | no | inspectServer | Configured storage lacks authoritative query support ([REMOTE.md](./REMOTE.md)) |
 | `operation.query_failed` | internal | no | inspectServer | Registered authoritative SQL execution or result decoding fails ([REMOTE.md](./REMOTE.md)) |
+| `operation.execution_failed` | internal | no | inspectServer | Registered operation code or infrastructure fails unexpectedly ([REMOTE.md](./REMOTE.md)) |
 | `sync.auth_required` | auth-required | yes | refreshAuth | Host authentication absent/failed (HTTP 401; WS close) |
 | `sync.auth_lease_required` | auth-required | yes | refreshAuth | The host opted the request into lease authorization (a live-resolver outage) but no valid lease exists for `(partition, clientId)` — expired, actor-mismatched, or never issued (§7.3.3) — *new in SSP2*; request-level |
 | `sync.auth_lease_revoked` | auth-required | yes | refreshAuth | A lease-authorized round was attempted on a lease the host revoked by `leaseId` (§7.3.4) — *new in SSP2*; request-level. Distinct from `sync.scope_revoked` (§3.3): the grant was pulled, but no local data is purged |
 | `sync.forbidden` | forbidden | no | checkPermissions | Write-path scope denial (§3.4); segment scope-digest mismatch (§5.5); `resolveScopes` threw on a write |
 | `sync.invalid_request` | invalid-request | no | fixRequest | Malformed envelope/frame, bad content type, missing required fields |
-| `sync.invalid_client_id` | invalid-request | no | resetClientId | `clientId` bound to a different actor (§1.5) |
+| `sync.invalid_client_id` | invalid-request | no | resetClientId | `clientId` bound to a different actor or uses the reserved server-command namespace (§1.5) |
 | `sync.invalid_subscription` | invalid-request | no | fixRequest | Duplicate subscription id; undeclared scope key (requested **or** resolved — §3.2) |
 | `sync.empty_commit` | invalid-request | no | fixRequest | `PUSH_COMMIT` with zero operations |
 | `sync.unknown_table` | schema-mismatch | no | regenerateClient | Subscription (request-level) or push operation (commit-level, §1.7) names a table the server doesn't handle |

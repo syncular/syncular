@@ -1,4 +1,4 @@
-# Operations
+# Operations and maintenance
 
 Day-two concerns for a running sync server: the structured-events hook,
 the admin console, commit-log pruning, reaction retention, blob GC, and the
