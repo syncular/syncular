@@ -11,6 +11,7 @@ import { SYQL_HIGHLIGHTER_LANGUAGES } from './src/syql-highlighting.ts';
 
 export default defineConfig({
   site: 'https://syncular.dev',
+  compressHTML: true,
   server: { port: 3100 },
   devToolbar: { enabled: false },
   vite: {

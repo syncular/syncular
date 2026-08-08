@@ -85,6 +85,12 @@ for (const file of sources) {
 }
 
 describe('internal links', () => {
+  test('Astro preserves whitespace around inline links', () => {
+    expect(readFileSync(join(docsRoot, 'astro.config.mjs'), 'utf8')).toMatch(
+      /compressHTML:\s*true/,
+    );
+  });
+
   test('found a plausible number of links', () => {
     expect(links.length).toBeGreaterThan(100);
   });
