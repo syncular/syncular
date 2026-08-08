@@ -16,6 +16,36 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-08-08',
+    title: 'Server-side sync clients',
+    body: 'The same SyncClient that runs in a browser runs in a CLI, background worker, or long-running Node or Bun service, holding a local synchronized read model over native SQLite.',
+    links: [
+      { href: '/guide-server-clients/', label: 'Server-side sync clients' },
+    ],
+  },
+  {
+    date: '2026-08-07',
+    title: 'Remote server operations',
+    body: 'SyncRemoteClient is the database-less client for ordinary commits, registered authoritative queries, server-authoritative commands, and live query snapshots, for jobs, webhooks, and machine-to-machine integrations.',
+    links: [
+      { href: '/guide-remote-operations/', label: 'Remote server operations' },
+    ],
+  },
+  {
+    date: '2026-08-07',
+    title: 'Durable server reactions',
+    body: 'Reactions run application work (email, webhooks, projections) after the server accepts a commit: a planner records bounded JSON inside the authoritative transaction, and a runner delivers it at least once outside it.',
+    links: [{ href: '/server-reactions/', label: 'Durable reactions' }],
+  },
+  {
+    date: '2026-08-07',
+    title: 'Domain actions and event rows',
+    body: 'A documented pattern for recording why state changed: update the affected domain rows and insert one immutable event row in the same mutate() call.',
+    links: [
+      { href: '/guide-domain-events/', label: 'Domain actions & event rows' },
+    ],
+  },
+  {
     date: '2026-08-03',
     title: 'Storage persistence status',
     body: 'The browser client exposes whether persistent storage has been granted, so an app can request persistence and warn about eviction risk at startup.',

@@ -50,6 +50,11 @@ parallel path without current evidence and a specification change.
   underlying type.
 - **Testable change → test.** Add or extend a `bun:test` file next to the
   change. No `mock.module`; use dependency injection or scoped test doubles.
+- **Docs and changelog ship with the feature.** A change that alters what
+  users see or do updates the docs site (`apps/docs/src/content/*.md`);
+  feature-level work also adds an entry to the changelog manifest
+  (`apps/docs/src/changelog.mjs`, newest first, linking to the docs page
+  that covers it).
 - **English everywhere**: code, comments, commit messages, docs.
 - **Commits are human.** No AI attributions, `Co-Authored-By` trailers, or
   tool names in commit messages.
