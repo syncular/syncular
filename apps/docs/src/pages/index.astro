@@ -10,7 +10,7 @@ import rootPkg from '../../../../package.json';
 
 const FEATURES = [
   { title: 'scopes-as-code', body: 'one resolveScopes(actor) in your backend gates every read and write', href: '/concepts-scopes/' },
-  { title: 'offline outbox', body: 'writes queue while out of range, replay in order on reconnect', href: '/concepts-conflicts/' },
+  { title: 'offline outbox', body: 'writes queue while out of range, replay in order on reconnect', href: '/concepts-subscriptions/' },
   { title: 'durable recovery', body: 'structured rejections and losing writes survive restart until your app resolves them', href: '/concepts-conflicts/' },
   { title: 'realtime', body: 'verified deltas pushed over a single WebSocket loop', href: '/concepts-realtime/' },
   { title: 'fast bootstrap', body: 'precomputed sqlite-image segments; 100k rows in ~30 ms', href: '/concepts-bootstrap/' },
@@ -43,7 +43,7 @@ const PLATFORM_LINKS = [
 
 const RULE_EQ = '='.repeat(160);
 const RULE_DASH = '-'.repeat(160);
-const title = 'syncular — offline-first SQL sync for every platform';
+const title = 'syncular: offline-first SQL sync for every platform';
 const description =
   'Local SQLite on every client, kept in sync through a server-authoritative commit log. One protocol across web, Swift, Kotlin, Flutter, React Native, Tauri, and Rust.';
 ---
@@ -91,19 +91,19 @@ const description =
             <pre id="hole-glow" aria-hidden="true"></pre>
           </div>
           <div class="fig-row">
-            <span>FIG. 1 — SERVER-AUTHORITATIVE COMMIT LOG (LIVE SIMULATION)</span>
+            <span>FIG. 1: SERVER-AUTHORITATIVE COMMIT LOG (LIVE SIMULATION)</span>
             <span><span id="sim-status"></span> <button id="sim-toggle" type="button">[ PAUSE ]</button></span>
           </div>
           <h1>ALL YOUR DATA, DRAWN TO A<br />SINGLE POINT OF TRUTH<span>.</span></h1>
           <p class="sub">
             syncular is offline-first SQL sync. Local SQLite on every client, a
             server-authoritative commit log at the center, scope-based
-            authorization at the horizon. Nothing escapes validation; commits
-            cross in order — on the web and natively on iOS, Android, Flutter,
+            authorization on every read and write; commits apply in order or
+            not at all. On the web, and natively on iOS, Android, Flutter,
             React Native, Tauri, and Rust.
           </p>
           <div class="cta-row">
-            <a class="btn primary" href="/quickstart/">[ QUICKSTART — 5 MIN ]</a>
+            <a class="btn primary" href="/quickstart/">[ QUICKSTART · 5 MIN ]</a>
             <a class="btn" href="https://demo.syncular.dev/">[ TRY LIVE DEMO ]</a>
           </div>
           <div class="install"><span class="p">$</span> bun create syncular-app my-app <span class="p"># Apache-2.0</span></div>
@@ -111,7 +111,7 @@ const description =
 
         <div class="rule" aria-hidden="true">{RULE_DASH}</div>
         <section>
-          <p class="kicker">TELEMETRY — MEASURED NUMBERS</p>
+          <p class="kicker">TELEMETRY: MEASURED NUMBERS</p>
           <div class="receipt"><pre>BOOTSTRAP 100,000 ROWS ..................... <span class="v">30 ms</span>
 REALTIME PROPAGATION (p95) ................. <span class="v">0.2 ms</span>
 WEB CLIENT, GZIPPED ........................ <span class="v">31.3 KB</span>
@@ -122,9 +122,26 @@ CONFORMANCE SCENARIOS ...................... <span class="v">{CONFORMANCE_SCENAR
         <div class="rule" aria-hidden="true">{RULE_EQ}</div>
         <section>
           <p class="kicker">SECTION 01</p>
+          <h2>WHAT YOU STOP BUILDING<span>.</span></h2>
+          <p class="lead">
+            Hand-rolled offline sync means building a durable retry queue, a
+            conflict surface, an authorization check on every sync path, a
+            bootstrap pipeline, and an upgrade story. Syncular ships those as
+            protocol behavior. You write a SQL schema,
+            one <a href="/concepts-scopes/">resolveScopes(actor)</a> function,
+            and your app.
+          </p>
+          <div class="receipt"><pre>YOU WRITE ................ migrations · resolveScopes(actor) · your app
+SYNCULAR RUNS ............ outbox replay · conflict records · bootstrap
+                           realtime deltas · upgrade resets · pruning + GC</pre></div>
+        </section>
+
+        <div class="rule" aria-hidden="true">{RULE_DASH}</div>
+        <section>
+          <p class="kicker">SECTION 02</p>
           <h2>ONE ENGINE, YOUR LANGUAGE<span>.</span></h2>
           <p class="lead">
-            The same flow everywhere — create a client, subscribe to a scope,
+            The same flow everywhere: create a client, subscribe to a scope,
             write locally, sync. Web clients run the TypeScript core; everything
             else runs the Rust core. Both implement one written protocol and
             pass the same conformance suite. Typegen carries that parity into
@@ -159,15 +176,14 @@ CONFORMANCE SCENARIOS ...................... <span class="v">{CONFORMANCE_SCENAR
 
         <div class="rule" aria-hidden="true">{RULE_DASH}</div>
         <section>
-          <p class="kicker">SECTION 02</p>
+          <p class="kicker">SECTION 03</p>
           <h2>THE SERVER IS THE GRAVITY WELL<span>.</span></h2>
           <p class="lead">
-            Clients orbit with their own local SQLite — reads and writes stay
-            local and instant. Pushes fall toward the commit log, where every
+            Every client keeps its own local SQLite; reads and writes stay
+            local and instant. Pushes land in the commit log, where every
             change is ordered, validated against your scopes, and delivered back
-            to exactly the clients allowed to see it. Drift out of contact and
-            the <a href="/concepts-conflicts/">outbox</a> holds your writes;
-            re-enter range and they replay, in order, against the same log
+            to exactly the clients allowed to see it. Offline, the <a href="/concepts-subscriptions/">outbox</a> holds your writes;
+            on reconnect they replay, in order, against the same log
             everyone else sees.
           </p>
           <div class="diagram"><pre>   [ client / sqlite ]          [ client / sqlite ]
@@ -175,15 +191,15 @@ CONFORMANCE SCENARIOS ...................... <span class="v">{CONFORMANCE_SCENAR
               \                        /
                v                      v
    +----------------------------------------------+
-   |  <span class="hi">COMMIT LOG — ordered · validated · scoped</span>   |
+   |  <span class="hi">COMMIT LOG: ordered · validated · scoped</span>    |
    |  <span class="am" id="logticker">c41  c42  c43  c44  c45  c46  c47  &gt;&gt;</span>        |
    +----------------------------------------------+
                ^                      \
               /  pull                  v  push
    [ client / sqlite ]          [ client / sqlite ]</pre></div>
           <p class="lead">
-            The log is the spine of the protocol:
-            <a href="/concepts-commits/">commits, cursors &amp; idempotency</a> ·
+            The mechanics, page by page: <a href="/concepts-commits/">commits, cursors &amp; idempotency</a> ·
+            <a href="/concepts-subscriptions/">subscriptions &amp; the outbox</a> ·
             <a href="/concepts-bootstrap/">bootstrap &amp; segments</a> ·
             <a href="/concepts-realtime/">realtime</a>.
           </p>
@@ -191,43 +207,56 @@ CONFORMANCE SCENARIOS ...................... <span class="v">{CONFORMANCE_SCENAR
 
         <div class="rule" aria-hidden="true">{RULE_DASH}</div>
         <section>
-          <p class="kicker">SECTION 03</p>
+          <p class="kicker">SECTION 04</p>
           <h2>CAPABILITIES, TYPEWRITTEN<span>.</span></h2>
           <div class="feature-list">
             {FEATURES.map((f) => (
-              <p><a href={f.href}>{f.title}</a> <span>— {f.body}</span></p>
+              <p><a href={f.href}>{f.title}</a><span>: {f.body}</span></p>
             ))}
           </div>
         </section>
 
         <div class="rule" aria-hidden="true">{RULE_DASH}</div>
         <section>
-          <p class="kicker">SECTION 04</p>
-          <h2>TWO CORES. ONE PHYSICS<span>.</span></h2>
+          <p class="kicker">SECTION 05</p>
+          <h2>TWO CORES, ONE PROTOCOL<span>.</span></h2>
           <p class="lead">
-            One <a href="https://github.com/syncular/syncular/blob/main/docs/SPEC.md">written protocol</a>
-            is the law. Two independent cores obey it, held identical by golden
-            byte-level vectors and {CONFORMANCE_SCENARIOS} conformance scenarios run against both in
-            CI. Divergence is a bug you can point at, and a third
-            implementation joins by reading the
-            <a href="/guide-conformance/">spec</a>.
+            Both cores implement
+            one <a href="https://github.com/syncular/syncular/blob/main/docs/SPEC.md">written protocol</a>,
+            held identical by golden byte-level vectors
+            and {CONFORMANCE_SCENARIOS} conformance scenarios run against both
+            in CI. Divergence shows up as a failing vector, and a third
+            implementation joins by reading
+            the <a href="/guide-conformance/">spec</a>.
           </p>
           <div class="cores">
             <div class="core">
-              <p class="t">CORE A — TYPESCRIPT</p>
+              <p class="t">CORE A: TYPESCRIPT</p>
               <p class="d">Web (worker + OPFS sqlite-wasm) · React · 31.3 KB gzipped of its own code</p>
             </div>
             <div class="core">
-              <p class="t">CORE B — RUST <span style="font-weight:400">(C FFI)</span></p>
-              <p class="d">Swift · Kotlin · Flutter · React Native · Tauri · Rust — one JSON command surface</p>
+              <p class="t">CORE B: RUST <span style="font-weight:400">(C FFI)</span></p>
+              <p class="d">Swift · Kotlin · Flutter · React Native · Tauri · Rust, over one JSON command surface</p>
             </div>
           </div>
           <p class="lead">
-            Servers run on <a href="/guide-server/">Bun/Node via Hono</a> or
-            <a href="/server-workers/">Cloudflare Workers</a>, storage on
-            <a href="/server-storage/">SQLite, Postgres, or D1</a>, segments and
+            Servers run on <a href="/guide-server/">Bun/Node via Hono</a> or <a href="/server-workers/">Cloudflare Workers</a>, storage on <a href="/server-storage/">SQLite, Postgres, or D1</a>, segments and
             blobs on S3-compatible stores. Pruning, blob GC, events, and an
             admin surface are <a href="/server-operations/">part of the product</a>.
+          </p>
+        </section>
+
+        <div class="rule" aria-hidden="true">{RULE_DASH}</div>
+        <section>
+          <p class="kicker">SECTION 06</p>
+          <h2>BOUNDARIES<span>.</span></h2>
+          <p class="lead">
+            One server and one ordered log per deployment; there is no
+            peer-to-peer mode. Rows converge by version, and a concurrent edit
+            surfaces to <a href="/concepts-conflicts/">your app</a> as a
+            conflict; collaborative text uses <a href="/concepts-crdt/">CRDT columns</a>. Authorization runs in
+            your backend, next to your auth. Frame-by-frame multiplayer state
+            belongs in a dedicated netcode layer.
           </p>
         </section>
 

@@ -29,12 +29,12 @@ const client = new SyncClient({
 });
 await client.start();
 
-client.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['inbox'] } });
+client.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } });
 
 client.mutate([{
   table: 'todos',
   op: 'upsert',
-  values: { id: 't1', listId: 'inbox', title: 'Ship it', done: 0 },
+  values: { id: 't1', listId: 'groceries', title: 'Ship it', done: 0 },
 }]);
 await client.syncUntilIdle();
 
@@ -85,11 +85,11 @@ let client = try SyncularClient(
     )
 )
 
-try client.subscribe(id: "todos", table: "todos", scopes: ["list_id": ["inbox"]])
+try client.subscribe(id: "todos", table: "todos", scopes: ["list_id": ["groceries"]])
 
 try client.mutate([.object([
     "op": "upsert", "table": "todos",
-    "values": .object(["id": "t1", "list_id": "inbox", "title": "Ship it"]),
+    "values": .object(["id": "t1", "list_id": "groceries", "title": "Ship it"]),
 ])])
 let outcome = try client.sync()
 
@@ -114,12 +114,12 @@ val client = SyncularClient.create(
     ),
 )
 
-client.subscribe(id = "todos", table = "todos", scopes = mapOf("list_id" to listOf("inbox")))
+client.subscribe(id = "todos", table = "todos", scopes = mapOf("list_id" to listOf("groceries")))
 
 client.mutate(listOf(JsonValue.obj(
     "op" to JsonValue.of("upsert"), "table" to JsonValue.of("todos"),
     "values" to JsonValue.obj("id" to JsonValue.of("t1"),
-        "list_id" to JsonValue.of("inbox"), "title" to JsonValue.of("Ship it")),
+        "list_id" to JsonValue.of("groceries"), "title" to JsonValue.of("Ship it")),
 )))
 val outcome = client.sync()
 
@@ -144,11 +144,11 @@ final client = SyncularClient.create(
   ),
 );
 
-client.subscribe('todos', 'todos', scopes: {'list_id': ['inbox']});
+client.subscribe('todos', 'todos', scopes: {'list_id': ['groceries']});
 
 client.mutate([
   {'op': 'upsert', 'table': 'todos',
-   'values': {'id': 't1', 'list_id': 'inbox', 'title': 'Ship it'}},
+   'values': {'id': 't1', 'list_id': 'groceries', 'title': 'Ship it'}},
 ]);
 client.syncUntilIdle();
 
@@ -171,19 +171,19 @@ let mut client = SyncClient::open_path(
 
 client.subscribe(
     "todos".into(), "todos".into(),
-    vec![("list_id".into(), vec!["inbox".into()])], None)?;
+    vec![("list_id".into(), vec!["groceries".into()])], None)?;
 
 client.mutate(vec![Mutation::Upsert {
     table: "todos".into(),
     values: serde_json::json!({
-        "id": "t1", "list_id": "inbox", "title": "Ship it"
+        "id": "t1", "list_id": "groceries", "title": "Ship it"
     }).as_object().cloned().unwrap(),
     base_version: None,
 }])?;
 
 client.sync_until_idle(&mut transport, None);
 
-let params = list_todos::Params::new("inbox".into());
+let params = list_todos::Params::new("groceries".into());
 let rows: Vec<list_todos::Row> = list_todos::run(&client, &params)?;`,
   },
 ];
