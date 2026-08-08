@@ -9,6 +9,7 @@ import type { BlobStore } from './blob-store';
 import type { CrdtMergerRegistry } from './crdt-merger';
 import type { SyncularServerEvents } from './events';
 import type { LeaseStore } from './lease-store';
+import type { AnyReactionPlanner } from './reactions';
 import type { ServerSchema } from './schema';
 import type { SegmentStore } from './segment-store';
 import type {
@@ -22,6 +23,9 @@ import type { CommitValidator, ValidatorRegistry } from './validate';
 
 /** SSP2 body content type (§1.1). */
 export const SSP2_CONTENT_TYPE = 'application/vnd.syncular.sync.v2';
+
+/** Internal idempotency namespace. Ordinary SSP2 client IDs cannot use it. */
+export const REMOTE_COMMAND_CLIENT_ID_PREFIX = '["remote-command",';
 
 export interface ResolveScopesArgs {
   readonly partition: string;
@@ -119,6 +123,12 @@ export interface SyncServerConfig {
    * commit-log/idempotency append. A throw rolls back the complete commit.
    */
   readonly commitValidator?: CommitValidator;
+  /**
+   * Pure durable-reaction planner. Runs once after candidate validation and
+   * before commit-log/idempotency append. Its bounded records are enqueued in
+   * the same transaction; handlers run later through `ReactionRunner`.
+   */
+  readonly reactionPlanner?: AnyReactionPlanner;
   readonly resolveScopes: ResolveScopes;
   /**
    * §7.3 auth leases. Absent ⇒ the feature is off: no `LEASE` frame is

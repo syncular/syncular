@@ -74,6 +74,26 @@ CREATE TABLE IF NOT EXISTS sync_push_results(
   client_commit_id TEXT NOT NULL, result TEXT NOT NULL,
   PRIMARY KEY(partition, client_id, client_commit_id)
 );
+CREATE TABLE IF NOT EXISTS sync_reactions(
+  partition TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+  type TEXT NOT NULL, version INTEGER NOT NULL, payload TEXT NOT NULL,
+  source_client_id TEXT NOT NULL, source_client_commit_id TEXT NOT NULL,
+  source_commit_seq INTEGER NOT NULL, created_at_ms INTEGER NOT NULL,
+  available_at_ms INTEGER NOT NULL, status TEXT NOT NULL,
+  attempts INTEGER NOT NULL, max_attempts INTEGER NOT NULL,
+  lease_owner TEXT, lease_expires_at_ms INTEGER, completed_at_ms INTEGER,
+  last_failure TEXT,
+  PRIMARY KEY(partition, idempotency_key),
+  CHECK(status IN ('pending', 'leased', 'completed', 'dead-letter'))
+);
+CREATE INDEX IF NOT EXISTS sync_reactions_due
+  ON sync_reactions(partition, status, available_at_ms, created_at_ms, idempotency_key);
+CREATE INDEX IF NOT EXISTS sync_reactions_lease
+  ON sync_reactions(partition, status, lease_expires_at_ms);
+CREATE INDEX IF NOT EXISTS sync_reactions_completed
+  ON sync_reactions(partition, status, completed_at_ms, idempotency_key);
+CREATE INDEX IF NOT EXISTS sync_reactions_dead_letter
+  ON sync_reactions(partition, status, available_at_ms, idempotency_key);
 CREATE TABLE IF NOT EXISTS sync_clients(
   partition TEXT NOT NULL, client_id TEXT NOT NULL, actor_id TEXT NOT NULL,
   cursor INTEGER NOT NULL, subscriptions TEXT NOT NULL,

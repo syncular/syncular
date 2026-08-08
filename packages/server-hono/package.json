@@ -46,7 +46,7 @@
   ],
   "dependencies": {
     "@syncular/server": "workspace:*",
-    "hono": "^4.11.0"
+    "hono": "^4.12.34"
   },
   "devDependencies": {
     "@syncular/core": "workspace:*"

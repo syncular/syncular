@@ -10,10 +10,23 @@ and binding to where it lives.
 |---|---|
 | [Syncular protocol specification](https://github.com/syncular/syncular/blob/main/docs/SPEC.md) | Transport, data model, scopes, synchronization, storage-independent behavior, errors, and conformance |
 | [SYQL language specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md) | `.syql` lexical grammar, syntax, types, static semantics, SQLite profile, lowering, generated API contract, tooling, and conformance |
+| [Remote operation specification](https://github.com/syncular/syncular/blob/main/docs/REMOTE.md) | Registered authoritative queries, commands, operation value encoding, and live query watches |
 
 Start with the dedicated [SYQL language guide](/syql/) for examples and the
 authoring model. Use the language specification when implementing tooling or
 when exact normative behavior matters.
+
+## Task guides
+
+- [Server-side sync clients](/guide-server-clients/): run a persistent SQLite
+  replica in a Node or Bun service, CLI, or background worker.
+- [Remote server operations](/guide-remote-operations/): submit database-less
+  commits and call typed queries, commands, and live watches.
+- [Domain actions and event rows](/guide-domain-events/): store application
+  intent atomically with related domain writes.
+- [Durable server reactions](/server-reactions/): atomically plan application
+  work from accepted commits, then deliver it with leases, retries, stable
+  idempotency keys, and dead letters.
 
 ## Protocol specification by section
 
@@ -42,10 +55,10 @@ All published under the `@syncular/*` scope (plus the unscoped scaffolder):
 | Package | What it is | Source |
 |---|---|---|
 | `@syncular/core` | Protocol codecs, shared types, the golden-vector round-trip | [packages/core](https://github.com/syncular/syncular/tree/main/packages/core) |
-| `@syncular/server` | `handleSyncRequest` + storage/auth/segment/blob interfaces, realtime hub, pruning, signed URLs, `SyncularAdmin` | [packages/server](https://github.com/syncular/syncular/tree/main/packages/server) |
+| `@syncular/server` | `handleSyncRequest`, registered queries and commands, durable reaction planning and delivery, storage/auth/segment/blob interfaces, realtime hubs, pruning, signed URLs, `SyncularAdmin` | [packages/server](https://github.com/syncular/syncular/tree/main/packages/server) |
 | `@syncular/server-hono` | Thin Hono adapter mounting the §1.1 routes + the static admin page | [packages/server-hono](https://github.com/syncular/syncular/tree/main/packages/server-hono) |
 | `@syncular/server-workers` | Cloudflare Workers entry: fetch handler over D1 storage + R2 segments/blobs | [packages/server-workers](https://github.com/syncular/syncular/tree/main/packages/server-workers) |
-| `@syncular/client` | The TS client core on sqlite-wasm/OPFS, worker + transports, multi-tab | [packages/web-client](https://github.com/syncular/syncular/tree/main/packages/web-client) |
+| `@syncular/client` | The TS replica client plus database-less `SyncRemoteClient`, native/browser database adapters, worker transports, and multi-tab support | [packages/web-client](https://github.com/syncular/syncular/tree/main/packages/web-client) |
 | `@syncular/react` | React bindings: `SyncProvider` + hooks over fine-grained invalidation | [packages/react](https://github.com/syncular/syncular/tree/main/packages/react) |
 | `@syncular/crypto` | Client-side E2EE primitives (symmetric + asymmetric); see [Encryption](/concepts-encryption/) | [packages/crypto](https://github.com/syncular/syncular/tree/main/packages/crypto) |
 | `@syncular/crdt-yjs` | The Yjs `crdt`-column merger (server) + `YjsColumn` client helper; see [CRDT columns](/concepts-crdt/) | [packages/crdt-yjs](https://github.com/syncular/syncular/tree/main/packages/crdt-yjs) |
@@ -112,3 +125,5 @@ Each operational contract lives next to the code that enforces it:
 
 - [Quickstart](/quickstart/): the whole shape end to end in five minutes.
 - [Protocol & conformance](/guide-conformance/): how the spec is enforced across cores.
+- [Server-side sync clients](/guide-server-clients/): persistent SQLite replicas in Node and Bun processes.
+- [Remote server operations](/guide-remote-operations/): database-less commits, typed authoritative queries, commands, and watches.

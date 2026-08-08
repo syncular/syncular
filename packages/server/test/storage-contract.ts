@@ -16,6 +16,7 @@ import { encodeRow, type RowColumn } from '@syncular/core';
 import {
   type ClientRecord,
   compileSchema,
+  type NewReaction,
   type ServerSchema,
   type ServerStorage,
   StorageQueryError,
@@ -28,6 +29,23 @@ const NOW = 1_750_000_000_000;
 
 function bytes(...values: number[]): Uint8Array {
   return new Uint8Array(values);
+}
+
+function reaction(
+  sourceCommitSeq: number,
+  idempotencyKey = '["c1","commit-1","email"]',
+): NewReaction {
+  return {
+    idempotencyKey,
+    type: 'email.send',
+    version: 1,
+    payload: { messageId: 'message-1' },
+    sourceClientId: 'c1',
+    sourceClientCommitId: 'commit-1',
+    sourceCommitSeq,
+    createdAtMs: NOW,
+    maxAttempts: 3,
+  };
 }
 
 /**
@@ -387,6 +405,292 @@ export function runStorageContract(
       expect(
         await storage.getPushResult(PARTITION, 'c1', 'first-writer'),
       ).toEqual(first);
+    });
+
+    test('reaction enqueue commits and rolls back with the source transaction', async () => {
+      const storage = await make();
+      const committed = await storage.begin(PARTITION);
+      expect(committed.enqueueReactions).toBeDefined();
+      const commitSeq = await committed.appendCommit({
+        clientId: 'c1',
+        clientCommitId: 'commit-1',
+        actorId: 'a1',
+        createdAtMs: NOW,
+        changes: [],
+      });
+      await committed.enqueueReactions?.([reaction(commitSeq)]);
+      await committed.commit();
+      expect(
+        await storage.getReaction?.(PARTITION, '["c1","commit-1","email"]'),
+      ).toMatchObject({ status: 'pending', sourceCommitSeq: 1, attempts: 0 });
+      expect(
+        await storage.listReactions?.(PARTITION, {
+          statuses: ['pending'],
+          types: ['email.send'],
+          limit: 10,
+        }),
+      ).toHaveLength(1);
+
+      const rolledBack = await storage.begin(PARTITION);
+      const rolledBackSeq = await rolledBack.appendCommit({
+        clientId: 'c1',
+        clientCommitId: 'commit-2',
+        actorId: 'a1',
+        createdAtMs: NOW + 1,
+        changes: [],
+      });
+      await rolledBack.enqueueReactions?.([
+        reaction(rolledBackSeq, '["c1","commit-2","email"]'),
+      ]);
+      await rolledBack.rollback();
+      expect(
+        await storage.getReaction?.(PARTITION, '["c1","commit-2","email"]'),
+      ).toBeUndefined();
+      expect(await storage.getMaxCommitSeq(PARTITION)).toBe(1);
+    });
+
+    test('concurrent claimers lease one reaction to one worker', async () => {
+      const storage = await make();
+      const tx = await storage.begin(PARTITION);
+      await tx.enqueueReactions?.([reaction(1)]);
+      await tx.commit();
+      const [left, right] = await Promise.all([
+        storage.claimReactions?.(PARTITION, {
+          leaseOwner: 'lease-1',
+          types: ['email.send'],
+          nowMs: NOW,
+          leaseDurationMs: 100,
+          limit: 1,
+        }),
+        storage.claimReactions?.(PARTITION, {
+          leaseOwner: 'lease-2',
+          types: ['email.send'],
+          nowMs: NOW,
+          leaseDurationMs: 100,
+          limit: 1,
+        }),
+      ]);
+      expect((left?.length ?? 0) + (right?.length ?? 0)).toBe(1);
+      const claimed = [...(left ?? []), ...(right ?? [])][0];
+      expect(claimed?.status).toBe('leased');
+      expect(claimed?.attempts).toBe(1);
+    });
+
+    test('expired leases are reclaimed and stale owners cannot acknowledge', async () => {
+      const storage = await make();
+      const tx = await storage.begin(PARTITION);
+      await tx.enqueueReactions?.([reaction(1)]);
+      await tx.commit();
+      const first = await storage.claimReactions?.(PARTITION, {
+        leaseOwner: 'lease-1',
+        types: ['email.send'],
+        nowMs: NOW,
+        leaseDurationMs: 100,
+        limit: 1,
+      });
+      expect(first).toHaveLength(1);
+      expect(
+        await storage.extendReactionLease?.(
+          PARTITION,
+          reaction(1).idempotencyKey,
+          'lease-1',
+          NOW + 200,
+        ),
+      ).toBe(true);
+      expect(
+        await storage.claimReactions?.(PARTITION, {
+          leaseOwner: 'lease-2',
+          types: ['email.send'],
+          nowMs: NOW + 199,
+          leaseDurationMs: 100,
+          limit: 1,
+        }),
+      ).toHaveLength(0);
+      const reclaimed = await storage.claimReactions?.(PARTITION, {
+        leaseOwner: 'lease-2',
+        types: ['email.send'],
+        nowMs: NOW + 200,
+        leaseDurationMs: 100,
+        limit: 1,
+      });
+      expect(reclaimed?.[0]).toMatchObject({
+        leaseOwner: 'lease-2',
+        attempts: 2,
+      });
+      expect(
+        await storage.completeReaction?.(
+          PARTITION,
+          reaction(1).idempotencyKey,
+          'lease-1',
+          NOW + 201,
+        ),
+      ).toBe(false);
+      expect(
+        await storage.completeReaction?.(
+          PARTITION,
+          reaction(1).idempotencyKey,
+          'lease-2',
+          NOW + 201,
+        ),
+      ).toBe(true);
+    });
+
+    test('retry, dead-letter, and manual retry state round-trip', async () => {
+      const storage = await make();
+      const tx = await storage.begin(PARTITION);
+      await tx.enqueueReactions?.([reaction(1)]);
+      await tx.commit();
+      await storage.claimReactions?.(PARTITION, {
+        leaseOwner: 'lease-1',
+        types: ['email.send'],
+        nowMs: NOW,
+        leaseDurationMs: 100,
+        limit: 1,
+      });
+      expect(
+        await storage.failReaction?.(PARTITION, reaction(1).idempotencyKey, {
+          leaseOwner: 'lease-1',
+          failure: { code: 'email.unavailable', atMs: NOW + 1 },
+          retryAtMs: NOW + 50,
+        }),
+      ).toBe(true);
+      expect(
+        await storage.getReaction?.(PARTITION, reaction(1).idempotencyKey),
+      ).toMatchObject({ status: 'pending', availableAtMs: NOW + 50 });
+      await storage.claimReactions?.(PARTITION, {
+        leaseOwner: 'lease-1',
+        types: ['email.send'],
+        nowMs: NOW + 50,
+        leaseDurationMs: 100,
+        limit: 1,
+      });
+      expect(
+        await storage.failReaction?.(PARTITION, reaction(1).idempotencyKey, {
+          leaseOwner: 'lease-1',
+          failure: { code: 'email.invalid', atMs: NOW + 51 },
+        }),
+      ).toBe(true);
+      expect(
+        await storage.getReaction?.(PARTITION, reaction(1).idempotencyKey),
+      ).toMatchObject({ status: 'dead-letter', attempts: 2 });
+      expect(
+        await storage.retryReaction?.(
+          PARTITION,
+          reaction(1).idempotencyKey,
+          NOW + 60,
+        ),
+      ).toBe(true);
+      expect(
+        await storage.getReaction?.(PARTITION, reaction(1).idempotencyKey),
+      ).toMatchObject({ status: 'pending', attempts: 0 });
+    });
+
+    test('reaction pruning is bounded and deletes only aged terminal rows', async () => {
+      const storage = await make();
+      const tx = await storage.begin(PARTITION);
+      await tx.enqueueReactions?.([
+        { ...reaction(0, 'pending'), type: 'reaction.pending' },
+        { ...reaction(0, 'leased'), type: 'reaction.leased' },
+        { ...reaction(0, 'a-completed-old'), type: 'reaction.completed-old' },
+        {
+          ...reaction(0, 'completed-boundary'),
+          type: 'reaction.completed-boundary',
+        },
+        { ...reaction(0, 'b-dead-old'), type: 'reaction.dead-old' },
+        {
+          ...reaction(0, 'dead-boundary'),
+          type: 'reaction.dead-boundary',
+        },
+      ]);
+      await tx.commit();
+      const claim = async (type: string, leaseOwner: string) => {
+        const claimed = await storage.claimReactions?.(PARTITION, {
+          leaseOwner,
+          types: [type],
+          nowMs: NOW,
+          leaseDurationMs: 100,
+          limit: 1,
+        });
+        expect(claimed).toHaveLength(1);
+      };
+      await claim('reaction.leased', 'leased-owner');
+      await claim('reaction.completed-old', 'completed-old-owner');
+      expect(
+        await storage.completeReaction?.(
+          PARTITION,
+          'a-completed-old',
+          'completed-old-owner',
+          NOW + 10,
+        ),
+      ).toBe(true);
+      await claim('reaction.completed-boundary', 'completed-boundary-owner');
+      expect(
+        await storage.completeReaction?.(
+          PARTITION,
+          'completed-boundary',
+          'completed-boundary-owner',
+          NOW + 200,
+        ),
+      ).toBe(true);
+      await claim('reaction.dead-old', 'dead-old-owner');
+      expect(
+        await storage.failReaction?.(PARTITION, 'b-dead-old', {
+          leaseOwner: 'dead-old-owner',
+          failure: { code: 'reaction.dead_old', atMs: NOW + 20 },
+        }),
+      ).toBe(true);
+      await claim('reaction.dead-boundary', 'dead-boundary-owner');
+      expect(
+        await storage.failReaction?.(PARTITION, 'dead-boundary', {
+          leaseOwner: 'dead-boundary-owner',
+          failure: { code: 'reaction.dead_boundary', atMs: NOW + 200 },
+        }),
+      ).toBe(true);
+
+      expect(
+        await storage.pruneReactions?.(PARTITION, {
+          completedBeforeMs: NOW + 200,
+          deadLetterBeforeMs: NOW + 200,
+          limit: 1,
+        }),
+      ).toEqual({ completed: 1, deadLetter: 0 });
+      expect(
+        await storage.pruneReactions?.(PARTITION, {
+          completedBeforeMs: NOW + 200,
+          deadLetterBeforeMs: NOW + 200,
+          limit: 10,
+        }),
+      ).toEqual({ completed: 0, deadLetter: 1 });
+      expect(await storage.getReaction?.(PARTITION, 'pending')).toMatchObject({
+        status: 'pending',
+      });
+      expect(await storage.getReaction?.(PARTITION, 'leased')).toMatchObject({
+        status: 'leased',
+      });
+      expect(
+        await storage.getReaction?.(PARTITION, 'completed-boundary'),
+      ).toMatchObject({ status: 'completed' });
+      expect(
+        await storage.getReaction?.(PARTITION, 'dead-boundary'),
+      ).toMatchObject({ status: 'dead-letter' });
+    });
+
+    test('commit-log pruning never deletes pending reactions', async () => {
+      const storage = await make();
+      const tx = await storage.begin(PARTITION);
+      const commitSeq = await tx.appendCommit({
+        clientId: 'c1',
+        clientCommitId: 'commit-1',
+        actorId: 'a1',
+        createdAtMs: NOW,
+        changes: [],
+      });
+      await tx.enqueueReactions?.([reaction(commitSeq)]);
+      await tx.commit();
+      expect(await storage.pruneCommitsThrough(PARTITION, commitSeq)).toBe(1);
+      expect(
+        await storage.getReaction?.(PARTITION, reaction(1).idempotencyKey),
+      ).toMatchObject({ status: 'pending', sourceCommitSeq: 1 });
     });
 
     test('conflict push-result bytes round-trip', async () => {

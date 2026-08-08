@@ -52,6 +52,13 @@ function harness() {
     storage,
     segments,
     resolveScopes: () => ({ project_id: ['p1'] }),
+    reactionPlanner: ({ operations }) =>
+      operations.map((operation) => ({
+        key: `task:${operation.rowId}`,
+        type: 'email.send',
+        version: 1,
+        payload: { taskId: operation.rowId },
+      })),
     events: ring,
   };
   const sync = createSyncularHono({
@@ -172,6 +179,25 @@ describe('JSON endpoints mirror the read surface', () => {
       commits: { commitSeq: number; tables: string[] }[];
     };
     expect(body.commits[0]).toMatchObject({ commitSeq: 1, tables: ['tasks'] });
+  });
+
+  test('GET /admin/reactions', async () => {
+    const { app, seed, auth } = harness();
+    await seed();
+    const res = await app.request(
+      '/admin/reactions?status=pending&type=email.send',
+      auth,
+    );
+    const body = (await res.json()) as {
+      reactions: { status: string; type: string; sourceCommitSeq: number }[];
+    };
+    expect(body.reactions).toEqual([
+      expect.objectContaining({
+        status: 'pending',
+        type: 'email.send',
+        sourceCommitSeq: 1,
+      }),
+    ]);
   });
 
   test('GET /admin/rows/:table/:rowId', async () => {

@@ -143,8 +143,9 @@ init/create, raw command round-trip, mutate → readRows (the optimistic row wit
 `version == -1`), the query fast path, `{error}` surfacing as `SyncularError`,
 the offline outbox (`pendingCommitIds`), a network command reporting
 `transport.unavailable` on the lean core (by design `sync()` returns
-`{ok:false, errorCode}` rather than erroring out-of-band), the non-blocking
-event poll, `close()` idempotence, and a `pause()`/`resume()` cycle.
+`{ok:false, errorCode}` rather than erroring out-of-band), `close()`
+idempotence, and a `pause()`/`resume()` cycle. The Rust FFI suite covers empty
+event-queue polling directly.
 
 The tests use **Swift Testing** (`import Testing`) — the framework that ships
 with the Swift toolchain, so `swift test` runs on a Command-Line-Tools-only mac

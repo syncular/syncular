@@ -9,6 +9,8 @@ import { SSP2_CONTENT_TYPE } from './content-type';
 import { ClientSyncError } from './errors';
 import type {
   RealtimeConnector,
+  RemoteOperationTransport,
+  RemoteOperationRealtimeConnector,
   SegmentDownloader,
   SyncTransport,
 } from './transport';
@@ -55,6 +57,78 @@ export function httpSyncTransport(
     if (!response.ok) await throwHttpError(response);
     return new Uint8Array(await response.arrayBuffer());
   };
+}
+
+/** POST one registered authoritative operation to `<mount>/operations`. */
+export function httpRemoteOperationTransport(
+  operationsUrl: string,
+  options?: HttpTransportOptions,
+): RemoteOperationTransport {
+  const doFetch = options?.fetch ?? fetch;
+  return async (request) => {
+    const response = await doFetch(operationsUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/vnd.syncular.operations.v1+json',
+        ...options?.headers,
+      },
+      body: request.slice().buffer as ArrayBuffer,
+    });
+    if (!response.ok) await throwHttpError(response);
+    return new Uint8Array(await response.arrayBuffer());
+  };
+}
+
+/** WebSocket connector for registered query snapshots. */
+export function webSocketRemoteOperationConnector(
+  realtimeUrl: string,
+): RemoteOperationRealtimeConnector {
+  return (handlers) =>
+    new Promise((resolve, reject) => {
+      const socket = new WebSocket(realtimeUrl);
+      let opened = false;
+      socket.binaryType = 'arraybuffer';
+      socket.onopen = () => {
+        opened = true;
+        resolve({
+          send: (bytes) => socket.send(bytes.slice().buffer as ArrayBuffer),
+          close: () => socket.close(),
+        });
+      };
+      socket.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          handlers.onMessage(new Uint8Array(event.data));
+        }
+      };
+      socket.onerror = () => {
+        if (!opened) {
+          reject(
+            new ClientSyncError(
+              'sync.transport_failed',
+              'remote operation realtime socket failed to connect',
+              true,
+            ),
+          );
+        }
+        try {
+          socket.close();
+        } catch {
+          handlers.onClose?.();
+        }
+      };
+      socket.onclose = () => {
+        if (!opened) {
+          reject(
+            new ClientSyncError(
+              'sync.transport_failed',
+              'remote operation realtime socket closed while connecting',
+              true,
+            ),
+          );
+        }
+        handlers.onClose?.();
+      };
+    });
 }
 
 /**
@@ -224,8 +298,10 @@ export function webSocketRealtimeConnector(
   return (handlers) =>
     new Promise((resolve, reject) => {
       const socket = new WebSocket(realtimeUrl);
+      let opened = false;
       socket.binaryType = 'arraybuffer';
       socket.onopen = () => {
+        opened = true;
         resolve({
           send: (text) => socket.send(text),
           sendBytes: (bytes) => {
@@ -239,15 +315,31 @@ export function webSocketRealtimeConnector(
         else handlers.onBinary(new Uint8Array(event.data as ArrayBuffer));
       };
       socket.onerror = () => {
-        reject(
-          new ClientSyncError(
-            'sync.transport_failed',
-            'realtime socket failed to connect',
-            true,
-          ),
-        );
+        if (!opened) {
+          reject(
+            new ClientSyncError(
+              'sync.transport_failed',
+              'realtime socket failed to connect',
+              true,
+            ),
+          );
+        }
+        try {
+          socket.close();
+        } catch {
+          handlers.onClose?.();
+        }
       };
       socket.onclose = () => {
+        if (!opened) {
+          reject(
+            new ClientSyncError(
+              'sync.transport_failed',
+              'realtime socket closed while connecting',
+              true,
+            ),
+          );
+        }
         handlers.onClose?.();
       };
     });

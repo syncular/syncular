@@ -8,6 +8,17 @@ pruning (§4.6), and signed-URL token issuance (§5.4). `SPEC.md` is
 normative for everything on the wire; this README covers the **host
 surface** — in particular the ops seam and the pruning runbook.
 
+Application processes can expose generated named queries and transactional
+commands through `RemoteOperationRegistry`. Queries stay in the server
+registry, command mutations use the ordinary serialized push path, and
+`RemoteOperationWatchHub` provides live replacement snapshots. The protocol is
+specified in [`docs/REMOTE.md`](../../docs/REMOTE.md) and the practical setup is
+in the [remote operations guide](https://syncular.dev/guide-remote-operations/).
+
+Application intent belongs in immutable domain event rows written in the same
+commit as the state change. `SyncularServerEvents` below remains operational
+telemetry. See the [domain event guide](https://syncular.dev/guide-domain-events/).
+
 ## Deployment matrix (runtime adapters)
 
 The server core is **runtime-neutral TypeScript** — `handleSyncRequest` and
@@ -263,6 +274,118 @@ must check for it and fail closed. See the public
 for a user-scoped key-grant table revoked through a Workspace index and for the
 atomic reverse-index/queue fallback required by ordered or derived lookups.
 
+## Durable server reactions
+
+`reactionPlanner` turns an accepted candidate commit into bounded work records.
+It runs after operation and whole-commit validation, inside the authoritative
+push transaction. It may use the candidate-state reader and must perform no
+external side effects. A rejected or replayed commit does not run it.
+
+```ts
+import {
+  ReactionRunner,
+  type ReactionPlanner,
+  type SyncServerConfig,
+} from '@syncular/server';
+
+type AppReactions = {
+  'invoice.email': { invoiceId: string };
+};
+
+const reactionPlanner: ReactionPlanner<AppReactions> = ({ operations }) =>
+  operations.flatMap((operation) =>
+    operation.table === 'invoice_events' &&
+    operation.row?.kind === 'invoice_finalized' &&
+    typeof operation.row.invoice_id === 'string'
+      ? [{
+          key: `invoice:${operation.row.invoice_id}`,
+          type: 'invoice.email',
+          version: 1,
+          payload: { invoiceId: operation.row.invoice_id },
+          maxAttempts: 8,
+        }]
+      : [],
+  );
+
+const config: SyncServerConfig = {
+  schema, storage, segments, resolveScopes, reactionPlanner,
+};
+```
+
+App rows, commit metadata, reaction rows, and the push idempotency result land
+in one transaction. The handler idempotency key is derived from the source
+`partition`, `clientId`, `clientCommitId`, and planner `key`. Reaction rows use
+their own partition-scoped table and survive `pruneCommitLog`.
+
+Drive delivery from a host scheduler or queue wake:
+
+```ts
+const runner = new ReactionRunner<AppReactions>({
+  storage,
+  partition: 'main',
+  workerId: 'invoice-worker-1',
+  handlers: {
+    'invoice.email': async ({ payload, idempotencyKey, extendLease }) => {
+      await extendLease();
+      await emailProvider.send({
+        invoiceId: payload.invoiceId,
+        idempotencyKey,
+      });
+    },
+  },
+});
+
+await runner.runOnce();
+```
+
+Claims and acknowledgements compare a lease owner. Expired leases can be
+claimed by another worker, and long handlers can call `extendLease()`. Ordinary
+throws and `RetryableReactionError` retry with bounded exponential backoff.
+`PermanentReactionError` and exhausted retry limits enter `dead-letter`.
+`retryDeadLetterReaction` resets one row for an explicit operator retry.
+Each `runOnce()` uses a fresh lease token and rechecks ownership before
+starting every handler in a claimed batch.
+
+Schedule terminal retention separately from commit-log pruning:
+
+```ts
+import { pruneReactions } from '@syncular/server';
+
+let result;
+do {
+  result = await pruneReactions({
+    storage,
+    partition: 'main',
+    nowMs: Date.now(),
+    events,
+  });
+} while (result.mayHaveMore);
+```
+
+Defaults retain completed rows for 30 days, dead-lettered rows for 90 days,
+and remove at most 1,000 rows per pass. Override them with
+`retention: { completedRetentionMs, deadLetterRetentionMs, batchSize }`.
+Only terminal rows strictly older than their cutoff are eligible. Pending and
+leased work is preserved, including expired leases. Cleanup and manual retry
+serialize at storage, so one transition wins a race. Each pass emits
+`reaction.prune_completed` with both cutoffs, both removal counts, the limit,
+and `mayHaveMore`.
+
+Delivery is at least once. A crash after the handler's external call and before
+acknowledgement can run that call again. Handlers receive the same stable
+`idempotencyKey` on every attempt and should pass it to external providers.
+Syncular does not claim exactly-once external effects.
+
+Planned payloads are plain JSON, versioned, limited to 64 KiB and 16 levels,
+with at most 100 reactions per commit. Failure details are plain JSON limited
+to 8 KiB. The planner API cannot enforce purity in JavaScript; running an
+external effect from the planner violates the transaction contract.
+
+SQLite and PostgreSQL use their existing push transactions. D1 appends the
+reaction writes to the same atomic batch as the source commit and retains its
+mandatory per-partition Durable Object coordination for pushes. D1 claims use
+one `UPDATE ... RETURNING` statement, so there is no claim read/write gap.
+
 ## Structured events (the ops seam)
 
 One optional interface, `SyncularServerEvents`, carries every
@@ -310,6 +433,12 @@ context). The demo server wires it behind `SYNCULAR_DEMO_EVENTS=1`.
 | `push.applied` | A `PUSH_COMMIT` applied, or replayed from the idempotency cache (§2.3) | `clientId`, `clientCommitId`, `operations`, `commitSeq?`, `replay` |
 | `push.rejected` | A commit rejected (§6.3) | `clientId`, `clientCommitId`, `operations`, `code` (§10.2), `opIndex` |
 | `push.conflicted` | A commit terminated by a version conflict (§6.2) | `clientId`, `clientCommitId`, `operations`, `opIndex` |
+| `reaction.queued` | A planned reaction committed with its source push | `clientId`, `clientCommitId`, `commitSeq`, `idempotencyKey`, `reactionType`, `version` |
+| `reaction.started` | A worker claimed and began one attempt | `workerId`, `idempotencyKey`, `reactionType`, `version`, `attempt` |
+| `reaction.retried` | A retryable attempt failed and was rescheduled | started fields plus `nextAttemptAtMs`, `errorCode` |
+| `reaction.completed` | A handler finished and its owner acknowledged | started fields |
+| `reaction.dead_lettered` | A permanent or exhausted failure was recorded | started fields plus `errorCode` |
+| `reaction.prune_completed` | One bounded terminal-reaction retention pass finished | `completedBeforeMs`, `deadLetterBeforeMs`, `limit`, `removedCompleted`, `removedDeadLetter`, `mayHaveMore` |
 | `pull.served` | Once per served pull half, after all sections streamed | `clientId`, `subscriptions[]`: `{id, table, status, mode` (`bootstrap` \| `incremental` \| `none`)`, fromCursor, nextCursor, commits, changes, segments[]}`; each segment: `{mediaType` (`rows` \| `sqlite`)`, delivery` (`inline` \| `ref`)`, origin` (`built` \| `reused`)`, bytes, rows}` |
 | `segment.downloaded` | Every direct segment download (§5.5), success or failure | `segmentId`, `outcome` (`ok` \| `error`), `errorCode?`, `mediaType?`, `bytes?`, `durationMs` |
 | `blob.swept` | Every `sweepOrphanBlobs` pass (§5.9.2 orphan GC) | `partition`, `swept` (deleted count), `referenced` (keep-set size), `graceMs` |
@@ -325,10 +454,9 @@ exists) `partition` / `actorId`.
 
 ## Admin / console surface (`SyncularAdmin`)
 
-The operator-facing read surface over the server core. It is a module in
-this package — **not** a separate UI package — and adds **zero** wire
-protocol: SPEC.md says nothing about it, because authorization for these
-reads is entirely the host's. It delivers the 80% operator value (who's
+The operator-facing read surface over the server core lives in this package
+and adds **zero** wire protocol. Authorization for these reads is entirely the
+host's. It delivers the 80% operator value (who's
 connected, what's flowing,
 horizon health, the event tail) as a handful of read-only, partition-scoped,
 JSON-able queries.
@@ -367,6 +495,7 @@ by design:
 | `listClients(partition)` | Known clients: `clientId`, `actorId`, `cursor`, `lag` (commits not yet pulled: `maxCommitSeq − max(cursor, 0)`), `updatedAtMs`, `subscriptions[]`, and an `active` flag (cursor touched within the §4.6 active window). |
 | `clientDetail(partition, clientId, {eventLimit?})` | One client's drill-down: `{exists, client?, lease?, events}` — the record (with lag), its §7.3 lease when a lease store is wired, and its slice of the event tail. Answers "why is this client stale" in one read. |
 | `listCommits(partition, {afterSeq?, limit?, table?})` | Commit-log **metadata** (never payloads), newest first: `commitSeq`, `clientId`, `clientCommitId`, `actorId`, `createdAtMs`, `changeCount`, `tables[]`. |
+| `listReactions(partition, {statuses?, types?, limit?})` | Durable reaction lifecycle rows, newest first, including source commit, attempts, lease, completion, and bounded failure information. |
 | `inspectRow(partition, table, rowId)` | `{exists, serverVersion?, scopes?}` — current row version + stored scopes, payload **not** decoded. |
 | `scopeActivity(partition, {variable, value}, {limit?})` | Recent commits touching one scope key, via the §3.1 change-scope index (never a log scan). |
 | `horizonStatus(partition)` | `{maxCommitSeq, horizonSeq, retainedCommits, activeCursorFloor, recommendedHorizonSeq, recommendation}` — the horizon a prune pass would reach now (§4.6) + a coarse `up-to-date` / `prune-recommended`. |
@@ -413,6 +542,7 @@ app.route('/admin', routes);
 | `GET /clients` | `listClients` |
 | `GET /clients/:clientId?eventLimit` | `clientDetail` |
 | `GET /commits?afterSeq&limit&table` | `listCommits` |
+| `GET /reactions?status&type&limit` | `listReactions` |
 | `GET /rows/:table/:rowId` | `inspectRow` |
 | `GET /scope-activity?variable&value&limit` | `scopeActivity` |
 | `GET /horizon` | `horizonStatus` |

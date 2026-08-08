@@ -40,6 +40,10 @@
  * rather than a lock D1 does not expose.
  */
 import { decodeRow, type RowValue } from '@syncular/core';
+import {
+  bindAuthoritativePartition,
+  prepareAuthoritativeQuery,
+} from './authoritative-query';
 import { syncError } from './errors';
 import {
   commitWindowPageSql,
@@ -79,14 +83,24 @@ import {
   toStoredRow,
 } from './sqlite-dialect';
 import type {
+  AuthoritativeQueryRequest,
+  AuthoritativeQueryResult,
   ClientCursorInfo,
   ClientRecord,
   ClientSubscription,
   CommitMetadata,
   CommitMetadataQuery,
   CommitWindowQuery,
+  DurableJsonValue,
   IndexRowScanQuery,
   NewCommit,
+  NewReaction,
+  PrunedReactionCounts,
+  ReactionClaimQuery,
+  ReactionFailure,
+  ReactionFailureUpdate,
+  ReactionListQuery,
+  ReactionPruneQuery,
   RowScanQuery,
   ScopeActivityQuery,
   ScopeCommitActivity,
@@ -94,6 +108,7 @@ import type {
   StorageTransaction,
   StoredCommit,
   StoredPushResult,
+  StoredReaction,
   StoredRow,
 } from './storage';
 import { isD1ConstraintError, StorageConstraintError } from './storage-errors';
@@ -120,6 +135,52 @@ export interface D1Database {
 interface BufferedStatement {
   readonly sql: string;
   readonly params: readonly unknown[];
+}
+
+interface D1ReactionRecord {
+  idempotency_key: string;
+  type: string;
+  version: number;
+  payload: string;
+  source_client_id: string;
+  source_client_commit_id: string;
+  source_commit_seq: number;
+  created_at_ms: number;
+  available_at_ms: number;
+  status: StoredReaction['status'];
+  attempts: number;
+  max_attempts: number;
+  lease_owner: string | null;
+  lease_expires_at_ms: number | null;
+  completed_at_ms: number | null;
+  last_failure: string | null;
+}
+
+function toStoredReaction(record: D1ReactionRecord): StoredReaction {
+  return {
+    idempotencyKey: record.idempotency_key,
+    type: record.type,
+    version: record.version,
+    payload: JSON.parse(record.payload) as DurableJsonValue,
+    sourceClientId: record.source_client_id,
+    sourceClientCommitId: record.source_client_commit_id,
+    sourceCommitSeq: record.source_commit_seq,
+    createdAtMs: record.created_at_ms,
+    maxAttempts: record.max_attempts,
+    status: record.status,
+    attempts: record.attempts,
+    availableAtMs: record.available_at_ms,
+    ...(record.lease_owner !== null ? { leaseOwner: record.lease_owner } : {}),
+    ...(record.lease_expires_at_ms !== null
+      ? { leaseExpiresAtMs: record.lease_expires_at_ms }
+      : {}),
+    ...(record.completed_at_ms !== null
+      ? { completedAtMs: record.completed_at_ms }
+      : {}),
+    ...(record.last_failure !== null
+      ? { lastFailure: JSON.parse(record.last_failure) as ReactionFailure }
+      : {}),
+  };
 }
 
 function relationalValuesEqual(left: RowValue, right: RowValue): boolean {
@@ -588,6 +649,32 @@ class D1Transaction implements StorageTransaction {
     );
   }
 
+  async enqueueReactions(reactions: readonly NewReaction[]): Promise<void> {
+    this.#assertOpen();
+    for (const reaction of reactions) {
+      this.#buffer_(
+        `INSERT INTO sync_reactions(
+           partition, idempotency_key, type, version, payload,
+           source_client_id, source_client_commit_id, source_commit_seq,
+           created_at_ms, available_at_ms, status, attempts, max_attempts
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,'pending',0,?)`,
+        [
+          this.#partition,
+          reaction.idempotencyKey,
+          reaction.type,
+          reaction.version,
+          JSON.stringify(reaction.payload),
+          reaction.sourceClientId,
+          reaction.sourceClientCommitId,
+          reaction.sourceCommitSeq,
+          reaction.createdAtMs,
+          reaction.createdAtMs,
+          reaction.maxAttempts,
+        ],
+      );
+    }
+  }
+
   async commit(): Promise<void> {
     this.#assertOpen();
     if (this.#buffer.length === 0) {
@@ -831,6 +918,61 @@ export class D1ServerStorage implements ServerStorage {
     return row?.max_commit_seq ?? 0;
   }
 
+  async queryAuthoritative(
+    partition: string,
+    query: AuthoritativeQueryRequest,
+  ): Promise<AuthoritativeQueryResult> {
+    if (this.#tables === undefined) {
+      throw new Error(
+        'ensureSchema(schema) must run before registered queries',
+      );
+    }
+    const prepared = bindAuthoritativePartition(
+      prepareAuthoritativeQuery(
+        query.sql,
+        query.params,
+        query.tables,
+        this.#tables,
+      ),
+      partition,
+    );
+    const results = await this.#db.batch([
+      this.#db.prepare(prepared.sql).bind(...prepared.params),
+      this.#db
+        .prepare('SELECT max_commit_seq FROM sync_partitions WHERE partition=?')
+        .bind(partition),
+    ]);
+    const rowsResult = results[0];
+    const cursorResult = results[1];
+    if (
+      typeof rowsResult !== 'object' ||
+      rowsResult === null ||
+      !('results' in rowsResult) ||
+      !Array.isArray(rowsResult.results) ||
+      typeof cursorResult !== 'object' ||
+      cursorResult === null ||
+      !('results' in cursorResult) ||
+      !Array.isArray(cursorResult.results)
+    ) {
+      throw new Error('D1 registered query returned an invalid batch result');
+    }
+    const cursor = cursorResult.results[0];
+    const maxCommitSeq =
+      typeof cursor === 'object' &&
+      cursor !== null &&
+      'max_commit_seq' in cursor &&
+      typeof cursor.max_commit_seq === 'number'
+        ? cursor.max_commit_seq
+        : 0;
+    return {
+      rows: rowsResult.results.filter(
+        (row): row is Readonly<Record<string, unknown>> =>
+          typeof row === 'object' && row !== null,
+      ),
+      maxCommitSeq,
+    };
+  }
+
   async getHorizonSeq(partition: string): Promise<number> {
     const row = await this.#db
       .prepare('SELECT horizon_seq FROM sync_partitions WHERE partition=?')
@@ -916,6 +1058,216 @@ export class D1ServerStorage implements ServerStorage {
         'persisted push result unreadable (§6.3)',
       );
     }
+  }
+
+  async claimReactions(
+    partition: string,
+    query: ReactionClaimQuery,
+  ): Promise<StoredReaction[]> {
+    if (query.types.length === 0 || query.limit <= 0) return [];
+    if (query.types.length + 7 > D1_MAX_BIND_PARAMS) {
+      throw new Error('D1 reaction claim exceeds the bound-parameter limit');
+    }
+    const typeParams = query.types.map(() => '?').join(',');
+    const { results } = await this.#db
+      .prepare(
+        `UPDATE sync_reactions
+            SET status='leased', attempts=attempts+1,
+                lease_owner=?, lease_expires_at_ms=?, completed_at_ms=NULL
+          WHERE (partition, idempotency_key) IN (
+            SELECT partition, idempotency_key
+              FROM sync_reactions
+             WHERE partition=? AND type IN (${typeParams})
+               AND ((status='pending' AND available_at_ms<=?)
+                 OR (status='leased' AND lease_expires_at_ms<=?))
+             ORDER BY CASE WHEN status='leased' THEN lease_expires_at_ms
+                           ELSE available_at_ms END,
+                      created_at_ms, idempotency_key
+             LIMIT ?
+          )
+        RETURNING *`,
+      )
+      .bind(
+        query.leaseOwner,
+        Math.min(Number.MAX_SAFE_INTEGER, query.nowMs + query.leaseDurationMs),
+        partition,
+        ...query.types,
+        query.nowMs,
+        query.nowMs,
+        query.limit,
+      )
+      .all<D1ReactionRecord>();
+    return results
+      .map(toStoredReaction)
+      .sort(
+        (a, b) =>
+          a.createdAtMs - b.createdAtMs ||
+          a.idempotencyKey.localeCompare(b.idempotencyKey),
+      );
+  }
+
+  async completeReaction(
+    partition: string,
+    idempotencyKey: string,
+    leaseOwner: string,
+    completedAtMs: number,
+  ): Promise<boolean> {
+    const record = await this.#db
+      .prepare(
+        `UPDATE sync_reactions
+            SET status='completed', completed_at_ms=?,
+                lease_owner=NULL, lease_expires_at_ms=NULL
+          WHERE partition=? AND idempotency_key=?
+            AND status='leased' AND lease_owner=?
+        RETURNING idempotency_key`,
+      )
+      .bind(completedAtMs, partition, idempotencyKey, leaseOwner)
+      .first<{ idempotency_key: string }>();
+    return record !== null;
+  }
+
+  async extendReactionLease(
+    partition: string,
+    idempotencyKey: string,
+    leaseOwner: string,
+    leaseExpiresAtMs: number,
+  ): Promise<boolean> {
+    const record = await this.#db
+      .prepare(
+        `UPDATE sync_reactions SET lease_expires_at_ms=?
+          WHERE partition=? AND idempotency_key=?
+            AND status='leased' AND lease_owner=?
+        RETURNING idempotency_key`,
+      )
+      .bind(leaseExpiresAtMs, partition, idempotencyKey, leaseOwner)
+      .first<{ idempotency_key: string }>();
+    return record !== null;
+  }
+
+  async failReaction(
+    partition: string,
+    idempotencyKey: string,
+    update: ReactionFailureUpdate,
+  ): Promise<boolean> {
+    const record = await this.#db
+      .prepare(
+        `UPDATE sync_reactions
+            SET status=?, available_at_ms=?, last_failure=?,
+                lease_owner=NULL, lease_expires_at_ms=NULL
+          WHERE partition=? AND idempotency_key=?
+            AND status='leased' AND lease_owner=?
+        RETURNING idempotency_key`,
+      )
+      .bind(
+        update.retryAtMs === undefined ? 'dead-letter' : 'pending',
+        update.retryAtMs ?? update.failure.atMs,
+        JSON.stringify(update.failure),
+        partition,
+        idempotencyKey,
+        update.leaseOwner,
+      )
+      .first<{ idempotency_key: string }>();
+    return record !== null;
+  }
+
+  async retryReaction(
+    partition: string,
+    idempotencyKey: string,
+    nowMs: number,
+  ): Promise<boolean> {
+    const record = await this.#db
+      .prepare(
+        `UPDATE sync_reactions
+            SET status='pending', attempts=0, available_at_ms=?,
+                last_failure=NULL, lease_owner=NULL, lease_expires_at_ms=NULL,
+                completed_at_ms=NULL
+          WHERE partition=? AND idempotency_key=? AND status='dead-letter'
+        RETURNING idempotency_key`,
+      )
+      .bind(nowMs, partition, idempotencyKey)
+      .first<{ idempotency_key: string }>();
+    return record !== null;
+  }
+
+  async getReaction(
+    partition: string,
+    idempotencyKey: string,
+  ): Promise<StoredReaction | undefined> {
+    const record = await this.#db
+      .prepare(
+        'SELECT * FROM sync_reactions WHERE partition=? AND idempotency_key=?',
+      )
+      .bind(partition, idempotencyKey)
+      .first<D1ReactionRecord>();
+    return record === null ? undefined : toStoredReaction(record);
+  }
+
+  async listReactions(
+    partition: string,
+    query: ReactionListQuery,
+  ): Promise<StoredReaction[]> {
+    const where = ['partition=?'];
+    const params: (string | number)[] = [partition];
+    if (query.statuses !== undefined && query.statuses.length > 0) {
+      where.push(`status IN (${query.statuses.map(() => '?').join(',')})`);
+      params.push(...query.statuses);
+    }
+    if (query.types !== undefined && query.types.length > 0) {
+      where.push(`type IN (${query.types.map(() => '?').join(',')})`);
+      params.push(...query.types);
+    }
+    if (params.length + 1 > D1_MAX_BIND_PARAMS) {
+      throw new Error('D1 reaction list exceeds the bound-parameter limit');
+    }
+    params.push(query.limit);
+    const { results } = await this.#db
+      .prepare(
+        `SELECT * FROM sync_reactions WHERE ${where.join(' AND ')}
+          ORDER BY created_at_ms DESC, idempotency_key DESC LIMIT ?`,
+      )
+      .bind(...params)
+      .all<D1ReactionRecord>();
+    return results.map(toStoredReaction);
+  }
+
+  async pruneReactions(
+    partition: string,
+    query: ReactionPruneQuery,
+  ): Promise<PrunedReactionCounts> {
+    if (query.limit <= 0) return { completed: 0, deadLetter: 0 };
+    const { results } = await this.#db
+      .prepare(
+        `DELETE FROM sync_reactions
+          WHERE partition=? AND idempotency_key IN (
+            SELECT idempotency_key FROM sync_reactions
+             WHERE partition=?
+               AND ((status='completed' AND completed_at_ms IS NOT NULL
+                     AND completed_at_ms<?)
+                 OR (status='dead-letter' AND available_at_ms<?))
+             ORDER BY CASE WHEN status='completed' THEN completed_at_ms
+                           ELSE available_at_ms END,
+                      idempotency_key
+             LIMIT ?
+          )
+            AND ((status='completed' AND completed_at_ms IS NOT NULL
+                  AND completed_at_ms<?)
+              OR (status='dead-letter' AND available_at_ms<?))
+        RETURNING status`,
+      )
+      .bind(
+        partition,
+        partition,
+        query.completedBeforeMs,
+        query.deadLetterBeforeMs,
+        query.limit,
+        query.completedBeforeMs,
+        query.deadLetterBeforeMs,
+      )
+      .all<{ status: 'completed' | 'dead-letter' }>();
+    return {
+      completed: results.filter((row) => row.status === 'completed').length,
+      deadLetter: results.filter((row) => row.status === 'dead-letter').length,
+    };
   }
 
   async readCommitWindow(

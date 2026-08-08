@@ -4,9 +4,8 @@
  * `ServerStorage`, the optional segment/blob store stats, and an in-memory
  * event ring. It delivers the 80% operator value (who's connected, what's
  * flowing, horizon health, the event tail) as a handful of queries in the
- * server package — no separate
- * UI package, no framework, no wire-protocol surface (SPEC.md is untouched;
- * this is host surface, mirrored in the server README).
+ * server package — no separate UI package, no framework, and no wire-protocol
+ * surface. This host surface is mirrored in the server README.
  *
  * Nothing here is on the sync hot path. Every method is a plain read; the
  * additive optional storage/store methods it depends on are documented as
@@ -25,8 +24,10 @@ import type { SegmentStore, SegmentStoreStats } from './segment-store';
 import type {
   ClientRecord,
   CommitMetadata,
+  ReactionStatus,
   ScopeCommitActivity,
   ServerStorage,
+  StoredReaction,
 } from './storage';
 
 /** A connected/known client as the console sees it (§4.5, §8.1). */
@@ -137,6 +138,12 @@ export interface AdminScopeActivityOptions {
   readonly limit?: number;
 }
 
+export interface AdminListReactionsOptions {
+  readonly statuses?: readonly ReactionStatus[];
+  readonly types?: readonly string[];
+  readonly limit?: number;
+}
+
 export interface AdminStats {
   readonly segments?: SegmentStoreStats;
   readonly blobs?: BlobStoreStats;
@@ -164,6 +171,7 @@ export interface SyncularAdminOptions {
 
 const DEFAULT_COMMIT_LIMIT = 50;
 const DEFAULT_SCOPE_LIMIT = 50;
+const DEFAULT_REACTION_LIMIT = 100;
 const DEFAULT_CLIENT_EVENT_LIMIT = 100;
 const DEFAULT_METRICS_WINDOW_MS = 5 * 60 * 1000;
 const DEFAULT_METRICS_BUCKETS = 30;
@@ -310,6 +318,22 @@ export class SyncularAdmin {
       afterSeq: options.afterSeq ?? 0,
       limit: options.limit ?? DEFAULT_COMMIT_LIMIT,
       ...(options.table !== undefined ? { table: options.table } : {}),
+    });
+  }
+
+  /** Pending, leased, completed, and dead-lettered durable reactions. */
+  async listReactions(
+    partition: string,
+    options: AdminListReactionsOptions = {},
+  ): Promise<StoredReaction[]> {
+    const read = required(
+      this.#storage.listReactions?.bind(this.#storage),
+      'storage',
+    );
+    return read(partition, {
+      limit: options.limit ?? DEFAULT_REACTION_LIMIT,
+      ...(options.statuses !== undefined ? { statuses: options.statuses } : {}),
+      ...(options.types !== undefined ? { types: options.types } : {}),
     });
   }
 

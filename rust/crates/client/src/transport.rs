@@ -57,6 +57,15 @@ pub trait Transport {
     /// One combined push+pull round trip (§1.5) over the request/response
     /// binding (`POST /sync`, loopback, …).
     fn sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError>;
+    /// One registered authoritative query or command request. Hosts that do
+    /// not expose `<mount>/operations` keep the default fail-loud behavior.
+    fn remote_operation(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+        let _ = request;
+        Err(TransportError::new(
+            "client.remote_operations_unconfigured",
+            "this transport has no remote operation endpoint",
+        ))
+    }
     /// One combined push+pull round over the realtime socket (§8.7). The
     /// host owns the WS-binding mechanics — channel tags, chunk assembly
     /// to the response's END — and returns the assembled response bytes.

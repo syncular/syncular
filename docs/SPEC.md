@@ -228,6 +228,8 @@ A server mounts these routes under a host-chosen prefix `<mount>`:
 | `<mount>/blobs/{blobId}/upload-grant` | POST | Presigned-upload grant: mint a direct-to-storage PUT URL (§5.9.3) |
 | `<mount>/blobs/{blobId}` | GET | Blob download with row-derived re-authorization (§5.9.5) |
 | `<mount>/realtime` | GET (WebSocket upgrade) | Realtime channel (§8) |
+| `<mount>/operations` | POST | Registered authoritative query or command ([REMOTE.md](./REMOTE.md)) |
+| `<mount>/operations/realtime` | GET (WebSocket upgrade) | Live registered-query watches ([REMOTE.md](./REMOTE.md)) |
 
 Content type for SSP2 bodies is `application/vnd.syncular.sync.v2`. A
 server MUST reject a `<mount>/sync` request with any other content type
@@ -412,7 +414,7 @@ envelope codec rejects a no-content request as a **decode error** under
 
 | Field | Type | Semantics |
 |---|---|---|
-| `clientId` | `str` | Stable per-device identifier, non-empty. A server MUST reject a `clientId` already bound to a different actor in the same partition (`sync.invalid_client_id`) |
+| `clientId` | `str` | Stable per-device identifier, non-empty. A server MUST reject a `clientId` already bound to a different actor in the same partition or beginning with the reserved `["remote-command",` server-command prefix (`sync.invalid_client_id`) |
 | `schemaVersion` | `i32` | The client's generated schema version, ≥ 1. Gates codec selection and segment reuse |
 
 ### 1.6 Response message grammar
@@ -2763,7 +2765,8 @@ classified as safe for the actor that already passed the row write gate.
 
 **Host codes MUST be distinguishable from protocol codes.** A host
 validation code **MUST NOT** begin with any reserved protocol-family
-prefix: **`sync.`**, **`blob.`**, **`presence.`**, or **`client.`**. These
+prefix: **`sync.`**, **`blob.`**, **`operation.`**, **`presence.`**, or
+**`client.`**. These
 namespace the protocol's own error families (§10.2 and the client-local
 codes of §10.3); reserving them guarantees a code appearing in a rejection
 record is unambiguously either a protocol code or a host code, never a
@@ -2922,6 +2925,159 @@ coverage, or be selectable by a client. A host MUST NOT expose arbitrary
 table/index/value selection to an untrusted caller. Exact server lookups,
 client-visible scope indexes, correlated multi-variable scopes, and explicit
 materialized reverse-index/work-queue rows remain distinct mechanisms.
+
+### 6.9 Durable server reactions
+
+Operational events are a fire-and-forget observability seam. Application work
+that must follow an accepted commit uses a durable server reaction. Reactions
+are a server-host feature and add no SSP2 frame or client-visible authority.
+
+**Planning order.** A host MAY configure one `reactionPlanner`. The server runs
+it only for a new commit after every operation and §6.7/§6.8 validator has
+accepted the final candidate state. It runs before commit-log append,
+idempotency append, and transaction commit:
+
+`optimistic idempotency → partition serialization → locked idempotency →
+decode/auth/row validation/write × N → whole-commit validation → reaction
+planning → append log/reactions/idempotency → commit`
+
+The planner receives the same `clientId`, `clientCommitId`, `actorId`,
+`partition`, ordered operation evidence, and candidate-state reader as §6.8.
+It MUST be pure with respect to storage outside the transaction and every
+external system. It MAY perform candidate reads and return data. It MUST NOT
+send email, invoke a webhook, publish a message, start a job, or perform any
+other user-visible side effect. TypeScript cannot prove callback purity, so
+this is a host correctness requirement. A planner throw aborts the open
+transaction and surfaces as a server failure. It does not persist a rejected
+client outcome; a later delivery may run the planner again.
+
+A conflict, protocol rejection, authorization rejection, row-validator
+rejection, or whole-commit rejection MUST enqueue zero reactions. A locked
+idempotency hit MUST skip the planner. Replaying an applied commit returns its
+cached result and MUST NOT add a second reaction row.
+
+**Planned record.** Each record contains:
+
+- `key`: non-empty, unique within the source commit, at most 256 UTF-8 bytes.
+- `type`: a code-like handler name at most 128 UTF-8 bytes.
+- `version`: a positive signed 32-bit integer. A handler MUST branch on
+  versions it supports and treat an unsupported version as a permanent
+  failure.
+- `payload`: plain JSON with finite numbers, at most 16 levels deep and at
+  most 65,536 UTF-8 bytes after normalization. Functions, `undefined`,
+  non-finite numbers, class instances, and cyclic values are invalid.
+- `maxAttempts`: an integer from 1 through 100; the default is 10.
+
+A commit may plan at most 100 records. Any invalid record fails the push
+transaction before commit. The persisted handler idempotency key is the stable
+JSON encoding of `[partition, clientId, clientCommitId, key]`. The tuple makes
+a planner key local to its source commit and partition, and removes delimiter
+ambiguity. A handler MUST pass this idempotency key to an external system when
+that system supports idempotent requests.
+
+**Atomic storage.** App rows, commit metadata and changes, reaction rows, and
+the applied idempotency result MUST commit in one authoritative transaction.
+The reaction table is partition-scoped and independent of commit-log/change
+tables. `pruneCommitLog` MUST NOT delete pending, leased, completed, or
+dead-lettered reactions. A missing transaction enqueue capability MUST fail
+before app-row mutation when a planner is configured.
+
+SQLite and PostgreSQL write reaction rows through the existing §6.3 push
+transaction. D1 buffers them into the same atomic `D1Database.batch()` as the
+source commit and requires the existing per-partition coordinator assertion.
+D1 MUST fail closed before the push when that assertion is absent. A D1 claim
+MUST use one write statement that both chooses due rows and returns their new
+leases; a select followed by a later update cannot provide the required claim
+guarantee. A D1 runtime that cannot execute that statement atomically MUST fail
+closed for reaction delivery.
+
+**Delivery state machine.** A host drives `ReactionRunner.runOnce()` from its
+scheduler or queue wake. Rows move through `pending`, `leased`, `completed`,
+and `dead-letter` states. A claim is one atomic storage operation over one
+partition and the worker's registered handler types. It selects due pending
+rows and expired leases, changes the owner/expiry, and increments `attempts`.
+PostgreSQL uses row locks with `SKIP LOCKED`; SQLite and D1 use one atomic
+`UPDATE ... RETURNING` statement. Concurrent workers therefore normally
+receive disjoint leases.
+
+Every runner call uses a fresh opaque lease-owner token. Before starting each
+handler in a claimed batch, the runner renews that row using the token. If the
+row expired and another worker reclaimed it while an earlier batch member was
+running, renewal fails and the stale runner skips the handler.
+
+Handlers execute after the authoritative push transaction has committed. A
+handler receives its payload and version, source client/commit/sequence,
+current attempt, maximum attempts, partition, and stable idempotency key. A
+long handler MAY call `extendLease()` before expiry. Completion, lease
+extension, retry, and dead-letter updates compare the current lease owner. A
+stale worker cannot acknowledge or alter a lease that another worker has
+claimed.
+
+Delivery is at least once. If a process crashes after a handler performs its
+side effect and before completion is recorded, the lease expires and another
+worker may invoke the handler again with the same idempotency key. External
+systems decide whether that repeated request collapses to one effect.
+Syncular does not promise exactly-once execution for external side effects.
+
+An ordinary throw and `RetryableReactionError` are retryable. The retry delay
+is bounded exponential backoff:
+`min(maxBackoffMs, initialBackoffMs × 2^(attempt − 1))`, with defaults of one
+second and five minutes. `PermanentReactionError` dead-letters immediately;
+a retryable failure dead-letters when `attempts >= maxAttempts`. Persisted
+failure information contains a stable error code, failure time, and optional
+plain JSON details bounded to 8,192 bytes. Raw exception text is not persisted.
+An operator may reset a dead-lettered row through
+`retryDeadLetterReaction`; the reset clears failure information and attempts
+and makes the row immediately due.
+
+**Terminal retention.** Reaction storage MUST provide a bounded,
+partition-scoped cleanup operation over terminal rows. A cleanup pass MUST
+delete only `completed` rows whose completion time is strictly older than its
+completed cutoff and `dead-letter` rows whose failure time is strictly older
+than its dead-letter cutoff. It MUST NOT delete `pending` or `leased` rows,
+including expired leases. Cleanup is independent of commit-log pruning and
+MUST NOT alter source commits, app rows, or idempotency results.
+
+`pruneReactions` applies separate retention floors and a maximum row count per
+pass. Defaults retain completed reactions for 30 days, dead-lettered reactions
+for 90 days, and delete at most 1,000 rows per pass. A host schedules passes and
+repeats while the result reports that more rows may remain. Manual retry and
+cleanup may race; their storage operations MUST serialize so exactly one
+terminal transition wins. Every pass MAY emit `reaction.prune_completed` with
+the cutoffs, per-status removal counts, limit, and `mayHaveMore` flag.
+
+**Observability and reads.** Lifecycle events are `reaction.queued` after the
+source transaction commits, `reaction.started`, `reaction.retried`,
+`reaction.completed`, and `reaction.dead_lettered`. They remain
+fire-and-forget operational events and do not replace reaction storage.
+`SyncularAdmin.listReactions` and the authenticated Hono
+`GET /admin/reactions` route expose partition-scoped lifecycle state.
+
+### 6.10 Database-less commit producers
+
+A process MAY submit ordinary commits without maintaining a local replica.
+It sends a push-only SSP2 request to `POST <mount>/sync`: `REQ_HEADER`, one or
+more `PUSH_COMMIT` frames, and `END`. A `PULL_HEADER` is unnecessary. The
+server applies the same authorization, conflict, validation, atomicity,
+idempotency, commit-log, and realtime rules as every replica-originated push.
+
+The producer MUST supply a stable `clientId` for its service identity and a
+stable `clientCommitId` for each logical operation. Losing the response does
+not authorize a new id. A retry MUST resend the byte-equivalent commit under
+the original `(partition, clientId, clientCommitId)` key (§2.3). The caller is
+responsible for retaining or deterministically deriving that identity because
+there is no Syncular outbox.
+
+A database-less producer has no local rows, subscriptions, cursor, optimistic
+state, rollback journal, or offline queue. It receives the terminal
+`PUSH_RESULT` directly. A conflict record carries the authoritative row bytes
+and version exactly as it does for a replica client. The caller decides
+whether to issue a corrected commit under a new `clientCommitId`.
+
+The application-facing remote operation protocol for authoritative queries,
+commands, and live query watches is defined separately in
+[`docs/REMOTE.md`](./REMOTE.md). Ordinary commits continue to use SSP2 so
+there is one commit path.
 
 ---
 
@@ -4084,12 +4240,19 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 
 | Code | Category | Retryable | Action | Produced when |
 |---|---|---|---|---|
+| `operation.unknown` | not-found | no | regenerateClient | A registered query or command ID is absent or has the wrong kind ([REMOTE.md](./REMOTE.md)) |
+| `operation.forbidden` | forbidden | no | checkPermissions | Registered query scope coverage or an operation authorizer denies access ([REMOTE.md](./REMOTE.md)) |
+| `operation.invalid_request` | invalid-request | no | fixRequest | A remote operation message, generated query coverage, or command mutation plan is invalid ([REMOTE.md](./REMOTE.md)) |
+| `operation.result_too_large` | invalid-request | no | fixRequest | A registered query returns more than its configured `maxRows` ([REMOTE.md](./REMOTE.md)) |
+| `operation.storage_unsupported` | internal | no | inspectServer | Configured storage lacks authoritative query support ([REMOTE.md](./REMOTE.md)) |
+| `operation.query_failed` | internal | no | inspectServer | Registered authoritative SQL execution or result decoding fails ([REMOTE.md](./REMOTE.md)) |
+| `operation.execution_failed` | internal | no | inspectServer | Registered operation code or infrastructure fails unexpectedly ([REMOTE.md](./REMOTE.md)) |
 | `sync.auth_required` | auth-required | yes | refreshAuth | Host authentication absent/failed (HTTP 401; WS close) |
 | `sync.auth_lease_required` | auth-required | yes | refreshAuth | The host opted the request into lease authorization (a live-resolver outage) but no valid lease exists for `(partition, clientId)` — expired, actor-mismatched, or never issued (§7.3.3) — *new in SSP2*; request-level |
 | `sync.auth_lease_revoked` | auth-required | yes | refreshAuth | A lease-authorized round was attempted on a lease the host revoked by `leaseId` (§7.3.4) — *new in SSP2*; request-level. Distinct from `sync.scope_revoked` (§3.3): the grant was pulled, but no local data is purged |
 | `sync.forbidden` | forbidden | no | checkPermissions | Write-path scope denial (§3.4); segment scope-digest mismatch (§5.5); `resolveScopes` threw on a write |
 | `sync.invalid_request` | invalid-request | no | fixRequest | Malformed envelope/frame, bad content type, missing required fields |
-| `sync.invalid_client_id` | invalid-request | no | resetClientId | `clientId` bound to a different actor (§1.5) |
+| `sync.invalid_client_id` | invalid-request | no | resetClientId | `clientId` bound to a different actor or uses the reserved server-command namespace (§1.5) |
 | `sync.invalid_subscription` | invalid-request | no | fixRequest | Duplicate subscription id; undeclared scope key (requested **or** resolved — §3.2) |
 | `sync.empty_commit` | invalid-request | no | fixRequest | `PUSH_COMMIT` with zero operations |
 | `sync.unknown_table` | schema-mismatch | no | regenerateClient | Subscription (request-level) or push operation (commit-level, §1.7) names a table the server doesn't handle |
@@ -4180,7 +4343,7 @@ code — it is opaque to the client runtime, which applies generic rejection
 handling and never hardcodes its `category`/`retryable`/`recommendedAction`
 (those fields are catalog-fixed only for the codes in §10.2). A host code
 MUST NOT begin with the reserved protocol-family prefixes `sync.`,
-`blob.`, `presence.`, or `client.` (§6.7), so a code in a rejection record
+`blob.`, `operation.`, `presence.`, or `client.` (§6.7), so a code in a rejection record
 is always unambiguously either a protocol code (this catalog, its fixed
 metadata applies) or a host code (opaque, app-defined). This keeps the
 wire catalog closed while letting hosts mint their own business-rule

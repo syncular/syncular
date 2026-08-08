@@ -311,7 +311,7 @@ rule. Do **not** put an S3/R2 lifecycle-expiration rule on the `blob/`
 prefix; it would delete still-referenced attachments out from under live
 rows. Reclamation is reference-driven: the only thing that deletes a blob
 is the scheduled `sweepOrphanBlobs` pass, which deletes only blobs no live
-row references. See [Operations](/server-operations/).
+row references. See [Operations and maintenance](/server-operations/).
 
 Two independent presign switches take the server out of the blob byte
 path: `blobSignedUrls: s3PresignedBlobUrls(blobs)` issues presigned
@@ -326,7 +326,7 @@ upload grants. Absent config means clients stream through the direct
   server.
 - [Cloudflare Workers](/server-workers/): D1, R2, and Durable Object
   realtime end to end.
-- [Operations](/server-operations/): pruning the commit log and sweeping
+- [Operations and maintenance](/server-operations/): pruning the commit log and sweeping
   orphan blobs.
 - [Bootstrap & segments](/concepts-bootstrap/): why segments are cache
   entries and how reuse absorbs storms.

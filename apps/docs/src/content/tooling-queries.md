@@ -10,6 +10,11 @@ Read the dedicated [SYQL guide](/syql/) or the
 [formal language specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md)
 for the complete language.
 
+The same generated descriptor can be registered as a scoped or privileged
+[authoritative remote query](/guide-remote-operations/#registered-typed-queries).
+Remote callers send its generated ID and typed parameters; SQL remains in the
+server registry.
+
 ## Plain `.sql`
 
 ```sql

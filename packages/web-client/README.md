@@ -3,6 +3,17 @@
 The TypeScript client protocol core (SPEC.md §§3–8, client side) plus its
 browser platform bindings.
 
+The normal `SyncClient` also runs in a CLI or background service.
+Use `openBunDatabase(path)` or `openNodeDatabase(path)` for a persistent local
+replica. See the [server-side sync client guide](https://syncular.dev/guide-server-clients/).
+
+`SyncRemoteClient` is the database-less server client. It sends ordinary
+push-only commits through `/sync` and can call registered typed queries,
+server-authoritative commands, and live query watches through the remote
+operation transport. See [remote server operations](https://syncular.dev/guide-remote-operations/).
+Its schema and sync transport are optional for query-only or command-only
+processes.
+
 ## Client-local FTS5 projections
 
 Generated schemas may attach `ftsIndexes` to a synced table. The

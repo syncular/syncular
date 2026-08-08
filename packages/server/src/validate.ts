@@ -32,6 +32,7 @@ import {
 export const RESERVED_VALIDATION_CODE_PREFIXES: readonly string[] = [
   'sync.',
   'blob.',
+  'operation.',
   'presence.',
   'client.',
 ];

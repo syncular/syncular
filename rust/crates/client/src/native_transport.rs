@@ -174,6 +174,14 @@ impl Transport for HostTransport {
         }
     }
 
+    fn remote_operation(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+        match self {
+            HostTransport::Null { .. } => Err(unavailable("remoteOperation")),
+            #[cfg(feature = "native-transport")]
+            HostTransport::Native(t) => t.remote_operation(request),
+        }
+    }
+
     fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
         match self {
             HostTransport::Null { .. } => Err(unavailable("realtimeSync")),
@@ -546,6 +554,21 @@ mod native {
             read_body(resp)
         }
 
+        fn post_operation(&self, body: &[u8]) -> Result<Vec<u8>, TransportError> {
+            let url = format!("{}/operations", self.base_url);
+            let mut req = self.agent.post(&url).header(
+                "content-type",
+                "application/vnd.syncular.operations.v1+json",
+            );
+            for (key, value) in &self.headers {
+                req = req.header(key.as_str(), value.as_str());
+            }
+            let response = req
+                .send(body)
+                .map_err(|error| http_err("POST operation", error))?;
+            read_body(response)
+        }
+
         fn get_bytes(&self, url: &str, with_headers: bool) -> Result<Vec<u8>, TransportError> {
             let mut req = self.agent.get(url);
             if with_headers {
@@ -596,6 +619,10 @@ mod native {
     impl Transport for NativeTransport {
         fn sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
             self.post_sync("/sync", request)
+        }
+
+        fn remote_operation(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
+            self.post_operation(request)
         }
 
         fn realtime_sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {

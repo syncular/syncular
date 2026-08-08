@@ -8,12 +8,16 @@ import {
   canonicalScopeJson,
   decodeMessage,
   encodeMessage,
+  encodeRemoteOperationRequest,
+  decodeRemoteOperationResponse,
   encodeRow,
   PROTOCOL_WIRE_VERSION,
   type RowColumn,
 } from '@syncular/core';
 import {
   MemorySegmentStore,
+  registerRemoteQuery,
+  RemoteOperationRegistry,
   type ServerSchema,
   SqliteServerStorage,
   SSP2_CONTENT_TYPE,
@@ -41,7 +45,10 @@ const SCHEMA: ServerSchema = {
   ],
 };
 
-function makeApp(events?: SyncularServerEvents) {
+function makeApp(
+  events?: SyncularServerEvents,
+  operations?: RemoteOperationRegistry,
+) {
   const config: SyncServerConfig = {
     schema: SCHEMA,
     storage: new SqliteServerStorage(),
@@ -52,6 +59,7 @@ function makeApp(events?: SyncularServerEvents) {
   };
   return createSyncularHono({
     config,
+    ...(operations !== undefined ? { operations } : {}),
     authenticate: async (request) => {
       const token = request.headers.get('authorization');
       if (token !== 'Bearer good') return null;
@@ -97,6 +105,77 @@ function requestBytes(title = 'hello'): Uint8Array {
 }
 
 describe('hono adapter', () => {
+  test('POST /operations runs a registered query', async () => {
+    const descriptor = {
+      id: 'sha256:test/allTasks',
+      hasParams: false,
+      sql: 'SELECT id, title FROM tasks ORDER BY id',
+      tables: ['tasks'],
+      resultColumns: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'title', type: 'string', nullable: false },
+      ] as const,
+      bind: () => [],
+      dependencies: () => [{ table: 'tasks' }],
+      coverage: () => [],
+    };
+    const app = makeApp(
+      undefined,
+      new RemoteOperationRegistry([
+        registerRemoteQuery(descriptor, {
+          maxRows: 10,
+          auth: {
+            access: 'privileged',
+            authorize: () => true,
+          },
+        }),
+      ]),
+    );
+    const response = await app.request('/operations', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/vnd.syncular.operations.v1+json',
+        authorization: 'Bearer good',
+      },
+      body: encodeRemoteOperationRequest({
+        revision: 1,
+        kind: 'query',
+        clientId: 'admin-worker',
+        operationId: descriptor.id,
+        params: null,
+      }).slice().buffer as ArrayBuffer,
+    });
+
+    expect(response.status).toBe(200);
+    expect(
+      decodeRemoteOperationResponse(
+        new Uint8Array(await response.arrayBuffer()),
+      ),
+    ).toEqual({
+      revision: 1,
+      kind: 'query',
+      operationId: descriptor.id,
+      rows: [],
+      maxCommitSeq: 0,
+    });
+  });
+
+  test('POST /operations rejects the wrong content type with HTTP 415', async () => {
+    const app = makeApp();
+
+    const response = await app.request('/operations', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+
+    expect(response.status).toBe(415);
+    expect(await response.json()).toMatchObject({
+      code: 'operation.invalid_request',
+      retryable: false,
+    });
+  });
+
   test('POST /sync round-trips SSP2 bytes', async () => {
     const app = makeApp();
     const response = await app.request('/sync', {

@@ -18,6 +18,7 @@ import { observationScenarios } from './observation';
 import { offlineScenarios } from './offline';
 import { presenceScenarios } from './presence';
 import { realtimeScenarios } from './realtime';
+import { remoteProducerScenarios } from './remote-producer';
 import { reconnectStormScenarios } from './reconnect-storm';
 import { schemaBumpScenarios } from './schema-bump';
 import { scopeScenarios } from './scopes';
@@ -44,6 +45,7 @@ export const CATALOG: readonly Scenario[] = [
   ...lifecycleScenarios,
   ...schemaBumpScenarios,
   ...realtimeScenarios,
+  ...remoteProducerScenarios,
   ...wsRoundScenarios,
   ...presenceScenarios,
   ...reconnectStormScenarios,

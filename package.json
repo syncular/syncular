@@ -13,15 +13,18 @@
     "bindings/tauri/example"
   ],
   "overrides": {
-    "dompurify": "3.4.12",
+    "dompurify": "3.4.13",
+    "js-yaml": "4.3.1",
+    "nanoid": "3.3.18",
     "svgo": "^4.0.2",
     "postcss": "^8.5.23",
-    "sharp": "^0.35.3"
+    "sharp": "^0.35.3",
+    "undici": "7.29.0"
   },
   "scripts": {
     "postinstall": "git config core.hooksPath .githooks 2>/dev/null || true; test -e CLAUDE.md || ln -s AGENTS.md CLAUDE.md || true",
-    "//audit-ignore": "react-router GHSA-qwww-vcr4-c8h2 is ignored, not unfixed: it is an RSC-mode CSRF bypass, and react-router-dom has no release carrying the 8.3.0 fix — the DOM entry points moved into react-router itself in v8, which needs React 19 via useOptimistic. It reaches us only as a devDependency of packages/react used by one test, react-router-scheduling.test.tsx, which drives the data router without RSC and ships to nobody. Drop this ignore when the react lane moves to React 19. The svgo/postcss/sharp advisories are fixed for real, via the root overrides above.",
-    "audit": "bun audit --ignore GHSA-qwww-vcr4-c8h2",
+    "//audit-ignore": "react-router GHSA-qwww-vcr4-c8h2 is ignored, not unfixed: it is an RSC-mode CSRF bypass, and react-router-dom has no release carrying the 8.3.0 fix — the DOM entry points moved into react-router itself in v8, which needs React 19 via useOptimistic. It reaches us only as a devDependency of packages/react used by one test, react-router-scheduling.test.tsx, which drives the data router without RSC and ships to nobody. image-size GHSA-w3rx-r6r6-pgpr and GHSA-5p2g-fcmc-qvqq have no fixed release; image-size is present only through the React Native Metro development toolchain, and Syncular never passes ICNS, JXL, or HEIF input to it. Drop each ignore when its dependency has a compatible fix. The svgo/postcss/sharp advisories are fixed for real, via the root overrides above.",
+    "audit": "bun audit --ignore GHSA-qwww-vcr4-c8h2 --ignore GHSA-w3rx-r6r6-pgpr --ignore GHSA-5p2g-fcmc-qvqq",
     "check": "bun run version:check && bun run check:code",
     "check:code": "bun run typecheck && bun run lint && bun run knip && bun run test",
     "version:print": "bun scripts/version.ts print",

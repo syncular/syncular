@@ -94,6 +94,13 @@ wrangler d1 create syncular
 wrangler d1 migrations apply syncular
 ```
 
+The generated migration must include `sync_reactions` before configuring a
+`reactionPlanner`. Planned records join the source commit's atomic batch.
+`ReactionRunner` claims work with one atomic write statement and can be driven
+from a scheduled Worker event or Durable Object alarm. D1 statement and
+invocation limits apply to the source batch and delivery passes; see
+[Durable server reactions](/server-reactions/#storage-and-migrations).
+
 **Per-partition write serialization.** Every push must serialize before row
 reads/validation/CRDT merge and re-check idempotency under that boundary. The
 Workers adapter forwards `/sync` to one DO per partition and the DO uses an
@@ -208,14 +215,19 @@ Secrets (`wrangler secret put`): `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
 HTTP-only deployment, keep the DO binding/migration and use `coordinator`
 instead of `realtime`; only the WebSocket route is omitted.
 
-## Blob GC on a schedule
+## Maintenance on a schedule
 
-Nothing reclaims blobs automatically. The host schedules the sweep. On
-Workers the natural place is a cron trigger: add `[triggers] crons = [...]`
-and run `sweepOrphanBlobs` per partition from the `scheduled` handler.
+The host schedules reaction retention, commit-log pruning, and blob cleanup.
+On Workers the natural place is a cron trigger: add
+`[triggers] crons = [...]` and run the maintenance helpers per partition from
+the `scheduled` handler.
 
 ```ts
-import { sweepOrphanBlobs, D1ServerStorage } from '@syncular/server';
+import {
+  D1ServerStorage,
+  pruneReactions,
+  sweepOrphanBlobs,
+} from '@syncular/server';
 
 export default {
   fetch: /* … as above … */,
@@ -223,18 +235,29 @@ export default {
     const storage = new D1ServerStorage(env.DB);
     const blobs = makeBlobs(env); // the same S3BlobStore config
     for (const partition of await listPartitions(env)) {
+      let result;
+      do {
+        result = await pruneReactions({
+          storage,
+          partition,
+          nowMs: Date.now(),
+        });
+      } while (result.mayHaveMore);
+
       await sweepOrphanBlobs(storage, blobs, partition);
     }
   },
 };
 ```
 
-The sweep is safe only with a correctly sized grace period; the full
-runbook is in [Operations](/server-operations/).
+Reaction cleanup retains completed records for 30 days and dead-lettered
+records for 90 days by default. It never deletes pending or leased records.
+Blob cleanup is safe only with a correctly sized grace period. The full
+runbook is in [Operations and maintenance](/server-operations/).
 
 ## Where to go next
 
-- [Operations](/server-operations/): events, pruning, blob GC, and what to
+- [Operations and maintenance](/server-operations/): events, pruning, blob GC, and what to
   alert on.
 - [Storage backends](/server-storage/): how D1 compares to SQLite and
   Postgres, and the R2 store details.

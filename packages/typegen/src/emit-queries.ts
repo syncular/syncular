@@ -399,6 +399,9 @@ function emitSyqlQuery(query: AnalyzedQuery, hash: string): string {
     );
   }
   lines.push(`  tables: ${query.name}Tables,`);
+  lines.push(
+    `  resultColumns: [${query.columns.map((column) => `{ name: ${quote(column.langName)}, type: ${quote(column.type)}, nullable: ${column.nullable} }`).join(', ')}],`,
+  );
   const reactiveUsesParams = query.reactive.dependencies.some((dependency) =>
     dependency.scopes.some((scope) => scope.params.length > 0),
   );
@@ -537,6 +540,9 @@ function emitQuery(query: AnalyzedQuery, hash: string): string {
   lines.push(`  sql: ${sqlConst},`);
   lines.push(`  mapRow: ${query.name}MapRow,`);
   lines.push(`  tables: ${query.name}Tables,`);
+  lines.push(
+    `  resultColumns: [${query.columns.map((column) => `{ name: ${quote(column.langName)}, type: ${quote(column.type)}, nullable: ${column.nullable} }`).join(', ')}],`,
+  );
   const reactiveUsesParams = query.reactive.dependencies.some((dependency) =>
     dependency.scopes.some((scope) => scope.params.length > 0),
   );
@@ -683,6 +689,7 @@ export function emitQueriesModule(
       '  readonly sql: string;',
       '  readonly mapRow: (row: Readonly<Record<string, unknown>>) => Row;',
       '  readonly tables: readonly string[];',
+      '  readonly resultColumns: readonly QueryResultColumn[];',
       '  readonly bind: (params: Params) => readonly QueryValue[];',
       '  readonly sqlFor?: (params: Params) => string;',
       '  readonly dependencies: (params: Params) => readonly QueryDependency[];',
@@ -695,6 +702,12 @@ export function emitQueriesModule(
       'export interface QueryDependency {',
       '  readonly table: string;',
       '  readonly scopeKeys?: readonly string[];',
+      '}',
+      '',
+      'export interface QueryResultColumn {',
+      '  readonly name: string;',
+      "  readonly type: 'string' | 'integer' | 'float' | 'boolean' | 'json' | 'bytes' | 'blob_ref' | 'crdt';",
+      '  readonly nullable: boolean;',
       '}',
       '',
       'export interface WindowCoverage {',

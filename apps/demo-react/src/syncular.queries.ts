@@ -71,6 +71,7 @@ export interface NamedQuery<Row, Params = undefined> {
   readonly sql: string;
   readonly mapRow: (row: Readonly<Record<string, unknown>>) => Row;
   readonly tables: readonly string[];
+  readonly resultColumns: readonly QueryResultColumn[];
   readonly bind: (params: Params) => readonly QueryValue[];
   readonly sqlFor?: (params: Params) => string;
   readonly dependencies: (params: Params) => readonly QueryDependency[];
@@ -83,6 +84,12 @@ export interface NamedQuery<Row, Params = undefined> {
 export interface QueryDependency {
   readonly table: string;
   readonly scopeKeys?: readonly string[];
+}
+
+export interface QueryResultColumn {
+  readonly name: string;
+  readonly type: 'string' | 'integer' | 'float' | 'boolean' | 'json' | 'bytes' | 'blob_ref' | 'crdt';
+  readonly nullable: boolean;
 }
 
 export interface WindowCoverage {
@@ -163,6 +170,7 @@ export const listTodosQuery: NamedQuery<ListTodosRow, ListTodosParams> = {
   mapRow: listTodosMapRow,
   sqlFor: (params: ListTodosParams) => listTodosSelect(params).sql,
   tables: listTodosTables,
+  resultColumns: [{ name: 'id', type: 'string', nullable: false }, { name: 'listId', type: 'string', nullable: false }, { name: 'title', type: 'string', nullable: false }, { name: 'done', type: 'boolean', nullable: false }, { name: 'position', type: 'integer', nullable: false }, { name: 'updatedAtMs', type: 'integer', nullable: false }, { name: 'attachment', type: 'blob_ref', nullable: true }],
   dependencies: (params) => [
     { table: 'todos', scopeKeys: ['list:' + String(params.listId) + ''] },
   ],

@@ -81,6 +81,15 @@ class DoublePreparedStatement implements D1PreparedStatement {
   _apply(): void {
     this.#db.query(this.#sql).run(...(this.#params as never[]));
   }
+
+  _batchResult(): unknown {
+    if (/^\s*(?:SELECT|WITH)\b/i.test(this.#sql)) {
+      const rows = this.#db.query(this.#sql).all(...(this.#params as never[]));
+      return { results: rows.map((row) => normalizeRow(row)) };
+    }
+    this._apply();
+    return {};
+  }
 }
 
 export class D1DatabaseDouble implements D1Database {
@@ -99,15 +108,15 @@ export class D1DatabaseDouble implements D1Database {
     // all-or-nothing semantics with BEGIN … COMMIT/ROLLBACK.
     this.#db.exec('BEGIN IMMEDIATE');
     try {
-      for (const statement of statements) {
-        (statement as DoublePreparedStatement)._apply();
-      }
+      const results = statements.map((statement) =>
+        (statement as DoublePreparedStatement)._batchResult(),
+      );
       this.#db.exec('COMMIT');
+      return results;
     } catch (error) {
       this.#db.exec('ROLLBACK');
       throw error;
     }
-    return statements.map(() => ({}));
   }
 
   async exec(query: string): Promise<unknown> {

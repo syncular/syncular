@@ -114,6 +114,20 @@ describe('request validation (§1.7)', () => {
     expect(error.recommendedAction).toBe('resetClientId');
   });
 
+  test('ordinary clients cannot use the remote command idempotency namespace', async () => {
+    const t = makeContext();
+    const bytes = requestBytes(
+      [pushCommit('request-1', [upsert('tasks', 't1', taskRow('t1', 'p1'))])],
+      '["remote-command","service"]',
+    );
+
+    await expectSyncError(
+      handleSyncRequest(bytes, t.ctx),
+      'sync.invalid_client_id',
+    );
+    expect(await t.storage.getMaxCommitSeq('part-1')).toBe(0);
+  });
+
   test('undecodable bytes fail with the DecodeError code', async () => {
     const t = makeContext();
     await expectSyncError(
@@ -210,6 +224,21 @@ describe('error catalog (§10.2)', () => {
       retryable: true,
       recommendedAction: 'refreshAuth',
     });
-    expect(Object.keys(ERROR_CATALOG)).toHaveLength(28);
+    expect(ERROR_CATALOG['operation.forbidden']).toMatchObject({
+      category: 'forbidden',
+      retryable: false,
+      recommendedAction: 'checkPermissions',
+    });
+    expect(ERROR_CATALOG['operation.query_failed']).toMatchObject({
+      category: 'internal',
+      retryable: false,
+      recommendedAction: 'inspectServer',
+    });
+    expect(ERROR_CATALOG['operation.execution_failed']).toMatchObject({
+      category: 'internal',
+      retryable: false,
+      recommendedAction: 'inspectServer',
+    });
+    expect(Object.keys(ERROR_CATALOG)).toHaveLength(35);
   });
 });

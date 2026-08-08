@@ -1,6 +1,6 @@
 /**
- * Structured server events — the one operational seam (host surface, not
- * wire protocol; SPEC.md is untouched by this module).
+ * Structured server events — the one operational seam (host surface, outside
+ * the wire protocol).
  *
  * Design rules:
  * - Every event is a flat, JSON-able object with a stable `type` string:
@@ -79,6 +79,62 @@ export interface PushConflictedEvent extends PushEventBase {
   readonly replay: boolean;
   readonly recordedAtMs?: number;
   readonly cacheIdentity?: string;
+}
+
+/** A planned reaction committed atomically with its accepted source commit. */
+export interface ReactionQueuedEvent {
+  readonly type: 'reaction.queued';
+  readonly atMs: number;
+  readonly partition: string;
+  readonly actorId: string;
+  readonly clientId: string;
+  readonly clientCommitId: string;
+  readonly commitSeq: number;
+  readonly idempotencyKey: string;
+  readonly reactionType: string;
+  readonly version: number;
+}
+
+interface ReactionDeliveryEventBase {
+  readonly atMs: number;
+  readonly partition: string;
+  readonly workerId: string;
+  readonly idempotencyKey: string;
+  readonly reactionType: string;
+  readonly version: number;
+  readonly attempt: number;
+}
+
+export interface ReactionStartedEvent extends ReactionDeliveryEventBase {
+  readonly type: 'reaction.started';
+}
+
+export interface ReactionRetriedEvent extends ReactionDeliveryEventBase {
+  readonly type: 'reaction.retried';
+  readonly nextAttemptAtMs: number;
+  readonly errorCode: string;
+}
+
+export interface ReactionCompletedEvent extends ReactionDeliveryEventBase {
+  readonly type: 'reaction.completed';
+}
+
+export interface ReactionDeadLetteredEvent extends ReactionDeliveryEventBase {
+  readonly type: 'reaction.dead_lettered';
+  readonly errorCode: string;
+}
+
+/** One bounded terminal-reaction retention pass. */
+export interface ReactionPruneCompletedEvent {
+  readonly type: 'reaction.prune_completed';
+  readonly atMs: number;
+  readonly partition: string;
+  readonly completedBeforeMs: number;
+  readonly deadLetterBeforeMs: number;
+  readonly limit: number;
+  readonly removedCompleted: number;
+  readonly removedDeadLetter: number;
+  readonly mayHaveMore: boolean;
 }
 
 /** One emitted segment within a pull subscription section. */
@@ -248,6 +304,12 @@ export type SyncularServerEvent =
   | PushAppliedEvent
   | PushRejectedEvent
   | PushConflictedEvent
+  | ReactionQueuedEvent
+  | ReactionStartedEvent
+  | ReactionRetriedEvent
+  | ReactionCompletedEvent
+  | ReactionDeadLetteredEvent
+  | ReactionPruneCompletedEvent
   | PullServedEvent
   | SegmentDownloadedEvent
   | BlobUploadedEvent

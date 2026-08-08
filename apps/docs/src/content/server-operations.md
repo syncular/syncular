@@ -1,8 +1,13 @@
-# Operations
+# Operations and maintenance
 
 Day-two concerns for a running sync server: the structured-events hook,
-the admin console, commit-log pruning, blob GC, and the load-test suite.
-Everything here is host-scheduled and opt-in.
+the admin console, commit-log pruning, reaction retention, blob GC, and the
+load-test suite. Everything here is host-scheduled and opt-in.
+
+Application-level domain actions use immutable
+[domain event rows](/guide-domain-events/). Registered application queries and
+commands use [remote server operations](/guide-remote-operations/).
+`SyncularServerEvents` below remains operational telemetry.
 
 ## Structured events
 
@@ -36,16 +41,20 @@ extra wiring; the realtime hub and `pruneCommitLog` take the same sink via
 their own options. There is no logger dependency: a Sentry or metrics
 adapter is a ~20-line `emit` implementation. The full event catalog
 (`request.handled`, `push.applied` / `push.rejected` / `push.conflicted`,
-`pull.served`, `segment.downloaded`, `blob.swept`, `realtime.*`,
+`pull.served`, `segment.downloaded`, `blob.swept`, `reaction.*`, `realtime.*`,
 `prune.completed`, `scopes.resolve_failed`) is in the
 [server README](https://github.com/syncular/syncular/blob/main/packages/server/README.md).
+Reaction lifecycle meanings and the durable state machine are covered in
+[Durable server reactions](/server-reactions/#observe-and-inspect-reactions).
 
 ## The admin console
 
 `SyncularAdmin` is a read-only, partition-scoped query surface over server
 storage plus the event ring: clients and their cursors, commit metadata
 (never payloads), per-row version and scopes, scope activity, horizon
-status, segment/blob stats, and the event tail.
+status, durable reactions, segment/blob stats, and the event tail. Reaction
+reads include their persisted payload and failure details, so admin access is
+application-data access.
 
 ```ts
 import { SyncularAdmin } from '@syncular/server';
@@ -76,6 +85,10 @@ per-partition horizon and deletes commits at or below it. Nothing prunes
 automatically; you schedule it (hourly to daily is the sensible range, and
 a pass with nothing to do is cheap).
 
+Reaction rows use a separate table. Commit-log pruning does not delete pending,
+leased, completed, or dead-lettered reactions. Use the separate reaction
+retention pass below.
+
 ```ts
 import { pruneCommitLog } from '@syncular/server';
 
@@ -99,6 +112,38 @@ your pruning health signal: a steady trickle is devices returning from
 long absences; a spike means you pruned faster than your fleet syncs and
 are paying for it in bootstrap load. Observe it via
 `pull.served` subscriptions with `status: "reset"`.
+
+## Reaction retention
+
+The host schedules `pruneReactions` per partition, alongside commit-log
+pruning. Defaults retain completed records for 30 days, dead-lettered records
+for 90 days, and remove at most 1,000 records in one pass.
+
+```ts
+import { pruneReactions } from '@syncular/server';
+
+let result;
+do {
+  result = await pruneReactions({
+    storage,
+    partition: 'main',
+    nowMs: Date.now(),
+    events,
+  });
+} while (result.mayHaveMore);
+```
+
+Only terminal records older than their cutoff are eligible. Pending and leased
+records are preserved, including expired leases that a worker can reclaim.
+Dead-letter retention determines how long operators can inspect and manually
+retry a failed record. Configure a longer duration when failure investigation
+or retry procedures require it.
+
+Each bounded pass emits `reaction.prune_completed`. A full batch reports
+`mayHaveMore: true`; repeat until false. Timestamp indexes support both age
+filters, and the delete limit keeps a maintenance pass from monopolizing the
+storage writer. The full lifecycle and retention API are in
+[Durable server reactions](/server-reactions/).
 
 ## Blob GC (`sweepOrphanBlobs`)
 
@@ -159,6 +204,9 @@ event stream, that segment *reuse* beats *build* under a storm. Full docs in
 - `prune.completed` with `advanced: false` for many consecutive passes
   while the log grows: one laggard cursor inside the active window is
   pinning retention; the floors bound the damage to `ageForceMs`.
+- `reaction.prune_completed` with `mayHaveMore: true` after every scheduled
+  batch: terminal rows are accumulating faster than the cleanup schedule
+  removes them. Raise the batch count or run passes more often.
 - `realtime.wake` with `reason: "delta-too-large"`: sustained occurrences
   mean commits routinely exceed the delta limit and clients fall back to
   HTTP pulls; raise the limit or shrink commits.
@@ -171,3 +219,7 @@ event stream, that segment *reuse* beats *build* under a storm. Full docs in
   the policies pruning and GC interact with.
 - [Cloudflare Workers](/server-workers/): running the sweep from a cron
   trigger.
+- [Domain actions and event rows](/guide-domain-events/): durable application
+  intent stored with domain writes.
+- [Remote server operations](/guide-remote-operations/): database-less typed
+  queries, commands, and live watches.
