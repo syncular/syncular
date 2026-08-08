@@ -45,7 +45,7 @@ The application lifecycle owner calls `clientResource.dispose()` when the
 engine is truly no longer needed. A resource survives React remounts, but not
 automatic module replacement: preserve it in your bundler's HMR data or dispose
 the previous resource before constructing another persistent worker. The
-[schema-aware Vite recipe](/guide-vite/#keep-one-schema-correct-persistent-owner-during-hmr)
+[schema-aware Vite recipe](/guide-vite/#keep-one-schema-and-runtime-correct-persistent-owner-during-hmr)
 and [official React example](https://github.com/syncular/syncular/blob/main/apps/demo-react/src/frontend/main.tsx)
 capture the generated version, reuse same-schema edits, and order disposal
 before a schema-bump replacement.

@@ -68,9 +68,6 @@ written atomically with the state change.
 
 ## Boundaries
 
-Syncular is **server-authoritative, offline-first SQL sync you can operate**.
-A few boundaries define it:
-
 - **One server, one ordered log.** A single source of truth keeps
   authorization, audit, and pruning tractable. There is no peer-to-peer mode.
 - **Versioned rows with explicit conflicts.** Rows converge through versioned
@@ -82,9 +79,7 @@ A few boundaries define it:
 - **Built for durable, authorized app data.** Frame-by-frame multiplayer
   state belongs in a dedicated netcode layer.
 
-## Boring by design
-
-The core design decisions:
+## Design decisions
 
 | Decision | Why it matters |
 |---|---|
@@ -98,14 +93,10 @@ The core design decisions:
 ## The numbers
 
 - **30 ms** to bootstrap a 100k-row image on a fresh client (the rows lane is
-  365 ms). See [benchmarks](/benchmarks/).
+  365 ms).
 - **0.2 ms p95** realtime propagation between two live clients.
-- **31.3 KB gzip** of syncular's own client JavaScript; the rest of the browser
-  payload is the stock sqlite-wasm distribution every wasm-SQLite product ships.
-- The complete conformance catalog, protocol vectors, package suite, and
-  platform-native gates are CI-blocking.
 
-> These docs describe what is in the tree today.
+Methodology and the rest of the record are in [benchmarks](/benchmarks/).
 
 ## Where to go next
 

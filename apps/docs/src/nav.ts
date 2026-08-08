@@ -15,8 +15,6 @@ export const nav: readonly NavSection[] = [
       { slug: 'what-is', title: 'What is syncular' },
       { slug: 'quickstart', title: 'Quickstart' },
       { slug: 'demos', title: 'Live demos' },
-      { slug: 'changelog', title: 'Changelog' },
-      { slug: 'blog', title: 'Blog' },
     ],
   },
   {
@@ -85,6 +83,13 @@ export const nav: readonly NavSection[] = [
       { slug: 'guide-conformance', title: 'Protocol & conformance' },
       { slug: 'benchmarks', title: 'Benchmarks' },
       { slug: 'troubleshooting', title: 'Troubleshooting' },
+    ],
+  },
+  {
+    title: 'Project',
+    items: [
+      { slug: 'changelog', title: 'Changelog' },
+      { slug: 'blog', title: 'Blog' },
       { slug: 'contributing', title: 'Contributing' },
       { slug: 'llms', title: 'LLMs' },
       { slug: 'privacy', title: 'Privacy' },

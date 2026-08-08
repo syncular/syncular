@@ -18,18 +18,13 @@ a single-pane todo UI on the worker + OPFS client instead. For
 [one codebase, web + desktop](/guide-web-desktop/), `--template tauri` adds a
 `src-tauri/` host running the native Rust core behind the engine seam.
 
-> The rest of this page is the **"what it did" explainer**: every snippet is
-> extracted from the runnable [`examples/quickstart`](https://github.com/syncular/syncular/tree/main/examples/quickstart)
-> directory (the same shape the scaffolder emits), which also ships a smoke test
-> that runs this exact path in CI so it cannot rot. If you scaffolded above, you
-> already have these files; read on to understand them, or skip to
-> [step 3](#3-generate-the-typed-schema) to run it.
-
-To copy the example by hand instead of scaffolding:
-
-```sh
-cp -r examples/quickstart my-app && cd my-app
-```
+> Every snippet below comes from the runnable
+> [`examples/quickstart`](https://github.com/syncular/syncular/tree/main/examples/quickstart)
+> directory (the shape the scaffolder emits); a CI smoke test runs this exact
+> path. To copy it by hand instead of scaffolding:
+> `cp -r examples/quickstart my-app && cd my-app`. If you scaffolded above,
+> you already have these files; skip to
+> [step 3](#3-generate-the-typed-schema) to run them.
 
 ## 2. Describe and lock the schema
 
@@ -121,7 +116,7 @@ Bun.serve({ port, fetch: app.fetch });
 console.log(`syncular quickstart server: http://localhost:${port}`);
 ```
 
-`resolveScopes` is the entire authorization story, and it runs in **your**
+`resolveScopes` decides which rows an actor may sync, and it runs in **your**
 backend. Here the demo actor may see every list (`['*']`); a real backend
 returns the list ids the authenticated user belongs to. See
 [Scopes & authorization](/concepts-scopes/).
@@ -216,6 +211,11 @@ B sees: [
 converges on A's write, filtered to the scope B is authorized for.
 
 ## Where to go from here
+
+This page traded four production concerns for brevity: the database is
+in-memory (pass a path to persist), `authenticate` accepts everyone,
+`resolveScopes` grants every list, and sync runs on manual `syncUntilIdle()`
+calls with no realtime connection. The platform pages restore all four.
 
 - **[Web (browser)](/platform-web/)**: the real browser build (worker + OPFS)
   with realtime and offline replay. Or jump straight to your platform:

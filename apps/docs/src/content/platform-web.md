@@ -113,7 +113,7 @@ await handle.mutate([
 For typed reads (generated `.sql` queries) see
 [Named queries](/tooling-queries/). For React live queries see
 [React](/platform-react/). During development, use the
-[schema-aware Vite owner recipe](/guide-vite/#keep-one-schema-correct-persistent-owner-during-hmr)
+[schema-aware Vite owner recipe](/guide-vite/#keep-one-schema-and-runtime-correct-persistent-owner-during-hmr)
 so query HMR cannot outpace the worker's generated schema; the
 [official React example](https://github.com/syncular/syncular/blob/main/apps/demo-react/src/frontend/main.tsx)
 uses that exact record.

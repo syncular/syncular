@@ -43,8 +43,8 @@ ack is safe:
 - an originally-rejected commit replays as the same rejection.
 
 Exactly-once apply per client commit; at-least-once delivery of results. This
-is why the client outbox can retry freely after any network blip; the
-[offline replay](/guide-client/) story rests on it.
+is why the client outbox can retry freely after any network blip, and why
+[offline replay](/platform-web/#offline-replay) is safe.
 
 ## The pruning horizon
 

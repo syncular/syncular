@@ -58,11 +58,10 @@ lack it.
 
 The path for a third core is therefore: implement `SPEC.md`, pass the golden
 vectors byte-for-byte, then pass the conformance catalog through a driver
-shim. That is exactly how the clean-room Rust core was validated: written from
-the spec alone, it passed every vector on first run and the full catalog
-against the TS server.
+shim. The clean-room Rust core was validated this way: written from the spec,
+it passed the golden vectors and the full catalog against the TS server.
 
-This is also how features land. **CRDT fields** shipped spec-first: the
+New features follow the same path. **CRDT fields** shipped spec-first: the
 column type and merge semantics in
 [SPEC §5.10](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#510-crdt-columns--opt-in-collaborative-state), two
 golden vectors, and convergence scenarios in the catalog run by both client

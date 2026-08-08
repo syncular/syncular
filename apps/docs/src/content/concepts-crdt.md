@@ -2,7 +2,7 @@
 
 Most columns are **last-write-wins** (LWW): the newest write to a row wins, and
 a concurrent write to the same optimistic-concurrency token conflicts (see
-[Conflicts](concepts-conflicts.md)). A shared document two people edit at the
+[Conflicts](/concepts-conflicts/)). A shared document two people edit at the
 same time needs a different model: both edits should survive and **converge**
 into one state.
 

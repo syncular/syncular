@@ -1,8 +1,7 @@
 # Specifications & package map
 
-The docs are the guide; the specifications are the normative contracts. This
-page points into both specifications and maps every published package, crate,
-and binding to where it lives.
+This page points into the normative specifications and maps every published
+package, crate, and binding to where it lives.
 
 ## Normative specifications
 

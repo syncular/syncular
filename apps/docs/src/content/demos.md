@@ -1,10 +1,9 @@
 # Live demos
 
-Every demo in the repo is the same very simple todo list, built to prove two
-things per platform: syncular compiles and works there, and the integration is
-a few plain lines of code. The headline browser demo is available online; this
-page also explains how to run both browser demos locally and where the native
-platform examples live.
+Every demo in the repo is the same todo list. Each one shows that syncular
+builds and syncs on its platform, with an integration surface of roughly 30
+lines. The two-pane browser demo is hosted online; this page explains how to
+run both browser demos locally and where the native platform examples live.
 
 > **[Launch the live two-pane demo →](https://demo.syncular.dev/)**
 >
@@ -14,7 +13,7 @@ platform examples live.
 
 ## Two-pane convergence demo (`apps/demo`)
 
-The vanilla-DOM headline demo: **two independent client cores** from
+The vanilla-DOM two-pane demo: **two independent client cores** from
 `@syncular/client`, each a Web Worker running the whole core
 (`SyncClient` + transports + sqlite-wasm on persistent OPFS), syncing a todo
 list through one server (`@syncular/server-hono` over bun:sqlite) in a single
@@ -104,11 +103,7 @@ Rust core, with run recipes in each example's README.
   syncular instance in the Tauri host process.
   [bindings/tauri/example](https://github.com/syncular/syncular/tree/main/bindings/tauri/example)
 
-Taken together: `apps/demo` covers the browser core loop, `apps/demo-react`
-covers the typed hook surface, and the native examples show that React web,
-Tauri, and React Native run identical hook code while Swift, Kotlin, and Dart
-mirror one wrapper surface over the same conformance-locked JSON command
-router. Each example README contains its run and verification instructions.
+Each example README contains its run and verification instructions.
 
 ## Where to go next
 

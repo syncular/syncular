@@ -1,8 +1,8 @@
 # Benchmarks
 
 The measured performance record for the syncular core: bootstrap wall time, realtime
-propagation, client bundle size, and server memory. The caveats come first,
-because the lane these numbers come from flatters some of them. The
+propagation, client bundle size, and server memory. The numbers come from a
+controlled lane that flatters some of them; the caveats state which. The
 curated source of truth is
 [bench/RESULTS.md](https://github.com/syncular/syncular/blob/main/bench/RESULTS.md).
 

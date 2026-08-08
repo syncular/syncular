@@ -5,7 +5,8 @@ that has already validated a server-authoritative device, membership, or
 encryption-key revocation. It removes matching synced data and unsafe pending
 writes from one client without inventing a remote-erasure protocol.
 
-The host owns authority. Syncular owns the atomic SQLite consequences.
+The application decides when a purge is authorized; `purgeLocalData()`
+applies the removal as one atomic SQLite transaction.
 
 ## Authority workflow
 

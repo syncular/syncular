@@ -230,7 +230,7 @@ With an encrypted column, the server:
   before encrypting if length is sensitive);
 - **can** see **which rows change and when** (metadata: row ids, scopes,
   versions, timestamps are plaintext by design);
-- sees **ciphertext** in a [write-validator](concepts-conflicts.md): a §6.7
+- sees **ciphertext** in a [write-validator](/concepts-conflicts/): a §6.7
   validator cannot assert on an encrypted column's contents, so business rules
   over encrypted data run on the client, before the write;
 - serves an encrypted table only on the **rows lane**, and skips the
