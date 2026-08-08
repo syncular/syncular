@@ -1,0 +1,41 @@
+---
+import { changelog } from '../changelog.mjs';
+import Docs from '../layouts/Docs.astro';
+
+const formatDate = (value: string) =>
+  new Intl.DateTimeFormat('en', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  }).format(new Date(`${value}T00:00:00Z`));
+---
+
+<Docs
+  title="Changelog"
+  active="changelog"
+  description="Feature timeline for syncular: what shipped and when, with a link to the documentation for each change."
+>
+  <h1>Changelog</h1>
+  <p>
+    What shipped and when, newest first. Each entry links to the page that
+    documents the feature; dates are merge dates on main.
+  </p>
+
+  <ol class="timeline">
+    {
+      changelog.map((entry) => (
+        <li class="timeline-entry">
+          <time datetime={entry.date}>{formatDate(entry.date)}</time>
+          <h2>{entry.title}</h2>
+          <p>{entry.body}</p>
+          <p class="timeline-links">
+            {entry.links.map((link) => (
+              <a href={link.href}>{link.label} →</a>
+            ))}
+          </p>
+        </li>
+      ))
+    }
+  </ol>
+</Docs>

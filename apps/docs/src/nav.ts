@@ -15,6 +15,7 @@ export const nav: readonly NavSection[] = [
       { slug: 'what-is', title: 'What is syncular' },
       { slug: 'quickstart', title: 'Quickstart' },
       { slug: 'demos', title: 'Live demos' },
+      { slug: 'changelog', title: 'Changelog' },
       { slug: 'blog', title: 'Blog' },
     ],
   },

@@ -270,6 +270,46 @@ th {
   color: var(--dim);
 }
 
+/* ---------- Changelog timeline ---------- */
+.timeline { margin: 2.2rem 0 0; padding: 0 0 0 0.3rem; list-style: none; }
+.timeline-entry {
+  position: relative;
+  margin: 0;
+  padding: 0 0 2.1rem 1.6rem;
+  border-left: 1px solid var(--border);
+}
+.timeline-entry:last-child { padding-bottom: 0.4rem; }
+.timeline-entry::before {
+  content: '';
+  position: absolute;
+  left: -0.3rem;
+  top: 0.5rem;
+  width: 0.55rem;
+  height: 0.55rem;
+  background: var(--void);
+  border: 1px solid var(--border-strong);
+}
+.timeline-entry:first-child::before {
+  background: var(--amber);
+  border-color: var(--amber);
+}
+.timeline-entry time {
+  display: block;
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+article .timeline-entry h2 {
+  margin: 0.2rem 0 0.4rem;
+  padding: 0;
+  border: none;
+  font-size: 1rem;
+}
+article .timeline-entry p { margin: 0.4rem 0; }
+.timeline-links { display: flex; flex-wrap: wrap; gap: 0.3rem 1.2rem; }
+.timeline-links a { font-size: 0.82rem; }
+
 /* ---------- Landing page ---------- */
 .landing-body { display: block; }
 .wrap { max-width: 66rem; margin: 0 auto; padding: 0 1.25rem; }

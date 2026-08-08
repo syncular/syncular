@@ -8,6 +8,7 @@ import {
 } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { changelog } from '../src/changelog.mjs';
 import { reflectReleaseVersion, releaseVersion } from './release-version.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -87,7 +88,30 @@ statement variants, public inputs, private binds, dependencies, coverage, and
 row identity. Source text is never uploaded or persisted.
 `,
 };
-const discoverablePages = [...contentFiles, playgroundPage];
+const changelogPage = {
+  slug: 'changelog',
+  path: join(root, 'src/changelog.mjs'),
+  title: 'Changelog',
+  lastmod: changelog[0].date,
+  body: `# Changelog
+
+What shipped and when, newest first. Each entry links to the page that
+documents the feature; dates are merge dates on main.
+
+${changelog
+  .map(
+    (entry) => `## ${entry.date}: ${entry.title}
+
+${entry.body}
+
+${entry.links
+  .map((link) => `- [${link.label}](${site}${link.href})`)
+  .join('\n')}`,
+  )
+  .join('\n\n')}
+`,
+};
+const discoverablePages = [...contentFiles, playgroundPage, changelogPage];
 const bySlug = new Map(discoverablePages.map((page) => [page.slug, page]));
 const orderedPages = [
   ...navItems.flatMap((item) => {
