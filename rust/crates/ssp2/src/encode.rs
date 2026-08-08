@@ -2,22 +2,27 @@
 //! reproduces the input byte-for-byte: raw `json` strings, map entry order,
 //! and unknown frames are all preserved by the model.
 
-use crate::decode::{SSP2_MAGIC, WIRE_VERSION};
+use crate::decode::{MINIMUM_WIRE_VERSION, SSP2_MAGIC, WIRE_VERSION};
 use crate::model::frame_type as ft;
 use crate::model::{Frame, MediaType, Message, MsgKind, Op, OpResult, PushStatus, SubStatus};
 use crate::primitives::Writer;
 
 pub fn encode_message(msg: &Message) -> Vec<u8> {
+    assert!(
+        (MINIMUM_WIRE_VERSION..=WIRE_VERSION).contains(&msg.wire_version),
+        "unsupported wireVersion {}",
+        msg.wire_version
+    );
     let mut w = Writer::new();
     w.raw(SSP2_MAGIC);
-    w.u16(WIRE_VERSION);
+    w.u16(msg.wire_version);
     w.u8(match msg.msg_kind {
         MsgKind::Request => 0x01,
         MsgKind::Response => 0x02,
     });
     w.u8(0x00); // flags
     for frame in &msg.frames {
-        let (ty, payload) = encode_frame(frame);
+        let (ty, payload) = encode_frame(frame, msg.wire_version);
         w.u8(ty);
         w.u32(payload.len() as u32);
         w.raw(&payload);
@@ -34,21 +39,31 @@ fn op_byte(op: Op) -> u8 {
     }
 }
 
-/// Every frame type with a defined layout in wire version 1 (§1.2 registry),
-/// `END` included.
+/// Every frame type with a defined layout in wire versions 1 and 2 (§1.2
+/// registry), `END` included.
 fn is_registered_frame_type(ty: u8) -> bool {
     ty == ft::END || ft::REQUEST_TYPES.contains(&ty) || ft::RESPONSE_TYPES.contains(&ty)
 }
 
-fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
+fn encode_frame(frame: &Frame, wire_version: u16) -> (u8, Vec<u8>) {
     let mut w = Writer::new();
     let ty = match frame {
         Frame::ReqHeader {
             client_id,
             schema_version,
+            log_epoch,
         } => {
             w.str(client_id);
             w.i32(*schema_version);
+            if wire_version >= 2 {
+                assert!(log_epoch.as_ref().is_none_or(|value| !value.is_empty()));
+                w.opt(log_epoch, |w, value| w.str(value));
+            } else {
+                assert!(
+                    log_epoch.is_none(),
+                    "REQ_HEADER.logEpoch requires wireVersion 2"
+                );
+            }
             ft::REQ_HEADER
         }
         Frame::PushCommit {
@@ -97,9 +112,24 @@ fn encode_frame(frame: &Frame) -> (u8, Vec<u8>) {
         Frame::RespHeader {
             required_schema_version,
             latest_schema_version,
+            log_epoch,
+            reset_required,
         } => {
             w.opt(required_schema_version, |w, v| w.i32(*v));
             w.opt(latest_schema_version, |w, v| w.i32(*v));
+            if wire_version >= 2 {
+                let value = log_epoch
+                    .as_ref()
+                    .filter(|value| !value.is_empty())
+                    .expect("RESP_HEADER.logEpoch is required and non-empty");
+                w.str(value);
+                w.bool(reset_required.expect("RESP_HEADER.resetRequired is required"));
+            } else {
+                assert!(
+                    log_epoch.is_none() && reset_required.is_none(),
+                    "RESP_HEADER epoch fields require wireVersion 2"
+                );
+            }
             ft::RESP_HEADER
         }
         Frame::Lease {

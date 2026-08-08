@@ -1,4 +1,4 @@
-/** Frame type registry for wire version 1 (SPEC.md §1.2). */
+/** Frame type registry for wire versions 1 and 2 (SPEC.md §1.2). */
 export const FrameType = {
   END: 0x00,
   REQ_HEADER: 0x01,
@@ -41,7 +41,7 @@ export const RESPONSE_FRAME_TYPES: ReadonlySet<number> = new Set([
   FrameType.ERROR,
 ]);
 
-/** Every frame type with a defined layout in wire version 1. */
+/** Every frame type with a defined layout in wire versions 1 and 2. */
 export const KNOWN_FRAME_TYPES: ReadonlySet<number> = new Set([
   FrameType.END,
   ...REQUEST_FRAME_TYPES,

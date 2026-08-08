@@ -14,6 +14,71 @@
  */
 import { canonicalScopeJson, type ScopeMap } from '@syncular/core';
 import type { ClientDatabase } from './database';
+import { ClientSyncError } from './errors';
+
+export type TimeBucketUnit = 'month';
+
+const MAX_TIME_BUCKET_MS = 253_402_300_799_999;
+
+function monthBucket(year: number, month: number): string {
+  return `${year.toString().padStart(4, '0')}-${month.toString().padStart(2, '0')}`;
+}
+
+/** Derive the immutable UTC scope value stored when a row is created. */
+export function creationTimeBucket(
+  createdAtMs: number,
+  unit: TimeBucketUnit,
+): string {
+  if (
+    unit !== 'month' ||
+    !Number.isSafeInteger(createdAtMs) ||
+    createdAtMs < 0 ||
+    createdAtMs > MAX_TIME_BUCKET_MS
+  ) {
+    throw new ClientSyncError(
+      'sync.invalid_request',
+      'creationTimeBucket requires a supported unit and a UTC timestamp from 1970 through 9999',
+    );
+  }
+  const date = new Date(createdAtMs);
+  return monthBucket(date.getUTCFullYear(), date.getUTCMonth() + 1);
+}
+
+/** Return a rolling UTC month window ordered from oldest to newest. */
+export function last(
+  count: number,
+  unit: TimeBucketUnit,
+  nowMs = Date.now(),
+): string[] {
+  if (
+    unit !== 'month' ||
+    !Number.isSafeInteger(count) ||
+    count < 1 ||
+    count > 1_200 ||
+    !Number.isSafeInteger(nowMs) ||
+    nowMs < 0 ||
+    nowMs > MAX_TIME_BUCKET_MS
+  ) {
+    throw new ClientSyncError(
+      'sync.invalid_request',
+      'last requires a supported unit, a count from 1 through 1200, and a UTC timestamp from 1970 through 9999',
+    );
+  }
+  const date = new Date(nowMs);
+  const current = date.getUTCFullYear() * 12 + date.getUTCMonth();
+  if (current - (count - 1) < 1970 * 12) {
+    throw new ClientSyncError(
+      'sync.invalid_request',
+      'last requires every returned UTC month to fall from 1970 through 9999',
+    );
+  }
+  const units: string[] = [];
+  for (let offset = count - 1; offset >= 0; offset -= 1) {
+    const value = current - offset;
+    units.push(monthBucket(Math.floor(value / 12), (value % 12) + 1));
+  }
+  return units;
+}
 
 /**
  * A window base: one table, one variable whose values are the window

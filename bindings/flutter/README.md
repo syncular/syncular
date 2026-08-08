@@ -61,12 +61,19 @@ client.resume();  // reconnect + restart poll
 client.close();   // release DB/transport/socket; idempotent
 ```
 
+Call `client.setHeaders({'Authorization': 'Bearer $token'})` after credential
+rotation. HTTP requests use the new headers immediately. Reconnect realtime to
+repeat the WebSocket handshake with them. `FlutterConnectivitySignal` and
+`SyncularConnectivityAdapter` bind a boolean reachability stream to
+`pause()`/`resume()`; close the adapter during client teardown.
+
 Typed conveniences mirror the command surface exactly (same names as the
 Swift/Kotlin wrappers): `mutate` / `subscribe` / `unsubscribe` / `sync` /
 `syncUntilIdle` / `readRows` / `query` / `pendingCommitIds` / `syncNeeded` /
 `subscriptionState` / `conflicts` / `presence` / `setPresence` / `setWindow` /
 `windowState` / `connectRealtime` / `disconnectRealtime` / `crdtText` /
-`crdtInsertText` / `crdtDeleteText` / `crdtApplyUpdate` (native CRDT, §5.10.5).
+`crdtInsertText` / `crdtDeleteText` / `crdtApplyUpdate` / `setHeaders` (native
+CRDT is specified in §5.10.5).
 Anything not lifted is
 reachable via the raw `command(method, params)`.
 

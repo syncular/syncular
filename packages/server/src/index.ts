@@ -64,6 +64,7 @@ export {
   type ReactionTypeMap,
 } from './reactions';
 export * from './realtime';
+export * from './restore';
 export * from './relational-rows';
 export * from './s3-blob-store';
 export * from './s3-segment-store';

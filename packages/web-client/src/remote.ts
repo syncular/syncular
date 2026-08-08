@@ -10,7 +10,6 @@ import {
   encodeRemoteOperationRequest,
   encodeRemoteOperationRealtimeMessage,
   encodeRow,
-  PROTOCOL_WIRE_VERSION,
   type PushOperation,
   type PushOperationResult,
   type PushResultDetailsFrame,
@@ -42,6 +41,8 @@ export interface SyncRemoteClientConfig {
   readonly operations?: RemoteOperationTransport;
   readonly operationRealtime?: RemoteOperationRealtimeConnector;
   readonly encryption?: EncryptionConfig;
+  /** Acquired partition log epoch for restore-safe ordinary commits (§2.1). */
+  readonly logEpoch?: string;
 }
 
 export interface RemoteCommitInput {
@@ -203,10 +204,14 @@ export class SyncRemoteClient {
     }
   >();
   readonly #encryption: EncryptionConfig | undefined;
+  readonly #logEpoch: string | undefined;
 
   constructor(config: SyncRemoteClientConfig) {
     if (config.clientId.length === 0) {
       throw invalid('SyncRemoteClient clientId must be non-empty');
+    }
+    if (config.logEpoch !== undefined && config.logEpoch.length === 0) {
+      throw invalid('SyncRemoteClient logEpoch must be non-empty');
     }
     this.#schema =
       config.schema === undefined
@@ -217,6 +222,7 @@ export class SyncRemoteClient {
     this.#operations = config.operations;
     this.#operationRealtime = config.operationRealtime;
     this.#encryption = config.encryption;
+    this.#logEpoch = config.logEpoch;
   }
 
   async prepareCommit(input: RemoteCommitInput): Promise<PreparedRemoteCommit> {
@@ -277,13 +283,16 @@ export class SyncRemoteClient {
     return {
       requestId: input.requestId,
       bytes: encodeMessage({
-        wireVersion: PROTOCOL_WIRE_VERSION,
+        wireVersion: this.#logEpoch === undefined ? 1 : 2,
         msgKind: 'request',
         frames: [
           {
             type: 'REQ_HEADER',
             clientId: this.#clientId,
             schemaVersion: schema.version,
+            ...(this.#logEpoch !== undefined
+              ? { logEpoch: this.#logEpoch }
+              : {}),
           },
           {
             type: 'PUSH_COMMIT',

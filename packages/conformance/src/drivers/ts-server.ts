@@ -33,6 +33,7 @@ import {
   type SegmentUrlConfig,
   type ServerSchema,
   type ServerStorage,
+  BunSqliteDatabase,
   SqliteServerStorage,
   SyncError,
   type SyncRequestContext,
@@ -218,7 +219,7 @@ function parseBlobUrl(
 class TsServerInstance implements ServerInstance {
   readonly #schema: DriverSchema;
   readonly #partition: string;
-  readonly #storage: SqliteServerStorage;
+  #storage: SqliteServerStorage;
   readonly #wrapped: ServerStorage;
   readonly #segments: MemorySegmentStore;
   readonly #blobs: BlobStore = new MemoryBlobStore();
@@ -244,6 +245,7 @@ class TsServerInstance implements ServerInstance {
   readonly #blobUploadPresign: BlobUploadPresignConfig;
   /** §7.3: the lease store + config, present iff `leases` was requested. */
   readonly #leases: LeaseConfig | undefined;
+  #backup: Uint8Array | undefined;
 
   constructor(options: ServerCreateOptions) {
     this.#schema = options.schema;
@@ -343,16 +345,21 @@ class TsServerInstance implements ServerInstance {
 
   /** Storage with the optional idempotency-lookup fault (§6.3). */
   #wrapStorage(): ServerStorage {
-    const storage = this.#storage;
     return {
-      ensureSchema: (s) => storage.ensureSchema(s),
-      begin: (p) => storage.begin(p),
-      getMaxCommitSeq: (p) => storage.getMaxCommitSeq(p),
-      getHorizonSeq: (p) => storage.getHorizonSeq(p),
-      setHorizonSeq: (p, s) => storage.setHorizonSeq(p, s),
-      pruneCommitsThrough: (p, s) => storage.pruneCommitsThrough(p, s),
-      getCommitSeqBefore: (p, t) => storage.getCommitSeqBefore(p, t),
-      getRow: (p, t, r) => storage.getRow(p, t, r),
+      ensureSchema: (s) => this.#storage.ensureSchema(s),
+      touchPartition: (p, at, epoch) =>
+        this.#storage.touchPartition(p, at, epoch),
+      rotatePartitionLogEpoch: (p, epoch, at) =>
+        this.#storage.rotatePartitionLogEpoch(p, epoch, at),
+      listPartitionRegistry: () => this.#storage.listPartitionRegistry(),
+      listPartitions: () => this.#storage.listPartitions(),
+      begin: (p) => this.#storage.begin(p),
+      getMaxCommitSeq: (p) => this.#storage.getMaxCommitSeq(p),
+      getHorizonSeq: (p) => this.#storage.getHorizonSeq(p),
+      setHorizonSeq: (p, s) => this.#storage.setHorizonSeq(p, s),
+      pruneCommitsThrough: (p, s) => this.#storage.pruneCommitsThrough(p, s),
+      getCommitSeqBefore: (p, t) => this.#storage.getCommitSeqBefore(p, t),
+      getRow: (p, t, r) => this.#storage.getRow(p, t, r),
       getPushResult: (p, c, id) => {
         if (this.#failNextIdempotencyLookup) {
           this.#failNextIdempotencyLookup = false;
@@ -361,16 +368,17 @@ class TsServerInstance implements ServerInstance {
             'injected: unreadable idempotency record',
           );
         }
-        return storage.getPushResult(p, c, id);
+        return this.#storage.getPushResult(p, c, id);
       },
-      readCommitWindow: (p, q) => storage.readCommitWindow(p, q),
-      scanRows: (p, q) => storage.scanRows(p, q),
-      getClientRecord: (p, c) => storage.getClientRecord(p, c),
-      putClientRecord: (p, r) => storage.putClientRecord(p, r),
-      listClientCursors: (p) => storage.listClientCursors(p),
+      readCommitWindow: (p, q) => this.#storage.readCommitWindow(p, q),
+      scanRows: (p, q) => this.#storage.scanRows(p, q),
+      getClientRecord: (p, c) => this.#storage.getClientRecord(p, c),
+      putClientRecord: (p, r) => this.#storage.putClientRecord(p, r),
+      listClientCursors: (p) => this.#storage.listClientCursors(p),
       // §5.9.4 blob reference index reads.
-      listRowsReferencingBlob: (p, b) => storage.listRowsReferencingBlob(p, b),
-      listReferencedBlobIds: (p) => storage.listReferencedBlobIds(p),
+      listRowsReferencingBlob: (p, b) =>
+        this.#storage.listRowsReferencingBlob(p, b),
+      listReferencedBlobIds: (p) => this.#storage.listReferencedBlobIds(p),
     };
   }
 
@@ -721,6 +729,29 @@ class TsServerInstance implements ServerInstance {
     return this.#now.ms;
   }
 
+  async captureBackup(): Promise<void> {
+    if (!(this.#storage.db instanceof BunSqliteDatabase)) {
+      throw new Error('backup simulation requires the Bun SQLite adapter');
+    }
+    this.#backup = this.#storage.db.serialize();
+  }
+
+  async restoreBackup(): Promise<void> {
+    if (this.#backup === undefined) {
+      throw new Error('captureBackup must run before restoreBackup');
+    }
+    const restored = new SqliteServerStorage(
+      BunSqliteDatabase.deserialize(this.#backup),
+    );
+    await restored.rotatePartitionLogEpoch(
+      this.#partition,
+      `restored-${this.#now.ms}`,
+      this.#now.ms,
+    );
+    this.#storage.db.close();
+    this.#storage = restored;
+  }
+
   async prune(retention?: RetentionOptions): Promise<number> {
     return pruneCommitLog({
       storage: this.#wrapped,
@@ -785,6 +816,7 @@ class TsServerInstance implements ServerInstance {
 export const tsServerDriver: ServerDriver = {
   name: 'ts-server',
   capabilities: [
+    'backup-restore',
     'idempotency-fault',
     'signed-urls',
     'blobs',

@@ -56,6 +56,16 @@ location. `SyncularConfig` also accepts `wsUrl` and `headers`, and `create`
 takes `limits`, an explicit `libraryPath`, and `pollInterval` (40 ms by
 default).
 
+Rotate credentials without recreating the client:
+
+```dart
+client.setHeaders({'Authorization': 'Bearer $freshToken'});
+```
+
+The next HTTP request uses the new headers. An open WebSocket keeps the
+headers from its handshake; call `pause()` and `resume()` when the new
+credential must apply to the live socket immediately.
+
 ## Reads & writes
 
 ```dart
@@ -149,6 +159,27 @@ These are the same artifacts the Swift and Kotlin release paths use; only
 the load call site differs.
 
 ## Lifecycle & threading
+
+Adapt a reachability source to the client lifecycle with
+`FlutterConnectivitySignal`:
+
+```dart
+final connectivity = SyncularConnectivityAdapter(
+  client,
+  FlutterConnectivitySignal(
+    online: currentOnline,
+    changes: onlineChanges,
+  ),
+);
+
+// During client teardown:
+await connectivity.close();
+```
+
+The boolean stream must report network availability, rather than the selected
+interface name. If `AppLifecycleState` also controls the client, feed the
+adapter a combined foreground-and-online stream or close it while the app is
+paused.
 
 ```dart
 client.pause();   // stop poll + disconnect realtime (app backgrounded)

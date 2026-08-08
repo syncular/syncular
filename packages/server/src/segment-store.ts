@@ -12,6 +12,8 @@ export const DEFAULT_SEGMENT_TTL_MS = 24 * 60 * 60 * 1000;
 
 export interface SegmentMetadata {
   readonly partition: string;
+  /** Partition log continuity that produced these bytes (§2.1). */
+  readonly logEpoch: string;
   readonly table: string;
   readonly schemaVersion: number;
   readonly mediaType: 'rows' | 'sqlite';
@@ -36,6 +38,7 @@ export interface SegmentRecord extends SegmentMetadata {
  */
 export interface SegmentFindKey {
   readonly partition: string;
+  readonly logEpoch: string;
   readonly table: string;
   readonly schemaVersion: number;
   readonly mediaType: 'rows' | 'sqlite';
@@ -126,6 +129,7 @@ export class MemorySegmentStore implements SegmentStore {
     for (const { record } of this.#entries.values()) {
       if (
         record.partition === key.partition &&
+        record.logEpoch === key.logEpoch &&
         record.table === key.table &&
         record.schemaVersion === key.schemaVersion &&
         record.mediaType === key.mediaType &&

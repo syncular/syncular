@@ -17,7 +17,6 @@ import {
   encodeMessage,
   encodeRow,
   MessageStreamScanner,
-  PROTOCOL_WIRE_VERSION,
   type PushCommitFrame,
   type PushResultFrame,
   REALTIME_TAG_DELTA,
@@ -171,7 +170,7 @@ function syncRequestBytes(
   clientId: string,
 ): Uint8Array {
   return encodeMessage({
-    wireVersion: PROTOCOL_WIRE_VERSION,
+    wireVersion: 1,
     msgKind: 'request',
     frames: [{ type: 'REQ_HEADER', clientId, schemaVersion: 1 }, ...frames],
   });

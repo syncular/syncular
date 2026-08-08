@@ -31,7 +31,11 @@ import {
   type WakeReason,
 } from '@syncular/core';
 import type { SyncRequestContext, SyncServerConfig } from './context';
-import { REMOTE_COMMAND_CLIENT_ID_PREFIX, RESOLVER_OUTAGE } from './context';
+import {
+  REMOTE_COMMAND_CLIENT_ID_PREFIX,
+  RESOLVER_OUTAGE,
+  touchAuthenticatedPartition,
+} from './context';
 import { SyncError, syncError } from './errors';
 import { emitEvent, type SyncularServerEvents } from './events';
 import { createSyncResponseStream } from './handler';
@@ -215,6 +219,9 @@ export class RealtimeSession {
   readonly partition: string;
   readonly actorId: string;
   readonly clientId: string;
+  readonly logEpoch: string;
+  /** Response/delta layout selected by the most recent socket round. */
+  wireVersion: number;
   /** Highest contiguously applied commitSeq acknowledged by the client. */
   cursor: number;
   /** Suppress deltas until the client catches up via pull + ack (§8.2). */
@@ -256,12 +263,16 @@ export class RealtimeSession {
     clock: () => number,
     maxDeltaBytes: number,
     storage: ServerStorage,
+    logEpoch: string,
+    wireVersion: number,
     events: SyncularServerEvents | undefined,
   ) {
     this.sessionId = crypto.randomUUID();
     this.partition = options.partition;
     this.actorId = options.actorId;
     this.clientId = options.clientId;
+    this.logEpoch = logEpoch;
+    this.wireVersion = wireVersion;
     this.cursor = cursor;
     this.lastKnownSeq = latestSeq;
     this.wakePending = cursor < latestSeq;
@@ -515,6 +526,11 @@ export class RealtimeSession {
       if (this.#activeRound === token) this.#activeRound = undefined;
     };
     try {
+      const requestedWireVersion =
+        (requestBytes[4] ?? 0) | ((requestBytes[5] ?? 0) << 8);
+      if (requestedWireVersion === 1 || requestedWireVersion === 2) {
+        this.wireVersion = requestedWireVersion;
+      }
       let stream: AsyncIterable<Uint8Array> | undefined;
       try {
         // §8.7: the round's clientId must match the connection's —
@@ -543,7 +559,9 @@ export class RealtimeSession {
               ? error
               : syncError(error.code, error.message);
           finishRound(); // END is in this one chunk
-          await this.#sendRoundChunk(errorResponseBytes(sync));
+          await this.#sendRoundChunk(
+            errorResponseBytes(sync, this.wireVersion, this.logEpoch),
+          );
           return;
         }
         throw error;
@@ -712,7 +730,14 @@ export class RealtimeSession {
       this.sendWake('catchup-required');
       return;
     }
-    const frames: ResponseFrame[] = [{ type: 'RESP_HEADER' }];
+    const frames: ResponseFrame[] = [
+      {
+        type: 'RESP_HEADER',
+        ...(this.wireVersion >= 2
+          ? { logEpoch: this.logEpoch, resetRequired: false }
+          : {}),
+      },
+    ];
     for (const section of sections) {
       frames.push({
         type: 'SUB_START',
@@ -733,7 +758,7 @@ export class RealtimeSession {
       frames.push({ type: 'SUB_END', nextCursor: commit.commitSeq });
     }
     const bytes = encodeMessage({
-      wireVersion: PROTOCOL_WIRE_VERSION,
+      wireVersion: this.wireVersion,
       msgKind: 'response',
       frames,
     });
@@ -963,6 +988,11 @@ export class RealtimeHub {
   async connect(options: RealtimeConnectOptions): Promise<RealtimeSession> {
     const { storage } = this.#config;
     const clock = this.#config.clock ?? Date.now;
+    const registry = await touchAuthenticatedPartition({
+      ...this.#config,
+      partition: options.partition,
+      actorId: options.actorId,
+    });
     if (options.clientId.startsWith(REMOTE_COMMAND_CLIENT_ID_PREFIX)) {
       throw syncError(
         'sync.invalid_client_id',
@@ -995,6 +1025,8 @@ export class RealtimeHub {
       clock,
       this.#config.maxDeltaBytes ?? DEFAULT_MAX_DELTA_BYTES,
       storage,
+      registry.logEpoch,
+      record?.wireVersion ?? PROTOCOL_WIRE_VERSION,
       this.#config.events,
     );
     this.#sessions.add(session);
@@ -1079,12 +1111,19 @@ export function createRealtimeHub(config: RealtimeHubConfig): RealtimeHub {
 /** §8.7 failures: the socket has no HTTP status surface, so a
  * request-level failure becomes a minimal RESP_HEADER/ERROR/END
  * response message delivered as the round's response stream. */
-function errorResponseBytes(error: SyncError): Uint8Array {
+function errorResponseBytes(
+  error: SyncError,
+  wireVersion: number,
+  logEpoch: string,
+): Uint8Array {
   return encodeMessage({
-    wireVersion: PROTOCOL_WIRE_VERSION,
+    wireVersion,
     msgKind: 'response',
     frames: [
-      { type: 'RESP_HEADER' },
+      {
+        type: 'RESP_HEADER',
+        ...(wireVersion >= 2 ? { logEpoch, resetRequired: false } : {}),
+      },
       {
         type: 'ERROR',
         code: error.code,

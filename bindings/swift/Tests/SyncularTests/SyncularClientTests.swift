@@ -54,6 +54,16 @@ private func upsert(id: String, title: String) -> JSONValue {
     ])
 }
 
+private final class TestConnectivitySignal: SyncularConnectivitySignal {
+    var online = false
+    var listener: ((Bool) -> Void)?
+
+    func subscribe(_ listener: @escaping (Bool) -> Void) -> () -> Void {
+        self.listener = listener
+        return { [weak self] in self?.listener = nil }
+    }
+}
+
 @Test func initCreatesClient() throws {
     let client = try makeClient()
     defer { client.close() }
@@ -96,6 +106,26 @@ private func upsert(id: String, title: String) -> JSONValue {
         params: .object(["id": .string("s2"), "table": .string("todo"), "scopes": .object([:])])
     )
     #expect(result.objectValue != nil)
+}
+
+@Test func rotatesTransportHeadersWithoutRecreatingTheClient() throws {
+    let client = try makeClient()
+    defer { client.close() }
+    try client.setHeaders(["authorization": "Bearer fresh"])
+    try client.subscribe(id: "after-rotation", table: "todo")
+    #expect(try client.subscriptionState(id: "after-rotation") == "active")
+}
+
+@Test func connectivityAdapterPausesResumesAndDetaches() throws {
+    let client = try makeClient()
+    defer { client.close() }
+    let signal = TestConnectivitySignal()
+    let adapter = SyncularConnectivityAdapter(client: client, signal: signal)
+    #expect(signal.listener != nil)
+    signal.listener?(true)
+    try client.subscribe(id: "after-connectivity", table: "todo")
+    adapter.stop()
+    #expect(signal.listener == nil)
 }
 
 @Test func errorReplySurfacesAsSyncularError() throws {

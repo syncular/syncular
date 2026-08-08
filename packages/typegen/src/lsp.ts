@@ -9,6 +9,7 @@ import type { IrDocument } from './ir';
 import { MANIFEST_FILENAME, parseManifest } from './manifest';
 import { lockedMigrationNames, readMigrationLock } from './migration-lock';
 import type { QueryDb, QueryNamingOptions } from './query';
+import { syqlDiagnosticRemedy } from './syql-diagnostics';
 import { SyqlFrontendError, type SyqlSourceSpan } from './syql-lexer';
 import type { SyqlLoweredQuery } from './syql-lowering';
 import { lowerSyqlQuery } from './syql-lowering';
@@ -49,6 +50,7 @@ interface Diagnostic {
   severity: number;
   source: string;
   code?: string;
+  data?: { readonly remedy: string };
   message: string;
 }
 
@@ -384,14 +386,25 @@ export class SyqlLanguageServer {
       error instanceof SyqlFrontendError &&
       resolve(error.sourceFile) === file
     ) {
+      const remedy = syqlDiagnosticRemedy(error.code);
       return {
         range: spanRange(text, error.span),
         severity: 1,
         source: 'syncular',
         code: error.code,
+        ...(remedy === undefined ? {} : { data: { remedy } }),
         message: error.detail,
       };
     }
+    const projectContextError =
+      this.#context(pathToFileURL(file).href).kind === 'error';
+    const code =
+      error instanceof SyqlFrontendError
+        ? error.code
+        : projectContextError
+          ? 'SYQL9001_PROJECT_CONTEXT'
+          : undefined;
+    const remedy = code === undefined ? undefined : syqlDiagnosticRemedy(code);
     return {
       range: {
         start: { line: 0, character: 0 },
@@ -402,11 +415,11 @@ export class SyqlLanguageServer {
       },
       severity: 1,
       source: 'syncular',
-      ...(error instanceof SyqlFrontendError ? { code: error.code } : {}),
-      message:
-        this.#context(pathToFileURL(file).href).kind === 'error'
-          ? `SYQL9001_PROJECT_CONTEXT: ${message}`
-          : message,
+      ...(code === undefined ? {} : { code }),
+      ...(remedy === undefined ? {} : { data: { remedy } }),
+      message: projectContextError
+        ? `SYQL9001_PROJECT_CONTEXT: ${message}`
+        : message,
     };
   }
 

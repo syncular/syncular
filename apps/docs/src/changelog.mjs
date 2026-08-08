@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-08-08',
+    title: 'Restore fencing and host lifecycle controls',
+    body: 'Wire version 2 fences restored partition timelines with log epochs while preserving each client outbox. The client package adds a shared sync scheduler and UTC month-window helpers. Native bindings add runtime header rotation and connectivity adapters. The server adds an authenticated partition registry, and typegen publishes a diagnostic remedy catalog.',
+    links: [
+      { href: '/server-backup-restore/', label: 'Backup and restore' },
+      { href: '/guide-server-clients/', label: 'Server-side sync clients' },
+      { href: '/concepts-windowing/', label: 'Windowed sync' },
+      { href: '/syql/', label: 'SYQL language' },
+    ],
+  },
+  {
+    date: '2026-08-08',
     title: 'Docs restructure',
     body: 'One example domain per audience across the site, a dependency-ordered concepts arc, template-locked platform pages, and new pages for subscriptions and the outbox, schema upgrades, partitions, realtime tickets, encryption keys, and the CLI.',
     links: [

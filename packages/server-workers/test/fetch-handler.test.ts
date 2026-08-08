@@ -14,7 +14,6 @@ import {
   decodeMessage,
   encodeMessage,
   encodeRow,
-  PROTOCOL_WIRE_VERSION,
   type PushResultFrame,
   type RequestFrame,
   type RowColumn,
@@ -107,7 +106,7 @@ async function makeHandler(
 
 function syncRequest(frames: RequestFrame[], clientId = 'client-1'): Request {
   const bytes = encodeMessage({
-    wireVersion: PROTOCOL_WIRE_VERSION,
+    wireVersion: 1,
     msgKind: 'request',
     frames: [{ type: 'REQ_HEADER', clientId, schemaVersion: 1 }, ...frames],
   });

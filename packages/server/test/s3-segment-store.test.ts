@@ -51,6 +51,7 @@ function makeStore(): S3SegmentStore {
 
 const META: SegmentMetadata = {
   partition: 'p',
+  logEpoch: 'epoch-1',
   table: 'tasks',
   schemaVersion: 1,
   mediaType: 'rows',
@@ -88,6 +89,7 @@ describe('S3SegmentStore specifics', () => {
     const found = await store.find(
       {
         partition: META.partition,
+        logEpoch: META.logEpoch,
         table: META.table,
         schemaVersion: META.schemaVersion,
         mediaType: META.mediaType,

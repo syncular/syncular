@@ -145,14 +145,11 @@ impl Handle {
             self.last_diagnostics_fingerprint = None;
             self.transport.set_signed_urls(self.effects.signed_urls);
         }
-        if method == "activateSecurity" && result.is_ok() {
-            // A successful activation may carry a fresh transport header set
-            // (already validated by the shared router — a shape failure comes
-            // back as its error result). Apply it here, before the RN host
-            // consumes the startup sync intent the activation enqueued (a
-            // `sync-intent` event answered with a strictly later
-            // `syncUntilIdle` command), so a preflight that outlived the boot
-            // token starts its first round with valid credentials.
+        if matches!(method, "activateSecurity" | "setHeaders") && result.is_ok() {
+            // The shared router already validated the replacement set. Apply
+            // it before a successful activation's startup sync intent reaches
+            // the host; direct rotation takes effect on the next HTTP request
+            // and the next realtime connection.
             if let Some(headers) = params
                 .get("headers")
                 .and_then(|value| parse_headers(value).ok())

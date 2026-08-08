@@ -288,6 +288,19 @@ describe('createNativeSyncClient', () => {
       ).params.headers,
     ).toEqual({ authorization: 'Bearer post-preflight' });
     expect(await client.query('SELECT 1')).toBeInstanceOf(Array);
+    await client.setHeaders({ authorization: 'Bearer rotated' });
+    const rotation = calls.find(
+      (call) =>
+        call.fn === 'command' &&
+        (call.arg as { method?: string }).method === 'setHeaders',
+    );
+    expect(
+      (
+        rotation?.arg as {
+          params: { headers: Record<string, string> };
+        }
+      ).params.headers,
+    ).toEqual({ authorization: 'Bearer rotated' });
     await client.close();
   });
 

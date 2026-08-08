@@ -25,6 +25,7 @@ export * from './query';
 export * from './query-ir';
 export * from './sql';
 export * from './syql-ast';
+export * from './syql-diagnostics';
 export * from './syql-lexer';
 export * from './syql-lowering';
 export * from './syql-modules';

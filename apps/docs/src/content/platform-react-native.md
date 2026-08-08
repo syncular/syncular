@@ -72,6 +72,16 @@ without one it runs the offline-only core with no network stack. Give the
 client a persistent database path; an in-memory database loses rows, cursors,
 client identity, and the outbox on restart.
 
+Rotate credentials without recreating the client:
+
+```ts
+await client.setHeaders({ Authorization: `Bearer ${freshToken}` });
+```
+
+The next HTTP request uses the new headers. An open WebSocket keeps the
+headers from its handshake; call `pause()` and `resume()` when the new
+credential must apply to the live socket immediately.
+
 ## Reads & writes
 
 Every `@syncular/react` hook works unchanged in a React Native app. Pass the

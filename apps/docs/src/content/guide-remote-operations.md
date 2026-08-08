@@ -51,6 +51,10 @@ const client = new SyncRemoteClient({
 The schema and `/sync` transport are optional when a process only calls
 registered queries or commands; ordinary commits require both.
 
+Ordinary commits use wire version 1 when `logEpoch` is absent. Supply the
+partition `logEpoch` in the constructor after a restore rotation requires
+epoch validation. Prepared bytes bind the request to that epoch.
+
 ## Database-less ordinary commits
 
 The client uses the existing `/sync` push path. It does not create a local

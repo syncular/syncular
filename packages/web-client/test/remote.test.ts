@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  decodeMessage,
   decodeRow,
   encodeRemoteOperationRealtimeMessage,
   encodeRemoteOperationResponse,
@@ -22,6 +23,38 @@ import {
 import { CLIENT_SCHEMA, makeServer, PARTITION, TASK_COLUMNS } from './helpers';
 
 describe('SyncRemoteClient', () => {
+  test('binds prepared ordinary commits to an explicit log epoch', async () => {
+    const client = new SyncRemoteClient({
+      schema: CLIENT_SCHEMA,
+      clientId: 'epoch-worker',
+      logEpoch: 'epoch-2',
+    });
+    const prepared = await client.prepareCommit({
+      requestId: 'epoch-job-1',
+      mutations: [
+        {
+          table: 'tasks',
+          op: 'upsert',
+          values: {
+            id: 'task-epoch',
+            project_id: 'project-1',
+            title: 'Epoch bound',
+            done: false,
+            priority: null,
+            meta: null,
+          },
+        },
+      ],
+    });
+
+    const message = decodeMessage(prepared.bytes);
+    expect(message.wireVersion).toBe(2);
+    expect(message.frames[0]).toMatchObject({
+      type: 'REQ_HEADER',
+      logEpoch: 'epoch-2',
+    });
+  });
+
   test('applies an ordinary push-only commit without a local database', async () => {
     const server = makeServer();
     const client = new SyncRemoteClient({

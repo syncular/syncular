@@ -9,7 +9,11 @@
  */
 import type { ScopeMap } from '@syncular/core';
 import type { SyncRequestContext } from './context';
-import { clockOf, RESOLVER_OUTAGE } from './context';
+import {
+  clockOf,
+  RESOLVER_OUTAGE,
+  touchAuthenticatedPartition,
+} from './context';
 import { SyncError, syncError } from './errors';
 import { emitEvent } from './events';
 import { compileSchema } from './schema';
@@ -96,8 +100,13 @@ async function downloadSegment(
   ctx: SyncRequestContext,
   request: SegmentDownloadRequest,
 ): Promise<SegmentDownloadResult> {
+  const registry = await touchAuthenticatedPartition(ctx);
   const entry = await ctx.segments.get(request.segmentId);
-  if (entry === undefined || entry.record.partition !== ctx.partition) {
+  if (
+    entry === undefined ||
+    entry.record.partition !== ctx.partition ||
+    entry.record.logEpoch !== registry.logEpoch
+  ) {
     throw syncError('sync.not_found', 'unknown segment (§5.5)');
   }
   if (entry.record.expiresAtMs <= clockOf(ctx)()) {

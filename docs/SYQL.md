@@ -526,6 +526,13 @@ Diagnostics have stable codes grouped by compiler phase:
 The conformance fixtures pin primary codes and selected source positions.
 Messages may add context without changing the code's meaning.
 
+The reference compiler exports `SYQL_DIAGNOSTIC_REMEDIES`, a complete mapping
+from every compiler and generated-runtime diagnostic code to one remediation
+instruction. `generateSyqlDiagnosticCatalog()` returns the mapping as a
+code-sorted JSON-ready array. The language server includes the mapped text in
+`Diagnostic.data.remedy`. A new diagnostic code MUST add its remedy in the
+same change.
+
 ## 18. Complete example
 
 ```syql

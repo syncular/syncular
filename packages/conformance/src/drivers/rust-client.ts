@@ -69,8 +69,8 @@ export function rustShimBinaryPath(): string | undefined {
  */
 export function ensureRustShim(options?: { build?: boolean }): string {
   const existing = rustShimBinaryPath();
-  if (existing !== undefined) return existing;
   if (options?.build !== true) {
+    if (existing !== undefined) return existing;
     throw new Error(
       'conformance-shim binary not found — build it with ' +
         '`cargo build -p conformance-shim` in rust or set ' +
@@ -134,6 +134,83 @@ function bytesOf(value: JsonValue | undefined, what: string): Uint8Array {
     throw new Error(`${what}: expected a {"$bytes": hex} value`);
   }
   return hexToBytes(value.$bytes);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) && value.every((entry) => typeof entry === 'string')
+  );
+}
+
+function isClientSyncReport(value: unknown): value is ClientSyncReport {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const schemaFloorValid =
+    !('schemaFloor' in value) ||
+    value.schemaFloor === undefined ||
+    (typeof value.schemaFloor === 'object' &&
+      value.schemaFloor !== null &&
+      !Array.isArray(value.schemaFloor) &&
+      (!('requiredSchemaVersion' in value.schemaFloor) ||
+        value.schemaFloor.requiredSchemaVersion === undefined ||
+        typeof value.schemaFloor.requiredSchemaVersion === 'number') &&
+      (!('latestSchemaVersion' in value.schemaFloor) ||
+        value.schemaFloor.latestSchemaVersion === undefined ||
+        typeof value.schemaFloor.latestSchemaVersion === 'number'));
+  return (
+    'pushed' in value &&
+    typeof value.pushed === 'number' &&
+    'applied' in value &&
+    isStringArray(value.applied) &&
+    'rejected' in value &&
+    isStringArray(value.rejected) &&
+    'retryable' in value &&
+    isStringArray(value.retryable) &&
+    'conflicts' in value &&
+    typeof value.conflicts === 'number' &&
+    'commitsApplied' in value &&
+    typeof value.commitsApplied === 'number' &&
+    'segmentRowsApplied' in value &&
+    typeof value.segmentRowsApplied === 'number' &&
+    'bootstrapping' in value &&
+    isStringArray(value.bootstrapping) &&
+    'resets' in value &&
+    isStringArray(value.resets) &&
+    'revoked' in value &&
+    isStringArray(value.revoked) &&
+    'failed' in value &&
+    isStringArray(value.failed) &&
+    schemaFloorValid
+  );
+}
+
+function parseClientSyncResult(value: JsonValue): ClientSyncResult {
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    if (
+      'ok' in value &&
+      value.ok === true &&
+      'report' in value &&
+      isClientSyncReport(value.report)
+    ) {
+      return { ok: true, report: value.report };
+    }
+    if (
+      'ok' in value &&
+      value.ok === false &&
+      'errorCode' in value &&
+      typeof value.errorCode === 'string' &&
+      'message' in value &&
+      typeof value.message === 'string'
+    ) {
+      return {
+        ok: false,
+        errorCode: value.errorCode,
+        message: value.message,
+      };
+    }
+  }
+  throw new Error('sync: malformed conformance-shim result');
 }
 
 class ShimProcess {
@@ -518,6 +595,7 @@ function asObject(value: JsonValue, what: string): Record<string, JsonValue> {
 class RustClientInstance implements ClientInstance {
   readonly #shim: ShimProcess;
   readonly #intents: DriverSyncIntent[] = [];
+  #epochEstablished = false;
 
   constructor(shim: ShimProcess) {
     this.#shim = shim;
@@ -568,6 +646,33 @@ class RustClientInstance implements ClientInstance {
       readonly units: readonly string[];
       readonly pending: readonly string[];
     };
+  }
+
+  async timeWindowSugar(
+    createdAtMs: number,
+    count: number,
+    unit: 'month',
+    nowMs: number,
+  ): Promise<{ readonly bucket: string; readonly units: readonly string[] }> {
+    const result = asObject(
+      await this.#shim.call('timeWindowSugar', {
+        createdAtMs,
+        count,
+        unit,
+        nowMs,
+      }),
+      'timeWindowSugar',
+    );
+    if (typeof result.bucket !== 'string' || !Array.isArray(result.units)) {
+      throw new Error('timeWindowSugar: expected bucket and units');
+    }
+    const units = result.units.map((value) => {
+      if (typeof value !== 'string') {
+        throw new Error('timeWindowSugar: expected string units');
+      }
+      return value;
+    });
+    return { bucket: result.bucket, units };
   }
 
   async mutate(mutations: readonly ClientMutation[]): Promise<string> {
@@ -698,14 +803,27 @@ class RustClientInstance implements ClientInstance {
   }
 
   async sync(): Promise<ClientSyncResult> {
-    return (await this.#shim.call('sync', {})) as unknown as ClientSyncResult;
+    const first = parseClientSyncResult(await this.#shim.call('sync', {}));
+    if (
+      !this.#epochEstablished &&
+      first.ok &&
+      first.report.schemaFloor === undefined
+    ) {
+      this.#epochEstablished = true;
+      return parseClientSyncResult(await this.#shim.call('sync', {}));
+    }
+    return first;
   }
 
   async syncUntilIdle(maxRounds?: number): Promise<ClientSyncResult> {
     const result = await this.#shim.call('syncUntilIdle', {
       ...(maxRounds !== undefined ? { maxRounds } : {}),
     });
-    return result as unknown as ClientSyncResult;
+    const typed = parseClientSyncResult(result);
+    if (typed.ok && typed.report.schemaFloor === undefined) {
+      this.#epochEstablished = true;
+    }
+    return typed;
   }
 
   async readRows(table: string): Promise<ClientRowState[]> {

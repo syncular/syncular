@@ -76,15 +76,7 @@ async function push(
   commits: readonly PushCommitFrame[],
   events?: SyncularServerEvent[],
 ): Promise<ResponseMessage> {
-  const bytes = encodeMessage({
-    wireVersion: PROTOCOL_WIRE_VERSION,
-    msgKind: 'request',
-    frames: [
-      { type: 'REQ_HEADER', clientId: 'constraint-client', schemaVersion: 1 },
-      ...commits,
-    ],
-  });
-  const response = await handleSyncRequest(bytes, {
+  const context = {
     partition: 'workspace-partition',
     actorId: 'surgeon',
     schema: SCHEMA,
@@ -96,7 +88,52 @@ async function push(
       : {
           events: { emit: (event: SyncularServerEvent) => events.push(event) },
         }),
+  };
+  const acquisition = decodeMessage(
+    await handleSyncRequest(
+      encodeMessage({
+        wireVersion: PROTOCOL_WIRE_VERSION,
+        msgKind: 'request',
+        frames: [
+          {
+            type: 'REQ_HEADER',
+            clientId: 'constraint-client',
+            schemaVersion: 1,
+          },
+          {
+            type: 'PULL_HEADER',
+            limitCommits: 0,
+            limitSnapshotRows: 0,
+            maxSnapshotPages: 0,
+            accept: 0b0011,
+          },
+        ],
+      }),
+      context,
+    ),
+  );
+  const acquisitionHeader = acquisition.frames[0];
+  if (
+    acquisition.msgKind !== 'response' ||
+    acquisitionHeader?.type !== 'RESP_HEADER' ||
+    acquisitionHeader.logEpoch === undefined
+  ) {
+    throw new Error('missing acquisition log epoch');
+  }
+  const bytes = encodeMessage({
+    wireVersion: PROTOCOL_WIRE_VERSION,
+    msgKind: 'request',
+    frames: [
+      {
+        type: 'REQ_HEADER',
+        clientId: 'constraint-client',
+        schemaVersion: 1,
+        logEpoch: acquisitionHeader.logEpoch,
+      },
+      ...commits,
+    ],
   });
+  const response = await handleSyncRequest(bytes, context);
   const decoded = decodeMessage(response);
   if (decoded.msgKind !== 'response') throw new Error('expected response');
   return decoded;

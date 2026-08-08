@@ -62,6 +62,7 @@ import type {
   IndexRowScanQuery,
   NewCommit,
   NewReaction,
+  PartitionRegistryEntry,
   PrunedReactionCounts,
   ReactionClaimQuery,
   ReactionFailure,
@@ -409,6 +410,14 @@ export class SqliteServerStorage implements ServerStorage {
     }
     this.db = db;
     this.db.exec(SQLITE_DDL);
+    const clientColumns = this.db
+      .query<{ name: string }, []>('PRAGMA table_info("sync_clients")')
+      .all();
+    if (!clientColumns.some((column) => column.name === 'wire_version')) {
+      this.db.exec(
+        'ALTER TABLE sync_clients ADD COLUMN wire_version INTEGER NOT NULL DEFAULT 1',
+      );
+    }
   }
 
   /** Resolve a table's compiled schema; row operations require `ensureSchema`. */
@@ -502,6 +511,106 @@ export class SqliteServerStorage implements ServerStorage {
     }
     this.#tables = schema.tables;
     this.#schemaVersion = schema.version;
+  }
+
+  async touchPartition(
+    partition: string,
+    authenticatedAtMs: number,
+    initialLogEpoch: string,
+  ): Promise<PartitionRegistryEntry> {
+    if (initialLogEpoch.length === 0) {
+      throw new Error('initial log epoch must be non-empty');
+    }
+    this.db
+      .query(
+        `INSERT INTO sync_partition_registry(
+           partition, log_epoch, last_authenticated_at_ms
+         ) VALUES (?,?,?)
+         ON CONFLICT(partition) DO UPDATE SET
+           last_authenticated_at_ms=excluded.last_authenticated_at_ms`,
+      )
+      .run(partition, initialLogEpoch, authenticatedAtMs);
+    const row = this.db
+      .query<
+        {
+          log_epoch: string;
+          epoch_required: number;
+          last_authenticated_at_ms: number;
+        },
+        [string]
+      >(
+        `SELECT log_epoch, epoch_required, last_authenticated_at_ms
+           FROM sync_partition_registry WHERE partition=?`,
+      )
+      .get(partition);
+    if (row === null)
+      throw new Error('partition registry write did not persist');
+    return {
+      partition,
+      logEpoch: row.log_epoch,
+      epochRequired: row.epoch_required === 1,
+      lastAuthenticatedAtMs: row.last_authenticated_at_ms,
+    };
+  }
+
+  async rotatePartitionLogEpoch(
+    partition: string,
+    logEpoch: string,
+    authenticatedAtMs: number,
+  ): Promise<PartitionRegistryEntry> {
+    if (logEpoch.length === 0) throw new Error('log epoch must be non-empty');
+    return this.#serializeReactionWrite(() => {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        this.db
+          .query(
+            `INSERT INTO sync_partition_registry(
+               partition, log_epoch, epoch_required, last_authenticated_at_ms
+             ) VALUES (?,?,1,?)
+             ON CONFLICT(partition) DO UPDATE SET
+               log_epoch=excluded.log_epoch,
+               epoch_required=1,
+               last_authenticated_at_ms=excluded.last_authenticated_at_ms`,
+          )
+          .run(partition, logEpoch, authenticatedAtMs);
+        this.db
+          .query('DELETE FROM sync_clients WHERE partition=?')
+          .run(partition);
+        this.db.exec('COMMIT');
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+      return {
+        partition,
+        logEpoch,
+        epochRequired: true,
+        lastAuthenticatedAtMs: authenticatedAtMs,
+      };
+    });
+  }
+
+  async listPartitionRegistry(): Promise<PartitionRegistryEntry[]> {
+    return this.db
+      .query<
+        {
+          partition: string;
+          log_epoch: string;
+          epoch_required: number;
+          last_authenticated_at_ms: number;
+        },
+        []
+      >(
+        `SELECT partition, log_epoch, epoch_required, last_authenticated_at_ms
+           FROM sync_partition_registry ORDER BY partition`,
+      )
+      .all()
+      .map((row) => ({
+        partition: row.partition,
+        logEpoch: row.log_epoch,
+        epochRequired: row.epoch_required === 1,
+        lastAuthenticatedAtMs: row.last_authenticated_at_ms,
+      }));
   }
 
   /**
@@ -1077,19 +1186,21 @@ export class SqliteServerStorage implements ServerStorage {
         {
           client_id: string;
           actor_id: string;
+          wire_version: number;
           cursor: number;
           subscriptions: string;
           updated_at_ms: number;
         },
         [string, string]
       >(
-        'SELECT client_id, actor_id, cursor, subscriptions, updated_at_ms FROM sync_clients WHERE partition=? AND client_id=?',
+        'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms FROM sync_clients WHERE partition=? AND client_id=?',
       )
       .get(partition, clientId);
     if (record === null) return undefined;
     return {
       clientId: record.client_id,
       actorId: record.actor_id,
+      wireVersion: record.wire_version,
       cursor: record.cursor,
       updatedAtMs: record.updated_at_ms,
       subscriptions: JSON.parse(record.subscriptions) as ClientSubscription[],
@@ -1102,12 +1213,13 @@ export class SqliteServerStorage implements ServerStorage {
   ): Promise<void> {
     this.db
       .query(
-        'INSERT OR REPLACE INTO sync_clients(partition, client_id, actor_id, cursor, subscriptions, updated_at_ms) VALUES (?,?,?,?,?,?)',
+        'INSERT OR REPLACE INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms) VALUES (?,?,?,?,?,?,?)',
       )
       .run(
         partition,
         record.clientId,
         record.actorId,
+        record.wireVersion,
         record.cursor,
         JSON.stringify(record.subscriptions),
         record.updatedAtMs,
@@ -1187,18 +1299,20 @@ export class SqliteServerStorage implements ServerStorage {
         {
           client_id: string;
           actor_id: string;
+          wire_version: number;
           cursor: number;
           subscriptions: string;
           updated_at_ms: number;
         },
         [string]
       >(
-        'SELECT client_id, actor_id, cursor, subscriptions, updated_at_ms FROM sync_clients WHERE partition=? ORDER BY updated_at_ms DESC',
+        'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms FROM sync_clients WHERE partition=? ORDER BY updated_at_ms DESC',
       )
       .all(partition);
     return records.map((record) => ({
       clientId: record.client_id,
       actorId: record.actor_id,
+      wireVersion: record.wire_version,
       cursor: record.cursor,
       updatedAtMs: record.updated_at_ms,
       subscriptions: JSON.parse(record.subscriptions) as ClientSubscription[],
@@ -1324,14 +1438,6 @@ export class SqliteServerStorage implements ServerStorage {
   }
 
   async listPartitions(): Promise<string[]> {
-    // Union: the registry row appears on first commit, the client row on
-    // first pull — a partition with only one of the two still shows up.
-    const rows = this.db
-      .query<{ partition: string }, []>(
-        `SELECT partition FROM sync_partitions
-         UNION SELECT partition FROM sync_clients ORDER BY partition`,
-      )
-      .all();
-    return rows.map((r) => r.partition);
+    return (await this.listPartitionRegistry()).map((entry) => entry.partition);
   }
 }

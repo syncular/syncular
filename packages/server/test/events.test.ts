@@ -385,6 +385,11 @@ function wrapStorage(
 ): ServerStorage {
   return {
     ensureSchema: (s) => storage.ensureSchema(s),
+    touchPartition: (p, at, epoch) => storage.touchPartition(p, at, epoch),
+    rotatePartitionLogEpoch: (p, epoch, at) =>
+      storage.rotatePartitionLogEpoch(p, epoch, at),
+    listPartitionRegistry: () => storage.listPartitionRegistry(),
+    listPartitions: () => storage.listPartitions(),
     begin: (p) => storage.begin(p),
     getMaxCommitSeq: (p) => storage.getMaxCommitSeq(p),
     getHorizonSeq: (p) => storage.getHorizonSeq(p),

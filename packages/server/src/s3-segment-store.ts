@@ -152,7 +152,13 @@ function parseRecordJson(json: string, source: string): SegmentRecord {
     throw new Error(`S3SegmentStore: corrupt record in ${source}`);
   }
   const r = parsed as Record<string, unknown>;
-  const strings = ['segmentId', 'partition', 'table', 'scopeDigest'] as const;
+  const strings = [
+    'segmentId',
+    'partition',
+    'logEpoch',
+    'table',
+    'scopeDigest',
+  ] as const;
   const numbers = [
     'schemaVersion',
     'asOfCommitSeq',
@@ -182,6 +188,7 @@ function parseRecordJson(json: string, source: string): SegmentRecord {
   return {
     segmentId: r.segmentId as string,
     partition: r.partition as string,
+    logEpoch: r.logEpoch as string,
     table: r.table as string,
     schemaVersion: r.schemaVersion as number,
     mediaType: r.mediaType,
@@ -223,6 +230,7 @@ export class S3SegmentStore implements SegmentStore {
   async #findKeyFor(key: SegmentFindKey): Promise<string> {
     const canonical = JSON.stringify([
       key.partition,
+      key.logEpoch,
       key.table,
       key.schemaVersion,
       key.mediaType,
@@ -431,6 +439,7 @@ export class S3SegmentStore implements SegmentStore {
     const record = parseRecordJson(await response.text(), 'reuse pointer');
     if (
       record.partition !== key.partition ||
+      record.logEpoch !== key.logEpoch ||
       record.table !== key.table ||
       record.schemaVersion !== key.schemaVersion ||
       record.mediaType !== key.mediaType ||

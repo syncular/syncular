@@ -204,6 +204,7 @@ export type RealtimeConnectResult =
 
 /** Optional server capabilities a scenario may require. */
 export type ServerCapability =
+  | 'backup-restore'
   | 'idempotency-fault'
   | 'signed-urls'
   | 'blobs'
@@ -373,6 +374,11 @@ export interface ServerInstance {
 
   advanceClock(ms: number): Promise<void>;
   nowMs(): Promise<number>;
+
+  /** Capture the server database state for a later restore simulation. */
+  captureBackup?(): Promise<void>;
+  /** Restore the captured state and rotate the partition log epoch. */
+  restoreBackup?(): Promise<void>;
 
   /** Run §4.6 pruning; returns the resulting horizonSeq. */
   prune(retention?: RetentionOptions): Promise<number>;
@@ -670,6 +676,12 @@ export interface ClientInstance {
     readonly units: readonly string[];
     readonly pending: readonly string[];
   }>;
+  timeWindowSugar(
+    createdAtMs: number,
+    count: number,
+    unit: 'month',
+    nowMs: number,
+  ): Promise<{ readonly bucket: string; readonly units: readonly string[] }>;
 
   /** Revisioned observation/conformance surface. */
   localRevision?(): Promise<string>;

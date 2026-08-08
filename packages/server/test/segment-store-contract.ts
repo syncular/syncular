@@ -18,6 +18,7 @@ export const CONTRACT_NOW = 1_750_000_000_000;
 
 const IMAGE_META: SegmentMetadata = {
   partition: 'p',
+  logEpoch: 'epoch-1',
   table: 'tasks',
   schemaVersion: 1,
   mediaType: 'sqlite',
@@ -38,6 +39,7 @@ const PAGED_META: SegmentMetadata = {
 
 const KEY: SegmentFindKey = {
   partition: 'p',
+  logEpoch: 'epoch-1',
   table: 'tasks',
   schemaVersion: 1,
   mediaType: 'sqlite',

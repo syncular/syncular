@@ -15,12 +15,13 @@ pub enum MsgKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Message {
+    pub wire_version: u16,
     pub msg_kind: MsgKind,
     pub frames: Vec<Frame>,
 }
 
-/// Frame types, wire version 1 (§1.2 registry). `END` is structural and not
-/// represented in the model.
+/// Frame types, wire versions 1 and 2 (§1.2 registry). `END` is structural
+/// and not represented in the model.
 pub mod frame_type {
     pub const END: u8 = 0x00;
     pub const REQ_HEADER: u8 = 0x01;
@@ -172,6 +173,7 @@ pub enum Frame {
     ReqHeader {
         client_id: String,
         schema_version: i32,
+        log_epoch: Option<String>,
     },
     PushCommit {
         client_commit_id: String,
@@ -194,6 +196,8 @@ pub enum Frame {
     RespHeader {
         required_schema_version: Option<i32>,
         latest_schema_version: Option<i32>,
+        log_epoch: Option<String>,
+        reset_required: Option<bool>,
     },
     /// §7.3.2: a server-issued auth lease delivered to the client (opaque).
     Lease {

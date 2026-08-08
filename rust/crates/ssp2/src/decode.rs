@@ -11,7 +11,8 @@ use crate::primitives::Reader;
 use crate::segment::decode_rows_segment;
 
 pub const SSP2_MAGIC: &[u8; 4] = b"SSP2";
-pub const WIRE_VERSION: u16 = 1;
+pub const MINIMUM_WIRE_VERSION: u16 = 1;
+pub const WIRE_VERSION: u16 = 2;
 
 /// Decode a complete SSP2 message, enforcing envelope rules and the per-kind
 /// frame grammar. Unknown frame types are preserved byte-for-byte (§1.2
@@ -23,7 +24,7 @@ pub fn decode_message(bytes: &[u8]) -> Result<Message> {
         return Err(DecodeError::invalid("bad envelope magic (expected SSP2)"));
     }
     let wire_version = r.u16("wireVersion")?;
-    if wire_version != WIRE_VERSION {
+    if !(MINIMUM_WIRE_VERSION..=WIRE_VERSION).contains(&wire_version) {
         return Err(DecodeError::invalid(format!(
             "unsupported wireVersion {wire_version}"
         )));
@@ -45,15 +46,19 @@ pub fn decode_message(bytes: &[u8]) -> Result<Message> {
     }
 
     let frames = match msg_kind {
-        MsgKind::Request => decode_request_frames(&mut r)?,
-        MsgKind::Response => decode_response_frames(&mut r)?,
+        MsgKind::Request => decode_request_frames(&mut r, wire_version)?,
+        MsgKind::Response => decode_response_frames(&mut r, wire_version)?,
     };
     if !r.is_empty() {
         return Err(DecodeError::invalid(
             "trailing bytes after the END frame (canonical encoding)",
         ));
     }
-    Ok(Message { msg_kind, frames })
+    Ok(Message {
+        wire_version,
+        msg_kind,
+        frames,
+    })
 }
 
 /// Read one frame header + payload. Returns `None` for END.
@@ -103,7 +108,7 @@ fn classify(ty: u8, kind: MsgKind) -> Result<bool> {
 /// §1.5 grammar: REQ_HEADER, PUSH_COMMIT × N, PULL_HEADER 0|1,
 /// SUBSCRIPTION × M (only if PULL_HEADER present), END. A request with
 /// neither push nor pull frames is invalid.
-fn decode_request_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
+fn decode_request_frames(r: &mut Reader<'_>, wire_version: u16) -> Result<Vec<Frame>> {
     let mut frames = Vec::new();
     let mut seen_header = false;
     let mut seen_pull = false;
@@ -129,7 +134,7 @@ fn decode_request_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                     "first frame of a request must be REQ_HEADER",
                 ));
             }
-            frames.push(decode_req_header(payload)?);
+            frames.push(decode_req_header(payload, wire_version)?);
             seen_header = true;
             continue;
         }
@@ -179,7 +184,7 @@ fn decode_request_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
 /// SUB_START (COMMIT × k | segment frames × m) SUB_END; ERROR 0|1 anywhere
 /// after RESP_HEADER, and if present the next frame MUST be END (no frame of
 /// any type, unknown included, may follow it).
-fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
+fn decode_response_frames(r: &mut Reader<'_>, wire_version: u16) -> Result<Vec<Frame>> {
     let mut frames = Vec::new();
     let mut seen_header = false;
     let mut seen_lease = false; // §7.3.2: at most one LEASE, before the body
@@ -218,7 +223,7 @@ fn decode_response_frames(r: &mut Reader<'_>) -> Result<Vec<Frame>> {
                     "first frame of a response must be RESP_HEADER",
                 ));
             }
-            frames.push(decode_resp_header(payload)?);
+            frames.push(decode_resp_header(payload, wire_version)?);
             seen_header = true;
             continue;
         }
@@ -410,7 +415,7 @@ fn frame_payload<T>(
     Ok(value)
 }
 
-fn decode_req_header(payload: &[u8]) -> Result<Frame> {
+fn decode_req_header(payload: &[u8], wire_version: u16) -> Result<Frame> {
     frame_payload(payload, "REQ_HEADER", |r| {
         let client_id = r.str("clientId")?;
         if client_id.is_empty() {
@@ -422,9 +427,21 @@ fn decode_req_header(payload: &[u8]) -> Result<Frame> {
                 "schemaVersion must be ≥ 1, got {schema_version}"
             )));
         }
+        let log_epoch = if wire_version >= 2 && r.presence("logEpoch")? {
+            let value = r.str("logEpoch")?;
+            if value.is_empty() {
+                return Err(DecodeError::invalid(
+                    "REQ_HEADER.logEpoch must be non-empty",
+                ));
+            }
+            Some(value)
+        } else {
+            None
+        };
         Ok(Frame::ReqHeader {
             client_id,
             schema_version,
+            log_epoch,
         })
     })
 }
@@ -540,7 +557,7 @@ fn decode_subscription(payload: &[u8]) -> Result<Frame> {
     })
 }
 
-fn decode_resp_header(payload: &[u8]) -> Result<Frame> {
+fn decode_resp_header(payload: &[u8], wire_version: u16) -> Result<Frame> {
     frame_payload(payload, "RESP_HEADER", |r| {
         let required_schema_version = if r.presence("requiredSchemaVersion")? {
             Some(r.i32("requiredSchemaVersion")?)
@@ -552,9 +569,22 @@ fn decode_resp_header(payload: &[u8]) -> Result<Frame> {
         } else {
             None
         };
+        let (log_epoch, reset_required) = if wire_version >= 2 {
+            let value = r.str("logEpoch")?;
+            if value.is_empty() {
+                return Err(DecodeError::invalid(
+                    "RESP_HEADER.logEpoch must be non-empty",
+                ));
+            }
+            (Some(value), Some(r.bool("resetRequired")?))
+        } else {
+            (None, None)
+        };
         Ok(Frame::RespHeader {
             required_schema_version,
             latest_schema_version,
+            log_epoch,
+            reset_required,
         })
     })
 }

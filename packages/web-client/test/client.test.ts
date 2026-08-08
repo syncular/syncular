@@ -311,6 +311,7 @@ describe('durable commit outcomes', () => {
       clientId: 'batched-ack-client',
       database: db,
     });
+    await entry.client.syncUntilIdle();
     const observedOutboxCounts: number[] = [];
     let diagnosticsCount = 0;
     entry.client.onChange((batch) => {
@@ -337,9 +338,10 @@ describe('durable commit outcomes', () => {
       const summary = await entry.client.sync();
 
       expect(summary.applied).toHaveLength(32);
-      // Request encoding, one coalesced status baseline, final replay, and one
-      // observed diagnostics snapshot. None may scale with PUSH_RESULT count.
-      expect(db.outboxReadCount).toBe(4);
+      // Request encoding, the sync-needed transition, one coalesced status
+      // baseline, final replay, and one observed diagnostics snapshot. None
+      // may scale with PUSH_RESULT count.
+      expect(db.outboxReadCount).toBe(5);
       expect(db.outcomePruneCount).toBe(1);
       expect(diagnosticsCount).toBe(1);
       expect(observedOutboxCounts).toEqual(

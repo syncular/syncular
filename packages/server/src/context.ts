@@ -18,7 +18,11 @@ import type {
   SegmentUrlConfig,
 } from './signed-url';
 import type { SqliteImageBuilder } from './sqlite-image';
-import type { ServerStorage, StoredCommit } from './storage';
+import type {
+  PartitionRegistryEntry,
+  ServerStorage,
+  StoredCommit,
+} from './storage';
 import type { CommitValidator, ValidatorRegistry } from './validate';
 
 /** SSP2 body content type (§1.1). */
@@ -191,4 +195,15 @@ export function clockOf(ctx: SyncServerConfig): () => number {
 
 export function limitsOf(ctx: SyncServerConfig): ServerLimits {
   return { ...DEFAULT_LIMITS, ...ctx.limits };
+}
+
+/** Refresh the registry after host authentication and return log continuity. */
+export function touchAuthenticatedPartition(
+  ctx: SyncRequestContext,
+): Promise<PartitionRegistryEntry> {
+  return ctx.storage.touchPartition(
+    ctx.partition,
+    clockOf(ctx)(),
+    crypto.randomUUID(),
+  );
 }

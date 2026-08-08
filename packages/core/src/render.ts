@@ -137,6 +137,7 @@ function renderFrame(frame: RequestFrame | ResponseFrame): JsonValue {
         type: 'REQ_HEADER',
         clientId: frame.clientId,
         schemaVersion: frame.schemaVersion,
+        ...(frame.logEpoch !== undefined ? { logEpoch: frame.logEpoch } : {}),
       };
     case 'PUSH_COMMIT':
       return {
@@ -174,6 +175,10 @@ function renderFrame(frame: RequestFrame | ResponseFrame): JsonValue {
           : {}),
         ...(frame.latestSchemaVersion !== undefined
           ? { latestSchemaVersion: frame.latestSchemaVersion }
+          : {}),
+        ...(frame.logEpoch !== undefined ? { logEpoch: frame.logEpoch } : {}),
+        ...(frame.resetRequired !== undefined
+          ? { resetRequired: frame.resetRequired }
           : {}),
       };
     case 'LEASE':

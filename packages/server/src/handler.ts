@@ -28,6 +28,7 @@ import {
   limitsOf,
   REMOTE_COMMAND_CLIENT_ID_PREFIX,
   RESOLVER_OUTAGE,
+  touchAuthenticatedPartition,
 } from './context';
 import { SyncError, syncError } from './errors';
 import {
@@ -38,7 +39,7 @@ import {
 import {
   END_FRAME_BYTES,
   encodeResponseFrame,
-  RESPONSE_ENVELOPE_HEADER,
+  responseEnvelopeHeader,
 } from './frame-bytes';
 import type { LeaseRecord } from './lease-store';
 import {
@@ -53,9 +54,12 @@ import { type ProcessedPushCommit, processPushCommitWithTrace } from './push';
 import type { CompiledSchema } from './schema';
 import { compileSchema } from './schema';
 import { computeEffective, type ResolvedScopes } from './scopes';
-import type { ClientSubscription } from './storage';
+import type { ClientSubscription, PartitionRegistryEntry } from './storage';
 
 interface RequestPlan {
+  readonly wireVersion: number;
+  readonly logEpoch: string;
+  readonly epochReset: boolean;
   readonly header: ReqHeaderFrame;
   readonly pushes: readonly PushCommitFrame[];
   readonly pull: PullHeaderFrame | undefined;
@@ -192,6 +196,7 @@ async function planRequest(
   request: RequestMessage,
   ctx: SyncRequestContext,
   schema: CompiledSchema,
+  registry: PartitionRegistryEntry,
 ): Promise<RequestPlan> {
   const header = request.frames[0];
   if (header === undefined || header.type !== 'REQ_HEADER') {
@@ -206,16 +211,53 @@ async function planRequest(
     else if (frame.type === 'SUBSCRIPTION') subFrames.push(frame);
   }
 
+  if (request.wireVersion === 1 && registry.epochRequired) {
+    throw syncError(
+      'sync.client_wire_unsupported',
+      'this partition requires a client that validates log epochs (§2.1)',
+    );
+  }
+  if (
+    request.wireVersion >= 2 &&
+    header.logEpoch === undefined &&
+    pushes.length > 0
+  ) {
+    throw syncError(
+      'sync.invalid_request',
+      'epoch acquisition requests must not carry push commits (§2.1)',
+    );
+  }
+  const epochReset =
+    request.wireVersion >= 2 && header.logEpoch !== registry.logEpoch;
+
   if (header.schemaVersion !== schema.version) {
     // §2.4: no degraded encoding — answer with the schema floor (§1.6).
     // No lease is issued on a floor round (§7.3.3).
     return {
+      wireVersion: request.wireVersion,
+      logEpoch: registry.logEpoch,
+      epochReset,
       header,
       pushes,
       pull,
       subscriptions: [],
       resolved: { ok: false },
       schemaFloor: true,
+      leaseToEmit: undefined,
+    };
+  }
+
+  if (epochReset) {
+    return {
+      wireVersion: request.wireVersion,
+      logEpoch: registry.logEpoch,
+      epochReset: true,
+      header,
+      pushes: [],
+      pull: undefined,
+      subscriptions: [],
+      resolved: { ok: false },
+      schemaFloor: false,
       leaseToEmit: undefined,
     };
   }
@@ -313,6 +355,9 @@ async function planRequest(
   });
 
   return {
+    wireVersion: request.wireVersion,
+    logEpoch: registry.logEpoch,
+    epochReset: false,
     header,
     pushes,
     pull,
@@ -325,7 +370,7 @@ async function planRequest(
 
 /** Mutable outcome box shared with the instrumented stream wrapper. */
 interface RequestReport {
-  outcome: 'ok' | 'schema_floor' | 'error';
+  outcome: 'ok' | 'schema_floor' | 'reset' | 'error';
   errorCode?: string;
 }
 
@@ -413,28 +458,48 @@ async function* streamResponse(
   report?: RequestReport,
 ): AsyncGenerator<Uint8Array> {
   const events = ctx.events;
-  yield RESPONSE_ENVELOPE_HEADER;
+  yield responseEnvelopeHeader(plan.wireVersion);
   if (plan.schemaFloor) {
     if (report !== undefined) report.outcome = 'schema_floor';
-    yield encodeResponseFrame({
-      type: 'RESP_HEADER',
-      requiredSchemaVersion: schema.version,
-      latestSchemaVersion: schema.version,
-    });
+    yield encodeResponseFrame(
+      {
+        type: 'RESP_HEADER',
+        requiredSchemaVersion: schema.version,
+        latestSchemaVersion: schema.version,
+        ...(plan.wireVersion >= 2
+          ? { logEpoch: plan.logEpoch, resetRequired: plan.epochReset }
+          : {}),
+      },
+      plan.wireVersion,
+    );
     yield END_FRAME_BYTES;
     return;
   }
-  yield encodeResponseFrame({
-    type: 'RESP_HEADER',
-    latestSchemaVersion: schema.version,
-  });
+  yield encodeResponseFrame(
+    {
+      type: 'RESP_HEADER',
+      latestSchemaVersion: schema.version,
+      ...(plan.wireVersion >= 2
+        ? { logEpoch: plan.logEpoch, resetRequired: plan.epochReset }
+        : {}),
+    },
+    plan.wireVersion,
+  );
+  if (plan.epochReset) {
+    if (report !== undefined) report.outcome = 'reset';
+    yield END_FRAME_BYTES;
+    return;
+  }
   // §7.3.2: the LEASE frame rides immediately after RESP_HEADER.
   if (plan.leaseToEmit !== undefined) {
-    yield encodeResponseFrame({
-      type: 'LEASE',
-      leaseId: plan.leaseToEmit.leaseId,
-      expiresAtMs: plan.leaseToEmit.expiresAtMs,
-    });
+    yield encodeResponseFrame(
+      {
+        type: 'LEASE',
+        leaseId: plan.leaseToEmit.leaseId,
+        expiresAtMs: plan.leaseToEmit.expiresAtMs,
+      },
+      plan.wireVersion,
+    );
     if (events !== undefined) {
       emitEvent(events, {
         type: 'lease.issued',
@@ -461,9 +526,11 @@ async function* streamResponse(
       if (events !== undefined) {
         emitPushEvent(events, ctx, plan.header.clientId, push, processed);
       }
-      yield encodeResponseFrame(frame);
+      yield encodeResponseFrame(frame, plan.wireVersion);
       const details = pushResultDetailsFrame(frame);
-      if (details !== undefined) yield encodeResponseFrame(details);
+      if (details !== undefined) {
+        yield encodeResponseFrame(details, plan.wireVersion);
+      }
     }
 
     // Pull half (§4): subscriptions echoed in request order.
@@ -485,6 +552,7 @@ async function* streamResponse(
           maxSeq,
           horizonSeq,
           trace,
+          plan.logEpoch,
         );
         let status: 'active' | 'revoked' | 'reset' = 'active';
         let bootstrap = false;
@@ -502,7 +570,7 @@ async function* streamResponse(
               changes += frame.changes.length;
             }
           }
-          yield encodeResponseFrame(frame);
+          yield encodeResponseFrame(frame, plan.wireVersion);
           step = await section.next();
         }
         if (step.value.active) cursors.push(step.value.nextCursor);
@@ -556,6 +624,7 @@ async function* streamResponse(
     await ctx.storage.putClientRecord(ctx.partition, {
       clientId: plan.header.clientId,
       actorId: ctx.actorId,
+      wireVersion: plan.wireVersion,
       cursor,
       updatedAtMs: clockOf(ctx)(),
       subscriptions,
@@ -567,15 +636,18 @@ async function* streamResponse(
         report.errorCode = error.code;
       }
       // §1.6: in-band ERROR, then END, nothing else.
-      yield encodeResponseFrame({
-        type: 'ERROR',
-        code: error.code,
-        message: error.message,
-        category: error.category,
-        retryable: error.retryable,
-        recommendedAction: error.recommendedAction,
-        ...(error.details !== undefined ? { details: error.details } : {}),
-      });
+      yield encodeResponseFrame(
+        {
+          type: 'ERROR',
+          code: error.code,
+          message: error.message,
+          category: error.category,
+          retryable: error.retryable,
+          recommendedAction: error.recommendedAction,
+          ...(error.details !== undefined ? { details: error.details } : {}),
+        },
+        plan.wireVersion,
+      );
       yield END_FRAME_BYTES;
       return;
     }
@@ -644,7 +716,8 @@ async function createStreamCore(
   // Relational row tables: create/
   // migrate on first contact; memoized per storage instance thereafter.
   await ctx.storage.ensureSchema(schema);
-  const plan = await planRequest(request, ctx, schema);
+  const registry = await touchAuthenticatedPartition(ctx);
+  const plan = await planRequest(request, ctx, schema, registry);
   if (events === undefined) return streamResponse(plan, ctx, schema);
   const report: RequestReport = { outcome: 'ok' };
   return instrumentedStream(

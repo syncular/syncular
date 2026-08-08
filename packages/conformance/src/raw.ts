@@ -151,7 +151,11 @@ export function rawSubscription(
 
 export function rawRequestBytes(
   frames: readonly RequestFrame[],
-  options?: { clientId?: string; schemaVersion?: number },
+  options?: {
+    clientId?: string;
+    schemaVersion?: number;
+    logEpoch?: string;
+  },
 ): Uint8Array {
   return encodeMessage({
     wireVersion: PROTOCOL_WIRE_VERSION,
@@ -161,6 +165,9 @@ export function rawRequestBytes(
         type: 'REQ_HEADER',
         clientId: options?.clientId ?? 'raw-client',
         schemaVersion: options?.schemaVersion ?? 1,
+        ...(options?.logEpoch !== undefined
+          ? { logEpoch: options.logEpoch }
+          : {}),
       },
       ...frames,
     ],

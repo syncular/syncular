@@ -14,6 +14,9 @@ server-authoritative commands, and live query watches through the remote
 operation transport. See [remote server operations](https://syncular.dev/guide-remote-operations/).
 Its schema and sync transport are optional for query-only or command-only
 processes.
+Ordinary commits use wire version 1 until the caller supplies an acquired
+partition `logEpoch`. Set `logEpoch` after a restore rotation requires epoch
+validation.
 
 ## Client-local FTS5 projections
 
@@ -68,6 +71,20 @@ core per origin. Wake-ups are handled inside the worker (`autoSync`,
 SPEC §8.4); the supported page-level realtime supervisor owns reconnect and
 resume policy. The main thread gets `onSyncNeeded` / `onConflict` / `onSynced`
 events for rendering.
+
+A direct `SyncClient` used by a long-running service exposes
+`onSyncNeeded()` and `onSyncIntent()`. Install the shared single-flight loop
+instead of maintaining host timers:
+
+```ts
+const scheduler = installSyncScheduler(client, { onError: reportSyncError });
+// During shutdown:
+scheduler.stop();
+```
+
+Creation-time window helpers produce immutable UTC month scope values.
+`creationTimeBucket(createdAtMs, 'month')` returns `YYYY-MM`, and
+`last(3, 'month')` returns the current and preceding two buckets oldest first.
 
 OPFS is best effort until the browser grants origin persistence. The page owns
 that decision because `StorageManager.persist()` is a Window API and should be

@@ -118,6 +118,7 @@ export async function runServerSqliteContract(runtime: Runtime): Promise<void> {
     const storedSegment = await segments.put(
       {
         partition: 'hospital',
+        logEpoch: 'epoch-1',
         table: 'tasks',
         schemaVersion: 1,
         mediaType: 'rows',

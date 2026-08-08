@@ -118,6 +118,8 @@ export const TEST_SCHEMA: ServerSchema = {
   ],
 };
 
+const TEST_LOG_EPOCH = 'test-log-epoch';
+
 export interface ScopeHolder {
   value: ScopeMap;
   error: boolean;
@@ -154,6 +156,7 @@ export function makeContext(
     clock: () => now.ms,
     ...overrides,
   };
+  void ctx.storage.touchPartition(ctx.partition, now.ms, TEST_LOG_EPOCH);
   return { ctx, storage, segments, scopes, now };
 }
 
@@ -249,11 +252,15 @@ export function requestBytes(
   frames: RequestFrame[],
   clientId = 'client-1',
   schemaVersion = 1,
+  logEpoch = TEST_LOG_EPOCH,
 ): Uint8Array {
   return encodeMessage({
     wireVersion: PROTOCOL_WIRE_VERSION,
     msgKind: 'request',
-    frames: [{ type: 'REQ_HEADER', clientId, schemaVersion }, ...frames],
+    frames: [
+      { type: 'REQ_HEADER', clientId, schemaVersion, logEpoch },
+      ...frames,
+    ],
   });
 }
 

@@ -25,6 +25,12 @@
       "bin": "combined.bin",
       "json": "combined.json",
       "covers": "Push + pull in one envelope (SPEC.md §1.5 ordering)"
+    },
+    {
+      "name": "epoch-bound",
+      "bin": "epoch-bound.bin",
+      "json": "epoch-bound.json",
+      "covers": "Wire version 2 request carrying the client partition log epoch"
     }
   ],
   "invalid": [

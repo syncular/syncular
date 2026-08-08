@@ -62,6 +62,7 @@ export const nav: readonly NavSection[] = [
       { slug: 'server-storage', title: 'Storage backends' },
       { slug: 'server-workers', title: 'Cloudflare Workers' },
       { slug: 'server-partitions', title: 'Partitions & multi-tenancy' },
+      { slug: 'server-backup-restore', title: 'Backup and restore' },
       { slug: 'server-operations', title: 'Operations and maintenance' },
       { slug: 'server-reactions', title: 'Durable reactions' },
       { slug: 'server-realtime-tickets', title: 'Realtime tickets' },

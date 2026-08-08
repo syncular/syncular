@@ -3,7 +3,12 @@
  * to the server, plus schema-floor signalling (§1.6) and clientId binding.
  */
 import { describe, expect, test } from 'bun:test';
-import type { RespHeaderFrame } from '@syncular/core';
+import {
+  decodeMessage,
+  encodeMessage,
+  SUPPORTED_PROTOCOL_WIRE_VERSIONS,
+  type RespHeaderFrame,
+} from '@syncular/core';
 import { ERROR_CATALOG, handleSyncRequest } from '@syncular/server';
 import {
   expectSyncError,
@@ -19,6 +24,28 @@ import {
 } from './helpers';
 
 describe('request validation (§1.7)', () => {
+  test('the reference server mirrors every supported request version', async () => {
+    for (const wireVersion of SUPPORTED_PROTOCOL_WIRE_VERSIONS) {
+      const t = makeContext();
+      const bytes = encodeMessage({
+        wireVersion,
+        msgKind: 'request',
+        frames: [
+          {
+            type: 'REQ_HEADER',
+            clientId: `client-v${wireVersion}`,
+            schemaVersion: 1,
+            ...(wireVersion >= 2 ? { logEpoch: 'test-log-epoch' } : {}),
+          },
+          pullHeader(),
+        ],
+      });
+      const response = decodeMessage(await handleSyncRequest(bytes, t.ctx));
+      expect(response.msgKind).toBe('response');
+      expect(response.wireVersion).toBe(wireVersion);
+    }
+  });
+
   test('duplicate subscription ids fail with sync.invalid_subscription', async () => {
     const t = makeContext();
     const bytes = requestBytes([
@@ -239,6 +266,6 @@ describe('error catalog (§10.2)', () => {
       retryable: false,
       recommendedAction: 'inspectServer',
     });
-    expect(Object.keys(ERROR_CATALOG)).toHaveLength(35);
+    expect(Object.keys(ERROR_CATALOG)).toHaveLength(36);
   });
 });

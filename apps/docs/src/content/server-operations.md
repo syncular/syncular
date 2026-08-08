@@ -190,6 +190,20 @@ commits older than `ageForceMs` (default 30 days) may be pruned regardless;
 and the newest `minRetainedCommits` (default 1000) are always kept.
 The defaults are conservative; lowering them risks more client resets.
 
+Run each maintenance pass over the storage-backed registry. Authenticated
+server endpoints refresh its timestamp, so the loop does not depend on a
+second tenant list:
+
+```ts
+for (const { partition } of await storage.listPartitionRegistry()) {
+  await pruneCommitLog({ storage, partition, nowMs: Date.now(), events });
+}
+```
+
+Use `lastAuthenticatedAtMs` when the host intentionally excludes inactive
+partitions from frequent passes. Keep a slower pass for the full registry so
+retired partitions still receive retention and blob cleanup.
+
 A client whose cursor fell behind the horizon gets a reset and
 re-bootstraps from scratch. This is expected behavior, and its rate is
 your pruning health signal: devices returning from long absences produce a

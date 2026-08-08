@@ -520,17 +520,11 @@ export class SyncularAdmin {
     };
   }
 
-  /**
-   * Every partition the storage knows (commit log + client records) — the
-   * fleet-view backing and the console's partition picker. Fails loud when
-   * the backend omits the optional `listPartitions`.
-   */
+  /** Every authenticated partition in the storage-backed registry. */
   async listPartitions(): Promise<string[]> {
-    const list = required(
-      this.#storage.listPartitions?.bind(this.#storage),
-      'storage',
+    return (await this.#storage.listPartitionRegistry()).map(
+      (entry) => entry.partition,
     );
-    return list();
   }
 
   /**

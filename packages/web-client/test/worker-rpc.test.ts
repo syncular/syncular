@@ -128,8 +128,11 @@ test('boot → subscribe → mutate → sync → query, all over the RPC', async
   expect(commitId.length).toBeGreaterThan(0);
   expect((await handle.pendingCommits()).length).toBe(1);
 
-  // sync() reports the round that pushed; syncUntilIdle would return the
-  // final quiescent round's (empty) summary.
+  // The first version 2 round acquires the partition log epoch without
+  // sending the outbox. The next round reports the push; syncUntilIdle would
+  // return the final quiescent round's empty summary.
+  const acquisition = await handle.sync();
+  expect(acquisition.resets).toEqual(['tasks']);
   const summary = await handle.sync();
   expect(summary.applied).toEqual([commitId]);
   await handle.syncUntilIdle();

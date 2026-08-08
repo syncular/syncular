@@ -212,12 +212,14 @@ async function* sqliteImageSegment(
   asOf: number,
   digest: string,
   trace: PullSectionTrace | undefined,
+  logEpoch: string,
 ): AsyncGenerator<ResponseFrame, boolean> {
   const { storage, segments, partition } = ctx;
   const now = clockOf(ctx)();
   const existing = await segments.find(
     {
       partition,
+      logEpoch,
       table: plan.table.name,
       schemaVersion: schema.version,
       mediaType: 'sqlite',
@@ -286,6 +288,7 @@ async function* sqliteImageSegment(
   const record = await segments.put(
     {
       partition,
+      logEpoch,
       table: plan.table.name,
       schemaVersion: schema.version,
       mediaType: 'sqlite',
@@ -320,6 +323,7 @@ async function* bootstrapSegments(
   asOf: number,
   startRowCursor: string | null,
   trace: PullSectionTrace | undefined,
+  logEpoch: string,
 ): AsyncGenerator<
   ResponseFrame,
   { complete: boolean; rowCursor: string | null }
@@ -347,6 +351,7 @@ async function* bootstrapSegments(
       asOf,
       digest,
       trace,
+      logEpoch,
     );
     if (imaged) return { complete: true, rowCursor: null };
   }
@@ -393,6 +398,7 @@ async function* bootstrapSegments(
       const record = await segments.put(
         {
           partition,
+          logEpoch,
           table: plan.table.name,
           schemaVersion: schema.version,
           mediaType: 'rows',
@@ -435,8 +441,12 @@ export async function* subscriptionSection(
   maxSeq: number,
   horizonSeq: number,
   trace?: PullSectionTrace,
+  logEpoch?: string,
 ): AsyncGenerator<ResponseFrame, SubscriptionResult> {
   const sub = plan.frame;
+  if (logEpoch === undefined || logEpoch.length === 0) {
+    throw new Error('subscriptionSection requires a non-empty log epoch');
+  }
 
   if (plan.status === 'revoked') {
     yield {
@@ -496,6 +506,7 @@ export async function* subscriptionSection(
       asOf,
       startCursor,
       trace,
+      logEpoch,
     );
     if (outcome.complete) {
       yield { type: 'SUB_END', nextCursor: asOf };

@@ -62,6 +62,16 @@ client identity, and the outbox on restart. `SyncularConfig` also takes
 `wsUrl` (derived from `baseUrl` if nil) and `headers` (auth, tenant, …) for
 the native transport.
 
+Rotate credentials without recreating the client:
+
+```swift
+try client.setHeaders(["Authorization": "Bearer \(freshToken)"])
+```
+
+The next HTTP request uses the new headers. An open WebSocket keeps the
+headers from its handshake; call `pause()` and `resume()` when the new
+credential must apply to the live socket immediately.
+
 ## Reads & writes
 
 ```swift
@@ -146,6 +156,27 @@ mutate path and returns the enqueued `clientCommitId`. The merge model, the
 [CRDT columns](/concepts-crdt/).
 
 ## Lifecycle & threading
+
+`IOSPathConnectivitySignal` adapts `NWPathMonitor` and drives the same
+pause/resume lifecycle:
+
+```swift
+let pathSignal = IOSPathConnectivitySignal()
+let connectivity = SyncularConnectivityAdapter(
+    client: client,
+    signal: pathSignal
+)
+
+// During client teardown:
+connectivity.stop()
+pathSignal.stop()
+```
+
+The path signal reports network availability only. If app background state
+also controls the client, use one combined foreground-and-online signal or
+stop this adapter while the app is backgrounded. Two independent lifecycle
+owners could otherwise resume the client while the other still requires a
+pause.
 
 - **`pause()`** stops the event poll loop and disconnects the realtime
   socket. Call when the app backgrounds (SwiftUI: `.onChange(of: scenePhase)`

@@ -265,6 +265,33 @@ const combined: RequestMessage = {
   ],
 };
 
+const epochBound: RequestMessage = {
+  wireVersion: 2,
+  msgKind: 'request',
+  frames: [
+    {
+      type: 'REQ_HEADER',
+      clientId: 'client-a',
+      schemaVersion: 2,
+      logEpoch: 'epoch-2026-07-02-a',
+    },
+    {
+      type: 'PULL_HEADER',
+      limitCommits: 500,
+      limitSnapshotRows: 2000,
+      maxSnapshotPages: 8,
+      accept: 0b1111,
+    },
+    {
+      type: 'SUBSCRIPTION',
+      id: 'sub-notes',
+      table: 'notes',
+      scopes: { project: ['p1'] },
+      cursor: 42,
+    },
+  ],
+};
+
 // ---------------------------------------------------------------------------
 // Valid response vectors
 // ---------------------------------------------------------------------------
@@ -283,6 +310,18 @@ const pullEmpty: ResponseMessage = {
       bootstrap: false,
     },
     { type: 'SUB_END', nextCursor: 57 },
+  ],
+};
+
+const epochReset: ResponseMessage = {
+  wireVersion: 2,
+  msgKind: 'response',
+  frames: [
+    {
+      type: 'RESP_HEADER',
+      logEpoch: 'epoch-2026-07-02-b',
+      resetRequired: true,
+    },
   ],
 };
 
@@ -1087,6 +1126,12 @@ total += emitKind(
       render: renderMessage,
       covers: 'Push + pull in one envelope (SPEC.md §1.5 ordering)',
     },
+    {
+      name: 'epoch-bound',
+      bytes: encodeMessage(epochBound),
+      render: renderMessage,
+      covers: 'Wire version 2 request carrying the client partition log epoch',
+    },
   ],
   [],
   [
@@ -1144,6 +1189,13 @@ total += emitKind(
       render: renderMessage,
       covers:
         'Active subscription, zero commits, cursor advanced anyway (SPEC.md §4.5)',
+    },
+    {
+      name: 'epoch-reset',
+      bytes: encodeMessage(epochReset),
+      render: renderMessage,
+      covers:
+        'Wire version 2 header-only reset after a partition log epoch change',
     },
     {
       name: 'commits-incremental',

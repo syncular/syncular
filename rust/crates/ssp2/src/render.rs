@@ -32,7 +32,7 @@ fn scope_map_value(scopes: &[(String, Vec<String>)]) -> Value {
 pub fn render_message(msg: &Message) -> Value {
     obj(vec![
         ("magic", Value::from("SSP2")),
-        ("wireVersion", Value::from(1)),
+        ("wireVersion", Value::from(msg.wire_version)),
         (
             "msgKind",
             Value::from(match msg.msg_kind {
@@ -56,10 +56,14 @@ fn render_frame(frame: &Frame) -> Value {
         Frame::ReqHeader {
             client_id,
             schema_version,
+            log_epoch,
         } => {
             entries.push(("type", Value::from("REQ_HEADER")));
             entries.push(("clientId", Value::from(client_id.clone())));
             entries.push(("schemaVersion", Value::from(*schema_version)));
+            if let Some(value) = log_epoch {
+                entries.push(("logEpoch", Value::from(value.clone())));
+            }
         }
         Frame::PushCommit {
             client_commit_id,
@@ -123,6 +127,8 @@ fn render_frame(frame: &Frame) -> Value {
         Frame::RespHeader {
             required_schema_version,
             latest_schema_version,
+            log_epoch,
+            reset_required,
         } => {
             entries.push(("type", Value::from("RESP_HEADER")));
             if let Some(v) = required_schema_version {
@@ -130,6 +136,12 @@ fn render_frame(frame: &Frame) -> Value {
             }
             if let Some(v) = latest_schema_version {
                 entries.push(("latestSchemaVersion", Value::from(*v)));
+            }
+            if let Some(value) = log_epoch {
+                entries.push(("logEpoch", Value::from(value.clone())));
+            }
+            if let Some(value) = reset_required {
+                entries.push(("resetRequired", Value::from(*value)));
             }
         }
         Frame::Lease {

@@ -85,6 +85,7 @@ import type {
   IndexRowScanQuery,
   NewCommit,
   NewReaction,
+  PartitionRegistryEntry,
   PrunedReactionCounts,
   ReactionClaimQuery,
   ReactionFailure,
@@ -135,6 +136,12 @@ CREATE TABLE IF NOT EXISTS sync_partitions(
   partition TEXT PRIMARY KEY,
   max_commit_seq BIGINT NOT NULL DEFAULT 0,
   horizon_seq BIGINT NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS sync_partition_registry(
+  partition TEXT PRIMARY KEY,
+  log_epoch TEXT NOT NULL,
+  epoch_required BOOLEAN NOT NULL DEFAULT FALSE,
+  last_authenticated_at_ms BIGINT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sync_row_scopes(
   partition TEXT NOT NULL, tbl TEXT NOT NULL,
@@ -189,10 +196,13 @@ CREATE INDEX IF NOT EXISTS sync_reactions_dead_letter
   ON sync_reactions(partition, status, available_at_ms, idempotency_key);
 CREATE TABLE IF NOT EXISTS sync_clients(
   partition TEXT NOT NULL, client_id TEXT NOT NULL, actor_id TEXT NOT NULL,
+  wire_version INTEGER NOT NULL DEFAULT 1,
   cursor BIGINT NOT NULL, subscriptions JSONB NOT NULL,
   updated_at_ms BIGINT NOT NULL,
   PRIMARY KEY(partition, client_id)
 );
+ALTER TABLE sync_clients
+  ADD COLUMN IF NOT EXISTS wire_version INTEGER NOT NULL DEFAULT 1;
 CREATE TABLE IF NOT EXISTS sync_blob_refs(
   partition TEXT NOT NULL, tbl TEXT NOT NULL, row_id TEXT NOT NULL,
   blob_id TEXT NOT NULL,
@@ -998,6 +1008,86 @@ export class PostgresServerStorage implements ServerStorage {
     this.#schemaVersion = schema.version;
   }
 
+  async touchPartition(
+    partition: string,
+    authenticatedAtMs: number,
+    initialLogEpoch: string,
+  ): Promise<PartitionRegistryEntry> {
+    if (initialLogEpoch.length === 0) {
+      throw new Error('initial log epoch must be non-empty');
+    }
+    const { rows } = await this.#exec.query<{
+      log_epoch: string;
+      epoch_required: boolean;
+      last_authenticated_at_ms: unknown;
+    }>(
+      `INSERT INTO sync_partition_registry(
+         partition, log_epoch, last_authenticated_at_ms
+       ) VALUES ($1,$2,$3)
+       ON CONFLICT(partition) DO UPDATE SET
+         last_authenticated_at_ms=EXCLUDED.last_authenticated_at_ms
+       RETURNING log_epoch, epoch_required, last_authenticated_at_ms`,
+      [partition, initialLogEpoch, authenticatedAtMs],
+    );
+    const row = rows[0];
+    if (row === undefined)
+      throw new Error('partition registry write did not persist');
+    return {
+      partition,
+      logEpoch: row.log_epoch,
+      epochRequired: row.epoch_required,
+      lastAuthenticatedAtMs: asNumber(row.last_authenticated_at_ms),
+    };
+  }
+
+  async rotatePartitionLogEpoch(
+    partition: string,
+    logEpoch: string,
+    authenticatedAtMs: number,
+  ): Promise<PartitionRegistryEntry> {
+    if (logEpoch.length === 0) throw new Error('log epoch must be non-empty');
+    await this.#exec.transaction(async (client) => {
+      await client.query(
+        `INSERT INTO sync_partition_registry(
+           partition, log_epoch, epoch_required, last_authenticated_at_ms
+         ) VALUES ($1,$2,TRUE,$3)
+         ON CONFLICT(partition) DO UPDATE SET
+           log_epoch=EXCLUDED.log_epoch,
+           epoch_required=TRUE,
+           last_authenticated_at_ms=EXCLUDED.last_authenticated_at_ms`,
+        [partition, logEpoch, authenticatedAtMs],
+      );
+      await client.query('DELETE FROM sync_clients WHERE partition=$1', [
+        partition,
+      ]);
+    });
+    return {
+      partition,
+      logEpoch,
+      epochRequired: true,
+      lastAuthenticatedAtMs: authenticatedAtMs,
+    };
+  }
+
+  async listPartitionRegistry(): Promise<PartitionRegistryEntry[]> {
+    const { rows } = await this.#exec.query<{
+      partition: string;
+      log_epoch: string;
+      epoch_required: boolean;
+      last_authenticated_at_ms: unknown;
+    }>(
+      `SELECT partition, log_epoch, epoch_required, last_authenticated_at_ms
+         FROM sync_partition_registry ORDER BY partition`,
+      [],
+    );
+    return rows.map((row) => ({
+      partition: row.partition,
+      logEpoch: row.log_epoch,
+      epochRequired: row.epoch_required,
+      lastAuthenticatedAtMs: asNumber(row.last_authenticated_at_ms),
+    }));
+  }
+
   /**
    * Open a real Postgres transaction. The push handler drives the returned
    * `StorageTransaction` imperatively (getRow/upsert/…/commit), but the
@@ -1496,11 +1586,12 @@ export class PostgresServerStorage implements ServerStorage {
     const { rows } = await this.#exec.query<{
       client_id: string;
       actor_id: string;
+      wire_version: unknown;
       cursor: unknown;
       subscriptions: unknown;
       updated_at_ms: unknown;
     }>(
-      'SELECT client_id, actor_id, cursor, subscriptions, updated_at_ms FROM sync_clients WHERE partition=$1 AND client_id=$2',
+      'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms FROM sync_clients WHERE partition=$1 AND client_id=$2',
       [partition, clientId],
     );
     const record = rows[0];
@@ -1508,6 +1599,7 @@ export class PostgresServerStorage implements ServerStorage {
     return {
       clientId: record.client_id,
       actorId: record.actor_id,
+      wireVersion: asNumber(record.wire_version),
       cursor: asNumber(record.cursor),
       updatedAtMs: asNumber(record.updated_at_ms),
       subscriptions: asJson<ClientSubscription[]>(record.subscriptions),
@@ -1519,16 +1611,18 @@ export class PostgresServerStorage implements ServerStorage {
     record: ClientRecord,
   ): Promise<void> {
     await this.#exec.query(
-      `INSERT INTO sync_clients(partition, client_id, actor_id, cursor, subscriptions, updated_at_ms)
-       VALUES ($1,$2,$3,$4,$5,$6)
+      `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT (partition, client_id) DO UPDATE
-         SET actor_id=EXCLUDED.actor_id, cursor=EXCLUDED.cursor,
+         SET actor_id=EXCLUDED.actor_id, wire_version=EXCLUDED.wire_version,
+             cursor=EXCLUDED.cursor,
              subscriptions=EXCLUDED.subscriptions,
              updated_at_ms=EXCLUDED.updated_at_ms`,
       [
         partition,
         record.clientId,
         record.actorId,
+        record.wireVersion,
         record.cursor,
         JSON.stringify(record.subscriptions),
         record.updatedAtMs,
@@ -1608,16 +1702,18 @@ export class PostgresServerStorage implements ServerStorage {
     const { rows } = await this.#exec.query<{
       client_id: string;
       actor_id: string;
+      wire_version: unknown;
       cursor: unknown;
       subscriptions: unknown;
       updated_at_ms: unknown;
     }>(
-      'SELECT client_id, actor_id, cursor, subscriptions, updated_at_ms FROM sync_clients WHERE partition=$1 ORDER BY updated_at_ms DESC',
+      'SELECT client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms FROM sync_clients WHERE partition=$1 ORDER BY updated_at_ms DESC',
       [partition],
     );
     return rows.map((r) => ({
       clientId: r.client_id,
       actorId: r.actor_id,
+      wireVersion: asNumber(r.wire_version),
       cursor: asNumber(r.cursor),
       updatedAtMs: asNumber(r.updated_at_ms),
       subscriptions: (typeof r.subscriptions === 'string'
@@ -1742,13 +1838,6 @@ export class PostgresServerStorage implements ServerStorage {
   }
 
   async listPartitions(): Promise<string[]> {
-    // Union: the registry row appears on first commit, the client row on
-    // first pull — a partition with only one of the two still shows up.
-    const { rows } = await this.#exec.query<{ partition: string }>(
-      `SELECT partition FROM sync_partitions
-       UNION SELECT partition FROM sync_clients ORDER BY partition`,
-      [],
-    );
-    return rows.map((r) => r.partition);
+    return (await this.listPartitionRegistry()).map((entry) => entry.partition);
   }
 }

@@ -43,6 +43,12 @@ CREATE TABLE IF NOT EXISTS sync_partitions(
   max_commit_seq INTEGER NOT NULL DEFAULT 0,
   horizon_seq INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS sync_partition_registry(
+  partition TEXT PRIMARY KEY,
+  log_epoch TEXT NOT NULL,
+  epoch_required INTEGER NOT NULL DEFAULT 0,
+  last_authenticated_at_ms INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sync_row_scopes(
   partition TEXT NOT NULL, tbl TEXT NOT NULL,
   var TEXT NOT NULL, value TEXT NOT NULL, row_id TEXT NOT NULL,
@@ -96,6 +102,7 @@ CREATE INDEX IF NOT EXISTS sync_reactions_dead_letter
   ON sync_reactions(partition, status, available_at_ms, idempotency_key);
 CREATE TABLE IF NOT EXISTS sync_clients(
   partition TEXT NOT NULL, client_id TEXT NOT NULL, actor_id TEXT NOT NULL,
+  wire_version INTEGER NOT NULL DEFAULT 1,
   cursor INTEGER NOT NULL, subscriptions TEXT NOT NULL,
   updated_at_ms INTEGER NOT NULL,
   PRIMARY KEY(partition, client_id)

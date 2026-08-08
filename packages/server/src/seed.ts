@@ -186,8 +186,52 @@ export async function seedMutations(
     };
   });
 
+  const requestContext = {
+    ...config,
+    partition: target.partition,
+    actorId: target.actorId,
+  };
+  const acquisition = decodeMessage(
+    await handleSyncRequest(
+      encodeMessage({
+        wireVersion: PROTOCOL_WIRE_VERSION,
+        msgKind: 'request',
+        frames: [
+          {
+            type: 'REQ_HEADER',
+            clientId,
+            schemaVersion: config.schema.version,
+          },
+          {
+            type: 'PULL_HEADER',
+            limitCommits: 0,
+            limitSnapshotRows: 0,
+            maxSnapshotPages: 0,
+            accept: 0b0011,
+          },
+        ],
+      }),
+      requestContext,
+    ),
+  );
+  const acquisitionHeader = acquisition.frames[0];
+  if (
+    acquisition.msgKind !== 'response' ||
+    acquisitionHeader?.type !== 'RESP_HEADER' ||
+    acquisitionHeader.logEpoch === undefined
+  ) {
+    throw new SyncError(
+      'sync.invalid_request',
+      'seedMutations: epoch acquisition returned an invalid response',
+    );
+  }
   const frames: RequestFrame[] = [
-    { type: 'REQ_HEADER', clientId, schemaVersion: config.schema.version },
+    {
+      type: 'REQ_HEADER',
+      clientId,
+      schemaVersion: config.schema.version,
+      logEpoch: acquisitionHeader.logEpoch,
+    },
     { type: 'PUSH_COMMIT', clientCommitId, operations },
     // A pull that asks for nothing: the round exists for its push half.
     {
@@ -221,9 +265,7 @@ export async function seedMutations(
       frames,
     }),
     {
-      ...config,
-      partition: target.partition,
-      actorId: target.actorId,
+      ...requestContext,
       events:
         config.events === undefined
           ? capture

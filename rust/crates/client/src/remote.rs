@@ -105,6 +105,7 @@ impl std::error::Error for RemoteClientError {}
 pub struct SyncRemoteClient {
     schema: Option<ClientSchema>,
     client_id: String,
+    log_epoch: Option<String>,
     encryption: EncryptionConfig,
 }
 
@@ -128,6 +129,7 @@ impl SyncRemoteClient {
         Ok(Self {
             schema: None,
             client_id,
+            log_epoch: None,
             encryption: EncryptionConfig::default(),
         })
     }
@@ -135,6 +137,19 @@ impl SyncRemoteClient {
     pub fn with_encryption(mut self, encryption: EncryptionConfig) -> Self {
         self.encryption = encryption;
         self
+    }
+
+    /// Bind prepared commit bytes to one acquired partition log epoch (§2.1).
+    pub fn with_log_epoch(
+        mut self,
+        log_epoch: impl Into<String>,
+    ) -> Result<Self, RemoteClientError> {
+        let log_epoch = log_epoch.into();
+        if log_epoch.is_empty() {
+            return Err(RemoteClientError::invalid("logEpoch must be non-empty"));
+        }
+        self.log_epoch = Some(log_epoch);
+        Ok(self)
     }
 
     pub fn prepare_commit(
@@ -212,11 +227,13 @@ impl SyncRemoteClient {
             }
         }
         let bytes = encode_message(&Message {
+            wire_version: if self.log_epoch.is_some() { 2 } else { 1 },
             msg_kind: MsgKind::Request,
             frames: vec![
                 Frame::ReqHeader {
                     client_id: self.client_id.clone(),
                     schema_version: schema.version,
+                    log_epoch: self.log_epoch.clone(),
                 },
                 Frame::PushCommit {
                     client_commit_id: input.request_id.clone(),
@@ -719,11 +736,14 @@ mod tests {
         fn sync(&mut self, request: &[u8]) -> Result<Vec<u8>, TransportError> {
             self.requests.push(request.to_vec());
             Ok(encode_message(&Message {
+                wire_version: 1,
                 msg_kind: MsgKind::Response,
                 frames: vec![
                     Frame::RespHeader {
                         required_schema_version: None,
                         latest_schema_version: None,
+                        log_epoch: None,
+                        reset_required: None,
                     },
                     Frame::PushResult {
                         client_commit_id: "job-1".to_owned(),

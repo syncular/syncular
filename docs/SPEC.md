@@ -264,7 +264,7 @@ Every SSP2 message is:
 ```
 offset  size  field
 0       4     magic          0x53 0x53 0x50 0x32  ("SSP2")
-4       2     wireVersion    u16 — this document specifies version 1
+4       2     wireVersion    u16; this document specifies versions 1 and 2
 6       1     msgKind        u8  — 0x01 request, 0x02 response
 7       1     flags          u8  — MUST be 0x00; non-zero is a decode error
 8       …     frames         sequence of frames, terminated by END
@@ -320,7 +320,7 @@ Rules:
 4. Frame ordering constraints are per message kind (§1.5, §1.6); a frame
    out of legal order is a decode error.
 
-Frame type registry (wire version 1):
+Frame type registry (wire versions 1 and 2):
 
 | Type | Name | Message | §
 |---|---|---|---|
@@ -412,10 +412,17 @@ envelope codec rejects a no-content request as a **decode error** under
 
 **`REQ_HEADER` payload:**
 
-| Field | Type | Semantics |
-|---|---|---|
-| `clientId` | `str` | Stable per-device identifier, non-empty. A server MUST reject a `clientId` already bound to a different actor in the same partition or beginning with the reserved `["remote-command",` server-command prefix (`sync.invalid_client_id`) |
-| `schemaVersion` | `i32` | The client's generated schema version, ≥ 1. Gates codec selection and segment reuse |
+| Field | Type | Versions | Semantics |
+|---|---|---|---|
+| `clientId` | `str` | 1, 2 | Stable per-device identifier, non-empty. A server MUST reject a `clientId` already bound to a different actor in the same partition or beginning with the reserved `["remote-command",` server-command prefix (`sync.invalid_client_id`) |
+| `schemaVersion` | `i32` | 1, 2 | The client's generated schema version, ≥ 1. Gates codec selection and segment reuse |
+| `logEpoch` | `opt(str)` | 2 | The partition log identity last accepted by this durable client replica (§2.1). An absent value requests epoch acquisition and MUST accompany zero `PUSH_COMMIT` frames |
+
+Wire version 1 ends after `schemaVersion`. Wire version 2 adds `logEpoch`.
+The server accepts a version 1 request only while the partition registry does
+not require epoch validation (§2.1). A server MUST reject a version 1 request
+after an epoch rotation with `sync.client_wire_unsupported` before processing
+any push or pull.
 
 ### 1.6 Response message grammar
 
@@ -448,10 +455,17 @@ contrast, is cross-message state and stays a producer conformance rule.
 
 **`RESP_HEADER` payload:**
 
-| Field | Type | Semantics |
-|---|---|---|
-| `requiredSchemaVersion` | `opt(i32)` | If present, the client's `schemaVersion` is no longer served; the client MUST stop syncing and surface an upgrade requirement (`sync.client_schema_unsupported` semantics). The stop state is the trigger for the schema-bump flow once the app updates (§7.4.2) |
-| `latestSchemaVersion` | `opt(i32)` | Informational: newest schema version the server knows. MUST NOT block syncing |
+| Field | Type | Versions | Semantics |
+|---|---|---|---|
+| `requiredSchemaVersion` | `opt(i32)` | 1, 2 | If present, the client's `schemaVersion` is no longer served; the client MUST stop syncing and surface an upgrade requirement (`sync.client_schema_unsupported` semantics). The stop state is the trigger for the schema-bump flow once the app updates (§7.4.2) |
+| `latestSchemaVersion` | `opt(i32)` | 1, 2 | Informational: newest schema version the server knows. MUST NOT block syncing |
+| `logEpoch` | `str` | 2 | The current partition log identity (§2.1), non-empty |
+| `resetRequired` | `bool` | 2 | True when the request omitted `logEpoch` or sent a different value. The response MUST then end after `RESP_HEADER`, and the client MUST run the log reset before its next round |
+
+Wire version 1 ends after `latestSchemaVersion`. Wire version 2 adds
+`logEpoch` and `resetRequired`. A version 2 schema-floor response still
+carries both version fields, `logEpoch`, and `resetRequired`; schema upgrade
+takes precedence in the client surface.
 
 **Schema-floor response.** When the request's `schemaVersion` is not
 served — below the floor *or* newer than anything the server knows —
@@ -559,6 +573,50 @@ joint absence of bits 0 and 1 as request validation
   horizons, and segments are all partition-local.
 - Each commit records `createdAtMs` (server clock, epoch ms) and
   `actorId` (the authenticated actor that pushed it).
+
+Each partition also carries a non-empty, opaque **`logEpoch`**. The
+`logEpoch` identifies the continuity of the commit log and its idempotency
+records. It is independent of `commitSeq`, schema version, and database
+instance identity. The server creates the first `logEpoch` when
+authentication first names the partition and stores it in the partition
+registry. Authentication also refreshes the registry's last-seen timestamp,
+including requests that do not create a commit or client cursor.
+
+A version 2 client persists the accepted `logEpoch` in the same durable
+database as its cursors and outbox. It sends that value in every later
+`REQ_HEADER`. The server compares it before scope resolution, lease issuance,
+push application, pull reads, or client-record updates:
+
+1. A matching value allows the request to proceed.
+2. An absent value is epoch acquisition. The request MUST carry no
+   `PUSH_COMMIT`; the server returns `RESP_HEADER.resetRequired = true` and
+   the current `logEpoch`, then `END`.
+3. A different value is a log discontinuity. The server returns the same
+   reset response and performs no other request work.
+
+On a reset response, the client stores the returned `logEpoch`, discards all
+synced rows, row versions, subscription cursors, effective scopes, and
+bootstrap state, then re-registers its subscription intent from cursor `-1`.
+The client preserves `clientId`, outbox commits, commit outcomes, auth lease,
+and local-only application state. It withholds the preserved outbox until the
+next request carries the accepted `logEpoch`. Replaying that outbox after the
+reset is safe because the server either retained the matching idempotency
+result or applies the commit in the new log continuity.
+
+**Backup restore rule.** An operator restoring authoritative storage to an
+earlier point MUST rotate `logEpoch` before any restored instance accepts
+traffic. Rotation creates a new unpredictable value, marks epoch validation
+required, and deletes partition client cursor records. The operator MUST
+fence instances and realtime sessions that still hold the prior database
+timeline. Segment reuse keys and external segment metadata MUST include
+`logEpoch`; an instance MUST NOT reuse a segment from a different epoch even
+when its partition, schema version, scopes, and `asOfCommitSeq` match.
+
+The server cannot infer that an external database service restored an older
+snapshot. The restore procedure owns rotation. Serving restored storage under
+the prior `logEpoch` violates the protocol because clients can overstate their
+cursors and the server can reapply commit identities whose post-backup
+idempotency records disappeared.
 
 ### 2.2 Changes, rows, versions
 
@@ -1155,7 +1213,26 @@ never a mutation of an existing subscription:
   (§4.1 omission-as-unregistration) and run **eviction** for it, fused
   with the local unsubscription in one transaction (E3).
 - **Replace** `{A,B}→{B,C}` = shrink `A` + widen `C`; `B` is neither
-  re-bootstrapped nor evicted.
+re-bootstrapped nor evicted.
+
+**Creation-time bucket sugar (W2).** A table MAY store an immutable UTC month
+bucket derived from the row's creation timestamp as a scope value. Client
+cores expose `creationTimeBucket(createdAtMs, 'month')`, which returns
+`YYYY-MM`, and `last(count, 'month', nowMs)`, which returns the `count`
+consecutive UTC month values ending at `nowMs`, ordered oldest first. The
+oldest returned month MUST NOT precede `1970-01`. `count`
+MUST be at most 1,200. For
+example, `last(3, 'month', 2026-08-08T00:00:00Z)` returns `['2026-06',
+'2026-07', '2026-08']`. `count` MUST be a positive safe integer and timestamps
+MUST be non-negative integer milliseconds since the Unix epoch and no later
+than `9999-12-31T23:59:59.999Z`. Invalid input
+fails with `sync.invalid_request`.
+
+The bucket is creation-time data. A row never moves between bucket scopes as
+wall time advances. A host slides retention by passing `last(...)` to its
+window coordinator at an explicit lifecycle or calendar boundary. The core
+starts no timer. Shrink, outbox pinning, completeness, and re-entry retain the
+rules in this section.
 
 **Eviction (E1–E4).** When a unit leaves the window, the client
 performs, as **one atomic local transaction** (E3):
@@ -3685,12 +3762,16 @@ matching scope keys.
 **Where "known subscriptions" come from:** the subscription list (ids,
 tables, requested scopes) of the client's most recent pull. Servers
 MUST persist that list per (partition, `clientId`) when processing a
-pull — alongside the cursor record of §4.5 — and load it at WebSocket
+pull alongside the cursor record of §4.5 and the accepted SSP2 wire
+version, then load it at WebSocket
 upgrade. A client that has never pulled
 has no registered subscriptions: it receives `hello` with
 `requiresSync: true` and no deltas until a pull registers them — which,
 for a socket-syncing client, is its first sync round on this very
 connection (§8.7), so connect-then-sync is the reference boot order.
+Before the first socket sync round, the server encodes deltas with the wire
+version stored by the client's most recent HTTP round. A completed socket
+round replaces that version for later deltas.
 Registrations are fixed for the life of the connection **under the HTTP
 binding alone**: a pull over `POST /sync` takes effect at the next
 connect, not mid-session. A sync round completed **on the connection
@@ -4210,6 +4291,19 @@ reconnect" failure mode of an HTTP-pull-only client cannot occur.
 - Every wire-visible change lands **in the same commit** as its updated
   golden vectors (CI-enforced in this tree).
 
+Wire version 2 adds the `logEpoch` and `resetRequired` fields to the header
+frames (§1.5, §1.6). A reference server reads versions 1 and 2. Reference
+clients write version 2. Version 1 remains serviceable until an operator
+rotates a partition epoch; after rotation, accepting version 1 would let a
+client continue across an unobservable log discontinuity, so the server
+rejects it before processing.
+
+The reference codec publishes its ordered compatibility window as
+`SUPPORTED_PROTOCOL_WIRE_VERSIONS`. A reference server MUST decode every
+version in that window and encode the response with the request's version.
+The current window has N = 2 versions, `[1, 2]`. Adding a version extends the
+window and its golden vectors before a later release can advance the minimum.
+
 ---
 
 ## 10. Error catalog
@@ -4236,7 +4330,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 `rebootstrap`, `forceResync`, `retryLater`, `splitBatch`,
 `inspectServer`.
 
-### 10.2 Codes (wire version 1)
+### 10.2 Codes (wire versions 1 and 2)
 
 | Code | Category | Retryable | Action | Produced when |
 |---|---|---|---|---|
@@ -4270,6 +4364,7 @@ Recommended actions: `refreshAuth`, `checkPermissions`, `fixRequest`,
 | `sync.rate_limited` | rate-limited | yes | retryLater | Request or connection rate cap |
 | `sync.schema_mismatch` | schema-mismatch | no | regenerateClient | Generated client artifacts incompatible with the server (e.g., segment column-table mismatch, §5.2) |
 | `sync.client_schema_unsupported` | schema-mismatch | no | upgradeClient | `schemaVersion` below the server floor (accompanies `requiredSchemaVersion`) |
+| `sync.client_wire_unsupported` | schema-mismatch | no | upgradeClient | A wire version 1 client contacts a partition whose log epoch has rotated (§2.1); request-level, before push or pull processing |
 | `sync.websocket_connection_limit` | rate-limited | yes | retryLater | Realtime connection cap (global or per client) |
 | `blob.not_found` | not-found | no | fixRequest | Blob download for an unknown blob (§5.9.5), or a push referencing an absent blob (§5.9.6, §6.6) — *new in SSP2* |
 | `blob.forbidden` | forbidden | no | checkPermissions | Blob download where no referencing row is authorized for the actor (§5.9.5) — *new in SSP2* |
@@ -4460,6 +4555,8 @@ byte-identical output):
 | 21 | `realtime/presence-publish` + `realtime/presence-fanout` | JSON control vectors (`.json` only — no binary form): a client→server publish (§8.6.2 `{scopeKey, doc}`) and a server→client `join` fanout (`{scopeKey, kind, actorId, clientId, doc, timestamp}`). Pins the new `presence` event shape in both directions; a feature-off peer ignores it by event name (§8.6), so no binary vector or wire-version bump |
 | 22 | `crypto/aes-gcm-*` | §5.11 ciphertext envelope, byte-pinned per `declaredType` with a **fixed** key and nonce (test-only injection): one case per value type (`string`, `json`, `integer`, `float`, `boolean`, `bytes`) — plaintext value, key, nonce, and expected envelope bytes. Both cores reproduce the envelope byte-for-byte and round-trip decrypt. A separate `crypto/` kind (not a wire message; the envelope is a codec-level value, exercised directly, not inside an SSP2 frame) |
 | 23 | `crypto/x25519-wrap` | §5.11 X25519 sealed-box key wrap: a fixed recipient keypair, a fixed ephemeral secret and nonce, a fixed 32-byte symmetric key, and the expected wrap envelope; both cores wrap to the same bytes and unwrap back to the key. Proves the async-encryption utilities are cross-core byte-compatible |
+| 24 | `request/epoch-bound` | Wire version 2 request header with the client's stored partition `logEpoch` |
+| 25 | `response/epoch-reset` | Wire version 2 header-only response with a new `logEpoch` and `resetRequired = true` |
 | — | `request/invalid/*` | Truncated envelope (no END), bad magic, unsupported wireVersion, non-zero flags, overlong frame length, unknown enum byte (`op = 3`), upsert without payload |
 | — | `response/invalid/*` | Bool byte > 1 (`SUB_START.bootstrap` = `0x02`) |
 | — | `segment/invalid/*` | Null bit on non-nullable column, rows segment without end marker, json column value that does not parse (§2.4 tag 5), row `serverVersion` 0 (must be ≥ 1) |

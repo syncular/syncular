@@ -27,6 +27,30 @@ async function windowUnits(handle: ClientHandle): Promise<string[]> {
 
 export const windowScenarios: readonly Scenario[] = [
   {
+    name: 'window/creation-time-month-sugar',
+    specRefs: ['§4.8'],
+    async run(ctx) {
+      const a = await ctx.newClient({
+        actorId: 'actor-a',
+        clientId: 'client-a',
+        allowed: {},
+      });
+      checkEqual(
+        await a.api.timeWindowSugar(
+          Date.UTC(2026, 1, 8),
+          3,
+          'month',
+          Date.UTC(2026, 1, 8),
+        ),
+        {
+          bucket: '2026-02',
+          units: ['2025-12', '2026-01', '2026-02'],
+        },
+        'creation bucket and rolling units use UTC calendar months',
+      );
+    },
+  },
+  {
     name: 'window/widen-bootstraps-only-the-new-unit',
     specRefs: ['§4.8', 'B.18a'],
     async run(ctx) {

@@ -80,61 +80,37 @@ reacts to two callbacks.
     (doubling, capped at 30 seconds).
   - `{ kind: 'none' }`: nothing is pending. Cancel any scheduled round.
 
-A consumer of these callbacks keeps three rules: one round runs at a time,
-the newest intent replaces a pending timer, and shutdown stops scheduling.
-This is a minimal scheduler holding all three:
+A host installs the shared scheduler. It coalesces duplicate wake-ups, runs one
+round at a time, replaces an older retry deadline with the newest intent, and
+removes its listeners on stop.
 
 ```ts
 import {
+  installSyncScheduler,
   installRealtimeSupervisor,
   webSocketRealtimeConnector,
-  type SyncIntent,
 } from '@syncular/client';
-
-let client: SyncClient;
-let timer: ReturnType<typeof setTimeout> | undefined;
-let closed = false;
-// Single-flight chain: the next round starts after the current one ends.
-let running = Promise.resolve();
-
-function schedule(intent: SyncIntent): void {
-  if (closed) return;
-  // The newest intent wins: drop whatever was pending.
-  if (timer !== undefined) {
-    clearTimeout(timer);
-    timer = undefined;
-  }
-  if (intent.kind === 'none') return;
-  const delay = intent.kind === 'background' ? intent.delayMs : 0;
-  timer = setTimeout(() => {
-    timer = undefined;
-    running = running
-      .then(() => client.syncUntilIdle())
-      .then(() => undefined)
-      .catch((error) => console.error('sync failed', error));
-  }, delay);
-}
 
 const realtimeTicket = process.env.SYNCULAR_REALTIME_TICKET;
 if (realtimeTicket === undefined) throw new Error('missing realtime ticket');
 const clientId = 'appointment-worker-eu-1';
 
-client = new SyncClient({
+const client = new SyncClient({
   // database, schema, clientId, transport, segments: as above
   realtime: webSocketRealtimeConnector(
     `wss://api.example.com/realtime?clientId=${encodeURIComponent(clientId)}&ticket=${encodeURIComponent(realtimeTicket)}`,
   ),
-  onSyncNeeded: () => schedule({ kind: 'interactive' }),
-  onSyncIntent: schedule,
 });
 
 await client.start();
+const scheduler = installSyncScheduler(client, {
+  onError: (error) => console.error('sync failed', error),
+});
 client.subscribe({
   id: 'clinic-42-appointments',
   table: 'appointments',
   scopes: { clinic_id: ['clinic-42'] },
 });
-await client.syncUntilIdle();
 installRealtimeSupervisor(client);
 ```
 
@@ -235,20 +211,15 @@ normal operation.
 
 ## Clean shutdown
 
-Stop the scheduler (`closed`, `timer`, and `running` are its state from
-above), wait for the round in flight, then close the client and SQLite:
+Stop the scheduler before closing the client and SQLite. `client.close()`
+aborts an in-flight round and releases the client lock.
 
 ```ts
 let shutdownPromise: Promise<void> | undefined;
 
 function shutdown(): Promise<void> {
   shutdownPromise ??= (async () => {
-    closed = true;
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      timer = undefined;
-    }
-    await running;
+    scheduler.stop();
     await client.close();
     database.close();
   })();

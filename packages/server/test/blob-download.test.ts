@@ -93,6 +93,14 @@ describe('handleBlobDownload authorization (§5.9.5)', () => {
     expect(result.headers['Content-Type']).toBe('image/png');
     // No presign configured ⇒ no url on the result.
     expect(result.url).toBeUndefined();
+    expect(await storage.listPartitionRegistry()).toEqual([
+      {
+        partition: PARTITION,
+        logEpoch: expect.any(String),
+        epochRequired: false,
+        lastAuthenticatedAtMs: NOW,
+      },
+    ]);
   });
 
   test('denies (403) when no referencing row is authorized', async () => {
@@ -202,6 +210,10 @@ describe('handleBlobUploadGrant (§5.9.3 presigned upload)', () => {
     expect(grant.url).toContain(blobId);
     expect(grant.urlExpiresAtMs).toBe(NOW + 900_000);
     expect(grant.present).toBeUndefined();
+    expect((await storage.listPartitionRegistry())[0]).toMatchObject({
+      partition: PARTITION,
+      lastAuthenticatedAtMs: NOW,
+    });
   });
 
   test('an already-present blob returns present:true and no url (idempotent)', async () => {

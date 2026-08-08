@@ -37,7 +37,7 @@ import {
   TransportFaults,
 } from './faults';
 import { FIXTURE_SCHEMA, PARTITION } from './fixture';
-import { decodeResponse, rawRequestBytes } from './raw';
+import { decodeResponse, rawPullHeader, rawRequestBytes } from './raw';
 
 export const DEFAULT_NOW_MS = 1_750_000_000_000;
 
@@ -342,6 +342,7 @@ export class ScenarioContext {
   readonly serverSchema: DriverSchema;
   readonly random: () => number;
   readonly #clients: ClientHandle[] = [];
+  readonly #rawLogEpochs = new Map<string, string>();
 
   constructor(
     pairing: Pairing,
@@ -634,7 +635,41 @@ export class ScenarioContext {
     frames: readonly RequestFrame[],
     options?: { clientId?: string; schemaVersion?: number },
   ): Promise<RawSyncResult> {
-    return this.rawSyncBytes(actorId, rawRequestBytes(frames, options));
+    const clientId = options?.clientId ?? 'raw-client';
+    let logEpoch = this.#rawLogEpochs.get(clientId);
+    if (logEpoch === undefined) {
+      const acquisition = await this.rawSyncBytes(
+        actorId,
+        rawRequestBytes([rawPullHeader()], options),
+      );
+      if (!acquisition.ok) return acquisition;
+      const header = acquisition.message.frames[0];
+      if (header?.type !== 'RESP_HEADER' || header.logEpoch === undefined) {
+        throw new Error('v2 epoch acquisition returned no log epoch');
+      }
+      logEpoch = header.logEpoch;
+      this.#rawLogEpochs.set(clientId, logEpoch);
+    }
+    let result = await this.rawSyncBytes(
+      actorId,
+      rawRequestBytes(frames, { ...options, clientId, logEpoch }),
+    );
+    if (
+      result.ok &&
+      result.message.frames[0]?.type === 'RESP_HEADER' &&
+      result.message.frames[0].resetRequired === true
+    ) {
+      logEpoch = result.message.frames[0].logEpoch;
+      if (logEpoch === undefined) {
+        throw new Error('v2 epoch reset returned no log epoch');
+      }
+      this.#rawLogEpochs.set(clientId, logEpoch);
+      result = await this.rawSyncBytes(
+        actorId,
+        rawRequestBytes(frames, { ...options, clientId, logEpoch }),
+      );
+    }
+    return result;
   }
 
   /** Deliver arbitrary request bytes (captured replays, corruptions). */
