@@ -14,29 +14,92 @@ cursors, client identity, and the outbox on restart.
 import {
   httpSegmentDownloader,
   httpSyncTransport,
-  installRealtimeSupervisor,
   SyncClient,
-  webSocketRealtimeConnector,
-  type SyncIntent,
 } from '@syncular/client';
 import { openSqliteDatabase } from '@syncular/client/sqlite';
 import { schema } from './syncular.generated';
 
-const database = openSqliteDatabase('./data/appointment-worker.sqlite');
-
 const serviceToken = process.env.SYNCULAR_SERVICE_TOKEN;
 if (serviceToken === undefined) throw new Error('missing service token');
-const realtimeTicket = process.env.SYNCULAR_REALTIME_TICKET;
-if (realtimeTicket === undefined) throw new Error('missing realtime ticket');
-const clientId = 'appointment-worker-eu-1';
+
+const database = openSqliteDatabase('./data/appointment-worker.sqlite');
+
+const client = new SyncClient({
+  database,
+  schema,
+  clientId: 'appointment-worker-eu-1',
+  transport: httpSyncTransport('https://api.example.com/sync', {
+    headers: { Authorization: `Bearer ${serviceToken}` },
+  }),
+  segments: httpSegmentDownloader('https://api.example.com/segments', {
+    headers: { Authorization: `Bearer ${serviceToken}` },
+  }),
+});
+
+await client.start();
+client.subscribe({
+  id: 'clinic-42-appointments',
+  table: 'appointments',
+  scopes: { clinic_id: ['clinic-42'] },
+});
+await client.syncUntilIdle();
+```
+
+This is a complete client for batch-style work. `syncUntilIdle()` runs sync
+rounds until the outbox is pushed and the subscription has caught up, so a
+CLI or cron worker calls it explicitly: once after start, then again after
+writing. The [quickstart](/quickstart/) runs exactly this shape in a
+terminal.
+
+The bearer token is application auth: the server's `authenticate` callback
+maps it to an actor and partition. The client ID identifies the replica and
+is not an authentication credential. `openSqliteDatabase()` selects
+`bun:sqlite` on Bun and the built-in `node:sqlite` module on Node 22.13 or
+newer; there is no SQLite package or native addon to install.
+Runtime-specific code can still import `openBunDatabase()` from
+`@syncular/client/bun` or `openNodeDatabase()` from
+`@syncular/client/node`.
+
+## Long-running services: scheduling sync rounds
+
+A `SyncClient` never starts a sync round on its own; its host decides when to
+call `syncUntilIdle()`. In the browser deployment the shipped worker host
+contains that scheduler, so you never see it. A headless process is its own
+host: explicit calls (above) cover batch jobs, and a long-running service
+reacts to two callbacks.
+
+- `onSyncNeeded(reason)`: a wake-up. Startup found queued work, the server's
+  hello requested a sync, or a realtime message announced new commits. Run a
+  round soon.
+- `onSyncIntent(intent)`: the core's exact scheduling instruction, emitted
+  whenever its state changes:
+  - `{ kind: 'interactive' }`: work is queued (for example a local write
+    entered the outbox). Run a round now.
+  - `{ kind: 'background', delayMs }`: the last round failed with a
+    retryable error. Retry after `delayMs`; the core owns the backoff
+    (doubling, capped at 30 seconds).
+  - `{ kind: 'none' }`: nothing is pending. Cancel any scheduled round.
+
+A consumer of these callbacks keeps three rules: one round runs at a time,
+the newest intent replaces a pending timer, and shutdown stops scheduling.
+This is a minimal scheduler holding all three:
+
+```ts
+import {
+  installRealtimeSupervisor,
+  webSocketRealtimeConnector,
+  type SyncIntent,
+} from '@syncular/client';
 
 let client: SyncClient;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let closed = false;
+// Single-flight chain: the next round starts after the current one ends.
 let running = Promise.resolve();
 
 function schedule(intent: SyncIntent): void {
   if (closed) return;
+  // The newest intent wins: drop whatever was pending.
   if (timer !== undefined) {
     clearTimeout(timer);
     timer = undefined;
@@ -52,16 +115,12 @@ function schedule(intent: SyncIntent): void {
   }, delay);
 }
 
+const realtimeTicket = process.env.SYNCULAR_REALTIME_TICKET;
+if (realtimeTicket === undefined) throw new Error('missing realtime ticket');
+const clientId = 'appointment-worker-eu-1';
+
 client = new SyncClient({
-  database,
-  schema,
-  clientId,
-  transport: httpSyncTransport('https://api.example.com/sync', {
-    headers: { Authorization: `Bearer ${serviceToken}` },
-  }),
-  segments: httpSegmentDownloader('https://api.example.com/segments', {
-    headers: { Authorization: `Bearer ${serviceToken}` },
-  }),
+  // database, schema, clientId, transport, segments: as above
   realtime: webSocketRealtimeConnector(
     `wss://api.example.com/realtime?clientId=${encodeURIComponent(clientId)}&ticket=${encodeURIComponent(realtimeTicket)}`,
   ),
@@ -79,25 +138,20 @@ await client.syncUntilIdle();
 installRealtimeSupervisor(client);
 ```
 
-The supervisor owns initial connection, reconnect with bounded backoff, and a
-catch-up sync after reconnect. A custom service loop can call
-`connectRealtime()` and `disconnectRealtime()` directly instead.
+The realtime connection makes the callbacks fire while the service sits
+idle: the server announces new commits over the WebSocket, the client
+raises `onSyncNeeded`, and the scheduler pulls them. `installRealtimeSupervisor`
+owns the initial connection, reconnect with bounded backoff, and a catch-up
+sync after reconnect. A custom service loop can call `connectRealtime()` and
+`disconnectRealtime()` directly instead.
 
-The HTTP and WebSocket credentials are application auth. The server's
-`authenticate` callback maps them to an actor and partition. The realtime host
-passes `clientId` to `RealtimeHub.connect`; Syncular checks its actor binding.
-The client ID identifies the replica and is not an authentication credential.
-The example uses a query parameter for WebSocket authentication because the
+The example authenticates the WebSocket with a query parameter because the
 built-in connector uses the standard `WebSocket` constructor. Configure the
-server to accept that short-lived ticket. Do not put a long-lived service
-bearer in a URL that a proxy may log. A rotating ticket flow can provide a
-custom `RealtimeConnector` that obtains a ticket for each connection attempt.
-Bun and Node 22.13 or newer provide the required runtime APIs. The
-`@syncular/client/sqlite` export selects `bun:sqlite` on Bun and the built-in
-`node:sqlite` module on Node. There is no SQLite package or native addon to
-install. Runtime-specific code can still import `openBunDatabase()` from
-`@syncular/client/bun` or `openNodeDatabase()` from
-`@syncular/client/node`.
+server to accept that short-lived ticket, and keep long-lived service bearers
+out of URLs that a proxy may log. A rotating ticket flow can provide a custom
+`RealtimeConnector` that obtains a ticket for each connection attempt. The
+connector requires a global `WebSocket`, which Bun and Node 22.13 or newer
+provide.
 
 ## Query and mutate
 
@@ -180,8 +234,8 @@ normal operation.
 
 ## Clean shutdown
 
-Stop scheduling new rounds, close realtime, wait for the current round, then
-close SQLite:
+Stop the scheduler (`closed`, `timer`, and `running` are its state from
+above), wait for the round in flight, then close the client and SQLite:
 
 ```ts
 let shutdownPromise: Promise<void> | undefined;
