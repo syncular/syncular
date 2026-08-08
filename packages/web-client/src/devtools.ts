@@ -13,11 +13,13 @@
  *
  * Gated to development: the registry installs only where a `window` exists
  * (worker cores register through their page-side handle) and NODE_ENV is
- * anything except `'production'` (bundlers statically replace it, so
- * production builds skip installation; environments without `process` are
- * treated as dev). Cost when gated off: one function call per client.
+ * anything except `'production'`. A browser sandbox can explicitly retain
+ * the registry by defining `SYNCULAR_DEVTOOLS` as `true` in its bundle. Cost
+ * when gated off: one function call per client.
  */
 import type { InvalidationEvent, InvalidationListener } from './invalidation';
+
+declare const SYNCULAR_DEVTOOLS: boolean;
 
 /** What a registrant supplies — plain lambdas over its own surface. */
 export interface DevtoolsRegistration {
@@ -60,7 +62,12 @@ function registryHost(): Record<string, unknown> | undefined {
     process?: { env?: { NODE_ENV?: string } };
   };
   if (g.window === undefined) return undefined;
-  if (g.process?.env?.NODE_ENV === 'production') return undefined;
+  if (
+    g.process?.env?.NODE_ENV === 'production' &&
+    (typeof SYNCULAR_DEVTOOLS === 'undefined' || !SYNCULAR_DEVTOOLS)
+  ) {
+    return undefined;
+  }
   return g;
 }
 

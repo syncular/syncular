@@ -16,9 +16,9 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
-    date: '2026-08-08',
-    title: 'Embedded demo console',
-    body: 'The hosted two-pane demo seeds through the epoch-aware server helper and exposes its in-page server state through a read-only SyncularAdmin console. The console reports horizon status, metrics, store stats, clients, commit metadata, and the event tail without sending demo data to a remote server.',
+    date: '2026-08-09',
+    title: 'Hosted demo repair and debug console',
+    body: 'The hosted two-pane demo seeds through the epoch-aware server helper and explicitly retains the browser debugging registry. Open browser devtools to inspect both live clients through __SYNCULAR__, including their snapshots and full client handles.',
     links: [{ href: '/demos/', label: 'Live demos' }],
   },
   {

@@ -202,7 +202,6 @@ interface EmbeddedServer {
     mediaType?: string,
   ): Promise<void>;
   blobDownload(blobId: string): Promise<Uint8Array>;
-  adminSnapshot(): Promise<Record<string, unknown>>;
   /** A realtime "socket": a numbered channel into the worker's hub (§8.7). */
   rtOpen(clientId: string, handlers: RealtimeHandlers): Promise<RealtimeSocket>;
 }
@@ -218,20 +217,14 @@ function getEmbeddedServer(): Promise<EmbeddedServer> {
     const pending = new Map<
       number,
       {
-        resolve: (msg: {
-          bytes?: Uint8Array;
-          snapshot?: Record<string, unknown>;
-        }) => void;
+        resolve: (msg: { bytes?: Uint8Array }) => void;
         reject: (error: Error) => void;
       }
     >();
     const channels = new Map<number, RealtimeHandlers>();
     const call = (
       body: Record<string, unknown>,
-    ): Promise<{
-      bytes?: Uint8Array;
-      snapshot?: Record<string, unknown>;
-    }> =>
+    ): Promise<{ bytes?: Uint8Array }> =>
       new Promise((res, rej) => {
         const id = nextId++;
         pending.set(id, { resolve: res, reject: rej });
@@ -250,13 +243,6 @@ function getEmbeddedServer(): Promise<EmbeddedServer> {
         const out = (await call({ kind: 'blob-download', blobId })).bytes;
         if (out === undefined) throw new Error('blob rpc returned no bytes');
         return out;
-      },
-      adminSnapshot: async () => {
-        const snapshot = (await call({ kind: 'admin-snapshot' })).snapshot;
-        if (snapshot === undefined) {
-          throw new Error('admin rpc returned no snapshot');
-        }
-        return snapshot;
       },
       rtOpen: async (clientId, handlers) => {
         const channel = nextChannel++;
@@ -280,7 +266,6 @@ function getEmbeddedServer(): Promise<EmbeddedServer> {
         id?: number;
         ok?: boolean;
         bytes?: Uint8Array;
-        snapshot?: Record<string, unknown>;
         text?: string;
         channel?: number;
         error?: { code: string; message: string };
@@ -1022,40 +1007,17 @@ async function main(): Promise<void> {
   const globalStatus = document.getElementById('global-status') as HTMLElement;
 
   await Promise.all([paneA.init(), paneB.init()]);
-
-  const consoleLink = document.getElementById(
-    'console-link',
-  ) as HTMLAnchorElement;
-  const consolePanel = document.getElementById('server-console') as HTMLElement;
-  const consoleOutput = document.getElementById(
-    'console-output',
-  ) as HTMLPreElement;
-  const consoleRefresh = document.getElementById(
-    'console-refresh',
-  ) as HTMLButtonElement;
-  if (EMBEDDED) {
-    consoleLink.hidden = false;
-    const refreshConsole = async () => {
-      consoleRefresh.disabled = true;
-      consoleOutput.textContent = 'reading server state…';
-      try {
-        consoleOutput.textContent = JSON.stringify(
-          await (await getEmbeddedServer()).adminSnapshot(),
-          null,
-          2,
-        );
-      } catch (error) {
-        consoleOutput.textContent =
-          error instanceof Error ? error.message : String(error);
-      } finally {
-        consoleRefresh.disabled = false;
-      }
-    };
-    consoleRefresh.addEventListener('click', () => void refreshConsole());
-    consoleLink.addEventListener('click', () => {
-      consolePanel.hidden = false;
-      void refreshConsole();
-    });
+  const debugRegistry = (
+    window as typeof window & {
+      readonly __SYNCULAR__?: { readonly clients: readonly unknown[] };
+    }
+  ).__SYNCULAR__;
+  if (debugRegistry?.clients.length === 2) {
+    console.info('Syncular debug console ready: await __SYNCULAR__.snapshot()');
+  } else {
+    console.error(
+      'sync.demo_devtools_unavailable: expected two registered clients',
+    );
   }
 
   conflictBtn.disabled = false;

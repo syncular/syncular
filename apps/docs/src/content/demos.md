@@ -22,10 +22,11 @@ Bun process. The page drives each core over the `SyncClientHandle` RPC.
 The [hosted version](https://demo.syncular.dev/) replaces the Bun development
 server with the same Syncular server core running over sqlite-wasm in a third
 Web Worker, making the complete demo backend-free and self-contained. Open
-`[ console ]` on the hosted page to read the embedded server's horizon,
-metrics, store stats, clients, commit metadata, and event tail. The console
-reads the in-page `demo` partition through `SyncularAdmin`; it sends no data to
-a remote server.
+browser devtools and run `await __SYNCULAR__.snapshot()` to inspect both live
+clients. `__SYNCULAR__.clients[0].ref` exposes the first client for queries,
+sync rounds, subscriptions, conflicts, and diagnostics. Both demo builds
+explicitly retain this development registry; ordinary production builds gate
+it off.
 
 ```sh
 git clone https://github.com/syncular/syncular
