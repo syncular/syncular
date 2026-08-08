@@ -65,8 +65,38 @@ parallel path without current evidence and a specification change.
 
 ## Prose rules for docs
 
-Reader-facing text gets the same review as code. These patterns are
-generated-prose tells; delete them on sight:
+Reader-facing text gets the same review as code.
+
+### Voice
+
+Write as the engineer who built the system, addressing a peer who will
+build on it. The register is a good reference manual: declarative,
+concrete, unhurried. Every sentence carries a fact, an instruction, or a
+consequence; a sentence that carries none is deleted. When something is
+uncertain or unmeasured, say so plainly or leave it out.
+
+### Sentence mechanics
+
+- Actor first, active verb: "The server validates whole commits", never
+  "Commits are validated". Passive voice only when the actor is unknown
+  or irrelevant.
+- Name the component doing the work (`typegen`, the outbox, the client
+  core). "The system", "the solution", and "functionality" are banned
+  subjects.
+- One canonical name per concept, reused verbatim across the page.
+  Repeating a technical noun is correct; rotating synonyms makes readers
+  hunt for a distinction that does not exist.
+- Numbers and names over adjectives: "bootstraps 100k rows in 30.7 ms
+  warm", never "fast bootstrap". A claim needs a number, a spec section,
+  or a code path behind it; otherwise cut it.
+- Instructions in the imperative, consequence stated as fact: "Use a
+  persistent database path. An in-memory database loses the outbox on
+  restart."
+- Define a term at first use or link to the page that does.
+- Bullets only for genuinely parallel items (options, fields, steps).
+  Connected reasoning stays in paragraphs.
+
+### Banned patterns (generated-prose tells; delete on sight)
 
 - **No em-dashes.** Use a colon, semicolon, comma, parentheses, or a
   sentence split. List items are "`thing`: description".
@@ -82,6 +112,24 @@ generated-prose tells; delete them on sight:
   battle-tested, blazing, production-scale. State the measurable property
   instead.
 - **No rhetorical questions** answered by the next sentence.
+- **No hedging.** "can potentially", "may be able to", "it is possible
+  that". Commit to the fact or delete the sentence.
+- **No decorative triads.** Three adjectives or three parallel clauses
+  used for rhythm. Enumerate real items; the count falls where it falls.
+- **No "simply", "just", "easily", "straightforward".** If true, the word
+  is unnecessary; if false, it insults the stuck reader.
+- **No enthusiasm.** Exclamation marks, "Let's", "dive in". The reader is
+  working.
+- **No analogies.** Explain the mechanism itself; "think of X as Y" trades
+  precision away.
+- **No summary paragraphs and no heading echo.** The page ends when the
+  content ends, and the first sentence under a heading advances past the
+  heading instead of restating it.
+
+### The test
+
+Reread the paragraph and delete everything whose removal loses no fact,
+instruction, or consequence. Then check the survivors against the tells.
 
 ## Layout
 
