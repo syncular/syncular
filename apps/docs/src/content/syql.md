@@ -25,7 +25,7 @@ typegen.
 ```syql
 import { matchesTitle } from "./todo-predicates.syql";
 
-sync query listTodos(
+sync query searchTodos(
   listId,
   status?: string | null,
   range?,
@@ -147,8 +147,12 @@ sync query listTodos(listId) {
 
 Coverage is accepted only when the covered table has one SQL instance and
 every declared schema scope is proven from required, non-null equality/`IN`
-predicates. Predicates under `OR`, negation, `when`, or nested queries never
-prove coverage, and an `IN` proof may contain only required binds.
+predicates. A required scope bind may propagate through a qualified,
+mandatory scope-column equality in `WHERE` or a simple `JOIN ... ON` clause.
+Predicates under `OR`, negation, `when`, or nested queries never prove
+coverage, and an `IN` proof may contain only required binds. Ambiguous
+joins, optional boolean branches, nested SQL, and self-joins fail closed
+instead of claiming partial readiness.
 
 For a table with multiple scopes, choose the unit dimension:
 
@@ -212,52 +216,19 @@ unkeyed reconciliation.
 Unannotated input types are inferred from all SQL and predicate uses. Add a
 type when SQL provides no evidence. Conflicting evidence is a compile error.
 
-## Generated targets
+## Generated targets and tooling
 
 One QueryIR drives TypeScript, Swift, Kotlin, Dart, and Rust named-query
 outputs. Every target receives the same public inputs, selected physical SQL,
 bind order, reactive dependencies, synchronization coverage, and proven row
-identity.
+identity. The CLI, per-target output configuration, and the Rust module shape
+are on [Named queries](/tooling-queries/).
 
-Rust is enabled explicitly:
-
-```json
-{
-  "output": {
-    "rust": {
-      "queriesPath": "./src/syncular_queries.rs"
-    }
-  }
-}
-```
-
-The output uses one snake-case module per query:
-
-```rust
-mod syncular_queries;
-
-let params = syncular_queries::list_todos::Params::new(list_id);
-let rows = syncular_queries::list_todos::run(&client, &params)?;
-let snapshot = syncular_queries::list_todos::snapshot(&mut client, &params)?;
-```
-
-Rust maps exact integers to `i64`, optional nullable inputs to
-`SyqlPresence<Option<T>>`, groups to generated structs, and sorts to closed
-enums. Row decoding is strict: malformed or missing dynamic values return a
-query/column-specific error. `DESCRIPTOR` exposes dependencies, coverage, and
-row identity for hosts that build a reactive observer over change batches;
-there is no framework-specific Rust hook.
-
-## Tooling
-
-```bash
-bunx @syncular/typegen fmt queries
-bunx @syncular/typegen generate
-```
-
-The formatter is semantic-preserving and idempotent. The VS Code extension and
-language server provide diagnostics, formatting, symbols, and
-hover/definition/references for imported predicates.
+The `syncular fmt` formatter is semantic-preserving and idempotent. The VS
+Code extension and language server provide diagnostics, formatting, symbols,
+and hover/definition/references for imported predicates. Rust maps exact
+integers to `i64`, optional nullable inputs to `SyqlPresence<Option<T>>`,
+groups to generated structs, and sorts to closed enums.
 
 For exact grammar, lowering, portability, and diagnostic requirements, use the
 [normative specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md).

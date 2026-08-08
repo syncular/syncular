@@ -1,7 +1,34 @@
 # Troubleshooting
 
-The first-integration checklist: the symptoms integrators actually hit,
-what each one means, and the fix.
+The first-integration checklist: the symptoms integrators hit, what each one
+means, and the fix.
+
+## Error code index
+
+Errors carry stable codes. Arriving from a stack trace, start here:
+
+| Code | Meaning | Detail |
+|---|---|---|
+| `sync.invalid_request` naming `_sync_*` | A write carried an engine-owned column | [below](#syncinvalid_request-naming-an-_sync_-column) |
+| `sync.outbox_incompatible` | A pending commit references a dropped column | [below](#syncoutbox_incompatible-rejections-after-a-schema-bump) |
+| `sync.unknown_table` | A subscription names a table the schema retired | [Schema upgrades](/concepts-schema-upgrades/) |
+| `sync.schema_not_ready` | The server booted without a readiness check | [Server setup](/guide-server/) |
+| `sync.invalid_client_id` | A client id was reused under a different actor | [Seeding data](/server-operations/#seeding-data) |
+| `sync.forbidden` | A write failed the scope check | [Scopes & authorization](/concepts-scopes/) |
+| `sync.storage.scan_requires_scope` | A row scan omitted its mandatory scope filter | [Storage backends](/server-storage/#choosing-the-right-row-lookup) |
+| `client.not_leader` | Another tab owns the origin leader lock | [below](#clientnot_leader-on-a-second-tab) |
+| `client.storage_busy` | The OPFS pool is still held by another engine | [below](#clientstorage_busy-while-opening-the-app) |
+| `client.worker_restart_required` | A stale dev-server worker graph | [below](#clientworker_restart_required-after-a-package-upgrade) |
+| `client.decrypt_failed` | No key for an envelope's key id | [Encryption keys](/concepts-encryption-keys/) |
+| `client.security_preflight_required` | Protected work before `activateSecurity` | [Authorized local purge](/concepts-local-data-purge/) |
+| `client.local_data_purged` | A pending commit touched a purged target | [Authorized local purge](/concepts-local-data-purge/) |
+| `client.crdt_unavailable` | The `crdt-yjs` feature is off in this build | [CRDT columns](/concepts-crdt/) |
+| `client.identity_mismatch` | An explicit `clientId` differs from the database's | [Tauri](/platform-tauri/) |
+| `operation.invalid_request` | A remote query without complete scope proof | [Remote server operations](/guide-remote-operations/) |
+| `presence.forbidden` | A presence publish to an unheld scope key | [Realtime](/concepts-realtime/) |
+
+The normative catalog is
+[SPEC §10](https://github.com/syncular/syncular/blob/main/docs/SPEC.md#10-errors).
 
 ## Debugging from the console
 
@@ -93,7 +120,7 @@ A pending offline commit references a column your new schema removed, so it
 can no longer encode (§7.4.4). The commit leaves the outbox, its optimistic
 rows are undone, and the rejection surfaces with this code; later commits
 keep draining. This is the designed behavior for dropped columns; see
-[Schema bumps](/guide-schema/). If you hit it in development, wipe the
+[Schema upgrades](/concepts-schema-upgrades/). If you hit it in development, wipe the
 client database (below) and move on.
 
 ## `client.not_leader` on a second tab
@@ -216,9 +243,39 @@ Two config lines fix both: `optimizeDeps.exclude` for
 including the dev proxy for `/sync`, `/segments`, and the `/realtime`
 WebSocket, is on the [Vite page](/guide-vite/).
 
+## Tauri
+
+Web and Tauri clients converge in both directions. They are separate local
+replicas and therefore need distinct persisted client ids, but they must
+connect to the same server partition with a compatible schema and overlapping
+authorized scopes. A web mutation drains through its outbox, commits on the
+server, and wakes the Tauri client over realtime; the reverse path is
+identical.
+
+If a Tauri view is slow, remains partial, or does not react to another
+client:
+
+1. Confirm the npm bridge and Rust plugin resolve to matching versions; do
+   not mix an older crate with a newer JS bridge.
+2. Confirm `db_path` is set and writable. Without it, snapshots share the
+   mutable owner by design.
+3. Let the database own its persisted client id. Do not reuse one database or
+   explicit `clientId` across devices or actors; the native transport puts the
+   restored id on the realtime URL automatically.
+4. Verify the HTTP and WebSocket endpoints authenticate into the same server
+   partition and grants as the web client, and that both clients use the same
+   generated schema version.
+5. Check the surfaced sync error and outbox count. A non-draining outbox
+   points to transport/auth/server work; an empty outbox with slow large
+   queries points to result serialization or rendering, where bounded windows
+   and pagination are the appropriate fix.
+
+The read-path latency contract behind these checks is the
+[performance contract](/platform-tauri/#performance-contract).
+
 ## Where to go next
 
 - **[Vite](/guide-vite/)**: the config plus dev proxy.
-- **[Schema bumps](/guide-schema/)**: the wipe-and-re-bootstrap flow and
+- **[Schema upgrades](/concepts-schema-upgrades/)**: the wipe-and-re-bootstrap flow and
   what it costs.
 - **[Web (browser)](/platform-web/)**: worker mode, OPFS, multi-tab.

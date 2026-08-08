@@ -6,9 +6,10 @@ Syncular generates typed query APIs from two source formats:
 - `.syql` for optional predicates, reusable predicates, finite sort choices,
   bounded limits, exact reactive dependencies, and explicit sync coverage.
 
-Read the dedicated [SYQL guide](/syql/) or the
+The [SYQL language page](/syql/) teaches the second format; the
+[SYQL playground](/playground/) compiles it in the browser. The
 [formal language specification](https://github.com/syncular/syncular/blob/main/docs/SYQL.md)
-for the complete language.
+is normative.
 
 The same generated descriptor can be registered as a scoped or privileged
 [authoritative remote query](/guide-remote-operations/#registered-typed-queries).
@@ -36,12 +37,12 @@ JOIN` are generated as nullable in TypeScript, Swift, Kotlin, Dart, and Rust,
 even when the physical column is `NOT NULL`.
 
 ```sql
-select t.id, d.body as document_body
-from tasks t
-left join documents d on d.task_id = t.id
+select t.id, n.title as note_title
+from todos t
+left join notes n on n.list_id = t.list_id
 ```
 
-Here `id` remains required while `documentBody` is nullable. Aliases,
+Here `id` remains required while `noteTitle` is nullable. Aliases,
 left-to-right join chains, and parenthesized relation groups retain any
 nullability introduced by an earlier outer join. Physical tables inside a
 derived subquery still participate in reactive dependencies.
@@ -55,50 +56,40 @@ When a write needs compare-and-set semantics, explicitly project
 ## `.syql`
 
 ```syql
-sync query listTodos(
-  listId,
-  q?: string,
-  range?,
-  unassigned: bool = false,
-) {
-  select id, list_id, title, done, created_at
-  from todos
+sync query listTodos(listId) {
+  select id, list_id, title, done from todos
   where todos.list_id = :listId
-    and when(q) title like '%' || :q || '%'
-    and when(range) created_at between :range
-    and when(unassigned) assignee_id is null
   order by sortBy default position {
     position: position asc, id asc;
-    newest: created_at desc, id desc;
+    newest: updated_at_ms desc, id desc;
   }
   limit pageSize default 50 max 200;
 }
 ```
 
-The SQL is direct. `when` controls complete optional conjuncts. `BETWEEN
-:range` creates an atomic inclusive `{ start, end }` input. Sort profiles are a
-generated enum, and the limit is validated before execution.
-
-`query` is a reactive local read. `sync query` also claims synchronization
-coverage, so the compiler requires complete scope proof for every read schema
-table. Required scope binds may propagate through a qualified, mandatory
-scope-column equality in `WHERE` or a simple `JOIN ... ON` clause. Generated
-coverage is aggregate: the query is not ready until every table window is
-complete. Ambiguous joins, optional boolean branches, nested SQL, and self-joins
-fail closed instead of claiming partial readiness. Result identity is inferred
-from projected schema keys.
+`query` is a reactive local read; `sync query` also claims synchronization
+coverage, so the query is not ready until every covered table window is
+complete. Optional `when` predicates, reusable predicates, ranges, sort
+profiles, limits, and the coverage proof rules are the
+[SYQL language](/syql/); statements that cannot prove their claims fail
+closed at generation time.
 
 Use explicit `JOIN ... ON` syntax; comma-separated table sources are rejected
 so a valid SQLite statement can never omit a table from reactive metadata.
 
 ## Generate and check
 
+The `syncular` CLI ships in `@syncular/typegen`:
+
 ```bash
-bunx @syncular/typegen generate
-bunx @syncular/typegen generate --check
-bunx @syncular/typegen fmt queries
-bunx @syncular/typegen fmt --check queries
+bunx syncular generate --manifest-dir .
+bunx syncular generate --manifest-dir . --check
+bunx syncular fmt queries
+bunx syncular fmt --check queries
 ```
+
+Wire `--check` into CI so it catches missing generated changes; the same CLI
+also owns the [migration lock](/guide-schema/) subcommands.
 
 Generation emits the target-neutral query IR plus configured TypeScript,
 Swift, Kotlin, Dart, and Rust APIs. All targets consume the same physical plan,

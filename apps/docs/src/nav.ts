@@ -28,7 +28,6 @@ export const nav: readonly NavSection[] = [
       { slug: 'platform-flutter', title: 'Flutter & Dart' },
       { slug: 'platform-react-native', title: 'React Native' },
       { slug: 'platform-tauri', title: 'Tauri' },
-      { slug: 'guide-web-desktop', title: 'One codebase: web + desktop' },
       { slug: 'platform-rust', title: 'Rust' },
       { slug: 'platform-ffi', title: 'Embedding via C FFI' },
     ],
@@ -40,6 +39,7 @@ export const nav: readonly NavSection[] = [
       { slug: 'concepts-scopes', title: 'Scopes & authorization' },
       { slug: 'concepts-bootstrap', title: 'Bootstrap & segments' },
       { slug: 'concepts-windowing', title: 'Windowed sync' },
+      { slug: 'concepts-schema-upgrades', title: 'Schema upgrades' },
       { slug: 'concepts-conflicts', title: 'Conflicts & optimistic writes' },
       {
         slug: 'guide-concurrency-correction',
