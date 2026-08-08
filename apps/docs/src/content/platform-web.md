@@ -1,9 +1,8 @@
 # Web (browser)
 
-How to run the syncular client in a browser: the whole core in a Web Worker
-on SQLite (WASM) over OPFS, with the page holding a thin RPC handle. By the
-end you have a persistent, offline-capable local database that syncs in the
-background, plus the ephemeral and Node/Bun variants of the same core.
+The browser client runs the whole core in a Web Worker on SQLite (WASM) over
+OPFS, with the page holding a thin RPC handle: a persistent, offline-capable
+local database that syncs in the background.
 
 The client core (`@syncular/client`) is plain library code: storage behind a
 `ClientDatabase`, network behind transport seams, multi-tab ownership behind a
@@ -101,12 +100,12 @@ Reads are local SQL against your own tables; every write goes through
 `mutate`, which queues it in the outbox:
 
 ```ts
-await handle.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['l1'] } });
+await handle.subscribe({ id: 'todos', table: 'todos', scopes: { list_id: ['groceries'] } });
 await handle.syncUntilIdle();
 
 const rows = await handle.query('SELECT id, title FROM todos ORDER BY id');
 await handle.mutate([
-  { table: 'todos', op: 'upsert', values: { id: crypto.randomUUID(), list_id: 'l1', title: 'hi', done: false } },
+  { table: 'todos', op: 'upsert', values: { id: crypto.randomUUID(), list_id: 'groceries', title: 'hi', done: false } },
 ]);
 ```
 
@@ -257,37 +256,18 @@ unsafe pending commits, and blob references atomically. See
 [Authorized local purge](/concepts-local-data-purge/).
 
 For quarantine-before-data, create the direct client or Worker handle with
-`securityPreflight: true`, apply the validated purge, then call
-`activateSecurity({ encryption })`. Protected work and automatic host-loop
-sync fail with `client.security_preflight_required` until activation.
-`beginSecurityPreflight()` gates new work immediately and drains in-flight
-database/network work before releasing the old keyring. A follower request
+`securityPreflight: true`; the lifecycle is defined in
+[Authorized local purge](/concepts-local-data-purge/). A follower request
 applies to the one shared origin leader.
 
 ## Node and Bun backends
 
 The same core runs outside the browser (a CLI, a plain Node service, an
-Electron main process) by swapping the database backend:
-
-```ts
-import { SyncClient } from '@syncular/client';
-import { openSqliteDatabase } from '@syncular/client/sqlite';
-
-const client = new SyncClient({
-  database: openSqliteDatabase('app.db'),
-  schema,
-  // transport, clientId, and subscriptions
-});
-```
-
-The export selects `bun:sqlite` on Bun and Node's built-in `node:sqlite` on
-Node 22.13 or newer. It defaults to `:memory:`; pass a path to persist. There
-is no separate SQLite dependency. The [quickstart](/quickstart/) runs this
-shape in a terminal.
-
-See [Server-side sync clients](/guide-server-clients/) for the complete service
-lifecycle. A process that needs no local SQLite database can use
-[`SyncRemoteClient`](/guide-remote-operations/) instead.
+Electron main process) by swapping the database backend for
+`openSqliteDatabase()` from `@syncular/client/sqlite`. The
+[quickstart](/quickstart/) runs this shape in a terminal, and
+[Server-side sync clients](/guide-server-clients/) covers the complete
+service lifecycle.
 
 ## Browser support
 

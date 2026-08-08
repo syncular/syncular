@@ -119,9 +119,7 @@ export const changelog = [
     date: '2026-07-14',
     title: 'One codebase, web and desktop',
     body: 'The Tauri template scaffolds one React tree that runs over the browser worker on the web and a native Rust core on desktop.',
-    links: [
-      { href: '/guide-web-desktop/', label: 'One codebase: web + desktop' },
-    ],
+    links: [{ href: '/platform-tauri/', label: 'Tauri' }],
   },
   {
     date: '2026-07-07',

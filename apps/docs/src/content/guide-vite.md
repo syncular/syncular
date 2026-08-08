@@ -1,9 +1,9 @@
 # Vite
 
-The browser worker mode runs out of the box under Vite once four
-non-obvious pieces are in place: the Syncular/wasm optimizer exclusions, the
-worker output format, a dev proxy for the sync endpoints, and one
-schema-and-runtime-correct HMR owner. This page is the whole setup.
+The browser worker mode runs under Vite once four non-obvious pieces are in
+place: the Syncular/wasm optimizer exclusions, the worker output format, a
+dev proxy for the sync endpoints, and one schema-and-runtime-correct HMR
+owner.
 
 (The packages ship compiled JS to browser bundlers via the `browser` exports
 condition pointing at `dist/`, so webpack, Next.js, and Metro consume them

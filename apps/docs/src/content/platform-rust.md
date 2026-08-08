@@ -32,7 +32,7 @@ The wire codec lives in `syncular-ssp2` (library name `ssp2`, also
 `0.0.0` on crates.io); it arrives as a dependency and you rarely need it
 directly.
 
-## The character of the API
+## The API shape
 
 Three decisions shape the API:
 

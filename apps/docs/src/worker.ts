@@ -340,9 +340,23 @@ const respondWithHeaders = (
   });
 };
 
+// Pages that moved or merged keep their old URLs alive here.
+const redirects = new Map([
+  ['/guide-client/', '/platform-web/'],
+  ['/guide-web-desktop/', '/platform-tauri/'],
+]);
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    const redirectTarget =
+      redirects.get(url.pathname) ??
+      redirects.get(`${url.pathname}/`) ??
+      undefined;
+    if (redirectTarget !== undefined) {
+      return Response.redirect(new URL(redirectTarget, url.origin), 301);
+    }
 
     if (url.pathname === '/_analytics/read' && request.method === 'POST') {
       return articleReadResponse(request, env);

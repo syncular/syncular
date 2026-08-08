@@ -10,10 +10,10 @@ other host does. Every `@syncular/react` hook works unchanged.
 
 Webview OPFS is eviction-prone and inconsistent across WKWebView and
 webkitgtk. The Rust core gives a real on-disk SQLite database (rusqlite) and
-native performance. So the full client runs in the Tauri host process and the
-webview is a thin RPC client of it. This is the same shape as the browser
-worker mode, except the "worker" is the native process and the RPC is Tauri
-IPC.
+native performance, so the full client runs in the Tauri host process and the
+webview is a thin RPC client of it. The shape matches the browser worker
+mode: the client core runs outside the UI thread, reached over RPC (here,
+Tauri IPC).
 
 ## Install
 
@@ -134,28 +134,17 @@ const client = await createTauriSyncClient({
 ```
 
 Raw keys cross only into the native command core and are never sent to the
-server. See [Client-side encryption](/concepts-encryption/).
+server. See [Encryption keys](/concepts-encryption-keys/).
 
 The bridge exposes the native durable outcome journal through `commitOutcome`,
 `commitOutcomes`, and `resolveCommitOutcome`; React observes it with
 `useCommitOutcomes()`.
 
-`purgeLocalData({ purgeId, targets })` crosses the same command bridge to the
-native core. It applies exact plaintext-selector row and FTS cleanup, whole-
-commit outbox rejection, optimistic replay, blob reconciliation, and durable
-idempotency in one SQLite transaction. Validate the authority directive and
-gate protected subscriptions before calling it; app-owned files and OS secure-
-store keys remain the app's responsibility.
-See [Authorized local purge](/concepts-local-data-purge/) for the complete
-authority and subscription-gating workflow.
-
-For quarantine-before-data, create with `securityPreflight: true`, run the
-validated purge, then call `activateSecurity({ encryption })`. Before
-activation, protected commands and both query paths fail with
-`client.security_preflight_required`. `beginSecurityPreflight()` gates new
-work and drains the mutable owner plus read sidecar before removing the old
-Rust keyring. `close()` shuts down that native client; it no longer only
-detaches the webview listener.
+`purgeLocalData({ purgeId, targets })` and the `securityPreflight` /
+`activateSecurity` / `beginSecurityPreflight` lifecycle cross the same
+command bridge to the native core, with the semantics defined in
+[Authorized local purge](/concepts-local-data-purge/). `close()` shuts down
+the native client.
 
 Install the shared realtime supervisor on the returned client so a transient
 startup failure or socket close cannot strand remote-only changes:
@@ -179,6 +168,72 @@ native sleep/wake evidence should expose it through the same structural
 lifecycle signal. The supervisor owns bounded reconnect and catch-up; the
 native core guarantees repeated connect commands still own only one socket.
 See [Realtime](/concepts-realtime/) for phases and diagnostics.
+
+## One codebase, web and desktop
+
+The same React tree runs over two hosts: in the browser, the client core
+lives in a Web Worker on OPFS; on desktop, this plugin's native Rust core.
+Everything in `@syncular/react` targets one structural interface,
+`SyncClientLike`, so the only host-aware code is an engine seam that picks
+the client:
+
+```ts
+// engine.ts: the one file that knows about hosts.
+import type { SyncClientLike } from '@syncular/react';
+import { schema } from './syncular.generated';
+
+/** Tauri v2 injects this into every webview it hosts. */
+const isTauri = () =>
+  '__TAURI_INTERNALS__' in window ||
+  import.meta.env.VITE_FORCE_ENGINE === 'tauri';
+
+export async function createEngine(): Promise<SyncClientLike> {
+  if (isTauri()) {
+    // Desktop: the native Rust core in the Tauri process. The plugin owns
+    // the database path and the transport; the webview is a thin RPC proxy.
+    const { createTauriSyncClient } = await import('@syncular/tauri');
+    return createTauriSyncClient({ schema });
+  }
+  // Web: the whole core in a worker, persisted on OPFS. The first tab
+  // leads; further tabs follow it over a BroadcastChannel.
+  const { createSyncClientHandle } = await import('@syncular/client');
+  const WS = location.protocol === 'https:' ? 'wss' : 'ws';
+  return createSyncClientHandle({
+    worker: () =>
+      new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }),
+    schema,
+    database: { mode: 'persistent', name: 'app' },
+    endpoints: {
+      syncUrl: '/sync',
+      segmentsUrl: '/segments',
+      realtimeUrl: `${WS}://${location.host}/realtime?clientId={clientId}`,
+    },
+  });
+}
+```
+
+Render one `<SyncProvider client={await createEngine()}>` around the shared
+tree. The dynamic imports keep each host's machinery out of the other's
+bundle: the web build never ships the Tauri bridge, and the Tauri webview
+never loads sqlite-wasm. The `VITE_FORCE_ENGINE` override is for developing
+the Tauri UI in a plain browser tab.
+
+What differs per host:
+
+| | Web (worker) | Desktop (Tauri) |
+| --- | --- | --- |
+| Core | TypeScript client in a Web Worker | Rust client in the host process |
+| Storage | OPFS (`opfs-sahpool`) | On-disk SQLite under app-data |
+| Transport | `fetch` + WebSocket from the worker | `ureq` + `tungstenite` in Rust |
+| Query round trip | postMessage RPC | Tauri IPC to an independent read-only SQLite owner |
+| Setup | [Vite config](/guide-vite/) | plugin registration above |
+
+Auth rotation on desktop goes through `client.setHeaders(...)` (below); on
+the web the worker's transport sends whatever your reverse proxy or session
+carries. `bun create syncular-app my-app --template tauri` scaffolds the
+engine seam, the shared React tree, the sync server, and a `src-tauri/` host
+as a runnable project: run the web half with `bun run dev` and the desktop
+half with `cargo tauri dev`.
 
 ## The command and event surface
 
@@ -212,7 +267,7 @@ document. See [CRDT columns](/concepts-crdt/).
 ## Rotating auth
 
 `SyncularConfig.headers` sets the initial header set at plugin registration.
-Real apps rotate JWTs, so the bridge exposes a runtime replacement:
+The bridge replaces it at runtime for token rotation:
 
 ```ts
 await client.setHeaders({ authorization: `Bearer ${freshToken}` });
@@ -256,43 +311,23 @@ the independent read owner, shared by equal observers. Status/conflict-only
 changes do not rerun SQL. For large result sets serialization can dominate, so
 prefer indexed keyset pagination and bounded windows.
 
-## Performance contract and troubleshooting
+## Performance contract
 
 For the isolated native read path, use `@syncular/tauri` and
-`tauri-plugin-syncular` **0.5.1 or newer** with a file-backed `db_path`:
+`tauri-plugin-syncular` with a file-backed `db_path`:
 
 - `querySnapshot` reads rows, window coverage, and local revision atomically on
   the independent SQLite owner. `auto_sync`, HTTP rounds, and realtime socket
   work on the mutable owner cannot queue ahead of that read.
 - The native bridge release gate requires warm snapshot IPC p95 to remain at or
-  below 5 ms. That is a local-read budget, not a promise that React rendering,
-  reconciliation, and painting will all complete within 5 ms.
-- An in-memory configuration (`db_path: None`) deliberately falls back to the
-  mutable owner: it is useful for tests, but does not provide the independent
-  read-path latency contract or persistence across restarts.
+  below 5 ms. The budget covers the local read; React rendering,
+  reconciliation, and painting are outside it.
+- An in-memory configuration (`db_path: None`) falls back to the mutable
+  owner: useful for tests, without the independent read-path latency contract
+  or persistence across restarts.
 
-Web and Tauri clients should converge in both directions. They are separate
-local replicas and therefore need distinct persisted client ids, but they must
-connect to the same server partition with a compatible schema and overlapping
-authorized scopes. A web mutation drains through its outbox, commits on the
-server, and wakes the Tauri client over realtime; the reverse path is identical.
-
-If a Tauri view is slow, remains partial, or does not react to another client:
-
-1. Confirm the npm bridge and Rust plugin both resolve to 0.5.1 or newer; do
-   not mix an older crate with a newer JS bridge.
-2. Confirm `db_path` is set and writable. Without it, snapshots share the
-   mutable owner by design.
-3. Let the database own its persisted client id. Do not reuse one database or
-   explicit `clientId` across devices or actors; the native transport puts the
-   restored id on the realtime URL automatically.
-4. Verify the HTTP and WebSocket endpoints authenticate into the same server
-   partition and grants as the web client, and that both clients use the same
-   generated schema version.
-5. Check the surfaced sync error and outbox count. A non-draining outbox points
-   to transport/auth/server work; an empty outbox with slow large queries points
-   to result serialization or rendering, where bounded windows and pagination
-   are the appropriate fix.
+A symptom-by-symptom checklist for slow, partial, or non-converging Tauri
+views is in [Troubleshooting](/troubleshooting/#tauri).
 
 ## The example
 

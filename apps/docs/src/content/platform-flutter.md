@@ -22,7 +22,7 @@ The native core (`libsyncular`) is built by
 [`rust/scripts/build-native.sh`](https://github.com/syncular/syncular/blob/main/rust/scripts/build-native.sh)
 and shipped per platform (see the library-loading section below). The binding
 itself is plain Dart, so it runs in Flutter apps and in headless Dart programs
-alike. The one gap is web: `dart:ffi` doesn't target it.
+alike. `dart:ffi` does not target the web; use `@syncular/client` there.
 
 ## Create a client
 
@@ -46,27 +46,28 @@ final client = SyncularClient.create(
 );
 ```
 
-Passing `baseUrl` activates the native transport layer, HTTP plus WebSocket;
-that requires a core built with the `native-transport` feature, and leaving
-it out keeps the client on the offline-only core. Passing `dbPath` points the
-client at a file-backed SQLite database that outlives app restarts (in a
-Flutter app, `getApplicationSupportDirectory()` from `path_provider` is the
-natural place for it); skip it and state lives only for the current process.
-`SyncularConfig` also accepts `wsUrl` and `headers`, and `create` takes
-`limits`, an explicit `libraryPath`, and `pollInterval` (40 ms by default).
+With a `baseUrl` the client runs the native HTTP and WebSocket transport;
+without one it runs the offline-only core with no network stack. The native
+transport requires a core built with the `native-transport` feature. Give the
+client a persistent database path; an in-memory database loses rows, cursors,
+client identity, and the outbox on restart. In a Flutter app,
+`getApplicationSupportDirectory()` from `path_provider` is the usual
+location. `SyncularConfig` also accepts `wsUrl` and `headers`, and `create`
+takes `limits`, an explicit `libraryPath`, and `pollInterval` (40 ms by
+default).
 
 ## Reads & writes
 
 ```dart
 // Subscribe: table + scope map. Local; sync fills it.
-client.subscribe('todos', 'todos', scopes: {'list_id': ['inbox']});
+client.subscribe('todos', 'todos', scopes: {'list_id': ['groceries']});
 
-// Optimistic write: the local read sees it right away.
+// Optimistic write: visible in local reads immediately.
 final commitId = client.mutate([
   {
     'op': 'upsert',
     'table': 'todos',
-    'values': {'id': 't1', 'list_id': 'inbox', 'title': 'Hello',
+    'values': {'id': 't1', 'list_id': 'groceries', 'title': 'Hello',
                'done': false, 'position': 1, 'updated_at_ms': 1},
   },
 ]);
@@ -74,9 +75,9 @@ final commitId = client.mutate([
 // RowState maps: {rowId, version, values}; version == -1 = optimistic.
 final states = client.readRows('todos');
 
-// Arbitrary read-only SQL against the local database, returned as flat rows.
+// Arbitrary read-only SQL, returned as flat rows.
 final rows = client.query(
-  'SELECT id, title, done FROM todos WHERE list_id = ?', params: ['inbox']);
+  'SELECT id, title, done FROM todos WHERE list_id = ?', params: ['groceries']);
 ```
 
 Scope maps use the same authorization vocabulary as the rest of syncular;
@@ -101,25 +102,21 @@ client.events.listen((e) {
 
 Exact `change` batches, `sync-intent`, and `presence` arrive on
 `client.events`, a **broadcast Stream** delivered on the
-owning isolate's event loop, so listeners can touch UI state directly. Under
-the hood a `Timer.periodic` on the owning isolate drains the core's
-`poll_event` queue with non-blocking polls, so event delivery runs safely
-alongside in-flight commands without blocking the isolate inside the FFI.
+owning isolate's event loop, so listeners can touch UI state directly. A
+`Timer.periodic` on the owning isolate drains the core's `poll_event` queue
+with non-blocking polls, so event delivery runs alongside in-flight commands
+without blocking the isolate inside the FFI.
 
-Failed commands throw `SyncularError`, carrying a stable `code` and a
-message. `sync()` is the one call that folds transport trouble into its
-result instead of throwing: offline, or on the lean core, it comes back as
-`{ok: false, errorCode: "transport.unavailable"}`, and the write sits in the
-offline outbox until the next sync clears it (check `pendingCommitIds()`
-for what's queued). Every `mutate` writes optimistically, so `readRows` and
-`query` reflect it the moment the call returns.
+Failed commands throw `SyncularError` (a stable `code` plus a message).
+`sync()` reports transport failure in its return value: offline, or on the
+offline-only core, it returns
+`{ok: false, errorCode: "transport.unavailable"}`, and the commit waits in
+the outbox; `pendingCommitIds()` stays non-empty until a later sync drains
+it. `mutate` applies locally at once and queues the commit for the next push.
 
 ## Collaborative text (CRDT)
 
-Enable the `crdt-yjs` feature on the core and `crdt` columns pick up native
-editing helpers. The wire format matches the web `@syncular/crdt-yjs` helper,
-so a Flutter app and a browser can collaborate on the same document (see
-[CRDT](/concepts-crdt/)):
+`crdt` columns expose native editing helpers:
 
 ```dart
 final text = client.crdtText('notes', 'n1', 'doc');
@@ -127,12 +124,13 @@ client.crdtInsertText('notes', 'n1', 'doc', 0, 'Hi ');
 client.crdtDeleteText('notes', 'n1', 'doc', 0, 3);
 ```
 
-When the built-in text helpers don't cover a case, hand `crdtApplyUpdate` an
-arbitrary Yjs update as a `List<int>`. Whichever route you take, the update
-rides the standard mutate call and comes back with a queued
-`clientCommitId`.
+`crdtApplyUpdate` applies an arbitrary Yjs update as a `List<int>` for cases
+the text helpers do not cover; each helper pushes its update through the
+normal mutate path and returns the enqueued `clientCommitId`. The merge
+model, the `crdt-yjs` feature flag, and cross-core convergence guarantees are
+on [CRDT columns](/concepts-crdt/).
 
-## Library loading & platform artifacts
+## Library loading
 
 `dart:ffi` resolves `libsyncular` in a fixed order: an explicit `libraryPath`
 passed to `SyncularClient.create`, then the `SYNCULAR_LIBRARY_PATH`
@@ -166,9 +164,11 @@ client.close();   // release DB/transport/socket; idempotent
 - **`close()`** cancels the poll timer, frees the core, and closes the event
   stream. It is idempotent; once closed, commands throw `client.closed`.
 
-Only one thread ever touches the core, and Dart's concurrency model makes
-that automatic: commands and the poll loop both run on the isolate that
-created the handle, so there is nothing to race. The
+A schema bump on an installed app follows the wipe-and-re-bootstrap
+flow in [Schema upgrades](/concepts-schema-upgrades/).
+
+The core is thread-affine. Commands and the poll loop both run on the
+isolate that created the handle. The
 [example](https://github.com/syncular/syncular/tree/main/bindings/flutter/example)
 is a ~150-line Flutter todo app (`flutter run` against the demo server); its
 platform scaffolds come from `flutter create` and stay out of the repo.

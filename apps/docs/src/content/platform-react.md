@@ -4,6 +4,8 @@
 TypeScript core, Tauri bridge, and React Native bridge. React 18+ is a peer
 dependency.
 
+## Install
+
 ```sh
 bun add @syncular/react
 ```
@@ -170,7 +172,7 @@ default. Under sustained external-store traffic, the address bar and the
 router's internal location can advance while a mounted route continues to
 render its previous `useLocation()` or `useSearchParams()` snapshot. Syncular
 cannot guarantee another library's transition scheduling. For route-owned
-clinical controls that must agree synchronously with the visible URL, use the
+controls that must agree synchronously with the visible URL, use the
 router's explicit synchronous publication policy:
 
 ```tsx

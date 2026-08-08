@@ -41,37 +41,37 @@ val client = SyncularClient.create(
 )
 ```
 
-With a `baseUrl` the client runs the native HTTP + WebSocket transport,
-which needs a core built with the `native-transport` feature; leaving it out
-gives the offline-only core with no network stack. With a `dbPath` state
-lives in a file-backed SQLite database and survives restarts; leaving it out
-keeps the database in memory. `SyncularConfig` also takes `wsUrl` and
-`headers` (auth, tenant, …) for the native transport.
+With a `baseUrl` the client runs the native HTTP and WebSocket transport;
+without one it runs the offline-only core with no network stack. The native
+transport requires a core built with the `native-transport` feature. Give the
+client a persistent database path; an in-memory database loses rows, cursors,
+client identity, and the outbox on restart. `SyncularConfig` also takes
+`wsUrl` and `headers` (auth, tenant, …) for the native transport.
 
 ## Reads & writes
 
 ```kotlin
 // Subscribe: table + scope map. Local; sync fills it.
-client.subscribe(id = "todos", table = "notes",
-                 scopes = mapOf("list_id" to listOf("welcome")))
+client.subscribe(id = "todos", table = "todos",
+                 scopes = mapOf("list_id" to listOf("groceries")))
 
-// Optimistic write: lands in the local DB and is readable at once.
+// Optimistic write: visible in local reads immediately.
 val commitId = client.mutate(listOf(
     JsonValue.obj(
-        "table" to JsonValue.of("notes"), "op" to JsonValue.of("upsert"),
+        "table" to JsonValue.of("todos"), "op" to JsonValue.of("upsert"),
         "values" to JsonValue.obj(
-            "id" to JsonValue.of("n1"), "list_id" to JsonValue.of("welcome"),
-            "body" to JsonValue.of("Hello"), "updated_at_ms" to JsonValue.of(1),
+            "id" to JsonValue.of("t1"), "list_id" to JsonValue.of("groceries"),
+            "title" to JsonValue.of("Hello"), "updated_at_ms" to JsonValue.of(1),
         ),
     ),
 ))
 
 // RowState objects: {rowId, version, values}; version == -1 = optimistic.
-val rows = client.readRows("notes")
+val rows = client.readRows("todos")
 
-// Read-only SQL against the local database; rows come back flat.
-val hits = client.query("SELECT id, body FROM notes WHERE list_id = ?",
-                        listOf(JsonValue.of("welcome")))
+// Arbitrary read-only SQL, returned as flat rows.
+val hits = client.query("SELECT id, title FROM todos WHERE list_id = ?",
+                        listOf(JsonValue.of("groceries")))
 ```
 
 `JsonValue` is the binding's hand-rolled JSON model (no third-party JSON
@@ -102,19 +102,16 @@ marshal to your UI thread as needed. Supporting reads: `syncNeeded()`,
 `presence(scopeKey)`, `setPresence(scopeKey, doc)`, and `connectRealtime()` /
 `disconnectRealtime()`.
 
-Failed commands throw `SyncularException` carrying a stable `code` and a
-message. `sync()` reports transport failure in-band: offline, or on the lean
-core, it returns `{ok: false, errorCode: "transport.unavailable"}`, and the
-mutation sits in the offline outbox until a later sync drains it
-(`pendingCommitIds()` shows what is queued). Every `mutate` is optimistic;
-the write is readable through `readRows`/`query` as soon as the call
-returns.
+Failed commands throw `SyncularException` (a stable `code` plus a message).
+`sync()` reports transport failure in its return value: offline, or on the
+offline-only core, it returns
+`{ok: false, errorCode: "transport.unavailable"}`, and the commit waits in
+the outbox; `pendingCommitIds()` stays non-empty until a later sync drains
+it. `mutate` applies locally at once and queues the commit for the next push.
 
 ## Collaborative text (CRDT)
 
-On a core built with the `crdt-yjs` feature, `crdt` columns expose native
-editing helpers, byte-compatible with the web `@syncular/crdt-yjs` helper
-(see [CRDT](/concepts-crdt/)):
+`crdt` columns expose native editing helpers:
 
 ```kotlin
 val text = client.crdtText("notes", "n1", "doc")
@@ -122,9 +119,11 @@ client.crdtInsertText("notes", "n1", "doc", 0, "Hi ")
 client.crdtDeleteText("notes", "n1", "doc", 0, 3)
 ```
 
-For updates the text helpers do not cover, `crdtApplyUpdate` applies an
-arbitrary Yjs update as a `ByteArray`. Every helper routes its update
-through the normal mutate path and returns the enqueued `clientCommitId`.
+`crdtApplyUpdate` applies an arbitrary Yjs update as a `ByteArray` for cases
+the text helpers do not cover; each helper pushes its update through the
+normal mutate path and returns the enqueued `clientCommitId`. The merge
+model, the `crdt-yjs` feature flag, and cross-core convergence guarantees are
+on [CRDT columns](/concepts-crdt/).
 
 ## Library loading
 
@@ -156,10 +155,12 @@ Android also requires a recent runtime.
   thread first so the handle is never freed under an in-flight `poll_event`,
   and commands throw `client.closed` afterwards.
 
-The underlying core expects a single thread. The wrapper meets that by
-serializing every command through an internal lock, so `SyncularClient`
-itself is safe to call from any thread; leave the raw FFI functions to the
-wrapper. The
+A schema bump on an installed app follows the wipe-and-re-bootstrap
+flow in [Schema upgrades](/concepts-schema-upgrades/).
+
+The core is thread-affine. The wrapper serializes every command through an
+internal lock, so `SyncularClient` itself is safe to call from any thread;
+leave the raw FFI functions to the wrapper. The
 [example](https://github.com/syncular/syncular/tree/main/bindings/kotlin/example)
 is a terminal todo app against the [quickstart](/quickstart/) server; its CI
 smoke pushes a write through a live server and reads it back from an

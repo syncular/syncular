@@ -1,21 +1,15 @@
 # React Native
 
 `@syncular/react-native` runs the native Rust client core behind a React
-Native TurboModule (rusqlite on the device filesystem, HTTP and WebSockets
-owned in Rust) and surfaces it as the same `SyncClientLike` interface every
-other host implements. As a result, every `@syncular/react` hook works
-unchanged in a React Native app.
-
-## Why the binding runs the native core
-
-RN's Hermes runtime lacks both OPFS and sqlite-wasm, and the TypeScript
-client's persistent path depends on both. So React Native uses the native
-core from the [`syncular-ffi`](https://github.com/syncular/syncular/tree/main/rust/crates/ffi)
-crate: a real SQLite file on the device filesystem (rusqlite) and a
-native HTTP + WebSocket transport, bridged through a TurboModule. The bridge
-is thin because the surface is already JSON-command-shaped: `{method,
-params}` in, `{result|error}` out, bytes as `{"$bytes":"hex"}`, and
-`poll_event` feeding a `NativeEventEmitter`.
+Native TurboModule and surfaces it as the same `SyncClientLike` interface
+every other host implements. RN's Hermes runtime lacks OPFS and sqlite-wasm,
+which the TypeScript client's persistent path depends on, so the binding
+drives the [`syncular-ffi`](https://github.com/syncular/syncular/tree/main/rust/crates/ffi)
+crate: a real SQLite file on the device filesystem (rusqlite) and a native
+HTTP and WebSocket transport. The bridge is thin because the surface is
+already JSON-command-shaped: `{method, params}` in, `{result|error}` out,
+bytes as `{"$bytes":"hex"}`, and `poll_event` feeding a
+`NativeEventEmitter`.
 
 ## Install
 
@@ -58,7 +52,7 @@ import { schema } from './syncular.generated';
 
 const client = await createNativeSyncClient({
   schema,                          // the typegen output, same as every host
-  baseUrl: 'https://your.server',  // engages the native HTTP+WS transport
+  baseUrl: 'https://your.server',  // engages the native transport
 });
 ```
 
@@ -68,14 +62,20 @@ The config keys:
 | --- | --- |
 | `clientId` | Optional explicit id; otherwise the core creates and persists one. |
 | `schema` | The generated schema from [typegen](/guide-schema/). |
-| `baseUrl` | Sync server mount; engages the native transport. Omit for a client-local core. |
+| `baseUrl` | Sync server mount. |
 | `dbPath` | On-disk SQLite path (apps usually pass a file under the app-data dir). |
 | `headers` | Extra transport headers (auth, tenant, …). |
 | `limits` | §4.2 client limits, forwarded to the native `create`. |
 
-## Every React hook works unchanged
+With a `baseUrl` the client runs the native HTTP and WebSocket transport;
+without one it runs the offline-only core with no network stack. Give the
+client a persistent database path; an in-memory database loses rows, cursors,
+client identity, and the outbox on restart.
 
-Pass the client to `<SyncProvider>` and the entire
+## Reads & writes
+
+Every `@syncular/react` hook works unchanged in a React Native app. Pass the
+client to `<SyncProvider>` and the entire
 [`@syncular/react`](/platform-react/) surface (`useQuery`, `useRawSql`,
 `useMutation`, `useSyncStatus`, `useCommitOutcomes`, `usePresence`) behaves exactly as it does
 against the browser client. From the example app's real `App.tsx`:
@@ -90,8 +90,7 @@ function TodoList() {
     'SELECT id, title, done FROM todos WHERE list_id = ? ORDER BY position, id',
     ['groceries'],
   );
-  // mutate([{ table: 'todos', op: 'upsert', values: { ... } }]): the outbox
-  // queues offline; the row appears optimistically via invalidation.
+  // mutate([{ table: 'todos', op: 'upsert', values: { ... } }])
 }
 
 export function App({ client }) {
@@ -103,34 +102,9 @@ export function App({ client }) {
 }
 ```
 
-Native CRDT text (needs the FFI `crdt-yjs` feature) is exposed as typed
-methods on the client (`crdtText`, `crdtInsertText`, `crdtDeleteText`,
-`crdtApplyUpdate`), byte-compatible with the web `@syncular/crdt-yjs` helper.
-See [CRDT columns](/concepts-crdt/).
+`mutate` applies locally at once and queues the commit for the next push.
 
-## Durable recovery and local purge
-
-Final commit outcomes use the native SQLite journal. `commitOutcome`,
-`commitOutcomes`, and `resolveCommitOutcome` survive process restarts; failed
-aggregate outcomes retain the complete ordered local operation envelope for an
-authorized repair flow. React applications normally observe that journal with
-`useCommitOutcomes()`.
-
-`client.purgeLocalData({ purgeId, targets })` forwards the same bounded plan to
-the Rust core as Tauri and the C FFI. It atomically removes matching rows and
-FTS documents, rejects whole affected pending commits, replays safe optimistic
-work, reconciles blob references, and returns counts only. Validate the
-directive and gate subscriptions first; see
-[Authorized local purge](/concepts-local-data-purge/).
-
-React Native accepts the same portable `{ keys, keyIdColumns }` encryption
-config as Worker and Tauri. For authentication/quarantine-before-data, create
-with `securityPreflight: true`, apply the validated local purge, and then call
-`activateSecurity({ encryption })`. Protected operations and automatic sync
-intents fail with `client.security_preflight_required` until activation;
-`beginSecurityPreflight()` provides the live revocation barrier.
-
-## Events and lifecycle
+## Sync loop & events
 
 The client core has no callbacks: the native shims pump
 `syncular_client_poll_event` on a background queue and emit each event JSON on
@@ -138,6 +112,15 @@ the `syncular::event` topic. The FFI forwards exact revisioned `change` batches
 and explicit `sync-intent` effects from the Rust core; it does not diff
 counters. The JS bridge feeds changes into the same shared reactive store as
 web and Tauri, while `presence` remains ephemeral.
+
+## Collaborative text (CRDT)
+
+Native CRDT text is exposed as typed methods on the client: `crdtText`,
+`crdtInsertText`, `crdtDeleteText`, and `crdtApplyUpdate`. The merge model,
+the `crdt-yjs` feature flag, and cross-core convergence guarantees are on
+[CRDT columns](/concepts-crdt/).
+
+## Lifecycle & threading
 
 Lifecycle is explicit:
 
@@ -147,14 +130,25 @@ Lifecycle is explicit:
 - `client.resume()`: reconnect realtime and restart the pump.
 - `client.close()`: detach listeners and release the native core.
 
-`resume()` is deliberately one-shot. For retry, socket-close recovery, and an
-explicit catch-up before claiming freshness, install
-`installRealtimeSupervisor()` from `@syncular/client` with an `AppState`-backed
-lifecycle signal plus the app's connectivity and protection signals. Keep
-calling `pause()` / `resume()` to control the native event pump; repeated
-connection attempts are idempotent, so the supervisor safely adds policy
-without creating a second native socket. See
-[Realtime](/platform-web/#the-realtime-supervisor).
+A schema bump on an installed app follows the wipe-and-re-bootstrap
+flow in [Schema upgrades](/concepts-schema-upgrades/).
+
+`resume()` is one-shot. For retry, socket-close recovery, and an explicit
+catch-up before claiming freshness, install `installRealtimeSupervisor()`
+from `@syncular/client` with an `AppState`-backed lifecycle signal plus the
+app's connectivity and protection signals. Keep calling `pause()` /
+`resume()` to control the native event pump; repeated connection attempts are
+idempotent, so the supervisor adds policy without creating a second native
+socket. See [Realtime](/platform-web/#the-realtime-supervisor).
+
+Final commit outcomes use the native SQLite journal: `commitOutcome`,
+`commitOutcomes`, and `resolveCommitOutcome` survive process restarts, and
+React applications observe the journal with `useCommitOutcomes()`.
+`client.purgeLocalData({ purgeId, targets })` forwards the same bounded purge
+plan to the Rust core as Tauri and the C FFI; for
+authentication/quarantine-before-data, create with `securityPreflight: true`,
+apply the validated local purge, then call `activateSecurity({ encryption })`
+(see [Authorized local purge](/concepts-local-data-purge/)).
 
 ## Platform notes
 
@@ -177,13 +171,13 @@ without creating a second native socket. See
 
 ## Where to go next
 
-- **[React hooks](/platform-react/)**: the full `useQuery` / `useRawSql` /
+- [React hooks](/platform-react/): the full `useQuery` / `useRawSql` /
   `useMutation` / `usePresence` surface this binding feeds.
-- **[Embedding via C FFI](/platform-ffi/)**: the five-function C ABI
+- [FFI & the native core](/platform-ffi/): the five-function C ABI
   underneath the TurboModule.
-- **[The example app](https://github.com/syncular/syncular/tree/main/bindings/react-native/example)**:
+- [The example app](https://github.com/syncular/syncular/tree/main/bindings/react-native/example):
   the runnable todo app, with the per-platform device-build recipe.
-- **[Realtime](/concepts-realtime/)**: how the socket, deltas, and
+- [Realtime](/concepts-realtime/): how the socket, deltas, and
   invalidations work.
-- **[Authorized local purge](/concepts-local-data-purge/)**: device and key
+- [Authorized local purge](/concepts-local-data-purge/): device and key
   revocation without pretending an offline device was remotely erased.

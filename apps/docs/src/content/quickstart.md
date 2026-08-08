@@ -15,8 +15,9 @@ That is the fastest path: the scaffolder writes the project this page walks
 through (a schema, a ~30-line server, a two-client script, a README, and a
 smoke test). For a browser app, `--template web` scaffolds a Hono server +
 a single-pane todo UI on the worker + OPFS client instead. For
-[one codebase, web + desktop](/guide-web-desktop/), `--template tauri` adds a
-`src-tauri/` host running the native Rust core behind the engine seam.
+[one codebase, web and desktop](/platform-tauri/#one-codebase-web-and-desktop),
+`--template tauri` adds a `src-tauri/` host running the native Rust core
+behind the engine seam.
 
 > Every snippet below comes from the runnable
 > [`examples/quickstart`](https://github.com/syncular/syncular/tree/main/examples/quickstart)

@@ -54,41 +54,41 @@ let client = try SyncularClient(
 )
 ```
 
-Set `baseUrl` to engage the native HTTP + WebSocket transport (a core built
-with the `native-transport` feature); without it the client runs the
-offline-only core. Set `dbPath` to persist state across launches in a
-file-backed SQLite database; without it the database is in-memory.
-`SyncularConfig` also takes `wsUrl` (explicit realtime socket URL, derived
-from `baseUrl` if nil) and `headers` (auth, tenant, …) for the native
-transport.
+With a `baseUrl` the client runs the native HTTP and WebSocket transport;
+without one it runs the offline-only core with no network stack. The native
+transport requires a core built with the `native-transport` feature. Give the
+client a persistent database path; an in-memory database loses rows, cursors,
+client identity, and the outbox on restart. `SyncularConfig` also takes
+`wsUrl` (derived from `baseUrl` if nil) and `headers` (auth, tenant, …) for
+the native transport.
 
 ## Reads & writes
 
 ```swift
 // Subscribe: table + scope map. Local; sync fills it.
-try client.subscribe(id: "todos", table: "notes",
-                     scopes: ["list_id": ["welcome"]])
+try client.subscribe(id: "todos", table: "todos",
+                     scopes: ["list_id": ["groceries"]])
 
 // Optimistic write: visible in local reads immediately.
 let commitId = try client.mutate([
     .object([
-        "table": .string("notes"), "op": .string("upsert"),
+        "table": .string("todos"), "op": .string("upsert"),
         "values": .object([
-            "id": .string("n1"), "list_id": .string("welcome"),
-            "body": .string("Hello"), "updated_at_ms": .number(1),
+            "id": .string("t1"), "list_id": .string("groceries"),
+            "title": .string("Hello"), "updated_at_ms": .number(1),
         ]),
     ]),
 ])
 
 // RowState objects: {rowId, version, values}; version == -1 = optimistic.
-let rows = try client.readRows(table: "notes")
+let rows = try client.readRows(table: "todos")
 
 // Arbitrary read-only SQL, returned as flat rows.
-let hits = try client.query("SELECT id, body FROM notes WHERE list_id = ?",
-                            params: [.string("welcome")])
+let hits = try client.query("SELECT id, title FROM todos WHERE list_id = ?",
+                            params: [.string("groceries")])
 ```
 
-The scope map here is the same authorization vocabulary used across syncular
+The scope map is the same authorization vocabulary used across syncular
 (see [Scopes & authorization](/concepts-scopes/)). Anything the typed
 conveniences do not cover is reachable through the raw command call:
 
@@ -121,19 +121,15 @@ initializer. Supporting reads: `syncNeeded()`, `pendingCommitIds()`,
 `disconnectRealtime()`.
 
 Failed commands throw `SyncularError` (a stable `code` plus a message).
-`sync()` is the exception: transport trouble is reported in its return value.
-Offline or on the lean core it returns
-`{ok: false, errorCode: "transport.unavailable"}`, and the mutation waits in
-the offline outbox; `pendingCommitIds()` stays non-empty until sync drains
-it. Writes are always optimistic, so a `mutate` shows up in
-`readRows`/`query` immediately.
+`sync()` reports transport failure in its return value: offline, or on the
+offline-only core, it returns
+`{ok: false, errorCode: "transport.unavailable"}`, and the commit waits in
+the outbox; `pendingCommitIds()` stays non-empty until a later sync drains
+it. `mutate` applies locally at once and queues the commit for the next push.
 
 ## Collaborative text (CRDT)
 
-Build the core with the `crdt-yjs` feature and `crdt` columns get native
-helpers. They are byte-compatible with the web `@syncular/crdt-yjs` helper,
-so a Swift app and a browser can edit the same document (see
-[CRDT](/concepts-crdt/)):
+`crdt` columns expose native editing helpers:
 
 ```swift
 let text = try client.crdtText(table: "notes", rowId: "n1", column: "doc")
@@ -144,12 +140,12 @@ try client.crdtDeleteText(table: "notes", rowId: "n1", column: "doc",
 ```
 
 `crdtApplyUpdate` applies an arbitrary Yjs update (raw bytes) for cases the
-text helpers do not cover. Each editing helper pushes the update through the
-normal mutate path and returns the enqueued `clientCommitId`.
+text helpers do not cover; each helper pushes its update through the normal
+mutate path and returns the enqueued `clientCommitId`. The merge model, the
+`crdt-yjs` feature flag, and cross-core convergence guarantees are on
+[CRDT columns](/concepts-crdt/).
 
 ## Lifecycle & threading
-
-The wrapper owns app lifecycle:
 
 - **`pause()`** stops the event poll loop and disconnects the realtime
   socket. Call when the app backgrounds (SwiftUI: `.onChange(of: scenePhase)`
@@ -160,6 +156,9 @@ The wrapper owns app lifecycle:
   Idempotent; it blocks until the poll loop has left its in-flight
   `poll_event` call, so the handle is never freed under a waiter. Commands
   throw `client.closed` afterwards.
+
+A schema bump on an installed app follows the wipe-and-re-bootstrap
+flow in [Schema upgrades](/concepts-schema-upgrades/).
 
 The core is thread-affine. The wrapper serializes all command dispatch
 through a private serial queue, so you may call `SyncularClient` from any
