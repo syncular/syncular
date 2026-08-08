@@ -39,6 +39,11 @@ persists it to a file.
   offline, edits the row in both panes (pane B's edit wins on the server),
   then asks you to toggle pane A online — the replayed stale-`baseVersion`
   commit surfaces a §6.3 conflict record (never auto-resolved) in pane A.
+- **Server console**: the hosted static demo exposes a read-only `[ console ]`
+  panel backed by `SyncularAdmin` in the embedded server worker. It reports
+  horizon status, metrics, store stats, clients, commit metadata, and the event
+  tail for the in-page `demo` partition. For the Bun development server, run
+  `SYNCULAR_DEMO_ADMIN=1 bun run dev` and open `/admin`.
 
 ## Notes
 

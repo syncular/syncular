@@ -17,6 +17,12 @@
 export const changelog = [
   {
     date: '2026-08-08',
+    title: 'Embedded demo console',
+    body: 'The hosted two-pane demo seeds through the epoch-aware server helper and exposes its in-page server state through a read-only SyncularAdmin console. The console reports horizon status, metrics, store stats, clients, commit metadata, and the event tail without sending demo data to a remote server.',
+    links: [{ href: '/demos/', label: 'Live demos' }],
+  },
+  {
+    date: '2026-08-08',
     title: 'Restore fencing and host lifecycle controls',
     body: 'Wire version 2 fences restored partition timelines with log epochs while preserving each client outbox. The client package adds a shared sync scheduler and UTC month-window helpers. Native bindings add runtime header rotation and connectivity adapters. The server adds an authenticated partition registry, and typegen publishes a diagnostic remedy catalog.',
     links: [

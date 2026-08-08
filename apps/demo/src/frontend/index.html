@@ -129,6 +129,18 @@
     .conflicts .item code { background: var(--panel); border: 1px solid var(--border);
       padding: 0 .3rem; font-size: .72rem; color: #e3d3a2; }
 
+    .server-console { margin: 0 1.25rem 1.25rem; border: 1px solid var(--border);
+      background: var(--panel); }
+    .server-console h2 { display: flex; align-items: center; gap: .8rem; margin: 0;
+      padding: .55rem .9rem; border-bottom: 1px solid var(--border);
+      color: var(--faint); font-size: .72rem; font-weight: 400;
+      letter-spacing: .12em; text-transform: uppercase; }
+    .server-console h2 span { color: var(--dim); letter-spacing: .06em; }
+    .server-console h2 button { margin-left: auto; }
+    .server-console pre { margin: 0; padding: .9rem; max-height: 32rem;
+      overflow: auto; color: var(--ink); font: .72rem/1.55 var(--mono);
+      white-space: pre-wrap; word-break: break-word; }
+
     .rule { color: var(--faint); font-size: .72rem; white-space: nowrap; overflow: hidden;
       user-select: none; padding: 0 1.25rem; }
     footer { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
@@ -147,6 +159,7 @@
     <span class="spacer"></span>
     <span id="global-status" class="hint"></span>
     <nav aria-label="Syncular links">
+      <a id="console-link" href="#server-console" hidden>console</a>
       <a href="https://syncular.dev/what-is/">docs</a>
       <a href="https://syncular.dev/demos/">demo guide</a>
       <a href="https://github.com/syncular/syncular">source</a>
@@ -156,6 +169,14 @@
     <section class="pane" id="pane-a"></section>
     <section class="pane" id="pane-b"></section>
   </main>
+  <section class="server-console" id="server-console" hidden>
+    <h2>
+      server console
+      <span>read-only · in-page partition</span>
+      <button id="console-refresh">refresh</button>
+    </h2>
+    <pre id="console-output" aria-live="polite">reading server state…</pre>
+  </section>
   <div class="rule">================================================================================================================================================================</div>
   <footer>
     <span>SYNCULAR v0.0.0 · DEMO · <a href="https://syncular.dev/">SYNCULAR.DEV</a></span>

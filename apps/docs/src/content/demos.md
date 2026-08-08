@@ -21,7 +21,11 @@ Bun process. The page drives each core over the `SyncClientHandle` RPC.
 
 The [hosted version](https://demo.syncular.dev/) replaces the Bun development
 server with the same Syncular server core running over sqlite-wasm in a third
-Web Worker, making the complete demo backend-free and self-contained.
+Web Worker, making the complete demo backend-free and self-contained. Open
+`[ console ]` on the hosted page to read the embedded server's horizon,
+metrics, store stats, clients, commit metadata, and event tail. The console
+reads the in-page `demo` partition through `SyncularAdmin`; it sends no data to
+a remote server.
 
 ```sh
 git clone https://github.com/syncular/syncular
@@ -34,6 +38,8 @@ One process serves everything on one port: `POST /sync` and
 `GET /segments/:id`, the `/realtime` WebSocket, and the frontend + worker
 bundles. Server storage is in-memory by default;
 `SYNCULAR_DEMO_DB=path bun run --cwd apps/demo dev` persists it to a file.
+Run `SYNCULAR_DEMO_ADMIN=1 bun run --cwd apps/demo dev` to mount the complete
+operator console at `/admin`.
 
 What to try:
 

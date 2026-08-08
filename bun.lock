@@ -19,7 +19,6 @@
       "dependencies": {
         "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
         "@syncular/client": "workspace:*",
-        "@syncular/core": "workspace:*",
         "@syncular/server": "workspace:*",
         "@syncular/server-hono": "workspace:*",
         "hono": "^4.12.34",
