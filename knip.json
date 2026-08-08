@@ -20,7 +20,11 @@
       "entry": ["test/**/*.{ts,tsx,mjs}"]
     },
     "packages/server": {
-      "entry": ["test/**/*.{ts,tsx,mjs}"]
+      "entry": [
+        "src/index-node.ts",
+        "src/sqlite-node.ts",
+        "test/**/*.{ts,tsx,mjs}"
+      ]
     },
     "packages/server-workers": {
       "entry": ["test/**/*.{ts,tsx,mjs}"]
@@ -32,7 +36,7 @@
       "entry": ["test/**/*.{ts,tsx,mjs}"]
     },
     "packages/web-client": {
-      "entry": ["test/**/*.{ts,tsx,mjs}"]
+      "entry": ["src/sqlite-node.ts", "test/**/*.{ts,tsx,mjs}"]
     },
     "packages/core": {
       "entry": ["scripts/*.ts"]

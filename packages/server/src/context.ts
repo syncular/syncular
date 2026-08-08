@@ -167,7 +167,8 @@ export interface SyncServerConfig {
    * §5.3 sqlite-image builder, injected so the pull path never
    * statically imports `bun:sqlite`. Absent ⇒ the sqlite-image lane is off
    * (bit-2 clients are served the rows lane) — the Workers/edge posture. A
-   * Bun/Node host wires `buildSqliteImage` from `@syncular/server`.
+   * Bun or Node host wires `buildSqliteImage` from
+   * `@syncular/server/sqlite`.
    */
   readonly sqliteImageBuilder?: SqliteImageBuilder;
   readonly realtime?: RealtimeNotifier;

@@ -73,13 +73,15 @@ export * from './seed';
 export * from './segment-download';
 export * from './segment-store';
 export * from './signed-url';
-// Bun-specific storages (top-level `bun:sqlite`): re-exported for Bun/Node
-// hosts. Workers/edge builds tree-shake them (and their `bun:sqlite` import)
-// away — the runtime-neutral core closure is enforced by
-// `test/runtime-neutrality.test.ts`.
-export * from './sqlite-blob-store';
 export * from './sqlite-dialect';
-export * from './sqlite-image';
+export * from './sqlite-driver';
+export {
+  IMAGE_METADATA_TABLE,
+  IMAGE_VERSION_COLUMN,
+  type SqliteImageBuilder,
+  type SqliteImageInput,
+} from './sqlite-image';
+export * from './sqlite-blob-store';
 export * from './sqlite-lease-store';
 export * from './sqlite-segment-store';
 export * from './sqlite-storage';

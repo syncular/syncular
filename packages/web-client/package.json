@@ -58,6 +58,14 @@
         "default": "./dist/node-database.js"
       }
     },
+    "./sqlite": {
+      "bun": "./src/sqlite-bun.ts",
+      "node": {
+        "types": "./dist/sqlite-node.d.ts",
+        "default": "./dist/sqlite-node.js"
+      },
+      "types": "./dist/sqlite-node.d.ts"
+    },
     "./wasm": {
       "bun": "./src/wasm-database.ts",
       "browser": "./dist/wasm-database.js",
@@ -85,23 +93,13 @@
     "!dist/**/*.test.d.ts"
   ],
   "scripts": {
-    "verify:node": "bun build ./test/node-database/verify-node.mjs --target=node --external better-sqlite3 --outfile=./.verify-node.built.mjs && node ./.verify-node.built.mjs"
+    "verify:node": "bun build ./test/node-database/verify-node.mjs --target=node --outfile=./.verify-node.built.mjs && node ./.verify-node.built.mjs"
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
     "@syncular/core": "workspace:*"
   },
-  "peerDependencies": {
-    "better-sqlite3": ">=11"
-  },
-  "peerDependenciesMeta": {
-    "better-sqlite3": {
-      "optional": true
-    }
-  },
   "devDependencies": {
-    "@syncular/server": "workspace:*",
-    "@types/better-sqlite3": "^7.6.13",
-    "better-sqlite3": "^12.11.1"
+    "@syncular/server": "workspace:*"
   }
 }

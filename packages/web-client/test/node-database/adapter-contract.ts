@@ -6,9 +6,8 @@
  *  - under bun, against the bun:sqlite adapter, from `node-database.test.ts`
  *    (proves the contract itself is correct and that the Node adapter is
  *    asked to satisfy exactly what the reference backend already does), and
- *  - under real Node, against the better-sqlite3 adapter, from
- *    `verify-node.mjs` (proves the Node adapter — which bun cannot dlopen,
- *    oven-sh/bun#4290 — mirrors bun semantics on the real native module).
+ *  - under real Node, against the built-in node:sqlite adapter, from
+ *    `verify-node.mjs`.
  *
  * `runAdapterContract` throws on the first mismatch; a clean return is a pass.
  * `node:` builtins import identically under bun and Node ESM.
@@ -16,7 +15,7 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ClientDatabase, SqlValue } from '../../src/database';
+import type { ClientDatabase } from '../../src/database';
 
 function assert(cond: unknown, message: string): asserts cond {
   if (!cond) throw new Error(`adapter-contract: ${message}`);
@@ -44,14 +43,14 @@ export function runAdapterContract(
     1.5,
     new Uint8Array([1, 2, 3]),
     // booleans MUST be accepted and coerced to 0/1 (bun-adapter parity).
-    true as unknown as SqlValue,
+    true,
   ]);
   db.exec('INSERT INTO t (id, n, f, b, flag) VALUES (?, ?, ?, ?, ?)', [
     'z',
     null,
     null,
     null,
-    false as unknown as SqlValue,
+    false,
   ]);
 
   const rows = db.query('SELECT * FROM t ORDER BY id');

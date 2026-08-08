@@ -29,7 +29,7 @@ The supported set, and what deliberately does **not** get an adapter:
 
 | Runtime | Adapter | Transport | Storage | Status |
 | --- | --- | --- | --- | --- |
-| **Bun / Node** | `@syncular/server-hono` | HTTP (`POST /sync`, segments, blobs) **+ WS realtime** (§8, host-driven upgrade) | any: `SqliteServerStorage`, `PostgresServerStorage`, memory | **Supported now** — the reference deployment; runs the full conformance catalog on both bindings. |
+| **Bun / Node 22.13+** | `@syncular/server-hono` | HTTP (`POST /sync`, segments, blobs) **+ WS realtime** (§8, host-driven upgrade) | `SqliteServerStorage` through `@syncular/server/sqlite`, Postgres, memory | **Supported now** — the reference deployment; runs the full conformance catalog on both bindings. |
 | **Cloudflare Workers** | `@syncular/server-workers` | HTTP binding via Hono (Workers-native) **+ optional WS realtime** (§8) | `D1ServerStorage` behind one per-partition Durable Object queue; R2-as-S3 for segments/blobs | **Supported now** — D1 sync writes always traverse the DO; WebSocket upgrades remain optional. |
 | Raw Deno / edge-misc | — | — | — | **Not adapted** (policy below). |
 
@@ -76,9 +76,9 @@ or the storage projection cannot migrate:
 ```ts
 import {
   ensureSyncServerReady,
-  SqliteServerStorage,
   type SyncServerConfig,
 } from '@syncular/server';
+import { SqliteServerStorage } from '@syncular/server/sqlite';
 
 const config: SyncServerConfig = {
   schema,
@@ -90,6 +90,12 @@ const config: SyncServerConfig = {
 await ensureSyncServerReady(config);
 Bun.serve({ fetch: app.fetch });
 ```
+
+`@syncular/server/sqlite` selects `bun:sqlite` on Bun and the built-in
+`node:sqlite` module on Node. It covers server storage, segment storage, blob
+storage, leases, and SQLite-image generation without an external SQLite
+package. The runtime-specific database wrappers are `BunSqliteDatabase` and
+`NodeSqliteDatabase` when a host needs direct access to the native handle.
 
 The helper accepts the generated `ServerSchema`, compiles it, and calls the
 storage backend's low-level `ensureSchema(CompiledSchema)`. A failure is a
@@ -974,7 +980,8 @@ same table+scope during a storm, your TTL is shorter than the storm.
 
 ## Postgres storage (the production database path)
 
-`SqliteServerStorage` (bun:sqlite) is the dev-speed default. For
+`SqliteServerStorage` from `@syncular/server/sqlite` uses `bun:sqlite` or
+Node's built-in `node:sqlite`. For
 production, `PostgresServerStorage` implements the same `ServerStorage`
 contract against Postgres, with the inverted scope index carried through
 as **covering indexes** so scope fanout is an index range scan, never a

@@ -12,12 +12,12 @@ import {
   httpSyncTransport,
   SyncClient,
 } from '@syncular/client';
-import { openBunDatabase } from '@syncular/client/bun';
+import { openSqliteDatabase } from '@syncular/client/sqlite';
 import { schema } from './syncular.generated';
 
 export function makeClient(baseUrl: string, clientId: string): SyncClient {
   return new SyncClient({
-    database: openBunDatabase(), // in-memory; pass a path to persist
+    database: openSqliteDatabase(), // in-memory; pass a path to persist
     schema,
     clientId,
     transport: httpSyncTransport(`${baseUrl}/sync`),

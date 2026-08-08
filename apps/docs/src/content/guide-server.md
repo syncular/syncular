@@ -26,10 +26,10 @@ segment store, and a resolver, wrapped by the Hono adapter.
 import {
   ensureSyncServerReady,
   MemorySegmentStore,
-  SqliteServerStorage,
   type SyncServerConfig,
 } from '@syncular/server';
 import { createSyncularHono } from '@syncular/server-hono';
+import { SqliteServerStorage } from '@syncular/server/sqlite';
 import { schema } from './syncular.generated';
 
 const config: SyncServerConfig = {
@@ -261,8 +261,10 @@ covers the same ground with virtual time.
 
 ## Choosing the rest
 
-- **Storage**: `SqliteServerStorage` (bun:sqlite) is the dev-speed default;
-  `PostgresServerStorage` is the production database path; `D1ServerStorage`
+- **Storage**: `SqliteServerStorage` uses `bun:sqlite` on Bun and built-in
+  `node:sqlite` on Node 22.13 or newer. It fits development and single-node
+  deployments. `PostgresServerStorage` is the production database path;
+  `D1ServerStorage`
   serves Workers. Full trade-offs in [Storage backends](/server-storage/).
 - **Segments and blobs**: memory stores for tests, SQLite for a single
   node, S3-compatible object storage (AWS S3, Cloudflare R2, MinIO) with

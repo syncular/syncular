@@ -76,6 +76,7 @@ jobs:
           bun install --frozen-lockfile
       - run: bun run check:code
       - run: bun run build:packages
+      - run: bun run verify:packages
       - name: publish (dependency order)
         run: |
           set -euo pipefail

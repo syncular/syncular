@@ -3,7 +3,7 @@
  * SPEC.md is normative.
  *
  * Browser-safe root: database backends live behind subpath exports
- * (`./bun` for bun:sqlite tests, `./wasm` for sqlite-wasm + OPFS); the
+ * (`./sqlite` for Node or Bun, `./wasm` for sqlite-wasm + OPFS); the
  * worker-side bootstrap lives behind `./worker`. The main-thread handle
  * (`worker-host`) and the RPC protocol types are root exports — they
  * import no SQLite.

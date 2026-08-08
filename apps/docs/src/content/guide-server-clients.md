@@ -19,12 +19,10 @@ import {
   webSocketRealtimeConnector,
   type SyncIntent,
 } from '@syncular/client';
-import { openBunDatabase } from '@syncular/client/bun';
-// Node: import { openNodeDatabase } from '@syncular/client/node';
+import { openSqliteDatabase } from '@syncular/client/sqlite';
 import { schema } from './syncular.generated';
 
-const database = openBunDatabase('./data/appointment-worker.sqlite');
-// const database = openNodeDatabase('./data/appointment-worker.sqlite');
+const database = openSqliteDatabase('./data/appointment-worker.sqlite');
 
 const serviceToken = process.env.SYNCULAR_SERVICE_TOKEN;
 if (serviceToken === undefined) throw new Error('missing service token');
@@ -94,11 +92,12 @@ built-in connector uses the standard `WebSocket` constructor. Configure the
 server to accept that short-lived ticket. Do not put a long-lived service
 bearer in a URL that a proxy may log. A rotating ticket flow can provide a
 custom `RealtimeConnector` that obtains a ticket for each connection attempt.
-Bun and current Node runtimes provide `fetch`; the WebSocket connector also
-requires a global `WebSocket` implementation.
-
-`openNodeDatabase()` uses the optional `better-sqlite3` peer. Install it in a
-Node service. Bun should use `openBunDatabase()` and `bun:sqlite`.
+Bun and Node 22.13 or newer provide the required runtime APIs. The
+`@syncular/client/sqlite` export selects `bun:sqlite` on Bun and the built-in
+`node:sqlite` module on Node. There is no SQLite package or native addon to
+install. Runtime-specific code can still import `openBunDatabase()` from
+`@syncular/client/bun` or `openNodeDatabase()` from
+`@syncular/client/node`.
 
 ## Query and mutate
 

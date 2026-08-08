@@ -1,12 +1,11 @@
 /**
- * SQLite storage via `bun:sqlite` (dev-speed, dependency-free).
+ * SQLite server storage over the shared synchronous driver.
  *
  * Scope fanout is index-first: both the commit log and the
  * current-row table carry a (table, variable, value) inverted index; reads
  * select candidates from the index and verify the full multi-variable
  * match against the stored scope map — never a log scan.
  */
-import { Database } from 'bun:sqlite';
 import {
   bindAuthoritativePartition,
   prepareAuthoritativeQuery,
@@ -45,6 +44,10 @@ import {
   serializePushResult,
   toStoredRow,
 } from './sqlite-dialect';
+import {
+  SqliteAdapterRequiredError,
+  type SqliteDatabase,
+} from './sqlite-driver';
 import type {
   AuthoritativeQueryRequest,
   AuthoritativeQueryResult,
@@ -160,7 +163,7 @@ class SqliteTransaction implements StorageTransaction {
     clientCommitId: string,
   ): Promise<StoredPushResult | undefined> {
     this.#assertOpen();
-    // One shared bun:sqlite connection — this read runs inside this
+    // One shared SQLite connection: this read runs inside this
     // transaction's BEGIN IMMEDIATE.
     return this.#storage.getPushResult(
       this.#partition,
@@ -379,8 +382,8 @@ class SqliteTransaction implements StorageTransaction {
 }
 
 export class SqliteServerStorage implements ServerStorage {
-  readonly db: Database;
-  /** One bun:sqlite connection can own only one transaction at a time. */
+  readonly db: SqliteDatabase;
+  /** One SQLite connection can own only one transaction at a time. */
   #transactionTail: Promise<void> = Promise.resolve();
   /** Set by `ensureSchema`: app-table lookup for the relational row store. */
   #tables: ReadonlyMap<string, CompiledTable> | undefined;
@@ -400,8 +403,11 @@ export class SqliteServerStorage implements ServerStorage {
     }
   }
 
-  constructor(db: Database | string = ':memory:') {
-    this.db = typeof db === 'string' ? new Database(db) : db;
+  constructor(db: SqliteDatabase | string = ':memory:') {
+    if (typeof db === 'string') {
+      throw new SqliteAdapterRequiredError();
+    }
+    this.db = db;
     this.db.exec(SQLITE_DDL);
   }
 

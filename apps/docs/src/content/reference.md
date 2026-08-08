@@ -19,7 +19,8 @@ when exact normative behavior matters.
 ## Task guides
 
 - [Server-side sync clients](/guide-server-clients/): run a persistent SQLite
-  replica in a Node or Bun service, CLI, or background worker.
+  replica in a Node or Bun service, CLI, or background worker. The shared
+  `@syncular/client/sqlite` export selects the runtime adapter.
 - [Remote server operations](/guide-remote-operations/): submit database-less
   commits and call typed queries, commands, and live watches.
 - [Domain actions and event rows](/guide-domain-events/): store application
@@ -55,10 +56,10 @@ All published under the `@syncular/*` scope (plus the unscoped scaffolder):
 | Package | What it is | Source |
 |---|---|---|
 | `@syncular/core` | Protocol codecs, shared types, the golden-vector round-trip | [packages/core](https://github.com/syncular/syncular/tree/main/packages/core) |
-| `@syncular/server` | `handleSyncRequest`, registered queries and commands, durable reaction planning and delivery, storage/auth/segment/blob interfaces, realtime hubs, pruning, signed URLs, `SyncularAdmin` | [packages/server](https://github.com/syncular/syncular/tree/main/packages/server) |
+| `@syncular/server` | `handleSyncRequest`, runtime-selected SQLite through `@syncular/server/sqlite`, registered queries and commands, durable reaction planning and delivery, storage/auth/segment/blob interfaces, realtime hubs, pruning, signed URLs, `SyncularAdmin` | [packages/server](https://github.com/syncular/syncular/tree/main/packages/server) |
 | `@syncular/server-hono` | Thin Hono adapter mounting the §1.1 routes + the static admin page | [packages/server-hono](https://github.com/syncular/syncular/tree/main/packages/server-hono) |
 | `@syncular/server-workers` | Cloudflare Workers entry: fetch handler over D1 storage + R2 segments/blobs | [packages/server-workers](https://github.com/syncular/syncular/tree/main/packages/server-workers) |
-| `@syncular/client` | The TS replica client plus database-less `SyncRemoteClient`, native/browser database adapters, worker transports, and multi-tab support | [packages/web-client](https://github.com/syncular/syncular/tree/main/packages/web-client) |
+| `@syncular/client` | The TS replica client plus database-less `SyncRemoteClient`, runtime-selected SQLite through `@syncular/client/sqlite`, browser database adapters, worker transports, and multi-tab support | [packages/web-client](https://github.com/syncular/syncular/tree/main/packages/web-client) |
 | `@syncular/react` | React bindings: `SyncProvider` + hooks over fine-grained invalidation | [packages/react](https://github.com/syncular/syncular/tree/main/packages/react) |
 | `@syncular/crypto` | Client-side E2EE primitives (symmetric + asymmetric); see [Encryption](/concepts-encryption/) | [packages/crypto](https://github.com/syncular/syncular/tree/main/packages/crypto) |
 | `@syncular/crdt-yjs` | The Yjs `crdt`-column merger (server) + `YjsColumn` client helper; see [CRDT columns](/concepts-crdt/) | [packages/crdt-yjs](https://github.com/syncular/syncular/tree/main/packages/crdt-yjs) |

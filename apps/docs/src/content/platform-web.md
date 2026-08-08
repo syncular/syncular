@@ -247,17 +247,18 @@ Electron main process) by swapping the database backend:
 
 ```ts
 import { SyncClient } from '@syncular/client';
-import { openBunDatabase } from '@syncular/client/bun';   // bun:sqlite
-// or:
-import { openNodeDatabase } from '@syncular/client/node'; // better-sqlite3
+import { openSqliteDatabase } from '@syncular/client/sqlite';
 
-const client = new SyncClient({ database: openNodeDatabase('app.db'), schema, /* … */ });
+const client = new SyncClient({
+  database: openSqliteDatabase('app.db'),
+  schema,
+  // transport, clientId, and subscriptions
+});
 ```
 
-Both default to `:memory:`; pass a path to persist. `better-sqlite3` is an
-optional peer dependency, so browser-only apps skip the native build entirely;
-`openNodeDatabase()` throws a clear error if the peer is missing
-(`npm install better-sqlite3`). The [quickstart](/quickstart/) runs this exact
+The export selects `bun:sqlite` on Bun and Node's built-in `node:sqlite` on
+Node 22.13 or newer. It defaults to `:memory:`; pass a path to persist. There
+is no separate SQLite dependency. The [quickstart](/quickstart/) runs this
 shape in a terminal.
 
 See [Server-side sync clients](/guide-server-clients/) for the complete service

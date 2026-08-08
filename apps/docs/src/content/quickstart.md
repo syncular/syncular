@@ -96,10 +96,10 @@ to tell typegen the schema shape; this server does not run it.
 import {
   ensureSyncServerReady,
   MemorySegmentStore,
-  SqliteServerStorage,
   type SyncServerConfig,
 } from '@syncular/server';
 import { createSyncularHono } from '@syncular/server-hono';
+import { SqliteServerStorage } from '@syncular/server/sqlite';
 import { schema } from './syncular.generated';
 
 const config: SyncServerConfig = {
@@ -139,7 +139,7 @@ identical to a web build.
 
 ```ts
 // src/make-client.ts
-import { openBunDatabase } from '@syncular/client/bun';
+import { openSqliteDatabase } from '@syncular/client/sqlite';
 import {
   httpSegmentDownloader,
   httpSyncTransport,
@@ -149,7 +149,7 @@ import { schema } from './syncular.generated';
 
 export function makeClient(baseUrl: string, clientId: string): SyncClient {
   return new SyncClient({
-    database: openBunDatabase(), // in-memory; pass a path to persist
+    database: openSqliteDatabase(), // in-memory; pass a path to persist
     schema,
     clientId,
     transport: httpSyncTransport(`${baseUrl}/sync`),

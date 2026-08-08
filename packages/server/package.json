@@ -27,12 +27,24 @@
   },
   "exports": {
     ".": {
-      "bun": "./src/index.ts",
+      "bun": "./src/index-bun.ts",
+      "node": {
+        "types": "./dist/index-node.d.ts",
+        "default": "./dist/index-node.js"
+      },
       "browser": "./dist/index.js",
       "import": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
+    },
+    "./sqlite": {
+      "bun": "./src/sqlite-bun.ts",
+      "node": {
+        "types": "./dist/sqlite-node.d.ts",
+        "default": "./dist/sqlite-node.js"
+      },
+      "types": "./dist/sqlite-node.d.ts"
     },
     "./pglite": {
       "bun": "./src/pg-executor-pglite.ts",
@@ -52,6 +64,9 @@
     "!dist/**/*.test.js",
     "!dist/**/*.test.d.ts"
   ],
+  "scripts": {
+    "verify:node": "cd ../.. && bun build ./packages/server/test/sqlite-runtime/verify-node.mjs --target=node --conditions=bun --outfile=./packages/server/.verify-node.built.mjs && node ./packages/server/.verify-node.built.mjs"
+  },
   "dependencies": {
     "@syncular/core": "workspace:*"
   },

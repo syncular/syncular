@@ -10,7 +10,7 @@ contract suite.
 
 | Backend | Adapter | Realtime fanout | When to use |
 |---|---|---|---|
-| SQLite (bun:sqlite) | `SqliteServerStorage` | in-process hub | Development, demos, single-node deployments |
+| SQLite (`bun:sqlite` or `node:sqlite`) | `SqliteServerStorage` from `@syncular/server/sqlite` | in-process hub | Development, demos, single-node deployments |
 | Postgres | `PostgresServerStorage` + your driver via `PgExecutor` | LISTEN/NOTIFY via `PostgresFanout` | Production on Bun/Node, especially multi-instance |
 | Cloudflare D1 | `D1ServerStorage` | in-Durable-Object fanout | Cloudflare Workers, see [Cloudflare Workers](/server-workers/) |
 
@@ -183,8 +183,10 @@ projection when the lookup is derived, ordered, or ranged.
 
 ## SQLite (`SqliteServerStorage`)
 
-`new SqliteServerStorage('./data.db')` (or `':memory:'`) over bun:sqlite is
-the dev-speed default. The server manages all of its own tables (the
+Import `SqliteServerStorage` from `@syncular/server/sqlite`, then pass
+`'./data.db'` or `':memory:'`. The export selects `bun:sqlite` on Bun and
+Node's built-in `node:sqlite` on Node 22.13 or newer. The server manages all
+of its own tables (the
 `sync_*` internals plus the materialized app tables above): your app
 migrations feed typegen, and the server derives its DDL from the compiled
 schema. It is

@@ -1,12 +1,12 @@
 /**
- * Shared SQLite dialect for the two SQLite-family storages: `bun:sqlite`
- * (synchronous, `SqliteServerStorage`) and Cloudflare D1 (async,
- * `D1ServerStorage`). D1 *is* SQLite — same DDL, same statement grammar,
+ * Shared SQLite dialect for synchronous `SqliteServerStorage` on Bun or Node
+ * and asynchronous `D1ServerStorage` on Cloudflare Workers. D1 is SQLite:
+ * same DDL, same statement grammar,
  * same `?` positional placeholders, same `INSERT ... ON CONFLICT` / `INSERT
  * OR IGNORE` upsert idioms — so the schema and the value (de)serialization are
  * genuinely common ground and live here.
  *
- * What is NOT shared: statement *execution*. `bun:sqlite` is sync
+ * What is not shared: statement execution. The server SQLite driver is sync
  * (`db.query(sql).get(...)`) and D1 is async (`await
  * db.prepare(sql).bind(...).all()`); a shared execution layer would have to
  * pick one calling convention and adapt the other, which is uglier than two
@@ -25,7 +25,7 @@ import type {
 } from './storage';
 
 /**
- * Schema DDL — one statement per `;`-delimited chunk. `bun:sqlite` applies
+ * Schema DDL, one statement per `;`-delimited chunk. Native SQLite applies
  * the whole string via `db.exec(SQLITE_DDL)`; D1 applies each statement
  * separately (its `prepare`/`batch` API is one statement per call). Types
  * are SQLite's: `INTEGER`/`TEXT`/`BLOB`. Scopes are stored as JSON `TEXT`
@@ -246,7 +246,7 @@ export interface SqliteChangeRecord {
   payload: Uint8Array | null;
 }
 
-/** `bun:sqlite` returns `Uint8Array`; D1 returns `ArrayBuffer` for BLOBs. */
+/** Native SQLite returns `Uint8Array`; D1 returns `ArrayBuffer` for BLOBs. */
 export function asUint8Array(value: unknown): Uint8Array {
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
@@ -280,7 +280,7 @@ export function toStoredChange(record: SqliteChangeRecord): StoredChange {
  * One result row of `commitWindowPageSql` (candidate LEFT JOIN commit meta
  * LEFT JOIN changes): meta/change columns are NULL when the joined row
  * vanished (see the builder's LEFT JOIN contract). `payload` is a BLOB —
- * `bun:sqlite` hands back `Uint8Array`, D1 `ArrayBuffer`; `toStoredChange`
+ * Native SQLite hands back `Uint8Array`, D1 `ArrayBuffer`; `toStoredChange`
  * normalizes via `asUint8Array`.
  */
 export interface SqliteCommitWindowRecord {

@@ -10,8 +10,8 @@
  *      bypasses the outbox (SPEC §7.1) and silently diverges from the
  *      server — writes MUST go through `client.mutate([...])`.
  *   2. ONE STATEMENT. `sqlite-wasm`'s `exec` runs every statement in a
- *      multi-statement string (`SELECT 1; DROP TABLE t`), while bun:sqlite /
- *      better-sqlite3 prepare only the first. We unify on the strict
+ *      multi-statement string (`SELECT 1; DROP TABLE t`), while the native
+ *      SQLite adapters prepare only the first. We unify on the strict
  *      behaviour: exactly one statement per `query()`.
  *
  * The guard only fronts the PUBLIC `client.query()` — engine-internal reads

@@ -331,9 +331,10 @@ WRANGLER_SMOKE=1`-gated test wrapping exactly this recipe.
 The server core this entry loads (handler, realtime session, D1 storage,
 memory stores, signed-URL/segment/blob machinery) is free of Bun- and
 Node-only builtins — SigV4 and all hashing use Web Crypto, base64 uses
-`btoa`/`atob`, and the SQLite-family stores that need `bun:sqlite`
+`btoa`/`atob`, and the SQLite-family stores that need `bun:sqlite` or
+`node:sqlite`
 (`SqliteServerStorage`, `SqliteSegmentStore`, `SqliteBlobStore`,
 `SqliteLeaseStore`, `buildSqliteImage`) live in separate modules a Bun/Node
-host opts into and a Workers bundle tree-shakes away. This is enforced by a
+host imports through `@syncular/server/sqlite`. This is enforced by a
 static import-graph scan in
 `packages/server/test/runtime-neutrality.test.ts`.

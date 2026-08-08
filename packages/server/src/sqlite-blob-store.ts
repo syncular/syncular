@@ -1,19 +1,20 @@
 /**
- * SQLite-backed blob store via `bun:sqlite` (dev/bench convenience,
- * dependency-free). Bun-specific by design (top-level `bun:sqlite` import),
- * so it lives in its own module — the runtime-neutral `BlobStore` interface,
- * `MemoryBlobStore`, `blobIdFor`, and `isBlobId` stay in `blob-store.ts` for
- * the Workers/edge core (runtime neutrality is enforced by
- * `test/runtime-neutrality.test.ts`).
+ * SQLite-backed blob store over the shared synchronous driver.
  */
-import { Database } from 'bun:sqlite';
 import type { BlobRecord, BlobStore, BlobStoreStats } from './blob-store';
+import {
+  SqliteAdapterRequiredError,
+  type SqliteDatabase,
+} from './sqlite-driver';
 
 export class SqliteBlobStore implements BlobStore {
-  readonly db: Database;
+  readonly db: SqliteDatabase;
 
-  constructor(db: Database | string = ':memory:') {
-    this.db = typeof db === 'string' ? new Database(db) : db;
+  constructor(db: SqliteDatabase | string = ':memory:') {
+    if (typeof db === 'string') {
+      throw new SqliteAdapterRequiredError();
+    }
+    this.db = db;
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sync_blobs(
         partition TEXT NOT NULL, blob_id TEXT NOT NULL,

@@ -36,7 +36,7 @@ async function resolveImageBuilder(
   if (cachedDefaultBuilder === undefined) {
     const hasBun = (globalThis as { Bun?: unknown }).Bun !== undefined;
     cachedDefaultBuilder = hasBun
-      ? (await import('./sqlite-image')).buildSqliteImage
+      ? (await import('./sqlite-bun')).buildSqliteImage
       : null;
   }
   return cachedDefaultBuilder ?? undefined;

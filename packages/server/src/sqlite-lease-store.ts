@@ -1,28 +1,29 @@
 /**
- * SQLite-backed auth-lease store via `bun:sqlite` (§7.3.1 reference store,
- * dependency-free). Bun-specific by design (top-level `bun:sqlite` import),
- * so it lives in its own module — the runtime-neutral `LeaseStore` interface,
- * `LeaseRecord`, and `MemoryLeaseStore` stay in `lease-store.ts` for the
- * Workers/edge core (runtime neutrality is enforced by
- * `test/runtime-neutrality.test.ts`).
+ * SQLite-backed auth-lease store over the shared synchronous driver.
  */
-import { Database } from 'bun:sqlite';
 import type { ScopeMap } from '@syncular/core';
 import type { LeaseIdFactory, LeaseRecord, LeaseStore } from './lease-store';
+import {
+  SqliteAdapterRequiredError,
+  type SqliteDatabase,
+} from './sqlite-driver';
 
 function defaultLeaseId(): string {
   return `lease_${crypto.randomUUID()}`;
 }
 
 export class SqliteLeaseStore implements LeaseStore {
-  readonly db: Database;
+  readonly db: SqliteDatabase;
   readonly #newId: LeaseIdFactory;
 
   constructor(
-    db: Database | string = ':memory:',
+    db: SqliteDatabase | string = ':memory:',
     options?: { readonly leaseId?: LeaseIdFactory },
   ) {
-    this.db = typeof db === 'string' ? new Database(db) : db;
+    if (typeof db === 'string') {
+      throw new SqliteAdapterRequiredError();
+    }
+    this.db = db;
     this.#newId = options?.leaseId ?? defaultLeaseId;
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sync_leases(

@@ -52,6 +52,7 @@ export class StorageQueryError extends Error {
 interface DriverError {
   readonly code?: unknown;
   readonly errno?: unknown;
+  readonly errcode?: unknown;
   readonly message?: unknown;
 }
 
@@ -72,7 +73,9 @@ export function isSqliteConstraintError(error: unknown): boolean {
     return true;
   }
   const errno = candidate?.errno;
-  return typeof errno === 'number' && (errno & 0xff) === 19;
+  if (typeof errno === 'number' && (errno & 0xff) === 19) return true;
+  const errcode = candidate?.errcode;
+  return typeof errcode === 'number' && (errcode & 0xff) === 19;
 }
 
 /** PostgreSQL SQLSTATE class 23: integrity constraint violation. */

@@ -1,13 +1,6 @@
 /**
- * SQLite-backed segment store via `bun:sqlite` (dev/bench convenience,
- * dependency-free). Bun-specific by design: it imports `bun:sqlite` at the
- * top level, so it lives in its own module — importing it opts into the Bun
- * runtime. The runtime-neutral `SegmentStore` interface, `MemorySegmentStore`,
- * and `segmentIdFor` stay in `segment-store.ts` so the Workers/edge core can
- * import them without pulling in `bun:sqlite` (runtime neutrality is enforced
- * by `test/runtime-neutrality.test.ts`).
+ * SQLite-backed segment store over the shared synchronous driver.
  */
-import { Database } from 'bun:sqlite';
 import {
   DEFAULT_SEGMENT_TTL_MS,
   type SegmentFindKey,
@@ -17,16 +10,23 @@ import {
   type SegmentStoreStats,
   segmentIdFor,
 } from './segment-store';
+import {
+  SqliteAdapterRequiredError,
+  type SqliteDatabase,
+} from './sqlite-driver';
 
 export class SqliteSegmentStore implements SegmentStore {
-  readonly db: Database;
+  readonly db: SqliteDatabase;
   #ttlMs: number;
 
   constructor(
-    db: Database | string = ':memory:',
+    db: SqliteDatabase | string = ':memory:',
     options?: { ttlMs?: number },
   ) {
-    this.db = typeof db === 'string' ? new Database(db) : db;
+    if (typeof db === 'string') {
+      throw new SqliteAdapterRequiredError();
+    }
+    this.db = db;
     this.#ttlMs = options?.ttlMs ?? DEFAULT_SEGMENT_TTL_MS;
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sync_segments(

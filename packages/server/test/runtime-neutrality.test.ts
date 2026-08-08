@@ -14,12 +14,10 @@
  *   - import a `bun:*` or `node:*` builtin, or
  *   - reference `Bun.` or the `Buffer` global.
  *
- * The Bun-specific modules (`sqlite-storage`, `sqlite-image`,
- * `sqlite-segment-store`, `sqlite-blob-store`, the pglite executor) are NOT
- * reachable from these entries — they are separate files a Bun/Node host opts
- * into — so the scan naturally excludes them. If a future edit makes the core
- * reach for `bun:sqlite` or `Buffer`, this test fails loudly at the source
- * that introduced it.
+ * The shared SQLite stores are runtime-neutral. Only `sqlite-bun.ts`,
+ * `sqlite-node.ts`, and their concrete drivers may import runtime builtins. If
+ * a future edit makes one of the checked neutral entries reach for a runtime
+ * builtin, this test fails at the source that introduced it.
  */
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
@@ -46,6 +44,12 @@ const ENTRIES = [
   'admin.ts',
   'events.ts',
   'events-ring.ts',
+  'sqlite-driver.ts',
+  'sqlite-storage.ts',
+  'sqlite-segment-store.ts',
+  'sqlite-blob-store.ts',
+  'sqlite-lease-store.ts',
+  'sqlite-image.ts',
 ];
 
 /** Resolve a relative import specifier to a `.ts` file under `src`. */
@@ -147,9 +151,10 @@ describe('runtime neutrality (static scan)', () => {
     expect(names).toContain('d1-storage.ts');
     expect(names).toContain('segment-store.ts');
     expect(names).toContain('blob-store.ts');
-    // And the Bun-specific storages are NOT reachable from the neutral core.
-    expect(names).not.toContain('sqlite-storage.ts');
-    expect(names).not.toContain('sqlite-segment-store.ts');
-    expect(names).not.toContain('sqlite-blob-store.ts');
+    expect(names).toContain('sqlite-storage.ts');
+    expect(names).toContain('sqlite-segment-store.ts');
+    expect(names).toContain('sqlite-blob-store.ts');
+    expect(names).not.toContain('sqlite-bun.ts');
+    expect(names).not.toContain('sqlite-node.ts');
   });
 });

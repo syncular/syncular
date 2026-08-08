@@ -2,15 +2,15 @@
  * SQLite-image segment generation (SPEC.md §5.3): a complete SQLite
  * database file carrying one table's whole effective-scope snapshot at
  * the bootstrap pin, plus the single-row `_syncular_segment` metadata
- * table. Built in memory on bun:sqlite — dependency-free.
+ * table. Runtime entries provide the concrete SQLite database.
  *
  * Images are NOT byte-deterministic (§5.3): the content address pins the
  * served bytes, and cross-client dedup comes from the segment store's
  * metadata lookup (`SegmentStore.find`), not from hash convergence.
  */
-import { Database } from 'bun:sqlite';
 import { decodeRow, type RowColumn, type RowValue } from '@syncular/core';
 import type { CompiledTable } from './schema';
+import type { SqliteDatabase } from './sqlite-driver';
 import type { StoredRow } from './storage';
 
 /** The §5.6 version column as it appears inside a sqlite image (§5.3). */
@@ -63,62 +63,57 @@ export interface SqliteImageInput {
 /**
  * The §5.3 image-builder capability, injected through
  * `SyncServerConfig.sqliteImageBuilder`. Building an image needs
- * a real SQLite engine (`bun:sqlite` here), which is not available on every
- * runtime — Cloudflare Workers has none. So the core takes the builder as an
- * optional capability rather than importing `bun:sqlite` on the pull path:
- * a Bun/Node host passes `buildSqliteImage`; a Workers host omits it and the
- * pull serves the rows lane (§5.3 clients advertise sqlite as an *accept*,
- * never a requirement — the host chooses the served format from what it can
- * produce; this is a support floor, not a fallback).
+ * a real SQLite engine, which is not available on every runtime. The core
+ * takes the builder as an optional capability rather than importing a driver
+ * on the pull path. A Bun or Node host passes `buildSqliteImage`; a Workers
+ * host omits it and serves the rows lane.
  */
 export type SqliteImageBuilder = (input: SqliteImageInput) => Uint8Array;
 
-/** Build the §5.3 image bytes for a whole-table snapshot. */
-export const buildSqliteImage: SqliteImageBuilder = (input) => {
+/** Populate a §5.3 image database for a whole-table snapshot. */
+export function writeSqliteImage(
+  db: SqliteDatabase,
+  input: SqliteImageInput,
+): void {
   const { table, rows } = input;
   const primaryKey = table.columns[table.primaryKeyIndex]?.name;
-  const db = new Database(':memory:');
+  const columnDefs = table.columns.map((column) => {
+    const notNull = column.nullable ? '' : ' NOT NULL';
+    const pk = column.name === primaryKey ? ' PRIMARY KEY' : '';
+    return `${quoteIdent(column.name)} ${sqlType(column)}${notNull}${pk}`;
+  });
+  columnDefs.push(`${quoteIdent(IMAGE_VERSION_COLUMN)} INTEGER NOT NULL`);
+  db.exec(`CREATE TABLE ${quoteIdent(table.name)} (${columnDefs.join(', ')})`);
+  db.exec(
+    `CREATE TABLE ${IMAGE_METADATA_TABLE} (
+      format INTEGER NOT NULL, "table" TEXT NOT NULL,
+      "schemaVersion" INTEGER NOT NULL, "asOfCommitSeq" INTEGER NOT NULL,
+      "scopeDigest" TEXT NOT NULL, "rowCount" INTEGER NOT NULL)`,
+  );
+  db.query(`INSERT INTO ${IMAGE_METADATA_TABLE} VALUES (1, ?, ?, ?, ?, ?)`).run(
+    table.name,
+    input.schemaVersion,
+    input.asOfCommitSeq,
+    input.scopeDigest,
+    rows.length,
+  );
+  const names = [
+    ...table.columns.map((column) => quoteIdent(column.name)),
+    quoteIdent(IMAGE_VERSION_COLUMN),
+  ];
+  const insert = db.query(
+    `INSERT INTO ${quoteIdent(table.name)} (${names.join(', ')})
+     VALUES (${names.map(() => '?').join(', ')})`,
+  );
+  db.exec('BEGIN');
   try {
-    const columnDefs = table.columns.map((column) => {
-      const notNull = column.nullable ? '' : ' NOT NULL';
-      const pk = column.name === primaryKey ? ' PRIMARY KEY' : '';
-      return `${quoteIdent(column.name)} ${sqlType(column)}${notNull}${pk}`;
-    });
-    columnDefs.push(`${quoteIdent(IMAGE_VERSION_COLUMN)} INTEGER NOT NULL`);
-    db.exec(
-      `CREATE TABLE ${quoteIdent(table.name)} (${columnDefs.join(', ')})`,
-    );
-    db.exec(
-      `CREATE TABLE ${IMAGE_METADATA_TABLE} (
-        format INTEGER NOT NULL, "table" TEXT NOT NULL,
-        "schemaVersion" INTEGER NOT NULL, "asOfCommitSeq" INTEGER NOT NULL,
-        "scopeDigest" TEXT NOT NULL, "rowCount" INTEGER NOT NULL)`,
-    );
-    db.query(
-      `INSERT INTO ${IMAGE_METADATA_TABLE} VALUES (1, ?, ?, ?, ?, ?)`,
-    ).run(
-      table.name,
-      input.schemaVersion,
-      input.asOfCommitSeq,
-      input.scopeDigest,
-      rows.length,
-    );
-    const names = [
-      ...table.columns.map((column) => quoteIdent(column.name)),
-      quoteIdent(IMAGE_VERSION_COLUMN),
-    ];
-    const insert = db.query(
-      `INSERT INTO ${quoteIdent(table.name)} (${names.join(', ')})
-       VALUES (${names.map(() => '?').join(', ')})`,
-    );
-    db.exec('BEGIN');
     for (const row of rows) {
       const values = decodeRow(table.columns, row.payload);
       insert.run(...values.map(toSql), row.serverVersion);
     }
     db.exec('COMMIT');
-    return new Uint8Array(db.serialize());
-  } finally {
-    db.close();
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
   }
-};
+}

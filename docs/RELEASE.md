@@ -1,8 +1,27 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.46** (`v0.15.46`). All artifacts use Apache-2.0, except
+current release is **0.15.47** (`v0.15.47`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.15.47 release notes
+
+- `@syncular/client/sqlite` now selects `bun:sqlite` on Bun and the built-in
+  `node:sqlite` module on Node 22.13 or newer. Server clients can use one
+  `openSqliteDatabase(path)` import in both runtimes. The prior
+  `better-sqlite3` peer dependency and native-addon installation are removed;
+  the explicit `@syncular/client/bun` and `@syncular/client/node` exports remain.
+- `@syncular/server/sqlite` provides the same runtime selection for
+  `SqliteServerStorage`, segment and blob stores, lease storage, and SQLite
+  bootstrap images. The package root also selects the correct server adapter
+  in Node and Bun while the Workers server graph remains free of runtime
+  builtins.
+- Node and Bun run the same client and server SQLite contracts. Release
+  verification also installs the packed npm artifacts into a blank project
+  and checks the documented automatic imports, local queries, and server
+  storage under both runtimes. The server-client, storage, web, quickstart,
+  package-reference, example, and create-app documentation uses the shared
+  imports.
 
 ## 0.15.46 release notes
 

@@ -17,10 +17,11 @@
 export const changelog = [
   {
     date: '2026-08-08',
-    title: 'Server-side sync clients',
-    body: 'The same SyncClient that runs in a browser runs in a CLI, background worker, or long-running Node or Bun service, holding a local synchronized read model over native SQLite.',
+    title: 'Server-side sync clients on built-in SQLite',
+    body: 'SyncClient runs in a CLI, background worker, or long-running service. The SQLite export selects built-in node:sqlite or bun:sqlite, and the server storage package uses the same runtime-selected import.',
     links: [
       { href: '/guide-server-clients/', label: 'Server-side sync clients' },
+      { href: '/server-storage/', label: 'Storage backends' },
     ],
   },
   {
