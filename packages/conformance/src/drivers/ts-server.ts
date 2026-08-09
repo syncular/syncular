@@ -374,6 +374,8 @@ class TsServerInstance implements ServerInstance {
       scanRows: (p, q) => this.#storage.scanRows(p, q),
       getClientRecord: (p, c) => this.#storage.getClientRecord(p, c),
       putClientRecord: (p, r) => this.#storage.putClientRecord(p, r),
+      updateClientCursor: (p, c, cursor, updatedAtMs) =>
+        this.#storage.updateClientCursor(p, c, cursor, updatedAtMs),
       listClientCursors: (p) => this.#storage.listClientCursors(p),
       // §5.9.4 blob reference index reads.
       listRowsReferencingBlob: (p, b) =>

@@ -21,16 +21,27 @@ import {
   type RowValue,
 } from '@syncular/core';
 import {
+  commitWindowPageSql,
   compileSchema,
   createTableDdl,
   D1ServerStorage,
   PostgresServerStorage,
   physicalIndexName,
+  postgresScopeValueParam,
+  scanRowPageSql,
   type ServerSchema,
   SqliteServerStorage,
   type StoredRow,
 } from '@syncular/server';
 import { pgliteExecutor } from '@syncular/server/pglite';
+import type { D1Database, D1PreparedStatement } from '../src/d1-storage';
+import type { PgExecutor, PgQueryable } from '../src/pg-executor';
+import type {
+  SqliteDatabase,
+  SqliteRunResult,
+  SqliteStatement,
+  SqliteValue,
+} from '../src/sqlite-driver';
 import { D1DatabaseDouble } from './d1-double';
 
 const PARTITION = 'part-1';
@@ -113,6 +124,23 @@ function nullableAppendSchema(): ServerSchema {
         ],
       },
       ...SCHEMA.tables.slice(1),
+    ],
+  };
+}
+
+function secondNullableAppendSchema(): ServerSchema {
+  const v2 = nullableAppendSchema();
+  return {
+    version: 3,
+    tables: [
+      {
+        ...v2.tables[0]!,
+        columns: [
+          ...v2.tables[0]!.columns,
+          { name: 'reviewer', type: 'string', nullable: true },
+        ],
+      },
+      ...v2.tables.slice(1),
     ],
   };
 }
@@ -449,6 +477,327 @@ describe('server-side schema migration (the subset)', () => {
     expect(projected).toEqual({ assignee: null });
   });
 
+  test('a competing D1 layout cannot rewrite rows beneath another migration target', async () => {
+    const db = new D1DatabaseDouble();
+    const v1 = new D1ServerStorage(db);
+    await v1.ensureSchema(compileSchema(SCHEMA));
+    await upsert(v1, PARTITION, 'tasks', taskRow('t1', 'p1', 'v1 row'));
+
+    let announce!: () => void;
+    const announced = new Promise<void>((resolve) => {
+      announce = resolve;
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const sqlByStatement = new WeakMap<D1PreparedStatement, string>();
+    let rewriteGated = false;
+    const gated: D1Database = {
+      prepare(query: string): D1PreparedStatement {
+        const statement = db.prepare(query);
+        sqlByStatement.set(statement, query);
+        return statement;
+      },
+      async batch(statements: D1PreparedStatement[]): Promise<unknown[]> {
+        if (
+          !rewriteGated &&
+          statements.some((statement) =>
+            sqlByStatement.get(statement)?.startsWith('UPDATE "tasks" SET'),
+          )
+        ) {
+          rewriteGated = true;
+          announce();
+          await released;
+        }
+        return db.batch(statements);
+      },
+      exec(query: string): Promise<unknown> {
+        return db.exec(query);
+      },
+    };
+
+    const v2Migration = new D1ServerStorage(gated).ensureSchema(
+      compileSchema(nullableAppendSchema()),
+    );
+    await announced;
+    const v3Outcome = await new D1ServerStorage(db)
+      .ensureSchema(compileSchema(secondNullableAppendSchema()))
+      .then(
+        () => undefined,
+        (error: Error) => error,
+      );
+    release();
+    const v2Outcome = await v2Migration.then(
+      () => undefined,
+      (error: Error) => error,
+    );
+
+    expect(v3Outcome).toBeInstanceOf(Error);
+    expect(v3Outcome?.message).toContain('migration is already in progress');
+    expect(v2Outcome).toBeUndefined();
+
+    const v3 = secondNullableAppendSchema();
+    const current = new D1ServerStorage(db);
+    await current.ensureSchema(compileSchema(v3));
+    const stored = await current.getRow(PARTITION, 'tasks', 't1');
+    expect(decodeRow(v3.tables[0]!.columns, stored!.payload).slice(-2)).toEqual(
+      [null, null],
+    );
+  });
+
+  test('an active D1 migration fences old-instance reads and in-flight writes', async () => {
+    const db = new D1DatabaseDouble();
+    const old = new D1ServerStorage(db);
+    const v1 = compileSchema(SCHEMA);
+    await old.ensureSchema(v1);
+    await upsert(old, PARTITION, 'tasks', taskRow('m1', 'p1', 'existing'));
+    const inFlight = await old.begin(PARTITION);
+    await inFlight.upsertRow(
+      'tasks',
+      taskRow('z-later', 'p1', 'old-layout write'),
+    );
+
+    let announce!: () => void;
+    const announced = new Promise<void>((resolve) => {
+      announce = resolve;
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const sqlByStatement = new WeakMap<D1PreparedStatement, string>();
+    let rewriteGated = false;
+    const gated: D1Database = {
+      prepare(query: string): D1PreparedStatement {
+        const statement = db.prepare(query);
+        sqlByStatement.set(statement, query);
+        return statement;
+      },
+      async batch(statements: D1PreparedStatement[]): Promise<unknown[]> {
+        if (
+          !rewriteGated &&
+          statements.some((statement) =>
+            sqlByStatement.get(statement)?.startsWith('UPDATE "tasks" SET'),
+          )
+        ) {
+          rewriteGated = true;
+          announce();
+          await released;
+        }
+        return db.batch(statements);
+      },
+      exec(query: string): Promise<unknown> {
+        return db.exec(query);
+      },
+    };
+
+    const migration = new D1ServerStorage(gated).ensureSchema(
+      compileSchema(nullableAppendSchema()),
+    );
+    await announced;
+    const ensureOutcome = await old.ensureSchema(v1).then(
+      () => undefined,
+      (error: Error) => error,
+    );
+    const readOutcome = await old.getRow(PARTITION, 'tasks', 'm1').then(
+      () => undefined,
+      (error: Error) => error,
+    );
+    const scanOutcome = await old
+      .scanRows(PARTITION, {
+        table: 'tasks',
+        scopeFilter: { project_id: ['p1'] },
+        afterRowId: null,
+        limit: 10,
+      })
+      .then(
+        () => undefined,
+        (error: Error) => error,
+      );
+    const late = await old.begin(PARTITION);
+    const uniqueReadOutcome = await late
+      .upsertRow('tasks', taskRow('z-second', 'p1', 'late unique read'))
+      .then(
+        () => undefined,
+        (error: Error) => error,
+      );
+    const commitOutcome = await inFlight.commit().then(
+      () => undefined,
+      (error: Error) => error,
+    );
+    release();
+    await migration;
+    await inFlight.rollback();
+    await late.rollback();
+
+    for (const outcome of [
+      ensureOutcome,
+      readOutcome,
+      scanOutcome,
+      uniqueReadOutcome,
+      commitOutcome,
+    ]) {
+      expect(outcome).toBeInstanceOf(Error);
+      expect(outcome?.message).toContain('migration is already in progress');
+    }
+    const current = new D1ServerStorage(db);
+    const v2 = nullableAppendSchema();
+    await current.ensureSchema(compileSchema(v2));
+    expect(await current.getRow(PARTITION, 'tasks', 'z-later')).toBeUndefined();
+  });
+
+  test('a stale D1 claimant accepts an equal target published first', async () => {
+    const db = new D1DatabaseDouble();
+    await new D1ServerStorage(db).ensureSchema(compileSchema(SCHEMA));
+    const sqlByStatement = new WeakMap<D1PreparedStatement, string>();
+    let announce!: () => void;
+    const announced = new Promise<void>((resolve) => {
+      announce = resolve;
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let claimGated = false;
+    const gated: D1Database = {
+      prepare(query: string): D1PreparedStatement {
+        const statement = db.prepare(query);
+        sqlByStatement.set(statement, query);
+        return statement;
+      },
+      async batch(statements: D1PreparedStatement[]): Promise<unknown[]> {
+        if (
+          !claimGated &&
+          statements.some((statement) =>
+            sqlByStatement
+              .get(statement)
+              ?.includes('INSERT OR IGNORE INTO sync_schema_migration'),
+          )
+        ) {
+          claimGated = true;
+          announce();
+          await released;
+        }
+        return db.batch(statements);
+      },
+      exec(query: string): Promise<unknown> {
+        return db.exec(query);
+      },
+    };
+    const v2 = compileSchema(nullableAppendSchema());
+
+    const stale = new D1ServerStorage(gated).ensureSchema(v2);
+    await announced;
+    await new D1ServerStorage(db).ensureSchema(v2);
+    release();
+
+    await expect(stale).resolves.toBeUndefined();
+  });
+
+  test('concurrent D1 callers can complete the same migration target', async () => {
+    const db = new D1DatabaseDouble();
+    const v1 = new D1ServerStorage(db);
+    await v1.ensureSchema(compileSchema(SCHEMA));
+    await upsert(v1, PARTITION, 'tasks', taskRow('t1', 'p1', 'v1 row'));
+
+    let announce!: () => void;
+    const announced = new Promise<void>((resolve) => {
+      announce = resolve;
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ddlGated = false;
+    const gated: D1Database = {
+      prepare(query: string): D1PreparedStatement {
+        return db.prepare(query);
+      },
+      batch(statements: D1PreparedStatement[]): Promise<unknown[]> {
+        return db.batch(statements);
+      },
+      async exec(query: string): Promise<unknown> {
+        if (
+          !ddlGated &&
+          query.startsWith('ALTER TABLE "tasks" ADD COLUMN "assignee" TEXT')
+        ) {
+          ddlGated = true;
+          announce();
+          await released;
+        }
+        return db.exec(query);
+      },
+    };
+    const v2 = compileSchema(nullableAppendSchema());
+
+    const first = new D1ServerStorage(gated).ensureSchema(v2);
+    await announced;
+    await new D1ServerStorage(db).ensureSchema(v2);
+    release();
+    await first;
+
+    const current = new D1ServerStorage(db);
+    await current.ensureSchema(v2);
+    const stored = await current.getRow(PARTITION, 'tasks', 't1');
+    expect(
+      decodeRow(v2.tables.get('tasks')!.columns, stored!.payload).at(-1),
+    ).toBeNull();
+  });
+
+  test('D1 resumes after a committed rewrite page without rewriting it twice', async () => {
+    const db = new D1DatabaseDouble();
+    const v1 = new D1ServerStorage(db);
+    await v1.ensureSchema(compileSchema(SCHEMA));
+    await upsert(v1, PARTITION, 'tasks', taskRow('t1', 'p1', 'v1 row'));
+
+    const sqlByStatement = new WeakMap<D1PreparedStatement, string>();
+    let interrupted = false;
+    let interruptNextPrepare = false;
+    const crashAfterRewrite: D1Database = {
+      prepare(query: string): D1PreparedStatement {
+        if (interruptNextPrepare) {
+          interruptNextPrepare = false;
+          throw new Error('simulated process interruption after D1 commit');
+        }
+        const statement = db.prepare(query);
+        sqlByStatement.set(statement, query);
+        return statement;
+      },
+      async batch(statements: D1PreparedStatement[]): Promise<unknown[]> {
+        const result = await db.batch(statements);
+        if (
+          !interrupted &&
+          statements.some((statement) =>
+            sqlByStatement.get(statement)?.startsWith('UPDATE "tasks" SET'),
+          )
+        ) {
+          interrupted = true;
+          interruptNextPrepare = true;
+        }
+        return result;
+      },
+      exec(query: string): Promise<unknown> {
+        return db.exec(query);
+      },
+    };
+    const v2 = nullableAppendSchema();
+
+    await expect(
+      new D1ServerStorage(crashAfterRewrite).ensureSchema(compileSchema(v2)),
+    ).rejects.toThrow('simulated process interruption');
+    await new D1ServerStorage(db).ensureSchema(compileSchema(v2));
+
+    const current = new D1ServerStorage(db);
+    await current.ensureSchema(compileSchema(v2));
+    const stored = await current.getRow(PARTITION, 'tasks', 't1');
+    expect(decodeRow(v2.tables[0]!.columns, stored!.payload).at(-1)).toBeNull();
+    const migration = await db
+      .prepare('SELECT id FROM sync_schema_migration WHERE id=1')
+      .first<{ id: number }>();
+    expect(migration).toBeNull();
+  });
+
   test('a version bump replaces declared indexes on SQLite', async () => {
     const storage = new SqliteServerStorage();
     await storage.ensureSchema(compileSchema(SCHEMA));
@@ -469,7 +818,94 @@ describe('server-side schema migration (the subset)', () => {
       )
       .all()
       .map((column) => column.name);
-    expect(columns).toEqual(['project_id', 'title']);
+    expect(columns).toEqual(['_sync_partition', 'project_id', 'title']);
+  });
+
+  test('same-version startup upgrades legacy declared indexes on SQLite', async () => {
+    const storage = new SqliteServerStorage();
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    storage.db.run('DROP INDEX sync_ix_tasks_by_project_title');
+    storage.db.run(
+      'CREATE UNIQUE INDEX sync_ix_tasks_by_project_title ON tasks (project_id, title)',
+    );
+    storage.db.run('CREATE INDEX ops_tasks_tuning ON tasks (title)');
+
+    const restarted = new SqliteServerStorage(storage.db);
+    await restarted.ensureSchema(compileSchema(SCHEMA));
+
+    const columns = restarted.db
+      .query<{ name: string }, []>(
+        'PRAGMA index_info("sync_ix_tasks_by_project_title")',
+      )
+      .all()
+      .map((column) => column.name);
+    expect(columns).toEqual(['_sync_partition', 'project_id', 'title']);
+    const indexes = restarted.db
+      .query<{ name: string; unique: number }, []>('PRAGMA index_list("tasks")')
+      .all();
+    expect(indexes).toContainEqual(
+      expect.objectContaining({
+        name: 'sync_ix_tasks_by_project_title',
+        unique: 1,
+      }),
+    );
+    expect(indexes).toContainEqual(
+      expect.objectContaining({ name: 'ops_tasks_tuning' }),
+    );
+  });
+
+  test('an older SQLite repair cannot cross a newer schema bump', async () => {
+    const storage = new SqliteServerStorage();
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    storage.db.run('DROP INDEX sync_ix_tasks_by_project_title');
+    storage.db.run(
+      'CREATE UNIQUE INDEX sync_ix_tasks_by_project_title ON tasks (project_id, title)',
+    );
+
+    let newer: Promise<void> | undefined;
+    let intercepted = false;
+    const gatedDb: SqliteDatabase = {
+      exec(sql: string): void {
+        if (sql === 'BEGIN IMMEDIATE' && !intercepted) {
+          intercepted = true;
+          newer = new SqliteServerStorage(storage.db).ensureSchema(
+            compileSchema(INDEX_REPLACEMENT_SCHEMA),
+          );
+        }
+        storage.db.exec(sql);
+      },
+      run(sql: string, bindings?: readonly SqliteValue[]): SqliteRunResult {
+        return storage.db.run(sql, bindings);
+      },
+      query<
+        Row = Record<string, SqliteValue>,
+        Params extends readonly SqliteValue[] = SqliteValue[],
+      >(sql: string): SqliteStatement<Row, Params> {
+        return storage.db.query<Row, Params>(sql);
+      },
+      close(): void {
+        storage.db.close();
+      },
+    };
+
+    const older = new SqliteServerStorage(gatedDb).ensureSchema(
+      compileSchema(SCHEMA),
+    );
+    await newer;
+    await expect(older).rejects.toThrow(/newer than the configured schema/);
+
+    const marker = storage.db
+      .query<{ schema_version: number }, []>(
+        'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+      )
+      .get();
+    expect(marker?.schema_version).toBe(2);
+    const names = storage.db
+      .query<{ name: string; origin: string }, []>('PRAGMA index_list("tasks")')
+      .all()
+      .filter((index) => index.origin === 'c')
+      .map((index) => index.name);
+    expect(names).toEqual(['sync_ix_tasks_by_title']);
   });
 
   test('a version bump replaces declared indexes on Postgres', async () => {
@@ -486,7 +922,111 @@ describe('server-side schema migration (the subset)', () => {
     expect(indexes.rows[0]?.indexdef).toContain(
       'UNIQUE INDEX sync_ix_tasks_by_title',
     );
-    expect(indexes.rows[0]?.indexdef).toContain('(project_id, title)');
+    expect(indexes.rows[0]?.indexdef).toContain(
+      '(_sync_partition, project_id, title)',
+    );
+  });
+
+  test('same-version startup upgrades legacy declared indexes on Postgres', async () => {
+    const db = await PGlite.create();
+    await new PostgresServerStorage(pgliteExecutor(db)).ensureSchema(
+      compileSchema(SCHEMA),
+    );
+    await db.query('DROP INDEX sync_ix_tasks_by_project_title');
+    await db.query(
+      'CREATE UNIQUE INDEX sync_ix_tasks_by_project_title ON tasks (project_id, title)',
+    );
+
+    await new PostgresServerStorage(pgliteExecutor(db)).ensureSchema(
+      compileSchema(SCHEMA),
+    );
+
+    const index = await db.query<{ indexdef: string }>(
+      "SELECT indexdef FROM pg_indexes WHERE schemaname=current_schema() AND indexname='sync_ix_tasks_by_project_title'",
+    );
+    expect(index.rows[0]?.indexdef).toContain(
+      '(_sync_partition, project_id, title)',
+    );
+    expect(index.rows[0]?.indexdef).toContain(
+      'UNIQUE INDEX sync_ix_tasks_by_project_title',
+    );
+    await db.close();
+  });
+
+  test('an older Postgres repair cannot cross a newer schema bump', async () => {
+    const db = await PGlite.create();
+    const base = pgliteExecutor(db);
+    await new PostgresServerStorage(base).ensureSchema(compileSchema(SCHEMA));
+    await db.query('DROP INDEX sync_ix_tasks_by_project_title');
+    await db.query(
+      'CREATE UNIQUE INDEX sync_ix_tasks_by_project_title ON tasks (project_id, title)',
+    );
+
+    let announce!: () => void;
+    const announced = new Promise<void>((resolve) => {
+      announce = resolve;
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const gated: PgExecutor = {
+      query<Row>(text: string, params?: readonly unknown[]) {
+        return base.query<Row>(text, params);
+      },
+      async transaction<T>(fn: (client: PgQueryable) => Promise<T>) {
+        announce();
+        await released;
+        return base.transaction(fn);
+      },
+    };
+
+    const older = new PostgresServerStorage(gated).ensureSchema(
+      compileSchema(SCHEMA),
+    );
+    await announced;
+    await new PostgresServerStorage(base).ensureSchema(
+      compileSchema(INDEX_REPLACEMENT_SCHEMA),
+    );
+    release();
+
+    await expect(older).rejects.toThrow(/newer than the configured schema/);
+    const marker = await db.query<{ schema_version: number }>(
+      'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+    );
+    expect(marker.rows[0]?.schema_version).toBe(2);
+    const indexes = await db.query<{ indexname: string }>(
+      "SELECT indexname FROM pg_indexes WHERE schemaname=current_schema() AND tablename='tasks' AND indexname <> 'tasks_pkey' ORDER BY indexname",
+    );
+    expect(indexes.rows.map((index) => index.indexname)).toEqual([
+      'sync_ix_tasks_by_title',
+    ]);
+    await db.close();
+  });
+
+  test('a declared UNIQUE index is unique per partition', async () => {
+    // One physical table holds every partition, so an index over the declared
+    // columns alone would let one tenant reserve a value for every other.
+    const db = await PGlite.create();
+    const storage = new PostgresServerStorage(pgliteExecutor(db));
+    await storage.ensureSchema(compileSchema(INDEX_REPLACEMENT_SCHEMA));
+
+    await upsert(
+      storage,
+      'tenant-a',
+      'tasks',
+      taskRow('t1', 'p1', 'same-title'),
+    );
+    await upsert(
+      storage,
+      'tenant-b',
+      'tasks',
+      taskRow('t2', 'p1', 'same-title'),
+    );
+
+    expect((await storage.getRow('tenant-a', 'tasks', 't1'))?.rowId).toBe('t1');
+    expect((await storage.getRow('tenant-b', 'tasks', 't2'))?.rowId).toBe('t2');
+    await db.close();
   });
 
   test('a version bump replaces declared indexes on D1', async () => {
@@ -505,9 +1045,97 @@ describe('server-side schema migration (the subset)', () => {
       .prepare('PRAGMA index_info("sync_ix_tasks_by_title")')
       .all<{ name: string }>();
     expect(columns.results.map((column) => column.name)).toEqual([
+      '_sync_partition',
       'project_id',
       'title',
     ]);
+  });
+
+  test('same-version startup upgrades legacy declared indexes on D1', async () => {
+    const db = new D1DatabaseDouble();
+    await new D1ServerStorage(db).ensureSchema(compileSchema(SCHEMA));
+    await db.exec('DROP INDEX sync_ix_tasks_by_project_title');
+    await db.exec(
+      'CREATE UNIQUE INDEX sync_ix_tasks_by_project_title ON tasks (project_id, title)',
+    );
+
+    await new D1ServerStorage(db).ensureSchema(compileSchema(SCHEMA));
+
+    const columns = await db
+      .prepare('PRAGMA index_info("sync_ix_tasks_by_project_title")')
+      .all<{ name: string }>();
+    expect(columns.results.map((column) => column.name)).toEqual([
+      '_sync_partition',
+      'project_id',
+      'title',
+    ]);
+    const indexes = await db
+      .prepare('PRAGMA index_list("tasks")')
+      .all<{ name: string; unique: number }>();
+    expect(indexes.results).toContainEqual(
+      expect.objectContaining({
+        name: 'sync_ix_tasks_by_project_title',
+        unique: 1,
+      }),
+    );
+  });
+
+  test('an older D1 repair cannot cross a newer schema bump', async () => {
+    const db = new D1DatabaseDouble();
+    await new D1ServerStorage(db).ensureSchema(compileSchema(SCHEMA));
+    await db.exec('DROP INDEX sync_ix_tasks_by_project_title');
+    await db.exec(
+      'CREATE UNIQUE INDEX sync_ix_tasks_by_project_title ON tasks (project_id, title)',
+    );
+
+    let announce!: () => void;
+    const announced = new Promise<void>((resolve) => {
+      announce = resolve;
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let gatedBatch = false;
+    const gated: D1Database = {
+      prepare(query: string): D1PreparedStatement {
+        return db.prepare(query);
+      },
+      async batch(statements: D1PreparedStatement[]): Promise<unknown[]> {
+        if (!gatedBatch) {
+          gatedBatch = true;
+          announce();
+          await released;
+        }
+        return db.batch(statements);
+      },
+      exec(query: string): Promise<unknown> {
+        return db.exec(query);
+      },
+    };
+
+    const older = new D1ServerStorage(gated).ensureSchema(
+      compileSchema(SCHEMA),
+    );
+    await announced;
+    await new D1ServerStorage(db).ensureSchema(
+      compileSchema(INDEX_REPLACEMENT_SCHEMA),
+    );
+    release();
+
+    await expect(older).rejects.toThrow(/newer than the configured schema/);
+    const marker = await db
+      .prepare('SELECT schema_version FROM sync_schema_meta WHERE id=1')
+      .first<{ schema_version: number }>();
+    expect(marker?.schema_version).toBe(2);
+    const indexes = await db
+      .prepare('PRAGMA index_list("tasks")')
+      .all<{ name: string; origin: string }>();
+    expect(
+      indexes.results
+        .filter((index) => index.origin === 'c')
+        .map((index) => index.name),
+    ).toEqual(['sync_ix_tasks_by_title']);
   });
 
   test('a version bump preserves operator-added tuning indexes and migrates bare declared names', async () => {
@@ -1041,6 +1669,91 @@ describe('IR→DDL', () => {
     expect(postgres).toContain('"priority" BIGINT');
     expect(postgres).toContain('"score" DOUBLE PRECISION');
     expect(postgres).toContain('"_sync_payload" BYTEA NOT NULL');
+  });
+});
+
+// --- the scope-value bind of the two page queries ----------------------------
+
+describe('scope-value binds', () => {
+  function tasks() {
+    const compiled = compileSchema(SCHEMA).tables.get('tasks');
+    if (compiled === undefined) throw new Error('missing table');
+    return compiled;
+  }
+
+  test('postgres binds one value as a scalar and unnests more', () => {
+    const one = scanRowPageSql(tasks(), 1, 'postgres');
+    const many = scanRowPageSql(tasks(), 3, 'postgres');
+
+    expect(one).toContain('value=$4');
+    expect(one).not.toContain('unnest');
+
+    // The array is expanded into one bounded index range per value rather
+    // than put on `value` as an array qual, which is what keeps the scan off
+    // the ordering column. These fragments pin the exact SQL contract used
+    // by both commit-window and row-page scans.
+    expect(many).toContain('unnest($4::text[]) AS v(value)');
+    expect(many).toContain('CROSS JOIN LATERAL');
+    expect(many).toContain('value=v.value');
+    expect(many).not.toContain('value=ANY');
+
+    // The placeholder numbers do not move with the value count, which is
+    // what takes the 65,535 bind-parameter ceiling off the query.
+    expect(one).toContain('row_id>$5');
+    expect(many).toContain('row_id>$5');
+
+    // Each lateral arm is bounded by the page limit, so the sort above it
+    // sees `values * limit` rows instead of the whole scope extent.
+    expect(many.split('LIMIT $6')).toHaveLength(3);
+
+    expect(commitWindowPageSql(1, 'postgres')).toContain('value=$4');
+    expect(commitWindowPageSql(1, 'postgres')).not.toContain('unnest');
+
+    const windowMany = commitWindowPageSql(9, 'postgres');
+    expect(windowMany).toContain('unnest($4::text[]) AS v(value)');
+    expect(windowMany).toContain('value=v.value');
+    expect(windowMany).not.toContain('value=ANY');
+    expect(windowMany).toContain('commit_seq>$5');
+    expect(windowMany.split('LIMIT $7')).toHaveLength(3);
+
+    expect(postgresScopeValueParam(['l1'])).toEqual(['l1']);
+    expect(postgresScopeValueParam(['l1', 'l2'])).toEqual([['l1', 'l2']]);
+  });
+
+  test('sqlite keeps one placeholder per scope value', () => {
+    // SQLite has no array type and D1 shares this builder. The ceiling there
+    // is a separate, lower one that this shape does not address.
+    expect(scanRowPageSql(tasks(), 3, 'sqlite')).toContain('value IN (?,?,?)');
+    expect(commitWindowPageSql(3, 'sqlite')).toContain('value IN (?,?,?)');
+  });
+
+  test('scope values survive the array bind verbatim', async () => {
+    // A comma, a brace, a double quote, a backslash and a NULL-looking word
+    // are what an array literal has to escape.
+    const awkward = ['a,b', '{c}', 'd"e', 'f\\g', 'NULL'];
+    const db = await PGlite.create();
+    const storage = new PostgresServerStorage(pgliteExecutor(db));
+    await storage.ensureSchema(compileSchema(SCHEMA));
+    for (const [index, project] of awkward.entries()) {
+      await upsert(
+        storage,
+        PARTITION,
+        'tasks',
+        taskRow(`t${index}`, project, 'title'),
+      );
+    }
+
+    const rows = await storage.scanRows(PARTITION, {
+      table: 'tasks',
+      scopeFilter: { project_id: awkward },
+      afterRowId: null,
+      limit: 10,
+    });
+
+    expect(rows.map((row) => row.scopes.project_id).sort()).toEqual(
+      [...awkward].sort(),
+    );
+    await db.close();
   });
 });
 

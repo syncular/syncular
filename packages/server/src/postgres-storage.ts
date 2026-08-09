@@ -52,10 +52,14 @@ import {
   commitWindowPageSql,
   deleteRowSql,
   dropTableDdl,
+  expectedIndexShapes,
   indexRowPageStatement,
+  indexReconciliationDdl,
+  indexesNeedReconciliation,
   layoutsOf,
   migratePayload,
   parseLayouts,
+  postgresScopeValueParam,
   retiredTableNames,
   rewritePlan,
   rewriteRowSql,
@@ -619,7 +623,7 @@ class PostgresTransaction implements StorageTransaction {
         this.#partition,
         query.table,
         firstVariable,
-        ...firstValues,
+        ...postgresScopeValueParam(firstValues),
         afterRowId,
         batchSize,
       ]);
@@ -867,6 +871,70 @@ class RollbackSignal extends Error {
   }
 }
 
+async function postgresDeclaredIndexState(
+  queryable: PgQueryable,
+  schema: CompiledSchema,
+): Promise<{
+  existingIndexes: ReadonlyMap<string, ReadonlySet<string>>;
+  reconciliationNeeded: boolean;
+}> {
+  const existingIndexes = new Map<string, ReadonlySet<string>>();
+  let reconciliationNeeded = false;
+  for (const table of schema.tables.values()) {
+    const expected = expectedIndexShapes(table);
+    if (expected.length === 0) continue;
+    const indexes = await queryable.query<{
+      index_name: string;
+      is_unique: boolean;
+      columns: string[];
+    }>(
+      `SELECT index_class.relname AS index_name,
+              index_meta.indisunique AS is_unique,
+              array_agg(attribute.attname ORDER BY key.ordinality) AS columns
+         FROM pg_catalog.pg_class AS table_class
+         JOIN pg_catalog.pg_namespace AS namespace
+           ON namespace.oid = table_class.relnamespace
+         JOIN pg_catalog.pg_index AS index_meta
+           ON index_meta.indrelid = table_class.oid
+         JOIN pg_catalog.pg_class AS index_class
+           ON index_class.oid = index_meta.indexrelid
+         CROSS JOIN LATERAL unnest(index_meta.indkey)
+           WITH ORDINALITY AS key(attnum, ordinality)
+         JOIN pg_catalog.pg_attribute AS attribute
+           ON attribute.attrelid = table_class.oid
+          AND attribute.attnum = key.attnum
+        WHERE namespace.nspname = current_schema()
+          AND table_class.relname = $1
+          AND NOT index_meta.indisprimary
+          AND NOT EXISTS (
+            SELECT 1
+              FROM pg_catalog.pg_constraint AS owning_constraint
+             WHERE owning_constraint.conindid = index_meta.indexrelid
+          )
+        GROUP BY index_class.relname, index_meta.indisunique`,
+      [table.name],
+    );
+    existingIndexes.set(
+      table.name,
+      new Set(indexes.rows.map((index) => index.index_name)),
+    );
+    const expectedNames = new Set(expected.map((index) => index.name));
+    const shapes = new Map<
+      string,
+      { readonly unique: boolean; readonly columns: readonly string[] }
+    >();
+    for (const index of indexes.rows) {
+      if (!expectedNames.has(index.index_name)) continue;
+      shapes.set(index.index_name, {
+        unique: index.is_unique,
+        columns: index.columns,
+      });
+    }
+    reconciliationNeeded ||= indexesNeedReconciliation(table, shapes);
+  }
+  return { existingIndexes, reconciliationNeeded };
+}
+
 export class PostgresServerStorage implements ServerStorage {
   readonly #exec: PgExecutor;
   /** Set by `ensureSchema`: app-table lookup for the relational row store. */
@@ -918,20 +986,68 @@ export class PostgresServerStorage implements ServerStorage {
         `stored schema version ${stored} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
       );
     }
-    if (stored === undefined || stored < schema.version) {
-      // Introspect existing app tables, apply the migration subset
-      // (CREATE TABLE / ADD COLUMN / rebuild indexes), then rewrite stored
-      // rows (payload re-encode for layout changes and/or projection
-      // backfill for flipped-on materialization) — all inside one
-      // transaction (Postgres DDL is transactional — a failed bump leaves
-      // no half-state).
-      const layouts = parseLayouts(
-        typeof marker.rows[0]?.layouts === 'string'
-          ? marker.rows[0].layouts
-          : undefined,
-      );
-      const retiredTables = retiredTableNames(schema, layouts);
+    if (
+      stored === schema.version &&
+      (await postgresDeclaredIndexState(this.#exec, schema))
+        .reconciliationNeeded
+    ) {
       await this.#exec.transaction(async (client) => {
+        await client.query(
+          'LOCK TABLE sync_schema_meta IN ACCESS EXCLUSIVE MODE',
+        );
+        const authoritative = await client.query<{ schema_version: unknown }>(
+          'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+        );
+        const currentVersion =
+          authoritative.rows[0] === undefined
+            ? undefined
+            : asNumber(authoritative.rows[0].schema_version);
+        if (currentVersion !== undefined && currentVersion > schema.version) {
+          throw new Error(
+            `stored schema version ${currentVersion} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
+          );
+        }
+        if (currentVersion !== schema.version) {
+          throw new Error(
+            'stored schema version changed during index reconciliation',
+          );
+        }
+        const current = await postgresDeclaredIndexState(client, schema);
+        if (current.reconciliationNeeded) {
+          for (const statement of indexReconciliationDdl(
+            schema,
+            current.existingIndexes,
+          )) {
+            await client.query(statement);
+          }
+        }
+      });
+    }
+    if (stored === undefined || stored < schema.version) {
+      await this.#exec.transaction(async (client) => {
+        await client.query(
+          'LOCK TABLE sync_schema_meta IN ACCESS EXCLUSIVE MODE',
+        );
+        const authoritative = await client.query<{
+          schema_version: unknown;
+          layouts: unknown;
+        }>('SELECT schema_version, layouts FROM sync_schema_meta WHERE id=1');
+        const currentVersion =
+          authoritative.rows[0] === undefined
+            ? undefined
+            : asNumber(authoritative.rows[0].schema_version);
+        if (currentVersion !== undefined && currentVersion > schema.version) {
+          throw new Error(
+            `stored schema version ${currentVersion} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
+          );
+        }
+        if (currentVersion === schema.version) return;
+        const layouts = parseLayouts(
+          typeof authoritative.rows[0]?.layouts === 'string'
+            ? authoritative.rows[0].layouts
+            : undefined,
+        );
+        const retiredTables = retiredTableNames(schema, layouts);
         const existing = new Map<string, ReadonlySet<string>>();
         const existingIndexes = new Map<string, ReadonlySet<string>>();
         for (const table of schema.tables.values()) {
@@ -974,6 +1090,14 @@ export class PostgresServerStorage implements ServerStorage {
         }
         for (const tableName of retiredTables) {
           await client.query('DELETE FROM sync_row_scopes WHERE tbl=$1', [
+            tableName,
+          ]);
+          // Blob references go with the scope index. One left behind still
+          // answers the reference lookup the §5.9.2 sweep consults, so the
+          // bytes are never reclaimed, and it is skipped by the row lookup
+          // §5.9.5 authorizes downloads against, so every download is denied:
+          // the blob becomes undeletable and unreachable in the same move.
+          await client.query('DELETE FROM sync_blob_refs WHERE tbl=$1', [
             tableName,
           ]);
           await client.query(dropTableDdl(tableName));
@@ -1188,7 +1312,8 @@ export class PostgresServerStorage implements ServerStorage {
   async setHorizonSeq(partition: string, seq: number): Promise<void> {
     await this.#exec.query(
       `INSERT INTO sync_partitions(partition, horizon_seq) VALUES ($1,$2)
-       ON CONFLICT (partition) DO UPDATE SET horizon_seq=EXCLUDED.horizon_seq`,
+       ON CONFLICT (partition) DO UPDATE SET
+         horizon_seq=GREATEST(sync_partitions.horizon_seq, EXCLUDED.horizon_seq)`,
       [partition, seq],
     );
   }
@@ -1469,7 +1594,7 @@ export class PostgresServerStorage implements ServerStorage {
           partition,
           query.table,
           firstVariable,
-          ...firstValues,
+          ...postgresScopeValueParam(firstValues),
           afterSeq,
           query.throughSeq,
           batchSize,
@@ -1547,7 +1672,7 @@ export class PostgresServerStorage implements ServerStorage {
         partition,
         query.table,
         firstVariable,
-        ...firstValues,
+        ...postgresScopeValueParam(firstValues),
         afterRowId,
         batchSize,
       ]);
@@ -1615,9 +1740,9 @@ export class PostgresServerStorage implements ServerStorage {
        VALUES ($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT (partition, client_id) DO UPDATE
          SET actor_id=EXCLUDED.actor_id, wire_version=EXCLUDED.wire_version,
-             cursor=EXCLUDED.cursor,
+             cursor=GREATEST(sync_clients.cursor, EXCLUDED.cursor),
              subscriptions=EXCLUDED.subscriptions,
-             updated_at_ms=EXCLUDED.updated_at_ms`,
+             updated_at_ms=GREATEST(sync_clients.updated_at_ms, EXCLUDED.updated_at_ms)`,
       [
         partition,
         record.clientId,
@@ -1627,6 +1752,20 @@ export class PostgresServerStorage implements ServerStorage {
         JSON.stringify(record.subscriptions),
         record.updatedAtMs,
       ],
+    );
+  }
+
+  async updateClientCursor(
+    partition: string,
+    clientId: string,
+    cursor: number,
+    updatedAtMs: number,
+  ): Promise<void> {
+    await this.#exec.query(
+      `UPDATE sync_clients
+       SET cursor=GREATEST(cursor, $3), updated_at_ms=GREATEST(updated_at_ms, $4)
+       WHERE partition=$1 AND client_id=$2`,
+      [partition, clientId, cursor, updatedAtMs],
     );
   }
 

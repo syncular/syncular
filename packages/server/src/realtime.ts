@@ -307,6 +307,10 @@ export class RealtimeSession {
     const cursor = (parsed as { cursor?: unknown }).cursor;
     if (typeof cursor !== 'number' || !Number.isSafeInteger(cursor)) return;
     this.cursor = Math.max(this.cursor, cursor);
+    // The client may have caught up through another binding (§8.4). Its ack
+    // proves those commits no longer need socket notifications, so the next
+    // notification must be adjacent to the acknowledged cursor.
+    this.lastKnownSeq = Math.max(this.lastKnownSeq, this.cursor);
     if (this.cursor >= this.lastKnownSeq) this.wakePending = false;
     // §8.2: acks update the client cursor record without an HTTP pull.
     void this.#persistCursor();
@@ -626,16 +630,12 @@ export class RealtimeSession {
 
   async #persistCursor(): Promise<void> {
     try {
-      const record = await this.#storage.getClientRecord(
+      await this.#storage.updateClientCursor(
         this.partition,
         this.clientId,
+        this.cursor,
+        this.#clock(),
       );
-      if (record === undefined) return;
-      await this.#storage.putClientRecord(this.partition, {
-        ...record,
-        cursor: Math.max(record.cursor, this.cursor),
-        updatedAtMs: this.#clock(),
-      });
     } catch {
       // Cursor persistence is best-effort; the next pull repairs it.
     }
@@ -688,8 +688,9 @@ export class RealtimeSession {
     }
   }
 
-  /** Called by the hub for every applied commit, in commitSeq order. */
+  /** Called by the hub for every applied commit notification. */
   deliverCommit(commit: StoredCommit): void {
+    const contiguous = commit.commitSeq === this.lastKnownSeq + 1;
     this.lastKnownSeq = Math.max(this.lastKnownSeq, commit.commitSeq);
     const sections: Array<{
       registration: Registration;
@@ -715,6 +716,14 @@ export class RealtimeSession {
           }),
         );
       if (changes.length > 0) sections.push({ registration, changes });
+    }
+    if (!contiguous) {
+      // Pushes allocate commitSeq under the partition lock but notify after
+      // commit, so racing notifications may arrive out of order. A gap,
+      // duplicate, or regression cannot be a delta: the client would apply
+      // and acknowledge a cursor that does not prove the intervening log.
+      this.sendWake('catchup-required');
+      return;
     }
     if (sections.length === 0) return;
     if (this.#activeRound !== undefined) {
@@ -771,7 +780,7 @@ export class RealtimeSession {
     tagged[0] = REALTIME_TAG_DELTA;
     tagged.set(bytes, 1);
     this.#sendSafe(tagged);
-    this.cursor = commit.commitSeq;
+    this.cursor = Math.max(this.cursor, commit.commitSeq);
     const events = this.#events;
     if (events !== undefined) {
       emitEvent(events, {

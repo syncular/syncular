@@ -156,6 +156,38 @@ test('SQLite: a failed COMMIT rolls back and later transactions proceed', async 
   ).toBeDefined();
 });
 
+test('retiring a table purges its blob refs with its row scopes', async () => {
+  // A surviving `sync_blob_refs` row fails in both directions at once: it
+  // keeps answering the reference lookup the §5.9.2 sweep consults, so the
+  // bytes are never reclaimed, and it is skipped by the row lookup §5.9.5
+  // authorizes downloads against, so every download is denied.
+  const db = await PGlite.create();
+  const storage = new PostgresServerStorage(pgliteExecutor(db));
+  await storage.migrate();
+  await storage.ensureSchema(compileSchema(CONTRACT_SCHEMA));
+
+  for (const tbl of ['tasks', 'docs']) {
+    await db.query(
+      'INSERT INTO sync_blob_refs(partition, tbl, row_id, blob_id) VALUES ($1,$2,$3,$4)',
+      ['p1', tbl, 'r1', `sha256:${'a'.repeat(64)}`],
+    );
+  }
+
+  // Retire `docs` by bumping to a schema that no longer declares it.
+  await storage.ensureSchema(
+    compileSchema({
+      ...CONTRACT_SCHEMA,
+      version: 2,
+      tables: CONTRACT_SCHEMA.tables.filter((table) => table.name !== 'docs'),
+    }),
+  );
+
+  const remaining = await db.query<{ tbl: string }>(
+    'SELECT DISTINCT tbl FROM sync_blob_refs ORDER BY tbl',
+  );
+  expect(remaining.rows.map((row) => row.tbl)).toEqual(['tasks']);
+});
+
 test('pglite executor serializes overlapping transaction scopes', async () => {
   const db = await PGlite.create();
   const exec = pgliteExecutor(db);

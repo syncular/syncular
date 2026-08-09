@@ -1071,6 +1071,10 @@ export function runStorageContract(
       expect(await storage.getHorizonSeq(PARTITION)).toBe(0);
       await storage.setHorizonSeq(PARTITION, 2);
       expect(await storage.getHorizonSeq(PARTITION)).toBe(2);
+      // A stale concurrent prune must not move the horizon behind rows a
+      // newer prune may already have deleted.
+      await storage.setHorizonSeq(PARTITION, 1);
+      expect(await storage.getHorizonSeq(PARTITION)).toBe(2);
       const removed = await storage.pruneCommitsThrough(PARTITION, 2);
       expect(removed).toBe(2);
       // Pruned commits vanish from the window; retained ones remain.
@@ -1136,6 +1140,105 @@ export function runStorageContract(
       await storage.putClientRecord(PARTITION, { ...record, cursor: 99 });
       const updated = await storage.getClientRecord(PARTITION, 'c1');
       expect(updated?.cursor).toBe(99);
+    });
+
+    test('cursor-only updates are absent-safe and monotonic', async () => {
+      const storage = await make();
+
+      await storage.updateClientCursor(PARTITION, 'missing', 8, NOW + 8);
+      expect(
+        await storage.getClientRecord(PARTITION, 'missing'),
+      ).toBeUndefined();
+
+      const record: ClientRecord = {
+        clientId: 'cursor-only',
+        actorId: 'actor-old',
+        wireVersion: 1,
+        cursor: 2,
+        updatedAtMs: NOW,
+        subscriptions: [
+          { id: 'old', table: 'tasks', scopes: { project_id: ['p1'] } },
+        ],
+      };
+      await storage.putClientRecord(PARTITION, record);
+      await storage.updateClientCursor(PARTITION, record.clientId, 9, NOW + 20);
+      await storage.updateClientCursor(PARTITION, record.clientId, 4, NOW + 10);
+
+      expect(await storage.getClientRecord(PARTITION, record.clientId)).toEqual(
+        {
+          ...record,
+          cursor: 9,
+          updatedAtMs: NOW + 20,
+        },
+      );
+    });
+
+    test('ACK then full replacement preserves the ACK cursor and replaces round fields', async () => {
+      const storage = await make();
+      const old: ClientRecord = {
+        clientId: 'ack-then-round',
+        actorId: 'actor-old',
+        wireVersion: 1,
+        cursor: 2,
+        updatedAtMs: NOW,
+        subscriptions: [
+          { id: 'old', table: 'tasks', scopes: { project_id: ['p1'] } },
+        ],
+      };
+      const replacement: ClientRecord = {
+        ...old,
+        actorId: 'actor-new',
+        wireVersion: 2,
+        cursor: 4,
+        updatedAtMs: NOW + 10,
+        subscriptions: [
+          { id: 'new', table: 'tasks', scopes: { project_id: ['p2'] } },
+        ],
+      };
+
+      await storage.putClientRecord(PARTITION, old);
+      await storage.updateClientCursor(PARTITION, old.clientId, 9, NOW + 20);
+      await storage.putClientRecord(PARTITION, replacement);
+
+      expect(await storage.getClientRecord(PARTITION, old.clientId)).toEqual({
+        ...replacement,
+        cursor: 9,
+        updatedAtMs: NOW + 20,
+      });
+    });
+
+    test('full replacement then ACK preserves round fields and advances the cursor', async () => {
+      const storage = await make();
+      const old: ClientRecord = {
+        clientId: 'round-then-ack',
+        actorId: 'actor-old',
+        wireVersion: 1,
+        cursor: 2,
+        updatedAtMs: NOW,
+        subscriptions: [
+          { id: 'old', table: 'tasks', scopes: { project_id: ['p1'] } },
+        ],
+      };
+      const replacement: ClientRecord = {
+        ...old,
+        actorId: 'actor-new',
+        wireVersion: 2,
+        cursor: 4,
+        updatedAtMs: NOW + 20,
+        subscriptions: [
+          { id: 'new', table: 'tasks', scopes: { project_id: ['p2'] } },
+        ],
+      };
+
+      await storage.putClientRecord(PARTITION, old);
+      await storage.putClientRecord(PARTITION, replacement);
+      await storage.updateClientCursor(PARTITION, old.clientId, 9, NOW + 30);
+
+      expect(await storage.getClientRecord(PARTITION, old.clientId)).toEqual({
+        ...replacement,
+        cursor: 9,
+        updatedAtMs: NOW + 30,
+      });
     });
 
     // --- Blob reference index (§5.9.4, optional methods) ---

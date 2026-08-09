@@ -53,12 +53,20 @@ export async function pruneCommitLog(options: PruneOptions): Promise<number> {
   const retainFloor = maxSeq - policy.minRetainedCommits;
   const target = Math.min(Math.max(cursorFloor, forcedSeq), retainFloor);
   const current = await storage.getHorizonSeq(partition);
-  const horizon = Math.max(current, Math.max(0, target));
-  let removedCommits = 0;
-  if (horizon > current) {
-    await storage.setHorizonSeq(partition, horizon);
-    removedCommits = await storage.pruneCommitsThrough(partition, horizon);
+  const proposedHorizon = Math.max(current, Math.max(0, target));
+  if (proposedHorizon > current) {
+    // This order is load-bearing for concurrent pulls. The storage update is
+    // monotonic, so concurrent prune passes cannot restore an older horizon.
+    // A reader may observe the new horizon before deletion, which safely
+    // overstates what is gone; it must never observe the old horizon after
+    // the log has been pruned.
+    await storage.setHorizonSeq(partition, proposedHorizon);
   }
+  // Re-read after the monotonic write so a concurrent higher winner governs
+  // this pass too. Deletion is idempotent and runs even when the horizon did
+  // not move, repairing a crash between an earlier horizon write and delete.
+  const horizon = await storage.getHorizonSeq(partition);
+  const removedCommits = await storage.pruneCommitsThrough(partition, horizon);
   const events = options.events;
   if (events !== undefined) {
     emitEvent(events, {

@@ -209,17 +209,74 @@ export function physicalIndexName(declaredName: string): string {
  * index-name uniqueness is the user's schema concern, as it is client-side.
  * Server-side the physical name carries the {@link SYNC_INDEX_PREFIX}
  * ownership marker.
+ *
+ * Every index leads with {@link SYNC_PARTITION_COLUMN}. One physical table
+ * holds every partition, so a declared `UNIQUE` over the app columns alone
+ * would reserve a value across every partition on the server, and a trusted
+ * index lookup would find its partition predicate outside the index. The
+ * declared name and the declared column order the client materializes are
+ * unchanged; the partition column is server-side only.
  */
 export function createIndexDdl(table: CompiledTable): string[] {
-  // User indexes name app columns — nothing to index without the projection.
-  if (!table.materialize) return [];
-  return table.indexes.map((index) => {
+  return expectedIndexShapes(table).map((index) => {
     const unique = index.unique ? 'UNIQUE ' : '';
     const columns = index.columns
       .map((column) => quoteIdent(column))
       .join(', ');
-    return `CREATE ${unique}INDEX IF NOT EXISTS ${quoteIdent(physicalIndexName(index.name))} ON ${quoteIdent(table.name)} (${columns})`;
+    return `CREATE ${unique}INDEX IF NOT EXISTS ${quoteIdent(index.name)} ON ${quoteIdent(table.name)} (${columns})`;
   });
+}
+
+/** The physical definition every declared server index must have. */
+export function expectedIndexShapes(table: CompiledTable): readonly {
+  readonly name: string;
+  readonly unique: boolean;
+  readonly columns: readonly string[];
+}[] {
+  if (!table.materialize) return [];
+  return table.indexes.map((index) => ({
+    name: physicalIndexName(index.name),
+    unique: index.unique === true,
+    columns: [SYNC_PARTITION_COLUMN, ...index.columns],
+  }));
+}
+
+/** True when a declared physical index is absent or has an obsolete shape. */
+export function indexesNeedReconciliation(
+  table: CompiledTable,
+  existing: ReadonlyMap<
+    string,
+    { readonly unique: boolean; readonly columns: readonly string[] }
+  >,
+): boolean {
+  return expectedIndexShapes(table).some((expected) => {
+    const actual = existing.get(expected.name);
+    return (
+      actual === undefined ||
+      actual.unique !== expected.unique ||
+      actual.columns.length !== expected.columns.length ||
+      actual.columns.some((column, index) => column !== expected.columns[index])
+    );
+  });
+}
+
+/** Rebuild only Syncular-owned declared indexes against an equal-version schema. */
+export function indexReconciliationDdl(
+  schema: CompiledSchema,
+  existingIndexesByTable: ReadonlyMap<string, ReadonlySet<string>>,
+): string[] {
+  const drops: string[] = [];
+  const creates: string[] = [];
+  for (const table of schema.tables.values()) {
+    const declared = new Set(table.indexes.map((index) => index.name));
+    for (const indexName of existingIndexesByTable.get(table.name) ?? []) {
+      if (indexName.startsWith(SYNC_INDEX_PREFIX) || declared.has(indexName)) {
+        drops.push(dropIndexDdl(indexName));
+      }
+    }
+    creates.push(...createIndexDdl(table));
+  }
+  return [...drops, ...creates];
 }
 
 /** Idempotent removal of one Syncular-owned relational projection index. */
@@ -366,6 +423,55 @@ export function indexRowPageStatement(
 }
 
 /**
+ * The `value` predicate of both candidate subqueries, the placeholder number
+ * the predicate stops at, and whether the predicate has to be driven from a
+ * `LATERAL` scan per value.
+ *
+ * On sqlite (and D1 through it) every value is its own placeholder, which is
+ * the shape those drivers accept.
+ *
+ * On postgres one value binds as a scalar, so the planner sees an equality on
+ * `value` and walks the covering index in candidate order. More than one
+ * cannot become an array qual on `value`: that column precedes the ordering
+ * column in both scope-index primary keys, so the planner aggregates and
+ * sorts the whole matched candidate set before the `LIMIT` applies, and by
+ * eight values it drops the index for a parallel sequential scan. Measured on
+ * 200k index rows over eight values: 28.955 ms and 1714 buffers for the array
+ * qual against 0.548 ms and 89 buffers for the lateral form.
+ *
+ * So the array is unnested and each value gets its own index range, bounded
+ * by the page `LIMIT`. That keeps the whole list in ONE bind, which is what
+ * removes the 65,535 bind-parameter ceiling.
+ */
+function scopeValuePredicate(
+  valueCount: number,
+  dialect: RelationalDialect,
+): { predicate: string; next: number; lateral: boolean } {
+  if (dialect === 'sqlite') {
+    const values: string[] = [];
+    for (let i = 0; i < valueCount; i++) values.push('?');
+    return {
+      predicate: `value IN (${values.join(',')})`,
+      next: 4 + valueCount,
+      lateral: false,
+    };
+  }
+  if (valueCount === 1)
+    return { predicate: 'value=$4', next: 5, lateral: false };
+  return { predicate: 'value=v.value', next: 5, lateral: true };
+}
+
+/**
+ * The `$4` bind of the postgres form: the value itself when there is one, and
+ * the whole list as one `text[]` when there is more than one. Returned as an
+ * array so a call site spreads it into its parameter list exactly where it
+ * spread the values before.
+ */
+export function postgresScopeValueParam(values: readonly string[]): unknown[] {
+  return values.length === 1 ? [values[0]] : [values];
+}
+
+/**
  * One-round-trip page scan for `scanRows`: candidates from the inverted
  * scope index (ordered + LIMITed at the covering `sync_row_scopes` PK —
  * exactly the old candidate query, so the index-first posture is unchanged)
@@ -380,10 +486,11 @@ export function indexRowPageStatement(
  * disappearing from the page.
  *
  * Bind order:
- *   - postgres: [partition, tbl, var, ...values, afterRowId, limit]
- *     (the join reuses `$1` for the partition);
+ *   - postgres: [partition, tbl, var, values, afterRowId, limit] (the join
+ *     reuses `$1` for the partition; `values` is one bind carrying the
+ *     single value or the whole list, see {@link postgresScopeValueParam});
  *   - sqlite:   [partition, tbl, var, ...values, afterRowId, limit,
- *     partition] (positional `?` — the partition binds again for the join).
+ *     partition] (positional `?`: the partition binds again for the join).
  */
 export function scanRowPageSql(
   table: CompiledTable,
@@ -391,16 +498,24 @@ export function scanRowPageSql(
   dialect: RelationalDialect,
 ): string {
   const p = (n: number) => (dialect === 'sqlite' ? '?' : `$${n}`);
-  const values: string[] = [];
-  for (let i = 0; i < valueCount; i++) values.push(p(4 + i));
-  const after = p(4 + valueCount);
-  const limit = p(5 + valueCount);
+  const { predicate, next, lateral } = scopeValuePredicate(valueCount, dialect);
+  const after = p(next);
+  const limit = p(next + 1);
   const joinPartition = dialect === 'sqlite' ? '?' : '$1';
+  const where = `WHERE partition=${p(1)} AND tbl=${p(2)} AND var=${p(3)} AND ${predicate}
+           AND row_id>${after}
+         ORDER BY row_id LIMIT ${limit}`;
+  const candidates = lateral
+    ? `SELECT DISTINCT row_id FROM (
+       SELECT s.row_id FROM unnest($4::text[]) AS v(value)
+         CROSS JOIN LATERAL (
+           SELECT row_id FROM sync_row_scopes
+         ${where}) s) u
+     ORDER BY row_id LIMIT ${limit}`
+    : `SELECT DISTINCT row_id FROM sync_row_scopes
+       ${where}`;
   return `SELECT c.row_id AS row_id, r.${quoteIdent(SYNC_VERSION_COLUMN)} AS server_version, r.${quoteIdent(SYNC_SCOPES_COLUMN)} AS scopes, r.${quoteIdent(SYNC_PAYLOAD_COLUMN)} AS payload
-     FROM (SELECT DISTINCT row_id FROM sync_row_scopes
-       WHERE partition=${p(1)} AND tbl=${p(2)} AND var=${p(3)} AND value IN (${values.join(',')})
-         AND row_id>${after}
-       ORDER BY row_id LIMIT ${limit}) c
+     FROM (${candidates}) c
      LEFT JOIN ${quoteIdent(table.name)} r
        ON r.${quoteIdent(SYNC_PARTITION_COLUMN)}=${joinPartition} AND r.${quoteIdent(SYNC_ROW_ID_COLUMN)}=c.row_id
      ORDER BY c.row_id`;
@@ -428,10 +543,11 @@ export function scanRowPageSql(
  * rows and verifies the full multi-variable scope match in JS.
  *
  * Bind order:
- *   - postgres: [partition, tbl, var, ...values, afterSeq, throughSeq,
- *     limit] (the joins reuse `$1`/`$2`);
+ *   - postgres: [partition, tbl, var, values, afterSeq, throughSeq, limit]
+ *     (the joins reuse `$1`/`$2`; `values` is one bind carrying the single
+ *     value or the whole list, see {@link postgresScopeValueParam});
  *   - sqlite:   [partition, tbl, var, ...values, afterSeq, throughSeq,
- *     limit, partition, partition, tbl] (positional `?` — partition/tbl bind
+ *     limit, partition, partition, tbl] (positional `?`: partition/tbl bind
  *     again for the joins).
  */
 export function commitWindowPageSql(
@@ -439,19 +555,27 @@ export function commitWindowPageSql(
   dialect: RelationalDialect,
 ): string {
   const p = (n: number) => (dialect === 'sqlite' ? '?' : `$${n}`);
-  const values: string[] = [];
-  for (let i = 0; i < valueCount; i++) values.push(p(4 + i));
-  const after = p(4 + valueCount);
-  const through = p(5 + valueCount);
-  const limit = p(6 + valueCount);
+  const { predicate, next, lateral } = scopeValuePredicate(valueCount, dialect);
+  const after = p(next);
+  const through = p(next + 1);
+  const limit = p(next + 2);
   const joinPartition = dialect === 'sqlite' ? '?' : '$1';
   const joinTbl = dialect === 'sqlite' ? '?' : '$2';
+  const where = `WHERE partition=${p(1)} AND tbl=${p(2)} AND var=${p(3)} AND ${predicate}
+         AND commit_seq>${after} AND commit_seq<=${through}
+       ORDER BY commit_seq LIMIT ${limit}`;
+  const candidates = lateral
+    ? `SELECT DISTINCT commit_seq FROM (
+       SELECT s.commit_seq FROM unnest($4::text[]) AS v(value)
+         CROSS JOIN LATERAL (
+           SELECT commit_seq FROM sync_change_scopes
+       ${where}) s) u
+     ORDER BY commit_seq LIMIT ${limit}`
+    : `SELECT DISTINCT commit_seq FROM sync_change_scopes
+       ${where}`;
   return `SELECT c.commit_seq AS commit_seq, m.actor_id AS actor_id, m.created_at_ms AS created_at_ms,
        ch.tbl AS tbl, ch.row_id AS row_id, ch.op AS op, ch.row_version AS row_version, ch.scopes AS scopes, ch.payload AS payload
-     FROM (SELECT DISTINCT commit_seq FROM sync_change_scopes
-       WHERE partition=${p(1)} AND tbl=${p(2)} AND var=${p(3)} AND value IN (${values.join(',')})
-         AND commit_seq>${after} AND commit_seq<=${through}
-       ORDER BY commit_seq LIMIT ${limit}) c
+     FROM (${candidates}) c
      LEFT JOIN sync_commits m
        ON m.partition=${joinPartition} AND m.commit_seq=c.commit_seq
      LEFT JOIN sync_changes ch
@@ -478,10 +602,10 @@ export function deleteRowSql(
 }
 
 /**
- * The schema-version marker table gates DDL work. `ensureSchema` compares the
- * stored version and skips
- * all introspection/DDL when it matches — one cheap read per storage
- * instance (relevant for D1's per-request instantiation).
+ * The schema-version marker gates app-table migration and payload rewrites.
+ * An equal version skips that work, but `ensureSchema` still verifies tables
+ * with declared physical indexes because the marker does not record their
+ * server-only partition column. A current index shape issues no DDL.
  *
  * `layouts` persists each table's column layout (name/type/nullable, the
  * exact inputs the row codec's byte layout depends on) as of the LAST
@@ -726,12 +850,10 @@ export function schemaDdl(
   existingIndexesByTable: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
 ): string[] {
   const drops: string[] = [];
-  const creates: string[] = [];
+  const indexes: string[] = [];
   for (const table of schema.tables.values()) {
     const existing = existingColumnsByTable.get(table.name);
-    if (existing === undefined) {
-      creates.push(createTableDdl(table, dialect));
-    } else {
+    if (existing !== undefined) {
       const declared = new Set(table.indexes.map((index) => index.name));
       for (const indexName of existingIndexesByTable.get(table.name) ?? []) {
         if (
@@ -741,12 +863,33 @@ export function schemaDdl(
           drops.push(dropIndexDdl(indexName));
         }
       }
-      creates.push(...addColumnDdl(table, existing, dialect));
     }
-    creates.push(...createIndexDdl(table));
+    indexes.push(...createIndexDdl(table));
   }
   // Every drop precedes every create: an index name moving between tables in
   // one bump must release the global (SQLite) index namespace before the
   // receiving table re-creates it.
-  return [...drops, ...creates];
+  return [
+    ...drops,
+    ...schemaProjectionDdl(schema, existingColumnsByTable, dialect),
+    ...indexes,
+  ];
+}
+
+/** CREATE TABLE and ADD COLUMN statements without secondary-index changes. */
+export function schemaProjectionDdl(
+  schema: CompiledSchema,
+  existingColumnsByTable: ReadonlyMap<string, ReadonlySet<string>>,
+  dialect: RelationalDialect,
+): string[] {
+  const statements: string[] = [];
+  for (const table of schema.tables.values()) {
+    const existing = existingColumnsByTable.get(table.name);
+    if (existing === undefined) {
+      statements.push(createTableDdl(table, dialect));
+    } else {
+      statements.push(...addColumnDdl(table, existing, dialect));
+    }
+  }
+  return statements;
 }

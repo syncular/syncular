@@ -56,25 +56,33 @@ interface WasmDb {
 }
 
 function d1OverWasm(db: WasmDb): D1Database {
+  const prepared = new WeakMap<
+    D1PreparedStatement,
+    { readonly sql: string; readonly params: readonly unknown[] }
+  >();
   const statement = (
     sql: string,
     params: readonly unknown[],
-  ): D1PreparedStatement => ({
-    bind: (...values: unknown[]) => statement(sql, values),
-    first: async <T>() =>
-      (db.selectObjects(sql, params.length > 0 ? params : undefined)[0] ??
-        null) as T | null,
-    all: async <T>() => ({
-      results: db.selectObjects(
-        sql,
-        params.length > 0 ? params : undefined,
-      ) as T[],
-    }),
-    run: async () => {
-      db.exec({ sql, ...(params.length > 0 ? { bind: params } : {}) });
-      return {};
-    },
-  });
+  ): D1PreparedStatement => {
+    const result: D1PreparedStatement = {
+      bind: (...values: unknown[]) => statement(sql, values),
+      first: async <T>() =>
+        (db.selectObjects(sql, params.length > 0 ? params : undefined)[0] ??
+          null) as T | null,
+      all: async <T>() => ({
+        results: db.selectObjects(
+          sql,
+          params.length > 0 ? params : undefined,
+        ) as T[],
+      }),
+      run: async () => {
+        db.exec({ sql, ...(params.length > 0 ? { bind: params } : {}) });
+        return {};
+      },
+    };
+    prepared.set(result, { sql, params });
+    return result;
+  };
   return {
     prepare: (sql) => statement(sql, []),
     // Real D1 wraps a batch in one implicit transaction (all-or-nothing);
@@ -83,7 +91,22 @@ function d1OverWasm(db: WasmDb): D1Database {
       db.exec({ sql: 'BEGIN' });
       try {
         const results: unknown[] = [];
-        for (const stmt of statements) results.push(await stmt.run());
+        for (const stmt of statements) {
+          const source = prepared.get(stmt);
+          if (source === undefined) {
+            throw new Error('batch received a statement from another adapter');
+          }
+          if (/^\s*(?:SELECT|WITH)\b/i.test(source.sql)) {
+            results.push({
+              results: db.selectObjects(
+                source.sql,
+                source.params.length > 0 ? source.params : undefined,
+              ),
+            });
+          } else {
+            results.push(await stmt.run());
+          }
+        }
         db.exec({ sql: 'COMMIT' });
         return results;
       } catch (error) {

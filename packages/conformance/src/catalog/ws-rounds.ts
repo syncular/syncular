@@ -7,6 +7,17 @@
  * Readiness doctrine: every wait is an explicit completion promise at
  * the transport seam (rounds completed, deltas, acks, server close).
  * Zero sleeps, zero polls.
+ *
+ * There is deliberately no stalled-transport scenario here. §8.7 makes
+ * backpressure mechanics ("drain events, thresholds, chunk sizes") host
+ * concerns, so the only wire-observable requirement under a socket that
+ * cannot drain is the one every scenario below already asserts: the
+ * response stream arrives complete and in order, never truncated,
+ * reordered, or interleaved. The rate it arrives at is not observable.
+ * `RealtimeSink` matches that: `onText`/`onBinary` return void, so a
+ * harness sink has no way to decline a frame, defer one, or report a
+ * buffer depth, and giving it one would change a contract both server
+ * drivers implement.
  */
 import { REALTIME_TAG_ROUND } from '@syncular/core';
 import { check, checkEqual } from '../checks';

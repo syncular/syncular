@@ -426,6 +426,7 @@ export interface ServerStorage {
 
   getMaxCommitSeq(partition: string): Promise<number>;
   getHorizonSeq(partition: string): Promise<number>;
+  /** Advances the retention horizon monotonically; lower values are ignored. */
   setHorizonSeq(partition: string, seq: number): Promise<void>;
   /**
    * Deletes commits with `commitSeq <= seq` (log, changes, scope index).
@@ -541,6 +542,13 @@ export interface ServerStorage {
     clientId: string,
   ): Promise<ClientRecord | undefined>;
   putClientRecord(partition: string, record: ClientRecord): Promise<void>;
+  /** Atomically advances an existing client's cursor and update timestamp. */
+  updateClientCursor(
+    partition: string,
+    clientId: string,
+    cursor: number,
+    updatedAtMs: number,
+  ): Promise<void>;
   /** Cursor records feeding the §4.6 retention watermark. */
   listClientCursors(partition: string): Promise<ClientCursorInfo[]>;
 

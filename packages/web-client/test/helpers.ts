@@ -143,6 +143,8 @@ function wrapStorage(
     scanRows: (p, q) => storage.scanRows(p, q),
     getClientRecord: (p, c) => storage.getClientRecord(p, c),
     putClientRecord: (p, r) => storage.putClientRecord(p, r),
+    updateClientCursor: (p, c, cursor, updatedAtMs) =>
+      storage.updateClientCursor(p, c, cursor, updatedAtMs),
     listClientCursors: (p) => storage.listClientCursors(p),
   };
 }

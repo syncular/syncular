@@ -14,6 +14,7 @@ import {
 } from '@syncular/core';
 import type { SyncRequestContext } from './context';
 import { clockOf, limitsOf } from './context';
+import { syncError } from './errors';
 import type { PullSegmentSummary } from './events';
 import type { CompiledSchema, CompiledTable } from './schema';
 import { scopeDigest } from './scopes';
@@ -543,6 +544,15 @@ export async function* subscriptionSection(
     throughSeq: maxSeq,
     limitChanges: limits.limitCommits + 1,
   });
+  // Pruning advances the horizon before deleting commits. Re-reading after
+  // the window query therefore detects any deletion that could have made the
+  // incremental result incomplete, before SUB_END lets the client persist it.
+  if (sub.cursor < (await ctx.storage.getHorizonSeq(ctx.partition))) {
+    throw syncError(
+      'sync.cursor_expired',
+      'the retention horizon advanced during the incremental pull (§4.6)',
+    );
+  }
   let delivered = 0;
   let deliveredCommits = 0;
   let lastDeliveredSeq = sub.cursor;

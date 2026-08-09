@@ -6,15 +6,24 @@ import { describe, expect, test } from 'bun:test';
 import {
   type CommitFrame,
   decodeMessage,
+  encodeMessage,
   parseRealtimeServerEvent,
+  REALTIME_TAG_ROUND,
   type ScopeMap,
   type SubStartFrame,
 } from '@syncular/core';
-import { createRealtimeHub, type RealtimeHub } from '@syncular/server';
+import {
+  type ClientRecord,
+  createRealtimeHub,
+  type RealtimeHub,
+  type ServerStorage,
+  type StoredCommit,
+} from '@syncular/server';
 import {
   makeContext,
   pullHeader,
   pushCommit,
+  requestBytes,
   subFrame,
   sync,
   type TestContext,
@@ -53,6 +62,55 @@ function makeHub(t: TestContext, maxDeltaBytes?: number): RealtimeHub {
   // Wire the hub into the push path.
   Object.assign(t.ctx, { realtime: hub });
   return hub;
+}
+
+function taggedRound(bytes: Uint8Array): Uint8Array {
+  const tagged = new Uint8Array(bytes.length + 1);
+  tagged[0] = REALTIME_TAG_ROUND;
+  tagged.set(bytes, 1);
+  return tagged;
+}
+
+function observeCursorPersistence(
+  storage: ServerStorage,
+  expectedCursor: number,
+): { storage: ServerStorage; persisted: Promise<void> } {
+  let resolve!: () => void;
+  const persisted = new Promise<void>((done) => {
+    resolve = done;
+  });
+  let observed = false;
+  const markObserved = (): void => {
+    if (observed) return;
+    observed = true;
+    resolve();
+  };
+
+  return {
+    storage: new Proxy(storage, {
+      get(target, property) {
+        if (property === 'updateClientCursor') {
+          return async (...args: [string, string, number, number]) => {
+            const update = Reflect.get(target, property, target);
+            if (typeof update !== 'function') {
+              throw new Error('storage does not implement updateClientCursor');
+            }
+            await Reflect.apply(update, target, args);
+            if (args[2] === expectedCursor) markObserved();
+          };
+        }
+        if (property === 'putClientRecord') {
+          return async (partition: string, record: ClientRecord) => {
+            await target.putClientRecord(partition, record);
+            if (record.cursor === expectedCursor) markObserved();
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }),
+    persisted,
+  };
 }
 
 async function waitFor(check: () => Promise<boolean>): Promise<void> {
@@ -125,6 +183,40 @@ describe('handshake (§8.1)', () => {
       }),
     ).rejects.toMatchObject({ code: 'sync.invalid_client_id' });
   });
+
+  test('reserved command IDs touch the registry while exact near misses connect', async () => {
+    const t = makeContext();
+    const hub = makeHub(t);
+
+    await expect(
+      hub.connect({
+        partition: 'reserved-connect',
+        actorId: 'actor-1',
+        clientId: '["remote-command","actor-1","job-1"]',
+        send: () => {},
+      }),
+    ).rejects.toMatchObject({ code: 'sync.invalid_client_id' });
+
+    expect(
+      typeof (await t.storage.listPartitionRegistry()).find(
+        (entry) => entry.partition === 'reserved-connect',
+      )?.logEpoch,
+    ).toBe('string');
+
+    for (const clientId of [
+      '["remote-command"]',
+      '["remote-commandx","actor-1"]',
+    ]) {
+      await expect(
+        hub.connect({
+          partition: 'reserved-connect',
+          actorId: 'actor-1',
+          clientId,
+          send: () => {},
+        }),
+      ).resolves.toBeDefined();
+    }
+  });
 });
 
 describe('delta delivery (§8.2)', () => {
@@ -171,6 +263,184 @@ describe('delta delivery (§8.2)', () => {
     expect(end?.type === 'SUB_END' && end.nextCursor).toBe(
       commit?.commitSeq ?? -1,
     );
+  });
+
+  test('out-of-order commit notifications wake before sending a gap delta', async () => {
+    const t = makeContext();
+    await sync(t, [
+      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+      pullHeader(),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
+    ]);
+    const hub = makeHub(t);
+    const wire = makeWire();
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+    });
+    expect(session.cursor).toBe(1);
+    expect(session.lastKnownSeq).toBe(1);
+
+    const captured: StoredCommit[] = [];
+    Object.assign(t.ctx, {
+      realtime: {
+        notifyCommit: (_partition: string, commit: StoredCommit) => {
+          captured.push(commit);
+        },
+      },
+    });
+    await sync(
+      t,
+      [pushCommit('c2', [upsert('tasks', 't2', taskRow('t2', 'p1'))])],
+      { clientId: 'other-client' },
+    );
+    await sync(
+      t,
+      [pushCommit('c3', [upsert('tasks', 't3', taskRow('t3', 'p1'))])],
+      { clientId: 'other-client' },
+    );
+    expect(captured.map((commit) => commit.commitSeq)).toEqual([2, 3]);
+
+    await hub.notifyCommit('part-1', captured[1]!);
+    await hub.notifyCommit('part-1', captured[0]!);
+
+    expect(wire.binaries).toHaveLength(0);
+    const wakes = wire.texts.slice(1).map((text) => {
+      const parsed = parseRealtimeServerEvent(text);
+      if (!parsed.known || parsed.event.event !== 'sync') {
+        throw new Error('expected catch-up wake');
+      }
+      return parsed.event.data;
+    });
+    expect(wakes.map((wake) => wake.reason)).toEqual([
+      'catchup-required',
+      'catchup-required',
+    ]);
+    expect(wakes.map((wake) => wake.cursor)).toEqual([3, 3]);
+    expect(session.cursor).toBe(1);
+    expect(session.lastKnownSeq).toBe(3);
+    expect(session.wakePending).toBe(true);
+  });
+
+  test('a catch-up ack advances the notification base before deltas resume', async () => {
+    const t = makeContext();
+    await sync(t, [
+      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+      pullHeader(),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
+    ]);
+    const hub = makeHub(t);
+    const wire = makeWire();
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+    });
+
+    const captured: StoredCommit[] = [];
+    Object.assign(t.ctx, {
+      realtime: {
+        notifyCommit: (_partition: string, commit: StoredCommit) => {
+          captured.push(commit);
+        },
+      },
+    });
+    await sync(
+      t,
+      [pushCommit('c2', [upsert('tasks', 't2', taskRow('t2', 'p1'))])],
+      { clientId: 'other-client' },
+    );
+    await sync(
+      t,
+      [pushCommit('c3', [upsert('tasks', 't3', taskRow('t3', 'p1'))])],
+      { clientId: 'other-client' },
+    );
+    expect(captured.map((commit) => commit.commitSeq)).toEqual([2, 3]);
+
+    // The shared client loop caught up through a pull on another binding.
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 3 }));
+    expect(session.lastKnownSeq).toBe(3);
+    Object.assign(t.ctx, { realtime: hub });
+
+    await sync(
+      t,
+      [pushCommit('c4', [upsert('tasks', 't4', taskRow('t4', 'p1'))])],
+      { clientId: 'other-client' },
+    );
+    expect(wire.binaries).toHaveLength(1);
+    expect(session.cursor).toBe(4);
+    expect(session.lastKnownSeq).toBe(4);
+  });
+
+  test('duplicate and regressive notifications wake from an unsuppressed session', async () => {
+    const t = makeContext();
+    await sync(t, [
+      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+      pullHeader(),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
+    ]);
+    const hub = makeHub(t);
+    const wire = makeWire();
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+    });
+
+    const captured: StoredCommit[] = [];
+    Object.assign(t.ctx, {
+      realtime: {
+        notifyCommit: (_partition: string, commit: StoredCommit) => {
+          captured.push(commit);
+        },
+      },
+    });
+    await sync(
+      t,
+      [pushCommit('c2', [upsert('tasks', 't2', taskRow('t2', 'p1'))])],
+      { clientId: 'other-client' },
+    );
+    await sync(
+      t,
+      [pushCommit('c3', [upsert('tasks', 't3', taskRow('t3', 'p1'))])],
+      { clientId: 'other-client' },
+    );
+    const second = captured[0]!;
+    const third = captured[1]!;
+
+    await hub.notifyCommit('part-1', second);
+    expect(wire.binaries).toHaveLength(1);
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 2 }));
+    await hub.notifyCommit('part-1', second);
+    expect(wire.binaries).toHaveLength(1);
+    const duplicateWake = parseRealtimeServerEvent(wire.texts[1] ?? '');
+    if (!duplicateWake.known || duplicateWake.event.event !== 'sync') {
+      throw new Error('expected duplicate notification wake');
+    }
+    expect(duplicateWake.event.data.reason).toBe('catchup-required');
+    expect(duplicateWake.event.data.cursor).toBe(2);
+    expect(session.lastKnownSeq).toBe(2);
+    expect(session.cursor).toBe(2);
+
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 2 }));
+    await hub.notifyCommit('part-1', third);
+    expect(wire.binaries).toHaveLength(2);
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 3 }));
+    await hub.notifyCommit('part-1', second);
+    expect(wire.binaries).toHaveLength(2);
+    const regressionWake = parseRealtimeServerEvent(wire.texts[2] ?? '');
+    if (!regressionWake.known || regressionWake.event.event !== 'sync') {
+      throw new Error('expected regressive notification wake');
+    }
+    expect(regressionWake.event.data.reason).toBe('catchup-required');
+    expect(regressionWake.event.data.cursor).toBe(3);
+    expect(session.lastKnownSeq).toBe(3);
+    expect(session.cursor).toBe(3);
+    expect(wire.texts).toHaveLength(3);
   });
 
   test('a commit outside the registered scopes produces nothing', async () => {
@@ -258,6 +528,169 @@ describe('delta delivery (§8.2)', () => {
       const record = await t.storage.getClientRecord('part-1', 'client-1');
       return record?.cursor === latest;
     });
+  });
+
+  test('ACK then v2 socket replacement keeps the ACK cursor and new subscriptions', async () => {
+    const t = makeContext();
+    const initial: ClientRecord = {
+      clientId: 'client-1',
+      actorId: 'actor-1',
+      wireVersion: 1,
+      cursor: 0,
+      updatedAtMs: t.now.ms,
+      subscriptions: [
+        { id: 'old', table: 'tasks', scopes: { project_id: ['p1'] } },
+      ],
+    };
+    await t.storage.putClientRecord('part-1', initial);
+    const observed = observeCursorPersistence(t.storage, 10);
+    Object.assign(t.ctx, { storage: observed.storage });
+    const hub = makeHub(t);
+    const wire = makeWire();
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+    });
+
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 10 }));
+    await observed.persisted;
+    await session.handleBinary(
+      taggedRound(
+        requestBytes([
+          pullHeader(),
+          subFrame('new', 'tasks', { project_id: ['p1'] }, -1),
+        ]),
+      ),
+    );
+
+    expect(await t.storage.getClientRecord('part-1', 'client-1')).toMatchObject(
+      {
+        cursor: 10,
+        wireVersion: 2,
+        subscriptions: [
+          { id: 'new', table: 'tasks', scopes: { project_id: ['p1'] } },
+        ],
+      },
+    );
+  });
+
+  test('v2 socket replacement then ACK keeps the new subscriptions and advances the cursor', async () => {
+    const t = makeContext();
+    const initial: ClientRecord = {
+      clientId: 'client-1',
+      actorId: 'actor-1',
+      wireVersion: 1,
+      cursor: 0,
+      updatedAtMs: t.now.ms,
+      subscriptions: [
+        { id: 'old', table: 'tasks', scopes: { project_id: ['p1'] } },
+      ],
+    };
+    await t.storage.putClientRecord('part-1', initial);
+    const observed = observeCursorPersistence(t.storage, 10);
+    Object.assign(t.ctx, { storage: observed.storage });
+    const hub = makeHub(t);
+    const wire = makeWire();
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+    });
+
+    await session.handleBinary(
+      taggedRound(
+        requestBytes([
+          pullHeader(),
+          subFrame('new', 'tasks', { project_id: ['p1'] }, -1),
+        ]),
+      ),
+    );
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 10 }));
+    await observed.persisted;
+
+    expect(await t.storage.getClientRecord('part-1', 'client-1')).toMatchObject(
+      {
+        cursor: 10,
+        wireVersion: 2,
+        subscriptions: [
+          { id: 'new', table: 'tasks', scopes: { project_id: ['p1'] } },
+        ],
+      },
+    );
+  });
+
+  test('a v1 error round keeps its minimal error and later delta on v1', async () => {
+    const t = makeContext();
+    const observed = observeCursorPersistence(t.storage, 0);
+    Object.assign(t.ctx, { storage: observed.storage });
+    const hub = makeHub(t);
+    const wire = makeWire();
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+    });
+    expect(session.wireVersion).toBe(2);
+
+    await t.storage.putClientRecord('part-1', {
+      clientId: 'client-1',
+      actorId: 'actor-1',
+      wireVersion: 2,
+      cursor: 0,
+      updatedAtMs: t.now.ms,
+      subscriptions: [
+        { id: 'later', table: 'tasks', scopes: { project_id: ['p1'] } },
+      ],
+    });
+
+    await session.handleBinary(
+      taggedRound(
+        encodeMessage({
+          wireVersion: 1,
+          msgKind: 'request',
+          frames: [
+            {
+              type: 'REQ_HEADER',
+              clientId: 'different-client',
+              schemaVersion: 1,
+            },
+            pullHeader(),
+          ],
+        }),
+      ),
+    );
+
+    const errorWire = wire.binaries[0];
+    expect(errorWire?.[0]).toBe(REALTIME_TAG_ROUND);
+    const error = decodeMessage(errorWire?.subarray(1) ?? new Uint8Array());
+    expect(error.wireVersion).toBe(1);
+    expect(error.frames[0]).toEqual({ type: 'RESP_HEADER' });
+    expect(error.frames[1]).toMatchObject({
+      type: 'ERROR',
+      code: 'sync.invalid_client_id',
+    });
+
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 0 }));
+    await observed.persisted;
+    await sync(
+      t,
+      [
+        pushCommit('after-v1-error', [
+          upsert('tasks', 'later', taskRow('later', 'p1')),
+        ]),
+      ],
+      { clientId: 'writer' },
+    );
+
+    const deltaWire = wire.binaries[1];
+    expect(deltaWire?.[0]).toBe(0x00);
+    const delta = decodeMessage(deltaWire?.subarray(1) ?? new Uint8Array());
+    expect(delta.wireVersion).toBe(1);
+    expect(delta.frames[0]).toEqual({ type: 'RESP_HEADER' });
   });
 
   test('closed sessions receive nothing', async () => {

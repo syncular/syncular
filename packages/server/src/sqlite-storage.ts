@@ -15,7 +15,10 @@ import {
   commitWindowPageSql,
   deleteRowSql,
   dropTableDdl,
+  expectedIndexShapes,
   indexRowPageStatement,
+  indexReconciliationDdl,
+  indexesNeedReconciliation,
   layoutsOf,
   migratePayload,
   parseLayouts,
@@ -382,6 +385,48 @@ class SqliteTransaction implements StorageTransaction {
   }
 }
 
+function sqliteDeclaredIndexState(
+  db: SqliteDatabase,
+  schema: CompiledSchema,
+): {
+  existingIndexes: ReadonlyMap<string, ReadonlySet<string>>;
+  reconciliationNeeded: boolean;
+} {
+  const existingIndexes = new Map<string, ReadonlySet<string>>();
+  let reconciliationNeeded = false;
+  for (const table of schema.tables.values()) {
+    const expected = expectedIndexShapes(table);
+    if (expected.length === 0) continue;
+    const escapedTableName = table.name.replaceAll('"', '""');
+    const indexes = db
+      .query<{ name: string; unique: number; origin: string }, []>(
+        `PRAGMA index_list("${escapedTableName}")`,
+      )
+      .all()
+      .filter((index) => index.origin === 'c');
+    existingIndexes.set(
+      table.name,
+      new Set(indexes.map((index) => index.name)),
+    );
+    const expectedNames = new Set(expected.map((index) => index.name));
+    const shapes = new Map<
+      string,
+      { readonly unique: boolean; readonly columns: readonly string[] }
+    >();
+    for (const index of indexes) {
+      if (!expectedNames.has(index.name)) continue;
+      const escapedIndexName = index.name.replaceAll('"', '""');
+      const columns = db
+        .query<{ name: string }, []>(`PRAGMA index_info("${escapedIndexName}")`)
+        .all()
+        .map((column) => column.name);
+      shapes.set(index.name, { unique: index.unique === 1, columns });
+    }
+    reconciliationNeeded ||= indexesNeedReconciliation(table, shapes);
+  }
+  return { existingIndexes, reconciliationNeeded };
+}
+
 export class SqliteServerStorage implements ServerStorage {
   readonly db: SqliteDatabase;
   /** One SQLite connection can own only one transaction at a time. */
@@ -445,64 +490,123 @@ export class SqliteServerStorage implements ServerStorage {
         `stored schema version ${marker.schema_version} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
       );
     }
-    if (marker === null || marker.schema_version < schema.version) {
-      // Introspect existing app tables, then apply the migration subset
-      // (CREATE TABLE / ADD COLUMN / rebuild indexes) to reach `schema`, then
-      // rewrite stored rows (payload re-encode for layout changes, and/or
-      // projection backfill for flipped-on materialization). One
-      // transaction: a failed bump leaves no half-state.
-      const layouts = parseLayouts(marker?.layouts);
-      const retiredTables = retiredTableNames(schema, layouts);
-      const existing = new Map<string, ReadonlySet<string>>();
-      const existingIndexes = new Map<string, ReadonlySet<string>>();
-      for (const table of schema.tables.values()) {
-        const escapedTableName = table.name.replaceAll('"', '""');
-        const columns = this.db
-          .query<{ name: string }, []>(
-            `PRAGMA table_info("${escapedTableName}")`,
-          )
-          .all();
-        if (columns.length > 0) {
-          existing.set(table.name, new Set(columns.map((c) => c.name)));
-          const indexes = this.db
-            .query<{ name: string; origin: string }, []>(
-              `PRAGMA index_list("${escapedTableName}")`,
-            )
-            .all()
-            .filter((index) => index.origin === 'c');
-          existingIndexes.set(
-            table.name,
-            new Set(indexes.map((index) => index.name)),
-          );
-        }
-      }
+    if (
+      marker?.schema_version === schema.version &&
+      sqliteDeclaredIndexState(this.db, schema).reconciliationNeeded
+    ) {
       this.db.exec('BEGIN IMMEDIATE');
       try {
-        for (const tableName of retiredTables) {
-          this.db
-            .query('DELETE FROM sync_row_scopes WHERE tbl=?')
-            .run(tableName);
-          this.db.exec(dropTableDdl(tableName));
-        }
-        for (const statement of schemaDdl(
-          schema,
-          existing,
-          'sqlite',
-          existingIndexes,
-        )) {
-          this.db.exec(statement);
-        }
-        for (const table of schema.tables.values()) {
-          const oldLayout = layouts[table.name];
-          const plan = rewritePlan(table, oldLayout, existing.get(table.name));
-          if (!plan.migrate && !plan.backfill) continue;
-          this.#rewriteRows(table, plan.migrate ? oldLayout : undefined);
-        }
-        this.db
-          .query(
-            'INSERT INTO sync_schema_meta(id, schema_version, layouts) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, layouts=excluded.layouts',
+        const authoritative = this.db
+          .query<{ schema_version: number }, []>(
+            'SELECT schema_version FROM sync_schema_meta WHERE id=1',
           )
-          .run(schema.version, layoutsOf(schema));
+          .get();
+        if (
+          authoritative !== null &&
+          authoritative.schema_version > schema.version
+        ) {
+          throw new Error(
+            `stored schema version ${authoritative.schema_version} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
+          );
+        }
+        if (authoritative?.schema_version !== schema.version) {
+          throw new Error(
+            'stored schema version changed during index reconciliation',
+          );
+        }
+        const current = sqliteDeclaredIndexState(this.db, schema);
+        if (current.reconciliationNeeded) {
+          for (const statement of indexReconciliationDdl(
+            schema,
+            current.existingIndexes,
+          )) {
+            this.db.exec(statement);
+          }
+        }
+        this.db.exec('COMMIT');
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+    }
+    if (marker === null || marker.schema_version < schema.version) {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        const authoritative = this.db
+          .query<{ schema_version: number; layouts: string }, []>(
+            'SELECT schema_version, layouts FROM sync_schema_meta WHERE id=1',
+          )
+          .get();
+        if (
+          authoritative !== null &&
+          authoritative.schema_version > schema.version
+        ) {
+          throw new Error(
+            `stored schema version ${authoritative.schema_version} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
+          );
+        }
+        if (authoritative?.schema_version !== schema.version) {
+          const layouts = parseLayouts(authoritative?.layouts);
+          const retiredTables = retiredTableNames(schema, layouts);
+          const existing = new Map<string, ReadonlySet<string>>();
+          const existingIndexes = new Map<string, ReadonlySet<string>>();
+          for (const table of schema.tables.values()) {
+            const escapedTableName = table.name.replaceAll('"', '""');
+            const columns = this.db
+              .query<{ name: string }, []>(
+                `PRAGMA table_info("${escapedTableName}")`,
+              )
+              .all();
+            if (columns.length > 0) {
+              existing.set(table.name, new Set(columns.map((c) => c.name)));
+              const indexes = this.db
+                .query<{ name: string; origin: string }, []>(
+                  `PRAGMA index_list("${escapedTableName}")`,
+                )
+                .all()
+                .filter((index) => index.origin === 'c');
+              existingIndexes.set(
+                table.name,
+                new Set(indexes.map((index) => index.name)),
+              );
+            }
+          }
+          for (const tableName of retiredTables) {
+            this.db
+              .query('DELETE FROM sync_row_scopes WHERE tbl=?')
+              .run(tableName);
+            // With the scope index: a blob reference that outlives its table is
+            // both unreclaimable by the §5.9.2 sweep and undownloadable through
+            // the §5.9.5 row lookup.
+            this.db
+              .query('DELETE FROM sync_blob_refs WHERE tbl=?')
+              .run(tableName);
+            this.db.exec(dropTableDdl(tableName));
+          }
+          for (const statement of schemaDdl(
+            schema,
+            existing,
+            'sqlite',
+            existingIndexes,
+          )) {
+            this.db.exec(statement);
+          }
+          for (const table of schema.tables.values()) {
+            const oldLayout = layouts[table.name];
+            const plan = rewritePlan(
+              table,
+              oldLayout,
+              existing.get(table.name),
+            );
+            if (!plan.migrate && !plan.backfill) continue;
+            this.#rewriteRows(table, plan.migrate ? oldLayout : undefined);
+          }
+          this.db
+            .query(
+              'INSERT INTO sync_schema_meta(id, schema_version, layouts) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, layouts=excluded.layouts',
+            )
+            .run(schema.version, layoutsOf(schema));
+        }
         this.db.exec('COMMIT');
       } catch (error) {
         this.db.exec('ROLLBACK');
@@ -777,7 +881,9 @@ export class SqliteServerStorage implements ServerStorage {
       .query('INSERT OR IGNORE INTO sync_partitions(partition) VALUES (?)')
       .run(partition);
     this.db
-      .query('UPDATE sync_partitions SET horizon_seq=? WHERE partition=?')
+      .query(
+        'UPDATE sync_partitions SET horizon_seq=MAX(horizon_seq, ?) WHERE partition=?',
+      )
       .run(seq, partition);
   }
 
@@ -1213,7 +1319,14 @@ export class SqliteServerStorage implements ServerStorage {
   ): Promise<void> {
     this.db
       .query(
-        'INSERT OR REPLACE INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms) VALUES (?,?,?,?,?,?,?)',
+        `INSERT INTO sync_clients(partition, client_id, actor_id, wire_version, cursor, subscriptions, updated_at_ms)
+         VALUES (?,?,?,?,?,?,?)
+         ON CONFLICT(partition, client_id) DO UPDATE SET
+           actor_id=excluded.actor_id,
+           wire_version=excluded.wire_version,
+           cursor=MAX(sync_clients.cursor, excluded.cursor),
+           subscriptions=excluded.subscriptions,
+           updated_at_ms=MAX(sync_clients.updated_at_ms, excluded.updated_at_ms)`,
       )
       .run(
         partition,
@@ -1224,6 +1337,21 @@ export class SqliteServerStorage implements ServerStorage {
         JSON.stringify(record.subscriptions),
         record.updatedAtMs,
       );
+  }
+
+  async updateClientCursor(
+    partition: string,
+    clientId: string,
+    cursor: number,
+    updatedAtMs: number,
+  ): Promise<void> {
+    this.db
+      .query(
+        `UPDATE sync_clients
+         SET cursor=MAX(cursor, ?), updated_at_ms=MAX(updated_at_ms, ?)
+         WHERE partition=? AND client_id=?`,
+      )
+      .run(cursor, updatedAtMs, partition, clientId);
   }
 
   async listClientCursors(partition: string): Promise<ClientCursorInfo[]> {
