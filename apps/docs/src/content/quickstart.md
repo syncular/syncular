@@ -3,6 +3,10 @@
 Two independent client cores converge through one server, all in a terminal,
 in about five minutes.
 
+For an existing app, start with
+[Add Syncular to an existing project](/guide-schema/#add-syncular-to-an-existing-project)
+to install the CLI and generate your schema, then follow your platform guide.
+
 ## 1. Scaffold
 
 ```sh

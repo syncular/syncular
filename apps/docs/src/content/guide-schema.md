@@ -11,6 +11,55 @@ have zero imports, so pulling one in adds no dependency edge.
 The authoritative contract for the manifest, the IR, and the SQL subset is the
 [typegen README](https://github.com/syncular/syncular/blob/main/packages/typegen/README.md); this is the workflow.
 
+## Add Syncular to an existing project
+
+The `syncular` CLI ships in `@syncular/typegen`. From the directory containing
+your app's `package.json`, install it as a development dependency:
+
+```sh
+bun add --dev @syncular/typegen
+```
+
+If the app has no Syncular schema yet, create and generate the starter schema:
+
+```sh
+bunx syncular init --manifest-dir .
+bunx syncular generate --manifest-dir .
+```
+
+`init` adds these inputs to your app:
+
+| File | Purpose |
+| --- | --- |
+| `syncular.json` | Names the synced tables, scopes, schema versions, and output paths. |
+| `migrations/0001_initial/up.sql` | Declares a starter `notes` table with `id`, `list_id`, `body`, and `updated_at_ms` columns. |
+| `syncular.migrations.lock.json` | Locks the initial migration against later edits. |
+| `queries/notes-in-list.sql` | Defines a typed read of notes in one list. |
+
+`generate` writes `syncular.ir.json`, `src/syncular.generated.ts`, and
+`src/syncular.queries.ts`. The `output.module` field in `syncular.json`
+controls the schema module's path. Import its `schema` export from a file
+in `src/`:
+
+```ts
+import { schema } from './syncular.generated';
+```
+
+Pass that object to `createSyncClientHandle`, `createTauriSyncClient`, or
+`SyncClient`, and use the same generated schema on the sync server. Generate
+the module before starting your app. Commit the schema inputs, migration
+lock, and generated outputs.
+
+`init` refuses to overwrite existing starter inputs. If you already have
+`syncular.json`, keep it and skip `init`. If its migration history has no lock
+yet, run the baseline command below before generation.
+
+To start with your own tables, author the migration and manifest described
+below, then baseline and generate them. `typegen` reads those SQL files; it
+does not inspect or import an existing database. The starter created by `init`
+already has a lock, so extend it through new migrations and
+[schema versions](#schema-bumps).
+
 ## The committed schema inputs
 
 **Migrations** (`migrations/NNNN_name/up.sql`) declare table shape. typegen
@@ -20,6 +69,18 @@ single-column primary key per table) and reads only the head table shape. It
 never runs your migrations: your host does that, and the server manages its
 own internal tables.
 
+```sql
+-- migrations/0001_initial/up.sql
+CREATE TABLE todos (
+  id TEXT PRIMARY KEY,
+  list_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  done BOOLEAN NOT NULL,
+  position INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+```
+
 **The manifest** (`syncular.json`) names the synced tables, their scope
 patterns, subscription templates, and the schema-version history:
 
@@ -27,11 +88,9 @@ patterns, subscription templates, and the schema-version history:
 {
   "manifestVersion": 1,
   "migrations": "./migrations",
-  "queries": "./queries",
   "output": {
     "ir": "./syncular.ir.json",
-    "module": "./src/syncular.generated.ts",
-    "rust": { "queriesPath": "./src/syncular_queries.rs" }
+    "module": "./src/syncular.generated.ts"
   },
   "schemaVersions": [{ "version": 1, "through": "0001_initial" }],
   "tables": [{ "name": "todos", "scopes": ["list:{list_id}"] }],

@@ -138,15 +138,19 @@ Grant the plugin's default permission in a capability
 { "identifier": "syncular", "windows": ["main"], "permissions": ["syncular:default"] }
 ```
 
-Webview:
+Generate the schema module using the
+[existing-project setup](https://syncular.dev/guide-schema/#add-syncular-to-an-existing-project),
+then create the client in the webview:
 
 ```ts
 import { createTauriSyncClient } from '@syncular/tauri';
 import { schema } from './syncular.generated';
 
 const client = await createTauriSyncClient({ schema });
-// Pass to React: <SyncProvider client={client}> — every hook works unchanged.
 ```
+
+The bridge works with any frontend framework. React apps can add
+`@syncular/react` and pass the shared client to `SyncProvider`.
 
 The core persists a generated client id in the configured database. Supplying
 an explicit id is optional and cannot rebind an existing database.

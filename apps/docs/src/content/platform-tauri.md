@@ -4,7 +4,8 @@ A Tauri app runs a native syncular instance inside the host process:
 `tauri-plugin-syncular` (Rust) consumes the client core directly as a crate,
 with no FFI layer, and the webview talks to it through a thin JS bridge,
 `@syncular/tauri`, that implements the same `SyncClientLike` interface every
-other host does. Every `@syncular/react` hook works unchanged.
+other host does. The bridge works with Vue, React, Svelte, or plain TypeScript.
+React apps can add the optional `@syncular/react` hooks.
 
 ## Why the client lives in the host process
 
@@ -17,10 +18,10 @@ Tauri IPC).
 
 ## Install
 
-Two pieces. The JS bridge is on npm:
+Install the JS bridge and its required Tauri API peer in your frontend project:
 
 ```sh
-bun add @syncular/tauri @syncular/react
+bun add @syncular/tauri @tauri-apps/api
 ```
 
 The Rust plugin is on crates.io:
@@ -94,22 +95,27 @@ Grant the plugin's permission in a capability file
 
 ## Create the client in the webview
 
-Install both the bridge and its required Tauri API peer so Vite/Bun can bundle
-the `core` and `event` ESM entry points:
+Generate `src/syncular.generated.ts` before importing it. For an existing app,
+follow [Add Syncular to an existing project](/guide-schema/#add-syncular-to-an-existing-project)
+to install `@syncular/typegen`, create the migration and manifest, and run
+generation. The Tauri scaffold includes those inputs. Its generated `schema`
+describes the synced tables and must match the schema used by your sync server.
 
-```sh
-bun add @syncular/tauri @tauri-apps/api
-```
-
-```tsx
+```ts
+// src/sync.ts
 import { createTauriSyncClient } from '@syncular/tauri';
-import { SyncProvider } from '@syncular/react';
 import { schema } from './syncular.generated';
 
-const client = await createTauriSyncClient({ schema });
-// Every hook works unchanged:
-// <SyncProvider client={client}> … useQuery / useMutation / useCommitOutcomes / usePresence
+export const client = await createTauriSyncClient({ schema });
 ```
+
+Create one client for the webview and share it across your components. Its
+`subscribe`, `query`, and `mutate` methods return promises and can be called
+from any frontend framework. `query` returns a local snapshot; subscribe to
+`onChange` events to observe later changes. The callback receives a revisioned
+change batch, and `onChange` returns an unsubscribe function. Remove listeners
+when their component is disposed; call `client.close()` when the app releases
+the shared client.
 
 The JS side supplies the schema and optional `limits`; the native side owns
 the database path (plugin config). On first open the core generates and stores
@@ -168,6 +174,26 @@ native sleep/wake evidence should expose it through the same structural
 lifecycle signal. The supervisor owns bounded reconnect and catch-up; the
 native core guarantees repeated connect commands still own only one socket.
 See [Realtime](/concepts-realtime/) for phases and diagnostics.
+
+## React bindings (optional)
+
+In a React app, install the hooks and pass the shared client to `SyncProvider`:
+
+```sh
+bun add @syncular/react
+```
+
+```tsx
+import { SyncProvider } from '@syncular/react';
+import { client } from './sync';
+
+<SyncProvider client={client}>
+  <App />
+</SyncProvider>
+```
+
+The provider adapts the Tauri client for live queries, mutations, status, and
+presence. See [React](/platform-react/) for the hooks and startup handling.
 
 ## One codebase, web and desktop
 

@@ -16,6 +16,18 @@
 /** @type {readonly ChangelogEntry[]} */
 export const changelog = [
   {
+    date: '2026-09-05',
+    title: 'Existing-project schema setup',
+    body: 'The schema guide documents installing typegen, initializing schema inputs, and generating the client schema inside an existing app. The Tauri guide starts with a framework-independent client and introduces React bindings as an optional step.',
+    links: [
+      {
+        href: '/guide-schema/#add-syncular-to-an-existing-project',
+        label: 'Existing-project setup',
+      },
+      { href: '/platform-tauri/', label: 'Tauri' },
+    ],
+  },
+  {
     date: '2026-08-09',
     title: 'Hosted demo repair and graphical console',
     body: 'The hosted two-pane demo seeds through the epoch-aware server helper and opens the existing graphical SyncularAdmin console against its embedded server worker. The console reads horizon status, metrics, store stats, clients, commits, rows, scope activity, and events without sending demo data to a remote server.',

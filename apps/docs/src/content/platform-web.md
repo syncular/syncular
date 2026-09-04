@@ -31,7 +31,9 @@ startSyncWorker();
 ```
 
 On the main thread, `createSyncClientHandle` spawns that worker and returns
-the handle:
+the handle. Generate the imported schema module first using the
+[existing-project setup](/guide-schema/#add-syncular-to-an-existing-project).
+The scaffolded templates already include the schema inputs.
 
 ```ts
 // main thread

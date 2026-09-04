@@ -8,6 +8,22 @@ Install the bridge together with its required Tauri JavaScript API peer:
 bun add @syncular/tauri @tauri-apps/api
 ```
 
+The bridge works with any frontend framework. Generate the schema module using
+the [existing-project setup](https://syncular.dev/guide-schema/#add-syncular-to-an-existing-project),
+then create one shared client in the webview:
+
+```ts
+// src/sync.ts
+import { createTauriSyncClient } from '@syncular/tauri';
+import { schema } from './syncular.generated';
+
+export const client = await createTauriSyncClient({ schema });
+```
+
+Register the native plugin as described in the
+[Tauri guide](https://syncular.dev/platform-tauri/). React apps can separately
+install `@syncular/react` for hooks over the same client.
+
 Reactive snapshots use the plugin's independent read-only SQLite path, so
 local Tauri views remain responsive while the native client is syncing over
 HTTP/WebSocket. Mutations, sync, and all durable writes remain serialized on

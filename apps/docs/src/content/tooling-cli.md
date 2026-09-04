@@ -8,9 +8,12 @@ as a CI gate.
 
 ## `syncular init`
 
-Scaffolds a starter `syncular.json` plus `migrations/0001_initial` into the
-manifest directory. `bun create syncular-app` runs a superset of this; `init`
-serves existing projects adopting syncular.
+Adds a starter `syncular.json`, `migrations/0001_initial/up.sql`,
+`syncular.migrations.lock.json`, and `queries/notes-in-list.sql` to the manifest
+directory. It refuses to overwrite any of these files. Run `syncular generate`
+afterward to produce the schema and typed query modules. Follow
+[Add Syncular to an existing project](/guide-schema/#add-syncular-to-an-existing-project)
+for the installation commands and file layout.
 
 ## `syncular generate`
 
