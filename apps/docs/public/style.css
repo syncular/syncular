@@ -611,7 +611,19 @@ main.landing { display: block; padding: 0; }
 
 /* ---------- Blog ---------- */
 main.blog-main { padding-top: 2.4rem; }
-.blog-post { max-width: 47rem; }
+.blog-post { max-width: 47rem; overflow-wrap: anywhere; }
+.blog-post figure { max-width: 30rem; margin: 2rem auto; }
+.blog-post figure img { display: block; width: 100%; height: auto; }
+.blog-post figcaption { margin-top: 0.75rem; color: var(--dim); font-size: 0.8rem; }
+.blog-post details {
+  margin: 1rem 0;
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+.blog-post summary { cursor: pointer; color: var(--amber); }
+.blog-post summary:focus-visible { outline: 2px solid var(--amber); outline-offset: 4px; }
+.blog-post details[open] summary { margin-bottom: 0.8rem; }
 .blog-index { max-width: 56rem; }
 .blog-back,
 .blog-meta {
@@ -722,7 +734,7 @@ article .blog-card p {
   .sidebar-toggle:checked ~ .nav-section { display: block; }
   .sidebar-top + .nav-section { margin-top: 1.3rem; }
   main { padding: 1.6rem 1.1rem 4rem; }
-  main.blog-main { padding-top: 1.6rem; }
+  main.blog-main { padding: 1.6rem 0 4rem; }
   .feature-list, .cores { grid-template-columns: 1fr; }
   .landing section { padding: 2rem 0 1.7rem; }
   .tab-panel pre { min-height: 0; }

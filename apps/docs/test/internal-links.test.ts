@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 // Every internal link in reader-facing sources must resolve to a page the
@@ -85,6 +85,28 @@ for (const file of sources) {
 }
 
 describe('internal links', () => {
+  test('article images have alternative text and reference existing public assets', () => {
+    const broken: string[] = [];
+    for (const file of contentFiles) {
+      for (const match of readFileSync(file, 'utf8').matchAll(
+        /<img\b[^>]*>|!\[([^\]]*)\]\((\/[^)\s]*)\)/g,
+      )) {
+        const src = match[2] ?? /\bsrc="([^"]*)"/.exec(match[0])?.[1];
+        const alt = match[1] ?? /\balt="([^"]*)"/.exec(match[0])?.[1];
+        if (!src?.startsWith('/')) continue;
+        if (!existsSync(join(docsRoot, 'public', src))) {
+          broken.push(`${relative(docsRoot, file)}: missing image ${src}`);
+        }
+        if (!alt?.trim()) {
+          broken.push(
+            `${relative(docsRoot, file)}: missing alt text for ${src}`,
+          );
+        }
+      }
+    }
+    expect(broken).toEqual([]);
+  });
+
   test('Astro preserves whitespace around inline links', () => {
     expect(readFileSync(join(docsRoot, 'astro.config.mjs'), 'utf8')).toMatch(
       /compressHTML:\s*true/,

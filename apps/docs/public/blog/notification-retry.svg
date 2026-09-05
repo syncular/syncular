@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="670" viewBox="0 0 480 670" role="img" aria-labelledby="title desc">
+  <title id="title">A worker crash repeats delivery with the same key</title>
+  <desc id="desc">Worker A calls the provider with key K. The provider accepts the message. Worker A crashes before recording completion. After its lease expires, worker B retries with key K. A provider honoring that key returns the prior result. Worker B records completion.</desc>
+  <rect width="480" height="670" fill="#0a0908"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#f4efe4">
+    <text x="24" y="34" fill="#ffb000" font-size="14" letter-spacing="1">02 / FOLLOW THE RETRY</text>
+    <path d="M 42 82 V 614" stroke="#756f64" stroke-width="2"/>
+    <g fill="#0a0908" stroke="#ffb000" stroke-width="2">
+      <circle cx="42" cy="86" r="7"/><circle cx="42" cy="174" r="7"/>
+      <circle cx="42" cy="380" r="7"/><circle cx="42" cy="468" r="7"/>
+      <circle cx="42" cy="614" r="7"/>
+    </g>
+    <text x="66" y="82" font-size="19">Worker A calls the provider</text>
+    <text x="66" y="112" font-size="17" fill="#ffb000">Idempotency key: K</text>
+    <text x="66" y="170" font-size="19">Provider accepts the message</text>
+    <text x="66" y="200" font-size="17" fill="#b9b2a6">One notification</text>
+    <rect x="24" y="231" width="432" height="89" fill="#261c0a" stroke="#ffb000"/>
+    <text x="42" y="264" font-size="19" fill="#ffb000">Worker A stops here</text>
+    <text x="42" y="294" font-size="17">Completion has not been recorded.</text>
+    <text x="66" y="347" font-size="15" fill="#b9b2a6">The lease expires.</text>
+    <text x="66" y="376" font-size="19">Worker B retries the call</text>
+    <text x="66" y="406" font-size="17" fill="#ffb000">Idempotency key: K · unchanged</text>
+    <text x="66" y="464" font-size="19">Provider recognizes K</text>
+    <text x="66" y="494" font-size="17" fill="#b9b2a6">Returns the prior result</text>
+    <text x="66" y="537" font-size="15" fill="#b9b2a6">Requires provider deduplication</text>
+    <text x="66" y="560" font-size="15" fill="#b9b2a6">that still retains this key.</text>
+    <text x="66" y="610" font-size="19">Worker B records completion</text>
+    <text x="66" y="640" font-size="17" fill="#b9b2a6">Reaction status: completed</text>
+  </g>
+</svg>
