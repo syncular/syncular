@@ -84,17 +84,55 @@ so the storage executes reads immediately and **buffers** writes, flushing
 them as one atomic batch at commit. A rejected op rolls back by never
 flushing.
 
-It does not apply DDL on construction (a cold request must never race a
-schema apply). Generate the migration SQL from `sqliteDdlStatements()`
-(exported from `@syncular/server`) into a `migrations/` file, then:
+### Schema migration
 
-```sh
-wrangler d1 create syncular
-wrangler d1 migrations apply syncular
+Call `D1ServerStorage.migrateSchema(compileSchema(schema))` from an authenticated
+maintenance handler before admitting sync traffic. It creates the core tables,
+applies application DDL, and rewrites stored rows. Each call saves its progress
+and returns `{ complete, statementsExecuted }`.
+
+```ts
+import { compileSchema, D1ServerStorage } from '@syncular/server';
+import { schema } from './syncular.generated';
+
+// Inside your authenticated maintenance handler:
+const storage = new D1ServerStorage(env.DB);
+const result = await storage.migrateSchema(compileSchema(schema), {
+  maxStatements: 40,
+});
+return Response.json(result, { status: result.complete ? 200 : 202 });
 ```
 
-The generated migration must include `sync_reactions` before configuring a
-`reactionPlanner`. Planned records join the source commit's atomic batch.
+Send another request after a `202` response. Run one migration call per Worker
+invocation; a loop or `waitUntil` in the same invocation shares its query limit.
+`maxStatements` defaults to 50 and accepts integers from 10 through 1000. It
+counts the statements issued by this call, including progress tracking. Leave
+room for other D1 queries in the invocation. Cloudflare allows 50 queries on Free
+and 1000 on Paid; see [D1 limits](https://developers.cloudflare.com/d1/platform/limits/).
+A row batch rewrites at most 32 rows. Each individual DDL statement must still
+finish within D1's time limit; this budget cannot split an index build.
+
+Retry the same schema after an interrupted request. The storage commits each
+batch and its progress together, and competing requests cannot apply the same
+batch twice. An unfinished migration rejects a different target schema with
+`sync.storage.schema_migration_conflict`. Keep the target schema available until
+the migration completes.
+
+The storage rejects application row reads and transaction commits while a
+migration is pending. A storage instance using an older schema remains unusable
+after completion. Each protected read or commit adds one guard statement to its
+D1 batch. Drain Workers running Syncular versions without these checks
+before starting the first upgrade with this API. Direct SQL access must observe
+the same maintenance window.
+
+`ensureSchema` runs one step with the default budget. It throws
+`sync.storage.schema_migration_pending` if more work remains;
+`ensureSyncServerReady` wraps this as `sync.schema_not_ready` with the original
+error in `cause`. Finish the maintenance requests before calling the readiness
+helper to admit traffic.
+
+`migrateSchema` creates `sync_reactions` before completing. Planned records join
+the source commit's atomic batch.
 `ReactionRunner` claims work with one atomic write statement and can be driven
 from a scheduled Worker event or Durable Object alarm. D1 statement and
 invocation limits apply to the source batch and delivery passes; see

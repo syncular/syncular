@@ -49,6 +49,7 @@ import {
 } from './authoritative-query';
 import { syncError } from './errors';
 import {
+  assertAppendOnlyMigration,
   commitWindowPageSql,
   deleteRowSql,
   dropTableDdl,
@@ -205,7 +206,7 @@ type PendingRow =
     };
 
 class D1Transaction implements StorageTransaction {
-  readonly #db: D1Database;
+  readonly #db: Pick<D1Database, 'prepare' | 'batch'>;
   readonly #partition: string;
   readonly #resolveTable: (name: string) => CompiledTable;
   readonly #pushApplySerialized: boolean;
@@ -233,7 +234,7 @@ class D1Transaction implements StorageTransaction {
   readonly #pending = new Map<string, PendingRow>();
 
   constructor(
-    db: D1Database,
+    db: Pick<D1Database, 'prepare' | 'batch'>,
     partition: string,
     resolveTable: (name: string) => CompiledTable,
     pushApplySerialized: boolean,
@@ -737,6 +738,23 @@ export interface D1ServerStorageOptions {
   readonly commitValidationSerialized?: boolean;
 }
 
+interface D1MigrationState {
+  phase: 'core' | 'prepare' | 'ddl' | 'rewrite';
+  offset: number;
+  columns: Record<string, string[]>;
+  indexes: Record<string, string[]>;
+  ddl: string[];
+  rewrites: Array<{ table: string; oldLayout?: readonly StoredColumnLayout[] }>;
+  afterPartition: string;
+  afterRowId: string;
+}
+
+interface D1MigrationClaim {
+  target: string;
+  source_layouts: string;
+  state: string;
+}
+
 export class D1ServerStorage implements ServerStorage {
   readonly #db: D1Database;
   readonly #pushApplySerialized: boolean;
@@ -778,100 +796,480 @@ export class D1ServerStorage implements ServerStorage {
   }
 
   async ensureSchema(schema: CompiledSchema): Promise<void> {
-    // Memoized fast path: same instance, same schema version. D1 storages
-    // are typically constructed per request — a fresh instance pays exactly
-    // one marker read below when the version already matches.
-    if (this.#schemaVersion === schema.version) return;
-    for (const table of schema.tables.values()) {
-      const bindCount = tableColumnNames(table).length;
-      if (bindCount > D1_MAX_BIND_PARAMS) {
-        throw new Error(
-          `table ${JSON.stringify(table.name)} needs ${bindCount} bound parameters per upsert; D1 caps statements at ${D1_MAX_BIND_PARAMS}`,
-        );
+    if (this.#schemaVersion === schema.version) {
+      await this.#schemaDatabase().batch([]);
+      return;
+    }
+    if (!(await this.migrateSchema(schema)).complete) {
+      throw new StorageQueryError('sync.storage.schema_migration_pending');
+    }
+  }
+
+  /** Run once per Worker invocation. Resume an incomplete result in another invocation. */
+  async migrateSchema(
+    schema: CompiledSchema,
+    options: { readonly maxStatements?: number } = {},
+  ): Promise<{
+    readonly complete: boolean;
+    readonly statementsExecuted: number;
+  }> {
+    const maxStatements = options.maxStatements ?? 50;
+    if (
+      !Number.isInteger(maxStatements) ||
+      maxStatements < 10 ||
+      maxStatements > 1000
+    ) {
+      throw new StorageQueryError('sync.storage.invalid_migration_budget');
+    }
+    const tables = [...schema.tables.values()].sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+    );
+    for (const table of tables) {
+      if (tableColumnNames(table).length > D1_MAX_BIND_PARAMS) {
+        throw new Error('D1 caps statements at 100 bound parameters');
       }
     }
-    await this.#db.exec(`${SCHEMA_META_DDL_SQLITE.replace(/\s+/g, ' ')};`);
-    const marker = await this.#db
-      .prepare(
+    const target = JSON.stringify({
+      version: schema.version,
+      tables: tables.map((table) => ({
+        name: table.name,
+        columns: table.columns,
+        primaryKeyIndex: table.primaryKeyIndex,
+        materialize: table.materialize,
+        indexes: table.indexes,
+        scopes: table.scopePatterns,
+      })),
+    });
+    let statementsExecuted = 0;
+    const read = async <T>(
+      statement: D1PreparedStatement,
+    ): Promise<T | null> => {
+      statementsExecuted++;
+      return statement.first<T>();
+    };
+    const batch = async (
+      statements: D1PreparedStatement[],
+    ): Promise<unknown[]> => {
+      statementsExecuted += statements.length;
+      return this.#db.batch(statements);
+    };
+    await batch([
+      this.#db.prepare(SCHEMA_META_DDL_SQLITE),
+      this.#db.prepare(`CREATE TABLE IF NOT EXISTS sync_schema_migration(
+  id INTEGER PRIMARY KEY CHECK(id=1),
+  target TEXT NOT NULL,
+  source_layouts TEXT NOT NULL,
+  state TEXT NOT NULL
+)`),
+    ]);
+    const marker = await read<{ schema_version: number; layouts: string }>(
+      this.#db.prepare(
         'SELECT schema_version, layouts FROM sync_schema_meta WHERE id=1',
-      )
-      .first<{ schema_version: number; layouts: string }>();
-    if (marker !== null && marker.schema_version > schema.version) {
-      throw new Error(
-        `stored schema version ${marker.schema_version} is newer than the configured schema (${schema.version}) — refusing to run an older server against a migrated database`,
-      );
+      ),
+    );
+    let claim = await read<D1MigrationClaim>(
+      this.#db.prepare('SELECT * FROM sync_schema_migration WHERE id=1'),
+    );
+    if (claim === null && marker?.schema_version === schema.version) {
+      this.#tables = schema.tables;
+      this.#schemaVersion = schema.version;
+      return { complete: true, statementsExecuted };
     }
-    if (marker === null || marker.schema_version < schema.version) {
-      await this.migrate();
+    if (marker !== null && marker.schema_version > schema.version) {
+      throw new StorageQueryError('sync.storage.schema_changed');
+    }
+    if (claim === null) {
       const layouts = parseLayouts(marker?.layouts);
-      const retiredTables = retiredTableNames(schema, layouts);
-      const existing = new Map<string, ReadonlySet<string>>();
-      const existingIndexes = new Map<string, ReadonlySet<string>>();
-      for (const table of schema.tables.values()) {
-        const escapedTableName = table.name.replaceAll('"', '""');
-        const { results } = await this.#db
-          .prepare(`PRAGMA table_info("${escapedTableName}")`)
-          .all<{ name: string }>();
-        if (results.length > 0) {
-          existing.set(table.name, new Set(results.map((c) => c.name)));
-          const indexes = await this.#db
-            .prepare(`PRAGMA index_list("${escapedTableName}")`)
-            .all<{ name: string; origin: string }>();
-          existingIndexes.set(
-            table.name,
-            new Set(
-              indexes.results
-                .filter((index) => index.origin === 'c')
-                .map((index) => index.name),
-            ),
-          );
+      for (const table of tables) {
+        const oldLayout = layouts[table.name];
+        if (oldLayout !== undefined) {
+          assertAppendOnlyMigration(table.name, oldLayout, table);
         }
       }
-      for (const statement of schemaDdl(
-        schema,
-        existing,
-        'sqlite',
-        existingIndexes,
-      )) {
-        await this.#db.exec(`${statement.replace(/\s+/g, ' ')};`);
+      const state: D1MigrationState = {
+        phase: 'core',
+        offset: 0,
+        columns: {},
+        indexes: {},
+        rewrites: [],
+        ddl: [],
+        afterPartition: '',
+        afterRowId: '',
+      };
+      // Claim the database before inspecting projection layouts. The marker
+      // comparison prevents a delayed caller from planning against an old schema.
+      try {
+        await batch([
+          this.#db
+            .prepare(`INSERT INTO sync_schema_migration
+          SELECT 2, '', '', '' WHERE EXISTS (SELECT 1 FROM sync_schema_meta
+            WHERE id=1 AND schema_version<>?) OR (?=0 AND EXISTS (SELECT 1 FROM sync_schema_meta WHERE id=1))`)
+            .bind(marker?.schema_version ?? 0, marker === null ? 0 : 1),
+          this.#db
+            .prepare(`INSERT OR IGNORE INTO sync_schema_migration
+          (id, target, source_layouts, state) VALUES (1,?,?,?)`)
+            .bind(target, marker?.layouts ?? '{}', JSON.stringify(state)),
+        ]);
+      } catch (error) {
+        const current = await read<{ schema_version: number }>(
+          this.#db.prepare(
+            'SELECT schema_version FROM sync_schema_meta WHERE id=1',
+          ),
+        );
+        if (current?.schema_version !== marker?.schema_version)
+          return { complete: false, statementsExecuted };
+        throw error;
       }
-      // Migration rewrite: payload re-encode on layout change and/or
-      // projection backfill on flipped-on materialization. D1 has no
-      // interactive transaction — the rewrite runs statement-at-a-time,
-      // which is safe (each rewrite is idempotent and the marker only
-      // advances after all rewrites land; a mid-run crash re-runs them).
-      for (const table of schema.tables.values()) {
-        const oldLayout = layouts[table.name];
-        const plan = rewritePlan(table, oldLayout, existing.get(table.name));
-        if (!plan.migrate && !plan.backfill) continue;
-        await this.#rewriteRows(table, plan.migrate ? oldLayout : undefined);
+      claim = await read<D1MigrationClaim>(
+        this.#db.prepare('SELECT * FROM sync_schema_migration WHERE id=1'),
+      );
+    }
+    if (claim === null || claim.target !== target) {
+      throw new StorageQueryError('sync.storage.schema_migration_conflict');
+    }
+    const sourceLayouts = parseLayouts(claim.source_layouts);
+    let state = JSON.parse(claim.state) as D1MigrationState;
+    // Reserve one statement to distinguish a stale checkpoint from a database
+    // failure. A losing concurrent step returns incomplete without retrying here.
+    const save = async (
+      next: D1MigrationState,
+      statements: D1PreparedStatement[],
+      publish = false,
+    ): Promise<boolean> => {
+      const prior = claim.state;
+      const encoded = JSON.stringify(next);
+      try {
+        await batch([
+          this.#db
+            .prepare(`INSERT INTO sync_schema_migration
+            SELECT 2, '', '', '' WHERE NOT EXISTS (
+              SELECT 1 FROM sync_schema_migration WHERE id=1 AND target=? AND state=?)`)
+            .bind(target, prior),
+          ...statements,
+          publish
+            ? this.#db.prepare('DELETE FROM sync_schema_migration WHERE id=1')
+            : this.#db
+                .prepare('UPDATE sync_schema_migration SET state=? WHERE id=1')
+                .bind(encoded),
+        ]);
+      } catch (error) {
+        const current = await read<D1MigrationClaim>(
+          this.#db.prepare('SELECT * FROM sync_schema_migration WHERE id=1'),
+        );
+        if (
+          current === null ||
+          (current.target === target && current.state !== prior)
+        )
+          return false;
+        throw error;
       }
-      // Retire tables only after the additive DDL and rewrites succeed. D1
-      // cannot wrap the whole bump in an interactive transaction, but this
-      // ordering avoids destructive work before every fallible preparatory
-      // step and the batch keeps table + live-scope cleanup atomic.
-      if (retiredTables.length > 0) {
-        await this.#db.batch(
-          retiredTables.flatMap((tableName) => [
-            this.#db
-              .prepare('DELETE FROM sync_row_scopes WHERE tbl=?')
-              .bind(tableName),
-            this.#db
-              .prepare('DELETE FROM sync_blob_refs WHERE tbl=?')
-              .bind(tableName),
-            this.#db.prepare(dropTableDdl(tableName)),
+      claim.state = encoded;
+      state = next;
+      return true;
+    };
+    while (maxStatements - statementsExecuted >= 4) {
+      const remaining = maxStatements - statementsExecuted - 1;
+      if (state.phase === 'core') {
+        const ddl = sqliteDdlStatements();
+        const count = Math.min(ddl.length - state.offset, remaining - 2);
+        if (count > 0) {
+          const statements = ddl
+            .slice(state.offset, state.offset + count)
+            .map((sql) => this.#db.prepare(sql));
+          if (
+            !(await save(
+              { ...state, offset: state.offset + count },
+              statements,
+            ))
+          )
+            break;
+          continue;
+        }
+        if (remaining < 4) break;
+        statementsExecuted++;
+        const columns = await this.#db
+          .prepare('PRAGMA table_info("sync_clients")')
+          .all<{ name: string }>();
+        const needsWireVersion = !columns.results.some(
+          (column) => column.name === 'wire_version',
+        );
+        if (
+          !(await save(
+            { ...state, phase: 'prepare', offset: 0 },
+            needsWireVersion
+              ? [
+                  this.#db.prepare(
+                    'ALTER TABLE sync_clients ADD COLUMN wire_version INTEGER NOT NULL DEFAULT 1',
+                  ),
+                ]
+              : [],
+          ))
+        )
+          break;
+      } else if (state.phase === 'prepare') {
+        const table = tables[state.offset];
+        if (table !== undefined) {
+          if (remaining < 4) break;
+          statementsExecuted += 2;
+          const columns = await this.#db
+            .prepare(`PRAGMA table_info(${quoteIdent(table.name)})`)
+            .all<{ name: string }>();
+          const indexes = await this.#db
+            .prepare(`PRAGMA index_list(${quoteIdent(table.name)})`)
+            .all<{ name: string; origin: string }>();
+          // Validate the old codec before any application DDL or row rewrite.
+          rewritePlan(
+            table,
+            sourceLayouts[table.name],
+            columns.results.length > 0
+              ? new Set(columns.results.map((column) => column.name))
+              : undefined,
+          );
+          if (
+            !(await save(
+              {
+                ...state,
+                offset: state.offset + 1,
+                columns: {
+                  ...state.columns,
+                  ...(columns.results.length > 0
+                    ? {
+                        [table.name]: columns.results.map(
+                          (column) => column.name,
+                        ),
+                      }
+                    : {}),
+                },
+                indexes: {
+                  ...state.indexes,
+                  [table.name]: indexes.results
+                    .filter((index) => index.origin === 'c')
+                    .map((index) => index.name),
+                },
+              },
+              [],
+            ))
+          )
+            break;
+          continue;
+        }
+        const columns = new Map(
+          Object.entries(state.columns).map(([name, names]) => [
+            name,
+            new Set(names),
           ]),
         );
-      }
-      await this.#db
-        .prepare(
-          'INSERT INTO sync_schema_meta(id, schema_version, layouts) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, layouts=excluded.layouts',
+        const indexes = new Map(
+          Object.entries(state.indexes).map(([name, names]) => [
+            name,
+            new Set(names),
+          ]),
+        );
+        const rewrites = tables.flatMap((table) => {
+          const plan = rewritePlan(
+            table,
+            sourceLayouts[table.name],
+            columns.get(table.name),
+          );
+          return plan.migrate || plan.backfill
+            ? [
+                {
+                  table: table.name,
+                  ...(plan.migrate
+                    ? { oldLayout: sourceLayouts[table.name] }
+                    : {}),
+                },
+              ]
+            : [];
+        });
+        const ddl = [
+          ...retiredTableNames(schema, sourceLayouts).flatMap((name) => [
+            `DELETE FROM sync_row_scopes WHERE tbl='${name.replaceAll("'", "''")}'`,
+            `DELETE FROM sync_blob_refs WHERE tbl='${name.replaceAll("'", "''")}'`,
+            dropTableDdl(name),
+          ]),
+          ...schemaDdl(schema, columns, 'sqlite', indexes),
+        ];
+        if (
+          !(await save(
+            {
+              ...state,
+              phase: 'ddl',
+              offset: 0,
+              ddl,
+              rewrites,
+              columns: {},
+              indexes: {},
+            },
+            [],
+          ))
         )
-        .bind(schema.version, layoutsOf(schema))
-        .run();
+          break;
+      } else if (state.phase === 'ddl') {
+        const count = Math.min(state.ddl.length - state.offset, remaining - 2);
+        if (count === 0) {
+          if (
+            !(await save(
+              { ...state, phase: 'rewrite', offset: 0, ddl: [] },
+              [],
+            ))
+          )
+            break;
+        } else if (
+          !(await save(
+            { ...state, offset: state.offset + count },
+            state.ddl
+              .slice(state.offset, state.offset + count)
+              .map((sql) => this.#db.prepare(sql)),
+          ))
+        )
+          break;
+      } else {
+        const plan = state.rewrites[state.offset];
+        if (plan === undefined) {
+          if (
+            !(await save(
+              state,
+              [
+                this.#db
+                  .prepare(`INSERT INTO sync_schema_meta(id, schema_version, layouts) VALUES (1,?,?)
+            ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version, layouts=excluded.layouts`)
+                  .bind(schema.version, layoutsOf(schema)),
+              ],
+              true,
+            ))
+          )
+            break;
+          this.#tables = schema.tables;
+          this.#schemaVersion = schema.version;
+          return { complete: true, statementsExecuted };
+        }
+        const table = schema.tables.get(plan.table);
+        if (table === undefined)
+          throw new StorageQueryError('sync.storage.schema_migration_conflict');
+        if (remaining < 4) break;
+        const limit = Math.min(32, remaining - 3);
+        statementsExecuted++;
+        const { results } = await this.#db
+          .prepare(`SELECT * FROM (${selectRowsForRewriteSql(table, 'sqlite')})
+            WHERE EXISTS (SELECT 1 FROM sync_schema_migration WHERE id=1 AND target=? AND state=?)`)
+          .bind(
+            state.afterPartition,
+            state.afterRowId,
+            limit,
+            target,
+            claim.state,
+          )
+          .all<{ partition: string; row_id: string; payload: unknown }>();
+        const statements = results.map((row) => {
+          const bytes = asUint8Array(row.payload);
+          const payload =
+            plan.oldLayout !== undefined
+              ? migratePayload(plan.oldLayout, table, bytes)
+              : bytes;
+          return this.#db
+            .prepare(rewriteRowSql(table, 'sqlite'))
+            .bind(
+              ...rewriteValues(
+                table,
+                row.partition,
+                row.row_id,
+                payload,
+                'sqlite',
+              ),
+            );
+        });
+        const last = results.at(-1);
+        const done = results.length < limit;
+        if (
+          !(await save(
+            {
+              ...state,
+              offset: state.offset + (done ? 1 : 0),
+              afterPartition: done ? '' : last!.partition,
+              afterRowId: done ? '' : last!.row_id,
+            },
+            statements,
+          ))
+        )
+          break;
+      }
     }
-    this.#tables = schema.tables;
-    this.#schemaVersion = schema.version;
+    return { complete: false, statementsExecuted };
+  }
+
+  /** Every protected read or write shares a transaction with its schema check. */
+  #schemaDatabase(): Pick<D1Database, 'prepare' | 'batch'> {
+    if (this.#schemaVersion === undefined)
+      throw new StorageQueryError('sync.storage.schema_changed');
+    const db = this.#db;
+    const version = this.#schemaVersion;
+    const sources = new WeakMap<D1PreparedStatement, D1PreparedStatement>();
+    const execute = async (
+      statements: D1PreparedStatement[],
+    ): Promise<unknown[]> => {
+      try {
+        const results = await db.batch([
+          db
+            .prepare(`INSERT INTO sync_schema_migration SELECT 2, '', '', ''
+            WHERE EXISTS (SELECT 1 FROM sync_schema_migration WHERE id=1)
+              OR NOT EXISTS (SELECT 1 FROM sync_schema_meta WHERE id=1 AND schema_version=?)`)
+            .bind(version),
+          ...statements,
+        ]);
+        return results.slice(1);
+      } catch (error) {
+        const migration = await db
+          .prepare('SELECT id FROM sync_schema_migration WHERE id=1')
+          .first();
+        if (migration !== null)
+          throw new StorageQueryError('sync.storage.schema_migration_pending');
+        const marker = await db
+          .prepare('SELECT schema_version FROM sync_schema_meta WHERE id=1')
+          .first<{ schema_version: number }>();
+        if (marker?.schema_version !== version)
+          throw new StorageQueryError('sync.storage.schema_changed');
+        throw error;
+      }
+    };
+    const prepare = (
+      sql: string,
+      params: unknown[] = [],
+    ): D1PreparedStatement => {
+      const source = db.prepare(sql).bind(...params);
+      const all = async <T>(): Promise<{ results: T[] }> => {
+        const result = (await execute([source]))[0];
+        if (
+          typeof result !== 'object' ||
+          result === null ||
+          !('results' in result) ||
+          !Array.isArray(result.results)
+        ) {
+          throw new Error('D1 query returned an invalid batch result');
+        }
+        return { results: result.results as T[] };
+      };
+      const statement: D1PreparedStatement = {
+        bind: (...values) => prepare(sql, values),
+        all,
+        first: async <T>() => (await all<T>()).results[0] ?? null,
+        run: async () => (await execute([source]))[0],
+      };
+      sources.set(statement, source);
+      return statement;
+    };
+    return {
+      prepare,
+      batch: (statements) =>
+        execute(
+          statements.map((statement) => {
+            const source = sources.get(statement);
+            if (source === undefined)
+              throw new Error('D1 batch contains a foreign statement');
+            return source;
+          }),
+        ),
+    };
   }
 
   async touchPartition(
@@ -963,53 +1361,18 @@ export class D1ServerStorage implements ServerStorage {
     }));
   }
 
-  /** Keyset-paged migration rewrite (see the sqlite storage's counterpart). */
-  async #rewriteRows(
-    table: CompiledTable,
-    oldLayout: readonly StoredColumnLayout[] | undefined,
-  ): Promise<void> {
-    const select = selectRowsForRewriteSql(table, 'sqlite');
-    const update = rewriteRowSql(table, 'sqlite');
-    const BATCH = 500;
-    let afterPartition = '';
-    let afterRowId = '';
-    for (;;) {
-      const { results } = await this.#db
-        .prepare(select)
-        .bind(afterPartition, afterRowId, BATCH)
-        .all<{ partition: string; row_id: string; payload: unknown }>();
-      if (results.length === 0) break;
-      const statements = results.map((row) => {
-        const bytes = asUint8Array(row.payload);
-        const payload =
-          oldLayout !== undefined
-            ? migratePayload(oldLayout, table, bytes)
-            : bytes;
-        return this.#db
-          .prepare(update)
-          .bind(
-            ...rewriteValues(
-              table,
-              row.partition,
-              row.row_id,
-              payload,
-              'sqlite',
-            ),
-          );
-      });
-      await this.#db.batch(statements);
-      const last = results[results.length - 1];
-      if (last === undefined || results.length < BATCH) break;
-      afterPartition = last.partition;
-      afterRowId = last.row_id;
-    }
-  }
-
   async begin(partition: string): Promise<StorageTransaction> {
+    const tables = this.#tables;
+    const db = this.#schemaDatabase();
     return new D1Transaction(
-      this.#db,
+      db,
       partition,
-      (name) => this.table(name),
+      (name) => {
+        const table = tables?.get(name);
+        if (table === undefined)
+          throw new StorageQueryError('sync.storage.schema_changed');
+        return table;
+      },
       this.#pushApplySerialized,
     );
   }
@@ -1026,6 +1389,7 @@ export class D1ServerStorage implements ServerStorage {
     partition: string,
     query: AuthoritativeQueryRequest,
   ): Promise<AuthoritativeQueryResult> {
+    const db = this.#schemaDatabase();
     if (this.#tables === undefined) {
       throw new Error(
         'ensureSchema(schema) must run before registered queries',
@@ -1040,9 +1404,9 @@ export class D1ServerStorage implements ServerStorage {
       ),
       partition,
     );
-    const results = await this.#db.batch([
-      this.#db.prepare(prepared.sql).bind(...prepared.params),
-      this.#db
+    const results = await db.batch([
+      db.prepare(prepared.sql).bind(...prepared.params),
+      db
         .prepare('SELECT max_commit_seq FROM sync_partitions WHERE partition=?')
         .bind(partition),
     ]);
@@ -1188,7 +1552,8 @@ export class D1ServerStorage implements ServerStorage {
     table: string,
     rowId: string,
   ): Promise<StoredRow | undefined> {
-    const record = await this.#db
+    const db = this.#schemaDatabase();
+    const record = await db
       .prepare(selectRowSql(this.table(table), 'sqlite'))
       .bind(partition, rowId)
       .first<SqliteRowRecord>();
@@ -1200,7 +1565,8 @@ export class D1ServerStorage implements ServerStorage {
     clientId: string,
     clientCommitId: string,
   ): Promise<StoredPushResult | undefined> {
-    const record = await this.#db
+    const db = this.#schemaDatabase();
+    const record = await db
       .prepare(
         'SELECT result FROM sync_push_results WHERE partition=? AND client_id=? AND client_commit_id=?',
       )
@@ -1431,6 +1797,7 @@ export class D1ServerStorage implements ServerStorage {
     partition: string,
     query: CommitWindowQuery,
   ): Promise<StoredCommit[]> {
+    const db = this.#schemaDatabase();
     const variables = Object.keys(query.scopeFilter).sort();
     const firstVariable = variables[0];
     if (firstVariable === undefined) return [];
@@ -1446,7 +1813,7 @@ export class D1ServerStorage implements ServerStorage {
     let afterSeq = query.afterSeq;
     const batchSize = Math.max(64, query.limitChanges);
     while (deliveredChanges < query.limitChanges) {
-      const { results: records } = await this.#db
+      const { results: records } = await db
         .prepare(sql)
         .bind(
           partition,
@@ -1476,6 +1843,7 @@ export class D1ServerStorage implements ServerStorage {
   }
 
   async scanRows(partition: string, query: RowScanQuery): Promise<StoredRow[]> {
+    const db = this.#schemaDatabase();
     const firstVariable = assertScopeIndexedScan(query);
     const firstValues = query.scopeFilter[firstVariable] ?? [];
     if (firstValues.length === 0) return [];
@@ -1491,7 +1859,7 @@ export class D1ServerStorage implements ServerStorage {
     let afterRowId = query.afterRowId ?? '';
     const batchSize = Math.max(64, query.limit);
     while (rows.length < query.limit) {
-      const { results: records } = await this.#db
+      const { results: records } = await db
         .prepare(sql)
         .bind(
           partition,
@@ -1523,6 +1891,7 @@ export class D1ServerStorage implements ServerStorage {
     partition: string,
     query: IndexRowScanQuery,
   ): Promise<StoredRow[]> {
+    const db = this.#schemaDatabase();
     const table = this.table(query.table);
     const index = resolveIndexRowScan(table, query);
     const statement = indexRowPageStatement(
@@ -1534,7 +1903,7 @@ export class D1ServerStorage implements ServerStorage {
       query.limit,
       'sqlite',
     );
-    const { results } = await this.#db
+    const { results } = await db
       .prepare(statement.sql)
       .bind(...statement.params)
       .all<SqliteRowRecord>();
@@ -1642,7 +2011,8 @@ export class D1ServerStorage implements ServerStorage {
       readonly scopes: Record<string, string>;
     }[]
   > {
-    const { results: refs } = await this.#db
+    const db = this.#schemaDatabase();
+    const { results: refs } = await db
       .prepare(
         'SELECT tbl, row_id FROM sync_blob_refs WHERE partition=? AND blob_id=?',
       )
@@ -1656,7 +2026,7 @@ export class D1ServerStorage implements ServerStorage {
     for (const ref of refs) {
       const compiled = this.#tables?.get(ref.tbl);
       if (compiled === undefined) continue; // table no longer in the schema
-      const row = await this.#db
+      const row = await db
         .prepare(selectRowScopesSql(compiled, 'sqlite'))
         .bind(partition, ref.row_id)
         .first<{ scopes: string }>();
@@ -1807,7 +2177,8 @@ export class D1ServerStorage implements ServerStorage {
   ): Promise<
     { serverVersion: number; scopes: Record<string, string> } | undefined
   > {
-    const record = await this.#db
+    const db = this.#schemaDatabase();
+    const record = await db
       .prepare(selectRowScopesSql(this.table(table), 'sqlite'))
       .bind(partition, rowId)
       .first<{ server_version: number; scopes: string }>();
