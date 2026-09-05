@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-09-05',
+    title: 'D1 schema upgrades resume across requests',
+    body: 'D1ServerStorage.migrateSchema limits statements per invocation and saves row-rewrite progress. Interrupted upgrades resume with the same schema, and competing requests cannot apply the same batch twice. The storage rejects row reads and transaction commits until migration finishes. Run migration requests before admitting sync traffic; ensureSchema reports when another invocation is needed.',
+    links: [
+      {
+        href: '/server-workers/#schema-migration',
+        label: 'D1 migration setup',
+      },
+    ],
+  },
+  {
+    date: '2026-09-05',
     title: 'Concurrent pull recovery and partition-scoped server indexes',
     body: 'Pulls reset before emitting an active section when pruning crosses their commit-window read. Realtime notifications that break sequence trigger catch-up, and acknowledgment persistence preserves concurrent subscription updates. Declared server indexes include the partition column; existing databases require an application schema-version bump to rebuild them. Table retirement removes stale blob references. Includes focused contributions from Chase Pursley in PR #47.',
     links: [

@@ -101,21 +101,23 @@ See `wrangler.toml.example` for the binding config.
 
 ## Schema migration (D1)
 
-`D1ServerStorage` does **not** apply its DDL on construction (a cold request
-must never race a schema apply). Apply it once with wrangler. Generate the
-migration SQL from `sqliteDdlStatements()` (exported from `@syncular/server`)
-into a `migrations/` file, then:
+Run `storage.migrateSchema(compileSchema(schema))` from an authenticated
+maintenance handler before admitting sync traffic. The method creates core
+and application tables and rewrites stored rows. It returns
+`{ complete, statementsExecuted }`; call it again in a new Worker invocation
+when `complete` is false.
 
-```sh
-wrangler d1 create syncular
-wrangler d1 migrations apply syncular
-```
+Each call defaults to 50 statements. Set `{ maxStatements: 40 }` to leave
+room for other queries, or choose another integer from 10 through 1000 for
+your D1 plan. Run at most one call per invocation. Progress and row updates
+commit together, so interrupted requests can resume with the same schema.
+The storage rejects row reads and transaction commits during migration.
 
-The schema is plain SQLite DDL (shared with `bun:sqlite` via
-`sqlite-dialect.ts`), so it is portable across the two SQLite-family
-storages. Regenerate and apply a migration when upgrading Syncular adds a core
-table. The durable reaction queue uses `sync_reactions`; a Worker running a
-reaction planner or runner fails closed if that migration is absent.
+`ensureSchema` performs one step and throws
+`sync.storage.schema_migration_pending` when another invocation is needed.
+Drain older Syncular deployments before starting an upgrade: they do not
+check the migration state. See [the migration guide](https://syncular.dev/server-workers/#schema-migration)
+for a maintenance handler and the remaining D1 limits.
 
 ## Storage: D1 (`D1ServerStorage`)
 

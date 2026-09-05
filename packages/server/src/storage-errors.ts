@@ -15,6 +15,10 @@ export class StorageConstraintError extends Error {
 
 /** Stable, privacy-safe failures for trusted server storage queries. */
 export type StorageQueryErrorCode =
+  | 'sync.storage.schema_migration_pending'
+  | 'sync.storage.schema_migration_conflict'
+  | 'sync.storage.schema_changed'
+  | 'sync.storage.invalid_migration_budget'
   | 'sync.storage.scan_requires_scope'
   | 'sync.storage.index_not_found'
   | 'sync.storage.index_not_materialized'
@@ -26,6 +30,14 @@ export type StorageQueryErrorCode =
 
 const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
   {
+    'sync.storage.schema_migration_pending':
+      'schema migration requires another invocation',
+    'sync.storage.schema_migration_conflict':
+      'another schema migration target is already pending',
+    'sync.storage.schema_changed':
+      'storage schema is not ready for this operation',
+    'sync.storage.invalid_migration_budget':
+      'migration statement budget must be an integer from 10 through 1000',
     'sync.storage.prune_epoch_mismatch':
       'partition log epoch changed; recompute retention inputs',
     'sync.storage.partition_unregistered':

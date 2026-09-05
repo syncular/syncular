@@ -41,11 +41,17 @@ runStorageContract('postgres/pglite', async () => {
 // D1 (Cloudflare Workers) against the local bun:sqlite-backed double
 // (test/d1-double.ts documents its fidelity limits). Same contract, so the
 // D1 path is held to the reference behavior key-for-key.
+async function prepareD1(storage: D1ServerStorage): Promise<void> {
+  while (
+    !(await storage.migrateSchema(compileSchema(CONTRACT_SCHEMA))).complete
+  ) {}
+}
+
 runStorageContract('d1/double', async () => {
   const storage = new D1ServerStorage(new D1DatabaseDouble(), {
     pushApplySerialized: true,
   });
-  await storage.migrate();
+  await prepareD1(storage);
   return storage;
 });
 
@@ -112,7 +118,7 @@ test('Postgres migrates legacy client records to wire version 1', async () => {
 
 test('D1 push apply fails closed without external serialization', async () => {
   const storage = new D1ServerStorage(new D1DatabaseDouble());
-  await storage.migrate();
+  await prepareD1(storage);
   const tx = await storage.begin('partition');
   await expect(tx.lockPartitionForPush?.()).rejects.toThrow(
     'requires externally serialized partition writes',
@@ -225,8 +231,7 @@ class ConstraintAtBatchDouble extends D1DatabaseDouble {
 test('D1: a batch-commit constraint attributes the opIndex only when it is unambiguous', async () => {
   const db = new ConstraintAtBatchDouble();
   const storage = new D1ServerStorage(db, { pushApplySerialized: true });
-  await storage.migrate();
-  await storage.ensureSchema(compileSchema(CONTRACT_SCHEMA));
+  await prepareD1(storage);
   const taskRow = (id: string) => ({
     rowId: id,
     serverVersion: 1,
@@ -321,7 +326,9 @@ for (const backend of ['SQLite', 'Postgres', 'D1'] as const) {
       storage = new PostgresServerStorage(executor);
     } else {
       d1.beforeBatchStatement = before;
-      storage = new D1ServerStorage(d1, { pushApplySerialized: true });
+      const adapter = new D1ServerStorage(d1, { pushApplySerialized: true });
+      await prepareD1(adapter);
+      storage = adapter;
     }
     try {
       await storage.ensureSchema(compileSchema(CONTRACT_SCHEMA));

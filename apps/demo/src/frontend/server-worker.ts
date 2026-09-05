@@ -70,10 +70,9 @@ function d1OverWasm(db: WasmDb): D1Database {
         params.length > 0 ? params : undefined,
       ) as T[],
     }),
-    run: async () => {
-      db.exec({ sql, ...(params.length > 0 ? { bind: params } : {}) });
-      return {};
-    },
+    run: async () => ({
+      results: db.selectObjects(sql, params.length > 0 ? params : undefined),
+    }),
   });
   return {
     prepare: (sql) => statement(sql, []),

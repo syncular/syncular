@@ -35,9 +35,9 @@ and constraint-owned indexes remain outside the rebuild set.
 Removing a table in a schema migration also deletes its blob references. References
 from retained tables continue to protect their blobs from garbage collection.
 
-D1 schema migration still requires a separate redesign for invocation budgets and
-concurrent migration fencing. This change does not introduce the proposed durable
-migration-claim framework from PR #47.
+D1 upgrades save progress between Worker invocations. Run
+`D1ServerStorage.migrateSchema` until it returns `complete: true` before admitting
+traffic. See [D1 schema migration](/server-workers/#schema-migration).
 
 ## Choosing a database
 

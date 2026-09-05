@@ -110,6 +110,11 @@ Log the cause for operators and stop startup. Do not catch readiness errors in
 authentication or convert them to a 401; request-time schema checks are only a
 defensive fallback.
 
+For D1, finish `storage.migrateSchema(compileSchema(schema))` across separate
+Worker invocations before admitting traffic. Each call returns `complete` and
+`statementsExecuted`; the default budget is 50 statements. See
+[D1 schema migration](https://syncular.dev/server-workers/#schema-migration).
+
 After restoring an authoritative database, keep traffic stopped and call
 `rotatePartitionLogEpoch({ storage, partition })` for every restored
 partition. The rotation clears stale client cursors and requires version 2

@@ -161,6 +161,13 @@ async function sqliteStorage(): Promise<SqliteServerStorage> {
   return storage;
 }
 
+async function migrateD1(
+  storage: D1ServerStorage,
+  schema: ServerSchema,
+): Promise<void> {
+  while (!(await storage.migrateSchema(compileSchema(schema))).complete) {}
+}
+
 async function upsert(
   storage: SqliteServerStorage | PostgresServerStorage | D1ServerStorage,
   partition: string,
@@ -192,7 +199,8 @@ describe('partition-scoped declared unique indexes', () => {
           storage.db.exec(sql);
         }
       };
-      await storage.ensureSchema(compileSchema(SCHEMA));
+      if (storage instanceof D1ServerStorage) await migrateD1(storage, SCHEMA);
+      else await storage.ensureSchema(compileSchema(SCHEMA));
       await exec('DROP INDEX sync_ix_tasks_by_project_title');
       await exec(
         'CREATE UNIQUE INDEX sync_ix_tasks_by_project_title ON tasks(project_id, title)',
@@ -200,7 +208,9 @@ describe('partition-scoped declared unique indexes', () => {
       await exec('CREATE INDEX operator_title_index ON tasks(title)');
       const row = taskRow('t1', 'p1', 'same-title');
       await upsert(storage, PARTITION, 'tasks', row);
-      await storage.ensureSchema(compileSchema({ ...SCHEMA, version: 2 }));
+      if (storage instanceof D1ServerStorage)
+        await migrateD1(storage, { ...SCHEMA, version: 2 });
+      else await storage.ensureSchema(compileSchema({ ...SCHEMA, version: 2 }));
       await upsert(storage, 'part-2', 'tasks', row);
       expect((await storage.getRow(PARTITION, 'tasks', 't1'))?.payload).toEqual(
         row.payload,
@@ -369,7 +379,7 @@ describe('relational tables (D1)', () => {
   test('a secondary unique collision never replaces the existing server row', async () => {
     const db = new D1DatabaseDouble();
     const storage = new D1ServerStorage(db);
-    await storage.ensureSchema(compileSchema(SCHEMA));
+    await migrateD1(storage, SCHEMA);
     await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'original'));
     await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'updated'));
     await upsert(storage, PARTITION, 'tasks', taskRow('t2', 'p1', 'original'));
@@ -490,11 +500,11 @@ describe('server-side schema migration (the subset)', () => {
   test('D1 preserves existing rows across a nullable column append', async () => {
     const db = new D1DatabaseDouble();
     const storage = new D1ServerStorage(db);
-    await storage.ensureSchema(compileSchema(SCHEMA));
+    await migrateD1(storage, SCHEMA);
     await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'v1 row'));
 
     const v2 = nullableAppendSchema();
-    await storage.ensureSchema(compileSchema(v2));
+    await migrateD1(storage, v2);
     const stored = await storage.getRow(PARTITION, 'tasks', 't1');
     expect(decodeRow(v2.tables[0]!.columns, stored!.payload).at(-1)).toBeNull();
     const projected = await db
@@ -548,8 +558,8 @@ describe('server-side schema migration (the subset)', () => {
   test('a version bump replaces declared indexes on D1', async () => {
     const db = new D1DatabaseDouble();
     const storage = new D1ServerStorage(db);
-    await storage.ensureSchema(compileSchema(SCHEMA));
-    await storage.ensureSchema(compileSchema(INDEX_REPLACEMENT_SCHEMA));
+    await migrateD1(storage, SCHEMA);
+    await migrateD1(storage, INDEX_REPLACEMENT_SCHEMA);
 
     const indexes = await db
       .prepare('PRAGMA index_list("tasks")')
@@ -734,7 +744,7 @@ describe('server-side schema migration (the subset)', () => {
   test('D1 retires the relational current-row table idempotently', async () => {
     const db = new D1DatabaseDouble();
     const storage = new D1ServerStorage(db);
-    await storage.ensureSchema(compileSchema(SCHEMA));
+    await migrateD1(storage, SCHEMA);
     const tx = await storage.begin(PARTITION);
     await tx.upsertRow('tasks', taskRow('t1', 'p1', 'retired'));
     await tx.commit();

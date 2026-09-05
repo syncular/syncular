@@ -743,6 +743,27 @@ application-table star projections.
 
 ---
 
+#### D1 schema readiness
+
+A D1 schema upgrade MUST save row-rewrite progress in the same atomic batch as
+those rewrites. A resumed upgrade MUST decode only rows after that checkpoint
+using the previous schema layout. The published schema version advances only
+after all DDL, rewrites, and retired-table cleanup finish.
+
+Each call to `D1ServerStorage.migrateSchema` has a statement budget, including
+metadata reads, DDL, guards, and checkpoint writes. The host MUST run at most one
+migration step per Worker invocation and start another invocation when the result
+has `complete: false`. `ensureSchema` performs one default-budget step and throws
+`sync.storage.schema_migration_pending` when more work remains.
+
+Concurrent migration steps MUST compare their saved progress inside the batch
+that changes rows or DDL. A stale step changes nothing. A different target schema
+cannot take over an unfinished upgrade. Application row reads and transaction
+commits MUST check the migration claim and published schema in the same D1 batch
+as the operation. An unfinished upgrade or a changed schema rejects the operation;
+no mixed-layout payload reaches a client. These are host readiness failures and do
+not add a wire error or change either client's recovery protocol.
+
 ## 3. Scopes and authorization
 
 Scopes are the crown jewels of the design. Scope values are always

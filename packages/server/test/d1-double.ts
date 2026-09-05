@@ -50,9 +50,11 @@ function normalizeRow<T>(row: unknown): T {
 class DoublePreparedStatement implements D1PreparedStatement {
   readonly #db: Database;
   readonly #sql: string;
+  readonly #count: () => void;
   #params: unknown[] = [];
 
-  constructor(db: Database, sql: string) {
+  constructor(db: Database, sql: string, count: () => void) {
+    this.#count = count;
     this.#db = db;
     this.#sql = sql;
   }
@@ -63,38 +65,36 @@ class DoublePreparedStatement implements D1PreparedStatement {
   }
 
   async first<T = Record<string, unknown>>(): Promise<T | null> {
+    this.#count();
     const row = this.#db.query(this.#sql).get(...(this.#params as never[]));
     return row === null || row === undefined ? null : normalizeRow<T>(row);
   }
 
   async all<T = Record<string, unknown>>(): Promise<{ results: T[] }> {
+    this.#count();
     const rows = this.#db.query(this.#sql).all(...(this.#params as never[]));
     return { results: rows.map((row) => normalizeRow<T>(row)) };
   }
 
   async run(): Promise<unknown> {
+    this.#count();
     this.#db.query(this.#sql).run(...(this.#params as never[]));
     return {};
-  }
-
-  /** Internal: apply this statement inside an already-open transaction. */
-  _apply(): void {
-    this.#db.query(this.#sql).run(...(this.#params as never[]));
   }
 
   _batchResult(before?: (sql: string) => void): unknown {
+    this.#count();
     before?.(this.#sql);
-    if (/^\s*(?:SELECT|WITH)\b/i.test(this.#sql)) {
-      const rows = this.#db.query(this.#sql).all(...(this.#params as never[]));
-      return { results: rows.map((row) => normalizeRow(row)) };
-    }
-    this._apply();
-    return {};
+    const rows = this.#db.query(this.#sql).all(...(this.#params as never[]));
+    return { results: rows.map((row) => normalizeRow(row)) };
   }
 }
 
 export class D1DatabaseDouble implements D1Database {
   readonly #db: Database;
+  statementsExecuted = 0;
+  statementLimit = Number.POSITIVE_INFINITY;
+  afterBatch: (() => void) | undefined;
   beforeBatchStatement: ((sql: string) => void) | undefined;
 
   constructor(db: Database = new Database(':memory:')) {
@@ -102,29 +102,38 @@ export class D1DatabaseDouble implements D1Database {
   }
 
   prepare(query: string): D1PreparedStatement {
-    return new DoublePreparedStatement(this.#db, query);
+    return new DoublePreparedStatement(this.#db, query, () => {
+      this.statementsExecuted++;
+      if (this.statementsExecuted > this.statementLimit)
+        throw new Error('D1 invocation query limit exceeded');
+    });
   }
 
   async batch(statements: D1PreparedStatement[]): Promise<unknown[]> {
     // Real D1 wraps a batch in one implicit transaction; reproduce the
     // all-or-nothing semantics with BEGIN … COMMIT/ROLLBACK.
     this.#db.exec('BEGIN IMMEDIATE');
+    let results: unknown[];
     try {
-      const results = statements.map((statement) =>
+      results = statements.map((statement) =>
         (statement as DoublePreparedStatement)._batchResult(
           this.beforeBatchStatement,
         ),
       );
       this.beforeBatchStatement?.('COMMIT');
       this.#db.exec('COMMIT');
-      return results;
     } catch (error) {
       this.#db.exec('ROLLBACK');
       throw error;
     }
+    this.afterBatch?.();
+    return results;
   }
 
   async exec(query: string): Promise<unknown> {
+    this.statementsExecuted++;
+    if (this.statementsExecuted > this.statementLimit)
+      throw new Error('D1 invocation query limit exceeded');
     this.#db.exec(query);
     return {};
   }
