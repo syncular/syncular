@@ -887,19 +887,6 @@ pub fn dispatch<T: Transport>(
             let state = need_client(client)?.subscription_state(id);
             Ok(json!({ "state": state }))
         }
-        "schemaFloor" => {
-            let floor = need_client(client)?.schema_floor().cloned();
-            Ok(json!({ "floor": floor }))
-        }
-        "leaseState" => {
-            let lease = need_client(client)?.lease_state().cloned();
-            Ok(json!({ "lease": lease }))
-        }
-        "upgrading" => {
-            // §7.4.5: true while a schema-bump reset + first re-bootstrap runs.
-            let value = need_client(client)?.upgrading();
-            Ok(json!({ "value": value }))
-        }
         "recreateWithSchema" => {
             // §7.4.2 "app ships new code": swap to the new schema on the SAME
             // in-memory database (the Rust core has no persistent restart, so
@@ -921,10 +908,6 @@ pub fn dispatch<T: Transport>(
         "disconnectRealtime" => {
             need_client(client)?.disconnect_realtime(transport);
             Ok(json!({}))
-        }
-        "syncNeeded" => {
-            let value = need_client(client)?.sync_needed();
-            Ok(json!({ "value": value }))
         }
         "setPresence" => {
             let scope_key = params

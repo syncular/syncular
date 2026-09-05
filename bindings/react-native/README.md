@@ -169,7 +169,7 @@ state to that payload. The API remains protected during security preflight.
     `@syncular/tauri` pattern): the `SyncClientLike` contract, method →
     command mapping, atomic `querySnapshot`, typed `patch`, lossless bigint and
     bytes round-trip, exact `onChange` fanout, lifecycle (pause/resume/close driving
-    the native pump), and a **parity test against the React `normalizeClient`**
+    the native pump), and a **parity test against the React `SyncClientLike` contract**
     (so a drift in `SyncClientLike` breaks this suite);
   - *the App integration render* (`test/app.test.tsx`): the example's **real
     `App.tsx`** rendered with `@testing-library/react` against a **stateful**
@@ -243,3 +243,9 @@ The blocker to enabling it as-is: the example consumes `workspace:*` source
 packages that `npm` (RN's package manager) can't resolve, so the lane needs
 either published packages or a `file:`-link install step first — resolved before
 this graduates from follow-up to a shipped lane.
+
+The snapshot API revision removes the individual `schemaFloor`, `leaseState`,
+`upgrading`, and `syncNeeded` methods. Read those fields from
+`await client.statusSnapshot()`. Collection and outcome reads remain methods.
+React accepts the bridge directly. See the
+[client migration](https://syncular.dev/platform-web/#snapshot-api-migration).

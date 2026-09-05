@@ -7,7 +7,20 @@
  * least the newest `minRetainedCommits` commits are always retained.
  */
 import { emitEvent, type SyncularServerEvents } from './events';
-import type { ServerStorage } from './storage';
+import type { CommitPruneQuery, ServerStorage } from './storage';
+import { StorageQueryError } from './storage-errors';
+
+/** Shared validation for the built-in atomic pruning adapters. */
+export function validateCommitPruneQuery(query: CommitPruneQuery): void {
+  if (
+    !Number.isSafeInteger(query.throughSeq) ||
+    query.throughSeq < 0 ||
+    typeof query.logEpoch !== 'string' ||
+    query.logEpoch.length === 0
+  ) {
+    throw new StorageQueryError('sync.storage.invalid_prune_cursor');
+  }
+}
 
 export interface RetentionPolicy {
   /** Active window for laggard cursors (default 14 days). */
@@ -37,28 +50,29 @@ export interface PruneOptions {
 export async function pruneCommitLog(options: PruneOptions): Promise<number> {
   const { storage, partition, nowMs } = options;
   const policy = { ...DEFAULT_RETENTION, ...options.retention };
+  const logEpoch = await storage.getPartitionLogEpoch(partition);
+  if (logEpoch === undefined)
+    throw new StorageQueryError('sync.storage.partition_unregistered');
   const maxSeq = await storage.getMaxCommitSeq(partition);
-  const cursors = await storage.listClientCursors(partition);
-  const activeCursors = cursors
-    .filter((c) => c.updatedAtMs >= nowMs - policy.activeWindowMs)
-    .map((c) => c.cursor);
   const cursorFloor =
-    activeCursors.length > 0
-      ? Math.min(...activeCursors)
-      : Number.MAX_SAFE_INTEGER;
+    (await storage.getActiveClientCursorFloor(
+      partition,
+      nowMs - policy.activeWindowMs,
+    )) ?? Number.MAX_SAFE_INTEGER;
   const forcedSeq = await storage.getCommitSeqBefore(
     partition,
     nowMs - policy.ageForceMs,
   );
   const retainFloor = maxSeq - policy.minRetainedCommits;
   const target = Math.min(Math.max(cursorFloor, forcedSeq), retainFloor);
-  const current = await storage.getHorizonSeq(partition);
-  const horizon = Math.max(current, Math.max(0, target));
-  let removedCommits = 0;
-  if (horizon > current) {
-    await storage.setHorizonSeq(partition, horizon);
-    removedCommits = await storage.pruneCommitsThrough(partition, horizon);
-  }
+  const {
+    previousHorizonSeq: current,
+    horizonSeq: horizon,
+    removedCommits,
+  } = await storage.pruneCommitsThrough(partition, {
+    logEpoch,
+    throughSeq: Math.max(0, target),
+  });
   const events = options.events;
   if (events !== undefined) {
     emitEvent(events, {

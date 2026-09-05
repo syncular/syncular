@@ -9,32 +9,52 @@
 
 import type { PresencePeer } from '@syncular/client';
 import { useEffect, useState } from 'react';
+import type { SyncClientLike } from './client';
 import { useSyncClient } from './use-client';
+
+const EMPTY_PEERS: readonly PresencePeer[] = [];
 
 export function usePresence(scopeKey: string): readonly PresencePeer[] {
   const client = useSyncClient();
-  const [peers, setPeers] = useState<readonly PresencePeer[]>([]);
+  const [snapshot, setSnapshot] = useState<{
+    client: SyncClientLike;
+    scopeKey: string;
+    peers: readonly PresencePeer[];
+  }>(() => ({ client, scopeKey, peers: EMPTY_PEERS }));
+  if (snapshot.client !== client || snapshot.scopeKey !== scopeKey) {
+    setSnapshot({ client, scopeKey, peers: EMPTY_PEERS });
+  }
 
   useEffect(() => {
-    let cancelled = false;
+    let generation = 0;
     const read = () => {
-      Promise.resolve(client.presence(scopeKey))
-        .then((list) => {
-          if (!cancelled) setPeers(list);
+      const request = ++generation;
+      void Promise.resolve()
+        .then(() => client.presence(scopeKey))
+        .then((peers) => {
+          if (request === generation) {
+            setSnapshot((previous) =>
+              previous.client === client && previous.scopeKey === scopeKey
+                ? { client, scopeKey, peers }
+                : previous,
+            );
+          }
         })
         .catch(() => {
-          /* transient — the next presence event re-reads */
+          // Keep the current scope's last snapshot until the next event.
         });
     };
-    read();
     const unsubscribe = client.onPresence((changedKey) => {
       if (changedKey === scopeKey) read();
     });
+    read();
     return () => {
-      cancelled = true;
+      generation += 1;
       unsubscribe();
     };
   }, [client, scopeKey]);
 
-  return peers;
+  return snapshot.client === client && snapshot.scopeKey === scopeKey
+    ? snapshot.peers
+    : EMPTY_PEERS;
 }

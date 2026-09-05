@@ -17,6 +17,29 @@
 export const changelog = [
   {
     date: '2026-09-05',
+    title: 'Canonical client snapshots and bounded sync work',
+    body: 'React mutation callbacks now use onEnqueued for durable local acceptance. Client state reads use statusSnapshot across direct, worker, and native hosts; getter normalization and individual state commands are removed. Outbox status reads avoid decoding pending bodies, request encoding reads bounded pages, and concurrent SQLite bootstrap misses share one batched image build. Custom image builders must accept rowBatches and return a promise.',
+    links: [
+      { href: '/platform-react/', label: 'Mutation callback migration' },
+      {
+        href: '/platform-web/#snapshot-api-migration',
+        label: 'Client snapshot migration',
+      },
+      { href: '/server-storage/', label: 'Image builder migration' },
+    ],
+  },
+  {
+    date: '2026-09-05',
+    title: 'Query isolation, FIFO batching, and observation ordering',
+    body: 'Generated relation plans bind every registered query table occurrence to its authenticated partition. Existing query modules require regeneration. Outbox request batches preserve commit creation order when the next commit exceeds the remaining operation budget, including retries and restarts. Unexpected validator and CRDT failures expose static public messages. Presence and shared status, conflict, and outcome observations discard stale asynchronous results. Commit-log pruning atomically advances the horizon and deletes history with restore-epoch fencing; custom storage adapters require the updated pruning contract and active-cursor aggregate. Inactive reactive observations release their cached rows after a microtask and leave change dispatch immediately.',
+    links: [
+      { href: '/guide-remote-operations/', label: 'Remote query regeneration' },
+      { href: '/concepts-conflicts/', label: 'Outbox ordering' },
+      { href: '/server-storage/', label: 'Storage adapter migration' },
+    ],
+  },
+  {
+    date: '2026-09-05',
     title: 'Existing-project schema setup',
     body: 'The schema guide documents installing typegen, initializing schema inputs, and generating the client schema inside an existing app. The Tauri guide starts with a framework-independent client and introduces React bindings as an optional step.',
     links: [

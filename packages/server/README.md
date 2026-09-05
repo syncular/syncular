@@ -15,6 +15,11 @@ registry, command mutations use the ordinary serialized push path, and
 specified in [`docs/REMOTE.md`](../../docs/REMOTE.md) and the practical setup is
 in the [remote operations guide](https://syncular.dev/guide-remote-operations/).
 
+Remote query registration requires generated `relationPlans` for each selected
+SQL statement. Run `syncular generate` before upgrading existing query modules.
+The server uses those boundaries to bind every physical table occurrence to
+the authenticated partition, including quoted self joins and CTE bodies.
+
 Application intent belongs in immutable domain event rows written in the same
 commit as the state change. `SyncularServerEvents` below remains operational
 telemetry. See the [domain event guide](https://syncular.dev/guide-domain-events/).
@@ -927,10 +932,22 @@ at or below it. Nothing prunes automatically — the host schedules it.
 
 **When to run.** A periodic job per partition — hourly to daily is the
 sensible range; there is no benefit below the granularity of your
-`activeWindowMs`. Prune is cheap when there is nothing to do (one cursor
-scan + two point reads), so err on the side of running it often rather
-than letting a backlog build. Pass `events` to get `prune.completed`
-per pass.
+`activeWindowMs`. Pass `events` to get `prune.completed` per pass.
+
+Pruning verifies the captured log epoch and updates the horizon together with
+commit/change/scope deletion in one transaction. Concurrent passes cannot
+lower the horizon. A retry cleans up eligible records even when the horizon
+already covers them. A restore invalidates a pending pass with
+`sync.storage.prune_epoch_mismatch`; recompute its retention inputs.
+Unregistered partitions cannot be pruned. D1 maintenance enters the owning
+Durable Object's existing write queue through
+`SyncularRealtimeHost.pruneCommitLog`.
+
+Custom storage adapters must add `getPartitionLogEpoch(partition)` and replace
+`pruneCommitsThrough(partition, seq)` with
+`pruneCommitsThrough(partition, { logEpoch, throughSeq })`, returning
+`{ previousHorizonSeq, horizonSeq, removedCommits }` from the transaction.
+`setHorizonSeq` remains monotonic and is no longer used by the pruning helper.
 
 **The retention floors (§4.6, encoded in `RetentionPolicy`).** The
 horizon never advances past `min(cursor)` of *active* clients — clients
@@ -1149,3 +1166,23 @@ deterministic in-process sqlite loopback):
 ```sh
 SYNCULAR_PG_URL=postgres://user:pass@localhost:5432/db bun run bench
 ```
+
+Custom storage adapters must implement
+`getActiveClientCursorFloor(partition, cutoffMs)`. Return the minimum cursor
+whose `updatedAtMs >= cutoffMs`, or `null` when no client qualifies. Preserve
+negative bootstrap cursors. Pruning and admin horizon status use this scalar
+aggregate; `listClientCursors` remains the explicit listing interface.
+
+SQLite image builders now return `Promise<Uint8Array>` and receive
+`rowBatches`, an iterable or async iterable of row arrays. Replace custom
+builders' `input.rows` loop with `for await (const rows of input.rowBatches)`,
+insert each batch into the dedicated image database, and count rows during
+consumption. Write the final row count into `_syncular_segment` before
+serialization. Await `buildSqliteImage(input)` when calling the built-in
+Bun or Node builder directly.
+
+The server shares in-flight builds for the same storage pair and artifact
+identity after authorization. Sharing is local to one process. Signed URL
+grants remain per request. The first eligibility probe has at most
+`limitSnapshotRows + 1` rows; subsequent builder batches have at most 5,000
+rows. The image database and serialized output still consume memory.

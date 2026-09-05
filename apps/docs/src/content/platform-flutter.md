@@ -94,7 +94,7 @@ Scope maps use the same authorization vocabulary as the rest of syncular;
 see [Scopes & authorization](/concepts-scopes/). The Dart client exposes the
 same convenience methods as the Swift and Kotlin wrappers: `mutate`,
 `subscribe`, `unsubscribe`, `sync`, `syncUntilIdle`, `readRows`, `query`,
-`pendingCommitIds`, `syncNeeded`, `subscriptionState`, `conflicts`,
+`pendingCommitIds`, `statusSnapshot`, `subscriptionState`, `conflicts`,
 `presence`, `setPresence`, `setWindow`, `windowState`, `connectRealtime`,
 `disconnectRealtime`, and the CRDT helpers. For anything not lifted into a
 named method, call `command(method, params)` directly.
@@ -210,3 +210,17 @@ platform scaffolds come from `flutter create` and stay out of the repo.
 - [Scopes & authorization](/concepts-scopes/): the rules behind the scope maps in `subscribe`.
 - [Conflicts & optimistic writes](/concepts-conflicts/): what shows up in the `conflict` event.
 - [Quickstart](/quickstart/): the server the todo example runs against.
+
+## Snapshot and outcome methods
+
+Use `querySnapshot` for rows, coverage, and revision from one local read.
+`statusSnapshot` returns scheduling, schema, lease, and outbox state;
+`diagnosticsSnapshot` adds bounded support evidence. `commitOutcome` looks up
+one terminal result by commit ID. `commitOutcomes` lists the durable journal,
+and `resolveCommitOutcome` records an explicit resolution. A pending commit
+has no terminal outcome. `rejections` lists rejected commits.
+
+This source-breaking revision removes the `syncNeeded` convenience and the raw
+`schemaFloor`, `leaseState`, `upgrading`, and `syncNeeded` commands. Read those
+fields from `statusSnapshot` instead. The wrappers use the existing native
+command dispatcher and return the binding's JSON value types.

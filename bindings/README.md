@@ -40,7 +40,7 @@ times and the marshaling zero more times. So each wrapper ships:
   boundary (Swift `swift test`, Kotlin `gradle test`) — the elegant hermetic
   path.
 - a **parity proof** where the wrapper feeds JS hooks: the RN JS bridge is
-  accepted by the React `normalizeClient` and drives every `SyncClientLike`
+  accepted by the React `SyncClientLike` contract and drives every `SyncClientLike`
   member (a `SyncClientLike` drift breaks the suite). The Tauri JS bridge carries
   the same proof.
 
@@ -60,7 +60,7 @@ so the smoke + parity bar is the honest floor.
 - **Flutter/Dart** — `bindings/flutter/syncular/test` (`dart test`): the same
   suite over `dart:ffi` against the real native core.
 - **React Native** — `bindings/react-native/test` (bun): the JS bridge over an
-  injected NativeModule double + the `normalizeClient` parity test.
+  injected NativeModule double + the `SyncClientLike` contract parity test.
 - **Tauri** — its plugin's Rust tests (router round-trip, event derivation,
   file-DB persistence) + `@syncular/tauri`'s bridge/parity tests.
 

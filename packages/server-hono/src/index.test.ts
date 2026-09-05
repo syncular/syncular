@@ -110,6 +110,12 @@ describe('hono adapter', () => {
       id: 'sha256:test/allTasks',
       hasParams: false,
       sql: 'SELECT id, title FROM tasks ORDER BY id',
+      relationPlans: [
+        {
+          sql: 'SELECT id, title FROM tasks ORDER BY id',
+          relations: [{ table: 'tasks', start: 22, end: 27 }],
+        },
+      ],
       tables: ['tasks'],
       resultColumns: [
         { name: 'id', type: 'string', nullable: false },

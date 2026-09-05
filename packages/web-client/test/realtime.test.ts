@@ -97,7 +97,7 @@ describe('handshake (§8.1)', () => {
     await b.client.syncUntilIdle();
     await b.client.connectRealtime();
     // Caught up at connect: no sync needed.
-    expect(b.client.syncNeeded).toBe(false);
+    expect(b.client.statusSnapshot().syncNeeded).toBe(false);
     expect(b.wakes).toHaveLength(0);
     b.client.disconnectRealtime();
 
@@ -107,7 +107,7 @@ describe('handshake (§8.1)', () => {
     ]);
     await a.client.syncUntilIdle();
     await b.client.connectRealtime();
-    expect(b.client.syncNeeded).toBe(true);
+    expect(b.client.statusSnapshot().syncNeeded).toBe(true);
     expect(b.wakes).toEqual(['hello']);
   });
 });
@@ -126,7 +126,7 @@ describe('deltas (§8.2)', () => {
       await c.client.syncUntilIdle();
     }
     await b.client.connectRealtime();
-    expect(b.client.syncNeeded).toBe(false);
+    expect(b.client.statusSnapshot().syncNeeded).toBe(false);
 
     a.client.mutate([
       {
@@ -138,7 +138,11 @@ describe('deltas (§8.2)', () => {
     await a.client.syncUntilIdle();
 
     // No pull on B: the delta alone must land the row.
-    await waitFor(() => tableRows(b.db, 'tasks').length === 1, 'delta applied');
+    await waitFor(
+      () => tableRows(b.db, 'tasks').length === 1,
+      (notify) => b.client.onChange(notify),
+      'delta applied',
+    );
     expect(tableRows(b.db, 'tasks')[0]?.title).toBe('via-delta');
     expect(tableRows(b.db, 'tasks')[0]?._sync_version).toBe(1);
 
@@ -146,13 +150,26 @@ describe('deltas (§8.2)', () => {
     // the server's client record (§8.2: acks update it without a pull).
     const seq = await server.storage.getMaxCommitSeq(PARTITION);
     expect(b.client.subscription('s1')?.cursor).toBe(seq);
-    await waitFor(async () => {
-      const record = await server.storage.getClientRecord(
-        PARTITION,
-        'client-b',
-      );
-      return record?.cursor === seq;
-    }, 'ack persisted');
+    await waitFor(
+      async () => {
+        const record = await server.storage.getClientRecord(
+          PARTITION,
+          'client-b',
+        );
+        return record?.cursor === seq;
+      },
+      (notify) => {
+        const put = server.storage.putClientRecord.bind(server.storage);
+        server.storage.putClientRecord = async (partition, record) => {
+          await put(partition, record);
+          notify();
+        };
+        return () => {
+          server.storage.putClientRecord = put;
+        };
+      },
+      'ack persisted',
+    );
   });
 
   test('deltas keep flowing commit by commit', async () => {
@@ -174,8 +191,12 @@ describe('deltas (§8.2)', () => {
       ]);
       await a.client.syncUntilIdle();
     }
-    await waitFor(() => tableRows(b.db, 'tasks').length === 3, 'all deltas');
-    expect(b.client.syncNeeded).toBe(false);
+    await waitFor(
+      () => tableRows(b.db, 'tasks').length === 3,
+      (notify) => b.client.onChange(notify),
+      'all deltas',
+    );
+    expect(b.client.statusSnapshot().syncNeeded).toBe(false);
   });
 
   test('scope-filtered deltas: unrelated commits do not reach the client', async () => {
@@ -203,7 +224,11 @@ describe('deltas (§8.2)', () => {
       { table: 'tasks', op: 'upsert', values: taskValues('mine', 'p1') },
     ]);
     await a.client.syncUntilIdle();
-    await waitFor(() => tableRows(b.db, 'tasks').length === 1, 'scoped delta');
+    await waitFor(
+      () => tableRows(b.db, 'tasks').length === 1,
+      (notify) => b.client.onChange(notify),
+      'scoped delta',
+    );
     expect(tableRows(b.db, 'tasks')[0]?.id).toBe('mine');
   });
 });
@@ -227,7 +252,7 @@ describe('wake-ups and catch-up (§8.3, §8.4)', () => {
     ]);
     await a.client.syncUntilIdle();
     await b.client.connectRealtime();
-    expect(b.client.syncNeeded).toBe(true); // hello.requiresSync
+    expect(b.client.statusSnapshot().syncNeeded).toBe(true); // hello.requiresSync
 
     // While behind, a matching commit becomes a coalescible wake-up, not a
     // delta (§8.2: deltas must be cursor-contiguous).
@@ -235,13 +260,17 @@ describe('wake-ups and catch-up (§8.3, §8.4)', () => {
       { table: 'tasks', op: 'upsert', values: taskValues('t2', 'p1') },
     ]);
     await a.client.syncUntilIdle();
-    await waitFor(() => b.wakes.includes('catchup-required'), 'wake-up');
+    await waitFor(
+      () => b.wakes.includes('catchup-required'),
+      (notify) => b.client.onSyncNeeded(notify),
+      'wake-up',
+    );
     expect(tableRows(b.db, 'tasks')).toHaveLength(0);
 
     // The recovery pull converges and acks; deltas then resume.
     await b.client.syncUntilIdle();
     expect(tableRows(b.db, 'tasks')).toHaveLength(2);
-    expect(b.client.syncNeeded).toBe(false);
+    expect(b.client.statusSnapshot().syncNeeded).toBe(false);
 
     a.client.mutate([
       {
@@ -251,7 +280,11 @@ describe('wake-ups and catch-up (§8.3, §8.4)', () => {
       },
     ]);
     await a.client.syncUntilIdle();
-    await waitFor(() => tableRows(b.db, 'tasks').length === 3, 'delta resumed');
+    await waitFor(
+      () => tableRows(b.db, 'tasks').length === 3,
+      (notify) => b.client.onChange(notify),
+      'delta resumed',
+    );
     expect(tableRows(b.db, 'tasks')[2]?.title).toBe('resumed');
   });
 
@@ -266,10 +299,24 @@ describe('wake-ups and catch-up (§8.3, §8.4)', () => {
     await b.client.syncUntilIdle();
     await b.client.connectRealtime();
     server.hub.wake(PARTITION, 'reset-required');
-    expect(b.client.syncNeeded).toBe(true);
+    expect(b.client.statusSnapshot().syncNeeded).toBe(true);
     expect(b.wakes).toContain('reset-required');
     // §8.3: a wake-up is never data — recovery is a pull.
     await b.client.syncUntilIdle();
-    expect(b.client.syncNeeded).toBe(false);
+    expect(b.client.statusSnapshot().syncNeeded).toBe(false);
   });
+});
+
+test('migrated readiness helpers and callers use completion signals without wall-clock waits', async () => {
+  for (const file of [
+    'helpers.ts',
+    'realtime.test.ts',
+    'realtime-supervisor.test.ts',
+    'worker-rpc.test.ts',
+  ]) {
+    const source = await Bun.file(new URL(file, import.meta.url)).text();
+    expect(source).not.toMatch(
+      /\b(?:setTimeout|setInterval|(?:Bun\.)?sleep)\s*\(/,
+    );
+  }
 });

@@ -148,7 +148,7 @@ interface LoweringFixture {
     readonly activationControls: readonly string[];
     readonly neutralizedStatements: number;
     readonly enumeratedStatements: number;
-    readonly queryIrVersion: 3;
+    readonly queryIrVersion: 4;
     readonly publicInputKinds: readonly string[];
     readonly identity: readonly string[];
     readonly coverage: readonly {

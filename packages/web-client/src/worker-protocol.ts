@@ -20,13 +20,11 @@ import type { WakeReason } from '@syncular/core';
 import type { BlobRef, CachedBlob } from './blob';
 import type {
   ConflictRecord,
-  LeaseState,
+  ClientSnapshotMethods,
   MutationInput,
   PresencePeer,
   QueryReadSpec,
   QuerySnapshot,
-  RejectionRecord,
-  SchemaFloor,
   SecurityLifecycle,
   SubscribeInput,
   SyncClientLimits,
@@ -34,27 +32,15 @@ import type {
   WindowState,
 } from './client';
 import type { SqlRow, SqlValue } from './database';
-import type {
-  ClientDiagnosticsRequest,
-  ClientDiagnosticsSnapshot,
-} from './diagnostics';
+import type { ClientDiagnosticsSnapshot } from './diagnostics';
 import type { EncryptionKeyringConfig } from './encryption';
-import type {
-  ClientChangeBatch,
-  LocalRevision,
-  SyncStatusSnapshot,
-} from './invalidation';
+import type { ClientChangeBatch, LocalRevision } from './invalidation';
 import type { LocalDataPurgeInput, LocalDataPurgeResult } from './local-purge';
 import type {
   LocalDataRebootstrapInput,
   LocalDataRebootstrapResult,
 } from './local-rebootstrap';
 import type { OutboxCommit } from './outbox';
-import type {
-  CommitOutcome,
-  CommitOutcomeQuery,
-  ResolveCommitOutcomeInput,
-} from './outcomes';
 import type { ClientSchema } from './schema';
 import type { SubscriptionRecord } from './state';
 import type { WindowBase } from './window';
@@ -137,7 +123,10 @@ export interface WorkerSecurityActivation {
 // The logical API — the one shared shape (worker implements, handle projects)
 // ---------------------------------------------------------------------------
 
-export interface WorkerApi {
+export interface WorkerApi extends Omit<
+  ClientSnapshotMethods,
+  'querySnapshot'
+> {
   securityLifecycle(): SecurityLifecycle;
   beginSecurityPreflight(): Promise<void>;
   activateSecurity(options?: WorkerSecurityActivation): Promise<void>;
@@ -166,21 +155,6 @@ export interface WorkerApi {
   query(sql: string, params?: readonly SqlValue[]): SqlRow[];
   querySnapshot(spec: QueryReadSpec): QuerySnapshot;
   localRevision(): LocalRevision;
-  statusSnapshot(): SyncStatusSnapshot;
-  diagnosticsSnapshot(
-    request?: ClientDiagnosticsRequest,
-  ): ClientDiagnosticsSnapshot;
-  conflicts(): readonly ConflictRecord[];
-  rejections(): readonly RejectionRecord[];
-  commitOutcome(clientCommitId: string): CommitOutcome | undefined;
-  commitOutcomes(query?: CommitOutcomeQuery): readonly CommitOutcome[];
-  resolveCommitOutcome(input: ResolveCommitOutcomeInput): CommitOutcome;
-  schemaFloor(): SchemaFloor | undefined;
-  /** §7.3.5: the opaque auth-lease state, or undefined. */
-  leaseState(): LeaseState | undefined;
-  /** §7.4.5: true while a schema-bump reset + first re-bootstrap runs. */
-  upgrading(): boolean;
-  syncNeeded(): boolean;
   pendingCommits(): OutboxCommit[];
   subscriptions(): SubscriptionRecord[];
   subscription(id: string): SubscriptionRecord | undefined;

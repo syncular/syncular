@@ -204,4 +204,4 @@ example build). CI runs it as the `tauri-bindings` job, gated on
 - **JS tests**: `@syncular/tauri`'s bridge unit tests (injected
   invoke/listen doubles) assert the `SyncClientLike` contract, event fanout, and
   the bytes convention, plus a shape-parity test against the real React
-  `normalizeClient`.
+  `SyncClientLike` contract.

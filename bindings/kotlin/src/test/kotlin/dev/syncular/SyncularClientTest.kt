@@ -140,11 +140,23 @@ class SyncularClientTest {
     }
 
     @Test
-    fun pendingCommitsAfterOfflineMutate() {
+    fun snapshotsAndPendingOutcomesAfterOfflineMutate() {
         makeClient().use { client ->
             client.subscribe(id = "s1", table = "todo")
-            client.mutate(listOf(upsert("t1", "x")))
-            assertTrue(client.pendingCommitIds().isNotEmpty())
+            val id = client.mutate(listOf(upsert("t1", "x")))
+            assertEquals(listOf(id), client.pendingCommitIds())
+            assertEquals(1.0, client.statusSnapshot()["outbox"]?.number)
+            assertEquals(1, client.querySnapshot("SELECT title FROM todo")["rows"]?.array?.size)
+            assertEquals(1.0, client.diagnosticsSnapshot()["replica"]?.get("pendingOutbox")?.number)
+            assertEquals(null, client.commitOutcome(id))
+            assertTrue(client.commitOutcomes().isEmpty())
+            assertTrue(client.rejections().isEmpty())
+            assertFailsWith<SyncularException> {
+                client.resolveCommitOutcome(JsonValue.obj("clientCommitId" to JsonValue.of(id), "resolution" to JsonValue.of("dismissed")))
+            }
+            for (method in listOf("schemaFloor", "leaseState", "upgrading", "syncNeeded")) {
+                assertFailsWith<SyncularException> { client.command(method, JsonValue.Obj(emptyMap())) }
+            }
         }
     }
 

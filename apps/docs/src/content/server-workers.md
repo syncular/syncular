@@ -159,6 +159,9 @@ const realtimeDOConfig = (env: Env): RealtimeDOConfig => ({
 export class SyncularRealtimeDO extends DurableObject<Env> {
   #host = new SyncularRealtimeHost(this.ctx, this.env.DB, realtimeDOConfig(this.env));
   fetch(request: Request) { return this.#host.fetch(request); }
+  pruneCommitLog(partition: string, nowMs: number) {
+    return this.#host.pruneCommitLog({ partition, nowMs });
+  }
   webSocketMessage(ws: WebSocket, msg: ArrayBuffer | string) {
     return this.#host.webSocketMessage(ws, msg);
   }
@@ -219,12 +222,14 @@ instead of `realtime`; only the WebSocket route is omitted.
 The host schedules reaction retention, commit-log pruning, and blob cleanup.
 On Workers the natural place is a cron trigger: add
 `[triggers] crons = [...]` and run the maintenance helpers per partition from
-the `scheduled` handler.
+the `scheduled` handler. Commit-log pruning calls the DO method shown above,
+which shares the HTTP/socket write queue. Generate the Worker binding types
+with `REALTIME` referencing `DurableObjectNamespace<SyncularRealtimeDO>` so the
+RPC method is available on its stub. Direct uncoordinated D1 pruning fails.
 
 ```ts
 import {
   D1ServerStorage,
-  pruneCommitLog,
   pruneReactions,
   sweepOrphanBlobs,
 } from '@syncular/server';
@@ -236,7 +241,7 @@ export default {
     await storage.migrate();
     const blobs = makeBlobs(env); // the same S3BlobStore config
     for (const { partition } of await storage.listPartitionRegistry()) {
-      await pruneCommitLog({ storage, partition, nowMs: Date.now() });
+      await env.REALTIME.getByName(partition).pruneCommitLog(partition, Date.now());
 
       let result;
       do {

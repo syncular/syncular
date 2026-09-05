@@ -151,7 +151,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     if (
       closed ||
       client === undefined ||
-      client.securityLifecycle === 'preflight'
+      client.securityLifecycle() === 'preflight'
     ) {
       return;
     }
@@ -175,7 +175,7 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
       !autoSync ||
       closed ||
       client === undefined ||
-      client.securityLifecycle === 'preflight' ||
+      client.securityLifecycle() === 'preflight' ||
       intent.kind === 'none'
     ) {
       return;
@@ -371,12 +371,13 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
     // `start()` may discover persisted subscriptions/outbox work. Its callback
     // fires before this worker publishes the initialized client, so consume
     // the durable state once here as well; coalescing makes this a single task.
-    if (started.syncNeeded) consumeSyncIntent({ kind: 'interactive' });
+    if (started.statusSnapshot().syncNeeded)
+      consumeSyncIntent({ kind: 'interactive' });
     return { clientId: started.clientId };
   }
 
   const api: WorkerApi = {
-    securityLifecycle: () => requireClient().securityLifecycle,
+    securityLifecycle: () => requireClient().securityLifecycle(),
     beginSecurityPreflight: async () => {
       if (backgroundTimer !== undefined) clearTimeout(backgroundTimer);
       backgroundTimer = undefined;
@@ -435,17 +436,13 @@ export function startSyncWorker(overrides: SyncWorkerOverrides = {}): void {
         realtime: snapshot.host.realtime,
       });
     },
-    conflicts: () => requireClient().conflicts,
-    rejections: () => requireClient().rejections,
+    conflicts: () => requireClient().conflicts(),
+    rejections: () => requireClient().rejections(),
     commitOutcome: (clientCommitId) =>
       requireClient().commitOutcome(clientCommitId),
     commitOutcomes: (query) => requireClient().commitOutcomes(query),
     resolveCommitOutcome: (input) =>
       requireClient().resolveCommitOutcome(input),
-    schemaFloor: () => requireClient().schemaFloor,
-    leaseState: () => requireClient().leaseState,
-    upgrading: () => requireClient().upgrading,
-    syncNeeded: () => requireClient().syncNeeded,
     pendingCommits: () => requireClient().pendingCommits(),
     subscriptions: () => requireClient().subscriptions(),
     subscription: (id) => requireClient().subscription(id),

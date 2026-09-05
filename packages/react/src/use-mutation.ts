@@ -13,13 +13,15 @@ export interface SyncTableDescriptor<Row, Insert, Update, Id> {
 }
 
 export interface UseMutationOptions {
-  readonly onSuccess?: (clientCommitId: string) => void;
+  /** Runs after durable local enqueue. The server outcome can still reject this commit. */
+  readonly onEnqueued?: (clientCommitId: string) => void;
   readonly onError?: (error: Error) => void;
 }
 
 export interface UseMutationResult {
   mutate: (mutations: readonly MutationInput[]) => Promise<string>;
   readonly pendingCount: number;
+  /** True while at least one local enqueue is unresolved. */
   readonly isPending: boolean;
   readonly error: Error | undefined;
   readonly resetError: () => void;
@@ -66,12 +68,12 @@ export function useMutation<Row, Insert, Update, Id>(
   const resetError = useCallback(() => setError(undefined), []);
 
   const run = useCallback(
-    async (operation: () => Promise<string>): Promise<string> => {
+    async (operation: () => string | Promise<string>): Promise<string> => {
       setPendingCount((count) => count + 1);
       setError(undefined);
       try {
         const id = await operation();
-        optionsRef.current?.onSuccess?.(id);
+        optionsRef.current?.onEnqueued?.(id);
         return id;
       } catch (caught) {
         const wrapped =

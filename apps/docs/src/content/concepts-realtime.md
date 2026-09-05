@@ -61,3 +61,8 @@ receive from a scope key only if your connection holds it. Publishing to an
 unheld key returns `presence.forbidden`. Peers are identified as
 `(actorId, clientId)`, visible only to scope-mates. In React,
 `usePresence(scopeKey)` keeps the peer list live.
+
+`usePresence(scopeKey)` clears the previous peers when the client or scope
+changes. Overlapping reads publish the newest requested snapshot; an older
+response cannot replace it, including after the newer read fails. Cleanup
+invalidates pending reads.

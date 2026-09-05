@@ -38,8 +38,9 @@ let text = try client.crdtText(table: "notes", rowId: "n1", column: "doc")
 try client.crdtInsertText(table: "notes", rowId: "n1", column: "doc", index: 0, value: "Hi ")
 try client.crdtDeleteText(table: "notes", rowId: "n1", column: "doc", index: 0, len: 3)
 
-// Raw escape hatch for any method the conveniences don't cover:
-let result = try client.command(method: "leaseState", params: .object([:]))
+// Read lease and schema state from one snapshot:
+let status = try client.statusSnapshot()
+let lease = status["leaseState"]
 
 // Exact changes, scheduling intents, and privacy-safe diagnostics snapshots
 // arrive on the main queue:
@@ -168,3 +169,17 @@ precedent's honest scoping, the Swift gate is **not** run in CI — it is the lo
 `check.sh` bar documented here. The Kotlin gate (FFM, JDK-only) IS cheap enough
 to compile-check on an Ubuntu runner; see [`../kotlin`](../kotlin) and the
 `swift-kotlin-bindings` job in `.github/workflows/ci.yml`.
+
+## Snapshot and outcome methods
+
+Use `querySnapshot` for rows, coverage, and revision from one local read.
+`statusSnapshot` returns scheduling, schema, lease, and outbox state;
+`diagnosticsSnapshot` adds bounded support evidence. `commitOutcome` looks up
+one terminal result by commit ID. `commitOutcomes` lists the durable journal,
+and `resolveCommitOutcome` records an explicit resolution. A pending commit
+has no terminal outcome. `rejections` lists rejected commits.
+
+This source-breaking revision removes the `syncNeeded` convenience and the raw
+`schemaFloor`, `leaseState`, `upgrading`, and `syncNeeded` commands. Read those
+fields from `statusSnapshot` instead. The wrappers use the existing native
+command dispatcher and return the binding's JSON value types.

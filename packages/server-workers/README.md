@@ -139,6 +139,10 @@ from a Worker scheduler, queue consumer, Workflow step, or Durable Object
 alarm according to the application's hosting model.
 
 Schedule `pruneReactions` per partition as a separate maintenance pass.
+For commit-log pruning, expose the `SyncularRealtimeHost.pruneCommitLog` method
+through the owning Durable Object and call its RPC from the scheduler. This
+method uses the existing partition FIFO. Direct D1 pruning requires the same
+external serialization assertion as push application.
 Defaults retain completed rows for 30 days and dead-lettered rows for 90 days,
 with at most 1,000 deletions per pass. Repeat while `mayHaveMore` is true.
 Pending and leased rows are never eligible. D1 executes each bounded cleanup
@@ -263,6 +267,9 @@ const realtimeDOConfig = (env: Env): RealtimeDOConfig => ({
 export class SyncularRealtimeDO extends DurableObject<Env> {
   #host = new SyncularRealtimeHost(this.ctx, this.env.DB, realtimeDOConfig(this.env));
   fetch(request: Request) { return this.#host.fetch(request); }
+  pruneCommitLog(partition: string, nowMs: number) {
+    return this.#host.pruneCommitLog({ partition, nowMs });
+  }
   webSocketMessage(ws: WebSocket, msg: ArrayBuffer | string) {
     return this.#host.webSocketMessage(ws, msg);
   }

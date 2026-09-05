@@ -302,6 +302,36 @@ describe('CRDT column push merge (SPEC.md §5.10.3)', () => {
     ).toBe(1);
   });
 
+  test('sanitizes merger exceptions before persistence and replay', async () => {
+    const secret = 'synthetic-private-merger-token';
+    let calls = 0;
+    const failing = makeCtx({
+      'set-union': () => {
+        calls += 1;
+        throw new Error(secret);
+      },
+    });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await push(failing, 'private-failure', {
+        rowId: 'n1',
+        payload: noteRow('n1', 'p1', 't', new Uint8Array([1])),
+      });
+      expect(result.results[0]).toMatchObject({
+        status: 'error',
+        code: 'sync.crdt_merge_failed',
+        message: 'CRDT merger failed',
+      });
+      expect(JSON.stringify(result)).not.toContain(secret);
+    }
+    expect(calls).toBe(1);
+    expect(
+      JSON.stringify(
+        await storage.getPushResult('part-1', 'client-1', 'private-failure'),
+      ),
+    ).not.toContain(secret);
+    expect(await storage.getRow('part-1', 'notes', 'n1')).toBeUndefined();
+  });
+
   test('a crdt push with no merger registered fails loud (§5.10.6)', async () => {
     const noMergerCtx = makeCtx(undefined);
     const r = await push(noMergerCtx, 'c1', {

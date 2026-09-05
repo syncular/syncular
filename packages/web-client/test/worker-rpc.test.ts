@@ -159,8 +159,8 @@ test('boot → subscribe → mutate → sync → query, all over the RPC', async
   );
   expect(await handle.conflicts()).toEqual([]);
   expect(await handle.rejections()).toEqual([]);
-  expect(await handle.schemaFloor()).toBeUndefined();
-  expect(await handle.syncNeeded()).toBe(false);
+  expect((await handle.statusSnapshot()).schemaFloor).toBeUndefined();
+  expect((await handle.statusSnapshot()).syncNeeded).toBe(false);
   const diagnostics = await handle.diagnosticsSnapshot({
     expectedSubscriptions: [
       { id: 'tasks', table: 'tasks' },
@@ -493,7 +493,8 @@ test('conflicts surface as RPC events and via conflicts()', async () => {
   expect(resolved.resolution).toBe('resolved_keep_server');
   expect(await a.conflicts()).toHaveLength(0);
   expect(await a.commitOutcomes({ activeOnly: true })).toHaveLength(0);
-  await waitFor(() => events.conflicts === 1, 'conflict event delivery');
+  // The completed RPC reads are FIFO barriers for preceding worker events.
+  expect(events.conflicts).toBe(1);
 
   // The losing pane converges to the server row.
   const rows = await a.query('SELECT title FROM tasks WHERE id = ?', ['t3']);
@@ -523,10 +524,14 @@ test('realtime wake-ups drive the worker-side host loop (§8.4)', async () => {
 
   // Either a binary delta applied directly or a wake-up triggered the
   // worker's coalesced auto-sync — the observable contract is the row.
-  await waitFor(async () => {
-    const rows = await b.query('SELECT id FROM tasks WHERE id = ?', ['t4']);
-    return rows.length === 1;
-  }, 'realtime propagation into worker B');
+  await waitFor(
+    async () => {
+      const rows = await b.query('SELECT id FROM tasks WHERE id = ?', ['t4']);
+      return rows.length === 1;
+    },
+    (notify) => b.onChange(notify),
+    'realtime propagation into worker B',
+  );
   await b.disconnectRealtime();
   expect(events.wakes.length).toBeGreaterThanOrEqual(0);
 });
@@ -542,7 +547,11 @@ test('worker realtime connect is single-owner across repeated RPC calls', async 
   expect(http.realtimeOpened - openedBefore).toBe(1);
 
   await handle.disconnectRealtime();
-  await waitFor(() => http.realtimeActive === 0, 'worker realtime disconnect');
+  await waitFor(
+    () => http.realtimeActive === 0,
+    (notify) => http.onRealtimeChange(notify),
+    'worker realtime disconnect',
+  );
   await handle.connectRealtime();
   expect(http.realtimeOpened - openedBefore).toBe(2);
   await handle.disconnectRealtime();

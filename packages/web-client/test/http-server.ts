@@ -21,6 +21,7 @@ export interface HttpTestServer {
   readonly realtimeUrl: string;
   readonly realtimeOpened: number;
   readonly realtimeActive: number;
+  onRealtimeChange(listener: () => void): () => void;
   stop(): Promise<void>;
 }
 
@@ -50,6 +51,7 @@ export function serveOverHttp(
   server: TestServer,
   actorId = 'actor-1',
 ): HttpTestServer {
+  const realtimeListeners = new Set<() => void>();
   let realtimeOpened = 0;
   let realtimeActive = 0;
   const bunServer = Bun.serve<SocketData>({
@@ -98,6 +100,7 @@ export function serveOverHttp(
       open(ws) {
         realtimeOpened += 1;
         realtimeActive += 1;
+        for (const listener of realtimeListeners) listener();
         server.hub
           .connect({
             partition: PARTITION,
@@ -124,6 +127,7 @@ export function serveOverHttp(
       close(ws) {
         realtimeActive = Math.max(0, realtimeActive - 1);
         ws.data.session?.close();
+        for (const listener of realtimeListeners) listener();
       },
     },
   });
@@ -132,6 +136,12 @@ export function serveOverHttp(
     syncUrl: `${base}/sync`,
     segmentsUrl: `${base}/segments`,
     realtimeUrl: `ws://localhost:${bunServer.port}/realtime?clientId={clientId}`,
+    onRealtimeChange(listener) {
+      realtimeListeners.add(listener);
+      return () => {
+        realtimeListeners.delete(listener);
+      };
+    },
     get realtimeOpened() {
       return realtimeOpened;
     },

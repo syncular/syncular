@@ -161,12 +161,12 @@ export async function runServerSqliteContract(runtime: Runtime): Promise<void> {
 
     const table = schema.tables.get('tasks');
     assert(table !== undefined, 'compiled table');
-    const image = runtime.buildImage({
+    const image = await runtime.buildImage({
       table,
       schemaVersion: 1,
       asOfCommitSeq: 1,
       scopeDigest: 'scope',
-      rows: [row],
+      rowBatches: [[row]],
     });
     const header = new TextDecoder().decode(image.slice(0, 16));
     assert(header === 'SQLite format 3\0', 'SQLite image header');

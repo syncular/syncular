@@ -294,7 +294,7 @@ test('leader + follower: follower proxies the full API to the one core', async (
 
   // State surfaces cross the channel.
   expect(await follower.conflicts()).toEqual([]);
-  expect(await follower.schemaFloor()).toBeUndefined();
+  expect((await follower.statusSnapshot()).schemaFloor).toBeUndefined();
   const leaderDiagnostics = await leader.diagnosticsSnapshot();
   const followerDiagnostics = await follower.diagnosticsSnapshot();
   expect(leaderDiagnostics.host).toMatchObject({

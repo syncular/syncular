@@ -870,12 +870,25 @@ class RustClientInstance implements ClientInstance {
   }
 
   async schemaFloor(): Promise<ClientSyncReport['schemaFloor'] | undefined> {
-    const result = asObject(
-      await this.#shim.call('schemaFloor', {}),
-      'schemaFloor',
+    const status = asObject(
+      await this.#shim.call('statusSnapshot', {}),
+      'statusSnapshot',
     );
-    if (result.floor === null || result.floor === undefined) return undefined;
-    return result.floor as unknown as ClientSyncReport['schemaFloor'];
+    if (status.schemaFloor === null || status.schemaFloor === undefined)
+      return undefined;
+    const floor = asObject(status.schemaFloor, 'schemaFloor');
+    const { requiredSchemaVersion, latestSchemaVersion } = floor;
+    if (
+      (requiredSchemaVersion !== undefined &&
+        typeof requiredSchemaVersion !== 'number') ||
+      (latestSchemaVersion !== undefined &&
+        typeof latestSchemaVersion !== 'number')
+    )
+      throw new Error('invalid schema floor snapshot');
+    return {
+      ...(requiredSchemaVersion === undefined ? {} : { requiredSchemaVersion }),
+      ...(latestSchemaVersion === undefined ? {} : { latestSchemaVersion }),
+    };
   }
 
   async leaseState(): Promise<
@@ -886,15 +899,24 @@ class RustClientInstance implements ClientInstance {
       }
     | undefined
   > {
-    const result = asObject(
-      await this.#shim.call('leaseState', {}),
-      'leaseState',
+    const status = asObject(
+      await this.#shim.call('statusSnapshot', {}),
+      'statusSnapshot',
     );
-    if (result.lease === null || result.lease === undefined) return undefined;
-    return result.lease as unknown as {
-      readonly leaseId?: string;
-      readonly expiresAtMs?: number;
-      readonly errorCode?: string;
+    if (status.leaseState === null || status.leaseState === undefined)
+      return undefined;
+    const lease = asObject(status.leaseState, 'leaseState');
+    const { leaseId, expiresAtMs, errorCode } = lease;
+    if (
+      (leaseId !== undefined && typeof leaseId !== 'string') ||
+      (expiresAtMs !== undefined && typeof expiresAtMs !== 'number') ||
+      (errorCode !== undefined && typeof errorCode !== 'string')
+    )
+      throw new Error('invalid lease snapshot');
+    return {
+      ...(leaseId === undefined ? {} : { leaseId }),
+      ...(expiresAtMs === undefined ? {} : { expiresAtMs }),
+      ...(errorCode === undefined ? {} : { errorCode }),
     };
   }
 
@@ -907,11 +929,7 @@ class RustClientInstance implements ClientInstance {
   }
 
   async syncNeeded(): Promise<boolean> {
-    const result = asObject(
-      await this.#shim.call('syncNeeded', {}),
-      'syncNeeded',
-    );
-    return result.value === true;
+    return (await this.statusSnapshot()).syncNeeded;
   }
 
   async setPresence(
@@ -934,11 +952,7 @@ class RustClientInstance implements ClientInstance {
   }
 
   async upgrading(): Promise<boolean> {
-    const result = asObject(
-      await this.#shim.call('upgrading', {}),
-      'upgrading',
-    );
-    return result.value === true;
+    return (await this.statusSnapshot()).upgrading;
   }
 
   /**

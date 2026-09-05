@@ -373,3 +373,9 @@ The only Tauri-specific line is client construction.
   the socket.
 - **[Server setup](/guide-server/)**: the server this native instance syncs
   against.
+
+The snapshot API revision removes the individual `schemaFloor`, `leaseState`,
+`upgrading`, and `syncNeeded` methods. Read those fields from
+`await client.statusSnapshot()`. Collection and outcome reads remain methods.
+React accepts the bridge directly. See the
+[client migration](https://syncular.dev/platform-web/#snapshot-api-migration).

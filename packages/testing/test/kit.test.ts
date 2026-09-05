@@ -268,13 +268,13 @@ describe('createTestSync — write validation', () => {
       });
       await a.sync();
 
-      expect(a.api.rejections).toHaveLength(1);
-      expect(a.api.rejections[0]?.details).toEqual({
+      expect(a.api.rejections()).toHaveLength(1);
+      expect(a.api.rejections()[0]?.details).toEqual({
         fieldPaths: ['body'],
         reason: 'reserved_term',
         requiredAction: 'edit_fields',
       });
-      expect(a.api.rejections[0]?.operation?.changedFields).toEqual(['body']);
+      expect(a.api.rejections()[0]?.operation?.changedFields).toEqual(['body']);
     } finally {
       await sync.dispose();
     }
@@ -321,8 +321,8 @@ describe('createTestSync — write validation', () => {
       ]);
       await a.sync();
 
-      expect(a.api.rejections).toHaveLength(1);
-      expect(a.api.rejections[0]).toMatchObject({
+      expect(a.api.rejections()).toHaveLength(1);
+      expect(a.api.rejections()[0]).toMatchObject({
         code: 'app.audit_required',
         opIndex: 0,
         retryable: false,
@@ -354,7 +354,7 @@ describe('createTestSync — write validation', () => {
       ]);
       await b.sync();
 
-      expect(b.api.rejections).toHaveLength(0);
+      expect(b.api.rejections()).toHaveLength(0);
       expect(
         await sync.server.storage.getRow('test', 'notes', 'n2'),
       ).toBeDefined();

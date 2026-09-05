@@ -1,11 +1,20 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { SyncClient } from '@syncular/client';
+import { BunClientDatabase } from '@syncular/client/bun';
+import { handleSyncRequest, ValidationRejection } from '@syncular/server';
+import { CLIENT_SCHEMA, makeServer, taskValues } from './loopback';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { type ReactNode, StrictMode } from 'react';
 import {
   createSyncClientResource,
   SyncProvider,
   type SyncTableDescriptor,
+  type SyncClientLike,
   useMutation,
+  useCommitOutcomes,
   useRawSql,
 } from '../src/index';
 import { FakeClient } from './fake-client';
@@ -27,7 +36,7 @@ function deferred<T>(): {
   return { promise, resolve, reject };
 }
 
-function wrapper(client: FakeClient) {
+function wrapper(client: SyncClientLike) {
   return ({ children }: { children: ReactNode }) => (
     <SyncProvider client={client}>{children}</SyncProvider>
   );
@@ -150,7 +159,7 @@ describe('client resources', () => {
 
 describe('mutation ergonomics', () => {
   test('overlapping mutations use a pending count and preserve rejected promises', async () => {
-    const client = new FakeClient();
+    const client: SyncClientLike = new FakeClient();
     const first = deferred<string>();
     const second = deferred<string>();
     const pending = [first, second];
@@ -160,7 +169,7 @@ describe('mutation ergonomics', () => {
     const { result } = renderHook(
       () =>
         useMutation({
-          onSuccess: (id) => successes.push(id),
+          onEnqueued: (id) => successes.push(id),
           onError: (error) => errors.push(error),
         }),
       { wrapper: wrapper(client) },
@@ -256,4 +265,92 @@ describe('mutation ergonomics', () => {
       ['tasks', 't1', { done: true }, { baseVersion: 3 }],
     ]);
   });
+});
+
+test('onEnqueued succeeds offline and the later rejection remains addressable after restart', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'syncular-react-enqueue-'));
+  const path = join(directory, 'client.db');
+  const server = makeServer();
+  let offline = true;
+  const ctx = {
+    ...server.ctxFor('actor'),
+    validators: {
+      tasks: () => {
+        throw new ValidationRejection('app.denied', 'write denied');
+      },
+    },
+  };
+  const open = async () => {
+    const db = new BunClientDatabase(path);
+    const client = new SyncClient({
+      database: db,
+      schema: CLIENT_SCHEMA,
+      clientId: 'enqueue-test',
+      transport: (bytes) => {
+        if (offline) return Promise.reject(new Error('offline'));
+        return handleSyncRequest(bytes, ctx);
+      },
+    });
+    await client.start();
+    return { db, client };
+  };
+  let current = await open();
+  const enqueued: string[] = [];
+  const view = renderHook(
+    () => ({
+      mutation: useMutation({ onEnqueued: (id) => enqueued.push(id) }),
+      outcomes: useCommitOutcomes(),
+    }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <SyncProvider client={current.client}>{children}</SyncProvider>
+      ),
+    },
+  );
+  try {
+    let id = '';
+    await act(async () => {
+      id = await view.result.current.mutation.mutate([
+        { table: 'tasks', op: 'upsert', values: taskValues('t1', 'p1') },
+      ]);
+    });
+    expect(enqueued).toEqual([id]);
+    expect(view.result.current.mutation.isPending).toBe(false);
+    expect(current.client.pendingCommits()).toHaveLength(1);
+    expect(current.client.commitOutcome(id)).toBeUndefined();
+    expect(view.result.current.outcomes.outcomes).toEqual([]);
+    await act(async () => {
+      await expect(current.client.sync()).rejects.toThrow('offline');
+    });
+    view.unmount();
+    await current.client.close();
+    current.db.close();
+    current = await open();
+    expect(current.client.pendingCommits()[0]?.clientCommitId).toBe(id);
+    offline = false;
+    await current.client.syncUntilIdle();
+    expect(current.client.commitOutcome(id)?.status).toBe('rejected');
+    expect(enqueued).toEqual([id]);
+    await current.client.close();
+    current.db.close();
+    current = await open();
+    expect(current.client.commitOutcome(id)?.status).toBe('rejected');
+    const outcomes = renderHook(() => useCommitOutcomes(), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <SyncProvider client={current.client}>{children}</SyncProvider>
+      ),
+    });
+    await act(async () => {
+      for (let turn = 0; turn < 12; turn += 1) await Promise.resolve();
+    });
+    expect(outcomes.result.current.outcomes[0]?.clientCommitId).toBe(id);
+    expect(outcomes.result.current.outcomes[0]?.status).toBe('rejected');
+    outcomes.unmount();
+  } finally {
+    view.unmount();
+    await current.client.close();
+    current.db.close();
+    server.storage.db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

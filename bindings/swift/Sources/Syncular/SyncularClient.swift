@@ -354,7 +354,7 @@ public final class SyncularClient {
 
     /// Current pending client commit ids (the offline outbox — non-empty after
     /// a local `mutate` until sync drains it). The honest offline "unsynced
-    /// work" signal (`syncNeeded` reflects a server-push wake, not local mutes).
+    /// work" signal (the status snapshot also includes server-push scheduling intent).
     public func pendingCommitIds() throws -> [String] {
         let result = try command(method: "pendingCommitIds", params: .object([:]))
         guard case let .object(fields) = result, case let .array(ids)? = fields["ids"] else {
@@ -376,11 +376,50 @@ public final class SyncularClient {
         return rows
     }
 
-    /// The current sync-needed flag (§8.4 wake signal).
-    public func syncNeeded() throws -> Bool {
-        let result = try command(method: "syncNeeded", params: .object([:]))
-        if case let .object(fields) = result { return fields["value"]?.boolValue ?? false }
-        return false
+    /// Atomically read rows, coverage, and the local revision.
+    public func querySnapshot(_ sql: String, params: [JSONValue] = [], coverage: [JSONValue] = []) throws -> JSONValue {
+        try command(method: "querySnapshot", params: .object(["sql": .string(sql), "params": .array(params), "coverage": .array(coverage)]))
+    }
+
+    /// One read for outbox count, upgrade state, lease, schema floor, and sync-needed state.
+    public func statusSnapshot() throws -> JSONValue {
+        try command(method: "statusSnapshot", params: .object([:]))
+    }
+
+    public func diagnosticsSnapshot(_ request: JSONValue = .object([:])) throws -> JSONValue {
+        try command(method: "diagnosticsSnapshot", params: request)
+    }
+
+    public func commitOutcome(clientCommitId: String) throws -> JSONValue? {
+        let result = try command(method: "commitOutcome", params: .object(["clientCommitId": .string(clientCommitId)]))
+        guard let outcome = result["outcome"] else {
+            throw SyncularError(code: "client.invalid_host_response", message: "commit outcome missing")
+        }
+        return outcome == .null ? nil : outcome
+    }
+
+    public func commitOutcomes(_ query: JSONValue = .object([:])) throws -> [JSONValue] {
+        let result = try command(method: "commitOutcomes", params: .object(["query": query]))
+        guard let outcomes = result["outcomes"]?.arrayValue else {
+            throw SyncularError(code: "client.invalid_host_response", message: "commit outcomes missing")
+        }
+        return outcomes
+    }
+
+    public func resolveCommitOutcome(_ input: JSONValue) throws -> JSONValue {
+        let result = try command(method: "resolveCommitOutcome", params: .object(["input": input]))
+        guard let outcome = result["outcome"] else {
+            throw SyncularError(code: "client.invalid_host_response", message: "resolved commit outcome missing")
+        }
+        return outcome
+    }
+
+    public func rejections() throws -> [JSONValue] {
+        let result = try command(method: "rejections", params: .object([:]))
+        guard let rejections = result["rejections"]?.arrayValue else {
+            throw SyncularError(code: "client.invalid_host_response", message: "rejections missing")
+        }
+        return rejections
     }
 
     /// A subscription's status string (`active` / `revoked` / `failed`) — the

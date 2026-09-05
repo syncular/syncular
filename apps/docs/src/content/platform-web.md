@@ -297,3 +297,34 @@ There is a single support floor and a single persistence path:
 - [Named queries](/tooling-queries/): typed `.sql` reads on every platform.
 - [Local full-text search](/tooling-local-search/): offline FTS5 over synced rows.
 - [`@syncular/client` README](https://github.com/syncular/syncular/tree/main/packages/web-client): the full API reference, including blob caching and the RPC protocol.
+
+## Snapshot API migration
+
+This source-breaking revision uses methods for application reads across the
+direct client, worker leaders and followers, Tauri, and React Native. Replace
+`client.conflicts`, `client.rejections`, and `client.securityLifecycle` on the
+direct client with method calls. Replace `schemaFloor`, `leaseState`,
+`upgrading`, and `syncNeeded` getters or bridge methods with fields from one
+`statusSnapshot()` call:
+
+```ts
+const status = await client.statusSnapshot();
+if (status.schemaFloor) showUpgradeRequired(status.schemaFloor);
+const conflicts = await client.conflicts();
+const outcome = await client.commitOutcome(commitId);
+```
+
+The direct client returns snapshots synchronously. Worker and native bridges
+return promises; `await` works with both. `querySnapshot` returns rows, coverage,
+and revision from one read. `diagnosticsSnapshot`, `commitOutcome`,
+`commitOutcomes`, and `resolveCommitOutcome` retain their existing arguments.
+The shared `ClientSnapshotMethods` and `PromiseMethods` types describe these
+contracts. Key-bearing security activation stays on each concrete host type.
+
+React uses the supplied client directly; `useSyncClient()` preserves its
+identity. Remove imports of `normalizeClient` and the
+`@syncular/client/realtime-supervisor-observation` forwarding utility. Pass the
+client to `SyncProvider` and use `realtimeSupervisorSnapshot(client)` to inspect
+an attached supervisor. Custom React clients must implement the snapshot
+methods and method-form collection reads. See the [React migration](/platform-react/)
+for the `onEnqueued` callback rename.

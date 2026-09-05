@@ -1,17 +1,13 @@
 /**
  * @syncular/react — React bindings with fine-grained live queries
  * Works against BOTH `SyncClient`
- * (direct) and `SyncClientHandle` (worker) through one normalized client
+ * (direct) and `SyncClientHandle` (worker) through the canonical client
  * interface. React 18+ (react is a peer dependency); no other runtime deps.
  *
  * See README.md for the invalidation granularity truth and the `tables`
  * option.
  */
-export type { NormalizedClient, SyncClientLike } from './client';
-// `normalizeClient` is the runtime facade the hooks consume; exported so
-// alternate hosts (e.g. `@syncular/tauri`) can assert shape-parity against
-// the exact normalizer the bindings use.
-export { normalizeClient } from './client';
+export type { SyncClientLike } from './client';
 export { inferTables } from './infer-tables';
 export {
   type SyncBoundaryActions,

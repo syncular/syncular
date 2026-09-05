@@ -102,6 +102,10 @@ function toDriverValue(value: RowValue): DriverRowValue {
  */
 function compileValidatorRule(spec: ValidatorInstallSpec): Validator {
   const rule = spec.rule;
+  if (rule.kind === 'unexpectedError')
+    return () => {
+      throw new Error(rule.message);
+    };
   if (rule.kind === 'maxLength') {
     return (op) => {
       if (op.row === undefined) return; // deletes carry no row
@@ -356,6 +360,7 @@ class TsServerInstance implements ServerInstance {
       begin: (p) => this.#storage.begin(p),
       getMaxCommitSeq: (p) => this.#storage.getMaxCommitSeq(p),
       getHorizonSeq: (p) => this.#storage.getHorizonSeq(p),
+      getPartitionLogEpoch: (p) => this.#storage.getPartitionLogEpoch(p),
       setHorizonSeq: (p, s) => this.#storage.setHorizonSeq(p, s),
       pruneCommitsThrough: (p, s) => this.#storage.pruneCommitsThrough(p, s),
       getCommitSeqBefore: (p, t) => this.#storage.getCommitSeqBefore(p, t),
@@ -374,6 +379,8 @@ class TsServerInstance implements ServerInstance {
       scanRows: (p, q) => this.#storage.scanRows(p, q),
       getClientRecord: (p, c) => this.#storage.getClientRecord(p, c),
       putClientRecord: (p, r) => this.#storage.putClientRecord(p, r),
+      getActiveClientCursorFloor: (p, cutoff) =>
+        this.#storage.getActiveClientCursorFloor(p, cutoff),
       listClientCursors: (p) => this.#storage.listClientCursors(p),
       // §5.9.4 blob reference index reads.
       listRowsReferencingBlob: (p, b) =>

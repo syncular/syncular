@@ -519,7 +519,7 @@ class TsClientInstance implements ClientInstance {
   }
 
   async conflicts(): Promise<ClientConflict[]> {
-    return this.#client.conflicts.map((conflict) => {
+    return this.#client.conflicts().map((conflict) => {
       const serverRow: Record<string, DriverRowValue> = {};
       for (const [key, value] of Object.entries(conflict.serverRow)) {
         serverRow[key] = toDriverValue(value);
@@ -546,7 +546,7 @@ class TsClientInstance implements ClientInstance {
   }
 
   async rejections(): Promise<ClientRejection[]> {
-    return this.#client.rejections.map((rejection) => ({
+    return this.#client.rejections().map((rejection) => ({
       clientCommitId: rejection.clientCommitId,
       opIndex: rejection.opIndex,
       code: rejection.code,
@@ -595,7 +595,7 @@ class TsClientInstance implements ClientInstance {
       }
     | undefined
   > {
-    return this.#client.schemaFloor;
+    return this.#client.statusSnapshot().schemaFloor;
   }
 
   async leaseState(): Promise<
@@ -606,11 +606,11 @@ class TsClientInstance implements ClientInstance {
       }
     | undefined
   > {
-    return this.#client.leaseState;
+    return this.#client.statusSnapshot().leaseState;
   }
 
   async upgrading(): Promise<boolean> {
-    return this.#client.upgrading;
+    return this.#client.statusSnapshot().upgrading;
   }
 
   /**
@@ -626,7 +626,7 @@ class TsClientInstance implements ClientInstance {
       ...this.#options,
       schema,
     });
-    if (this.#client.syncNeeded) {
+    if (this.#client.statusSnapshot().syncNeeded) {
       this.#intents.push({ kind: 'interactive' });
     }
     this.#schema = schema;
@@ -642,7 +642,7 @@ class TsClientInstance implements ClientInstance {
   }
 
   async syncNeeded(): Promise<boolean> {
-    return this.#client.syncNeeded;
+    return this.#client.statusSnapshot().syncNeeded;
   }
 
   async setPresence(

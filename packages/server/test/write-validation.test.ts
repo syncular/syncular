@@ -91,6 +91,54 @@ function capture(): Captured {
 }
 
 describe('write validation apply (§6.7)', () => {
+  for (const source of ['row', 'commit'] as const) {
+    test(`sanitizes unexpected ${source} exceptions before persistence and replay`, async () => {
+      const secret = 'synthetic-private-database-password';
+      let calls = 0;
+      const fail = () => {
+        calls += 1;
+        throw new Error(secret);
+      };
+      const cap = capture();
+      const t = makeContext({
+        ...(source === 'row'
+          ? { validators: { tasks: fail } }
+          : { commitValidator: fail }),
+        events: cap.sink,
+      });
+      const frames = [
+        pushCommit('private-failure', [
+          upsert('tasks', 't1', taskRow('t1', 'p1')),
+        ]),
+      ];
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const result = await sync(t, frames);
+        expect(pushResults(result)[0]?.results[0]).toMatchObject({
+          status: 'error',
+          code: 'sync.constraint_violation',
+          message:
+            source === 'row'
+              ? 'write validator failed'
+              : 'whole-commit validator failed',
+        });
+        expect(JSON.stringify(result)).not.toContain(secret);
+      }
+      expect(calls).toBe(1);
+      expect(
+        JSON.stringify(
+          await t.storage.getPushResult(
+            'part-1',
+            'client-1',
+            'private-failure',
+          ),
+        ),
+      ).not.toContain(secret);
+      expect(JSON.stringify(cap.events)).not.toContain(secret);
+      expect(await t.storage.getRow('part-1', 'tasks', 't1')).toBeUndefined();
+      t.storage.db.close();
+    });
+  }
+
   test('emits and idempotently replays a privacy-safe details companion', async () => {
     const t = makeContext({
       validators: {

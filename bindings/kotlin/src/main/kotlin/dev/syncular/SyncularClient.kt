@@ -283,9 +283,33 @@ class SyncularClient private constructor(
         return result["ids"]?.array?.mapNotNull { it.string } ?: emptyList()
     }
 
-    /** The current sync-needed flag (§8.4 wake signal). */
-    fun syncNeeded(): Boolean =
-        command("syncNeeded", JsonValue.Obj(emptyMap()))["value"]?.bool ?: false
+    /** Atomically read rows, coverage, and the local revision. */
+    fun querySnapshot(sql: String, params: List<JsonValue> = emptyList(), coverage: List<JsonValue> = emptyList()): JsonValue =
+        command("querySnapshot", JsonValue.obj("sql" to JsonValue.of(sql), "params" to JsonValue.arr(params), "coverage" to JsonValue.arr(coverage)))
+
+    /** One read for outbox count, upgrade state, lease, schema floor, and sync-needed state. */
+    fun statusSnapshot(): JsonValue = command("statusSnapshot", JsonValue.Obj(emptyMap()))
+
+    fun diagnosticsSnapshot(request: JsonValue = JsonValue.Obj(emptyMap())): JsonValue =
+        command("diagnosticsSnapshot", request)
+
+    fun commitOutcome(clientCommitId: String): JsonValue? {
+        val outcome = command("commitOutcome", JsonValue.obj("clientCommitId" to JsonValue.of(clientCommitId)))["outcome"]
+            ?: throw SyncularException("client.invalid_host_response", "commit outcome missing")
+        return if (outcome is JsonValue.Null) null else outcome
+    }
+
+    fun commitOutcomes(query: JsonValue = JsonValue.Obj(emptyMap())): List<JsonValue> =
+        command("commitOutcomes", JsonValue.obj("query" to query))["outcomes"]?.array
+            ?: throw SyncularException("client.invalid_host_response", "commit outcomes missing")
+
+    fun resolveCommitOutcome(input: JsonValue): JsonValue =
+        command("resolveCommitOutcome", JsonValue.obj("input" to input))["outcome"]
+            ?: throw SyncularException("client.invalid_host_response", "resolved commit outcome missing")
+
+    fun rejections(): List<JsonValue> =
+        command("rejections", JsonValue.Obj(emptyMap()))["rejections"]?.array
+            ?: throw SyncularException("client.invalid_host_response", "rejections missing")
 
     /** A subscription's status string (active/revoked/failed) — the status
      *  surface. Lifted from the `{state: {…, status}}` view. */

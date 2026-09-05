@@ -211,8 +211,8 @@ describe('application-authorized local projection rebootstrap', () => {
     expect(
       local.client.subscription('repair-tasks')?.bootstrapState,
     ).toBeUndefined();
-    expect(local.client.upgrading).toBe(true);
-    expect(local.client.syncNeeded).toBe(true);
+    expect(local.client.statusSnapshot().upgrading).toBe(true);
+    expect(local.client.statusSnapshot().syncNeeded).toBe(true);
     expect(changes).toHaveLength(1);
     expect(changes[0]).toContain('tasks');
 
@@ -233,7 +233,7 @@ describe('application-authorized local projection rebootstrap', () => {
       'server-row',
     ]);
     expect(local.client.pendingCommits()).toEqual([]);
-    expect(local.client.upgrading).toBe(false);
+    expect(local.client.statusSnapshot().upgrading).toBe(false);
     await local.client.close();
     local.db.close();
   });
@@ -275,8 +275,8 @@ describe('application-authorized local projection rebootstrap', () => {
     // The stale round's SUB_END state stays unpersisted: the rewound cursor
     // and the upgrading marker survive.
     expect(local.client.subscription('race-tasks')?.cursor).toBe(-1);
-    expect(local.client.upgrading).toBe(true);
-    expect(local.client.syncNeeded).toBe(true);
+    expect(local.client.statusSnapshot().upgrading).toBe(true);
+    expect(local.client.statusSnapshot().syncNeeded).toBe(true);
 
     await local.client.syncUntilIdle();
     expect(tableRows(local.db, 'tasks').map((row) => row.id)).toEqual([
@@ -285,7 +285,7 @@ describe('application-authorized local projection rebootstrap', () => {
     expect(
       local.client.subscription('race-tasks')?.cursor,
     ).toBeGreaterThanOrEqual(0);
-    expect(local.client.upgrading).toBe(false);
+    expect(local.client.statusSnapshot().upgrading).toBe(false);
     await local.client.close();
     local.db.close();
   });

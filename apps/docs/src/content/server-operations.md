@@ -184,6 +184,14 @@ await pruneCommitLog({
 });
 ```
 
+Pruning commits the horizon and history deletion atomically. Concurrent passes
+cannot lower the horizon, and repeating a completed pass removes only remaining
+eligible records. A restore between retention reads and deletion fails with
+`sync.storage.prune_epoch_mismatch`; recompute the pass after restore completes.
+An unregistered partition fails with `sync.storage.partition_unregistered`.
+On D1, call pruning through the partition's Durable Object maintenance method
+as shown in the [Workers guide](/server-workers/).
+
 The retention floors (`RetentionPolicy`): the horizon never advances past
 `min(cursor)` of clients active within `activeWindowMs` (default 14 days);
 commits older than `ageForceMs` (default 30 days) may be pruned regardless;

@@ -1,7 +1,7 @@
 /**
  * `SyncProvider` — supplies a `SyncClient` or `SyncClientHandle` to the
  * hook tree through React context. One provider per client; the hooks read
- * the normalized facade. Written with `createElement` (no JSX) so the whole
+ * the supplied client. Written with `createElement` (no JSX) so the whole
  * package typechecks under the repo's `.ts`-only root tsconfig with no jsx
  * setting — the bindings are plain function components either way.
  */
@@ -18,16 +18,10 @@ import {
   useMemo,
   useSyncExternalStore,
 } from 'react';
-import {
-  type NormalizedClient,
-  normalizeClient,
-  type SyncClientLike,
-} from './client';
+import { type SyncClientLike } from './client';
 import { isSyncClientResource, type SyncClientResource } from './resource';
 
-export const SyncContext = createContext<NormalizedClient | undefined>(
-  undefined,
-);
+export const SyncContext = createContext<SyncClientLike | undefined>(undefined);
 export const SyncStoreContext = createContext<ReactiveClientStore | undefined>(
   undefined,
 );
@@ -61,7 +55,6 @@ export interface SyncBoundaryActions {
 }
 
 interface ClientRecord {
-  readonly normalized: NormalizedClient;
   readonly store: ReactiveClientStore;
   refs: number;
 }
@@ -72,10 +65,8 @@ function recordFor(client: SyncClientLike): ClientRecord {
   const key = client as object;
   let record = stores.get(key);
   if (record === undefined) {
-    const normalized = normalizeClient(client);
     record = {
-      normalized,
-      store: new ReactiveClientStore(normalized),
+      store: new ReactiveClientStore(client),
       refs: 0,
     };
     stores.set(key, record);
@@ -92,7 +83,7 @@ interface ReadySyncProviderProps {
 
 function ReadySyncProvider(props: ReadySyncProviderProps): ReactNode {
   const record = useMemo(() => recordFor(props.client), [props.client]);
-  const { normalized, store } = record;
+  const { store } = record;
   const status = useSyncExternalStore(
     store.status.subscribe,
     store.status.getSnapshot,
@@ -125,7 +116,7 @@ function ReadySyncProvider(props: ReadySyncProviderProps): ReactNode {
   }
   return createElement(
     SyncContext.Provider,
-    { value: normalized },
+    { value: props.client },
     createElement(SyncStoreContext.Provider, { value: store }, props.children),
   );
 }

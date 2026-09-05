@@ -396,12 +396,10 @@ export class SyncularAdmin {
     const nowMs = this.#clock();
     const maxCommitSeq = await this.#storage.getMaxCommitSeq(partition);
     const horizonSeq = await this.#storage.getHorizonSeq(partition);
-    const cursors = await this.#storage.listClientCursors(partition);
-    const activeCursors = cursors
-      .filter((c) => c.updatedAtMs >= nowMs - this.#retention.activeWindowMs)
-      .map((c) => c.cursor);
-    const activeCursorFloor =
-      activeCursors.length > 0 ? Math.min(...activeCursors) : null;
+    const activeCursorFloor = await this.#storage.getActiveClientCursorFloor(
+      partition,
+      nowMs - this.#retention.activeWindowMs,
+    );
     const cursorFloor = activeCursorFloor ?? Number.MAX_SAFE_INTEGER;
     const forcedSeq = await this.#storage.getCommitSeqBefore(
       partition,

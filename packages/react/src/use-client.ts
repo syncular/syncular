@@ -1,10 +1,10 @@
 import type { ReactiveClientStore } from '@syncular/client';
 import { useContext } from 'react';
-import type { NormalizedClient } from './client';
+import type { SyncClientLike } from './client';
 import { SyncContext, SyncStoreContext } from './provider';
 
-/** Read the normalized client from context; throws outside a `SyncProvider`. */
-export function useSyncClient(): NormalizedClient {
+/** Read the supplied client from context; throws outside a `SyncProvider`. */
+export function useSyncClient(): SyncClientLike {
   const client = useContext(SyncContext);
   if (client === undefined) {
     throw new Error(

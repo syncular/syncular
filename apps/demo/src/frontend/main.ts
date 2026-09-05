@@ -415,7 +415,7 @@ async function makeEmbeddedCore(
     syncUntilIdle: () => client.syncUntilIdle(),
     query: (sql, params) => Promise.resolve(client.query(sql, params)),
     pendingCount: () => Promise.resolve(client.pendingCommits().length),
-    conflicts: () => Promise.resolve(client.conflicts),
+    conflicts: () => Promise.resolve(client.conflicts()),
     uploadBlob: async (bytes, options) => {
       const ref = await client.uploadBlob(bytes, options);
       return client.blobRefString(ref);
@@ -505,7 +505,7 @@ async function makeEphemeralCore(
     syncUntilIdle: () => client.syncUntilIdle(),
     query: (sql, params) => Promise.resolve(client.query(sql, params)),
     pendingCount: () => Promise.resolve(client.pendingCommits().length),
-    conflicts: () => Promise.resolve(client.conflicts),
+    conflicts: () => Promise.resolve(client.conflicts()),
     uploadBlob: async (bytes, options) => {
       const ref = await client.uploadBlob(bytes, options);
       return client.blobRefString(ref);

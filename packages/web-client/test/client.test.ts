@@ -30,6 +30,10 @@ import {
 class OutboxReadCountingDatabase extends BunClientDatabase {
   outboxReadCount = 0;
   outcomePruneCount = 0;
+  decodedOutboxBodies = 0;
+  decodedOutboxBytes = 0;
+  pagedOutboxBodies = 0;
+  outboxSqlCalls = 0;
 
   override query(sql: string, params: readonly SqlValue[] = []): SqlRow[] {
     const normalized = sql.replace(/\s+/g, ' ').trim();
@@ -41,16 +45,155 @@ class OutboxReadCountingDatabase extends BunClientDatabase {
     ) {
       this.outcomePruneCount += 1;
     }
-    return super.query(sql, params);
+    const rows = super.query(sql, params);
+    if (normalized.includes('FROM _syncular_outbox')) this.outboxSqlCalls += 1;
+    if (
+      normalized.startsWith(
+        'SELECT seq, client_commit_id, created_at_ms, operations',
+      )
+    ) {
+      for (const row of rows) {
+        const operations = row.operations;
+        if (typeof operations !== 'string')
+          throw new Error('invalid outbox operations');
+        Object.defineProperty(row, 'operations', {
+          get: () => {
+            this.decodedOutboxBodies += 1;
+            this.decodedOutboxBytes += operations.length;
+            if (normalized.includes('WHERE seq >')) this.pagedOutboxBodies += 1;
+            return operations;
+          },
+        });
+      }
+    }
+    return rows;
   }
 
   resetCounts(): void {
     this.outboxReadCount = 0;
+    this.decodedOutboxBodies = 0;
+    this.decodedOutboxBytes = 0;
+    this.pagedOutboxBodies = 0;
+    this.outboxSqlCalls = 0;
     this.outcomePruneCount = 0;
   }
 }
 
 describe('two clients, one server (tripwire)', () => {
+  test('durable outcomes and diagnostics exclude unexpected validator text', async () => {
+    const secret = 'synthetic-private-client-outcome-token';
+    const server = makeServer(undefined, {
+      validators: {
+        tasks: () => {
+          throw new Error(secret);
+        },
+      },
+    });
+    const a = await makeClient(server, { clientId: 'private-outcome' });
+    try {
+      const id = a.client.mutate([
+        { table: 'tasks', op: 'upsert', values: taskValues('failed', 'p1') },
+      ]);
+      a.faults.dropResponseOnce = true;
+      await expect(a.client.sync()).rejects.toThrow('simulated response loss');
+      expect((await a.client.sync()).rejected).toEqual([id]);
+      expect(a.client.commitOutcomes()[0]?.results[0]).toMatchObject({
+        status: 'error',
+        rejection: {
+          code: 'sync.constraint_violation',
+          message: 'write validator failed',
+        },
+      });
+      expect(JSON.stringify(a.client.commitOutcomes())).not.toContain(secret);
+      expect(JSON.stringify(a.client.diagnosticsSnapshot())).not.toContain(
+        secret,
+      );
+    } finally {
+      await a.client.close();
+      a.db.close();
+      server.storage.db.close();
+    }
+  });
+
+  test('reopens a partially delivered outbox and preserves FIFO across request budgets', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'syncular-fifo-'));
+    const databasePath = join(directory, 'client.db');
+    const server = makeServer();
+    try {
+      const first = await makeClient(server, {
+        clientId: 'fifo-restart',
+        databasePath,
+      });
+      let ids: string[];
+      try {
+        ids = [
+          first.client.mutate(
+            Array.from({ length: 499 }, (_, index) => ({
+              table: 'tasks',
+              op: 'upsert' as const,
+              values: taskValues(`filler-${index}`, 'p1'),
+            })),
+          ),
+          first.client.mutate([
+            {
+              table: 'tasks',
+              op: 'upsert',
+              values: taskValues('edited', 'p1', 'older'),
+            },
+            {
+              table: 'tasks',
+              op: 'upsert',
+              values: taskValues('sibling', 'p1'),
+            },
+          ]),
+          first.client.mutate([
+            {
+              table: 'tasks',
+              op: 'upsert',
+              values: taskValues('edited', 'p1', 'newest'),
+            },
+          ]),
+        ];
+        first.faults.dropResponseOnce = true;
+        await expect(first.client.sync()).rejects.toThrow(
+          'simulated response loss',
+        );
+        expect(
+          first.client.pendingCommits().map((commit) => commit.clientCommitId),
+        ).toEqual(ids);
+      } finally {
+        await first.client.close();
+        first.db.close();
+      }
+      const reopened = await makeClient(server, {
+        clientId: 'fifo-restart',
+        databasePath,
+      });
+      try {
+        reopened.client.subscribe({
+          id: 'tasks',
+          table: 'tasks',
+          scopes: { project_id: ['p1'] },
+        });
+        expect((await reopened.client.sync()).applied).toEqual(ids.slice(0, 1));
+        expect((await reopened.client.sync()).applied).toEqual(ids.slice(1));
+        await reopened.client.syncUntilIdle();
+        expect(reopened.client.pendingCommits()).toEqual([]);
+        expect(
+          tableRows(reopened.db, 'tasks').find((row) => row.id === 'edited')
+            ?.title,
+        ).toBe('newest');
+        expect(await server.storage.getMaxCommitSeq(PARTITION)).toBe(3);
+      } finally {
+        await reopened.client.close();
+        reopened.db.close();
+      }
+    } finally {
+      server.storage.db.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test('mutation → push → other-client pull converges', async () => {
     const server = makeServer();
     const a = await makeClient(server, { clientId: 'client-a' });
@@ -338,10 +481,10 @@ describe('durable commit outcomes', () => {
       const summary = await entry.client.sync();
 
       expect(summary.applied).toHaveLength(32);
-      // Request encoding, the sync-needed transition, one coalesced status
-      // baseline, final replay, and one observed diagnostics snapshot. None
-      // may scale with PUSH_RESULT count.
-      expect(db.outboxReadCount).toBe(5);
+      // Only the final optimistic replay uses a full scan. Status and
+      // diagnostics count rows without decoding their operations.
+      expect(db.outboxReadCount).toBe(1);
+      expect(db.decodedOutboxBodies).toBe(32);
       expect(db.outcomePruneCount).toBe(1);
       expect(diagnosticsCount).toBe(1);
       expect(observedOutboxCounts).toEqual(
@@ -477,9 +620,9 @@ describe('durable commit outcomes', () => {
         clientId: 'loser',
         databasePath,
       });
-      expect(reopened.client.conflicts).toHaveLength(1);
-      expect(reopened.client.conflicts[0]?.serverRow.title).toBe('winner');
-      expect(reopened.client.conflicts[0]?.operation?.changedFields).toEqual([
+      expect(reopened.client.conflicts()).toHaveLength(1);
+      expect(reopened.client.conflicts()[0]?.serverRow.title).toBe('winner');
+      expect(reopened.client.conflicts()[0]?.operation?.changedFields).toEqual([
         'title',
       ]);
       const resolved = reopened.client.resolveCommitOutcome({
@@ -487,7 +630,7 @@ describe('durable commit outcomes', () => {
         resolution: 'resolved_keep_server',
       });
       expect(resolved.resolution).toBe('resolved_keep_server');
-      expect(reopened.client.conflicts).toHaveLength(0);
+      expect(reopened.client.conflicts()).toHaveLength(0);
       // Resolution is one-way and idempotent; a later choice cannot rewrite it.
       expect(
         reopened.client.resolveCommitOutcome({
@@ -503,7 +646,7 @@ describe('durable commit outcomes', () => {
         clientId: 'loser',
         databasePath,
       });
-      expect(twice.client.conflicts).toHaveLength(0);
+      expect(twice.client.conflicts()).toHaveLength(0);
       expect(twice.client.commitOutcome(losingCommitId)?.resolution).toBe(
         'resolved_keep_server',
       );
@@ -740,7 +883,7 @@ describe('durable commit outcomes', () => {
         clientId: 'rejection-details',
         databasePath,
       });
-      expect(reopened.client.rejections[0]).toMatchObject({
+      expect(reopened.client.rejections()[0]).toMatchObject({
         clientCommitId: rejectedId,
         details: { fieldPaths: ['title'], requiredAction: 'edit_fields' },
         operation: { changedFields: ['title'] },
@@ -1037,7 +1180,7 @@ describe('offline outbox (§7)', () => {
     ]);
     const summary = await a.client.sync();
     expect(summary.rejected).toHaveLength(1);
-    expect(a.client.rejections[0]?.code).toBe('sync.forbidden');
+    expect(a.client.rejections()[0]?.code).toBe('sync.forbidden');
     expect(a.client.pendingCommits()).toHaveLength(0);
   });
 });
@@ -1163,7 +1306,7 @@ describe('schema floor (§1.6)', () => {
     });
     await a.client.syncUntilIdle();
     expect(a.client.stopped).toBe(false);
-    expect(a.client.schemaFloor).toBeUndefined();
+    expect(a.client.statusSnapshot().schemaFloor).toBeUndefined();
   });
 });
 
@@ -1282,4 +1425,83 @@ describe('the SELECT * → mutate round trip', () => {
       /no local row/,
     );
   });
+});
+
+describe('bounded outbox encoding', () => {
+  for (const count of [100, 1_000, 10_000]) {
+    test(`${count} mixed commits decode no bodies for status and a bounded FIFO prefix for push`, async () => {
+      const server = makeServer();
+      const db = new OutboxReadCountingDatabase();
+      const entry = await makeClient(server, {
+        clientId: 'bounded-outbox',
+        database: db,
+      });
+      try {
+        await entry.client.syncUntilIdle();
+        db.transaction(() => {
+          for (let index = 0; index < count; index += 1) {
+            const operations = Array.from(
+              { length: 1 + (index % 3) },
+              (_, op) => ({
+                table: 'tasks',
+                rowId: `r${index}-${op}`,
+                op: 'upsert',
+                values: taskValues(`r${index}-${op}`, 'p1'),
+              }),
+            );
+            db.exec(
+              'INSERT INTO _syncular_outbox(client_commit_id, created_at_ms, operations) VALUES (?, ?, ?)',
+              [`commit-${index}`, index, JSON.stringify(operations)],
+            );
+          }
+        });
+        db.resetCounts();
+        expect(entry.client.statusSnapshot().outbox).toBe(count);
+        expect(entry.client.diagnosticsSnapshot().replica.pendingOutbox).toBe(
+          count,
+        );
+        if (process.env.SYNCULAR_OUTBOX_BASELINE !== '1')
+          expect(db.decodedOutboxBodies).toBe(0);
+        const statusBodies = db.decodedOutboxBodies;
+        db.resetCounts();
+        const start = performance.now();
+        const summary = await entry.client.sync();
+        const firstPushBodies = db.pagedOutboxBodies;
+        if (process.env.SYNCULAR_OUTBOX_BASELINE !== '1') {
+          expect(firstPushBodies).toBeLessThanOrEqual(501);
+          expect(firstPushBodies).toBe(Math.min(count, 251));
+        }
+        expect(summary.applied).toHaveLength(Math.min(count, 250));
+        expect(summary.deferredCommits ?? 0).toBe(Math.max(0, count - 250));
+        await entry.client.syncUntilIdle(100);
+        const elapsedMs = performance.now() - start;
+        const measurements = {
+          count,
+          elapsedMs,
+          statusBodies,
+          firstPushBodies,
+          decodedBodies: db.decodedOutboxBodies,
+          decodedJsonBytes: db.decodedOutboxBytes,
+          outboxSqlCalls: db.outboxSqlCalls,
+          maxRssBytes: process.resourceUsage().maxRSS * 1024,
+        };
+        expect(entry.client.pendingCommits()).toHaveLength(0);
+        expect(
+          (
+            await server.storage.scanRows(PARTITION, {
+              table: 'tasks',
+              scopeFilter: { project_id: ['p1'] },
+              afterRowId: null,
+              limit: 30_000,
+            })
+          ).length,
+        ).toBe(count * 2 - (count % 3 === 1 ? 1 : 0));
+        if (process.env.SYNCULAR_OUTBOX_BENCH === '1')
+          console.log(JSON.stringify(measurements));
+      } finally {
+        await entry.client.close();
+        db.close();
+      }
+    }, 60_000);
+  }
 });

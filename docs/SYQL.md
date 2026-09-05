@@ -482,6 +482,16 @@ can be implemented by either backend:
 - `neutralize`: retain one statement per sort profile and guard each
   conditional with a compiler-generated boolean bind.
 
+Every physical statement also records its resolved physical table occurrences
+and their UTF-16 source boundaries in positional SQL. The TypeScript descriptor
+exports these statement-specific relation plans for authoritative server reads
+under [REMOTE.md §2](./REMOTE.md#2-registered-queries). Aliases and quoted table
+names retain exact boundaries. CTE references resolve through lexical query
+scopes; their physical source relations remain dependencies. A compiler MUST
+reject a relation whose identity it cannot resolve. Server registration
+requires this metadata and never infers partition isolation from a deduplicated
+table-name list.
+
 `auto` chooses variants for a small condition count and neutralization
 otherwise. Both backends MUST return the same rows for the same public input.
 Sort profiles multiply physical statements. The dynamic limit remains a bind

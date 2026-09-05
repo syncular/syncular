@@ -19,10 +19,19 @@ export type StorageQueryErrorCode =
   | 'sync.storage.index_not_found'
   | 'sync.storage.index_not_materialized'
   | 'sync.storage.index_value_count_mismatch'
-  | 'sync.storage.invalid_limit';
+  | 'sync.storage.invalid_limit'
+  | 'sync.storage.prune_epoch_mismatch'
+  | 'sync.storage.partition_unregistered'
+  | 'sync.storage.invalid_prune_cursor';
 
 const STORAGE_QUERY_MESSAGES: Readonly<Record<StorageQueryErrorCode, string>> =
   {
+    'sync.storage.prune_epoch_mismatch':
+      'partition log epoch changed; recompute retention inputs',
+    'sync.storage.partition_unregistered':
+      'pruning requires a registered partition',
+    'sync.storage.invalid_prune_cursor':
+      'pruning requires a non-negative safe integer cursor and a non-empty log epoch',
     'sync.storage.scan_requires_scope':
       'scope-indexed row scans require at least one scope variable',
     'sync.storage.index_not_found':

@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  type SyncClient,
+  type SyncClientHandle,
   type ClientDiagnosticsListener,
   type ClientDiagnosticsSnapshot,
   installRealtimeSupervisor,
@@ -7,7 +9,13 @@ import {
   realtimeSupervisorSnapshot,
   subscribeRealtimeSupervisor,
 } from '@syncular/client';
-import { normalizeClient } from '../src/client';
+import { createElement, type ReactNode } from 'react';
+import { renderHook } from '@testing-library/react';
+import type { SyncClientLike } from '../src/client';
+import { SyncProvider } from '../src/provider';
+import { useSyncClient } from '../src/use-client';
+import { installHappyDom } from './setup';
+installHappyDom();
 import { FakeClient } from './fake-client';
 
 function diagnostics(
@@ -68,10 +76,10 @@ async function settle(): Promise<void> {
   await Promise.resolve();
 }
 
-describe('realtime supervisor through the normalized React client', () => {
-  test('keeps the optional supervisor runtime out of the normalizer bundle', async () => {
+describe('realtime supervisor through the supplied React client', () => {
+  test('keeps the optional supervisor runtime out of the provider bundle', async () => {
     const result = await Bun.build({
-      entrypoints: [`${import.meta.dir}/../src/client.ts`],
+      entrypoints: [`${import.meta.dir}/../src/provider.ts`],
       target: 'bun',
       minify: true,
     });
@@ -121,7 +129,12 @@ describe('realtime supervisor through the normalized React client', () => {
       schedule: timers.schedule,
       random: () => 0,
     });
-    const normalized = normalizeClient(source);
+    const view = renderHook(() => useSyncClient(), {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(SyncProvider, { client: source }, children),
+    });
+    const normalized = view.result.current;
+    expect(normalized).toBe(source);
     const observed: string[] = [];
     const unsubscribe = subscribeRealtimeSupervisor(normalized, () => {
       observed.push(realtimeSupervisorSnapshot(normalized).phase);
@@ -155,5 +168,14 @@ describe('realtime supervisor through the normalized React client', () => {
       attempt: 0,
     });
     unsubscribe();
+    view.unmount();
   });
+});
+
+test('direct and worker host types satisfy the canonical React client contract', () => {
+  const contracts: [
+    SyncClient extends SyncClientLike ? true : never,
+    SyncClientHandle extends SyncClientLike ? true : never,
+  ] = [true, true];
+  expect(contracts).toEqual([true, true]);
 });

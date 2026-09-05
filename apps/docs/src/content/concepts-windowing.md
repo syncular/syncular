@@ -155,3 +155,12 @@ on unmount, and surfaces registration through `isPending` / `error`.
 `setWindow`/`windowState` and React's `useWindow` remain explicit primitives.
 They feed the same union coordinator, but ordinary generated queries should
 not repeat their coverage by hand.
+
+Query and window observers retain inactive entries only until the next
+microtask. The final unsubscribe removes the entry from change dispatch
+immediately; cleanup releases its rows and invalidates pending reads. A
+same-microtask remount preserves the shared snapshot. A later subscription
+starts a fresh read, including subscriptions held by an older React render.
+Releasing the final window owner removes the empty claim group after the
+core has applied the release. Disposing the store rejects unapplied retention
+handles with `client.reactive_store_disposed`.

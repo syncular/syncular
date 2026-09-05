@@ -580,3 +580,45 @@ Tests drive the real worker entry in a bun `Worker` with bun:sqlite
 injected through the bootstrap's database-factory override
 (`test/worker-rpc.test.ts`); the OPFS path itself is browser-only and is
 exercised by `apps/demo`.
+
+## Snapshot API migration
+
+This source-breaking revision uses methods for application reads across the
+direct client, worker leaders and followers, Tauri, and React Native. Replace
+`client.conflicts`, `client.rejections`, and `client.securityLifecycle` on the
+direct client with method calls. Replace `schemaFloor`, `leaseState`,
+`upgrading`, and `syncNeeded` getters or bridge methods with fields from one
+`statusSnapshot()` call:
+
+```ts
+const status = await client.statusSnapshot();
+if (status.schemaFloor) showUpgradeRequired(status.schemaFloor);
+const conflicts = await client.conflicts();
+const outcome = await client.commitOutcome(commitId);
+```
+
+The direct client returns snapshots synchronously. Worker and native bridges
+return promises; `await` works with both. `querySnapshot` returns rows, coverage,
+and revision from one read. `diagnosticsSnapshot`, `commitOutcome`,
+`commitOutcomes`, and `resolveCommitOutcome` retain their existing arguments.
+The shared `ClientSnapshotMethods` and `PromiseMethods` types describe these
+contracts. Key-bearing security activation stays on each concrete host type.
+
+React uses the supplied client directly; `useSyncClient()` preserves its
+identity. Remove imports of `normalizeClient` and the
+`@syncular/client/realtime-supervisor-observation` forwarding utility. Pass the
+client to `SyncProvider` and use `realtimeSupervisorSnapshot(client)` to inspect
+an attached supervisor. Custom React clients must implement the snapshot
+methods and method-form collection reads. See the [React migration](https://syncular.dev/platform-react/)
+for the `onEnqueued` callback rename.
+
+## Outbox read costs
+
+Request encoding pins the pending count and highest local sequence before its
+first asynchronous step. It reads keyset pages of 32 raw records, decodes only
+the consumed prefix, and stops at the first whole commit that exceeds the
+remaining operation budget. Mutations appended during encoding enter the next
+request. Status and diagnostics use `COUNT(*)` without parsing pending bodies.
+Optimistic replay still reads the remaining outbox after each response. The
+100/1,000/10,000-commit workload and measured limits are recorded in
+[the reliability RFC](../../docs/RFC-RELIABILITY-DX.md#9-implementation-evidence-2026-09-05).

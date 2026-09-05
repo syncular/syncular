@@ -17,10 +17,16 @@ import { clockOf, limitsOf } from './context';
 import type { PullSegmentSummary } from './events';
 import type { CompiledSchema, CompiledTable } from './schema';
 import { scopeDigest } from './scopes';
-import type { SegmentRecord } from './segment-store';
+import type { SegmentRecord, SegmentStore } from './segment-store';
 import { issueSegmentUrl } from './signed-url';
 import type { SqliteImageBuilder } from './sqlite-image';
-import type { StoredCommit, StoredRow } from './storage';
+import type { ServerStorage, StoredCommit, StoredRow } from './storage';
+
+// One artifact build per owning storage pair and complete immutable identity.
+const imageBuilds = new WeakMap<
+  ServerStorage,
+  WeakMap<SegmentStore, Map<string, Promise<SegmentRecord>>>
+>();
 
 /**
  * Resolve the §5.3 image builder: the host-injected one if present, else the
@@ -260,57 +266,89 @@ async function* sqliteImageSegment(
   // support floor, not a fallback (§5.3: sqlite is an *accept*, not a demand).
   const buildImage = await resolveImageBuilder(ctx);
   if (buildImage === undefined) return false;
-  // The probe rows are the snapshot's first page — keep them and scan on
-  // from the probe's cursor instead of re-reading the whole prefix (the
-  // scan is keyset-ordered by rowId, so the concatenation is exactly the
-  // rows a single full scan would return).
-  const rows: StoredRow[] = [...probe];
-  let afterRowId: string | null = probe[probe.length - 1]?.rowId ?? null;
-  for (;;) {
-    const scanned: StoredRow[] = await storage.scanRows(partition, {
-      table: plan.table.name,
-      scopeFilter: plan.effective,
-      afterRowId,
-      limit: 50_000,
-    });
-    rows.push(...scanned);
-    const last = scanned[scanned.length - 1];
-    if (scanned.length < 50_000 || last === undefined) break;
-    afterRowId = last.rowId;
+  let stores = imageBuilds.get(storage);
+  if (stores === undefined) {
+    stores = new WeakMap();
+    imageBuilds.set(storage, stores);
   }
-  const bytes = buildImage({
-    table: plan.table,
+  let builds = stores.get(segments);
+  if (builds === undefined) {
+    builds = new Map();
+    stores.set(segments, builds);
+  }
+  const identity = {
+    partition,
+    logEpoch,
+    table: plan.table.name,
     schemaVersion: schema.version,
-    asOfCommitSeq: asOf,
+    mediaType: 'sqlite' as const,
     scopeDigest: digest,
-    rows,
-  });
-  const record = await segments.put(
-    {
-      partition,
-      logEpoch,
-      table: plan.table.name,
-      schemaVersion: schema.version,
-      mediaType: 'sqlite',
-      scopeDigest: digest,
-      asOfCommitSeq: asOf,
-      rowCount: rows.length,
-      rowCursor: null,
-      nextRowCursor: null,
-    },
-    bytes,
-    now,
-  );
+    asOfCommitSeq: asOf,
+  };
+  const key = JSON.stringify(identity);
+  let building = builds.get(key);
+  let builtHere = false;
+  if (building === undefined) {
+    building = (async () => {
+      // Another request can finish while this one's eligibility probe awaits.
+      const cached = await segments.find(identity, clockOf(ctx)());
+      if (cached !== undefined) return cached;
+      builtHere = true;
+      let rowCount = 0;
+      const bytes = await buildImage({
+        table: plan.table,
+        schemaVersion: schema.version,
+        asOfCommitSeq: asOf,
+        scopeDigest: digest,
+        rowBatches: (async function* () {
+          rowCount += probe.length;
+          yield probe;
+          let afterRowId = probe[probe.length - 1]!.rowId;
+          for (;;) {
+            const rows = await storage.scanRows(partition, {
+              table: plan.table.name,
+              scopeFilter: plan.effective,
+              afterRowId,
+              limit: 5_000,
+            });
+            rowCount += rows.length;
+            yield rows;
+            const last = rows[rows.length - 1];
+            if (rows.length < 5_000 || last === undefined) break;
+            afterRowId = last.rowId;
+          }
+        })(),
+      });
+      return segments.put(
+        { ...identity, rowCount, rowCursor: null, nextRowCursor: null },
+        bytes,
+        clockOf(ctx)(),
+      );
+    })();
+    builds.set(key, building);
+  }
+  let record: SegmentRecord;
+  try {
+    record = await building;
+  } finally {
+    if (builds.get(key) === building) builds.delete(key);
+  }
   trace?.segments.push({
     mediaType: 'sqlite',
     delivery: 'ref',
-    origin: 'built',
+    origin: builtHere ? 'built' : 'reused',
     bytes: record.byteLength,
     rows: record.rowCount,
   });
   yield segmentRefFrame(
     record,
-    await signedUrlFields(ctx, limits, record.segmentId, digest, now),
+    await signedUrlFields(
+      ctx,
+      limits,
+      record.segmentId,
+      digest,
+      clockOf(ctx)(),
+    ),
   );
   return true;
 }

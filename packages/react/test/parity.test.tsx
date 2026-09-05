@@ -1,11 +1,6 @@
 /**
- * Worker-handle mode parity: the SAME hook behavior against the handle's
- * DIVERGENT surface (all-async methods, not getters). The hooks target one
- * `SyncClientLike`; the normalizer collapses the getter-vs-method /
- * sync-vs-promise split. This test runs a real `SyncClient` behind a
- * handle-shaped adapter so the promise-everywhere path is exercised end to
- * end (the web-client worker-rpc test proves the real worker forwards these
- * same events).
+ * Hook behavior over a real client with promise-based snapshots and mutations.
+ * Worker RPC tests separately cover the transport and event boundary.
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';

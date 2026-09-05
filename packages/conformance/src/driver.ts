@@ -222,6 +222,7 @@ export type ServerCapability =
  * them (an unknown kind is a driver bug, thrown loudly).
  */
 export type ValidatorRuleSpec =
+  | { readonly kind: 'unexpectedError'; readonly message: string }
   | {
       /** Reject when `column`'s string value exceeds `max` chars. */
       readonly kind: 'maxLength';

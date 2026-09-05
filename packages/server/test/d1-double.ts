@@ -82,7 +82,8 @@ class DoublePreparedStatement implements D1PreparedStatement {
     this.#db.query(this.#sql).run(...(this.#params as never[]));
   }
 
-  _batchResult(): unknown {
+  _batchResult(before?: (sql: string) => void): unknown {
+    before?.(this.#sql);
     if (/^\s*(?:SELECT|WITH)\b/i.test(this.#sql)) {
       const rows = this.#db.query(this.#sql).all(...(this.#params as never[]));
       return { results: rows.map((row) => normalizeRow(row)) };
@@ -94,6 +95,7 @@ class DoublePreparedStatement implements D1PreparedStatement {
 
 export class D1DatabaseDouble implements D1Database {
   readonly #db: Database;
+  beforeBatchStatement: ((sql: string) => void) | undefined;
 
   constructor(db: Database = new Database(':memory:')) {
     this.#db = db;
@@ -109,8 +111,11 @@ export class D1DatabaseDouble implements D1Database {
     this.#db.exec('BEGIN IMMEDIATE');
     try {
       const results = statements.map((statement) =>
-        (statement as DoublePreparedStatement)._batchResult(),
+        (statement as DoublePreparedStatement)._batchResult(
+          this.beforeBatchStatement,
+        ),
       );
+      this.beforeBatchStatement?.('COMMIT');
       this.#db.exec('COMMIT');
       return results;
     } catch (error) {

@@ -1,3 +1,4 @@
+import type { AuthoritativeRelationPlan } from './authoritative-query';
 /**
  * Storage interface (defined by the SPEC's needs, implementation-agnostic).
  *
@@ -18,6 +19,17 @@
  */
 import type { PushOperationResult, RowValue, ScopeMap } from '@syncular/core';
 import type { CompiledSchema } from './schema';
+
+export interface CommitPruneQuery {
+  readonly logEpoch: string;
+  readonly throughSeq: number;
+}
+
+export interface CommitPruneResult {
+  readonly previousHorizonSeq: number;
+  readonly horizonSeq: number;
+  readonly removedCommits: number;
+}
 
 /** The current stored state of a synced row. */
 export interface StoredRow {
@@ -281,7 +293,7 @@ export type AuthoritativeQueryValue =
 
 export interface AuthoritativeQueryRequest {
   /** Generated, positional SQLite-family SQL. It never comes from the request. */
-  readonly sql: string;
+  readonly plan: AuthoritativeRelationPlan;
   readonly params: readonly AuthoritativeQueryValue[];
   /** Generated dependency set, used to validate and partition every relation. */
   readonly tables: readonly string[];
@@ -422,16 +434,23 @@ export interface ServerStorage {
   /** Registry entries ordered by partition for maintenance loops. */
   listPartitionRegistry(): Promise<PartitionRegistryEntry[]>;
 
+  /** Read continuity without refreshing authenticated activity. */
+  getPartitionLogEpoch(partition: string): Promise<string | undefined>;
+
   begin(partition: string): Promise<StorageTransaction>;
 
   getMaxCommitSeq(partition: string): Promise<number>;
   getHorizonSeq(partition: string): Promise<number>;
+  /** Monotonic within the current epoch; use atomic pruning for maintenance. */
   setHorizonSeq(partition: string, seq: number): Promise<void>;
   /**
-   * Deletes commits with `commitSeq <= seq` (log, changes, scope index).
-   * Returns the number of commits removed (ops observability).
+   * Atomically verifies the log epoch, advances the horizon monotonically,
+   * and removes log/change/scope records through the effective horizon.
    */
-  pruneCommitsThrough(partition: string, seq: number): Promise<number>;
+  pruneCommitsThrough(
+    partition: string,
+    query: CommitPruneQuery,
+  ): Promise<CommitPruneResult>;
   /** Newest commitSeq created strictly before the timestamp; 0 if none. */
   getCommitSeqBefore(
     partition: string,
@@ -541,7 +560,12 @@ export interface ServerStorage {
     clientId: string,
   ): Promise<ClientRecord | undefined>;
   putClientRecord(partition: string, record: ClientRecord): Promise<void>;
-  /** Cursor records feeding the §4.6 retention watermark. */
+  /** Minimum cursor with updatedAtMs >= cutoff; null when none are active. */
+  getActiveClientCursorFloor(
+    partition: string,
+    cutoffMs: number,
+  ): Promise<number | null>;
+  /** Cursor records for client listings and administrative counts. */
   listClientCursors(partition: string): Promise<ClientCursorInfo[]>;
 
   /**

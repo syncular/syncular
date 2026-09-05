@@ -17,6 +17,12 @@ and restart flow, use [Concurrency and conflict correction](/guide-concurrency-c
 mirror. The row shows up in your queries at once. The next `sync()` round
 pushes the outbox and drains the results.
 
+Each request sends a contiguous prefix of pending commits in creation order.
+When the next whole commit exceeds the remaining operation budget, the client
+defers that commit and every later commit to the next round. Retries retain
+the original commit IDs and order. A single commit that exceeds the server's
+operation cap fails with `sync.too_many_operations`; the client keeps it atomic.
+
 ```ts
 const commitId = client.mutate([
   {

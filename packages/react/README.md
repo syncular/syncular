@@ -6,7 +6,10 @@ Tauri/React Native bridges.
 
 The store is client-scoped, not hook-scoped. Equal queries share one local SQL
 read per revision, rows and window completeness come from one SQLite snapshot,
-and stale promises cannot overwrite a newer revision. React is only a
+and stale promises cannot overwrite a newer revision. Status, conflict, and
+outcome refreshes discard older pending results after a newer read or event.
+Presence reads follow the same ordering and clear peers when the client or
+scope changes. React is only a
 `useSyncExternalStore` adapter over that renderer-independent state.
 
 ## Recommended query and mutation path
@@ -176,7 +179,7 @@ typed `upsert`, `patch`, and `remove` helpers:
 
 ```tsx
 const mutation = useMutation(tasksTable, {
-  onSuccess(commitId) {},
+  onEnqueued(commitId) {},
   onError(error) {},
 });
 
@@ -322,3 +325,21 @@ The snapshot deliberately excludes scopes, rows, clinical counts, SQL, paths,
 identities, credentials, mutation bodies, stack traces, and arbitrary prose.
 Do not enrich the copied bundle with database files, query results, or console
 dumps. See SPEC §7.6 for the complete contract.
+
+Query and window observers retain inactive entries only until the next
+microtask. The final unsubscribe removes the entry from change dispatch
+immediately; cleanup releases its rows and invalidates pending reads. A
+same-microtask remount preserves the shared snapshot. A later subscription
+starts a fresh read, including subscriptions held by an older React render.
+Releasing the final window owner removes the empty claim group after the
+core has applied the release. Disposing the store rejects unapplied retention
+handles with `client.reactive_store_disposed`.
+
+`SyncProvider` keeps the supplied client identity. `useSyncClient()` returns
+that client, whose read methods can return either values or promises. Use
+`await client.statusSnapshot()` in application code that supports multiple
+hosts. The `schemaFloor`, `leaseState`, `upgrading`, and `syncNeeded` fields
+come from that snapshot. Direct `conflicts`, `rejections`, and
+`securityLifecycle` reads are now method calls. `normalizeClient` has been
+removed; custom adapters must implement the canonical snapshot methods.
+See the [client migration](https://syncular.dev/platform-web/#snapshot-api-migration).

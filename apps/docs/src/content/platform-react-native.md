@@ -191,3 +191,9 @@ apply the validated local purge, then call `activateSecurity({ encryption })`
   invalidations work.
 - [Authorized local purge](/concepts-local-data-purge/): device and key
   revocation without pretending an offline device was remotely erased.
+
+The snapshot API revision removes the individual `schemaFloor`, `leaseState`,
+`upgrading`, and `syncNeeded` methods. Read those fields from
+`await client.statusSnapshot()`. Collection and outcome reads remain methods.
+React accepts the bridge directly. See the
+[client migration](https://syncular.dev/platform-web/#snapshot-api-migration).

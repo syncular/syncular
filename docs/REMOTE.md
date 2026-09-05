@@ -44,6 +44,20 @@ with a derived relation that selects the table's application columns and binds
 `_sync_partition` to the authenticated partition. Request values are never
 interpolated into SQL. A table with `materialize: false` cannot be queried.
 
+Each generated descriptor carries a relation plan for every physical SQL
+statement. A plan contains the exact positional SQL and every physical table
+occurrence's UTF-16 start/end offsets, resolved table name, and optional
+explicit alias. Quoted identifiers retain their source boundaries. CTE names
+resolve within their query scope; only their physical source relations are
+rewritten. Repeated references each require an entry. Table dependencies alone
+do not constitute a partition proof.
+
+Registration requires these plans. Execution selects the plan whose SQL equals
+the selected statement and rejects mismatched or missing metadata before SQL
+execution. Regenerate descriptors when upgrading a deployment that registers
+remote queries. Both scoped and privileged queries use the same relation plan;
+the privileged authorization callback grants access within one partition.
+
 Storage executes the query and reads the partition's `maxCommitSeq` in one
 database snapshot. A success response carries both rows and `maxCommitSeq`.
 The server returns only columns named by the generated result metadata and

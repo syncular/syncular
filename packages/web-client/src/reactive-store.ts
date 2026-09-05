@@ -4,12 +4,14 @@ import {
 } from './availability';
 import type {
   CommitOutcome,
+  ClientSnapshotReader,
   QueryReadSpec,
   QuerySnapshot,
   WindowCoverage,
   WindowState,
 } from './client';
 import type { SqlValue } from './database';
+import { ClientSyncError } from './errors';
 import type {
   ClientChangeBatch,
   ClientChangeListener,
@@ -50,24 +52,19 @@ export interface LiveQueryResult<Row> {
   readonly availability: SyncAvailability;
 }
 
-export interface ReactiveQueryClient {
+export interface ReactiveQueryClient extends Pick<
+  ClientSnapshotReader,
+  'statusSnapshot' | 'commitOutcomes'
+> {
   readonly currentSchemaVersion?: number;
   onChange(listener: ClientChangeListener): () => void;
   querySnapshot<Row = Record<string, SqlValue>>(
     spec: QueryReadSpec,
   ): QuerySnapshot<Row> | Promise<QuerySnapshot<Row>>;
-  statusSnapshot(): SyncStatusSnapshot | Promise<SyncStatusSnapshot>;
   leadershipSnapshot?(): LeadershipState | undefined;
   onLeadershipChange?(listener: (state: LeadershipState) => void): () => void;
-  readonly conflicts:
-    | readonly unknown[]
-    | (() => readonly unknown[] | Promise<readonly unknown[]>);
-  readonly rejections:
-    | readonly unknown[]
-    | (() => readonly unknown[] | Promise<readonly unknown[]>);
-  commitOutcomes():
-    | readonly CommitOutcome[]
-    | Promise<readonly CommitOutcome[]>;
+  conflicts(): readonly unknown[] | Promise<readonly unknown[]>;
+  rejections(): readonly unknown[] | Promise<readonly unknown[]>;
   setWindow(base: WindowBase, units: readonly string[]): void | Promise<void>;
   windowState(base: WindowBase): WindowState | Promise<WindowState>;
 }
@@ -110,14 +107,6 @@ export interface OutcomeStoreSnapshot {
 
 function errorOf(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
-}
-
-function readCollection(
-  value:
-    | readonly unknown[]
-    | (() => readonly unknown[] | Promise<readonly unknown[]>),
-): readonly unknown[] | Promise<readonly unknown[]> {
-  return typeof value === 'function' ? value() : value;
 }
 
 function unsupportedCanonicalValue(value: unknown): never {
@@ -303,6 +292,56 @@ function reconcileRows<Row>(
     : next;
 }
 
+interface CachedObservation {
+  onChange(batch: ClientChangeBatch): void;
+  reset(): void;
+  dispose(): void;
+}
+
+/** Shared ownership for query and window observations, including abandoned renders. */
+class ObservationCache {
+  readonly #entries = new Map<string, CachedObservation>();
+  readonly #active = new Set<CachedObservation>();
+  get size(): number {
+    return this.#entries.size;
+  }
+  get activeSize(): number {
+    return this.#active.size;
+  }
+  get(key: string): CachedObservation | undefined {
+    return this.#entries.get(key);
+  }
+  add(key: string, entry: CachedObservation): void {
+    this.#entries.set(key, entry);
+    this.#cleanup(key, entry);
+  }
+  activate(key: string, candidate: CachedObservation): CachedObservation {
+    const entry = this.#entries.get(key) ?? candidate;
+    this.#entries.set(key, entry);
+    this.#active.add(entry);
+    return entry;
+  }
+  deactivate(key: string, entry: CachedObservation): void {
+    this.#active.delete(entry);
+    this.#cleanup(key, entry);
+  }
+  #cleanup(key: string, entry: CachedObservation): void {
+    scheduleMicrotask(() => {
+      if (this.#active.has(entry)) return;
+      if (this.#entries.get(key) === entry) this.#entries.delete(key);
+      entry.reset();
+    });
+  }
+  onChange(batch: ClientChangeBatch): void {
+    for (const entry of this.#active) entry.onChange(batch);
+  }
+  clear(): void {
+    for (const entry of this.#entries.values()) entry.dispose();
+    this.#entries.clear();
+    this.#active.clear();
+  }
+}
+
 class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   readonly #owner = Symbol('query-window-claim');
   readonly #listeners = new Set<() => void>();
@@ -314,7 +353,8 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     isRefreshing: false,
     availability: { state: 'ready' },
   };
-  #subscribers = 0;
+  #delegate: QueryEntry<Row> | undefined;
+  #generation = 0;
   #scheduled = false;
   #running = false;
   #requested = false;
@@ -325,14 +365,23 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   constructor(
     readonly store: ReactiveClientStore,
     readonly spec: ReactiveQuerySpec<Row>,
+    private readonly key: string,
+    private readonly cache: ObservationCache,
   ) {}
 
-  getSnapshot = (): LiveQueryResult<Row> => this.#state;
+  getSnapshot = (): LiveQueryResult<Row> =>
+    this.#delegate?.getSnapshot() ?? this.#state;
 
   subscribe = (listener: () => void): (() => void) => {
-    this.#listeners.add(listener);
-    this.#subscribers += 1;
-    if (this.#subscribers === 1) {
+    const current = this.cache.activate(this.key, this);
+    if (current !== this) {
+      this.#delegate = current as QueryEntry<Row>;
+      return this.#delegate.subscribe(listener);
+    }
+    this.#delegate = undefined;
+    const notify = () => listener();
+    this.#listeners.add(notify);
+    if (this.#listeners.size === 1) {
       this.#offStatus = this.store.status.subscribe(() =>
         this.#onAvailabilityChange(),
       );
@@ -349,13 +398,16 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
           );
         }
         this.#claimReady = Promise.all(claims).then(() => undefined);
+        // A render can lose its last subscriber before the read loop starts.
+        // The loop still observes the original rejection while it owns the claim.
+        void this.#claimReady.catch(() => undefined);
       }
       this.#requestRead();
     }
     return () => {
-      if (!this.#listeners.delete(listener)) return;
-      this.#subscribers -= 1;
-      if (this.#subscribers === 0) {
+      if (!this.#listeners.delete(notify)) return;
+      if (this.#listeners.size === 0) {
+        this.cache.deactivate(this.key, this);
         this.#offStatus?.();
         this.#offStatus = undefined;
         this.store.releaseWindowClaims(this.#owner);
@@ -363,14 +415,42 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     };
   };
 
-  refresh = (): void => this.#requestRead(true);
+  refresh = (): void => {
+    if (this.#delegate !== undefined) this.#delegate.refresh();
+    else this.#requestRead(true);
+  };
+
+  reset(): void {
+    this.#generation += 1;
+    this.#scheduled = false;
+    this.#running = false;
+    this.#requested = false;
+    this.#desiredRevision = 0n;
+    this.#claimReady = Promise.resolve();
+    this.#state = {
+      rows: [],
+      phase: 'loading',
+      revision: undefined,
+      error: undefined,
+      isRefreshing: false,
+      availability: { state: 'ready' },
+    };
+  }
+
+  dispose(): void {
+    this.#listeners.clear();
+    this.#offStatus?.();
+    this.#offStatus = undefined;
+    this.store.releaseWindowClaims(this.#owner);
+    this.reset();
+  }
 
   onChange(batch: ClientChangeBatch): void {
     if (!batchMatches(batch, this.spec)) return;
     if (batch.revision > this.#desiredRevision) {
       this.#desiredRevision = batch.revision;
     }
-    if (this.#subscribers > 0) this.#requestRead();
+    if (this.#listeners.size > 0) this.#requestRead();
   }
 
   #publish(next: LiveQueryResult<Row>): void {
@@ -389,6 +469,7 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   }
 
   #requestRead(refreshing = false): void {
+    if (this.#listeners.size === 0) return;
     this.#requested = true;
     if (
       refreshing &&
@@ -399,7 +480,9 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
     }
     if (this.#scheduled || this.#running) return;
     this.#scheduled = true;
+    const generation = this.#generation;
     scheduleMicrotask(() => {
+      if (generation !== this.#generation) return;
       this.#scheduled = false;
       void this.#readLoop();
     });
@@ -430,13 +513,16 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
   }
 
   async #readLoop(): Promise<void> {
-    if (this.#running || this.#subscribers === 0) return;
+    if (this.#running || this.#listeners.size === 0) return;
+    const generation = this.#generation;
     this.#running = true;
     try {
       do {
         this.#requested = false;
         if (this.store.availabilitySnapshot().state === 'blocked') break;
         await this.#claimReady;
+        if (generation !== this.#generation || this.#listeners.size === 0)
+          return;
         const snapshot = await this.store.client.querySnapshot<
           Record<string, SqlValue>
         >({
@@ -448,6 +534,8 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
             ? { coverage: this.spec.coverage }
             : {}),
         });
+        if (generation !== this.#generation || this.#listeners.size === 0)
+          return;
         const availability = this.store.availabilitySnapshot();
         if (availability.state === 'blocked') {
           this.#publish({
@@ -484,8 +572,9 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
           isRefreshing: false,
           availability,
         });
-      } while (this.#requested && this.#subscribers > 0);
+      } while (this.#requested && this.#listeners.size > 0);
     } catch (error) {
+      if (generation !== this.#generation || this.#listeners.size === 0) return;
       const wrapped = errorOf(error);
       this.#publish({
         ...this.#state,
@@ -495,13 +584,16 @@ class QueryEntry<Row> implements ExternalStoreEntry<LiveQueryResult<Row>> {
         availability: this.store.availabilitySnapshot(),
       });
     } finally {
-      this.#running = false;
-      if (this.#requested && this.#subscribers > 0) this.#requestRead();
+      if (generation === this.#generation) {
+        this.#running = false;
+        if (this.#requested && this.#listeners.size > 0) this.#requestRead();
+      }
     }
   }
 }
 
 class ValueEntry<T> implements ExternalStoreEntry<T> {
+  #generation = 0;
   readonly #listeners = new Set<() => void>();
   constructor(
     private value: T,
@@ -513,9 +605,16 @@ class ValueEntry<T> implements ExternalStoreEntry<T> {
     return () => this.#listeners.delete(listener);
   };
   refresh = (): void => {
-    void this.read().then((next) => this.set(next));
+    const generation = ++this.#generation;
+    void this.read().then((next) => {
+      if (generation === this.#generation) this.set(next);
+    });
   };
+  invalidate(): void {
+    this.#generation += 1;
+  }
   set(next: T): void {
+    this.invalidate();
     if (next === this.value) return;
     this.value = next;
     for (const listener of this.#listeners) listener();
@@ -538,6 +637,8 @@ interface WindowClaimGroup {
 class WindowEntry implements ExternalStoreEntry<WindowState> {
   readonly #listeners = new Set<() => void>();
   #state: WindowState = { units: [], pending: [] };
+  #generation = 0;
+  #delegate: WindowEntry | undefined;
   #running = false;
   #requested = false;
 
@@ -545,19 +646,46 @@ class WindowEntry implements ExternalStoreEntry<WindowState> {
     readonly store: ReactiveClientStore,
     readonly base: WindowBase,
     readonly baseKey: string,
+    private readonly cache: ObservationCache,
   ) {}
 
-  getSnapshot = (): WindowState => this.#state;
+  getSnapshot = (): WindowState => this.#delegate?.getSnapshot() ?? this.#state;
   subscribe = (listener: () => void): (() => void) => {
-    this.#listeners.add(listener);
+    const current = this.cache.activate(this.baseKey, this);
+    if (current !== this) {
+      this.#delegate = current as WindowEntry;
+      return this.#delegate.subscribe(listener);
+    }
+    this.#delegate = undefined;
+    const notify = () => listener();
+    this.#listeners.add(notify);
     if (this.#listeners.size === 1) this.refresh();
-    return () => this.#listeners.delete(listener);
+    return () => {
+      if (this.#listeners.delete(notify) && this.#listeners.size === 0) {
+        this.cache.deactivate(this.baseKey, this);
+      }
+    };
   };
   refresh = (): void => {
+    if (this.#delegate !== undefined) {
+      this.#delegate.refresh();
+      return;
+    }
+    if (this.#listeners.size === 0) return;
     this.#requested = true;
     if (this.#running) return;
     void this.#readLoop();
   };
+  reset(): void {
+    this.#generation += 1;
+    this.#running = false;
+    this.#requested = false;
+    this.#state = { units: [], pending: [] };
+  }
+  dispose(): void {
+    this.#listeners.clear();
+    this.reset();
+  }
   onChange(batch: ClientChangeBatch): void {
     if (
       batch.windows.some((change) => change.baseKey === this.baseKey) &&
@@ -567,11 +695,14 @@ class WindowEntry implements ExternalStoreEntry<WindowState> {
     }
   }
   async #readLoop(): Promise<void> {
+    const generation = this.#generation;
     this.#running = true;
     try {
       do {
         this.#requested = false;
         const next = await this.store.client.windowState(this.base);
+        if (generation !== this.#generation || this.#listeners.size === 0)
+          return;
         if (
           canonicalValue(next.units) !== canonicalValue(this.#state.units) ||
           canonicalValue(next.pending) !== canonicalValue(this.#state.pending)
@@ -579,20 +710,22 @@ class WindowEntry implements ExternalStoreEntry<WindowState> {
           this.#state = next;
           for (const listener of this.#listeners) listener();
         }
-      } while (this.#requested);
+      } while (this.#requested && this.#listeners.size > 0);
     } catch {
       // WindowState predates the error-bearing query result. Keep the last
       // coherent snapshot; a later exact window event or refresh retries.
     } finally {
-      this.#running = false;
-      if (this.#requested) this.refresh();
+      if (generation === this.#generation) {
+        this.#running = false;
+        if (this.#requested) this.refresh();
+      }
     }
   }
 }
 
 export class ReactiveClientStore {
-  readonly #queries = new Map<string, QueryEntry<unknown>>();
-  readonly #windows = new Map<string, WindowEntry>();
+  readonly #queries = new ObservationCache();
+  readonly #windows = new ObservationCache();
   readonly #windowClaims = new Map<string, WindowClaimGroup>();
   #offChange: (() => void) | undefined;
   #offLeadership: (() => void) | undefined;
@@ -631,8 +764,8 @@ export class ReactiveClientStore {
       async () => {
         try {
           const [found, rejected] = await Promise.all([
-            readCollection(client.conflicts),
-            readCollection(client.rejections),
+            client.conflicts(),
+            client.rejections(),
           ]);
           return {
             conflicts: found,
@@ -667,9 +800,6 @@ export class ReactiveClientStore {
     this.status = status;
     this.conflicts = conflicts;
     this.outcomes = outcomes;
-    status.refresh();
-    conflicts.refresh();
-    outcomes.refresh();
     this.start();
   }
 
@@ -700,8 +830,8 @@ export class ReactiveClientStore {
     });
     let entry = this.#queries.get(key) as QueryEntry<Row> | undefined;
     if (entry === undefined) {
-      entry = new QueryEntry(this, spec);
-      this.#queries.set(key, entry as QueryEntry<unknown>);
+      entry = new QueryEntry(this, spec, key, this.#queries);
+      this.#queries.add(key, entry);
     }
     return entry;
   }
@@ -739,10 +869,10 @@ export class ReactiveClientStore {
 
   window(base: WindowBase): ExternalStoreEntry<WindowState> {
     const key = windowBaseKey(base);
-    let entry = this.#windows.get(key);
+    let entry = this.#windows.get(key) as WindowEntry | undefined;
     if (entry === undefined) {
-      entry = new WindowEntry(this, base, key);
-      this.#windows.set(key, entry);
+      entry = new WindowEntry(this, base, key, this.#windows);
+      this.#windows.add(key, entry);
     }
     return entry;
   }
@@ -791,7 +921,8 @@ export class ReactiveClientStore {
   }
 
   async #flushWindow(group: WindowClaimGroup): Promise<void> {
-    if (group.running) return;
+    const baseKey = windowBaseKey(group.base);
+    if (group.running || this.#windowClaims.get(baseKey) !== group) return;
     group.running = true;
     try {
       while (group.requested) {
@@ -802,6 +933,7 @@ export class ReactiveClientStore {
         const key = canonicalValue(units);
         if (key !== group.appliedKey) {
           await this.client.setWindow(group.base, units);
+          if (this.#windowClaims.get(baseKey) !== group) return;
           group.appliedKey = key;
         }
       }
@@ -810,15 +942,36 @@ export class ReactiveClientStore {
       for (const waiter of group.waiters.splice(0)) waiter.reject(error);
     } finally {
       group.running = false;
-      if (group.requested) this.#scheduleWindow(group);
+      if (group.requested && this.#windowClaims.get(baseKey) === group)
+        this.#scheduleWindow(group);
+      else if (
+        group.claims.size === 0 &&
+        group.waiters.length === 0 &&
+        group.appliedKey === canonicalValue([])
+      ) {
+        const key = windowBaseKey(group.base);
+        if (this.#windowClaims.get(key) === group)
+          this.#windowClaims.delete(key);
+      }
     }
+  }
+
+  /** Retained observation counts for diagnostics and resource benchmarks. */
+  cacheStats() {
+    return {
+      queries: this.#queries.size,
+      activeQueries: this.#queries.activeSize,
+      windows: this.#windows.size,
+      activeWindows: this.#windows.activeSize,
+      windowClaims: this.#windowClaims.size,
+    };
   }
 
   start(): void {
     if (this.#offChange !== undefined) return;
     this.#offChange = this.client.onChange((batch) => {
-      for (const entry of this.#queries.values()) entry.onChange(batch);
-      for (const entry of this.#windows.values()) entry.onChange(batch);
+      this.#queries.onChange(batch);
+      this.#windows.onChange(batch);
       if (batch.status !== undefined) {
         (this.status as ValueEntry<StatusStoreSnapshot>).set({
           status: batch.status,
@@ -838,15 +991,32 @@ export class ReactiveClientStore {
         ...previous,
         leadership,
       });
+      if (previous.isLoading) this.status.refresh();
     });
+    this.status.refresh();
+    this.conflicts.refresh();
+    this.outcomes.refresh();
   }
 
   dispose(): void {
+    this.#queries.clear();
+    this.#windows.clear();
+    for (const entry of [this.status, this.conflicts, this.outcomes]) {
+      (entry as ValueEntry<unknown>).invalidate();
+    }
     this.#offChange?.();
     this.#offChange = undefined;
     this.#offLeadership?.();
     this.#offLeadership = undefined;
     for (const group of this.#windowClaims.values()) {
+      for (const waiter of group.waiters.splice(0)) {
+        waiter.reject(
+          new ClientSyncError(
+            'client.reactive_store_disposed',
+            'reactive store disposed',
+          ),
+        );
+      }
       // Releasing a window is best-effort teardown. A resource owner may have
       // already closed the underlying worker/native handle before React effect
       // cleanup runs (notably during schema-changing HMR). Do not let that

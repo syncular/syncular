@@ -1124,6 +1124,24 @@ Servers prune the commit log. The contract:
   every row, the change that a fresh scan from any cursor ≥ horizonSeq
   would need to converge.
 
+Pruning MUST capture the partition log epoch before reading retention inputs.
+The storage operation `pruneCommitsThrough(partition, { logEpoch, throughSeq })`
+MUST verify that epoch, advance the horizon to the greater of its current value
+and `throughSeq`, and delete commit/change/scope-index records through that
+horizon in one transaction. It returns `previousHorizonSeq`, `horizonSeq`, and
+`removedCommits` from that transaction. Concurrent passes cannot lower the
+horizon. Retry the operation even when the horizon does not advance, so older
+incomplete cleanup can finish. Application rows, idempotency results, and durable
+reactions survive pruning.
+
+Pruning and restore rotation MUST serialize. An epoch mismatch rejects the
+operation before any deletion; the host must recompute retention inputs.
+Unregistered partitions cannot be pruned. SQLite uses its storage transaction
+queue; Postgres holds the partition lock on one connection; D1 performs all
+steps in one atomic batch under the existing partition coordinator. A failure
+rolls back both the horizon and deletions. A lost reply after commit leaves a
+safe, repeatable cleanup operation.
+
 ### 4.7 Bootstrap state machine
 
 A subscription **bootstraps** when any of: the request carries a
@@ -1507,6 +1525,14 @@ version-skew tolerance, not a second implementation path.
 `sync.invalid_request`, the column check is `sync.schema_mismatch`,
 download-side failures are §5.5's (`sync.not_found`,
 `sync.segment_expired`, `sync.forbidden`).
+
+The TypeScript server coalesces cold image builds within one process for a
+storage/segment-store pair and the complete reuse key. Every request resolves
+authorization before joining a build and obtains its signed URL afterward.
+Closing one request does not cancel an artifact build awaited by another.
+Builders consume keyset-ordered row batches while retaining the same pin and
+row versions. Coalescing changes no SSP2 frames and supplies no distributed
+lock across processes.
 
 ### 5.4 `SEGMENT_REF` frame — the descriptor
 
@@ -2853,7 +2879,17 @@ not silently at push time. A validator that throws something **other than
 a chosen host code** (an unexpected error, not a deliberate rejection)
 rejects the commit with `sync.constraint_violation` (§10.2) — the write
 did not happen, and the generic constraint code says so without leaking
-the thrown message as a machine code.
+the thrown message as a machine code. Unexpected row-validator errors MUST
+use the static public message `write validator failed`; unexpected whole-commit
+validator errors MUST use `whole-commit validator failed`. Unexpected CRDT
+merger errors (§5.10.6) MUST use `CRDT merger failed` with
+`sync.crdt_merge_failed`. Original exception messages, stacks, and values MUST
+NOT enter wire results, persisted push results, client outcomes, or support
+diagnostics. Deliberate host rejection messages and validated details remain
+public host-authored content. Hosts may capture original exceptions inside
+their callback using a private diagnostic sink; diagnostic delivery MUST NOT
+change callback completion or retry semantics. This rule applies to newly
+recorded results; existing idempotency records retain their recorded messages.
 
 **Events.** A validation rejection is an ordinary push rejection: it emits
 the existing `push.rejected` operational event (the §6.3 rejection seam)
@@ -3170,6 +3206,12 @@ there is one commit path.
   a client MUST NOT reorder or coalesce commits once a push containing
   them may have reached the server (the idempotency key pins their
   content).
+  Each request contains a contiguous prefix of the surviving outbox. When
+  the next whole commit exceeds the remaining operation budget, the client
+  defers that commit and the complete suffix. A smaller later commit MUST
+  NOT fill the remaining budget. Retries preserve this order and each
+  commit's identity. A first commit that alone exceeds the server cap stays
+  atomic and receives the request-level `sync.too_many_operations` error.
 - Local reads see outbox state applied optimistically. Reconciliation
   is **outbox replay on top**: whenever server data has been applied (a
   pull response or a realtime delta, §8.2 — including one that aborted
@@ -3191,6 +3233,11 @@ near the first important offline write and MUST surface a best-effort result
 when pending outbox commits exist. A denied request leaves the database usable
 with best-effort durability. A second origin-local outbox store does not cover
 origin eviction and MUST NOT be presented as an eviction backup.
+
+`syncUntilIdle` continues while the core's sync-needed flag is raised,
+including an epoch handshake with no subscriptions. A persisted outbox can
+therefore drain after startup without requiring a subscription to trigger a
+second request.
 
 ### 7.2 Replay and idempotent retry
 
@@ -3441,8 +3488,8 @@ purge runs on that recovered round, as always.
 #### 7.3.5 Client `leaseState`
 
 A client persists the current lease (`leaseId`, `expiresAtMs`) from the
-last `LEASE` frame and exposes it as `leaseState` — the mirror of
-`schemaFloor` (§1.6):
+last `LEASE` frame and exposes it in `statusSnapshot().leaseState`, alongside
+`statusSnapshot().schemaFloor` (§1.6):
 
 - `leaseState.leaseId` / `leaseState.expiresAtMs`: the held lease, if any.
 - `leaseState.remainingMs(now)`: `expiresAtMs − now`, the expiry-warning
@@ -3630,9 +3677,37 @@ bootstrapper at the new `schemaVersion`.
 
 ### 7.5 Local observation revisions and atomic reactive reads
 
+**Application read surface.** `querySnapshot`, `statusSnapshot`,
+`diagnosticsSnapshot`, `conflicts`, `rejections`, `commitOutcome`,
+`commitOutcomes`, and `resolveCommitOutcome` are methods on direct and hosted
+clients. Direct TypeScript reads return values; worker and JavaScript native
+bridges return promises. `schemaFloor`, `leaseState`, `upgrading`, and
+`syncNeeded` are fields of one status snapshot. Hosts MUST preserve the
+snapshot boundary and MUST NOT reconstruct those fields from separate calls.
+The native command dispatcher uses the same method names. Runtime-specific
+security activation and database ownership remain host capabilities.
+
+Asynchronous observation adapters MUST order publications by the initiating
+read or event. A newer refresh, including one that fails, invalidates every
+older pending read. An authoritative status event invalidates pending status
+reads. Presence adapters MUST subscribe before their initial read, invalidate
+pending reads on cleanup, and clear peers immediately when the client or
+scope changes. These rules apply equally to direct and promise-based client
+surfaces.
+
 This section specifies the client-local observation contract. It adds no
 SSP2 frame and no server behavior. A conforming client which exposes reactive
 local reads MUST implement this contract identically on every host binding.
+
+**Observer lifetime.** Client-scoped query and window caches retain no inactive
+results after microtask cleanup. The last unsubscribe removes an entry from
+change dispatch immediately. A render that never subscribes receives the same
+cleanup. Later subscriptions through an older entry reference MUST reacquire
+or join the current shared entry for that identity. Equal active queries share
+one read per revision. Cleanup invalidates pending reads and releases rows;
+resubscription after eviction reads a fresh atomic snapshot. Empty window-claim
+groups remain owned until their release and waiters settle. Final disposal
+clears retained observations; provider restart reestablishes them.
 
 **Revision.** Each client database persists an unsigned 64-bit `localRevision`
 in durable bookkeeping state. It starts at zero and increases exactly once in

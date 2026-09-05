@@ -4,9 +4,6 @@ import type {
   ClientDiagnosticsListener,
   ClientDiagnosticsSnapshot,
 } from './diagnostics';
-import { realtimeSupervisorObservationSource } from './realtime-supervisor-observation';
-
-export { linkRealtimeSupervisorObservation } from './realtime-supervisor-observation';
 
 type CancelTimer = () => void;
 
@@ -103,20 +100,14 @@ interface RealtimeSupervisorAttachment {
   readonly supervisor: RealtimeSupervisor;
 }
 
-function attachment(
-  client: object,
-  visited: Set<object> = new Set(),
-): RealtimeSupervisorAttachment | undefined {
-  if (visited.has(client)) return undefined;
-  visited.add(client);
+function attachment(client: object): RealtimeSupervisorAttachment | undefined {
   const candidate = Reflect.get(client, REALTIME_SUPERVISOR_KEY) as
     | Partial<RealtimeSupervisorAttachment>
     | undefined;
   if (candidate?.version === 1 && candidate.supervisor) {
     return candidate as RealtimeSupervisorAttachment;
   }
-  const source = realtimeSupervisorObservationSource(client);
-  return source === undefined ? undefined : attachment(source, visited);
+  return undefined;
 }
 
 function scheduleTimer(callback: () => void, delayMs: number): CancelTimer {

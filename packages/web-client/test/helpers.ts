@@ -125,6 +125,7 @@ function wrapStorage(
     begin: (p) => storage.begin(p),
     getMaxCommitSeq: (p) => storage.getMaxCommitSeq(p),
     getHorizonSeq: (p) => storage.getHorizonSeq(p),
+    getPartitionLogEpoch: (p) => storage.getPartitionLogEpoch(p),
     setHorizonSeq: (p, s) => storage.setHorizonSeq(p, s),
     pruneCommitsThrough: (p, s) => storage.pruneCommitsThrough(p, s),
     getCommitSeqBefore: (p, t) => storage.getCommitSeqBefore(p, t),
@@ -143,6 +144,8 @@ function wrapStorage(
     scanRows: (p, q) => storage.scanRows(p, q),
     getClientRecord: (p, c) => storage.getClientRecord(p, c),
     putClientRecord: (p, r) => storage.putClientRecord(p, r),
+    getActiveClientCursorFloor: (p, cutoff) =>
+      storage.getActiveClientCursorFloor(p, cutoff),
     listClientCursors: (p) => storage.listClientCursors(p),
   };
 }
@@ -391,16 +394,37 @@ export function responseGate(): {
   return { fault: { opened, onHeld }, held, release };
 }
 
-/** Readiness wait, never a sleep (test doctrine). */
-export async function waitFor(
+/** Await an observed completion condition, subscribing before the first read. */
+export function waitFor(
   check: () => boolean | Promise<boolean>,
+  subscribe: (notify: () => void) => () => void,
   what = 'condition',
 ): Promise<void> {
-  for (let i = 0; i < 400; i++) {
-    if (await check()) return;
-    await new Promise((resolve) => setTimeout(resolve, 2));
-  }
-  throw new Error(`${what} not reached`);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let off = () => {};
+    const inspect = () => {
+      if (settled) return;
+      void Promise.resolve()
+        .then(check)
+        .then(
+          (ready) => {
+            if (!ready || settled) return;
+            settled = true;
+            off();
+            resolve();
+          },
+          (cause: unknown) => {
+            if (settled) return;
+            settled = true;
+            off();
+            reject(new Error(what, { cause }));
+          },
+        );
+    };
+    off = subscribe(inspect);
+    inspect();
+  });
 }
 
 export function taskValues(

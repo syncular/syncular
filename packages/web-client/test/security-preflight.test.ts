@@ -65,7 +65,7 @@ test('preflight suppresses startup work until exact purge and activation', async
   });
   await client.start();
 
-  expect(client.securityLifecycle).toBe('preflight');
+  expect(client.securityLifecycle()).toBe('preflight');
   expect(intents).toEqual([]);
   expect(client.statusSnapshot().currentSchemaVersion).toBe(1);
   expect(client.localRevision).toBeGreaterThanOrEqual(0n);
@@ -87,7 +87,7 @@ test('preflight suppresses startup work until exact purge and activation', async
   ).toEqual({ alreadyApplied: false, purgedRows: 0, droppedCommits: 0 });
 
   await client.activateSecurity();
-  expect(client.securityLifecycle).toBe('active');
+  expect(client.securityLifecycle()).toBe('active');
   expect(intents).toEqual([{ kind: 'interactive' }]);
   expect(client.query('SELECT id FROM tasks')).toEqual([]);
 
@@ -106,14 +106,14 @@ test('active clients can enter a synchronous fail-closed barrier and rotate keys
   expect(client.query('SELECT id FROM tasks')).toEqual([]);
 
   const barrier = client.beginSecurityPreflight();
-  expect(client.securityLifecycle).toBe('preflight');
+  expect(client.securityLifecycle()).toBe('preflight');
   expectPreflightFailure(() => client.query('SELECT id FROM tasks'));
   await barrier;
 
   await client.activateSecurity({
     encryption: { keyProvider: () => new Uint8Array(32).fill(7) },
   });
-  expect(client.securityLifecycle).toBe('active');
+  expect(client.securityLifecycle()).toBe('active');
   expect(client.query('SELECT id FROM tasks')).toEqual([]);
   await expect(client.activateSecurity()).rejects.toMatchObject({
     code: 'sync.invalid_request',

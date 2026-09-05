@@ -136,8 +136,53 @@ describe('SELECT-only', () => {
 });
 
 describe('reactive table discovery', () => {
+  test('records each physical relation in exact positional SQL', () => {
+    for (const quoted of ['"todos"', '`todos`', '[todos]']) {
+      const query = analyze(
+        'q.sql',
+        `SELECT b.title FROM todos a JOIN ${quoted} AS b ON a.id=b.id`,
+      );
+      expect(
+        query.relations.map((relation) => ({
+          table: relation.table,
+          alias: relation.alias,
+          spelling: query.positionalSql.slice(relation.start, relation.end),
+        })),
+      ).toEqual([
+        { table: 'todos', alias: 'a', spelling: 'todos' },
+        { table: 'todos', alias: 'b', spelling: quoted },
+      ]);
+    }
+  });
+
+  test('resolves CTE shadowing within each enclosing statement', () => {
+    const sql =
+      'SELECT todos.id FROM todos JOIN (WITH todos AS (SELECT id FROM projects) SELECT id FROM todos) nested ON nested.id=todos.id';
+    expect(scanTableRefs(sql, IR).map((ref) => ref.table)).toEqual([
+      'todos',
+      'projects',
+    ]);
+    expect(
+      scanTableRefs(
+        'WITH recent AS (SELECT id FROM "todos") SELECT id FROM recent',
+        IR,
+      ).map((ref) => ref.table),
+    ).toEqual(['todos']);
+    expect(() =>
+      scanTableRefs('SELECT id FROM todos WHERE id IN projects', IR),
+    ).toThrow('explicit SELECT subquery');
+    expect(() => scanTableRefs('SELECT id FROM missing', IR)).toThrow(
+      'unresolved table relation',
+    );
+    expect(() => scanTableRefs('SELECT id FROM main.todos', IR)).toThrow(
+      'schema-qualified relations',
+    );
+  });
+
   test('rejects simple and parenthesized comma joins before emitting metadata', () => {
     for (const sql of [
+      'SELECT a.id FROM todos a, "todos" b WHERE a.id=b.id',
+      'SELECT a.id FROM ("todos" a, "todos" b) WHERE a.id=b.id',
       `SELECT left_row.id
        FROM todos AS left_row, todos AS right_row
        WHERE right_row.id = left_row.id`,
@@ -363,7 +408,13 @@ describe('column fidelity', () => {
       true,
       true,
     ]);
-    expect(scanTableRefs(sql, IR)).toEqual([
+    expect(
+      scanTableRefs(sql, IR).map(({ table, alias, nullable }) => ({
+        table,
+        alias,
+        nullable,
+      })),
+    ).toEqual([
       { table: 'todos', alias: 'root', nullable: false },
       { table: 'todos', alias: 'grouped', nullable: true },
       { table: 'todos', alias: 'nested', nullable: true },

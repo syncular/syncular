@@ -5,8 +5,12 @@
  * incremental at the pin, and cursor-expired re-bootstrap (§4.6).
  */
 import { describe, expect, test } from 'bun:test';
+import { compileSchema, type SqliteValue } from '@syncular/server';
+import { encodeRow } from '@syncular/core';
+import { upsertSql, upsertValues } from '../../server/src/relational-rows';
 import {
   makeClient,
+  TASK_COLUMNS,
   makeServer,
   PARTITION,
   type TestServer,
@@ -262,7 +266,12 @@ describe('cursor expiry (§4.6)', () => {
     await seedTasks(server, 2, 100);
     const horizon = oldCursor + 1;
     await server.storage.setHorizonSeq(PARTITION, horizon);
-    await server.storage.pruneCommitsThrough(PARTITION, horizon);
+    const logEpoch = await server.storage.getPartitionLogEpoch(PARTITION);
+    if (logEpoch === undefined) throw new Error('missing epoch');
+    await server.storage.pruneCommitsThrough(PARTITION, {
+      logEpoch,
+      throughSeq: horizon,
+    });
 
     const summary = await b.client.sync();
     expect(summary.resets).toEqual(['s1']);
@@ -290,3 +299,75 @@ describe('cursor expiry (§4.6)', () => {
     });
   });
 });
+
+test('batched image construction converges cold and warm clients with all row versions', async () => {
+  const count = process.env.SYNCULAR_IMAGE_BENCH === '1' ? 100_000 : 2_001;
+  const server = makeServer();
+  const schema = compileSchema(server.ctxFor('actor-1').schema);
+  await server.storage.ensureSchema(schema);
+  const table = schema.tables.get('tasks')!;
+  const insert = server.storage.db.query(upsertSql(table, 'sqlite'));
+  const scope = server.storage.db.query(
+    'INSERT INTO sync_row_scopes(partition,tbl,var,value,row_id) VALUES (?,?,?,?,?)',
+  );
+  server.storage.db.exec('BEGIN');
+  for (let index = 0; index < count; index += 1) {
+    const id = String(index).padStart(6, '0');
+    insert.run(
+      ...(upsertValues(
+        table,
+        PARTITION,
+        {
+          rowId: id,
+          serverVersion: 7,
+          scopes: { project_id: 'p1' },
+          payload: encodeRow(TASK_COLUMNS, [
+            id,
+            'p1',
+            'task',
+            false,
+            null,
+            null,
+          ]),
+        },
+        'sqlite',
+      ) as SqliteValue[]),
+    );
+    scope.run(PARTITION, 'tasks', 'project_id', 'p1', id);
+  }
+  server.storage.db.exec('COMMIT');
+  for (const phase of ['cold', 'warm']) {
+    const { client, db } = await makeClient(server, {
+      clientId: phase,
+      limits: { accept: 7 },
+    });
+    try {
+      client.subscribe({
+        id: 's',
+        table: 'tasks',
+        scopes: { project_id: ['p1'] },
+      });
+      const start = performance.now();
+      await client.syncUntilIdle();
+      const elapsedMs = performance.now() - start;
+      expect(client.query('SELECT COUNT(*) AS count FROM tasks')).toEqual([
+        { count },
+      ]);
+      expect(
+        client.query('SELECT id, title FROM tasks ORDER BY id LIMIT 1'),
+      ).toEqual([{ id: '000000', title: 'task' }]);
+      expect(
+        db.query(
+          'SELECT MIN(_sync_version) AS minimum, MAX(_sync_version) AS maximum FROM tasks',
+        ),
+      ).toEqual([{ minimum: 7, maximum: 7 }]);
+      expect(client.subscription('s')?.cursor).toBe(0);
+      if (process.env.SYNCULAR_IMAGE_BENCH === '1')
+        console.log(JSON.stringify({ phase, count, elapsedMs }));
+    } finally {
+      await client.close();
+      db.close();
+    }
+  }
+  server.storage.db.close();
+}, 60_000);

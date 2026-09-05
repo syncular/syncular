@@ -151,7 +151,14 @@ server database. Typegen currently checks the SQLite form, so a Postgres
 deployment should keep remotely registered SQL within the common SQL subset or
 test it against Postgres in CI.
 
-Registration requires generated result-column metadata. The server validates
+Regenerate query modules with `syncular generate` before upgrading the server.
+Generated descriptors now include `relationPlans` for every selected SQL
+variant. The compiler records each physical table occurrence, including quoted
+self joins and tables inside CTEs. QueryIR uses version 4. The server rejects
+descriptors without matching relation plans; hand-authored descriptors must be
+replaced with generated ones.
+
+Registration also requires generated result-column metadata. The server validates
 and returns only those columns, so driver-specific or undeclared fields do not
 cross the operation boundary.
 

@@ -69,7 +69,7 @@ repeat the WebSocket handshake with them. `FlutterConnectivitySignal` and
 
 Typed conveniences mirror the command surface exactly (same names as the
 Swift/Kotlin wrappers): `mutate` / `subscribe` / `unsubscribe` / `sync` /
-`syncUntilIdle` / `readRows` / `query` / `pendingCommitIds` / `syncNeeded` /
+`syncUntilIdle` / `readRows` / `query` / `pendingCommitIds` / `statusSnapshot` /
 `subscriptionState` / `conflicts` / `presence` / `setPresence` / `setWindow` /
 `windowState` / `connectRealtime` / `disconnectRealtime` / `crdtText` /
 `crdtInsertText` / `crdtDeleteText` / `crdtApplyUpdate` / `setHeaders` (native
@@ -184,3 +184,17 @@ The tests need **no server**: syncular is offline-first, so `mutate` →
 (`pendingCommitIds`) grows, and `sync()` on the lean core honestly reports
 `transport.unavailable`. That is the whole hermetic suite —
 `syncular/test/syncular_client_test.dart`, mirroring the Swift/Kotlin suites.
+
+## Snapshot and outcome methods
+
+Use `querySnapshot` for rows, coverage, and revision from one local read.
+`statusSnapshot` returns scheduling, schema, lease, and outbox state;
+`diagnosticsSnapshot` adds bounded support evidence. `commitOutcome` looks up
+one terminal result by commit ID. `commitOutcomes` lists the durable journal,
+and `resolveCommitOutcome` records an explicit resolution. A pending commit
+has no terminal outcome. `rejections` lists rejected commits.
+
+This source-breaking revision removes the `syncNeeded` convenience and the raw
+`schemaFloor`, `leaseState`, `upgrading`, and `syncNeeded` commands. Read those
+fields from `statusSnapshot` instead. The wrappers use the existing native
+command dispatcher and return the binding's JSON value types.

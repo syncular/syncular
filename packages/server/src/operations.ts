@@ -1,4 +1,8 @@
 import {
+  type AuthoritativeRelationPlan,
+  validateAuthoritativeRelationPlan,
+} from './authoritative-query';
+import {
   decodeRow,
   decodeRemoteOperationRequest,
   encodeRow,
@@ -42,6 +46,7 @@ export interface AuthoritativeQueryDescriptor<Params = undefined> {
   readonly hasParams: boolean;
   readonly sql: string;
   readonly tables: readonly string[];
+  readonly relationPlans: readonly AuthoritativeRelationPlan[];
   readonly resultColumns: readonly {
     readonly name: string;
     readonly type:
@@ -280,6 +285,9 @@ export function registerRemoteQuery<Params>(
   options: RemoteQueryOptions<Params>,
 ): RegisteredRemoteQuery {
   if (
+    !Array.isArray(descriptor.relationPlans) ||
+    !descriptor.relationPlans.some((plan) => plan.sql === descriptor.sql) ||
+    descriptor.relationPlans.some((plan) => !Array.isArray(plan.relations)) ||
     descriptor.id.length === 0 ||
     new Set(descriptor.tables).size !== descriptor.tables.length ||
     !Array.isArray(descriptor.resultColumns) ||
@@ -288,8 +296,11 @@ export function registerRemoteQuery<Params>(
       descriptor.resultColumns.length
   ) {
     throw new Error(
-      'remote query requires a non-empty id and unique tables and result columns',
+      'remote query requires generated relation plans, a non-empty id, and unique tables and result columns; regenerate queries',
     );
+  }
+  for (const plan of descriptor.relationPlans) {
+    validateAuthoritativeRelationPlan(plan, descriptor.tables);
   }
   if (
     !Number.isSafeInteger(options.maxRows) ||
@@ -394,12 +405,29 @@ export function registerRemoteQuery<Params>(
           'configured storage does not implement authoritative queries',
         );
       }
-      await ctx.storage.ensureSchema(schema);
       const selectedSql = descriptor.sqlFor?.(params) ?? descriptor.sql;
+      const plan = descriptor.relationPlans.find(
+        (candidate) => candidate.sql === selectedSql,
+      );
+      if (plan === undefined) {
+        throw syncError(
+          'operation.invalid_request',
+          'selected SQL has no generated relation plan; regenerate queries',
+        );
+      }
+      await ctx.storage.ensureSchema(schema);
+      const prefix = 'SELECT * FROM (';
       let result;
       try {
         result = await ctx.storage.queryAuthoritative(ctx.partition, {
-          sql: `SELECT * FROM (${selectedSql}) AS "_syncular_registered_query" LIMIT ?`,
+          plan: {
+            sql: `${prefix}${selectedSql}) AS "_syncular_registered_query" LIMIT ?`,
+            relations: plan.relations.map((relation) => ({
+              ...relation,
+              start: relation.start + prefix.length,
+              end: relation.end + prefix.length,
+            })),
+          },
           params: [...descriptor.bind(params), options.maxRows + 1],
           tables: descriptor.tables,
         });

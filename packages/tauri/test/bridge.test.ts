@@ -2,7 +2,7 @@
  * Bridge unit tests with injected invoke/listen doubles: assert the
  * `SyncClientLike` contract — method → command mapping, the query fast path,
  * exact change fanout, presence, and lossless parameter envelopes.
- * Plus a shape-parity test against the React `normalizeClient`, so a drift in
+ * Plus a shape-parity test against the React `SyncClientLike` contract, so a drift in
  * `SyncClientLike` breaks this suite (the bridge is the fourth host of that
  * one interface).
  */
@@ -13,7 +13,7 @@ import {
   realtimeSupervisorSnapshot,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
 } from '@syncular/client';
-import { normalizeClient, type SyncClientLike } from '@syncular/react';
+import { type SyncClientLike } from '@syncular/react';
 import { hostBoolean } from '../../typegen/test/fixtures/basic/syncular.queries';
 import { createTauriSyncClient, type TauriApi } from '../src/index';
 
@@ -157,14 +157,6 @@ function defaultResponder(cmd: string, args: Record<string, unknown>): unknown {
           resolvedAtMs: 2,
         },
       });
-    case 'schemaFloor':
-      return OK({ floor: undefined });
-    case 'leaseState':
-      return OK({ lease: undefined });
-    case 'upgrading':
-      return OK({ value: false });
-    case 'syncNeeded':
-      return OK({ value: true });
     case 'pendingCommitIds':
       return OK({ ids: ['commit-1'] });
     case 'presence':
@@ -563,8 +555,8 @@ describe('createTauriSyncClient', () => {
 
   test('accessor methods unwrap their command replies', async () => {
     const { client } = await build();
-    expect(await client.syncNeeded()).toBe(true);
-    expect(await client.upgrading()).toBe(false);
+    expect((await client.statusSnapshot()).syncNeeded).toBe(false);
+    expect((await client.statusSnapshot()).upgrading).toBe(false);
     expect(await client.conflicts()).toEqual([]);
     expect(await client.commitOutcome('commit-1')).toMatchObject({
       status: 'applied',
@@ -577,7 +569,7 @@ describe('createTauriSyncClient', () => {
       }),
     ).toMatchObject({ resolution: 'dismissed' });
     expect(await client.pendingCommits()).toEqual(['commit-1']);
-    expect(await client.schemaFloor()).toBeUndefined();
+    expect((await client.statusSnapshot()).schemaFloor).toBeUndefined();
   });
 
   test('an {error} reply throws a TauriSyncError with the code', async () => {
@@ -810,13 +802,13 @@ describe('createTauriSyncClient', () => {
 });
 
 describe('SyncClientLike parity', () => {
-  test('the bridge is accepted by normalizeClient and drives every member', async () => {
+  test('the bridge is accepted by the canonical snapshot interface and drives every member', async () => {
     const { client } = await build();
     // The compile-time proof: assigning to SyncClientLike would fail to
     // typecheck on any missing/mismatched member. The runtime proof: every
-    // normalized accessor resolves against the bridge.
+    // snapshot method resolves against the bridge.
     const like: SyncClientLike = client;
-    const normalized = normalizeClient(like);
+    const normalized = like;
 
     // onInvalidate / onPresence return unsubscribe fns.
     expect(typeof normalized.onInvalidate(() => {})).toBe('function');
@@ -867,10 +859,10 @@ describe('SyncClientLike parity', () => {
         resolution: 'dismissed',
       }),
     ).toMatchObject({ resolution: 'dismissed' });
-    expect(await normalized.schemaFloor()).toBeUndefined();
-    expect(await normalized.leaseState()).toBeUndefined();
-    expect(await normalized.upgrading()).toBe(false);
-    expect(await normalized.syncNeeded()).toBe(true);
+    expect((await normalized.statusSnapshot()).schemaFloor).toBeUndefined();
+    expect((await normalized.statusSnapshot()).leaseState).toBeUndefined();
+    expect((await normalized.statusSnapshot()).upgrading).toBe(false);
+    expect((await normalized.statusSnapshot()).syncNeeded).toBe(false);
     expect(await normalized.pendingCommits()).toEqual(['commit-1']);
     expect(await normalized.presence('room:1')).toEqual([]);
     await normalized.setPresence('room:1', { hi: true });

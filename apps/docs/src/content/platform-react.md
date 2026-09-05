@@ -99,7 +99,7 @@ await mutation.remove(id);
 ```
 
 The hook exposes `pendingCount`, `isPending`, `error`, and `resetError` plus
-optional `onSuccess`/`onError` callbacks. Overlapping mutations remain pending
+optional `onEnqueued`/`onError` callbacks. Overlapping mutations remain pending
 until every promise settles. The untyped `mutate([...])` batch API remains
 available from `useMutation()`.
 
@@ -217,3 +217,33 @@ router it does not own.
 
 See [Named queries](/tooling-queries/), [Windowing](/concepts-windowing/), and
 the [package README](https://github.com/syncular/syncular/tree/main/packages/react).
+
+This source-breaking API revision renames `useMutation`'s `onSuccess` option
+to `onEnqueued`. Replace the option name; the callback still receives the
+commit ID after local persistence. `isPending` counts local mutation calls.
+Both the callback and the resolved mutation promise can complete while
+offline. Server acceptance arrives later in the durable outcome journal.
+
+```ts
+const mutation = useMutation({
+  onEnqueued(commitId) {
+    setLastCommitId(commitId);
+  },
+});
+const { outcomes } = useCommitOutcomes();
+const outcome = outcomes.find((item) => item.clientCommitId === lastCommitId);
+```
+
+Use `client.commitOutcome(commitId)` to look up the same result after restart.
+An absent terminal outcome means the commit has not reached a recorded final
+server result. For a rejection or conflict, inspect the outcome and apply the
+resolution actions described in [conflict handling](/concepts-conflicts/).
+
+`SyncProvider` keeps the supplied client identity. `useSyncClient()` returns
+that client, whose read methods can return either values or promises. Use
+`await client.statusSnapshot()` in application code that supports multiple
+hosts. The `schemaFloor`, `leaseState`, `upgrading`, and `syncNeeded` fields
+come from that snapshot. Direct `conflicts`, `rejections`, and
+`securityLifecycle` reads are now method calls. `normalizeClient` has been
+removed; custom adapters must implement the canonical snapshot methods.
+See the [client migration](/platform-web/#snapshot-api-migration).

@@ -72,10 +72,9 @@ describe('httpSegmentDownloader', () => {
     const downloader = httpSegmentDownloader('https://host/segments', {
       fetch: doFetch,
     });
-    expect(downloader.fetchUrl?.('https://cdn.example/x')).rejects.toThrow(
-      ClientSyncError,
-    );
-    await Bun.sleep(0);
+    await expect(
+      downloader.fetchUrl?.('https://cdn.example/x'),
+    ).rejects.toThrow(ClientSyncError);
     // Exactly one request: the downloader never touched the direct
     // endpoint on failure (§5.4 — descriptor invalidated, re-pull).
     expect(seen).toHaveLength(1);

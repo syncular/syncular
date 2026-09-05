@@ -3,6 +3,7 @@
  * (SPEC.md §2.3, §6.3, §7; Appendix B.2/B.3). All faults inject at the
  * transport seam; the server is never told a fault happened.
  */
+import { decodeMessage } from '@syncular/core';
 import { check, checkEqual } from '../checks';
 import { task } from '../fixture';
 import { responsePushResults } from '../raw';
@@ -23,6 +24,148 @@ async function bootstrapped(
 }
 
 export const offlineScenarios: readonly Scenario[] = [
+  {
+    name: 'offline/first-handshake-drains-without-subscriptions',
+    specRefs: ['§7.1', '§2.1', '§8.4'],
+    async run(ctx) {
+      const client = await ctx.newClient({
+        actorId: 'actor',
+        clientId: 'first-handshake',
+        allowed: P1,
+      });
+      const id = await client.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('first', 'p1') },
+      ]);
+      await syncIdle(client);
+      checkEqual(
+        await client.api.pendingCommitIds(),
+        [],
+        'startup drains the queued write',
+      );
+      checkEqual(
+        (await ctx.server.readRows('tasks')).map((row) => row.rowId),
+        ['first'],
+        'server applies the write',
+      );
+      check(
+        client.sentRequests.some((bytes) =>
+          decodeMessage(bytes).frames.some(
+            (frame) =>
+              frame.type === 'PUSH_COMMIT' && frame.clientCommitId === id,
+          ),
+        ),
+        'a post-handshake request pushes the commit',
+      );
+    },
+  },
+  ...[499, 500, 501].map(
+    (operationCount): Scenario => ({
+      name: `offline/outbox-budget-${operationCount}`,
+      specRefs: ['§6.1', '§7.1', '§2.3'],
+      async run(ctx) {
+        const a = await bootstrapped(ctx, 'actor-a', 'client-a');
+        const first = await a.api.mutate(
+          Array.from({ length: operationCount }, (_, index) => ({
+            op: 'upsert' as const,
+            table: 'tasks',
+            values: task(`filler-${index}`, 'p1'),
+          })),
+        );
+        const second = await a.api.mutate([
+          {
+            op: 'upsert',
+            table: 'tasks',
+            values: task('edited', 'p1', 'older'),
+          },
+          { op: 'upsert', table: 'tasks', values: task('sibling', 'p1') },
+        ]);
+        const third = await a.api.mutate([
+          {
+            op: 'upsert',
+            table: 'tasks',
+            values: task('edited', 'p1', 'newest'),
+          },
+        ]);
+        a.sentRequests.length = 0;
+        if (operationCount > 500) {
+          await syncFails(
+            a,
+            'sync.too_many_operations',
+            'oversized first commit',
+          );
+          checkEqual(
+            await a.api.pendingCommitIds(),
+            [first, second, third],
+            'whole outbox survives request rejection',
+          );
+          checkEqual(
+            await ctx.server.getMaxCommitSeq(),
+            0,
+            'oversized request applied nothing',
+          );
+        } else {
+          a.faults.dropNextResponses = 1;
+          await syncFails(
+            a,
+            'transport.lost',
+            'lost first batch acknowledgement',
+          );
+          checkEqual(
+            await a.api.pendingCommitIds(),
+            [first, second, third],
+            'lost reply preserves FIFO queue',
+          );
+          const retried = await syncOk(a);
+          checkEqual(
+            retried.applied,
+            [first],
+            'retry drains only the first commit',
+          );
+          checkEqual(
+            await ctx.server.getMaxCommitSeq(),
+            1,
+            'retry applies the first commit once',
+          );
+          const remaining = await syncOk(a);
+          checkEqual(
+            remaining.applied,
+            [second, third],
+            'suffix applies in creation order',
+          );
+          checkEqual(await a.api.pendingCommitIds(), [], 'suffix drains');
+          await syncIdle(a);
+          const edited = (await ctx.server.readRows('tasks')).find(
+            (row) => row.rowId === 'edited',
+          );
+          checkEqual(
+            edited?.values.title,
+            'newest',
+            'newest edit survives batching',
+          );
+          await expectConverged(ctx, 'tasks', [a], {
+            variable: 'project_id',
+            values: ['p1'],
+          });
+        }
+        const batches = a.sentRequests
+          .map((bytes) => {
+            const request = decodeMessage(bytes);
+            check(request.msgKind === 'request', 'captured a request');
+            return request.frames.flatMap((frame) =>
+              frame.type === 'PUSH_COMMIT' ? [frame.clientCommitId] : [],
+            );
+          })
+          .filter((ids) => ids.length > 0);
+        checkEqual(
+          batches,
+          operationCount > 500
+            ? [[first]]
+            : [[first], [first], [second, third]],
+          'wire batches preserve the contiguous prefix',
+        );
+      },
+    }),
+  ),
   {
     name: 'offline/outbox-fifo-replay',
     specRefs: ['§7.1', '§7.2', 'B.2'],

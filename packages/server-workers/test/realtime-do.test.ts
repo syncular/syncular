@@ -542,6 +542,67 @@ describe('SyncularRealtimeDO (DO double + D1 double, reference codec)', () => {
     expect((wake?.data as { reason?: string }).reason).toBe('catchup-required');
   });
 
+  test('scheduled pruning waits for the existing partition write queue', async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const db = await makeDb();
+    const ns = new FakeDurableObjectNamespace(
+      db,
+      realtimeConfig(async () => {
+        entered();
+        await gate;
+      }),
+    );
+    const http = makeHttpHandler(db, ns);
+    const pushed = decodeHttpSync(
+      http(
+        httpSyncRequest(
+          [
+            {
+              type: 'PUSH_COMMIT',
+              clientCommitId: 'before-maintenance',
+              operations: [
+                {
+                  table: 'tasks',
+                  rowId: 'queued',
+                  op: 'upsert',
+                  payload: taskRow('queued', 'L', 'queued'),
+                },
+              ],
+            },
+          ],
+          'maintenance-client',
+        ),
+      ),
+    );
+    await reached;
+    let pruned = false;
+    const pending = ns
+      .get(ns.idFromName(PARTITION))
+      .host.pruneCommitLog({
+        partition: PARTITION,
+        nowMs: 2_000_000_000_000,
+        retention: { minRetainedCommits: 0, activeWindowMs: 0, ageForceMs: 0 },
+      })
+      .then((result) => {
+        pruned = true;
+        return result;
+      });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(pruned).toBe(false);
+    release();
+    await pushed;
+    expect(await pending).toBe(1);
+    expect(await new D1ServerStorage(db).getHorizonSeq(PARTITION)).toBe(1);
+  });
+
   test('overlapping HTTP duplicates are serialized by the partition DO', async () => {
     let validatorCalls = 0;
     const db = await makeDb();

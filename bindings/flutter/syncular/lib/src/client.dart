@@ -61,8 +61,7 @@ class WindowState {
   final List<String> pending;
 
   /// The per-unit verdict: registered AND bootstrap-complete.
-  bool complete(String unit) =>
-      units.contains(unit) && !pending.contains(unit);
+  bool complete(String unit) => units.contains(unit) && !pending.contains(unit);
 }
 
 /// Configuration for a [SyncularClient]. [baseUrl] engages the native HTTP+WS
@@ -278,7 +277,8 @@ class SyncularClient {
     final result = command(method, params);
     final id = result['clientCommitId'];
     if (id is! String) {
-      throw SyncularError('client.failed', '$method returned no clientCommitId');
+      throw SyncularError(
+          'client.failed', '$method returned no clientCommitId');
     }
     return id;
   }
@@ -347,10 +347,64 @@ class SyncularClient {
     return const [];
   }
 
-  /// The current sync-needed flag (§8.4 wake signal).
-  bool syncNeeded() {
-    final result = command('syncNeeded', const {});
-    return result['value'] == true;
+  /// Atomically read rows, coverage, and the local revision.
+  Map<String, Object?> querySnapshot(String sql,
+          {List<Object?> params = const [],
+          List<Map<String, Object?>> coverage = const []}) =>
+      command('querySnapshot',
+          {'sql': sql, 'params': params, 'coverage': coverage});
+
+  /// One read for outbox count, upgrade state, lease, schema floor, and sync-needed state.
+  Map<String, Object?> statusSnapshot() => command('statusSnapshot', const {});
+
+  Map<String, Object?> diagnosticsSnapshot(
+          [Map<String, Object?> request = const {}]) =>
+      command('diagnosticsSnapshot', request);
+
+  Map<String, Object?>? commitOutcome(String clientCommitId) {
+    final result = command('commitOutcome', {'clientCommitId': clientCommitId});
+    if (!result.containsKey('outcome')) {
+      throw const SyncularError(
+          'client.invalid_host_response', 'commit outcome missing');
+    }
+    final outcome = result['outcome'];
+    if (outcome == null) return null;
+    if (outcome is! Map<String, Object?>) {
+      throw const SyncularError(
+          'client.invalid_host_response', 'invalid commit outcome');
+    }
+    return outcome;
+  }
+
+  List<Map<String, Object?>> commitOutcomes(
+      [Map<String, Object?> query = const {}]) {
+    final outcomes = command('commitOutcomes', {'query': query})['outcomes'];
+    if (outcomes is! List ||
+        outcomes.any((entry) => entry is! Map<String, Object?>)) {
+      throw const SyncularError(
+          'client.invalid_host_response', 'invalid commit outcomes');
+    }
+    return outcomes.cast<Map<String, Object?>>();
+  }
+
+  Map<String, Object?> resolveCommitOutcome(Map<String, Object?> input) {
+    final outcome =
+        command('resolveCommitOutcome', {'input': input})['outcome'];
+    if (outcome is! Map<String, Object?>) {
+      throw const SyncularError(
+          'client.invalid_host_response', 'resolved commit outcome missing');
+    }
+    return outcome;
+  }
+
+  List<Map<String, Object?>> rejections() {
+    final rejections = command('rejections', const {})['rejections'];
+    if (rejections is! List ||
+        rejections.any((entry) => entry is! Map<String, Object?>)) {
+      throw const SyncularError(
+          'client.invalid_host_response', 'invalid rejections');
+    }
+    return rejections.cast<Map<String, Object?>>();
   }
 
   /// A subscription's status string (`active`/`revoked`/`failed`).

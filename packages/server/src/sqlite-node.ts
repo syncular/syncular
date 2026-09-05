@@ -43,13 +43,13 @@ export class SqliteLeaseStore extends SharedSqliteLeaseStore {
   }
 }
 
-export const buildSqliteImage: SqliteImageBuilder = (input) => {
+export const buildSqliteImage: SqliteImageBuilder = async (input) => {
   const directory = mkdtempSync(join(tmpdir(), 'syncular-server-image-'));
   const path = join(directory, 'segment.db');
   const db = new NodeSqliteDatabase(path);
   try {
     try {
-      writeSqliteImage(db, input);
+      await writeSqliteImage(db, input);
     } finally {
       db.close();
     }

@@ -15,6 +15,10 @@ syncular init [--manifest-dir <dir>]
 
 `generate` reads `<dir>/syncular.json` plus its migrations directory and
 writes the migration lock, IR JSON, and configured generated modules.
+QueryIR version 4 includes positional table-relation boundaries for every
+physical SQL statement. Generated TypeScript descriptors expose these as
+`relationPlans` for remote query registration. Regenerate existing query
+modules before upgrading the server.
 `--check` regenerates in memory and exits 1 unless every output on disk matches
 **byte-exactly**. `--watch` regenerates on any change under the manifest dir
 (Bun's recursive `fs.watch`, debounced; it skips the write when outputs are

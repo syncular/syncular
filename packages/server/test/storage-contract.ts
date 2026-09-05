@@ -687,7 +687,19 @@ export function runStorageContract(
       });
       await tx.enqueueReactions?.([reaction(commitSeq)]);
       await tx.commit();
-      expect(await storage.pruneCommitsThrough(PARTITION, commitSeq)).toBe(1);
+      const { logEpoch } = await storage.touchPartition(
+        PARTITION,
+        NOW,
+        'prune-epoch',
+      );
+      expect(
+        (
+          await storage.pruneCommitsThrough(PARTITION, {
+            logEpoch,
+            throughSeq: commitSeq,
+          })
+        ).removedCommits,
+      ).toBe(1);
       expect(
         await storage.getReaction?.(PARTITION, reaction(1).idempotencyKey),
       ).toMatchObject({ status: 'pending', sourceCommitSeq: 1 });
@@ -1071,8 +1083,20 @@ export function runStorageContract(
       expect(await storage.getHorizonSeq(PARTITION)).toBe(0);
       await storage.setHorizonSeq(PARTITION, 2);
       expect(await storage.getHorizonSeq(PARTITION)).toBe(2);
-      const removed = await storage.pruneCommitsThrough(PARTITION, 2);
-      expect(removed).toBe(2);
+      const { logEpoch } = await storage.touchPartition(
+        PARTITION,
+        NOW,
+        'prune-epoch',
+      );
+      const removed = await storage.pruneCommitsThrough(PARTITION, {
+        logEpoch,
+        throughSeq: 2,
+      });
+      expect(removed).toEqual({
+        previousHorizonSeq: 2,
+        horizonSeq: 2,
+        removedCommits: 2,
+      });
       // Pruned commits vanish from the window; retained ones remain.
       const window = await storage.readCommitWindow(PARTITION, {
         table: 'tasks',
@@ -1082,6 +1106,65 @@ export function runStorageContract(
         limitChanges: 100,
       });
       expect(window.map((c) => c.commitSeq)).toEqual([3, 4, 5]);
+    });
+
+    test('atomic pruning is monotonic, epoch-fenced, and repeatable after a lost reply', async () => {
+      const storage = await make();
+      const { logEpoch } = await storage.touchPartition(
+        PARTITION,
+        NOW,
+        'prune-epoch',
+      );
+      for (let i = 1; i <= 5; i += 1) {
+        const tx = await storage.begin(PARTITION);
+        await tx.appendCommit({
+          clientId: 'c1',
+          clientCommitId: `prune-${i}`,
+          actorId: 'a1',
+          createdAtMs: NOW,
+          changes: [],
+        });
+        await tx.commit();
+      }
+      const results = await Promise.all([
+        storage.pruneCommitsThrough(PARTITION, { logEpoch, throughSeq: 4 }),
+        storage.pruneCommitsThrough(PARTITION, { logEpoch, throughSeq: 2 }),
+      ]);
+      expect(
+        results.reduce((sum, result) => sum + result.removedCommits, 0),
+      ).toBe(4);
+      expect(
+        results.every(
+          (result) => result.horizonSeq >= result.previousHorizonSeq,
+        ),
+      ).toBe(true);
+      expect(await storage.getHorizonSeq(PARTITION)).toBe(4);
+      await storage.setHorizonSeq(PARTITION, 1);
+      expect(await storage.getHorizonSeq(PARTITION)).toBe(4);
+      expect(
+        await storage.pruneCommitsThrough(PARTITION, {
+          logEpoch,
+          throughSeq: 2,
+        }),
+      ).toEqual({ previousHorizonSeq: 4, horizonSeq: 4, removedCommits: 0 });
+      await storage.rotatePartitionLogEpoch(
+        PARTITION,
+        'restored-epoch',
+        NOW + 1,
+      );
+      await expect(
+        storage.pruneCommitsThrough(PARTITION, { logEpoch, throughSeq: 5 }),
+      ).rejects.toMatchObject({ code: 'sync.storage.prune_epoch_mismatch' });
+      expect(await storage.getHorizonSeq(PARTITION)).toBe(4);
+      expect(await storage.getPartitionLogEpoch(PARTITION)).toBe(
+        'restored-epoch',
+      );
+      expect(
+        await storage.pruneCommitsThrough(PARTITION, {
+          logEpoch: 'restored-epoch',
+          throughSeq: 5,
+        }),
+      ).toEqual({ previousHorizonSeq: 4, horizonSeq: 5, removedCommits: 1 });
     });
 
     test('getCommitSeqBefore returns the newest commit before a timestamp', async () => {
@@ -1112,6 +1195,47 @@ export function runStorageContract(
     });
 
     // --- Client records (§4.5, §8.1) ---
+
+    test('active cursor floor is partition-bound, includes cutoff equality, and preserves bootstrap cursors', async () => {
+      const storage = await make();
+      expect(
+        await storage.getActiveClientCursorFloor(PARTITION, NOW),
+      ).toBeNull();
+      const record: ClientRecord = {
+        clientId: 'inactive',
+        actorId: 'a',
+        wireVersion: 2,
+        cursor: -99,
+        updatedAtMs: NOW - 1,
+        subscriptions: [],
+      };
+      await storage.putClientRecord(PARTITION, record);
+      expect(
+        await storage.getActiveClientCursorFloor(PARTITION, NOW),
+      ).toBeNull();
+      await storage.putClientRecord(PARTITION, {
+        ...record,
+        clientId: 'boundary',
+        cursor: 7,
+        updatedAtMs: NOW,
+      });
+      await storage.putClientRecord('other', {
+        ...record,
+        cursor: -100,
+        updatedAtMs: NOW,
+      });
+      expect(await storage.getActiveClientCursorFloor(PARTITION, NOW)).toBe(7);
+      await storage.putClientRecord(PARTITION, {
+        ...record,
+        clientId: 'bootstrap',
+        cursor: -1,
+        updatedAtMs: NOW + 1,
+      });
+      expect(await storage.getActiveClientCursorFloor(PARTITION, NOW)).toBe(-1);
+      expect(
+        await storage.getActiveClientCursorFloor(PARTITION, NOW + 2),
+      ).toBeNull();
+    });
 
     test('client record + cursors round-trip', async () => {
       const storage = await make();

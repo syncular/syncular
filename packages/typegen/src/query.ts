@@ -62,6 +62,7 @@
  * for the query shapes this tier supports.
  */
 import { TypegenError } from './errors';
+import { isSyqlTrivia, lexSyqlSqlSource, type SyqlToken } from './syql-lexer';
 import type { IrColumn, IrColumnType, IrDocument, IrTable } from './ir';
 import { lowerProjection, mainVerbAfterWith } from './lower';
 import { buildNamingMap, type NamingMode, type NamingTarget } from './naming';
@@ -245,6 +246,7 @@ export interface QuerySyqlStatement {
   readonly sql: string;
   readonly positionalSql: string;
   readonly binds: readonly QuerySyqlPlanBind[];
+  readonly relations: readonly QueryRelation[];
 }
 
 /** The target-neutral physical plan every emitter must implement exactly. */
@@ -267,6 +269,14 @@ export interface QuerySyqlMetadata {
   readonly identity?: readonly string[];
 }
 
+/** Physical relation boundaries in the exact positional SQL statement. */
+export interface QueryRelation {
+  readonly table: string;
+  readonly start: number;
+  readonly end: number;
+  readonly alias?: string;
+}
+
 export interface AnalyzedQuery {
   /** camelCase function name (path-derived, or a `-- name:` override). */
   readonly name: string;
@@ -281,6 +291,7 @@ export interface AnalyzedQuery {
   readonly sql: string;
   /** The lowered SQL with `:name` rewritten to positional `?`. */
   readonly positionalSql: string;
+  readonly relations: readonly QueryRelation[];
   /** Params in first-occurrence (positional) order. */
   readonly params: readonly QueryParam[];
   /** Result columns in SELECT order. */
@@ -692,6 +703,9 @@ export function toPositionalSql(sql: string): string {
 
 export interface TableRef {
   readonly table: string;
+  readonly start: number;
+  readonly end: number;
+  readonly explicitAlias?: string;
   /** Alias (or the table name when un-aliased). */
   readonly alias: string;
   /** True when an enclosing flat join chain can null-extend this relation. */
@@ -709,6 +723,7 @@ const RESERVED_ALIAS = new Set([
   'inner',
   'left',
   'right',
+  'full',
   'outer',
   'natural',
   'join',
@@ -716,137 +731,26 @@ const RESERVED_ALIAS = new Set([
   'using',
   'limit',
   'having',
+  'union',
+  'intersect',
+  'except',
+  'offset',
+  'window',
+  'indexed',
+  'not',
 ]);
-const RESERVED_ALIAS_PATTERN = [...RESERVED_ALIAS].join('|');
-const TABLE_REF_RE = new RegExp(
-  `\\b(FROM|(?:NATURAL\\s+)?(?:(LEFT|RIGHT|FULL)(?:\\s+OUTER)?|INNER|CROSS)?\\s*JOIN)\\s+((?:\\(\\s*)*)(${IDENT})(?:\\s+(?:AS\\s+)?((?!(?:${RESERVED_ALIAS_PATTERN})\\b)${IDENT}))?`,
-  'gi',
-);
-
-function parenthesisDepthAt(sql: string, index: number): number {
-  let depth = 0;
-  for (let cursor = 0; cursor < index; cursor += 1) {
-    if (sql[cursor] === '(') depth += 1;
-    else if (sql[cursor] === ')') depth = Math.max(0, depth - 1);
-  }
-  return depth;
-}
-
-function matchingParenthesis(sql: string, open: number): number {
-  let depth = 0;
-  for (let cursor = open; cursor < sql.length; cursor += 1) {
-    if (sql[cursor] === '(') depth += 1;
-    else if (sql[cursor] === ')') {
-      depth -= 1;
-      if (depth === 0) return cursor;
-    }
-  }
-  return sql.length;
-}
-
-function hasCommaJoinedSchemaTable(sql: string, ir: IrDocument): boolean {
-  const cleaned = stripCommentsAndStrings(sql);
-  const known = new Set(
-    ir.tables.flatMap((table) => [
-      table.name.toLowerCase(),
-      ...table.ftsIndexes.map((index) => index.name.toLowerCase()),
-    ]),
-  );
-  const activeFromDepths = new Set<number>();
-  const clauseEnders = new Set([
-    'WHERE',
-    'GROUP',
-    'HAVING',
-    'ORDER',
-    'LIMIT',
-    'WINDOW',
-    'UNION',
-    'EXCEPT',
-    'INTERSECT',
-    'RETURNING',
-  ]);
-  let depth = 0;
-  let cursor = 0;
-  /** The previous significant token: an uppercased word or a single
-   * punctuation character. Distinguishes a table-source group — a `(` after
-   * FROM, JOIN, `,` or another `(` — from a function call or parenthesized
-   * expression, whose `(` follows an identifier or an operator. */
-  let previous: string | undefined;
-  const nextIdentifier = (start: number): string | undefined => {
-    let index = start;
-    while (
-      index < cleaned.length &&
-      (/\s/.test(cleaned[index] as string) || cleaned[index] === '(')
-    ) {
-      index += 1;
-    }
-    const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(cleaned.slice(index));
-    return match?.[0];
-  };
-
-  while (cursor < cleaned.length) {
-    const char = cleaned[cursor] as string;
-    if (/\s/.test(char)) {
-      cursor += 1;
-      continue;
-    }
-    if (char === '(') {
-      const opensTableSource =
-        previous === 'FROM' ||
-        previous === 'JOIN' ||
-        previous === ',' ||
-        previous === '(';
-      const next = nextIdentifier(cursor + 1);
-      if (
-        opensTableSource &&
-        activeFromDepths.has(depth) &&
-        next !== undefined &&
-        known.has(next.toLowerCase())
-      ) {
-        activeFromDepths.add(depth + 1);
-      }
-      depth += 1;
-      previous = '(';
-      cursor += 1;
-      continue;
-    }
-    if (char === ')') {
-      activeFromDepths.delete(depth);
-      depth = Math.max(0, depth - 1);
-      previous = ')';
-      cursor += 1;
-      continue;
-    }
-    if (char === ',' && activeFromDepths.has(depth)) {
-      const next = nextIdentifier(cursor + 1);
-      if (next !== undefined && known.has(next.toLowerCase())) return true;
-      previous = ',';
-      cursor += 1;
-      continue;
-    }
-    if (/[A-Za-z_]/.test(char)) {
-      let end = cursor + 1;
-      while (
-        end < cleaned.length &&
-        /[A-Za-z0-9_]/.test(cleaned[end] as string)
-      ) {
-        end += 1;
-      }
-      const word = cleaned.slice(cursor, end).toUpperCase();
-      if (word === 'FROM') activeFromDepths.add(depth);
-      else if (clauseEnders.has(word)) activeFromDepths.delete(depth);
-      previous = word;
-      cursor = end;
-      continue;
-    }
-    previous = char;
-    cursor += 1;
-  }
-  return false;
+function sqlIdentifier(token: SyqlToken | undefined): string | undefined {
+  if (token?.kind === 'identifier') return token.text;
+  if (token?.kind !== 'quoted-identifier') return undefined;
+  const quote = token.text[0];
+  const value = token.text.slice(1, -1);
+  return quote === '[' ? value : value.split(`${quote}${quote}`).join(quote);
 }
 
 export function scanTableRefs(sql: string, ir: IrDocument): TableRef[] {
-  const cleaned = stripCommentsAndStrings(sql);
+  const tokens = lexSyqlSqlSource('query SQL', sql).filter(
+    (token) => !isSyqlTrivia(token) && token.kind !== 'eof',
+  );
   const known = new Map(
     ir.tables.flatMap((table) => [
       [table.name.toLowerCase(), table.name] as const,
@@ -855,58 +759,187 @@ export function scanTableRefs(sql: string, ir: IrDocument): TableRef[] {
       ),
     ]),
   );
-  const nullableGroups = [
-    ...cleaned.matchAll(/\b(?:LEFT|FULL)(?:\s+OUTER)?\s+JOIN\s*(\()/gi),
-  ].map((match) => {
-    const open = (match.index ?? 0) + match[0].lastIndexOf('(');
-    return { open, close: matchingParenthesis(cleaned, open) };
+  const closes = new Map<number, number>();
+  const parents: number[] = [];
+  const depths: number[] = [];
+  const stack: number[] = [];
+  tokens.forEach((token, index) => {
+    if (token.text === ')') {
+      const open = stack.pop();
+      if (open !== undefined) closes.set(open, index);
+    }
+    parents[index] = stack.at(-1) ?? -1;
+    depths[index] = stack.length;
+    if (token.text === '(') stack.push(index);
   });
+  const activeFromDepths = new Set<number>();
+  const clauseEnders = new Set([
+    'where',
+    'group',
+    'having',
+    'order',
+    'limit',
+    'window',
+    'union',
+    'except',
+    'intersect',
+    'returning',
+  ]);
+  for (const [index, token] of tokens.entries()) {
+    const depth = depths[index] ?? 0;
+    const word =
+      token.kind === 'identifier' ? token.text.toLowerCase() : undefined;
+    if (word === 'in' && sqlIdentifier(tokens[index + 1]) !== undefined) {
+      throw new TypegenError(
+        'query SQL',
+        'table-name IN expressions are unsupported; use an explicit SELECT subquery',
+      );
+    }
+    if (word === 'from') activeFromDepths.add(depth);
+    else if (word !== undefined && clauseEnders.has(word))
+      activeFromDepths.delete(depth);
+    else if (token.text === ')') activeFromDepths.delete(depth + 1);
+    else if (token.text === '(' && activeFromDepths.has(depth)) {
+      const previous = tokens[index - 1]?.text.toLowerCase();
+      const next = tokens[index + 1];
+      if (
+        previous !== undefined &&
+        ['from', 'join', ',', '('].includes(previous) &&
+        !(
+          next?.kind === 'identifier' &&
+          ['select', 'with', 'values'].includes(next.text.toLowerCase())
+        )
+      ) {
+        activeFromDepths.add(depth + 1);
+      }
+    } else if (token.text === ',' && activeFromDepths.has(depth)) {
+      throw new TypegenError(
+        'query SQL',
+        'comma-separated table sources are unsupported because reactive proof requires every relation; use an explicit JOIN ... ON clause',
+      );
+    }
+  }
+  const ctes: { name: string; start: number; end: number }[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token?.kind !== 'identifier' || token.text.toLowerCase() !== 'with')
+      continue;
+    const scopeEnd = closes.get(parents[index] ?? -1) ?? tokens.length;
+    let cursor = index + 1;
+    if (tokens[cursor]?.text.toLowerCase() === 'recursive') cursor += 1;
+    for (;;) {
+      const name = sqlIdentifier(tokens[cursor]);
+      if (name === undefined) break;
+      cursor += 1;
+      if (tokens[cursor]?.text === '(')
+        cursor = (closes.get(cursor) ?? scopeEnd) + 1;
+      if (tokens[cursor]?.text.toLowerCase() !== 'as') break;
+      cursor += 1;
+      if (tokens[cursor]?.text.toLowerCase() === 'not') cursor += 1;
+      if (tokens[cursor]?.text.toLowerCase() === 'materialized') cursor += 1;
+      if (tokens[cursor]?.text !== '(') break;
+      ctes.push({ name: name.toLowerCase(), start: index, end: scopeEnd });
+      cursor = (closes.get(cursor) ?? scopeEnd) + 1;
+      if (tokens[cursor]?.text !== ',') break;
+      cursor += 1;
+    }
+  }
   const refs: TableRef[] = [];
   const relationStartByDepth = new Map<number, number>();
-  for (const m of cleaned.matchAll(TABLE_REF_RE)) {
-    const operator = (m[1] as string).toUpperCase();
-    const outerKind = m[2]?.toUpperCase();
-    const rawTable = m[4] as string;
-    const operatorDepth = parenthesisDepthAt(cleaned, m.index ?? 0);
-    const relativeTableIndex = m[0]
-      .toLowerCase()
-      .indexOf(rawTable.toLowerCase(), (m[1] as string).length);
-    const tableIndex =
-      (m.index ?? 0) + Math.max((m[1] as string).length, relativeTableIndex);
-    const tableDepth = parenthesisDepthAt(cleaned, tableIndex);
-    if (operator === 'FROM') {
-      relationStartByDepth.set(operatorDepth, refs.length);
-      relationStartByDepth.set(tableDepth, refs.length);
-    } else if (
-      tableDepth > operatorDepth &&
-      !relationStartByDepth.has(tableDepth)
-    ) {
-      relationStartByDepth.set(tableDepth, refs.length);
+  const nullableGroups: { start: number; end: number }[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token?.kind !== 'identifier') continue;
+    const operator = token.text.toLowerCase();
+    if (operator !== 'from' && operator !== 'join') continue;
+    let outerKind: string | undefined;
+    if (operator === 'join') {
+      let previous = index - 1;
+      if (tokens[previous]?.text.toLowerCase() === 'outer') previous -= 1;
+      if (tokens[previous]?.kind === 'identifier')
+        outerKind = tokens[previous]?.text.toLowerCase();
     }
-    if (outerKind === 'RIGHT' || outerKind === 'FULL') {
-      const relationStart =
-        relationStartByDepth.get(operatorDepth) ?? refs.length;
-      for (let index = relationStart; index < refs.length; index += 1) {
-        const prior = refs[index];
-        if (prior !== undefined && !prior.nullable) {
-          refs[index] = { ...prior, nullable: true };
-        }
+    const operatorDepth = depths[index] ?? 0;
+    let cursor = index + 1;
+    if (operator === 'from')
+      relationStartByDepth.set(operatorDepth, refs.length);
+    if (outerKind === 'right' || outerKind === 'full') {
+      for (
+        let prior = relationStartByDepth.get(operatorDepth) ?? refs.length;
+        prior < refs.length;
+        prior += 1
+      ) {
+        const ref = refs[prior];
+        if (ref !== undefined) refs[prior] = { ...ref, nullable: true };
       }
     }
-    const table = known.get(rawTable.toLowerCase());
-    if (table === undefined) continue; // e.g. a derived SELECT/CTE name
-    let alias = m[5];
-    if (alias !== undefined && RESERVED_ALIAS.has(alias.toLowerCase())) {
-      alias = undefined;
+    if (
+      (outerKind === 'left' || outerKind === 'full') &&
+      tokens[cursor]?.text === '('
+    ) {
+      nullableGroups.push({
+        start: cursor,
+        end: closes.get(cursor) ?? tokens.length,
+      });
     }
+    while (tokens[cursor]?.text === '(') cursor += 1;
+    const tableToken = tokens[cursor];
+    if (
+      tableToken?.kind === 'identifier' &&
+      ['select', 'with', 'values'].includes(tableToken.text.toLowerCase())
+    )
+      continue;
+    const rawTable = sqlIdentifier(tableToken);
+    if (rawTable === undefined || tableToken === undefined) {
+      throw new TypegenError('query SQL', 'cannot resolve table relation');
+    }
+    if (tokens[cursor + 1]?.text === '.') {
+      throw new TypegenError(
+        'query SQL',
+        'schema-qualified relations are unsupported; use application table names',
+      );
+    }
+    if (
+      ctes.some(
+        (cte) =>
+          cte.name === rawTable.toLowerCase() &&
+          cursor > cte.start &&
+          cursor < cte.end,
+      )
+    )
+      continue;
+    const table = known.get(rawTable.toLowerCase());
+    if (table === undefined)
+      throw new TypegenError(
+        'query SQL',
+        `unresolved table relation ${JSON.stringify(rawTable)}`,
+      );
+    const tableDepth = depths[cursor] ?? operatorDepth;
+    if (operator === 'from' || !relationStartByDepth.has(tableDepth))
+      relationStartByDepth.set(tableDepth, refs.length);
+    let aliasToken = tokens[cursor + 1];
+    if (
+      aliasToken?.kind === 'identifier' &&
+      aliasToken.text.toLowerCase() === 'as'
+    )
+      aliasToken = tokens[cursor + 2];
+    const explicitAlias =
+      aliasToken?.kind === 'quoted-identifier' ||
+      (aliasToken?.kind === 'identifier' &&
+        !RESERVED_ALIAS.has(aliasToken.text.toLowerCase()))
+        ? sqlIdentifier(aliasToken)
+        : undefined;
     refs.push({
       table,
-      alias: alias ?? table,
+      start: tableToken.span.start.offset,
+      end: tableToken.span.end.offset,
+      alias: explicitAlias ?? table,
+      ...(explicitAlias === undefined ? {} : { explicitAlias }),
       nullable:
-        outerKind === 'LEFT' ||
-        outerKind === 'FULL' ||
+        outerKind === 'left' ||
+        outerKind === 'full' ||
         nullableGroups.some(
-          (group) => tableIndex > group.open && tableIndex < group.close,
+          (group) => cursor > group.start && cursor < group.end,
         ),
     });
   }
@@ -1486,13 +1519,6 @@ export function analyzeStatement(
   if (sourceSql.length === 0) {
     throw new TypegenError(file, 'query file is empty');
   }
-  if (hasCommaJoinedSchemaTable(sourceSql, ir)) {
-    throw new TypegenError(
-      file,
-      'comma-separated table sources are unsupported because reactive proof requires every relation; use an explicit JOIN ... ON clause',
-    );
-  }
-
   // SELECT-only (the read tier). A `WITH` is allowed when its main statement
   // is a SELECT (SQLite also allows WITH … INSERT/UPDATE/DELETE — writes).
   const firstKeyword = /^\s*([A-Za-z]+)/.exec(
@@ -1695,6 +1721,12 @@ export function analyzeStatement(
     sourceSql,
     sql,
     positionalSql: toPositionalSql(sql),
+    relations: scanTableRefs(toPositionalSql(sql), ir).map((ref) => ({
+      table: ref.table,
+      start: ref.start,
+      end: ref.end,
+      ...(ref.explicitAlias === undefined ? {} : { alias: ref.explicitAlias }),
+    })),
     params,
     columns,
     tables,

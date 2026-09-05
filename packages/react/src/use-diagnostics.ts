@@ -47,19 +47,23 @@ export function useDiagnostics(
   const refresh = useCallback(() => {
     const current = ++generation.current;
     setIsLoading(true);
-    void client.diagnosticsSnapshot(request).then(
-      (next) => {
-        if (generation.current !== current) return;
-        setSnapshot(next);
-        setError(undefined);
-        setIsLoading(false);
-      },
-      (reason: unknown) => {
-        if (generation.current !== current) return;
-        setError(reason instanceof Error ? reason : new Error(String(reason)));
-        setIsLoading(false);
-      },
-    );
+    void Promise.resolve()
+      .then(() => client.diagnosticsSnapshot(request))
+      .then(
+        (next) => {
+          if (generation.current !== current) return;
+          setSnapshot(next);
+          setError(undefined);
+          setIsLoading(false);
+        },
+        (reason: unknown) => {
+          if (generation.current !== current) return;
+          setError(
+            reason instanceof Error ? reason : new Error(String(reason)),
+          );
+          setIsLoading(false);
+        },
+      );
   }, [client, request]);
 
   useEffect(() => {

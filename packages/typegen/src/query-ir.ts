@@ -14,13 +14,14 @@ import type { AnalyzedQuery } from './query';
 /** Serialize analyzed queries as the deterministic QueryIR JSON document. */
 export function serializeQueryIr(queries: readonly AnalyzedQuery[]): string {
   const doc = {
-    queryIrVersion: 3,
+    queryIrVersion: 4,
     queries: queries.map((query) => ({
       name: query.name,
       file: query.file,
       sourceSql: query.sourceSql,
       sql: query.sql,
       positionalSql: query.positionalSql,
+      relations: query.relations,
       params: query.params.map((param) => ({
         name: param.name,
         langName: param.langName,
@@ -101,6 +102,7 @@ export function serializeQueryIr(queries: readonly AnalyzedQuery[]): string {
                     : { activationMask: statement.activationMask }),
                   sql: statement.sql,
                   positionalSql: statement.positionalSql,
+                  relations: statement.relations,
                   binds: statement.binds.map((bind) => ({ ...bind })),
                 })),
               },

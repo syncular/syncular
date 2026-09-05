@@ -136,14 +136,24 @@ private final class TestConnectivitySignal: SyncularConnectivitySignal {
     }
 }
 
-@Test func pendingCommitsAfterOfflineMutate() throws {
+@Test func snapshotsAndPendingOutcomesAfterOfflineMutate() throws {
     let client = try makeClient()
     defer { client.close() }
     try client.subscribe(id: "s1", table: "todo")
-    _ = try client.mutate([upsert(id: "t1", title: "x")])
-    // The offline outbox holds the unsynced commit (the honest "unsynced work"
-    // signal; `syncNeeded` reflects a server-push wake, not local mutations).
-    #expect(try !client.pendingCommitIds().isEmpty)
+    let id = try client.mutate([upsert(id: "t1", title: "x")])
+    #expect(try client.pendingCommitIds() == [id])
+    #expect(try client.statusSnapshot()["outbox"]?.numberValue == 1)
+    #expect(try client.querySnapshot("SELECT title FROM todo")["rows"]?.arrayValue?.count == 1)
+    #expect(try client.diagnosticsSnapshot()["replica"]?["pendingOutbox"]?.numberValue == 1)
+    #expect(try client.commitOutcome(clientCommitId: id) == nil)
+    #expect(try client.commitOutcomes().isEmpty)
+    #expect(try client.rejections().isEmpty)
+    #expect(throws: SyncularError.self) {
+        try client.resolveCommitOutcome(.object(["clientCommitId": .string(id), "resolution": .string("dismissed")]))
+    }
+    for method in ["schemaFloor", "leaseState", "upgrading", "syncNeeded"] {
+        #expect(throws: SyncularError.self) { try client.command(method: method, params: .object([:])) }
+    }
 }
 
 @Test func networkCommandReportsTransportUnavailableOnLeanCore() throws {

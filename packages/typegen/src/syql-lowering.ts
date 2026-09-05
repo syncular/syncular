@@ -470,6 +470,7 @@ function lowerStatement(
       ...(activationMask === undefined ? {} : { activationMask }),
       sql: namedSql,
       positionalSql: analyzed.positionalSql,
+      relations: analyzed.relations,
       binds: bindNames.map((name) =>
         planBind(
           name,

@@ -9,7 +9,6 @@ import {
   ReactiveClientStore,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
 } from '@syncular/client';
-import { normalizeClient } from '@syncular/react';
 import { createTauriSyncClient, type TauriApi } from '../src/index';
 
 const ROOT = join(import.meta.dir, '..', '..', '..');
@@ -201,7 +200,7 @@ if (!available) {
         client.onDiagnostics((snapshot) =>
           diagnosticsKinds.push(snapshot.host.kind),
         );
-        const store = new ReactiveClientStore(normalizeClient(client));
+        const store = new ReactiveClientStore(client);
         store.start();
         const query = store.query<{ id: string; title: string }>({
           id: 'native-todos',

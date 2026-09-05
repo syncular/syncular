@@ -119,6 +119,8 @@ import {
   dropOutboxCommitsInScope,
   encodeOutboxCommit,
   listOutbox,
+  iterateOutbox,
+  countOutbox,
   listOutboxBeforeImages,
   type OutboxBeforeImage,
   type OutboxCommit,
@@ -527,6 +529,37 @@ function isFinalPushResult(frame: PushResultFrame): boolean {
   );
 }
 
+/** Canonical client reads, shared by synchronous cores and promise hosts. */
+export type ClientSnapshotMethods = Pick<
+  SyncClient,
+  | 'querySnapshot'
+  | 'statusSnapshot'
+  | 'diagnosticsSnapshot'
+  | 'conflicts'
+  | 'rejections'
+  | 'commitOutcome'
+  | 'commitOutcomes'
+  | 'resolveCommitOutcome'
+>;
+
+/** Project a method contract across an asynchronous host boundary. */
+export type PromiseMethods<Methods> = {
+  [Key in keyof Methods]: Methods[Key] extends (
+    ...args: infer Args
+  ) => infer Result
+    ? (...args: Args) => Promise<Awaited<Result>>
+    : never;
+};
+
+/** A reader can execute locally or cross a worker/native boundary. */
+export type ClientSnapshotReader = {
+  [Key in keyof ClientSnapshotMethods]: (
+    ...args: Parameters<ClientSnapshotMethods[Key]>
+  ) =>
+    | ReturnType<ClientSnapshotMethods[Key]>
+    | Promise<ReturnType<ClientSnapshotMethods[Key]>>;
+};
+
 export class SyncClient {
   readonly #config: SyncClientConfig;
   readonly #db: ClientDatabase;
@@ -707,7 +740,7 @@ export class SyncClient {
     // an application-issued sync() call.
     const startupWork =
       this.#schemaFloor === undefined &&
-      (listOutbox(this.#db).length > 0 ||
+      (countOutbox(this.#db) > 0 ||
         subscriptions.some((sub) => sub.status === 'active'));
     if (startupWork && this.#securityLifecycle === 'active') {
       this.#needsPull = true;
@@ -722,10 +755,10 @@ export class SyncClient {
       role: () => 'direct',
       outbox: async () => this.pendingCommits().length,
       subscriptions: async () => this.subscriptions(),
-      conflicts: async () => this.conflicts.length,
-      rejections: async () => this.rejections.length,
-      syncNeeded: async () => this.syncNeeded,
-      upgrading: async () => this.upgrading,
+      conflicts: async () => this.conflicts().length,
+      rejections: async () => this.rejections().length,
+      syncNeeded: async () => this.statusSnapshot().syncNeeded,
+      upgrading: async () => this.statusSnapshot().upgrading,
       onInvalidate: (listener) => this.onInvalidate(listener),
     });
     this.#emitDiagnostics();
@@ -875,7 +908,7 @@ export class SyncClient {
   }
 
   /** Current fail-closed local-replica security state. */
-  get securityLifecycle(): SecurityLifecycle {
+  securityLifecycle(): SecurityLifecycle {
     return this.#securityLifecycle;
   }
 
@@ -927,7 +960,7 @@ export class SyncClient {
     this.#securityLifecycle = 'active';
     const startupWork =
       this.#schemaFloor === undefined &&
-      (listOutbox(this.#db).length > 0 ||
+      (countOutbox(this.#db) > 0 ||
         loadSubscriptions(this.#db).some((sub) => sub.status === 'active'));
     if (startupWork) {
       this.#setSyncNeeded(true);
@@ -1194,7 +1227,7 @@ export class SyncClient {
       replica: {
         localRevision: getLocalRevision(this.#db).toString(),
         syncNeeded: this.#needsPull,
-        pendingOutbox: listOutbox(this.#db).length,
+        pendingOutbox: countOutbox(this.#db),
       },
       lease: leaseState,
       subscriptions: allSubscriptions.slice(
@@ -1310,7 +1343,7 @@ export class SyncClient {
   #statusSnapshot(outboxCount?: number): SyncStatusSnapshot {
     return {
       currentSchemaVersion: this.#config.schema.version,
-      outbox: outboxCount ?? listOutbox(this.#db).length,
+      outbox: outboxCount ?? countOutbox(this.#db),
       upgrading: this.#upgrading,
       leaseState: this.#leaseState,
       schemaFloor: this.#schemaFloor,
@@ -1606,12 +1639,12 @@ export class SyncClient {
     await transport.upload(blobId, bytes, mediaType);
   }
 
-  get conflicts(): readonly ConflictRecord[] {
+  conflicts(): readonly ConflictRecord[] {
     this.#requireActive();
     return this.#conflicts;
   }
 
-  get rejections(): readonly RejectionRecord[] {
+  rejections(): readonly RejectionRecord[] {
     this.#requireActive();
     return this.#rejections;
   }
@@ -1702,30 +1735,6 @@ export class SyncClient {
     });
   }
 
-  /** Non-undefined once the server declared a schema floor (§1.6). */
-  get schemaFloor(): SchemaFloor | undefined {
-    return this.#schemaFloor;
-  }
-
-  /**
-   * §7.4.5: true while a schema-bump reset + first re-bootstrap is in
-   * flight — the app's "upgrading…" cue. Clears when the first post-reset
-   * bootstrap round reaches idle (every subscription past its fresh
-   * bootstrap).
-   */
-  get upgrading(): boolean {
-    return this.#upgrading;
-  }
-
-  /**
-   * §7.3.5: the current auth-lease state (opaque). Undefined until a
-   * `LEASE` frame arrives. `errorCode` is set when a round was rejected
-   * with a request-level lease code — syncing on the lease has stopped.
-   */
-  get leaseState(): LeaseState | undefined {
-    return this.#leaseState;
-  }
-
   /** §7.3.5: remaining lease validity in ms (`expiresAtMs − now`), or
    * `undefined` if no lease is held. Negative once expired. */
   leaseRemainingMs(now: number = this.#now()): number | undefined {
@@ -1736,11 +1745,6 @@ export class SyncClient {
   /** True when syncing is stopped pending a client upgrade. */
   get stopped(): boolean {
     return this.#schemaFloor !== undefined;
-  }
-
-  /** §8: a hello/wake-up asked for a pull that has not run yet. */
-  get syncNeeded(): boolean {
-    return this.#needsPull;
   }
 
   /**
@@ -2502,12 +2506,19 @@ export class SyncClient {
     outbox: OutboxCommit[];
     deferred: number;
   }> {
-    const pending = listOutbox(this.#db);
+    // Pin before the first encryption await: mutations can append while a
+    // round is encoding, and belong to the next request.
+    const bounds = this.#db.query(
+      'SELECT COUNT(*) AS count, MAX(seq) AS last_seq FROM _syncular_outbox',
+    )[0]!;
+    const pendingCount = bounds.count as number;
+    const throughSeq = (bounds.last_seq as number | null) ?? 0;
     const pushFrames: RequestFrame[] = [];
     const outbox: OutboxCommit[] = [];
     let deferred = 0;
     let ops = 0;
-    for (const commit of pending) {
+    let processed = 0;
+    for (const commit of iterateOutbox(this.#db, throughSeq)) {
       // §6.1 splitBatch: whole commits in commit order, stopping before the
       // per-request operation cap. A first commit that alone exceeds the cap
       // is sent alone — the server rejects it loudly rather than the queue
@@ -2516,9 +2527,10 @@ export class SyncClient {
         outbox.length > 0 &&
         ops + commit.operations.length > MAX_OPS_PER_REQUEST
       ) {
-        deferred += 1;
-        continue;
+        deferred = pendingCount - processed;
+        break;
       }
+      processed += 1;
       try {
         pushFrames.push(
           // §5.11: encrypted columns are encrypted at this encode-at-send
@@ -2810,7 +2822,8 @@ export class SyncClient {
         last.segmentRowsApplied === 0 &&
         last.bootstrapping.length === 0 &&
         last.resets.length === 0 &&
-        (last.deferredCommits ?? 0) === 0
+        (last.deferredCommits ?? 0) === 0 &&
+        !this.#needsPull
       ) {
         return last;
       }
@@ -3229,8 +3242,7 @@ export class SyncClient {
             });
             break;
           case 'PUSH_RESULT': {
-            let outboxCount =
-              responseOutboxCount ?? listOutbox(this.#db).length;
+            let outboxCount = responseOutboxCount ?? countOutbox(this.#db);
             this.#applyBatch(
               (batch) => {
                 const drained = this.#handlePushResult(

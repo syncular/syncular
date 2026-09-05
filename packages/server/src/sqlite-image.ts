@@ -57,7 +57,9 @@ export interface SqliteImageInput {
   readonly schemaVersion: number;
   readonly asOfCommitSeq: number;
   readonly scopeDigest: string;
-  readonly rows: readonly StoredRow[];
+  readonly rowBatches:
+    | AsyncIterable<readonly StoredRow[]>
+    | Iterable<readonly StoredRow[]>;
 }
 
 /**
@@ -68,14 +70,16 @@ export interface SqliteImageInput {
  * on the pull path. A Bun or Node host passes `buildSqliteImage`; a Workers
  * host omits it and serves the rows lane.
  */
-export type SqliteImageBuilder = (input: SqliteImageInput) => Uint8Array;
+export type SqliteImageBuilder = (
+  input: SqliteImageInput,
+) => Promise<Uint8Array>;
 
 /** Populate a §5.3 image database for a whole-table snapshot. */
-export function writeSqliteImage(
+export async function writeSqliteImage(
   db: SqliteDatabase,
   input: SqliteImageInput,
-): void {
-  const { table, rows } = input;
+): Promise<void> {
+  const { table, rowBatches } = input;
   const primaryKey = table.columns[table.primaryKeyIndex]?.name;
   const columnDefs = table.columns.map((column) => {
     const notNull = column.nullable ? '' : ' NOT NULL';
@@ -90,13 +94,6 @@ export function writeSqliteImage(
       "schemaVersion" INTEGER NOT NULL, "asOfCommitSeq" INTEGER NOT NULL,
       "scopeDigest" TEXT NOT NULL, "rowCount" INTEGER NOT NULL)`,
   );
-  db.query(`INSERT INTO ${IMAGE_METADATA_TABLE} VALUES (1, ?, ?, ?, ?, ?)`).run(
-    table.name,
-    input.schemaVersion,
-    input.asOfCommitSeq,
-    input.scopeDigest,
-    rows.length,
-  );
   const names = [
     ...table.columns.map((column) => quoteIdent(column.name)),
     quoteIdent(IMAGE_VERSION_COLUMN),
@@ -107,10 +104,24 @@ export function writeSqliteImage(
   );
   db.exec('BEGIN');
   try {
-    for (const row of rows) {
-      const values = decodeRow(table.columns, row.payload);
-      insert.run(...values.map(toSql), row.serverVersion);
+    let rowCount = 0;
+    for await (const rows of rowBatches) {
+      for (const row of rows) {
+        const values = decodeRow(table.columns, row.payload);
+        insert.run(...values.map(toSql), row.serverVersion);
+      }
+      rowCount += rows.length;
     }
+    db.query(
+      `INSERT INTO ${IMAGE_METADATA_TABLE} VALUES (1, ?, ?, ?, ?, ?)`,
+    ).run(
+      table.name,
+      input.schemaVersion,
+      input.asOfCommitSeq,
+      input.scopeDigest,
+      rowCount,
+    );
+
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');

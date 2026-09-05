@@ -393,6 +393,7 @@ function wrapStorage(
     begin: (p) => storage.begin(p),
     getMaxCommitSeq: (p) => storage.getMaxCommitSeq(p),
     getHorizonSeq: (p) => storage.getHorizonSeq(p),
+    getPartitionLogEpoch: (p) => storage.getPartitionLogEpoch(p),
     setHorizonSeq: (p, s) => storage.setHorizonSeq(p, s),
     pruneCommitsThrough: (p, s) => storage.pruneCommitsThrough(p, s),
     getCommitSeqBefore: (p, m) => storage.getCommitSeqBefore(p, m),
@@ -402,6 +403,8 @@ function wrapStorage(
     scanRows: (p, q) => storage.scanRows(p, q),
     getClientRecord: (p, c) => storage.getClientRecord(p, c),
     putClientRecord: (p, r) => storage.putClientRecord(p, r),
+    getActiveClientCursorFloor: (p, cutoff) =>
+      storage.getActiveClientCursorFloor(p, cutoff),
     listClientCursors: (p) => storage.listClientCursors(p),
   };
 }

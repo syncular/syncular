@@ -120,7 +120,7 @@ describe('revocation purge (§3.3)', () => {
     // in the same combined request; the p3 commit applied.
     expect(summary.rejected).toHaveLength(1);
     expect(summary.applied).toEqual([keptCommit]);
-    expect(a.client.rejections[0]?.code).toBe('sync.forbidden');
+    expect(a.client.rejections()[0]?.code).toBe('sync.forbidden');
     expect(a.client.pendingCommits()).toHaveLength(0);
 
     const sub = a.client.subscription('s1');

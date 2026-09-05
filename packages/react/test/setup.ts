@@ -30,7 +30,7 @@ import { GlobalRegistrator } from '@happy-dom/global-registrator';
  */
 export function installHappyDom(): void {
   beforeAll(() => {
-    GlobalRegistrator.register();
+    GlobalRegistrator.register({ url: 'http://localhost/' });
   });
   afterAll(async () => {
     await GlobalRegistrator.unregister();

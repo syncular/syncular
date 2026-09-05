@@ -40,10 +40,10 @@ export class SqliteLeaseStore extends SharedSqliteLeaseStore {
   }
 }
 
-export const buildSqliteImage: SqliteImageBuilder = (input) => {
+export const buildSqliteImage: SqliteImageBuilder = async (input) => {
   const db = new BunSqliteDatabase();
   try {
-    writeSqliteImage(db, input);
+    await writeSqliteImage(db, input);
     return db.serialize();
   } finally {
     db.close();

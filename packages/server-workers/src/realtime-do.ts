@@ -72,6 +72,8 @@ import {
   D1ServerStorage,
   errorBody,
   handleSyncRequest,
+  pruneCommitLog,
+  type PruneOptions,
   type RealtimeHub,
   type RealtimeHubConfig,
   type RealtimeSession,
@@ -247,6 +249,14 @@ export class SyncularRealtimeHost {
       return this.#handleUpgrade(request);
     }
     return new Response('not found', { status: 404 });
+  }
+
+  /** Trusted maintenance shares the partition FIFO with HTTP/socket writes. */
+  pruneCommitLog(options: Omit<PruneOptions, 'storage'>): Promise<number> {
+    return this.#serializePartition(async () => {
+      await this.#storage.migrate();
+      return pruneCommitLog({ ...options, storage: this.#storage });
+    });
   }
 
   #serializePartition<T>(operation: () => Promise<T>): Promise<T> {

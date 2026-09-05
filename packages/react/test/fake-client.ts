@@ -40,7 +40,10 @@ import { windowBaseKey } from '@syncular/client';
 import type { SyncClientLike } from '../src/client';
 
 export class FakeClient implements SyncClientLike {
-  securityLifecycle: SecurityLifecycle = 'active';
+  #securityLifecycle: SecurityLifecycle = 'active';
+  securityLifecycle(): SecurityLifecycle {
+    return this.#securityLifecycle;
+  }
   #changes = new Set<ClientChangeListener>();
   #diagnosticsListeners = new Set<ClientDiagnosticsListener>();
   #invalidation = new Set<InvalidationListener>();
@@ -171,11 +174,11 @@ export class FakeClient implements SyncClientLike {
   // -- SyncClientLike --------------------------------------------------------
 
   beginSecurityPreflight(): void {
-    this.securityLifecycle = 'preflight';
+    this.#securityLifecycle = 'preflight';
   }
 
   activateSecurity(): void {
-    this.securityLifecycle = 'active';
+    this.#securityLifecycle = 'active';
   }
 
   onInvalidate(listener: InvalidationListener): () => void {
@@ -205,7 +208,7 @@ export class FakeClient implements SyncClientLike {
         connectivity: 'unknown',
         realtime: 'disconnected',
       },
-      securityLifecycle: this.securityLifecycle,
+      securityLifecycle: this.#securityLifecycle,
       schema: {
         currentVersion: this.#currentSchemaVersion,
         upgrading: this.#upgrading,
@@ -315,7 +318,16 @@ export class FakeClient implements SyncClientLike {
     return () => this.#leadershipListeners.delete(listener);
   }
 
-  presence(scopeKey: string): readonly PresencePeer[] {
+  presenceReader:
+    | ((
+        scopeKey: string,
+      ) => readonly PresencePeer[] | Promise<readonly PresencePeer[]>)
+    | undefined;
+
+  presence(
+    scopeKey: string,
+  ): readonly PresencePeer[] | Promise<readonly PresencePeer[]> {
+    if (this.presenceReader !== undefined) return this.presenceReader(scopeKey);
     return this.#presence.get(scopeKey) ?? [];
   }
 
@@ -390,11 +402,11 @@ export class FakeClient implements SyncClientLike {
 
   // These four are getters on the real SyncClient — as plain values here,
   // the normalizer resolves both shapes.
-  get conflicts(): readonly ConflictRecord[] {
+  conflicts(): readonly ConflictRecord[] {
     return this.#conflicts;
   }
 
-  get rejections(): readonly RejectionRecord[] {
+  rejections(): readonly RejectionRecord[] {
     return this.#rejections;
   }
 
@@ -434,22 +446,6 @@ export class FakeClient implements SyncClientLike {
     this.#outcomes[index] = resolved;
     this.emitOutcomes();
     return resolved;
-  }
-
-  get schemaFloor(): SchemaFloor | undefined {
-    return this.#schemaFloor;
-  }
-
-  get leaseState(): LeaseState | undefined {
-    return this.#leaseState;
-  }
-
-  get upgrading(): boolean {
-    return this.#upgrading;
-  }
-
-  get syncNeeded(): boolean {
-    return this.#syncNeeded;
   }
 
   pendingCommits(): unknown[] {

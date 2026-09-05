@@ -15,6 +15,8 @@ import {
   type JsonRowValue,
   jsonToRowValue,
   listOutbox,
+  iterateOutbox,
+  countOutbox,
   rowValueToJson,
 } from '@syncular/client';
 import { BunClientDatabase } from '@syncular/client/bun';
@@ -355,4 +357,35 @@ describe('push-result frame handling', () => {
     await local.client.close();
     local.db.close();
   });
+});
+
+test('keyset iteration ignores appended commits and leaves an unconsumed body undecoded', () => {
+  const db = new BunClientDatabase();
+  ensureLocalSchema(db, compiled);
+  for (let index = 0; index < 40; index += 1) {
+    appendOutboxCommit(
+      db,
+      String(index),
+      [{ table: 'tasks', rowId: String(index), op: 'delete' }],
+      index,
+    );
+  }
+  const pending = iterateOutbox(db, 40);
+  expect(pending.next().value?.clientCommitId).toBe('0');
+  appendOutboxCommit(
+    db,
+    'later',
+    [{ table: 'tasks', rowId: 'later', op: 'delete' }],
+    41,
+  );
+  expect([...pending].map((commit) => commit.clientCommitId)).toEqual(
+    Array.from({ length: 39 }, (_, index) => String(index + 1)),
+  );
+  db.exec("UPDATE _syncular_outbox SET operations='invalid json' WHERE seq=2");
+  const prefix = iterateOutbox(db, 40);
+  expect(prefix.next().value?.clientCommitId).toBe('0');
+  expect(() => prefix.return(undefined)).not.toThrow();
+  expect(countOutbox(db)).toBe(41);
+  expect(() => listOutbox(db)).toThrow();
+  db.close();
 });

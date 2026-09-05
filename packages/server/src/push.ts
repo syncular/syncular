@@ -185,7 +185,7 @@ async function runValidator(
     return errorRecord(
       opIndex,
       'sync.constraint_violation',
-      `write validator for table ${JSON.stringify(table.name)} threw: ${error instanceof Error ? error.message : String(error)}`,
+      'write validator failed',
     );
   }
   return undefined;
@@ -220,7 +220,7 @@ async function mergeCrdtColumns(
       return errorRecord(
         opIndex,
         'sync.crdt_merge_failed',
-        `no CRDT merger registered for crdtType ${JSON.stringify(crdtType)} (§5.10.2)`,
+        'no CRDT merger registered',
       );
     }
     const storedRaw = storedValues?.[index];
@@ -228,11 +228,11 @@ async function mergeCrdtColumns(
     let merged: Uint8Array;
     try {
       merged = await merger(stored, incoming);
-    } catch (error) {
+    } catch {
       return errorRecord(
         opIndex,
         'sync.crdt_merge_failed',
-        `CRDT merger for ${JSON.stringify(crdtType)} threw: ${error instanceof Error ? error.message : String(error)}`,
+        'CRDT merger failed',
       );
     }
     values[index] = merged;
@@ -732,7 +732,7 @@ async function runCommitValidator(
     return errorRecord(
       operations[0]?.opIndex ?? 0,
       'sync.constraint_violation',
-      `whole-commit validator threw: ${error instanceof Error ? error.message : String(error)}`,
+      'whole-commit validator failed',
     );
   }
   return undefined;

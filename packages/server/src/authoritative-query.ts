@@ -14,28 +14,16 @@ export interface BoundAuthoritativeQuery {
 
 const PARTITION_BIND = Symbol('syncular.authoritative_partition');
 
-const RESERVED_ALIAS = new Set([
-  'on',
-  'where',
-  'group',
-  'order',
-  'inner',
-  'left',
-  'right',
-  'full',
-  'outer',
-  'natural',
-  'join',
-  'cross',
-  'using',
-  'limit',
-  'having',
-]);
-const IDENT = '[A-Za-z_][A-Za-z0-9_]*';
-const TABLE_REF_RE = new RegExp(
-  `\\b(FROM|(?:NATURAL\\s+)?(?:(?:LEFT|RIGHT|FULL)(?:\\s+OUTER)?|INNER|CROSS)?\\s*JOIN)\\s+((?:\\(\\s*)*)(${IDENT})(?:\\s+(?:AS\\s+)?((?!(?:${[...RESERVED_ALIAS].join('|')})\\b)${IDENT}))?`,
-  'gi',
-);
+/** Compiler-proven occurrences in the exact generated positional statement. */
+export interface AuthoritativeRelationPlan {
+  readonly sql: string;
+  readonly relations: readonly {
+    readonly table: string;
+    readonly start: number;
+    readonly end: number;
+    readonly alias?: string;
+  }[];
+}
 
 function protectedSqlEnd(sql: string, index: number): number | undefined {
   const char = sql[index];
@@ -64,66 +52,57 @@ function protectedSqlEnd(sql: string, index: number): number | undefined {
   return undefined;
 }
 
-function maskedSql(sql: string): string {
-  let out = '';
-  let index = 0;
-  while (index < sql.length) {
-    const end = protectedSqlEnd(sql, index);
-    if (end === undefined) out += sql[index];
-    else out += sql.slice(index, end).replace(/[^\n]/g, ' ');
-    index = end ?? index + 1;
-  }
-  return out;
-}
-
-/**
- * Turn generated local SQL into a partition-local authoritative statement.
- * Only relations declared by the generated descriptor are rewritten. Values
- * remain parameters; request data is never interpolated into SQL.
- */
-export function prepareAuthoritativeQuery(
-  sql: string,
-  params: readonly AuthoritativeQueryValue[],
+/** Validate trusted generated metadata before registration or storage execution. */
+export function validateAuthoritativeRelationPlan(
+  plan: AuthoritativeRelationPlan,
   declaredTables: readonly string[],
-  tables: ReadonlyMap<string, CompiledTable>,
-): PreparedAuthoritativeQuery {
-  if (maskedSql(sql).includes(';'))
-    throw new Error('registered query must be one SELECT');
+): void {
+  if (
+    plan === undefined ||
+    typeof plan.sql !== 'string' ||
+    !Array.isArray(plan.relations)
+  ) {
+    throw new Error(
+      'registered query requires generated relation plans; regenerate queries',
+    );
+  }
+  const sql = plan.sql;
   const declared = new Set(declaredTables);
-  const masked = maskedSql(sql);
-  const replacements: Array<{
-    readonly start: number;
-    readonly end: number;
-    readonly text: string;
-  }> = [];
   const found = new Set<string>();
-  for (const match of masked.matchAll(TABLE_REF_RE)) {
-    const rawTable = match[3] as string;
-    const table = tables.get(rawTable);
-    if (table === undefined) continue;
-    if (!declared.has(table.name)) {
+  let previousEnd = 0;
+  for (const relation of plan.relations) {
+    if (
+      !Number.isSafeInteger(relation.start) ||
+      !Number.isSafeInteger(relation.end) ||
+      relation.start < previousEnd ||
+      relation.end <= relation.start ||
+      relation.end > sql.length
+    ) {
+      throw new Error(
+        'registered query relation boundaries do not match its SQL; regenerate queries',
+      );
+    }
+    previousEnd = relation.end;
+    if (!declared.has(relation.table)) {
       throw new Error('registered query table metadata does not match its SQL');
     }
-    if (!table.materialize) {
-      throw new Error('registered query targets a non-materialized table');
+    const spelling = sql.slice(relation.start, relation.end);
+    const quote = spelling[0];
+    const name =
+      quote === '['
+        ? spelling.slice(1, -1)
+        : quote === '"' || quote === '`'
+          ? spelling
+              .slice(1, -1)
+              .split(quote + quote)
+              .join(quote)
+          : spelling;
+    if (name.toLowerCase() !== relation.table.toLowerCase()) {
+      throw new Error(
+        'registered query relation name does not match its SQL; regenerate queries',
+      );
     }
-    let alias = match[4];
-    if (alias !== undefined && RESERVED_ALIAS.has(alias.toLowerCase())) {
-      alias = undefined;
-    }
-    const matchStart = match.index ?? 0;
-    const afterOperator = (match[1] as string).length;
-    const relative = match[0]
-      .toLowerCase()
-      .indexOf(rawTable.toLowerCase(), afterOperator);
-    const start = matchStart + relative;
-    const projection = table.columns.map((column) => quoteIdent(column.name));
-    replacements.push({
-      start,
-      end: start + rawTable.length,
-      text: `(SELECT ${projection.join(', ')} FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=/*syncular_partition*/?)${alias === undefined ? ` AS ${quoteIdent(table.name)}` : ''}`,
-    });
-    found.add(table.name);
+    found.add(relation.table);
   }
   if (
     found.size !== declared.size ||
@@ -131,42 +110,58 @@ export function prepareAuthoritativeQuery(
   ) {
     throw new Error('registered query table metadata does not match its SQL');
   }
-  let rewritten = sql;
-  for (const replacement of replacements.sort(
-    (left, right) => right.start - left.start,
-  )) {
-    rewritten =
-      rewritten.slice(0, replacement.start) +
-      replacement.text +
-      rewritten.slice(replacement.end);
-  }
+}
 
+/** Bind every compiler-proven table occurrence to the authenticated partition. */
+export function prepareAuthoritativeQuery(
+  plan: AuthoritativeRelationPlan,
+  params: readonly AuthoritativeQueryValue[],
+  declaredTables: readonly string[],
+  tables: ReadonlyMap<string, CompiledTable>,
+): PreparedAuthoritativeQuery {
+  validateAuthoritativeRelationPlan(plan, declaredTables);
+  const sql = plan.sql;
+  const replacements = plan.relations.map((relation) => {
+    const table = tables.get(relation.table);
+    if (table === undefined)
+      throw new Error('registered query targets an unknown table');
+    if (!table.materialize)
+      throw new Error('registered query targets a non-materialized table');
+    return {
+      start: relation.start,
+      end: relation.end,
+      text: `(SELECT ${table.columns.map((column) => quoteIdent(column.name)).join(', ')} FROM ${quoteIdent(table.name)} WHERE ${quoteIdent(SYNC_PARTITION_COLUMN)}=?)${relation.alias === undefined ? ` AS ${quoteIdent(table.name)}` : ''}`,
+    };
+  });
   const bound: (AuthoritativeQueryValue | typeof PARTITION_BIND)[] = [];
   let anonymousIndex = 0;
   let rendered = '';
-  for (let index = 0; index < rewritten.length; index += 1) {
-    if (rewritten.startsWith('/*syncular_partition*/?', index)) {
-      rendered += '?';
+  let nextRelation = 0;
+  for (let index = 0; index < sql.length; index += 1) {
+    const replacement = replacements[nextRelation];
+    if (replacement?.start === index) {
+      rendered += replacement.text;
       bound.push(PARTITION_BIND);
-      index += '/*syncular_partition*/?'.length - 1;
+      index = replacement.end - 1;
+      nextRelation += 1;
       continue;
     }
-    const protectedEnd = protectedSqlEnd(rewritten, index);
+    const protectedEnd = protectedSqlEnd(sql, index);
     if (protectedEnd !== undefined) {
-      rendered += rewritten.slice(index, protectedEnd);
+      rendered += sql.slice(index, protectedEnd);
       index = protectedEnd - 1;
       continue;
     }
-    const char = rewritten[index] as string;
+    const char = sql[index] as string;
     if (char !== '?') {
       rendered += char;
       continue;
     }
     let end = index + 1;
-    while (end < rewritten.length && /[0-9]/.test(rewritten[end] as string)) {
+    while (end < sql.length && /[0-9]/.test(sql[end] as string)) {
       end += 1;
     }
-    const numbered = rewritten.slice(index + 1, end);
+    const numbered = sql.slice(index + 1, end);
     const parameterIndex =
       numbered.length > 0
         ? Number.parseInt(numbered, 10) - 1

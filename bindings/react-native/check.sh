@@ -6,7 +6,7 @@
 # The verification bar: the JS bridge
 # is exercised with an INJECTED NativeModule double — no device, no RN runtime —
 # proving the SyncClientLike contract, the {$bytes:hex} convention, event fanout,
-# lifecycle, and parity vs the React `normalizeClient`. On top, the example
+# lifecycle, and parity vs the React `SyncClientLike` contract. On top, the example
 # app's REAL App.tsx is rendered (@testing-library/react) against a stateful
 # NativeModule double, proving the @syncular/react hooks drive the native
 # client end-to-end (list renders + mutate flows through) — the hooks↔module

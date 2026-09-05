@@ -11,7 +11,7 @@ import {
   type PushOperation,
   type ScopeMap,
 } from '@syncular/core';
-import type { ClientDatabase } from './database';
+import type { ClientDatabase, SqlRow } from './database';
 import type { EncryptionConfig } from './encryption';
 import { ClientSyncError } from './errors';
 import {
@@ -85,19 +85,50 @@ export function appendOutboxCommit(
   }
 }
 
-/** Pending commits in FIFO creation order (§7.1). */
+/** Pending commits in FIFO creation order (§7.1). Full reads serve replay and the public listing. */
 export function listOutbox(db: ClientDatabase): OutboxCommit[] {
   return db
     .query(
       `SELECT seq, client_commit_id, created_at_ms, operations
        FROM _syncular_outbox ORDER BY seq ASC`,
     )
-    .map((row) => ({
-      seq: row.seq as number,
-      clientCommitId: row.client_commit_id as string,
-      createdAtMs: row.created_at_ms as number,
-      operations: JSON.parse(row.operations as string) as OutboxOperation[],
-    }));
+    .map(decodeOutboxRow);
+}
+
+function decodeOutboxRow(row: SqlRow): OutboxCommit {
+  return {
+    seq: row.seq as number,
+    clientCommitId: row.client_commit_id as string,
+    createdAtMs: row.created_at_ms as number,
+    operations: JSON.parse(row.operations as string) as OutboxOperation[],
+  };
+}
+
+/** Keyset pages bound staging; laziness decodes only commits consumed by the encoder. */
+export function* iterateOutbox(
+  db: ClientDatabase,
+  throughSeq: number,
+): Generator<OutboxCommit> {
+  let afterSeq = 0;
+  while (afterSeq < throughSeq) {
+    const rows = db.query(
+      `SELECT seq, client_commit_id, created_at_ms, operations FROM _syncular_outbox
+       WHERE seq > ? AND seq <= ? ORDER BY seq ASC LIMIT 32`,
+      [afterSeq, throughSeq],
+    );
+    if (rows.length === 0) return;
+    for (const row of rows) {
+      const commit = decodeOutboxRow(row);
+      afterSeq = commit.seq;
+      yield commit;
+    }
+  }
+}
+
+/** Routine status reads never load operation bodies. */
+export function countOutbox(db: ClientDatabase): number {
+  return db.query('SELECT COUNT(*) AS count FROM _syncular_outbox')[0]!
+    .count as number;
 }
 
 export function deleteOutboxCommit(

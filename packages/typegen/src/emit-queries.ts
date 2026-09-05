@@ -314,15 +314,15 @@ function emitSyqlQuery(query: AnalyzedQuery, hash: string): string {
       : `raw?: ${Params}`;
   const validated = hasParams ? `${query.name}Validate(raw)` : undefined;
   const statementType = hasParams
-    ? `{ sql: string; bind: (params: ${Params}) => QueryValue[] }`
-    : '{ sql: string; bind: () => QueryValue[] }';
-  lines.push(`const ${query.name}Statements: ${statementType}[] = [`);
+    ? `QueryRelationPlan & { bind: (params: ${Params}) => QueryValue[] }`
+    : 'QueryRelationPlan & { bind: () => QueryValue[] }';
+  lines.push(`const ${query.name}Statements: (${statementType})[] = [`);
   for (const statement of metadata.plan.statements) {
     const binds = statement.binds
       .map((bind) => syqlBindExpr(query, bind, 'params'))
       .join(', ');
     lines.push(
-      `  { sql: ${quote(statement.positionalSql)}, bind: (${hasParams ? 'params' : ''}) => [${binds}] },`,
+      `  { sql: ${quote(statement.positionalSql)}, relations: ${JSON.stringify(statement.relations)}, bind: (${hasParams ? 'params' : ''}) => [${binds}] },`,
     );
   }
   lines.push('];');
@@ -399,6 +399,7 @@ function emitSyqlQuery(query: AnalyzedQuery, hash: string): string {
     );
   }
   lines.push(`  tables: ${query.name}Tables,`);
+  lines.push(`  relationPlans: ${query.name}Statements,`);
   lines.push(
     `  resultColumns: [${query.columns.map((column) => `{ name: ${quote(column.langName)}, type: ${quote(column.type)}, nullable: ${column.nullable} }`).join(', ')}],`,
   );
@@ -540,6 +541,9 @@ function emitQuery(query: AnalyzedQuery, hash: string): string {
   lines.push(`  sql: ${sqlConst},`);
   lines.push(`  mapRow: ${query.name}MapRow,`);
   lines.push(`  tables: ${query.name}Tables,`);
+  lines.push(
+    `  relationPlans: [{ sql: ${sqlConst}, relations: ${JSON.stringify(query.relations)} }],`,
+  );
   lines.push(
     `  resultColumns: [${query.columns.map((column) => `{ name: ${quote(column.langName)}, type: ${quote(column.type)}, nullable: ${column.nullable} }`).join(', ')}],`,
   );
@@ -683,6 +687,11 @@ export function emitQueriesModule(
       " *  `@syncular/react`'s `useQuery`. `Row` is the projection row",
       ' *  type; `Params` is `undefined` for a param-less query. `sqlFor`',
       ' *  selects a checked revision-1 SYQL physical statement when needed. */',
+      'export interface QueryRelationPlan {',
+      '  readonly sql: string;',
+      '  readonly relations: readonly { readonly table: string; readonly start: number; readonly end: number; readonly alias?: string }[];',
+      '}',
+      '',
       'export interface NamedQuery<Row, Params = undefined> {',
       '  readonly id: string;',
       '  readonly hasParams: boolean;',
@@ -690,6 +699,7 @@ export function emitQueriesModule(
       '  readonly mapRow: (row: Readonly<Record<string, unknown>>) => Row;',
       '  readonly tables: readonly string[];',
       '  readonly resultColumns: readonly QueryResultColumn[];',
+      '  readonly relationPlans: readonly QueryRelationPlan[];',
       '  readonly bind: (params: Params) => readonly QueryValue[];',
       '  readonly sqlFor?: (params: Params) => string;',
       '  readonly dependencies: (params: Params) => readonly QueryDependency[];',

@@ -1,3 +1,4 @@
+import type { ClientSnapshotMethods, PromiseMethods } from '@syncular/client';
 /**
  * @syncular/react-native — the JS bridge to the native syncular core running
  * over the FFI (the same C ABI Swift/Kotlin wrap). RN's Hermes runtime has no
@@ -35,7 +36,6 @@ import type {
   EncryptionKeyringConfig,
   InvalidationEvent,
   InvalidationListener,
-  LeaseState,
   LocalDataPurgeInput,
   LocalDataPurgeResult,
   LocalDataRebootstrapInput,
@@ -46,7 +46,6 @@ import type {
   QuerySnapshot,
   RejectionRecord,
   ResolveCommitOutcomeInput,
-  SchemaFloor,
   SecurityLifecycle,
   SqlRow,
   SqlValue,
@@ -274,10 +273,10 @@ function requireNativeSyncular(): unknown {
 
 /**
  * The RN-side proxy implementing `SyncClientLike` over the TurboModule. Every
- * method is a promise; the React `normalizeClient` wraps sync/async members
- * uniformly, so the hooks accept it directly.
+ * snapshot method returns a promise. React hooks accept the canonical
+ * snapshot interface directly.
  */
-export class NativeSyncClient {
+export class NativeSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   readonly #native: SyncularNativeModule;
   readonly #autoSync: boolean;
   readonly #invalidationListeners = new Set<InvalidationListener>();
@@ -836,32 +835,6 @@ export class NativeSyncClient {
       input,
     })) as { outcome: CommitOutcome };
     return result.outcome;
-  }
-
-  async schemaFloor(): Promise<SchemaFloor | undefined> {
-    const result = (await this.#command('schemaFloor', {})) as {
-      floor?: SchemaFloor;
-    };
-    return result.floor ?? undefined;
-  }
-
-  async leaseState(): Promise<LeaseState | undefined> {
-    const result = (await this.#command('leaseState', {})) as {
-      lease?: LeaseState;
-    };
-    return result.lease ?? undefined;
-  }
-
-  async upgrading(): Promise<boolean> {
-    const result = (await this.#command('upgrading', {})) as { value: boolean };
-    return result.value;
-  }
-
-  async syncNeeded(): Promise<boolean> {
-    const result = (await this.#command('syncNeeded', {})) as {
-      value: boolean;
-    };
-    return result.value;
   }
 
   async pendingCommits(): Promise<unknown[]> {

@@ -187,6 +187,12 @@ describe('SyncRemoteClient', () => {
       id: 'sha256:test/tasksInProject',
       hasParams: true,
       sql: 'SELECT id, title, done, NULL AS attachment FROM tasks WHERE project_id = ? ORDER BY id',
+      relationPlans: [
+        {
+          sql: 'SELECT id, title, done, NULL AS attachment FROM tasks WHERE project_id = ? ORDER BY id',
+          relations: [{ table: 'tasks', start: 48, end: 53 }],
+        },
+      ],
       tables: ['tasks'],
       resultColumns: [
         { name: 'id', type: 'string', nullable: false },
@@ -285,6 +291,12 @@ describe('SyncRemoteClient', () => {
       id: 'sha256:test/incompleteDocsCoverage',
       hasParams: true,
       sql: 'SELECT id FROM docs WHERE org_id = ? AND project_id = ?',
+      relationPlans: [
+        {
+          sql: 'SELECT id FROM docs WHERE org_id = ? AND project_id = ?',
+          relations: [{ table: 'docs', start: 15, end: 19 }],
+        },
+      ],
       tables: ['docs'],
       resultColumns: [{ name: 'id', type: 'string', nullable: false }] as const,
       bind: (params: { orgId: string; projectId: string }) => [
@@ -329,6 +341,12 @@ describe('SyncRemoteClient', () => {
       id: 'query/invalid-result',
       hasParams: false,
       sql: 'SELECT id, 1.5 AS estimate FROM tasks',
+      relationPlans: [
+        {
+          sql: 'SELECT id, 1.5 AS estimate FROM tasks',
+          relations: [{ table: 'tasks', start: 32, end: 37 }],
+        },
+      ],
       tables: ['tasks'],
       resultColumns: [
         { name: 'id', type: 'string', nullable: false },
@@ -374,6 +392,12 @@ describe('SyncRemoteClient', () => {
       id: 'query/declared-result',
       hasParams: false,
       sql: 'SELECT id FROM tasks',
+      relationPlans: [
+        {
+          sql: 'SELECT id FROM tasks',
+          relations: [{ table: 'tasks', start: 15, end: 20 }],
+        },
+      ],
       tables: ['tasks'],
       resultColumns: [{ name: 'id', type: 'string', nullable: false }] as const,
       bind: () => [],
@@ -466,6 +490,12 @@ describe('SyncRemoteClient', () => {
       id: 'sha256:test/boundClientQuery',
       hasParams: false,
       sql: 'SELECT id FROM tasks',
+      relationPlans: [
+        {
+          sql: 'SELECT id FROM tasks',
+          relations: [{ table: 'tasks', start: 15, end: 20 }],
+        },
+      ],
       tables: ['tasks'],
       resultColumns: [{ name: 'id', type: 'string', nullable: false }] as const,
       bind: () => [],
@@ -714,6 +744,12 @@ describe('SyncRemoteClient', () => {
       id: 'sha256:test/watchTasks',
       hasParams: true,
       sql: 'SELECT id, title FROM tasks WHERE project_id = ? ORDER BY id',
+      relationPlans: [
+        {
+          sql: 'SELECT id, title FROM tasks WHERE project_id = ? ORDER BY id',
+          relations: [{ table: 'tasks', start: 22, end: 27 }],
+        },
+      ],
       tables: ['tasks'],
       resultColumns: [
         { name: 'id', type: 'string', nullable: false },

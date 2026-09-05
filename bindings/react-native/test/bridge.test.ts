@@ -3,7 +3,7 @@
  * assert the `SyncClientLike` contract — method → command mapping, the query
  * fast path, exact change fanout, the `{$bytes:hex}`
  * convention, and lifecycle (pause/resume/close driving the native pump). Plus
- * a shape-parity test against the React `normalizeClient`, so a drift in
+ * a shape-parity test against the React `SyncClientLike` contract, so a drift in
  * `SyncClientLike` breaks this suite (the bridge is the fifth host of that one
  * interface, after direct / worker / follower / Tauri).
  *
@@ -17,7 +17,7 @@ import {
   realtimeSupervisorSnapshot,
   SECURITY_PREFLIGHT_REQUIRED_CODE,
 } from '@syncular/client';
-import { normalizeClient, type SyncClientLike } from '@syncular/react';
+import { type SyncClientLike } from '@syncular/react';
 import { hostBoolean } from '../../../packages/typegen/test/fixtures/basic/syncular.queries';
 import {
   createNativeSyncClient,
@@ -182,14 +182,6 @@ function defaultResponder(
           resolvedAtMs: 2,
         },
       });
-    case 'schemaFloor':
-      return OK({ floor: undefined });
-    case 'leaseState':
-      return OK({ lease: undefined });
-    case 'upgrading':
-      return OK({ value: false });
-    case 'syncNeeded':
-      return OK({ value: true });
     case 'pendingCommitIds':
       return OK({ ids: ['commit-1'] });
     case 'presence':
@@ -542,11 +534,11 @@ describe('createNativeSyncClient', () => {
 
   test('accessor methods unwrap their command replies', async () => {
     const { client } = await build();
-    expect(await client.syncNeeded()).toBe(true);
-    expect(await client.upgrading()).toBe(false);
+    expect((await client.statusSnapshot()).syncNeeded).toBe(false);
+    expect((await client.statusSnapshot()).upgrading).toBe(false);
     expect(await client.conflicts()).toEqual([]);
     expect(await client.pendingCommits()).toEqual(['commit-1']);
-    expect(await client.schemaFloor()).toBeUndefined();
+    expect((await client.statusSnapshot()).schemaFloor).toBeUndefined();
   });
 
   test('an {error} reply throws a NativeSyncError with the code', async () => {
@@ -721,13 +713,13 @@ describe('createNativeSyncClient', () => {
 });
 
 describe('SyncClientLike parity', () => {
-  test('the bridge is accepted by normalizeClient and drives every member', async () => {
+  test('the bridge is accepted by the canonical snapshot interface and drives every member', async () => {
     const { client } = await build();
     // Compile-time proof: assigning to SyncClientLike fails to typecheck on any
-    // missing/mismatched member. Runtime proof: every normalized accessor
+    // missing/mismatched member. Runtime proof: every snapshot method
     // resolves against the bridge.
     const like: SyncClientLike = client;
-    const normalized = normalizeClient(like);
+    const normalized = like;
 
     expect(typeof normalized.onChange(() => {})).toBe('function');
     expect(typeof normalized.onInvalidate(() => {})).toBe('function');
@@ -777,10 +769,10 @@ describe('SyncClientLike parity', () => {
         resolution: 'dismissed',
       }),
     ).toMatchObject({ resolution: 'dismissed' });
-    expect(await normalized.schemaFloor()).toBeUndefined();
-    expect(await normalized.leaseState()).toBeUndefined();
-    expect(await normalized.upgrading()).toBe(false);
-    expect(await normalized.syncNeeded()).toBe(true);
+    expect((await normalized.statusSnapshot()).schemaFloor).toBeUndefined();
+    expect((await normalized.statusSnapshot()).leaseState).toBeUndefined();
+    expect((await normalized.statusSnapshot()).upgrading).toBe(false);
+    expect((await normalized.statusSnapshot()).syncNeeded).toBe(false);
     expect(await normalized.pendingCommits()).toEqual(['commit-1']);
     expect(await normalized.presence('room:1')).toEqual([]);
     await normalized.setPresence('room:1', { hi: true });

@@ -1,3 +1,4 @@
+import type { ClientSnapshotMethods, PromiseMethods } from '@syncular/client';
 /**
  * @syncular/tauri — the JS bridge to the native syncular instance running
  * inside the Tauri process (see `tauri-plugin-syncular`).
@@ -39,7 +40,6 @@ import type {
   EncryptionKeyringConfig,
   InvalidationEvent,
   InvalidationListener,
-  LeaseState,
   LocalDataPurgeInput,
   LocalDataPurgeResult,
   LocalDataRebootstrapInput,
@@ -50,7 +50,6 @@ import type {
   QuerySnapshot,
   RejectionRecord,
   ResolveCommitOutcomeInput,
-  SchemaFloor,
   SecurityLifecycle,
   SqlRow,
   SqlValue,
@@ -252,10 +251,10 @@ async function resolveTauri(injected: TauriApi | undefined): Promise<TauriApi> {
 
 /**
  * The webview-side proxy implementing `SyncClientLike` over the plugin. Every
- * method is a promise (an IPC round trip); the React `normalizeClient` already
- * wraps sync and async members uniformly, so the hooks accept it directly.
+ * snapshot method returns a promise from an IPC round trip. React hooks accept
+ * the canonical snapshot interface directly.
  */
-export class TauriSyncClient {
+export class TauriSyncClient implements PromiseMethods<ClientSnapshotMethods> {
   readonly #tauri: TauriApi;
   readonly #invalidationListeners = new Set<InvalidationListener>();
   readonly #changeListeners = new Set<ClientChangeListener>();
@@ -761,32 +760,6 @@ export class TauriSyncClient {
       input,
     })) as { outcome: CommitOutcome };
     return result.outcome;
-  }
-
-  async schemaFloor(): Promise<SchemaFloor | undefined> {
-    const result = (await this.#command('schemaFloor', {})) as {
-      floor?: SchemaFloor;
-    };
-    return result.floor ?? undefined;
-  }
-
-  async leaseState(): Promise<LeaseState | undefined> {
-    const result = (await this.#command('leaseState', {})) as {
-      lease?: LeaseState;
-    };
-    return result.lease ?? undefined;
-  }
-
-  async upgrading(): Promise<boolean> {
-    const result = (await this.#command('upgrading', {})) as { value: boolean };
-    return result.value;
-  }
-
-  async syncNeeded(): Promise<boolean> {
-    const result = (await this.#command('syncNeeded', {})) as {
-      value: boolean;
-    };
-    return result.value;
   }
 
   async pendingCommits(): Promise<unknown[]> {

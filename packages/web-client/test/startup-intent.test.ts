@@ -44,7 +44,7 @@ test('reopening active persistent subscriptions emits a catch-up intent', async 
   });
   await reopened.start();
 
-  expect(reopened.syncNeeded).toBe(true);
+  expect(reopened.statusSnapshot().syncNeeded).toBe(true);
   expect(wakes).toEqual(['startup']);
   expect(intents).toEqual([{ kind: 'interactive' }]);
 

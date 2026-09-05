@@ -160,3 +160,17 @@ the Kotlin/FFM gate is **cheap to compile-check on Ubuntu** with a JDK — so th
 `swift-kotlin-bindings` job in `.github/workflows/ci.yml` sets up JDK 21, builds
 the lean dylib, and runs `gradle test` on Linux. That exercises the real FFM
 downcalls against the real native core.
+
+## Snapshot and outcome methods
+
+Use `querySnapshot` for rows, coverage, and revision from one local read.
+`statusSnapshot` returns scheduling, schema, lease, and outbox state;
+`diagnosticsSnapshot` adds bounded support evidence. `commitOutcome` looks up
+one terminal result by commit ID. `commitOutcomes` lists the durable journal,
+and `resolveCommitOutcome` records an explicit resolution. A pending commit
+has no terminal outcome. `rejections` lists rejected commits.
+
+This source-breaking revision removes the `syncNeeded` convenience and the raw
+`schemaFloor`, `leaseState`, `upgrading`, and `syncNeeded` commands. Read those
+fields from `statusSnapshot` instead. The wrappers use the existing native
+command dispatcher and return the binding's JSON value types.

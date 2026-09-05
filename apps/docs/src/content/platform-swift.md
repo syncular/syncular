@@ -99,11 +99,11 @@ let hits = try client.query("SELECT id, title FROM todos WHERE list_id = ?",
 ```
 
 The scope map is the same authorization vocabulary used across syncular
-(see [Scopes & authorization](/concepts-scopes/)). Anything the typed
-conveniences do not cover is reachable through the raw command call:
+(see [Scopes & authorization](/concepts-scopes/)). Read lease and schema state from one snapshot:
 
 ```swift
-let result = try client.command(method: "leaseState", params: .object([:]))
+let status = try client.statusSnapshot()
+let lease = status["leaseState"]
 ```
 
 ## Sync loop & events
@@ -125,7 +125,7 @@ Exact `change` batches, `sync-intent`, and `presence` are drained from the
 core's `poll_event` queue on a background queue
 and delivered on the main queue; set the `onEvent` closure or a
 `SyncularClientDelegate`. A different `deliveryQueue` can be passed to the
-initializer. Supporting reads: `syncNeeded()`, `pendingCommitIds()`,
+initializer. Supporting reads: `statusSnapshot()`, `pendingCommitIds()`,
 `subscriptionState(id:)`, `conflicts()`, `presence(scopeKey:)`,
 `setPresence(scopeKey:doc:)`, and `connectRealtime()` /
 `disconnectRealtime()`.
@@ -204,3 +204,17 @@ integration against the [quickstart](/quickstart/) server.
 - [Scopes & authorization](/concepts-scopes/): how the scope maps you subscribe with are authorized.
 - [Conflicts & optimistic writes](/concepts-conflicts/): the payload behind the `conflict` event.
 - [Quickstart](/quickstart/): the server the examples above talk to.
+
+## Snapshot and outcome methods
+
+Use `querySnapshot` for rows, coverage, and revision from one local read.
+`statusSnapshot` returns scheduling, schema, lease, and outbox state;
+`diagnosticsSnapshot` adds bounded support evidence. `commitOutcome` looks up
+one terminal result by commit ID. `commitOutcomes` lists the durable journal,
+and `resolveCommitOutcome` records an explicit resolution. A pending commit
+has no terminal outcome. `rejections` lists rejected commits.
+
+This source-breaking revision removes the `syncNeeded` convenience and the raw
+`schemaFloor`, `leaseState`, `upgrading`, and `syncNeeded` commands. Read those
+fields from `statusSnapshot` instead. The wrappers use the existing native
+command dispatcher and return the binding's JSON value types.

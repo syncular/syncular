@@ -1,3 +1,6 @@
+import { validateCommitPruneQuery } from './prune';
+import { StorageQueryError } from './storage-errors';
+import type { CommitPruneQuery, CommitPruneResult } from './storage';
 /**
  * Cloudflare D1 server storage for Workers deployments.
  *
@@ -1027,7 +1030,7 @@ export class D1ServerStorage implements ServerStorage {
     }
     const prepared = bindAuthoritativePartition(
       prepareAuthoritativeQuery(
-        query.sql,
+        query.plan,
         query.params,
         query.tables,
         this.#tables,
@@ -1071,6 +1074,16 @@ export class D1ServerStorage implements ServerStorage {
     };
   }
 
+  async getPartitionLogEpoch(partition: string): Promise<string | undefined> {
+    const row = await this.#db
+      .prepare(
+        'SELECT log_epoch FROM sync_partition_registry WHERE partition=?',
+      )
+      .bind(partition)
+      .first<{ log_epoch: string }>();
+    return row?.log_epoch;
+  }
+
   async getHorizonSeq(partition: string): Promise<number> {
     const row = await this.#db
       .prepare('SELECT horizon_seq FROM sync_partitions WHERE partition=?')
@@ -1082,33 +1095,76 @@ export class D1ServerStorage implements ServerStorage {
   async setHorizonSeq(partition: string, seq: number): Promise<void> {
     await this.#db
       .prepare(
-        'INSERT INTO sync_partitions(partition, horizon_seq) VALUES (?,?) ON CONFLICT(partition) DO UPDATE SET horizon_seq=excluded.horizon_seq',
+        'INSERT INTO sync_partitions(partition, horizon_seq) VALUES (?,?) ON CONFLICT(partition) DO UPDATE SET horizon_seq=max(horizon_seq,excluded.horizon_seq)',
       )
       .bind(partition, seq)
       .run();
   }
 
-  async pruneCommitsThrough(partition: string, seq: number): Promise<number> {
-    const before = await this.#db
-      .prepare(
-        'SELECT count(*) AS n FROM sync_commits WHERE partition=? AND commit_seq<=?',
-      )
-      .bind(partition, seq)
-      .first<{ n: number }>();
-    await this.#db.batch([
-      this.#db
-        .prepare('DELETE FROM sync_commits WHERE partition=? AND commit_seq<=?')
-        .bind(partition, seq),
-      this.#db
-        .prepare('DELETE FROM sync_changes WHERE partition=? AND commit_seq<=?')
-        .bind(partition, seq),
+  async pruneCommitsThrough(
+    partition: string,
+    query: CommitPruneQuery,
+  ): Promise<CommitPruneResult> {
+    validateCommitPruneQuery(query);
+    if (!this.#pushApplySerialized)
+      throw new Error(
+        'D1 pruning requires externally serialized partition writes',
+      );
+    const epochGuard =
+      'EXISTS (SELECT 1 FROM sync_partition_registry WHERE partition=? AND log_epoch=?)';
+    const horizon =
+      '(SELECT horizon_seq FROM sync_partitions WHERE partition=?)';
+    const results = await this.#db.batch([
       this.#db
         .prepare(
-          'DELETE FROM sync_change_scopes WHERE partition=? AND commit_seq<=?',
+          `SELECT log_epoch, coalesce(${horizon},0) AS previous_horizon_seq FROM sync_partition_registry WHERE partition=?`,
         )
-        .bind(partition, seq),
+        .bind(partition, partition),
+      this.#db
+        .prepare(`INSERT INTO sync_partitions(partition,horizon_seq) SELECT ?,? WHERE ${epochGuard}
+        ON CONFLICT(partition) DO UPDATE SET horizon_seq=max(horizon_seq,excluded.horizon_seq)`)
+        .bind(partition, query.throughSeq, partition, query.logEpoch),
+      this.#db
+        .prepare(
+          `SELECT horizon_seq, (SELECT count(*) FROM sync_commits WHERE partition=? AND commit_seq<=${horizon}) AS removed_commits FROM sync_partitions WHERE partition=?`,
+        )
+        .bind(partition, partition, partition),
+      ...['sync_commits', 'sync_changes', 'sync_change_scopes'].map((table) =>
+        this.#db
+          .prepare(
+            `DELETE FROM ${table} WHERE partition=? AND commit_seq<=${horizon} AND ${epochGuard}`,
+          )
+          .bind(partition, partition, partition, query.logEpoch),
+      ),
     ]);
-    return before?.n ?? 0;
+    const [before, after] = [results[0], results[2]].map((result) => {
+      if (
+        typeof result !== 'object' ||
+        result === null ||
+        !('results' in result) ||
+        !Array.isArray(result.results)
+      ) {
+        throw new Error('D1 pruning returned an invalid batch result');
+      }
+      const row: unknown = result.results[0];
+      return typeof row === 'object' && row !== null
+        ? (row as Readonly<Record<string, unknown>>)
+        : undefined;
+    });
+    if (before?.log_epoch !== query.logEpoch)
+      throw new StorageQueryError('sync.storage.prune_epoch_mismatch');
+    if (
+      typeof before.previous_horizon_seq !== 'number' ||
+      typeof after?.horizon_seq !== 'number' ||
+      typeof after.removed_commits !== 'number'
+    ) {
+      throw new Error('D1 pruning returned invalid horizon metadata');
+    }
+    return {
+      previousHorizonSeq: before.previous_horizon_seq,
+      horizonSeq: after.horizon_seq,
+      removedCommits: after.removed_commits,
+    };
   }
 
   async getCommitSeqBefore(
@@ -1528,6 +1584,19 @@ export class D1ServerStorage implements ServerStorage {
         record.updatedAtMs,
       )
       .run();
+  }
+
+  async getActiveClientCursorFloor(
+    partition: string,
+    cutoffMs: number,
+  ): Promise<number | null> {
+    const row = await this.#db
+      .prepare(
+        'SELECT MIN(cursor) AS cursor FROM sync_clients WHERE partition=? AND updated_at_ms>=?',
+      )
+      .bind(partition, cutoffMs)
+      .first<{ cursor: number | null }>();
+    return row!.cursor;
   }
 
   async listClientCursors(partition: string): Promise<ClientCursorInfo[]> {

@@ -1,3 +1,6 @@
+import { validateCommitPruneQuery } from './prune';
+import { StorageQueryError } from './storage-errors';
+import type { CommitPruneQuery, CommitPruneResult } from './storage';
 /**
  * Postgres server storage: the production database path.
  *
@@ -221,6 +224,21 @@ interface SerializedResult {
   serverRow?: string;
   retryable?: boolean;
   details?: import('@syncular/core').RejectionDetails;
+}
+
+async function lockPartitionOn(
+  client: PgQueryable,
+  partition: string,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO sync_partitions(partition, max_commit_seq) VALUES ($1, 0)
+    ON CONFLICT (partition) DO NOTHING`,
+    [partition],
+  );
+  await client.query(
+    'SELECT max_commit_seq FROM sync_partitions WHERE partition=$1 FOR UPDATE',
+    [partition],
+  );
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -649,15 +667,7 @@ class PostgresTransaction implements StorageTransaction {
 
   async lockPartitionForPush(): Promise<void> {
     this.#assertOpen();
-    await this.#client.query(
-      `INSERT INTO sync_partitions(partition, max_commit_seq) VALUES ($1, 0)
-       ON CONFLICT (partition) DO NOTHING`,
-      [this.#partition],
-    );
-    await this.#client.query(
-      'SELECT max_commit_seq FROM sync_partitions WHERE partition=$1 FOR UPDATE',
-      [this.#partition],
-    );
+    await lockPartitionOn(this.#client, this.#partition);
     await this.#client.query('SAVEPOINT syncular_push_candidate');
     this.#pushApplySavepoint = true;
   }
@@ -1047,6 +1057,7 @@ export class PostgresServerStorage implements ServerStorage {
   ): Promise<PartitionRegistryEntry> {
     if (logEpoch.length === 0) throw new Error('log epoch must be non-empty');
     await this.#exec.transaction(async (client) => {
+      await lockPartitionOn(client, partition);
       await client.query(
         `INSERT INTO sync_partition_registry(
            partition, log_epoch, epoch_required, last_authenticated_at_ms
@@ -1148,7 +1159,7 @@ export class PostgresServerStorage implements ServerStorage {
     }
     const prepared = bindAuthoritativePartition(
       prepareAuthoritativeQuery(
-        query.sql,
+        query.plan,
         query.params,
         query.tables,
         this.#tables,
@@ -1177,6 +1188,14 @@ export class PostgresServerStorage implements ServerStorage {
     });
   }
 
+  async getPartitionLogEpoch(partition: string): Promise<string | undefined> {
+    const { rows } = await this.#exec.query<{ log_epoch: string }>(
+      'SELECT log_epoch FROM sync_partition_registry WHERE partition=$1',
+      [partition],
+    );
+    return rows[0]?.log_epoch;
+  }
+
   async getHorizonSeq(partition: string): Promise<number> {
     const { rows } = await this.#exec.query<{ horizon_seq: unknown }>(
       'SELECT horizon_seq FROM sync_partitions WHERE partition=$1',
@@ -1188,25 +1207,52 @@ export class PostgresServerStorage implements ServerStorage {
   async setHorizonSeq(partition: string, seq: number): Promise<void> {
     await this.#exec.query(
       `INSERT INTO sync_partitions(partition, horizon_seq) VALUES ($1,$2)
-       ON CONFLICT (partition) DO UPDATE SET horizon_seq=EXCLUDED.horizon_seq`,
+       ON CONFLICT (partition) DO UPDATE SET horizon_seq=GREATEST(sync_partitions.horizon_seq,EXCLUDED.horizon_seq)`,
       [partition, seq],
     );
   }
 
-  async pruneCommitsThrough(partition: string, seq: number): Promise<number> {
-    const removed = await this.#exec.query(
-      'DELETE FROM sync_commits WHERE partition=$1 AND commit_seq<=$2',
-      [partition, seq],
-    );
-    await this.#exec.query(
-      'DELETE FROM sync_changes WHERE partition=$1 AND commit_seq<=$2',
-      [partition, seq],
-    );
-    await this.#exec.query(
-      'DELETE FROM sync_change_scopes WHERE partition=$1 AND commit_seq<=$2',
-      [partition, seq],
-    );
-    return removed.rowCount;
+  async pruneCommitsThrough(
+    partition: string,
+    query: CommitPruneQuery,
+  ): Promise<CommitPruneResult> {
+    validateCommitPruneQuery(query);
+    return this.#exec.transaction(async (client) => {
+      await lockPartitionOn(client, partition);
+      const epoch = await client.query<{ log_epoch: string }>(
+        'SELECT log_epoch FROM sync_partition_registry WHERE partition=$1 FOR UPDATE',
+        [partition],
+      );
+      if (epoch.rows[0]?.log_epoch !== query.logEpoch)
+        throw new StorageQueryError('sync.storage.prune_epoch_mismatch');
+      const previous = await client.query<{ horizon_seq: unknown }>(
+        'SELECT horizon_seq FROM sync_partitions WHERE partition=$1',
+        [partition],
+      );
+      const previousHorizonSeq = asNumber(previous.rows[0]?.horizon_seq);
+      const horizonSeq = Math.max(previousHorizonSeq, query.throughSeq);
+      await client.query(
+        'UPDATE sync_partitions SET horizon_seq=$2 WHERE partition=$1',
+        [partition, horizonSeq],
+      );
+      const removed = await client.query(
+        'DELETE FROM sync_commits WHERE partition=$1 AND commit_seq<=$2',
+        [partition, horizonSeq],
+      );
+      await client.query(
+        'DELETE FROM sync_changes WHERE partition=$1 AND commit_seq<=$2',
+        [partition, horizonSeq],
+      );
+      await client.query(
+        'DELETE FROM sync_change_scopes WHERE partition=$1 AND commit_seq<=$2',
+        [partition, horizonSeq],
+      );
+      return {
+        previousHorizonSeq,
+        horizonSeq,
+        removedCommits: removed.rowCount,
+      };
+    });
   }
 
   async getCommitSeqBefore(
@@ -1628,6 +1674,17 @@ export class PostgresServerStorage implements ServerStorage {
         record.updatedAtMs,
       ],
     );
+  }
+
+  async getActiveClientCursorFloor(
+    partition: string,
+    cutoffMs: number,
+  ): Promise<number | null> {
+    const { rows } = await this.#exec.query<{ cursor: unknown }>(
+      'SELECT MIN(cursor) AS cursor FROM sync_clients WHERE partition=$1 AND updated_at_ms>=$2',
+      [partition, cutoffMs],
+    );
+    return rows[0]!.cursor === null ? null : asNumber(rows[0]!.cursor);
   }
 
   async listClientCursors(partition: string): Promise<ClientCursorInfo[]> {

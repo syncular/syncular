@@ -12,7 +12,7 @@
       ],
       "neutralizedStatements": 2,
       "enumeratedStatements": 8,
-      "queryIrVersion": 3,
+      "queryIrVersion": 4,
       "publicInputKinds": [
         "value",
         "value",

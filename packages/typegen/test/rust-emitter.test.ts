@@ -6,6 +6,7 @@ import {
 } from '../src';
 
 const QUERY: AnalyzedQuery = {
+  relations: [],
   name: 'compositeIdentity',
   file: 'composite-identity.sql',
   sourceSql: 'SELECT id, revision FROM records',

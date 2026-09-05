@@ -619,6 +619,7 @@ describe('supported realtime host supervisor', () => {
     timers.runNext();
     await waitFor(
       () => supervisor.snapshot().phase === 'connected',
+      (notify) => supervisor.subscribe(notify),
       'initial supervised catch-up',
     );
 
@@ -636,7 +637,10 @@ describe('supported realtime host supervisor', () => {
     network.emit('online');
     timers.runNext();
     await waitFor(
-      () => tableRows(b.db, 'tasks').length === 1,
+      () =>
+        tableRows(b.db, 'tasks').length === 1 &&
+        supervisor.snapshot().phase === 'connected',
+      (notify) => supervisor.subscribe(notify),
       'remote-only catch-up',
     );
     expect(supervisor.snapshot()).toEqual({ phase: 'connected', attempt: 0 });

@@ -25,6 +25,7 @@ import {
   useSyncStatus,
   useWindow,
 } from '../src/index';
+import type { PresencePeer } from '@syncular/client';
 import { FakeClient } from './fake-client';
 import { installHappyDom } from './setup';
 
@@ -49,6 +50,16 @@ async function flushEffects(): Promise<void> {
     await Promise.resolve();
     await Promise.resolve();
   });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((ok, fail) => {
+    resolve = ok;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }
 
 afterEach(() => {
@@ -274,6 +285,91 @@ describe('useCommitOutcomes', () => {
 });
 
 describe('usePresence', () => {
+  for (const newestFails of [false, true]) {
+    test(`ignores an older presence response after a newer ${newestFails ? 'failure' : 'response'}`, async () => {
+      const client = new FakeClient();
+      const old = deferred<readonly PresencePeer[]>();
+      const latest = deferred<readonly PresencePeer[]>();
+      let reads = 0;
+      client.presenceReader = () =>
+        ++reads === 1 ? old.promise : latest.promise;
+      const { result, unmount } = renderHook(() => usePresence('project:p1'), {
+        wrapper: wrapper(client),
+      });
+      await flushEffects();
+      act(() => client.emitPresence('project:p1'));
+      await flushEffects();
+      const peers = [{ actorId: 'new', clientId: 'new', doc: {} }];
+      await act(async () => {
+        if (newestFails) latest.reject(new Error('unavailable'));
+        else latest.resolve(peers);
+      });
+      await act(async () =>
+        old.resolve([{ actorId: 'old', clientId: 'old', doc: {} }]),
+      );
+      expect(result.current).toEqual(newestFails ? [] : peers);
+      unmount();
+    });
+  }
+
+  test('clears peers on scope changes before replacement reads settle', async () => {
+    const client = new FakeClient();
+    const pending = deferred<readonly PresencePeer[]>();
+    const peers = [{ actorId: 'first', clientId: 'first', doc: {} }];
+    client.presenceReader = (scope) =>
+      scope === 'project:p1' ? peers : pending.promise;
+    const { result, rerender, unmount } = renderHook(
+      ({ scope }) => usePresence(scope),
+      {
+        initialProps: { scope: 'project:p1' },
+        wrapper: wrapper(client),
+      },
+    );
+    await flushEffects();
+    expect(result.current).toEqual(peers);
+    rerender({ scope: 'project:p2' });
+    expect(result.current).toEqual([]);
+    unmount();
+    await act(async () => pending.resolve(peers));
+  });
+
+  test('clears peers when the provider changes clients', async () => {
+    const first = new FakeClient();
+    const second = new FakeClient();
+    const pending = deferred<readonly PresencePeer[]>();
+    first.seedPresence('project:p1', [
+      { actorId: 'first', clientId: 'first', doc: {} },
+    ]);
+    second.presenceReader = () => pending.promise;
+    function Peers() {
+      return (
+        <output>
+          {usePresence('project:p1')
+            .map((peer) => peer.actorId)
+            .join(',')}
+        </output>
+      );
+    }
+    const view = render(
+      <SyncProvider client={first}>
+        <Peers />
+      </SyncProvider>,
+    );
+    await flushEffects();
+    expect(view.container.textContent).toBe('first');
+    view.rerender(
+      <SyncProvider client={second}>
+        <Peers />
+      </SyncProvider>,
+    );
+    expect(view.container.textContent).toBe('');
+    await act(async () =>
+      pending.resolve([{ actorId: 'second', clientId: 'second', doc: {} }]),
+    );
+    expect(view.container.textContent).toBe('second');
+    view.unmount();
+  });
+
   test('lists peers and updates on a presence change', async () => {
     const client = new FakeClient();
     client.seedPresence('project:p1', [

@@ -56,7 +56,7 @@
         "activationControls": { "type": "array", "items": { "type": "string" } },
         "neutralizedStatements": { "type": "integer", "minimum": 1 },
         "enumeratedStatements": { "type": "integer", "minimum": 1 },
-        "queryIrVersion": { "const": 3 },
+        "queryIrVersion": { "const": 4 },
         "publicInputKinds": {
           "type": "array",
           "items": { "enum": ["value", "group", "sort", "limit"] }

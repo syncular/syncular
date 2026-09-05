@@ -247,7 +247,7 @@ describe('revision-1 SYQL lowering', () => {
     ).toBe(false);
     expect(lowered.analysis.reactive.rowKey).toEqual(['id']);
     const serialized = JSON.parse(serializeQueryIr([lowered.analysis]));
-    expect(serialized.queryIrVersion).toBe(3);
+    expect(serialized.queryIrVersion).toBe(4);
     expect(serialized.queries[0].syql.plan.backend).toBe('neutralize');
     expect(serialized.queries[0].syql.inputs[1]).toMatchObject({
       name: 'status',

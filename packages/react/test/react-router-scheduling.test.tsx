@@ -42,11 +42,6 @@ function RouteStateProbe() {
 
 describe('React Router scheduling integration fixture', () => {
   test('keeps controls, router state, and the browser URL converged under sustained Syncular updates', async () => {
-    (
-      window as Window & {
-        readonly happyDOM: { setURL(url: string): void };
-      }
-    ).happyDOM.setURL('http://localhost/');
     window.history.replaceState(null, '', '/?mode=plan');
     const client = new FakeClient();
     const router = createBrowserRouter([

@@ -13,7 +13,7 @@ Fixture data has six deliberately separate representations:
   `toSyqlSemanticAst`;
 - semantic vectors pin module imports, public input/control meaning, predicate
   expansion, and stable semantic errors;
-- lowering vectors pin the selected physical backend, QueryIR v3, generated
+- lowering vectors pin the selected physical backend, QueryIR v4, generated
   SQL invariants, and execute both backends against the same environments;
 - formatter vectors pin exact canonical output, semantic equivalence, and byte
   idempotence;
@@ -22,7 +22,7 @@ Fixture data has six deliberately separate representations:
   lexical/syntax/semantic/lowering vectors pin stable diagnostics.
 
 `schema/query-ir.schema.json` is the normative JSON Schema for the revision-1
-SYQL-to-QueryIR v3 compiler boundary consumed by every target emitter.
+SYQL-to-QueryIR v4 compiler boundary consumed by every target emitter.
 
 Trivia and source spans remain present in the lossless runtime AST. They are
 excluded from semantic AST equality so formatting-only changes do not alter

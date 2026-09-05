@@ -17,7 +17,7 @@ import { check, checkEqual } from '../checks';
 import type { ValidatorInstallSpec } from '../driver';
 import { task } from '../fixture';
 import type { Scenario, ScenarioContext } from '../scenario';
-import { expectConverged, syncIdle, syncOk } from './util';
+import { expectConverged, syncFails, syncIdle, syncOk } from './util';
 
 const P1 = { project_id: ['p1'] } as const;
 
@@ -50,6 +50,48 @@ async function bootstrapped(
 }
 
 export const validatorScenarios: readonly Scenario[] = [
+  {
+    name: 'validators/unexpected-error-retries-as-static-rejection',
+    specRefs: ['§6.3', '§6.7', '§2.3'],
+    requires: ['validators'],
+    async run(ctx) {
+      await install(ctx, [
+        {
+          table: 'tasks',
+          rule: {
+            kind: 'unexpectedError',
+            message: 'synthetic-private-validator-token',
+          },
+        },
+      ]);
+      const a = await bootstrapped(ctx, 'actor-a', 'client-a');
+      const commit = await a.api.mutate([
+        { op: 'upsert', table: 'tasks', values: task('failed', 'p1') },
+      ]);
+      a.faults.dropNextResponses = 1;
+      await syncFails(a, 'transport.lost', 'lost sanitized rejection');
+      checkEqual(
+        (await syncIdle(a)).rejected,
+        [commit],
+        'cached rejection drains the outbox',
+      );
+      checkEqual(
+        (await a.api.rejections())[0]?.code,
+        'sync.constraint_violation',
+        'both clients retain the static public code',
+      );
+      checkEqual(
+        await ctx.server.readRows('tasks'),
+        [],
+        'unexpected failure writes no rows',
+      );
+      checkEqual(
+        await a.api.pendingCommitIds(),
+        [],
+        'cached rejection consumes the pending commit',
+      );
+    },
+  },
   {
     // A validator rejects: the commit rolls back atomically (its sibling
     // insert with it, §6.4) and the host code surfaces in the client's

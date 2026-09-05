@@ -110,16 +110,37 @@ void main() {
   test('error reply surfaces as SyncularError', () {
     final client = makeClient();
     addTearDown(client.close);
-    expect(() => client.readRows('does_not_exist'),
-        throwsA(isA<SyncularError>()));
+    expect(
+        () => client.readRows('does_not_exist'), throwsA(isA<SyncularError>()));
   });
 
-  test('pending commits after an offline mutate', () {
+  test('snapshots and pending outcomes after an offline mutate', () {
     final client = makeClient();
     addTearDown(client.close);
     client.subscribe('s1', 'todo');
-    client.mutate([upsert('t1', 'x')]);
-    expect(client.pendingCommitIds(), isNotEmpty);
+    final id = client.mutate([upsert('t1', 'x')]);
+    expect(client.pendingCommitIds(), [id]);
+    expect(client.statusSnapshot()['outbox'], 1);
+    expect(
+        client.querySnapshot('SELECT title FROM todo')['rows'], hasLength(1));
+    expect(
+        (client.diagnosticsSnapshot()['replica'] as Map)['pendingOutbox'], 1);
+    expect(client.commitOutcome(id), isNull);
+    expect(client.commitOutcomes(), isEmpty);
+    expect(client.rejections(), isEmpty);
+    expect(
+        () => client.resolveCommitOutcome(
+            {'clientCommitId': id, 'resolution': 'dismissed'}),
+        throwsA(isA<SyncularError>()));
+    for (final method in [
+      'schemaFloor',
+      'leaseState',
+      'upgrading',
+      'syncNeeded'
+    ]) {
+      expect(() => client.command(method, const {}),
+          throwsA(isA<SyncularError>()));
+    }
   });
 
   test('network command reports transport.unavailable on the lean core', () {

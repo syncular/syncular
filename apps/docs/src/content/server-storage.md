@@ -270,6 +270,26 @@ execution shape. It ships in `@syncular/server` but its home is the Workers
 deployment: per-partition write serialization, migration workflow, and the
 Durable Object are covered in [Cloudflare Workers](/server-workers/).
 
+## Custom storage pruning
+
+Implement `getPartitionLogEpoch(partition)` as a point read that leaves the
+last-authenticated timestamp unchanged. `pruneCommitLog` reads it before
+computing retention inputs.
+
+Replace `pruneCommitsThrough(partition, seq)` with
+`pruneCommitsThrough(partition, { logEpoch, throughSeq })`. In one transaction,
+verify the epoch, compute `max(currentHorizon, throughSeq)`, advance the horizon,
+and delete commit/change/scope records through it. Return
+`{ previousHorizonSeq, horizonSeq, removedCommits }` from that transaction.
+Serialize this operation with restore rotation. An epoch mismatch must reject
+before deleting; retries must clean up even when the horizon already covers
+the requested sequence. Retained `setHorizonSeq` implementations must use a
+monotonic update.
+
+The built-in adapters implement this contract. The D1 adapter requires
+partition coordination; use the Durable Object maintenance method in the
+[Workers guide](/server-workers/).
+
 ## Segment stores
 
 Bootstrap segments are **TTL cache entries** with a default 24 h lifetime;
@@ -330,3 +350,23 @@ upload grants. Absent config means clients stream through the direct
   orphan blobs.
 - [Bootstrap & segments](/concepts-bootstrap/): why segments are cache
   entries and how reuse absorbs storms.
+
+Custom storage adapters must implement
+`getActiveClientCursorFloor(partition, cutoffMs)`. Return the minimum cursor
+whose `updatedAtMs >= cutoffMs`, or `null` when no client qualifies. Preserve
+negative bootstrap cursors. Pruning and admin horizon status use this scalar
+aggregate; `listClientCursors` remains the explicit listing interface.
+
+SQLite image builders now return `Promise<Uint8Array>` and receive
+`rowBatches`, an iterable or async iterable of row arrays. Replace custom
+builders' `input.rows` loop with `for await (const rows of input.rowBatches)`,
+insert each batch into the dedicated image database, and count rows during
+consumption. Write the final row count into `_syncular_segment` before
+serialization. Await `buildSqliteImage(input)` when calling the built-in
+Bun or Node builder directly.
+
+The server shares in-flight builds for the same storage pair and artifact
+identity after authorization. Sharing is local to one process. Signed URL
+grants remain per request. The first eligibility probe has at most
+`limitSnapshotRows + 1` rows; subsequent builder batches have at most 5,000
+rows. The image database and serialized output still consume memory.

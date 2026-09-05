@@ -450,7 +450,18 @@ class Validator {
       location,
     );
     this.#validateDeterminism(activeSql, logical.declaration.statement.span);
-    const refs = scanTableRefs(activeSql, this.#ir);
+    let refs: TableRef[];
+    try {
+      refs = scanTableRefs(activeSql, this.#ir);
+    } catch (error) {
+      // Preserve SQLite's source-spanned diagnostics for invalid relations.
+      this.#validateSqlite(activeSql, logical, []);
+      this.#fail(
+        'SYQL6002_INVALID_SQL',
+        logical.declaration.statement.span,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
     this.#validatePortableProfile(
       activeSql,
       logical.declaration.statement.span,

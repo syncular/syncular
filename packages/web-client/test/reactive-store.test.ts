@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   type ClientChangeBatch,
+  type CommitOutcome,
   type ClientChangeListener,
   canonicalValue,
   type QueryReadSpec,
@@ -97,12 +98,12 @@ class FakeReactiveClient implements ReactiveQueryClient {
     return next as QuerySnapshot<Result> | Promise<QuerySnapshot<Result>>;
   }
 
-  statusSnapshot(): SyncStatusSnapshot {
+  statusSnapshot(): SyncStatusSnapshot | Promise<SyncStatusSnapshot> {
     this.statusCalls += 1;
     return this.currentStatus;
   }
 
-  conflicts(): readonly unknown[] {
+  conflicts(): readonly unknown[] | Promise<readonly unknown[]> {
     this.conflictCalls += 1;
     return [];
   }
@@ -112,7 +113,9 @@ class FakeReactiveClient implements ReactiveQueryClient {
     return [];
   }
 
-  commitOutcomes(): readonly never[] {
+  commitOutcomes():
+    | readonly CommitOutcome[]
+    | Promise<readonly CommitOutcome[]> {
     return [];
   }
 
@@ -304,6 +307,71 @@ describe('composable windows and domain routing', () => {
     store.dispose();
   });
 
+  test('a status event supersedes an older pending snapshot', async () => {
+    const client = new FakeReactiveClient();
+    const pending = deferred<SyncStatusSnapshot>();
+    client.statusSnapshot = () => pending.promise;
+    const store = new ReactiveClientStore(client);
+    const latest = { ...STATUS, outbox: 3 };
+    client.emit(batch(1n, { status: latest }));
+    pending.resolve(STATUS);
+    await drainMicrotasks();
+    expect(store.status.getSnapshot().status).toEqual(latest);
+    store.dispose();
+  });
+
+  for (const source of ['conflicts', 'outcomes'] as const) {
+    for (const fails of [false, true]) {
+      test(`${source} ignores an older result after a newer ${fails ? 'failure' : 'result'}`, async () => {
+        const client = new FakeReactiveClient();
+        const first = deferred<readonly CommitOutcome[]>();
+        const second = deferred<readonly CommitOutcome[]>();
+        let reads = 0;
+        const read = () => (++reads === 1 ? first.promise : second.promise);
+        if (source === 'conflicts') client.conflicts = read;
+        else client.commitOutcomes = read;
+        const store = new ReactiveClientStore(client);
+        const entry = store[source];
+        entry.refresh();
+        const failure = new Error('latest read failed');
+        if (fails) second.reject(failure);
+        else second.resolve([]);
+        await drainMicrotasks();
+        const latest = entry.getSnapshot();
+        first.resolve([
+          {
+            sequence: 1,
+            clientCommitId: 'stale',
+            status: 'applied',
+            recordedAtMs: 0,
+            results: [],
+            resolution: 'active',
+          },
+        ]);
+        await drainMicrotasks();
+        expect(entry.getSnapshot()).toBe(latest);
+        expect(latest.error).toBe(fails ? failure : undefined);
+        store.dispose();
+      });
+    }
+  }
+
+  test('disposing a store invalidates pending value reads and restart refreshes them', async () => {
+    const client = new FakeReactiveClient();
+    const pending = deferred<SyncStatusSnapshot>();
+    client.statusSnapshot = () => pending.promise;
+    const store = new ReactiveClientStore(client);
+    store.dispose();
+    pending.resolve(STATUS);
+    await drainMicrotasks();
+    expect(store.status.getSnapshot().isLoading).toBe(true);
+    client.statusSnapshot = () => STATUS;
+    store.start();
+    await drainMicrotasks();
+    expect(store.status.getSnapshot().status).toEqual(STATUS);
+    store.dispose();
+  });
+
   test('status-only changes perform zero SQL reruns and no status follow-up read', async () => {
     const client = new FakeReactiveClient();
     client.snapshots.push({ revision: 1n, rows: [], coverage: COMPLETE });
@@ -436,5 +504,220 @@ describe('keyed reconciliation performance', () => {
     expect((durations[2] ?? 1) / Math.max(durations[1] ?? 1, 0.1)).toBeLessThan(
       30,
     );
+  });
+});
+
+describe('observation ownership', () => {
+  test('10k parameter changes retain only subscribed rows and dispatch only to active queries', async () => {
+    const client = new FakeReactiveClient();
+    const store = new ReactiveClientStore(client);
+    const activeRows = [{ id: 'active', title: 'keep' }];
+    client.snapshots.push({
+      revision: 1n,
+      rows: activeRows,
+      coverage: COMPLETE,
+    });
+    const active = store.query<Row>(querySpec({ params: ['active'] }));
+    const offActive = active.subscribe(() => undefined);
+    await drainMicrotasks();
+    const snapshot = active.getSnapshot();
+    let dependencyReads = 0;
+    for (let index = 0; index < 10_000; index += 1) {
+      const entry = store.query<Row>({
+        ...querySpec({ params: [String(index)] }),
+        get dependencies() {
+          dependencyReads += 1;
+          return [{ table: 'tasks' }];
+        },
+      });
+      if (index % 2 === 0) {
+        client.snapshots.push({
+          revision: 1n,
+          rows: [{ id: String(index), title: 'retire' }],
+          coverage: COMPLETE,
+        });
+        const off = entry.subscribe(() => undefined);
+        await drainMicrotasks();
+        expect(entry.getSnapshot().rows).toHaveLength(1);
+        off();
+      }
+      await drainMicrotasks();
+      expect(entry.getSnapshot().rows).toHaveLength(0);
+    }
+    expect(store.cacheStats()).toEqual({
+      queries: 1,
+      activeQueries: 1,
+      windows: 0,
+      activeWindows: 0,
+      windowClaims: 0,
+    });
+    expect(active.getSnapshot()).toBe(snapshot);
+    expect(store.query<Row>(querySpec({ params: ['active'] }))).toBe(active);
+    dependencyReads = 0;
+    client.snapshots.push({
+      revision: 2n,
+      rows: activeRows,
+      coverage: COMPLETE,
+    });
+    client.emit(batch(2n, { tables: [{ table: 'tasks' }] }));
+    await drainMicrotasks();
+    expect(dependencyReads).toBe(0);
+    expect(active.getSnapshot().rows).toBe(snapshot.rows);
+    offActive();
+    await drainMicrotasks();
+    expect(store.cacheStats().queries).toBe(0);
+    store.dispose();
+  });
+
+  test('abandoned render references rejoin one canonical entry across repeated retirements', async () => {
+    const client = new FakeReactiveClient();
+    const store = new ReactiveClientStore(client);
+    const abandoned = store.query<Row>(querySpec());
+    await drainMicrotasks();
+    for (let round = 0; round < 3; round += 1) {
+      const current = store.query<Row>(querySpec());
+      client.snapshots.push({
+        revision: BigInt(round),
+        rows: [{ id: 'id', title: String(round) }],
+        coverage: COMPLETE,
+      });
+      const offCurrent = current.subscribe(() => undefined);
+      const offOld = abandoned.subscribe(() => undefined);
+      await drainMicrotasks();
+      expect(abandoned.getSnapshot()).toBe(current.getSnapshot());
+      expect(client.reads).toHaveLength(round + 1);
+      offCurrent();
+      offOld();
+      await drainMicrotasks();
+      expect(store.cacheStats().queries).toBe(0);
+      expect(abandoned.getSnapshot().rows).toHaveLength(0);
+    }
+    store.dispose();
+  });
+
+  test('same-microtask remount preserves rows, sharing and window claims', async () => {
+    const client = new FakeReactiveClient();
+    const store = new ReactiveClientStore(client);
+    const spec = querySpec({ coverage: [{ base: BASE, units: ['p1'] }] });
+    client.snapshots.push({
+      revision: 1n,
+      rows: [{ id: 'id', title: 'kept' }],
+      coverage: COMPLETE,
+    });
+    const entry = store.query<Row>(spec);
+    const off = entry.subscribe(() => undefined);
+    await drainMicrotasks();
+    const snapshot = entry.getSnapshot();
+    off();
+    client.snapshots.push({
+      revision: 1n,
+      rows: snapshot.rows,
+      coverage: COMPLETE,
+    });
+    const remount = store.query<Row>(spec);
+    const offRemount = remount.subscribe(() => undefined);
+    expect(remount).toBe(entry);
+    expect(remount.getSnapshot()).toBe(snapshot);
+    await drainMicrotasks();
+    expect(remount.getSnapshot()).toBe(snapshot);
+    expect(client.setWindowCalls.map((call) => call.units)).toEqual([['p1']]);
+    offRemount();
+    await drainMicrotasks();
+    expect(client.setWindowCalls.at(-1)?.units).toEqual([]);
+    expect(store.cacheStats().windowClaims).toBe(0);
+    store.dispose();
+  });
+
+  for (const failed of [false, true]) {
+    test(`retiring a pending read permits a fresh read and ignores its late ${failed ? 'error' : 'rows'}`, async () => {
+      const client = new FakeReactiveClient();
+      const old = deferred<QuerySnapshot<Row>>();
+      client.snapshots.push(old.promise);
+      const store = new ReactiveClientStore(client);
+      const entry = store.query<Row>(querySpec());
+      const off = entry.subscribe(() => undefined);
+      await drainMicrotasks();
+      off();
+      await drainMicrotasks();
+      client.snapshots.push({
+        revision: 2n,
+        rows: [{ id: 'fresh', title: 'fresh' }],
+        coverage: COMPLETE,
+      });
+      const offNew = entry.subscribe(() => undefined);
+      await drainMicrotasks();
+      expect(client.reads).toHaveLength(2);
+      const fresh = entry.getSnapshot();
+      if (failed) old.reject(new Error('retired read'));
+      else
+        old.resolve({
+          revision: 1n,
+          rows: [{ id: 'old', title: 'old' }],
+          coverage: COMPLETE,
+        });
+      await drainMicrotasks();
+      expect(entry.getSnapshot()).toBe(fresh);
+      expect(fresh.rows[0]?.id).toBe('fresh');
+      offNew();
+      store.dispose();
+    });
+  }
+
+  test('window observations and released claim groups have no inactive retention', async () => {
+    const client = new FakeReactiveClient();
+    const store = new ReactiveClientStore(client);
+    for (let index = 0; index < 100; index += 1) {
+      const base = { ...BASE, table: `table_${index}` };
+      const old = store.window(base);
+      await drainMicrotasks();
+      const current = store.window(base);
+      const off = current.subscribe(() => undefined);
+      const offOld = old.subscribe(() => undefined);
+      const retained = store.retainWindow(base, ['p1']);
+      await retained.ready;
+      expect(old.getSnapshot()).toBe(current.getSnapshot());
+      retained.release();
+      off();
+      offOld();
+      await drainMicrotasks();
+    }
+    expect(store.cacheStats()).toEqual({
+      queries: 0,
+      activeQueries: 0,
+      windows: 0,
+      activeWindows: 0,
+      windowClaims: 0,
+    });
+    store.dispose();
+  });
+
+  test('disposal rejects unapplied claims and old jobs cannot overwrite restarted ownership', async () => {
+    const client = new FakeReactiveClient();
+    const store = new ReactiveClientStore(client);
+    const retained = store.retainWindow(BASE, ['old']);
+    const rejected = retained.ready.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    const query = store.query<Row>(
+      querySpec({ coverage: [{ base: BASE, units: ['old'] }] }),
+    );
+    query.subscribe(() => undefined);
+    store.dispose();
+    store.start();
+    const fresh = store.retainWindow(BASE, ['fresh']);
+    await fresh.ready;
+    expect(await rejected).toMatchObject({
+      code: 'client.reactive_store_disposed',
+    });
+    await drainMicrotasks();
+    expect(client.setWindowCalls.map((call) => call.units)).toEqual([
+      [],
+      ['fresh'],
+    ]);
+    fresh.release();
+    await drainMicrotasks();
+    expect(store.cacheStats().windowClaims).toBe(0);
+    store.dispose();
   });
 });

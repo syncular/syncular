@@ -8,6 +8,14 @@ the old outcome, and restore any remaining correction UI after restart.
 Use this for user-owned offline creation and editing. The final section explains
 when an operation needs a server-authoritative command instead.
 
+Unexpected row-validator, whole-commit-validator, and CRDT merger exceptions
+produce static public messages. Their original text never enters newly
+recorded push results or client outcomes. Capture errors inside the host
+callback when private diagnostics are needed, and isolate diagnostic failures
+from the callback result. Deliberate `ValidationRejection` and
+`CommitValidationRejection` messages remain public content. Existing stored
+rejections retain their historical messages; upgrading does not rewrite them.
+
 ## 1. Read the confirmed version
 
 Project Syncular's private version column explicitly and alias it. This SYQL

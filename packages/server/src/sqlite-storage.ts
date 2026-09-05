@@ -1,3 +1,6 @@
+import { validateCommitPruneQuery } from './prune';
+import { StorageQueryError } from './storage-errors';
+import type { CommitPruneQuery, CommitPruneResult } from './storage';
 /**
  * SQLite server storage over the shared synchronous driver.
  *
@@ -390,7 +393,7 @@ export class SqliteServerStorage implements ServerStorage {
   #tables: ReadonlyMap<string, CompiledTable> | undefined;
   #schemaVersion: number | undefined;
 
-  async #serializeReactionWrite<T>(operation: () => T): Promise<T> {
+  async #serializeWrite<T>(operation: () => T): Promise<T> {
     const previous = this.#transactionTail;
     let release!: () => void;
     this.#transactionTail = new Promise<void>((resolve) => {
@@ -559,7 +562,7 @@ export class SqliteServerStorage implements ServerStorage {
     authenticatedAtMs: number,
   ): Promise<PartitionRegistryEntry> {
     if (logEpoch.length === 0) throw new Error('log epoch must be non-empty');
-    return this.#serializeReactionWrite(() => {
+    return this.#serializeWrite(() => {
       this.db.exec('BEGIN IMMEDIATE');
       try {
         this.db
@@ -725,7 +728,7 @@ export class SqliteServerStorage implements ServerStorage {
     }
     const prepared = bindAuthoritativePartition(
       prepareAuthoritativeQuery(
-        query.sql,
+        query.plan,
         query.params,
         query.tables,
         this.#tables,
@@ -763,6 +766,14 @@ export class SqliteServerStorage implements ServerStorage {
     }
   }
 
+  async getPartitionLogEpoch(partition: string): Promise<string | undefined> {
+    return this.db
+      .query<{ log_epoch: string }, [string]>(
+        'SELECT log_epoch FROM sync_partition_registry WHERE partition=?',
+      )
+      .get(partition)?.log_epoch;
+  }
+
   async getHorizonSeq(partition: string): Promise<number> {
     const row = this.db
       .query<{ horizon_seq: number }, [string]>(
@@ -773,27 +784,62 @@ export class SqliteServerStorage implements ServerStorage {
   }
 
   async setHorizonSeq(partition: string, seq: number): Promise<void> {
-    this.db
-      .query('INSERT OR IGNORE INTO sync_partitions(partition) VALUES (?)')
-      .run(partition);
-    this.db
-      .query('UPDATE sync_partitions SET horizon_seq=? WHERE partition=?')
-      .run(seq, partition);
+    await this.#serializeWrite(() => {
+      this.db
+        .query(`INSERT INTO sync_partitions(partition, horizon_seq) VALUES (?,?)
+        ON CONFLICT(partition) DO UPDATE SET horizon_seq=max(horizon_seq,excluded.horizon_seq)`)
+        .run(partition, seq);
+    });
   }
 
-  async pruneCommitsThrough(partition: string, seq: number): Promise<number> {
-    const removed = this.db
-      .query('DELETE FROM sync_commits WHERE partition=? AND commit_seq<=?')
-      .run(partition, seq);
-    this.db
-      .query('DELETE FROM sync_changes WHERE partition=? AND commit_seq<=?')
-      .run(partition, seq);
-    this.db
-      .query(
-        'DELETE FROM sync_change_scopes WHERE partition=? AND commit_seq<=?',
-      )
-      .run(partition, seq);
-    return Number(removed.changes);
+  async pruneCommitsThrough(
+    partition: string,
+    query: CommitPruneQuery,
+  ): Promise<CommitPruneResult> {
+    validateCommitPruneQuery(query);
+    return this.#serializeWrite(() => {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        const epoch = this.db
+          .query<{ log_epoch: string }, [string]>(
+            'SELECT log_epoch FROM sync_partition_registry WHERE partition=?',
+          )
+          .get(partition)?.log_epoch;
+        if (epoch !== query.logEpoch)
+          throw new StorageQueryError('sync.storage.prune_epoch_mismatch');
+        const previousHorizonSeq =
+          this.db
+            .query<{ horizon_seq: number }, [string]>(
+              'SELECT horizon_seq FROM sync_partitions WHERE partition=?',
+            )
+            .get(partition)?.horizon_seq ?? 0;
+        const horizonSeq = Math.max(previousHorizonSeq, query.throughSeq);
+        this.db
+          .query(`INSERT INTO sync_partitions(partition, horizon_seq) VALUES (?,?)
+          ON CONFLICT(partition) DO UPDATE SET horizon_seq=excluded.horizon_seq`)
+          .run(partition, horizonSeq);
+        const removed = this.db
+          .query('DELETE FROM sync_commits WHERE partition=? AND commit_seq<=?')
+          .run(partition, horizonSeq);
+        this.db
+          .query('DELETE FROM sync_changes WHERE partition=? AND commit_seq<=?')
+          .run(partition, horizonSeq);
+        this.db
+          .query(
+            'DELETE FROM sync_change_scopes WHERE partition=? AND commit_seq<=?',
+          )
+          .run(partition, horizonSeq);
+        this.db.exec('COMMIT');
+        return {
+          previousHorizonSeq,
+          horizonSeq,
+          removedCommits: Number(removed.changes),
+        };
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+    });
   }
 
   async getCommitSeqBefore(
@@ -847,7 +893,7 @@ export class SqliteServerStorage implements ServerStorage {
     query: ReactionClaimQuery,
   ): Promise<StoredReaction[]> {
     if (query.types.length === 0 || query.limit <= 0) return [];
-    return this.#serializeReactionWrite(() => {
+    return this.#serializeWrite(() => {
       const typeParams = query.types.map(() => '?').join(',');
       const records = this.db
         .query<SqliteReactionRecord, (string | number)[]>(
@@ -895,7 +941,7 @@ export class SqliteServerStorage implements ServerStorage {
     leaseOwner: string,
     completedAtMs: number,
   ): Promise<boolean> {
-    return this.#serializeReactionWrite(() => {
+    return this.#serializeWrite(() => {
       const result = this.db
         .query(
           `UPDATE sync_reactions
@@ -915,7 +961,7 @@ export class SqliteServerStorage implements ServerStorage {
     leaseOwner: string,
     leaseExpiresAtMs: number,
   ): Promise<boolean> {
-    return this.#serializeReactionWrite(() => {
+    return this.#serializeWrite(() => {
       const result = this.db
         .query(
           `UPDATE sync_reactions SET lease_expires_at_ms=?
@@ -933,7 +979,7 @@ export class SqliteServerStorage implements ServerStorage {
     update: ReactionFailureUpdate,
   ): Promise<boolean> {
     const retry = update.retryAtMs !== undefined;
-    return this.#serializeReactionWrite(() => {
+    return this.#serializeWrite(() => {
       const result = this.db
         .query(
           `UPDATE sync_reactions
@@ -959,7 +1005,7 @@ export class SqliteServerStorage implements ServerStorage {
     idempotencyKey: string,
     nowMs: number,
   ): Promise<boolean> {
-    return this.#serializeReactionWrite(() => {
+    return this.#serializeWrite(() => {
       const result = this.db
         .query(
           `UPDATE sync_reactions
@@ -1014,7 +1060,7 @@ export class SqliteServerStorage implements ServerStorage {
     query: ReactionPruneQuery,
   ): Promise<PrunedReactionCounts> {
     if (query.limit <= 0) return { completed: 0, deadLetter: 0 };
-    return this.#serializeReactionWrite(() => {
+    return this.#serializeWrite(() => {
       const records = this.db
         .query<
           { status: 'completed' | 'dead-letter' },
@@ -1224,6 +1270,18 @@ export class SqliteServerStorage implements ServerStorage {
         JSON.stringify(record.subscriptions),
         record.updatedAtMs,
       );
+  }
+
+  async getActiveClientCursorFloor(
+    partition: string,
+    cutoffMs: number,
+  ): Promise<number | null> {
+    const row = this.db
+      .query<{ cursor: number | null }, [string, number]>(
+        'SELECT MIN(cursor) AS cursor FROM sync_clients WHERE partition=? AND updated_at_ms>=?',
+      )
+      .get(partition, cutoffMs);
+    return row!.cursor;
   }
 
   async listClientCursors(partition: string): Promise<ClientCursorInfo[]> {

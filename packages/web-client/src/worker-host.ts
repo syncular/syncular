@@ -1,3 +1,4 @@
+import type { PromiseMethods } from './client';
 /**
  * Main-thread side of the worker mode and the
  * multi-tab topology.
@@ -25,13 +26,11 @@ import type { WakeReason } from '@syncular/core';
 import type { BlobRef, CachedBlob } from './blob';
 import type {
   ConflictRecord,
-  LeaseState,
   MutationInput,
   PresencePeer,
   QueryReadSpec,
   QuerySnapshot,
   RejectionRecord,
-  SchemaFloor,
   SecurityLifecycle,
   SubscribeInput,
   SyncClientLimits,
@@ -244,7 +243,7 @@ interface LeaderCore {
  * promise. `role` is `'leader'` (owns the worker) or `'follower'` (proxies to
  * the leader over the channel). Constructed via {@link createSyncClientHandle}.
  */
-export class SyncClientHandle {
+export class SyncClientHandle implements PromiseMethods<WorkerApi> {
   /** True only for a leader handle. Kept for the pre-multiTab contract. */
   get isLeader(): boolean {
     return this.#role === 'leader';
@@ -324,12 +323,12 @@ export class SyncClientHandle {
       ref: this,
       clientId: () => this.#clientId,
       role: () => this.#role,
-      outbox: async () => (await this.pendingCommits()).length,
+      outbox: async () => (await this.statusSnapshot()).outbox,
       subscriptions: () => this.subscriptions(),
       conflicts: async () => (await this.conflicts()).length,
       rejections: async () => (await this.rejections()).length,
-      syncNeeded: () => this.syncNeeded(),
-      upgrading: () => this.upgrading(),
+      syncNeeded: async () => (await this.statusSnapshot()).syncNeeded,
+      upgrading: async () => (await this.statusSnapshot()).upgrading,
       onInvalidate: (listener) => this.onInvalidate(listener),
     });
   }
@@ -593,23 +592,7 @@ export class SyncClientHandle {
     return this.#call('resolveCommitOutcome', [input]);
   }
 
-  schemaFloor(): Promise<SchemaFloor | undefined> {
-    return this.#call('schemaFloor', []);
-  }
-
-  leaseState(): Promise<LeaseState | undefined> {
-    return this.#call('leaseState', []);
-  }
-
   /** §7.4.5: true while a schema-bump reset + first re-bootstrap runs. */
-  upgrading(): Promise<boolean> {
-    return this.#call('upgrading', []);
-  }
-
-  syncNeeded(): Promise<boolean> {
-    return this.#call('syncNeeded', []);
-  }
-
   pendingCommits(): Promise<OutboxCommit[]> {
     return this.#call('pendingCommits', []);
   }
