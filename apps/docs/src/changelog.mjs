@@ -17,6 +17,17 @@
 export const changelog = [
   {
     date: '2026-09-05',
+    title: 'Concurrent pull recovery and partition-scoped server indexes',
+    body: 'Pulls reset before emitting an active section when pruning crosses their commit-window read. Realtime notifications that break sequence trigger catch-up, and acknowledgment persistence preserves concurrent subscription updates. Declared server indexes include the partition column; existing databases require an application schema-version bump to rebuild them. Table retirement removes stale blob references. Includes focused contributions from Chase Pursley in PR #47.',
+    links: [
+      {
+        href: '/server-storage/#concurrent-pulls-and-storage-upgrades',
+        label: 'Storage upgrade instructions',
+      },
+    ],
+  },
+  {
+    date: '2026-09-05',
     title: 'Generated Rust decoder compatibility',
     body: 'Typegen emits byte decoders that pass Rust 1.98 Clippy while retaining strict envelope validation. Regenerate Rust query modules with typegen 0.16.1 to receive the updated helper.',
     links: [{ href: '/tooling-queries/', label: 'Generated queries' }],

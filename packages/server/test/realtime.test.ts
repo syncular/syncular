@@ -59,14 +59,6 @@ function makeHub(t: TestContext, maxDeltaBytes?: number): RealtimeHub {
   return hub;
 }
 
-async function waitFor(check: () => Promise<boolean>): Promise<void> {
-  for (let i = 0; i < 200; i++) {
-    if (await check()) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error('condition not reached');
-}
-
 describe('handshake (§8.1)', () => {
   test('a client that never pulled gets hello with requiresSync and no deltas', async () => {
     const t = makeContext();
@@ -426,19 +418,37 @@ describe('delta delivery (§8.2)', () => {
     expect(wire.binaries).toHaveLength(1);
   });
 
-  test('acks update the client cursor record without an HTTP pull (§8.2)', async () => {
+  test('an ACK racing a subscription replacement updates only the cursor and timestamp', async () => {
     const t = makeContext();
     const hub = makeHub(t);
-    const { wire, session } = await connectedSession(t, hub);
-    await sync(t, [
-      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
-    ]);
-    expect(wire.binaries).toHaveLength(1);
-    const latest = await t.storage.getMaxCommitSeq('part-1');
-    session.handleMessage(JSON.stringify({ type: 'ack', cursor: latest }));
-    await waitFor(async () => {
-      const record = await t.storage.getClientRecord('part-1', 'client-1');
-      return record?.cursor === latest;
+    const { session } = await connectedSession(t, hub);
+    const original = await t.storage.getClientRecord('part-1', 'client-1');
+    if (original === undefined) throw new Error('missing client');
+    const update = t.storage.updateClientCursor.bind(t.storage);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let persisted!: Promise<void>;
+    t.storage.updateClientCursor = (...args) => {
+      persisted = gate.then(() => update(...args));
+      return persisted;
+    };
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 10 }));
+    const replacement = {
+      ...original,
+      cursor: 4,
+      subscriptions: [
+        { id: 'new', table: 'tasks', scopes: { project_id: ['p2'] } },
+      ],
+    };
+    await t.storage.putClientRecord('part-1', replacement);
+    release();
+    await persisted;
+    expect(await t.storage.getClientRecord('part-1', 'client-1')).toEqual({
+      ...replacement,
+      cursor: 10,
+      updatedAtMs: t.now.ms,
     });
   });
 

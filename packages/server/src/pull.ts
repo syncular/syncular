@@ -501,6 +501,28 @@ export async function* subscriptionSection(
 
   const token = parseBootstrapToken(sub.bootstrapState, sub.table);
 
+  let commits: StoredCommit[] = [];
+  if (
+    token === undefined &&
+    sub.cursor >= 0 &&
+    sub.cursor >= horizonSeq &&
+    sub.cursor <= maxSeq
+  ) {
+    commits = await ctx.storage.readCommitWindow(ctx.partition, {
+      table: sub.table,
+      scopeFilter: plan.effective,
+      afterSeq: sub.cursor,
+      throughSeq: maxSeq,
+      limitChanges: limits.limitCommits + 1,
+    });
+    // Validate continuity before committing to an active section. A prune
+    // during a paged read can otherwise make an incomplete window look empty.
+    horizonSeq = Math.max(
+      horizonSeq,
+      await ctx.storage.getHorizonSeq(ctx.partition),
+    );
+  }
+
   // §4.6: a cursor behind the horizon (and not resuming a bootstrap)
   // cannot compute deltas — answer `reset` and echo the cursor.
   if (token === undefined && sub.cursor >= 0 && sub.cursor < horizonSeq) {
@@ -574,13 +596,6 @@ export async function* subscriptionSection(
     effectiveScopes: plan.effective,
     bootstrap: false,
   };
-  const commits = await ctx.storage.readCommitWindow(ctx.partition, {
-    table: sub.table,
-    scopeFilter: plan.effective,
-    afterSeq: sub.cursor,
-    throughSeq: maxSeq,
-    limitChanges: limits.limitCommits + 1,
-  });
   let delivered = 0;
   let deliveredCommits = 0;
   let lastDeliveredSeq = sub.cursor;

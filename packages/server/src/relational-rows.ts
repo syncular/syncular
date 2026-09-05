@@ -205,7 +205,7 @@ export function physicalIndexName(declaredName: string): string {
 
 /**
  * CREATE INDEX IF NOT EXISTS for the table's user-declared indexes. These use
- * the same declared names and columns the client materializes. Cross-table
+ * the declared columns with a leading server partition column. Cross-table
  * index-name uniqueness is the user's schema concern, as it is client-side.
  * Server-side the physical name carries the {@link SYNC_INDEX_PREFIX}
  * ownership marker.
@@ -215,7 +215,7 @@ export function createIndexDdl(table: CompiledTable): string[] {
   if (!table.materialize) return [];
   return table.indexes.map((index) => {
     const unique = index.unique ? 'UNIQUE ' : '';
-    const columns = index.columns
+    const columns = [SYNC_PARTITION_COLUMN, ...index.columns]
       .map((column) => quoteIdent(column))
       .join(', ');
     return `CREATE ${unique}INDEX IF NOT EXISTS ${quoteIdent(physicalIndexName(index.name))} ON ${quoteIdent(table.name)} (${columns})`;

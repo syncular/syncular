@@ -30,6 +30,39 @@ describe('cursor behind the horizon (§4.6)', () => {
     expect(s.end.nextCursor).toBe(1); // echoed unchanged
   });
 
+  for (const pruneAfterRead of [false, true]) {
+    test(`pruning ${pruneAfterRead ? 'after' : 'before'} the window read resets before an active section`, async () => {
+      const t = makeContext();
+      for (let i = 1; i <= 3; i++) await seedTask(t, `c${i}`, `t${i}`, 'p1');
+      const read = t.storage.readCommitWindow.bind(t.storage);
+      t.storage.readCommitWindow = async (partition, query) => {
+        const commits = pruneAfterRead
+          ? await read(partition, query)
+          : undefined;
+        const logEpoch = await t.storage.getPartitionLogEpoch(partition);
+        if (logEpoch === undefined) throw new Error('missing epoch');
+        await t.storage.pruneCommitsThrough(partition, {
+          logEpoch,
+          throughSeq: 3,
+        });
+        return commits ?? read(partition, query);
+      };
+      const message = await sync(t, [
+        pullHeader(),
+        subFrame('s1', 'tasks', { project_id: ['p1'] }, 1),
+      ]);
+      const result = section(message, 's1');
+      expect(result.start.status).toBe('reset');
+      expect(result.start.reasonCode).toBe('sync.cursor_expired');
+      expect(result.body).toHaveLength(0);
+      expect(result.end.nextCursor).toBe(1);
+      expect(
+        message.frames.filter((frame) => frame.type === 'ERROR'),
+      ).toHaveLength(0);
+      t.storage.db.close();
+    });
+  }
+
   test('a cursor exactly at the horizon still pulls incrementally (boundary)', async () => {
     const t = makeContext();
     for (let i = 1; i <= 3; i++) await seedTask(t, `c${i}`, `t${i}`, 'p1');

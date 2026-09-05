@@ -172,6 +172,60 @@ async function upsert(
   await tx.commit();
 }
 
+describe('partition-scoped declared unique indexes', () => {
+  for (const backend of ['sqlite', 'postgres', 'd1'] as const) {
+    test(`${backend}: a schema bump repairs legacy indexes without changing row payloads`, async () => {
+      const pg = backend === 'postgres' ? await PGlite.create() : undefined;
+      const d1 = backend === 'd1' ? new D1DatabaseDouble() : undefined;
+      const storage =
+        pg !== undefined
+          ? new PostgresServerStorage(pgliteExecutor(pg))
+          : d1 !== undefined
+            ? new D1ServerStorage(d1)
+            : new SqliteServerStorage();
+      const exec = async (sql: string): Promise<void> => {
+        if (pg !== undefined) {
+          await pg.exec(sql);
+        } else if (d1 !== undefined) {
+          await d1.prepare(sql).run();
+        } else if (storage instanceof SqliteServerStorage) {
+          storage.db.exec(sql);
+        }
+      };
+      await storage.ensureSchema(compileSchema(SCHEMA));
+      await exec('DROP INDEX sync_ix_tasks_by_project_title');
+      await exec(
+        'CREATE UNIQUE INDEX sync_ix_tasks_by_project_title ON tasks(project_id, title)',
+      );
+      await exec('CREATE INDEX operator_title_index ON tasks(title)');
+      const row = taskRow('t1', 'p1', 'same-title');
+      await upsert(storage, PARTITION, 'tasks', row);
+      await storage.ensureSchema(compileSchema({ ...SCHEMA, version: 2 }));
+      await upsert(storage, 'part-2', 'tasks', row);
+      expect((await storage.getRow(PARTITION, 'tasks', 't1'))?.payload).toEqual(
+        row.payload,
+      );
+      expect((await storage.getRow('part-2', 'tasks', 't1'))?.payload).toEqual(
+        row.payload,
+      );
+      const tx = await storage.begin(PARTITION);
+      try {
+        await tx.upsertRow('tasks', taskRow('t2', 'p1', 'same-title'));
+        // D1 applies buffered writes at commit.
+        await tx.commit();
+        throw new Error('write unexpectedly succeeded');
+      } catch (error) {
+        expect(error).toMatchObject({ name: 'StorageConstraintError' });
+        await tx.rollback();
+      }
+      // Operator indexes survive the same existing migration path.
+      await exec('DROP INDEX operator_title_index');
+      if (pg !== undefined) await pg.close();
+      else if (storage instanceof SqliteServerStorage) storage.db.close();
+    });
+  }
+});
+
 // --- 4. the row-codec round-trip invariant (per column type) ---------------
 
 describe('row-codec round-trip invariant (encode∘decode = id)', () => {
@@ -469,7 +523,7 @@ describe('server-side schema migration (the subset)', () => {
       )
       .all()
       .map((column) => column.name);
-    expect(columns).toEqual(['project_id', 'title']);
+    expect(columns).toEqual(['_sync_partition', 'project_id', 'title']);
   });
 
   test('a version bump replaces declared indexes on Postgres', async () => {
@@ -486,7 +540,9 @@ describe('server-side schema migration (the subset)', () => {
     expect(indexes.rows[0]?.indexdef).toContain(
       'UNIQUE INDEX sync_ix_tasks_by_title',
     );
-    expect(indexes.rows[0]?.indexdef).toContain('(project_id, title)');
+    expect(indexes.rows[0]?.indexdef).toContain(
+      '(_sync_partition, project_id, title)',
+    );
   });
 
   test('a version bump replaces declared indexes on D1', async () => {
@@ -505,6 +561,7 @@ describe('server-side schema migration (the subset)', () => {
       .prepare('PRAGMA index_info("sync_ix_tasks_by_title")')
       .all<{ name: string }>();
     expect(columns.results.map((column) => column.name)).toEqual([
+      '_sync_partition',
       'project_id',
       'title',
     ]);
@@ -614,6 +671,10 @@ describe('server-side schema migration (the subset)', () => {
     await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'retired'));
     await upsert(storage, PARTITION, 'projects', projectRow('p1', 'kept'));
 
+    const refs = await storage.begin(PARTITION);
+    await refs.setBlobRefs!('tasks', 't1', ['retired-blob']);
+    await refs.setBlobRefs!('projects', 'p1', ['kept-blob']);
+    await refs.commit();
     const v2: ServerSchema = {
       version: 2,
       tables: [SCHEMA.tables[1]!],
@@ -633,6 +694,12 @@ describe('server-side schema migration (the subset)', () => {
       .get('tasks');
     expect(staleScopes?.n).toBe(0);
     expect(await storage.getRow(PARTITION, 'projects', 'p1')).toBeDefined();
+    expect(await storage.listReferencedBlobIds(PARTITION)).toEqual([
+      'kept-blob',
+    ]);
+    expect(
+      await storage.listRowsReferencingBlob(PARTITION, 'retired-blob'),
+    ).toEqual([]);
   });
 
   test('postgres retires the relational current-row table atomically', async () => {
@@ -640,6 +707,10 @@ describe('server-side schema migration (the subset)', () => {
     const storage = new PostgresServerStorage(pgliteExecutor(db));
     await storage.ensureSchema(compileSchema(SCHEMA));
     await upsert(storage, PARTITION, 'tasks', taskRow('t1', 'p1', 'retired'));
+    const refs = await storage.begin(PARTITION);
+    await refs.setBlobRefs!('tasks', 't1', ['retired-blob']);
+    await refs.setBlobRefs!('projects', 'p1', ['kept-blob']);
+    await refs.commit();
     await storage.ensureSchema(
       compileSchema({ version: 2, tables: [SCHEMA.tables[1]!] }),
     );
@@ -652,6 +723,12 @@ describe('server-side schema migration (the subset)', () => {
       "SELECT count(*) AS n FROM sync_row_scopes WHERE tbl='tasks'",
     );
     expect(Number(scopes.rows[0]?.n)).toBe(0);
+    expect(await storage.listReferencedBlobIds(PARTITION)).toEqual([
+      'kept-blob',
+    ]);
+    expect(
+      await storage.listRowsReferencingBlob(PARTITION, 'retired-blob'),
+    ).toEqual([]);
   });
 
   test('D1 retires the relational current-row table idempotently', async () => {
@@ -661,6 +738,10 @@ describe('server-side schema migration (the subset)', () => {
     const tx = await storage.begin(PARTITION);
     await tx.upsertRow('tasks', taskRow('t1', 'p1', 'retired'));
     await tx.commit();
+    const refs = await storage.begin(PARTITION);
+    await refs.setBlobRefs!('tasks', 't1', ['retired-blob']);
+    await refs.setBlobRefs!('projects', 'p1', ['kept-blob']);
+    await refs.commit();
     await storage.ensureSchema(
       compileSchema({ version: 2, tables: [SCHEMA.tables[1]!] }),
     );
@@ -676,6 +757,12 @@ describe('server-side schema migration (the subset)', () => {
       .bind('tasks')
       .first<{ n: number }>();
     expect(scopes?.n).toBe(0);
+    expect(await storage.listReferencedBlobIds(PARTITION)).toEqual([
+      'kept-blob',
+    ]);
+    expect(
+      await storage.listRowsReferencingBlob(PARTITION, 'retired-blob'),
+    ).toEqual([]);
   });
 
   test('an older server refuses a newer database', async () => {

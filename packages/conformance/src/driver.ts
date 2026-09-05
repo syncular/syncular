@@ -206,6 +206,7 @@ export type RealtimeConnectResult =
 export type ServerCapability =
   | 'backup-restore'
   | 'idempotency-fault'
+  | 'concurrent-storage-faults'
   | 'signed-urls'
   | 'blobs'
   | 'blob-presign'
@@ -398,6 +399,11 @@ export interface ServerInstance {
    * unreadable record (§6.3 `sync.idempotency_cache_miss`).
    */
   failNextIdempotencyLookup?(): Promise<void>;
+
+  /** Prune through the pinned window on its next read, after the round's horizon read. */
+  pruneDuringNextCommitRead?(): Promise<void>;
+  /** Hold two post-commit notifications, then deliver them in reverse sequence. */
+  reverseNextCommitNotifications?(): Promise<void>;
 
   close(): Promise<void>;
 }

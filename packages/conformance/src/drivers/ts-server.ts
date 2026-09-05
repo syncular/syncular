@@ -237,6 +237,13 @@ class TsServerInstance implements ServerInstance {
   #resolverFailing = false;
   #resolverOutage = false;
   #failNextIdempotencyLookup = false;
+  #pruneDuringNextCommitRead = false;
+  #reversedNotifications:
+    | Array<{
+        partition: string;
+        commit: import('@syncular/server').StoredCommit;
+      }>
+    | undefined;
   /** §6.7: installed per-table write validators (absent ⇒ feature off). */
   #validators: ValidatorRegistry | undefined;
   /** §6.8: installed transaction-scoped whole-commit validator. */
@@ -375,7 +382,18 @@ class TsServerInstance implements ServerInstance {
         }
         return this.#storage.getPushResult(p, c, id);
       },
-      readCommitWindow: (p, q) => this.#storage.readCommitWindow(p, q),
+      readCommitWindow: async (p, q) => {
+        if (this.#pruneDuringNextCommitRead) {
+          this.#pruneDuringNextCommitRead = false;
+          const logEpoch = await this.#storage.getPartitionLogEpoch(p);
+          if (logEpoch === undefined) throw new Error('missing epoch');
+          await this.#storage.pruneCommitsThrough(p, {
+            logEpoch,
+            throughSeq: q.throughSeq,
+          });
+        }
+        return this.#storage.readCommitWindow(p, q);
+      },
       scanRows: (p, q) => this.#storage.scanRows(p, q),
       getClientRecord: (p, c) => this.#storage.getClientRecord(p, c),
       putClientRecord: (p, r) => this.#storage.putClientRecord(p, r),
@@ -422,7 +440,22 @@ class TsServerInstance implements ServerInstance {
       ...(this.#commitValidator !== undefined
         ? { commitValidator: this.#commitValidator }
         : {}),
-      realtime: this.#hub,
+      realtime: {
+        notifyCommit: async (partition, commit) => {
+          const pending = this.#reversedNotifications;
+          if (pending === undefined)
+            return this.#hub.notifyCommit(partition, commit);
+          pending.push({ partition, commit });
+          if (pending.length < 2) return;
+          this.#reversedNotifications = undefined;
+          for (const notification of pending.reverse()) {
+            await this.#hub.notifyCommit(
+              notification.partition,
+              notification.commit,
+            );
+          }
+        },
+      },
     };
   }
 
@@ -813,6 +846,14 @@ class TsServerInstance implements ServerInstance {
     });
   }
 
+  async pruneDuringNextCommitRead(): Promise<void> {
+    this.#pruneDuringNextCommitRead = true;
+  }
+
+  async reverseNextCommitNotifications(): Promise<void> {
+    this.#reversedNotifications = [];
+  }
+
   async failNextIdempotencyLookup(): Promise<void> {
     this.#failNextIdempotencyLookup = true;
   }
@@ -827,6 +868,7 @@ export const tsServerDriver: ServerDriver = {
   capabilities: [
     'backup-restore',
     'idempotency-fault',
+    'concurrent-storage-faults',
     'signed-urls',
     'blobs',
     'blob-presign',

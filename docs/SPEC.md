@@ -1124,6 +1124,12 @@ Servers prune the commit log. The contract:
   every row, the change that a fresh scan from any cursor ≥ horizonSeq
   would need to converge.
 
+An incremental pull MUST read its commit window and then recheck the horizon
+before emitting `SUB_START`. If pruning advanced past the request cursor during
+that read, the server MUST use the reset response above. It MUST NOT emit an
+active section followed by a non-retryable cursor-expiry error. Once the window
+is buffered and continuity is verified, later pruning cannot remove its frames.
+
 Pruning MUST capture the partition log epoch before reading retention inputs.
 The storage operation `pruneCommitsThrough(partition, { logEpoch, throughSeq })`
 MUST verify that epoch, advance the horizon to the greater of its current value
@@ -3907,6 +3913,16 @@ per §8.7, or `POST /sync`) before trusting the socket for continuity.
   matching commit with a coalescible `catchup-required` wake-up, until
   an ack reaches the highest `commitSeq` the connection has observed —
   then deltas resume.
+- Post-commit notifications can arrive out of commit order. The server MUST
+  track the highest observed notification sequence and send a catch-up wake
+  when the next notification is non-adjacent. Notifications outside the
+  registered scopes still advance this sequence. A catch-up acknowledgment
+  MUST advance the notification sequence to at least its cursor.
+- Acknowledgment persistence MUST update only the existing client record's
+  cursor and timestamp, monotonically and atomically. It MUST preserve the
+  subscriptions, actor, and wire version written by a concurrent sync round.
+  A full sync round remains authoritative for its subscription cursor floor;
+  replacing subscriptions can lower that floor.
 - The client acknowledges applied deltas:
   `{"type":"ack","cursor":<highest contiguously applied commitSeq>}`.
   The ack is the sole client→server control message and is recognized

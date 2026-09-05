@@ -1293,6 +1293,39 @@ export function runStorageContract(
       );
     });
 
+    test('full subscription replacement can lower the retention floor after an ACK', async () => {
+      const storage = await make();
+      const original: ClientRecord = {
+        clientId: 'changed-subscriptions',
+        actorId: 'actor-1',
+        wireVersion: 2,
+        cursor: 10,
+        updatedAtMs: NOW,
+        subscriptions: [
+          { id: 'old', table: 'tasks', scopes: { project_id: ['p1'] } },
+        ],
+      };
+      await storage.putClientRecord(PARTITION, original);
+      await storage.updateClientCursor(
+        PARTITION,
+        original.clientId,
+        20,
+        NOW + 1,
+      );
+      const replacement: ClientRecord = {
+        ...original,
+        cursor: 2,
+        updatedAtMs: NOW + 2,
+        subscriptions: [
+          { id: 'new', table: 'tasks', scopes: { project_id: ['p2'] } },
+        ],
+      };
+      await storage.putClientRecord(PARTITION, replacement);
+      expect(
+        await storage.getClientRecord(PARTITION, original.clientId),
+      ).toEqual(replacement);
+    });
+
     // --- Blob reference index (§5.9.4, optional methods) ---
 
     test('setBlobRefs / listRowsReferencingBlob / listReferencedBlobIds round-trip', async () => {

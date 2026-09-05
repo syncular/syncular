@@ -6,6 +6,39 @@ for the commit log and rows, `SegmentStore` for bootstrap segments, and
 when to pick which; all backends sharing an interface pass one shared
 contract suite.
 
+## Concurrent pulls and storage upgrades
+
+Incremental pulls read their commit window and recheck the retention horizon
+before starting an active subscription section. Pruning during that read returns
+`sync.cursor_expired` as a subscription reset. Both client cores report the reset
+and `syncUntilIdle` follows it with a fresh bootstrap.
+
+Realtime sessions track commit notification order, including commits outside their
+registered scopes. A sequence gap, duplicate, or regression sends a catch-up wake.
+A catch-up acknowledgment advances the notification watermark before deltas resume.
+
+Custom storage adapters must implement
+`updateClientCursor(partition, clientId, cursor, updatedAtMs)`. Update only the
+existing record's cursor and timestamp with their respective maxima, atomically.
+Keep missing records absent and preserve actor, wire version, and subscriptions.
+`putClientRecord` remains a full replacement: changing subscriptions can lower the
+retention cursor floor.
+
+Declared server indexes now lead with `_sync_partition`. Unique values are enforced
+within each partition. The generated client index columns remain unchanged.
+**When upgrading an existing server database, increment the application schema
+version and regenerate its schema before starting the server.** The existing
+schema migration rebuilds Syncular-owned indexes with the partition column.
+Reopening the same schema version does not rebuild old indexes. Operator indexes
+and constraint-owned indexes remain outside the rebuild set.
+
+Removing a table in a schema migration also deletes its blob references. References
+from retained tables continue to protect their blobs from garbage collection.
+
+D1 schema migration still requires a separate redesign for invocation budgets and
+concurrent migration fencing. This change does not introduce the proposed durable
+migration-claim framework from PR #47.
+
 ## Choosing a database
 
 | Backend | Adapter | Realtime fanout | When to use |

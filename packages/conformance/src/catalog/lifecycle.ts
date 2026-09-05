@@ -19,6 +19,49 @@ const P1 = { project_id: ['p1'] } as const;
 
 export const lifecycleScenarios: readonly Scenario[] = [
   {
+    name: 'lifecycle/pruning-during-pull-resets-and-rebootstraps',
+    specRefs: ['§4.6', '§4.7'],
+    requires: ['concurrent-storage-faults'],
+    async run(ctx) {
+      await seedTasks(ctx, [task('t1', 'p1', 'before')]);
+      const client = await ctx.newClient({
+        actorId: 'reader',
+        clientId: 'reader',
+        allowed: P1,
+      });
+      await client.api.subscribe({ id: 'tasks', table: 'tasks', scopes: P1 });
+      await syncIdle(client);
+      await seedTasks(ctx, [task('t2', 'p1', 'pruned')]);
+      await ctx.server.pruneDuringNextCommitRead!();
+      const reset = await syncOk(client);
+      checkEqual(
+        reset.commitsApplied,
+        0,
+        'an incomplete window applies no commits',
+      );
+      checkEqual(
+        (await client.api.subscriptionState('tasks'))?.cursor,
+        -1,
+        'reset discards the expired cursor',
+      );
+      checkEqual(
+        reset.resets,
+        ['tasks'],
+        'the round reports required bootstrap recovery',
+      );
+      await syncIdle(client);
+      await expectConverged(ctx, 'tasks', [client], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+      checkEqual(
+        (await client.api.readRows('tasks')).length,
+        2,
+        'bootstrap recovers the pruned row',
+      );
+    },
+  },
+  {
     name: 'subscription/identity-is-immutable-and-idempotent',
     specRefs: ['§4.1', '§7.5'],
     async run(ctx) {
