@@ -560,6 +560,14 @@ export interface ServerStorage {
     clientId: string,
   ): Promise<ClientRecord | undefined>;
   putClientRecord(partition: string, record: ClientRecord): Promise<void>;
+  /** Advance an existing client's ACK cursor and timestamp atomically,
+   * preserving actor, wire version, and subscriptions. Missing records stay absent. */
+  updateClientCursor(
+    partition: string,
+    clientId: string,
+    cursor: number,
+    updatedAtMs: number,
+  ): Promise<void>;
   /** Minimum cursor with updatedAtMs >= cutoff; null when none are active. */
   getActiveClientCursorFloor(
     partition: string,

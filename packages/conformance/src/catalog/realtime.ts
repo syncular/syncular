@@ -26,6 +26,34 @@ async function connectedClient(
 
 export const realtimeScenarios: readonly Scenario[] = [
   {
+    name: 'realtime/reversed-notifications-recover-before-resuming-deltas',
+    specRefs: ['§8.2', '§8.3', '§8.4'],
+    requires: ['concurrent-storage-faults'],
+    async run(ctx) {
+      const client = await connectedClient(ctx, 'reader', 'reader');
+      await client.api.connectRealtime();
+      await ctx.server.reverseNextCommitNotifications!();
+      await seedTasks(ctx, [task('t1', 'p1', 'first')]);
+      await seedTasks(ctx, [task('t2', 'p1', 'second')]);
+      await client.realtime.waitForWakes(2);
+      checkEqual(
+        client.realtime.deltasDelivered,
+        0,
+        'no delta crosses the missing notification',
+      );
+      check(await client.api.syncNeeded(), 'the wake schedules catch-up');
+      await syncIdle(client);
+      await client.realtime.waitForAck(await ctx.server.getMaxCommitSeq());
+      await seedTasks(ctx, [task('t3', 'p1', 'resumed')]);
+      await client.realtime.waitForDeltas(1);
+      await client.realtime.waitForAck(await ctx.server.getMaxCommitSeq());
+      await expectConverged(ctx, 'tasks', [client], {
+        variable: 'project_id',
+        values: ['p1'],
+      });
+    },
+  },
+  {
     name: 'realtime/delta-roundtrip-and-ack',
     specRefs: ['§8.1', '§8.2'],
     async run(ctx) {
