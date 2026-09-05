@@ -1,6 +1,6 @@
 # RFC: Sync correctness, bounded resource use, and client interfaces
 
-- Status: implemented and verified; included in 0.16.0
+- Status: implemented and verified; included in 0.16.1
 - Date: 2026-09-05
 - Review baseline: `197755fd`
 - Scope: TypeScript and Rust clients, server storage, typegen, React, and tests
@@ -747,5 +747,5 @@ The seven skipped main-gate tests require an external Postgres connection or
 opt-in template installs. PGlite and the D1 double cover the storage contracts;
 deployed Postgres/D1 behavior and native mobile device builds were not run.
 The remaining timer audit sites and the scope-deletion index investigation
-above are follow-up work outside the implemented changes. Those verification runs preceded release preparation. Release 0.16.0 includes
+above are follow-up work outside the implemented changes. Those verification runs preceded release preparation. Release 0.16.1 includes
 the implemented changes and the documented source migrations.

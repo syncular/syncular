@@ -17,6 +17,12 @@
 export const changelog = [
   {
     date: '2026-09-05',
+    title: 'Generated Rust decoder compatibility',
+    body: 'Typegen emits byte decoders that pass Rust 1.98 Clippy while retaining strict envelope validation. Regenerate Rust query modules with typegen 0.16.1 to receive the updated helper.',
+    links: [{ href: '/tooling-queries/', label: 'Generated queries' }],
+  },
+  {
+    date: '2026-09-05',
     title: 'Canonical client snapshots and bounded sync work',
     body: 'React mutation callbacks now use onEnqueued for durable local acceptance. Client state reads use statusSnapshot across direct, worker, and native hosts; getter normalization and individual state commands are removed. Outbox status reads avoid decoding pending bodies, request encoding reads bounded pages, and concurrent SQLite bootstrap misses share one batched image build. Custom image builders must accept rowBatches and return a promise.',
     links: [

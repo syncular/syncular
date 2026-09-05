@@ -248,13 +248,25 @@ fn generated_integer_and_byte_decoders_are_strict_and_lossless() {
     assert!(error.to_string().contains("meta"));
     assert!(error.to_string().contains("missing column"));
 
-    let malformed = Map::from_iter([
-        ("id".to_owned(), json!("doc-1")),
-        ("attachment".to_owned(), json!({ "$bytes": "xyz" })),
-        ("bodyDoc".to_owned(), Value::Null),
-        ("remoteBlob".to_owned(), Value::Null),
-    ]);
-    let error = generated::doc_value_types::decode(malformed).expect_err("bad bytes");
-    assert!(error.to_string().contains("attachment"));
-    assert!(error.to_string().contains("$bytes"));
+    for (hex, expected) in [("", vec![]), ("00ff10", vec![0, 255, 16])] {
+        let row = Map::from_iter([
+            ("id".to_owned(), json!("doc-1")),
+            ("attachment".to_owned(), json!({ "$bytes": hex })),
+            ("bodyDoc".to_owned(), Value::Null),
+            ("remoteBlob".to_owned(), Value::Null),
+        ]);
+        let decoded = generated::doc_value_types::decode(row).expect("valid bytes");
+        assert_eq!(decoded.attachment, Some(expected));
+    }
+    for hex in ["0", "xyz", "gg", "00fg", "é"] {
+        let malformed = Map::from_iter([
+            ("id".to_owned(), json!("doc-1")),
+            ("attachment".to_owned(), json!({ "$bytes": hex })),
+            ("bodyDoc".to_owned(), Value::Null),
+            ("remoteBlob".to_owned(), Value::Null),
+        ]);
+        let error = generated::doc_value_types::decode(malformed).expect_err("bad bytes");
+        assert!(error.to_string().contains("attachment"));
+        assert!(error.to_string().contains("$bytes"));
+    }
 }

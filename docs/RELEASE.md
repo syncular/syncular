@@ -1,10 +1,18 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.16.0** (`v0.16.0`). All artifacts use Apache-2.0, except
+current release is **0.16.1** (`v0.16.1`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
 
-## 0.16.0 release notes
+## 0.16.1 release notes
+
+0.16.1 includes the reliability and DX changes described below and updates
+Rust byte-decoder generation for the Rust 1.98 Clippy gate. Even-length
+validation remains explicit; malformed hexadecimal input still fails. The
+0.16.0 workflow was cancelled before either registry publication step after
+CI identified the generated-code lint. Its tag remains unchanged.
+
+## 0.16.0 changes (released in 0.16.1)
 
 This release changes source-level client, generated-query, and storage APIs.
 Upgrade the Syncular packages together and regenerate query modules before

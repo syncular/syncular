@@ -133,3 +133,8 @@ dependency. See [Rust](/platform-rust/) for the complete client workflow.
 For offline full-text search, declare a client-local FTS5
 projection and query it through the same generated surface. See
 [Local full-text search](/tooling-local-search/).
+
+Generated Rust byte decoders reject odd-length and non-hexadecimal `$bytes`
+envelopes before returning a row. The generated helpers also compile with
+Rust 1.98's Clippy warnings denied. Regenerate Rust query modules when upgrading
+typegen to 0.16.1 to receive the updated helper.

@@ -892,7 +892,7 @@ function emitSupport(clientCrate: string): string {
     '        ));',
     '    }',
     '    hex.as_bytes()',
-    '        .chunks_exact(2)',
+    '        .chunks(2)',
     '        .map(|pair| {',
     '            let pair = std::str::from_utf8(pair)',
     '                .map_err(|_| decode_error(query, column, "bytes", "non-ASCII $bytes envelope"))?;',
