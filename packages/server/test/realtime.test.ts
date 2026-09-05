@@ -10,7 +10,11 @@ import {
   type ScopeMap,
   type SubStartFrame,
 } from '@syncular/core';
-import { createRealtimeHub, type RealtimeHub } from '@syncular/server';
+import {
+  createRealtimeHub,
+  type RealtimeHub,
+  type StoredCommit,
+} from '@syncular/server';
 import {
   makeContext,
   pullHeader,
@@ -171,6 +175,184 @@ describe('delta delivery (§8.2)', () => {
     expect(end?.type === 'SUB_END' && end.nextCursor).toBe(
       commit?.commitSeq ?? -1,
     );
+  });
+
+  test('out-of-order commit notifications wake before sending a gap delta', async () => {
+    const t = makeContext();
+    await sync(t, [
+      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+      pullHeader(),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
+    ]);
+    const hub = makeHub(t);
+    const wire = makeWire();
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+    });
+    expect(session.cursor).toBe(1);
+    expect(session.lastKnownSeq).toBe(1);
+
+    const captured: StoredCommit[] = [];
+    Object.assign(t.ctx, {
+      realtime: {
+        notifyCommit: (_partition: string, commit: StoredCommit) => {
+          captured.push(commit);
+        },
+      },
+    });
+    await sync(
+      t,
+      [pushCommit('c2', [upsert('tasks', 't2', taskRow('t2', 'p1'))])],
+      { clientId: 'other-client' },
+    );
+    await sync(
+      t,
+      [pushCommit('c3', [upsert('tasks', 't3', taskRow('t3', 'p1'))])],
+      { clientId: 'other-client' },
+    );
+    expect(captured.map((commit) => commit.commitSeq)).toEqual([2, 3]);
+
+    await hub.notifyCommit('part-1', captured[1]!);
+    await hub.notifyCommit('part-1', captured[0]!);
+
+    expect(wire.binaries).toHaveLength(0);
+    const wakes = wire.texts.slice(1).map((text) => {
+      const parsed = parseRealtimeServerEvent(text);
+      if (!parsed.known || parsed.event.event !== 'sync') {
+        throw new Error('expected catch-up wake');
+      }
+      return parsed.event.data;
+    });
+    expect(wakes.map((wake) => wake.reason)).toEqual([
+      'catchup-required',
+      'catchup-required',
+    ]);
+    expect(wakes.map((wake) => wake.cursor)).toEqual([3, 3]);
+    expect(session.cursor).toBe(1);
+    expect(session.lastKnownSeq).toBe(3);
+    expect(session.wakePending).toBe(true);
+  });
+
+  test('a catch-up ack advances the notification base before deltas resume', async () => {
+    const t = makeContext();
+    await sync(t, [
+      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+      pullHeader(),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
+    ]);
+    const hub = makeHub(t);
+    const wire = makeWire();
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+    });
+
+    const captured: StoredCommit[] = [];
+    Object.assign(t.ctx, {
+      realtime: {
+        notifyCommit: (_partition: string, commit: StoredCommit) => {
+          captured.push(commit);
+        },
+      },
+    });
+    await sync(
+      t,
+      [pushCommit('c2', [upsert('tasks', 't2', taskRow('t2', 'p1'))])],
+      { clientId: 'other-client' },
+    );
+    await sync(
+      t,
+      [pushCommit('c3', [upsert('tasks', 't3', taskRow('t3', 'p1'))])],
+      { clientId: 'other-client' },
+    );
+    expect(captured.map((commit) => commit.commitSeq)).toEqual([2, 3]);
+
+    // The shared client loop caught up through a pull on another binding.
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 3 }));
+    expect(session.lastKnownSeq).toBe(3);
+    Object.assign(t.ctx, { realtime: hub });
+
+    await sync(
+      t,
+      [pushCommit('c4', [upsert('tasks', 't4', taskRow('t4', 'p1'))])],
+      { clientId: 'other-client' },
+    );
+    expect(wire.binaries).toHaveLength(1);
+    expect(session.cursor).toBe(4);
+    expect(session.lastKnownSeq).toBe(4);
+  });
+
+  test('duplicate and regressive notifications wake from an unsuppressed session', async () => {
+    const t = makeContext();
+    await sync(t, [
+      pushCommit('c1', [upsert('tasks', 't1', taskRow('t1', 'p1'))]),
+      pullHeader(),
+      subFrame('s1', 'tasks', { project_id: ['p1'] }, 0),
+    ]);
+    const hub = makeHub(t);
+    const wire = makeWire();
+    const session = await hub.connect({
+      partition: 'part-1',
+      actorId: 'actor-1',
+      clientId: 'client-1',
+      send: wire.send,
+    });
+
+    const captured: StoredCommit[] = [];
+    Object.assign(t.ctx, {
+      realtime: {
+        notifyCommit: (_partition: string, commit: StoredCommit) => {
+          captured.push(commit);
+        },
+      },
+    });
+    await sync(
+      t,
+      [pushCommit('c2', [upsert('tasks', 't2', taskRow('t2', 'p1'))])],
+      { clientId: 'other-client' },
+    );
+    await sync(
+      t,
+      [pushCommit('c3', [upsert('tasks', 't3', taskRow('t3', 'p1'))])],
+      { clientId: 'other-client' },
+    );
+    const second = captured[0]!;
+    const third = captured[1]!;
+
+    await hub.notifyCommit('part-1', second);
+    expect(wire.binaries).toHaveLength(1);
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 2 }));
+    await hub.notifyCommit('part-1', second);
+    expect(wire.binaries).toHaveLength(1);
+    const duplicateWake = parseRealtimeServerEvent(wire.texts[1] ?? '');
+    if (!duplicateWake.known || duplicateWake.event.event !== 'sync') {
+      throw new Error('expected duplicate notification wake');
+    }
+    expect(duplicateWake.event.data.reason).toBe('catchup-required');
+    expect(duplicateWake.event.data.cursor).toBe(2);
+    expect(session.lastKnownSeq).toBe(2);
+    expect(session.cursor).toBe(2);
+
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 2 }));
+    await hub.notifyCommit('part-1', third);
+    expect(wire.binaries).toHaveLength(2);
+    session.handleMessage(JSON.stringify({ type: 'ack', cursor: 3 }));
+    await hub.notifyCommit('part-1', second);
+    expect(wire.binaries).toHaveLength(2);
+    const regressionWake = parseRealtimeServerEvent(wire.texts[2] ?? '');
+    if (!regressionWake.known || regressionWake.event.event !== 'sync') {
+      throw new Error('expected regressive notification wake');
+    }
+    expect(regressionWake.event.data.reason).toBe('catchup-required');
+    expect(regressionWake.event.data.cursor).toBe(3);
+    expect(session.lastKnownSeq).toBe(3);
+    expect(session.cursor).toBe(3);
+    expect(wire.texts).toHaveLength(3);
   });
 
   test('a commit outside the registered scopes produces nothing', async () => {

@@ -986,6 +986,9 @@ export class PostgresServerStorage implements ServerStorage {
           await client.query('DELETE FROM sync_row_scopes WHERE tbl=$1', [
             tableName,
           ]);
+          await client.query('DELETE FROM sync_blob_refs WHERE tbl=$1', [
+            tableName,
+          ]);
           await client.query(dropTableDdl(tableName));
         }
         for (const statement of schemaDdl(
@@ -1673,6 +1676,20 @@ export class PostgresServerStorage implements ServerStorage {
         JSON.stringify(record.subscriptions),
         record.updatedAtMs,
       ],
+    );
+  }
+
+  async updateClientCursor(
+    partition: string,
+    clientId: string,
+    cursor: number,
+    updatedAtMs: number,
+  ): Promise<void> {
+    await this.#exec.query(
+      `UPDATE sync_clients
+       SET cursor=GREATEST(cursor, $3), updated_at_ms=GREATEST(updated_at_ms, $4)
+       WHERE partition=$1 AND client_id=$2`,
+      [partition, clientId, cursor, updatedAtMs],
     );
   }
 

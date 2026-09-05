@@ -1262,6 +1262,37 @@ export function runStorageContract(
       expect(updated?.cursor).toBe(99);
     });
 
+    test('cursor-only updates are absent-safe and monotonic', async () => {
+      const storage = await make();
+
+      await storage.updateClientCursor(PARTITION, 'missing', 8, NOW + 8);
+      expect(
+        await storage.getClientRecord(PARTITION, 'missing'),
+      ).toBeUndefined();
+
+      const record: ClientRecord = {
+        clientId: 'cursor-only',
+        actorId: 'actor-old',
+        wireVersion: 1,
+        cursor: 2,
+        updatedAtMs: NOW,
+        subscriptions: [
+          { id: 'old', table: 'tasks', scopes: { project_id: ['p1'] } },
+        ],
+      };
+      await storage.putClientRecord(PARTITION, record);
+      await storage.updateClientCursor(PARTITION, record.clientId, 9, NOW + 20);
+      await storage.updateClientCursor(PARTITION, record.clientId, 4, NOW + 10);
+
+      expect(await storage.getClientRecord(PARTITION, record.clientId)).toEqual(
+        {
+          ...record,
+          cursor: 9,
+          updatedAtMs: NOW + 20,
+        },
+      );
+    });
+
     // --- Blob reference index (§5.9.4, optional methods) ---
 
     test('setBlobRefs / listRowsReferencingBlob / listReferencedBlobIds round-trip', async () => {

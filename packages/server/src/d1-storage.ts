@@ -856,6 +856,9 @@ export class D1ServerStorage implements ServerStorage {
             this.#db
               .prepare('DELETE FROM sync_row_scopes WHERE tbl=?')
               .bind(tableName),
+            this.#db
+              .prepare('DELETE FROM sync_blob_refs WHERE tbl=?')
+              .bind(tableName),
             this.#db.prepare(dropTableDdl(tableName)),
           ]),
         );
@@ -1583,6 +1586,22 @@ export class D1ServerStorage implements ServerStorage {
         JSON.stringify(record.subscriptions),
         record.updatedAtMs,
       )
+      .run();
+  }
+
+  async updateClientCursor(
+    partition: string,
+    clientId: string,
+    cursor: number,
+    updatedAtMs: number,
+  ): Promise<void> {
+    await this.#db
+      .prepare(
+        `UPDATE sync_clients
+         SET cursor=MAX(cursor, ?), updated_at_ms=MAX(updated_at_ms, ?)
+         WHERE partition=? AND client_id=?`,
+      )
+      .bind(cursor, updatedAtMs, partition, clientId)
       .run();
   }
 
