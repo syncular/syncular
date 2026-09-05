@@ -1,8 +1,47 @@
 # Syncular release runbook
 
 Syncular publishes every public npm package and Rust crate in lockstep. The
-current release is **0.15.48** (`v0.15.48`). All artifacts use Apache-2.0, except
+current release is **0.16.0** (`v0.16.0`). All artifacts use Apache-2.0, except
 private examples and test harnesses that are never published.
+
+## 0.16.0 release notes
+
+This release changes source-level client, generated-query, and storage APIs.
+Upgrade the Syncular packages together and regenerate query modules before
+starting the server. The SSP2 frame layout is unchanged.
+
+- Registered queries use QueryIR v4 relation plans to partition every physical
+  table occurrence, including repeated, quoted, and nested relations. Old
+  descriptors fail with regeneration guidance.
+- Outbox batches preserve a contiguous FIFO prefix. Initial epoch negotiation
+  drains offline commits even without subscriptions. Status and diagnostics
+  count pending commits without decoding their bodies; request encoding reads
+  bounded pages.
+- Commit-log pruning advances the horizon and deletes history atomically with
+  epoch fencing. Custom storage adapters must implement the updated pruning
+  contract, partition epoch read, and active-client cursor aggregate.
+- Unexpected validator and CRDT exceptions expose static public messages.
+  Presence and reactive observations discard stale asynchronous completions.
+  Inactive query and window observations release cached rows and leave change
+  dispatch.
+- Concurrent SQLite bootstrap requests share one image build. Custom image
+  builders receive `rowBatches` and return `Promise<Uint8Array>`.
+- React renames `useMutation`'s `onSuccess` callback to `onEnqueued`. The callback
+  describes durable local acceptance; terminal server results remain in the
+  outcome journal. React uses the supplied client identity directly.
+- Application state reads use `statusSnapshot()` across direct and hosted
+  clients. Replace `schemaFloor`, `leaseState`, `upgrading`, and `syncNeeded`
+  getters or commands with snapshot fields. Direct `conflicts`, `rejections`,
+  and `securityLifecycle` reads become method calls. `normalizeClient` and the
+  supervisor-observation forwarding export are removed. Native wrappers expose
+  the canonical snapshot and outcome methods.
+
+Migration guides: [client](https://syncular.dev/platform-web/#snapshot-api-migration),
+[React](https://syncular.dev/platform-react/),
+[storage](https://syncular.dev/server-storage/), and
+[query regeneration](https://syncular.dev/guide-remote-operations/).
+Measured results and verification limits are recorded in
+[RFC-RELIABILITY-DX.md](./RFC-RELIABILITY-DX.md#9-implementation-evidence-2026-09-05).
 
 ## 0.15.48 release notes
 
