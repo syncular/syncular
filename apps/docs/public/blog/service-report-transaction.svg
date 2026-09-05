@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="1040" viewBox="0 0 480 1040" role="img" aria-labelledby="title desc">
+  <title id="title">Pump repair #184: from an offline completion to the customer report</title>
+  <desc id="desc">A technician completes work order 184 offline and saves report R184. After reconnection, one server transaction accepts the work order, report, completion event, and queued report email. The office sees a complete repair while the email is queued. A worker submits that report to the email provider for the customer.</desc>
+  <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="m 1 1 8 4 -8 4" fill="none" stroke="#ffb000" stroke-width="1.5"/></marker></defs>
+  <rect width="480" height="1040" fill="#0a0908"/>
+  <g font-family="system-ui, -apple-system, sans-serif" fill="#f4efe4">
+    <text x="24" y="30" font-size="13" letter-spacing="1.2" fill="#ffb000">01 / COMPLETE A REPAIR OFFLINE</text>
+    <rect x="24" y="48" width="432" height="213" rx="12" fill="#14120e" stroke="#756f64"/>
+    <text x="44" y="77" font-size="15" fill="#b9b2a6">TECHNICIAN'S PHONE · NO SIGNAL</text>
+    <text x="44" y="111" font-size="24" font-weight="600">#184 · Pump repair</text>
+    <rect x="44" y="126" width="129" height="27" rx="5" fill="#263020"/>
+    <text x="55" y="145" font-size="15" fill="#c1d9a6">Job completed</text>
+    <text x="186" y="145" font-size="15" fill="#ffb000">Pending sync</text>
+    <text x="44" y="177" font-size="16">Report R184</text>
+    <text x="44" y="201" font-size="16" fill="#b9b2a6">Replaced pump. Pressure test passed.</text>
+    <text x="44" y="239" font-size="14" fill="#b9b2a6">Completion + report + event saved in outbox</text>
+    <path d="M 240 261 V 317" stroke="#ffb000" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="258" y="294" font-size="14" fill="#b9b2a6">Phone reconnects</text>
+    <rect x="24" y="329" width="432" height="276" rx="12" fill="#14120e" stroke="#ffb000" stroke-width="1.5"/>
+    <text x="44" y="360" font-size="15" fill="#ffb000">SYNCULAR SERVER · ONE TRANSACTION</text>
+    <text x="44" y="386" font-size="15" fill="#b9b2a6">Check permission and completion rules</text>
+    <path d="M 44 403 H 436" stroke="#756f64"/>
+    <text x="44" y="435" font-size="18">Work order #184 → completed</text>
+    <text x="44" y="467" font-size="18">Report R184 → saved</text>
+    <text x="44" y="499" font-size="18">Completion event → report R184</text>
+    <text x="44" y="531" font-size="18" fill="#ffb000">Email report R184 → queued</text>
+    <text x="44" y="560" font-size="14" fill="#b9b2a6">Commit log + retry result saved alongside</text>
+    <text x="44" y="585" font-size="14" fill="#b9b2a6">Rejected completion: none of these commit.</text>
+    <path d="M 240 605 V 634 H 12 V 820 H 240 V 844" fill="none" stroke="#ffb000" stroke-width="2" marker-end="url(#arrow)"/>
+    <path d="M 12 730 H 24" stroke="#ffb000" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="258" y="639" font-size="14" fill="#ffb000">Accepted</text>
+    <rect x="24" y="672" width="432" height="116" rx="12" fill="#14120e" stroke="#756f64"/>
+    <text x="44" y="701" font-size="15" fill="#b9b2a6">OFFICE · TWO SEPARATE OUTCOMES</text>
+    <text x="44" y="734" font-size="19">#184 repair: complete</text>
+    <text x="44" y="765" font-size="19" fill="#ffb000">Report email: queued</text>
+    <text x="258" y="821" font-size="14" fill="#b9b2a6">Worker submits email</text>
+    <rect x="24" y="856" width="432" height="158" rx="12" fill="#14120e" stroke="#756f64"/>
+    <path d="M 44 879 H 76 V 901 H 44 Z M 44 879 L 60 891 L 76 879" fill="none" stroke="#ffb000" stroke-width="1.5"/>
+    <text x="89" y="896" font-size="16" fill="#ffb000">To: customer for work order #184</text>
+    <text x="44" y="934" font-size="21" font-weight="600">Your pump repair report</text>
+    <text x="44" y="963" font-size="16">Replaced pump. Pressure test passed.</text>
+    <text x="44" y="993" font-size="14" fill="#b9b2a6">Provider handles delivery after acceptance.</text>
+  </g>
+</svg>

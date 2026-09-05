@@ -1,30 +1,40 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="480" height="670" viewBox="0 0 480 670" role="img" aria-labelledby="title desc">
-  <title id="title">A worker crash repeats delivery with the same key</title>
-  <desc id="desc">Worker A calls the provider with key K. The provider accepts the message. Worker A crashes before recording completion. After its lease expires, worker B retries with key K. A provider honoring that key returns the prior result. Worker B records completion.</desc>
-  <rect width="480" height="670" fill="#0a0908"/>
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#f4efe4">
-    <text x="24" y="34" fill="#ffb000" font-size="14" letter-spacing="1">02 / FOLLOW THE RETRY</text>
-    <path d="M 42 82 V 614" stroke="#756f64" stroke-width="2"/>
-    <g fill="#0a0908" stroke="#ffb000" stroke-width="2">
-      <circle cx="42" cy="86" r="7"/><circle cx="42" cy="174" r="7"/>
-      <circle cx="42" cy="380" r="7"/><circle cx="42" cy="468" r="7"/>
-      <circle cx="42" cy="614" r="7"/>
-    </g>
-    <text x="66" y="82" font-size="19">Worker A calls the provider</text>
-    <text x="66" y="112" font-size="17" fill="#ffb000">Idempotency key: K</text>
-    <text x="66" y="170" font-size="19">Provider accepts the message</text>
-    <text x="66" y="200" font-size="17" fill="#b9b2a6">One notification</text>
-    <rect x="24" y="231" width="432" height="89" fill="#261c0a" stroke="#ffb000"/>
-    <text x="42" y="264" font-size="19" fill="#ffb000">Worker A stops here</text>
-    <text x="42" y="294" font-size="17">Completion has not been recorded.</text>
-    <text x="66" y="347" font-size="15" fill="#b9b2a6">The lease expires.</text>
-    <text x="66" y="376" font-size="19">Worker B retries the call</text>
-    <text x="66" y="406" font-size="17" fill="#ffb000">Idempotency key: K · unchanged</text>
-    <text x="66" y="464" font-size="19">Provider recognizes K</text>
-    <text x="66" y="494" font-size="17" fill="#b9b2a6">Returns the prior result</text>
-    <text x="66" y="537" font-size="15" fill="#b9b2a6">Requires provider deduplication</text>
-    <text x="66" y="560" font-size="15" fill="#b9b2a6">that still retains this key.</text>
-    <text x="66" y="610" font-size="19">Worker B records completion</text>
-    <text x="66" y="640" font-size="17" fill="#b9b2a6">Reaction status: completed</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="1000" viewBox="0 0 480 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Retrying the email for pump repair #184 after a worker crash</title>
+  <desc id="desc">Worker A submits report R184 with idempotency key K. The email provider accepts it, but the worker crashes before completing its reaction. The repair remains complete. After the lease expires, worker B submits report R184 with the same key. If the provider still retains K, it returns the earlier result without creating a second email. Worker B records completion.</desc>
+  <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="m 1 1 8 4 -8 4" fill="none" stroke="#ffb000" stroke-width="1.5"/></marker></defs>
+  <rect width="480" height="1000" fill="#0a0908"/>
+  <g font-family="system-ui, -apple-system, sans-serif" fill="#f4efe4">
+    <text x="24" y="30" font-size="13" letter-spacing="1.2" fill="#ffb000">02 / RETRY THE SAME CUSTOMER REPORT</text>
+    <rect x="24" y="48" width="432" height="120" rx="12" fill="#14120e" stroke="#756f64"/>
+    <text x="44" y="77" font-size="15" fill="#b9b2a6">WORKER A · FIRST ATTEMPT</text>
+    <text x="44" y="112" font-size="22" font-weight="600">Email report R184 for job #184</text>
+    <text x="44" y="145" font-size="16" fill="#ffb000">Report R184 · Idempotency key K</text>
+    <path d="M 240 168 V 202" stroke="#ffb000" stroke-width="2" marker-end="url(#arrow)"/>
+    <rect x="24" y="214" width="432" height="104" rx="12" fill="#14120e" stroke="#756f64"/>
+    <text x="44" y="245" font-size="15" fill="#b9b2a6">EMAIL PROVIDER</text>
+    <text x="44" y="279" font-size="21">Accepts the customer's report email</text>
+    <text x="44" y="303" font-size="14" fill="#b9b2a6">Remembers the result under key K</text>
+    <path d="M 240 318 V 352" stroke="#ffb000" stroke-width="2" marker-end="url(#arrow)"/>
+    <rect x="24" y="364" width="432" height="153" rx="12" fill="#261c0a" stroke="#ffb000"/>
+    <text x="44" y="397" font-size="21" font-weight="600" fill="#ffb000">Worker A crashes</text>
+    <text x="44" y="427" font-size="16">It hasn't recorded the provider's success.</text>
+    <path d="M 44 441 H 436" stroke="#756f64"/>
+    <text x="44" y="471" font-size="17">Job #184: complete</text>
+    <text x="44" y="498" font-size="17" fill="#ffb000">Email reaction: still unfinished</text>
+    <path d="M 240 517 V 574" stroke="#ffb000" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="258" y="552" font-size="14" fill="#b9b2a6">Worker lease expires</text>
+    <rect x="24" y="586" width="432" height="120" rx="12" fill="#14120e" stroke="#756f64"/>
+    <text x="44" y="615" font-size="15" fill="#b9b2a6">WORKER B · RETRY</text>
+    <text x="44" y="650" font-size="22" font-weight="600">Email report R184 for job #184</text>
+    <text x="44" y="683" font-size="16" fill="#ffb000">Same report R184 · Same key K</text>
+    <path d="M 240 706 V 740" stroke="#ffb000" stroke-width="2" marker-end="url(#arrow)"/>
+    <rect x="24" y="752" width="432" height="109" rx="12" fill="#14120e" stroke="#756f64"/>
+    <text x="44" y="781" font-size="15" fill="#b9b2a6">EMAIL PROVIDER · IF IT STILL RETAINS K</text>
+    <text x="44" y="815" font-size="21">Returns the earlier acceptance</text>
+    <text x="44" y="842" font-size="16">No second report email is created.</text>
+    <path d="M 240 861 V 895" stroke="#ffb000" stroke-width="2" marker-end="url(#arrow)"/>
+    <rect x="24" y="907" width="432" height="69" rx="12" fill="#14120e" stroke="#756f64"/>
+    <text x="44" y="937" font-size="19">Worker B completes the email reaction</text>
+    <text x="44" y="962" font-size="14" fill="#b9b2a6">Provider acceptance recorded for report R184</text>
   </g>
 </svg>
